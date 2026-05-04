@@ -1,0 +1,11 @@
+node_modules/
+python-bundle/
+dist-main/
+dist-preload/
+dist-renderer/
+out/
+build/
+.DS_Store
+.env
+.env.local
+*.log
