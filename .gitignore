@@ -1,11 +1,48 @@
+# Dependencies
 node_modules/
-python-bundle/
+.venv/
+
+# Build outputs
 dist-main/
-dist-preload/
 dist-renderer/
+dist-preload/
 out/
-build/
-.DS_Store
+
+# Native extension build artifacts
+native/freyja_native/target/
+*.so
+*.dylib
+*.pyd
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Environment
 .env
-.env.local
-*.log
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Freyja user data (lives under ~/.freyja/)
+# Included here in case someone symlinks it into the repo for debugging
+sessions/
+last-frames/
+bridge-events.jsonl
+bridge-diagnose.txt
+
+# Electron builder
+*.dmg
+*.zip
+*.app/
