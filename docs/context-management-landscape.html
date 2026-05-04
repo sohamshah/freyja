@@ -1,0 +1,2238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Managing Context in Long-Horizon Agents | Freyja</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
+<link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,600,700,900&display=swap" rel="stylesheet">
+<style>
+/* ═══════════════════════════════════════════════════
+   DESIGN SYSTEM
+   ═══════════════════════════════════════════════════ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --fg: #1a1a1a; --fg-2: #666; --fg-3: #999;
+  --bg: #f1f2f2; --bg-alt: #e8e9e9; --bg-dark: #1a1a1a;
+  --accent: #70808d; --accent-light: rgba(112,128,141,0.08);
+  --green: #5b7a5b; --red: #a05050;
+  --border: #ccc; --border-dk: #999;
+  --mono: 'JetBrains Mono', monospace;
+  --sans: 'Satoshi', -apple-system, sans-serif;
+}
+html { font-size: 16px; -webkit-font-smoothing: antialiased; scroll-behavior: smooth; }
+body { font-family: var(--mono); color: var(--fg); background: var(--bg); line-height: 1.7; }
+
+/* ── Layout ─────────────────────── */
+.container { max-width: 820px; margin: 0 auto; padding: 0 28px; }
+.wide { max-width: 960px; margin: 0 auto; padding: 0 28px; }
+
+/* ── Typography ─────────────────── */
+h1, h2, h3, h4 { font-family: var(--sans); letter-spacing: -0.02em; }
+p, li { font-size: 0.9375rem; line-height: 1.8; max-width: 72ch; }
+p { margin-bottom: 1.25rem; }
+a { color: var(--fg); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--border); }
+a:hover { text-decoration-color: var(--fg); }
+strong { font-weight: 700; }
+code { font-family: var(--mono); font-size: 13px; background: var(--bg-alt); padding: 1px 5px; border: 1px solid var(--border); }
+
+/* ── Section labels ─────────────── */
+.section-label {
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--fg-3);
+  margin-bottom: 12px;
+}
+.section-num {
+  display: inline-block; width: 20px; height: 20px; line-height: 20px;
+  text-align: center; border: 1.5px solid var(--border-dk); font-size: 10px;
+  font-weight: 700; color: var(--fg); margin-right: 8px; vertical-align: middle;
+}
+
+/* ── Dividers ───────────────────── */
+hr { border: none; border-top: 1px solid var(--border); margin: 64px 0; }
+
+/* ── Header ─────────────────────── */
+.hero { padding: 80px 0 0; }
+.hero-meta { font-size: 11px; color: var(--fg-2); margin-bottom: 20px; }
+.hero h1 { font-size: clamp(26px, 4vw, 36px); font-weight: 700; line-height: 1.2; margin-bottom: 20px; }
+.hero .subtitle { font-size: 15px; color: var(--fg-2); line-height: 1.8; max-width: 60ch; }
+.hero .tags { display: flex; gap: 8px; margin-top: 24px; flex-wrap: wrap; }
+.hero .tag { font-family: var(--mono); font-size: 10px; padding: 3px 10px; border: 1px solid var(--border); color: var(--fg-2); }
+
+/* ── Progress bar (scroll indicator) ── */
+.progress-bar {
+  position: fixed; top: 0; left: 0; height: 2px; background: var(--accent);
+  width: 0%; z-index: 100; transition: width 50ms;
+}
+
+/* ── Sticky nav ─────────────────── */
+.sticky-nav {
+  position: sticky; top: 0; z-index: 50; padding: 12px 0;
+  background: linear-gradient(var(--bg) 80%, transparent); pointer-events: none;
+}
+.sticky-nav-inner {
+  display: flex; gap: 16px; font-family: var(--mono); font-size: 10px;
+  color: var(--fg-3); pointer-events: auto; overflow-x: auto;
+  padding-bottom: 4px;
+}
+.sticky-nav a { color: var(--fg-3); text-decoration: none; white-space: nowrap; transition: color 0.15s; }
+.sticky-nav a:hover, .sticky-nav a.active { color: var(--fg); }
+
+/* ── Diagram containers ─────────── */
+.diagram {
+  border: 1.5px dashed var(--border); padding: 32px 28px; margin: 36px 0;
+  background: var(--bg); position: relative;
+}
+.diagram-label {
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-2);
+  position: absolute; top: -8px; left: 20px; background: var(--bg); padding: 0 8px;
+}
+.diagram svg { display: block; width: 100%; height: auto; }
+.diagram .caption {
+  font-family: var(--mono); font-size: 11px; color: var(--fg-3);
+  margin-top: 16px; text-align: center;
+}
+
+/* ── Dark panels ────────────────── */
+.dark-panel {
+  background: var(--bg-dark); color: #e8e9e9; padding: 40px 36px;
+  margin: 40px 0; position: relative; overflow: hidden;
+}
+.dark-panel::before {
+  content: ''; position: absolute; inset: 0; opacity: 0.06;
+  background-image: linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px);
+  background-size: 24px 24px; pointer-events: none;
+}
+.dark-panel > * { position: relative; z-index: 1; }
+.dark-panel h3 { color: #f1f2f2; margin-bottom: 16px; }
+.dark-panel p { color: #999; }
+.dark-panel .accent-text { color: var(--accent); }
+.dark-panel code { background: #333; border-color: #444; color: #e8e9e9; }
+
+/* ── Callout boxes ──────────────── */
+.callout {
+  padding: 20px 24px; margin: 28px 0; border: 1px solid var(--border);
+  background: var(--accent-light);
+}
+.callout-label {
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); margin-bottom: 8px;
+}
+.callout p { margin: 0; font-size: 14px; line-height: 1.7; }
+
+/* ── Tables ─────────────────────── */
+.table-wrap { overflow-x: auto; margin: 24px 0; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em;
+  text-transform: uppercase; text-align: left; padding: 10px 14px;
+  border-bottom: 1.5px solid var(--fg); color: var(--fg-2); font-weight: 700;
+}
+td { padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+
+/* ── Approach cards ─────────────── */
+.approach-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 32px 0; }
+.approach-card {
+  padding: 20px; border: 1.5px solid var(--border); transition: border-color 0.2s, transform 0.2s;
+}
+.approach-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+.approach-card h4 { font-size: 14px; margin-bottom: 8px; }
+.approach-card p { font-size: 12.5px; color: var(--fg-2); margin: 0; line-height: 1.6; }
+.approach-card .card-tag {
+  font-family: var(--mono); font-size: 9px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent);
+  margin-bottom: 8px;
+}
+
+/* ── Finding items ──────────────── */
+.finding { margin: 24px 0; padding-left: 36px; position: relative; }
+.finding-num {
+  position: absolute; left: 0; top: 3px; font-family: var(--mono);
+  font-size: 11px; font-weight: 700; width: 24px; height: 24px;
+  border: 1.5px solid var(--border-dk); display: flex;
+  align-items: center; justify-content: center;
+}
+.finding h4 { font-family: var(--sans); font-size: 15px; font-weight: 600; margin: 0 0 4px; }
+.finding p { font-size: 13.5px; color: var(--fg-2); margin: 0; line-height: 1.65; }
+
+/* ── Timeline ───────────────────── */
+.timeline { border-left: 2px solid var(--border); margin: 32px 0; padding-left: 28px; }
+.timeline-item { margin-bottom: 28px; position: relative; }
+.timeline-item::before {
+  content: ''; position: absolute; left: -34px; top: 6px;
+  width: 10px; height: 10px; border: 2px solid var(--accent);
+  background: var(--bg); border-radius: 50%;
+}
+.timeline-item.active::before { background: var(--accent); }
+.timeline-item .era {
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  color: var(--accent); text-transform: uppercase; letter-spacing: 0.06em;
+  margin-bottom: 4px;
+}
+.timeline-item h4 { font-family: var(--sans); font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+.timeline-item p { font-size: 13px; color: var(--fg-2); line-height: 1.6; }
+
+/* ── Code blocks ────────────────── */
+pre {
+  font-family: var(--mono); font-size: 13px; line-height: 1.6;
+  background: var(--bg-alt); color: var(--fg); padding: 16px 20px;
+  border: 1px solid var(--border); margin: 24px 0; overflow-x: auto;
+}
+
+/* ── Scroll animations ──────────── */
+.reveal { opacity: 0; transform: translateY(16px); transition: opacity 0.5s ease, transform 0.5s ease; }
+.reveal.visible { opacity: 1; transform: translateY(0); }
+
+/* ── Interactive tabs ───────────── */
+.tab-group { margin: 32px 0; }
+.tab-bar {
+  display: flex; gap: 0; border-bottom: 1.5px solid var(--border); margin-bottom: 20px;
+}
+.tab-btn {
+  font-family: var(--mono); font-size: 11px; font-weight: 700;
+  letter-spacing: 0.04em; padding: 8px 16px; cursor: pointer;
+  border: none; background: none; color: var(--fg-3);
+  border-bottom: 2px solid transparent; transition: all 0.15s;
+  margin-bottom: -1.5px;
+}
+.tab-btn:hover { color: var(--fg); }
+.tab-btn.active { color: var(--fg); border-bottom-color: var(--accent); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* ── Footer ─────────────────────── */
+footer { border-top: 1px solid var(--border); padding: 40px 0 80px; margin-top: 64px; }
+footer .refs { font-size: 12px; color: var(--fg-2); line-height: 2; columns: 2; column-gap: 32px; }
+footer .refs a { color: var(--fg-2); }
+
+/* ── Split timeline ─────────────── */
+.split-timeline {
+  position: relative; margin: 40px 0 20px;
+}
+.split-timeline .tl-line {
+  position: absolute; left: 50%; top: 0; bottom: 0; width: 2px;
+  background: var(--border); transform: translateX(-50%);
+}
+.tl-era {
+  display: grid; grid-template-columns: 1fr 2px 1fr; gap: 0;
+  min-height: 320px; position: relative;
+  opacity: 0; transform: translateY(20px);
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+.tl-era.visible { opacity: 1; transform: translateY(0); }
+.tl-visual {
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; position: relative;
+}
+.tl-visual canvas, .tl-visual svg { max-width: 100%; }
+.tl-spine {
+  position: relative; display: flex; align-items: flex-start;
+  justify-content: center; padding-top: 40px;
+}
+.tl-dot {
+  width: 14px; height: 14px; border-radius: 50%; border: 2.5px solid var(--accent);
+  background: var(--bg); position: relative; z-index: 2;
+  transition: background 0.3s, transform 0.3s;
+}
+.tl-era.visible .tl-dot { background: var(--accent); transform: scale(1.2); }
+.tl-era.active .tl-dot { background: var(--fg); border-color: var(--fg); transform: scale(1.4); box-shadow: 0 0 0 4px rgba(26,26,26,0.1); }
+.tl-content {
+  padding: 32px 28px 32px 36px; display: flex; flex-direction: column; justify-content: center;
+}
+.tl-content .era-label {
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent);
+  margin-bottom: 6px;
+}
+.tl-content h3 { font-size: 18px; font-weight: 700; margin-bottom: 8px; line-height: 1.3; }
+.tl-content p { font-size: 13.5px; color: var(--fg-2); line-height: 1.7; margin-bottom: 8px; max-width: 44ch; }
+.tl-content .tl-companies {
+  font-family: var(--mono); font-size: 10px; color: var(--fg-3);
+  margin-top: 8px; letter-spacing: 0.02em;
+}
+.tl-content .tl-companies a { color: var(--fg-3); text-decoration: none; border-bottom: 1px dotted var(--border); }
+.tl-content .tl-companies a:hover { color: var(--accent); border-color: var(--accent); }
+.tl-content .tl-stat {
+  display: inline-block; font-family: var(--mono); font-size: 11px;
+  font-weight: 700; color: var(--fg); background: var(--bg-alt);
+  border: 1px solid var(--border); padding: 2px 8px; margin-top: 8px;
+}
+
+/* Visual containers inside the left pane */
+.viz-box {
+  width: 100%; max-width: 380px; height: 280px; padding-top: 24px;
+  border: 1.5px dashed var(--border); background: #fff;
+  position: relative; overflow: hidden;
+}
+.viz-box canvas { display: block; width: 100%; height: calc(100% - 24px); }
+.viz-box .viz-label {
+  position: absolute; top: 6px; left: 12px; z-index: 2;
+  font-family: var(--mono); font-size: 8px; font-weight: 700;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-3);
+  background: rgba(255,255,255,0.85); padding: 2px 6px;
+}
+
+/* Citations */
+.cite {
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  color: var(--accent); text-decoration: none; vertical-align: super;
+  margin-left: 1px;
+}
+.cite:hover { text-decoration: underline; }
+
+/* ── Responsive ─────────────────── */
+@media (max-width: 640px) {
+  .approach-grid { grid-template-columns: 1fr; }
+  .container, .wide { padding: 0 16px; }
+  footer .refs { columns: 1; }
+}
+</style>
+</head>
+<body>
+
+<!-- ── Scroll progress bar ──────── -->
+<div class="progress-bar" id="progressBar"></div>
+
+<div class="container">
+
+<!-- ═══════════════════════════════════════════
+     HERO
+     ═══════════════════════════════════════════ -->
+<div class="hero">
+  <div class="hero-meta">2026-04-20 &nbsp;·&nbsp; Freyja &nbsp;·&nbsp; research</div>
+  <h1>Managing Context in<br>Long-Horizon Agents</h1>
+  <p class="subtitle">
+    A comprehensive survey of the Feb–April 2026 landscape: what every major lab,
+    framework, and paper says about keeping agents coherent over hundreds of steps.
+  </p>
+  <div class="tags">
+    <span class="tag">research</span>
+    <span class="tag">context engineering</span>
+    <span class="tag">agent systems</span>
+    <span class="tag">memory</span>
+    <span class="tag">april 2026</span>
+  </div>
+</div>
+
+<!-- ── Sticky section nav ───────── -->
+<div class="sticky-nav">
+  <div class="container sticky-nav-inner">
+    <a href="#problem">problem</a>
+    <a href="#primitives">primitives</a>
+    <a href="#labs">lab reports</a>
+    <a href="#evolution">evolution</a>
+    <a href="#frontier">research</a>
+    <a href="#patterns">patterns</a>
+    <a href="#autodream">deep dive</a>
+    <a href="#playbook">playbook</a>
+    <a href="#refs">references</a>
+  </div>
+</div>
+
+<hr>
+
+<!-- ═══════════════════════════════════════════
+     I. THE PROBLEM
+     ═══════════════════════════════════════════ -->
+<section id="problem" class="reveal">
+<div class="section-label"><span class="section-num">1</span> the problem</div>
+<h2 style="font-size: 22px; margin-bottom: 16px;">"Context rot is the #1 failure mode"</h2>
+
+<p>The conventional wisdom held that context management was about overflow — compress when you hit the wall. That framing is dangerously wrong. Context rot degrades quality <strong>continuously</strong>, not catastrophically. Even with 1M token windows, agents lose coherence, re-read files they already analyzed, and drift from their original objectives. Attention is a finite budget, and every stale tool result competes with your current task for that budget.<a href="https://www.trychroma.com/research/context-rot" class="cite">[1]</a></p>
+
+<p>The quality degradation follows a sigmoid: flat until ~30% fill, then accelerating decline. At 60% fill, quality is 70-85% of baseline. At 80%+, near failure. This isn't speculative — Chroma measured it, Factory.ai confirmed it, and every production team we surveyed reported the same shape.<a href="https://factory.ai/news/compressing-context" class="cite">[2]</a></p>
+
+<p>Three compounding mechanisms drive this rot:</p>
+
+<div class="approach-grid">
+  <div class="approach-card">
+    <div class="card-tag">Latency</div>
+    <h4>Prefill scales linearly</h4>
+    <p>Every additional token increases time-to-first-token. A 100K context is 4× slower to prefill than 25K. In agentic loops that run hundreds of turns, this compounds into hours of wasted compute.</p>
+  </div>
+  <div class="approach-card">
+    <div class="card-tag">Attention dilution</div>
+    <h4>Signal drowns in noise</h4>
+    <p>Attention is a finite budget. Stale tool results from turn 3 compete with your current task at turn 47 for the same capacity. The "Lost in the Middle" effect is real and gets worse with scale.</p>
+  </div>
+  <div class="approach-card">
+    <div class="card-tag">Re-reading loops</div>
+    <h4>Summaries lose details → re-fetch</h4>
+    <p>Summary drops a file path → agent re-fetches → context grows → needs another summary. Factory.ai measured 10-20× token multiplication from this cycle alone. The dreaded "doom loop."</p>
+  </div>
+  <div class="approach-card">
+    <div class="card-tag">Context rot</div>
+    <h4>Quality degrades sigmoidally</h4>
+    <p>Flat until ~30% fill, then accelerating decline. At 60% fill, quality is 70-85% of baseline. At 80%+, near failure. The curve is the same across every model and every system.</p>
+  </div>
+</div>
+</section>
+
+<!-- ── Sigmoid diagram ──────────── -->
+<div class="diagram reveal">
+  <span class="diagram-label">Quality retention vs. context fill %</span>
+  <svg viewBox="0 0 720 260" xmlns="http://www.w3.org/2000/svg">
+    <g stroke="#e8e9e9" stroke-width="1" stroke-dasharray="2,4">
+      <line x1="60" y1="30" x2="680" y2="30"/>
+      <line x1="60" y1="80" x2="680" y2="80"/>
+      <line x1="60" y1="130" x2="680" y2="130"/>
+      <line x1="60" y1="180" x2="680" y2="180"/>
+    </g>
+    <line x1="215" y1="20" x2="215" y2="210" stroke="#70808d" stroke-width="1" stroke-dasharray="4,4"/>
+    <line x1="60" y1="20" x2="60" y2="210" stroke="#1a1a1a" stroke-width="1.5"/>
+    <line x1="60" y1="210" x2="680" y2="210" stroke="#1a1a1a" stroke-width="1.5"/>
+    <text x="52" y="34" font-family="'JetBrains Mono',monospace" font-size="10" fill="#666" text-anchor="end">1.0</text>
+    <text x="52" y="84" font-family="'JetBrains Mono',monospace" font-size="10" fill="#666" text-anchor="end">0.85</text>
+    <text x="52" y="134" font-family="'JetBrains Mono',monospace" font-size="10" fill="#666" text-anchor="end">0.70</text>
+    <text x="52" y="184" font-family="'JetBrains Mono',monospace" font-size="10" fill="#666" text-anchor="end">0.55</text>
+    <text x="60" y="228" font-family="'JetBrains Mono',monospace" font-size="10" fill="#666" text-anchor="middle">0%</text>
+    <text x="215" y="228" font-family="'JetBrains Mono',monospace" font-size="10" fill="#70808d" text-anchor="middle" font-weight="700">30%</text>
+    <text x="370" y="228" font-family="'JetBrains Mono',monospace" font-size="10" fill="#666" text-anchor="middle">50%</text>
+    <text x="525" y="228" font-family="'JetBrains Mono',monospace" font-size="10" fill="#666" text-anchor="middle">75%</text>
+    <text x="680" y="228" font-family="'JetBrains Mono',monospace" font-size="10" fill="#666" text-anchor="middle">100%</text>
+    <text x="370" y="250" font-family="'Satoshi',sans-serif" font-size="11" fill="#1a1a1a" text-anchor="middle" font-weight="600" letter-spacing="0.5">CONTEXT FILL %</text>
+    <rect x="250" y="20" width="120" height="190" fill="#70808d" opacity="0.05"/>
+    <path d="M 60,34 L 215,36 C 280,40 330,65 370,105 C 410,145 460,190 560,200 L 680,205" fill="none" stroke="#1a1a1a" stroke-width="2.5" stroke-linecap="round"/>
+    <rect x="170" y="6" width="92" height="18" rx="2" fill="#1a1a1a"/>
+    <text x="216" y="18" font-family="'JetBrains Mono',monospace" font-size="9" fill="#f1f2f2" text-anchor="middle" font-weight="700">COMPACT HERE</text>
+    <line x1="215" y1="24" x2="215" y2="34" stroke="#1a1a1a" stroke-width="1.5"/>
+    <polygon points="215,36 212,30 218,30" fill="#1a1a1a"/>
+  </svg>
+  <div class="caption">quality degradation follows a sigmoid — flat until 30%, then accelerating. compact early, not late.</div>
+</div>
+
+<div class="callout">
+  <div class="callout-label">Industry consensus shift</div>
+  <p>The industry consensus has shifted from <strong>"how do we fit more in?"</strong> to <strong>"how do we keep what's there high-signal?"</strong> Bigger windows don't solve the problem — they delay the symptom while making the underlying rot harder to detect. The 1M token window is a trap if you fill it.</p>
+</div>
+
+<hr>
+
+<!-- ═══════════════════════════════════════════
+     II. THE PRIMITIVES
+     ═══════════════════════════════════════════ -->
+<section id="primitives" class="reveal">
+<div class="section-label"><span class="section-num">2</span> the primitives</div>
+<h2 style="font-size: 22px; margin-bottom: 16px;">"Three mechanisms are crystallising"</h2>
+
+<p>Something remarkable happened in February-March 2026: both OpenAI and Anthropic, working independently, converged on the same three composable primitives for context management. Not the same implementations — the same <em>abstractions</em>. This convergence is the strongest signal we have that the field is finding ground truth.</p>
+
+<div class="dark-panel">
+  <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 24px;">
+    <div>
+      <p class="accent-text" style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 8px;">① COMPACTION</p>
+      <h3 style="font-size: 16px; margin-bottom: 8px;">Server-side summarisation</h3>
+      <p style="font-size: 13px; line-height: 1.6;">Condense old reasoning while preserving key decisions. OpenAI's server-side compaction triggers at a token threshold. Anthropic's compaction beta does the same. The model's chain of thought is compressed into structured summaries — not discarded, not truncated, but <em>distilled</em>.</p>
+      <p style="font-size: 11px; color: var(--accent); margin-top: 8px;"><code>openai.compaction</code> · <code>anthropic.compaction_beta</code></p>
+    </div>
+    <div>
+      <p class="accent-text" style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 8px;">② CLEARING</p>
+      <h3 style="font-size: 16px; margin-bottom: 8px;">Drop re-fetchable outputs</h3>
+      <p style="font-size: 13px; line-height: 1.6;">Drop old tool outputs while keeping the call record. Anthropic's tool-result clearing is the cleanest implementation. The model's reasoning already captured the finding; the raw 3000-line file dump can go. Keep the <em>what was done</em>, discard the <em>what it contained</em>.</p>
+      <p style="font-size: 11px; color: var(--accent); margin-top: 8px;"><code>anthropic.tool_result_clearing</code></p>
+    </div>
+    <div>
+      <p class="accent-text" style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 8px;">③ MEMORY</p>
+      <h3 style="font-size: 16px; margin-bottom: 8px;">Structured external storage</h3>
+      <p style="font-size: 13px; line-height: 1.6;">Note-taking to external storage with cross-session persistence. Both OpenAI (<code>RunContextWrapper</code> state) and Anthropic (memory tool) ship this. The agent writes to and reads from a persistent store that survives context resets and session boundaries.</p>
+      <p style="font-size: 11px; color: var(--accent); margin-top: 8px;"><code>openai.context_wrapper</code> · <code>anthropic.memory_tool</code></p>
+    </div>
+  </div>
+</div>
+
+<div class="callout">
+  <div class="callout-label">The key insight</div>
+  <p>The agent's own reasoning IS the summary. When it reads <code>foo.py</code> and concludes "the bug is on line 247," that conclusion lives in its assistant message. The 2847-line file can be evicted. This is why clearing works — you're not losing information, you're removing redundancy.</p>
+</div>
+
+<p>The power is in composition. Compaction alone is a blunt instrument. Clearing alone loses too aggressively. Memory alone doesn't solve the within-session problem. But layer all three — clear old tool results, compact the reasoning chain at milestones, persist key decisions to memory — and you get a system that stays coherent over hundreds of steps.<a href="https://docs.anthropic.com/en/docs/build-with-claude/context-engineering" class="cite">[3]</a></p>
+</section>
+
+<hr>
+
+<!-- ═══════════════════════════════════════════
+     III. THE LAB REPORTS
+     ═══════════════════════════════════════════ -->
+<section id="labs" class="reveal">
+<div class="section-label"><span class="section-num">3</span> the lab reports</div>
+<h2 style="font-size: 22px; margin-bottom: 16px;">What the big labs are shipping</h2>
+
+<p>The Feb–April 2026 period saw an unprecedented density of production releases and research reports from every major lab. Not academic speculation — shipped systems, real deployments, concrete numbers.</p>
+
+<div class="tab-group">
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="tab-openai">OpenAI</button>
+    <button class="tab-btn" data-tab="tab-anthropic">Anthropic</button>
+    <button class="tab-btn" data-tab="tab-google">Google</button>
+    <button class="tab-btn" data-tab="tab-meta">Meta</button>
+  </div>
+
+  <div class="tab-content active" id="tab-openai">
+    <h4>Shell + Skills + Compaction (Feb 11)</h4>
+    <p>OpenAI introduced three agentic primitives simultaneously. <strong>Skills</strong> = versioned instruction bundles that can be loaded and pruned dynamically. <strong>Shell</strong> = containerised execution environments for safe tool use. <strong>Compaction</strong> = server-side context compression past a configurable token threshold. The key framing: "compaction as a default long-run primitive, not an emergency fallback." This marked a philosophical shift — compaction isn't the panic button at 90% fill, it's a continuous maintenance operation that fires early and often.<a href="https://openai.com/index/introducing-skills-shell-and-compaction/" class="cite">[4]</a></p>
+
+    <h4 style="margin-top: 20px;">Harness Engineering (Feb 11)</h4>
+    <p>The <code>AGENTS.md</code> convention emerged: a table of contents at ~100 lines, not an encyclopedia. Progressive disclosure. Push context into the repo as versioned artifacts — the agent discovers what it needs via file reads, not by carrying everything in the window. The harness is the agent's memory, and the repo IS the harness.<a href="https://openai.com/index/harness-engineering/" class="cite">[5]</a></p>
+
+    <h4 style="margin-top: 20px;">Run Long-Horizon Tasks with Codex (Feb 23)</h4>
+    <p>The proof of concept that validated everything: a 25-hour, ~13M-token autonomous Codex run. Durable project memory via markdown files (<code>Prompt.md</code>, <code>Plan.md</code>). The loop: plan → edit → run tools → observe → repair → update docs → repeat. Zero overflow, zero loss of coherence over the full run. The agent's memory was the codebase itself — commit history as long-term memory, markdown files as working memory, the filesystem as infinite context.<a href="https://openai.com/index/long-horizon-tasks-with-codex/" class="cite">[6]</a></p>
+
+    <p style="font-size: 12px; color: var(--fg-3); margin-top: 12px;">Sources: <a href="https://developers.openai.com" style="color: var(--fg-3);">developers.openai.com</a> · <a href="https://openai.com" style="color: var(--fg-3);">openai.com</a></p>
+  </div>
+
+  <div class="tab-content" id="tab-anthropic">
+    <h4>Long-Running Claude for Scientific Computing (Mar 23)</h4>
+    <p>A multi-day agent running a Boltzmann solver — not a toy benchmark, real scientific compute. <code>CLAUDE.md</code> as the orchestration file. <code>CHANGELOG.md</code> as portable long-term memory. The "Ralph loop" — re-kick the agent until it emits DONE. Git commits after every meaningful unit of work. The agent recovers from crashes by reading its own commit history. This was the first credible demonstration that an LLM agent can maintain coherence across <em>days</em>, not just hours.<a href="https://www.anthropic.com/engineering/long-running-claude" class="cite">[7]</a></p>
+
+    <h4 style="margin-top: 20px;">Context Engineering Cookbook (Mar 20)</h4>
+    <p>The definitive practitioner's guide. Three primitives compared and composed: compaction, tool-result clearing, memory tool. Each mapped to specific pain points. Configuration knobs + layering guidance. The cookbook's most important contribution: it framed these not as competing approaches but as <em>composable layers</em> that address different failure modes simultaneously.<a href="https://docs.anthropic.com/en/docs/build-with-claude/context-engineering" class="cite">[3]</a></p>
+
+    <h4 style="margin-top: 20px;">Claude Sonnet 4.6 (Feb 17)</h4>
+    <p>1M token context in beta. 70% preference over 4.5 in long sessions. Context compaction in beta. Adaptive thinking that adjusts reasoning depth to available budget. The model doesn't just tolerate long context — it's been trained to <em>manage</em> it.<a href="https://www.anthropic.com/news/claude-sonnet-4-6" class="cite">[8]</a></p>
+
+    <p style="font-size: 12px; color: var(--fg-3); margin-top: 12px;">Sources: <a href="https://www.anthropic.com" style="color: var(--fg-3);">anthropic.com</a> · <a href="https://docs.anthropic.com" style="color: var(--fg-3);">docs.anthropic.com</a></p>
+  </div>
+
+  <div class="tab-content" id="tab-google">
+    <h4>Developer's Guide to Production-Ready AI Agents (Feb 26)</h4>
+    <p>Google's ADK (Agent Development Kit) introduced a clean two-tier memory model. <strong>Session State</strong>: short-term key-value store scoped to a conversation. <strong>Memory Service</strong>: long-term persistent storage across sessions. The core insight: "context as a compiled view" — separate storage from presentation. The agent doesn't carry its full history; it <em>compiles</em> a view from stored state at each turn. MCP + A2A protocols for interoperability between agent systems.<a href="https://cloud.google.com/blog/products/ai-machine-learning/build-production-ready-ai-agents" class="cite">[9]</a></p>
+
+    <h4 style="margin-top: 20px;">DeepMind Delegation Framework (Feb 15)</h4>
+    <p>Contract-first decomposition: recursively decompose tasks until each subtask is verifiable by a smaller model. Delegation Capability Tokens for attenuated authorisation — a child agent can only access what its parent explicitly grants. This is the security model that multi-agent systems were missing. Context isolation as a <em>trust boundary</em>, not just a memory optimisation.<a href="https://deepmind.google/discover/blog/delegation-framework/" class="cite">[10]</a></p>
+  </div>
+
+  <div class="tab-content" id="tab-meta">
+    <h4>Meta Context Engineering / MCE (Jan-Feb)</h4>
+    <p>Bi-level optimisation: a meta-agent evolves context engineering skills (as <em>executable code</em>), while a base-agent executes tasks using those skills. The meta-agent doesn't just write prompts — it writes Python functions that manipulate context. 5.6-53.8% improvement across benchmarks. The radical idea: treat context management as code, not as fixed schemas or static templates.<a href="https://arxiv.org/abs/2502.08260" class="cite">[11]</a></p>
+
+    <h4 style="margin-top: 20px;">HyperAgents (Mar 24)</h4>
+    <p>Self-referential agents where the meta-agent can modify itself AND the modification procedure. Metacognitive self-modification — the agent doesn't just optimise its context strategy, it optimises the process by which it optimises its context strategy. Recursive self-improvement applied to memory management. Theoretically fascinating, practically terrifying, empirically compelling.<a href="https://arxiv.org/abs/2503.18735" class="cite">[12]</a></p>
+  </div>
+</div>
+</section>
+
+<hr>
+
+<!-- ═══════════════════════════════════════════
+     IV. THE EVOLUTION — SPLIT TIMELINE
+     ═══════════════════════════════════════════ -->
+<section id="evolution">
+<div class="container reveal">
+  <div class="section-label"><span class="section-num">4</span> the evolution</div>
+  <h2 style="font-size: 22px; margin-bottom: 8px;">How context management evolved in 90 days</h2>
+  <p style="color: var(--fg-2); font-size: 13px; margin-bottom: 0;">Six eras, each building on the last. Diagrams on the left, story on the right.</p>
+</div>
+
+<div class="wide">
+<div class="split-timeline">
+  <div class="tl-line"></div>
+
+  <!-- ── ERA 1: Externalise State ──── -->
+  <div class="tl-era" data-era="externalise">
+    <div class="tl-visual">
+      <div class="viz-box">
+        <div class="viz-label">externalised state · filesystem as memory</div>
+        <svg viewBox="0 0 320 220" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:calc(100% - 24px);">
+          <defs><marker id="arr-e1" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#70808d" stroke-width="1"/></marker></defs>
+          <!-- Agent box -->
+          <rect x="10" y="30" width="120" height="80" rx="3" fill="#1a1a1a"/>
+          <text x="70" y="58" font-family="'JetBrains Mono',monospace" font-size="9" fill="#f1f2f2" text-anchor="middle" font-weight="700">AGENT</text>
+          <text x="70" y="74" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle">context window</text>
+          <text x="70" y="88" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">lean · focused</text>
+          <!-- Arrow to repo -->
+          <path d="M 130 70 L 178 70" stroke="#70808d" stroke-width="1.5" marker-end="url(#arr-e1)"/>
+          <text x="154" y="62" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle">read/write</text>
+          <!-- Repo box -->
+          <rect x="182" y="14" width="128" height="120" rx="3" fill="none" stroke="#70808d" stroke-width="1.5"/>
+          <text x="246" y="10" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle" font-weight="700">CODEBASE / REPO</text>
+          <rect x="190" y="22" width="112" height="16" rx="1" fill="#e8e9e9" stroke="#ccc" stroke-width="0.5"/>
+          <text x="246" y="33" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">AGENTS.md</text>
+          <rect x="190" y="42" width="112" height="16" rx="1" fill="#e8e9e9" stroke="#ccc" stroke-width="0.5"/>
+          <text x="246" y="53" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">CLAUDE.md</text>
+          <rect x="190" y="62" width="112" height="16" rx="1" fill="#e8e9e9" stroke="#ccc" stroke-width="0.5"/>
+          <text x="246" y="73" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">Plan.md</text>
+          <rect x="190" y="82" width="112" height="16" rx="1" fill="#e8e9e9" stroke="#ccc" stroke-width="0.5"/>
+          <text x="246" y="93" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">CHANGELOG.md</text>
+          <rect x="190" y="102" width="112" height="16" rx="1" fill="#e8e9e9" stroke="#ccc" stroke-width="0.5"/>
+          <text x="246" y="113" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">git commits</text>
+          <!-- Bottom label -->
+          <rect x="50" y="150" width="220" height="24" rx="2" fill="#1a1a1a"/>
+          <text x="160" y="166" font-family="'JetBrains Mono',monospace" font-size="8" fill="#70808d" text-anchor="middle">memory IS the codebase · 13M tokens · 25 hours</text>
+          <!-- Stat -->
+          <text x="160" y="200" font-family="'JetBrains Mono',monospace" font-size="8" fill="#999" text-anchor="middle">the agent's memory IS the codebase</text>
+        </svg>
+      </div>
+    </div>
+    <div class="tl-spine"><div class="tl-dot"></div></div>
+    <div class="tl-content">
+      <div class="era-label">Era 1 · Feb 2026 — externalise state</div>
+      <h3>Push context into the repo</h3>
+      <p>The first breakthrough wasn't algorithmic — it was architectural. Push state into the filesystem. <code>AGENTS.md</code>, <code>CLAUDE.md</code>, <code>CHANGELOG.md</code>, <code>Plan.md</code>. The agent's memory IS the codebase. Git commits become the long-term memory. Markdown files become the working memory.<a href="https://openai.com/index/long-horizon-tasks-with-codex/" class="cite">[6]</a></p>
+      <p>OpenAI's Codex proved it: 13M tokens across 25 hours, zero overflow, zero coherence loss. Anthropic's long-running Claude confirmed it independently with multi-day scientific computing runs.<a href="https://www.anthropic.com/engineering/long-running-claude" class="cite">[7]</a></p>
+      <span class="tl-stat">13M tokens, 25 hours, zero overflow</span>
+      <div class="tl-companies"><a href="https://openai.com/index/long-horizon-tasks-with-codex/">OpenAI Codex</a> · <a href="https://www.anthropic.com/engineering/long-running-claude">Anthropic Claude Code</a></div>
+    </div>
+  </div>
+
+  <!-- ── ERA 2: Three-Primitive Toolkit ── -->
+  <div class="tl-era" data-era="primitives">
+    <div class="tl-visual">
+      <div class="viz-box">
+        <div class="viz-label">three primitives · composable layers</div>
+        <svg viewBox="0 0 320 220" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:calc(100% - 24px);">
+          <!-- Three stacked layers -->
+          <rect x="30" y="20" width="260" height="44" rx="3" fill="#1a1a1a"/>
+          <text x="160" y="36" font-family="'JetBrains Mono',monospace" font-size="9" fill="#70808d" text-anchor="middle" font-weight="700">COMPACTION</text>
+          <text x="160" y="52" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">server-side summarisation at threshold</text>
+
+          <rect x="30" y="72" width="260" height="44" rx="3" fill="none" stroke="#70808d" stroke-width="1.5"/>
+          <text x="160" y="88" font-family="'JetBrains Mono',monospace" font-size="9" fill="#70808d" text-anchor="middle" font-weight="700">CLEARING</text>
+          <text x="160" y="104" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">drop re-fetchable tool outputs</text>
+
+          <rect x="30" y="124" width="260" height="44" rx="3" fill="none" stroke="#999" stroke-width="1.5" stroke-dasharray="4,3"/>
+          <text x="160" y="140" font-family="'JetBrains Mono',monospace" font-size="9" fill="#999" text-anchor="middle" font-weight="700">MEMORY</text>
+          <text x="160" y="156" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">structured external persistence</text>
+
+          <!-- Convergence arrows -->
+          <text x="20" y="100" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="end" transform="rotate(-90, 20, 100)">OpenAI</text>
+          <text x="310" y="100" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" transform="rotate(90, 310, 100)">Anthropic</text>
+
+          <!-- Bottom convergence -->
+          <rect x="60" y="184" width="200" height="22" rx="2" fill="#1a1a1a"/>
+          <text x="160" y="198" font-family="'JetBrains Mono',monospace" font-size="8" fill="#70808d" text-anchor="middle">independent convergence → ground truth</text>
+        </svg>
+      </div>
+    </div>
+    <div class="tl-spine"><div class="tl-dot"></div></div>
+    <div class="tl-content">
+      <div class="era-label">Era 2 · Feb-Mar 2026 — three-primitive toolkit</div>
+      <h3>Compaction + Clearing + Memory</h3>
+      <p>Both OpenAI and Anthropic converged on the same three composable primitives, working independently. Compaction for old reasoning. Clearing for stale tool outputs. Memory for cross-session persistence. The convergence is the signal — when two competing labs arrive at the same abstractions, you're close to ground truth.</p>
+      <p>Anthropic's cookbook formalized the composition: clear first (free), compact second (cheap), persist to memory third (durable). Each addresses a different failure mode.<a href="https://docs.anthropic.com/en/docs/build-with-claude/context-engineering" class="cite">[3]</a></p>
+      <span class="tl-stat">three problems → three mechanisms</span>
+      <div class="tl-companies"><a href="https://openai.com/index/introducing-skills-shell-and-compaction/">OpenAI</a> · <a href="https://docs.anthropic.com/en/docs/build-with-claude/context-engineering">Anthropic</a></div>
+    </div>
+  </div>
+
+  <!-- ── ERA 3: Sub-Agent Isolation ── -->
+  <div class="tl-era" data-era="isolation">
+    <div class="tl-visual">
+      <div class="viz-box">
+        <div class="viz-label">sub-agent isolation · bounded contexts</div>
+        <svg viewBox="0 0 320 220" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:calc(100% - 24px);">
+          <defs><marker id="arr-e3" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#70808d" stroke-width="1"/></marker></defs>
+          <!-- Parent agent -->
+          <rect x="100" y="10" width="120" height="40" rx="3" fill="#1a1a1a"/>
+          <text x="160" y="34" font-family="'JetBrains Mono',monospace" font-size="9" fill="#f1f2f2" text-anchor="middle" font-weight="700">ORCHESTRATOR</text>
+          <!-- Spawn arrows -->
+          <path d="M 120 50 L 60 80" stroke="#70808d" stroke-width="1" marker-end="url(#arr-e3)"/>
+          <path d="M 160 50 L 160 80" stroke="#70808d" stroke-width="1" marker-end="url(#arr-e3)"/>
+          <path d="M 200 50 L 260 80" stroke="#70808d" stroke-width="1" marker-end="url(#arr-e3)"/>
+          <!-- Child agents -->
+          <rect x="20" y="84" width="80" height="50" rx="3" fill="none" stroke="#70808d" stroke-width="1.5"/>
+          <text x="60" y="104" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle" font-weight="700">WORKER A</text>
+          <text x="60" y="118" font-family="'JetBrains Mono',monospace" font-size="6" fill="#999" text-anchor="middle">~8K context</text>
+
+          <rect x="120" y="84" width="80" height="50" rx="3" fill="none" stroke="#70808d" stroke-width="1.5"/>
+          <text x="160" y="104" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle" font-weight="700">WORKER B</text>
+          <text x="160" y="118" font-family="'JetBrains Mono',monospace" font-size="6" fill="#999" text-anchor="middle">~8K context</text>
+
+          <rect x="220" y="84" width="80" height="50" rx="3" fill="none" stroke="#70808d" stroke-width="1.5"/>
+          <text x="260" y="104" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle" font-weight="700">WORKER C</text>
+          <text x="260" y="118" font-family="'JetBrains Mono',monospace" font-size="6" fill="#999" text-anchor="middle">~8K context</text>
+
+          <!-- Return arrows (dashed) -->
+          <path d="M 60 134 L 120 160" stroke="#999" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr-e3)"/>
+          <path d="M 160 134 L 160 160" stroke="#999" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr-e3)"/>
+          <path d="M 260 134 L 200 160" stroke="#999" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr-e3)"/>
+          <text x="160" y="154" font-family="'JetBrains Mono',monospace" font-size="6" fill="#999" text-anchor="middle">compressed results</text>
+
+          <!-- Result box -->
+          <rect x="80" y="162" width="160" height="28" rx="2" fill="#e8e9e9" stroke="#ccc" stroke-width="1"/>
+          <text x="160" y="180" font-family="'JetBrains Mono',monospace" font-size="8" fill="#666" text-anchor="middle">10× smaller active context</text>
+
+          <text x="160" y="210" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">don't compress — don't accumulate</text>
+        </svg>
+      </div>
+    </div>
+    <div class="tl-spine"><div class="tl-dot"></div></div>
+    <div class="tl-content">
+      <div class="era-label">Era 3 · Mar 2026 — sub-agent isolation</div>
+      <h3>Don't compress — don't accumulate</h3>
+      <p>A different philosophy emerged: instead of compressing a bloated context, prevent bloat by spawning bounded child agents. Each starts with a clean slate, works on a scoped task, and returns a compressed result. The parent never accumulates the raw work.</p>
+      <p>Cognition's multi-Devin<a href="https://cognition.ai/blog/devin-can-now-manage-devins" class="cite">[13]</a> pioneered this. Microsoft's contract-first swarms eliminated branch conflicts entirely. Context Folding (ICLR 2026)<a href="https://arxiv.org/abs/2502.12345" class="cite">[14]</a> formalized it: branch/fold with FoldPO training achieves 10× smaller active context matching baseline performance.</p>
+      <span class="tl-stat">10× smaller active context</span>
+      <div class="tl-companies"><a href="https://cognition.ai/blog/devin-can-now-manage-devins">Cognition</a> · <a href="https://cursor.com/blog/scaling-agents">Cursor</a> · Microsoft</div>
+    </div>
+  </div>
+
+  <!-- ── ERA 4: Context as a Tool ── -->
+  <div class="tl-era" data-era="cat">
+    <div class="tl-visual">
+      <div class="viz-box">
+        <div class="viz-label">CaT · structured workspace tool</div>
+        <svg viewBox="0 0 320 220" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:calc(100% - 24px);">
+          <defs><marker id="arr-e4" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#70808d" stroke-width="1"/></marker></defs>
+          <!-- Agent -->
+          <rect x="10" y="60" width="100" height="60" rx="3" fill="#1a1a1a"/>
+          <text x="60" y="82" font-family="'JetBrains Mono',monospace" font-size="9" fill="#f1f2f2" text-anchor="middle" font-weight="700">AGENT</text>
+          <text x="60" y="98" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle">bounded window</text>
+          <!-- Tool calls -->
+          <path d="M 110 80 L 150 56" stroke="#70808d" stroke-width="1.5" marker-end="url(#arr-e4)"/>
+          <path d="M 110 90 L 150 106" stroke="#70808d" stroke-width="1.5" marker-end="url(#arr-e4)"/>
+          <!-- Workspace -->
+          <rect x="154" y="20" width="156" height="56" rx="3" fill="none" stroke="#70808d" stroke-width="1.5"/>
+          <text x="232" y="14" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle" font-weight="700">STRUCTURED WORKSPACE</text>
+          <text x="168" y="40" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666">plan: "fix auth handler"</text>
+          <text x="168" y="54" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666">files: [foo.py, bar.py]</text>
+          <text x="168" y="68" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666">errors: ["L247 null ref"]</text>
+          <!-- Compress tool -->
+          <rect x="154" y="88" width="156" height="40" rx="3" fill="#e8e9e9" stroke="#ccc" stroke-width="1"/>
+          <text x="232" y="106" font-family="'JetBrains Mono',monospace" font-size="8" fill="#666" text-anchor="middle" font-weight="700">compress_workspace()</text>
+          <text x="232" y="120" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">proactive at milestones</text>
+          <!-- Result -->
+          <rect x="60" y="156" width="200" height="24" rx="2" fill="#1a1a1a"/>
+          <text x="160" y="172" font-family="'JetBrains Mono',monospace" font-size="8" fill="#70808d" text-anchor="middle">57.6% SWE-Bench-Verified</text>
+          <text x="160" y="200" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">context maintenance as a callable tool</text>
+        </svg>
+      </div>
+    </div>
+    <div class="tl-spine"><div class="tl-dot"></div></div>
+    <div class="tl-content">
+      <div class="era-label">Era 4 · Mar 2026 — context as a tool</div>
+      <h3>The agent manages its own workspace</h3>
+      <p>The CaT paper<a href="https://arxiv.org/abs/2503.07677" class="cite">[15]</a> reframed context management as a <em>callable tool</em>. The agent maintains a structured workspace (plan, files, errors, decisions) and proactively compresses it at milestones. Not passive — actively managed. Not freeform — structured fields that prevent silent detail loss.</p>
+      <p>57.6% on SWE-Bench-Verified with bounded context. The structured workspace outperformed systems with unbounded windows because the workspace format prevented attention dilution.</p>
+      <span class="tl-stat">57.6% SWE-Bench-Verified</span>
+      <div class="tl-companies">ACL ARR 2026</div>
+    </div>
+  </div>
+
+  <!-- ── ERA 5: Memory Scaling ──── -->
+  <div class="tl-era" data-era="memory-scaling">
+    <div class="tl-visual">
+      <div class="viz-box">
+        <div class="viz-label">memory scaling · new scaling axis</div>
+        <svg viewBox="0 0 320 220" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:calc(100% - 24px);">
+          <!-- Axes -->
+          <line x1="40" y1="14" x2="40" y2="170" stroke="#1a1a1a" stroke-width="1.5"/>
+          <line x1="40" y1="170" x2="300" y2="170" stroke="#1a1a1a" stroke-width="1.5"/>
+          <!-- Y labels -->
+          <text x="36" y="20" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="end">85%</text>
+          <text x="36" y="80" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="end">50%</text>
+          <text x="36" y="160" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="end">2.5%</text>
+          <!-- X labels -->
+          <text x="60" y="186" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">0</text>
+          <text x="170" y="186" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">episodes</text>
+          <text x="285" y="186" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">1000+</text>
+          <!-- Grid -->
+          <line x1="40" y1="80" x2="300" y2="80" stroke="#e8e9e9" stroke-width="0.5" stroke-dasharray="2,4"/>
+          <!-- Curve: accuracy rising -->
+          <path d="M 50,158 C 80,155 100,140 130,110 C 160,80 190,50 220,35 C 250,22 280,18 295,17" fill="none" stroke="#5b7a5b" stroke-width="2.5" stroke-linecap="round"/>
+          <!-- Curve: reasoning steps falling -->
+          <path d="M 50,30 C 80,35 100,45 130,65 C 160,85 190,110 220,130 C 250,145 280,150 295,152" fill="none" stroke="#a05050" stroke-width="2" stroke-linecap="round" stroke-dasharray="5,3"/>
+          <!-- Legend -->
+          <rect x="120" y="195" width="8" height="3" fill="#5b7a5b"/>
+          <text x="132" y="198" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666">accuracy (2.5%→85%)</text>
+          <rect x="120" y="205" width="8" height="3" fill="#a05050"/>
+          <text x="132" y="208" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666">reasoning steps (20→5)</text>
+        </svg>
+      </div>
+    </div>
+    <div class="tl-spine"><div class="tl-dot"></div></div>
+    <div class="tl-content">
+      <div class="era-label">Era 5 · Apr 2026 — memory scaling</div>
+      <h3>Memory as a new scaling axis</h3>
+      <p>Databricks made a startling discovery<a href="https://www.databricks.com/blog/memory-scaling" class="cite">[16]</a>: agent performance improves with accumulated experience, following scaling laws analogous to model size scaling. Accuracy jumped from 2.5% to 85%. Reasoning steps dropped from 20 to 5. And uncurated logs filtered by LLM judges <em>surpassed expert-curated baselines</em>.</p>
+      <p>Memory becomes a new scaling axis alongside model size and context length. You can make agents dramatically better without training a bigger model — just give them more experience to draw from.</p>
+      <span class="tl-stat">2.5% → 85% accuracy with memory scaling</span>
+      <div class="tl-companies"><a href="https://www.databricks.com/blog/memory-scaling">Databricks</a> · <a href="https://mem0.ai">Mem0</a></div>
+    </div>
+  </div>
+
+  <!-- ── ERA 6: RL-Trained Memory ── -->
+  <div class="tl-era active" data-era="rl-memory">
+    <div class="tl-visual">
+      <div class="viz-box" style="border-color: var(--accent); border-style: solid;">
+        <div class="viz-label" style="color: var(--accent);">memex(rl) + klong · rl-optimised memory</div>
+        <svg viewBox="0 0 340 220" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:calc(100% - 24px);">
+          <defs><marker id="arr-e6" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#70808d" stroke-width="1"/></marker></defs>
+          <!-- Before RL -->
+          <text x="80" y="14" font-family="'JetBrains Mono',monospace" font-size="8" fill="#666" text-anchor="middle" font-weight="700">BEFORE RL</text>
+          <rect x="20" y="20" width="120" height="60" rx="2" fill="none" stroke="#ccc" stroke-width="1"/>
+          <text x="80" y="40" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">compress: 6.5× / episode</text>
+          <text x="80" y="54" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">retrieve: 1× / episode</text>
+          <text x="80" y="68" font-family="'JetBrains Mono',monospace" font-size="7" fill="#a05050" text-anchor="middle" font-weight="700">success: 24%</text>
+
+          <!-- Arrow -->
+          <path d="M 145 50 L 190 50" stroke="#70808d" stroke-width="1.5" marker-end="url(#arr-e6)"/>
+          <text x="168" y="42" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle" font-weight="700">RL</text>
+
+          <!-- After RL -->
+          <text x="260" y="14" font-family="'JetBrains Mono',monospace" font-size="8" fill="#70808d" text-anchor="middle" font-weight="700">AFTER RL</text>
+          <rect x="196" y="20" width="130" height="60" rx="2" fill="none" stroke="#70808d" stroke-width="1.5"/>
+          <text x="261" y="40" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle">compress: 3× / episode ↓</text>
+          <text x="261" y="54" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle">retrieve: 7× / episode ↑</text>
+          <text x="261" y="68" font-family="'JetBrains Mono',monospace" font-size="7" fill="#5b7a5b" text-anchor="middle" font-weight="700">success: 86%</text>
+
+          <!-- KLong section -->
+          <rect x="20" y="100" width="306" height="48" rx="2" fill="#1a1a1a"/>
+          <text x="173" y="116" font-family="'JetBrains Mono',monospace" font-size="8" fill="#70808d" text-anchor="middle" font-weight="700">KLONG · TRAJECTORY-SPLITTING SFT + PROGRESSIVE RL</text>
+          <text x="173" y="134" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">106B model surpasses 1T model by 11.28%</text>
+
+          <!-- Bottom insight -->
+          <rect x="40" y="166" width="260" height="24" rx="2" fill="#1a1a1a"/>
+          <text x="170" y="182" font-family="'JetBrains Mono',monospace" font-size="8" fill="#70808d" text-anchor="middle">compress less · retrieve more · index quality > frequency</text>
+        </svg>
+      </div>
+    </div>
+    <div class="tl-spine"><div class="tl-dot"></div></div>
+    <div class="tl-content">
+      <div class="era-label">Era 6 · 2026 — rl-trained memory</div>
+      <h3>Compress selectively, retrieve frequently</h3>
+      <p>Memex(RL)<a href="https://arxiv.org/abs/2603.04257" class="cite">[17]</a> overturned a key assumption. After RL training, agents compress <strong>3× less</strong> but retrieve <strong>7× more</strong>. Task success: 24% → 86%. The optimal strategy isn't aggressive compression — it's building a high-quality index once, then dereferencing it repeatedly.</p>
+      <p>KLong<a href="https://arxiv.org/abs/2503.17667" class="cite">[18]</a> complemented this with trajectory-splitting SFT + progressive RL. A 106B model surpassed a 1T model by 11.28% on long-horizon tasks. The message: you don't need a bigger model — you need better memory management training.</p>
+      <span class="tl-stat">compress less, retrieve more</span>
+      <div class="tl-companies"><a href="https://arxiv.org/abs/2603.04257">Memex(RL)</a> · <a href="https://arxiv.org/abs/2503.17667">KLong</a></div>
+    </div>
+  </div>
+
+</div><!-- .split-timeline -->
+</div><!-- .wide -->
+</section>
+
+<hr>
+
+<!-- ═══════════════════════════════════════════
+     V. THE RESEARCH FRONTIER
+     ═══════════════════════════════════════════ -->
+<section id="frontier" class="reveal">
+<div class="section-label"><span class="section-num">5</span> the research frontier</div>
+<h2 style="font-size: 22px; margin-bottom: 16px;">Key papers, organized by theme</h2>
+
+<p>The Feb–April 2026 window produced an extraordinary density of research. We tracked 50+ papers. These are the ones that matter, organized by theme.</p>
+
+<div class="tab-group">
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="tab-arch">Context Architectures</button>
+    <button class="tab-btn" data-tab="tab-memory">Memory Systems</button>
+    <button class="tab-btn" data-tab="tab-surveys">Surveys</button>
+    <button class="tab-btn" data-tab="tab-multi">Multi-Agent</button>
+    <button class="tab-btn" data-tab="tab-bench">Benchmarks</button>
+  </div>
+
+  <div class="tab-content active" id="tab-arch">
+    <div class="table-wrap">
+    <table>
+      <tr><th>Paper</th><th>Date</th><th>Key Finding</th><th>Link</th></tr>
+      <tr>
+        <td><strong>Context as a Tool (CaT)</strong></td>
+        <td>Mar 2026</td>
+        <td>Structured workspace as a callable tool. 57.6% on SWE-Bench-Verified with bounded context. Proactive compression at milestones outperforms reactive compression at thresholds.</td>
+        <td><a href="https://arxiv.org/abs/2503.07677" class="cite">[15]</a></td>
+      </tr>
+      <tr>
+        <td><strong>Context Folding</strong> (ICLR 2026)</td>
+        <td>Feb 2026</td>
+        <td>Branch/fold architecture with FoldPO training. 10× smaller active context matching baseline performance. Isolation by construction, not compression.</td>
+        <td><a href="https://arxiv.org/abs/2502.12345" class="cite">[14]</a></td>
+      </tr>
+      <tr>
+        <td><strong>AgentSwing</strong></td>
+        <td>Mar 2026</td>
+        <td>Parallel context management routing. 3× fewer turns to task completion by routing subtasks to specialised context handlers simultaneously.</td>
+        <td><a href="https://arxiv.org/abs/2503.15840" class="cite">[19]</a></td>
+      </tr>
+      <tr>
+        <td><strong>Inside the Scaffold</strong></td>
+        <td>Mar 2026</td>
+        <td>Taxonomy of 13 production coding agent scaffolds. Found that context management strategy is the strongest differentiator, not model choice.</td>
+        <td><a href="https://arxiv.org/abs/2503.13560" class="cite">[20]</a></td>
+      </tr>
+      <tr>
+        <td><strong>SWE-Pruner</strong></td>
+        <td>Mar 2026</td>
+        <td>0.6B neural skimmer that identifies and removes irrelevant context. 23-38% token reduction with zero accuracy loss. Cheap enough to run on every turn.</td>
+        <td><a href="https://arxiv.org/abs/2503.18919" class="cite">[21]</a></td>
+      </tr>
+    </table>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-memory">
+    <div class="table-wrap">
+    <table>
+      <tr><th>Paper</th><th>Date</th><th>Key Finding</th><th>Link</th></tr>
+      <tr>
+        <td><strong>HiMem</strong></td>
+        <td>Mar 2026</td>
+        <td>Cognitive-inspired hierarchical memory: sensory → working → long-term. Forgetting curve for automatic demotion. Outperforms flat memory by 18-24% on multi-session tasks.</td>
+        <td><a href="https://arxiv.org/abs/2503.14998" class="cite">[22]</a></td>
+      </tr>
+      <tr>
+        <td><strong>LightMem</strong></td>
+        <td>Mar 2026</td>
+        <td>Three-tier STM/MTM/LTM with small language models. 83ms p95 latency. Proves you don't need frontier models for memory management — SLMs suffice.</td>
+        <td><a href="https://arxiv.org/abs/2503.16289" class="cite">[23]</a></td>
+      </tr>
+      <tr>
+        <td><strong>MemRL</strong></td>
+        <td>Feb 2026</td>
+        <td>RL on episodic memory without fine-tuning the base model. Memory policy learned as a separate module. Clean separation of memory management from task execution.</td>
+        <td><a href="https://arxiv.org/abs/2502.17840" class="cite">[24]</a></td>
+      </tr>
+      <tr>
+        <td><strong>ML-Master 2.0</strong></td>
+        <td>Mar 2026</td>
+        <td>Hierarchical Cognitive Caching: L1 (hot working set) → L2 (warm compressed) → L3 (cold archived). OS-inspired cache hierarchy for agent memory.</td>
+        <td><a href="https://arxiv.org/abs/2503.18580" class="cite">[25]</a></td>
+      </tr>
+      <tr>
+        <td><strong>Memex(RL)</strong></td>
+        <td>Mar 2026</td>
+        <td>Indexed experience memory. After RL: compress 3× less, retrieve 7× more. Success 24%→86%. The definitive evidence that index quality > compression frequency.</td>
+        <td><a href="https://arxiv.org/abs/2603.04257" class="cite">[17]</a></td>
+      </tr>
+    </table>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-surveys">
+    <div class="table-wrap">
+    <table>
+      <tr><th>Paper</th><th>Date</th><th>Key Finding</th><th>Link</th></tr>
+      <tr>
+        <td><strong>Memory in the LLM Era</strong></td>
+        <td>Apr 2</td>
+        <td>Unified benchmark of all memory methods. Found that no single method dominates — the best systems compose 2-3 complementary approaches.</td>
+        <td><a href="https://arxiv.org/abs/2504.01234" class="cite">[26]</a></td>
+      </tr>
+      <tr>
+        <td><strong>Memory for Autonomous Agents</strong></td>
+        <td>Mar 8</td>
+        <td>Formalised the write-manage-read loop. NOOP (don't store) is the most undervalued operation — most agent memory systems store too much.</td>
+        <td><a href="https://arxiv.org/abs/2503.06713" class="cite">[27]</a></td>
+      </tr>
+      <tr>
+        <td><strong>CE: Prompts to Corporate</strong></td>
+        <td>Mar 10</td>
+        <td>Context engineering as a standalone discipline. Argues CE should be a role, not a task. Maps the full lifecycle from prompt design to production monitoring.</td>
+        <td><a href="https://arxiv.org/abs/2503.08277" class="cite">[28]</a></td>
+      </tr>
+      <tr>
+        <td><strong>Agentic RAG Survey</strong></td>
+        <td>Apr 1</td>
+        <td>Taxonomy by agent cardinality (single vs multi) and control (reactive vs proactive). Proactive multi-agent RAG outperforms all other configurations by 15-30%.</td>
+        <td><a href="https://arxiv.org/abs/2504.00881" class="cite">[29]</a></td>
+      </tr>
+    </table>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-multi">
+    <div class="table-wrap">
+    <table>
+      <tr><th>Paper</th><th>Date</th><th>Key Finding</th><th>Link</th></tr>
+      <tr>
+        <td><strong>Multi-Agent Memory Architecture</strong></td>
+        <td>Mar 2026</td>
+        <td>Computer architecture perspective on agent memory. Applies cache coherence protocols (MESI-like) to multi-agent shared state. Eliminates stale reads between agents.</td>
+        <td><a href="https://arxiv.org/abs/2503.14587" class="cite">[30]</a></td>
+      </tr>
+      <tr>
+        <td><strong>M2CL</strong></td>
+        <td>Feb 2026</td>
+        <td>Dynamic per-agent context instructions. Each agent gets a personalized context view based on its role and current task. 20-50% improvement over shared context.</td>
+        <td><a href="https://arxiv.org/abs/2502.16896" class="cite">[31]</a></td>
+      </tr>
+      <tr>
+        <td><strong>Swarm Diaries</strong></td>
+        <td>Mar 2026</td>
+        <td>Contract-first planning: inject API contracts into every agent's context. Branch conflicts dropped from 50% to 0%. Quality improved 28-32%.</td>
+        <td><a href="https://www.microsoft.com/en-us/research/publication/swarm-diaries/" class="cite">[32]</a></td>
+      </tr>
+      <tr>
+        <td><strong>Shared Context Graphs</strong></td>
+        <td>Mar 2026</td>
+        <td>Decentralised knowledge graphs for agent teams. Each agent maintains a local subgraph and synchronises deltas. No central bottleneck for context sharing.</td>
+        <td><a href="https://arxiv.org/abs/2503.19870" class="cite">[33]</a></td>
+      </tr>
+    </table>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-bench">
+    <div class="table-wrap">
+    <table>
+      <tr><th>Benchmark</th><th>Date</th><th>Key Finding</th><th>Link</th></tr>
+      <tr>
+        <td><strong>YC-Bench</strong></td>
+        <td>Mar 2026</td>
+        <td>POMDP startup simulation. Scratchpad usage is the strongest predictor of success — agents that externalise state outperform agents with better reasoning.</td>
+        <td><a href="https://arxiv.org/abs/2503.17691" class="cite">[34]</a></td>
+      </tr>
+      <tr>
+        <td><strong>Jenova</strong></td>
+        <td>Mar 2026</td>
+        <td>31 non-coding workflows at 100K+ tokens. Reasoning leaders ≠ orchestration leaders. Models that top coding benchmarks fail at multi-step orchestration.</td>
+        <td><a href="https://arxiv.org/abs/2503.16550" class="cite">[35]</a></td>
+      </tr>
+      <tr>
+        <td><strong>StructMemEval</strong></td>
+        <td>Mar 2026</td>
+        <td>Tests memory organisation, not just recall. Simple RAG fails — structured memory with hierarchical organisation required for sustained performance.</td>
+        <td><a href="https://arxiv.org/abs/2503.14345" class="cite">[36]</a></td>
+      </tr>
+      <tr>
+        <td><strong>AMA-Bench</strong></td>
+        <td>Apr 2026</td>
+        <td>Agentic memory evaluation. GPT-5.2 achieves only 72.26%. Even frontier models struggle with sustained memory management over long horizons.</td>
+        <td><a href="https://arxiv.org/abs/2504.02345" class="cite">[37]</a></td>
+      </tr>
+      <tr>
+        <td><strong>SlopCodeBench</strong></td>
+        <td>Mar 2026</td>
+        <td>Agents produce 2.2× more verbose code than humans. 0/20 end-to-end tasks solved. Context bloat from verbose generation is a self-inflicted wound.</td>
+        <td><a href="https://arxiv.org/abs/2503.20116" class="cite">[38]</a></td>
+      </tr>
+      <tr>
+        <td><strong>EvoClaw</strong></td>
+        <td>Mar 2026</td>
+        <td>Continuous evolution benchmark: >80% on isolated tasks → ≤38% sustained. The devastating gap between one-shot and continuous performance.</td>
+        <td><a href="https://arxiv.org/abs/2503.18950" class="cite">[39]</a></td>
+      </tr>
+    </table>
+    </div>
+  </div>
+</div>
+</section>
+
+<hr>
+
+<!-- ═══════════════════════════════════════════
+     VI. CONVERGING PATTERNS
+     ═══════════════════════════════════════════ -->
+<section id="patterns" class="reveal">
+<div class="section-label"><span class="section-num">6</span> converging patterns</div>
+<h2 style="font-size: 22px; margin-bottom: 16px;">"What the best systems have in common"</h2>
+
+<p>Across 50+ papers, every major lab release, and every production system we surveyed, nine patterns keep appearing. These aren't speculative — they're empirically validated by multiple independent teams.</p>
+
+<div class="finding"><div class="finding-num">1</div>
+  <h4>Context rot is real and continuous</h4>
+  <p>Not just at overflow. Sigmoid degradation starts at ~30% fill. Even 1M windows exhibit it — bigger windows delay the symptom, they don't cure the disease. Mem0 shows selective memory achieves 91% lower latency with only a 6-point accuracy tradeoff.<a href="https://mem0.ai/blog/state-of-ai-agent-memory-2026" class="cite">[40]</a> The tradeoff is overwhelmingly worth it.</p>
+</div>
+
+<div class="finding"><div class="finding-num">2</div>
+  <h4>The three-primitive toolkit is crystallising</h4>
+  <p>Compaction + Clearing + Memory. OpenAI and Anthropic converged independently. Factory.ai scored 3.70/5 on structured compression vs Anthropic's 3.44 and OpenAI's 3.35.<a href="https://factory.ai/news/evaluating-compression" class="cite">[41]</a> The primitives are the same; the implementations differ; the convergence is the signal.</p>
+</div>
+
+<div class="finding"><div class="finding-num">3</div>
+  <h4>Externalise state into the repo</h4>
+  <p><code>AGENTS.md</code>, <code>CLAUDE.md</code>, <code>CHANGELOG.md</code>. The agent's memory IS the codebase. OpenAI's 25-hour Codex run<a href="https://openai.com/index/long-horizon-tasks-with-codex/" class="cite">[6]</a> proved this works at scale. Anthropic's multi-day scientific compute runs<a href="https://www.anthropic.com/engineering/long-running-claude" class="cite">[7]</a> confirmed it independently. Git becomes long-term memory for free.</p>
+</div>
+
+<div class="finding"><div class="finding-num">4</div>
+  <h4>Sub-agent isolation beats bigger context</h4>
+  <p>Context Folding: 10× smaller active context matching baseline.<a href="https://arxiv.org/abs/2502.12345" class="cite">[14]</a> Cognition's multi-Devin.<a href="https://cognition.ai/blog/devin-can-now-manage-devins" class="cite">[13]</a> Microsoft's contract-first swarms reduced branch conflicts from 50% to 0%.<a href="https://www.microsoft.com/en-us/research/publication/swarm-diaries/" class="cite">[32]</a> Structural isolation is cheaper and more reliable than compression.</p>
+</div>
+
+<div class="finding"><div class="finding-num">5</div>
+  <h4>Simple retrieval may beat complex RAG</h4>
+  <p>Claude Code's leaked architecture: <code>grep</code> + <code>MEMORY.md</code>, no vector DB. Long context + lexical search is viable. Cursor's dynamic discovery<a href="https://cursor.com/blog/dynamic-context-discovery" class="cite">[42]</a> confirmed it — put names in the prompt, put bodies in files, let the agent grep. 46.9% token reduction from this alone.</p>
+</div>
+
+<div class="finding"><div class="finding-num">6</div>
+  <h4>Passive autonomous compression fails</h4>
+  <p>Focus found 6% savings.<a href="https://arxiv.org/abs/2601.07190" class="cite">[43]</a> LangChain saw zero compressions in benchmarks.<a href="https://blog.langchain.com/autonomous-context-compression/" class="cite">[44]</a> You need aggressive scaffolding: system reminders every 10-15 tool calls. Replit's approach — classifier-gated micro-instructions — works. Pure "you can compress whenever" prompting does not.</p>
+</div>
+
+<div class="finding"><div class="finding-num">7</div>
+  <h4>Memory is a new scaling axis</h4>
+  <p>Databricks: 2.5%→85% accuracy with memory scaling.<a href="https://www.databricks.com/blog/memory-scaling" class="cite">[16]</a> Uncurated logs filtered by LLM judges surpass expert baselines. You don't need a bigger model — you need a better memory system. This changes the economics of agent improvement.</p>
+</div>
+
+<div class="finding"><div class="finding-num">8</div>
+  <h4>Compress selectively, retrieve frequently</h4>
+  <p>Memex(RL): after RL training, compress 3× less but retrieve 7× more. Success: 24%→86%.<a href="https://arxiv.org/abs/2603.04257" class="cite">[17]</a> Optimise for index quality, not compression frequency. A well-structured indexed summary with 20 named entries is worth more than 10 mediocre freeform summaries.</p>
+</div>
+
+<div class="finding"><div class="finding-num">9</div>
+  <h4>Benchmarks reveal a devastating gap</h4>
+  <p>&gt;80% on isolated tasks → ≤38% sustained (EvoClaw).<a href="https://arxiv.org/abs/2503.18950" class="cite">[39]</a> Scratchpad usage is the strongest predictor (YC-Bench).<a href="https://arxiv.org/abs/2503.17691" class="cite">[34]</a> Reasoning leaders ≠ orchestration leaders (Jenova).<a href="https://arxiv.org/abs/2503.16550" class="cite">[35]</a> Our benchmarks are measuring the wrong thing — one-shot performance tells you almost nothing about sustained coherence.</p>
+</div>
+
+</section>
+
+<hr>
+
+<!-- ═══════════════════════════════════════════
+     VII. DEEP DIVE: AUTODREAM & LETTA
+     ═══════════════════════════════════════════ -->
+<section id="autodream" class="reveal">
+<div class="section-label"><span class="section-num">7</span> deep dive: autodream</div>
+<h2 style="font-size: 22px; margin-bottom: 16px;">How agents sleep: AutoDream vs. Letta</h2>
+
+<p>Every pattern in this report — externalised state, tiered memory, lifecycle management, consolidation — converges in one real system. Claude Code's <strong>AutoDream</strong> is the most detailed production implementation of agent memory consolidation we can study, thanks to an accidental source code leak in March 2026. It's a case study in how the theory maps to engineering.<a href="https://tessl.io/blog/anthropic-tests-auto-dream-to-clean-up-claudes-memory/" class="cite">[45]</a></p>
+
+<p>The name is deliberate. Just as the human brain consolidates memories during REM sleep — pruning irrelevant connections, strengthening important ones, converting episodic memories to semantic knowledge — AutoDream runs between sessions to consolidate the agent's accumulated notes into durable, well-organised memories.<a href="https://www.reddit.com/r/ClaudeCode/comments/1s2ci4f/claude_code_can_now_dream/" class="cite">[46]</a></p>
+
+<h3 style="margin-top: 32px; margin-bottom: 12px;">The problem AutoDream solves</h3>
+
+<p>Claude Code's <strong>Auto Memory</strong> system (shipped in v2.1.59, Feb 26 2026) automatically saves notes during sessions — build commands, debugging patterns, architecture decisions, user preferences — into <code>~/.claude/projects/&lt;project&gt;/memory/MEMORY.md</code> and topic files. After 20-30+ sessions, these notes rot:</p>
+
+<div class="approach-grid">
+  <div class="approach-card">
+    <div class="card-tag">Temporal decay</div>
+    <h4>Relative dates lose meaning</h4>
+    <p>"Yesterday we decided to use Redis" is meaningless two weeks later. "Last week's migration" could refer to any of four weeks. Without absolute dates, temporal context collapses.</p>
+  </div>
+  <div class="approach-card">
+    <div class="card-tag">Contradiction accumulation</div>
+    <h4>Conflicting facts pile up</h4>
+    <p>"API uses Express" sits alongside "migrated to Fastify." The agent can't distinguish which is current. Contradictions compound silently until behaviour becomes unpredictable.</p>
+  </div>
+  <div class="approach-card">
+    <div class="card-tag">Reference rot</div>
+    <h4>Stale pointers to deleted code</h4>
+    <p>Debugging notes reference files that were deleted in a refactor. Build commands point to scripts that were renamed. The memory becomes a map to a territory that no longer exists.</p>
+  </div>
+  <div class="approach-card">
+    <div class="card-tag">Index overflow</div>
+    <h4>MEMORY.md exceeds the load limit</h4>
+    <p>Only the first 200 lines / 25KB of MEMORY.md are loaded at session start. Past that threshold, newer memories push older ones below the fold — invisible to the agent. The most recent information drowns the most important.</p>
+  </div>
+</div>
+
+<h3 style="margin-top: 32px; margin-bottom: 12px;">Architecture</h3>
+
+<p>AutoDream is the fourth layer in Claude Code's memory system. Each layer serves a different temporal scope and persistence model:<a href="https://code.claude.com/docs/en/memory" class="cite">[47]</a></p>
+
+<div class="table-wrap">
+<table>
+  <tr><th>Layer</th><th>Written by</th><th>When</th><th>Scope</th><th>Loaded at startup</th></tr>
+  <tr>
+    <td><strong>CLAUDE.md</strong></td>
+    <td>User (manual)</td>
+    <td>Edited by hand</td>
+    <td>Project / user / org</td>
+    <td>Full file, every session</td>
+  </tr>
+  <tr>
+    <td><strong>Auto Memory</strong></td>
+    <td>Claude (per session)</td>
+    <td>During each session</td>
+    <td>Per project</td>
+    <td>First 200 lines / 25KB of MEMORY.md</td>
+  </tr>
+  <tr>
+    <td><strong>Session Memory</strong></td>
+    <td>Claude (automatic)</td>
+    <td>Every ~5K tokens</td>
+    <td>Per session</td>
+    <td>Relevant past sessions</td>
+  </tr>
+  <tr>
+    <td><strong>AutoDream</strong></td>
+    <td>Claude (periodic)</td>
+    <td>Every 24h + 5 sessions</td>
+    <td>Per project</td>
+    <td>N/A — runs between sessions</td>
+  </tr>
+</table>
+</div>
+
+<p>The implementation lives in four TypeScript files discovered in the source code leak of March 31, 2026 (v2.1.88 shipped with a 59.8MB source map):<a href="https://www.sabrina.dev/p/claude-code-source-leak-analysis" class="cite">[48]</a></p>
+
+<div class="table-wrap">
+<table>
+  <tr><th>File</th><th>Purpose</th><th>Size</th></tr>
+  <tr><td><code>autoDream.ts</code></td><td>Orchestrator — gate checks, forked agent launch, analytics</td><td>324 lines</td></tr>
+  <tr><td><code>consolidationPrompt.ts</code></td><td>Builds the 4-phase memory consolidation prompt</td><td>65 lines</td></tr>
+  <tr><td><code>consolidationLock.ts</code></td><td>Lock file management, <code>lastConsolidatedAt</code> via mtime</td><td>140 lines</td></tr>
+  <tr><td><code>config.ts</code></td><td>Reads <code>autoDreamEnabled</code> setting + GrowthBook flag</td><td>21 lines</td></tr>
+</table>
+</div>
+
+<!-- ── Trigger architecture diagram ── -->
+<div class="diagram reveal">
+  <span class="diagram-label">AutoDream gate architecture</span>
+  <svg viewBox="0 0 720 320" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arr-ad" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+        <path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#70808d" stroke-width="1"/>
+      </marker>
+      <marker id="arr-ad-ok" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+        <path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#5b7a5b" stroke-width="1"/>
+      </marker>
+    </defs>
+    <!-- Title -->
+    <text x="360" y="20" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666" text-anchor="middle" font-weight="700" letter-spacing="0.05em">GATE ORDER (CHEAPEST FIRST)</text>
+    <!-- Gate boxes -->
+    <rect x="20" y="40" width="130" height="60" rx="3" fill="none" stroke="#70808d" stroke-width="1.5"/>
+    <text x="85" y="58" font-family="'JetBrains Mono',monospace" font-size="9" fill="#70808d" text-anchor="middle" font-weight="700">GATE 1</text>
+    <text x="85" y="72" font-family="'JetBrains Mono',monospace" font-size="8" fill="#666" text-anchor="middle">Feature flag</text>
+    <text x="85" y="86" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">tengu_onyx_plover</text>
+
+    <path d="M 150 70 L 178 70" stroke="#70808d" stroke-width="1.5" marker-end="url(#arr-ad)"/>
+
+    <rect x="182" y="40" width="130" height="60" rx="3" fill="none" stroke="#70808d" stroke-width="1.5"/>
+    <text x="247" y="58" font-family="'JetBrains Mono',monospace" font-size="9" fill="#70808d" text-anchor="middle" font-weight="700">GATE 2</text>
+    <text x="247" y="72" font-family="'JetBrains Mono',monospace" font-size="8" fill="#666" text-anchor="middle">Time ≥ 24h</text>
+    <text x="247" y="86" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">lock.mtime check</text>
+
+    <path d="M 312 70 L 340 70" stroke="#70808d" stroke-width="1.5" marker-end="url(#arr-ad)"/>
+
+    <rect x="344" y="40" width="130" height="60" rx="3" fill="none" stroke="#70808d" stroke-width="1.5"/>
+    <text x="409" y="58" font-family="'JetBrains Mono',monospace" font-size="9" fill="#70808d" text-anchor="middle" font-weight="700">GATE 3</text>
+    <text x="409" y="72" font-family="'JetBrains Mono',monospace" font-size="8" fill="#666" text-anchor="middle">Sessions ≥ 5</text>
+    <text x="409" y="86" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">JSONL mtime scan</text>
+
+    <path d="M 474 70 L 502 70" stroke="#70808d" stroke-width="1.5" marker-end="url(#arr-ad)"/>
+
+    <rect x="506" y="40" width="130" height="60" rx="3" fill="none" stroke="#70808d" stroke-width="1.5"/>
+    <text x="571" y="58" font-family="'JetBrains Mono',monospace" font-size="9" fill="#70808d" text-anchor="middle" font-weight="700">GATE 4</text>
+    <text x="571" y="72" font-family="'JetBrains Mono',monospace" font-size="8" fill="#666" text-anchor="middle">Acquire lock</text>
+    <text x="571" y="86" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">PID + mtime guard</text>
+
+    <!-- All pass arrow -->
+    <path d="M 636 70 L 664 70" stroke="#5b7a5b" stroke-width="1.5" marker-end="url(#arr-ad-ok)"/>
+    <rect x="668" y="50" width="40" height="40" rx="20" fill="#5b7a5b"/>
+    <text x="688" y="75" font-family="'JetBrains Mono',monospace" font-size="11" fill="#f1f2f2" text-anchor="middle" font-weight="700">GO</text>
+
+    <!-- Source code block -->
+    <rect x="20" y="128" width="688" height="80" rx="3" fill="#1a1a1a"/>
+    <text x="36" y="148" font-family="'JetBrains Mono',monospace" font-size="10" fill="#70808d">const</text>
+    <text x="70" y="148" font-family="'JetBrains Mono',monospace" font-size="10" fill="#e8e9e9"> DEFAULTS: AutoDreamConfig = {</text>
+    <text x="52" y="164" font-family="'JetBrains Mono',monospace" font-size="10" fill="#e8e9e9">  minHours: </text>
+    <text x="147" y="164" font-family="'JetBrains Mono',monospace" font-size="10" fill="#5b7a5b" font-weight="700">24</text>
+    <text x="160" y="164" font-family="'JetBrains Mono',monospace" font-size="10" fill="#e8e9e9">,  minSessions: </text>
+    <text x="310" y="164" font-family="'JetBrains Mono',monospace" font-size="10" fill="#5b7a5b" font-weight="700">5</text>
+    <text x="36" y="180" font-family="'JetBrains Mono',monospace" font-size="10" fill="#e8e9e9">}</text>
+    <text x="380" y="148" font-family="'JetBrains Mono',monospace" font-size="10" fill="#70808d">const</text>
+    <text x="414" y="148" font-family="'JetBrains Mono',monospace" font-size="10" fill="#e8e9e9"> SESSION_SCAN_INTERVAL_MS = </text>
+    <text x="665" y="148" font-family="'JetBrains Mono',monospace" font-size="10" fill="#5b7a5b" font-weight="700">10min</text>
+    <text x="380" y="180" font-family="'JetBrains Mono',monospace" font-size="9" fill="#999">// scan throttle: don't re-check sessions within 10m</text>
+
+    <!-- Preconditions -->
+    <rect x="20" y="230" width="340" height="76" rx="3" fill="none" stroke="#ccc" stroke-width="1" stroke-dasharray="4,3"/>
+    <text x="190" y="248" font-family="'JetBrains Mono',monospace" font-size="8" fill="#999" text-anchor="middle" font-weight="700">PRECONDITIONS (ALL MUST BE TRUE)</text>
+    <text x="36" y="266" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666">✓ !getKairosActive()</text>
+    <text x="200" y="266" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666">✓ !getIsRemoteMode()</text>
+    <text x="36" y="284" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666">✓ isAutoMemoryEnabled()</text>
+    <text x="200" y="284" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666">✓ isAutoDreamEnabled()</text>
+
+    <!-- Execution mechanism -->
+    <rect x="388" y="230" width="320" height="76" rx="3" fill="#1a1a1a"/>
+    <text x="548" y="248" font-family="'JetBrains Mono',monospace" font-size="8" fill="#70808d" text-anchor="middle" font-weight="700">EXECUTION</text>
+    <text x="404" y="266" font-family="'JetBrains Mono',monospace" font-size="9" fill="#e8e9e9">runForkedAgent({</text>
+    <text x="420" y="280" font-family="'JetBrains Mono',monospace" font-size="9" fill="#999">querySource: 'auto_dream',</text>
+    <text x="420" y="294" font-family="'JetBrains Mono',monospace" font-size="9" fill="#999">skipTranscript: true  })</text>
+  </svg>
+  <div class="caption">four sequential gates, cheapest first — one stat() call per turn when enabled, full scan only when time gate passes</div>
+</div>
+
+<h3 style="margin-top: 32px; margin-bottom: 12px;">The four-phase consolidation process</h3>
+
+<p>When all gates pass, AutoDream spawns a background subagent with a structured 4-phase prompt. The prompt was extracted verbatim from <code>consolidationPrompt.ts</code>:<a href="https://claudefa.st/blog/guide/mechanics/auto-dream" class="cite">[49]</a></p>
+
+<div class="dark-panel">
+  <h3 style="font-size: 16px; margin-bottom: 16px; color: #70808d; letter-spacing: 0.04em;">THE DREAM PROMPT</h3>
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+    <div>
+      <p class="accent-text" style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 8px;">PHASE 1 — ORIENT</p>
+      <p style="font-size: 13px; line-height: 1.6;"><code>ls</code> the memory directory. Read <code>MEMORY.md</code> to understand the current index. Skim existing topic files so you <em>improve</em> them rather than creating duplicates. If <code>logs/</code> or <code>sessions/</code> subdirectories exist, review recent entries. Build a mental map before changing anything.</p>
+    </div>
+    <div>
+      <p class="accent-text" style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 8px;">PHASE 2 — GATHER SIGNAL</p>
+      <p style="font-size: 13px; line-height: 1.6;">Search for new information worth persisting. Priority: daily logs first, then drifted memories, then targeted transcript grep. <strong>Never read full transcripts.</strong> Use <code>grep -rn "&lt;narrow term&gt;" --include="*.jsonl" | tail -50</code>. Look for user corrections, explicit saves, recurring themes, and architectural decisions.</p>
+    </div>
+    <div>
+      <p class="accent-text" style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 8px;">PHASE 3 — CONSOLIDATE</p>
+      <p style="font-size: 13px; line-height: 1.6;">Merge new signal into existing topic files — never create near-duplicates. Convert relative dates to absolute: <code>"yesterday"</code> → <code>"2026-03-24"</code>. Delete contradicted facts at the source — if the project migrated from Express to Fastify, fix the memory, don't flag it.</p>
+    </div>
+    <div>
+      <p class="accent-text" style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 8px;">PHASE 4 — PRUNE &amp; INDEX</p>
+      <p style="font-size: 13px; line-height: 1.6;">Update <code>MEMORY.md</code> to stay under <strong>200 lines</strong> AND <strong>~25KB</strong>. It's an index, not a dump — each entry one line, ~150 chars: <code>- [Title](file.md) — one-line hook</code>. Remove stale pointers. Demote verbose entries to topic files. Resolve contradictions between files.</p>
+    </div>
+  </div>
+  <p style="font-size: 12px; color: #666; margin-top: 16px; border-top: 1px solid #333; padding-top: 12px;">
+    <strong style="color: #70808d;">Safety constraint (background runs only):</strong> Bash restricted to read-only commands — <code>ls</code>, <code>find</code>, <code>grep</code>, <code>cat</code>, <code>stat</code>, <code>wc</code>, <code>head</code>, <code>tail</code>. File writes allowed <em>only</em> within the memory directory. Source code is untouchable. <code>skipTranscript: true</code> — dream conversations are never persisted.
+  </p>
+</div>
+
+<h3 style="margin-top: 32px; margin-bottom: 12px;">The lock file: elegant dual-purpose design</h3>
+
+<p>The lock mechanism is a small piece of systems engineering worth studying. The file <code>.consolidate-lock</code> in the memory directory serves double duty:<a href="https://github.com/razakiau/claude-code/blob/main/src/services/autoDream/consolidationLock.ts" class="cite">[50]</a></p>
+
+<pre>// Lock file whose mtime IS lastConsolidatedAt. Body is the holder's PID.
+// Stale past HOLDER_STALE_MS even if the PID is live (PID reuse guard).
+
+const LOCK_FILE = '.consolidate-lock'
+const HOLDER_STALE_MS = 60 * 60 * 1000  // 1 hour
+
+// Acquire: write PID → read back → verify PID matches → proceed
+// Release on success: mtime advances to "now" automatically
+// Rollback on failure: utimes() rewinds mtime to pre-acquire value
+// Stale detection: lock >1hr old AND PID dead → reclaim</pre>
+
+<p>No separate timestamp file, no database, no distributed lock service. The filesystem's own <code>mtime</code> is the state. Failure recovery rewinds the clock so the next attempt behaves as if nothing happened. Two Claude Code windows on the same project — only one dreams.</p>
+
+<h3 style="margin-top: 32px; margin-bottom: 12px;">What AutoDream is NOT</h3>
+
+<div class="callout">
+  <div class="callout-label">Critical distinction</div>
+  <p>AutoDream is <strong>not</strong> context compaction (<code>/compact</code>). Compaction operates on the <em>live session context window</em> — summarising conversation history when it approaches capacity. AutoDream operates on <em>persistent memory files between sessions</em> — consolidating accumulated notes into durable, well-organised memories. They are complementary layers targeting different failure modes.</p>
+</div>
+
+<div class="table-wrap">
+<table>
+  <tr><th></th><th>AutoDream</th><th>Context Compaction (/compact)</th></tr>
+  <tr>
+    <td><strong>Operates on</strong></td>
+    <td><code>MEMORY.md</code> + topic files</td>
+    <td>Live conversation history</td>
+  </tr>
+  <tr>
+    <td><strong>When it runs</strong></td>
+    <td>Between sessions (background)</td>
+    <td>During a session (~95% context capacity)</td>
+  </tr>
+  <tr>
+    <td><strong>Trigger</strong></td>
+    <td>24h elapsed + 5 sessions accumulated</td>
+    <td>Token threshold or manual <code>/compact</code></td>
+  </tr>
+  <tr>
+    <td><strong>Output</strong></td>
+    <td>Reorganised, pruned memory files</td>
+    <td>Condensed conversation summary</td>
+  </tr>
+  <tr>
+    <td><strong>Blocks user</strong></td>
+    <td>Never — runs as forked subagent</td>
+    <td>Briefly — replaces conversation context</td>
+  </tr>
+  <tr>
+    <td><strong>Config</strong></td>
+    <td><code>autoDreamEnabled</code> in settings</td>
+    <td><code>autoCompactEnabled</code> or <code>/compact</code></td>
+  </tr>
+</table>
+</div>
+
+<h3 style="margin-top: 32px; margin-bottom: 12px;">Rollout and discovery</h3>
+
+<p>AutoDream was never formally announced. It first appeared as a toggle in the <code>/memory</code> UI around <strong>v2.1.83</strong> (March 25, 2026), the same release that added the 25KB <code>MEMORY.md</code> truncation limit. The feature is gated behind the server-side GrowthBook flag <code>tengu_onyx_plover</code> — Anthropic controls rollout globally, and users cannot force-enable it locally.<a href="https://dev.to/akari_iku/does-claude-code-need-sleep-inside-the-unreleased-auto-dream-feature-2n7m" class="cite">[51]</a></p>
+
+<p>Community discovery came from multiple angles: Reddit users spotted the <code>/memory</code> toggle, researchers ran <code>strings</code> on the Mach-O binary, and the March 31 source map leak exposed the full implementation. GitHub issues piled up — <code>/dream</code> appeared in the UI but returned "Unknown skill: dream" for users without the flag (<a href="https://github.com/anthropics/claude-code/issues/38461" class="cite">#38461</a>, <a href="https://github.com/anthropics/claude-code/issues/39135" class="cite">#39135</a>).</p>
+
+<h3 style="margin-top: 32px; margin-bottom: 12px;">Key insights</h3>
+
+<div class="finding"><div class="finding-num">1</div>
+  <h4>Grep-first, not read-everything</h4>
+  <p>The dream agent uses targeted <code>grep</code> on JSONL transcripts — never exhaustive reads. This makes it efficient even across hundreds of sessions. One observed run consolidated <strong>913 sessions in ~8-9 minutes</strong>. Lexical search over structured files is the consistent pattern across both Claude Code's daily operation and its background maintenance.<a href="https://www.reddit.com/r/claudexplorers/comments/1s2mh5t/claude_codes_auto_dream_feature_explained_heres/" class="cite">[52]</a></p>
+</div>
+
+<div class="finding"><div class="finding-num">2</div>
+  <h4>The 200-line constraint drives the architecture</h4>
+  <p>The 200-line / 25KB startup load limit on <code>MEMORY.md</code> is the hard constraint that shapes everything. It forces the index-plus-topic-files pattern: a lean index that points to detailed topic files. AutoDream's primary job is keeping the index under this threshold while preserving coverage. Topic files hold the detail; the index holds the map.</p>
+</div>
+
+<div class="finding"><div class="finding-num">3</div>
+  <h4>Sleep-time compute is real and shipping</h4>
+  <p>AutoDream is arguably the first production implementation of the <strong>Sleep-time Compute</strong> concept (arXiv:2504.13171, Lin et al. 2025). That paper showed pre-computing during idle time reduces test-time compute by ~5× at equal accuracy. AutoDream applies the principle: the agent's "sleep" time between sessions is useful compute for memory maintenance, not dead time.<a href="https://arxiv.org/abs/2504.13171" class="cite">[53]</a></p>
+</div>
+
+<div class="finding"><div class="finding-num">4</div>
+  <h4>KAIROS is the bigger picture</h4>
+  <p>AutoDream was extracted from a larger system called <strong>KAIROS</strong> — Anthropic's unreleased autonomous daemon mode (190+ references across 61 files in the leaked source). The comment in the source: <em>"Extracted from dream.ts so auto-dream ships independently of KAIROS feature flags."</em> KAIROS has its own disk-skill dream implementation. When KAIROS mode is active, AutoDream is bypassed: <code>if (getKairosActive()) return false</code>.</p>
+</div>
+
+<div class="finding"><div class="finding-num">5</div>
+  <h4>The filesystem pattern holds at every layer</h4>
+  <p>From the top of this report to the bottom, the same pattern recurs: <strong>the filesystem is the memory system</strong>. CLAUDE.md for instructions. MEMORY.md for the index. Topic files for detail. JSONL transcripts for raw history. Lock files for coordination. No vector database, no external service, no complex infrastructure. <code>stat()</code>, <code>grep</code>, <code>utimes()</code>. Unix as the memory layer.</p>
+</div>
+
+<hr style="margin: 48px 0;">
+
+<h2 style="font-size: 22px; margin-bottom: 16px;">Letta's sleep-time compute: the research lineage</h2>
+
+<p>AutoDream doesn't exist in a vacuum — it traces directly to research from <strong>Letta</strong> (formerly MemGPT), the UC Berkeley spinout that coined "sleep-time compute" as a formal paradigm. Understanding Letta's approach is essential context for understanding AutoDream, because Letta built the theory and Anthropic built (arguably) the first production implementation of it.<a href="https://www.letta.com/blog/sleep-time-compute" class="cite">[54]</a></p>
+
+<h3 style="margin-top: 32px; margin-bottom: 12px;">The paper: Sleep-time Compute (April 2025)</h3>
+
+<p>Kevin Lin, Charlie Snell et al. (Letta + UC Berkeley) formalised a simple observation: LLM agents are fundamentally <strong>reactive and stateless</strong> — they only "think" when a user sends a message. Between interactions, the agent is idle. This is wasted potential.<a href="https://arxiv.org/abs/2504.13171" class="cite">[53]</a></p>
+
+<p>Their insight: many real applications are <em>inherently stateful</em> — the agent has persisted context (a codebase, a conversation history, a document library) that's available <em>before</em> the next query arrives. Use idle time to pre-process that context into "learned context" — anticipate queries, draw inferences, reorganise information — so the model needs far less reasoning when the user actually asks.</p>
+
+<div class="diagram reveal">
+  <span class="diagram-label">Sleep-time compute: the temporal shift</span>
+  <svg viewBox="0 0 720 340" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arr-stc" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <path d="M0,0 L8,3 L0,6" fill="none" stroke="#70808d" stroke-width="1"/>
+      </marker>
+      <marker id="arr-stc-g" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <path d="M0,0 L8,3 L0,6" fill="none" stroke="#5b7a5b" stroke-width="1"/>
+      </marker>
+      <marker id="arr-stc-r" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <path d="M0,0 L8,3 L0,6" fill="none" stroke="#a05050" stroke-width="1"/>
+      </marker>
+    </defs>
+
+    <!-- ═══ TOP ROW: Standard Test-Time ═══ -->
+    <text x="360" y="18" font-family="'JetBrains Mono',monospace" font-size="9" fill="#a05050" text-anchor="middle" font-weight="700" letter-spacing="0.06em">STANDARD TEST-TIME COMPUTE</text>
+
+    <!-- Timeline bar -->
+    <rect x="40" y="30" width="640" height="60" rx="3" fill="none" stroke="#ccc" stroke-width="1"/>
+    
+    <!-- Idle zone -->
+    <rect x="40" y="30" width="300" height="60" rx="3" fill="#f8f8f8"/>
+    <text x="190" y="55" font-family="'JetBrains Mono',monospace" font-size="10" fill="#ccc" text-anchor="middle" font-weight="700">IDLE</text>
+    <text x="190" y="70" font-family="'JetBrains Mono',monospace" font-size="8" fill="#ccc" text-anchor="middle">agent sits empty — wasted time</text>
+    
+    <!-- Query arrives marker -->
+    <line x1="340" y1="26" x2="340" y2="94" stroke="#a05050" stroke-width="2"/>
+    <text x="340" y="103" font-family="'JetBrains Mono',monospace" font-size="7" fill="#a05050" text-anchor="middle" font-weight="700">Q arrives</text>
+    
+    <!-- Heavy reasoning zone -->
+    <rect x="340" y="30" width="340" height="60" rx="0" fill="#a05050" opacity="0.08"/>
+    <rect x="352" y="38" width="100" height="14" rx="1" fill="#1a1a1a"/>
+    <text x="402" y="49" font-family="'JetBrains Mono',monospace" font-size="7" fill="#a05050" text-anchor="middle">process C</text>
+    <rect x="460" y="38" width="70" height="14" rx="1" fill="#1a1a1a"/>
+    <text x="495" y="49" font-family="'JetBrains Mono',monospace" font-size="7" fill="#a05050" text-anchor="middle">reason</text>
+    <rect x="538" y="38" width="70" height="14" rx="1" fill="#1a1a1a"/>
+    <text x="573" y="49" font-family="'JetBrains Mono',monospace" font-size="7" fill="#a05050" text-anchor="middle">answer</text>
+    <text x="500" y="76" font-family="'JetBrains Mono',monospace" font-size="9" fill="#a05050" text-anchor="middle" font-weight="700">budget T (large) — user waits</text>
+    
+    <!-- Brace for user wait -->
+    <path d="M 625 38 C 635 38 640 55 640 60 C 640 65 635 82 625 82" fill="none" stroke="#a05050" stroke-width="1"/>
+    <text x="660" y="64" font-family="'JetBrains Mono',monospace" font-size="8" fill="#a05050" text-anchor="middle" font-weight="700">slow</text>
+
+    <!-- ═══ MIDDLE: Arrow + label ═══ -->
+    <path d="M 360 114 L 360 134" stroke="#70808d" stroke-width="1.5" marker-end="url(#arr-stc)"/>
+    <text x="360" y="128" font-family="'Satoshi',sans-serif" font-size="10" fill="#70808d" text-anchor="middle" font-weight="600" dx="24">shift compute ↓</text>
+
+    <!-- ═══ BOTTOM ROW: Sleep-Time Compute ═══ -->
+    <text x="360" y="158" font-family="'JetBrains Mono',monospace" font-size="9" fill="#5b7a5b" text-anchor="middle" font-weight="700" letter-spacing="0.06em">SLEEP-TIME COMPUTE</text>
+
+    <!-- Timeline bar -->
+    <rect x="40" y="170" width="640" height="60" rx="3" fill="none" stroke="#ccc" stroke-width="1"/>
+    
+    <!-- Sleep zone -->
+    <rect x="40" y="170" width="300" height="60" rx="3" fill="#5b7a5b" opacity="0.06"/>
+    <rect x="52" y="178" width="82" height="14" rx="1" fill="#1a1a1a"/>
+    <text x="93" y="189" font-family="'JetBrains Mono',monospace" font-size="7" fill="#5b7a5b" text-anchor="middle">analyse C</text>
+    <rect x="140" y="178" width="82" height="14" rx="1" fill="#1a1a1a"/>
+    <text x="181" y="189" font-family="'JetBrains Mono',monospace" font-size="7" fill="#5b7a5b" text-anchor="middle">infer</text>
+    <rect x="228" y="178" width="100" height="14" rx="1" fill="#1a1a1a"/>
+    <text x="278" y="189" font-family="'JetBrains Mono',monospace" font-size="7" fill="#5b7a5b" text-anchor="middle">rewrite → C'</text>
+    <text x="190" y="216" font-family="'JetBrains Mono',monospace" font-size="9" fill="#5b7a5b" text-anchor="middle" font-weight="700">budget S — nobody waiting</text>
+    
+    <!-- Query arrives marker -->
+    <line x1="340" y1="166" x2="340" y2="234" stroke="#5b7a5b" stroke-width="2"/>
+    <text x="340" y="243" font-family="'JetBrains Mono',monospace" font-size="7" fill="#5b7a5b" text-anchor="middle" font-weight="700">Q arrives</text>
+    
+    <!-- Light reasoning zone -->
+    <rect x="340" y="170" width="160" height="60" rx="0" fill="#5b7a5b" opacity="0.06"/>
+    <rect x="352" y="182" width="136" height="14" rx="1" fill="#1a1a1a"/>
+    <text x="420" y="193" font-family="'JetBrains Mono',monospace" font-size="7" fill="#5b7a5b" text-anchor="middle">C' + Q → fast answer</text>
+    <text x="420" y="216" font-family="'JetBrains Mono',monospace" font-size="8" fill="#5b7a5b" text-anchor="middle" font-weight="700">T<tspan font-size="6" dy="2">small</tspan><tspan dy="-2"> ≪ T</tspan></text>
+    
+    <!-- Done early marker -->
+    <rect x="500" y="170" width="180" height="60" rx="0" fill="#5b7a5b" opacity="0.03"/>
+    <text x="590" y="204" font-family="'JetBrains Mono',monospace" font-size="9" fill="#5b7a5b" text-anchor="middle" font-weight="700">✓ done early</text>
+    
+    <!-- Brace for fast -->
+    <path d="M 505 182 C 515 182 520 195 520 200 C 520 205 515 218 505 218" fill="none" stroke="#5b7a5b" stroke-width="1"/>
+    <text x="540" y="204" font-family="'JetBrains Mono',monospace" font-size="8" fill="#5b7a5b" text-anchor="middle" font-weight="700">fast</text>
+
+    <!-- ═══ BOTTOM STATS ═══ -->
+    <rect x="40" y="264" width="210" height="28" rx="2" fill="#1a1a1a"/>
+    <text x="145" y="282" font-family="'JetBrains Mono',monospace" font-size="8" fill="#5b7a5b" text-anchor="middle">~5× less test-time compute</text>
+    <rect x="260" y="264" width="200" height="28" rx="2" fill="#1a1a1a"/>
+    <text x="360" y="282" font-family="'JetBrains Mono',monospace" font-size="8" fill="#5b7a5b" text-anchor="middle">up to +18% accuracy</text>
+    <rect x="470" y="264" width="210" height="28" rx="2" fill="#1a1a1a"/>
+    <text x="575" y="282" font-family="'JetBrains Mono',monospace" font-size="8" fill="#5b7a5b" text-anchor="middle">2.5× cost reduction (10+ Q/C)</text>
+    
+    <!-- Source -->
+    <text x="360" y="312" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">Lin, Snell et al. · arXiv:2504.13171 · Letta + UC Berkeley · April 2025</text>
+    <text x="360" y="328" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">strongest predictor of benefit: query predictability from context</text>
+  </svg>
+  <div class="caption">the core insight — shift expensive reasoning from user-blocking test-time to idle sleep-time</div>
+</div>
+
+<p>The paper identified <strong>query predictability</strong> as the strongest predictor of benefit: if the user's likely question naturally follows from the context, sleep-time compute helps enormously. For open-ended queries with no contextual connection, standard test-time scaling may be better. This maps perfectly to coding agents (highly predictable: "fix the bug I described") and poorly to general chatbots (unpredictable: "tell me a joke").</p>
+
+<h3 style="margin-top: 32px; margin-bottom: 12px;">Letta's product: sleep-time agents</h3>
+
+<p>Letta shipped sleep-time agents in <strong>Letta 0.7.0</strong> (April 21, 2025) — four days after the paper hit arXiv. When <code>enable_sleeptime=True</code>, Letta creates a <strong>dual-agent system</strong> under the hood:<a href="https://docs.letta.com/guides/agents/architectures/sleeptime/" class="cite">[55]</a></p>
+
+<div class="table-wrap">
+<table>
+  <tr><th></th><th>Primary agent</th><th>Sleep-time agent</th></tr>
+  <tr>
+    <td><strong>Role</strong></td>
+    <td>Handles live user interactions</td>
+    <td>Background memory management</td>
+  </tr>
+  <tr>
+    <td><strong>Tools</strong></td>
+    <td><code>conversation_search</code>, <code>archival_memory_search</code>, custom tools</td>
+    <td><code>rethink_memory</code> (up to 10×), <code>finish_rethinking</code></td>
+  </tr>
+  <tr>
+    <td><strong>Memory edit rights</strong></td>
+    <td>❌ Cannot edit core memory blocks</td>
+    <td>✅ Can edit both its own and primary agent's memory</td>
+  </tr>
+  <tr>
+    <td><strong>Trigger</strong></td>
+    <td>Synchronous — every user message</td>
+    <td>Every N steps (default: 5, configurable)</td>
+  </tr>
+  <tr>
+    <td><strong>Model</strong></td>
+    <td>Fast model (e.g. GPT-4o-mini, Claude Haiku)</td>
+    <td>Stronger model (e.g. GPT-4.1, Claude Sonnet)</td>
+  </tr>
+</table>
+</div>
+
+<p>This architecture solves the original MemGPT problem: in the 2023 design, a single agent handled both conversation <em>and</em> memory management, creating latency and reliability issues. Sleep-time agents decouple these concerns — the primary agent is never blocked by memory operations, and the sleep-time agent can use a slower, more capable model because nobody is waiting for it.</p>
+
+<p>The memory substrate is Letta's <strong>memory block</strong> system — labelled, character-limited string values (e.g. <code>"human"</code>, <code>"persona"</code>, <code>"knowledge"</code>) pinned to the system prompt and persisted in PostgreSQL. The sleep-time agent rewrites these blocks with consolidated, well-organised learned context that the primary agent reads on the next turn.<a href="https://www.letta.com/blog/memory-blocks" class="cite">[56]</a></p>
+
+<h3 style="margin-top: 32px; margin-bottom: 12px;">The evolution: Context Repositories (February 2026)</h3>
+
+<p>By early 2026, Letta had evolved beyond memory blocks. <strong>Context Repositories</strong> replaced the database-backed block system with <strong>git-backed local files</strong> — the same filesystem pattern that Claude Code uses:<a href="https://www.letta.com/blog/context-repositories" class="cite">[57]</a></p>
+
+<pre>~/.letta/memory/
+├── MEMORY.md              # Always in system prompt (filetree + navigation)
+├── system/                # Files always loaded into system prompt
+│   ├── preferences.md
+│   └── project-context.md
+├── skills/                # Task-specific procedural knowledge
+└── knowledge/             # Domain knowledge</pre>
+
+<p>Sleep-time processing evolved accordingly. Server-side sleep-time agents were deprecated in favour of <strong>three built-in memory skills</strong> running as client-side subagents:<a href="https://www.letta.com/blog/our-next-phase" class="cite">[58]</a></p>
+
+<div class="approach-grid">
+  <div class="approach-card">
+    <div class="card-tag">Memory Initialisation</div>
+    <h4><code>/init</code></h4>
+    <p>Bootstraps memory by exploring the codebase and importing existing Claude Code or Codex histories. Runs concurrent subagents in git worktrees for parallelism.</p>
+  </div>
+  <div class="approach-card">
+    <div class="card-tag">Memory Reflection</div>
+    <h4>Background sleep-time</h4>
+    <p>Periodically reviews recent conversation history. Persists important information into the memory repository with informative git commit messages. Works in a git worktree to avoid conflicts, merges back automatically.</p>
+  </div>
+  <div class="approach-card">
+    <div class="card-tag">Memory Defragmentation</div>
+    <h4><code>/doctor</code></h4>
+    <p>Reorganises memory files — splits large files, merges duplicates, restructures into 15-25 focused files. The maintenance operation that keeps memory healthy over time.</p>
+  </div>
+  <div class="approach-card">
+    <div class="card-tag">Context Constitution</div>
+    <h4>Governing principles</h4>
+    <p>A set of principles (April 2026) governing how agents manage context to learn from experience. Formalises the relationship between agent identity, memory, and continuity. Open-sourced on GitHub.<a href="https://www.letta.com/blog/context-constitution" class="cite">[59]</a></p>
+  </div>
+</div>
+
+<p>The theoretical foundation underlying all of this is Letta's <strong>"continual learning in token space"</strong> thesis: an agent is <code>(θ, C)</code> — model weights plus context. Traditional ML updates θ (catastrophic forgetting, opaque, impractical). Letta's bet: update <strong>C</strong> (interpretable, portable across model generations, rollback is trivial). Sleep-time compute is the mechanism that makes C continuously better.<a href="https://www.letta.com/blog/continual-learning" class="cite">[60]</a></p>
+
+<h3 style="margin-top: 40px; margin-bottom: 16px;">The comparison: two implementations of one idea</h3>
+
+<p>AutoDream and Letta's sleep-time agents are the two most complete implementations of the same underlying concept. They share a research lineage — Anthropic's source code explicitly cites the Letta/UC Berkeley paper. But their engineering choices diverge sharply, reflecting different architectural philosophies.</p>
+
+<div class="table-wrap">
+<table>
+  <tr><th>Dimension</th><th>Claude Code AutoDream</th><th>Letta Sleep-Time Agents</th></tr>
+  <tr>
+    <td><strong>Architecture</strong></td>
+    <td>Forked subagent running locally in background</td>
+    <td>Dual-agent system (primary + sleep-time) in server-side group; evolving to client-side subagents (2026)</td>
+  </tr>
+  <tr>
+    <td><strong>Memory storage</strong></td>
+    <td>Local filesystem: <code>MEMORY.md</code> + topic <code>.md</code> files</td>
+    <td>Memory blocks in PostgreSQL (2025); git-backed MemFS files (2026)</td>
+  </tr>
+  <tr>
+    <td><strong>Trigger</strong></td>
+    <td>24h elapsed <strong>AND</strong> 5 sessions accumulated (dual gate)</td>
+    <td>Every N conversation steps (default: 5, configurable)</td>
+  </tr>
+  <tr>
+    <td><strong>Frequency</strong></td>
+    <td>Infrequent — once per day at most</td>
+    <td>Frequent — potentially every 5 user messages</td>
+  </tr>
+  <tr>
+    <td><strong>Process</strong></td>
+    <td>4-phase prompt: Orient → Gather Signal → Consolidate → Prune &amp; Index</td>
+    <td>Iterative <code>rethink_memory()</code> calls (up to 10×), then <code>finish_rethinking()</code></td>
+  </tr>
+  <tr>
+    <td><strong>What it reads</strong></td>
+    <td>Memory files + targeted <code>grep</code> on JSONL transcripts</td>
+    <td>Conversation transcript assembled from recent messages</td>
+  </tr>
+  <tr>
+    <td><strong>Model</strong></td>
+    <td>Same model as active session (Claude)</td>
+    <td>Configurable per agent — can use a stronger model for sleep-time</td>
+  </tr>
+  <tr>
+    <td><strong>Safety</strong></td>
+    <td>Read-only bash; writes restricted to memory directory; lock file with PID</td>
+    <td>Sleep-time agent has memory-only write access; primary agent cannot edit memory at all</td>
+  </tr>
+  <tr>
+    <td><strong>Versioning</strong></td>
+    <td>Lock file mtime as timestamp; no formal history</td>
+    <td>Full git commit history with messages (Context Repositories); block history in DB (legacy)</td>
+  </tr>
+  <tr>
+    <td><strong>Index constraint</strong></td>
+    <td>Hard: 200 lines / 25KB (startup load limit)</td>
+    <td>Configurable character limits per memory block</td>
+  </tr>
+  <tr>
+    <td><strong>Multi-model</strong></td>
+    <td>No — locked to Claude</td>
+    <td>Yes — model-agnostic; primary and sleep-time can use different providers</td>
+  </tr>
+  <tr>
+    <td><strong>Open source</strong></td>
+    <td>No (leaked; gated behind feature flag)</td>
+    <td>Yes (Apache 2.0)</td>
+  </tr>
+  <tr>
+    <td><strong>Maturity</strong></td>
+    <td>Shipping (gated rollout), undocumented, ~v2.1.83+</td>
+    <td>Experimental (Letta 0.7.0, Apr 2025); evolving to Context Repositories (Feb 2026)</td>
+  </tr>
+</table>
+</div>
+
+<!-- ── Comparison diagram ── -->
+<div class="diagram reveal">
+  <span class="diagram-label">Two architectures, one paradigm</span>
+  <svg viewBox="0 0 720 440" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arr-vs" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+        <path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#70808d" stroke-width="1"/>
+      </marker>
+      <marker id="arr-vs-g" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+        <path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#5b7a5b" stroke-width="1"/>
+      </marker>
+    </defs>
+
+    <!-- ═══ LEFT HALF: CLAUDE CODE ═══ -->
+    <rect x="16" y="8" width="330" height="298" rx="4" fill="none" stroke="#ccc" stroke-width="1" stroke-dasharray="6,3"/>
+    <text x="181" y="26" font-family="'JetBrains Mono',monospace" font-size="10" fill="#1a1a1a" text-anchor="middle" font-weight="700">CLAUDE CODE · AUTODREAM</text>
+
+    <!-- Active session -->
+    <rect x="32" y="40" width="140" height="54" rx="3" fill="#1a1a1a"/>
+    <text x="102" y="58" font-family="'JetBrains Mono',monospace" font-size="9" fill="#f1f2f2" text-anchor="middle" font-weight="700">ACTIVE SESSION</text>
+    <text x="102" y="72" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle">Claude · single model</text>
+    <text x="102" y="84" font-family="'JetBrains Mono',monospace" font-size="6" fill="#999" text-anchor="middle">reads MEMORY.md at startup</text>
+
+    <!-- Fork arrow -->
+    <path d="M 102 94 L 102 126" stroke="#70808d" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr-vs)"/>
+    <text x="82" y="114" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d">fork</text>
+
+    <!-- Dream subagent -->
+    <rect x="32" y="130" width="140" height="72" rx="3" fill="none" stroke="#70808d" stroke-width="1.5"/>
+    <text x="102" y="148" font-family="'JetBrains Mono',monospace" font-size="9" fill="#70808d" text-anchor="middle" font-weight="700">DREAM AGENT</text>
+    <text x="102" y="162" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">① Orient → ② Gather</text>
+    <text x="102" y="174" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">③ Consolidate → ④ Prune</text>
+    <text x="102" y="190" font-family="'JetBrains Mono',monospace" font-size="6" fill="#999" text-anchor="middle">bash read-only · skipTranscript</text>
+
+    <!-- Memory filesystem -->
+    <rect x="192" y="40" width="140" height="162" rx="3" fill="#f8f8f8" stroke="#ccc" stroke-width="1"/>
+    <text x="262" y="34" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle" font-weight="700">~/.claude/memory/</text>
+    <rect x="200" y="48" width="124" height="16" rx="1" fill="#fff" stroke="#ccc" stroke-width="0.5"/>
+    <text x="262" y="60" font-family="'JetBrains Mono',monospace" font-size="7" fill="#1a1a1a" text-anchor="middle" font-weight="700">MEMORY.md ≤200 lines</text>
+    <rect x="200" y="68" width="124" height="14" rx="1" fill="#fff" stroke="#ccc" stroke-width="0.5"/>
+    <text x="262" y="79" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">debugging.md</text>
+    <rect x="200" y="86" width="124" height="14" rx="1" fill="#fff" stroke="#ccc" stroke-width="0.5"/>
+    <text x="262" y="97" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">api-conventions.md</text>
+    <rect x="200" y="104" width="124" height="14" rx="1" fill="#fff" stroke="#ccc" stroke-width="0.5"/>
+    <text x="262" y="115" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">build-commands.md</text>
+    <line x1="200" y1="126" x2="324" y2="126" stroke="#ccc" stroke-width="0.5" stroke-dasharray="2,2"/>
+    <rect x="200" y="132" width="124" height="14" rx="1" fill="#fff" stroke="#ccc" stroke-width="0.5"/>
+    <text x="262" y="143" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">.consolidate-lock</text>
+    <rect x="200" y="150" width="124" height="14" rx="1" fill="#fff" stroke="#ccc" stroke-width="0.5"/>
+    <text x="262" y="161" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">*.jsonl transcripts</text>
+    <rect x="200" y="168" width="124" height="14" rx="1" fill="#fff" stroke="#ccc" stroke-width="0.5"/>
+    <text x="262" y="179" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">CLAUDE.md (user)</text>
+
+    <!-- Arrows -->
+    <path d="M 172 66 L 196 60" stroke="#70808d" stroke-width="1" marker-end="url(#arr-vs)"/>
+    <path d="M 172 166 L 196 150" stroke="#5b7a5b" stroke-width="1.5" marker-end="url(#arr-vs-g)"/>
+    <text x="180" y="160" font-family="'JetBrains Mono',monospace" font-size="6" fill="#5b7a5b" transform="rotate(-20,180,160)">write</text>
+    <path d="M 196 165 L 172 175" stroke="#70808d" stroke-width="1" marker-end="url(#arr-vs)"/>
+    <text x="178" y="178" font-family="'JetBrains Mono',monospace" font-size="6" fill="#999">grep</text>
+
+    <!-- Trigger box -->
+    <rect x="32" y="218" width="300" height="38" rx="2" fill="#1a1a1a"/>
+    <text x="182" y="234" font-family="'JetBrains Mono',monospace" font-size="8" fill="#70808d" text-anchor="middle" font-weight="700">TRIGGER: 24h + 5 sessions (dual gate)</text>
+    <text x="182" y="248" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">lock file · PID guard · 10min scan throttle · feature flag</text>
+
+    <!-- Key traits -->
+    <text x="32" y="276" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666">✦ infrequent, deep consolidation passes</text>
+    <text x="32" y="290" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666">✦ Unix primitives: stat(), grep, utimes()</text>
+    <text x="32" y="304" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666">✦ 913 sessions in ~8 min (observed)</text>
+
+    <!-- ═══ DIVIDER ═══ -->
+    <line x1="360" y1="14" x2="360" y2="306" stroke="#ccc" stroke-width="1.5" stroke-dasharray="6,4"/>
+    <rect x="348" y="146" width="24" height="20" rx="10" fill="var(--bg)"/>
+    <text x="360" y="160" font-family="'Satoshi',sans-serif" font-size="10" fill="#70808d" text-anchor="middle" font-weight="700">vs</text>
+
+    <!-- ═══ RIGHT HALF: LETTA ═══ -->
+    <rect x="374" y="8" width="330" height="298" rx="4" fill="none" stroke="#ccc" stroke-width="1" stroke-dasharray="6,3"/>
+    <text x="539" y="26" font-family="'JetBrains Mono',monospace" font-size="10" fill="#1a1a1a" text-anchor="middle" font-weight="700">LETTA · SLEEP-TIME AGENTS</text>
+
+    <!-- Primary agent -->
+    <rect x="390" y="40" width="140" height="54" rx="3" fill="#1a1a1a"/>
+    <text x="460" y="58" font-family="'JetBrains Mono',monospace" font-size="9" fill="#f1f2f2" text-anchor="middle" font-weight="700">PRIMARY AGENT</text>
+    <text x="460" y="72" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle">fast model · no mem edit</text>
+    <text x="460" y="84" font-family="'JetBrains Mono',monospace" font-size="6" fill="#999" text-anchor="middle">reads memory blocks in context</text>
+
+    <!-- Async arrow -->
+    <path d="M 460 94 L 460 126" stroke="#70808d" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr-vs)"/>
+    <text x="476" y="114" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d">async</text>
+
+    <!-- Sleep-time agent -->
+    <rect x="390" y="130" width="140" height="72" rx="3" fill="none" stroke="#70808d" stroke-width="1.5"/>
+    <text x="460" y="148" font-family="'JetBrains Mono',monospace" font-size="9" fill="#70808d" text-anchor="middle" font-weight="700">SLEEP-TIME AGENT</text>
+    <text x="460" y="162" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">stronger / slower model</text>
+    <text x="460" y="174" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">rethink_memory() × 10</text>
+    <text x="460" y="190" font-family="'JetBrains Mono',monospace" font-size="6" fill="#999" text-anchor="middle">finish_rethinking() to commit</text>
+
+    <!-- Memory blocks / MemFS -->
+    <rect x="550" y="40" width="140" height="162" rx="3" fill="#f8f8f8" stroke="#ccc" stroke-width="1"/>
+    <text x="620" y="34" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle" font-weight="700">MEMORY (DB → MemFS)</text>
+    <rect x="558" y="48" width="124" height="16" rx="1" fill="#fff" stroke="#ccc" stroke-width="0.5"/>
+    <text x="620" y="60" font-family="'JetBrains Mono',monospace" font-size="7" fill="#1a1a1a" text-anchor="middle" font-weight="700">"human" block</text>
+    <rect x="558" y="68" width="124" height="14" rx="1" fill="#fff" stroke="#ccc" stroke-width="0.5"/>
+    <text x="620" y="79" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">"persona" block</text>
+    <rect x="558" y="86" width="124" height="14" rx="1" fill="#fff" stroke="#ccc" stroke-width="0.5"/>
+    <text x="620" y="97" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">"knowledge" block</text>
+    <line x1="558" y1="108" x2="682" y2="108" stroke="#ccc" stroke-width="0.5" stroke-dasharray="2,2"/>
+    <text x="620" y="120" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle" font-weight="600">2026: MemFS (git-backed)</text>
+    <rect x="558" y="126" width="124" height="14" rx="1" fill="#fff" stroke="#ccc" stroke-width="0.5"/>
+    <text x="620" y="137" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">MEMORY.md</text>
+    <rect x="558" y="144" width="124" height="14" rx="1" fill="#fff" stroke="#ccc" stroke-width="0.5"/>
+    <text x="620" y="155" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">skills/*.md</text>
+    <rect x="558" y="162" width="124" height="14" rx="1" fill="#fff" stroke="#ccc" stroke-width="0.5"/>
+    <text x="620" y="173" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">git commit history</text>
+    <rect x="558" y="180" width="124" height="14" rx="1" fill="#fff" stroke="#ccc" stroke-width="0.5"/>
+    <text x="620" y="191" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">PostgreSQL (archival)</text>
+
+    <!-- Arrows -->
+    <path d="M 530 66 L 554 60" stroke="#70808d" stroke-width="1" marker-end="url(#arr-vs)"/>
+    <text x="536" y="56" font-family="'JetBrains Mono',monospace" font-size="6" fill="#999">read</text>
+    <path d="M 530 166 L 554 150" stroke="#5b7a5b" stroke-width="1.5" marker-end="url(#arr-vs-g)"/>
+    <text x="536" y="158" font-family="'JetBrains Mono',monospace" font-size="6" fill="#5b7a5b" transform="rotate(-16,536,158)">rethink</text>
+
+    <!-- Trigger box -->
+    <rect x="390" y="218" width="300" height="38" rx="2" fill="#1a1a1a"/>
+    <text x="540" y="234" font-family="'JetBrains Mono',monospace" font-size="8" fill="#70808d" text-anchor="middle" font-weight="700">TRIGGER: every N steps (default: 5)</text>
+    <text x="540" y="248" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">configurable · model-agnostic · dual-model capable</text>
+
+    <!-- Key traits -->
+    <text x="390" y="276" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666">✦ frequent, incremental memory updates</text>
+    <text x="390" y="290" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666">✦ fast model primary / strong model sleep</text>
+    <text x="390" y="304" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666">✦ open source (Apache 2.0)</text>
+
+    <!-- ═══ BOTTOM CONVERGENCE BAR ═══ -->
+    <rect x="16" y="324" width="688" height="56" rx="4" fill="#1a1a1a"/>
+    <!-- Convergence arrows from both sides -->
+    <path d="M 181 308 L 181 322" stroke="#999" stroke-width="1" stroke-dasharray="2,2"/>
+    <path d="M 539 308 L 539 322" stroke="#999" stroke-width="1" stroke-dasharray="2,2"/>
+    
+    <text x="360" y="344" font-family="'JetBrains Mono',monospace" font-size="9" fill="#70808d" text-anchor="middle" font-weight="700">CONVERGENCE: filesystem + git + background subagents + structured index</text>
+    <text x="360" y="362" font-family="'JetBrains Mono',monospace" font-size="8" fill="#999" text-anchor="middle">shared lineage: Sleep-time Compute (Lin, Snell et al. 2025) · arXiv:2504.13171 · MemGPT heritage</text>
+    <text x="360" y="376" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">Letta moved DB → files (Feb 2026) · Claude Code added background consolidation (Mar 2026) · both arrived at the same place</text>
+
+    <!-- Convergence dots -->
+    <circle cx="181" cy="340" r="4" fill="#70808d"/>
+    <circle cx="539" cy="340" r="4" fill="#70808d"/>
+    <line x1="185" y1="340" x2="535" y2="340" stroke="#70808d" stroke-width="1" stroke-dasharray="3,3"/>
+  </svg>
+  <div class="caption">same research lineage, divergent engineering choices — converging on the same architecture by early 2026</div>
+</div>
+
+<div class="callout">
+  <div class="callout-label">The convergence</div>
+  <p>The most striking observation: <strong>Letta is converging toward Claude Code's architecture</strong>. Their February 2026 Context Repositories release replaced database-backed memory blocks with git-backed local files, adopted <code>MEMORY.md</code> as the system-prompt index, added git worktrees for concurrent subagent processing, and deprecated server-side sleep-time agents in favour of client-side subagents. Meanwhile, Claude Code's AutoDream moved the other direction — adding background consolidation to what was already a filesystem-native memory system. Both arrived at: <strong>filesystem + git + background subagents + structured index</strong>.</p>
+</div>
+
+<h3 style="margin-top: 32px; margin-bottom: 12px;">Synthesis: what the comparison reveals</h3>
+
+<div class="finding"><div class="finding-num">6</div>
+  <h4>Frequency vs. depth is the core design tradeoff</h4>
+  <p>Letta's sleep-time agent runs every 5 messages — frequent, shallow passes that keep memory incrementally fresh. AutoDream runs once per day — infrequent, deep passes that comprehensively reorganise. The right choice depends on the workload: conversational agents benefit from frequent updates (Letta); project-scoped coding agents benefit from deep consolidation (AutoDream). Neither is universally better.</p>
+</div>
+
+<div class="finding"><div class="finding-num">7</div>
+  <h4>The dual-model pattern is underexploited</h4>
+  <p>Letta's ability to use a fast model for the primary agent and a stronger model for sleep-time processing is an elegant cost optimisation that AutoDream doesn't offer (locked to Claude). As sleep-time compute matures, expect this pattern to become standard: latency-critical paths use cheap models, background processing uses expensive ones. The aggregate cost can be <em>lower</em> than a single strong model handling everything.</p>
+</div>
+
+<div class="finding"><div class="finding-num">8</div>
+  <h4>Git is emerging as the universal memory backend</h4>
+  <p>Both systems are converging on git as the versioning layer for agent memory. Letta's Context Repositories use git commits with messages. Claude Code's memory files live in a project directory alongside git-tracked source. The advantages are clear: history, branching, merging, diffing, conflict resolution — all solved problems in the git ecosystem. Agent memory is just another thing that benefits from version control.</p>
+</div>
+
+<div class="finding"><div class="finding-num">9</div>
+  <h4>The research→production pipeline is compressing</h4>
+  <p>Letta published arXiv:2504.13171 on April 17, 2025 and shipped sleep-time agents four days later. Anthropic's AutoDream appeared in Claude Code by March 2026 — less than a year from paper to (gated) production. The gap between "academic concept" and "shipping in millions of sessions" is now measured in months, not years. Practitioners can no longer afford to wait for the survey paper.</p>
+</div>
+
+</section>
+
+<hr>
+
+<!-- ═══════════════════════════════════════════
+     VIII. THE PRODUCTION PLAYBOOK
+     ═══════════════════════════════════════════ -->
+<section id="playbook" class="reveal">
+<div class="section-label"><span class="section-num">8</span> the production playbook</div>
+<h2 style="font-size: 22px; margin-bottom: 16px;">How practitioners are building</h2>
+
+<p>Theory converges in papers. Practice converges in production. Across every system we surveyed, the same three-layer pattern emerges — not because teams copied each other, but because the problem structure demands it.</p>
+
+<!-- ═══ META-PATTERN ARCHITECTURE DIAGRAM ═══ -->
+<div class="diagram reveal">
+  <span class="diagram-label">The three-layer meta-pattern</span>
+  <svg viewBox="0 0 720 380" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arr-pb" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+        <path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#70808d" stroke-width="1"/>
+      </marker>
+    </defs>
+
+    <!-- Background layers -->
+    <rect x="20" y="20" width="680" height="96" rx="4" fill="#5b7a5b" opacity="0.06" stroke="#5b7a5b" stroke-width="1.5"/>
+    <rect x="20" y="128" width="680" height="96" rx="4" fill="#70808d" opacity="0.06" stroke="#70808d" stroke-width="1.5"/>
+    <rect x="20" y="236" width="680" height="96" rx="4" fill="#1a1a1a" opacity="0.04" stroke="#1a1a1a" stroke-width="1.5"/>
+
+    <!-- Layer 1: PREVENT -->
+    <text x="40" y="42" font-family="'JetBrains Mono',monospace" font-size="10" fill="#5b7a5b" font-weight="700" letter-spacing="0.08em">① PREVENT</text>
+    <text x="40" y="56" font-family="'Satoshi',sans-serif" font-size="11" fill="#5b7a5b" font-weight="600">Stop bloat from entering context</text>
+
+    <rect x="240" y="32" width="140" height="34" rx="3" fill="#fff" stroke="#5b7a5b" stroke-width="1"/>
+    <text x="310" y="46" font-family="'JetBrains Mono',monospace" font-size="8" fill="#5b7a5b" text-anchor="middle" font-weight="700">File-native memory</text>
+    <text x="310" y="58" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">MEMORY.md + grep</text>
+
+    <rect x="392" y="32" width="140" height="34" rx="3" fill="#fff" stroke="#5b7a5b" stroke-width="1"/>
+    <text x="462" y="46" font-family="'JetBrains Mono',monospace" font-size="8" fill="#5b7a5b" text-anchor="middle" font-weight="700">Contract-first</text>
+    <text x="462" y="58" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">API contracts only</text>
+
+    <rect x="544" y="32" width="140" height="34" rx="3" fill="#fff" stroke="#5b7a5b" stroke-width="1"/>
+    <text x="614" y="46" font-family="'JetBrains Mono',monospace" font-size="8" fill="#5b7a5b" text-anchor="middle" font-weight="700">Sub-agent isolation</text>
+    <text x="614" y="58" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">bounded child agents</text>
+
+    <!-- Stat bar for layer 1 -->
+    <rect x="240" y="76" width="444" height="22" rx="2" fill="#5b7a5b" opacity="0.1"/>
+    <text x="462" y="91" font-family="'JetBrains Mono',monospace" font-size="8" fill="#5b7a5b" text-anchor="middle">the best token to save is the one you never emit · 46.9% reduction from on-demand loading alone</text>
+
+    <!-- Layer 2: MANAGE -->
+    <text x="40" y="150" font-family="'JetBrains Mono',monospace" font-size="10" fill="#70808d" font-weight="700" letter-spacing="0.08em">② MANAGE</text>
+    <text x="40" y="164" font-family="'Satoshi',sans-serif" font-size="11" fill="#70808d" font-weight="600">Control what stays and how it ages</text>
+
+    <rect x="240" y="140" width="108" height="34" rx="3" fill="#fff" stroke="#70808d" stroke-width="1"/>
+    <text x="294" y="154" font-family="'JetBrains Mono',monospace" font-size="8" fill="#70808d" text-anchor="middle" font-weight="700">Tiered memory</text>
+    <text x="294" y="166" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">L1→L2→L3</text>
+
+    <rect x="358" y="140" width="108" height="34" rx="3" fill="#fff" stroke="#70808d" stroke-width="1"/>
+    <text x="412" y="154" font-family="'JetBrains Mono',monospace" font-size="8" fill="#70808d" text-anchor="middle" font-weight="700">Lifecycle ops</text>
+    <text x="412" y="166" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">ADD/UPD/DEL/NOOP</text>
+
+    <rect x="476" y="140" width="108" height="34" rx="3" fill="#fff" stroke="#70808d" stroke-width="1"/>
+    <text x="530" y="154" font-family="'JetBrains Mono',monospace" font-size="8" fill="#70808d" text-anchor="middle" font-weight="700">Graph memory</text>
+    <text x="530" y="166" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">entity relations</text>
+
+    <rect x="594" y="140" width="90" height="34" rx="3" fill="#fff" stroke="#70808d" stroke-width="1"/>
+    <text x="639" y="154" font-family="'JetBrains Mono',monospace" font-size="8" fill="#70808d" text-anchor="middle" font-weight="700">Event log</text>
+    <text x="639" y="166" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">replay/audit</text>
+
+    <!-- Stat bar for layer 2 -->
+    <rect x="240" y="184" width="444" height="22" rx="2" fill="#70808d" opacity="0.08"/>
+    <text x="462" y="199" font-family="'JetBrains Mono',monospace" font-size="8" fill="#70808d" text-anchor="middle">NOOP is the most undervalued operation · 91% lower latency from selective memory (Mem0)</text>
+
+    <!-- Layer 3: SCAFFOLD -->
+    <text x="40" y="258" font-family="'JetBrains Mono',monospace" font-size="10" fill="#1a1a1a" font-weight="700" letter-spacing="0.08em">③ SCAFFOLD</text>
+    <text x="40" y="272" font-family="'Satoshi',sans-serif" font-size="11" fill="#1a1a1a" font-weight="600">Actively maintain coherence</text>
+
+    <rect x="240" y="248" width="118" height="34" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1"/>
+    <text x="299" y="262" font-family="'JetBrains Mono',monospace" font-size="8" fill="#1a1a1a" text-anchor="middle" font-weight="700">Sleep-time</text>
+    <text x="299" y="274" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">background compute</text>
+
+    <rect x="368" y="248" width="118" height="34" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1"/>
+    <text x="427" y="262" font-family="'JetBrains Mono',monospace" font-size="8" fill="#1a1a1a" text-anchor="middle" font-weight="700">Dual-model</text>
+    <text x="427" y="274" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">fast + strong</text>
+
+    <rect x="496" y="248" width="118" height="34" rx="3" fill="#fff" stroke="#1a1a1a" stroke-width="1"/>
+    <text x="555" y="262" font-family="'JetBrains Mono',monospace" font-size="8" fill="#1a1a1a" text-anchor="middle" font-weight="700">Structured ws</text>
+    <text x="555" y="274" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">milestone triggers</text>
+
+    <!-- Stat bar for layer 3 -->
+    <rect x="240" y="292" width="444" height="22" rx="2" fill="#1a1a1a" opacity="0.06"/>
+    <text x="462" y="307" font-family="'JetBrains Mono',monospace" font-size="8" fill="#1a1a1a" text-anchor="middle">passive compression yields 6% · scaffolded triggers yield 22.7% · sleep-time yields 5× compute reduction</text>
+
+    <!-- Left side: data flow arrows -->
+    <path d="M 180 68 L 180 140" stroke="#70808d" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr-pb)"/>
+    <path d="M 180 176 L 180 248" stroke="#70808d" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr-pb)"/>
+
+    <!-- Bottom: result -->
+    <rect x="120" y="346" width="480" height="26" rx="3" fill="#1a1a1a"/>
+    <text x="360" y="363" font-family="'JetBrains Mono',monospace" font-size="9" fill="#70808d" text-anchor="middle" font-weight="700">COHERENT AGENT · HUNDREDS OF STEPS · NO SYSTEM RELIES ON SPONTANEOUS HYGIENE</text>
+    <path d="M 180 316 L 180 344" stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arr-pb)"/>
+  </svg>
+  <div class="caption">every production system follows the same stack — prevent, manage, scaffold</div>
+</div>
+
+<!-- ═══ LAYER 1: PREVENT ═══ -->
+<h3 style="margin-top: 40px; margin-bottom: 4px; color: var(--green);">Layer 1 — Prevent</h3>
+<p style="font-size: 13px; color: var(--fg-2); margin-bottom: 20px;">Stop context bloat at the source. The cheapest token is the one that never enters the window.</p>
+
+<div class="approach-grid">
+  <div class="approach-card" style="border-left: 3px solid #5b7a5b;">
+    <div class="card-tag">File-native memory</div>
+    <h4>No vector DB needed</h4>
+    <p>Claude Code uses <code>MEMORY.md</code> + <code>grep</code>. Cursor writes tool outputs to files. LangChain offloads &gt;20K tokens to disk. The filesystem is persistent, searchable, and costs zero tokens until accessed. Cursor measured <strong>46.9% token reduction</strong> from on-demand loading alone.<a href="https://cursor.com/blog/dynamic-context-discovery" class="cite">[42]</a></p>
+  </div>
+  <div class="approach-card" style="border-left: 3px solid #5b7a5b;">
+    <div class="card-tag">Contract-first multi-agent</div>
+    <h4>Inject API contracts into every agent</h4>
+    <p>Microsoft's Swarm Diaries: inject API contracts into every agent's context. Quality improved 28-32%. Branch conflicts eliminated entirely. The contract is the minimum viable shared context — everything else is isolated.<a href="https://www.microsoft.com/en-us/research/publication/swarm-diaries/" class="cite">[32]</a></p>
+  </div>
+  <div class="approach-card" style="border-left: 3px solid #5b7a5b;">
+    <div class="card-tag">Sub-agent isolation</div>
+    <h4>Don't compress — don't accumulate</h4>
+    <p>Spawn bounded child agents for scoped subtasks; return only compressed results to the orchestrator. Context Folding achieves 10× smaller active context at equal performance. Structural isolation is cheaper than any compression strategy.<a href="https://arxiv.org/abs/2502.12345" class="cite">[14]</a></p>
+  </div>
+</div>
+
+<!-- ═══ LAYER 2: MANAGE ═══ -->
+<h3 style="margin-top: 40px; margin-bottom: 4px; color: var(--accent);">Layer 2 — Manage</h3>
+<p style="font-size: 13px; color: var(--fg-2); margin-bottom: 20px;">Control what enters the window, how long it stays, and when it goes.</p>
+
+<div class="approach-grid">
+  <div class="approach-card" style="border-left: 3px solid #70808d;">
+    <div class="card-tag">Tiered memory architecture</div>
+    <h4>OS-like memory hierarchy</h4>
+    <p>Working set → session → long-term → structured. Redis, Oracle, Mem0 all converged here independently. Mem0 reports 91% lower latency vs full-context baselines. Each tier has a different eviction policy, access latency, and persistence guarantee.<a href="https://mem0.ai/blog/state-of-ai-agent-memory-2026" class="cite">[40]</a></p>
+  </div>
+  <div class="approach-card" style="border-left: 3px solid #70808d;">
+    <div class="card-tag">Lifecycle management</div>
+    <h4>ADD / UPDATE / DELETE / NOOP</h4>
+    <p>NOOP is the most undervalued operation — don't store everything. The best memory systems are defined as much by what they <em>don't</em> store as by what they do. Aggressive filtering at write time prevents read-time pollution.<a href="https://arxiv.org/abs/2503.06713" class="cite">[27]</a></p>
+  </div>
+  <div class="approach-card" style="border-left: 3px solid #70808d;">
+    <div class="card-tag">Graph memory</div>
+    <h4>Entity relationships at production latency</h4>
+    <p>Mem0g reaches 68.4% LLM Score vs 72.9% full-context at 2.59s p95 vs 17.12s. Graph memory isn't just for knowledge bases — it's the best structure for persistent agent state with complex relationships.</p>
+  </div>
+  <div class="approach-card" style="border-left: 3px solid #70808d;">
+    <div class="card-tag">Event-driven architectures</div>
+    <h4>Everything is an event</h4>
+    <p>Google ADK's event recording, OpenHands' event-sourced architecture. Every agent action is an event. Enables replay, debugging, auditing, and — crucially — selective context reconstruction from the event log.</p>
+  </div>
+</div>
+
+<!-- ═══ LAYER 3: SCAFFOLD ═══ -->
+<h3 style="margin-top: 40px; margin-bottom: 4px;">Layer 3 — Scaffold</h3>
+<p style="font-size: 13px; color: var(--fg-2); margin-bottom: 20px;">Actively maintain coherence over time. Don't trust the model to manage itself — build the management into the system.</p>
+
+<div class="approach-grid">
+  <div class="approach-card" style="border-left: 3px solid #1a1a1a;">
+    <div class="card-tag">Sleep-time compute</div>
+    <h4>Agents that think while you're away</h4>
+    <p>Letta's research: ~5× test-time reduction from pre-processing context during idle time. Claude Code's AutoDream consolidates memory between sessions. The pattern is general: any persistent-context agent can benefit from background processing.<a href="https://arxiv.org/abs/2504.13171" class="cite">[53]</a></p>
+  </div>
+  <div class="approach-card" style="border-left: 3px solid #1a1a1a;">
+    <div class="card-tag">Dual-model architecture</div>
+    <h4>Fast primary, strong background</h4>
+    <p>Letta's pattern: fast cheap model for user-facing interactions, stronger expensive model for background consolidation. Nobody waits for the background model. The aggregate cost can be <em>lower</em> than a single strong model handling everything.</p>
+  </div>
+  <div class="approach-card" style="border-left: 3px solid #1a1a1a;">
+    <div class="card-tag">Structured workspace</div>
+    <h4>Compress at milestones, not thresholds</h4>
+    <p>Schema-defined working memory with explicit fields for plan, files, errors, decisions. Proactive compression at task milestones, not token counters. CaT achieves 57.6% on SWE-Bench-Verified with bounded context.<a href="https://arxiv.org/abs/2503.07677" class="cite">[15]</a></p>
+  </div>
+</div>
+
+<!-- ═══ CONTEXT LIFECYCLE PIPELINE DIAGRAM ═══ -->
+<div class="diagram reveal" style="margin-top: 40px;">
+  <span class="diagram-label">Context lifecycle — one agent turn</span>
+  <svg viewBox="0 0 720 200" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arr-lc" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+        <path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#70808d" stroke-width="1"/>
+      </marker>
+    </defs>
+
+    <!-- Pipeline stages -->
+    <rect x="16" y="40" width="100" height="56" rx="3" fill="#5b7a5b" opacity="0.1" stroke="#5b7a5b" stroke-width="1.5"/>
+    <text x="66" y="60" font-family="'JetBrains Mono',monospace" font-size="9" fill="#5b7a5b" text-anchor="middle" font-weight="700">LOAD</text>
+    <text x="66" y="74" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">CLAUDE.md</text>
+    <text x="66" y="84" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">MEMORY.md</text>
+
+    <path d="M 116 68 L 136 68" stroke="#70808d" stroke-width="1.5" marker-end="url(#arr-lc)"/>
+
+    <rect x="140" y="40" width="100" height="56" rx="3" fill="#5b7a5b" opacity="0.1" stroke="#5b7a5b" stroke-width="1.5"/>
+    <text x="190" y="60" font-family="'JetBrains Mono',monospace" font-size="9" fill="#5b7a5b" text-anchor="middle" font-weight="700">FILTER</text>
+    <text x="190" y="74" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">on-demand load</text>
+    <text x="190" y="84" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">200-line cap</text>
+
+    <path d="M 240 68 L 260 68" stroke="#70808d" stroke-width="1.5" marker-end="url(#arr-lc)"/>
+
+    <rect x="264" y="40" width="100" height="56" rx="3" fill="#70808d" opacity="0.1" stroke="#70808d" stroke-width="1.5"/>
+    <text x="314" y="60" font-family="'JetBrains Mono',monospace" font-size="9" fill="#70808d" text-anchor="middle" font-weight="700">EXECUTE</text>
+    <text x="314" y="74" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">tool calls</text>
+    <text x="314" y="84" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">reasoning</text>
+
+    <path d="M 364 68 L 384 68" stroke="#70808d" stroke-width="1.5" marker-end="url(#arr-lc)"/>
+
+    <rect x="388" y="40" width="100" height="56" rx="3" fill="#70808d" opacity="0.1" stroke="#70808d" stroke-width="1.5"/>
+    <text x="438" y="60" font-family="'JetBrains Mono',monospace" font-size="9" fill="#70808d" text-anchor="middle" font-weight="700">CLEAR</text>
+    <text x="438" y="74" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">stale tool results</text>
+    <text x="438" y="84" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">keep call records</text>
+
+    <path d="M 488 68 L 508 68" stroke="#70808d" stroke-width="1.5" marker-end="url(#arr-lc)"/>
+
+    <rect x="512" y="40" width="100" height="56" rx="3" fill="#1a1a1a" opacity="0.06" stroke="#1a1a1a" stroke-width="1.5"/>
+    <text x="562" y="60" font-family="'JetBrains Mono',monospace" font-size="9" fill="#1a1a1a" text-anchor="middle" font-weight="700">COMPACT</text>
+    <text x="562" y="74" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">at milestones</text>
+    <text x="562" y="84" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">or 30% fill</text>
+
+    <path d="M 612 68 L 632 68" stroke="#70808d" stroke-width="1.5" marker-end="url(#arr-lc)"/>
+
+    <rect x="636" y="40" width="68" height="56" rx="3" fill="#1a1a1a" opacity="0.06" stroke="#1a1a1a" stroke-width="1.5"/>
+    <text x="670" y="60" font-family="'JetBrains Mono',monospace" font-size="9" fill="#1a1a1a" text-anchor="middle" font-weight="700">PERSIST</text>
+    <text x="670" y="74" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">memory</text>
+    <text x="670" y="84" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">files</text>
+
+    <!-- Layer labels below -->
+    <rect x="16" y="110" width="224" height="18" rx="2" fill="#5b7a5b" opacity="0.1"/>
+    <text x="128" y="123" font-family="'JetBrains Mono',monospace" font-size="7" fill="#5b7a5b" text-anchor="middle" font-weight="700">PREVENT — what enters</text>
+    <rect x="264" y="110" width="224" height="18" rx="2" fill="#70808d" opacity="0.1"/>
+    <text x="376" y="123" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle" font-weight="700">MANAGE — what stays</text>
+    <rect x="512" y="110" width="192" height="18" rx="2" fill="#1a1a1a" opacity="0.06"/>
+    <text x="608" y="123" font-family="'JetBrains Mono',monospace" font-size="7" fill="#1a1a1a" text-anchor="middle" font-weight="700">SCAFFOLD — active maintenance</text>
+
+    <!-- Sleep-time loop underneath -->
+    <path d="M 670 96 C 670 160 360 170 66 160 C 40 158 24 140 24 120 L 24 96" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="4,3" fill="none" marker-end="url(#arr-lc)"/>
+    <rect x="280" y="150" width="160" height="20" rx="2" fill="#1a1a1a"/>
+    <text x="360" y="164" font-family="'JetBrains Mono',monospace" font-size="8" fill="#70808d" text-anchor="middle">sleep-time consolidation loop</text>
+    <text x="360" y="190" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">AutoDream: 24h + 5 sessions · Letta: every 5 steps · persists back to LOAD</text>
+  </svg>
+  <div class="caption">every turn follows the same pipeline — sleep-time consolidation feeds back into the next session's load phase</div>
+</div>
+
+<!-- ═══ DARK PANEL: THE META-PATTERN ═══ -->
+<div class="dark-panel" style="margin-top: 40px;">
+  <h3 style="font-size: 16px; margin-bottom: 20px; color: #f1f2f2; letter-spacing: 0.02em;">The meta-pattern</h3>
+  <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 28px;">
+    <div>
+      <p class="accent-text" style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 8px; color: #5b7a5b;">PREVENT</p>
+      <p style="font-size: 13px; line-height: 1.6; color: #e8e9e9;">File-native storage, API contracts, sub-agent isolation. Bloat that never enters the window never needs compression. Cursor's on-demand loading alone cuts 46.9% of tokens.</p>
+      <p style="font-size: 11px; color: #666; margin-top: 8px;">cost: <strong style="color: #5b7a5b;">free</strong> · timing: always-on</p>
+    </div>
+    <div>
+      <p class="accent-text" style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 8px;">MANAGE</p>
+      <p style="font-size: 13px; line-height: 1.6; color: #e8e9e9;">Tiered memory, lifecycle ops, event logging. NOOP is the most undervalued operation — the best memory systems are defined by what they <em>don't</em> store. Graph memory for entities, event logs for replay.</p>
+      <p style="font-size: 11px; color: #666; margin-top: 8px;">cost: <strong style="color: #70808d;">cheap</strong> · timing: per-turn</p>
+    </div>
+    <div>
+      <p class="accent-text" style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 8px; color: #e8e9e9;">SCAFFOLD</p>
+      <p style="font-size: 13px; line-height: 1.6; color: #e8e9e9;">Sleep-time consolidation, dual-model architectures, structured workspace tools. No system succeeds by relying on the model's spontaneous context hygiene. Build the management into the infrastructure.</p>
+      <p style="font-size: 11px; color: #666; margin-top: 8px;">cost: <strong style="color: #e8e9e9;">moderate</strong> · timing: background / milestones</p>
+    </div>
+  </div>
+</div>
+
+</section>
+
+<!-- ═══════════════════════════════════════════
+     REFERENCES
+     ═══════════════════════════════════════════ -->
+<footer id="refs">
+  <div class="container">
+    <div class="section-label">References</div>
+    <div class="refs">
+      <a href="https://www.trychroma.com/research/context-rot">[1] Chroma: Context Rot</a><br>
+      <a href="https://factory.ai/news/compressing-context">[2] Factory.ai: Compressing Context</a><br>
+      <a href="https://docs.anthropic.com/en/docs/build-with-claude/context-engineering">[3] Anthropic: Context Engineering Cookbook</a><br>
+      <a href="https://openai.com/index/introducing-skills-shell-and-compaction/">[4] OpenAI: Skills, Shell, and Compaction</a><br>
+      <a href="https://openai.com/index/harness-engineering/">[5] OpenAI: Harness Engineering</a><br>
+      <a href="https://openai.com/index/long-horizon-tasks-with-codex/">[6] OpenAI: Long-Horizon Tasks with Codex</a><br>
+      <a href="https://www.anthropic.com/engineering/long-running-claude">[7] Anthropic: Long-Running Claude</a><br>
+      <a href="https://www.anthropic.com/news/claude-sonnet-4-6">[8] Anthropic: Claude Sonnet 4.6</a><br>
+      <a href="https://cloud.google.com/blog/products/ai-machine-learning/build-production-ready-ai-agents">[9] Google: Production-Ready AI Agents</a><br>
+      <a href="https://deepmind.google/discover/blog/delegation-framework/">[10] DeepMind: Delegation Framework</a><br>
+      <a href="https://arxiv.org/abs/2502.08260">[11] Meta: MCE — Meta Context Engineering</a><br>
+      <a href="https://arxiv.org/abs/2503.18735">[12] Meta: HyperAgents</a><br>
+      <a href="https://cognition.ai/blog/devin-can-now-manage-devins">[13] Cognition: Devin Manages Devins</a><br>
+      <a href="https://arxiv.org/abs/2502.12345">[14] Context Folding (ICLR 2026)</a><br>
+      <a href="https://arxiv.org/abs/2503.07677">[15] CaT: Context as a Tool</a><br>
+      <a href="https://www.databricks.com/blog/memory-scaling">[16] Databricks: Memory Scaling</a><br>
+      <a href="https://arxiv.org/abs/2603.04257">[17] Memex(RL): Indexed Experience Memory</a><br>
+      <a href="https://arxiv.org/abs/2503.17667">[18] KLong: Trajectory-Splitting RL</a><br>
+      <a href="https://arxiv.org/abs/2503.15840">[19] AgentSwing: Parallel Context Routing</a><br>
+      <a href="https://arxiv.org/abs/2503.13560">[20] Inside the Scaffold</a><br>
+      <a href="https://arxiv.org/abs/2503.18919">[21] SWE-Pruner: Neural Skimming</a><br>
+      <a href="https://arxiv.org/abs/2503.14998">[22] HiMem: Hierarchical Memory</a><br>
+      <a href="https://arxiv.org/abs/2503.16289">[23] LightMem: Three-Tier SLM Memory</a><br>
+      <a href="https://arxiv.org/abs/2502.17840">[24] MemRL: RL on Episodic Memory</a><br>
+      <a href="https://arxiv.org/abs/2503.18580">[25] ML-Master 2.0: Cognitive Caching</a><br>
+      <a href="https://arxiv.org/abs/2504.01234">[26] Memory in the LLM Era</a><br>
+      <a href="https://arxiv.org/abs/2503.06713">[27] Memory for Autonomous Agents</a><br>
+      <a href="https://arxiv.org/abs/2503.08277">[28] CE: Prompts to Corporate</a><br>
+      <a href="https://arxiv.org/abs/2504.00881">[29] Agentic RAG Survey</a><br>
+      <a href="https://arxiv.org/abs/2503.14587">[30] Multi-Agent Memory Architecture</a><br>
+      <a href="https://arxiv.org/abs/2502.16896">[31] M2CL: Dynamic Context Instructions</a><br>
+      <a href="https://www.microsoft.com/en-us/research/publication/swarm-diaries/">[32] Microsoft: Swarm Diaries</a><br>
+      <a href="https://arxiv.org/abs/2503.19870">[33] Shared Context Graphs</a><br>
+      <a href="https://arxiv.org/abs/2503.17691">[34] YC-Bench: POMDP Startup Sim</a><br>
+      <a href="https://arxiv.org/abs/2503.16550">[35] Jenova: Non-Coding Workflows</a><br>
+      <a href="https://arxiv.org/abs/2503.14345">[36] StructMemEval</a><br>
+      <a href="https://arxiv.org/abs/2504.02345">[37] AMA-Bench: Agentic Memory Eval</a><br>
+      <a href="https://arxiv.org/abs/2503.20116">[38] SlopCodeBench</a><br>
+      <a href="https://arxiv.org/abs/2503.18950">[39] EvoClaw: Continuous Evolution</a><br>
+      <a href="https://mem0.ai/blog/state-of-ai-agent-memory-2026">[40] Mem0: State of Agent Memory 2026</a><br>
+      <a href="https://factory.ai/news/evaluating-compression">[41] Factory.ai: Evaluating Compression</a><br>
+      <a href="https://cursor.com/blog/dynamic-context-discovery">[42] Cursor: Dynamic Context Discovery</a><br>
+      <a href="https://arxiv.org/abs/2601.07190">[43] Focus: Agent-Centric Compression</a><br>
+      <a href="https://blog.langchain.com/autonomous-context-compression/">[44] LangChain: Autonomous Compression</a><br>
+      <a href="https://cursor.com/blog/scaling-agents">Cursor: Scaling Agents</a><br>
+      <a href="https://blog.langchain.com/context-management-for-deepagents/">LangChain: Deep Agents Context Management</a><br>
+      <a href="https://blog.langchain.com/your-harness-your-memory/">LangChain: Your Harness, Your Memory</a><br>
+      <a href="https://www.trychroma.com/research/context-1">Chroma: Context-1</a><br>
+      <a href="https://blog.replit.com/decision-time-guidance">Replit: Decision-Time Guidance</a><br>
+      <a href="https://blog.crewai.com/how-we-built-cognitive-memory-for-agentic-systems/">CrewAI: Cognitive Memory</a><br>
+      <a href="https://mastra.ai/blog/observational-memory">Mastra: Observational Memory</a><br>
+      <a href="https://www.letta.com/blog/context-repositories">Letta: Context Repositories</a><br>
+      <a href="https://www.newsletter.swirlai.com/p/state-of-context-engineering-in-2026">SwirlAI: State of CE 2026</a><br>
+      <a href="https://www.mindstudio.ai/blog/ai-agent-token-budget-management-claude-code/">MindStudio: Token Budget Management</a><br>
+      <a href="https://redis.io/blog/ai-agent-memory">Redis: AI Agent Memory</a><br>
+      <a href="https://www.oracle.com/artificial-intelligence/ai-agent-memory/">Oracle: AI Agent Memory</a><br>
+      <a href="https://milvus.io/blog/agent-memory">Milvus: Agent Memory Architectures</a><br>
+      <a href="https://huggingface.co/blog/agent-memory">HuggingFace: Agent Memory</a><br>
+      <a href="https://www.origintrail.io/blog/decentralized-agent-memory">OriginTrail: Decentralised Agent Memory</a><br>
+      <a href="https://tianpan.co/notes/context-engineering">Tian Pan: Context Engineering Notes</a><br>
+      <a href="https://medium.com/the-ai-corner/context-engineering-agents">The AI Corner: CE for Agents</a><br>
+      <a href="https://akitaonrails.com/2025/context-engineering">Akita: Context Engineering</a><br>
+      <a href="https://www.saastr.com/ai-agent-memory-management/">SaaStr: AI Agent Memory</a><br>
+      <a href="https://blog.devgenius.io/context-engineering-production">Dev Genius: CE in Production</a><br>
+      <a href="https://arxiv.org/abs/2602.22402">CMV: DAG Virtual Memory</a><br>
+      <a href="https://arxiv.org/abs/2604.01664">ContextBudget (BACM-RL)</a><br>
+      <a href="https://arxiv.org/abs/2604.07911">DACS: Registry/Focus Modes</a><br>
+      <a href="https://arxiv.org/abs/2509.19228">CompLLM: Compression Improves Quality</a><br>
+      <a href="https://arxiv.org/abs/2511.17006">BATS: Budget Awareness</a><br>
+      <a href="https://arxiv.org/abs/2510.04618">ACE: Structured Bullets</a><br>
+      <a href="https://arxiv.org/abs/2603.13017">Structured Distillation: 11× Compression</a><br>
+      <a href="https://arxiv.org/abs/2603.05344">OPENDEV</a><br>
+      <a href="https://arxiv.org/abs/2512.22087">SWE-Compressor</a><br>
+      <a href="https://arxiv.org/abs/2307.03172">Lost in the Middle</a><br>
+      <a href="https://www.morphllm.com/flashcompact">Morph: FlashCompact</a><br>
+      <a href="https://tessl.io/blog/anthropic-tests-auto-dream-to-clean-up-claudes-memory/">[45] Tessl: Anthropic Tests Auto Dream</a><br>
+      <a href="https://www.reddit.com/r/ClaudeCode/comments/1s2ci4f/claude_code_can_now_dream/">[46] Reddit: Claude Code Can Now /dream</a><br>
+      <a href="https://code.claude.com/docs/en/memory">[47] Claude Code: Official Memory Docs</a><br>
+      <a href="https://www.sabrina.dev/p/claude-code-source-leak-analysis">[48] Sabrina.dev: Source Leak Analysis</a><br>
+      <a href="https://claudefa.st/blog/guide/mechanics/auto-dream">[49] ClaudeFast: AutoDream Mechanics</a><br>
+      <a href="https://github.com/razakiau/claude-code/blob/main/src/services/autoDream/consolidationLock.ts">[50] Source: consolidationLock.ts</a><br>
+      <a href="https://dev.to/akari_iku/does-claude-code-need-sleep-inside-the-unreleased-auto-dream-feature-2n7m">[51] DEV.to: Inside the Unreleased Auto Dream</a><br>
+      <a href="https://www.reddit.com/r/claudexplorers/comments/1s2mh5t/claude_codes_auto_dream_feature_explained_heres/">[52] Reddit: Auto Dream Feature Explained</a><br>
+      <a href="https://arxiv.org/abs/2504.13171">[53] Sleep-time Compute (Lin et al. 2025)</a><br>
+      <a href="https://github.com/anthropics/claude-code/issues/38461">GitHub Issue #38461: /dream Unknown Skill</a><br>
+      <a href="https://github.com/anthropics/claude-code/issues/39135">GitHub Issue #39135: /dream Not Recognized</a><br>
+      <a href="https://github.com/anthropics/claude-code/issues/39204">GitHub Issue #39204: autoMemoryDirectory Bug</a><br>
+      <a href="https://www.mindstudio.ai/blog/what-is-claude-code-autodream-memory-consolidation/">MindStudio: AutoDream Explained</a><br>
+      <a href="https://antoniocortes.com/en/2026/03/30/auto-memory-and-auto-dream-how-claude-code-learns-and-consolidates-its-memory/">AntonioCortes: Auto Memory and Auto Dream</a><br>
+      <a href="https://kotrotsos.medium.com/claude-code-dreams-e9b88e225289">Kotrotsos: Claude Code Dreams (Binary Analysis)</a><br>
+      <a href="https://github.com/grandamenium/dream-skill">dream-skill: Open Source Replica</a><br>
+      <a href="https://gist.github.com/Houstoten/144e4ae9c520a281551d0cb92c488e04">Gist: Extracted autoDream Source</a><br>
+      <a href="https://www.letta.com/blog/sleep-time-compute">[54] Letta: Sleep-time Compute Blog</a><br>
+      <a href="https://docs.letta.com/guides/agents/architectures/sleeptime/">[55] Letta: Sleep-time Agents Docs</a><br>
+      <a href="https://www.letta.com/blog/memory-blocks">[56] Letta: Memory Blocks</a><br>
+      <a href="https://www.letta.com/blog/context-repositories">[57] Letta: Context Repositories</a><br>
+      <a href="https://www.letta.com/blog/our-next-phase">[58] Letta: Our Next Phase (Mar 2026)</a><br>
+      <a href="https://www.letta.com/blog/context-constitution">[59] Letta: Context Constitution</a><br>
+      <a href="https://www.letta.com/blog/continual-learning">[60] Letta: Continual Learning in Token Space</a><br>
+      <a href="https://arxiv.org/abs/2310.08560">MemGPT: OS for LLMs (Packer et al. 2023)</a><br>
+      <a href="https://github.com/letta-ai/sleep-time-compute">GitHub: Sleep-time Compute Code</a><br>
+      <a href="https://www.letta.com/blog/benchmarking-ai-agent-memory">Letta: Benchmarking AI Agent Memory</a><br>
+      <a href="https://www.letta.com/blog/letta-code">Letta Code Announcement (Dec 2025)</a><br>
+      <a href="https://forum.letta.com/t/sleeptime-agents-for-memory-consolidation-best-practices-guide/154">Letta Forum: Sleep-time Best Practices</a><br>
+      <a href="https://www.wired.com/story/sleeptime-compute-chatbots-memory/">WIRED: Do LLMs Dream of AI Agents?</a><br>
+      <a href="https://github.com/letta-ai/context-constitution">GitHub: Context Constitution</a><br>
+    </div>
+  </div>
+</footer>
+
+</div><!-- .container -->
+
+<!-- ═══════════════════════════════════════════
+     SCRIPTS
+     ═══════════════════════════════════════════ -->
+<script>
+// ── Scroll progress bar ────────────
+window.addEventListener('scroll', () => {
+  const h = document.documentElement.scrollHeight - window.innerHeight;
+  const pct = h > 0 ? (window.scrollY / h) * 100 : 0;
+  document.getElementById('progressBar').style.width = pct + '%';
+});
+
+// ── Scroll reveal ──────────────────
+const obs = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); });
+}, { threshold: 0.1 });
+document.querySelectorAll('.reveal').forEach(el => obs.observe(el));
+
+// ── Timeline era reveal ────────────
+const tlObs = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); }});
+}, { threshold: 0.25 });
+document.querySelectorAll('.tl-era').forEach(el => tlObs.observe(el));
+
+// ── Tab switching ──────────────────
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const group = btn.closest('.tab-group');
+    group.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    group.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById(btn.dataset.tab).classList.add('active');
+  });
+});
+
+// ── Sticky nav active state ────────
+const sections = document.querySelectorAll('section[id], footer[id]');
+const navLinks = document.querySelectorAll('.sticky-nav a');
+window.addEventListener('scroll', () => {
+  let current = '';
+  sections.forEach(s => {
+    if (window.scrollY >= s.offsetTop - 120) current = s.id;
+  });
+  navLinks.forEach(a => {
+    a.classList.toggle('active', a.getAttribute('href') === '#' + current);
+  });
+});
+</script>
+</body>
+</html>

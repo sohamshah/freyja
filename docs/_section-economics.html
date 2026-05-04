@@ -1,0 +1,284 @@
+<!-- ═══════════════════════════════════════════
+     X. THE ECONOMICS OF SKILL EVOLUTION
+     ═══════════════════════════════════════════ -->
+<section id="economics" class="reveal">
+<div class="section-label"><span class="section-num">X</span> the economics</div>
+<h2 style="font-size: 22px; margin-bottom: 16px;">"Every token is either consumed or invested — the gap determines your ROI"</h2>
+
+<p>Skill evolution isn't free. Every mutation cycle burns tokens, every reflection step costs latency, every failed evolution attempt is sunk cost. The question isn't <em>whether</em> to evolve skills — it's <em>which skills</em> to evolve, <em>when</em> to stop iterating, and <em>how fast</em> the investment pays back. Recent work gives us concrete numbers.</p>
+
+<!-- ── ROI Framework ──────────────── -->
+<h3 style="font-size: 17px; margin: 36px 0 12px;">The Agentic ROI Framework</h3>
+
+<p>The Tsinghua/Oxford Knowledge Compounding study<a href="https://arxiv.org/abs/2604.11243" class="cite">[KC]</a> introduces a formal ROI metric for skill investment across domains:</p>
+
+<pre>ROI_i = (ΔQ_i × ΔT_i) / C_i
+
+  ΔQ_i = quality improvement from skill reuse in domain i
+  ΔT_i = time savings (fewer steps, fewer tokens)
+  C_i   = total cost of skill creation + evolution</pre>
+
+<p>The domain ranking is striking — and counterintuitive:</p>
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Domain</th><th>Agentic ROI</th><th>User Demand</th><th>Explanation</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Coding</strong></td><td style="color: var(--green); font-weight: 700;">Highest</td><td>High</td><td>Narrow topic clusters → skills accumulate and compound</td></tr>
+      <tr><td><strong>Scientific Research</strong></td><td style="color: var(--green);">High</td><td>Medium</td><td>Structured methodologies reuse well across papers</td></tr>
+      <tr><td><strong>Office Automation</strong></td><td>Medium</td><td>High</td><td>Repetitive workflows, but high format variance</td></tr>
+      <tr><td><strong>E-commerce</strong></td><td style="color: var(--amber);">Low</td><td>High</td><td>Product catalogues shift faster than skills can stabilise</td></tr>
+      <tr><td><strong>Personal Assistance</strong></td><td style="color: var(--red);">Lowest</td><td>Highest</td><td>Diffuse topics can't accumulate reusable skill knowledge</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="callout">
+  <div class="callout-label">The usability gap</div>
+  <p>The domains with the <strong>highest user demand</strong> have the <strong>lowest agentic ROI</strong>. Personal assistance is what everyone wants — but its diffuse topic distribution means each interaction is essentially novel. Coding, by contrast, has concentrated topic clusters where a single skill (e.g., "write pytest fixtures") fires hundreds of times. This is the central economic tension of skill evolution: <em>invest where compounding works, not where users ask loudest.</em></p>
+</div>
+
+<!-- ── Token Cost Numbers ─────────── -->
+<h3 style="font-size: 17px; margin: 36px 0 12px;">Concrete Token Savings</h3>
+<p>Four independent production systems quantify the returns:</p>
+
+<div class="stat-row">
+  <div class="stat-card">
+    <div class="stat-value" style="color: var(--green);">59%</div>
+    <div class="stat-label">fewer tokens</div>
+    <div class="stat-source">SAGE · +26% fewer steps</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value" style="color: var(--green);">89%</div>
+    <div class="stat-label">session cost reduction</div>
+    <div class="stat-source">$3.00 → $0.32 per session</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value" style="color: var(--green);">80%</div>
+    <div class="stat-label">token reduction</div>
+    <div class="stat-source">SkillCraft · compositional reuse</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value" style="color: var(--green);">26×</div>
+    <div class="stat-label">compression ratio</div>
+    <div class="stat-source">ProcMEM · 102 vs 2,675 tok</div>
+  </div>
+</div>
+
+<!-- ── Capital Goods Reframing ────── -->
+<h3 style="font-size: 17px; margin: 36px 0 12px;">The Capital Goods Reframing</h3>
+<p>The most provocative claim from the Knowledge Compounding paper: LLM tokens spent on skill evolution should be reclassified from <strong>consumables</strong> to <strong>capital goods</strong> — analogous to SFAS 86 treatment of software development costs. Four properties justify this:</p>
+
+<div class="approach-grid">
+  <div class="approach-card">
+    <div class="card-tag">Persistent product</div>
+    <h4>Skills outlive the session</h4>
+    <p>Unlike chat tokens that vanish at session end, evolved skills persist as durable artefacts — SKILL.md files, code libraries, wiki syntheses — reusable across future sessions.</p>
+  </div>
+  <div class="approach-card">
+    <div class="card-tag">Compound returns</div>
+    <h4>Each use amortises the cost</h4>
+    <p>A skill invoked N times returns N × savings. The marginal cost of the 100th invocation is zero; the marginal value is identical to the first.</p>
+  </div>
+  <div class="approach-card">
+    <div class="card-tag">Heritability</div>
+    <h4>Skills transfer across model generations</h4>
+    <p>SKILL.md is model-agnostic text. Skills authored for GPT-4o run on Claude, Gemini, or next-generation models. The investment doesn't depreciate with model upgrades.</p>
+  </div>
+  <div class="approach-card">
+    <div class="card-tag">Negative discounting</div>
+    <h4>Skills appreciate with use</h4>
+    <p>Evolution cycles improve skills over time. Unlike physical capital, skill artefacts gain value through iteration — the opposite of depreciation.</p>
+  </div>
+</div>
+
+<p>The compounding dynamics follow a learning curve:</p>
+<pre>H(i+1) = H(i) + α × (1 - H(i)) × p(i)
+
+  H(i) = knowledge harvest at step i
+  α     = 0.18 (empirically fitted learning rate)
+  p(i)  = probability of finding new knowledge at step i</pre>
+
+<div class="dark-panel">
+  <h3 style="font-size: 16px;">"Compounding never wins on raw token count"</h3>
+  <p style="font-size: 13.5px; line-height: 1.7;">In a 4-query experiment, Chunk-RAG used 13.6K tokens total. Compounding used 47K — <span class="accent-text">3.4× more</span>. But at day 30, the compounding system had produced <span class="accent-text">~270 persistent wiki pages</span>. Chunk-RAG had produced nothing persistent. The tokens were consumed, not invested. Capital accounting changes the entire calculus: compounding's "cost" is actually an asset on the balance sheet.</p>
+</div>
+
+<!-- ── Marketplace Scale ──────────── -->
+<h3 style="font-size: 17px; margin: 36px 0 12px;">The Marketplace at Scale</h3>
+<p>The skill marketplace ecosystem provides the clearest signal that skill evolution is not theoretical — it's a live economy with supply curves, demand curves, and market failures.<a href="https://arxiv.org/abs/2602.08004" class="cite">[ASE]</a></p>
+
+<div class="stat-row">
+  <div class="stat-card">
+    <div class="stat-value">280K+</div>
+    <div class="stat-label">public skills</div>
+    <div class="stat-source">skillsmp.com · Feb 2026</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">18.5×</div>
+    <div class="stat-label">growth in 20 days</div>
+    <div class="stat-source">2,179 → 40,285 skills</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">8,857</div>
+    <div class="stat-label">skills in one day</div>
+    <div class="stat-source">Jan 25, 2026 spike</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">5×</div>
+    <div class="stat-label">install gap</div>
+    <div class="stat-source">Web Search vs Code Gen</div>
+  </div>
+</div>
+
+<div class="diagram reveal">
+  <span class="diagram-label">Skill marketplace: supply vs demand by category</span>
+  <svg viewBox="0 0 720 310" xmlns="http://www.w3.org/2000/svg">
+    <g stroke="#e8e9e9" stroke-width="1" stroke-dasharray="2,4">
+      <line x1="180" y1="40" x2="690" y2="40"/><line x1="180" y1="90" x2="690" y2="90"/>
+      <line x1="180" y1="140" x2="690" y2="140"/><line x1="180" y1="190" x2="690" y2="190"/>
+    </g>
+    <line x1="180" y1="30" x2="180" y2="240" stroke="#1a1a1a" stroke-width="1.5"/>
+    <line x1="180" y1="240" x2="690" y2="240" stroke="#1a1a1a" stroke-width="1.5"/>
+    <text x="12" y="140" font-family="'Satoshi',sans-serif" font-size="10" fill="#666" text-anchor="start" font-weight="600" transform="rotate(-90 12 140)">RELATIVE SHARE</text>
+    <!-- Category labels -->
+    <text x="174" y="62" font-family="'JetBrains Mono',monospace" font-size="10" fill="#1a1a1a" text-anchor="end" font-weight="700">Web Search</text>
+    <text x="174" y="102" font-family="'JetBrains Mono',monospace" font-size="10" fill="#666" text-anchor="end">Code Gen</text>
+    <text x="174" y="142" font-family="'JetBrains Mono',monospace" font-size="10" fill="#666" text-anchor="end">Data Analysis</text>
+    <text x="174" y="182" font-family="'JetBrains Mono',monospace" font-size="10" fill="#666" text-anchor="end">Infrastructure</text>
+    <text x="174" y="222" font-family="'JetBrains Mono',monospace" font-size="10" fill="#666" text-anchor="end">Memory &amp; Cog</text>
+    <!-- Supply bars (dark) -->
+    <rect x="182" y="50" width="80" height="16" rx="1" fill="#1a1a1a" opacity="0.75"/>
+    <rect x="182" y="90" width="380" height="16" rx="1" fill="#1a1a1a" opacity="0.75"/>
+    <rect x="182" y="130" width="240" height="16" rx="1" fill="#1a1a1a" opacity="0.75"/>
+    <rect x="182" y="170" width="480" height="16" rx="1" fill="#1a1a1a" opacity="0.75"/>
+    <rect x="182" y="210" width="160" height="16" rx="1" fill="#1a1a1a" opacity="0.75"/>
+    <!-- Demand bars (green overlay) -->
+    <rect x="182" y="50" width="420" height="16" rx="1" fill="#5b7a5b" opacity="0.35"/>
+    <rect x="182" y="90" width="200" height="16" rx="1" fill="#5b7a5b" opacity="0.35"/>
+    <rect x="182" y="130" width="280" height="16" rx="1" fill="#5b7a5b" opacity="0.35"/>
+    <rect x="182" y="170" width="140" height="16" rx="1" fill="#5b7a5b" opacity="0.35"/>
+    <rect x="182" y="210" width="60" height="16" rx="1" fill="#5b7a5b" opacity="0.35"/>
+    <!-- Demand edge markers -->
+    <polygon points="602,53 608,58 602,63" fill="#5b7a5b"/>
+    <polygon points="382,93 388,98 382,103" fill="#5b7a5b"/>
+    <polygon points="462,133 468,138 462,143" fill="#5b7a5b"/>
+    <polygon points="322,173 328,178 322,183" fill="#a05050"/>
+    <polygon points="242,213 248,218 242,223" fill="#5b7a5b"/>
+    <!-- Annotations -->
+    <text x="614" y="62" font-family="'JetBrains Mono',monospace" font-size="9" fill="#5b7a5b" font-weight="700">1,268 avg installs</text>
+    <text x="668" y="182" font-family="'JetBrains Mono',monospace" font-size="9" fill="#a05050" font-weight="700">oversupplied</text>
+    <!-- Demand gap bracket for Web Search -->
+    <line x1="262" y1="46" x2="262" y2="69" stroke="#5b7a5b" stroke-width="1" stroke-dasharray="3,2"/>
+    <line x1="602" y1="46" x2="602" y2="69" stroke="#5b7a5b" stroke-width="1" stroke-dasharray="3,2"/>
+    <line x1="262" y1="46" x2="602" y2="46" stroke="#5b7a5b" stroke-width="1"/>
+    <text x="432" y="44" font-family="'JetBrains Mono',monospace" font-size="8" fill="#5b7a5b" text-anchor="middle" font-weight="700">DEMAND GAP</text>
+    <!-- Legend -->
+    <rect x="480" y="255" width="200" height="44" rx="2" fill="#fff" stroke="#ccc" stroke-width="1"/>
+    <rect x="492" y="266" width="24" height="8" rx="1" fill="#1a1a1a" opacity="0.75"/>
+    <text x="522" y="274" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666">supply (# skills)</text>
+    <rect x="492" y="282" width="24" height="8" rx="1" fill="#5b7a5b" opacity="0.35"/>
+    <text x="522" y="290" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666">demand (installs)</text>
+  </svg>
+  <div class="caption">Web Search is massively undersupplied relative to demand (avg 1,268 installs/skill vs Code Gen's 235). Infrastructure skills are oversupplied with low install rates.</div>
+</div>
+
+<!-- ── Cost of NOT Evolving ──────── -->
+<h3 style="font-size: 17px; margin: 36px 0 12px;">The Cost of <em>Not</em> Evolving</h3>
+<p>The asymmetry is stark: the cost of skill evolution is finite and bounded; the cost of stasis compounds indefinitely.</p>
+
+<div class="finding"><div class="finding-num">1</div>
+  <h4>Static skills provide ≈0pp benefit</h4>
+  <p>SkillsBench demonstrates that self-generated skills <em>without</em> iteration provide approximately zero improvement over baseline. The act of writing a skill isn't what creates value — the evolution loop is.<a href="https://arxiv.org/abs/2602.12670" class="cite">[SB]</a></p>
+</div>
+<div class="finding"><div class="finding-num">2</div>
+  <h4>10.7% of skills become obsolete</h4>
+  <p>SkillReducer analysis of real-world skill repositories: the original trigger description fails to activate 10.7% of skills over time. Without active maintenance, over one-tenth of your skill library is dead weight consuming retrieval bandwidth.</p>
+</div>
+<div class="finding"><div class="finding-num">3</div>
+  <h4>Without maintenance: 4.5× bloat, 8.9× utilisation decay</h4>
+  <p>AutoRefine quantifies the decay: unmanaged skill repositories grow 4.5× in size while utilisation rate degrades 8.9× — skills accumulate but stop firing, crowding the retrieval space and poisoning the router's selection accuracy.<a href="https://arxiv.org/abs/2601.22758" class="cite">[AR]</a></p>
+</div>
+<div class="finding"><div class="finding-num">4</div>
+  <h4>Context rot cliff at ~60% fill</h4>
+  <p>When skill context consumes &gt;60% of the available context window, agent performance degrades non-linearly. The model can no longer attend to the task itself — it's drowning in stale skill definitions. Progressive disclosure and active pruning aren't optimisations; they're survival mechanisms.</p>
+</div>
+
+<div class="callout success">
+  <div class="callout-label">✓ The maintenance equation</div>
+  <p>AutoRefine's scoring formula captures the tradeoff: <code>Score = effectiveness × frequency × precision</code>. Prune the bottom 20th percentile at exponentially spaced intervals. The result: a compact, high-utilisation skill library that stays healthy over time — rather than an ever-growing graveyard of unused artefacts.</p>
+</div>
+
+<!-- ── Breakeven Calculation ──────── -->
+<h3 style="font-size: 17px; margin: 36px 0 12px;">The Breakeven Calculation</h3>
+<p>Skill evolution costs are front-loaded. EvoSkills achieves ~71% pass rate in 3+ iterations, where each iteration equals one LLM call. Assume 3 evolution calls at ~1,000 tokens each = <strong>3,000 tokens invested</strong>. If each subsequent invocation saves 59% of an average 800-token call (~470 tokens saved), the payback schedule is fast:</p>
+
+<div class="diagram reveal">
+  <span class="diagram-label">Cumulative token cost: evolved vs non-evolved skill</span>
+  <svg viewBox="0 0 720 300" xmlns="http://www.w3.org/2000/svg">
+    <g stroke="#e8e9e9" stroke-width="1" stroke-dasharray="2,4">
+      <line x1="80" y1="30" x2="680" y2="30"/><line x1="80" y1="75" x2="680" y2="75"/>
+      <line x1="80" y1="120" x2="680" y2="120"/><line x1="80" y1="165" x2="680" y2="165"/>
+      <line x1="80" y1="210" x2="680" y2="210"/>
+    </g>
+    <!-- Axes -->
+    <line x1="80" y1="24" x2="80" y2="240" stroke="#1a1a1a" stroke-width="1.5"/>
+    <line x1="80" y1="240" x2="680" y2="240" stroke="#1a1a1a" stroke-width="1.5"/>
+    <!-- Y labels -->
+    <text x="72" y="34" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666" text-anchor="end">25K</text>
+    <text x="72" y="79" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666" text-anchor="end">20K</text>
+    <text x="72" y="124" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666" text-anchor="end">15K</text>
+    <text x="72" y="169" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666" text-anchor="end">10K</text>
+    <text x="72" y="214" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666" text-anchor="end">5K</text>
+    <!-- X labels -->
+    <text x="80" y="258" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666" text-anchor="middle">0</text>
+    <text x="200" y="258" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666" text-anchor="middle">5</text>
+    <text x="320" y="258" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666" text-anchor="middle">10</text>
+    <text x="440" y="258" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666" text-anchor="middle">15</text>
+    <text x="560" y="258" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666" text-anchor="middle">20</text>
+    <text x="680" y="258" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666" text-anchor="middle">25</text>
+    <text x="380" y="278" font-family="'Satoshi',sans-serif" font-size="11" fill="#1a1a1a" text-anchor="middle" font-weight="600" letter-spacing="0.5">INVOCATIONS</text>
+    <!-- Non-evolved line (800 tok/call — steep rise) -->
+    <path d="M 80,240 L 200,204 L 320,168 L 440,132 L 560,96 L 680,60" fill="none" stroke="#a05050" stroke-width="2.5" stroke-linecap="round"/>
+    <!-- Evolved line (3K upfront + 328 tok/call — shallow rise) -->
+    <path d="M 80,214 L 104,214 L 200,221 L 320,208 L 440,195 L 560,181 L 680,168" fill="none" stroke="#5b7a5b" stroke-width="2.5" stroke-linecap="round"/>
+    <!-- Evolution cost annotation -->
+    <circle cx="80" cy="214" r="3.5" fill="#5b7a5b"/>
+    <line x1="88" y1="214" x2="112" y2="228" stroke="#5b7a5b" stroke-width="1" stroke-dasharray="3,2"/>
+    <text x="114" y="234" font-family="'JetBrains Mono',monospace" font-size="8" fill="#5b7a5b">3K evolution cost</text>
+    <!-- Crossover callout -->
+    <circle cx="230" cy="196" r="5" fill="none" stroke="#70808d" stroke-width="2"/>
+    <line x1="237" y1="190" x2="275" y2="170" stroke="#70808d" stroke-width="1" stroke-dasharray="3,2"/>
+    <rect x="275" y="158" width="110" height="22" rx="2" fill="#fff" stroke="#70808d" stroke-width="1.5"/>
+    <text x="330" y="173" font-family="'JetBrains Mono',monospace" font-size="10" fill="#1a1a1a" text-anchor="middle" font-weight="700">BREAKEVEN ≈ 7</text>
+    <!-- Net savings shaded region -->
+    <path d="M 230,196 L 320,168 L 440,132 L 560,96 L 680,60 L 680,168 L 560,181 L 440,195 L 320,208 L 230,196 Z" fill="#5b7a5b" opacity="0.08"/>
+    <text x="530" y="138" font-family="'JetBrains Mono',monospace" font-size="9" fill="#5b7a5b" text-anchor="middle" font-weight="700">NET SAVINGS</text>
+    <!-- Legend -->
+    <rect x="480" y="20" width="195" height="44" rx="2" fill="#fff" stroke="#ccc" stroke-width="1"/>
+    <line x1="492" y1="35" x2="516" y2="35" stroke="#a05050" stroke-width="2.5"/>
+    <text x="522" y="38" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666">non-evolved (800 tok/call)</text>
+    <line x1="492" y1="51" x2="516" y2="51" stroke="#5b7a5b" stroke-width="2.5"/>
+    <text x="522" y="54" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666">evolved (328 tok/call)</text>
+  </svg>
+  <div class="caption">Evolved skills break even at ~7 invocations. By invocation 25, cumulative savings exceed 11,800 tokens — a 3.7× return on the 3,000-token evolution investment.</div>
+</div>
+
+<div class="dark-panel">
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 32px;">
+    <div>
+      <p class="accent-text" style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 8px;">THE INVESTMENT CASE</p>
+      <h3 style="font-size: 16px; margin-bottom: 8px;">~7 invocations to breakeven</h3>
+      <p style="font-size: 13px; line-height: 1.7;">3 evolution iterations × ~1K tokens = 3K tokens invested. Each invocation saves ~472 tokens (59% of 800). Breakeven at invocation 7. By invocation 30, you've netted <span class="accent-text">~11K tokens</span> in pure savings — a <span class="accent-text">3.7× return</span>.</p>
+    </div>
+    <div>
+      <p class="accent-text" style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 8px;">THE STASIS COST</p>
+      <h3 style="font-size: 16px; margin-bottom: 8px;">Unlimited downside</h3>
+      <p style="font-size: 13px; line-height: 1.7;">Without evolution: 10.7% skill obsolescence, 4.5× repository bloat, 8.9× utilisation decay. The non-evolving system doesn't stay constant — it <span class="accent-text">actively degrades</span>. Context rot, router poisoning, and retrieval dilution compound indefinitely.</p>
+    </div>
+  </div>
+</div>
+
+<p>The economics are unambiguous. Skill evolution is not a research curiosity — it's an arbitrage. The only question is which skills sit in the high-ROI quadrant (narrow domain, high reuse frequency, stable topic distribution) and which ones don't warrant the investment. Coding, infrastructure automation, and structured data workflows are the obvious first movers. Personal assistance, creative writing, and open-ended research are last — not because they're unimportant, but because their diffuse topic distributions can't accumulate reusable skill capital fast enough to justify the evolution cost.</p>
+
+</section>

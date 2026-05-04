@@ -1,0 +1,993 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FREYJA — Vision Board / Cosmos</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800;900&family=DM+Serif+Display:ital@0;1&family=Space+Mono:wght@400;700&display=swap');
+
+:root {
+  --bg: #0a0a0a;
+  --fg: #f0ede8;
+  --fg-dim: rgba(240,237,232,0.45);
+  --fg-ghost: rgba(240,237,232,0.06);
+  --blue: #a8d4fc;
+  --cyan: #7ae6ff;
+  --violet: #b4b0ff;
+  --purple: #c89aff;
+  --amber: #d4644a;
+  --img: ../../../Downloads/cosmos_moodboard;
+}
+
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+body{background:#050505;font-family:'Space Mono',monospace;-webkit-font-smoothing:antialiased;min-width:1440px}
+.board{max-width:1500px;margin:40px auto;display:flex;flex-direction:column;gap:4px}
+.row{display:flex;gap:4px}
+.panel{position:relative;overflow:hidden}
+
+.gt{background:linear-gradient(180deg,#7ae6ff 0%,#a8d4fc 35%,#b4b0ff 70%,#c89aff 100%);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+
+.sl{position:absolute;inset:0;pointer-events:none;z-index:2;
+  background:repeating-linear-gradient(0deg,transparent 0px,transparent 2px,var(--bg) 2px,var(--bg) 4.5px)}
+
+.dome{fill:none;stroke:currentColor;stroke-width:2.5;stroke-linecap:round}
+.topo-mark{fill:none;stroke:currentColor;stroke-width:1.4;stroke-linejoin:round}
+
+canvas.fx-canvas{display:block;width:100%;height:100%}
+.scanlines-fine{position:absolute;inset:0;pointer-events:none;z-index:10;
+  background:repeating-linear-gradient(0deg,transparent 0px,transparent 1px,rgba(0,0,0,0.22) 1px,rgba(0,0,0,0.22) 2px)}
+.scanlines-coral{position:absolute;inset:0;pointer-events:none;z-index:10;
+  background:repeating-linear-gradient(0deg,transparent 0px,transparent 2px,rgba(212,100,74,0.06) 2px,rgba(212,100,74,0.06) 4px)}
+.reg{position:absolute;width:16px;height:16px}
+.reg::before,.reg::after{content:'';position:absolute;background:var(--amber)}
+.reg.tl{top:12px;left:12px}.reg.tr{top:12px;right:12px}
+.reg.bl{bottom:12px;left:12px}.reg.br{bottom:12px;right:12px}
+.reg::before{width:16px;height:1.5px;top:7px;left:0}
+.reg::after{width:1.5px;height:16px;top:0;left:7px}
+.grid-overlay{position:absolute;inset:0;pointer-events:none;
+  background-image:linear-gradient(rgba(255,255,255,0.03) 1px,transparent 1px),
+  linear-gradient(90deg,rgba(255,255,255,0.03) 1px,transparent 1px);background-size:32px 32px}
+
+.showcase-card{background:rgba(240,237,232,0.03);border:1px solid rgba(240,237,232,0.07);
+  padding:32px 28px;display:flex;flex-direction:column;position:relative;overflow:hidden;
+  transition:background 0.3s}
+.showcase-card:hover{background:rgba(240,237,232,0.06)}
+.showcase-num{font-family:'Outfit';font-weight:900;font-size:56px;line-height:1;
+  color:rgba(240,237,232,0.04);position:absolute;top:16px;right:20px}
+
+/* Muted image bg util */
+.img-bg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none}
+.img-bg-muted{filter:grayscale(0.8) contrast(1.2) brightness(0.6);opacity:0.2}
+.img-bg-strong{filter:grayscale(1) contrast(1.4);opacity:0.35}
+
+/* Halftone dot CSS overlay — apply on a div OVER an image */
+.dots-overlay{position:absolute;inset:0;pointer-events:none;z-index:3;
+  background-image:radial-gradient(circle,rgba(240,237,232,0.06) 0.6px,transparent 0.6px);
+  background-size:4px 4px}
+.dots-overlay-dark{position:absolute;inset:0;pointer-events:none;z-index:3;
+  background-image:radial-gradient(circle,rgba(0,0,0,0.12) 0.6px,transparent 0.6px);
+  background-size:4px 4px}
+
+@keyframes drift{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+.float{animation:drift 7s ease-in-out infinite}
+
+@keyframes ring-breathe-1{0%,100%{transform:translate(0,0) rotate(0deg) scale(1)}25%{transform:translate(1px,-1px) rotate(1deg) scale(1.02)}50%{transform:translate(-1px,1px) rotate(-0.5deg) scale(0.98)}75%{transform:translate(1px,0.5px) rotate(0.8deg) scale(1.01)}}
+@keyframes ring-breathe-2{0%,100%{transform:translate(0,0) rotate(0deg) scale(1)}25%{transform:translate(-1.5px,1px) rotate(-1.2deg) scale(0.97)}50%{transform:translate(1px,-1.5px) rotate(0.7deg) scale(1.03)}75%{transform:translate(-0.5px,-1px) rotate(-0.5deg) scale(0.99)}}
+@keyframes ring-breathe-3{0%,100%{transform:translate(0,0) rotate(0deg) scale(1)}33%{transform:translate(2px,1px) rotate(1.5deg) scale(1.04)}66%{transform:translate(-1px,-2px) rotate(-1deg) scale(0.96)}}
+.breathe-ring{transform-origin:50px 50px}
+.breathe-ring:nth-child(1){animation:ring-breathe-1 8s ease-in-out infinite}
+.breathe-ring:nth-child(2){animation:ring-breathe-2 9s ease-in-out infinite 0.5s}
+.breathe-ring:nth-child(3){animation:ring-breathe-3 7s ease-in-out infinite 1s}
+.breathe-ring:nth-child(4){animation:ring-breathe-1 10s ease-in-out infinite 1.5s}
+.breathe-ring:nth-child(5){animation:ring-breathe-2 8.5s ease-in-out infinite 2s}
+.breathe-ring:nth-child(6){animation:ring-breathe-3 9.5s ease-in-out infinite 0.3s}
+.breathe-ring:nth-child(7){animation:ring-breathe-1 7.5s ease-in-out infinite 1.2s}
+.breathe-ring:nth-child(8){animation:ring-breathe-2 11s ease-in-out infinite 0.8s}
+.breathe-ring:nth-child(9){animation:ring-breathe-3 8s ease-in-out infinite 1.8s}
+
+@keyframes scan-sweep{0%{top:-5%;opacity:0.6}100%{top:110%;opacity:0}}
+@keyframes radar-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<!-- ═══ GLOBAL GRAIN ═══ -->
+<svg style="position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:9999;opacity:0.045">
+<filter id="g"><feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="4" stitchTiles="stitch"/></filter>
+<rect width="100%" height="100%" filter="url(#g)"/>
+</svg>
+
+<!-- ═══ REUSABLE SVG SYMBOLS ═══ -->
+<svg style="display:none">
+<defs>
+  <g id="dome">
+    <path d="M 30 50 C 30 43, 50 43, 50 50"/>
+    <path d="M 24 50 C 24 36, 56 36, 56 50"/>
+    <path d="M 18 50 C 18 28, 62 28, 62 50"/>
+    <path d="M 12 50 C 12 20, 68 20, 68 50"/>
+    <path d="M 6 50 C 6 12, 74 12, 74 50"/>
+    <path d="M 0 50 C 0 4, 80 4, 80 50"/>
+  </g>
+  <g id="topo">
+    <path d="M55.0,50.0 L55.1,50.7 L55.0,51.3 L54.7,51.9 L54.2,52.4 L53.7,52.8 L53.1,53.1 L52.6,53.4 L52.1,53.7 L51.6,53.9 L51.1,54.1 L50.6,54.2 L50.0,54.3 L49.4,54.2 L48.9,54.2 L48.3,54.2 L47.6,54.2 L46.9,54.1 L46.1,53.9 L45.5,53.5 L44.9,52.9 L44.6,52.2 L44.6,51.5 L44.7,50.7 L45.0,50.0 L45.3,49.4 L45.6,48.8 L45.9,48.3 L46.1,47.7 L46.4,47.2 L46.7,46.7 L47.1,46.2 L47.6,45.8 L48.1,45.5 L48.7,45.2 L49.3,44.9 L50.0,44.7 L50.7,44.6 L51.4,44.7 L52.1,44.9 L52.7,45.3 L53.2,45.9 L53.5,46.5 L53.8,47.1 L54.0,47.7 L54.2,48.2 L54.5,48.8 L54.8,49.4 L55.0,50.0 Z" opacity="1"/>
+    <path d="M59.7,50.0 L59.8,51.3 L59.7,52.6 L59.1,53.8 L58.2,54.7 L57.2,55.5 L56.2,56.2 L55.2,56.8 L54.3,57.4 L53.3,58.0 L52.3,58.6 L51.2,59.1 L50.0,59.4 L48.8,59.5 L47.5,59.5 L46.1,59.3 L44.7,59.1 L43.3,58.7 L41.9,58.1 L40.7,57.2 L39.7,55.9 L39.3,54.4 L39.3,52.9 L39.8,51.3 L40.4,50.0 L41.1,48.8 L41.7,47.8 L42.1,46.7 L42.4,45.6 L42.8,44.4 L43.3,43.3 L44.0,42.2 L45.0,41.3 L46.1,40.6 L47.3,40.1 L48.6,39.7 L50.0,39.5 L51.4,39.5 L52.8,39.7 L54.1,40.2 L55.2,41.0 L56.0,42.1 L56.7,43.3 L57.1,44.5 L57.5,45.6 L58.0,46.7 L58.6,47.7 L59.2,48.8 L59.7,50.0 Z" opacity="0.94"/>
+    <path d="M64.5,50.0 L64.8,52.0 L64.7,53.9 L63.9,55.7 L62.6,57.3 L61.1,58.5 L59.6,59.6 L58.1,60.6 L56.7,61.6 L55.3,62.8 L53.7,63.9 L52.0,64.8 L50.0,65.5 L47.9,65.7 L45.8,65.6 L43.7,65.1 L41.7,64.4 L39.7,63.4 L37.8,62.2 L36.3,60.5 L35.2,58.5 L34.8,56.3 L35.0,54.0 L35.7,51.9 L36.6,50.0 L37.6,48.4 L38.3,46.9 L38.7,45.3 L38.9,43.6 L39.2,41.7 L39.8,39.8 L40.8,38.0 L42.3,36.6 L44.0,35.6 L46.0,35.0 L48.0,34.7 L50.0,34.6 L52.0,34.8 L53.9,35.3 L55.8,36.1 L57.3,37.3 L58.6,38.8 L59.6,40.4 L60.3,42.1 L61.0,43.7 L61.8,45.1 L62.7,46.6 L63.7,48.2 L64.5,50.0 Z" opacity="0.89"/>
+    <path d="M70.0,50.0 L70.6,52.7 L70.4,55.5 L69.4,58.0 L67.7,60.2 L65.6,62.0 L63.4,63.4 L61.4,64.8 L59.4,66.3 L57.4,67.9 L55.2,69.6 L52.8,70.9 L50.0,71.8 L47.1,72.0 L44.2,71.5 L41.5,70.5 L39.0,69.0 L36.7,67.3 L34.7,65.3 L33.1,63.0 L31.9,60.4 L31.5,57.7 L31.8,54.9 L32.5,52.3 L33.6,50.0 L34.5,48.0 L35.1,46.0 L35.2,43.9 L35.3,41.5 L35.4,38.8 L36.1,36.1 L37.4,33.5 L39.4,31.6 L41.8,30.3 L44.6,29.7 L47.3,29.6 L50.0,30.0 L52.6,30.5 L55.0,31.3 L57.3,32.3 L59.4,33.7 L61.2,35.4 L62.6,37.4 L63.8,39.4 L64.9,41.4 L66.1,43.3 L67.5,45.3 L68.8,47.5 L70.0,50.0 Z" opacity="0.83"/>
+    <path d="M76.1,50.0 L76.8,53.5 L76.5,57.1 L75.1,60.4 L72.9,63.2 L70.1,65.5 L67.3,67.3 L64.5,69.0 L62.0,70.7 L59.4,72.7 L56.6,74.7 L53.5,76.3 L50.0,77.3 L46.4,77.3 L42.9,76.4 L39.8,74.7 L37.0,72.5 L34.7,70.0 L32.6,67.4 L31.0,64.6 L29.8,61.7 L29.2,58.6 L29.1,55.6 L29.6,52.7 L30.3,50.0 L30.8,47.5 L31.1,44.9 L31.0,42.1 L30.7,38.9 L30.8,35.3 L31.6,31.6 L33.4,28.4 L36.1,25.9 L39.4,24.5 L43.1,24.1 L46.6,24.5 L50.0,25.3 L53.1,26.3 L56.1,27.3 L58.9,28.5 L61.6,29.9 L64.0,31.7 L66.1,33.9 L68.0,36.2 L69.7,38.6 L71.3,41.2 L73.1,43.8 L74.7,46.7 L76.1,50.0 Z" opacity="0.78"/>
+    <path d="M82.1,50.0 L82.6,54.3 L82.0,58.6 L80.2,62.5 L77.4,65.8 L74.0,68.4 L70.5,70.5 L67.1,72.3 L64.0,74.2 L60.9,76.4 L57.7,78.6 L54.0,80.4 L50.0,81.5 L45.9,81.4 L41.9,80.1 L38.5,77.9 L35.5,75.0 L33.1,72.0 L31.1,68.9 L29.3,65.9 L27.7,62.9 L26.5,59.7 L25.8,56.5 L25.5,53.2 L25.4,50.0 L25.4,46.8 L25.3,43.4 L25.0,39.6 L24.8,35.5 L25.2,30.9 L26.5,26.5 L29.0,22.6 L32.6,19.9 L37.0,18.5 L41.6,18.5 L46.0,19.4 L50.0,20.8 L53.7,22.2 L57.1,23.5 L60.5,24.7 L63.8,26.0 L67.1,27.8 L70.0,30.0 L72.7,32.6 L75.0,35.6 L77.0,38.8 L79.0,42.2 L80.8,45.9 L82.1,50.0 Z" opacity="0.72"/>
+    <path d="M87.2,50.0 L87.3,54.9 L86.3,59.7 L84.1,64.1 L80.9,67.8 L77.0,70.7 L72.9,72.9 L69.1,74.9 L65.5,76.9 L62.1,79.3 L58.5,81.7 L54.5,83.9 L50.0,85.2 L45.4,85.2 L41.0,83.8 L37.1,81.2 L33.9,77.9 L31.3,74.4 L28.9,71.1 L26.7,67.9 L24.4,64.8 L22.3,61.5 L20.4,57.9 L19.1,54.1 L18.3,50.0 L17.8,45.8 L17.6,41.3 L17.5,36.5 L17.8,31.4 L18.9,26.1 L21.1,21.1 L24.7,17.0 L29.4,14.2 L34.7,13.2 L40.3,13.7 L45.4,15.2 L50.0,17.2 L54.1,19.0 L58.0,20.3 L61.9,21.3 L66.0,22.4 L70.1,23.9 L74.0,26.0 L77.4,29.0 L80.3,32.5 L82.6,36.5 L84.6,40.7 L86.2,45.2 L87.2,50.0 Z" opacity="0.66"/>
+    <path d="M91.2,50.0 L90.9,55.4 L89.6,60.6 L87.1,65.4 L83.6,69.4 L79.5,72.6 L75.1,75.1 L71.0,77.4 L67.2,79.7 L63.4,82.4 L59.5,85.4 L55.0,88.0 L50.0,89.7 L44.7,89.9 L39.7,88.5 L35.2,85.7 L31.5,82.1 L28.4,78.2 L25.5,74.5 L22.5,71.1 L19.4,67.7 L16.2,64.0 L13.2,59.9 L10.9,55.1 L9.5,50.0 L8.9,44.6 L9.0,39.0 L9.8,33.3 L11.2,27.6 L13.4,21.9 L16.8,16.8 L21.4,12.8 L27.1,10.3 L33.3,9.7 L39.5,10.7 L45.1,12.7 L50.0,15.0 L54.4,16.8 L58.6,17.9 L63.1,18.5 L67.9,19.0 L72.9,20.1 L77.8,22.2 L82.1,25.4 L85.5,29.5 L87.9,34.3 L89.6,39.4 L90.7,44.6 L91.2,50.0 Z" opacity="0.61"/>
+    <path d="M94.8,50.0 L94.0,55.8 L92.5,61.4 L90.0,66.6 L86.5,71.1 L82.4,74.9 L78.0,78.0 L73.6,80.8 L69.5,83.7 L65.3,87.0 L60.8,90.4 L55.7,93.6 L50.0,95.7 L43.9,96.2 L38.0,94.8 L32.7,91.8 L28.2,87.7 L24.5,83.3 L21.0,79.0 L17.4,75.0 L13.4,71.1 L9.3,66.9 L5.5,61.9 L2.6,56.2 L0.9,50.0 L0.7,43.5 L1.7,37.1 L3.7,30.8 L6.5,24.9 L10.0,19.3 L14.5,14.5 L20.0,10.9 L26.2,8.8 L32.8,8.4 L39.2,9.5 L44.9,11.6 L50.0,13.6 L54.6,15.1 L59.2,15.6 L64.3,15.5 L70.0,15.3 L76.1,16.0 L82.0,18.0 L87.1,21.6 L90.9,26.4 L93.3,32.1 L94.6,38.1 L95.0,44.1 L94.8,50.0 Z" opacity="0.55"/>
+  </g>
+  <g id="disc">
+    <rect x="35" y="6" width="30" height="4.5" rx="1" fill="currentColor"/>
+    <rect x="22" y="15" width="56" height="4.5" rx="1" fill="currentColor"/>
+    <rect x="14" y="24" width="72" height="4.5" rx="1" fill="currentColor"/>
+    <rect x="10" y="33" width="80" height="4.5" rx="1" fill="currentColor"/>
+    <rect x="8" y="42" width="84" height="4.5" rx="1" fill="currentColor"/>
+    <rect x="8" y="51" width="84" height="4.5" rx="1" fill="currentColor"/>
+    <rect x="10" y="60" width="80" height="4.5" rx="1" fill="currentColor"/>
+    <rect x="14" y="69" width="72" height="4.5" rx="1" fill="currentColor"/>
+    <rect x="22" y="78" width="56" height="4.5" rx="1" fill="currentColor"/>
+    <rect x="35" y="87" width="30" height="4.5" rx="1" fill="currentColor"/>
+  </g>
+  <g id="rings">
+    <circle cx="50" cy="50" r="44" stroke="currentColor" stroke-width="2" fill="none"/>
+    <circle cx="50" cy="50" r="33" stroke="currentColor" stroke-width="2" fill="none"/>
+    <circle cx="50" cy="50" r="22" stroke="currentColor" stroke-width="2" fill="none"/>
+    <circle cx="50" cy="50" r="12" stroke="currentColor" stroke-width="1.8" fill="none"/>
+    <circle cx="50" cy="50" r="4" fill="currentColor"/>
+  </g>
+  <g id="wave" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+    <path d="M 5 20 Q 25 12, 50 20 Q 75 28, 95 20"/>
+    <path d="M 5 38 Q 25 30, 50 38 Q 75 46, 95 38"/>
+    <path d="M 5 56 Q 25 48, 50 56 Q 75 64, 95 56"/>
+    <path d="M 5 74 Q 25 66, 50 74 Q 75 82, 95 74"/>
+  </g>
+  <g id="peak">
+    <path d="M 50 10 L 30 85 L 70 85 Z" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linejoin="round"/>
+    <circle cx="50" cy="50" r="18" stroke="currentColor" stroke-width="1.5" fill="none"/>
+    <circle cx="50" cy="50" r="8" stroke="currentColor" stroke-width="1.2" fill="none"/>
+    <circle cx="50" cy="50" r="2.5" fill="currentColor"/>
+  </g>
+  <g id="fstar">
+    <circle cx="10" cy="10" r="3.2" stroke="currentColor" fill="none" stroke-width="0.9"/>
+    <circle cx="10" cy="10" r="1.2" fill="currentColor"/>
+    <line x1="10" y1="1" x2="10" y2="5" stroke="currentColor" stroke-width="1.2"/>
+    <line x1="10" y1="15" x2="10" y2="19" stroke="currentColor" stroke-width="1.2"/>
+    <line x1="2.2" y1="5.5" x2="5.8" y2="7.6" stroke="currentColor" stroke-width="1.2"/>
+    <line x1="14.2" y1="12.4" x2="17.8" y2="14.5" stroke="currentColor" stroke-width="1.2"/>
+    <line x1="2.2" y1="14.5" x2="5.8" y2="12.4" stroke="currentColor" stroke-width="1.2"/>
+    <line x1="14.2" y1="7.6" x2="17.8" y2="5.5" stroke="currentColor" stroke-width="1.2"/>
+  </g>
+</defs>
+</svg>
+
+<div class="board">
+
+<!-- ═══════════════════════════════════════════════
+     ROW 1: BRAND + DEPLOY
+     ═══════════════════════════════════════════════ -->
+<div class="row">
+  <!-- PANEL 1: FREYJA BRAND — contour swirl background -->
+  <div class="panel" style="flex:3;background:var(--bg);padding:48px 56px;min-height:580px;display:flex;flex-direction:column">
+    <img src="../../../Downloads/cosmos_moodboard/contour-swirl-abstract-lines.jpg" class="img-bg img-bg-muted" style="opacity:0.14">
+    <div class="dots-overlay"></div>
+    <div style="display:flex;align-items:center;gap:14px;position:relative;z-index:5">
+      <svg width="56" height="18" viewBox="0 0 56 18" fill="none"><g stroke="rgba(240,237,232,0.25)" stroke-width="2">
+        <line x1="2" y1="18" x2="9" y2="0"/><line x1="8" y1="18" x2="15" y2="0"/>
+        <line x1="14" y1="18" x2="21" y2="0"/><line x1="20" y1="18" x2="27" y2="0"/>
+        <line x1="26" y1="18" x2="33" y2="0"/><line x1="32" y1="18" x2="39" y2="0"/>
+        <line x1="38" y1="18" x2="45" y2="0"/><line x1="44" y1="18" x2="51" y2="0"/>
+      </g></svg>
+      <span style="font-size:10px;letter-spacing:0.25em;color:var(--fg-dim)">FREYJA SYSTEMS</span>
+      <span style="margin-left:auto;color:var(--fg-dim)">
+        <svg width="18" height="18" viewBox="0 0 100 100" class="topo-mark"><use href="#topo"/></svg>
+      </span>
+      <span style="font-size:10px;letter-spacing:0.2em;color:var(--fg-dim)">COSMOS</span>
+    </div>
+    <div style="flex:1;display:flex;flex-direction:column;justify-content:center;margin:20px 0;position:relative;z-index:5">
+      <div style="margin-bottom:8px;color:var(--fg)">
+        <svg width="56" height="56" viewBox="0 0 100 100" class="topo-mark" stroke-width="1.8"><use href="#topo"/></svg>
+      </div>
+      <div style="font-family:'Outfit';font-weight:900;font-size:132px;line-height:0.92;letter-spacing:0.06em" class="gt">FREYJA</div>
+      <div style="height:22px;margin-top:-2px;
+        background-image:radial-gradient(circle,var(--blue) 1.2px,transparent 1.2px);
+        background-size:5px 5px;
+        mask-image:linear-gradient(180deg,rgba(0,0,0,0.4) 0%,transparent 100%);
+        -webkit-mask-image:linear-gradient(180deg,rgba(0,0,0,0.4) 0%,transparent 100%)"></div>
+      <div style="margin-top:16px;font-size:12px;letter-spacing:0.22em;color:var(--fg-dim);text-transform:uppercase">
+        AUTONOMOUS AGENT RUNTIME — COSMOS EDITION
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:16px;position:relative;z-index:5">
+      <span style="font-size:12px;color:var(--amber)">&#10095;&#10095;&#10095;</span>
+      <span style="font-family:'Outfit';font-weight:900;font-size:13px;letter-spacing:0.15em;color:var(--fg-dim)">SF</span>
+      <span style="padding:4px 14px;background:rgba(212,100,74,0.12);font-size:9px;letter-spacing:0.18em;color:var(--amber)">STATUS: ACTIVE</span>
+      <span style="margin-left:auto;font-size:9px;letter-spacing:0.12em;color:rgba(240,237,232,0.2)">V 0.1 ALPHA</span>
+    </div>
+  </div>
+
+  <!-- PANEL 2: DEPLOY — cyberpunk workspace dithered -->
+  <div class="panel" style="flex:2;background:var(--bg);min-height:580px;display:flex">
+    <canvas id="c-deploy" width="560" height="580" style="position:absolute;inset:0;width:100%;height:100%;display:block;opacity:0.3"></canvas>
+    <div style="width:34px;background:var(--blue);display:flex;align-items:center;justify-content:center;flex-shrink:0;position:relative;z-index:2">
+      <span style="writing-mode:vertical-rl;transform:rotate(180deg);font-family:'Outfit';font-weight:900;font-size:10px;letter-spacing:0.3em;color:var(--bg)">SEIDR</span>
+    </div>
+    <div style="flex:1;padding:40px 44px;display:flex;flex-direction:column;position:relative;z-index:2">
+      <div style="font-size:10px;letter-spacing:0.15em;color:var(--fg-dim);margin-bottom:auto">AGENTS &mdash; RUNNING &mdash; CONTINUOUSLY</div>
+      <div style="margin:16px 0">
+        <div style="font-family:'Outfit';font-weight:900;font-size:80px;color:var(--fg);line-height:0.94;letter-spacing:0.04em">DEPLOY<br>AGENTS</div>
+        <div style="height:16px;margin-top:-2px;
+          background-image:radial-gradient(circle,var(--fg) 1px,transparent 1px);
+          background-size:4.5px 4.5px;
+          mask-image:linear-gradient(180deg,rgba(0,0,0,0.3) 0%,transparent 100%);
+          -webkit-mask-image:linear-gradient(180deg,rgba(0,0,0,0.3) 0%,transparent 100%)"></div>
+      </div>
+      <div style="display:inline-flex;align-items:center;gap:10px;padding:8px 16px;border:1.5px solid rgba(168,212,252,0.4);align-self:flex-start;margin-bottom:16px">
+        <span style="font-family:'Outfit';font-weight:900;font-size:14px;letter-spacing:0.18em;color:var(--fg)">RUNTIME READY</span>
+        <svg width="18" height="18" viewBox="0 0 100 100" style="color:var(--blue)"><use href="#rings"/></svg>
+      </div>
+      <div style="position:absolute;bottom:16px;right:28px;font-family:'Outfit';font-weight:900;font-size:100px;color:var(--fg-ghost);line-height:1;letter-spacing:0.04em">&copy; 2026</div>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:auto">
+        <div style="flex:1;height:1px;background:rgba(240,237,232,0.1)"></div>
+        <span style="font-size:10px;letter-spacing:0.18em;color:var(--fg-dim)">ALWAYS LEARNING</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     ROW 2: FULL-WIDTH — MOUNTAIN RIDGELINE
+     ═══════════════════════════════════════════════ -->
+<div class="panel" style="background:var(--bg);min-height:480px;position:relative">
+  <canvas id="c-mountain" width="1500" height="480" style="position:absolute;inset:0;width:100%;height:100%;display:block;opacity:0.4"></canvas>
+  <div class="scanlines-fine"></div>
+  <div style="position:absolute;top:50%;left:0;right:0;border-top:1px dashed rgba(212,100,74,0.06)"></div>
+  <div style="position:absolute;left:50%;top:0;bottom:0;border-left:1px dashed rgba(212,100,74,0.06)"></div>
+  <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    font-family:'Outfit';font-weight:900;font-size:200px;color:var(--fg-ghost);
+    letter-spacing:0.12em;white-space:nowrap;pointer-events:none;z-index:2">FREYJA</div>
+  <div style="position:absolute;top:28px;left:36px;z-index:5;display:flex;align-items:center;gap:12px">
+    <svg width="20" height="20" viewBox="0 0 100 100" class="topo-mark" style="color:var(--cyan)"><use href="#topo"/></svg>
+    <span style="font-size:10px;letter-spacing:0.22em;color:rgba(240,237,232,0.5);text-transform:uppercase">FREYJA SYSTEMS — RIDGELINE SUBSTRATE</span>
+  </div>
+  <div style="position:absolute;top:28px;right:36px;z-index:5;text-align:right">
+    <span style="font-size:10px;letter-spacing:0.2em;color:rgba(240,237,232,0.5);text-transform:uppercase">DITHER: FLOYD-STEINBERG</span>
+  </div>
+  <!-- Breathing contour rings, right side -->
+  <div style="position:absolute;right:80px;top:50%;transform:translateY(-50%);z-index:5;width:200px;height:200px">
+    <svg width="200" height="200" viewBox="0 0 100 100" fill="none" stroke="var(--fg)" stroke-width="1.4" stroke-linejoin="round">
+      <path class="breathe-ring" d="M55.0,50.0 L55.1,50.7 L55.0,51.3 L54.7,51.9 L54.2,52.4 L53.7,52.8 L53.1,53.1 L52.6,53.4 L52.1,53.7 L51.6,53.9 L51.1,54.1 L50.6,54.2 L50.0,54.3 L49.4,54.2 L48.9,54.2 L48.3,54.2 L47.6,54.2 L46.9,54.1 L46.1,53.9 L45.5,53.5 L44.9,52.9 L44.6,52.2 L44.6,51.5 L44.7,50.7 L45.0,50.0 Z" opacity="1"/>
+      <path class="breathe-ring" d="M59.7,50.0 L59.8,51.3 L59.7,52.6 L59.1,53.8 L58.2,54.7 L57.2,55.5 L56.2,56.2 L55.2,56.8 L54.3,57.4 L53.3,58.0 L52.3,58.6 L51.2,59.1 L50.0,59.4 L48.8,59.5 L47.5,59.5 L46.1,59.3 L44.7,59.1 L43.3,58.7 L41.9,58.1 L40.7,57.2 L39.7,55.9 L39.3,54.4 L39.3,52.9 L39.8,51.3 L40.4,50.0 Z" opacity="0.9"/>
+      <path class="breathe-ring" d="M64.5,50.0 L64.8,52.0 L64.7,53.9 L63.9,55.7 L62.6,57.3 L61.1,58.5 L59.6,59.6 L58.1,60.6 L56.7,61.6 L55.3,62.8 L53.7,63.9 L52.0,64.8 L50.0,65.5 L47.9,65.7 L45.8,65.6 L43.7,65.1 L41.7,64.4 L39.7,63.4 L37.8,62.2 L36.3,60.5 L35.2,58.5 L34.8,56.3 L35.0,54.0 L35.7,51.9 L36.6,50.0 Z" opacity="0.8"/>
+      <path class="breathe-ring" d="M70.0,50.0 L70.6,52.7 L70.4,55.5 L69.4,58.0 L67.7,60.2 L65.6,62.0 L63.4,63.4 L61.4,64.8 L59.4,66.3 L57.4,67.9 L55.2,69.6 L52.8,70.9 L50.0,71.8 L47.1,72.0 L44.2,71.5 L41.5,70.5 L39.0,69.0 L36.7,67.3 L34.7,65.3 L33.1,63.0 L31.9,60.4 L31.5,57.7 L31.8,54.9 L32.5,52.3 L33.6,50.0 Z" opacity="0.7"/>
+      <path class="breathe-ring" d="M76.1,50.0 L76.8,53.5 L76.5,57.1 L75.1,60.4 L72.9,63.2 L70.1,65.5 L67.3,67.3 L64.5,69.0 L62.0,70.7 L59.4,72.7 L56.6,74.7 L53.5,76.3 L50.0,77.3 L46.4,77.3 L42.9,76.4 L39.8,74.7 L37.0,72.5 L34.7,70.0 L32.6,67.4 L31.0,64.6 L29.8,61.7 L29.2,58.6 L29.1,55.6 L29.6,52.7 L30.3,50.0 Z" opacity="0.6"/>
+      <path class="breathe-ring" d="M82.1,50.0 L82.6,54.3 L82.0,58.6 L80.2,62.5 L77.4,65.8 L74.0,68.4 L70.5,70.5 L67.1,72.3 L64.0,74.2 L60.9,76.4 L57.7,78.6 L54.0,80.4 L50.0,81.5 L45.9,81.4 L41.9,80.1 L38.5,77.9 L35.5,75.0 L33.1,72.0 L31.1,68.9 L29.3,65.9 L27.7,62.9 L26.5,59.7 L25.8,56.5 L25.5,53.2 L25.4,50.0 Z" opacity="0.5"/>
+    </svg>
+  </div>
+  <div style="position:absolute;bottom:28px;left:36px;z-index:5">
+    <span style="font-size:10px;letter-spacing:0.18em;color:rgba(240,237,232,0.4);text-transform:uppercase">MOUNTAIN RIDGELINE — DRAMATIC SUBSTRATE</span>
+  </div>
+  <div style="position:absolute;bottom:28px;right:36px;z-index:5">
+    <span style="font-size:10px;letter-spacing:0.18em;color:rgba(240,237,232,0.4);text-transform:uppercase">NATIVE DESKTOP INTELLIGENCE</span>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     ROW 3: LEAF SKELETON + WIREFRAME SPHERE
+     ═══════════════════════════════════════════════ -->
+<div class="row">
+  <!-- LEFT: Leaf skeleton halftone -->
+  <div class="panel" style="flex:1;background:var(--bg);min-height:600px;position:relative">
+    <canvas id="c-leaf" width="740" height="600" style="position:absolute;inset:0;width:100%;height:100%;display:block"></canvas>
+    <div class="scanlines-fine"></div>
+    <div style="position:absolute;bottom:0;left:0;right:0;padding:36px 32px;background:linear-gradient(transparent,rgba(10,10,10,0.92));z-index:5">
+      <div style="font-family:'DM Serif Display';font-size:48px;color:var(--fg);line-height:1.05;margin-bottom:8px">
+        Organic<br><span style="font-style:italic;color:var(--violet)">Networks</span>
+      </div>
+      <div style="font-size:10px;letter-spacing:0.08em;color:var(--fg-dim);line-height:1.7;max-width:360px">
+        Neural pathways mirror the branching patterns found in nature — leaf veins, river deltas, lightning. Freyja's agent graph follows the same organic logic.
+      </div>
+    </div>
+    <div style="position:absolute;top:20px;left:24px;z-index:5">
+      <span style="font-size:9px;letter-spacing:0.2em;color:rgba(240,237,232,0.35)">MAGNOLIA GLABRA / SPECIMEN</span>
+    </div>
+  </div>
+
+  <!-- RIGHT: Wireframe sphere dithered -->
+  <div class="panel" style="flex:1;background:var(--bg);min-height:600px;position:relative">
+    <canvas id="c-sphere" width="740" height="600" style="position:absolute;inset:0;width:100%;height:100%;display:block;opacity:0.4"></canvas>
+    <div class="grid-overlay"></div>
+    <div style="position:relative;z-index:5;padding:40px 36px;display:flex;flex-direction:column;height:100%">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <div style="font-family:'Outfit';font-weight:900;font-size:12px;letter-spacing:0.25em;color:var(--fg-dim)">MESH TOPOLOGY</div>
+          <div style="font-size:9px;letter-spacing:0.12em;color:rgba(240,237,232,0.2);margin-top:4px">WIREFRAME / 3D ORGANIC</div>
+        </div>
+        <svg width="22" height="22" viewBox="0 0 100 100" style="color:var(--blue)"><use href="#rings"/></svg>
+      </div>
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:center">
+        <div style="font-family:'Outfit';font-weight:900;font-size:72px;line-height:0.92;letter-spacing:0.03em" class="gt">AGENT<br>MESH</div>
+        <div style="height:16px;margin-top:-2px;width:300px;
+          background-image:radial-gradient(circle,var(--violet) 1px,transparent 1px);
+          background-size:4.5px 4.5px;
+          mask-image:linear-gradient(180deg,rgba(0,0,0,0.3) 0%,transparent 100%);
+          -webkit-mask-image:linear-gradient(180deg,rgba(0,0,0,0.3) 0%,transparent 100%)"></div>
+        <div style="font-size:11px;letter-spacing:0.15em;color:var(--fg-dim);margin-top:16px;max-width:360px;line-height:1.7;text-transform:uppercase">
+          Every agent is a node. Every connection is a skill. The mesh grows with each session.
+        </div>
+      </div>
+      <div style="display:flex;gap:32px;padding-top:16px;border-top:1px solid rgba(240,237,232,0.06)">
+        <div>
+          <div style="font-family:'Outfit';font-weight:900;font-size:28px;color:var(--blue);line-height:1">∞</div>
+          <div style="font-size:8px;letter-spacing:0.1em;color:var(--fg-dim);margin-top:3px">TOPOLOGY</div>
+        </div>
+        <div style="width:1px;background:rgba(240,237,232,0.06)"></div>
+        <div>
+          <div style="font-family:'Outfit';font-weight:900;font-size:28px;color:var(--violet);line-height:1">MESH</div>
+          <div style="font-size:8px;letter-spacing:0.1em;color:var(--fg-dim);margin-top:3px">PROTOCOL</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     ROW 4: MEMORY + ANIMATED DEER FIELD REPORT
+     ═══════════════════════════════════════════════ -->
+<div class="row">
+  <!-- MEMORY PANEL (structural, no image) -->
+  <div class="panel" style="flex:1;min-height:540px;display:flex;flex-direction:column;background:var(--bg)">
+    <div style="padding:16px 20px;font-size:10px;letter-spacing:0.18em;color:var(--fg-dim);display:flex;align-items:center;gap:8px">
+      <svg width="16" height="16" viewBox="0 0 100 100" style="color:var(--fg-dim)"><use href="#disc"/></svg>
+      AUTONOMOUS MEMORY OPERATIONS
+    </div>
+    <div style="height:5px;background:var(--blue)"></div>
+    <div style="display:flex;flex:1">
+      <div style="width:130px;background:var(--bg);padding:20px 14px;display:flex;flex-direction:column;gap:4px;justify-content:center">
+        <div style="height:15px;width:90%;background:var(--fg)"></div>
+        <div style="height:15px;width:55%;background:var(--fg)"></div>
+        <div style="height:15px;width:100%;background:var(--amber)"></div>
+        <div style="height:15px;width:40%;background:var(--fg)"></div>
+        <div style="height:15px;width:75%;background:var(--blue)"></div>
+        <div style="height:15px;width:30%;background:var(--fg)"></div>
+        <div style="height:15px;width:85%;background:var(--fg)"></div>
+        <div style="height:15px;width:48%;background:var(--amber)"></div>
+        <div style="height:15px;width:68%;background:var(--fg)"></div>
+        <div style="height:15px;width:35%;background:var(--blue)"></div>
+        <div style="height:15px;width:92%;background:var(--fg)"></div>
+      </div>
+      <div style="flex:1;background:var(--amber);padding:32px 36px;color:var(--bg);position:relative">
+        <div style="position:absolute;inset:0;pointer-events:none;background-image:linear-gradient(rgba(0,0,0,0.04) 1px,transparent 1px),linear-gradient(90deg,rgba(0,0,0,0.04) 1px,transparent 1px);background-size:32px 32px"></div>
+        <div style="position:relative;z-index:2">
+          <div style="font-family:'Outfit';font-weight:900;font-size:44px;letter-spacing:0.03em;line-height:1">MEMORY &mdash; V.1</div>
+          <div style="margin-top:24px;font-size:12px;letter-spacing:0.1em">
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>SYSTEM STATE: ACTIVE</span><span>/</span></div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>LOOP: CONTINUOUS</span><span>SF</span></div>
+            <div style="margin:6px 0;opacity:0.3">-</div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>EVICTION: ENABLED</span><span>&gt;</span></div>
+            <div style="display:flex;justify-content:space-between"><span>ADAPTATION: SELF-IMPROVING</span><span>ALIVE</span></div>
+          </div>
+          <div style="margin-top:20px;font-size:11px;line-height:1.6;opacity:0.7;max-width:380px">
+            Freyja treats the context window like scarce RAM with a layered eviction strategy. Skills unload at 60%. Episodes compress at 70%. Tool results truncate at 80%. Full compaction fires at 90%.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FIELD REPORT — ANIMATED DEER (live GIF background!) -->
+  <div class="panel" style="flex:1;background:#080a0c;padding:48px 52px;min-height:540px;display:flex;flex-direction:column">
+    <!-- Animated deer GIF as muted background -->
+    <img src="../../../Downloads/cosmos_moodboard/birds-flock-motion-shalom.jpg" class="img-bg" style="filter:brightness(0.5) contrast(1.5) grayscale(1);opacity:0.4;object-position:center 30%">
+    <div class="scanlines-fine"></div>
+    <div class="dots-overlay"></div>
+
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;position:relative;z-index:5">
+      <div>
+        <span style="font-family:'DM Serif Display';font-size:30px;color:var(--fg)">Sub-Agents</span><br>
+        <span style="font-family:'DM Serif Display';font-size:30px;color:var(--amber);font-weight:700">In Motion</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px">
+        <svg width="18" height="18" viewBox="0 0 100 95" style="color:var(--amber)"><use href="#peak"/></svg>
+        <span style="font-size:11px;letter-spacing:0.15em;color:var(--amber)">&#10095;&#10095;&#10095;</span>
+      </div>
+    </div>
+
+    <div style="flex:1;display:flex;align-items:flex-end;position:relative;z-index:5">
+      <div>
+        <div style="font-size:9px;letter-spacing:0.08em;color:rgba(240,237,232,0.3);line-height:1.9;text-transform:uppercase">
+          LOG 00:02:14<br>FORMATION: ADAPTIVE SWARM<br>SESSION DURATION: 14.2 HRS<br>CONTEXT: 128 EPISODES<br>NO HUMAN INPUT
+        </div>
+        <div style="font-family:'DM Serif Display';font-size:72px;color:var(--fg);line-height:0.92;letter-spacing:-0.01em;margin-top:12px">
+          Runtime<br>Proven
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     ROW 5: OCEAN BLUE + CONTOUR CREAM
+     ═══════════════════════════════════════════════ -->
+<div class="row">
+  <!-- BLUE PANEL — dark ocean waves bg -->
+  <div class="panel" style="flex:1;background:var(--blue);padding:48px 52px;min-height:480px;color:var(--bg);display:flex;flex-direction:column">
+    <img src="../../../Downloads/cosmos_moodboard/ocean-waves-dark-moody.jpg" class="img-bg" style="opacity:0.15;filter:grayscale(1) contrast(1.3);mix-blend-mode:multiply">
+    <div class="dots-overlay-dark" style="opacity:0.5"></div>
+    <div style="position:relative;z-index:2;flex:1;display:flex;flex-direction:column">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:auto">
+        <span style="font-size:10px;letter-spacing:0.18em;opacity:0.5">ALL AGENTS READY</span>
+        <svg width="24" height="24" viewBox="0 0 100 100" style="color:var(--bg);opacity:0.35"><use href="#wave"/></svg>
+      </div>
+      <div style="font-family:'Outfit';font-weight:900;font-size:70px;line-height:0.92;letter-spacing:0.04em">SEIDR<br>READY<br>STATE</div>
+      <div style="position:absolute;top:55px;right:0;font-family:'Outfit';font-weight:900;font-size:88px;opacity:0.12">24/7</div>
+      <div style="display:flex;gap:5px;margin-top:auto">
+        <div style="height:28px;flex:2;background:var(--bg);border-radius:14px"></div>
+        <div style="height:28px;flex:1;background:var(--bg);border-radius:14px"></div>
+        <div style="height:28px;flex:3;background:var(--bg);border-radius:14px"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-top:12px;font-size:9px;letter-spacing:0.12em;opacity:0.45">
+        <span>LONG RUNNING AGENTS &mdash; 2341429</span>
+        <span>STATUS: ACTIVE &mdash; DEPLOYED &nbsp;&#10095;&#10095;&#10095;</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- CREAM PANEL — white contour relief bg -->
+  <div class="panel" style="flex:1;background:#e8e4de;padding:40px 48px;min-height:480px;color:#1a1a1a;display:flex;flex-direction:column">
+    <img src="../../../Downloads/cosmos_moodboard/contour-wave-organic-flow.jpg" class="img-bg" style="opacity:0.1;filter:contrast(1.4) brightness(0.9)">
+    <div class="dots-overlay-dark" style="opacity:0.3"></div>
+    <div style="position:relative;z-index:2;flex:1;display:flex;flex-direction:column">
+      <div style="display:flex;justify-content:space-between;margin-bottom:20px">
+        <span style="font-size:10px;letter-spacing:0.12em;opacity:0.4">SYSTEM MODE: ACTIVE MEMORY CALIBRATION</span>
+        <svg width="20" height="20" viewBox="0 0 100 100" style="color:rgba(26,26,26,0.2)"><use href="#wave"/></svg>
+      </div>
+      <div style="padding:14px 18px;border:1px solid rgba(26,26,26,0.08);background:rgba(26,26,26,0.02);margin-bottom:20px">
+        <div style="font-size:10px;line-height:1.8;opacity:0.45">[ SYSTEM LOG ]<br># INIT... OK<br># MEMORY LOCK... STABLE<br># SKILL RELAY... CONNECTED<br># SEIDR HANDSHAKE... COMPLETE</div>
+      </div>
+      <div style="font-family:'DM Serif Display';font-size:42px;line-height:1.1;margin-bottom:12px">Scaling autonomous<br>intelligence networks</div>
+      <div style="font-size:11px;line-height:1.65;max-width:440px;opacity:0.55;margin-bottom:20px">Freyja is developing the underlying architecture for next-generation desktop AI &mdash; an autonomous agent capable of learning, reasoning, and coordinating across all operational layers.</div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:auto">
+        <div><div style="font-family:'Outfit';font-weight:900;font-size:56px">98%</div><div style="font-size:9px;letter-spacing:0.12em;opacity:0.4;margin-top:2px">CONTEXT RETENTION RATE</div></div>
+        <div style="text-align:right;font-size:9px;letter-spacing:0.1em;opacity:0.35">14.2 HRS<br>SUSTAINED AUTONOMY</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     ROW 6: INSTITUTIONAL — contour elevation map bg
+     ═══════════════════════════════════════════════ -->
+<div class="panel" style="background:var(--bg);padding:56px 72px;min-height:460px;display:grid;grid-template-columns:1fr 1fr;gap:56px">
+  <img src="../../../Downloads/cosmos_moodboard/contour-elevation-map.jpg" class="img-bg" style="opacity:0.09;filter:grayscale(1) contrast(1.3)">
+  <div class="scanlines-fine" style="opacity:0.4"></div>
+  <div class="dots-overlay" style="opacity:0.6"></div>
+  <div style="display:flex;flex-direction:column;position:relative;z-index:5">
+    <div style="display:flex;align-items:flex-start;gap:24px;margin-bottom:36px">
+      <div style="width:90px;height:90px;flex-shrink:0;color:var(--fg)">
+        <svg width="90" height="90" viewBox="0 0 100 100"><use href="#disc"/></svg>
+      </div>
+      <div>
+        <div style="font-family:'DM Serif Display';font-size:42px;color:var(--fg);line-height:1.05">
+          Freyja<span style="font-size:16px;vertical-align:super;margin-left:6px;opacity:0.4">&#174;</span><br>Autonomous<br>Systems
+        </div>
+      </div>
+    </div>
+    <div style="font-family:'Outfit';font-weight:900;font-size:11px;letter-spacing:0.35em;color:var(--fg-dim);margin-bottom:20px">
+      SELF-IMPROVING &nbsp;&nbsp; DESKTOP &nbsp;&nbsp; INTELLIGENCE
+    </div>
+    <div style="display:flex;gap:20px;margin-bottom:20px">
+      <div style="font-size:10px;letter-spacing:0.12em;color:var(--fg-dim);line-height:1.7">AUTONOMOUS<br>AGENT<br>DEVELOPMENT</div>
+      <svg width="18" height="18" viewBox="0 0 20 20" style="color:var(--fg-dim);align-self:center"><use href="#fstar"/></svg>
+      <div style="font-size:10px;letter-spacing:0.12em;color:var(--fg-dim);line-height:1.7">EXPERIMENTAL<br>DESKTOP<br>UNITS</div>
+    </div>
+    <div style="font-size:10px;letter-spacing:0.1em;color:rgba(240,237,232,0.25);margin-top:auto;display:flex;align-items:center;gap:8px">
+      BADGE ID: FRY-01-CTRL &nbsp;/
+      <svg width="14" height="14" viewBox="0 0 20 20" style="color:rgba(240,237,232,0.25)"><use href="#fstar"/></svg>
+    </div>
+  </div>
+  <div style="display:flex;flex-direction:column;position:relative;z-index:5">
+    <div style="display:flex;justify-content:flex-end;margin-bottom:28px">
+      <svg width="150" height="150" viewBox="0 0 180 180" fill="none">
+        <defs><path id="sp2" d="M 90 12 A 78 78 0 1 1 89.99 12"/></defs>
+        <text fill="var(--fg-dim)" font-family="Space Mono" font-size="7.5" letter-spacing="3">
+          <textPath href="#sp2">FREYJA AUTONOMOUS SYSTEMS &bull; SEIDR FORESIGHT &bull;</textPath>
+        </text>
+        <circle cx="90" cy="90" r="65" stroke="rgba(240,237,232,0.1)" stroke-width="0.6" stroke-dasharray="2 4"/>
+        <svg x="50" y="58" width="80" height="52" viewBox="0 0 80 52" class="dome" style="color:var(--fg-dim)"><use href="#dome"/></svg>
+      </svg>
+    </div>
+    <div style="font-family:'DM Serif Display';font-size:36px;color:var(--fg);line-height:1.15;margin-bottom:16px">
+      Experimental Lab<br>San Francisco &nbsp;/
+    </div>
+    <div style="padding:14px 18px;border:1.5px solid rgba(240,237,232,0.15);background:rgba(240,237,232,0.03)">
+      <div style="font-size:10px;letter-spacing:0.12em;color:var(--fg-dim);line-height:1.6">
+        DEPLOY SELF-IMPROVING AUTONOMOUS<br>AGENTS ACROSS ALL OPERATIONAL LAYERS
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     DIVIDER: DITHERED SUBSTRATES
+     ═══════════════════════════════════════════════ -->
+<div style="display:flex;align-items:center;gap:20px;margin:48px 0 8px">
+  <div style="flex:1;height:1px;background:rgba(240,237,232,0.06)"></div>
+  <span style="font-size:9px;letter-spacing:0.35em;color:rgba(240,237,232,0.2)">SERIES VII — COSMOS SUBSTRATES</span>
+  <div style="flex:1;height:1px;background:rgba(240,237,232,0.06)"></div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     ROW 7: MISTY LAKE DITHERED BANNER
+     ═══════════════════════════════════════════════ -->
+<div class="panel" style="background:#0a0a0a;min-height:480px;position:relative">
+  <canvas id="c-lake" width="1500" height="480" style="position:absolute;inset:0;width:100%;height:100%;display:block;opacity:0.4"></canvas>
+  <div class="scanlines-fine"></div>
+  <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    font-family:'Outfit';font-weight:900;font-size:220px;color:rgba(240,237,232,0.04);
+    letter-spacing:0.12em;white-space:nowrap;pointer-events:none;z-index:2">SEIDR</div>
+  <div style="position:absolute;top:28px;left:36px;z-index:5;display:flex;align-items:center;gap:12px">
+    <svg width="20" height="20" viewBox="0 0 100 100" class="topo-mark" style="color:var(--cyan)"><use href="#topo"/></svg>
+    <span style="font-size:10px;letter-spacing:0.22em;color:rgba(240,237,232,0.5)">FREYJA — NORDIC WATERS</span>
+  </div>
+  <div style="position:absolute;right:80px;top:50%;transform:translateY(-50%);z-index:5;width:200px;height:200px">
+    <svg width="200" height="200" viewBox="0 0 100 100" fill="none" stroke="var(--fg)" stroke-width="1.4" stroke-linejoin="round">
+      <path class="breathe-ring" d="M55.0,50.0 L55.1,50.7 L55.0,51.3 L54.7,51.9 L54.2,52.4 L53.7,52.8 L53.1,53.1 L52.6,53.4 L52.1,53.7 L51.6,53.9 L51.1,54.1 L50.6,54.2 L50.0,54.3 L49.4,54.2 L48.9,54.2 L48.3,54.2 L47.6,54.2 L46.9,54.1 L46.1,53.9 L45.5,53.5 L44.9,52.9 L44.6,52.2 L44.6,51.5 L44.7,50.7 L45.0,50.0 Z" opacity="1"/>
+      <path class="breathe-ring" d="M59.7,50.0 L59.8,51.3 L59.7,52.6 L59.1,53.8 L58.2,54.7 L57.2,55.5 L56.2,56.2 L55.2,56.8 L54.3,57.4 L53.3,58.0 L52.3,58.6 L51.2,59.1 L50.0,59.4 L48.8,59.5 L47.5,59.5 L46.1,59.3 L44.7,59.1 L43.3,58.7 L41.9,58.1 L40.7,57.2 L39.7,55.9 L39.3,54.4 L39.3,52.9 L39.8,51.3 L40.4,50.0 Z" opacity="0.9"/>
+      <path class="breathe-ring" d="M64.5,50.0 L64.8,52.0 L64.7,53.9 L63.9,55.7 L62.6,57.3 L61.1,58.5 L59.6,59.6 L58.1,60.6 L56.7,61.6 L55.3,62.8 L53.7,63.9 L52.0,64.8 L50.0,65.5 L47.9,65.7 L45.8,65.6 L43.7,65.1 L41.7,64.4 L39.7,63.4 L37.8,62.2 L36.3,60.5 L35.2,58.5 L34.8,56.3 L35.0,54.0 L35.7,51.9 L36.6,50.0 Z" opacity="0.8"/>
+      <path class="breathe-ring" d="M70.0,50.0 L70.6,52.7 L70.4,55.5 L69.4,58.0 L67.7,60.2 L65.6,62.0 L63.4,63.4 L61.4,64.8 L59.4,66.3 L57.4,67.9 L55.2,69.6 L52.8,70.9 L50.0,71.8 L47.1,72.0 L44.2,71.5 L41.5,70.5 L39.0,69.0 L36.7,67.3 L34.7,65.3 L33.1,63.0 L31.9,60.4 L31.5,57.7 L31.8,54.9 L32.5,52.3 L33.6,50.0 Z" opacity="0.7"/>
+      <path class="breathe-ring" d="M76.1,50.0 L76.8,53.5 L76.5,57.1 L75.1,60.4 L72.9,63.2 L70.1,65.5 L67.3,67.3 L64.5,69.0 L62.0,70.7 L59.4,72.7 L56.6,74.7 L53.5,76.3 L50.0,77.3 L46.4,77.3 L42.9,76.4 L39.8,74.7 L37.0,72.5 L34.7,70.0 L32.6,67.4 L31.0,64.6 L29.8,61.7 L29.2,58.6 L29.1,55.6 L29.6,52.7 L30.3,50.0 Z" opacity="0.6"/>
+      <path class="breathe-ring" d="M82.1,50.0 L82.6,54.3 L82.0,58.6 L80.2,62.5 L77.4,65.8 L74.0,68.4 L70.5,70.5 L67.1,72.3 L64.0,74.2 L60.9,76.4 L57.7,78.6 L54.0,80.4 L50.0,81.5 L45.9,81.4 L41.9,80.1 L38.5,77.9 L35.5,75.0 L33.1,72.0 L31.1,68.9 L29.3,65.9 L27.7,62.9 L26.5,59.7 L25.8,56.5 L25.5,53.2 L25.4,50.0 Z" opacity="0.5"/>
+    </svg>
+  </div>
+  <div style="position:absolute;bottom:28px;left:36px;z-index:5">
+    <span style="font-size:10px;letter-spacing:0.18em;color:rgba(240,237,232,0.4)">MISTY LAKE — NORDIC STILLNESS</span>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     ROW 8: HORSES HALFTONE + NEBULA BAYER
+     ═══════════════════════════════════════════════ -->
+<div class="row">
+  <div class="panel" style="flex:1;min-height:560px;background:#0a0a0a;position:relative">
+    <canvas id="c-smoke2" width="740" height="560" style="position:absolute;inset:0;width:100%;height:100%;display:block"></canvas>
+    <div class="scanlines-coral"></div>
+    <div style="position:absolute;bottom:0;left:0;right:0;padding:36px 32px;background:linear-gradient(transparent,rgba(10,10,10,0.9));z-index:5">
+      <div style="font-family:'Outfit';font-weight:900;font-size:48px;color:var(--fg);line-height:0.95;letter-spacing:0.04em;margin-bottom:10px">
+        FLUID<br>STATE
+      </div>
+      <div style="height:14px;margin-top:-2px;width:260px;
+        background-image:radial-gradient(circle,var(--amber) 1px,transparent 1px);
+        background-size:4px 4px;
+        mask-image:linear-gradient(180deg,rgba(0,0,0,0.35) 0%,transparent 100%);
+        -webkit-mask-image:linear-gradient(180deg,rgba(0,0,0,0.35) 0%,transparent 100%)"></div>
+      <div style="font-size:9px;letter-spacing:0.18em;color:rgba(212,100,74,0.7);text-transform:uppercase;margin-top:12px">HALFTONE: CORAL / FLUID / 6px</div>
+    </div>
+    <div style="position:absolute;top:20px;left:24px;z-index:5">
+      <span style="font-size:9px;letter-spacing:0.2em;color:rgba(212,100,74,0.5)">SUBSTRATE / AETHER-01</span>
+    </div>
+  </div>
+
+  <div class="panel" style="flex:1;min-height:560px;background:#0a0a0a;position:relative">
+    <canvas id="c-nebula" width="740" height="560" style="position:absolute;inset:0;width:100%;height:100%;display:block"></canvas>
+    <div style="position:relative;z-index:5;padding:40px 36px;display:flex;flex-direction:column;height:100%">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <div style="font-family:'Outfit';font-weight:900;font-size:12px;letter-spacing:0.25em;color:var(--fg-dim)">COSMOS SUBSTRATE</div>
+          <div style="font-size:9px;letter-spacing:0.12em;color:rgba(240,237,232,0.2);margin-top:4px">BAYER ORDERED / 4×4 MATRIX</div>
+        </div>
+        <svg width="22" height="22" viewBox="0 0 100 100" style="color:var(--blue)"><use href="#rings"/></svg>
+      </div>
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:center">
+        <div style="font-family:'Outfit';font-weight:900;font-size:72px;line-height:0.92;letter-spacing:0.03em" class="gt">DEEP<br>FIELD</div>
+        <div style="height:16px;margin-top:-2px;width:300px;
+          background-image:radial-gradient(circle,var(--violet) 1px,transparent 1px);
+          background-size:4.5px 4.5px;
+          mask-image:linear-gradient(180deg,rgba(0,0,0,0.3) 0%,transparent 100%);
+          -webkit-mask-image:linear-gradient(180deg,rgba(0,0,0,0.3) 0%,transparent 100%)"></div>
+        <div style="font-size:11px;letter-spacing:0.15em;color:var(--fg-dim);margin-top:16px;max-width:360px;line-height:1.7;text-transform:uppercase">
+          Star-field nebula rendered through ordered dither. Each pixel mapped to the Freyja gradient spectrum.
+        </div>
+      </div>
+      <div style="display:flex;gap:32px;padding-top:16px;border-top:1px solid rgba(240,237,232,0.06)">
+        <div>
+          <div style="font-family:'Outfit';font-weight:900;font-size:28px;color:var(--blue);line-height:1">10⁹</div>
+          <div style="font-size:8px;letter-spacing:0.1em;color:var(--fg-dim);margin-top:3px">STARS</div>
+        </div>
+        <div style="width:1px;background:rgba(240,237,232,0.06)"></div>
+        <div>
+          <div style="font-family:'Outfit';font-weight:900;font-size:28px;color:var(--violet);line-height:1">∞</div>
+          <div style="font-size:8px;letter-spacing:0.1em;color:var(--fg-dim);margin-top:3px">DEPTH</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     ROW 9: SPECIMEN CATALOG + AURORA FORESIGHT
+     ═══════════════════════════════════════════════ -->
+<div class="row">
+  <!-- SPECIMEN / ARCHIVAL CATALOG PANEL -->
+  <div class="panel" style="flex:1;min-height:560px;background:#efeae0;color:#1a1a1a;position:relative;display:flex;flex-direction:column">
+
+    <!-- Aged paper grain overlay -->
+    <div style="position:absolute;inset:0;pointer-events:none;z-index:6;
+      background-image:radial-gradient(circle,rgba(0,0,0,0.04) 0.6px,transparent 0.6px);
+      background-size:3px 3px"></div>
+
+    <!-- Header: catalog number bar -->
+    <div style="padding:16px 28px;border-bottom:1px solid rgba(26,26,26,0.12);display:flex;justify-content:space-between;align-items:center;z-index:5;position:relative">
+      <span style="font-family:'Space Mono';font-size:9px;letter-spacing:0.25em;color:rgba(26,26,26,0.55);text-transform:uppercase">Plate Nº 047 &nbsp;/&nbsp; Series VIII</span>
+      <span style="font-family:'Space Mono';font-size:9px;letter-spacing:0.2em;color:rgba(26,26,26,0.4)">FREYJA ARCHIVES &mdash; SF</span>
+    </div>
+
+    <!-- Specimen area (halftoned bird) -->
+    <div style="flex:1;padding:28px 28px 0;display:flex;flex-direction:column;position:relative;z-index:5">
+      <!-- Caption above plate -->
+      <div style="text-align:center;margin-bottom:10px">
+        <span style="font-family:'DM Serif Display';font-style:italic;font-size:11px;letter-spacing:0.08em;color:rgba(26,26,26,0.55)">fig. 01 &mdash; <span style="text-transform:none">the watcher in transit</span></span>
+      </div>
+
+      <!-- Plate frame -->
+      <div style="flex:1;border:1px solid rgba(26,26,26,0.2);background:#dcd5c5;position:relative;overflow:hidden">
+        <canvas id="c-specimen" width="680" height="340" style="display:block;width:100%;height:100%"></canvas>
+        <!-- Corner tick marks (archivist's crop guides) -->
+        <div style="position:absolute;top:6px;left:6px;width:12px;height:12px;border-top:1px solid rgba(26,26,26,0.4);border-left:1px solid rgba(26,26,26,0.4)"></div>
+        <div style="position:absolute;top:6px;right:6px;width:12px;height:12px;border-top:1px solid rgba(26,26,26,0.4);border-right:1px solid rgba(26,26,26,0.4)"></div>
+        <div style="position:absolute;bottom:6px;left:6px;width:12px;height:12px;border-bottom:1px solid rgba(26,26,26,0.4);border-left:1px solid rgba(26,26,26,0.4)"></div>
+        <div style="position:absolute;bottom:6px;right:6px;width:12px;height:12px;border-bottom:1px solid rgba(26,26,26,0.4);border-right:1px solid rgba(26,26,26,0.4)"></div>
+      </div>
+
+      <!-- Latin binomial below plate -->
+      <div style="text-align:center;padding:14px 0 4px">
+        <div style="font-family:'DM Serif Display';font-style:italic;font-size:24px;color:#1a1a1a;line-height:1">Agens vigilans</div>
+        <div style="font-family:'Space Mono';font-size:9px;letter-spacing:0.3em;color:rgba(26,26,26,0.45);text-transform:uppercase;margin-top:4px">the waking agent</div>
+      </div>
+    </div>
+
+    <!-- Archival metadata footer -->
+    <div style="padding:16px 28px 20px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;border-top:1px solid rgba(26,26,26,0.12);z-index:5;position:relative">
+      <div>
+        <div style="font-family:'Space Mono';font-size:8px;letter-spacing:0.18em;color:rgba(26,26,26,0.4);text-transform:uppercase;margin-bottom:4px">COLLECTED</div>
+        <div style="font-family:'DM Serif Display';font-size:13px;color:#1a1a1a">14 · IV · MMXXVI</div>
+      </div>
+      <div>
+        <div style="font-family:'Space Mono';font-size:8px;letter-spacing:0.18em;color:rgba(26,26,26,0.4);text-transform:uppercase;margin-bottom:4px">LOCALE</div>
+        <div style="font-family:'DM Serif Display';font-size:13px;color:#1a1a1a">37.7749° N</div>
+      </div>
+      <div>
+        <div style="font-family:'Space Mono';font-size:8px;letter-spacing:0.18em;color:rgba(26,26,26,0.4);text-transform:uppercase;margin-bottom:4px">ACCESSION</div>
+        <div style="font-family:'DM Serif Display';font-size:13px;color:#1a1a1a">FRY-0047-α</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- AURORA FORESIGHT — gradient aurora bg dithered -->
+  <div class="panel" style="flex:1;min-height:560px;background:#0a0a0a;position:relative">
+    <canvas id="c-aurora" width="740" height="560" style="position:absolute;inset:0;width:100%;height:100%;display:block;opacity:0.4"></canvas>
+    <div style="position:absolute;inset:0;pointer-events:none;z-index:2;
+      background:linear-gradient(180deg,rgba(122,230,255,0.04) 0%,rgba(180,176,255,0.06) 40%,rgba(200,154,255,0.05) 100%);
+      mix-blend-mode:screen"></div>
+    <div style="position:relative;z-index:5;padding:40px 36px;display:flex;flex-direction:column;height:100%">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <div style="font-family:'Outfit';font-weight:900;font-size:11px;letter-spacing:0.25em;color:var(--fg-dim)">SEIDR FORESIGHT</div>
+          <div style="font-size:8px;letter-spacing:0.12em;color:rgba(240,237,232,0.2);margin-top:4px">NORSE PREDICTIVE ENGINE</div>
+        </div>
+      </div>
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:center">
+        <div style="font-family:'DM Serif Display';font-size:64px;color:var(--fg);line-height:1.05;margin-bottom:16px">
+          Foresight<br><span style="font-style:italic;color:var(--violet)">Engine</span>
+        </div>
+        <div style="font-size:11px;letter-spacing:0.08em;color:var(--fg-dim);line-height:1.7;max-width:380px">
+          Named for the Norse practice of Seiðr — the art of seeing what is yet to come. Freyja anticipates, plans, and acts before you ask.
+        </div>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-end">
+        <div style="display:flex;gap:20px">
+          <div>
+            <div style="font-family:'Outfit';font-weight:900;font-size:32px;line-height:1" class="gt">∞</div>
+            <div style="font-size:8px;letter-spacing:0.1em;color:var(--fg-dim);margin-top:3px">HORIZON</div>
+          </div>
+          <div style="width:1px;background:rgba(240,237,232,0.06)"></div>
+          <div>
+            <div style="font-family:'Outfit';font-weight:900;font-size:32px;color:var(--violet);line-height:1">SEIDR</div>
+            <div style="font-size:8px;letter-spacing:0.1em;color:var(--fg-dim);margin-top:3px">PROTOCOL</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     DIVIDER: PLATFORM SHOWCASE
+     ═══════════════════════════════════════════════ -->
+<div style="display:flex;align-items:center;gap:20px;margin:48px 0 8px">
+  <div style="flex:1;height:1px;background:rgba(240,237,232,0.06)"></div>
+  <span style="font-size:9px;letter-spacing:0.35em;color:rgba(240,237,232,0.2)">SERIES VIII — PLATFORM SHOWCASE</span>
+  <div style="flex:1;height:1px;background:rgba(240,237,232,0.06)"></div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     ROW 10: PLATFORM HERO
+     ═══════════════════════════════════════════════ -->
+<div class="panel" style="background:var(--bg);min-height:620px;display:grid;grid-template-columns:1fr 1fr;position:relative">
+  <div style="padding:64px 72px;display:flex;flex-direction:column;justify-content:center;position:relative;z-index:2">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:28px">
+      <svg width="22" height="22" viewBox="0 0 100 100" class="topo-mark" style="color:var(--cyan)"><use href="#topo"/></svg>
+      <span style="font-family:'Outfit';font-weight:900;font-size:10px;letter-spacing:0.3em;color:var(--fg-dim)">FREYJA PLATFORM</span>
+      <div style="height:1px;flex:1;background:rgba(240,237,232,0.08)"></div>
+    </div>
+    <div style="font-family:'DM Serif Display';font-size:56px;color:var(--fg);line-height:1.08;margin-bottom:20px">
+      The self-improving<br>desktop agent
+    </div>
+    <div style="font-size:12px;letter-spacing:0.06em;color:var(--fg-dim);line-height:1.7;max-width:440px;margin-bottom:36px">
+      Freyja deploys autonomous agents that learn, adapt, and coordinate across every operational layer — no human input required.
+    </div>
+    <div style="display:flex;gap:40px">
+      <div>
+        <div style="font-family:'Outfit';font-weight:900;font-size:40px;line-height:1" class="gt">98%</div>
+        <div style="font-size:8px;letter-spacing:0.12em;color:var(--fg-dim);margin-top:4px">CONTEXT<br>RETENTION</div>
+      </div>
+      <div>
+        <div style="font-family:'Outfit';font-weight:900;font-size:40px;line-height:1" class="gt">14.2h</div>
+        <div style="font-size:8px;letter-spacing:0.12em;color:var(--fg-dim);margin-top:4px">SUSTAINED<br>AUTONOMY</div>
+      </div>
+      <div>
+        <div style="font-family:'Outfit';font-weight:900;font-size:40px;line-height:1" class="gt">4.2×</div>
+        <div style="font-size:8px;letter-spacing:0.12em;color:var(--fg-dim);margin-top:4px">TASK<br>SPEEDUP</div>
+      </div>
+    </div>
+  </div>
+  <div style="position:relative;display:flex;align-items:center;justify-content:center">
+    <!-- Smoke/particle figure dithered as product visual -->
+    <canvas id="c-smoke" width="740" height="620" style="position:absolute;inset:0;width:100%;height:100%;display:block;opacity:0.3"></canvas>
+    <div class="scanlines-fine"></div>
+    <div style="position:relative;z-index:5;width:380px;background:rgba(10,10,10,0.9);border:1px solid rgba(240,237,232,0.1);box-shadow:0 40px 80px rgba(0,0,0,0.6)" class="float">
+      <div style="display:flex;align-items:center;padding:10px 14px;border-bottom:1px solid rgba(240,237,232,0.06);gap:6px">
+        <div style="width:10px;height:10px;border-radius:50%;background:#ff5f57"></div>
+        <div style="width:10px;height:10px;border-radius:50%;background:#febc2e"></div>
+        <div style="width:10px;height:10px;border-radius:50%;background:#28c840"></div>
+        <span style="margin-left:auto;font-size:9px;letter-spacing:0.12em;color:var(--fg-dim)">FREYJA v0.1</span>
+      </div>
+      <div style="padding:20px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">
+          <svg width="16" height="16" viewBox="0 0 100 100" class="topo-mark" style="color:var(--cyan)"><use href="#topo"/></svg>
+          <span style="font-size:10px;letter-spacing:0.08em" class="gt">ubα</span>
+          <div style="height:12px;width:1px;background:rgba(240,237,232,0.1)"></div>
+          <div style="display:flex;align-items:center;gap:4px;padding:2px 8px;background:rgba(58,200,64,0.1);border-radius:4px">
+            <div style="width:5px;height:5px;border-radius:50%;background:#28c840"></div>
+            <span style="font-size:8px;color:#28c840;letter-spacing:0.08em">LIVE</span>
+          </div>
+        </div>
+        <div style="background:rgba(240,237,232,0.04);padding:10px 12px;border-radius:6px;margin-bottom:6px">
+          <div style="font-size:9px;color:var(--fg-dim);line-height:1.5">Deploy the monitoring agent to track all API endpoints and alert on anomalies.</div>
+        </div>
+        <div style="background:rgba(122,230,255,0.06);padding:10px 12px;border-radius:6px;border-left:2px solid var(--cyan)">
+          <div style="font-size:9px;color:var(--fg-dim);line-height:1.5">Agent deployed. Monitoring 47 endpoints. First anomaly scan in 30s.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:rgba(240,237,232,0.04)"></div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     ROW 11: FEATURE CARDS
+     ═══════════════════════════════════════════════ -->
+<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px">
+  <div class="showcase-card" style="min-height:320px">
+    <div class="showcase-num">01</div>
+    <svg width="40" height="40" viewBox="0 0 100 100" style="color:var(--cyan);margin-bottom:20px"><use href="#disc"/></svg>
+    <div style="font-family:'Outfit';font-weight:900;font-size:22px;color:var(--fg);letter-spacing:0.04em;margin-bottom:10px">EPISODIC<br>MEMORY</div>
+    <div style="font-size:10px;letter-spacing:0.06em;color:var(--fg-dim);line-height:1.7;margin-bottom:auto">
+      4-layer eviction strategy treats context like scarce RAM. Skills unload at 60%. Episodes compress at 70%. Full compaction at 90%.
+    </div>
+    <div style="margin-top:20px;display:flex;align-items:center;gap:8px">
+      <div style="height:3px;flex:1;background:var(--cyan);opacity:0.4"></div>
+      <span style="font-size:8px;letter-spacing:0.12em;color:var(--cyan);opacity:0.6">128 EPISODES</span>
+    </div>
+  </div>
+  <div class="showcase-card" style="min-height:320px">
+    <div class="showcase-num">02</div>
+    <svg width="40" height="40" viewBox="0 0 100 100" style="color:var(--violet);margin-bottom:20px"><use href="#rings"/></svg>
+    <div style="font-family:'Outfit';font-weight:900;font-size:22px;color:var(--fg);letter-spacing:0.04em;margin-bottom:10px">AGENT<br>SWARMS</div>
+    <div style="font-size:10px;letter-spacing:0.06em;color:var(--fg-dim);line-height:1.7;margin-bottom:auto">
+      Multi-agent orchestration with shared episodic memory. Sub-agents spawn, coordinate, and self-correct without human intervention.
+    </div>
+    <div style="margin-top:20px;display:flex;align-items:center;gap:8px">
+      <div style="height:3px;flex:1;background:var(--violet);opacity:0.4"></div>
+      <span style="font-size:8px;letter-spacing:0.12em;color:var(--violet);opacity:0.6">4.2× SPEEDUP</span>
+    </div>
+  </div>
+  <div class="showcase-card" style="min-height:320px">
+    <div class="showcase-num">03</div>
+    <svg width="40" height="40" viewBox="0 0 100 95" style="color:var(--amber);margin-bottom:20px"><use href="#peak"/></svg>
+    <div style="font-family:'Outfit';font-weight:900;font-size:22px;color:var(--fg);letter-spacing:0.04em;margin-bottom:10px">SKILL<br>RELAY</div>
+    <div style="font-size:10px;letter-spacing:0.06em;color:var(--fg-dim);line-height:1.7;margin-bottom:auto">
+      Composable skill graph that grows with usage. Each session teaches the system new capabilities that persist across restarts.
+    </div>
+    <div style="margin-top:20px;display:flex;align-items:center;gap:8px">
+      <div style="height:3px;flex:1;background:var(--amber);opacity:0.4"></div>
+      <span style="font-size:8px;letter-spacing:0.12em;color:var(--amber);opacity:0.6">SELF-IMPROVING</span>
+    </div>
+  </div>
+  <div class="showcase-card" style="min-height:320px">
+    <div class="showcase-num">04</div>
+    <svg width="40" height="40" viewBox="0 0 100 100" class="topo-mark" style="color:var(--purple);margin-bottom:20px" stroke-width="2"><use href="#topo"/></svg>
+    <div style="font-family:'Outfit';font-weight:900;font-size:22px;color:var(--fg);letter-spacing:0.04em;margin-bottom:10px">SEIDR<br>FORESIGHT</div>
+    <div style="font-size:10px;letter-spacing:0.06em;color:var(--fg-dim);line-height:1.7;margin-bottom:auto">
+      Predictive planning engine that anticipates user needs before they're expressed. Proactive, not reactive.
+    </div>
+    <div style="margin-top:20px;display:flex;align-items:center;gap:8px">
+      <div style="height:3px;flex:1;background:var(--purple);opacity:0.4"></div>
+      <span style="font-size:8px;letter-spacing:0.12em;color:var(--purple);opacity:0.6">FORESIGHT</span>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     ROW 12: CLOSING — CONTOUR SWIRL
+     ═══════════════════════════════════════════════ -->
+<div class="panel" style="background:#0a0a0a;min-height:360px;display:flex;align-items:center;position:relative">
+  <canvas id="c-swirl" width="1500" height="360" style="position:absolute;inset:0;width:100%;height:100%;display:block;opacity:0.45"></canvas>
+  <!-- Paper grain overlay -->
+  <div style="position:absolute;inset:0;pointer-events:none;z-index:2;
+    background-image:radial-gradient(circle,rgba(232,228,222,0.04) 0.5px,transparent 0.5px);
+    background-size:2.5px 2.5px;mix-blend-mode:screen"></div>
+  <div style="position:relative;z-index:5;padding:0 72px;display:flex;align-items:center;justify-content:space-between;width:100%">
+    <div style="max-width:680px">
+      <div style="font-family:'DM Serif Display';font-size:44px;color:var(--fg);line-height:1.15;margin-bottom:16px">
+        "Deploy once.<br>Learn forever."
+      </div>
+      <div style="font-size:11px;letter-spacing:0.12em;color:var(--fg-dim);line-height:1.6;max-width:480px">
+        Freyja agents maintain continuous context, adapt their behavior through episodic reinforcement, and coordinate across all operational layers without human intervention.
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:16px">
+      <div style="width:180px;height:180px">
+        <svg width="180" height="180" viewBox="0 0 100 100" fill="none" stroke="var(--fg)" stroke-width="1.4" stroke-linejoin="round">
+          <path class="breathe-ring" d="M55.0,50.0 L55.1,50.7 L55.0,51.3 L54.7,51.9 L54.2,52.4 L53.7,52.8 L53.1,53.1 L52.6,53.4 L52.1,53.7 L51.6,53.9 L51.1,54.1 L50.6,54.2 L50.0,54.3 L49.4,54.2 L48.9,54.2 L48.3,54.2 L47.6,54.2 L46.9,54.1 L46.1,53.9 L45.5,53.5 L44.9,52.9 L44.6,52.2 L44.6,51.5 L44.7,50.7 L45.0,50.0 Z" opacity="1"/>
+          <path class="breathe-ring" d="M59.7,50.0 L59.8,51.3 L59.7,52.6 L59.1,53.8 L58.2,54.7 L57.2,55.5 L56.2,56.2 L55.2,56.8 L54.3,57.4 L53.3,58.0 L52.3,58.6 L51.2,59.1 L50.0,59.4 L48.8,59.5 L47.5,59.5 L46.1,59.3 L44.7,59.1 L43.3,58.7 L41.9,58.1 L40.7,57.2 L39.7,55.9 L39.3,54.4 L39.3,52.9 L39.8,51.3 L40.4,50.0 Z" opacity="0.9"/>
+          <path class="breathe-ring" d="M64.5,50.0 L64.8,52.0 L64.7,53.9 L63.9,55.7 L62.6,57.3 L61.1,58.5 L59.6,59.6 L58.1,60.6 L56.7,61.6 L55.3,62.8 L53.7,63.9 L52.0,64.8 L50.0,65.5 L47.9,65.7 L45.8,65.6 L43.7,65.1 L41.7,64.4 L39.7,63.4 L37.8,62.2 L36.3,60.5 L35.2,58.5 L34.8,56.3 L35.0,54.0 L35.7,51.9 L36.6,50.0 Z" opacity="0.8"/>
+          <path class="breathe-ring" d="M70.0,50.0 L70.6,52.7 L70.4,55.5 L69.4,58.0 L67.7,60.2 L65.6,62.0 L63.4,63.4 L61.4,64.8 L59.4,66.3 L57.4,67.9 L55.2,69.6 L52.8,70.9 L50.0,71.8 L47.1,72.0 L44.2,71.5 L41.5,70.5 L39.0,69.0 L36.7,67.3 L34.7,65.3 L33.1,63.0 L31.9,60.4 L31.5,57.7 L31.8,54.9 L32.5,52.3 L33.6,50.0 Z" opacity="0.7"/>
+          <path class="breathe-ring" d="M76.1,50.0 L76.8,53.5 L76.5,57.1 L75.1,60.4 L72.9,63.2 L70.1,65.5 L67.3,67.3 L64.5,69.0 L62.0,70.7 L59.4,72.7 L56.6,74.7 L53.5,76.3 L50.0,77.3 L46.4,77.3 L42.9,76.4 L39.8,74.7 L37.0,72.5 L34.7,70.0 L32.6,67.4 L31.0,64.6 L29.8,61.7 L29.2,58.6 L29.1,55.6 L29.6,52.7 L30.3,50.0 Z" opacity="0.6"/>
+          <path class="breathe-ring" d="M82.1,50.0 L82.6,54.3 L82.0,58.6 L80.2,62.5 L77.4,65.8 L74.0,68.4 L70.5,70.5 L67.1,72.3 L64.0,74.2 L60.9,76.4 L57.7,78.6 L54.0,80.4 L50.0,81.5 L45.9,81.4 L41.9,80.1 L38.5,77.9 L35.5,75.0 L33.1,72.0 L31.1,68.9 L29.3,65.9 L27.7,62.9 L26.5,59.7 L25.8,56.5 L25.5,53.2 L25.4,50.0 Z" opacity="0.5"/>
+        </svg>
+      </div>
+      <div style="display:flex;gap:12px;align-items:center">
+        <svg width="20" height="20" viewBox="0 0 20 20" style="color:var(--fg-dim)"><use href="#fstar"/></svg>
+        <span style="font-family:'Outfit';font-weight:900;font-size:10px;letter-spacing:0.2em;color:var(--fg-dim)">FREYJA SYSTEMS</span>
+        <svg width="20" height="20" viewBox="0 0 20 20" style="color:var(--fg-dim)"><use href="#fstar"/></svg>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+</div><!-- end .board -->
+
+
+<!-- ══════════════════════════════════════════════════════
+     EFFECTS ENGINE
+     ══════════════════════════════════════════════════════ -->
+<script>
+const IMG='../../../Downloads/cosmos_moodboard';
+function clamp(v){return Math.max(0,Math.min(255,v))}
+
+const FX={
+  dither(ctx,w,h,{fg=[240,237,232],bg=[10,10,10],threshold=128}={}){
+    const od=ctx.getImageData(0,0,w,h).data;
+    const gray=new Float32Array(w*h);
+    for(let i=0;i<w*h;i++)gray[i]=od[i*4]*0.299+od[i*4+1]*0.587+od[i*4+2]*0.114;
+    for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+      const idx=y*w+x,oldG=gray[idx],newG=oldG>threshold?255:0,err=oldG-newG;
+      gray[idx]=newG;
+      if(x+1<w)gray[idx+1]=clamp(gray[idx+1]+err*7/16);
+      if(y+1<h){if(x>0)gray[idx+w-1]=clamp(gray[idx+w-1]+err*3/16);gray[idx+w]=clamp(gray[idx+w]+err*5/16);if(x+1<w)gray[idx+w+1]=clamp(gray[idx+w+1]+err*1/16)}
+    }
+    const r=ctx.createImageData(w,h),rd=r.data;
+    for(let i=0;i<w*h;i++){const on=gray[i]>128;rd[i*4]=on?fg[0]:bg[0];rd[i*4+1]=on?fg[1]:bg[1];rd[i*4+2]=on?fg[2]:bg[2];rd[i*4+3]=255}
+    ctx.putImageData(r,0,0);
+  },
+  halftone(ctx,imageData,w,h,{spacing=7,dotColor='rgba(212,100,74,0.92)',bg='#0a0a0a',hexOffset=true,maxRadius=null}={}){
+    ctx.fillStyle=bg;ctx.fillRect(0,0,w,h);
+    const d=imageData.data,mr=maxRadius||spacing*0.62;
+    for(let y=0;y<h+spacing;y+=spacing){
+      const row=Math.floor(y/spacing),xOff=hexOffset&&row%2===1?spacing*0.5:0;
+      for(let x=-spacing;x<w+spacing;x+=spacing){
+        const px=Math.round(x+xOff),py=Math.round(y),sx=Math.max(0,Math.min(w-1,px)),sy=Math.max(0,Math.min(h-1,py));
+        const idx=(sy*w+sx)*4,brightness=(d[idx]*0.299+d[idx+1]*0.587+d[idx+2]*0.114)/255;
+        const r=mr*(1-brightness);if(r<0.35)continue;
+        ctx.beginPath();ctx.arc(px+spacing*0.5,py+spacing*0.5,r,0,Math.PI*2);ctx.fillStyle=dotColor;ctx.fill();
+      }
+    }
+  },
+  bayer(ctx,w,h,{fg=[168,212,252],bg=[10,10,10]}={}){
+    const M=[[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]];
+    const id=ctx.getImageData(0,0,w,h),d=id.data;
+    for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+      const i=(y*w+x)*4,g=d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114,t=(M[y%4][x%4]/16)*255,on=g>t;
+      d[i]=on?fg[0]:bg[0];d[i+1]=on?fg[1]:bg[1];d[i+2]=on?fg[2]:bg[2];
+    }
+    ctx.putImageData(id,0,0);
+  },
+  noise(ctx,w,h,{fg=[240,237,232],bg=[10,10,10],density=0.4}={}){
+    const id=ctx.createImageData(w,h),d=id.data;
+    for(let i=0;i<w*h;i++){const on=Math.random()>density;d[i*4]=on?fg[0]:bg[0];d[i*4+1]=on?fg[1]:bg[1];d[i*4+2]=on?fg[2]:bg[2];d[i*4+3]=255}
+    ctx.putImageData(id,0,0);
+  }
+};
+
+function applyEffect(canvasId,src,effect,opts={}){
+  const canvas=document.getElementById(canvasId);if(!canvas)return;
+  const ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height;
+  const img=new Image();
+  img.onload=function(){
+    const ir=img.width/img.height,cr=w/h;let sw,sh,sx,sy;
+    if(ir>cr){sh=h;sw=h*ir;sy=0;sx=(w-sw)/2}else{sw=w;sh=w/ir;sx=0;sy=(h-sh)/2}
+    ctx.drawImage(img,sx,sy,sw,sh);
+    if(effect==='halftone'){const imageData=ctx.getImageData(0,0,w,h);ctx.clearRect(0,0,w,h);FX.halftone(ctx,imageData,w,h,opts)}
+    else if(effect==='dither'||effect==='bayer'){FX[effect](ctx,w,h,opts)}
+  };
+  img.onerror=function(){FX.noise(ctx,w,h,{})};
+  img.src=src;
+}
+
+document.addEventListener('DOMContentLoaded',function(){
+  // Row 1: Deploy — cyberpunk workspace bayer dithered in blue
+  applyEffect('c-deploy',IMG+'/cosmos_1099977434.jpeg','bayer',{fg:[168,212,252],bg:[10,10,10]});
+
+  // Row 2: Mountain ridgeline — dithered in cream
+  applyEffect('c-mountain',IMG+'/mountain-ridgeline-dramatic.jpg','dither',{fg:[240,237,232],bg:[10,10,10],threshold:110});
+
+  // Row 3 left: Leaf skeleton — halftone in cream
+  applyEffect('c-leaf',IMG+'/leaf-skeleton-magnolia-dark.jpeg','halftone',{spacing:5,dotColor:'rgba(240,237,232,0.9)',bg:'#0a0a0a',hexOffset:true});
+
+  // Row 3 right: Wireframe sphere — bayer in violet
+  applyEffect('c-sphere',IMG+'/wireframe-3d-mesh-organic-sphere.jpg','bayer',{fg:[180,176,255],bg:[10,10,10]});
+
+  // Row 7: Misty blue lake — dithered in blue
+  applyEffect('c-lake',IMG+'/misty-blue-lake-landscape.jpg','dither',{fg:[168,212,252],bg:[10,10,10],threshold:115});
+
+  // Row 8 left: Smoke fluid — halftone coral
+  applyEffect('c-smoke2',IMG+'/smoke-fluid-simulation-dark.jpg','halftone',{spacing:6,dotColor:'rgba(212,100,74,0.92)',bg:'#0a0a0a',hexOffset:true});
+
+  // Row 8 right: Nebula — halftone blue (no grid/scanlines, heavy halftone)
+  applyEffect('c-nebula',IMG+'/star-field-cosmos-nebula-blue.jpg','halftone',{spacing:5,dotColor:'rgba(168,212,252,0.9)',bg:'#0a0a0a',hexOffset:true});
+
+  // Row 9 left: Specimen — motion-blur bird halftoned on cream plate
+  applyEffect('c-specimen',IMG+'/bird-flight-motion-blur.jpg','halftone',{spacing:4,dotColor:'rgba(26,26,26,0.85)',bg:'#dcd5c5',hexOffset:true});
+
+  // Row 9 right: Aurora gradient — dithered in violet
+  applyEffect('c-aurora',IMG+'/dark-gradient-aurora-abstract.jpg','dither',{fg:[180,176,255],bg:[10,10,10],threshold:115});
+
+  // Row 10: Smoke figure — dithered in violet
+  applyEffect('c-smoke',IMG+'/smoke-ethereal-white-dark-bg.jpg','dither',{fg:[200,154,255],bg:[10,10,10],threshold:120});
+
+  // Row 12: Contour swirl — Floyd-Steinberg dither for inked-paper feel
+  applyEffect('c-swirl',IMG+'/contour-swirl-abstract-lines.jpg','dither',{fg:[232,228,222],bg:[10,10,10],threshold:90});
+});
+</script>
+
+</body>
+</html>

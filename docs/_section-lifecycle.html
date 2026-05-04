@@ -1,0 +1,291 @@
+<!-- ═══════════════════════════════════════════
+     X. THE SKILL LIFECYCLE
+     ═══════════════════════════════════════════ -->
+<section id="lifecycle" class="reveal">
+<div class="section-label"><span class="section-num">X</span> the skill lifecycle</div>
+<h2 style="font-size: 22px; margin-bottom: 16px;">From Birth to Retirement</h2>
+
+<p>Every skill has a biography. It is born from one of four distinct pathways, grows through a maturity ladder gated by statistical confidence, draws sustenance from three layers of memory, and — eventually — dies. The lifecycle is not a conveyor belt; it's a loop. Dead skills seed the traces from which new skills crystallise. Understanding this loop is the difference between a skill library that compounds and one that rots.</p>
+
+<!-- ── Animated lifecycle ring ─────── -->
+<style>
+  @keyframes lifecycle-pulse {
+    0%   { opacity: 1; }
+    25%  { opacity: 0.25; }
+    50%  { opacity: 0.25; }
+    75%  { opacity: 0.25; }
+    100% { opacity: 1; }
+  }
+  .lc-ring-stage { transition: opacity 0.4s ease; }
+  .lc-stage-birth  { animation: lifecycle-pulse 8s ease-in-out 0s infinite; }
+  .lc-stage-growth  { animation: lifecycle-pulse 8s ease-in-out 2s infinite; }
+  .lc-stage-mature  { animation: lifecycle-pulse 8s ease-in-out 4s infinite; }
+  .lc-stage-retire  { animation: lifecycle-pulse 8s ease-in-out 6s infinite; }
+  @keyframes orbit-dot {
+    0%   { offset-distance: 0%; }
+    100% { offset-distance: 100%; }
+  }
+  .lc-orbit-dot {
+    offset-path: path('M 300,60 C 470,60 540,130 540,240 C 540,350 470,420 300,420 C 130,420 60,350 60,240 C 60,130 130,60 300,60 Z');
+    animation: orbit-dot 8s linear infinite;
+    offset-rotate: 0deg;
+  }
+</style>
+
+<div class="diagram reveal" style="overflow: visible;">
+  <span class="diagram-label">Skill lifecycle — circular flow</span>
+  <svg viewBox="0 0 600 480" xmlns="http://www.w3.org/2000/svg">
+    <!-- Orbit ring -->
+    <ellipse cx="300" cy="240" rx="220" ry="170" fill="none" stroke="#ccc" stroke-width="1.5" stroke-dasharray="6,4"/>
+    <!-- Animated pulse dot traveling the ring -->
+    <circle class="lc-orbit-dot" r="5" fill="#70808d"/>
+    <!-- ─── BIRTH (top) ─── -->
+    <g class="lc-ring-stage lc-stage-birth">
+      <rect x="220" y="40" width="160" height="56" rx="3" fill="#1a1a1a" stroke="#70808d" stroke-width="1.5"/>
+      <text x="300" y="62" font-family="'JetBrains Mono',monospace" font-size="9" fill="#70808d" text-anchor="middle" font-weight="700" letter-spacing="0.08em">① BIRTH</text>
+      <text x="300" y="80" font-family="'JetBrains Mono',monospace" font-size="8" fill="#999" text-anchor="middle">4 pathways · crystallisation gate</text>
+    </g>
+    <!-- ─── GROWTH (right) ─── -->
+    <g class="lc-ring-stage lc-stage-growth">
+      <rect x="430" y="212" width="160" height="56" rx="3" fill="#1a1a1a" stroke="#5b7a5b" stroke-width="1.5"/>
+      <text x="510" y="234" font-family="'JetBrains Mono',monospace" font-size="9" fill="#5b7a5b" text-anchor="middle" font-weight="700" letter-spacing="0.08em">② GROWTH</text>
+      <text x="510" y="252" font-family="'JetBrains Mono',monospace" font-size="8" fill="#999" text-anchor="middle">maturity gating · EMA confidence</text>
+    </g>
+    <!-- ─── MATURITY (bottom) ─── -->
+    <g class="lc-ring-stage lc-stage-mature">
+      <rect x="220" y="384" width="160" height="56" rx="3" fill="#1a1a1a" stroke="#9a7a3a" stroke-width="1.5"/>
+      <text x="300" y="406" font-family="'JetBrains Mono',monospace" font-size="9" fill="#9a7a3a" text-anchor="middle" font-weight="700" letter-spacing="0.08em">③ MATURITY</text>
+      <text x="300" y="424" font-family="'JetBrains Mono',monospace" font-size="8" fill="#999" text-anchor="middle">3 memory layers · verified status</text>
+    </g>
+    <!-- ─── RETIREMENT (left) ─── -->
+    <g class="lc-ring-stage lc-stage-retire">
+      <rect x="10" y="212" width="160" height="56" rx="3" fill="#1a1a1a" stroke="#a05050" stroke-width="1.5"/>
+      <text x="90" y="234" font-family="'JetBrains Mono',monospace" font-size="9" fill="#a05050" text-anchor="middle" font-weight="700" letter-spacing="0.08em">④ RETIREMENT</text>
+      <text x="90" y="252" font-family="'JetBrains Mono',monospace" font-size="8" fill="#999" text-anchor="middle">pruning · redesign · obsolescence</text>
+    </g>
+    <!-- Directional arrows (clockwise) -->
+    <g fill="none" stroke="#999" stroke-width="1.2">
+      <path d="M 380,75 C 420,90 450,140 470,210" marker-end="url(#lc-arrow)"/>
+      <path d="M 510,270 C 480,340 430,390 380,418" marker-end="url(#lc-arrow)"/>
+      <path d="M 220,418 C 170,390 120,340 95,270" marker-end="url(#lc-arrow)"/>
+      <path d="M 90,210 C 110,140 160,90 220,68" marker-end="url(#lc-arrow)"/>
+    </g>
+    <!-- Rebirth arc from retire → birth -->
+    <path d="M 90,212 C 70,150 120,90 218,58" fill="none" stroke="#70808d" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#lc-arrow-accent)"/>
+    <text x="110" y="130" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" transform="rotate(-50,110,130)">rebirth</text>
+    <defs>
+      <marker id="lc-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0,0 L 8,4 L 0,8 Z" fill="#999"/></marker>
+      <marker id="lc-arrow-accent" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0,0 L 8,4 L 0,8 Z" fill="#70808d"/></marker>
+    </defs>
+  </svg>
+  <div class="caption">A skill's life is circular — retirement traces feed the next generation of crystallised skills.</div>
+</div>
+
+<hr style="margin: 48px 0;">
+
+<!-- ─── BIRTH ───────────────────────── -->
+<h3 style="font-size: 18px; margin-bottom: 12px;">① Birth — four pathways to existence</h3>
+
+<p>Skills don't appear from nowhere. Every skill in every library we surveyed entered through one of exactly four doors:</p>
+
+<div class="approach-grid">
+  <div class="approach-card">
+    <div class="card-tag">Pathway A</div>
+    <h4>Human-authored</h4>
+    <p>A developer writes a <code>SKILL.md</code> by hand. Still the dominant pathway for seed skills — Memento started with 5 hand-crafted seeds and grew to 235 autonomously.<a href="https://arxiv.org/abs/2603.18743" class="cite">[M1]</a></p>
+  </div>
+  <div class="approach-card">
+    <div class="card-tag">Pathway B</div>
+    <h4>Extracted from traces</h4>
+    <p>ProcMEM distils raw trajectories into <code>(Activation, Execution, Termination)</code> tuples — <strong>26× compression</strong>: 102 tokens per skill vs. 2,675 tokens per trajectory. 92.5% in-domain reuse rate.<a href="https://arxiv.org/abs/2602.01869" class="cite">[M2]</a></p>
+  </div>
+  <div class="approach-card">
+    <div class="card-tag">Pathway C</div>
+    <h4>Mined from repositories</h4>
+    <p>Code modules are converted to <code>SKILL.md</code> via dense retrieval + cross-encoder reranking. Repository mining automates the human-authoring bottleneck at scale.<a href="https://arxiv.org/abs/2603.11808" class="cite">[M3]</a></p>
+  </div>
+  <div class="approach-card">
+    <div class="card-tag">Pathway D</div>
+    <h4>Evolved from failures</h4>
+    <p>Memento-Skills: when utility drops below threshold δ after n<sub>min</sub> invocations, the system triggers <code>DiscoverSkill</code> or <code>OptimiseSkill</code> — failure is the mother of invention.<a href="https://arxiv.org/abs/2603.18743" class="cite">[M1]</a></p>
+  </div>
+</div>
+
+<div class="callout">
+  <div class="callout-label">The crystallisation decision tree</div>
+  <p>Not every trace becomes a skill. The gate logic, reconstructed from ProcMEM and AutoRefine:</p>
+</div>
+
+<pre style="font-size: 12px; line-height: 1.7;">
+Trace received
+  │
+  ├─ One-off pattern? ──────────────────── → discard
+  │
+  ├─ Recurring pattern detected?
+  │    │
+  │    ├─ Complex / stateful? ──────────── → Subagent pattern  (AutoRefine)
+  │    │
+  │    └─ Procedural / deterministic? ──── → Skill candidate
+  │         │
+  │         ├─ PPO-Gate: better than       → reject  (ProcMEM trust-region
+  │         │  existing baseline?               verification)
+  │         │
+  │         └─ Similar skill exists?
+  │              ├─ yes ────────────────── → MERGE  (version bump)
+  │              └─ no ─────────────────── → NEW    (mint v0.1.0)
+</pre>
+
+<div class="stat-row reveal">
+  <div class="stat-card">
+    <div class="stat-value">102</div>
+    <div class="stat-label">avg tokens / skill</div>
+    <div class="stat-source">ProcMEM</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">2,675</div>
+    <div class="stat-label">avg tokens / trajectory</div>
+    <div class="stat-source">ProcMEM</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">26×</div>
+    <div class="stat-label">compression ratio</div>
+    <div class="stat-source">trace → skill</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">92.5%</div>
+    <div class="stat-label">in-domain reuse</div>
+    <div class="stat-source">ProcMEM</div>
+  </div>
+</div>
+
+<hr style="margin: 48px 0;">
+
+<!-- ─── GROWTH ──────────────────────── -->
+<h3 style="font-size: 18px; margin-bottom: 12px;">② Growth — the maturity ladder</h3>
+
+<p>A newly minted skill is unproven. It enters a maturity ladder — each rung gated by statistical evidence, not time. Young skills stay plastic; mature skills freeze like late layers in a neural network. PSN formalises this with a maturity-aware update probability:</p>
+
+<pre style="font-size: 12px; line-height: 1.7;">P(update | σ) = 1 − sigmoid(V(σ) / threshold) + ε_min</pre>
+
+<p>Where <code>V(σ)</code> is the cumulative validation score. As a skill proves itself, its update probability decays toward <code>ε_min</code> — a small floor that keeps even verified skills open to rare, high-signal corrections. The intuition: <em>don't fix what isn't broken, but never fully lock the door.</em></p>
+
+<div class="timeline reveal">
+  <div class="timeline-item">
+    <div class="era">Stage 0 — Unvalidated</div>
+    <h4>Raw candidate, no evidence</h4>
+    <p>Just crystallised from a trace or authored by hand. Update probability ≈ 1.0. Every invocation result feeds back into the skill's body. High churn is expected — most skills die here.</p>
+  </div>
+  <div class="timeline-item">
+    <div class="era">Stage 1 — Experimental</div>
+    <h4>Early positive signal</h4>
+    <p>Passed initial unit-test gates (Memento-Skills) or achieved positive Q-value (ProcMEM). Update probability ~0.6. The skill begins receiving real traffic via exploration routing.</p>
+  </div>
+  <div class="timeline-item active">
+    <div class="era">Stage 2 — Verified</div>
+    <h4>Statistically trusted</h4>
+    <p>EMA Q-value exceeds confidence threshold over a sustained window. Update probability drops below 0.15. The skill is now "frozen" — invoked frequently, modified rarely. Refactoring (PSN structural rewrites) may still apply.</p>
+  </div>
+  <div class="timeline-item">
+    <div class="era">Stage 3 — Deprecated</div>
+    <h4>Flagged for retirement</h4>
+    <p>Base model passes the skill's eval without it (model absorption), or utility drops below δ. The skill enters a grace period — still callable, but no longer routed to by default. One more failure triggers full retirement.</p>
+  </div>
+</div>
+
+<hr style="margin: 48px 0;">
+
+<!-- ─── THREE MEMORY LAYERS ────────── -->
+<h3 style="font-size: 18px; margin-bottom: 12px;">③ The three memory layers</h3>
+
+<p>Skills don't exist in a vacuum — they are the apex of a three-layer memory architecture. PlugMem (Microsoft Research / UIUC) formalises what every successful system implicitly builds: episodic memory is the raw substrate, semantic memory is the distilled index, and procedural memory is the reusable skill. Each layer compresses the one below it.</p>
+
+<div class="diagram reveal">
+  <span class="diagram-label">Memory → skill distillation stack</span>
+  <svg viewBox="0 0 600 310" xmlns="http://www.w3.org/2000/svg">
+    <!-- Layer 3: Procedural (top) -->
+    <rect x="130" y="20" width="340" height="64" rx="3" fill="#1a1a1a" stroke="#5b7a5b" stroke-width="1.5"/>
+    <text x="300" y="46" font-family="'JetBrains Mono',monospace" font-size="10" fill="#5b7a5b" text-anchor="middle" font-weight="700" letter-spacing="0.06em">PROCEDURAL MEMORY</text>
+    <text x="300" y="62" font-family="'JetBrains Mono',monospace" font-size="8" fill="#999" text-anchor="middle">Prescription nodes · Intent nodes · reusable SKILL.md</text>
+    <text x="300" y="74" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">~100 tokens / skill</text>
+    <!-- Arrow down -->
+    <line x1="300" y1="100" x2="300" y2="84" stroke="#5b7a5b" stroke-width="1.2" marker-start="url(#lc-arr-green)"/>
+    <text x="316" y="97" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d">induce</text>
+    <!-- Layer 2: Semantic (middle) -->
+    <rect x="100" y="106" width="400" height="64" rx="3" fill="#1a1a1a" stroke="#9a7a3a" stroke-width="1.5"/>
+    <text x="300" y="132" font-family="'JetBrains Mono',monospace" font-size="10" fill="#9a7a3a" text-anchor="middle" font-weight="700" letter-spacing="0.06em">SEMANTIC MEMORY</text>
+    <text x="300" y="148" font-family="'JetBrains Mono',monospace" font-size="8" fill="#999" text-anchor="middle">Proposition nodes · Concept nodes · coreference-resolved facts</text>
+    <text x="300" y="160" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">100–1000× compressed vs raw context</text>
+    <!-- Arrow down -->
+    <line x1="300" y1="186" x2="300" y2="170" stroke="#9a7a3a" stroke-width="1.2" marker-start="url(#lc-arr-amber)"/>
+    <text x="316" y="183" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d">extract</text>
+    <!-- Layer 1: Episodic (bottom) -->
+    <rect x="70" y="192" width="460" height="64" rx="3" fill="#1a1a1a" stroke="#70808d" stroke-width="1.5"/>
+    <text x="300" y="218" font-family="'JetBrains Mono',monospace" font-size="10" fill="#70808d" text-anchor="middle" font-weight="700" letter-spacing="0.06em">EPISODIC MEMORY</text>
+    <text x="300" y="234" font-family="'JetBrains Mono',monospace" font-size="8" fill="#999" text-anchor="middle">(state, action, subgoal, reward) tuples · raw interaction traces</text>
+    <text x="300" y="246" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">~2,675 tokens / trajectory</text>
+    <!-- Compression labels on right -->
+    <text x="546" y="60" font-family="'JetBrains Mono',monospace" font-size="8" fill="#5b7a5b" font-weight="700">HIGH</text>
+    <text x="516" y="145" font-family="'JetBrains Mono',monospace" font-size="8" fill="#9a7a3a" font-weight="700">MEDIUM</text>
+    <text x="546" y="228" font-family="'JetBrains Mono',monospace" font-size="8" fill="#70808d" font-weight="700">RAW</text>
+    <text x="560" y="285" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle" transform="rotate(-90,560,285)">← COMPRESSION →</text>
+    <defs>
+      <marker id="lc-arr-green" viewBox="0 0 8 8" refX="4" refY="7" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0,0 L 8,0 L 4,8 Z" fill="#5b7a5b"/></marker>
+      <marker id="lc-arr-amber" viewBox="0 0 8 8" refX="4" refY="7" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0,0 L 8,0 L 4,8 Z" fill="#9a7a3a"/></marker>
+    </defs>
+  </svg>
+  <div class="caption">PlugMem's three-layer stack. Each layer compresses the one below. Skills are the final, most compressed artifact.</div>
+</div>
+
+<div class="callout warning">
+  <div class="callout-label">Key insight</div>
+  <p><strong>Episodic memory is not directly useful.</strong> It is the raw substrate from which skills are abstracted. Systems that skip the semantic layer and attempt to jump straight from traces to skills (AutoSkill v1, early Voyager) produce brittle, over-fitted procedures. The semantic layer acts as a denoising step — coreference resolution, entity linking, fact deduplication — that makes the final skill robust to surface-level variation in the original traces.</p>
+</div>
+
+<hr style="margin: 48px 0;">
+
+<!-- ─── DEATH ───────────────────────── -->
+<h3 style="font-size: 18px; margin-bottom: 12px;">④ Death — three retirement signals</h3>
+
+<p>A skill library that only grows eventually drowns the agent in stale, contradictory, or redundant procedures. AutoRefine showed the cost: without maintenance, a repository grows <strong>4.5×</strong> and utilisation degrades <strong>8.9×</strong>. Retirement is not failure — it's hygiene. Three distinct signals trigger it:</p>
+
+<div class="finding reveal">
+  <div class="finding-num">a</div>
+  <h4>Score-based pruning</h4>
+  <p>ProcMEM fires when online Q-value ≤ 0 or a duplicate is detected. Binary and immediate — the skill is deleted, not archived. Appropriate for skills that were never validated past the experimental stage.<a href="https://arxiv.org/abs/2602.01869" class="cite">[M2]</a></p>
+</div>
+<div class="finding reveal">
+  <div class="finding-num">b</div>
+  <h4>Utility-threshold redesign</h4>
+  <p>Memento-Skills: when <code>U &lt; δ</code> after <code>n<sub>min</sub></code> invocations, the system doesn't delete — it escalates to <code>DiscoverSkill</code>, treating the failure as a signal that the <em>approach</em> is wrong, not just the parameters. Redesign, not deletion. The maintenance score from AutoRefine: <code>Score = effectiveness × frequency × precision</code>, pruning the bottom 20th percentile at exponentially spaced intervals.<a href="https://arxiv.org/abs/2603.18743" class="cite">[M1]</a></p>
+</div>
+<div class="finding reveal">
+  <div class="finding-num">c</div>
+  <h4>Model obsolescence</h4>
+  <p>The subtlest death: the base model improves and absorbs the skill's knowledge. SkillReducer's audit of 55,315 real-world skills found <strong>10.7% are already obsolete</strong> — Condition D (description-only, no skill body) achieves 98.9% of the original performance. Skills encoding knowledge the model has since learned are dead weight. The test: disable the skill, re-run the eval. If the pass rate holds, retire it.<a href="https://arxiv.org/abs/2602.12670" class="cite">[M4]</a></p>
+</div>
+
+<div class="dark-panel reveal">
+  <h3 style="font-size: 16px;">The three-category lifespan</h3>
+  <p style="font-size: 13px; line-height: 1.7; color: #e8e9e9; margin-bottom: 16px;">Meta AI's taxonomy classifies every skill by <em>why</em> it exists, which determines <em>how</em> it should die:</p>
+  <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px;">
+    <div style="border: 1px solid #333; padding: 16px;">
+      <p class="accent-text" style="font-size: 10px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 6px;">PERFORMANCE-GAP</p>
+      <p style="font-size: 12px; color: #999; line-height: 1.6;">Compensates for a model weakness. <strong style="color:#e8e9e9;">Shortest lifespan.</strong> Dies when the model improves. Example: a skill teaching JSON output formatting — unnecessary once the model handles structured output natively.</p>
+    </div>
+    <div style="border: 1px solid #333; padding: 16px;">
+      <p class="accent-text" style="font-size: 10px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 6px;">PREFERENCE-ENCODING</p>
+      <p style="font-size: 12px; color: #999; line-height: 1.6;">Encodes user/org-specific taste. <strong style="color:#e8e9e9;">Medium lifespan.</strong> Persists until preferences change. Example: "always use British spelling" — model-agnostic, but user-mutable.</p>
+    </div>
+    <div style="border: 1px solid #333; padding: 16px;">
+      <p class="accent-text" style="font-size: 10px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 6px;">EVAL-ANCHORED</p>
+      <p style="font-size: 12px; color: #999; line-height: 1.6;">Pinned to a specific evaluation benchmark. <strong style="color:#e8e9e9;">Longest lifespan.</strong> Dies only when the eval is retired. Example: a skill tuned to pass a compliance audit — survives model upgrades.</p>
+    </div>
+  </div>
+</div>
+
+<div class="callout success">
+  <div class="callout-label">The "dreaming" mechanism</div>
+  <p>OpenClaw and LangChain's memory systems implement <strong>offline consolidation</strong> — a background process that periodically replays episodic traces, re-evaluates skill utility, and triggers retirement or reinforcement without any user interaction. The analogy to biological sleep consolidation is intentional: just as the hippocampus replays daily experiences during sleep to strengthen or prune synaptic connections, the "dreaming" loop replays agent traces during idle time to evolve the skill library. Skills that survive dreaming are the ones worth keeping.</p>
+</div>
+
+</section>

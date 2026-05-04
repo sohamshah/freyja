@@ -1,0 +1,1837 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Freyja: Architecture of a Self-Improving Desktop Agent</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+  :root {
+    --fg: #1a1a1a;
+    --fg-muted: #555;
+    --fg-faint: #8a8a8a;
+    --bg: #f7f7f5;
+    --bg-card: #fff;
+    --bg-code: #fafaf8;
+    --accent: #2545e8;
+    --accent-light: #eef1fd;
+    --red: #c4301c;
+    --red-light: #fdf0ed;
+    --green: #16803d;
+    --green-light: #f0fdf4;
+    --border: #c8c8c8;
+    --border-light: #e4e4e2;
+    --mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+    --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --serif: 'Newsreader', 'Georgia', 'Times New Roman', serif;
+    --prose-width: 700px;
+    --outer-width: 1100px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: var(--serif);
+    font-size: 19px;
+    line-height: 1.78;
+    color: var(--fg);
+    background: var(--bg);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* ── Layout: prose column + breakout ── */
+  .container {
+    max-width: var(--outer-width);
+    margin: 0 auto;
+    padding: 0 48px;
+  }
+  /* Prose stays narrow for comfortable reading measure */
+  section > p,
+  section > h3,
+  section > .callout,
+  section > .lifecycle,
+  section > .flow {
+    max-width: var(--prose-width);
+  }
+  /* Tables, diagrams, and specimens expand to full container */
+  section > table,
+  section > .diagram,
+  section > .specimen {
+    max-width: 100%;
+  }
+
+  /* ── Header ── */
+  header {
+    max-width: var(--prose-width);
+    padding: 100px 0 56px;
+    border-bottom: 1px solid var(--border-light);
+    margin-bottom: 64px;
+  }
+  header .label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 24px;
+    font-weight: 500;
+  }
+  header h1 {
+    font-family: var(--serif);
+    font-size: 48px;
+    font-weight: 700;
+    line-height: 1.12;
+    letter-spacing: -0.025em;
+    margin-bottom: 20px;
+  }
+  header .subtitle {
+    font-size: 21px;
+    color: var(--fg-muted);
+    line-height: 1.6;
+  }
+  header .meta {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--fg-faint);
+    margin-top: 28px;
+    letter-spacing: 0.02em;
+  }
+
+  /* ── Sections ── */
+  section {
+    margin-bottom: 80px;
+    padding-top: 8px;
+  }
+
+  h2 {
+    font-family: var(--serif);
+    font-size: 32px;
+    font-weight: 700;
+    letter-spacing: -0.015em;
+    margin-bottom: 28px;
+    padding-top: 16px;
+    max-width: var(--prose-width);
+  }
+  h2 .num {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--fg-faint);
+    letter-spacing: 0.1em;
+    display: block;
+    margin-bottom: 6px;
+    font-weight: 500;
+  }
+
+  h3 {
+    font-family: var(--sans);
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: 0.005em;
+    margin-top: 44px;
+    margin-bottom: 14px;
+    color: var(--fg);
+  }
+
+  p {
+    margin-bottom: 20px;
+    hanging-punctuation: first;
+  }
+
+  a {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px solid rgba(37, 69, 232, 0.2);
+    transition: border-color 0.15s;
+  }
+  a:hover { border-bottom-color: var(--accent); }
+
+  strong { font-weight: 600; }
+  em { font-style: italic; }
+  code {
+    font-family: var(--mono);
+    font-size: 0.82em;
+    background: var(--bg-code);
+    padding: 2px 7px;
+    border-radius: 4px;
+    border: 1px solid var(--border-light);
+  }
+
+  /* ── Diagrams ── */
+  .diagram {
+    margin: 36px 0;
+    padding: 36px 40px;
+    border: 1.5px dashed var(--border);
+    border-radius: 6px;
+    background: var(--bg-card);
+    overflow-x: auto;
+  }
+  .diagram .diagram-title {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    margin-bottom: 28px;
+    font-weight: 500;
+  }
+  .diagram svg { display: block; margin: 0 auto; }
+
+  /* ── Tables ── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 28px 0;
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  thead th {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    text-align: left;
+    padding: 10px 16px 10px 0;
+    border-bottom: 2px solid var(--fg);
+  }
+  tbody td {
+    padding: 12px 16px 12px 0;
+    border-bottom: 1px solid var(--border-light);
+    vertical-align: top;
+  }
+  tbody tr:hover { background: rgba(0,0,0,0.015); }
+  tbody tr:last-child td { border-bottom: none; }
+  td code { font-size: 12px; }
+  td:first-child { font-weight: 500; }
+
+  /* ── Specimen / code blocks ── */
+  .specimen {
+    margin: 32px 0;
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--bg-card);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .specimen-header {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border-light);
+    background: var(--bg-code);
+    font-weight: 500;
+  }
+  .specimen pre {
+    margin: 0;
+    padding: 20px;
+    font-family: var(--mono);
+    font-size: 13.5px;
+    line-height: 1.65;
+    overflow-x: auto;
+    background: var(--bg-card);
+    color: var(--fg);
+  }
+
+  /* ── Callout ── */
+  .callout {
+    margin: 32px 0;
+    padding: 24px 28px;
+    border-radius: 8px;
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.65;
+  }
+  .callout.insight {
+    background: var(--accent-light);
+    border-left: 3px solid var(--accent);
+  }
+  .callout.warning {
+    background: var(--red-light);
+    border-left: 3px solid var(--red);
+  }
+  .callout .callout-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .callout.insight .callout-label { color: var(--accent); }
+  .callout.warning .callout-label { color: var(--red); }
+
+  /* ── Flow diagram (CSS-based) ── */
+  .flow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin: 28px 0;
+    font-family: var(--mono);
+    font-size: 12.5px;
+  }
+  .flow-step {
+    padding: 10px 16px;
+    border: 1.5px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-card);
+    white-space: nowrap;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+  }
+  .flow-step.active {
+    border-color: var(--accent);
+    background: var(--accent-light);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .flow-arrow { color: var(--fg-faint); font-size: 18px; }
+
+  /* ── Tag ── */
+  .tag {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    padding: 3px 9px;
+    border-radius: 4px;
+    font-weight: 600;
+  }
+  .tag.red { background: var(--red-light); color: var(--red); }
+  .tag.blue { background: var(--accent-light); color: var(--accent); }
+  .tag.gray { background: #eeeeec; color: var(--fg-muted); }
+
+  /* ── Lifecycle (horizontal) ── */
+  .lifecycle {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    margin: 32px 0;
+    font-family: var(--mono);
+    font-size: 12px;
+    overflow-x: auto;
+    padding-bottom: 8px;
+  }
+  .lifecycle-node {
+    padding: 12px 20px;
+    border: 1.5px solid var(--border);
+    border-radius: 6px;
+    text-align: center;
+    white-space: nowrap;
+    background: var(--bg-card);
+    flex-shrink: 0;
+    font-weight: 500;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+  }
+  .lifecycle-node.verified { border-color: var(--green); background: var(--green-light); color: var(--green); }
+  .lifecycle-node.deprecated { border-color: var(--red); background: var(--red-light); color: var(--red); }
+  .lifecycle-edge {
+    padding: 0 8px;
+    color: var(--fg-faint);
+    font-size: 11px;
+    text-align: center;
+    flex-shrink: 0;
+    line-height: 1.3;
+  }
+
+  /* ── TOC ── */
+  .toc {
+    max-width: var(--prose-width);
+    margin: 0 0 64px;
+    padding: 32px 36px;
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    background: var(--bg-card);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .toc-title {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    margin-bottom: 18px;
+    font-weight: 500;
+  }
+  .toc ol {
+    list-style: none;
+    counter-reset: toc;
+    padding: 0;
+    columns: 2;
+    column-gap: 32px;
+  }
+  .toc li {
+    counter-increment: toc;
+    font-family: var(--sans);
+    font-size: 14.5px;
+    line-height: 1.8;
+    break-inside: avoid;
+  }
+  .toc li::before {
+    content: counter(toc, decimal-leading-zero) " ";
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--fg-faint);
+    margin-right: 6px;
+    font-weight: 500;
+  }
+  .toc a { color: var(--fg); border-bottom: 1px solid var(--border-light); }
+  .toc a:hover { color: var(--accent); border-bottom-color: var(--accent); }
+
+  /* ── Footer ── */
+  footer {
+    margin-top: 100px;
+    padding: 48px 0;
+    border-top: 1px solid var(--border-light);
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--fg-faint);
+    text-align: center;
+    letter-spacing: 0.02em;
+  }
+
+  /* ── Reading progress bar ── */
+  .progress-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 0%;
+    height: 2px;
+    background: var(--accent);
+    z-index: 1000;
+    transition: width 0.1s;
+  }
+
+  /* ── Hero exploded diagram ── */
+  .hero-diagram {
+    max-width: var(--outer-width);
+    margin: 0 auto 80px;
+    padding: 48px 24px 24px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-light);
+    border-radius: 10px;
+    position: relative;
+    overflow: hidden;
+  }
+  .hero-diagram::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: radial-gradient(circle, #d8d8d6 0.5px, transparent 0.5px);
+    background-size: 16px 16px;
+    opacity: 0.5;
+    pointer-events: none;
+  }
+  .hero-diagram svg {
+    display: block;
+    margin: 0 auto;
+    position: relative;
+    z-index: 1;
+    max-width: 100%;
+    height: auto;
+  }
+  .hero-caption {
+    max-width: var(--prose-width);
+    margin: 16px auto 0;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    text-align: center;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* ══ Hero diagram — isometric exploded stack ══ */
+
+  @keyframes float-gentle {
+    0%,100% { transform: translateY(0); }
+    50%     { transform: translateY(-3px); }
+  }
+
+  /* Episode accessed indicator — cycles through cards in sequence */
+  @keyframes episode-access {
+    0%, 100% { opacity: 0; }
+    10%, 22% { opacity: 1; }
+  }
+
+  @keyframes draw-in {
+    from { stroke-dashoffset: 1400; }
+    to   { stroke-dashoffset: 0; }
+  }
+
+  @keyframes flow-drip {
+    0%   { stroke-dashoffset: 0; }
+    100% { stroke-dashoffset: -14; }
+  }
+
+  .book, .card-1, .card-2, .card-3,
+  .obj-conv, .obj-tools, .obj-context, .obj-model,
+  .ep-access, .led-blink, .term-cursor, .cell-glow {
+    transform-origin: center;
+    transform-box: fill-box;
+  }
+  .book       { animation: float-gentle 6s ease-in-out infinite; }
+  .card-1     { animation: float-gentle 7s ease-in-out infinite 0.6s; }
+  .card-2     { animation: float-gentle 8s ease-in-out infinite 1.2s; }
+  .card-3     { animation: float-gentle 9s ease-in-out infinite 1.8s; }
+  .obj-conv   { animation: float-gentle 7s ease-in-out infinite 0.4s; }
+  .obj-tools  { animation: float-gentle 8s ease-in-out infinite 1.0s; }
+  .obj-context{ animation: float-gentle 9s ease-in-out infinite 1.6s; }
+  .obj-model  { animation: float-gentle 7s ease-in-out infinite 2.2s; }
+
+  @keyframes blink-steps     { 0%,50%    { opacity: 1; }    51%,100%  { opacity: 0.15; } }
+  @keyframes cell-pulse      { 0%,100% { opacity: 0.35; } 50% { opacity: 0.85; } }
+
+  .term-cursor { animation: blink-steps 1.1s steps(1) infinite; }
+  .led-blink   { animation: blink-steps 1.4s steps(1) infinite; }
+  .cell-glow   { animation: cell-pulse 2.6s ease-in-out infinite; }
+  .cell-glow.delay-1 { animation-delay: 0.8s; }
+  .cell-glow.delay-2 { animation-delay: 1.5s; }
+
+  .ep-access    { animation: episode-access 9s ease-in-out infinite; opacity: 0; }
+  .ep-access.e1 { animation-delay: 0s; }
+  .ep-access.e2 { animation-delay: 3s; }
+  .ep-access.e3 { animation-delay: 6s; }
+
+  .construct-line { stroke-dasharray: 1400; animation: draw-in 2.5s ease-out forwards; }
+  .flow-pipe      { stroke-dasharray: 6 4;  animation: flow-drip 0.8s linear infinite; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .book, .card-1, .card-2, .card-3, .ep-access, .flow-pipe { animation: none; }
+    .ep-access.e1 { opacity: 1; }
+  }
+
+  /* ── Section divider ── */
+  section + section { border-top: 1px solid var(--border-light); }
+
+  /* ── Responsive ── */
+  @media (max-width: 900px) {
+    .container { padding: 0 28px; }
+    header h1 { font-size: 36px; }
+    h2 { font-size: 26px; }
+    .toc ol { columns: 1; }
+    body { font-size: 17px; }
+  }
+  @media (max-width: 640px) {
+    .container { padding: 0 20px; }
+    header { padding: 60px 0 40px; }
+    header h1 { font-size: 28px; }
+    h2 { font-size: 22px; }
+    .diagram { padding: 16px; }
+    table { font-size: 12px; }
+    thead th { font-size: 9.5px; }
+  }
+</style>
+</head>
+<body>
+<div class="progress-bar" id="progress"></div>
+
+<div class="container">
+
+<header>
+  <div class="label">Architecture &middot; Research</div>
+  <h1>Freyja: Architecture of a Self-Improving Desktop Agent</h1>
+  <p class="subtitle">A unified memory layer, evolutionary skills, episodic sub-agents, and multi-model orchestration for sustained knowledge work on macOS.</p>
+  <div class="meta">Updated 2026-04-12 &middot; ~10,000 words &middot; Living document</div>
+</header>
+
+<!-- ═══════════════════ HERO DIAGRAM ═══════════════════ -->
+<figure class="hero-diagram">
+<svg viewBox="0 0 1000 2120" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Isometric exploded view — the full Freyja context-assembly stack">
+  <defs>
+    <marker id="flow-arrow-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,2 L9,5 L0,8 Z" fill="#2545e8"/>
+    </marker>
+    <marker id="flow-arrow-gray" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,2 L9,5 L0,8 Z" fill="#8a8a8a"/>
+    </marker>
+  </defs>
+
+  <!-- ═══════════ Corner annotations ═══════════ -->
+  <text x="32" y="32" font-family="'JetBrains Mono',monospace" font-size="10" fill="#2545e8" font-weight="600" letter-spacing="0.12em">FIG_002</text>
+  <text x="32" y="48" font-family="'JetBrains Mono',monospace" font-size="9" fill="#8a8a8a" letter-spacing="0.1em">CONTEXT · ASSEMBLY</text>
+  <line x1="32" y1="58" x2="180" y2="58" stroke="#c8c8c8" stroke-width="0.5"/>
+  <text x="32" y="72" font-family="'JetBrains Mono',monospace" font-size="9" fill="#8a8a8a" letter-spacing="0.08em">PROJ · ISOMETRIC 30°</text>
+  <text x="32" y="86" font-family="'JetBrains Mono',monospace" font-size="9" fill="#8a8a8a" letter-spacing="0.08em">EXPLODED · 6 LAYERS</text>
+
+  <text x="968" y="32" font-family="'JetBrains Mono',monospace" font-size="10" fill="#2545e8" font-weight="600" text-anchor="end" letter-spacing="0.12em">[ FREYJA / v0.1 ]</text>
+  <text x="968" y="48" font-family="'JetBrains Mono',monospace" font-size="9" fill="#8a8a8a" text-anchor="end" letter-spacing="0.1em">SKILLS · EPISODES · CONV</text>
+  <text x="968" y="62" font-family="'JetBrains Mono',monospace" font-size="9" fill="#8a8a8a" text-anchor="end" letter-spacing="0.1em">TOOL · CTX · MODEL</text>
+
+  <g stroke="#c8c8c8" stroke-width="0.4" fill="none">
+    <line x1="32" y1="102" x2="968" y2="102" stroke-dasharray="2 2"/>
+    <line x1="32" y1="98" x2="32" y2="106"/>
+    <line x1="968" y1="98" x2="968" y2="106"/>
+  </g>
+
+  <!-- ═══════════ Vertical corner-column construction lines ═══════════ -->
+  <g stroke="#2545e8" stroke-width="0.5" stroke-dasharray="4 4" opacity="0.22" fill="none">
+    <line class="construct-line" x1="290" y1="260" x2="290" y2="2010"/>
+    <line class="construct-line" x1="420" y1="210" x2="420" y2="2010"/>
+    <line class="construct-line" x1="489" y1="390" x2="489" y2="2010"/>
+    <line class="construct-line" x1="619" y1="330" x2="619" y2="2010"/>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════
+       ① BOOK — SKILLS (cy=250, H=34)
+       ═══════════════════════════════════════════════════ -->
+  <g class="book">
+    <!-- FRONT face (now showing page-edge stripes like right face — finished binding) -->
+    <polygon points="420,250 619,365 619,331 420,216" fill="#ffffff" stroke="#2545e8" stroke-width="1.3"/>
+    <!-- Page stripes on front face (diagonal lines matching right face) -->
+    <g transform="matrix(0.866, 0.5, 0, 1, 420, 216)">
+      <!-- local: x in [0,230], y in [0,34]. Horizontal lines become isometric stripes -->
+      <line x1="0" y1="5"  x2="230" y2="5"  stroke="#2545e8" stroke-width="0.35" opacity="0.4"/>
+      <line x1="0" y1="9"  x2="230" y2="9"  stroke="#2545e8" stroke-width="0.35" opacity="0.4"/>
+      <line x1="0" y1="13" x2="230" y2="13" stroke="#2545e8" stroke-width="0.35" opacity="0.4"/>
+      <line x1="0" y1="17" x2="230" y2="17" stroke="#2545e8" stroke-width="0.35" opacity="0.4"/>
+      <line x1="0" y1="21" x2="230" y2="21" stroke="#2545e8" stroke-width="0.35" opacity="0.4"/>
+      <line x1="0" y1="25" x2="230" y2="25" stroke="#2545e8" stroke-width="0.35" opacity="0.4"/>
+      <line x1="0" y1="29" x2="230" y2="29" stroke="#2545e8" stroke-width="0.35" opacity="0.4"/>
+      <!-- Binding strip — narrow darker band along top edge (where cover meets pages) -->
+      <rect x="0" y="0" width="230" height="2.2" fill="#1e3a8a" opacity="0.85"/>
+    </g>
+
+    <!-- RIGHT face (page-edge stripes) -->
+    <polygon points="619,365 489,440 489,406 619,331" fill="#ffffff" stroke="#2545e8" stroke-width="1.3"/>
+    <g stroke="#2545e8" stroke-width="0.3" opacity="0.4">
+      <line x1="619" y1="336" x2="489" y2="411"/>
+      <line x1="619" y1="340" x2="489" y2="415"/>
+      <line x1="619" y1="344" x2="489" y2="419"/>
+      <line x1="619" y1="348" x2="489" y2="423"/>
+      <line x1="619" y1="352" x2="489" y2="427"/>
+      <line x1="619" y1="356" x2="489" y2="431"/>
+      <line x1="619" y1="360" x2="489" y2="435"/>
+    </g>
+    <!-- Binding strip on right face top edge -->
+    <g transform="matrix(-0.866, 0.5, 0, 1, 619, 331)">
+      <rect x="0" y="0" width="150" height="2.2" fill="#1e3a8a" opacity="0.85"/>
+    </g>
+
+    <!-- TOP face (cover) -->
+    <polygon points="420,216 619,331 489,406 290,291" fill="#c7d2ff" stroke="#2545e8" stroke-width="1.4"/>
+    <g transform="matrix(0.866, 0.5, -0.866, 0.5, 420, 216)">
+      <rect x="32" y="32" width="166" height="86" rx="2" fill="none" stroke="#1e3a8a" stroke-width="0.8" opacity="0.55"/>
+      <rect x="37" y="37" width="156" height="76" rx="1" fill="none" stroke="#1e3a8a" stroke-width="0.4" opacity="0.35"/>
+      <text x="115" y="65" font-family="'JetBrains Mono',monospace" font-size="14" fill="#1e3a8a" text-anchor="middle" font-weight="700" letter-spacing="0.32em">FREYJA</text>
+      <line x1="75" y1="73" x2="155" y2="73" stroke="#1e3a8a" stroke-width="0.6" opacity="0.7"/>
+      <text x="115" y="92" font-family="'Newsreader',serif" font-size="15" fill="#1e3a8a" text-anchor="middle" font-style="italic">skills</text>
+      <line x1="90" y1="100" x2="140" y2="100" stroke="#1e3a8a" stroke-width="0.3" opacity="0.5"/>
+      <text x="115" y="111" font-family="'JetBrains Mono',monospace" font-size="6.5" fill="#1e3a8a" text-anchor="middle" opacity="0.7" letter-spacing="0.22em">vol. i</text>
+      <circle cx="20" cy="20" r="1.6" fill="#1e3a8a" opacity="0.6"/>
+      <circle cx="210" cy="20" r="1.6" fill="#1e3a8a" opacity="0.6"/>
+      <circle cx="20" cy="130" r="1.6" fill="#1e3a8a" opacity="0.6"/>
+      <circle cx="210" cy="130" r="1.6" fill="#1e3a8a" opacity="0.6"/>
+    </g>
+  </g>
+
+  <!-- SKILLS label -->
+  <g>
+    <circle cx="619" cy="348" r="2.5" fill="#2545e8"/>
+    <line x1="619" y1="348" x2="790" y2="348" stroke="#2545e8" stroke-width="0.7" stroke-dasharray="3 2"/>
+    <text x="798" y="344" font-family="'JetBrains Mono',monospace" font-size="12" fill="#1a1a1a" font-weight="700" letter-spacing="0.08em">SKILLS</text>
+    <text x="798" y="358" font-family="'JetBrains Mono',monospace" font-size="9" fill="#8a8a8a">build · guard · reference</text>
+    <text x="798" y="371" font-family="'JetBrains Mono',monospace" font-size="8" fill="#2545e8" opacity="0.75">~100 tok index · ≤5K body</text>
+  </g>
+
+  <!-- Callouts on book -->
+  <g>
+    <circle cx="555" cy="420" r="2" fill="#2545e8" opacity="0.7"/>
+    <line x1="555" y1="420" x2="700" y2="460" stroke="#2545e8" stroke-width="0.6" stroke-dasharray="3 2" opacity="0.7"/>
+    <text x="708" y="457" font-family="'JetBrains Mono',monospace" font-size="8" fill="#8a8a8a" letter-spacing="0.06em">PAGES</text>
+    <text x="708" y="468" font-family="'JetBrains Mono',monospace" font-size="7" fill="#8a8a8a" opacity="0.7">right · thickness</text>
+  </g>
+  <g>
+    <circle cx="300" cy="345" r="2" fill="#2545e8" opacity="0.7"/>
+    <line x1="300" y1="345" x2="230" y2="345" stroke="#2545e8" stroke-width="0.6" stroke-dasharray="3 2" opacity="0.7"/>
+    <text x="222" y="342" font-family="'JetBrains Mono',monospace" font-size="8" fill="#8a8a8a" text-anchor="end" letter-spacing="0.06em">HARDCOVER</text>
+    <text x="222" y="353" font-family="'JetBrains Mono',monospace" font-size="7" fill="#8a8a8a" text-anchor="end" opacity="0.7">top face · cover</text>
+  </g>
+
+  <!-- Flow 1: book → cards -->
+  <line class="flow-pipe" x1="454" y1="460" x2="454" y2="498" stroke="#2545e8" stroke-width="1.3" marker-end="url(#flow-arrow-blue)"/>
+  <text x="464" y="484" font-family="'JetBrains Mono',monospace" font-size="9" fill="#2545e8" font-weight="600" letter-spacing="0.12em">COMPOSE</text>
+
+  <!-- ═══════════════════════════════════════════════════
+       ② EPISODES — 3 thin cards (H=4 each)
+       ═══════════════════════════════════════════════════ -->
+
+  <!-- Card 3 (bottom, oldest) — cy=650 -->
+  <g class="card-3">
+    <polygon points="420,650 619,765 619,761 420,646" fill="#faf8fc" stroke="#7c3aed" stroke-width="0.9"/>
+    <polygon points="619,765 489,840 489,836 619,761" fill="#faf8fc" stroke="#7c3aed" stroke-width="0.9"/>
+    <polygon points="420,646 619,761 489,836 290,721" fill="#fafaf8" stroke="#7c3aed" stroke-width="1"/>
+    <g transform="matrix(0.866, 0.5, -0.866, 0.5, 420, 646)">
+      <rect x="10" y="12" width="36" height="13" rx="2" fill="#7c3aed" fill-opacity="0.55"/>
+      <text x="28" y="21" font-family="'JetBrains Mono',monospace" font-size="7" fill="#fff" text-anchor="middle" font-weight="700" letter-spacing="0.1em">EP·06</text>
+      <text x="52" y="22" font-family="'JetBrains Mono',monospace" font-size="8" fill="#7c3aed" opacity="0.55">find redis connection limits</text>
+      <line x1="10" y1="38" x2="220" y2="38" stroke="#475569" stroke-width="0.35" opacity="0.25"/>
+      <line x1="10" y1="48" x2="210" y2="48" stroke="#475569" stroke-width="0.35" opacity="0.25"/>
+      <line x1="10" y1="58" x2="200" y2="58" stroke="#475569" stroke-width="0.35" opacity="0.25"/>
+      <text x="220" y="140" font-family="'JetBrains Mono',monospace" font-size="8" fill="#7c3aed" text-anchor="end" opacity="0.55" font-weight="700">Q=0.74</text>
+      <circle class="ep-access e3" cx="210" cy="20" r="4" fill="#16803d"/>
+    </g>
+  </g>
+
+  <!-- Card 2 (middle) — cy=580 -->
+  <g class="card-2">
+    <polygon points="420,580 619,695 619,691 420,576" fill="#f9f6fe" stroke="#7c3aed" stroke-width="1"/>
+    <polygon points="619,695 489,770 489,766 619,691" fill="#f9f6fe" stroke="#7c3aed" stroke-width="1"/>
+    <polygon points="420,576 619,691 489,766 290,651" fill="#ffffff" stroke="#7c3aed" stroke-width="1.1"/>
+    <g transform="matrix(0.866, 0.5, -0.866, 0.5, 420, 576)">
+      <rect x="10" y="12" width="36" height="13" rx="2" fill="#7c3aed" fill-opacity="0.75"/>
+      <text x="28" y="21" font-family="'JetBrains Mono',monospace" font-size="7" fill="#fff" text-anchor="middle" font-weight="700" letter-spacing="0.1em">EP·07</text>
+      <text x="52" y="22" font-family="'JetBrains Mono',monospace" font-size="8" fill="#1a1a1a" font-weight="600">implement cache warming</text>
+      <text x="220" y="21" font-family="'JetBrains Mono',monospace" font-size="7" fill="#16803d" text-anchor="end" font-weight="700">SUCCESS</text>
+      <line x1="10" y1="38" x2="220" y2="38" stroke="#475569" stroke-width="0.4" opacity="0.4"/>
+      <line x1="10" y1="48" x2="208" y2="48" stroke="#475569" stroke-width="0.4" opacity="0.4"/>
+      <line x1="10" y1="58" x2="215" y2="58" stroke="#475569" stroke-width="0.4" opacity="0.4"/>
+      <rect x="10" y="66" width="210" height="38" rx="2" fill="#7c3aed" fill-opacity="0.05" stroke="#7c3aed" stroke-width="0.3" stroke-dasharray="2 2"/>
+      <text x="18" y="78" font-family="'Newsreader',serif" font-size="8.5" fill="#475569" font-style="italic">pre-warm on deploy, 60% → 92% hit rate</text>
+      <text x="18" y="90" font-family="'Newsreader',serif" font-size="8.5" fill="#475569" font-style="italic">files: src/cache/warmer.ts, redis.ts</text>
+      <text x="10" y="120" font-family="'JetBrains Mono',monospace" font-size="7" fill="#8a8a8a">haiku-4-5 · 8 tools · 9.4s</text>
+      <text x="220" y="120" font-family="'JetBrains Mono',monospace" font-size="8" fill="#7c3aed" text-anchor="end" font-weight="700">Q=0.87</text>
+      <circle class="ep-access e2" cx="210" cy="20" r="4" fill="#16803d"/>
+    </g>
+  </g>
+
+  <!-- Card 1 (top, most recent) — cy=510 -->
+  <g class="card-1">
+    <polygon points="420,510 619,625 619,621 420,506" fill="#f5f2fe" stroke="#7c3aed" stroke-width="1.1"/>
+    <polygon points="619,625 489,700 489,696 619,621" fill="#f5f2fe" stroke="#7c3aed" stroke-width="1.1"/>
+    <polygon points="420,506 619,621 489,696 290,581" fill="#ffffff" stroke="#7c3aed" stroke-width="1.3"/>
+    <g transform="matrix(0.866, 0.5, -0.866, 0.5, 420, 506)">
+      <rect x="104" y="-3" width="22" height="8" rx="1.5" fill="#7c3aed" stroke="#4a1d9a" stroke-width="0.4"/>
+      <rect x="10" y="12" width="40" height="14" rx="2" fill="#7c3aed"/>
+      <text x="30" y="22" font-family="'JetBrains Mono',monospace" font-size="7.5" fill="#fff" text-anchor="middle" font-weight="700" letter-spacing="0.1em">EP·08</text>
+      <text x="56" y="22" font-family="'JetBrains Mono',monospace" font-size="9" fill="#1a1a1a" font-weight="600">research caching arch</text>
+      <text x="220" y="21" font-family="'JetBrains Mono',monospace" font-size="7" fill="#16803d" text-anchor="end" font-weight="700">SUCCESS</text>
+      <line x1="10" y1="38" x2="220" y2="38" stroke="#475569" stroke-width="0.4" opacity="0.5"/>
+      <line x1="10" y1="48" x2="210" y2="48" stroke="#475569" stroke-width="0.4" opacity="0.5"/>
+      <line x1="10" y1="58" x2="215" y2="58" stroke="#475569" stroke-width="0.4" opacity="0.5"/>
+      <rect x="10" y="66" width="210" height="42" rx="2" fill="#7c3aed" fill-opacity="0.08" stroke="#7c3aed" stroke-width="0.4" stroke-dasharray="3 2"/>
+      <text x="18" y="78" font-family="'Newsreader',serif" font-size="9" fill="#1a1a1a" font-style="italic">Redis for sessions, LRU for APIs.</text>
+      <text x="18" y="90" font-family="'Newsreader',serif" font-size="9" fill="#1a1a1a" font-style="italic">Hit rate ~60%. No event invalidation.</text>
+      <text x="18" y="102" font-family="'JetBrains Mono',monospace" font-size="6.5" fill="#475569" opacity="0.85">src/cache/redis.ts:45 · lru.ts</text>
+      <text x="10" y="124" font-family="'JetBrains Mono',monospace" font-size="7" fill="#8a8a8a">haiku-4-5 · 12 tools · 12.0s</text>
+      <text x="220" y="124" font-family="'JetBrains Mono',monospace" font-size="9" fill="#7c3aed" text-anchor="end" font-weight="700">Q=0.92</text>
+      <path d="M 215 134 L 225 134 L 225 144 Z" fill="#7c3aed" fill-opacity="0.25" stroke="#7c3aed" stroke-width="0.4"/>
+      <circle class="ep-access e1" cx="210" cy="20" r="5" fill="#16803d"/>
+      <circle class="ep-access e1" cx="210" cy="20" r="2" fill="#dcfce7" style="animation-delay: 0.1s"/>
+    </g>
+  </g>
+
+  <!-- EPISODES label -->
+  <g>
+    <circle cx="290" cy="581" r="2.5" fill="#7c3aed"/>
+    <line x1="290" y1="581" x2="220" y2="581" stroke="#7c3aed" stroke-width="0.7" stroke-dasharray="3 2"/>
+    <text x="212" y="577" font-family="'JetBrains Mono',monospace" font-size="12" fill="#1a1a1a" font-weight="700" text-anchor="end" letter-spacing="0.08em">EPISODES</text>
+    <text x="212" y="591" font-family="'JetBrains Mono',monospace" font-size="9" fill="#8a8a8a" text-anchor="end">compressed sub-agent results</text>
+    <text x="212" y="604" font-family="'JetBrains Mono',monospace" font-size="8" fill="#7c3aed" text-anchor="end" opacity="0.75">IEU triplet · Q-value ranked</text>
+  </g>
+
+  <!-- Flow 2: episodes → conversation -->
+  <line class="flow-pipe" x1="454" y1="860" x2="454" y2="908" stroke="#8a8a8a" stroke-width="1.2" marker-end="url(#flow-arrow-gray)"/>
+  <text x="464" y="890" font-family="'JetBrains Mono',monospace" font-size="9" fill="#8a8a8a" font-weight="600" letter-spacing="0.12em">APPEND</text>
+
+  <!-- ═══════════════════════════════════════════════════
+       ③ CONVERSATION — terminal (cy=930, H=10)
+       FTL = (420, 920), BBR = (489, 1120)
+       ═══════════════════════════════════════════════════ -->
+  <g class="obj-conv">
+    <!-- Front face (dark bezel) -->
+    <polygon points="420,930 619,1045 619,1035 420,920" fill="#334155" stroke="#1e293b" stroke-width="1"/>
+    <!-- Right face -->
+    <polygon points="619,1045 489,1120 489,1110 619,1035" fill="#334155" stroke="#1e293b" stroke-width="1"/>
+    <!-- Top face (terminal screen) -->
+    <polygon points="420,920 619,1035 489,1110 290,995" fill="#fafaf8" stroke="#475569" stroke-width="1.2"/>
+    <g transform="matrix(0.866, 0.5, -0.866, 0.5, 420, 920)">
+      <!-- Header bar -->
+      <rect x="0" y="0" width="230" height="16" fill="#e5e7eb" stroke="#475569" stroke-width="0.4"/>
+      <circle cx="10" cy="8" r="2.5" fill="#f87171" stroke="#475569" stroke-width="0.3"/>
+      <circle cx="19" cy="8" r="2.5" fill="#fbbf24" stroke="#475569" stroke-width="0.3"/>
+      <circle cx="28" cy="8" r="2.5" fill="#4ade80" stroke="#475569" stroke-width="0.3"/>
+      <text x="115" y="11" font-family="'JetBrains Mono',monospace" font-size="6" fill="#475569" text-anchor="middle" opacity="0.8">freyja — session · turn 14</text>
+      <!-- Body -->
+      <text x="8" y="30" font-family="'JetBrains Mono',monospace" font-size="7" fill="#2545e8" font-weight="600">user&nbsp;&gt;</text>
+      <text x="28" y="30" font-family="'JetBrains Mono',monospace" font-size="7" fill="#475569">check caching hit rate</text>
+      <text x="8" y="42" font-family="'JetBrains Mono',monospace" font-size="7" fill="#c4301c" font-weight="600">freyja&nbsp;&gt;</text>
+      <text x="32" y="42" font-family="'JetBrains Mono',monospace" font-size="7" fill="#475569">reading src/cache/redis.ts</text>
+      <text x="8" y="54" font-family="'JetBrains Mono',monospace" font-size="7" fill="#8a8a8a">  [grep "hit_rate" src/cache/**]</text>
+      <text x="8" y="66" font-family="'JetBrains Mono',monospace" font-size="7" fill="#c4301c" font-weight="600">freyja&nbsp;&gt;</text>
+      <text x="32" y="66" font-family="'JetBrains Mono',monospace" font-size="7" fill="#475569">hit rate ~60%, no invalidation</text>
+      <text x="8" y="78" font-family="'JetBrains Mono',monospace" font-size="7" fill="#2545e8" font-weight="600">user&nbsp;&gt;</text>
+      <text x="28" y="78" font-family="'JetBrains Mono',monospace" font-size="7" fill="#475569">propose improvements</text>
+      <text x="8" y="90" font-family="'JetBrains Mono',monospace" font-size="7" fill="#c4301c" font-weight="600">freyja&nbsp;&gt;</text>
+      <text x="32" y="90" font-family="'JetBrains Mono',monospace" font-size="7" fill="#475569">spawning explore sub-agent</text>
+      <text x="8" y="102" font-family="'JetBrains Mono',monospace" font-size="7" fill="#8a8a8a">  [ep_19d812 · haiku-4-5]</text>
+      <text x="8" y="114" font-family="'JetBrains Mono',monospace" font-size="7" fill="#16803d" font-weight="600">·</text>
+      <text x="14" y="114" font-family="'JetBrains Mono',monospace" font-size="7" fill="#c4301c" font-weight="600">freyja&nbsp;&gt;</text>
+      <text x="38" y="114" font-family="'JetBrains Mono',monospace" font-size="7" fill="#475569">3 findings, see diff</text>
+      <!-- Prompt -->
+      <line x1="0" y1="128" x2="230" y2="128" stroke="#475569" stroke-width="0.3" opacity="0.3"/>
+      <text x="8" y="140" font-family="'JetBrains Mono',monospace" font-size="8" fill="#475569" font-weight="700">$</text>
+      <rect class="term-cursor" x="16" y="133" width="5" height="8" fill="#2545e8"/>
+    </g>
+  </g>
+
+  <!-- CONVERSATION label -->
+  <g>
+    <circle cx="619" cy="1060" r="2.5" fill="#475569"/>
+    <line x1="619" y1="1060" x2="790" y2="1060" stroke="#475569" stroke-width="0.7" stroke-dasharray="3 2"/>
+    <text x="798" y="1056" font-family="'JetBrains Mono',monospace" font-size="12" fill="#1a1a1a" font-weight="700" letter-spacing="0.08em">CONVERSATION</text>
+    <text x="798" y="1070" font-family="'JetBrains Mono',monospace" font-size="9" fill="#8a8a8a">user + assistant turns</text>
+    <text x="798" y="1083" font-family="'JetBrains Mono',monospace" font-size="8" fill="#475569" opacity="0.8">anchored summary at 90% fill</text>
+  </g>
+
+  <!-- Flow 3: conversation → tool results -->
+  <line class="flow-pipe" x1="454" y1="1130" x2="454" y2="1170" stroke="#8a8a8a" stroke-width="1.2" marker-end="url(#flow-arrow-gray)"/>
+  <text x="464" y="1156" font-family="'JetBrains Mono',monospace" font-size="9" fill="#8a8a8a" font-weight="600" letter-spacing="0.12em">STACK</text>
+
+  <!-- ═══════════════════════════════════════════════════
+       ④ TOOL RESULTS — clipboard (cy=1200, H=14)
+       ═══════════════════════════════════════════════════ -->
+  <g class="obj-tools">
+    <!-- Front face (clipboard edge, amber) -->
+    <polygon points="420,1200 619,1315 619,1301 420,1186" fill="#fde8c8" stroke="#ca8a04" stroke-width="1.1"/>
+    <!-- Right face -->
+    <polygon points="619,1315 489,1390 489,1376 619,1301" fill="#fde8c8" stroke="#ca8a04" stroke-width="1.1"/>
+    <!-- Top face (clipboard surface with papers) -->
+    <polygon points="420,1186 619,1301 489,1376 290,1261" fill="#fef3d1" stroke="#ca8a04" stroke-width="1.2"/>
+    <g transform="matrix(0.866, 0.5, -0.866, 0.5, 420, 1186)">
+      <!-- Metal clip at top -->
+      <rect x="95" y="-4" width="40" height="10" rx="2" fill="#9ca3af" stroke="#475569" stroke-width="0.5"/>
+      <rect x="102" y="-6" width="26" height="6" rx="1" fill="#6b7280" stroke="#475569" stroke-width="0.4"/>
+      <circle cx="105" cy="3" r="0.8" fill="#374151"/>
+      <circle cx="125" cy="3" r="0.8" fill="#374151"/>
+      <!-- Paper 3 (back, stubbed) -->
+      <rect x="20" y="25" width="194" height="102" rx="2" fill="#ffffff" stroke="#ca8a04" stroke-width="0.6" stroke-dasharray="3 2" opacity="0.55"/>
+      <!-- Paper 2 (middle) -->
+      <rect x="15" y="18" width="198" height="118" rx="2" fill="#fffefb" stroke="#ca8a04" stroke-width="0.7"/>
+      <text x="22" y="30" font-family="'JetBrains Mono',monospace" font-size="6.5" fill="#ca8a04" font-weight="600">[bash: git log --oneline -10]</text>
+      <rect x="160" y="22" width="46" height="12" rx="1" fill="none" stroke="#c4301c" stroke-width="0.7" transform="rotate(-4 183 28)"/>
+      <text x="183" y="30" font-family="'JetBrains Mono',monospace" font-size="6" fill="#c4301c" text-anchor="middle" font-weight="700" transform="rotate(-4 183 28)">STUBBED</text>
+      <line x1="22" y1="40" x2="200" y2="40" stroke="#475569" stroke-width="0.35"/>
+      <line x1="22" y1="48" x2="192" y2="48" stroke="#475569" stroke-width="0.35"/>
+      <line x1="22" y1="56" x2="195" y2="56" stroke="#475569" stroke-width="0.35"/>
+      <rect x="22" y="62" width="160" height="3" fill="#ca8a04" opacity="0.35"/>
+      <rect x="22" y="70" width="140" height="3" fill="#ca8a04" opacity="0.35"/>
+      <text x="22" y="86" font-family="'JetBrains Mono',monospace" font-size="5.5" fill="#ca8a04" opacity="0.7">[… 1,284 lines omitted …]</text>
+      <line x1="22" y1="92" x2="200" y2="92" stroke="#475569" stroke-width="0.3" opacity="0.6"/>
+      <!-- Paper 1 (top, FRESH) -->
+      <rect x="28" y="38" width="176" height="78" rx="2" fill="#ffffff" stroke="#ca8a04" stroke-width="0.9"/>
+      <text x="34" y="48" font-family="'JetBrains Mono',monospace" font-size="6.5" fill="#ca8a04" font-weight="700">[read_file redis.ts]</text>
+      <text x="196" y="48" font-family="'JetBrains Mono',monospace" font-size="5.5" fill="#16803d" text-anchor="end" font-weight="700">FRESH · t=0</text>
+      <line x1="34" y1="58" x2="198" y2="58" stroke="#1a1a1a" stroke-width="0.4"/>
+      <line x1="34" y1="64" x2="184" y2="64" stroke="#1a1a1a" stroke-width="0.4"/>
+      <line x1="34" y1="70" x2="196" y2="70" stroke="#1a1a1a" stroke-width="0.4"/>
+      <line x1="34" y1="76" x2="172" y2="76" stroke="#1a1a1a" stroke-width="0.4"/>
+      <line x1="34" y1="82" x2="194" y2="82" stroke="#1a1a1a" stroke-width="0.4"/>
+      <line x1="34" y1="88" x2="180" y2="88" stroke="#1a1a1a" stroke-width="0.4"/>
+      <line x1="34" y1="94" x2="192" y2="94" stroke="#1a1a1a" stroke-width="0.4"/>
+      <line x1="34" y1="100" x2="176" y2="100" stroke="#1a1a1a" stroke-width="0.4"/>
+      <line x1="34" y1="106" x2="188" y2="106" stroke="#1a1a1a" stroke-width="0.4"/>
+    </g>
+  </g>
+
+  <!-- TOOL RESULTS label (left) -->
+  <g>
+    <circle cx="290" cy="1261" r="2.5" fill="#ca8a04"/>
+    <line x1="290" y1="1261" x2="220" y2="1261" stroke="#ca8a04" stroke-width="0.7" stroke-dasharray="3 2"/>
+    <text x="212" y="1257" font-family="'JetBrains Mono',monospace" font-size="12" fill="#1a1a1a" font-weight="700" text-anchor="end" letter-spacing="0.08em">TOOL RESULTS</text>
+    <text x="212" y="1271" font-family="'JetBrains Mono',monospace" font-size="9" fill="#8a8a8a" text-anchor="end">fresh · stubbed · truncated</text>
+    <text x="212" y="1284" font-family="'JetBrains Mono',monospace" font-size="8" fill="#ca8a04" text-anchor="end" opacity="0.8">observation masking @ t−3</text>
+  </g>
+
+  <!-- Flow 4: tool results → context manager (BLUE, main flow) -->
+  <line class="flow-pipe" x1="454" y1="1400" x2="454" y2="1438" stroke="#2545e8" stroke-width="1.6" marker-end="url(#flow-arrow-blue)"/>
+  <text x="464" y="1424" font-family="'JetBrains Mono',monospace" font-size="10" fill="#2545e8" font-weight="700" letter-spacing="0.12em">ASSEMBLE</text>
+
+  <!-- ═══════════════════════════════════════════════════
+       ⑤ CONTEXT MANAGER — assembly chassis (cy=1490, H=48) HERO
+       FTL = (420, 1442), BBR = (489, 1680)
+       ═══════════════════════════════════════════════════ -->
+  <g class="obj-context">
+    <!-- Front face (thick blue chassis) -->
+    <polygon points="420,1490 619,1605 619,1557 420,1442" fill="#d4dcf8" stroke="#2545e8" stroke-width="1.5"/>
+    <!-- Face details: indicator LEDs on front -->
+    <g transform="matrix(0.866, 0.5, 0, 1, 420, 1442)">
+      <circle cx="25" cy="24" r="2" fill="#16803d"/>
+      <circle cx="45" cy="24" r="2" fill="#ca8a04"/>
+      <circle cx="65" cy="24" r="2" fill="#ea580c"/>
+      <circle cx="85" cy="24" r="2" fill="#c4301c"/>
+      <text x="120" y="27" font-family="'JetBrains Mono',monospace" font-size="6" fill="#2545e8" letter-spacing="0.1em" opacity="0.7">PRESSURE · 60/70/80/90</text>
+      <!-- Horizontal vent lines -->
+      <line x1="0" y1="36" x2="230" y2="36" stroke="#2545e8" stroke-width="0.4" opacity="0.35"/>
+      <line x1="0" y1="40" x2="230" y2="40" stroke="#2545e8" stroke-width="0.4" opacity="0.35"/>
+      <line x1="0" y1="44" x2="230" y2="44" stroke="#2545e8" stroke-width="0.4" opacity="0.35"/>
+    </g>
+
+    <!-- Right face (panel with label) -->
+    <polygon points="619,1605 489,1680 489,1632 619,1557" fill="#d4dcf8" stroke="#2545e8" stroke-width="1.5"/>
+
+    <!-- Top face (assembly deck) -->
+    <polygon points="420,1442 619,1557 489,1632 290,1517" fill="#e8edff" stroke="#2545e8" stroke-width="1.6"/>
+    <g transform="matrix(0.866, 0.5, -0.866, 0.5, 420, 1442)">
+      <!-- Title plate -->
+      <rect x="30" y="12" width="170" height="18" rx="2" fill="#2545e8"/>
+      <text x="115" y="25" font-family="'JetBrains Mono',monospace" font-size="10" fill="#ffffff" text-anchor="middle" font-weight="700" letter-spacing="0.2em">CONTEXT MANAGER</text>
+      <!-- Central circular gauge (the "compute wheel") -->
+      <circle cx="115" cy="78" r="32" fill="none" stroke="#2545e8" stroke-width="1.3"/>
+      <circle cx="115" cy="78" r="26" fill="none" stroke="#2545e8" stroke-width="0.5" opacity="0.5"/>
+      <circle cx="115" cy="78" r="4" fill="#2545e8"/>
+      <!-- Tick marks around gauge -->
+      <g stroke="#2545e8" stroke-width="0.5">
+        <line x1="115" y1="46" x2="115" y2="50"/>
+        <line x1="147" y1="78" x2="143" y2="78"/>
+        <line x1="115" y1="110" x2="115" y2="106"/>
+        <line x1="83" y1="78" x2="87" y2="78"/>
+      </g>
+      <!-- Needle (compute pointer) -->
+      <line x1="115" y1="78" x2="138" y2="62" stroke="#c4301c" stroke-width="1.5"/>
+      <!-- Inner labels -->
+      <text x="115" y="56" font-family="'JetBrains Mono',monospace" font-size="4.5" fill="#2545e8" text-anchor="middle" opacity="0.7" letter-spacing="0.1em">FILL</text>
+      <text x="115" y="92" font-family="'JetBrains Mono',monospace" font-size="4.5" fill="#2545e8" text-anchor="middle" opacity="0.7" letter-spacing="0.1em">47K / 200K</text>
+      <!-- Bottom threshold panel -->
+      <rect x="20" y="122" width="190" height="18" rx="2" fill="#ffffff" stroke="#2545e8" stroke-width="0.5"/>
+      <g font-family="'JetBrains Mono',monospace" font-size="6" letter-spacing="0.06em" font-weight="700">
+        <g transform="translate(28 131)">
+          <rect x="-2" y="-5" width="38" height="11" rx="1.5" fill="#16803d" fill-opacity="0.2" stroke="#16803d" stroke-width="0.4"/>
+          <text fill="#16803d" y="3">L0 60%</text>
+        </g>
+        <g transform="translate(72 131)">
+          <rect x="-2" y="-5" width="38" height="11" rx="1.5" fill="#ca8a04" fill-opacity="0.2" stroke="#ca8a04" stroke-width="0.4"/>
+          <text fill="#ca8a04" y="3">L1 70%</text>
+        </g>
+        <g transform="translate(116 131)">
+          <rect x="-2" y="-5" width="38" height="11" rx="1.5" fill="#ea580c" fill-opacity="0.2" stroke="#ea580c" stroke-width="0.4"/>
+          <text fill="#ea580c" y="3">L2 80%</text>
+        </g>
+        <g transform="translate(160 131)">
+          <rect x="-2" y="-5" width="38" height="11" rx="1.5" fill="#c4301c" fill-opacity="0.2" stroke="#c4301c" stroke-width="0.4"/>
+          <text fill="#c4301c" y="3">L3 90%</text>
+        </g>
+      </g>
+      <!-- Rivet dots at corners -->
+      <circle cx="8" cy="8" r="1.5" fill="#2545e8" opacity="0.6"/>
+      <circle cx="222" cy="8" r="1.5" fill="#2545e8" opacity="0.6"/>
+      <circle cx="8" cy="142" r="1.5" fill="#2545e8" opacity="0.6"/>
+      <circle cx="222" cy="142" r="1.5" fill="#2545e8" opacity="0.6"/>
+    </g>
+  </g>
+
+  <!-- CONTEXT MANAGER label (right, prominent) -->
+  <g>
+    <circle cx="619" cy="1580" r="3" fill="#2545e8" stroke="#fff" stroke-width="1"/>
+    <line x1="619" y1="1580" x2="790" y2="1580" stroke="#2545e8" stroke-width="1"/>
+    <text x="798" y="1576" font-family="'JetBrains Mono',monospace" font-size="13" fill="#2545e8" font-weight="700" letter-spacing="0.08em">ASSEMBLY</text>
+    <text x="798" y="1590" font-family="'JetBrains Mono',monospace" font-size="9" fill="#1a1a1a">each turn, fresh projection</text>
+    <text x="798" y="1603" font-family="'JetBrains Mono',monospace" font-size="8" fill="#8a8a8a">retrieve · shape · inject</text>
+    <text x="798" y="1615" font-family="'JetBrains Mono',monospace" font-size="8" fill="#8a8a8a">layered eviction (§9)</text>
+  </g>
+
+  <!-- ≤200K tok dimension callout -->
+  <g stroke="#2545e8" stroke-width="0.4" fill="none" opacity="0.6">
+    <line x1="270" y1="1442" x2="258" y2="1442"/>
+    <line x1="258" y1="1442" x2="258" y2="1680"/>
+    <line x1="258" y1="1680" x2="270" y2="1680"/>
+  </g>
+  <text x="248" y="1566" font-family="'JetBrains Mono',monospace" font-size="9" fill="#2545e8" text-anchor="end" opacity="0.75" font-weight="600">≤200K tok</text>
+
+  <!-- Flow 5: context manager → model -->
+  <line class="flow-pipe" x1="454" y1="1700" x2="454" y2="1768" stroke="#2545e8" stroke-width="1.4" marker-end="url(#flow-arrow-blue)"/>
+  <text x="464" y="1740" font-family="'JetBrains Mono',monospace" font-size="9" fill="#2545e8" font-weight="600" letter-spacing="0.12em">EXECUTE</text>
+
+  <!-- ═══════════════════════════════════════════════════
+       ⑥ MODEL — CPU chip (cy=1790, H=14)
+       FTL = (420, 1776), BBR = (489, 1980)
+       ═══════════════════════════════════════════════════ -->
+  <g class="obj-model">
+    <!-- Front face (chip package side) -->
+    <polygon points="420,1790 619,1905 619,1891 420,1776" fill="#1a1a1a" stroke="#000000" stroke-width="1"/>
+    <!-- Right face -->
+    <polygon points="619,1905 489,1980 489,1966 619,1891" fill="#1a1a1a" stroke="#000000" stroke-width="1"/>
+    <!-- Top face (chip surface with die + pins) -->
+    <polygon points="420,1776 619,1891 489,1966 290,1851" fill="#2a2a2e" stroke="#1a1a1a" stroke-width="1.3"/>
+    <g transform="matrix(0.866, 0.5, -0.866, 0.5, 420, 1776)">
+      <!-- Pins on the front-top edge and left-top edge of the chip (visible from iso) -->
+      <g fill="#b8b8bc" stroke="#5b5b63" stroke-width="0.3">
+        <!-- Right side pins (along local x = 230) -->
+        <rect x="226" y="20" width="10" height="4"/>
+        <rect x="226" y="30" width="10" height="4"/>
+        <rect x="226" y="40" width="10" height="4"/>
+        <rect x="226" y="50" width="10" height="4"/>
+        <rect x="226" y="60" width="10" height="4"/>
+        <rect x="226" y="70" width="10" height="4"/>
+        <rect x="226" y="80" width="10" height="4"/>
+        <rect x="226" y="90" width="10" height="4"/>
+        <rect x="226" y="100" width="10" height="4"/>
+        <rect x="226" y="110" width="10" height="4"/>
+        <rect x="226" y="120" width="10" height="4"/>
+        <rect x="226" y="130" width="10" height="4"/>
+        <!-- Bottom edge pins (along local y = 150) -->
+        <rect x="20" y="146" width="4" height="10"/>
+        <rect x="34" y="146" width="4" height="10"/>
+        <rect x="48" y="146" width="4" height="10"/>
+        <rect x="62" y="146" width="4" height="10"/>
+        <rect x="76" y="146" width="4" height="10"/>
+        <rect x="90" y="146" width="4" height="10"/>
+        <rect x="104" y="146" width="4" height="10"/>
+        <rect x="118" y="146" width="4" height="10"/>
+        <rect x="132" y="146" width="4" height="10"/>
+        <rect x="146" y="146" width="4" height="10"/>
+        <rect x="160" y="146" width="4" height="10"/>
+        <rect x="174" y="146" width="4" height="10"/>
+        <rect x="188" y="146" width="4" height="10"/>
+        <rect x="202" y="146" width="4" height="10"/>
+      </g>
+
+      <!-- Chip body bevel (inset) -->
+      <rect x="10" y="10" width="210" height="130" rx="2" fill="#1a1a1a" stroke="#0a0a0a" stroke-width="0.6"/>
+
+      <!-- Inner die (silicon) -->
+      <rect x="30" y="26" width="170" height="98" rx="1" fill="#0a0f22" stroke="#2545e8" stroke-width="0.6"/>
+
+      <!-- Orientation notch (top-left indicator) -->
+      <circle cx="18" cy="18" r="2" fill="#444" stroke="#666" stroke-width="0.3"/>
+
+      <!-- Circuit traces on die -->
+      <g stroke="#3a5fff" stroke-width="0.35" opacity="0.55" fill="none">
+        <line x1="30" y1="40" x2="200" y2="40"/>
+        <line x1="30" y1="52" x2="200" y2="52"/>
+        <line x1="30" y1="64" x2="200" y2="64"/>
+        <line x1="30" y1="88" x2="200" y2="88"/>
+        <line x1="30" y1="100" x2="200" y2="100"/>
+        <line x1="30" y1="112" x2="200" y2="112"/>
+        <line x1="46" y1="26" x2="46" y2="124"/>
+        <line x1="62" y1="26" x2="62" y2="124"/>
+        <line x1="78" y1="26" x2="78" y2="124"/>
+        <line x1="134" y1="26" x2="134" y2="124"/>
+        <line x1="150" y1="26" x2="150" y2="124"/>
+        <line x1="166" y1="26" x2="166" y2="124"/>
+        <line x1="184" y1="26" x2="184" y2="124"/>
+      </g>
+
+      <!-- Glowing compute cells -->
+      <rect class="cell-glow" x="48" y="42" width="12" height="12" fill="#3a5fff" fill-opacity="0.65"/>
+      <rect class="cell-glow delay-1" x="140" y="90" width="12" height="12" fill="#7c3aed" fill-opacity="0.65"/>
+      <rect class="cell-glow delay-2" x="80" y="106" width="12" height="12" fill="#3a5fff" fill-opacity="0.5"/>
+      <rect class="cell-glow delay-1" x="160" y="42" width="12" height="12" fill="#7c3aed" fill-opacity="0.5"/>
+
+      <!-- Central model label etched on die -->
+      <text x="115" y="80" font-family="'JetBrains Mono',monospace" font-size="8" fill="#e0e8ff" text-anchor="middle" font-weight="700" letter-spacing="0.22em">FWD PASS</text>
+      <text x="115" y="92" font-family="'JetBrains Mono',monospace" font-size="5.5" fill="#7f9dff" text-anchor="middle" letter-spacing="0.14em" opacity="0.85">claude-opus-4.6</text>
+
+      <!-- Power LED -->
+      <g transform="translate(200 18)">
+        <circle r="3.5" fill="#16803d" opacity="0.3"/>
+        <circle class="led-blink" r="2" fill="#4ade80"/>
+        <circle r="0.8" fill="#dcfce7"/>
+      </g>
+      <text x="195" y="20" font-family="'JetBrains Mono',monospace" font-size="4.5" fill="#888" text-anchor="end" letter-spacing="0.08em">PWR</text>
+
+      <!-- Chip marks -->
+      <text x="200" y="134" font-family="'JetBrains Mono',monospace" font-size="4.5" fill="#6a7bbf" text-anchor="end" letter-spacing="0.1em" opacity="0.7">F-1 · 2026</text>
+    </g>
+  </g>
+
+  <!-- MODEL label -->
+  <g>
+    <circle cx="290" cy="1851" r="2.5" fill="#1a1a1a"/>
+    <line x1="290" y1="1851" x2="220" y2="1851" stroke="#1a1a1a" stroke-width="0.7" stroke-dasharray="3 2"/>
+    <text x="212" y="1847" font-family="'JetBrains Mono',monospace" font-size="12" fill="#1a1a1a" font-weight="700" text-anchor="end" letter-spacing="0.08em">MODEL</text>
+    <text x="212" y="1861" font-family="'JetBrains Mono',monospace" font-size="9" fill="#8a8a8a" text-anchor="end">opus · sonnet · haiku · cascade</text>
+    <text x="212" y="1874" font-family="'JetBrains Mono',monospace" font-size="8" fill="#2545e8" text-anchor="end" opacity="0.75">compute(fragments) → next_action</text>
+    <text x="212" y="1886" font-family="'JetBrains Mono',monospace" font-size="8" fill="#8a8a8a" text-anchor="end">routed by slot (§7)</text>
+  </g>
+
+  <!-- Callout on pins -->
+  <g>
+    <circle cx="629" cy="1948" r="2" fill="#8a8a8a" opacity="0.8"/>
+    <line x1="629" y1="1948" x2="720" y2="1960" stroke="#8a8a8a" stroke-width="0.6" stroke-dasharray="3 2" opacity="0.7"/>
+    <text x="728" y="1957" font-family="'JetBrains Mono',monospace" font-size="8" fill="#8a8a8a" letter-spacing="0.06em">I/O PINS</text>
+    <text x="728" y="1968" font-family="'JetBrains Mono',monospace" font-size="7" fill="#8a8a8a" opacity="0.7">tokens in · tokens out</text>
+  </g>
+
+  <!-- Bottom bar -->
+  <g stroke="#c8c8c8" stroke-width="0.4" fill="none">
+    <line x1="32" y1="2030" x2="968" y2="2030" stroke-dasharray="2 2"/>
+    <line x1="32" y1="2026" x2="32" y2="2034"/>
+    <line x1="968" y1="2026" x2="968" y2="2034"/>
+  </g>
+  <text x="500" y="2048" font-family="'JetBrains Mono',monospace" font-size="9" fill="#8a8a8a" text-anchor="middle" letter-spacing="0.08em">© 2026 &middot; FREYJA ARCHITECTURE &middot; FIG_002 &middot; CONTEXT ASSEMBLY</text>
+  <text x="500" y="2064" font-family="'JetBrains Mono',monospace" font-size="8" fill="#2545e8" text-anchor="middle" opacity="0.6" letter-spacing="0.1em">skills → episodes → conversation → tool results → context manager → model</text>
+</svg>
+<figcaption class="hero-caption">FIG_002 &middot; exploded isometric view &middot; the six externalized layers of Freyja&rsquo;s context assembly, stacked along four corner-columns</figcaption>
+</figure>
+
+<!-- ═══════════════════ TOC ═══════════════════ -->
+<nav class="toc">
+  <div class="toc-title">Contents</div>
+  <ol>
+    <li><a href="#intro">Introduction</a></li>
+    <li><a href="#related">Related Work</a></li>
+    <li><a href="#overview">Architecture Overview</a></li>
+    <li><a href="#skills">Skills</a></li>
+    <li><a href="#episodes">Episodes and Episodic Memory</a></li>
+    <li><a href="#orchestration">Agent Orchestration</a></li>
+    <li><a href="#router">Model Router</a></li>
+    <li><a href="#tools">Tool Management and MCP</a></li>
+    <li><a href="#context">Context Management</a></li>
+    <li><a href="#permissions">Permission and Safety Model</a></li>
+    <li><a href="#computer">Computer Control</a></li>
+    <li><a href="#evolution">Self-Evolution</a></li>
+    <li><a href="#roadmap">Implementation Roadmap</a></li>
+    <li><a href="#future">Future Directions</a></li>
+  </ol>
+</nav>
+
+<!-- ═══════════════════ 1. INTRO ═══════════════════ -->
+<section id="intro">
+<h2><span class="num">01</span>Introduction</h2>
+
+<p>The dominant paradigm in AI-assisted software development treats the agent as a stateless tool&nbsp;&mdash; each session starts from scratch, context is managed implicitly by the provider, and the agent&rsquo;s capabilities are fixed at deployment time. This works tolerably for short coding tasks but breaks down for the kind of sustained, multi-modal knowledge work that a desktop agent should support: researching across documents and APIs, drafting communications, automating repetitive GUI workflows, and gradually learning a user&rsquo;s preferences and project conventions.</p>
+
+<p>Three problems motivate Freyja&rsquo;s architecture:</p>
+
+<div class="callout warning">
+  <div class="callout-label">Context is scarce</div>
+  Even 200K-token windows fill quickly when tool schemas, file contents, and conversation history compete for space. The <a href="https://arxiv.org/abs/2603.07670">MemoryArena benchmark</a> demonstrates that models near-perfect on passive recall &ldquo;plummet to 40&ndash;60%&rdquo; on interdependent multi-session agentic problems. Long context is not memory.
+</div>
+
+<div class="callout warning">
+  <div class="callout-label">Skills are fragile</div>
+  Hand-written instructions degrade as codebases evolve, and without a feedback loop the agent has no mechanism to distinguish helpful instructions from harmful ones.
+</div>
+
+<div class="callout warning">
+  <div class="callout-label">Tool explosion is real</div>
+  Connecting three typical MCP servers (GitHub, Slack, Sentry) consumes approximately 94,000 tokens of schema overhead&nbsp;&mdash; 47% of a 200K window&nbsp;&mdash; before any conversation begins, as measured by <a href="https://www.mindstudio.ai/blog/claude-code-mcp-server-token-overhead">MindStudio</a>.
+</div>
+
+<p>We address these problems with a layered architecture whose components are described in the sections that follow. Where possible, we adopt existing standards and patterns rather than inventing new ones, and we note explicitly where our design diverges from prior work and why.</p>
+</section>
+
+<!-- ═══════════════════ 2. RELATED WORK ═══════════════════ -->
+<section id="related">
+<h2><span class="num">02</span>Related Work</h2>
+
+<p>Our design draws on several families of prior work, which we summarize here to clarify what we adopt, what we extend, and what we depart from.</p>
+
+<h3>Agent frameworks</h3>
+<p><a href="https://code.claude.com">Claude Code</a> provides the closest reference architecture: a <code>while(tool_call)</code> loop with no DAGs or classifiers, eight core tools, a skill system based on Markdown files with YAML frontmatter, and a compaction mechanism that fires at approximately 83.5% of context capacity. We adopt its permission model, skill format, and compaction survival rules essentially unchanged, extending them with confidence tracking and evolutionary optimization. <a href="https://docs.openhands.dev">OpenHands</a> contributes the Condenser abstraction&nbsp;&mdash; a pluggable interface for context compression with multiple implementations (recent-events, LLM-summarizing, amortized-forgetting)&nbsp;&mdash; which informed our layered eviction design. <a href="https://cursor.com/learn/context">Cursor</a> takes a fundamentally different approach, treating each conversation as short-lived and relying on codebase indexing to re-fetch context on demand rather than compressing a growing transcript; we consider this a valid alternative for IDE-integrated tools but unsuitable for a long-running autonomous agent. <a href="https://docs.devin.ai">Devin</a> operates as a compound AI system with specialized models for planning, coding, review, and browsing, which validates our multi-model routing approach but requires full cloud infrastructure that we avoid.</p>
+
+<h3>Skills and instruction packages</h3>
+<p>The <a href="https://agentskills.io/specification">agentskills.io</a> open standard, adopted by 30+ agent tools including Claude Code, Cursor, Gemini CLI, and GitHub Copilot, defines a SKILL.md format with YAML frontmatter and a Markdown body, optional supporting files, and a progressive disclosure pattern (description at discovery, full body on activation). <a href="https://hermes-agent.nousresearch.com/docs/">Hermes Agent</a> extends this standard with a self-evolution pipeline that reads execution traces, diagnoses failures, generates candidate mutations via GEPA, and gates promotion through five mandatory constraint checks. We adopt both the standard and the evolution pipeline, adapting the latter to our confidence lifecycle.</p>
+
+<h3>Episodic memory</h3>
+<p><a href="https://arxiv.org/abs/2601.03192">MemRL</a> demonstrates that a frozen LLM augmented with an evolving memory bank of Intent-Experience-Utility (IEU) triplets, where utility scores are updated via exponential moving average after each episode, achieves a 56% gain on multi-step tasks (ALFWorld) and a forgetting rate of 0.041 versus 0.051 for the baseline. The two-phase retrieval mechanism&nbsp;&mdash; similarity-based recall followed by value-aware ranking that downweights semantically similar but historically unsuccessful memories&nbsp;&mdash; is the key differentiator from naive RAG, and we adopt it for our episode retrieval system.</p>
+
+<h3>Prompt optimization</h3>
+<p><a href="https://arxiv.org/abs/2507.19457">GEPA</a> (ICLR 2026 Oral) evolves textual parameters using LLM-based diagnostic reflection and Pareto-efficient search, outperforming GRPO by 6% on average (up to 20%) while requiring 35x fewer rollouts, at a cost of approximately $2&ndash;10 per optimization run. <a href="https://dspy.ai">DSPy</a> provides the compilation framework; its core lesson&nbsp;&mdash; that bootstrapping from successful execution traces is the most reliable way to improve prompts&nbsp;&mdash; directly informs our skill mutation operators.</p>
+
+<h3>Context management</h3>
+<p><a href="https://factory.ai/news/evaluating-compression">Factory.ai</a> demonstrates that structured anchored summarization (3.70/5 quality) outperforms both Anthropic&rsquo;s (3.44/5) and OpenAI&rsquo;s (3.35/5) approaches across 36K production messages. <a href="https://github.com/JetBrains-Research/the-complexity-trap">JetBrains</a> (NeurIPS DL4Code 2025) shows, perhaps counterintuitively, that observation masking&nbsp;&mdash; replacing old tool outputs with <code>[details omitted]</code> rather than summarizing&nbsp;&mdash; achieves +2.6% solve rate on SWE-bench Verified with 52% cost reduction. The <a href="https://arxiv.org/abs/2511.17006">BATS</a> budget-awareness signal reduces speculative searches by 40.4% at near-zero cost. We combine all three techniques.</p>
+
+<h3>Codebase understanding</h3>
+<p><a href="https://aider.chat/2023/10/22/repomap.html">Aider</a> contributes the most rigorous approach to repository mapping: a tree-sitter-parsed directed graph ranked via personalized PageRank, serialized within a configurable token budget. Aider&rsquo;s <a href="https://aider.chat/docs/unified-diffs.html">edit format research</a> found that unified diffs reduce LLM laziness by 3x versus search/replace blocks, and that function-call-based edit formats consistently underperform plain-text formats. Their <a href="https://aider.chat/2024/09/26/architect.html">architect mode</a>, which separates planning from editing, produced state-of-the-art results (85% with o1-preview + DeepSeek). <a href="https://www.augmentcode.com/context-engine">Augment Code</a> builds a custom semantic graph across 400,000+ files, exposed as an <a href="https://docs.augmentcode.com/context-services/mcp/overview">MCP server</a> usable by any agent.</p>
+
+<h3>Agent specialization</h3>
+<p><a href="https://forgecode.dev">ForgeCode</a> implements a three-agent architecture&nbsp;&mdash; FORGE (implementation), MUSE (planning, writes only to <code>plans/</code>), and SAGE (internal research, read-only)&nbsp;&mdash; where the analytical agent cannot trigger code changes. <a href="https://docs.roocode.com">Roo Code</a> extends Cline with custom modes that scope tool permissions per persona via regex patterns, and a &ldquo;Boomerang Tasks&rdquo; hub-and-spoke sub-agent model architecturally similar to our episode model. <a href="https://randomlabs.ai/blog/slate">Slate</a> (Random Labs, YC) is the most explicit implementation of the thread-weaving pattern we adopt: an orchestrator dispatches parallel worker threads, each of which produces an <em>episode</em> containing only successful tool calls and conclusions.</p>
+
+<h3>Sandboxing and generation</h3>
+<p><a href="https://bolt.new">Bolt.new</a> parses structured XML tags from the LLM stream into file writes and shell commands that execute progressively as tokens arrive. <a href="https://v0.dev">v0</a> (Vercel) uses a composite model pipeline achieving 93% error-free generation versus ~62% baseline. <a href="https://e2b.dev">E2B</a> provides Firecracker microVM sandboxes with ~150ms boot time and hardware-level isolation. <a href="https://openai.com/index/unrolling-the-codex-agent-loop/">Codex CLI</a> implements kernel-level sandboxing via macOS Seatbelt and Linux Landlock.</p>
+</section>
+
+<!-- ═══════════════════ 3. ARCHITECTURE ═══════════════════ -->
+<section id="overview">
+<h2><span class="num">03</span>Architecture Overview</h2>
+
+<p>Freyja&rsquo;s architecture is organized around a unified <em>memory layer</em> that mediates between persistent stores (skills, episodes, preferences, project instructions) and the finite context window of the LLM on each turn. We treat the context window as scarce RAM with a layered eviction strategy, rather than as an append-only log that eventually overflows into compaction.</p>
+
+<!-- ── MAIN ARCHITECTURE DIAGRAM ── -->
+<div class="diagram">
+<div class="diagram-title">Freyja &middot; Memory Layer Architecture</div>
+<svg viewBox="0 0 720 340" fill="none" xmlns="http://www.w3.org/2000/svg" style="max-width:720px;width:100%">
+  <!-- Outer container -->
+  <rect x="1" y="1" width="718" height="338" rx="4" stroke="#d4d4d4" stroke-width="1.5" stroke-dasharray="6 4" fill="#fafaf8"/>
+
+  <!-- External context boxes -->
+  <rect x="24" y="28" width="140" height="64" rx="3" stroke="#1a1a1a" stroke-width="1.2" fill="white"/>
+  <text x="36" y="52" font-family="'SF Mono',monospace" font-size="13" font-weight="600" fill="#1a1a1a">Skills</text>
+  <text x="36" y="70" font-family="'SF Mono',monospace" font-size="10" fill="#999">know-how · reusable</text>
+
+  <rect x="184" y="28" width="140" height="64" rx="3" stroke="#1a1a1a" stroke-width="1.2" fill="white"/>
+  <text x="196" y="52" font-family="'SF Mono',monospace" font-size="13" font-weight="600" fill="#1a1a1a">Episodes</text>
+  <text x="196" y="70" font-family="'SF Mono',monospace" font-size="10" fill="#999">compressed results</text>
+
+  <rect x="344" y="28" width="180" height="64" rx="3" stroke="#1a1a1a" stroke-width="1.2" fill="white"/>
+  <text x="356" y="52" font-family="'SF Mono',monospace" font-size="13" font-weight="600" fill="#1a1a1a">Session Transcript</text>
+  <text x="356" y="70" font-family="'SF Mono',monospace" font-size="10" fill="#999">conversation · tools</text>
+
+  <rect x="544" y="28" width="152" height="64" rx="3" stroke="#1a1a1a" stroke-width="1.2" fill="white"/>
+  <text x="556" y="52" font-family="'SF Mono',monospace" font-size="13" font-weight="600" fill="#1a1a1a">MCP · Tools</text>
+  <text x="556" y="70" font-family="'SF Mono',monospace" font-size="10" fill="#999">schemas · deferred</text>
+
+  <!-- Arrows down -->
+  <line x1="94" y1="92" x2="94" y2="124" stroke="#1a1a1a" stroke-width="1"/>
+  <polygon points="94,130 90,122 98,122" fill="#1a1a1a"/>
+  <line x1="254" y1="92" x2="254" y2="124" stroke="#1a1a1a" stroke-width="1"/>
+  <polygon points="254,130 250,122 258,122" fill="#1a1a1a"/>
+  <line x1="434" y1="92" x2="434" y2="124" stroke="#1a1a1a" stroke-width="1"/>
+  <polygon points="434,130 430,122 438,122" fill="#1a1a1a"/>
+  <line x1="620" y1="92" x2="620" y2="124" stroke="#1a1a1a" stroke-width="1"/>
+  <polygon points="620,130 616,122 624,122" fill="#1a1a1a"/>
+
+  <!-- Context Manager -->
+  <rect x="24" y="132" width="672" height="64" rx="3" stroke="#d4351c" stroke-width="1.5" fill="white"/>
+  <text x="40" y="148" font-family="'SF Mono',monospace" font-size="10" letter-spacing="1.2" fill="#d4351c" text-transform="uppercase">RETRIEVE · SHAPE · INJECT</text>
+  <text x="40" y="170" font-family="'SF Mono',monospace" font-size="14" font-weight="600" fill="#1a1a1a">Context Manager</text>
+  <text x="40" y="186" font-family="'SF Mono',monospace" font-size="10" fill="#999">decides what occupies the LLM window on each turn</text>
+
+  <!-- Eviction layer indicators -->
+  <rect x="480" y="142" width="54" height="22" rx="2" fill="#f0f0ee"/>
+  <text x="490" y="157" font-family="'SF Mono',monospace" font-size="9" fill="#999">60%</text>
+  <rect x="540" y="142" width="54" height="22" rx="2" fill="#fde8e4"/>
+  <text x="550" y="157" font-family="'SF Mono',monospace" font-size="9" fill="#d4351c">80%</text>
+  <rect x="600" y="142" width="54" height="22" rx="2" fill="#fde8e4"/>
+  <text x="610" y="157" font-family="'SF Mono',monospace" font-size="9" fill="#d4351c">90%</text>
+  <text x="480" y="186" font-family="'SF Mono',monospace" font-size="9" fill="#999">← eviction thresholds</text>
+
+  <!-- Arrow to Model Router -->
+  <line x1="360" y1="196" x2="360" y2="224" stroke="#1a1a1a" stroke-width="1"/>
+  <polygon points="360,230 356,222 364,222" fill="#1a1a1a"/>
+
+  <!-- Model Router -->
+  <rect x="24" y="232" width="672" height="56" rx="3" stroke="#2545e8" stroke-width="1.5" fill="white"/>
+  <text x="40" y="254" font-family="'SF Mono',monospace" font-size="14" font-weight="600" fill="#1a1a1a">Model Router</text>
+  <text x="40" y="274" font-family="'SF Mono',monospace" font-size="10" fill="#999">selects the appropriate model for each task</text>
+
+  <!-- Slot labels -->
+  <rect x="340" y="244" width="56" height="20" rx="2" fill="#e8ecfd"/>
+  <text x="350" y="258" font-family="'SF Mono',monospace" font-size="9" fill="#2545e8">main</text>
+  <rect x="402" y="244" width="74" height="20" rx="2" fill="#e8ecfd"/>
+  <text x="410" y="258" font-family="'SF Mono',monospace" font-size="9" fill="#2545e8">subagent</text>
+  <rect x="482" y="244" width="60" height="20" rx="2" fill="#e8ecfd"/>
+  <text x="492" y="258" font-family="'SF Mono',monospace" font-size="9" fill="#2545e8">search</text>
+  <rect x="548" y="244" width="74" height="20" rx="2" fill="#e8ecfd"/>
+  <text x="556" y="258" font-family="'SF Mono',monospace" font-size="9" fill="#2545e8">reasoning</text>
+  <rect x="628" y="244" width="60" height="20" rx="2" fill="#e8ecfd"/>
+  <text x="634" y="258" font-family="'SF Mono',monospace" font-size="9" fill="#2545e8">computer</text>
+
+  <!-- Arrow to model -->
+  <line x1="360" y1="288" x2="360" y2="310" stroke="#1a1a1a" stroke-width="1"/>
+  <polygon points="360,316 356,308 364,308" fill="#1a1a1a"/>
+
+  <!-- Model box -->
+  <rect x="260" y="316" width="200" height="18" rx="3" fill="#1a1a1a"/>
+  <text x="290" y="329" font-family="'SF Mono',monospace" font-size="10" fill="white">MODEL · forward pass</text>
+</svg>
+</div>
+
+<p>Following <a href="https://adk.dev/context/">Google ADK</a>&rsquo;s three-layer context model, we distinguish between the <em>session</em> (the durable, append-only event log that serves as ground truth), the <em>working context</em> (the computed projection of the session into a single model invocation&rsquo;s prompt), and <em>artifacts</em> (large payloads that live in external stores with lightweight handles in context). This separation enables multiple optimization strategies&nbsp;&mdash; compaction, caching, filtering, artifact externalization&nbsp;&mdash; without losing data.</p>
+
+<p>The engine itself is decoupled via a submission/event queue abstraction, following <a href="https://openai.com/index/unrolling-the-codex-agent-loop/">Codex CLI</a>&rsquo;s architecture: operations flow through a sequential processing loop with bounded channels, enabling multiple simultaneous UIs (desktop app, CLI, IDE extension), session resumability, and testable cores without coupling the agent logic to any particular frontend.</p>
+
+<table>
+  <thead><tr><th>Data type</th><th>Lifetime</th><th>Typical size</th><th>When loaded</th></tr></thead>
+  <tbody>
+    <tr><td>Skills (metadata)</td><td>Persistent, filesystem</td><td>~100 tokens each</td><td>At boot</td></tr>
+    <tr><td>Skills (full body)</td><td>Session, on activation</td><td>Up to 5K tokens</td><td>On <code>load_skill</code> call</td></tr>
+    <tr><td>Episodes</td><td>Per-session + persisted</td><td>200&ndash;500 tokens</td><td>When parent needs them</td></tr>
+    <tr><td>FREYJA.md</td><td>Persistent, project file</td><td>Variable</td><td>Always in context</td></tr>
+    <tr><td>Session transcript</td><td>Per-session, grows</td><td>Variable</td><td>Always (managed)</td></tr>
+    <tr><td>Tool results</td><td>Per-turn</td><td>Variable, can be large</td><td>Inline, truncated under pressure</td></tr>
+    <tr><td>MCP tool schemas</td><td>Per-session</td><td>300&ndash;800 tokens each</td><td>Deferred; on first use</td></tr>
+  </tbody>
+</table>
+
+<h3>Layered eviction</h3>
+
+<p>The context manager monitors fill level using provider token counts from API responses (not heuristics) and triggers four eviction layers in sequence:</p>
+
+<!-- Eviction layers diagram -->
+<div class="diagram">
+<div class="diagram-title">Eviction Layers &middot; cheapest fires first</div>
+<svg viewBox="0 0 720 200" fill="none" xmlns="http://www.w3.org/2000/svg" style="max-width:720px;width:100%">
+  <!-- Layer 0 -->
+  <rect x="10" y="10" width="160" height="80" rx="3" stroke="#16a34a" stroke-width="1.2" fill="#f0fdf4"/>
+  <text x="22" y="30" font-family="'SF Mono',monospace" font-size="10" fill="#16a34a" letter-spacing="0.8">LAYER 0 · 60%</text>
+  <text x="22" y="50" font-family="'SF Mono',monospace" font-size="12" font-weight="600" fill="#1a1a1a">Skill unload</text>
+  <text x="22" y="68" font-family="'SF Mono',monospace" font-size="9" fill="#999">drop bodies, keep</text>
+  <text x="22" y="80" font-family="'SF Mono',monospace" font-size="9" fill="#999">descriptions. ~0 loss.</text>
+
+  <!-- Layer 1 -->
+  <rect x="190" y="10" width="160" height="80" rx="3" stroke="#ca8a04" stroke-width="1.2" fill="#fefce8"/>
+  <text x="202" y="30" font-family="'SF Mono',monospace" font-size="10" fill="#ca8a04" letter-spacing="0.8">LAYER 1 · 70%</text>
+  <text x="202" y="50" font-family="'SF Mono',monospace" font-size="12" font-weight="600" fill="#1a1a1a">Episode compress</text>
+  <text x="202" y="68" font-family="'SF Mono',monospace" font-size="9" fill="#999">replace transcripts</text>
+  <text x="202" y="80" font-family="'SF Mono',monospace" font-size="9" fill="#999">with summaries.</text>
+
+  <!-- Layer 2 -->
+  <rect x="370" y="10" width="160" height="80" rx="3" stroke="#ea580c" stroke-width="1.2" fill="#fff7ed"/>
+  <text x="382" y="30" font-family="'SF Mono',monospace" font-size="10" fill="#ea580c" letter-spacing="0.8">LAYER 2 · 80%</text>
+  <text x="382" y="50" font-family="'SF Mono',monospace" font-size="12" font-weight="600" fill="#1a1a1a">Tool truncation</text>
+  <text x="382" y="68" font-family="'SF Mono',monospace" font-size="9" fill="#999">head 70% + tail 25%.</text>
+  <text x="382" y="80" font-family="'SF Mono',monospace" font-size="9" fill="#999">keep 3 most recent.</text>
+
+  <!-- Layer 3 -->
+  <rect x="550" y="10" width="160" height="80" rx="3" stroke="#d4351c" stroke-width="1.2" fill="#fde8e4"/>
+  <text x="562" y="30" font-family="'SF Mono',monospace" font-size="10" fill="#d4351c" letter-spacing="0.8">LAYER 3 · 90%</text>
+  <text x="562" y="50" font-family="'SF Mono',monospace" font-size="12" font-weight="600" fill="#1a1a1a">Full compaction</text>
+  <text x="562" y="68" font-family="'SF Mono',monospace" font-size="9" fill="#999">LLM summarization.</text>
+  <text x="562" y="80" font-family="'SF Mono',monospace" font-size="9" fill="#999">re-attach skills (25K).</text>
+
+  <!-- Arrows -->
+  <line x1="170" y1="50" x2="190" y2="50" stroke="#1a1a1a" stroke-width="1" marker-end="url(#arrow)"/>
+  <line x1="350" y1="50" x2="370" y2="50" stroke="#1a1a1a" stroke-width="1" marker-end="url(#arrow)"/>
+  <line x1="530" y1="50" x2="550" y2="50" stroke="#1a1a1a" stroke-width="1" marker-end="url(#arrow)"/>
+
+  <!-- Bottom annotation -->
+  <text x="10" y="120" font-family="'SF Mono',monospace" font-size="10" fill="#999" font-style="italic">most sessions never reach Layer 3</text>
+  <line x1="10" y1="140" x2="710" y2="140" stroke="#e8e8e8" stroke-width="1"/>
+  <text x="10" y="160" font-family="'SF Mono',monospace" font-size="10" fill="#d4351c">SIGNAL</text>
+  <text x="62" y="160" font-family="'SF Mono',monospace" font-size="10" fill="#999">targeted</text>
+  <text x="580" y="160" font-family="'SF Mono',monospace" font-size="10" fill="#d4351c">NOISE</text>
+  <text x="626" y="160" font-family="'SF Mono',monospace" font-size="10" fill="#999">conflicting · stale</text>
+  <line x1="120" y1="157" x2="570" y2="157" stroke="#e8e8e8" stroke-width="1" stroke-dasharray="4 3"/>
+  <text x="10" y="182" font-family="'SF Mono',monospace" font-size="10" fill="#999" font-style="italic">more signal → better computation&emsp;&emsp;more noise → fragments conflict, model gets confused</text>
+
+  <defs><marker id="arrow" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#1a1a1a"/></marker></defs>
+</svg>
+</div>
+
+</section>
+
+<!-- ═══════════════════ 4. SKILLS ═══════════════════ -->
+<section id="skills">
+<h2><span class="num">04</span>Skills</h2>
+
+<p>The <a href="https://arxiv.org/abs/2604.08224">Externalization survey</a> (Zhou et al., April 2026) defines a skill as the externalization of <em>procedural expertise</em>&nbsp;&mdash; not a tool (which exposes an operation) and not a protocol (which governs invocation), but a higher-level artifact encoding how a class of tasks should be executed. This expertise has three coupled components: the <em>operational procedure</em> (step decomposition, ordering, stopping conditions), <em>decision heuristics</em> (what to try first at branch points, when to back off), and <em>normative constraints</em> (testing requirements, scope limits, domain rules). Once externalized, skills become carriers of governance as much as carriers of capability.</p>
+
+<p>We instantiate this framework as <code>SKILL.md</code> files with YAML frontmatter and Markdown bodies, adopting the <a href="https://agentskills.io/specification">agentskills.io</a> open standard (30+ agent tools) and extending it through the <code>metadata.freyja</code> namespace.</p>
+
+<div class="specimen">
+<div class="specimen-header">Specimen &middot; SKILL.md with Freyja extensions</div>
+<pre>---
+name: api-conventions
+description: >
+  REST API design conventions for this project. Activate when
+  creating or modifying API endpoints.
+allowed-tools: Bash(npm run test:api *) Read Grep
+metadata:
+  freyja:
+    type: build
+    triggers: [api endpoint, REST, route handler]
+    confidence: verified
+    retrieval_count: 23
+    success_signals: 19
+    failure_signals: 2
+    cold_tools: [custom_api_validator]
+---
+
+# API Conventions
+
+[Step-by-step instructions follow...]</pre>
+</div>
+
+<h3>Discovery hierarchy</h3>
+<table>
+  <thead><tr><th>Priority</th><th>Location</th><th>Scope</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td><code>.freyja/skills/&lt;name&gt;/SKILL.md</code></td><td>Project</td><td>Team-shared, version-controlled</td></tr>
+    <tr><td>2</td><td><code>~/.freyja/skills/&lt;name&gt;/SKILL.md</code></td><td>Global (user)</td><td>Personal across all projects</td></tr>
+    <tr><td>3</td><td><code>.claude/skills/&lt;name&gt;/SKILL.md</code></td><td>Claude Code compat</td><td>Read-only fallback</td></tr>
+    <tr><td>4</td><td>Paths in <code>settings.json</code></td><td>Configurable</td><td>Shared skill libraries</td></tr>
+    <tr><td>5</td><td>MCP plugin skills</td><td>Per-plugin namespace</td><td>Server-provided</td></tr>
+  </tbody>
+</table>
+
+<h3>Skill types and activation</h3>
+<table>
+  <thead><tr><th>Type</th><th>Purpose</th><th>Activation trigger</th></tr></thead>
+  <tbody>
+    <tr><td><span class="tag blue">build</span></td><td>Teaches the agent how to accomplish a task</td><td>Keyword match against <code>triggers</code>, or user invocation</td></tr>
+    <tr><td><span class="tag red">guard</span></td><td>Teaches recovery from errors</td><td>Regex match against <code>error_patterns</code> on tool failure</td></tr>
+    <tr><td><span class="tag gray">reference</span></td><td>Domain knowledge the agent should know</td><td>Auto-activated when agent reads files matching <code>paths</code></td></tr>
+  </tbody>
+</table>
+
+<h3>Confidence lifecycle</h3>
+<div class="lifecycle">
+  <div class="lifecycle-node">UNVALIDATED</div>
+  <div class="lifecycle-edge">&rarr;<br><span style="font-size:9px">3+ uses</span></div>
+  <div class="lifecycle-node">EXPERIMENTAL</div>
+  <div class="lifecycle-edge">&rarr;<br><span style="font-size:9px">10+ uses, &ge;80%</span></div>
+  <div class="lifecycle-node verified">VERIFIED</div>
+  <div class="lifecycle-edge" style="margin-left:24px">&darr;<br><span style="font-size:9px">&lt;50%</span></div>
+  <div class="lifecycle-node deprecated">DEPRECATED</div>
+</div>
+
+<h3>Retrieval at scale</h3>
+
+<p>Our current retrieval (keyword triggers + LLM auto-discovery) is adequate for small catalogs but will not scale. <a href="https://arxiv.org/abs/2504.06188">SkillFlow</a> demonstrates that over 36K skills, keyword retrieval achieves MRR 0.266 while a four-stage progressive pipeline achieves MRR 0.634. More critically, <a href="https://arxiv.org/abs/2603.02176">AgentSkillOS</a> proves that flat skill invocation fails catastrophically at 200K scale:</p>
+
+<table>
+  <thead><tr><th>Configuration</th><th>200 skills</th><th>1K skills</th><th>200K skills</th></tr></thead>
+  <tbody>
+    <tr><td>DAG orchestration (Quality-First)</td><td><strong>100.0</strong></td><td><strong>100.0</strong></td><td><strong>100.0</strong></td></tr>
+    <tr><td>DAG orchestration (Efficiency-First)</td><td>58.5</td><td>76.1</td><td>89.0</td></tr>
+    <tr><td>Flat invocation (full pool)</td><td>24.3</td><td>48.1</td><td>17.2</td></tr>
+    <tr><td>Vanilla (no skills)</td><td>0.0</td><td>0.0</td><td>0.0</td></tr>
+  </tbody>
+</table>
+
+<div class="callout warning">
+  <div class="callout-label">Flat invocation gets worse at scale</div>
+  Even with oracle-perfect skill selection, flat invocation (loading skills without modeling dependencies or execution order) produces lower quality than DAG orchestration. The quality gap is structural. Skills declaring <code>depends_on</code> and <code>composes_with</code> relationships, enabling dependency-ordered execution with parallelism within layers, is essential for scaling.
+</div>
+
+<h3>Skill composition</h3>
+
+<p>The Externalization survey identifies five composition patterns&nbsp;&mdash; serial execution, parallel division of labor, conditional routing, recursive sub-skill invocation, and pipeline chaining&nbsp;&mdash; and notes that repeatedly validated compositions can themselves be packaged as new higher-level skills. <a href="https://arxiv.org/abs/2601.21123">CUA-Skill</a> formalizes this as <em>composition graphs</em> <code>G_c = (V_c, E_c)</code> where each node is a skill and each directed edge represents a valid chaining from one skill to another. This is directly analogous to our episode composition model (&sect;5), but at the skill level&nbsp;&mdash; and the two should compose: a skill&rsquo;s execution graph determines what sub-agents to spawn, and those sub-agents produce episodes that feed downstream skills.</p>
+
+<h3>Meta-cognitive activation</h3>
+
+<p><a href="https://arxiv.org/abs/2604.08545">Act Wisely</a> (Yan et al., April 2026) demonstrates that standard tool-augmented agents invoke tools on 80&ndash;98% of queries, but a meta-cognitive approach&nbsp;&mdash; where the agent first assesses whether it genuinely needs external computation&nbsp;&mdash; reduces invocation to ~2% while <em>improving</em> accuracy (+26.4% on WeMath). The implication: the agent should assess whether it can handle the task from parametric knowledge <em>before</em> loading a skill or calling a tool. This converts the skill selection problem from &ldquo;which skill matches?&rdquo; to &ldquo;do I need a skill at all?&rdquo;&nbsp;&mdash; and only entering the selection pipeline when the answer is yes dramatically reduces both context cost and selection errors.</p>
+
+<h3>Skill security</h3>
+
+<p>The Externalization survey warns that skill files themselves can become prompt-injection surfaces, and large-scale studies of public skill ecosystems report substantial rates of vulnerabilities including data exfiltration, privilege escalation, and supply-chain risk. This motivates our allow/deny permission model (&sect;10) and argues for sandboxing skill-provided scripts, treating third-party skills with the same caution as third-party npm packages.</p>
+
+<h3>Cross-user evolution</h3>
+
+<p><a href="https://arxiv.org/abs/2604.08377">SkillClaw</a> (Ma et al., April 2026) demonstrates that a dedicated <em>evolver agent</em>&nbsp;&mdash; separate from the main session&nbsp;&mdash; can aggregate trajectories from multiple users, perform causal chain analysis, and generate targeted skill mutations achieving +42.1% average improvement. Key adoptable patterns: a client proxy that transparently intercepts API calls for trajectory collection, evidence-backed versioning citing specific sessions and scores, and a nighttime validation gate running head-to-head comparisons before promotion.</p>
+
+</section>
+
+<!-- ═══════════════════ 5. EPISODES ═══════════════════ -->
+<section id="episodes">
+<h2><span class="num">05</span>Episodes and Episodic Memory</h2>
+
+<p>When a sub-agent completes its work, it produces an <em>episode</em>&nbsp;&mdash; a structured summary of what was accomplished, what was learned, and what files were touched&nbsp;&mdash; rather than passing the full transcript back to the parent. This design, inspired by Slate&rsquo;s &ldquo;thread weaving&rdquo; architecture, allows the parent session to benefit from sub-agent work without inheriting its context cost.</p>
+
+<div class="specimen">
+<div class="specimen-header">Specimen &middot; Episode record (JSON)</div>
+<pre>{
+  "id": "ep_19d812345",
+  "goal": "Research the caching architecture",
+  "agent_id": "explore",
+  "model": "claude-haiku-4-5",
+  "status": "success",
+  "duration_ms": 12000,
+  "tokens_in": 5200,
+  "tokens_out": 1800,
+  "tool_calls": 12,
+  "summary": "Redis for sessions, LRU for API responses. Hit rate ~60%.",
+  "key_findings": [
+    "Redis pool at src/cache/redis.ts:45 — max 10 connections",
+    "No cache warming on deploy — cold start ~30s"
+  ],
+  "files_examined": ["src/cache/redis.ts", "src/cache/lru.ts"],
+  "utility_q_value": 0.5,
+  "importance_score": 0.85,
+  "tags": ["caching", "redis", "performance"]
+}</pre>
+</div>
+
+<div class="callout insight">
+  <div class="callout-label">MemRL reinforcement</div>
+  The <code>utility_q_value</code> enables MemRL-style learning: after an episode is reused, its Q-value is updated via exponential moving average (<code>Q_new = Q_old + &alpha;(r &minus; Q_old)</code>). Retrieval uses two phases&nbsp;&mdash; similarity recall, then value-aware ranking with score <code>(1&minus;&lambda;) &middot; similarity + &lambda; &middot; Q_value</code>&nbsp;&mdash; which downranks semantically similar but historically unsuccessful episodes.
+</div>
+
+<h3>Multi-resolution architecture</h3>
+
+<div class="flow">
+  <div class="flow-step">per-tool-call<br><span style="font-size:10px;color:#999">telemetry</span></div>
+  <span class="flow-arrow">&rarr;</span>
+  <div class="flow-step active">per-subtask<br><span style="font-size:10px;color:var(--accent)">primary episodes</span></div>
+  <span class="flow-arrow">&rarr;</span>
+  <div class="flow-step">per-session<br><span style="font-size:10px;color:#999">cold archive</span></div>
+  <span class="flow-arrow">&rarr;</span>
+  <div class="flow-step">semantic<br><span style="font-size:10px;color:#999">skills</span></div>
+</div>
+</section>
+
+<!-- ═══════════════════ 6. ORCHESTRATION ═══════════════════ -->
+<section id="orchestration">
+<h2><span class="num">06</span>Agent Orchestration</h2>
+
+<p>The <em>main agent</em> is what the user talks to: it maintains the conversation transcript, owns the session context, decides when to delegate to sub-agents, synthesizes episode results, manages tool approval, and persists the session. <em>Sub-agents</em> are spawned for bounded tasks, receiving a fresh context, a goal, relevant episodes, and relevant skills. They produce an episode on completion and cannot spawn further sub-agents (single-level nesting).</p>
+
+<table>
+  <thead><tr><th>Type</th><th>Default model</th><th>Tools</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td>Explore</td><td>Haiku</td><td>Read-only</td><td>File discovery, code search</td></tr>
+    <tr><td>Plan</td><td>Inherits</td><td>Read-only</td><td>Research for planning mode</td></tr>
+    <tr><td>General</td><td>Inherits</td><td>All</td><td>Complex multi-step tasks</td></tr>
+    <tr><td>Computer</td><td>Sonnet (vision)</td><td>Computer tools only</td><td>Screen control, app automation</td></tr>
+  </tbody>
+</table>
+
+<div class="specimen">
+<div class="specimen-header">Specimen &middot; Custom sub-agent definition</div>
+<pre>---
+name: code-reviewer
+description: Reviews code for quality and best practices.
+tools: Read, Glob, Grep, Bash
+model: haiku
+permissionMode: acceptEdits
+skills: [api-conventions, error-handling-patterns]
+memory: project
+maxTurns: 30
+---
+
+You are a code reviewer. Analyze the code and provide specific,
+actionable feedback on quality, security, and best practices.</pre>
+</div>
+
+<h3>Delegation heuristics</h3>
+<table>
+  <thead><tr><th>Condition</th><th>Delegate?</th><th>Rationale</th></tr></thead>
+  <tbody>
+    <tr><td>Bounded task with clear success criteria</td><td><span class="tag blue">Yes</span></td><td>Sub-agent runs to completion independently</td></tr>
+    <tr><td>Would bloat main context with tactical detail</td><td><span class="tag blue">Yes</span></td><td>Execution stays in sub-agent&rsquo;s window</td></tr>
+    <tr><td>Multiple independent sub-tasks</td><td><span class="tag blue">Yes</span></td><td>Parallel sub-agents, episodes compose</td></tr>
+    <tr><td>Requires back-and-forth with user</td><td><span class="tag red">No</span></td><td>Sub-agents cannot prompt the user</td></tr>
+    <tr><td>Depends on recent conversation context</td><td><span class="tag red">No</span></td><td>Expensive to transfer</td></tr>
+    <tr><td>Single tool call</td><td><span class="tag red">No</span></td><td>Sub-agent overhead not justified</td></tr>
+  </tbody>
+</table>
+</section>
+
+<!-- ═══════════════════ 7. MODEL ROUTER ═══════════════════ -->
+<section id="router">
+<h2><span class="num">07</span>Model Router</h2>
+
+<p>We define five named model slots &mdash; <code>main</code>, <code>subagent</code>, <code>search</code>, <code>reasoning</code>, and <code>computer</code> &mdash; each configurable by the user. This is not an arbitrary decomposition: the same four-slot structure (minus <code>computer</code>) emerged independently in <a href="https://docs.randomlabs.ai/en/using-slate/configuration">Slate</a>, <a href="https://code.claude.com/docs/en/sub-agents">Claude Code</a>, and <a href="https://aider.chat/docs/usage/modes.html">Aider</a>. We add a fifth slot for computer control, which requires vision capabilities that the other slots do not.</p>
+
+<div class="specimen">
+<div class="specimen-header">Specimen &middot; Recommended defaults</div>
+<pre>{
+  "models": {
+    "main":      "claude-sonnet-4-6",
+    "subagent":  "claude-sonnet-4-6",
+    "search":    "claude-haiku-4-5",
+    "reasoning": "claude-opus-4-6",
+    "computer":  "claude-sonnet-4-6"
+  }
+}</pre>
+</div>
+
+<h3>Cross-platform validation</h3>
+<p>The following table shows how the major multi-agent platforms carve up their agent types and assign models, which informed our slot design:</p>
+<table>
+  <thead><tr><th>Platform</th><th>Orchestrator</th><th>Execute</th><th>Search</th><th>Reasoning</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Slate</strong></td><td>Opus 4.6</td><td>Sonnet 4.6</td><td>Haiku 4.5</td><td>GPT-5.3 Codex</td></tr>
+    <tr><td><strong>Claude Code</strong></td><td>Sonnet 4.6</td><td>Inherits</td><td>Haiku 4.5</td><td>Opus (<code>opusplan</code>)</td></tr>
+    <tr><td><strong>Codex CLI</strong></td><td>GPT-5.4</td><td>Inherits</td><td>Inherits</td><td>&mdash;</td></tr>
+    <tr><td><strong>ForgeCode</strong></td><td>Session</td><td>FORGE: session</td><td>SAGE: read-only</td><td>MUSE: session</td></tr>
+    <tr><td><strong>Roo Code</strong></td><td>Sticky/mode</td><td>Sonnet (typical)</td><td>Haiku (typical)</td><td>Opus/o3 (typical)</td></tr>
+    <tr><td><strong>Aider</strong></td><td>Main model</td><td>Editor: Sonnet</td><td>Weak: Haiku</td><td>Architect: Opus</td></tr>
+    <tr><td><strong>Freyja</strong></td><td><code>main</code></td><td><code>subagent</code></td><td><code>search</code></td><td><code>reasoning</code></td></tr>
+  </tbody>
+</table>
+
+<h3>Model landscape (April 2026)</h3>
+<table>
+  <thead><tr><th>Model</th><th>ID</th><th>Context</th><th>$/M in</th><th>$/M out</th><th>SWE-bench</th><th>Best for</th></tr></thead>
+  <tbody>
+    <tr><td>Claude Opus 4.6</td><td><code>claude-opus-4-6</code></td><td>1M</td><td>$5.00</td><td>$25.00</td><td>80.8%</td><td>Reasoning, orchestration</td></tr>
+    <tr><td>Claude Sonnet 4.6</td><td><code>claude-sonnet-4-6</code></td><td>1M</td><td>$3.00</td><td>$15.00</td><td>79.6%</td><td>Execution, computer-use</td></tr>
+    <tr><td>Claude Haiku 4.5</td><td><code>claude-haiku-4-5</code></td><td>200K</td><td>$1.00</td><td>$5.00</td><td>&mdash;</td><td>Search, triage</td></tr>
+    <tr><td>GPT-5.4</td><td><code>gpt-5.4</code></td><td>1.05M</td><td>$2.50</td><td>$15.00</td><td>75.1% TB</td><td>Terminal execution</td></tr>
+    <tr><td>GPT-5.4 Mini</td><td><code>gpt-5.4-mini</code></td><td>400K</td><td>$0.75</td><td>$4.50</td><td>&mdash;</td><td>Cheap subagent</td></tr>
+    <tr><td>Gemini 3.1 Pro</td><td><code>gemini-3.1-pro-preview</code></td><td>1M</td><td>~$2.00</td><td>~$12.00</td><td>80.6%</td><td>Price-performance</td></tr>
+    <tr><td>Gemini 3 Flash</td><td><code>gemini-3-flash-preview</code></td><td>&mdash;</td><td>$0.50</td><td>$3.00</td><td>&mdash;</td><td>Fast exploration</td></tr>
+    <tr><td>DeepSeek V3.2</td><td><code>deepseek-v3.2</code></td><td>164K</td><td>$0.26</td><td>$0.38</td><td>73.0%</td><td>Budget coding</td></tr>
+    <tr><td>Grok 4.20</td><td><code>grok-4.20-beta</code></td><td>2M</td><td>$2.00</td><td>$6.00</td><td>&mdash;</td><td>Largest context</td></tr>
+  </tbody>
+</table>
+
+<h3>Routing priority</h3>
+<table>
+  <thead><tr><th>Priority</th><th>Source</th><th>Example</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>User override</td><td>User selects Opus for this session</td></tr>
+    <tr><td>2</td><td>Skill frontmatter <code>model</code> field</td><td>Complex-reasoning skill forces <code>reasoning</code> slot</td></tr>
+    <tr><td>3</td><td>Sub-agent type &rarr; slot</td><td>Explore sub-agent &rarr; <code>search</code> slot</td></tr>
+    <tr><td>4</td><td>Cascade (sub-agents only)</td><td>Start Haiku, escalate to Sonnet on quality signal</td></tr>
+    <tr><td>5</td><td>Provider fallback</td><td>Configured model unavailable &rarr; next in chain</td></tr>
+  </tbody>
+</table>
+
+<h3>Latency envelopes</h3>
+<table>
+  <thead><tr><th>Task type</th><th>Max latency</th><th>Recommended tier</th></tr></thead>
+  <tbody>
+    <tr><td>Chat TTFT</td><td>&lt; 1s</td><td>Sonnet 4.6 / GPT-5.4</td></tr>
+    <tr><td>Computer control action</td><td>1&ndash;3s per step</td><td>Sonnet 4.6 (OSWorld 72.5%)</td></tr>
+    <tr><td>Code generation</td><td>3&ndash;10s</td><td>Sonnet 4.6 / Gemini 3.1 Pro</td></tr>
+    <tr><td>Complex planning</td><td>10&ndash;30s</td><td>Opus 4.6 / GPT-5.4</td></tr>
+    <tr><td>Sub-agent exploration</td><td>10&ndash;60s</td><td>Haiku 4.5 / Gemini 3 Flash</td></tr>
+    <tr><td>Research synthesis</td><td>30&ndash;120s</td><td>Sonnet + web tools, background</td></tr>
+  </tbody>
+</table>
+
+<div class="callout insight">
+  <div class="callout-label">Cost-per-outcome, not cost-per-token</div>
+  A model that needs 3 retries costs more than one that succeeds once. Route 70% of routine tasks to cheap models, reserve frontier models for 30% of complex work. The emerging consensus across platforms in 2026 validates this approach as achieving comparable quality at 40&ndash;80% cost reduction.
+</div>
+</section>
+
+<!-- ═══════════════════ 8. TOOLS ═══════════════════ -->
+<section id="tools">
+<h2><span class="num">08</span>Tool Management and MCP</h2>
+
+<p>Freyja ships with ~30 built-in tools. Users extend this set via <a href="https://modelcontextprotocol.io">MCP</a> servers. The challenge is that tool schemas are expensive (300&ndash;800 tokens each) and the <a href="https://arxiv.org/abs/2505.03275">RAG-MCP benchmark</a> demonstrates a sharp accuracy cliff above 200 tools.</p>
+
+<p>Before entering the tool selection pipeline at all, the agent should assess whether it genuinely needs a tool&nbsp;&mdash; the meta-cognitive gate described in &sect;4. <a href="https://arxiv.org/abs/2604.08545">Act Wisely</a> shows that this pre-filter alone eliminates 96&ndash;98% of queries from the selection problem, converting the scaling challenge from &ldquo;select among 200+ tools for every query&rdquo; to &ldquo;select among 200+ tools for the small fraction of queries that genuinely need tools.&rdquo;</p>
+
+<!-- Tool tier diagram -->
+<div class="diagram">
+<div class="diagram-title">Progressive Disclosure &middot; Three-Tier Tool System</div>
+<svg viewBox="0 0 720 160" fill="none" xmlns="http://www.w3.org/2000/svg" style="max-width:720px;width:100%">
+  <!-- HOT -->
+  <rect x="10" y="10" width="220" height="60" rx="3" stroke="#1a1a1a" stroke-width="1.5" fill="white"/>
+  <text x="22" y="30" font-family="'SF Mono',monospace" font-size="10" fill="#d4351c" letter-spacing="0.8">HOT</text>
+  <text x="50" y="30" font-family="'SF Mono',monospace" font-size="10" fill="#999">full schema in API list</text>
+  <text x="22" y="50" font-family="'SF Mono',monospace" font-size="12" font-weight="600" fill="#1a1a1a">Agent calls directly</text>
+  <text x="22" y="64" font-family="'SF Mono',monospace" font-size="9" fill="#999">bash, read, write, edit, glob, grep</text>
+
+  <!-- WARM -->
+  <rect x="250" y="10" width="220" height="60" rx="3" stroke="#1a1a1a" stroke-width="1.2" fill="white" stroke-dasharray="4 3"/>
+  <text x="262" y="30" font-family="'SF Mono',monospace" font-size="10" fill="#ca8a04" letter-spacing="0.8">WARM</text>
+  <text x="300" y="30" font-family="'SF Mono',monospace" font-size="10" fill="#999">name + summary only</text>
+  <text x="262" y="50" font-family="'SF Mono',monospace" font-size="12" font-weight="600" fill="#1a1a1a">tool_search(&quot;name&quot;)</text>
+  <text x="262" y="64" font-family="'SF Mono',monospace" font-size="9" fill="#999">MCP tools, deferred built-ins</text>
+
+  <!-- COLD -->
+  <rect x="490" y="10" width="220" height="60" rx="3" stroke="#1a1a1a" stroke-width="1" fill="white" stroke-dasharray="2 3"/>
+  <text x="502" y="30" font-family="'SF Mono',monospace" font-size="10" fill="#999" letter-spacing="0.8">COLD</text>
+  <text x="534" y="30" font-family="'SF Mono',monospace" font-size="10" fill="#999">not mentioned</text>
+  <text x="502" y="50" font-family="'SF Mono',monospace" font-size="12" font-weight="600" fill="#1a1a1a">skill reveals → search</text>
+  <text x="502" y="64" font-family="'SF Mono',monospace" font-size="9" fill="#999">skill-specific, rare utilities</text>
+
+  <!-- Promotion arrows -->
+  <line x1="490" y1="40" x2="470" y2="40" stroke="#2545e8" stroke-width="1" stroke-dasharray="4 3"/>
+  <polygon points="472,40 478,36 478,44" fill="#2545e8"/>
+  <line x1="250" y1="40" x2="230" y2="40" stroke="#2545e8" stroke-width="1" stroke-dasharray="4 3"/>
+  <polygon points="232,40 238,36 238,44" fill="#2545e8"/>
+
+  <!-- Bottom: savings -->
+  <rect x="10" y="90" width="700" height="50" rx="3" stroke="#e8e8e8" stroke-width="1" fill="#f8f8f6"/>
+  <text x="22" y="110" font-family="'SF Mono',monospace" font-size="10" fill="#999">100 tools always loaded</text>
+  <text x="260" y="110" font-family="'SF Mono',monospace" font-size="10" fill="#d4351c">50,000 tok/turn</text>
+  <text x="400" y="110" font-family="'SF Mono',monospace" font-size="10" fill="#999">$3.00 / 20-turn session</text>
+  <text x="22" y="130" font-family="'SF Mono',monospace" font-size="10" fill="#999">100 tools with disclosure</text>
+  <text x="260" y="130" font-family="'SF Mono',monospace" font-size="10" fill="#16a34a">7,500 tok/turn</text>
+  <text x="400" y="130" font-family="'SF Mono',monospace" font-size="10" fill="#16a34a">$0.32 / 20-turn session</text>
+  <text x="580" y="130" font-family="'SF Mono',monospace" font-size="11" font-weight="600" fill="#16a34a">&minus;90%</text>
+</svg>
+</div>
+</section>
+
+<!-- ═══════════════════ 9. CONTEXT ═══════════════════ -->
+<section id="context">
+<h2><span class="num">09</span>Context Management</h2>
+
+<p>The <em>context refill problem</em>&nbsp;&mdash; where compaction triggers repeatedly because the summary silently lost exact details that the model then re-fetches&nbsp;&mdash; is the primary production pathology in long-running agent sessions. We combine four techniques, applied in priority order so that cheaper interventions fire first:</p>
+
+<table>
+  <thead><tr><th>Priority</th><th>Technique</th><th>Source</th><th>Measured impact</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td><strong>Prevention</strong>&nbsp;&mdash; snippets not whole files; compact diffs not full rewrites</td><td><a href="https://www.morphllm.com/flashcompact">Morph</a></td><td>Sessions 15&ndash;30 min &rarr; 1&ndash;3 hours</td></tr>
+    <tr><td>2</td><td><strong>Budget signal</strong>&nbsp;&mdash; <code>[context: 47K/131K &mdash; MEDIUM]</code></td><td><a href="https://arxiv.org/abs/2511.17006">BATS</a></td><td>&minus;40.4% speculative searches</td></tr>
+    <tr><td>3</td><td><strong>Observation masking</strong>&nbsp;&mdash; stubs not summaries</td><td><a href="https://github.com/JetBrains-Research/the-complexity-trap">JetBrains</a></td><td>+2.6% solve rate, &minus;52% cost</td></tr>
+    <tr><td>4</td><td><strong>Anchored summarization</strong>&nbsp;&mdash; mandatory sections</td><td><a href="https://factory.ai/news/evaluating-compression">Factory.ai</a></td><td>3.70/5 vs Anthropic 3.44</td></tr>
+  </tbody>
+</table>
+
+<div class="callout insight">
+  <div class="callout-label">Key finding</div>
+  JetBrains shows that observation masking&nbsp;&mdash; which makes no attempt to preserve information&nbsp;&mdash; <em>outperforms</em> LLM summarization, which actively introduces errors by hallucinating details. Stubs are honest about what they don&rsquo;t contain; summaries pretend.
+</div>
+</section>
+
+<!-- ═══════════════════ 10. PERMISSIONS ═══════════════════ -->
+<section id="permissions">
+<h2><span class="num">10</span>Permission and Safety Model</h2>
+
+<p>We adopt Claude Code&rsquo;s six-tier permission system, providing a clear spectrum from fully read-only to fully autonomous:</p>
+
+<table>
+  <thead><tr><th>Tier</th><th>Behavior</th></tr></thead>
+  <tbody>
+    <tr><td><code>plan</code></td><td>Read-only; proposes steps but executes nothing</td></tr>
+    <tr><td><code>default</code></td><td>Prompts for each mutating tool call; reads auto-approved</td></tr>
+    <tr><td><code>acceptEdits</code></td><td>Auto-approves file edits and safe bash within workspace</td></tr>
+    <tr><td><code>auto</code></td><td>Classifier model reviews each call for destructive actions; reverts to prompting after 3 blocks</td></tr>
+    <tr><td><code>dontAsk</code></td><td>Non-interactive; auto-denies everything not in explicit allow list (CI)</td></tr>
+    <tr><td><code>bypassPermissions</code></td><td>Everything auto-approved; only protected paths still prompt</td></tr>
+  </tbody>
+</table>
+
+<div class="specimen">
+<div class="specimen-header">Specimen &middot; Permission rules in settings.json</div>
+<pre>{
+  "permissions": {
+    "deny":  ["Bash(curl *)", "Bash(rm -rf *)", "Read(./.env)", "Read(./secrets/**)"],
+    "allow": ["Bash(npm run test *)", "Bash(git commit *)", "mcp__github__*"]
+  }
+}</pre>
+</div>
+</section>
+
+<!-- ═══════════════════ 11. COMPUTER CONTROL ═══════════════════ -->
+<section id="computer">
+<h2><span class="num">11</span>Computer Control</h2>
+
+<p>Computer control operates through a dedicated sub-agent with its own context window, restricted tool set, and episode production, following the standard observe-plan-act-verify cycle:</p>
+
+<!-- Computer control cycle diagram -->
+<div class="diagram">
+<div class="diagram-title">Observe &middot; Plan &middot; Act &middot; Verify Cycle</div>
+<svg viewBox="0 0 720 120" fill="none" xmlns="http://www.w3.org/2000/svg" style="max-width:720px;width:100%">
+  <rect x="10" y="20" width="130" height="60" rx="3" stroke="#1a1a1a" stroke-width="1.2" fill="white"/>
+  <text x="22" y="40" font-family="'SF Mono',monospace" font-size="10" fill="#d4351c" letter-spacing="0.8">OBSERVE</text>
+  <text x="22" y="58" font-family="'SF Mono',monospace" font-size="11" fill="#1a1a1a">screenshot + AX</text>
+  <text x="22" y="72" font-family="'SF Mono',monospace" font-size="9" fill="#999">~200ms</text>
+
+  <line x1="140" y1="50" x2="170" y2="50" stroke="#1a1a1a" stroke-width="1" marker-end="url(#arrow)"/>
+
+  <rect x="172" y="20" width="130" height="60" rx="3" stroke="#2545e8" stroke-width="1.2" fill="#e8ecfd"/>
+  <text x="184" y="40" font-family="'SF Mono',monospace" font-size="10" fill="#2545e8" letter-spacing="0.8">PLAN</text>
+  <text x="184" y="58" font-family="'SF Mono',monospace" font-size="11" fill="#1a1a1a">vision model</text>
+  <text x="184" y="72" font-family="'SF Mono',monospace" font-size="9" fill="#999">1&ndash;5s (API call)</text>
+
+  <line x1="302" y1="50" x2="332" y2="50" stroke="#1a1a1a" stroke-width="1" marker-end="url(#arrow)"/>
+
+  <rect x="334" y="20" width="130" height="60" rx="3" stroke="#1a1a1a" stroke-width="1.2" fill="white"/>
+  <text x="346" y="40" font-family="'SF Mono',monospace" font-size="10" fill="#16a34a" letter-spacing="0.8">ACT</text>
+  <text x="346" y="58" font-family="'SF Mono',monospace" font-size="11" fill="#1a1a1a">freyja_native</text>
+  <text x="346" y="72" font-family="'SF Mono',monospace" font-size="9" fill="#999">&lt;50ms (CGEvent)</text>
+
+  <line x1="464" y1="50" x2="494" y2="50" stroke="#1a1a1a" stroke-width="1" marker-end="url(#arrow)"/>
+
+  <rect x="496" y="20" width="130" height="60" rx="3" stroke="#1a1a1a" stroke-width="1.2" fill="white"/>
+  <text x="508" y="40" font-family="'SF Mono',monospace" font-size="10" fill="#ca8a04" letter-spacing="0.8">WAIT</text>
+  <text x="508" y="58" font-family="'SF Mono',monospace" font-size="11" fill="#1a1a1a">UI settle</text>
+  <text x="508" y="72" font-family="'SF Mono',monospace" font-size="9" fill="#999">2s (hardcoded)</text>
+
+  <!-- Loop back arrow -->
+  <path d="M626,50 L660,50 L660,100 L40,100 L40,80" stroke="#999" stroke-width="1" stroke-dasharray="4 3" fill="none" marker-end="url(#arrow)"/>
+  <text x="300" y="114" font-family="'SF Mono',monospace" font-size="10" fill="#999" font-style="italic">3&ndash;7s total per action &middot; 10-step workflow ≈ 30&ndash;70s</text>
+</svg>
+</div>
+</section>
+
+<!-- ═══════════════════ 12. SELF-EVOLUTION ═══════════════════ -->
+<section id="evolution">
+<h2><span class="num">12</span>Self-Evolution</h2>
+
+<p>The confidence lifecycle (§4) provides passive selection pressure, but cannot <em>fix</em> broken skills. We adopt a phased approach to active evolution:</p>
+
+<table>
+  <thead><tr><th>Phase</th><th>Mechanism</th><th>Cost</th><th>When</th></tr></thead>
+  <tbody>
+    <tr><td><strong>0 &mdash; Passive</strong></td><td>Confidence lifecycle promotes or deprecates skills</td><td>0</td><td>Always on</td></tr>
+    <tr><td><strong>1 &mdash; Reflection</strong></td><td><code>/optimize-skill</code> pulls traces, diagnoses failures, generates candidate diff</td><td>~$0.50/skill</td><td>On demand</td></tr>
+    <tr><td><strong>2 &mdash; GEPA</strong></td><td>Scheduled pipeline targeting skills with &lt;80% success; Pareto frontier</td><td>~$2&ndash;10/skill</td><td>Nightly</td></tr>
+    <tr><td><strong>3 &mdash; A/B</strong></td><td>Dual-version routing, success-rate comparison, winner promoted</td><td>0</td><td>After Phase 2</td></tr>
+  </tbody>
+</table>
+
+<h3>Phase 1 pipeline</h3>
+<div class="flow">
+  <div class="flow-step">Pull traces</div>
+  <span class="flow-arrow">&rarr;</span>
+  <div class="flow-step">Split success / fail</div>
+  <span class="flow-arrow">&rarr;</span>
+  <div class="flow-step active">Reflect on failures</div>
+  <span class="flow-arrow">&rarr;</span>
+  <div class="flow-step">Generate mutations</div>
+  <span class="flow-arrow">&rarr;</span>
+  <div class="flow-step">Evaluate</div>
+  <span class="flow-arrow">&rarr;</span>
+  <div class="flow-step">Present diff</div>
+</div>
+
+<h3>Constraint gates (from <a href="https://github.com/NousResearch/hermes-agent-self-evolution">Hermes Agent</a>)</h3>
+<table>
+  <thead><tr><th>Gate</th><th>Criterion</th><th>Rationale</th></tr></thead>
+  <tbody>
+    <tr><td>Test suite</td><td>100% pass</td><td>No regressions</td></tr>
+    <tr><td>Size limit</td><td>SKILL.md &le; 15KB, description &le; 500 chars</td><td>Stays within context budget</td></tr>
+    <tr><td>Cache compat</td><td>No mid-conversation mutations</td><td>Prompt caching needs stable prefixes</td></tr>
+    <tr><td>Semantic</td><td>Cosine similarity &gt; threshold</td><td>Prevent drift from purpose</td></tr>
+    <tr><td>Human review</td><td>PR with diff</td><td>All changes auditable</td></tr>
+  </tbody>
+</table>
+</section>
+
+<!-- ═══════════════════ 13. ROADMAP ═══════════════════ -->
+<section id="roadmap">
+<h2><span class="num">13</span>Implementation Roadmap</h2>
+
+<table>
+  <thead><tr><th>Phase</th><th>Timeline</th><th>Key deliverables</th></tr></thead>
+  <tbody>
+    <tr><td><strong>1</strong></td><td>Week 1</td><td>Skill discovery + <code>load_skill</code> tool + FREYJA.md + 5 model slots + rule-based routing</td></tr>
+    <tr><td><strong>2</strong></td><td>Week 2</td><td>Episode generation + episode-as-tool-result + layered eviction (60/70/80/90%) + observation masking + BATS signal</td></tr>
+    <tr><td><strong>3</strong></td><td>Week 3</td><td>HOT/WARM/COLD tiers + <code>tool_search</code> + deferred MCP loading + MCP permission integration</td></tr>
+    <tr><td><strong>4</strong></td><td>Week 4</td><td>Model cascading + custom sub-agents (<code>.freyja/agents/</code>) + persistent memory + skill preloading + MCP scoping</td></tr>
+    <tr><td><strong>5</strong></td><td>Weeks 5&ndash;6</td><td>Confidence lifecycle + guard skills + <code>/optimize-skill</code> + OpenTelemetry tracing</td></tr>
+  </tbody>
+</table>
+</section>
+
+<!-- ═══════════════════ 14. FUTURE ═══════════════════ -->
+<section id="future">
+<h2><span class="num">14</span>Future Directions</h2>
+
+<p>Several aspects of the architecture remain underspecified or unexplored, which we outline here both as a record of known limitations and as an invitation for future work.</p>
+
+<p><strong>Codebase understanding.</strong> We lack a dedicated repo-mapping mechanism. <a href="https://aider.chat/2023/10/22/repomap.html">Aider</a>&rsquo;s tree-sitter + PageRank approach and <a href="https://www.augmentcode.com/context-engine">Augment Code</a>&rsquo;s semantic graph (available as MCP server) are candidates for integration.</p>
+
+<p><strong>Edit format selection.</strong> Aider&rsquo;s research shows the optimal edit format varies by model, and function-call formats consistently underperform plain text. We should evaluate model-specific format selection and the architect-mode pattern.</p>
+
+<p><strong>OS-level sandboxing.</strong> <a href="https://developers.openai.com/codex/concepts/sandboxing">Codex CLI</a>&rsquo;s kernel-level enforcement (Seatbelt, Landlock) provides stronger guarantees than our application-level approach.</p>
+
+<p><strong>Artifact externalization.</strong> <a href="https://adk.dev/context/">Google ADK</a>&rsquo;s handle pattern&nbsp;&mdash; large payloads in stores with lightweight refs in context&nbsp;&mdash; is a cleaner solution to tool-result bloat than head/tail truncation.</p>
+
+<p><strong>Agent observability.</strong> We have no tracing infrastructure. <a href="https://agentops.ai">AgentOps</a>&rsquo;s nine agent-specific span types and <a href="https://braintrust.dev">Braintrust</a>&rsquo;s production-trace-to-test-case pipeline should be adopted from Phase 1.</p>
+
+<p><strong>Streaming execution.</strong> <a href="https://bolt.new">Bolt.new</a>&rsquo;s streaming parser could reduce perceived latency for multi-file generation, but compatibility with our permission model requires investigation.</p>
+
+<p><strong>Orchestrator-never-executes.</strong> <a href="https://randomlabs.ai/blog/slate">Slate</a> and <a href="https://forgecode.dev">ForgeCode</a> enforce that the orchestrator only reasons and dispatches. Whether Freyja&rsquo;s main agent should adopt this constraint is an open design question.</p>
+
+<p><strong>Cross-platform support.</strong> macOS-only due to Rust native extension. Linux (AT-SPI) and Windows (UI Automation) need platform-specific backends behind a shared trait interface.</p>
+
+<p><strong>Privacy in computer control.</strong> Screenshot redaction (AXSecureTextField, password manager exclusion) is partial. Comprehensive protection likely requires a local vision model for element identification.</p>
+</section>
+
+<footer>
+  Freyja Architecture &middot; Living document &middot; Updated 2026-04-12
+</footer>
+
+</div>
+<script>
+window.addEventListener('scroll', () => {
+  const h = document.documentElement.scrollHeight - window.innerHeight;
+  document.getElementById('progress').style.width = (window.scrollY / h * 100) + '%';
+});
+</script>
+</body>
+</html>

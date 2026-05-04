@@ -1,0 +1,407 @@
+<!-- ═══════════════════════════════════════════
+     X. FAILURE MODES & THE SECURITY CRISIS
+     ═══════════════════════════════════════════ -->
+<section id="security" class="reveal">
+<div class="section-label"><span class="section-num">X</span> failure modes &amp; the security crisis</div>
+<h2 style="font-size: 22px; margin-bottom: 16px;">"Skills can fail, decay, and be weaponized — and all three are happening right now"</h2>
+
+<p>The skill ecosystem's growth story has a dark mirror. 40K+ skills in 20 days also means 40K+ potential failure vectors in 20 days. This section examines the full failure surface: how skills fail (taxonomy), when they actively hurt (negative transfer), how they rot (decay), and how they're being weaponized (supply-chain attacks).</p>
+
+<hr style="margin: 40px 0;">
+
+<!-- ─────────────────────────────────────────
+     PART 1: HOW SKILLS FAIL
+     ───────────────────────────────────────── -->
+<h3 style="font-size: 18px; margin-bottom: 20px;">Part 1: How Skills Fail — The Taxonomy</h3>
+
+<div class="finding reveal"><div class="finding-num">1</div>
+  <h4>The MAST Taxonomy: 14 failure modes across 1,642 annotated traces</h4>
+  <p>NeurIPS 2025 spotlight. The first systematic taxonomy of multi-agent skill failures. The critical finding: <strong>architecture determines failure profile, not model</strong>. MetaGPT and ChatDev running identical GPT-4o exhibit entirely different failure distributions.</p>
+</div>
+
+<div class="dark-panel reveal">
+  <h3 style="font-size: 16px; margin-bottom: 16px;">MAST: 3 categories · 14 failure modes · 1,642 traces</h3>
+  <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px;">
+    <div>
+      <p class="accent-text" style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 8px;">FC1 · SYSTEM DESIGN (5)</p>
+      <p style="font-size: 13px; line-height: 1.7; color: #e8e9e9;"><strong style="color: #f1f2f2;">Step repetition: 15.7%</strong> — the #1 failure mode. <strong>Unrecognised completion: 12.4%</strong>. <strong>Disobey spec: 11.8%</strong>. Plus format deviation and resource waste.</p>
+    </div>
+    <div>
+      <p class="accent-text" style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 8px;">FC2 · INTER-AGENT (6)</p>
+      <p style="font-size: 13px; line-height: 1.7; color: #e8e9e9;"><strong style="color: #f1f2f2;">Task derailment</strong>, <strong>info withholding</strong>, <strong>ignored input</strong>. Plus role confusion, conflicting plans, and redundant execution across agents.</p>
+    </div>
+    <div>
+      <p class="accent-text" style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 8px;">FC3 · VERIFICATION (3)</p>
+      <p style="font-size: 13px; line-height: 1.7; color: #e8e9e9;"><strong style="color: #f1f2f2;">Premature termination</strong>, <strong>incomplete verification</strong>, <strong>incorrect verification</strong>. The most insidious: silent corruption of downstream state.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ── Negative Transfer ── -->
+<div class="finding reveal"><div class="finding-num">2</div>
+  <h4>Negative Transfer — When skills actively hurt performance</h4>
+  <p>SkillsBench: 86 tasks, 7,308 trajectories. Self-generated skills: <strong>−1.8pp</strong>. Comprehensive (verbose) skills: <strong>−2.9pp</strong>. The sweet spot is narrow — 2–3 curated skills yield +18.6pp, but 4+ skills collapse to +5.9pp. Worst case: <code>taxonomy-tree-merge</code> at <strong>−39.3pp</strong>.<a href="https://arxiv.org/abs/2602.12670" class="cite">[2]</a></p>
+</div>
+
+<div class="callout warning reveal">
+  <div class="callout-label">⚠ Predictors of negative transfer</div>
+  <p>Five conditions predict when adding a skill will hurt: (1) domain well-covered in pretraining, (2) documentation is exhaustive rather than concise, (3) more than 3 skills loaded simultaneously, (4) skills self-generated without iteration, (5) model already has strong task priors. When all five align, skills are strictly worse than baseline.</p>
+</div>
+
+<!-- SVG 1: Negative Transfer Bar Chart -->
+<div class="diagram reveal">
+  <span class="diagram-label">Performance delta by skill count &amp; source</span>
+  <svg viewBox="0 0 720 280" xmlns="http://www.w3.org/2000/svg">
+    <g stroke="#e8e9e9" stroke-width="1" stroke-dasharray="2,4">
+      <line x1="80" y1="40" x2="690" y2="40"/>
+      <line x1="80" y1="90" x2="690" y2="90"/>
+      <line x1="80" y1="140" x2="690" y2="140"/>
+      <line x1="80" y1="190" x2="690" y2="190"/>
+    </g>
+    <!-- Zero line + axis -->
+    <line x1="80" y1="180" x2="690" y2="180" stroke="#1a1a1a" stroke-width="1.5"/>
+    <line x1="80" y1="30" x2="80" y2="240" stroke="#1a1a1a" stroke-width="1.5"/>
+    <!-- Y labels -->
+    <text x="72" y="44" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666" text-anchor="end">+20pp</text>
+    <text x="72" y="94" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666" text-anchor="end">+10pp</text>
+    <text x="72" y="144" font-family="'JetBrains Mono',monospace" font-size="9" fill="#999" text-anchor="end">+5pp</text>
+    <text x="72" y="184" font-family="'JetBrains Mono',monospace" font-size="9" fill="#1a1a1a" text-anchor="end" font-weight="700">0pp</text>
+    <text x="72" y="224" font-family="'JetBrains Mono',monospace" font-size="9" fill="#a05050" text-anchor="end">−5pp</text>
+
+    <!-- BY SKILL COUNT -->
+    <text x="200" y="258" font-family="'Satoshi',sans-serif" font-size="11" fill="#1a1a1a" text-anchor="middle" font-weight="600">BY SKILL COUNT</text>
+    <!-- 1 skill: +8.2pp -->
+    <rect x="118" y="118" width="42" height="62" fill="#70808d" opacity="0.7"/>
+    <text x="139" y="112" font-family="'JetBrains Mono',monospace" font-size="9" fill="#70808d" text-anchor="middle" font-weight="700">+8.2</text>
+    <text x="139" y="244" font-family="'JetBrains Mono',monospace" font-size="8" fill="#666" text-anchor="middle">1</text>
+    <!-- 2-3 skills: +18.6pp -->
+    <rect x="174" y="64" width="42" height="116" fill="#5b7a5b"/>
+    <text x="195" y="58" font-family="'JetBrains Mono',monospace" font-size="9" fill="#5b7a5b" text-anchor="middle" font-weight="700">+18.6</text>
+    <text x="195" y="244" font-family="'JetBrains Mono',monospace" font-size="8" fill="#5b7a5b" text-anchor="middle" font-weight="700">2–3</text>
+    <!-- 4+ skills: +5.9pp -->
+    <rect x="230" y="143" width="42" height="37" fill="#9a7a3a"/>
+    <text x="251" y="138" font-family="'JetBrains Mono',monospace" font-size="9" fill="#9a7a3a" text-anchor="middle" font-weight="700">+5.9</text>
+    <text x="251" y="244" font-family="'JetBrains Mono',monospace" font-size="8" fill="#666" text-anchor="middle">4+</text>
+
+    <line x1="320" y1="40" x2="320" y2="240" stroke="#ccc" stroke-width="1" stroke-dasharray="3,3"/>
+
+    <!-- BY SKILL SOURCE -->
+    <text x="440" y="258" font-family="'Satoshi',sans-serif" font-size="11" fill="#1a1a1a" text-anchor="middle" font-weight="600">BY SKILL SOURCE</text>
+    <!-- Curated: +16.2pp -->
+    <rect x="358" y="80" width="42" height="100" fill="#5b7a5b"/>
+    <text x="379" y="74" font-family="'JetBrains Mono',monospace" font-size="9" fill="#5b7a5b" text-anchor="middle" font-weight="700">+16.2</text>
+    <text x="379" y="244" font-family="'JetBrains Mono',monospace" font-size="8" fill="#666" text-anchor="middle">curated</text>
+    <!-- Self-gen: -1.8pp -->
+    <rect x="414" y="180" width="42" height="11" fill="#a05050"/>
+    <text x="435" y="202" font-family="'JetBrains Mono',monospace" font-size="9" fill="#a05050" text-anchor="middle" font-weight="700">−1.8</text>
+    <text x="435" y="244" font-family="'JetBrains Mono',monospace" font-size="8" fill="#666" text-anchor="middle">self-gen</text>
+    <!-- Verbose: -2.9pp -->
+    <rect x="470" y="180" width="42" height="17" fill="#a05050"/>
+    <text x="491" y="207" font-family="'JetBrains Mono',monospace" font-size="9" fill="#a05050" text-anchor="middle" font-weight="700">−2.9</text>
+    <text x="491" y="244" font-family="'JetBrains Mono',monospace" font-size="8" fill="#666" text-anchor="middle">verbose</text>
+
+    <line x1="558" y1="40" x2="558" y2="240" stroke="#ccc" stroke-width="1" stroke-dasharray="3,3"/>
+
+    <!-- Worst case -->
+    <rect x="585" y="74" width="96" height="56" rx="3" fill="none" stroke="#a05050" stroke-width="1.5"/>
+    <text x="633" y="92" font-family="'JetBrains Mono',monospace" font-size="9" fill="#a05050" text-anchor="middle" font-weight="700">WORST CASE</text>
+    <text x="633" y="112" font-family="'Satoshi',sans-serif" font-size="20" fill="#a05050" text-anchor="middle" font-weight="900">−39.3pp</text>
+    <text x="633" y="126" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">taxonomy-tree-merge</text>
+  </svg>
+  <div class="caption">SkillsBench: 2–3 curated skills is the sweet spot (+18.6pp). Self-generated and verbose skills produce negative transfer.</div>
+</div>
+
+<!-- ── Skill Decay ── -->
+<div class="finding reveal"><div class="finding-num">3</div>
+  <h4>Skill Decay — Four drift types</h4>
+  <p><strong>Goal drift</strong>: business objectives shift. <strong>Context drift</strong>: APIs update, libraries version-bump. <strong>Reasoning drift</strong>: newer models reason differently, once-helpful hints become overconstraining. <strong>Collaboration drift</strong>: partner agents evolve their protocols. The Order Management Agent illustrates: <strong>90.5% → 81.7% → 69.95%</strong> over 8 weeks — the skill was frozen, the environment was not.</p>
+</div>
+
+<!-- SVG 2: Skill Decay Visualization -->
+<div class="diagram reveal">
+  <span class="diagram-label">Skill decay: Order Management Agent (skill unchanged)</span>
+  <svg viewBox="0 0 720 260" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="decay-grad" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0%" stop-color="#5b7a5b"/>
+        <stop offset="50%" stop-color="#9a7a3a"/>
+        <stop offset="100%" stop-color="#a05050"/>
+      </linearGradient>
+    </defs>
+    <g stroke="#e8e9e9" stroke-width="1" stroke-dasharray="2,4">
+      <line x1="80" y1="40" x2="580" y2="40"/><line x1="80" y1="80" x2="580" y2="80"/>
+      <line x1="80" y1="120" x2="580" y2="120"/><line x1="80" y1="160" x2="580" y2="160"/>
+    </g>
+    <line x1="80" y1="30" x2="80" y2="200" stroke="#1a1a1a" stroke-width="1.5"/>
+    <line x1="80" y1="200" x2="580" y2="200" stroke="#1a1a1a" stroke-width="1.5"/>
+    <text x="72" y="44" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666" text-anchor="end">95%</text>
+    <text x="72" y="84" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666" text-anchor="end">85%</text>
+    <text x="72" y="124" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666" text-anchor="end">75%</text>
+    <text x="72" y="164" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666" text-anchor="end">65%</text>
+    <text x="160" y="218" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666" text-anchor="middle">Week 0</text>
+    <text x="330" y="218" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666" text-anchor="middle">Week 4</text>
+    <text x="500" y="218" font-family="'JetBrains Mono',monospace" font-size="9" fill="#666" text-anchor="middle">Week 8</text>
+    <text x="340" y="240" font-family="'Satoshi',sans-serif" font-size="11" fill="#1a1a1a" text-anchor="middle" font-weight="600">TIME (SKILL UNCHANGED)</text>
+    <!-- Curve -->
+    <path d="M 160,46 C 220,50 280,68 330,90 C 380,112 440,136 500,152" fill="none" stroke="url(#decay-grad)" stroke-width="3" stroke-linecap="round"/>
+    <circle cx="160" cy="46" r="5" fill="#5b7a5b" stroke="#fff" stroke-width="2"/>
+    <circle cx="330" cy="90" r="5" fill="#9a7a3a" stroke="#fff" stroke-width="2"/>
+    <circle cx="500" cy="152" r="5" fill="#a05050" stroke="#fff" stroke-width="2"/>
+    <text x="160" y="36" font-family="'JetBrains Mono',monospace" font-size="10" fill="#5b7a5b" text-anchor="middle" font-weight="700">90.5%</text>
+    <text x="330" y="80" font-family="'JetBrains Mono',monospace" font-size="10" fill="#9a7a3a" text-anchor="middle" font-weight="700">81.7%</text>
+    <text x="500" y="142" font-family="'JetBrains Mono',monospace" font-size="10" fill="#a05050" text-anchor="middle" font-weight="700">69.95%</text>
+    <!-- Annotation -->
+    <rect x="570" y="40" width="136" height="50" rx="3" fill="#1a1a1a"/>
+    <text x="638" y="58" font-family="'JetBrains Mono',monospace" font-size="8" fill="#a05050" text-anchor="middle" font-weight="700">−20.55pp / 8 WEEKS</text>
+    <text x="638" y="74" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">3 API versions shipped</text>
+    <text x="638" y="84" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">1 model update released</text>
+    <!-- Drift labels -->
+    <text x="245" y="62" font-family="'JetBrains Mono',monospace" font-size="7" fill="#9a7a3a" transform="rotate(-10, 245, 62)">context drift</text>
+    <text x="415" y="130" font-family="'JetBrains Mono',monospace" font-size="7" fill="#a05050" transform="rotate(-8, 415, 130)">reasoning drift</text>
+  </svg>
+  <div class="caption">Order Management Agent: 90.5% → 69.95% in 8 weeks. Three API versions and one model update — the skill was never touched.</div>
+</div>
+
+<div class="table-wrap reveal">
+<table>
+  <tr><th>Skill Category</th><th>Decay Rate</th><th>Primary Driver</th><th>Half-life</th></tr>
+  <tr><td><strong>API integration</strong></td><td style="color: var(--red); font-weight: 700;">Fastest</td><td>Endpoint changes, auth updates, schema drift</td><td>~3–6 weeks</td></tr>
+  <tr><td><strong>Infrastructure / DevOps</strong></td><td style="color: var(--red);">Fast</td><td>CLI version bumps, config format changes</td><td>~6–10 weeks</td></tr>
+  <tr><td><strong>Framework-specific</strong></td><td style="color: var(--amber);">Moderate</td><td>Major version releases, deprecation cycles</td><td>~3–6 months</td></tr>
+  <tr><td><strong>Architecture patterns</strong></td><td style="color: var(--accent);">Slow</td><td>Paradigm shifts, best-practice evolution</td><td>~6–12 months</td></tr>
+  <tr><td><strong>Generic programming</strong></td><td style="color: var(--green);">Slowest</td><td>Language semantics stable; model priors strengthen</td><td>~12+ months</td></tr>
+</table>
+</div>
+
+<hr style="margin: 48px 0;">
+
+<!-- ─────────────────────────────────────────
+     PART 2: THE SECURITY CRISIS
+     ───────────────────────────────────────── -->
+<h3 style="font-size: 18px; margin-bottom: 20px;">Part 2: The Security Crisis — Deep Dive</h3>
+
+<div class="finding reveal"><div class="finding-num">4</div>
+  <h4>The DDIPE Attack: supply-chain poisoning through documentation</h4>
+  <p>Document-Driven Implicit Payload Execution. The attack embeds malicious code in SKILL.md <em>documentation</em> — not source code. Agents reproduce reference implementations as "best practice" and the payload executes. Entry barrier: a GitHub account and a <code>SKILL.md</code> file. 4 CVEs filed.<a href="https://arxiv.org/abs/2604.03081" class="cite">[45]</a></p>
+</div>
+
+<!-- SVG 3: DDIPE Attack Flow (Animated) -->
+<div class="diagram reveal" style="background: #1a1a1a; border-color: #333; padding: 36px 28px;">
+  <span class="diagram-label" style="background: #1a1a1a; color: #a05050;">DDIPE attack flow — animated</span>
+  <style>
+    @keyframes ddipe-pulse { 0%,100%{opacity:.3;r:3} 50%{opacity:1;r:5} }
+    @keyframes ddipe-travel { 0%{offset-distance:0%;opacity:0} 10%{opacity:1} 90%{opacity:1} 100%{offset-distance:100%;opacity:0} }
+    .ddipe-dot { animation: ddipe-pulse 1.5s ease-in-out infinite; }
+  </style>
+  <svg viewBox="0 0 720 320" xmlns="http://www.w3.org/2000/svg">
+    <!-- Step 1: Attacker -->
+    <rect x="20" y="20" width="118" height="48" rx="3" fill="#333" stroke="#a05050" stroke-width="1.5"/>
+    <text x="79" y="40" font-family="'JetBrains Mono',monospace" font-size="9" fill="#a05050" text-anchor="middle" font-weight="700">① ATTACKER</text>
+    <text x="79" y="56" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">crafts malicious SKILL.md</text>
+    <!-- Arrow 1→2 -->
+    <line x1="138" y1="44" x2="188" y2="44" stroke="#a05050" stroke-width="1.5"/>
+    <circle cx="158" cy="44" r="3" fill="#a05050" class="ddipe-dot"/>
+    <circle cx="176" cy="44" r="3" fill="#a05050" class="ddipe-dot" style="animation-delay:.5s"/>
+    <!-- Step 2: Marketplace -->
+    <rect x="192" y="20" width="128" height="48" rx="3" fill="#333" stroke="#666" stroke-width="1.5"/>
+    <text x="256" y="40" font-family="'JetBrains Mono',monospace" font-size="9" fill="#e8e9e9" text-anchor="middle" font-weight="700">② MARKETPLACE</text>
+    <text x="256" y="56" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">published · no review gate</text>
+    <!-- Arrow 2→3 -->
+    <line x1="320" y1="44" x2="370" y2="44" stroke="#70808d" stroke-width="1.5"/>
+    <circle cx="340" cy="44" r="3" fill="#70808d" class="ddipe-dot" style="animation-delay:.3s"/>
+    <!-- Step 3: Victim Agent -->
+    <rect x="374" y="20" width="138" height="48" rx="3" fill="#333" stroke="#70808d" stroke-width="1.5"/>
+    <text x="443" y="40" font-family="'JetBrains Mono',monospace" font-size="9" fill="#70808d" text-anchor="middle" font-weight="700">③ VICTIM AGENT</text>
+    <text x="443" y="56" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">discovers &amp; loads skill</text>
+    <!-- Arrow 3→4 -->
+    <line x1="443" y1="68" x2="443" y2="98" stroke="#70808d" stroke-width="1.5"/>
+    <circle cx="443" cy="82" r="3" fill="#a05050" class="ddipe-dot" style="animation-delay:.7s"/>
+    <!-- Step 4: Code Reproduction -->
+    <rect x="354" y="102" width="178" height="48" rx="3" fill="#333" stroke="#a05050" stroke-width="1.5"/>
+    <text x="443" y="122" font-family="'JetBrains Mono',monospace" font-size="9" fill="#a05050" text-anchor="middle" font-weight="700">④ REPRODUCES CODE</text>
+    <text x="443" y="138" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">doc examples → "best practice"</text>
+    <!-- Arrow 4→5 -->
+    <line x1="443" y1="150" x2="443" y2="180" stroke="#a05050" stroke-width="1.5"/>
+    <!-- Step 5: Payload -->
+    <rect x="334" y="184" width="218" height="48" rx="3" fill="#a05050"/>
+    <text x="443" y="204" font-family="'JetBrains Mono',monospace" font-size="9" fill="#f1f2f2" text-anchor="middle" font-weight="700">⑤ PAYLOAD EXECUTES</text>
+    <text x="443" y="220" font-family="'JetBrains Mono',monospace" font-size="7" fill="rgba(255,255,255,.7)" text-anchor="middle">credential theft · exfiltration · reverse shell</text>
+
+    <!-- Exfiltration arc back to attacker -->
+    <path d="M 334 208 C 220 210 120 160 79 68" stroke="#a05050" stroke-width="2" fill="none" stroke-dasharray="6,4"/>
+    <circle cx="240" cy="208" r="4" fill="#a05050" class="ddipe-dot"/>
+    <circle cx="160" cy="170" r="4" fill="#a05050" class="ddipe-dot" style="animation-delay:1s"/>
+    <circle cx="110" cy="120" r="4" fill="#a05050" class="ddipe-dot" style="animation-delay:2s"/>
+    <text x="160" y="190" font-family="'JetBrains Mono',monospace" font-size="7" fill="#a05050" font-weight="700" transform="rotate(-25,160,190)">EXFILTRATED DATA</text>
+
+    <!-- Key insight box -->
+    <rect x="20" y="92" width="280" height="52" rx="3" fill="#2a2020" stroke="#a05050" stroke-width="1"/>
+    <text x="160" y="110" font-family="'JetBrains Mono',monospace" font-size="8" fill="#a05050" text-anchor="middle" font-weight="700">479-BYTE pip.conf = ONLY UNIVERSAL PAYLOAD</text>
+    <text x="160" y="126" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">succeeded across ALL models · brevity evades detection</text>
+    <text x="160" y="138" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">complexity triggers refusal · simplicity slips through</text>
+
+    <!-- Bypass rates -->
+    <rect x="20" y="162" width="280" height="86" rx="3" fill="#222"/>
+    <text x="160" y="180" font-family="'JetBrains Mono',monospace" font-size="8" fill="#e8e9e9" text-anchor="middle" font-weight="700">BYPASS RATES BY FRAMEWORK</text>
+    <text x="36" y="198" font-family="'JetBrains Mono',monospace" font-size="8" fill="#999">Claude Code / Sonnet 4.6</text>
+    <text x="284" y="198" font-family="'JetBrains Mono',monospace" font-size="9" fill="#a05050" text-anchor="end" font-weight="700">13.5%</text>
+    <text x="36" y="214" font-family="'JetBrains Mono',monospace" font-size="8" fill="#999">OpenHands / GLM-4.7</text>
+    <text x="284" y="214" font-family="'JetBrains Mono',monospace" font-size="9" fill="#a05050" text-anchor="end" font-weight="700">33.5%</text>
+    <text x="36" y="230" font-family="'JetBrains Mono',monospace" font-size="8" fill="#999">Codex / GPT-5.4</text>
+    <text x="284" y="230" font-family="'JetBrains Mono',monospace" font-size="9" fill="#a05050" text-anchor="end" font-weight="700">11.6%</text>
+    <text x="36" y="244" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666">only 1.6% bypass ALL models → multi-model voting viable</text>
+
+    <!-- Bottom label -->
+    <rect x="20" y="278" width="680" height="28" rx="2" fill="#222"/>
+    <text x="360" y="296" font-family="'JetBrains Mono',monospace" font-size="8" fill="#a05050" text-anchor="middle" font-weight="700">THE ATTACK SURFACE IS THE DOCUMENTATION ITSELF — NOT THE CODE</text>
+  </svg>
+  <div class="caption" style="color: #666;">DDIPE: malicious payloads in SKILL.md documentation. Agents reproduce them as "reference implementations."</div>
+</div>
+
+<!-- ── Snyk ToxicSkills ── -->
+<div class="finding reveal"><div class="finding-num">5</div>
+  <h4>Snyk ToxicSkills: 3,984 skills audited, 76 confirmed malicious</h4>
+  <p><strong>13.4% CRITICAL severity</strong>. 36.82% flagged with any issue. 76 deliberately weaponized. An 8-category threat taxonomy: credential theft, data exfiltration, dependency confusion, prompt injection, persistent backdoors, privilege escalation, lateral movement, and environment poisoning.</p>
+</div>
+
+<div class="stat-row reveal">
+  <div class="stat-card">
+    <div class="stat-value" style="color: var(--red);">3,984</div>
+    <div class="stat-label">skills audited</div>
+    <div class="stat-source">Snyk ToxicSkills</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value" style="color: var(--red);">13.4%</div>
+    <div class="stat-label">critical severity</div>
+    <div class="stat-source">immediate risk</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value" style="color: var(--red);">76</div>
+    <div class="stat-label">confirmed malicious</div>
+    <div class="stat-source">deliberately weaponized</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value" style="color: var(--red);">40+</div>
+    <div class="stat-label">from one actor (zaycv)</div>
+    <div class="stat-source">automated generation</div>
+  </div>
+</div>
+
+<div class="callout warning reveal">
+  <div class="callout-label">⚠ Named threat actors</div>
+  <p>Not anonymous. <strong>zaycv</strong>: 40+ automated malicious submissions using template-based generation, credential-harvesting payloads. <strong>Aslaep123</strong>: multi-stage payloads with delayed activation. <strong>aztr0nutzs</strong>: environment-poisoning — modifying <code>pip.conf</code>, <code>.npmrc</code>, and shell profiles to redirect package installs.</p>
+</div>
+
+<!-- ── npm Comparison (Dark Panel) ── -->
+<div class="dark-panel reveal">
+  <h3 style="font-size: 16px; margin-bottom: 16px;">Why AI skills are WORSE than traditional packages</h3>
+  <div class="table-wrap">
+    <table style="color: #e8e9e9;">
+      <tr>
+        <th style="color: #999; border-bottom-color: #444;">Surface</th>
+        <th style="color: #999; border-bottom-color: #444;">npm / PyPI</th>
+        <th style="color: #a05050; border-bottom-color: #444;">AI Skills</th>
+      </tr>
+      <tr><td style="border-bottom-color: #333; color: #999;">Default privilege</td><td style="border-bottom-color: #333;">Sandboxed, explicit perms</td><td style="border-bottom-color: #333; color: #a05050; font-weight: 700;">Full agent permissions — FS, network, shell</td></tr>
+      <tr><td style="border-bottom-color: #333; color: #999;">Attack vector</td><td style="border-bottom-color: #333;">Code only</td><td style="border-bottom-color: #333; color: #a05050; font-weight: 700;">Code + NL prompt injection in documentation</td></tr>
+      <tr><td style="border-bottom-color: #333; color: #999;">Persistence</td><td style="border-bottom-color: #333;">Files on disk</td><td style="border-bottom-color: #333; color: #a05050; font-weight: 700;">Files + agent memory + learned behaviours</td></tr>
+      <tr><td style="border-bottom-color: #333; color: #999;">Detection</td><td style="border-bottom-color: #333;">Static analysis catches most</td><td style="border-bottom-color: #333; color: #a05050; font-weight: 700;">Semantic disguise — only 1.6% detectable across models</td></tr>
+      <tr><td style="border-bottom-color: #333; color: #999;">Supply chain</td><td style="border-bottom-color: #333;">Visible dep tree (<code style="border-color:#555;">lock</code> files)</td><td style="border-bottom-color: #333; color: #a05050; font-weight: 700;">Runtime-loaded, dynamically discovered deps</td></tr>
+      <tr><td style="border-bottom-color: #333; color: #999;">Review gate</td><td style="border-bottom-color: #333;">Code review + CI/CD + SAST</td><td style="border-bottom-color: #333; color: #a05050; font-weight: 700;">Agent auto-installs at runtime — no human in loop</td></tr>
+      <tr><td style="border-bottom-color: #333; color: #999;">Blast radius</td><td style="border-bottom-color: #333;">Application-scoped</td><td style="border-bottom-color: #333; color: #a05050; font-weight: 700;">Cross-agent — skills propagate via collective evolution</td></tr>
+    </table>
+  </div>
+  <p style="font-size: 12px; color: #666; margin-top: 12px; margin-bottom: 0;">The fundamental asymmetry: packages contain code that tools analyse. Skills contain natural language that tools can't statically reason about.</p>
+</div>
+
+<hr style="margin: 48px 0;">
+
+<!-- ─────────────────────────────────────────
+     PART 3: DEFENSE ARCHITECTURE
+     ───────────────────────────────────────── -->
+<h3 style="font-size: 18px; margin-bottom: 20px;">Part 3: Defense Architecture</h3>
+
+<div class="stat-row reveal">
+  <div class="stat-card"><div class="stat-value" style="color: var(--red);">90%+</div><div class="stat-label">popular skills fail audit</div><div class="stat-source">SkillProbe</div></div>
+  <div class="stat-card"><div class="stat-value" style="color: var(--red);">46.3%</div><div class="stat-label">are duplicates</div><div class="stat-source">Agent Skills Empirical</div></div>
+  <div class="stat-card"><div class="stat-value" style="color: var(--red);">9%</div><div class="stat-label">critical-risk (L3)</div><div class="stat-source">of 40K+ skills</div></div>
+  <div class="stat-card"><div class="stat-value" style="color: var(--red);">4 CVEs</div><div class="stat-label">filed for DDIPE</div><div class="stat-source">Supply-Chain Poisoning</div></div>
+</div>
+
+<div class="approach-grid reveal">
+  <div class="approach-card">
+    <div class="card-tag">SkillProbe</div>
+    <h4>"Skills-for-Skills" auditing</h4>
+    <p>Multi-agent auditing — security agents evaluate other agents' skills. Catches systemic risk patterns. Identifies the giant connected component of high-risk skills sharing vulnerable dependencies.<a href="https://arxiv.org/abs/2603.21019" class="cite">[44]</a></p>
+  </div>
+  <div class="approach-card">
+    <div class="card-tag">ClawKeeper</div>
+    <h4>Three-layer security architecture</h4>
+    <p>Skill-layer sandbox + Plugin-layer isolation + Watcher-layer (out-of-process state-evolution monitoring). The Watcher kills mutations before they affect the host.<a href="https://arxiv.org/abs/2603.24414" class="cite">[46]</a></p>
+  </div>
+  <div class="approach-card">
+    <div class="card-tag">NVIDIA OpenShell</div>
+    <h4>Out-of-process policy enforcement</h4>
+    <p>Self-evolving skills execute in a sandbox. A separate watcher monitors state evolution. Policy violations killed pre-commit. Hardware isolation via Firecracker microVMs when available.</p>
+  </div>
+  <div class="approach-card">
+    <div class="card-tag">SoK: Agent Skills</div>
+    <h4>4-tier governance framework</h4>
+    <p>7 design patterns + security taxonomy. Trust & Lifecycle Governance with 4 trust tiers. ClawHavoc red-team: 1,200 malicious skills exfiltrating credentials.<a href="https://arxiv.org/abs/2602.20867" class="cite">[47]</a></p>
+  </div>
+</div>
+
+<div class="finding reveal"><div class="finding-num">7</div>
+  <h4>The 5-Layer Partnership on AI Defense Model</h4>
+  <p>No single defense suffices. Layered defense — each layer catches what the one above misses. This model synthesises SkillProbe (layer 4), ClawKeeper (layers 3–4), and OpenShell (layer 2) into a unified depth-defense architecture.</p>
+</div>
+
+<!-- SVG 4: 5-Layer Defense Model -->
+<div class="diagram reveal">
+  <span class="diagram-label">5-Layer defense model — defense in depth</span>
+  <svg viewBox="0 0 720 300" xmlns="http://www.w3.org/2000/svg">
+    <!-- Layer 5 (outermost) -->
+    <rect x="20" y="8" width="680" height="280" rx="6" fill="none" stroke="#a05050" stroke-width="2"/>
+    <text x="360" y="28" font-family="'JetBrains Mono',monospace" font-size="9" fill="#a05050" text-anchor="middle" font-weight="700">LAYER 5 — MARKETPLACE GOVERNANCE</text>
+    <text x="360" y="42" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">publisher identity · reputation scoring · automated pre-screening · duplicate detection (46.3%)</text>
+
+    <!-- Layer 4 -->
+    <rect x="50" y="52" width="620" height="224" rx="5" fill="none" stroke="#9a7a3a" stroke-width="1.5"/>
+    <text x="360" y="70" font-family="'JetBrains Mono',monospace" font-size="9" fill="#9a7a3a" text-anchor="middle" font-weight="700">LAYER 4 — STATIC ANALYSIS + MULTI-AGENT AUDIT</text>
+    <text x="360" y="82" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">SkillProbe "skills-for-skills" · dependency graph · giant-component detection · CVE scanning</text>
+
+    <!-- Layer 3 -->
+    <rect x="80" y="94" width="560" height="170" rx="4" fill="none" stroke="#70808d" stroke-width="1.5"/>
+    <text x="360" y="112" font-family="'JetBrains Mono',monospace" font-size="9" fill="#70808d" text-anchor="middle" font-weight="700">LAYER 3 — RUNTIME SANDBOXING</text>
+    <text x="360" y="124" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">ClawKeeper per-skill sandbox · Firecracker microVMs · FS isolation · network restrictions</text>
+
+    <!-- Layer 2 -->
+    <rect x="110" y="136" width="500" height="116" rx="3" fill="none" stroke="#5b7a5b" stroke-width="1.5"/>
+    <text x="360" y="154" font-family="'JetBrains Mono',monospace" font-size="9" fill="#5b7a5b" text-anchor="middle" font-weight="700">LAYER 2 — OUT-OF-PROCESS POLICY WATCHER</text>
+    <text x="360" y="166" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">OpenShell-style · monitors state evolution · kills violations before commit · trust tiers</text>
+
+    <!-- Layer 1 (innermost) -->
+    <rect x="140" y="180" width="440" height="60" rx="3" fill="#1a1a1a"/>
+    <text x="360" y="202" font-family="'JetBrains Mono',monospace" font-size="10" fill="#f1f2f2" text-anchor="middle" font-weight="700">LAYER 1 — MULTI-MODEL VOTING</text>
+    <text x="360" y="218" font-family="'JetBrains Mono',monospace" font-size="8" fill="#70808d" text-anchor="middle">only 1.6% of payloads bypass ALL models simultaneously</text>
+    <text x="360" y="232" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">consensus across 2+ models before executing skill-suggested code</text>
+
+    <!-- Trust tier labels -->
+    <text x="690" y="28" font-family="'JetBrains Mono',monospace" font-size="7" fill="#a05050" text-anchor="end" font-weight="700">T0</text>
+    <text x="660" y="70" font-family="'JetBrains Mono',monospace" font-size="7" fill="#9a7a3a" text-anchor="end" font-weight="700">T1</text>
+    <text x="630" y="112" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="end" font-weight="700">T2</text>
+    <text x="600" y="154" font-family="'JetBrains Mono',monospace" font-size="7" fill="#5b7a5b" text-anchor="end" font-weight="700">T3</text>
+    <text x="570" y="204" font-family="'JetBrains Mono',monospace" font-size="7" fill="#e8e9e9" text-anchor="end" font-weight="700">T4</text>
+
+    <text x="40" y="280" font-family="'JetBrains Mono',monospace" font-size="7" fill="#a05050">↑ attack surface</text>
+    <text x="680" y="280" font-family="'JetBrains Mono',monospace" font-size="7" fill="#5b7a5b" text-anchor="end">↑ trust level</text>
+  </svg>
+  <div class="caption">Defense in depth: each layer catches what the layer above misses. Trust tiers (T0–T4) govern which layers a skill must pass.</div>
+</div>
+
+<div class="callout reveal">
+  <div class="callout-label">The uncomfortable truth</div>
+  <p>None of this infrastructure exists in production today. The marketplace grew 18.5× in 20 days. The security tooling grew approximately 0×. We are in the <code>npm circa 2016</code> moment: explosive growth, minimal governance, active adversaries. The difference: AI skills have a <strong>strictly larger attack surface</strong> than npm packages — and the blast radius is cross-agent, not just cross-application.</p>
+</div>
+
+</section>

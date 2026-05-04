@@ -1,0 +1,2390 @@
+import { create } from 'zustand'
+import type {
+  BridgeEvent,
+  BridgeMode,
+  ArtifactRecord,
+  DesktopSettings,
+  FileChangeSet,
+  MemoryRecord,
+  Message,
+  MessagePart,
+  PermissionTier,
+  SessionSnapshot,
+  Skill,
+  SubagentRecord,
+  ToolCallRecord,
+  ToolCatalogEntry,
+} from '@shared/events'
+import {
+  getPersistableFrame,
+  normalizeFrame,
+  registerFrame,
+  releaseFrame,
+  retainFrame,
+  type FrameRef,
+} from '../lib/frameMedia'
+
+/** Per-computer-session live state: latest screenshot frame, planned
+ *  action (for the highlight ring), and action history. */
+export interface ComputerSessionState {
+  sessionId: string
+  parentSessionId?: string
+  goal: string
+  targetApp?: string
+  status: 'idle' | 'running' | 'done' | 'failed' | 'cancelled'
+  latestFrame?: FrameRef
+  /** Total number of screenshot_frame events received for this session.
+   *  Surfaced in the UI as a diagnostic badge. */
+  frameCount: number
+  plannedAction?: {
+    action: string
+    description?: string
+    x?: number
+    y?: number
+    w?: number
+    h?: number
+    plannedAt: number
+  }
+  history: Array<{
+    action: string
+    description?: string
+    success: boolean
+    durationMs: number
+    at: number
+  }>
+  summary?: string
+}
+
+/**
+ * Per-session state snapshot — everything that gets swapped when the user
+ * switches between sessions. Components still read flat fields off the
+ * top-level store, and switchSession archives/restores these slices.
+ */
+export interface SessionSlice {
+  messages: Message[]
+  currentStreamingMessageId: string | null
+  currentTurnId: string | null
+  thinking: string
+  isStreaming: boolean
+  toolCalls: Record<string, ToolCallRecord>
+  toolCallOrder: string[]
+  fileChanges: FileChangeSet[]
+  subagents: Record<string, SubagentRecord>
+  subagentOrder: string[]
+  usage: {
+    totalInputTokens: number
+    totalOutputTokens: number
+    totalCacheReadTokens: number
+    totalCacheWriteTokens: number
+    totalCost: number
+    lastTurnInputTokens: number
+    lastTurnOutputTokens: number
+    contextWindow: number
+  }
+  systemEvents: Array<{ id: string; subtype: string; message: string; at: number }>
+  busMessages: Array<import('@shared/events').BusMessageRecord>
+  artifacts: Array<import('@shared/events').ArtifactRecord>
+  model: string
+  /** System prompt sent to the model. Captured from the bridge's
+   *  `system_prompt_set` event for session export / training data. */
+  systemPrompt?: string
+}
+
+export interface ModelChoice {
+  id: string
+  family: string
+  label: string
+  tier: string
+  contextWindow: number
+  description: string
+  thinking?: boolean
+  envVar?: string
+  available?: boolean
+}
+
+export interface HarnessState extends SessionSlice {
+  mode: BridgeMode
+  modeDetail: string
+  ready: boolean
+  activeSessionId: string
+  sessions: SessionSnapshot[]
+  /** Archived per-session slices, keyed by session id. */
+  sessionArchive: Record<string, SessionSlice>
+  skills: Record<string, Skill>
+  memories: Record<string, MemoryRecord>
+  logs: Array<{ level: string; message: string; at: number }>
+  toolCatalog: Record<string, ToolCatalogEntry>
+  availableModels: ModelChoice[]
+  // File picker matches for the current @query
+  fileMatches: Array<{ path: string; name: string }>
+  fileQuery: string
+  // Pending permission requests from the bridge, most-recent first.
+  permissionQueue: Array<{
+    requestId: string
+    sessionId?: string
+    level: 'info' | 'low' | 'medium' | 'high' | 'dangerous'
+    prompt: string
+    reason?: string
+    details?: string
+  }>
+  // Attachments queued for the next send
+  pendingAttachments: Array<{ id: string; type: 'image'; mimeType: string; dataBase64: string; previewUrl: string }>
+  // Derived / UI
+  inputDraft: string
+  commandPaletteOpen: boolean
+  activeSubagentId: string | null
+  focusedPanel: 'sidebar' | 'conversation' | 'activity'
+  debugOpen: boolean
+  modelPickerOpen: boolean
+  settingsOpen: boolean
+  /** User preference — hide the left Sidebar panel for a focused view. */
+  sidebarCollapsed: boolean
+  /** User preference — hide the right Activity panel for a focused view. */
+  activityPanelCollapsed: boolean
+  /** Tool-call focus target used by changes/artifacts navigation. */
+  focusedToolCallId: string | null
+  focusedToolCallSerial: number
+  /** User preference — pixel width of the Activity panel when open.
+   *  The left Sidebar is intentionally NOT resizable; only the right
+   *  panel needs to grow for reading long log streams. Persisted to
+   *  localStorage so the preference survives reloads. */
+  activityPanelWidth: number
+  settings: DesktopSettings
+  toast: { id: string; message: string; tone: 'info' | 'ok' | 'warn' | 'danger'; at: number } | null
+  /** Live state for each active computer-use session. Frames are
+   *  latest-only (no history) to keep memory bounded. */
+  computerSessions: Record<string, ComputerSessionState>
+  /** Floating panic window is visible whenever any session is
+   *  running. Derived from computerSessions but cached here for
+   *  cheap selector access. */
+  computerActive: boolean
+  /** Wizard state for the permission setup flow. */
+  computerWizardOpen: boolean
+}
+
+export interface HarnessActions {
+  handleEvent(ev: BridgeEvent): void
+  setInputDraft(v: string): void
+  sendMessage(content: string): Promise<void>
+  cancelTurn(): Promise<void>
+  setModel(model: string): Promise<void>
+  openSubagent(id: string | null): void
+  toggleCommandPalette(open?: boolean): void
+  toggleModelPicker(open?: boolean): void
+  setFocusedPanel(p: HarnessState['focusedPanel']): void
+  requestDemoBurst(): Promise<void>
+  newSession(model?: string): Promise<void>
+  switchSession(sessionId: string): Promise<void>
+  listTools(): Promise<void>
+  toggleDebug(open?: boolean): void
+  toggleSidebar(collapsed?: boolean): void
+  toggleActivityPanel(collapsed?: boolean): void
+  setActivityPanelWidth(width: number): void
+  focusToolCall(id: string): void
+  toggleFocusMode(focus?: boolean): void
+  showToast(message: string, tone?: 'info' | 'ok' | 'warn' | 'danger'): void
+  clearToast(): void
+  runSlashCommand(name: string, args?: string): boolean
+  attachImage(file: File | Blob): Promise<void>
+  removeAttachment(id: string): void
+  requestFileMatches(query: string): Promise<void>
+  answerPermission(requestId: string, approved: boolean): Promise<void>
+  hydrateFromDisk(): Promise<void>
+  persistSession(sessionId: string): Promise<void>
+  persistSessionIndex(): Promise<void>
+  persistActiveSession(): Promise<void>
+  persistAllSessions(): Promise<void>
+  loadPersistedSessionIntoArchive(sessionId: string): Promise<boolean>
+  toggleSettings(open?: boolean): void
+  hydrateSettings(): Promise<void>
+  setPermissionTier(tier: PermissionTier): Promise<void>
+  escalateSessionPolicy(tier: PermissionTier): Promise<void>
+  switchToParent(): Promise<void>
+  // ─── Session management ──────────────────────────────────────
+  renameSession(sessionId: string, title: string): void
+  deleteSession(sessionId: string): Promise<void>
+  downloadSession(sessionId: string): Promise<void>
+  // ─── Computer control ────────────────────────────────────────
+  setComputerEnabled(enabled: boolean): Promise<void>
+  openComputerWizard(open?: boolean): void
+  emergencyStopComputer(reason?: string): Promise<void>
+}
+
+// Tool names that create or modify files — used to extract artifacts
+const FILE_WRITE_TOOLS = new Set([
+  'write_file', 'write', 'edit_file', 'edit', 'edit_json',
+])
+
+let messageCounter = 0
+function nextId(prefix = 'm'): string {
+  messageCounter += 1
+  return `${prefix}_${Date.now().toString(36)}_${messageCounter}`
+}
+
+const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  // Claude 4.7
+  'claude-opus-4-7': 1_000_000,
+  // Claude 4.6
+  'claude-opus-4-6': 1_000_000,
+  'claude-sonnet-4-6': 1_000_000,
+  // Claude 4.5 / 4
+  'claude-haiku-4-5': 200_000,
+  'claude-opus-4-5': 200_000,
+  'claude-sonnet-4-5': 1_000_000,
+  'claude-sonnet-4': 200_000,
+  'claude-opus-4': 200_000,
+  // OpenAI
+  'gpt-5.5': 1_050_000,
+  'gpt-5.4': 1_050_000,
+  'gpt-5.4-pro': 1_050_000,
+  'gpt-5.4-mini': 400_000,
+  'gpt-5.4-nano': 400_000,
+  'gpt-5.3-codex': 400_000,
+  'gpt-4-turbo': 128_000,
+  // Keep these in sync with engine/providers.py MODEL_META.
+  // Previously anything not listed here silently defaulted to 200k,
+  // so zai-glm-4.7 sessions showed `ctx X/200k` while the actual
+  // Cerebras context window is 131k — compaction triggers felt
+  // "wrong" because the UI denominator didn't match the provider.
+  'zai-glm-4.7': 131_072,
+  'glm5': 202_800,
+  'kimi-k2.5': 262_144,
+  'minimax-m2.5': 196_608,
+}
+
+function contextWindowFor(model: string): number {
+  return MODEL_CONTEXT_WINDOWS[model] ?? 200_000
+}
+
+function emptySlice(model: string = 'claude-sonnet-4-6'): SessionSlice {
+  return {
+    messages: [],
+    currentStreamingMessageId: null,
+    currentTurnId: null,
+    thinking: '',
+    isStreaming: false,
+    toolCalls: {},
+    toolCallOrder: [],
+    fileChanges: [],
+    subagents: {},
+    subagentOrder: [],
+    usage: {
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCacheReadTokens: 0,
+      totalCacheWriteTokens: 0,
+      totalCost: 0,
+      lastTurnInputTokens: 0,
+      lastTurnOutputTokens: 0,
+      contextWindow: contextWindowFor(model),
+    },
+    systemEvents: [],
+    busMessages: [],
+    artifacts: [],
+    model,
+  }
+}
+
+function emptyState(): HarnessState {
+  const bootId = 'session-boot'
+  return {
+    ...emptySlice(),
+    mode: 'error',
+    modeDetail: 'initializing',
+    ready: false,
+    activeSessionId: bootId,
+    sessions: [
+      {
+        id: bootId,
+        title: 'Current session',
+        workspace: '~/work/services/freyja',
+        model: 'claude-sonnet-4-6',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messageCount: 0,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        cacheReadTokens: 0,
+      },
+    ],
+    sessionArchive: {},
+    skills: {},
+    memories: {},
+    logs: [],
+    toolCatalog: {},
+    availableModels: [],
+    fileMatches: [],
+    fileQuery: '',
+    permissionQueue: [],
+    pendingAttachments: [],
+    inputDraft: '',
+    commandPaletteOpen: false,
+    modelPickerOpen: false,
+    activeSubagentId: null,
+    focusedPanel: 'conversation',
+    debugOpen: false,
+    settingsOpen: false,
+    sidebarCollapsed:
+      (typeof localStorage !== 'undefined' &&
+        localStorage.getItem('ah.sidebarCollapsed') === '1') || false,
+    activityPanelCollapsed:
+      (typeof localStorage !== 'undefined' &&
+        localStorage.getItem('ah.activityPanelCollapsed') === '1') || false,
+    focusedToolCallId: null,
+    focusedToolCallSerial: 0,
+    activityPanelWidth: (() => {
+      if (typeof localStorage === 'undefined') return 320
+      const raw = localStorage.getItem('ah.activityPanelWidth')
+      const parsed = raw ? parseInt(raw, 10) : NaN
+      // Clamp to a sane range so a stale/corrupt value can't render
+      // the panel unusable.
+      if (!Number.isFinite(parsed)) return 320
+      return Math.max(260, Math.min(900, parsed))
+    })(),
+    settings: {
+      version: 1,
+      permissions: { autoApprove: 'low' },
+      computer: {
+        enabled: false,
+        wizardState: 'never',
+        allowlist: [],
+        blocklist: [
+          'com.agilebits.onepassword7',
+          'com.agilebits.onepassword8',
+          'com.apple.keychainaccess',
+          'com.bitwarden.desktop',
+          'com.lastpass.LastPass',
+          'com.dashlane.mac',
+        ],
+        maxStepsDefault: 60,
+        showScreenshotsInline: true,
+      },
+    },
+    toast: null,
+    computerSessions: {},
+    computerActive: false,
+    computerWizardOpen: false,
+  }
+}
+
+/** Pull the slice fields out of a HarnessState. */
+function sliceFromState(s: HarnessState): SessionSlice {
+  return {
+    messages: s.messages,
+    currentStreamingMessageId: s.currentStreamingMessageId,
+    currentTurnId: s.currentTurnId,
+    thinking: s.thinking,
+    isStreaming: s.isStreaming,
+    toolCalls: s.toolCalls,
+    toolCallOrder: s.toolCallOrder,
+    fileChanges: s.fileChanges,
+    subagents: s.subagents,
+    subagentOrder: s.subagentOrder,
+    usage: s.usage,
+    systemEvents: s.systemEvents,
+    busMessages: s.busMessages,
+    artifacts: s.artifacts,
+    model: s.model,
+    systemPrompt: s.systemPrompt,
+  }
+}
+
+type PersistedSessionMetaPayload = {
+  version: 1
+  id: string
+  title: string
+  model: string
+  workspace: string
+  createdAt: number
+  updatedAt: number
+  messageCount: number
+  totalInputTokens: number
+  totalOutputTokens: number
+  cacheReadTokens: number
+  parentSessionId?: string
+  childSessionIds?: string[]
+  task?: string
+  agentType?: string
+  completed?: boolean
+  completedAt?: number
+  success?: boolean
+}
+
+type PersistedSessionPayload = PersistedSessionMetaPayload & {
+  slice: SessionSlice
+}
+
+function sliceForSession(state: HarnessState, sessionId: string): SessionSlice | undefined {
+  return sessionId === state.activeSessionId
+    ? sliceFromState(state)
+    : state.sessionArchive[sessionId]
+}
+
+function hasPersistableSessionState(
+  session: SessionSnapshot,
+  slice?: SessionSlice,
+): boolean {
+  const messageCount = slice?.messages.length ?? session.messageCount ?? 0
+  return (
+    messageCount > 0 ||
+    !!slice?.isStreaming ||
+    !!session.parentSessionId ||
+    !!session.childSessionIds?.length ||
+    !!session.task ||
+    !!session.completed
+  )
+}
+
+function persistedMetaFromSession(
+  session: SessionSnapshot,
+  slice?: SessionSlice,
+): PersistedSessionMetaPayload {
+  const usage = slice?.usage
+  return {
+    version: 1,
+    id: session.id,
+    title: session.title || 'Session',
+    model: slice?.model || session.model,
+    workspace: session.workspace || '~/',
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt || Date.now(),
+    messageCount: slice?.messages.length ?? session.messageCount ?? 0,
+    totalInputTokens: usage?.totalInputTokens ?? session.totalInputTokens ?? 0,
+    totalOutputTokens: usage?.totalOutputTokens ?? session.totalOutputTokens ?? 0,
+    cacheReadTokens: usage?.totalCacheReadTokens ?? session.cacheReadTokens ?? 0,
+    parentSessionId: session.parentSessionId,
+    childSessionIds: session.childSessionIds,
+    task: session.task,
+    agentType: session.agentType,
+    completed: session.completed,
+    completedAt: session.completedAt,
+    success: session.success,
+  }
+}
+
+function persistedPayloadFromSession(
+  session: SessionSnapshot,
+  slice: SessionSlice,
+): PersistedSessionPayload {
+  return {
+    ...persistedMetaFromSession(session, slice),
+    slice: materializeFramesForPersistence(slice),
+  }
+}
+
+function materializeFramesForPersistence(slice: SessionSlice): SessionSlice {
+  let changed = false
+  const toolCalls: Record<string, ToolCallRecord> = {}
+  for (const [id, call] of Object.entries(slice.toolCalls)) {
+    if (!call.frame) {
+      toolCalls[id] = call
+      continue
+    }
+    const frame = getPersistableFrame(call.frame as FrameRef)
+    if (frame && frame !== call.frame) {
+      changed = true
+      toolCalls[id] = { ...call, frame }
+    } else {
+      toolCalls[id] = call
+    }
+  }
+  return changed ? { ...slice, toolCalls } : slice
+}
+
+function normalizePersistedFrames(slice: SessionSlice): SessionSlice {
+  slice = {
+    ...slice,
+    fileChanges: slice.fileChanges ?? [],
+  }
+  let changed = false
+  const toolCalls: Record<string, ToolCallRecord> = {}
+  for (const [id, call] of Object.entries(slice.toolCalls)) {
+    const frame = normalizeFrame(call.frame as FrameRef | undefined)
+    if (frame) retainFrame(frame)
+    if (frame && frame !== call.frame) {
+      changed = true
+      toolCalls[id] = { ...call, frame }
+    } else {
+      toolCalls[id] = call
+    }
+  }
+  return changed ? { ...slice, toolCalls } : slice
+}
+
+function releaseSliceFrames(slice?: SessionSlice): void {
+  if (!slice) return
+  for (const call of Object.values(slice.toolCalls)) {
+    releaseFrame(call.frame as FrameRef | undefined)
+  }
+}
+
+function upsertArtifactsFromChangeSet(
+  artifacts: ArtifactRecord[],
+  changeSet: FileChangeSet,
+  creator = 'parent',
+  creatorLabel = 'Main agent',
+): ArtifactRecord[] {
+  let next = artifacts
+  for (const file of changeSet.files) {
+    const artifact: ArtifactRecord = {
+      id: `${changeSet.id}:${file.path}`,
+      path: file.path,
+      filename: file.filename,
+      creator,
+      creatorLabel,
+      createdAt: changeSet.createdAt || Date.now(),
+      fileType: file.fileType,
+      operation: file.operation,
+      changeSetId: changeSet.id,
+      toolCallId: changeSet.toolCallId,
+      additions: file.additions,
+      deletions: file.deletions,
+      binary: file.binary,
+      diffTruncated: file.diffTruncated,
+    }
+    const idx = next.findIndex((a) => a.path === file.path && a.creator === creator)
+    if (idx === -1) {
+      next = [...next, artifact]
+    } else {
+      next = next.map((a, i) =>
+        i === idx
+          ? {
+              ...a,
+              ...artifact,
+              // Preserve the original id if this file was already visible
+              // from an older heuristic artifact entry.
+              id: a.id || artifact.id,
+            }
+          : a,
+      )
+    }
+  }
+  return next
+}
+
+/**
+ * Pure function: fold a bridge event into a SessionSlice and return a new
+ * slice. Used both for live updates (against the top-level slice) and for
+ * cold updates to archived sessions.
+ */
+function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
+  const next: SessionSlice = { ...slice }
+
+  switch (ev.type) {
+    case 'turn_start': {
+      const msgId = nextId('msg')
+      const newMessage: Message = {
+        id: msgId,
+        role: 'assistant',
+        parts: [],
+        createdAt: Date.now(),
+      }
+      next.messages = [...slice.messages, newMessage]
+      next.currentStreamingMessageId = msgId
+      next.currentTurnId = ev.turnId
+      next.isStreaming = true
+      next.thinking = ''
+      return next
+    }
+
+    case 'text_delta': {
+      if (!slice.currentStreamingMessageId) return next
+      next.messages = slice.messages.map((m) => {
+        if (m.id !== slice.currentStreamingMessageId) return m
+        const parts = [...m.parts]
+        const last = parts[parts.length - 1]
+        if (last?.type === 'text') {
+          parts[parts.length - 1] = { ...last, text: (last.text ?? '') + ev.text }
+        } else {
+          parts.push({ type: 'text', text: ev.text })
+        }
+        return { ...m, parts }
+      })
+      return next
+    }
+
+    case 'thinking_delta': {
+      // Also keep the flat string for backwards compat (search, export)
+      next.thinking = slice.thinking + ev.thinking
+      // Append to the current streaming message as a thinking part
+      // so it renders inline, not as a detached block at the bottom.
+      if (!slice.currentStreamingMessageId) return next
+      next.messages = slice.messages.map((m) => {
+        if (m.id !== slice.currentStreamingMessageId) return m
+        const parts = [...m.parts]
+        const last = parts[parts.length - 1]
+        if (last?.type === 'thinking') {
+          parts[parts.length - 1] = { ...last, text: (last.text ?? '') + ev.thinking }
+        } else {
+          parts.push({ type: 'thinking', text: ev.thinking })
+        }
+        return { ...m, parts }
+      })
+      return next
+    }
+
+    case 'tool_use_start': {
+      // Determine groupId: if the last part in the current message is
+      // also a tool_call (no text/thinking between them), they're parallel
+      // and share the same group. Otherwise start a new group.
+      let groupId = `tg_${Date.now().toString(36)}_${ev.id.slice(-4)}`
+      if (slice.currentStreamingMessageId) {
+        const curMsg = slice.messages.find((m) => m.id === slice.currentStreamingMessageId)
+        if (curMsg) {
+          const lastPart = curMsg.parts[curMsg.parts.length - 1]
+          if (lastPart?.type === 'tool_call' && lastPart.toolCallId) {
+            const prevTc = slice.toolCalls[lastPart.toolCallId]
+            if (prevTc?.groupId) {
+              groupId = prevTc.groupId
+            }
+          }
+        }
+      }
+
+      const record: ToolCallRecord = {
+        id: ev.id,
+        name: ev.name,
+        status: 'running',
+        startedAt: Date.now(),
+        partialJson: '',
+        groupId,
+      }
+      next.toolCalls = { ...slice.toolCalls, [ev.id]: record }
+      next.toolCallOrder = [...slice.toolCallOrder, ev.id]
+      if (slice.currentStreamingMessageId) {
+        next.messages = slice.messages.map((m) =>
+          m.id === slice.currentStreamingMessageId
+            ? { ...m, parts: [...m.parts, { type: 'tool_call', toolCallId: ev.id } satisfies MessagePart] }
+            : m,
+        )
+      }
+      return next
+    }
+
+    case 'tool_input_delta': {
+      const existing = slice.toolCalls[ev.id]
+      if (!existing) return next
+      next.toolCalls = {
+        ...slice.toolCalls,
+        [ev.id]: {
+          ...existing,
+          partialJson: (existing.partialJson ?? '') + ev.partialJson,
+        },
+      }
+      return next
+    }
+
+    case 'tool_input_end': {
+      const existing = slice.toolCalls[ev.id]
+      if (!existing) return next
+      next.toolCalls = {
+        ...slice.toolCalls,
+        [ev.id]: { ...existing, arguments: ev.arguments, partialJson: undefined },
+      }
+      return next
+    }
+
+    case 'file_change_set': {
+      const changeSet = ev.changeSet
+      next.fileChanges = [
+        ...slice.fileChanges.filter((c) => c.id !== changeSet.id),
+        changeSet,
+      ]
+      const existing = slice.toolCalls[changeSet.toolCallId]
+      if (existing) {
+        next.toolCalls = {
+          ...slice.toolCalls,
+          [changeSet.toolCallId]: {
+            ...existing,
+            fileChangeSet: changeSet,
+          },
+        }
+      }
+      next.artifacts = upsertArtifactsFromChangeSet(slice.artifacts, changeSet)
+      return next
+    }
+
+    case 'tool_result': {
+      const existing = slice.toolCalls[ev.id]
+      if (!existing) return next
+      next.toolCalls = {
+        ...slice.toolCalls,
+        [ev.id]: {
+          ...existing,
+          status: ev.isError ? 'error' : 'success',
+          result: ev.preview,
+          isError: ev.isError,
+          durationMs: ev.durationMs,
+        },
+      }
+      // Extract artifact from file-writing tool calls
+      if (!ev.isError && FILE_WRITE_TOOLS.has(existing.name)) {
+        const args = (existing.arguments ?? {}) as Record<string, unknown>
+        const filePath = String(args.path ?? args.file_path ?? args.file ?? '')
+        if (filePath) {
+          const filename = filePath.split('/').pop() ?? filePath
+          const ext = filename.includes('.') ? filename.split('.').pop()?.toLowerCase() ?? '' : ''
+          const artifact: import('@shared/events').ArtifactRecord = {
+            id: ev.id,
+            path: filePath,
+            filename,
+            creator: 'parent',
+            creatorLabel: 'Main agent',
+            createdAt: Date.now(),
+            fileType: ext,
+            operation: existing.name.includes('edit') ? 'edit' : 'write',
+          }
+          // Don't duplicate if the same path already exists
+          const exists = slice.artifacts.some((a) => a.path === filePath)
+          if (!exists) {
+            next.artifacts = [...slice.artifacts, artifact]
+          } else {
+            // Update the existing entry's timestamp
+            next.artifacts = slice.artifacts.map((a) =>
+              a.path === filePath
+                ? {
+                    ...a,
+                    createdAt: Date.now(),
+                    operation: a.changeSetId ? a.operation : artifact.operation,
+                  }
+                : a,
+            )
+          }
+        }
+      }
+      return next
+    }
+
+    case 'bus_message': {
+      next.busMessages = [
+        ...slice.busMessages.slice(-100),
+        ev.message,
+      ]
+      return next
+    }
+
+    case 'system_event': {
+      next.systemEvents = [
+        ...slice.systemEvents.slice(-100),
+        { id: nextId('sys'), subtype: ev.subtype, message: ev.message, at: Date.now() },
+      ]
+      // Capture the system prompt for session export / training data
+      if (ev.subtype === 'system_prompt_set' && ev.details?.systemPrompt) {
+        next.systemPrompt = ev.details.systemPrompt as string
+      }
+      if (
+        slice.currentStreamingMessageId &&
+        ['compaction_start', 'compaction_complete', 'tool_truncation', 'context_pruning'].includes(
+          ev.subtype,
+        )
+      ) {
+        next.messages = slice.messages.map((m) =>
+          m.id === slice.currentStreamingMessageId
+            ? { ...m, parts: [...m.parts, { type: 'system', text: ev.message, systemSubtype: ev.subtype }] }
+            : m,
+        )
+      }
+      return next
+    }
+
+    case 'subagent_spawn': {
+      next.subagents = { ...slice.subagents, [ev.record.id]: ev.record }
+      next.subagentOrder = [...slice.subagentOrder, ev.record.id]
+      if (slice.currentStreamingMessageId) {
+        next.messages = slice.messages.map((m) =>
+          m.id === slice.currentStreamingMessageId
+            ? { ...m, parts: [...m.parts, { type: 'subagent', subagentId: ev.record.id }] }
+            : m,
+        )
+      }
+      return next
+    }
+
+    case 'subagent_update': {
+      const existing = slice.subagents[ev.id]
+      if (!existing) return next
+      next.subagents = { ...slice.subagents, [ev.id]: { ...existing, ...ev.patch } }
+      return next
+    }
+
+    case 'subagent_done': {
+      const existing = slice.subagents[ev.id]
+      if (!existing) return next
+      next.subagents = {
+        ...slice.subagents,
+        [ev.id]: { ...existing, state: 'done', result: ev.result, elapsedMs: ev.elapsedMs },
+      }
+      return next
+    }
+
+    case 'usage':
+      next.usage = {
+        ...slice.usage,
+        totalInputTokens: ev.inputTokens,
+        totalOutputTokens: ev.outputTokens,
+        totalCacheReadTokens: ev.cacheReadTokens,
+        totalCacheWriteTokens: ev.cacheWriteTokens,
+        totalCost: ev.cost,
+        lastTurnInputTokens: ev.inputTokens,
+        lastTurnOutputTokens: ev.outputTokens,
+      }
+      return next
+
+    case 'usage_snapshot':
+      next.usage = {
+        ...slice.usage,
+        totalInputTokens: ev.inputTokens,
+        totalOutputTokens: ev.outputTokens,
+        totalCacheReadTokens: ev.cacheReadTokens,
+        totalCacheWriteTokens: ev.cacheWriteTokens,
+        totalCost: ev.cost,
+      }
+      return next
+
+    case 'turn_complete':
+      // Only clear streaming state if this is the CURRENT turn. A stale
+      // turn_complete from a cancelled turn must not clobber a newer
+      // turn that's already streaming — that race causes the UI to go
+      // blank while the agent keeps working in the background.
+      if (!slice.currentTurnId || ev.turnId === slice.currentTurnId) {
+        next.currentStreamingMessageId = null
+        next.currentTurnId = null
+        next.isStreaming = false
+      }
+      return next
+
+    default:
+      return next
+  }
+}
+
+export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
+  ...emptyState(),
+
+  handleEvent(ev) {
+    set((prev) => {
+      // Non-session global events live in their own section.
+      if (ev.type === 'ready') {
+        const models = (ev.capabilities?.models as ModelChoice[] | undefined) ?? []
+        const capModel = (ev.capabilities?.model as string | undefined) ?? prev.model
+        const firstSessionId = ev.sessionId || prev.activeSessionId
+        return {
+          ...prev,
+          ready: true,
+          mode: ev.mode,
+          modeDetail:
+            ev.mode === 'live' ? 'live bridge' : ev.mode === 'demo' ? 'demo mode' : 'error',
+          activeSessionId: firstSessionId,
+          sessions: prev.sessions.map((s) =>
+            s.id === prev.activeSessionId
+              ? { ...s, id: firstSessionId, model: capModel }
+              : s,
+          ),
+          availableModels: models.length > 0 ? models : prev.availableModels,
+          model: capModel,
+          usage: { ...prev.usage, contextWindow: contextWindowFor(capModel) },
+        }
+      }
+      if (ev.type === 'log') {
+        return {
+          ...prev,
+          logs: [...prev.logs.slice(-200), { level: ev.level, message: ev.message, at: Date.now() }],
+        }
+      }
+      if (ev.type === 'error') {
+        let messages = prev.messages
+        if (prev.currentStreamingMessageId) {
+          messages = prev.messages.map((m) =>
+            m.id === prev.currentStreamingMessageId
+              ? {
+                  ...m,
+                  parts: [
+                    ...m.parts,
+                    {
+                      type: 'system',
+                      text: ev.message,
+                      systemSubtype: 'error',
+                    } satisfies MessagePart,
+                  ],
+                }
+              : m,
+          )
+        }
+        return {
+          ...prev,
+          logs: [...prev.logs.slice(-200), { level: 'error', message: ev.message, at: Date.now() }],
+          messages,
+          currentStreamingMessageId: null,
+          currentTurnId: null,
+          isStreaming: false,
+          toast: {
+            id: nextId('toast'),
+            message: ev.message,
+            tone: 'warn',
+            at: Date.now(),
+          },
+        }
+      }
+      if (ev.type === 'memory_retrieved' || ev.type === 'memory_updated') {
+        return {
+          ...prev,
+          memories: { ...prev.memories, [ev.memory.id]: ev.memory },
+        }
+      }
+      if (ev.type === 'skill_retrieved' || ev.type === 'skill_loaded' || ev.type === 'skill_pruned') {
+        const previous = prev.skills[ev.skill.id]
+        const nextStatus =
+          ev.type === 'skill_loaded'
+            ? 'loaded'
+            : ev.type === 'skill_pruned'
+              ? 'pruned'
+              : previous?.status === 'loaded' || previous?.status === 'pruned'
+                ? previous.status
+                : 'suggested'
+        return {
+          ...prev,
+          skills: {
+            ...prev.skills,
+            [ev.skill.id]: { ...previous, ...ev.skill, status: nextStatus },
+          },
+        }
+      }
+      if (ev.type === 'skill_updated') {
+        const previous = prev.skills[ev.skill.id]
+        return {
+          ...prev,
+          skills: {
+            ...prev.skills,
+            [ev.skill.id]: {
+              ...previous,
+              ...ev.skill,
+              status: previous?.status ?? ev.skill.status ?? 'available',
+            },
+          },
+        }
+      }
+      if (ev.type === 'tool_catalog_entry') {
+        return {
+          ...prev,
+          toolCatalog: { ...prev.toolCatalog, [ev.tool.name]: ev.tool },
+        }
+      }
+      if (ev.type === 'file_matches') {
+        return {
+          ...prev,
+          fileMatches: ev.matches,
+          fileQuery: ev.query,
+        }
+      }
+      if (ev.type === 'session_spawned') {
+        // A sub-agent just came up as its own session. Create a session
+        // snapshot, attach it to the parent's childSessionIds, and seed
+        // the archive with an empty slice so child events have somewhere
+        // to land.
+        const newSessionId = ev.sessionId!
+        const existing = prev.sessions.find((s) => s.id === newSessionId)
+        if (existing) return prev
+        const snapshot: SessionSnapshot = {
+          id: newSessionId,
+          title: ev.title || 'Sub-agent',
+          workspace: ev.workspace || prev.sessions[0]?.workspace || '~/',
+          model: ev.model || prev.model,
+          createdAt: ev.createdAt || Date.now(),
+          updatedAt: Date.now(),
+          messageCount: 0,
+          totalInputTokens: 0,
+          totalOutputTokens: 0,
+          cacheReadTokens: 0,
+          parentSessionId: ev.parentSessionId,
+          task: ev.task,
+          agentType: ev.agentType,
+          completed: false,
+        }
+        // If the new session happens to be attached to the currently
+        // active session, initialize its slice in the archive so events
+        // routed to it stream in. Otherwise also archive it.
+        const freshSlice = emptySlice(snapshot.model)
+        const archive = {
+          ...prev.sessionArchive,
+          [newSessionId]: freshSlice,
+        }
+        // Patch parent's childSessionIds list.
+        const updatedSessions = prev.sessions.map((s) =>
+          s.id === ev.parentSessionId
+            ? {
+                ...s,
+                childSessionIds: [
+                  ...(s.childSessionIds ?? []),
+                  newSessionId,
+                ],
+                updatedAt: Date.now(),
+              }
+            : s,
+        )
+        // Insert the new snapshot just below its parent if we can find it.
+        const parentIdx = updatedSessions.findIndex(
+          (s) => s.id === ev.parentSessionId,
+        )
+        if (parentIdx >= 0) {
+          updatedSessions.splice(parentIdx + 1, 0, snapshot)
+        } else {
+          updatedSessions.unshift(snapshot)
+        }
+        return {
+          ...prev,
+          sessionArchive: archive,
+          sessions: updatedSessions,
+        }
+      }
+      if (ev.type === 'session_completed') {
+        const artifactPath = (ev as any).artifactPath as string | undefined
+        const sub = prev.subagents[ev.sessionId!]
+        // If the completed session has an artifact, add to parent's artifacts
+        let nextArtifacts = prev.artifacts
+        if (artifactPath && sub) {
+          const filename = artifactPath.split('/').pop() ?? artifactPath
+          const ext = filename.includes('.') ? filename.split('.').pop()?.toLowerCase() ?? '' : ''
+          const exists = prev.artifacts.some((a) => a.path === artifactPath)
+          if (!exists) {
+            nextArtifacts = [
+              ...prev.artifacts,
+              {
+                id: ev.sessionId!,
+                path: artifactPath,
+                filename,
+                creator: ev.sessionId!,
+                creatorLabel: sub.label ?? 'Subagent',
+                createdAt: Date.now(),
+                fileType: ext,
+                operation: 'subagent_artifact',
+              },
+            ]
+          }
+        }
+        // Also scan the child's archived slice for write_file calls
+        const childSlice = prev.sessionArchive[ev.sessionId!]
+        if (childSlice && sub) {
+          for (const changeSet of childSlice.fileChanges) {
+            nextArtifacts = upsertArtifactsFromChangeSet(
+              nextArtifacts,
+              changeSet,
+              ev.sessionId!,
+              sub.label ?? 'Subagent',
+            )
+          }
+          const childTcs = Object.values(childSlice.toolCalls)
+          for (const tc of childTcs) {
+            if (FILE_WRITE_TOOLS.has(tc.name) && !tc.isError && tc.arguments) {
+              const args = tc.arguments as Record<string, unknown>
+              const fp = String(args.path ?? args.file_path ?? args.file ?? '')
+              if (fp && !nextArtifacts.some((a) => a.path === fp)) {
+                const fn = fp.split('/').pop() ?? fp
+                const ext2 = fn.includes('.') ? fn.split('.').pop()?.toLowerCase() ?? '' : ''
+                nextArtifacts = [
+                  ...nextArtifacts,
+                  {
+                    id: tc.id,
+                    path: fp,
+                    filename: fn,
+                    creator: ev.sessionId!,
+                    creatorLabel: sub.label ?? 'Subagent',
+                    createdAt: Date.now(),
+                    fileType: ext2,
+                    operation: 'write',
+                  },
+                ]
+              }
+            }
+          }
+        }
+        return {
+          ...prev,
+          artifacts: nextArtifacts,
+          sessions: prev.sessions.map((s) =>
+            s.id === ev.sessionId
+              ? {
+                  ...s,
+                  completed: true,
+                  completedAt: Date.now(),
+                  success: ev.success,
+                  totalInputTokens: ev.inputTokens ?? s.totalInputTokens,
+                  totalOutputTokens: ev.outputTokens ?? s.totalOutputTokens,
+                }
+              : s,
+          ),
+        }
+      }
+      // ─── Computer-use events ──────────────────────────────────
+      if (ev.type === 'computer_session_start') {
+        const sessionId = ev.sessionId!
+        releaseFrame(prev.computerSessions[sessionId]?.latestFrame)
+        const next: ComputerSessionState = {
+          sessionId,
+          parentSessionId: ev.parentSessionId,
+          goal: ev.goal,
+          targetApp: ev.targetApp,
+          status: 'running',
+          history: [],
+          frameCount: 0,
+        }
+        return {
+          ...prev,
+          computerSessions: { ...prev.computerSessions, [sessionId]: next },
+          computerActive: true,
+        }
+      }
+      if (ev.type === 'screenshot_frame') {
+        const sessionId = ev.sessionId!
+        const existing =
+          prev.computerSessions[sessionId] ?? {
+            sessionId,
+            goal: '',
+            status: 'running' as const,
+            history: [],
+            frameCount: 0,
+          }
+        const frame = registerFrame({
+          pngBase64: ev.pngBase64,
+          mimeType: ev.mimeType ?? 'image/png',
+          width: ev.width,
+          height: ev.height,
+          takenAt: ev.takenAt,
+          reason: ev.reason,
+        }, sessionId)
+        // Find the currently-running tool call on THIS session (either
+        // the active slice or an archived one) and attach the frame to
+        // its record so the conversation chip can render it inline.
+        const isActiveSession = sessionId === prev.activeSessionId
+        const attachFrameToLatestTool = (
+          toolCalls: Record<string, ToolCallRecord>,
+          toolCallOrder: string[],
+        ): Record<string, ToolCallRecord> => {
+          // Find the most recent running tool call. Fall back to the
+          // most recent overall if none are running (the tool may
+          // already have returned by the time the frame lands due to
+          // event ordering across the wire).
+          let targetId: string | undefined
+          for (let i = toolCallOrder.length - 1; i >= 0; i--) {
+            const tc = toolCalls[toolCallOrder[i]]
+            if (tc?.status === 'running') {
+              targetId = tc.id
+              break
+            }
+          }
+          if (!targetId && toolCallOrder.length > 0) {
+            targetId = toolCallOrder[toolCallOrder.length - 1]
+          }
+          if (!targetId) return toolCalls
+          const existingCall = toolCalls[targetId]
+          if (!existingCall) return toolCalls
+          releaseFrame(existingCall.frame as FrameRef | undefined)
+          retainFrame(frame)
+          return {
+            ...toolCalls,
+            [targetId]: { ...existingCall, frame },
+          }
+        }
+        if (isActiveSession) {
+          releaseFrame(existing.latestFrame)
+          retainFrame(frame)
+          return {
+            ...prev,
+            toolCalls: attachFrameToLatestTool(prev.toolCalls, prev.toolCallOrder),
+            computerSessions: {
+              ...prev.computerSessions,
+              [sessionId]: {
+                ...existing,
+                frameCount: existing.frameCount + 1,
+                latestFrame: frame,
+              },
+            },
+          }
+        }
+        // Non-active session: also poke the archived slice so when the
+        // user switches to it later, the frames are visible inline.
+        const archivedSlice = prev.sessionArchive[sessionId]
+        const nextArchive = archivedSlice
+          ? {
+              ...prev.sessionArchive,
+              [sessionId]: {
+                ...archivedSlice,
+                toolCalls: attachFrameToLatestTool(
+                  archivedSlice.toolCalls,
+                  archivedSlice.toolCallOrder,
+                ),
+              },
+            }
+          : prev.sessionArchive
+        releaseFrame(existing.latestFrame)
+        retainFrame(frame)
+        return {
+          ...prev,
+          sessionArchive: nextArchive,
+          computerSessions: {
+            ...prev.computerSessions,
+            [sessionId]: {
+              ...existing,
+              frameCount: existing.frameCount + 1,
+              latestFrame: frame,
+            },
+          },
+        }
+      }
+      if (ev.type === 'action_planned') {
+        const sessionId = ev.sessionId!
+        const existing = prev.computerSessions[sessionId]
+        if (!existing) return prev
+        return {
+          ...prev,
+          computerSessions: {
+            ...prev.computerSessions,
+            [sessionId]: {
+              ...existing,
+              plannedAction: {
+                action: ev.action,
+                description: ev.description,
+                x: ev.x,
+                y: ev.y,
+                w: ev.w,
+                h: ev.h,
+                plannedAt: Date.now(),
+              },
+            },
+          },
+        }
+      }
+      if (ev.type === 'action_executed') {
+        const sessionId = ev.sessionId!
+        const existing = prev.computerSessions[sessionId]
+        if (!existing) return prev
+        return {
+          ...prev,
+          computerSessions: {
+            ...prev.computerSessions,
+            [sessionId]: {
+              ...existing,
+              plannedAction: undefined,
+              history: [
+                ...existing.history,
+                {
+                  action: ev.action,
+                  success: ev.success,
+                  durationMs: ev.durationMs,
+                  at: Date.now(),
+                },
+              ].slice(-50),
+            },
+          },
+        }
+      }
+      if (ev.type === 'computer_session_end') {
+        const sessionId = ev.sessionId!
+        const existing = prev.computerSessions[sessionId]
+        if (!existing) return prev
+        const next = {
+          ...existing,
+          status:
+            ev.outcome === 'done'
+              ? ('done' as const)
+              : ev.outcome === 'cancelled'
+                ? ('cancelled' as const)
+                : ('failed' as const),
+          summary: ev.summary,
+        }
+        const updatedMap = { ...prev.computerSessions, [sessionId]: next }
+        const stillActive = Object.values(updatedMap).some(
+          (s) => s.status === 'running',
+        )
+        return {
+          ...prev,
+          computerSessions: updatedMap,
+          computerActive: stillActive,
+        }
+      }
+      if (ev.type === 'emergency_stop') {
+        // Flip every running session to cancelled. The bridge will
+        // then emit computer_session_end events as the sub-agents
+        // actually unwind.
+        const nextMap: Record<string, ComputerSessionState> = {}
+        for (const [id, s] of Object.entries(prev.computerSessions)) {
+          nextMap[id] =
+            s.status === 'running' ? { ...s, status: 'cancelled' } : s
+        }
+        return {
+          ...prev,
+          computerSessions: nextMap,
+          computerActive: false,
+          toast: {
+            id: nextId('toast'),
+            message: `Emergency stop (${ev.stopped ?? 0} tasks)`,
+            tone: 'warn',
+            at: Date.now(),
+          },
+        }
+      }
+      if (ev.type === 'permission_request') {
+        return {
+          ...prev,
+          permissionQueue: [
+            {
+              requestId: ev.requestId,
+              sessionId: ev.sessionId,
+              level: ev.level,
+              prompt: ev.prompt,
+              reason: ev.reason,
+              details: ev.details,
+            },
+            ...prev.permissionQueue.filter((p) => p.requestId !== ev.requestId),
+          ],
+        }
+      }
+      if (ev.type === 'subagent_event') {
+        // Ignored at the session level for now; future: render in subagent
+        // detail modal.
+        return prev
+      }
+      if (ev.type === 'message_stop') return prev
+
+      // Session-scoped events: route to the right slice.
+      const sessionId = (ev as any).sessionId as string | undefined
+      const isActive = !sessionId || sessionId === prev.activeSessionId
+
+      if (isActive) {
+        const nextSlice = applyEventToSlice(sliceFromState(prev), ev)
+        // Update the session snapshot's summary numbers when usage lands.
+        let sessions = prev.sessions
+        if (ev.type === 'usage' || ev.type === 'usage_snapshot') {
+          sessions = prev.sessions.map((s) =>
+            s.id === prev.activeSessionId
+              ? {
+                  ...s,
+                  updatedAt: Date.now(),
+                  totalInputTokens: nextSlice.usage.totalInputTokens,
+                  totalOutputTokens: nextSlice.usage.totalOutputTokens,
+                  cacheReadTokens: nextSlice.usage.totalCacheReadTokens,
+                  messageCount: nextSlice.messages.length,
+                }
+              : s,
+          )
+        } else if (ev.type === 'turn_complete') {
+          sessions = prev.sessions.map((s) =>
+            s.id === prev.activeSessionId
+              ? {
+                  ...s,
+                  updatedAt: Date.now(),
+                  messageCount: nextSlice.messages.length,
+                }
+              : s,
+          )
+        }
+        return { ...prev, ...nextSlice, sessions }
+      }
+
+      // Non-active: update or create the archived slice, and also
+      // bump the session row's messageCount / updatedAt so the
+      // sidebar list reflects background sub-agent activity AND so
+      // targeted persistence has accurate metadata for the row.
+      // Without this the swarm panel rows stayed at "empty" and were
+      // dropped from persistence entirely.
+      const existingArchive = prev.sessionArchive[sessionId!] ?? emptySlice(prev.model)
+      const updated = applyEventToSlice(existingArchive, ev)
+      const updatedSessions = prev.sessions.map((s) =>
+        s.id === sessionId
+          ? {
+              ...s,
+              messageCount: updated.messages.length,
+              updatedAt: Date.now(),
+              totalInputTokens: updated.usage.totalInputTokens,
+              totalOutputTokens: updated.usage.totalOutputTokens,
+              cacheReadTokens: updated.usage.totalCacheReadTokens,
+            }
+          : s,
+      )
+      return {
+        ...prev,
+        sessions: updatedSessions,
+        sessionArchive: { ...prev.sessionArchive, [sessionId!]: updated },
+      }
+    })
+  },
+
+  setInputDraft(v) {
+    set({ inputDraft: v })
+  },
+
+  async sendMessage(content) {
+    const state = useHarness.getState()
+    if (!content.trim() && state.pendingAttachments.length === 0) return
+    const id = nextId('msg')
+    const parts: MessagePart[] = []
+    if (content.trim()) parts.push({ type: 'text', text: content })
+    const attachments = state.pendingAttachments
+    set((prev) => ({
+      messages: [
+        ...prev.messages,
+        {
+          id,
+          role: 'user',
+          parts,
+          createdAt: Date.now(),
+          attachments: attachments.length > 0
+            ? attachments.map((a) => ({ id: a.id, type: a.type, previewUrl: a.previewUrl }))
+            : undefined,
+        } as Message,
+      ],
+      inputDraft: '',
+      pendingAttachments: [],
+    }))
+    const api = (window as any).harness
+    const cmd: any = {
+      type: 'send_message',
+      sessionId: state.activeSessionId,
+      content,
+      // Always include the model so the bridge uses the correct
+      // provider — especially important for resumed sessions where
+      // the bridge may have been restarted since the session was last
+      // active and doesn't remember the model choice.
+      model: state.model,
+    }
+    if (attachments.length > 0) {
+      cmd.attachments = attachments.map((a) => ({
+        type: a.type,
+        mimeType: a.mimeType,
+        dataBase64: a.dataBase64,
+      }))
+    }
+    if (api) {
+      await api.sendCommand(cmd)
+    } else {
+      ;(window as any).__harnessDemo?.send(content)
+    }
+  },
+
+  async cancelTurn() {
+    // Mark ALL in-flight state as cancelled so spinners stop, tool
+    // chips show error, sub-agents show cancelled. We do NOT flip
+    // `isStreaming` to false so the cancel button stays visible as
+    // a recovery path. The real `turn_complete` from the bridge
+    // handles that.
+    set((prev) => {
+      // Stop any spinning tool calls
+      const nextToolCalls = { ...prev.toolCalls }
+      for (const [id, tc] of Object.entries(prev.toolCalls)) {
+        if (tc.status === 'running') {
+          nextToolCalls[id] = {
+            ...tc,
+            status: 'error',
+            result: 'Cancelled',
+            isError: true,
+            durationMs: tc.durationMs ?? Math.round(Date.now() - tc.startedAt),
+          }
+        }
+      }
+      // Stop any running sub-agents
+      const nextSubs = { ...prev.subagents }
+      for (const [id, rec] of Object.entries(prev.subagents)) {
+        if (rec.state === 'running' || rec.state === 'pending') {
+          nextSubs[id] = { ...rec, state: 'cancelled' }
+        }
+      }
+      // Stop computer sessions
+      const nextComp: Record<string, ComputerSessionState> = {}
+      for (const [id, s] of Object.entries(prev.computerSessions)) {
+        nextComp[id] = s.status === 'running' ? { ...s, status: 'cancelled' } : s
+      }
+      return {
+        ...prev,
+        toolCalls: nextToolCalls,
+        subagents: nextSubs,
+        computerSessions: nextComp,
+        computerActive: false,
+      }
+    })
+    const api = (window as any).harness
+    if (api)
+      await api.sendCommand({
+        type: 'force_cancel',
+        sessionId: useHarness.getState().activeSessionId,
+      })
+  },
+
+  async setModel(model) {
+    set((prev) => ({
+      model,
+      usage: { ...prev.usage, contextWindow: contextWindowFor(model) },
+      sessions: prev.sessions.map((s) =>
+        s.id === prev.activeSessionId ? { ...s, model } : s,
+      ),
+    }))
+    const api = (window as any).harness
+    if (api)
+      await api.sendCommand({
+        type: 'set_model',
+        sessionId: useHarness.getState().activeSessionId,
+        model,
+      })
+  },
+
+  openSubagent(id) {
+    set({ activeSubagentId: id })
+  },
+
+  toggleCommandPalette(open) {
+    set((prev) => ({ commandPaletteOpen: open ?? !prev.commandPaletteOpen }))
+  },
+
+  toggleModelPicker(open) {
+    set((prev) => ({ modelPickerOpen: open ?? !prev.modelPickerOpen }))
+  },
+
+  setFocusedPanel(p) {
+    set({ focusedPanel: p })
+  },
+
+  async requestDemoBurst() {
+    const api = (window as any).harness
+    if (api) await api.requestDemoBurst()
+  },
+
+  async newSession(model) {
+    const newSessionId = `session-${Date.now().toString(36)}`
+    const state = useHarness.getState()
+    const chosenModel = model || state.model
+
+    set((prev) => {
+      // Archive the current slice unless it's empty (nothing to save).
+      const currentSlice = sliceFromState(prev)
+      const hasContent =
+        currentSlice.messages.length > 0 || currentSlice.isStreaming
+      const archive = hasContent
+        ? { ...prev.sessionArchive, [prev.activeSessionId]: currentSlice }
+        : prev.sessionArchive
+
+      const freshSlice = emptySlice(chosenModel)
+      return {
+        ...prev,
+        ...freshSlice,
+        activeSessionId: newSessionId,
+        sessionArchive: archive,
+        sessions: [
+          {
+            id: newSessionId,
+            title: 'New session',
+            workspace: prev.sessions[0]?.workspace ?? '~/',
+            model: chosenModel,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            messageCount: 0,
+            totalInputTokens: 0,
+            totalOutputTokens: 0,
+            cacheReadTokens: 0,
+          },
+          ...prev.sessions.filter((s) => s.id !== prev.activeSessionId || hasContent),
+        ],
+        pendingAttachments: [],
+        toast: {
+          id: nextId('toast'),
+          message: `New session (${chosenModel.replace('claude-', '')})`,
+          tone: 'info',
+          at: Date.now(),
+        },
+      }
+    })
+
+    const api = (window as any).harness
+    if (api)
+      await api.sendCommand({
+        type: 'new_session',
+        sessionId: newSessionId,
+        model: chosenModel,
+      })
+    else (window as any).__harnessDemo?.stop?.()
+  },
+
+  async switchSession(sessionId) {
+    const prev = useHarness.getState()
+    if (sessionId === prev.activeSessionId) return
+    let archivedSlice = prev.sessionArchive[sessionId]
+    if (!archivedSlice) {
+      // Try to load from disk.
+      const loaded = await prev.loadPersistedSessionIntoArchive(sessionId)
+      if (loaded) {
+        archivedSlice = useHarness.getState().sessionArchive[sessionId]
+      }
+    }
+    if (!archivedSlice) {
+      prev.showToast('Session not found', 'warn')
+      return
+    }
+    set((p) => {
+      // Archive the current slice before swapping in the target.
+      const currentSlice = sliceFromState(p)
+      const newArchive = { ...p.sessionArchive, [p.activeSessionId]: currentSlice }
+      // Remove the target from archive since it's now the active one.
+      delete newArchive[sessionId]
+      return {
+        ...p,
+        ...archivedSlice,
+        activeSessionId: sessionId,
+        sessionArchive: newArchive,
+        pendingAttachments: [],
+      }
+    })
+    // Route through showToast so it gets the standard 2.6s auto-dismiss
+    // timer instead of sticking around until the user clicks it.
+    useHarness.getState().showToast('Switched to session', 'info')
+
+    // Tell the bridge which model this session was using so it creates
+    // (or reconfigures) the _BridgeSession with the right provider.
+    // Without this the bridge defaults to claude-sonnet-4-6 for every
+    // resumed session, even if the user had picked gpt-5.4 before.
+    const restoredModel = useHarness.getState().model
+    const sessionSnapshot = useHarness
+      .getState()
+      .sessions.find((s) => s.id === sessionId)
+    const modelForBridge = sessionSnapshot?.model || restoredModel
+
+    const api = (window as any).harness
+    if (api) {
+      await api.sendCommand({
+        type: 'switch_session',
+        sessionId,
+        model: modelForBridge,
+      })
+    }
+  },
+
+  async attachImage(file) {
+    try {
+      const buffer = await file.arrayBuffer()
+      const bytes = new Uint8Array(buffer)
+      let binary = ''
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+      const dataBase64 = btoa(binary)
+      const mimeType = (file as any).type || 'image/png'
+      const previewUrl = `data:${mimeType};base64,${dataBase64}`
+      set((prev) => ({
+        pendingAttachments: [
+          ...prev.pendingAttachments,
+          {
+            id: nextId('att'),
+            type: 'image',
+            mimeType,
+            dataBase64,
+            previewUrl,
+          },
+        ],
+      }))
+    } catch (err) {
+      useHarness.getState().showToast('Failed to read image', 'warn')
+    }
+  },
+
+  removeAttachment(id) {
+    set((prev) => ({
+      pendingAttachments: prev.pendingAttachments.filter((a) => a.id !== id),
+    }))
+  },
+
+  async requestFileMatches(query) {
+    const api = (window as any).harness
+    if (!api) return
+    await api.sendCommand({
+      type: 'list_files',
+      sessionId: useHarness.getState().activeSessionId,
+      query,
+      limit: 40,
+    })
+  },
+
+  async hydrateFromDisk() {
+    const api = (window as any).harness
+    if (!api?.sessionList) return
+    const res = await api.sessionList()
+    if (!res?.ok || !Array.isArray(res.sessions) || res.sessions.length === 0) return
+    set((prev) => {
+      // Build a unified sessions list (persisted + current), de-duped by id.
+      // Critically: restore parentSessionId / completed / childSessionIds
+      // etc. so the "swarm" panel can reconstruct the subagent tree
+      // after an app restart. Previously we dropped everything except
+      // the basic display metadata, which made the post-restart swarm
+      // panel permanently empty and un-clickable.
+      const persistedSnapshots: SessionSnapshot[] = res.sessions.map((s: any) => ({
+        id: s.id,
+        title: s.title || 'Session',
+        workspace: s.workspace || prev.sessions[0]?.workspace || '~/',
+        model: s.model || 'claude-sonnet-4-6',
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+        messageCount: s.messageCount ?? 0,
+        totalInputTokens: s.totalInputTokens ?? 0,
+        totalOutputTokens: s.totalOutputTokens ?? 0,
+        cacheReadTokens: s.cacheReadTokens ?? 0,
+        parentSessionId: s.parentSessionId,
+        childSessionIds: s.childSessionIds,
+        task: s.task,
+        agentType: s.agentType,
+        completed: s.completed,
+        completedAt: s.completedAt,
+        success: s.success,
+      }))
+      const existingIds = new Set(prev.sessions.map((s) => s.id))
+      const merged: SessionSnapshot[] = [...prev.sessions]
+      for (const s of persistedSnapshots) {
+        if (!existingIds.has(s.id)) merged.push(s)
+      }
+      // Sort by updatedAt desc, but keep the active session at the top.
+      const active = merged.find((s) => s.id === prev.activeSessionId)
+      const rest = merged
+        .filter((s) => s.id !== prev.activeSessionId)
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+      return {
+        ...prev,
+        sessions: active ? [active, ...rest] : rest,
+      }
+    })
+  },
+
+  async persistSession(sessionId) {
+    const state = useHarness.getState()
+    const api = (window as any).harness
+    if (!api?.sessionSave) return
+    const session = state.sessions.find((s) => s.id === sessionId)
+    if (!session) return
+    const slice = sliceForSession(state, sessionId)
+    if (!slice || !hasPersistableSessionState(session, slice)) return
+    const startedAt = performance.now()
+    const res = await api.sessionSave(persistedPayloadFromSession(session, slice))
+    const durationMs = performance.now() - startedAt
+    if (!res?.ok) {
+      throw new Error(res?.error ?? 'session save failed')
+    }
+    if (durationMs > 100) {
+      console.debug(
+        `[persistence] renderer save request for ${sessionId} took ${Math.round(durationMs)}ms`,
+      )
+    }
+  },
+
+  async persistSessionIndex() {
+    const state = useHarness.getState()
+    const api = (window as any).harness
+    if (!api?.sessionIndexSave) return
+    const rows = state.sessions
+      .map((session) => {
+        const slice = sliceForSession(state, session.id)
+        if (!hasPersistableSessionState(session, slice)) return null
+        return persistedMetaFromSession(session, slice)
+      })
+      .filter(Boolean)
+    const startedAt = performance.now()
+    const res = await api.sessionIndexSave(rows)
+    const durationMs = performance.now() - startedAt
+    if (!res?.ok) {
+      throw new Error(res?.error ?? 'session index save failed')
+    }
+    if (durationMs > 100) {
+      console.debug(
+        `[persistence] renderer index save request took ${Math.round(durationMs)}ms`,
+      )
+    }
+  },
+
+  async persistActiveSession() {
+    await useHarness.getState().persistSession(useHarness.getState().activeSessionId)
+  },
+
+  async persistAllSessions() {
+    const state = useHarness.getState()
+    for (const session of state.sessions) {
+      await useHarness.getState().persistSession(session.id)
+    }
+    await useHarness.getState().persistSessionIndex()
+  },
+
+  async loadPersistedSessionIntoArchive(sessionId: string) {
+    const api = (window as any).harness
+    if (!api?.sessionLoad) return false
+    const res = await api.sessionLoad(sessionId)
+    if (!res?.ok || !res.session?.slice) return false
+    const slice = normalizePersistedFrames(res.session.slice as SessionSlice)
+    set((prev) => ({
+      sessionArchive: {
+        ...prev.sessionArchive,
+        [sessionId]: slice,
+      },
+    }))
+    return true
+  },
+
+  toggleSettings(open) {
+    set((prev) => ({ settingsOpen: open ?? !prev.settingsOpen }))
+  },
+
+  async hydrateSettings() {
+    const api = (window as any).harness
+    if (!api?.settingsGet) return
+    const res = await api.settingsGet()
+    if (res?.ok && res.settings) {
+      set({ settings: res.settings as DesktopSettings })
+    }
+  },
+
+  async setPermissionTier(tier) {
+    // Optimistic update in the store so the UI reflects the change
+    // instantly; the IPC handler writes to disk and pushes down to the
+    // bridge. If the write fails we fall back to the old value.
+    const prev = useHarness.getState().settings
+    set({
+      settings: {
+        ...prev,
+        permissions: { ...prev.permissions, autoApprove: tier },
+      },
+    })
+    const api = (window as any).harness
+    if (api?.settingsUpdate) {
+      const res = await api.settingsUpdate({
+        permissions: { autoApprove: tier },
+      })
+      if (!res?.ok) {
+        set({ settings: prev })
+        useHarness.getState().showToast('Failed to save settings', 'warn')
+      } else if (res.settings) {
+        set({ settings: res.settings as DesktopSettings })
+      }
+    }
+  },
+
+  async escalateSessionPolicy(tier) {
+    // Scoped to just the current session — does NOT touch global settings.
+    const api = (window as any).harness
+    if (!api) return
+    await api.sendCommand({
+      type: 'set_permission_policy',
+      sessionId: useHarness.getState().activeSessionId,
+      autoApprove: tier,
+    })
+  },
+
+  async switchToParent() {
+    const state = useHarness.getState()
+    const active = state.sessions.find((s) => s.id === state.activeSessionId)
+    if (!active?.parentSessionId) return
+    await state.switchSession(active.parentSessionId)
+  },
+
+  renameSession(sessionId, title) {
+    set((prev) => ({
+      sessions: prev.sessions.map((s) =>
+        s.id === sessionId ? { ...s, title } : s,
+      ),
+    }))
+    // Persist immediately so the new title survives app restart.
+    setTimeout(() => {
+      const state = useHarness.getState()
+      state.persistSession(sessionId).catch(() => {})
+      state.persistSessionIndex().catch(() => {})
+    }, 100)
+  },
+
+  async deleteSession(sessionId) {
+    const state = useHarness.getState()
+    // Don't allow deleting the currently active session — switch first.
+    if (sessionId === state.activeSessionId) {
+      state.showToast("Can't delete the active session", 'warn')
+      return
+    }
+    // Remove from store
+    set((prev) => {
+      const nextArchive = { ...prev.sessionArchive }
+      releaseSliceFrames(nextArchive[sessionId])
+      delete nextArchive[sessionId]
+      return {
+        ...prev,
+        sessions: prev.sessions.filter((s) => s.id !== sessionId),
+        sessionArchive: nextArchive,
+      }
+    })
+    // Remove from disk
+    const api = (window as any).harness
+    if (api?.sessionDelete) {
+      await api.sessionDelete(sessionId)
+    }
+    await useHarness.getState().persistSessionIndex().catch(() => {})
+    state.showToast('Session deleted', 'info')
+  },
+
+  async downloadSession(sessionId) {
+    const state = useHarness.getState()
+    // Build the export payload: session snapshot + full slice + metadata
+    const snapshot = state.sessions.find((s) => s.id === sessionId)
+    if (!snapshot) {
+      state.showToast('Session not found', 'warn')
+      return
+    }
+    // Get the slice — either from the active state or the archive
+    let slice: SessionSlice | undefined
+    if (sessionId === state.activeSessionId) {
+      slice = sliceFromState(state)
+    } else {
+      slice = state.sessionArchive[sessionId]
+      if (!slice) {
+        // Try loading from disk
+        const loaded = await state.loadPersistedSessionIntoArchive(sessionId)
+        if (loaded) {
+          slice = useHarness.getState().sessionArchive[sessionId]
+        }
+      }
+    }
+    if (!slice) {
+      state.showToast('Session data not found', 'warn')
+      return
+    }
+
+    // Build a rich export with all the data needed for training
+    // Build per-tool success/failure stats for training data quality
+    const toolStats: Record<string, { count: number; success: number; failure: number }> = {}
+    for (const tc of Object.values(slice.toolCalls)) {
+      if (!toolStats[tc.name]) toolStats[tc.name] = { count: 0, success: 0, failure: 0 }
+      toolStats[tc.name].count += 1
+      if (tc.isError) toolStats[tc.name].failure += 1
+      else if (tc.status === 'success') toolStats[tc.name].success += 1
+    }
+
+    // Extract the initial user message as the "task description"
+    // (used for RFT pair generation and RL reward assignment)
+    const firstUserMsg = slice.messages.find((m) => m.role === 'user')
+    const taskDescription = firstUserMsg?.parts
+      .filter((p) => p.type === 'text')
+      .map((p) => p.text)
+      .join('\n') ?? ''
+
+    // Extract thinking traces from message parts
+    const thinkingTraces = slice.messages
+      .filter((m) => m.role === 'assistant')
+      .flatMap((m) =>
+        m.parts
+          .filter((p) => p.type === 'thinking' && p.text)
+          .map((p) => ({ messageId: m.id, thinking: p.text })),
+      )
+
+    const exportData = {
+      version: 3,
+      exportedAt: new Date().toISOString(),
+      app: 'freyja',
+      // ─── System prompt (critical for SFT — the model needs to
+      //     know what instructions it was following) ─────────────
+      systemPrompt: slice.systemPrompt ?? null,
+      // ─── Session metadata ────────────────────────────────────
+      session: {
+        id: snapshot.id,
+        title: snapshot.title,
+        model: snapshot.model,
+        workspace: snapshot.workspace,
+        createdAt: snapshot.createdAt,
+        updatedAt: snapshot.updatedAt,
+        parentSessionId: snapshot.parentSessionId,
+        childSessionIds: snapshot.childSessionIds,
+        messageCount: snapshot.messageCount,
+        totalInputTokens: snapshot.totalInputTokens,
+        totalOutputTokens: snapshot.totalOutputTokens,
+        cacheReadTokens: snapshot.cacheReadTokens,
+      },
+      // ─── Training-relevant fields ────────────────────────────
+      // Initial task/prompt for RFT pairing and reward assignment
+      taskDescription,
+      // Per-tool success/failure for quality filtering (Hermes pattern)
+      toolStats,
+      // Thinking traces (ATLaS: training on reasoning = 3x better)
+      thinkingTraces,
+      // ─── Full conversation ───────────────────────────────────
+      messages: slice.messages.map((m) => ({
+        id: m.id,
+        role: m.role,
+        parts: m.parts,
+        createdAt: m.createdAt,
+        inputTokens: m.inputTokens,
+        outputTokens: m.outputTokens,
+        attachments: m.attachments,
+      })),
+      // ─── Tool calls (trajectory actions) ─────────────────────
+      toolCalls: Object.values(slice.toolCalls).map((tc) => ({
+        id: tc.id,
+        name: tc.name,
+        arguments: tc.arguments,
+        status: tc.status,
+        result: tc.result,
+        isError: tc.isError,
+        durationMs: tc.durationMs,
+        startedAt: tc.startedAt,
+      })),
+      toolCallOrder: slice.toolCallOrder,
+      // ─── Sub-agents (multi-agent trajectories) ───────────────
+      subagents: Object.values(slice.subagents).map((sa) => ({
+        id: sa.id,
+        label: sa.label,
+        mode: sa.mode,
+        state: sa.state,
+        task: sa.task,
+        agentType: sa.agentType,
+        artifactPath: sa.artifactPath,
+        startedAt: sa.startedAt,
+        elapsedMs: sa.elapsedMs,
+        tokensIn: sa.tokensIn,
+        tokensOut: sa.tokensOut,
+        toolsCalled: sa.toolsCalled,
+        result: sa.result,
+      })),
+      // ─── Aggregated metrics ──────────────────────────────────
+      usage: slice.usage,
+      systemEvents: slice.systemEvents,
+    }
+
+    // Create a downloadable file
+    const blob = new Blob(
+      [JSON.stringify(exportData, null, 2)],
+      { type: 'application/json' },
+    )
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    const safeName = (snapshot.title || 'session')
+      .replace(/[^a-zA-Z0-9-_ ]/g, '')
+      .replace(/\s+/g, '-')
+      .slice(0, 50)
+    a.href = url
+    a.download = `freyja-${safeName}-${sessionId.slice(-8)}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    state.showToast('Session downloaded', 'ok')
+  },
+
+  async setComputerEnabled(enabled) {
+    // Optimistic: flip the toggle in the store, persist via settings
+    // IPC, and let main.ts forward the flag down to the bridge.
+    const prevSettings = useHarness.getState().settings
+    const nextComputer = {
+      ...prevSettings.computer,
+      enabled,
+      // First time they turn it on, queue the wizard.
+      wizardState:
+        enabled && prevSettings.computer.wizardState === 'never'
+          ? ('never' as const)
+          : prevSettings.computer.wizardState,
+    }
+    set({
+      settings: { ...prevSettings, computer: nextComputer },
+      computerWizardOpen: enabled && prevSettings.computer.wizardState === 'never',
+    })
+    const api = (window as any).harness
+    if (api?.settingsUpdate) {
+      const res = await api.settingsUpdate({
+        computer: { enabled, wizardState: nextComputer.wizardState },
+      })
+      if (!res?.ok) {
+        // Roll back on failure.
+        set({ settings: prevSettings, computerWizardOpen: false })
+        useHarness.getState().showToast('Failed to toggle computer control', 'warn')
+      }
+    }
+  },
+
+  openComputerWizard(open) {
+    set((prev) => ({ computerWizardOpen: open ?? !prev.computerWizardOpen }))
+  },
+
+  async emergencyStopComputer(reason) {
+    const api = (window as any).harness
+    if (!api) return
+    // Optimistic: mark sessions cancelled immediately so the UI
+    // reflects the stop even before the bridge acks.
+    set((prev) => {
+      const nextMap: Record<string, ComputerSessionState> = {}
+      for (const [id, s] of Object.entries(prev.computerSessions)) {
+        nextMap[id] =
+          s.status === 'running' ? { ...s, status: 'cancelled' } : s
+      }
+      return {
+        ...prev,
+        computerSessions: nextMap,
+        computerActive: false,
+        toast: {
+          id: nextId('toast'),
+          message: 'Emergency stop fired',
+          tone: 'warn',
+          at: Date.now(),
+        },
+      }
+    })
+    await api.sendCommand({
+      type: 'computer.emergency_stop',
+      reason: reason || 'user',
+    })
+  },
+
+  async answerPermission(requestId, approved) {
+    const state = useHarness.getState()
+    const req = state.permissionQueue.find((p) => p.requestId === requestId)
+    set((prev) => ({
+      permissionQueue: prev.permissionQueue.filter((p) => p.requestId !== requestId),
+    }))
+    const api = (window as any).harness
+    if (api) {
+      await api.sendCommand({
+        type: 'permission_response',
+        sessionId: req?.sessionId ?? state.activeSessionId,
+        requestId,
+        approved,
+      })
+    }
+  },
+
+  async listTools() {
+    const api = (window as any).harness
+    if (api) await api.sendCommand({ type: 'list_tools' })
+  },
+
+  toggleDebug(open) {
+    set((prev) => ({ debugOpen: open ?? !prev.debugOpen }))
+  },
+
+  toggleSidebar(collapsed) {
+    set((prev) => {
+      const next = collapsed ?? !prev.sidebarCollapsed
+      try {
+        localStorage.setItem('ah.sidebarCollapsed', next ? '1' : '0')
+      } catch {}
+      return { sidebarCollapsed: next }
+    })
+  },
+
+  toggleActivityPanel(collapsed) {
+    set((prev) => {
+      const next = collapsed ?? !prev.activityPanelCollapsed
+      try {
+        localStorage.setItem('ah.activityPanelCollapsed', next ? '1' : '0')
+      } catch {}
+      return { activityPanelCollapsed: next }
+    })
+  },
+
+  setActivityPanelWidth(width) {
+    // Clamp: the activity panel has to stay wide enough for the
+    // context meter + tool-call rows to render without wrapping
+    // everything into useless 1-char columns, and narrow enough that
+    // the conversation area still has room on a 13" MBP.
+    const clamped = Math.max(260, Math.min(900, Math.round(width)))
+    set({ activityPanelWidth: clamped })
+    try {
+      localStorage.setItem('ah.activityPanelWidth', String(clamped))
+    } catch {}
+  },
+
+  focusToolCall(id) {
+    set((prev) => ({
+      focusedToolCallId: id,
+      focusedToolCallSerial: prev.focusedToolCallSerial + 1,
+      focusedPanel: 'conversation',
+    }))
+  },
+
+  toggleFocusMode(focus) {
+    // Focus mode = both side panels hidden. If neither is open we
+    // treat it as "currently in focus mode" and the toggle restores
+    // both. Otherwise collapse both.
+    set((prev) => {
+      const currentlyFocused =
+        prev.sidebarCollapsed && prev.activityPanelCollapsed
+      const collapse = focus ?? !currentlyFocused
+      try {
+        localStorage.setItem('ah.sidebarCollapsed', collapse ? '1' : '0')
+        localStorage.setItem(
+          'ah.activityPanelCollapsed',
+          collapse ? '1' : '0',
+        )
+      } catch {}
+      return {
+        sidebarCollapsed: collapse,
+        activityPanelCollapsed: collapse,
+      }
+    })
+  },
+
+  showToast(message, tone = 'info') {
+    const id = nextId('toast')
+    set({ toast: { id, message, tone, at: Date.now() } })
+    setTimeout(() => {
+      if (useHarness.getState().toast?.id === id) {
+        useHarness.setState({ toast: null })
+      }
+    }, 2600)
+  },
+
+  clearToast() {
+    set({ toast: null })
+  },
+
+  runSlashCommand(name, args) {
+    const state = useHarness.getState()
+    const show = (m: string, t: 'info' | 'ok' | 'warn' | 'danger' = 'info') =>
+      state.showToast(m, t)
+
+    switch (name) {
+      case '/help':
+      case '/docs':
+        state.toggleCommandPalette(true)
+        return true
+      case '/clear':
+      case '/new':
+      case '/reset':
+        state.newSession()
+        return true
+      case '/usage': {
+        const u = state.usage
+        const msg = `ctx ${u.totalInputTokens} in · ${u.totalOutputTokens} out · ${u.totalCacheReadTokens} cached · $${u.totalCost.toFixed(4)}`
+        show(msg)
+        return true
+      }
+      case '/model': {
+        const next = (args ?? '').trim()
+        if (!next) {
+          show(`current model: ${state.model}`, 'info')
+        } else {
+          state.setModel(next)
+          show(`model → ${next}`, 'ok')
+        }
+        return true
+      }
+      case '/session':
+      case '/sessions':
+        state.setFocusedPanel('sidebar')
+        show(`${state.sessions.length} session(s)`, 'info')
+        return true
+      case '/skills':
+        state.setFocusedPanel('sidebar')
+        show(`${Object.keys(state.skills).length} skill(s) loaded`, 'info')
+        return true
+      case '/subagents': {
+        const first = Object.values(state.subagents)[0]
+        if (first) state.openSubagent(first.id)
+        else show('no sub-agents yet', 'info')
+        return true
+      }
+      case '/tools':
+        state.listTools()
+        show('loading tool catalog…', 'info')
+        return true
+      case '/compact':
+        show('compaction is handled by the runner automatically', 'info')
+        return true
+      case '/memory':
+        state.setFocusedPanel('sidebar')
+        show(`${Object.keys(state.memories).length} memory item(s) loaded`, 'info')
+        return true
+      case '/export': {
+        // Persist whatever's in the current store to disk first so the
+        // exported file reflects the live session (the bridge also
+        // autosaves periodically but we want a fresh snapshot). Then
+        // ask the main process to show a save dialog and write the
+        // JSON + a companion .trace.txt that's easy to grep/read.
+        const api = (window as any).harness
+        if (!api?.sessionExport) {
+          show('export unavailable in this build', 'warn')
+          return true
+        }
+        ;(async () => {
+          try {
+            await state.persistActiveSession()
+          } catch {}
+          const sid = useHarness.getState().activeSessionId
+          const res = await api.sessionExport(sid)
+          if (res?.cancelled) return
+          if (res?.ok && res.jsonPath) {
+            show(`exported → ${res.jsonPath}`, 'info')
+          } else {
+            show(`export failed: ${res?.error ?? 'unknown'}`, 'warn')
+          }
+        })()
+        return true
+      }
+      case '/debug':
+        state.toggleDebug()
+        return true
+      case '/settings':
+      case '/permissions':
+        state.toggleSettings(true)
+        return true
+      case '/burst': {
+        const api = (window as any).harness
+        if (api) {
+          state.requestDemoBurst()
+        } else {
+          ;(window as any).__harnessDemo?.burst()
+        }
+        return true
+      }
+      case '/diagnose': {
+        const api = (window as any).harness
+        if (!api) {
+          show('no bridge', 'warn')
+          return true
+        }
+        api.sendCommand({ type: 'diagnose' })
+        show(
+          'diagnose requested -- check ~/.freyja/bridge-diagnose.txt',
+          'info',
+        )
+        return true
+      }
+      case '/restart-bridge':
+      case '/restart': {
+        // Kill + respawn the Python bridge subprocess. Use this
+        // after editing anything under bridge/ or engine/ --
+        // Python doesn't hot-reload, so the running process
+        // otherwise keeps the old code in memory. The UI and
+        // on-disk session state are preserved; only the in-memory
+        // bridge state resets.
+        const api = (window as any).harness
+        if (!api?.restartBridge) {
+          show('restart not available in this build', 'warn')
+          return true
+        }
+        show('restarting bridge…', 'info')
+        ;(async () => {
+          const res = await api.restartBridge()
+          if (res?.ok) {
+            show('bridge restarted', 'ok')
+          } else {
+            show(`restart failed: ${res?.error ?? 'unknown'}`, 'warn')
+          }
+        })()
+        return true
+      }
+      case '/computer':
+      case '/screen': {
+        const goal = (args ?? '').trim()
+        if (!goal) {
+          show('usage: /computer <goal>', 'info')
+          return true
+        }
+        if (!state.settings.computer.enabled) {
+          show('computer control is disabled — enable it in Settings', 'warn')
+          state.toggleSettings(true)
+          return true
+        }
+        // Synthesize a user message asking the parent agent to run
+        // computer_use with the provided goal. This is intentionally
+        // a normal chat turn (not a direct tool injection) so the
+        // parent transcript tells the full story of what happened.
+        state.sendMessage(
+          `Use the \`computer_use\` tool with goal: "${goal}". Watch mode is on.`,
+        )
+        show('computer sub-agent queued', 'ok')
+        return true
+      }
+      default:
+        return false
+    }
+  },
+}))

@@ -1,0 +1,659 @@
+"""
+Model provider abstraction and authentication management.
+
+Provides:
+- ModelProvider protocol for LLM provider implementations
+- AuthProfile and AuthProfileManager for credential rotation
+- ModelFallbackChain for multi-model failover
+
+Key behaviors from OpenClaw:
+1. Profile lock: user-specified profiles are never rotated away from
+2. Cooldown skip: failing profiles are temporarily excluded
+3. Timeout exception: timeouts don't trigger cooldown (run.ts:990)
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from abc import abstractmethod
+from dataclasses import dataclass, field
+from typing import Any, TYPE_CHECKING, Literal, Protocol, runtime_checkable
+
+from engine.types import (
+    APIUsage,
+    FailoverReason,
+    Message,
+    ThinkingBlock,
+    ThinkingConfig,
+    RedactedThinkingBlock,
+)
+
+if TYPE_CHECKING:
+    from engine.tools import ToolDefinition
+
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Provider Response
+# ============================================================================
+
+@dataclass
+class ProviderResponse:
+    """Response from a model provider completion call."""
+
+    content: str
+    """The text content of the response."""
+
+    tool_calls: list["ToolCallResponse"] | None = None
+    """Tool calls requested by the model, if any."""
+
+    usage: APIUsage = field(default_factory=APIUsage)
+    """Token usage for this call."""
+
+    stop_reason: str | None = None
+    """Why the model stopped generating (e.g., 'end_turn', 'tool_use')."""
+
+    model: str | None = None
+    """The model that generated this response."""
+
+    thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None
+    """Extended thinking blocks from the response, if any."""
+
+
+@dataclass
+class ToolCallResponse:
+    """A tool call from the model."""
+
+    id: str
+    name: str
+    arguments: dict
+
+
+@dataclass
+class StructuredResponse:
+    """
+    Response from a structured-output completion call.
+
+    Returned by ModelProvider.complete_structured(). The `data` field holds
+    the parsed JSON conforming to the requested schema. On parse failure or
+    when the model didn't produce structured output, `data` is an empty dict
+    and `raw_text` holds whatever the model actually returned for debugging.
+    """
+
+    data: dict
+    """Parsed structured output. Empty dict if generation/parsing failed."""
+
+    usage: APIUsage = field(default_factory=APIUsage)
+    """Token usage for this call."""
+
+    stop_reason: str | None = None
+    """Why the model stopped generating."""
+
+    model: str | None = None
+    """The model that generated this response."""
+
+    raw_text: str | None = None
+    """Raw text output when parsing failed. None on success."""
+
+    @property
+    def success(self) -> bool:
+        """True if structured data was returned."""
+        return bool(self.data)
+
+
+# ============================================================================
+# Provider Errors
+# ============================================================================
+
+class ProviderError(Exception):
+    """Base exception for provider errors."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        code: str | None = None,
+        retryable: bool = False,
+    ):
+        super().__init__(message)
+        self.status = status
+        self.code = code
+        self.retryable = retryable
+
+
+class AuthenticationError(ProviderError):
+    """Authentication or authorization failure."""
+
+    def __init__(self, message: str, **kwargs):
+        super().__init__(message, status=401, **kwargs)
+
+
+class RateLimitError(ProviderError):
+    """Rate limit or quota exceeded."""
+
+    def __init__(self, message: str, retry_after: float | None = None, **kwargs):
+        super().__init__(message, status=429, retryable=True, **kwargs)
+        self.retry_after = retry_after
+
+
+class BillingError(ProviderError):
+    """Billing or payment required."""
+
+    def __init__(self, message: str, **kwargs):
+        super().__init__(message, status=402, **kwargs)
+
+
+class ContextOverflowError(ProviderError):
+    """Context window exceeded."""
+
+    def __init__(self, message: str, **kwargs):
+        super().__init__(message, status=400, retryable=True, **kwargs)
+
+
+class ModelNotFoundError(ProviderError):
+    """Model does not exist."""
+
+    def __init__(self, message: str, **kwargs):
+        super().__init__(message, status=404, **kwargs)
+
+
+# ============================================================================
+# Model Provider Protocol
+# ============================================================================
+
+@runtime_checkable
+class ModelProvider(Protocol):
+    """Abstract interface for LLM providers."""
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Provider name (e.g., 'anthropic', 'openai')."""
+        ...
+
+    @property
+    @abstractmethod
+    def model_id(self) -> str:
+        """Model identifier (e.g., 'claude-sonnet-4-6')."""
+        ...
+
+    @property
+    @abstractmethod
+    def context_window(self) -> int:
+        """Maximum context window size in tokens."""
+        ...
+
+    @abstractmethod
+    def complete(
+        self,
+        messages: list[Message],
+        *,
+        tools: list["ToolDefinition"] | None = None,
+        system_prompt: str | None = None,
+        max_tokens: int | None = None,
+    ) -> ProviderResponse:
+        """
+        Send a completion request to the model.
+
+        Args:
+            messages: Conversation history
+            tools: Available tool definitions
+            system_prompt: System prompt to prepend
+            max_tokens: Maximum tokens to generate
+
+        Returns:
+            ProviderResponse with content and usage
+
+        Raises:
+            ProviderError: On API errors
+        """
+        ...
+
+    async def complete_structured(
+        self,
+        messages: list[Message],
+        *,
+        schema: dict,
+        schema_name: str = "structured_output",
+        schema_description: str | None = None,
+        system_prompt: str | None = None,
+        max_tokens: int | None = None,
+        strict: bool = True,
+        thinking: Any = None,
+    ) -> StructuredResponse:
+        """Generate a structured JSON response matching the given schema."""
+        ...
+
+
+# ============================================================================
+# Authentication Profile
+# ============================================================================
+
+@dataclass
+class AuthProfile:
+    """An authentication profile for a model provider."""
+
+    id: str
+    api_key: str
+    source: Literal["config", "user"] = "config"
+    cooldown_until: float | None = None
+    last_used: float | None = None
+    failure_count: int = 0
+
+    def is_in_cooldown(self, now: float | None = None) -> bool:
+        """Check if this profile is currently in cooldown."""
+        if self.cooldown_until is None:
+            return False
+        return (now or time.time()) < self.cooldown_until
+
+    def mark_cooldown(self, duration_seconds: float) -> None:
+        """Put this profile into cooldown."""
+        self.cooldown_until = time.time() + duration_seconds
+        self.failure_count += 1
+
+    def clear_cooldown(self) -> None:
+        """Clear cooldown and reset failure count."""
+        self.cooldown_until = None
+        self.failure_count = 0
+
+    def mark_used(self) -> None:
+        """Mark this profile as successfully used."""
+        self.last_used = time.time()
+        self.clear_cooldown()
+
+
+# ============================================================================
+# Auth Profile Manager
+# ============================================================================
+
+class AuthProfileManager:
+    """Manages rotation through authentication profiles."""
+
+    def __init__(
+        self,
+        profiles: list[AuthProfile],
+        *,
+        locked_profile_id: str | None = None,
+        default_cooldown_seconds: float = 60.0,
+    ):
+        if not profiles:
+            raise ValueError("At least one authentication profile is required")
+
+        self._profiles = list(profiles)
+        self._current_index = 0
+        self._locked_profile_id = locked_profile_id
+        self._default_cooldown = default_cooldown_seconds
+
+    @property
+    def current(self) -> AuthProfile:
+        """Get the current active profile."""
+        return self._profiles[self._current_index]
+
+    @property
+    def profiles(self) -> list[AuthProfile]:
+        """Get all profiles (read-only view)."""
+        return list(self._profiles)
+
+    @property
+    def is_locked(self) -> bool:
+        """Check if profile rotation is locked."""
+        return self._locked_profile_id is not None
+
+    def advance(self) -> bool:
+        """Rotate to next non-cooldown profile."""
+        if self._locked_profile_id:
+            logger.debug(f"Profile locked to {self._locked_profile_id}, not rotating")
+            return False
+
+        now = time.time()
+        start_index = self._current_index
+
+        for _ in range(len(self._profiles)):
+            next_index = (self._current_index + 1) % len(self._profiles)
+
+            if next_index == start_index:
+                logger.warning("All auth profiles exhausted")
+                return False
+
+            candidate = self._profiles[next_index]
+            self._current_index = next_index
+
+            if candidate.is_in_cooldown(now):
+                logger.debug(f"Skipping profile {candidate.id} (in cooldown)")
+                continue
+
+            logger.info(f"Rotated to auth profile {candidate.id}")
+            return True
+
+        return False
+
+    def mark_cooldown(
+        self,
+        profile_id: str,
+        reason: FailoverReason,
+        duration_seconds: float | None = None,
+    ) -> None:
+        """Mark a profile as in cooldown."""
+        if reason == "timeout":
+            logger.debug(f"Not marking cooldown for {profile_id} (timeout)")
+            return
+
+        duration = duration_seconds or self._default_cooldown
+
+        for profile in self._profiles:
+            if profile.id == profile_id:
+                profile.mark_cooldown(duration)
+                logger.info(
+                    f"Profile {profile_id} in cooldown for {duration}s "
+                    f"(reason: {reason}, failures: {profile.failure_count})"
+                )
+                break
+
+    def mark_success(self, profile_id: str) -> None:
+        """Mark a profile as successfully used."""
+        for profile in self._profiles:
+            if profile.id == profile_id:
+                profile.mark_used()
+                logger.debug(f"Profile {profile_id} marked successful")
+                break
+
+    def get_profile(self, profile_id: str) -> AuthProfile | None:
+        """Get a profile by ID."""
+        for profile in self._profiles:
+            if profile.id == profile_id:
+                return profile
+        return None
+
+    def available_count(self) -> int:
+        """Count profiles not in cooldown."""
+        now = time.time()
+        return sum(1 for p in self._profiles if not p.is_in_cooldown(now))
+
+
+# ============================================================================
+# Model Fallback Chain
+# ============================================================================
+
+class ModelFallbackChain:
+    """Manages fallback between model providers."""
+
+    def __init__(
+        self,
+        providers: list[ModelProvider],
+        *,
+        default_cooldown_seconds: float = 60.0,
+        probe_interval_seconds: float = 30.0,
+    ):
+        if not providers:
+            raise ValueError("At least one provider is required")
+
+        self._providers = list(providers)
+        self._current_index = 0
+        self._default_cooldown = default_cooldown_seconds
+        self._probe_interval = probe_interval_seconds
+        self._cooldowns: dict[str, float] = {}
+        self._last_probe: dict[str, float] = {}
+
+    @property
+    def current(self) -> ModelProvider:
+        """Get the current active provider."""
+        return self._providers[self._current_index]
+
+    @property
+    def primary(self) -> ModelProvider:
+        """Get the primary (first) provider."""
+        return self._providers[0]
+
+    @property
+    def is_on_fallback(self) -> bool:
+        """Check if currently using a fallback provider."""
+        return self._current_index > 0
+
+    def advance(self) -> bool:
+        """Move to next provider in the chain."""
+        now = time.time()
+
+        for _ in range(len(self._providers) - 1):
+            next_index = self._current_index + 1
+            if next_index >= len(self._providers):
+                logger.warning("All fallback providers exhausted")
+                return False
+
+            provider = self._providers[next_index]
+            cooldown_until = self._cooldowns.get(provider.name, 0)
+
+            if now < cooldown_until:
+                logger.debug(f"Skipping provider {provider.name} (in cooldown)")
+                self._current_index = next_index
+                continue
+
+            self._current_index = next_index
+            logger.info(f"Fell back to provider {provider.name}/{provider.model_id}")
+            return True
+
+        return False
+
+    def mark_cooldown(
+        self,
+        provider_name: str,
+        duration_seconds: float | None = None,
+    ) -> None:
+        """Put a provider into cooldown."""
+        duration = duration_seconds or self._default_cooldown
+        self._cooldowns[provider_name] = time.time() + duration
+        logger.info(f"Provider {provider_name} in cooldown for {duration}s")
+
+    def should_probe_primary(self) -> bool:
+        """Check if we should probe the primary provider."""
+        if not self.is_on_fallback:
+            return False
+
+        primary_name = self.primary.name
+        last_probe = self._last_probe.get(primary_name, 0)
+        now = time.time()
+
+        if now - last_probe >= self._probe_interval:
+            self._last_probe[primary_name] = now
+            return True
+
+        return False
+
+    def reset_to_primary(self) -> None:
+        """Reset to primary provider (after successful probe)."""
+        if self._current_index != 0:
+            logger.info(f"Resetting to primary provider {self.primary.name}")
+            self._current_index = 0
+            self._cooldowns.pop(self.primary.name, None)
+
+    def clear_cooldowns(self) -> None:
+        """Clear all cooldowns."""
+        self._cooldowns.clear()
+        self._current_index = 0
+
+
+# ============================================================================
+# Model Registry & Provider Factory
+# ============================================================================
+
+MODEL_REGISTRY: dict[str, dict[str, object]] = {
+    # Anthropic models
+    "claude-opus-4-7": {"provider": "anthropic", "context_window": 1_000_000, "thinking": False},
+    "claude-sonnet-4-6": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
+    "claude-opus-4-6": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
+    "claude-haiku-4-5": {"provider": "anthropic", "context_window": 200_000, "thinking": True},
+    "claude-sonnet-4-5": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
+    "claude-opus-4-5": {"provider": "anthropic", "context_window": 200_000, "thinking": True},
+    # OpenAI models (Responses API)
+    "gpt-5.5": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
+    "gpt-5.4": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
+    "gpt-5.4-pro": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
+    "gpt-5.4-mini": {"provider": "openai", "context_window": 400_000, "thinking": True},
+    "gpt-5.4-nano": {"provider": "openai", "context_window": 400_000, "thinking": True},
+    "gpt-5.3-codex": {"provider": "openai", "context_window": 400_000, "thinking": True},
+    # Cerebras models
+    "zai-glm-4.7": {"provider": "cerebras", "context_window": 131_072, "thinking": False},
+    # Fireworks models
+    "kimi-k2.5": {"provider": "fireworks", "context_window": 262_144, "thinking": False},
+    "glm5": {"provider": "fireworks", "context_window": 202_800, "thinking": False},
+    "minimax-m2.5": {"provider": "fireworks", "context_window": 196_608, "thinking": False},
+}
+
+MODEL_SPEED_TIERS = {
+    "fast": "claude-haiku-4-5",
+    "medium": "claude-sonnet-4-6",
+    "slow": "claude-opus-4-7",   # latest Opus; 4-6 stays in registry as fallback target
+    "openai": "gpt-5.5",         # OpenAI flagship
+    "codex": "gpt-5.3-codex",    # agentic coding specialist
+    "cerebras": "zai-glm-4.7",
+    "kimi": "kimi-k2.5",
+    "glm5": "glm5",
+    "minimax": "minimax-m2.5",
+}
+
+ALL_MODEL_CHOICES = list(MODEL_REGISTRY.keys())
+
+FALLBACK_CHAINS: dict[str, list[str]] = {
+    "claude-opus-4-7": ["claude-opus-4-6", "kimi-k2.5"],
+    "claude-sonnet-4-6": ["kimi-k2.5"],
+    "claude-opus-4-6": ["kimi-k2.5"],
+    "claude-haiku-4-5": ["kimi-k2.5"],
+    "zai-glm-4.7": ["kimi-k2.5"],
+    "gpt-5.5": ["gpt-5.4", "gpt-5.4-mini"],
+    "gpt-5.4": ["gpt-5.4-mini"],
+    "gpt-5.4-pro": ["gpt-5.4", "gpt-5.4-mini"],
+    "gpt-5.4-mini": ["gpt-5.4-nano"],
+    "gpt-5.4-nano": ["gpt-5.4-mini"],
+    "gpt-5.3-codex": ["gpt-5.4-mini"],
+    "kimi-k2.5": ["glm5", "minimax-m2.5"],
+    "glm5": ["kimi-k2.5", "minimax-m2.5"],
+    "minimax-m2.5": ["kimi-k2.5", "glm5"],
+}
+
+
+def get_context_window(model: str) -> int:
+    """Get context window size for a model."""
+    entry = MODEL_REGISTRY.get(model)
+    if entry:
+        return int(entry["context_window"])  # type: ignore[arg-type]
+    return 200_000
+
+
+def get_provider_name(model: str) -> str:
+    """Infer provider from model ID."""
+    entry = MODEL_REGISTRY.get(model)
+    if entry:
+        return str(entry["provider"])
+    if model.startswith("gpt-"):
+        return "openai"
+    if model.startswith("zai-") or model.startswith("cerebras-"):
+        return "cerebras"
+    if model.startswith("accounts/fireworks/"):
+        return "fireworks"
+    return "anthropic"
+
+
+def supports_thinking(model: str) -> bool:
+    """Check if a model supports extended thinking."""
+    entry = MODEL_REGISTRY.get(model)
+    if entry:
+        return bool(entry["thinking"])
+    return False
+
+
+def _create_single_provider(
+    model: str,
+    *,
+    max_tokens: int = 50_000,
+    thinking_config: ThinkingConfig | None = None,
+) -> "ModelProvider":
+    """Create a single provider instance for a model."""
+    provider_name = get_provider_name(model)
+    thinking = thinking_config or ThinkingConfig(enabled=False)
+
+    if provider_name == "openai":
+        from engine.openai_provider import OpenAIConfig, OpenAIProvider
+
+        return OpenAIProvider(OpenAIConfig(
+            model=model,
+            max_tokens=max_tokens,
+            reasoning=thinking,
+        ))
+    elif provider_name == "cerebras":
+        from engine.cerebras_provider import CerebrasConfig, CerebrasProvider
+
+        return CerebrasProvider(CerebrasConfig(
+            model=model,
+            max_tokens=max_tokens,
+        ))
+    elif provider_name == "fireworks":
+        from engine.fireworks_provider import FireworksConfig, FireworksProvider
+
+        if thinking.enabled:
+            logger.warning("Fireworks doesn't support thinking -- disabling.")
+            thinking = ThinkingConfig(enabled=False)
+
+        return FireworksProvider(FireworksConfig(
+            model=model,
+            max_tokens=max_tokens,
+        ))
+    else:
+        from engine.anthropic_provider import AnthropicConfig, AnthropicProvider
+
+        return AnthropicProvider(AnthropicConfig(
+            model=model,
+            max_tokens=max_tokens,
+            thinking=thinking,
+        ))
+
+
+def create_provider(
+    model: str,
+    *,
+    max_tokens: int = 50_000,
+    thinking_config: ThinkingConfig | None = None,
+) -> "ModelProvider":
+    """Create the appropriate provider for a given model."""
+    thinking = thinking_config or ThinkingConfig(enabled=False)
+
+    if thinking.enabled and not supports_thinking(model):
+        logger.warning("%s doesn't support thinking -- disabling.", model)
+        thinking = ThinkingConfig(enabled=False)
+
+    return _create_single_provider(model, max_tokens=max_tokens, thinking_config=thinking)
+
+
+def create_provider_with_fallback(
+    model: str,
+    *,
+    max_tokens: int = 50_000,
+    thinking_config: ThinkingConfig | None = None,
+) -> tuple["ModelProvider", ModelFallbackChain | None]:
+    """Create a provider and its fallback chain (if configured)."""
+    primary = create_provider(model, max_tokens=max_tokens, thinking_config=thinking_config)
+
+    fallback_models = FALLBACK_CHAINS.get(model, [])
+    if not fallback_models:
+        return primary, None
+
+    providers: list[ModelProvider] = [primary]
+    for fb_model in fallback_models:
+        try:
+            fb_provider = _create_single_provider(fb_model, max_tokens=max_tokens)
+            providers.append(fb_provider)
+            logger.info("Fallback provider ready: %s (%s)", fb_model, fb_provider.name)
+        except (ProviderError, Exception) as e:
+            logger.debug("Skipping fallback %s: %s", fb_model, e)
+
+    if len(providers) < 2:
+        return primary, None
+
+    chain = ModelFallbackChain(providers)
+    logger.info(
+        "Fallback chain for %s: %s",
+        model,
+        " -> ".join(f"{p.name}/{p.model_id}" for p in providers),
+    )
+    return primary, chain

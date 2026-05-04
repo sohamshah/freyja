@@ -1,0 +1,1401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FREYJA — Vision Board [REIMAGINED]</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Anton&family=DM+Serif+Display:ital@0;1&family=Space+Mono:wght@400;700&family=Space+Grotesk:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+:root {
+  /* CORE PALETTE - enhanced with cyberpunk accents */
+  --void: #0a0a0f;
+  --dark: #111117;
+  --dark-2: #1a1a24;
+  --dark-3: #22222e;
+  --cream: #e8e4de;
+  --cream-dim: rgba(232,228,222,0.6);
+  --blue: #00f0ff;
+  --blue-dim: rgba(0,240,255,0.3);
+  --amber: #ffb000;
+  --amber-dim: rgba(255,176,0,0.4);
+  --magenta: #ff2a6d;
+  --magenta-dim: rgba(255,42,109,0.3);
+  --green: #00ff88;
+  --green-dim: rgba(0,255,136,0.3);
+  
+  /* HALFTONE SETTINGS */
+  --dotSize: 0.2rem;
+  --bgSize: 0.9rem;
+}
+
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+
+body {
+  background: var(--void);
+  font-family: 'Space Mono', 'IBM Plex Mono', monospace;
+  -webkit-font-smoothing: antialiased;
+  min-width: 1440px;
+  overflow-x: auto;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   GLOBAL SVG FILTERS - Dithering, CRT, Glitch, Chromatic
+   ═══════════════════════════════════════════════════════════ */
+.filters-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   CSS PATTERN PRIMITIVES
+   ═══════════════════════════════════════════════════════════ */
+.board {
+  max-width: 1500px;
+  margin: 40px auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  position: relative;
+}
+
+.row { display: flex; gap: 4px; }
+.panel { position: relative; overflow: hidden; }
+
+/* ─── HALFTONE PATTERNS ─── */
+.halftone {
+  position: relative;
+}
+.halftone::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: 
+    radial-gradient(circle at center, var(--cream) var(--dotSize), transparent 0),
+    radial-gradient(circle at center, var(--cream) var(--dotSize), transparent 0);
+  background-size: var(--bgSize) var(--bgSize);
+  background-position: 0 0, calc(var(--bgSize)/2) calc(var(--bgSize)/2);
+  filter: contrast(40);
+  opacity: 0.15;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.halftone-amber::before {
+  background-image: 
+    radial-gradient(circle at center, var(--amber) var(--dotSize), transparent 0),
+    radial-gradient(circle at center, var(--amber) var(--dotSize), transparent 0);
+  opacity: 0.2;
+}
+
+.halftone-blue::before {
+  background-image: 
+    radial-gradient(circle at center, var(--blue) var(--dotSize), transparent 0),
+    radial-gradient(circle at center, var(--blue) var(--dotSize), transparent 0);
+  opacity: 0.15;
+}
+
+/* ─── DITHERED GRADIENT OVERLAYS ─── */
+.dither-gradient {
+  position: relative;
+}
+.dither-gradient::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: 
+    repeating-linear-gradient(0deg, transparent 0px, transparent 2px, rgba(0,0,0,0.15) 2px, rgba(0,0,0,0.15) 4px),
+    repeating-linear-gradient(90deg, transparent 0px, transparent 2px, rgba(0,0,0,0.15) 2px, rgba(0,0,0,0.15) 4px);
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* ─── SCANLINE VARIATIONS ─── */
+.scanlines {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  background: repeating-linear-gradient(0deg,
+    transparent 0px, transparent 2px,
+    var(--dark) 2px, var(--dark) 4.5px);
+  opacity: 0.6;
+}
+
+.scanlines-cream {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  background: repeating-linear-gradient(0deg,
+    transparent 0px, transparent 2px,
+    var(--cream) 2px, var(--cream) 4.5px);
+  opacity: 0.08;
+}
+
+.scanlines-blue {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  background: repeating-linear-gradient(0deg,
+    transparent 0px, transparent 1px,
+    var(--blue) 1px, var(--blue) 2px);
+  opacity: 0.15;
+  mix-blend-mode: screen;
+}
+
+.scanlines-crt {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+  background: 
+    repeating-linear-gradient(0deg,
+      rgba(0,0,0,0.1) 0px, 
+      transparent 1px, 
+      transparent 2px, 
+      rgba(0,0,0,0.1) 3px);
+  opacity: 0.4;
+}
+
+/* ─── ASCII MICROGRAPHIC PATTERNS ─── */
+.ascii-grid-bg {
+  position: absolute;
+  inset: 0;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 8px;
+  line-height: 1.2;
+  letter-spacing: 4px;
+  color: var(--green-dim);
+  opacity: 0.15;
+  pointer-events: none;
+  z-index: 1;
+  white-space: pre;
+  overflow: hidden;
+}
+
+.circuit-bg {
+  position: absolute;
+  inset: 0;
+  background-image: 
+    linear-gradient(var(--blue-dim) 1px, transparent 1px),
+    linear-gradient(90deg, var(--blue-dim) 1px, transparent 1px),
+    radial-gradient(circle, var(--blue) 1.5px, transparent 1.5px);
+  background-size: 40px 40px, 40px 40px, 40px 40px;
+  background-position: 0 0, 0 0, 20px 20px;
+  opacity: 0.2;
+  pointer-events: none;
+}
+
+.ten-print {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(45deg, var(--magenta-dim) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--magenta-dim) 25%, transparent 25%);
+  background-size: 16px 16px;
+  opacity: 0.1;
+  pointer-events: none;
+}
+
+/* ─── GLITCH & CHROMATIC ABERRATION ─── */
+.glitch-text {
+  position: relative;
+  display: inline-block;
+}
+.glitch-text::before,
+.glitch-text::after {
+  content: attr(data-text);
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+.glitch-text::before {
+  color: var(--magenta);
+  clip-path: polygon(0 0, 100% 0, 100% 35%, 0 35%);
+  transform: translate(-2px, 0);
+  opacity: 0.8;
+}
+.glitch-text::after {
+  color: var(--blue);
+  clip-path: polygon(0 65%, 100% 65%, 100% 100%, 0 100%);
+  transform: translate(2px, 0);
+  opacity: 0.8;
+}
+
+/* ─── ANIMATIONS ─── */
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+@keyframes scan {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+
+@keyframes dataflow {
+  0% { background-position: 0 0; }
+  100% { background-position: 40px 40px; }
+}
+
+@keyframes ring {
+  0% { transform: scale(0); opacity: 1; }
+  100% { transform: scale(3); opacity: 0; }
+}
+
+.animate-pulse { animation: pulse 2s ease-in-out infinite; }
+.animate-blink { animation: blink 1s infinite; }
+.animate-float { animation: float 3s ease-in-out infinite; }
+.animate-dataflow { animation: dataflow 2s linear infinite; }
+
+/* ─── UTILITY CLASSES ─── */
+.micro-label {
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  opacity: 0.5;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 6px;
+}
+.status-online { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.status-pending { background: var(--amber); }
+.status-active { background: var(--blue); box-shadow: 0 0 8px var(--blue); }
+
+/* ─── NEON GLOW UTILITIES ─── */
+.glow-blue { text-shadow: 0 0 10px var(--blue), 0 0 20px var(--blue-dim); }
+.glow-amber { text-shadow: 0 0 10px var(--amber), 0 0 20px var(--amber-dim); }
+.glow-green { text-shadow: 0 0 10px var(--green), 0 0 20px var(--green-dim); }
+.glow-magenta { text-shadow: 0 0 10px var(--magenta), 0 0 20px var(--magenta-dim); }
+
+.border-glow-blue { box-shadow: 0 0 15px var(--blue-dim), inset 0 0 15px var(--blue-dim); }
+</style>
+</head>
+<body>
+
+<!-- ═══ GLOBAL SVG FILTERS ═══ -->
+<svg class="filters-defs">
+  <defs>
+    <!-- CRT Scanline Filter -->
+    <filter id="crt" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0 0.5" numOctaves="1" result="stripes"/>
+      <feColorMatrix in="stripes" type="saturate" values="0" result="gray"/>
+      <feBlend in="SourceGraphic" in2="gray" mode="multiply"/>
+    </filter>
+    
+    <!-- Chromatic Aberration -->
+    <filter id="chromatic" x="-5%" y="0" width="110%" height="100%">
+      <feColorMatrix in="SourceGraphic" type="matrix" 
+        values="1 0 0 0 0.02   0 0 0 0 0   0 0 0 0 -0.02   0 0 0 1 0" result="r"/>
+      <feColorMatrix in="SourceGraphic" type="matrix"
+        values="0 0 0 0 -0.02  0 1 0 0 0   0 0 0 0 0.02    0 0 0 1 0" result="b"/>
+      <feMerge>
+        <feMergeNode in="r"/>
+        <feMergeNode in="SourceGraphic"/>
+        <feMergeNode in="b"/>
+      </feMerge>
+    </filter>
+    
+    <!-- Halftone Pattern Filter -->
+    <filter id="halftone-filter">
+      <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="2" result="noise"/>
+      <feColorMatrix type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 1 0" in="noise" result="coloredNoise"/>
+      <feComposite in="SourceGraphic" in2="coloredNoise" operator="arithmetic" k1="0" k2="1" k3="1" k4="0"/>
+    </filter>
+    
+    <!-- Dithering Noise -->
+    <filter id="dither">
+      <feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="3" stitchTiles="stitch" result="noise"/>
+      <feComposite in="SourceGraphic" in2="noise" operator="arithmetic" k1="0" k2="1" k3="1" k4="-0.5"/>
+      <feComponentTransfer>
+        <feFuncR type="discrete" tableValues="0 1"/>
+        <feFuncG type="discrete" tableValues="0 1"/>
+        <feFuncB type="discrete" tableValues="0 1"/>
+      </feComponentTransfer>
+    </filter>
+  </defs>
+</svg>
+
+<!-- ═══ GLOBAL GRAIN OVERLAY ═══ -->
+<svg style="position:fixed; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:9999; opacity:0.03;">
+  <filter id="g"><feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="4" stitchTiles="stitch"/></filter>
+  <rect width="100%" height="100%" filter="url(#g)"/>
+</svg>
+
+<div class="board">
+
+<!-- ═══════════════════════════════════════════════════════════
+     ROW 1: BRAND + DEPLOY - REIMAGINED WITH ASCII MICROGRAPHICS
+     ═══════════════════════════════════════════════════════════ -->
+<div class="row">
+
+  <!-- ─── PANEL 1: FREYJA BRAND WITH ASCII ART & CIRCUIT PATTERNS ─── -->
+  <div class="panel halftone" style="flex:3; background:var(--dark); padding:48px 56px; min-height:560px;
+    display:flex; flex-direction:column; border:1px solid var(--dark-3);">
+    
+    <!-- Circuit pattern overlay -->
+    <div class="circuit-bg"></div>
+    
+    <!-- ASCII Art Background Micrographic -->
+    <div class="ascii-grid-bg" style="top:20px; right:20px; width:200px; height:300px; text-align:right; opacity:0.1;">
+┌─┐┌─┐┌─┐
+│A││B││C│
+└┬┘└┬┘└┬┘
+ ║  ║  ║
+ └══╪══┘
+    │
+   ┌┴┐
+   │●│
+   └─┘
+    </div>
+    
+    <!-- Scanline overlay -->
+    <div class="scanlines-cream"></div>
+
+    <!-- Top: hash marks + enhanced label -->
+    <div style="display:flex; align-items:center; gap:14px; position:relative; z-index:3;">
+      <svg width="56" height="18" viewBox="0 0 56 18" fill="none">
+        <g stroke="rgba(232,228,222,0.3)" stroke-width="2">
+          <line x1="2" y1="18" x2="9" y2="0"/><line x1="8" y1="18" x2="15" y2="0"/>
+          <line x1="14" y1="18" x2="21" y2="0"/><line x1="20" y1="18" x2="27" y2="0"/>
+          <line x1="26" y1="18" x2="33" y2="0"/><line x1="32" y1="18" x2="39" y2="0"/>
+          <line x1="38" y1="18" x2="45" y2="0"/><line x1="44" y1="18" x2="51" y2="0"/>
+        </g>
+      </svg>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span class="micro-label" style="color:var(--cream-dim);">FREYJA SYSTEMS</span>
+        <span style="font-size:9px; color:var(--green); animation:blink 2s infinite;">◉</span>
+      </div>
+      <!-- Mini ASCII status -->
+      <div style="margin-left:auto; font-family:'IBM Plex Mono', monospace; font-size:8px; color:var(--blue-dim); letter-spacing:2px;">
+        [● ONLINE] [◐ STANDBY]
+      </div>
+    </div>
+
+    <!-- Main: title + enhanced scan-line logo with chromatic aberration -->
+    <div style="display:flex; align-items:center; gap:48px; flex:1; margin:24px 0; position:relative; z-index:3;">
+      <div style="flex:1;">
+        <div style="font-family:'Anton'; font-size:110px; color:var(--cream); line-height:0.92;
+          letter-spacing:0.02em; position:relative;" class="glitch-text" data-text="FREYJA">
+          FREYJA
+          <span style="position:absolute; top:2px; left:2px; color:var(--magenta); opacity:0.4; z-index:-1; clip-path:polygon(0 0,100% 0,100% 40%,0 40%);">FREYJA</span>
+          <span style="position:absolute; top:-2px; left:-2px; color:var(--blue); opacity:0.4; z-index:-1; clip-path:polygon(0 60%,100% 60%,100% 100%,0 100%);">FREYJA</span>
+        </div>
+        
+        <!-- ASCII decorative line -->
+        <div style="font-family:'IBM Plex Mono', monospace; font-size:10px; color:var(--amber-dim); letter-spacing:3px; margin:12px 0;">
+          ▓▓▓▓▓▓▓▓▓▓░░░░░░░░
+        </div>
+        
+        <div style="margin-top:20px; font-size:12px; letter-spacing:0.18em;
+          color:rgba(232,228,222,0.55); text-transform:uppercase;">
+          AUTONOMOUS AGENT RUNTIME
+        </div>
+        <div style="margin-top:6px; font-size:10px; letter-spacing:0.12em;
+          color:rgba(232,228,222,0.3); text-transform:uppercase;">
+          SELF-IMPROVING DESKTOP INTELLIGENCE
+        </div>
+        
+        <!-- Micrographic status bars -->
+        <div style="margin-top:24px; display:flex; gap:4px; align-items:center;">
+          <div style="font-family:'IBM Plex Mono', monospace; font-size:8px; color:var(--green);">
+            CPU [<span style="color:var(--green);">██████░░░░</span>] 60%
+          </div>
+          <div style="font-family:'IBM Plex Mono', monospace; font-size:8px; color:var(--blue);">
+            MEM [<span style="color:var(--blue);">████████░░</span>] 80%
+          </div>
+        </div>
+      </div>
+
+      <!-- Enhanced Scan-line contour ring with blue glow -->
+      <div style="position:relative; width:230px; height:230px; flex-shrink:0;">
+        <svg width="230" height="230" viewBox="0 0 300 300" fill="none" filter="url(#chromatic)">
+          <ellipse cx="150" cy="150" rx="25" ry="22" transform="rotate(5 150 150)"
+            stroke="var(--cream)" stroke-width="12" opacity="0.9"/>
+          <ellipse cx="150" cy="151" rx="50" ry="46" transform="rotate(-3 150 151)"
+            stroke="var(--cream)" stroke-width="10" opacity="0.8"/>
+          <ellipse cx="151" cy="150" rx="76" ry="71" transform="rotate(6 151 150)"
+            stroke="var(--blue)" stroke-width="8" opacity="0.7" class="animate-pulse"/>
+          <ellipse cx="150" cy="149" rx="100" ry="95" transform="rotate(-2 150 149)"
+            stroke="var(--cream)" stroke-width="7" opacity="0.6"/>
+          <ellipse cx="149" cy="150" rx="122" ry="117" transform="rotate(4 149 150)"
+            stroke="var(--cream)" stroke-width="6" opacity="0.5"/>
+          <ellipse cx="150" cy="151" rx="140" ry="136" transform="rotate(-3 150 151)"
+            stroke="var(--amber)" stroke-width="4" opacity="0.4" class="animate-pulse"/>
+          <!-- Blue accent ring -->
+          <ellipse cx="150" cy="150" rx="160" ry="155" transform="rotate(8 150 150)"
+            stroke="var(--blue)" stroke-width="1" opacity="0.3"/>
+        </svg>
+        <div class="scanlines"></div>
+        
+        <!-- Corner ASCII decoration -->
+        <div style="position:absolute; bottom:-20px; right:-10px; font-family:'IBM Plex Mono'; font-size:9px; color:var(--blue-dim);">
+          ╱╲╱╲╱╲
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom bar with enhanced micrographics -->
+    <div style="display:flex; align-items:center; gap:20px; position:relative; z-index:3;">
+      <span style="font-size:14px; color:rgba(232,228,222,0.3); letter-spacing:2px;">&#9776;</span>
+      <span style="font-size:11px; letter-spacing:0.08em; color:var(--amber); animation:blink 3s infinite;">&#10095;&#10095;&#10095;</span>
+      <span style="font-size:12px; letter-spacing:0.15em; color:rgba(232,228,222,0.5);
+        font-weight:700;">SF</span>
+      <span style="padding:4px 14px; background:rgba(0,240,255,0.08); border:1px solid var(--blue-dim);
+        font-size:9px; letter-spacing:0.15em; color:var(--blue); text-transform:uppercase;
+        box-shadow:0 0 10px var(--blue-dim);">
+        <span class="status-dot status-active"></span>STATUS: ACTIVE
+      </span>
+      
+      <!-- ASCII animation bar -->
+      <div style="margin-left:20px; font-family:'IBM Plex Mono'; font-size:9px; color:var(--green-dim); letter-spacing:2px;">
+        ▁▂▃▄▅▆▇█
+      </div>
+      
+      <span style="margin-left:auto; font-size:10px; letter-spacing:0.1em;
+        color:rgba(232,228,222,0.25);">Handle under autonomous conditions</span>
+      <!-- ® mark with glow -->
+      <div style="width:32px; height:32px; border:2px solid var(--amber); border-radius:50%;
+        display:flex; align-items:center; justify-content:center; flex-shrink:0;
+        box-shadow:0 0 15px var(--amber-dim);">
+        <span style="font-family:'Anton'; font-size:15px; color:var(--amber); line-height:1;">R</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── PANEL 2: DEPLOY AGENTS WITH ASCII MATRIX RAIN & NEURAL PATTERN ─── -->
+  <div class="panel" style="flex:2; background:var(--dark); min-height:560px; display:flex; border:1px solid var(--dark-3);">
+
+    <!-- Ice-blue vertical tab with circuit pattern -->
+    <div style="width:32px; background:var(--blue); display:flex; align-items:center;
+      justify-content:center; flex-shrink:0; position:relative; overflow:hidden;">
+      <div style="position:absolute; inset:0; background:repeating-linear-gradient(0deg,
+        transparent 0px, transparent 3px, rgba(0,0,0,0.1) 3px, rgba(0,0,0,0.1) 6px);"></div>
+      <span style="writing-mode:vertical-rl; text-orientation:mixed; transform:rotate(180deg);
+        font-family:'Space Mono'; font-size:9px; letter-spacing:0.25em;
+        color:var(--dark); text-transform:uppercase; font-weight:700; position:relative; z-index:2;">SEIDR</span>
+    </div>
+
+    <div style="flex:1; padding:40px 44px; display:flex; flex-direction:column; position:relative;">
+      
+      <!-- Neural network ASCII background -->
+      <div class="ascii-grid-bg" style="top:60px; right:20px; opacity:0.08;">
+  ○   ○   ○
+  │╲ ╱│╲ ╱│
+  │ ○ │ ○ │
+  │╱ │╱ │╱│
+  ○  │  │  ○
+    ╱│╲ │ ╱│╲
+   ○─●─○─●─○
+      </div>
+      
+      <!-- Matrix rain effect corner -->
+      <div style="position:absolute; bottom:40px; right:30px; font-family:'IBM Plex Mono'; font-size:10px; 
+        line-height:1.2; color:var(--green-dim); opacity:0.2; text-align:right;">
+        ░<br>▒<br>▓<br>█<br>▓<br>▒<br>░<br>░
+      </div>
+
+      <!-- Top label -->
+      <div style="font-size:10px; letter-spacing:0.12em; color:rgba(232,228,222,0.35);
+        text-transform:uppercase; margin-bottom:auto; position:relative; z-index:3;">
+        <span class="status-dot status-online"></span>AGENTS &mdash; RUNNING &mdash; CONTINUOUSLY
+      </div>
+
+      <!-- DEPLOY AGENTS with glitch effect -->
+      <div style="margin:16px 0; position:relative; z-index:3;">
+        <div style="font-family:'Anton'; font-size:72px; color:var(--cream); line-height:0.95;
+          letter-spacing:0.02em; position:relative;" class="glitch-text" data-text="DEPLOY">
+          DEPLOY
+          <span style="position:absolute; left:2px; color:var(--magenta); opacity:0.3; clip-path:polygon(0 30%,100% 30%,100% 50%,0 50%);">DEPLOY</span>
+        </div>
+        <div style="font-family:'Anton'; font-size:72px; color:var(--cream); line-height:0.95;
+          letter-spacing:0.02em;">
+          AGENTS
+        </div>
+        
+        <!-- ASCII decorative underline -->
+        <div style="font-family:'IBM Plex Mono'; font-size:12px; color:var(--blue-dim); letter-spacing:4px; margin-top:8px;">
+          ═══════════════════════
+        </div>
+      </div>
+
+      <!-- Runtime Ready badge with glow -->
+      <div style="display:inline-flex; align-items:center; gap:10px; padding:8px 16px;
+        border:1.5px solid var(--blue-dim); margin-bottom:16px; align-self:flex-start;
+        background:rgba(0,240,255,0.05); position:relative; z-index:3;">
+        <span style="font-size:11px; letter-spacing:0.15em; color:var(--cream);
+          text-transform:uppercase; font-weight:700;">RUNTIME READY</span>
+        <span style="animation:blink 1s infinite; color:var(--green); font-size:14px;">●</span>
+        <!-- Small contour icon -->
+        <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+          <circle cx="11" cy="11" r="9" stroke="var(--blue)" stroke-width="1.2" class="animate-pulse"/>
+          <circle cx="11" cy="11" r="6" stroke="var(--blue)" stroke-width="1" opacity="0.7"/>
+          <circle cx="11" cy="11" r="3" stroke="var(--blue)" stroke-width="0.8" opacity="0.5"/>
+          <circle cx="11" cy="11" r="1" fill="var(--blue)"/>
+        </svg>
+      </div>
+
+      <!-- Enhanced halftone bar with blue tint -->
+      <div style="height:20px; margin:8px 0 16px; position:relative; z-index:3;
+        background-image:radial-gradient(circle, var(--blue-dim) 0.8px, transparent 0.8px);
+        background-size:4px 4px;
+        mask-image:linear-gradient(to right, black, transparent);
+        -webkit-mask-image:linear-gradient(to right, black, transparent);"></div>
+
+      <!-- Ghost watermark with scanline effect -->
+      <div style="position:absolute; bottom:20px; right:32px; font-family:'Anton';
+        font-size:120px; color:rgba(232,228,222,0.04); line-height:1; letter-spacing:0.03em;">
+        &copy; 2026
+      </div>
+
+      <!-- Bottom with ASCII -->
+      <div style="display:flex; align-items:center; gap:12px; margin-top:auto; position:relative; z-index:3;">
+        <div style="flex:1; height:1px; background:linear-gradient(90deg, var(--cream-dim), transparent);"></div>
+        <span style="font-size:10px; letter-spacing:0.15em; color:rgba(232,228,222,0.35);
+          text-transform:uppercase; font-family:'IBM Plex Mono';">
+          ALWAYS LEARNING ▓▓▓
+        </span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════
+     ROW 2: FULL-WIDTH BANNER - REIMAGINED WITH 10 PRINT & CRT
+     ═══════════════════════════════════════════════════════════ -->
+<div class="panel halftone halftone-amber" style="background:var(--dark); padding:48px 64px; min-height:380px;
+  display:flex; flex-direction:column; justify-content:space-between; border:1px solid var(--dark-3);">
+
+  <!-- 10 PRINT pattern overlay -->
+  <div class="ten-print"></div>
+  
+  <!-- Circuit traces -->
+  <div style="position:absolute; inset:0; background-image:
+    linear-gradient(90deg, transparent 49%, var(--amber-dim) 49%, var(--amber-dim) 51%, transparent 51%),
+    linear-gradient(0deg, transparent 49%, var(--amber-dim) 49%, var(--amber-dim) 51%, transparent 51%);
+    background-size:80px 80px; opacity:0.05; pointer-events:none;"></div>
+
+  <!-- Registration marks -->
+  <div style="position:absolute; top:16px; left:16px; width:8px; height:8px; background:var(--amber); 
+    box-shadow:0 0 10px var(--amber);"></div>
+  <div style="position:absolute; top:16px; right:16px; width:8px; height:8px; background:var(--amber);
+    box-shadow:0 0 10px var(--amber);"></div>
+  <div style="position:absolute; bottom:16px; left:16px; width:8px; height:8px; background:var(--amber);
+    box-shadow:0 0 10px var(--amber);"></div>
+  <div style="position:absolute; bottom:16px; right:16px; width:8px; height:8px; background:var(--amber);
+    box-shadow:0 0 10px var(--amber);"></div>
+
+  <!-- Dashed registration lines -->
+  <div style="position:absolute; top:50%; left:0; right:0;
+    border-top:1px dashed rgba(255,176,0,0.15);"></div>
+  <div style="position:absolute; left:50%; top:0; bottom:0;
+    border-left:1px dashed rgba(255,176,0,0.15);"></div>
+
+  <!-- FREYJA ghost watermark with chromatic aberration -->
+  <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    font-family:'Anton'; font-size:220px; color:rgba(232,228,222,0.03);
+    letter-spacing:0.12em; white-space:nowrap; pointer-events:none;">
+    FREYJA
+  </div>
+  
+  <!-- ASCII decorative border -->
+  <div style="position:absolute; top:50px; left:50%; transform:translateX(-50%);
+    font-family:'IBM Plex Mono'; font-size:10px; color:var(--amber-dim); letter-spacing:10px;">
+    ═══════════════════════════════════════
+  </div>
+
+  <!-- Top row -->
+  <div style="display:flex; justify-content:space-between; position:relative; z-index:3;">
+    <div>
+      <div style="font-size:12px; letter-spacing:0.18em; color:var(--cream-dim);
+        text-transform:uppercase;">
+        <span style="color:var(--blue);">&#10022;</span> SEIDR FORESIGHT
+      </div>
+      <div style="font-size:11px; letter-spacing:0.12em; color:rgba(232,228,222,0.3);
+        text-transform:uppercase; margin-top:4px;">
+        ENGINE &mdash; V 0.1 &nbsp;╱
+      </div>
+      <!-- Mini ASCII status -->
+      <div style="margin-top:12px; font-family:'IBM Plex Mono'; font-size:8px; color:var(--green-dim);">
+        [0x1A] [0xFF] [0x00] [◉ RUNNING]
+      </div>
+    </div>
+    <div style="text-align:right;">
+      <div style="font-size:12px; letter-spacing:0.18em; color:var(--cream-dim);
+        text-transform:uppercase;">AUTONOMOUS DISCIPLINE</div>
+      <div style="font-size:11px; letter-spacing:0.12em; color:rgba(232,228,222,0.3);
+        text-transform:uppercase; margin-top:4px;">
+        SF &nbsp;&nbsp;&nbsp; NYC &nbsp;&nbsp;&nbsp; LDN
+      </div>
+      <!-- ASCII coordinates -->
+      <div style="margin-top:12px; font-family:'IBM Plex Mono'; font-size:8px; color:var(--blue-dim);">
+        37.7749° N, 122.4194° W
+      </div>
+    </div>
+  </div>
+
+  <!-- Center: large textured logo with enhanced effects -->
+  <div style="display:flex; align-items:center; justify-content:center; position:relative; z-index:3;">
+    <div style="position:relative; width:340px; height:340px; margin:-20px 0;">
+      <svg width="340" height="340" viewBox="0 0 400 400" fill="none" filter="url(#chromatic)">
+        <ellipse cx="200" cy="200" rx="30" ry="27" transform="rotate(4 200 200)"
+          stroke="var(--cream)" stroke-width="14" opacity="0.85"/>
+        <ellipse cx="200" cy="201" rx="58" ry="54" transform="rotate(-3 200 201)"
+          stroke="var(--cream)" stroke-width="12" opacity="0.75"/>
+        <ellipse cx="201" cy="200" rx="88" ry="83" transform="rotate(5 201 200)"
+          stroke="var(--amber)" stroke-width="10" opacity="0.65" class="animate-pulse"/>
+        <ellipse cx="200" cy="199" rx="118" ry="112" transform="rotate(-2 200 199)"
+          stroke="var(--cream)" stroke-width="9" opacity="0.55"/>
+        <ellipse cx="199" cy="200" rx="146" ry="140" transform="rotate(3 199 200)"
+          stroke="var(--blue)" stroke-width="7" opacity="0.45" class="animate-pulse"/>
+        <ellipse cx="200" cy="201" rx="172" ry="167" transform="rotate(-4 200 201)"
+          stroke="var(--cream)" stroke-width="5" opacity="0.3"/>
+        <!-- Extra blue accent ring -->
+        <ellipse cx="200" cy="200" rx="188" ry="182" transform="rotate(7 200 200)"
+          stroke="var(--blue)" stroke-width="2" opacity="0.2"/>
+      </svg>
+      <div class="scanlines"></div>
+      
+      <!-- Pulse ring animation -->
+      <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);">
+        <div style="position:absolute; width:60px; height:60px; border:2px solid var(--blue); border-radius:50%;
+          animation:ring 2s ease-out infinite; top:-30px; left:-30px;"></div>
+        <div style="position:absolute; width:60px; height:60px; border:2px solid var(--blue); border-radius:50%;
+          animation:ring 2s ease-out infinite; animation-delay:0.5s; top:-30px; left:-30px;"></div>
+        <div style="position:absolute; width:60px; height:60px; border:2px solid var(--blue); border-radius:50%;
+          animation:ring 2s ease-out infinite; animation-delay:1s; top:-30px; left:-30px;"></div>
+      </div>
+    </div>
+
+    <!-- ® circle with neon glow -->
+    <div style="position:absolute; right:100px; top:50%; transform:translateY(-50%);
+      width:60px; height:60px; border:3px solid var(--amber); border-radius:50%;
+      display:flex; align-items:center; justify-content:center;
+      box-shadow:0 0 20px var(--amber-dim), inset 0 0 20px var(--amber-dim);">
+      <span style="font-family:'Anton'; font-size:30px; color:var(--amber); line-height:1;">R</span>
+    </div>
+  </div>
+
+  <!-- Bottom row -->
+  <div style="display:flex; justify-content:space-between; position:relative; z-index:3;">
+    <div style="font-size:11px; letter-spacing:0.15em; color:rgba(232,228,222,0.4);
+      text-transform:uppercase; font-family:'IBM Plex Mono';">
+      AGENTS RUNNING CONTINUOUSLY ▓▓▓
+    </div>
+    <div style="font-size:11px; letter-spacing:0.15em; color:rgba(232,228,222,0.4);
+      text-transform:uppercase; font-family:'IBM Plex Mono';">
+      NATIVE DESKTOP INTELLIGENCE ▓▓▓
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════
+     ROW 3: MEMORY + FIELD REPORT - REIMAGINED WITH ASCII GRAPHS
+     ═══════════════════════════════════════════════════════════ -->
+<div class="row">
+
+  <!-- ─── PANEL 4: MEMORY SYSTEM WITH HEX DUMP & ASCII VISUALIZATION ─── -->
+  <div class="panel" style="flex:1; min-height:540px; display:flex; flex-direction:column;
+    background:var(--dark); border:1px solid var(--dark-3);">
+
+    <!-- Top bar with binary rain -->
+    <div style="padding:16px 20px; font-size:10px; letter-spacing:0.15em;
+      color:rgba(232,228,222,0.4); text-transform:uppercase; display:flex; justify-content:space-between;
+      align-items:center; border-bottom:1px solid var(--dark-3);">
+      <span><span class="status-dot status-active"></span>AUTONOMOUS MEMORY OPERATIONS</span>
+      <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--green-dim);">
+        01001 10101 01010
+      </span>
+    </div>
+
+    <!-- Ice-blue strip with dither -->
+    <div style="height:5px; background:linear-gradient(90deg, var(--blue), var(--magenta), var(--blue));
+      background-size:200% 100%; animation:dataflow 3s linear infinite;"></div>
+
+    <!-- Split content -->
+    <div style="display:flex; flex:1;">
+      <!-- Left: abstract bars with ASCII labels -->
+      <div style="width:160px; background:var(--dark); padding:20px 16px;
+        display:flex; flex-direction:column; gap:6px; justify-content:center; position:relative;">
+        
+        <!-- ASCII memory map background -->
+        <div style="position:absolute; top:10px; right:5px; font-family:'IBM Plex Mono'; font-size:8px; 
+          color:var(--blue-dim); opacity:0.3; line-height:1.4;">
+          0x0000 ┃░░░░░░░░┃<br>
+          0x1000 ┃████████┃<br>
+          0x2000 ┃▓▓▓▓▓▓▓▓┃<br>
+          0x3000 ┃▒▒▒▒▒▒▒▒┃
+        </div>
+        
+        <!-- Memory bars with labels -->
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--cream-dim); width:30px;">EP1</span>
+          <div style="height:16px; flex:1; background:var(--cream);"></div>
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--green);">98%</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--cream-dim); width:30px;">EP2</span>
+          <div style="height:16px; flex:1; background:var(--cream); opacity:0.6;"></div>
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--amber);">55%</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--cream-dim); width:30px;">SKL</span>
+          <div style="height:16px; flex:1; background:var(--amber);"></div>
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--amber);">100%</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--cream-dim); width:30px;">CTX</span>
+          <div style="height:16px; flex:1; background:var(--cream); opacity:0.4;"></div>
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--magenta);">40%</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--cream-dim); width:30px;">BUF</span>
+          <div style="height:16px; flex:1; background:var(--blue);"></div>
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--blue);">75%</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--cream-dim); width:30px;">EVC</span>
+          <div style="height:16px; flex:1; background:var(--cream); opacity:0.3;"></div>
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--cream-dim);">30%</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--cream-dim); width:30px;">LRN</span>
+          <div style="height:16px; flex:1; background:var(--cream); opacity:0.85;"></div>
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--green);">85%</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--cream-dim); width:30px;">SYN</span>
+          <div style="height:16px; flex:1; background:var(--amber); opacity:0.8;"></div>
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--amber);">80%</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--cream-dim); width:30px;">MEM</span>
+          <div style="height:16px; flex:1; background:var(--cream); opacity:0.68;"></div>
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--amber);">68%</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--cream-dim); width:30px;">REC</span>
+          <div style="height:16px; flex:1; background:var(--blue); opacity:0.6;"></div>
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--blue);">60%</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--cream-dim); width:30px;">STO</span>
+          <div style="height:16px; flex:1; background:var(--cream); opacity:0.92;"></div>
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--green);">92%</span>
+        </div>
+      </div>
+
+      <!-- Right: amber panel with hex dump visualization -->
+      <div style="flex:1; background:var(--amber); padding:32px 36px; color:var(--dark);
+        display:flex; flex-direction:column; position:relative; overflow:hidden;">
+
+        <!-- Grid overlay on amber bg -->
+        <div style="position:absolute; inset:0; pointer-events:none;
+          background-image:
+            linear-gradient(rgba(0,0,0,0.04) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(0,0,0,0.04) 1px, transparent 1px);
+          background-size:32px 32px;"></div>
+        
+        <!-- Circuit trace pattern -->
+        <div style="position:absolute; inset:0; opacity:0.05;
+          background-image:radial-gradient(circle, #000 1px, transparent 1px);
+          background-size:20px 20px;"></div>
+
+        <div style="position:relative; z-index:2;">
+          <div style="font-family:'Anton'; font-size:42px; line-height:1; letter-spacing:0.02em;">
+            MEMORY <span style="color:var(--magenta);">—</span> V.1
+          </div>
+          
+          <!-- Hex dump style status -->
+          <div style="margin-top:16px; font-family:'IBM Plex Mono'; font-size:9px; 
+            background:rgba(0,0,0,0.1); padding:8px; border-radius:4px; line-height:1.6;">
+            <div>0000: 53 59 53 20 41 43 54 49 |System Active|</div>
+            <div>0010: 4c 4f 4f 50 20 43 4f 4e |Loop Continuo|</div>
+          </div>
+
+          <div style="margin-top:24px; font-size:12px; letter-spacing:0.1em; font-family:'IBM Plex Mono';">
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+              <span>SYSTEM STATE: <span style="color:var(--dark); background:rgba(255,255,255,0.3); padding:0 4px;">ACTIVE</span></span><span>╱</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+              <span>LOOP: CONTINUOUS</span><span>SF</span>
+            </div>
+            <div style="margin:6px 0; color:rgba(26,26,26,0.3);">─ ─ ─ ─ ─ ─ ─ ─ ─ ─</div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+              <span>EVICTION: <span class="animate-blink" style="color:var(--magenta);">ENABLED</span></span><span>&gt;</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+              <span>ADAPTATION: <span style="color:var(--dark); background:rgba(255,255,255,0.3); padding:0 4px;">SELF-IMPROVING</span></span><span style="color:var(--green); animation:blink 1s infinite;">●</span>
+            </div>
+          </div>
+
+          <div style="margin-top:20px; font-size:11px; line-height:1.6; max-width:380px;
+            color:rgba(26,26,26,0.75); font-family:'Space Grotesk', sans-serif;">
+            Freyja is a continuously operating system designed to perform knowledge work
+            autonomously for hours without context degradation. It observes its own memory
+            pressure, applies layered eviction strategies, and self-improves through
+            episodic reinforcement learning. This process runs without scheduling,
+            reminders, or encouragement.
+          </div>
+        </div>
+
+        <!-- Vertical brand name -->
+        <div style="position:absolute; right:12px; bottom:32px; writing-mode:vertical-rl;
+          font-family:'DM Serif Display'; font-size:16px; color:rgba(26,26,26,0.2);
+          letter-spacing:0.15em;">Freyja</div>
+        
+        <!-- Corner decoration -->
+        <div style="position:absolute; top:12px; right:12px; font-family:'IBM Plex Mono'; 
+          font-size:10px; color:rgba(0,0,0,0.2);">
+          ╔══╗<br>║░░║<br>╚══╝
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── PANEL 5: FIELD REPORT WITH HALFTONE SPHERE & ASCII GRAPHS ─── -->
+  <div class="panel" style="flex:1; background:var(--dark-2); padding:48px 52px;
+    min-height:540px; display:flex; flex-direction:column; border:1px solid var(--dark-3);">
+    
+    <!-- Scanline overlay -->
+    <div class="scanlines-blue"></div>
+
+    <!-- Scattered + marks with glow -->
+    <div style="position:absolute; top:32px; right:100px; color:var(--amber); font-size:11px; opacity:0.6;
+      animation:blink 3s infinite;">+</div>
+    <div style="position:absolute; top:80px; right:60px; color:var(--amber); font-size:11px; opacity:0.4;">+</div>
+    <div style="position:absolute; top:140px; right:140px; color:var(--amber); font-size:11px; opacity:0.7;
+      animation:blink 2s infinite;">+</div>
+    <div style="position:absolute; top:200px; right:80px; color:var(--amber); font-size:11px; opacity:0.3;">+</div>
+    <div style="position:absolute; top:260px; right:120px; color:var(--blue); font-size:11px; opacity:0.5;
+      animation:pulse 2s infinite;">×</div>
+    <div style="position:absolute; top:320px; right:160px; color:var(--amber); font-size:11px; opacity:0.4;">+</div>
+    <div style="position:absolute; top:400px; right:90px; color:var(--magenta); font-size:11px; opacity:0.6;">●</div>
+    <div style="position:absolute; top:50px; right:200px; color:var(--green); font-size:11px; opacity:0.3;">●</div>
+    <div style="position:absolute; top:180px; right:220px; color:var(--blue); font-size:11px; opacity:0.4;">×</div>
+    
+    <!-- ASCII neural pattern in corner -->
+    <div style="position:absolute; bottom:60px; right:40px; font-family:'IBM Plex Mono'; 
+      font-size:8px; color:var(--blue-dim); opacity:0.15; line-height:1.2;">
+      ○─○─○<br>
+      │╲│╱│<br>
+      ○─●─○<br>
+      │╱│╲│<br>
+      ○─○─○
+    </div>
+
+    <!-- Top: mixed serif with ASCII badge -->
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; position:relative; z-index:3;">
+      <div>
+        <span style="font-family:'DM Serif Display'; font-size:28px; color:var(--cream);">Sub-Agents</span>
+        <br>
+        <span style="font-family:'DM Serif Display'; font-size:28px; color:var(--amber);
+          font-weight:700;">Deployed</span>
+        <!-- ASCII divider -->
+        <div style="font-family:'IBM Plex Mono'; font-size:10px; color:var(--amber-dim); margin-top:8px;">
+          ────────▓▓▓────────
+        </div>
+      </div>
+      <!-- Compass with ASCII -->
+      <div style="position:relative; width:60px; height:60px; margin-right:40px;">
+        <span style="position:absolute; top:-4px; left:50%; transform:translateX(-50%);
+          font-size:10px; letter-spacing:0.12em; color:var(--amber);">N</span>
+        <span style="position:absolute; bottom:-4px; left:50%; transform:translateX(-50%);
+          font-size:10px; letter-spacing:0.12em; color:rgba(232,228,222,0.3);">S</span>
+        <span style="position:absolute; right:-8px; top:50%; transform:translateY(-50%);
+          font-size:10px; letter-spacing:0.12em; color:rgba(232,228,222,0.3);">E</span>
+        <span style="position:absolute; left:-10px; top:50%; transform:translateY(-50%);
+          font-size:10px; letter-spacing:0.12em; color:rgba(232,228,222,0.3);">W</span>
+        <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+          width:10px; height:10px; background:var(--amber); border-radius:50%;
+          box-shadow:0 0 10px var(--amber);"></div>
+        <!-- ASCII crosshair -->
+        <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+          font-family:'IBM Plex Mono'; font-size:12px; color:var(--amber-dim);">
+          ┼
+        </div>
+      </div>
+    </div>
+
+    <!-- Center: halftone contour sphere (amber dots) with ASCII log -->
+    <div style="display:flex; align-items:center; gap:32px; flex:1; margin:16px 0; position:relative; z-index:3;">
+      <div style="position:relative; width:220px; height:220px; flex-shrink:0;">
+        <div style="position:absolute;inset:0;border-radius:50%;overflow:hidden;">
+          <div style="position:absolute;inset:0;
+            background-image:radial-gradient(circle,var(--amber) 1.6px,transparent 1.6px);
+            background-size:6px 6px;
+            mask-image:radial-gradient(ellipse 85% 85% at 38% 42%,
+              black 15%,rgba(0,0,0,0.6) 30%,rgba(0,0,0,0.25) 50%,
+              rgba(0,0,0,0.06) 65%,transparent 78%);
+            -webkit-mask-image:radial-gradient(ellipse 85% 85% at 38% 42%,
+              black 15%,rgba(0,0,0,0.6) 30%,rgba(0,0,0,0.25) 50%,
+              rgba(0,0,0,0.06) 65%,transparent 78%);
+            opacity:0.8;"></div>
+          <div style="position:absolute;inset:0;
+            background-image:radial-gradient(circle,var(--blue) 0.8px,transparent 0.8px);
+            background-size:3.5px 3.5px; background-position:1.5px 1.5px;
+            mask-image:radial-gradient(ellipse 70% 70% at 42% 45%,
+              black 10%,rgba(0,0,0,0.3) 30%,rgba(0,0,0,0.06) 50%,transparent 65%);
+            -webkit-mask-image:radial-gradient(ellipse 70% 70% at 42% 45%,
+              black 10%,rgba(0,0,0,0.3) 30%,rgba(0,0,0,0.06) 50%,transparent 65%);
+            opacity:0.6;"></div>
+        </div>
+        <!-- Glowing center dot -->
+        <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+          width:12px; height:12px; background:var(--amber); border-radius:50%;
+          box-shadow:0 0 20px var(--amber), 0 0 40px var(--amber-dim);"></div>
+      </div>
+
+      <!-- Log data with enhanced ASCII -->
+      <div style="font-family:'IBM Plex Mono'; font-size:9px; letter-spacing:0.08em; color:rgba(232,228,222,0.4);
+        line-height:2; text-transform:uppercase;">
+        <div style="color:var(--green); margin-bottom:8px;">◉ LOG 00:02:14</div>
+        <div>FORMATION PATTERN: ADAPTIVE SWARM</div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <span>SESSION DURATION:</span>
+          <span style="color:var(--amber);">14.2 HRS</span>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <span>CONTEXT MAINTAINED:</span>
+          <span style="color:var(--blue);">128 EPISODES</span>
+        </div>
+        <div style="color:var(--cream-dim); margin:8px 0;">───────────────────────</div>
+        <div style="color:var(--green); animation:blink 2s infinite;">CORRECTION PROPAGATED IN 0.43 SECONDS</div>
+        <div style="color:var(--magenta); margin-top:8px;">[ NO HUMAN INPUT ]</div>
+        
+        <!-- ASCII mini graph -->
+        <div style="margin-top:16px; font-size:8px; color:var(--blue-dim);">
+          LATENCY<br>
+          │      ●<br>
+          │   ●<br>
+          │ ●    ●<br>
+          │●      ●<br>
+          └───────────<br>
+          0.2   0.4   0.6s
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom: massive serif with ASCII frame -->
+    <div style="position:relative; z-index:3;">
+      <div style="font-family:'DM Serif Display'; font-size:76px; color:var(--cream);
+        line-height:0.92; letter-spacing:-0.01em;">
+        Runtime
+      </div>
+      <div style="font-family:'DM Serif Display'; font-size:76px; color:var(--cream);
+        line-height:0.92; letter-spacing:-0.01em;">
+        Proven
+      </div>
+      <!-- ASCII underline -->
+      <div style="font-family:'IBM Plex Mono'; font-size:14px; color:var(--amber-dim); letter-spacing:4px; margin-top:12px;">
+        ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
+      </div>
+    </div>
+  </div>
+
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════
+     ROW 4: INSTITUTIONAL - REIMAGINED WITH SEAL & ASCII GRID
+     ═══════════════════════════════════════════════════════════ -->
+<div class="panel" style="background:var(--dark); padding:56px 72px; min-height:460px;
+  display:grid; grid-template-columns:1fr 1fr; gap:56px; border:1px solid var(--dark-3);">
+
+  <!-- Circuit pattern background -->
+  <div class="circuit-bg" style="opacity:0.1;"></div>
+  
+  <!-- 10 PRINT overlay -->
+  <div class="ten-print" style="opacity:0.05;"></div>
+
+  <!-- Left side -->
+  <div style="display:flex; flex-direction:column; position:relative; z-index:3;">
+    <!-- Logo mark + title with ASCII frame -->
+    <div style="display:flex; align-items:flex-start; gap:24px; margin-bottom:40px;">
+      <!-- Geometric scan-line logo mark -->
+      <div style="position:relative; width:100px; height:100px; flex-shrink:0;">
+        <svg width="100" height="100" viewBox="0 0 120 120" fill="none">
+          <g fill="var(--cream)">
+            <rect x="40" y="8" width="40" height="5.5" rx="1"/>
+            <rect x="28" y="18" width="64" height="5.5" rx="1"/>
+            <rect x="20" y="28" width="80" height="5.5" rx="1"/>
+            <rect x="14" y="38" width="92" height="5.5" rx="1"/>
+            <rect x="10" y="48" width="100" height="5.5" rx="1"/>
+            <rect x="10" y="58" width="100" height="5.5" rx="1"/>
+            <rect x="10" y="68" width="100" height="5.5" rx="1"/>
+            <rect x="14" y="78" width="92" height="5.5" rx="1"/>
+            <rect x="20" y="88" width="80" height="5.5" rx="1"/>
+            <rect x="28" y="98" width="64" height="5.5" rx="1"/>
+            <rect x="40" y="108" width="40" height="5.5" rx="1"/>
+          </g>
+        </svg>
+        <div class="scanlines"></div>
+        <!-- Corner ASCII -->
+        <div style="position:absolute; bottom:-8px; right:-8px; font-family:'IBM Plex Mono'; 
+          font-size:8px; color:var(--blue-dim);">
+          [LOGO]
+        </div>
+      </div>
+      <div>
+        <div style="font-family:'DM Serif Display'; font-size:44px; color:var(--cream);
+          line-height:1.05;">
+          Freyja
+          <span style="font-size:18px; vertical-align:super; margin-left:6px; opacity:0.5;">&#174;</span>
+          <br>Autonomous<br>Systems
+        </div>
+        <!-- ASCII badge -->
+        <div style="margin-top:12px; font-family:'IBM Plex Mono'; font-size:9px; color:var(--green-dim);">
+          [v2.0.1] [BUILD 8942] [SHA: a7f3d]
+        </div>
+      </div>
+    </div>
+
+    <!-- Institutional text with ASCII decoration -->
+    <div style="font-size:11px; letter-spacing:0.35em; color:rgba(232,228,222,0.45);
+      text-transform:uppercase; margin-bottom:24px;">
+      SELF-IMPROVING &nbsp;▓▓▓&nbsp; DESKTOP &nbsp;▓▓▓&nbsp; INTELLIGENCE
+    </div>
+
+    <div style="display:flex; gap:24px; align-items:flex-start; margin-bottom:24px;">
+      <div style="font-size:10px; letter-spacing:0.12em; color:rgba(232,228,222,0.4);
+        text-transform:uppercase; line-height:1.7;">
+        AUTONOMOUS<br>AGENT<br>DEVELOPMENT
+      </div>
+      <!-- Dot cluster with ASCII -->
+      <div style="display:flex; flex-direction:column; gap:3px; align-items:center; padding:4px 12px;
+        border:1px solid var(--dark-3);">
+        <div style="display:flex; gap:3px;">
+          <div style="width:3px; height:3px; background:var(--cream); border-radius:50%; opacity:0.5;"></div>
+        </div>
+        <div style="display:flex; gap:3px;">
+          <div style="width:3px; height:3px; background:var(--cream); border-radius:50%; opacity:0.4;"></div>
+          <div style="width:3px; height:3px; background:var(--blue); border-radius:50%; opacity:0.6;
+            animation:blink 2s infinite;"></div>
+        </div>
+        <div style="display:flex; gap:3px;">
+          <div style="width:3px; height:3px; background:var(--cream); border-radius:50%; opacity:0.3;"></div>
+          <div style="width:3px; height:3px; background:var(--amber); border-radius:50%; opacity:0.5;"></div>
+          <div style="width:3px; height:3px; background:var(--cream); border-radius:50%; opacity:0.35;"></div>
+        </div>
+        <div style="font-family:'IBM Plex Mono'; font-size:7px; color:var(--cream-dim); margin-top:4px;">●●●</div>
+      </div>
+      <div style="font-size:10px; letter-spacing:0.12em; color:rgba(232,228,222,0.4);
+        text-transform:uppercase; line-height:1.7;">
+        EXPERIMENTAL<br>DESKTOP<br>UNITS
+      </div>
+    </div>
+
+    <div style="font-size:10px; letter-spacing:0.1em; color:rgba(232,228,222,0.3);
+      text-transform:uppercase; margin-top:auto; display:flex; align-items:center; gap:16px;">
+      <span>BADGE ID: FRY-01-CTRL</span>
+      <span style="color:var(--amber);">╱</span>
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style="vertical-align:middle;">
+        <circle cx="8" cy="8" r="3" stroke="var(--cream)" stroke-width="0.8" opacity="0.4"/>
+        <circle cx="8" cy="4" r="1" fill="var(--cream)" opacity="0.3"/>
+        <circle cx="4" cy="10" r="1" fill="var(--cream)" opacity="0.3"/>
+        <circle cx="12" cy="10" r="1" fill="var(--cream)" opacity="0.3"/>
+        <circle cx="8" cy="8" r="1" fill="var(--amber)" opacity="0.8"/>
+      </svg>
+      <!-- Mini ASCII badge -->
+      <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--green-dim);">
+        [● VERIFIED]
+      </span>
+    </div>
+  </div>
+
+  <!-- Right side -->
+  <div style="display:flex; flex-direction:column; position:relative; z-index:3;">
+    <!-- Circular seal with glow -->
+    <div style="display:flex; justify-content:flex-end; margin-bottom:32px;">
+      <svg width="160" height="160" viewBox="0 0 180 180" fill="none">
+        <defs>
+          <path id="sealArc" d="M 90 12 A 78 78 0 1 1 89.99 12"/>
+        </defs>
+        <text fill="var(--cream)" font-family="Space Mono" font-size="7.5" letter-spacing="3" opacity="0.6">
+          <textPath href="#sealArc">FREYJA AUTONOMOUS SYSTEMS • SEIDR FORESIGHT •</textPath>
+        </text>
+        <circle cx="90" cy="90" r="65" stroke="rgba(232,228,222,0.15)" stroke-width="0.6"
+          stroke-dasharray="2 4"/>
+        <!-- Center orbital with glow -->
+        <ellipse cx="90" cy="90" rx="35" ry="15" transform="rotate(-20 90 90)"
+          stroke="var(--cream)" stroke-width="1" opacity="0.4"/>
+        <ellipse cx="90" cy="90" rx="35" ry="15" transform="rotate(25 90 90)"
+          stroke="var(--blue)" stroke-width="1" opacity="0.5" class="animate-pulse"/>
+        <ellipse cx="90" cy="90" rx="35" ry="15" transform="rotate(70 90 90)"
+          stroke="var(--cream)" stroke-width="1" opacity="0.3"/>
+        <circle cx="90" cy="90" r="8" fill="var(--amber)" opacity="0.3"/>
+        <circle cx="90" cy="90" r="4" fill="var(--amber)" opacity="0.6">
+          <animate attributeName="opacity" values="0.6;1;0.6" dur="2s" repeatCount="indefinite"/>
+        </circle>
+        <!-- Dots on outer ring -->
+        <circle cx="90" cy="12" r="2" fill="var(--blue)" opacity="0.5">
+          <animate attributeName="opacity" values="0.5;1;0.5" dur="1.5s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="168" cy="90" r="2" fill="var(--blue)" opacity="0.5"/>
+        <circle cx="90" cy="168" r="2" fill="var(--blue)" opacity="0.5"/>
+        <circle cx="12" cy="90" r="2" fill="var(--blue)" opacity="0.5"/>
+      </svg>
+    </div>
+
+    <!-- Serif headline -->
+    <div style="font-family:'DM Serif Display'; font-size:38px; color:var(--cream);
+      line-height:1.15; margin-bottom:16px;">
+      Experimental Lab<br>San Francisco &nbsp;╱
+    </div>
+    
+    <!-- ASCII coordinates -->
+    <div style="font-family:'IBM Plex Mono'; font-size:9px; color:var(--blue-dim); margin-bottom:16px;">
+      37° 46' 29.7252" N, 122° 25' 9.912" W
+    </div>
+
+    <!-- Bordered description box with glow -->
+    <div style="padding:14px 18px; border:1.5px solid rgba(0,240,255,0.2);
+      background:rgba(0,240,255,0.03); box-shadow:0 0 20px rgba(0,240,255,0.05);">
+      <div style="font-size:10px; letter-spacing:0.12em; color:rgba(232,228,222,0.55);
+        text-transform:uppercase; line-height:1.6;">
+        DEPLOY SELF-IMPROVING AUTONOMOUS<br>
+        AGENTS ACROSS ALL OPERATIONAL LAYERS
+      </div>
+      <!-- ASCII progress -->
+      <div style="margin-top:12px; font-family:'IBM Plex Mono'; font-size:8px; color:var(--green-dim);">
+        PROGRESS: [████████████████████░░░░░░░░] 66%
+      </div>
+    </div>
+  </div>
+
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════
+     ROW 5: BLUE ACCENT + SYSTEM STATUS - REIMAGINED WITH ASCII TERMINAL
+     ═══════════════════════════════════════════════════════════ -->
+<div class="row">
+
+  <!-- ─── PANEL 7: BLUE ACCENT PANEL WITH HEX GRID & ASCII WAVEFORM ─── -->
+  <div class="panel" style="flex:1; background:var(--blue); padding:48px 52px; min-height:480px;
+    color:var(--dark); display:flex; flex-direction:column; position:relative; overflow:hidden;">
+    
+    <!-- Hexagonal pattern overlay -->
+    <div style="position:absolute; inset:0; opacity:0.05;
+      background-image: url('data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2224%22 height=%2224%22><text x=%220%22 y=%2216%22 font-size=%2214%22>⬡</text></svg>');
+      background-size:24px 24px;"></div>
+    
+    <!-- Grid overlay -->
+    <div style="position:absolute; inset:0; pointer-events:none;
+      background-image:
+        linear-gradient(rgba(0,0,0,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,0,0,0.04) 1px, transparent 1px);
+      background-size:36px 36px;"></div>
+
+    <div style="position:relative; z-index:2; flex:1; display:flex; flex-direction:column;">
+      <!-- Top label with ASCII -->
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:auto;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-size:10px; letter-spacing:0.15em; text-transform:uppercase; opacity:0.6;">
+            ALL AGENTS READY
+          </span>
+          <span style="font-family:'IBM Plex Mono'; font-size:10px; color:var(--dark); opacity:0.4;">
+            [◉ ◉ ◉]
+          </span>
+        </div>
+        <!-- Contour icon -->
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+          <circle cx="14" cy="14" r="11" stroke="var(--dark)" stroke-width="1.5" opacity="0.3"/>
+          <circle cx="14" cy="14" r="7" stroke="var(--dark)" stroke-width="1.2" opacity="0.4"/>
+          <circle cx="14" cy="14" r="3.5" stroke="var(--dark)" stroke-width="1" opacity="0.5"/>
+          <circle cx="14" cy="14" r="1.2" fill="var(--dark)" opacity="0.5"/>
+        </svg>
+      </div>
+
+      <!-- Massive stacked type with ASCII shadow -->
+      <div style="font-family:'Anton'; font-size:72px; line-height:0.92; letter-spacing:0.02em; position:relative;">
+        <span style="position:relative; z-index:2;">SEIDR</span>
+        <span style="position:absolute; top:4px; left:4px; color:rgba(0,0,0,0.1); z-index:1;">SEIDR</span>
+        <br>READY<br>STATE
+      </div>
+      
+      <!-- ASCII waveform decoration -->
+      <div style="margin-top:20px; font-family:'IBM Plex Mono'; font-size:12px; opacity:0.3;">
+        ▂▄▆████▆▄▂▂▄▆████▆▄▂
+      </div>
+
+      <!-- Right side large number with glow -->
+      <div style="position:absolute; top:60px; right:0; font-family:'Anton'; font-size:100px;
+        line-height:1; opacity:0.12; text-shadow:2px 2px 0 rgba(0,0,0,0.1);">24/7</div>
+
+      <!-- Vertical text with ASCII -->
+      <div style="position:absolute; left:-4px; top:50%; transform:translateY(-50%) rotate(180deg);
+        writing-mode:vertical-rl; font-size:9px; letter-spacing:0.2em; text-transform:uppercase;
+        opacity:0.4; font-family:'IBM Plex Mono';">
+        AUTONOMOUS RUNTIME ▓▓▓
+      </div>
+
+      <!-- Bottom info with binary -->
+      <div style="margin-top:auto; display:flex; justify-content:space-between; align-items:flex-end;">
+        <div style="font-size:10px; letter-spacing:0.12em; text-transform:uppercase; opacity:0.6;
+          font-family:'IBM Plex Mono';">
+          LONG RUNNING AGENTS <span style="color:var(--magenta);">—</span> 2341429
+        </div>
+        <div style="font-size:10px; letter-spacing:0.12em; text-transform:uppercase; opacity:0.6;
+          display:flex; align-items:center; gap:8px;">
+          <span class="animate-blink" style="color:var(--dark);">●</span>
+          STATUS: ACTIVE <span style="animation:blink 1s infinite;">&#10095;&#10095;&#10095;</span>
+        </div>
+      </div>
+
+      <!-- Bottom geometric shapes with ASCII labels -->
+      <div style="display:flex; gap:6px; margin-top:16px;">
+        <div style="height:28px; flex:2; background:var(--dark); border-radius:14px;
+          display:flex; align-items:center; justify-content:center;">
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--blue); opacity:0.5;">CPU</span>
+        </div>
+        <div style="height:28px; flex:1; background:var(--dark); border-radius:14px;
+          display:flex; align-items:center; justify-content:center;">
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--blue); opacity:0.5;">GPU</span>
+        </div>
+        <div style="height:28px; flex:3; background:var(--dark); border-radius:14px;
+          display:flex; align-items:center; justify-content:center;">
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--blue); opacity:0.5;">NEURAL</span>
+        </div>
+        <div style="height:28px; flex:1; background:var(--dark); border-radius:14px;
+          display:flex; align-items:center; justify-content:center;">
+          <span style="font-family:'IBM Plex Mono'; font-size:8px; color:var(--blue); opacity:0.5;">I/O</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── PANEL 8: SYSTEM READOUT AS ASCII TERMINAL ─── -->
+  <div class="panel" style="flex:1; background:var(--cream); padding:40px 48px; min-height:480px;
+    color:var(--dark); display:flex; flex-direction:column; position:relative;">
+    
+    <!-- Halftone overlay -->
+    <div class="halftone" style="position:absolute; inset:0; opacity:0.5;"></div>
+    
+    <!-- Grid overlay -->
+    <div style="position:absolute; inset:0; pointer-events:none;
+      background-image:
+        linear-gradient(rgba(0,0,0,0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,0,0,0.035) 1px, transparent 1px);
+      background-size:28px 28px;"></div>
+
+    <div style="position:relative; z-index:2; flex:1; display:flex; flex-direction:column;">
+      <!-- Top bar with blinking status -->
+      <div style="display:flex; justify-content:space-between; margin-bottom:24px;">
+        <span style="font-size:10px; letter-spacing:0.12em; text-transform:uppercase; opacity:0.4;
+          font-family:'IBM Plex Mono';">
+          <span class="animate-blink" style="color:var(--green);">●</span> SYSTEM MODE: ACTIVE MEMORY CALIBRATION
+        </span>
+      </div>
+
+      <!-- Terminal-style System log -->
+      <div style="padding:16px 20px; border:1px solid rgba(26,26,26,0.15);
+        background:rgba(26,26,26,0.03); margin-bottom:20px; font-family:'IBM Plex Mono';">
+        <div style="font-size:10px; line-height:1.8; opacity:0.7;">
+          <span style="color:var(--green);">$</span> freyja --status<br>
+          <span style="color:var(--blue);">[</span> SYSTEM LOG <span style="color:var(--blue);">]</span><br>
+          <span style="color:var(--green);">#</span> INIT<span style="animation:blink 1s infinite;">...</span> OK<br>
+          <span style="color:var(--green);">#</span> MEMORY LOCK<span style="animation:blink 1s infinite;">...</span> STABLE<br>
+          <span style="color:var(--green);">#</span> SKILL RELAY<span style="animation:blink 1s infinite;">...</span> CONNECTED<br>
+          <span style="color:var(--green);">#</span> EPISODE STORE<span style="animation:blink 1s infinite;">...</span> VERIFIED<br>
+          <span style="color:var(--amber);">#</span> SEIDR HANDSHAKE<span style="animation:blink 1s infinite;">...</span> COMPLETE<br>
+          <span style="color:var(--green);">#</span> FWD LINK 02<span style="animation:blink 1s infinite;">...</span> ONLINE<br>
+          <span style="color:var(--dark);">-</span><br>
+          <span style="color:var(--green);">></span> <span style="animation:blink 1s infinite;">_</span>
+        </div>
+      </div>
+
+      <!-- Massive headline -->
+      <div style="font-family:'DM Serif Display'; font-size:44px; line-height:1.1;
+        margin-bottom:16px;">
+        Scaling autonomous<br>intelligence networks
+      </div>
+
+      <!-- Body text -->
+      <div style="font-size:11px; line-height:1.65; max-width:440px; opacity:0.6; margin-bottom:24px;">
+        Freyja is developing the underlying architecture for
+        next-generation desktop AI — an autonomous agent
+        capable of learning, reasoning, and coordinating across
+        all operational layers.
+      </div>
+
+      <!-- Contact button with ASCII corners -->
+      <div style="display:inline-flex; align-items:center; gap:0; margin-bottom:auto; align-self:flex-start;">
+        <div style="width:8px; height:8px; border-top:1.5px solid var(--dark);
+          border-left:1.5px solid var(--dark); opacity:0.4;"></div>
+        <span style="padding:6px 16px; background:var(--amber); color:var(--cream);
+          font-size:10px; letter-spacing:0.15em; text-transform:uppercase; font-weight:700;
+          box-shadow:0 0 15px rgba(255,176,0,0.3);">
+          LEARN MORE
+        </span>
+        <div style="width:8px; height:8px; border-bottom:1.5px solid var(--dark);
+          border-right:1.5px solid var(--dark); opacity:0.4;"></div>
+      </div>
+
+      <!-- Bottom stats with ASCII bars -->
+      <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:auto;">
+        <div>
+          <div style="font-family:'Anton'; font-size:56px; line-height:1;">98<span style="font-size:24px;">%</span></div>
+          <div style="font-size:10px; letter-spacing:0.1em; text-transform:uppercase; opacity:0.5;
+            margin-top:4px; font-family:'IBM Plex Mono';">
+            CONTEXT RETENTION RATE<br>
+            <span style="color:var(--green);">████████████████████▓▓</span>
+          </div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:10px; letter-spacing:0.1em; text-transform:uppercase; opacity:0.4;
+            font-family:'IBM Plex Mono';">
+            14.2 HRS<br>SUSTAINED AUTONOMY<br>
+            <span style="color:var(--amber);">██████████████████░░░░</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Footer bar with ASCII -->
+      <div style="display:flex; justify-content:space-between; margin-top:16px; padding-top:12px;
+        border-top:1px solid rgba(26,26,26,0.08); font-family:'IBM Plex Mono';">
+        <span style="font-size:9px; letter-spacing:0.1em; text-transform:uppercase; opacity:0.35;">
+          ALL SESSIONS CONDUCTED UNDER FIELD SPEC:
+        </span>
+        <span style="font-size:9px; letter-spacing:0.1em; text-transform:uppercase; opacity:0.35;">
+          FRY-0891 ╱ SEIDR OPS
+        </span>
+        <span style="font-size:9px; letter-spacing:0.1em; text-transform:uppercase; opacity:0.35;">
+          EXPERIMENTAL LAB <span style="animation:blink 2s infinite;">—</span> SAN FRANCISCO
+        </span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+</div><!-- end .board -->
+
+<!-- ═══ GLOBAL SCANLINE OVERLAY ═══ -->
+<div class="scanlines-crt" style="position:fixed; inset:0; pointer-events:none; z-index:10000; opacity:0.15;"></div>
+
+</body>
+</html>

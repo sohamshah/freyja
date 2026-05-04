@@ -1,0 +1,1434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FREYJA — Vision Board</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800;900&family=DM+Serif+Display:ital@0;1&family=Space+Mono:wght@400;700&display=swap');
+
+:root {
+  --bg: #0a0a0a;
+  --fg: #f0ede8;
+  --fg-dim: rgba(240,237,232,0.45);
+  --fg-ghost: rgba(240,237,232,0.06);
+  --blue: #a8d4fc;
+  --cyan: #7ae6ff;
+  --violet: #b4b0ff;
+  --purple: #c89aff;
+  --amber: #d4644a;
+}
+
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+body{background:#050505;font-family:'Space Mono',monospace;-webkit-font-smoothing:antialiased;min-width:1440px}
+.board{max-width:1500px;margin:40px auto;display:flex;flex-direction:column;gap:4px}
+.row{display:flex;gap:4px}
+.panel{position:relative;overflow:hidden}
+
+/* Gradient text */
+.gt{background:linear-gradient(180deg,#7ae6ff 0%,#a8d4fc 35%,#b4b0ff 70%,#c89aff 100%);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+
+/* Scan-line overlay */
+.sl{position:absolute;inset:0;pointer-events:none;z-index:2;
+  background:repeating-linear-gradient(0deg,transparent 0px,transparent 2px,var(--bg) 2px,var(--bg) 4.5px)}
+
+/* Dome icon - inline reusable */
+.dome{fill:none;stroke:currentColor;stroke-width:2.5;stroke-linecap:round}
+
+/* Topo mark */
+.topo-mark{fill:none;stroke:currentColor;stroke-width:1.4;stroke-linejoin:round}
+
+/* ── Canvas / Dithered image panels ────────────────── */
+canvas.fx-canvas{display:block;width:100%;height:100%}
+.scanlines-fine{position:absolute;inset:0;pointer-events:none;z-index:10;
+  background:repeating-linear-gradient(0deg,transparent 0px,transparent 1px,rgba(0,0,0,0.22) 1px,rgba(0,0,0,0.22) 2px)}
+.scanlines-coral{position:absolute;inset:0;pointer-events:none;z-index:10;
+  background:repeating-linear-gradient(0deg,transparent 0px,transparent 2px,rgba(212,100,74,0.06) 2px,rgba(212,100,74,0.06) 4px)}
+.reg{position:absolute;width:16px;height:16px}
+.reg::before,.reg::after{content:'';position:absolute;background:var(--amber)}
+.reg.tl{top:12px;left:12px}.reg.tr{top:12px;right:12px}
+.reg.bl{bottom:12px;left:12px}.reg.br{bottom:12px;right:12px}
+.reg::before{width:16px;height:1.5px;top:7px;left:0}
+.reg::after{width:1.5px;height:16px;top:0;left:7px}
+.grid-overlay{position:absolute;inset:0;pointer-events:none;
+  background-image:linear-gradient(rgba(255,255,255,0.03) 1px,transparent 1px),
+  linear-gradient(90deg,rgba(255,255,255,0.03) 1px,transparent 1px);background-size:32px 32px}
+
+/* ── Platform showcase ──────────────────────────────── */
+.showcase-card{background:rgba(240,237,232,0.03);border:1px solid rgba(240,237,232,0.07);
+  padding:32px 28px;display:flex;flex-direction:column;position:relative;overflow:hidden;
+  transition:background 0.3s}
+.showcase-card:hover{background:rgba(240,237,232,0.06)}
+.showcase-num{font-family:'Outfit';font-weight:900;font-size:56px;line-height:1;
+  color:rgba(240,237,232,0.04);position:absolute;top:16px;right:20px}
+
+/* ── Float animation ────────────────────────────────── */
+@keyframes drift{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+.float{animation:drift 7s ease-in-out infinite}
+
+/* ── Breathing contour rings ────────────────────────── */
+@keyframes ring-breathe-1{0%,100%{transform:translate(0,0) rotate(0deg) scale(1)}25%{transform:translate(1px,-1px) rotate(1deg) scale(1.02)}50%{transform:translate(-1px,1px) rotate(-0.5deg) scale(0.98)}75%{transform:translate(1px,0.5px) rotate(0.8deg) scale(1.01)}}
+@keyframes ring-breathe-2{0%,100%{transform:translate(0,0) rotate(0deg) scale(1)}25%{transform:translate(-1.5px,1px) rotate(-1.2deg) scale(0.97)}50%{transform:translate(1px,-1.5px) rotate(0.7deg) scale(1.03)}75%{transform:translate(-0.5px,-1px) rotate(-0.5deg) scale(0.99)}}
+@keyframes ring-breathe-3{0%,100%{transform:translate(0,0) rotate(0deg) scale(1)}33%{transform:translate(2px,1px) rotate(1.5deg) scale(1.04)}66%{transform:translate(-1px,-2px) rotate(-1deg) scale(0.96)}}
+.breathe-ring{transform-origin:50px 50px}
+.breathe-ring:nth-child(1){animation:ring-breathe-1 8s ease-in-out infinite}
+.breathe-ring:nth-child(2){animation:ring-breathe-2 9s ease-in-out infinite 0.5s}
+.breathe-ring:nth-child(3){animation:ring-breathe-3 7s ease-in-out infinite 1s}
+.breathe-ring:nth-child(4){animation:ring-breathe-1 10s ease-in-out infinite 1.5s}
+.breathe-ring:nth-child(5){animation:ring-breathe-2 8.5s ease-in-out infinite 2s}
+.breathe-ring:nth-child(6){animation:ring-breathe-3 9.5s ease-in-out infinite 0.3s}
+.breathe-ring:nth-child(7){animation:ring-breathe-1 7.5s ease-in-out infinite 1.2s}
+.breathe-ring:nth-child(8){animation:ring-breathe-2 11s ease-in-out infinite 0.8s}
+.breathe-ring:nth-child(9){animation:ring-breathe-3 8s ease-in-out infinite 1.8s}
+</style>
+</head>
+<body>
+
+<!-- ═══ GLOBAL GRAIN ═══ -->
+<svg style="position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:9999;opacity:0.045">
+<filter id="g"><feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="4" stitchTiles="stitch"/></filter>
+<rect width="100%" height="100%" filter="url(#g)"/>
+</svg>
+
+<!-- ═══ REUSABLE SVG SYMBOLS ═══ -->
+<svg style="display:none">
+<defs>
+  <!-- Dome icon (topographic hill) -->
+  <g id="dome">
+    <path d="M 30 50 C 30 43, 50 43, 50 50"/>
+    <path d="M 24 50 C 24 36, 56 36, 56 50"/>
+    <path d="M 18 50 C 18 28, 62 28, 62 50"/>
+    <path d="M 12 50 C 12 20, 68 20, 68 50"/>
+    <path d="M 6 50 C 6 12, 74 12, 74 50"/>
+    <path d="M 0 50 C 0 4, 80 4, 80 50"/>
+  </g>
+  <!-- Authentic topographic contour mark (from app algorithm) -->
+  <g id="topo">
+    <path d="M55.0,50.0 L55.1,50.7 L55.0,51.3 L54.7,51.9 L54.2,52.4 L53.7,52.8 L53.1,53.1 L52.6,53.4 L52.1,53.7 L51.6,53.9 L51.1,54.1 L50.6,54.2 L50.0,54.3 L49.4,54.2 L48.9,54.2 L48.3,54.2 L47.6,54.2 L46.9,54.1 L46.1,53.9 L45.5,53.5 L44.9,52.9 L44.6,52.2 L44.6,51.5 L44.7,50.7 L45.0,50.0 L45.3,49.4 L45.6,48.8 L45.9,48.3 L46.1,47.7 L46.4,47.2 L46.7,46.7 L47.1,46.2 L47.6,45.8 L48.1,45.5 L48.7,45.2 L49.3,44.9 L50.0,44.7 L50.7,44.6 L51.4,44.7 L52.1,44.9 L52.7,45.3 L53.2,45.9 L53.5,46.5 L53.8,47.1 L54.0,47.7 L54.2,48.2 L54.5,48.8 L54.8,49.4 L55.0,50.0 Z" opacity="1"/>
+    <path d="M59.7,50.0 L59.8,51.3 L59.7,52.6 L59.1,53.8 L58.2,54.7 L57.2,55.5 L56.2,56.2 L55.2,56.8 L54.3,57.4 L53.3,58.0 L52.3,58.6 L51.2,59.1 L50.0,59.4 L48.8,59.5 L47.5,59.5 L46.1,59.3 L44.7,59.1 L43.3,58.7 L41.9,58.1 L40.7,57.2 L39.7,55.9 L39.3,54.4 L39.3,52.9 L39.8,51.3 L40.4,50.0 L41.1,48.8 L41.7,47.8 L42.1,46.7 L42.4,45.6 L42.8,44.4 L43.3,43.3 L44.0,42.2 L45.0,41.3 L46.1,40.6 L47.3,40.1 L48.6,39.7 L50.0,39.5 L51.4,39.5 L52.8,39.7 L54.1,40.2 L55.2,41.0 L56.0,42.1 L56.7,43.3 L57.1,44.5 L57.5,45.6 L58.0,46.7 L58.6,47.7 L59.2,48.8 L59.7,50.0 Z" opacity="0.94"/>
+    <path d="M64.5,50.0 L64.8,52.0 L64.7,53.9 L63.9,55.7 L62.6,57.3 L61.1,58.5 L59.6,59.6 L58.1,60.6 L56.7,61.6 L55.3,62.8 L53.7,63.9 L52.0,64.8 L50.0,65.5 L47.9,65.7 L45.8,65.6 L43.7,65.1 L41.7,64.4 L39.7,63.4 L37.8,62.2 L36.3,60.5 L35.2,58.5 L34.8,56.3 L35.0,54.0 L35.7,51.9 L36.6,50.0 L37.6,48.4 L38.3,46.9 L38.7,45.3 L38.9,43.6 L39.2,41.7 L39.8,39.8 L40.8,38.0 L42.3,36.6 L44.0,35.6 L46.0,35.0 L48.0,34.7 L50.0,34.6 L52.0,34.8 L53.9,35.3 L55.8,36.1 L57.3,37.3 L58.6,38.8 L59.6,40.4 L60.3,42.1 L61.0,43.7 L61.8,45.1 L62.7,46.6 L63.7,48.2 L64.5,50.0 Z" opacity="0.89"/>
+    <path d="M70.0,50.0 L70.6,52.7 L70.4,55.5 L69.4,58.0 L67.7,60.2 L65.6,62.0 L63.4,63.4 L61.4,64.8 L59.4,66.3 L57.4,67.9 L55.2,69.6 L52.8,70.9 L50.0,71.8 L47.1,72.0 L44.2,71.5 L41.5,70.5 L39.0,69.0 L36.7,67.3 L34.7,65.3 L33.1,63.0 L31.9,60.4 L31.5,57.7 L31.8,54.9 L32.5,52.3 L33.6,50.0 L34.5,48.0 L35.1,46.0 L35.2,43.9 L35.3,41.5 L35.4,38.8 L36.1,36.1 L37.4,33.5 L39.4,31.6 L41.8,30.3 L44.6,29.7 L47.3,29.6 L50.0,30.0 L52.6,30.5 L55.0,31.3 L57.3,32.3 L59.4,33.7 L61.2,35.4 L62.6,37.4 L63.8,39.4 L64.9,41.4 L66.1,43.3 L67.5,45.3 L68.8,47.5 L70.0,50.0 Z" opacity="0.83"/>
+    <path d="M76.1,50.0 L76.8,53.5 L76.5,57.1 L75.1,60.4 L72.9,63.2 L70.1,65.5 L67.3,67.3 L64.5,69.0 L62.0,70.7 L59.4,72.7 L56.6,74.7 L53.5,76.3 L50.0,77.3 L46.4,77.3 L42.9,76.4 L39.8,74.7 L37.0,72.5 L34.7,70.0 L32.6,67.4 L31.0,64.6 L29.8,61.7 L29.2,58.6 L29.1,55.6 L29.6,52.7 L30.3,50.0 L30.8,47.5 L31.1,44.9 L31.0,42.1 L30.7,38.9 L30.8,35.3 L31.6,31.6 L33.4,28.4 L36.1,25.9 L39.4,24.5 L43.1,24.1 L46.6,24.5 L50.0,25.3 L53.1,26.3 L56.1,27.3 L58.9,28.5 L61.6,29.9 L64.0,31.7 L66.1,33.9 L68.0,36.2 L69.7,38.6 L71.3,41.2 L73.1,43.8 L74.7,46.7 L76.1,50.0 Z" opacity="0.78"/>
+    <path d="M82.1,50.0 L82.6,54.3 L82.0,58.6 L80.2,62.5 L77.4,65.8 L74.0,68.4 L70.5,70.5 L67.1,72.3 L64.0,74.2 L60.9,76.4 L57.7,78.6 L54.0,80.4 L50.0,81.5 L45.9,81.4 L41.9,80.1 L38.5,77.9 L35.5,75.0 L33.1,72.0 L31.1,68.9 L29.3,65.9 L27.7,62.9 L26.5,59.7 L25.8,56.5 L25.5,53.2 L25.4,50.0 L25.4,46.8 L25.3,43.4 L25.0,39.6 L24.8,35.5 L25.2,30.9 L26.5,26.5 L29.0,22.6 L32.6,19.9 L37.0,18.5 L41.6,18.5 L46.0,19.4 L50.0,20.8 L53.7,22.2 L57.1,23.5 L60.5,24.7 L63.8,26.0 L67.1,27.8 L70.0,30.0 L72.7,32.6 L75.0,35.6 L77.0,38.8 L79.0,42.2 L80.8,45.9 L82.1,50.0 Z" opacity="0.72"/>
+    <path d="M87.2,50.0 L87.3,54.9 L86.3,59.7 L84.1,64.1 L80.9,67.8 L77.0,70.7 L72.9,72.9 L69.1,74.9 L65.5,76.9 L62.1,79.3 L58.5,81.7 L54.5,83.9 L50.0,85.2 L45.4,85.2 L41.0,83.8 L37.1,81.2 L33.9,77.9 L31.3,74.4 L28.9,71.1 L26.7,67.9 L24.4,64.8 L22.3,61.5 L20.4,57.9 L19.1,54.1 L18.3,50.0 L17.8,45.8 L17.6,41.3 L17.5,36.5 L17.8,31.4 L18.9,26.1 L21.1,21.1 L24.7,17.0 L29.4,14.2 L34.7,13.2 L40.3,13.7 L45.4,15.2 L50.0,17.2 L54.1,19.0 L58.0,20.3 L61.9,21.3 L66.0,22.4 L70.1,23.9 L74.0,26.0 L77.4,29.0 L80.3,32.5 L82.6,36.5 L84.6,40.7 L86.2,45.2 L87.2,50.0 Z" opacity="0.66"/>
+    <path d="M91.2,50.0 L90.9,55.4 L89.6,60.6 L87.1,65.4 L83.6,69.4 L79.5,72.6 L75.1,75.1 L71.0,77.4 L67.2,79.7 L63.4,82.4 L59.5,85.4 L55.0,88.0 L50.0,89.7 L44.7,89.9 L39.7,88.5 L35.2,85.7 L31.5,82.1 L28.4,78.2 L25.5,74.5 L22.5,71.1 L19.4,67.7 L16.2,64.0 L13.2,59.9 L10.9,55.1 L9.5,50.0 L8.9,44.6 L9.0,39.0 L9.8,33.3 L11.2,27.6 L13.4,21.9 L16.8,16.8 L21.4,12.8 L27.1,10.3 L33.3,9.7 L39.5,10.7 L45.1,12.7 L50.0,15.0 L54.4,16.8 L58.6,17.9 L63.1,18.5 L67.9,19.0 L72.9,20.1 L77.8,22.2 L82.1,25.4 L85.5,29.5 L87.9,34.3 L89.6,39.4 L90.7,44.6 L91.2,50.0 Z" opacity="0.61"/>
+    <path d="M94.8,50.0 L94.0,55.8 L92.5,61.4 L90.0,66.6 L86.5,71.1 L82.4,74.9 L78.0,78.0 L73.6,80.8 L69.5,83.7 L65.3,87.0 L60.8,90.4 L55.7,93.6 L50.0,95.7 L43.9,96.2 L38.0,94.8 L32.7,91.8 L28.2,87.7 L24.5,83.3 L21.0,79.0 L17.4,75.0 L13.4,71.1 L9.3,66.9 L5.5,61.9 L2.6,56.2 L0.9,50.0 L0.7,43.5 L1.7,37.1 L3.7,30.8 L6.5,24.9 L10.0,19.3 L14.5,14.5 L20.0,10.9 L26.2,8.8 L32.8,8.4 L39.2,9.5 L44.9,11.6 L50.0,13.6 L54.6,15.1 L59.2,15.6 L64.3,15.5 L70.0,15.3 L76.1,16.0 L82.0,18.0 L87.1,21.6 L90.9,26.4 L93.3,32.1 L94.6,38.1 L95.0,44.1 L94.8,50.0 Z" opacity="0.55"/>
+  </g>
+  <!-- Scan-line disc (horizontal bars forming circle) -->
+  <g id="disc">
+    <rect x="35" y="6" width="30" height="4.5" rx="1" fill="currentColor"/>
+    <rect x="22" y="15" width="56" height="4.5" rx="1" fill="currentColor"/>
+    <rect x="14" y="24" width="72" height="4.5" rx="1" fill="currentColor"/>
+    <rect x="10" y="33" width="80" height="4.5" rx="1" fill="currentColor"/>
+    <rect x="8" y="42" width="84" height="4.5" rx="1" fill="currentColor"/>
+    <rect x="8" y="51" width="84" height="4.5" rx="1" fill="currentColor"/>
+    <rect x="10" y="60" width="80" height="4.5" rx="1" fill="currentColor"/>
+    <rect x="14" y="69" width="72" height="4.5" rx="1" fill="currentColor"/>
+    <rect x="22" y="78" width="56" height="4.5" rx="1" fill="currentColor"/>
+    <rect x="35" y="87" width="30" height="4.5" rx="1" fill="currentColor"/>
+  </g>
+  <!-- Concentric rings (simple, clean) -->
+  <g id="rings">
+    <circle cx="50" cy="50" r="44" stroke="currentColor" stroke-width="2" fill="none"/>
+    <circle cx="50" cy="50" r="33" stroke="currentColor" stroke-width="2" fill="none"/>
+    <circle cx="50" cy="50" r="22" stroke="currentColor" stroke-width="2" fill="none"/>
+    <circle cx="50" cy="50" r="12" stroke="currentColor" stroke-width="1.8" fill="none"/>
+    <circle cx="50" cy="50" r="4" fill="currentColor"/>
+  </g>
+  <!-- Wave contours (horizontal wavy lines) -->
+  <g id="wave" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+    <path d="M 5 20 Q 25 12, 50 20 Q 75 28, 95 20"/>
+    <path d="M 5 38 Q 25 30, 50 38 Q 75 46, 95 38"/>
+    <path d="M 5 56 Q 25 48, 50 56 Q 75 64, 95 56"/>
+    <path d="M 5 74 Q 25 66, 50 74 Q 75 82, 95 74"/>
+  </g>
+  <!-- Peak marker (single contour ring + peak triangle) -->
+  <g id="peak">
+    <path d="M 50 10 L 30 85 L 70 85 Z" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linejoin="round"/>
+    <circle cx="50" cy="50" r="18" stroke="currentColor" stroke-width="1.5" fill="none"/>
+    <circle cx="50" cy="50" r="8" stroke="currentColor" stroke-width="1.2" fill="none"/>
+    <circle cx="50" cy="50" r="2.5" fill="currentColor"/>
+  </g>
+  <!-- Custom Freyja asterisk (contour-ring star) -->
+  <g id="fstar">
+    <circle cx="10" cy="10" r="3.2" stroke="currentColor" fill="none" stroke-width="0.9"/>
+    <circle cx="10" cy="10" r="1.2" fill="currentColor"/>
+    <line x1="10" y1="1" x2="10" y2="5" stroke="currentColor" stroke-width="1.2"/>
+    <line x1="10" y1="15" x2="10" y2="19" stroke="currentColor" stroke-width="1.2"/>
+    <line x1="2.2" y1="5.5" x2="5.8" y2="7.6" stroke="currentColor" stroke-width="1.2"/>
+    <line x1="14.2" y1="12.4" x2="17.8" y2="14.5" stroke="currentColor" stroke-width="1.2"/>
+    <line x1="2.2" y1="14.5" x2="5.8" y2="12.4" stroke="currentColor" stroke-width="1.2"/>
+    <line x1="14.2" y1="7.6" x2="17.8" y2="5.5" stroke="currentColor" stroke-width="1.2"/>
+  </g>
+</defs>
+</svg>
+
+<div class="board">
+
+<!-- ═══════════════════════════════════════════════
+     ROW 1: BRAND + DEPLOY
+     ═══════════════════════════════════════════════ -->
+<div class="row">
+
+  <!-- PANEL 1: FREYJA BRAND -->
+  <div class="panel" style="flex:3;background:var(--bg);padding:48px 56px;min-height:580px;display:flex;flex-direction:column">
+
+    <!-- Top bar -->
+    <div style="display:flex;align-items:center;gap:14px">
+      <svg width="56" height="18" viewBox="0 0 56 18" fill="none"><g stroke="rgba(240,237,232,0.25)" stroke-width="2">
+        <line x1="2" y1="18" x2="9" y2="0"/><line x1="8" y1="18" x2="15" y2="0"/>
+        <line x1="14" y1="18" x2="21" y2="0"/><line x1="20" y1="18" x2="27" y2="0"/>
+        <line x1="26" y1="18" x2="33" y2="0"/><line x1="32" y1="18" x2="39" y2="0"/>
+        <line x1="38" y1="18" x2="45" y2="0"/><line x1="44" y1="18" x2="51" y2="0"/>
+      </g></svg>
+      <span style="font-size:10px;letter-spacing:0.25em;color:var(--fg-dim)">FREYJA SYSTEMS</span>
+      <span style="margin-left:auto;color:var(--fg-dim)">
+        <svg width="18" height="18" viewBox="0 0 100 100" class="topo-mark"><use href="#topo"/></svg>
+      </span>
+      <span style="font-size:10px;letter-spacing:0.2em;color:var(--fg-dim)">SEIDR</span>
+    </div>
+
+    <!-- Hero: FREYJA full-width -->
+    <div style="flex:1;display:flex;flex-direction:column;justify-content:center;margin:20px 0">
+      <!-- Authentic topo mark above text (organic, not dome) -->
+      <div style="margin-bottom:8px;color:var(--fg)">
+        <svg width="56" height="56" viewBox="0 0 100 100" class="topo-mark" stroke-width="1.8"><use href="#topo"/></svg>
+      </div>
+      <!-- FREYJA with gradient — full width, no competing elements -->
+      <div style="font-family:'Outfit';font-weight:900;font-size:132px;line-height:0.92;letter-spacing:0.06em" class="gt">FREYJA</div>
+      <!-- Dot dissolve below text -->
+      <div style="height:22px;margin-top:-2px;
+        background-image:radial-gradient(circle,var(--blue) 1.2px,transparent 1.2px);
+        background-size:5px 5px;
+        mask-image:linear-gradient(180deg,rgba(0,0,0,0.4) 0%,transparent 100%);
+        -webkit-mask-image:linear-gradient(180deg,rgba(0,0,0,0.4) 0%,transparent 100%)"></div>
+      <!-- Subtitle -->
+      <div style="margin-top:16px;font-size:12px;letter-spacing:0.22em;color:var(--fg-dim);text-transform:uppercase">
+        AUTONOMOUS AGENT RUNTIME
+      </div>
+    </div>
+
+    <!-- Bottom bar -->
+    <div style="display:flex;align-items:center;gap:16px">
+      <span style="font-size:12px;color:var(--amber)">&#10095;&#10095;&#10095;</span>
+      <span style="font-family:'Outfit';font-weight:900;font-size:13px;letter-spacing:0.15em;color:var(--fg-dim)">SF</span>
+      <span style="padding:4px 14px;background:rgba(212,100,74,0.12);font-size:9px;letter-spacing:0.18em;color:var(--amber)">STATUS: ACTIVE</span>
+      <span style="margin-left:auto;font-size:9px;letter-spacing:0.12em;color:rgba(240,237,232,0.2)">V 0.1 ALPHA</span>
+      <div style="width:36px;height:36px;border:2px solid var(--amber);border-radius:50%;display:flex;align-items:center;justify-content:center">
+        <span style="font-family:'Outfit';font-weight:900;font-size:16px;color:var(--amber)">R</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- PANEL 2: DEPLOY AGENTS -->
+  <div class="panel" style="flex:2;background:var(--bg);min-height:580px;display:flex">
+    <!-- Blue tab -->
+    <div style="width:34px;background:var(--blue);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+      <span style="writing-mode:vertical-rl;transform:rotate(180deg);font-family:'Outfit';font-weight:900;font-size:10px;letter-spacing:0.3em;color:var(--bg)">SEIDR</span>
+    </div>
+    <div style="flex:1;padding:40px 44px;display:flex;flex-direction:column">
+      <div style="font-size:10px;letter-spacing:0.15em;color:var(--fg-dim);margin-bottom:auto">AGENTS &mdash; RUNNING &mdash; CONTINUOUSLY</div>
+
+      <div style="margin:16px 0">
+        <div style="font-family:'Outfit';font-weight:900;font-size:80px;color:var(--fg);line-height:0.94;letter-spacing:0.04em">DEPLOY<br>AGENTS</div>
+        <!-- Dissolve dots -->
+        <div style="height:16px;margin-top:-2px;
+          background-image:radial-gradient(circle,var(--fg) 1px,transparent 1px);
+          background-size:4.5px 4.5px;
+          mask-image:linear-gradient(180deg,rgba(0,0,0,0.3) 0%,transparent 100%);
+          -webkit-mask-image:linear-gradient(180deg,rgba(0,0,0,0.3) 0%,transparent 100%)"></div>
+      </div>
+
+      <!-- Badge -->
+      <div style="display:inline-flex;align-items:center;gap:10px;padding:8px 16px;border:1.5px solid rgba(168,212,252,0.4);align-self:flex-start;margin-bottom:16px">
+        <span style="font-family:'Outfit';font-weight:900;font-size:14px;letter-spacing:0.18em;color:var(--fg)">RUNTIME READY</span>
+        <svg width="18" height="18" viewBox="0 0 100 100" style="color:var(--blue)"><use href="#rings"/></svg>
+      </div>
+
+      <!-- Halftone bar -->
+      <div style="height:18px;margin:4px 0 16px;background-image:radial-gradient(circle,rgba(240,237,232,0.3) 0.5px,transparent 0.5px);background-size:3px 3px"></div>
+
+      <!-- Ghost -->
+      <div style="position:absolute;bottom:16px;right:28px;font-family:'Outfit';font-weight:900;font-size:100px;color:var(--fg-ghost);line-height:1;letter-spacing:0.04em">&copy; 2026</div>
+
+      <div style="display:flex;align-items:center;gap:12px;margin-top:auto">
+        <div style="flex:1;height:1px;background:rgba(240,237,232,0.1)"></div>
+        <span style="font-size:10px;letter-spacing:0.18em;color:var(--fg-dim)">ALWAYS LEARNING</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     ROW 2: FULL-WIDTH BANNER
+     ═══════════════════════════════════════════════ -->
+<div class="panel" style="background:var(--bg);padding:52px 64px;min-height:400px;display:flex;flex-direction:column;justify-content:space-between">
+
+  <!-- Registration marks -->
+  <div style="position:absolute;top:14px;left:14px;width:8px;height:8px;background:var(--amber)"></div>
+  <div style="position:absolute;top:14px;right:14px;width:8px;height:8px;background:var(--amber)"></div>
+  <div style="position:absolute;bottom:14px;left:14px;width:8px;height:8px;background:var(--amber)"></div>
+  <div style="position:absolute;bottom:14px;right:14px;width:8px;height:8px;background:var(--amber)"></div>
+  <div style="position:absolute;top:50%;left:0;right:0;border-top:1px dashed rgba(212,100,74,0.08)"></div>
+  <div style="position:absolute;left:50%;top:0;bottom:0;border-left:1px dashed rgba(212,100,74,0.08)"></div>
+
+  <!-- Ghost FREYJA -->
+  <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-family:'Outfit';font-weight:900;font-size:200px;color:var(--fg-ghost);letter-spacing:0.12em;white-space:nowrap;pointer-events:none">FREYJA</div>
+
+  <!-- Top -->
+  <div style="display:flex;justify-content:space-between;position:relative;z-index:3">
+    <div>
+      <div style="font-family:'Outfit';font-weight:900;font-size:13px;letter-spacing:0.22em;color:var(--fg-dim)">SEIDR FORESIGHT</div>
+      <div style="font-size:11px;letter-spacing:0.15em;color:rgba(240,237,232,0.25);margin-top:4px">ENGINE &mdash; V 0.1 &nbsp;/</div>
+    </div>
+    <div style="text-align:right">
+      <div style="font-family:'Outfit';font-weight:900;font-size:13px;letter-spacing:0.22em;color:var(--fg-dim)">AUTONOMOUS DISCIPLINE</div>
+      <div style="font-size:11px;letter-spacing:0.15em;color:rgba(240,237,232,0.25);margin-top:4px">SF &nbsp;&nbsp;&nbsp; NYC &nbsp;&nbsp;&nbsp; LDN</div>
+    </div>
+  </div>
+
+  <!-- Center: large topo mark -->
+  <div style="display:flex;align-items:center;justify-content:center;position:relative;z-index:3">
+    <div style="position:relative;width:360px;height:360px;margin:-30px 0;color:var(--fg)">
+      <svg width="360" height="360" viewBox="0 0 100 100" class="topo-mark" stroke-width="3.2"><use href="#topo"/></svg>
+      <div class="sl"></div>
+    </div>
+    <!-- ® -->
+    <div style="position:absolute;right:100px;top:50%;transform:translateY(-50%);width:56px;height:56px;border:3px solid var(--amber);border-radius:50%;display:flex;align-items:center;justify-content:center">
+      <span style="font-family:'Outfit';font-weight:900;font-size:26px;color:var(--amber)">R</span>
+    </div>
+    <!-- Varied icon corner marks -->
+    <svg width="24" height="24" viewBox="0 0 100 100" style="position:absolute;top:55px;left:80px;color:rgba(240,237,232,0.12)"><use href="#rings"/></svg>
+    <svg width="24" height="24" viewBox="0 0 100 95" style="position:absolute;bottom:55px;right:200px;color:rgba(240,237,232,0.12)"><use href="#peak"/></svg>
+  </div>
+
+  <!-- Bottom -->
+  <div style="display:flex;justify-content:space-between;position:relative;z-index:3">
+    <div style="font-size:11px;letter-spacing:0.18em;color:var(--fg-dim)">AGENTS RUNNING CONTINUOUSLY</div>
+    <div style="font-size:11px;letter-spacing:0.18em;color:var(--fg-dim)">NATIVE DESKTOP INTELLIGENCE</div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     ROW 3: TWO TALL TICKETS
+     ═══════════════════════════════════════════════ -->
+<div class="row">
+
+  <!-- TICKET 1: ASCII GLOBE -->
+  <div class="panel" style="flex:1;background:var(--bg);padding:0;min-height:820px;display:flex;flex-direction:column;border-radius:12px">
+    <!-- Header bar -->
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:16px 24px;border-bottom:1px solid rgba(240,237,232,0.08)">
+      <span style="font-size:10px;letter-spacing:0.2em;color:var(--fg-dim)">FREYJA LAB</span>
+      <div style="display:flex;align-items:center;gap:8px">
+        <svg width="16" height="16" viewBox="0 0 100 100" class="topo-mark" style="color:var(--fg-dim)"><use href="#topo"/></svg>
+        <span style="font-size:10px;letter-spacing:0.2em;color:var(--fg-dim)">BY FREYJA</span>
+      </div>
+    </div>
+
+    <div style="padding:32px 28px;flex:1;display:flex;flex-direction:column">
+      <!-- Dome + title -->
+      <div style="text-align:center;margin-bottom:8px">
+        <span style="font-family:'Outfit';font-weight:900;font-size:11px;letter-spacing:0.25em;color:var(--fg-dim)">ENG. TEAM</span>
+        &nbsp;&nbsp;
+        <svg width="32" height="32" viewBox="0 0 100 100" style="color:var(--fg);display:inline-block;vertical-align:middle"><use href="#disc"/></svg>
+      </div>
+      <div style="text-align:center;font-family:'Outfit';font-weight:900;font-size:52px;letter-spacing:0.08em;color:var(--fg)">FREYJA</div>
+      <!-- Dissolve -->
+      <div style="width:320px;height:16px;margin:-2px auto 0;
+        background-image:radial-gradient(circle,var(--fg) 1px,transparent 1px);
+        background-size:4px 4px;
+        mask-image:linear-gradient(180deg,rgba(0,0,0,0.35) 0%,transparent 100%);
+        -webkit-mask-image:linear-gradient(180deg,rgba(0,0,0,0.35) 0%,transparent 100%)"></div>
+      <div style="text-align:center;font-size:11px;letter-spacing:0.3em;color:var(--fg-dim);margin-top:6px">EST. 2026</div>
+
+      <!-- ASCII art globe -->
+      <div style="flex:1;display:flex;align-items:center;justify-content:center;margin:16px 0;position:relative">
+        <!-- Diagonal crosshair lines -->
+        <svg style="position:absolute;inset:0;opacity:0.06" viewBox="0 0 400 400" fill="none" stroke="var(--fg)" stroke-width="0.5">
+          <line x1="0" y1="0" x2="400" y2="400"/><line x1="400" y1="0" x2="0" y2="400"/>
+          <line x1="200" y1="0" x2="200" y2="400" stroke-dasharray="3 6"/>
+        </svg>
+        <div style="font-family:'Space Mono';font-size:5.5px;line-height:6.8px;letter-spacing:0.6px;color:rgba(240,237,232,0.3);word-break:break-all;overflow:hidden;width:300px;height:300px;text-align:center;
+          mask-image:radial-gradient(circle,black 28%,rgba(0,0,0,0.4) 38%,rgba(0,0,0,0.15) 48%,transparent 56%);
+          -webkit-mask-image:radial-gradient(circle,black 28%,rgba(0,0,0,0.4) 38%,rgba(0,0,0,0.15) 48%,transparent 56%)">|!|=&gt;&gt;s+x[V0/]d*v-!?}|7#&amp;%@~;:=+0O{["|';&lt;!?/&gt;\^|||{}&lt;&gt;=="x+d]|V*!/#0=@^~&amp;%';:+O-?}|7s[v!={&lt;&gt;""||/\^#$0x+V]d*&amp;%@!?;':={&lt;&gt;~7s|v-}{[]}+O#0||!|=&gt;&gt;s+x[V0/]d*v-!?}|7#&amp;%@~;:=+0O{["|';&lt;!?/&gt;\^|||{}&lt;&gt;=="x+d]|V*!/#0=@^~&amp;%';:+O-?}|7s[v!={&lt;&gt;""||/\^#$0x+V]d*&amp;%@!?;':={&lt;&gt;~7s|v-}{[]}+O#0||!|=&gt;&gt;s+x[V0/]d*v-!?}|7#&amp;%@~;:=+0O{["|';&lt;!?/&gt;\^|||{}&lt;&gt;=="x+d]|V*!/#0=@^~&amp;%';:+O-?}|7s[v!={&lt;&gt;""||/\^#$0x+V]d*&amp;%@!?;':={&lt;&gt;~7s|v-}{[]}+O#0||!|=&gt;&gt;s+x[V0/]d*v-!?}|7#&amp;%@~;:=+0O{["|';&lt;!?/&gt;\^|||{}&lt;&gt;=="x+d]|V*!/#0=@^~&amp;%';:+O-?}|7s[v!={&lt;&gt;""||/\^#$0x+V]d*&amp;%@!?;':={&lt;&gt;~7s|v-}{[]}+O#0||!|=&gt;&gt;s+x[V0/]d*v-!?}|7#&amp;%@~;:=+0O{["|';&lt;!?/&gt;\^|||{}&lt;&gt;=="x+d]|V*!/#0=@^~&amp;%';:+O-?}|7s[v!={&lt;&gt;""||/\^#$0x+V]d*&amp;%@!?;':={&lt;&gt;~7s|v-}{[]}+O#0||!|=&gt;&gt;s+x[V0/]d*v-!?}|7#&amp;%@~;:=+0O{["|';&lt;!?/&gt;\^|||{}&lt;&gt;=="x+d]|V*!/#0=@^~&amp;%';:+O-?}|7s[v!={&lt;&gt;""||/\^#$0x+V]d*&amp;%@!?;':={&lt;&gt;~7s|v-}{[]}+O#0||!|=&gt;&gt;s+x[V0/]d*v-!?}|7#&amp;%@~;:=+0O{["|';&lt;!?/&gt;\^|||{}&lt;&gt;=="x+d]|V*!/#0=@^~&amp;%';:+O-?}|7s[v!={&lt;&gt;""||/\^#$0x+V]d*&amp;%@!?;':={&lt;&gt;~7s|v-}{[]}+O#0|!=&gt;&gt;x[0/]d*v-!?}7#&amp;%@~;:=+0O{["|';&lt;!?/&gt;\^||{}&lt;&gt;=="x+d]|V*!/#0=@^~&amp;%';:+O-?}|7s[v!={&lt;&gt;""||/\^#$0x+V]d*&amp;%@!?;':={&lt;&gt;~7s|v-}{[]}+O#0</div>
+      </div>
+
+      <!-- Date block -->
+      <div style="font-family:'Outfit';font-weight:900;font-size:18px;letter-spacing:0.08em;color:var(--fg);margin-bottom:6px">
+        14 APRIL, 2026 &nbsp;&nbsp;03:41
+      </div>
+      <div style="font-family:'Outfit';font-weight:900;font-size:18px;letter-spacing:0.08em;color:var(--fg);margin-bottom:16px">
+        AM &nbsp;&nbsp;EXPERIMENTAL LAB, SF
+      </div>
+
+      <!-- Body text -->
+      <div style="font-size:10px;letter-spacing:0.08em;color:rgba(240,237,232,0.4);line-height:1.7;text-transform:uppercase;text-align:justify;margin-bottom:24px">
+        IN A CONTINUOUS ANALYSIS, WE FOUND THAT SUSTAINED AUTONOMOUS SESSIONS EXCEEDING 14 HOURS MAINTAINED 98% CONTEXT RETENTION THROUGH LAYERED MEMORY EVICTION, EPISODIC REINFORCEMENT LEARNING, AND ADAPTIVE SKILL COMPOSITION.
+      </div>
+
+      <!-- Footer -->
+      <div style="display:flex;align-items:center;justify-content:space-between;padding-top:16px;border-top:1px solid rgba(240,237,232,0.08)">
+        <span style="font-size:10px;letter-spacing:0.2em;color:var(--fg-dim)">FREYJA</span>
+        <svg width="18" height="18" viewBox="0 0 20 20" style="color:var(--fg-dim)"><use href="#fstar"/></svg>
+        <div style="display:flex;align-items:center;gap:6px">
+          <svg width="16" height="16" viewBox="0 0 100 100" class="topo-mark" style="color:var(--fg-dim)"><use href="#topo"/></svg>
+          <span style="font-size:10px;letter-spacing:0.2em;color:var(--fg-dim)">SEIDR</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TICKET 2: HALFTONE SPHERE -->
+  <div class="panel" style="flex:1;background:var(--bg);padding:0;min-height:820px;display:flex;flex-direction:column;border-radius:12px">
+    <!-- Header bar -->
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:16px 24px;border-bottom:1px solid rgba(240,237,232,0.08)">
+      <span style="font-size:10px;letter-spacing:0.2em;color:var(--fg-dim)">FREYJA LAB</span>
+      <div style="display:flex;align-items:center;gap:8px">
+        <svg width="16" height="16" viewBox="0 0 100 100" class="topo-mark" style="color:var(--fg-dim)"><use href="#topo"/></svg>
+        <span style="font-size:10px;letter-spacing:0.2em;color:var(--fg-dim)">BY FREYJA</span>
+      </div>
+    </div>
+
+    <div style="padding:32px 28px;flex:1;display:flex;flex-direction:column">
+      <!-- Dome + title centered -->
+      <div style="text-align:center;margin-bottom:4px">
+        <svg width="64" height="42" viewBox="0 0 80 52" class="dome" style="color:var(--fg)"><use href="#dome"/></svg>
+      </div>
+      <div style="text-align:center;font-family:'Outfit';font-weight:900;font-size:48px;letter-spacing:0.06em;color:var(--fg)">FREYJA</div>
+      <div style="text-align:center;font-size:11px;letter-spacing:0.3em;color:var(--fg-dim);margin-top:6px">EST. 2026</div>
+
+      <!-- Large scan-line contour mark -->
+      <div style="flex:1;display:flex;align-items:center;justify-content:center;margin:16px 0">
+        <div style="position:relative;width:300px;height:300px;color:var(--fg)">
+          <svg width="300" height="300" viewBox="0 0 100 100" class="topo-mark" stroke-width="2.6"><use href="#topo"/></svg>
+          <div class="sl"></div>
+        </div>
+      </div>
+
+      <!-- Title -->
+      <div style="font-family:'Outfit';font-weight:900;font-size:14px;letter-spacing:0.2em;color:var(--fg-dim);margin-bottom:4px">SEIDR FORESIGHT</div>
+      <div style="font-family:'Outfit';font-weight:900;font-size:24px;letter-spacing:0.08em;color:var(--fg);margin-bottom:16px">AGENT SWARMS</div>
+
+      <!-- Body -->
+      <div style="font-size:10px;letter-spacing:0.08em;color:rgba(240,237,232,0.4);line-height:1.7;text-transform:uppercase;text-align:justify;margin-bottom:24px">
+        IN A CONTINUOUS ANALYSIS, WE FOUND THAT MULTI-AGENT ORCHESTRATION WITH EPISODIC MEMORY SHARING REDUCES TASK COMPLETION TIME BY 4.2X WHILE MAINTAINING FULL CONTEXT INTEGRITY ACROSS ALL OPERATIONAL LAYERS.
+      </div>
+
+      <!-- Footer -->
+      <div style="display:flex;align-items:center;justify-content:space-between;padding-top:16px;border-top:1px solid rgba(240,237,232,0.08)">
+        <div>
+          <div style="font-size:9px;letter-spacing:0.12em;color:var(--fg-dim)">BY FREYJA</div>
+          <!-- Barcode -->
+          <div style="display:flex;gap:1.5px;height:20px;margin-top:6px;align-items:flex-end">
+            <div style="width:2px;height:100%;background:var(--fg-dim)"></div>
+            <div style="width:3px;height:100%;background:var(--fg-dim)"></div>
+            <div style="width:1px;height:75%;background:var(--fg-dim)"></div>
+            <div style="width:2px;height:100%;background:var(--fg-dim)"></div>
+            <div style="width:1px;height:60%;background:var(--fg-dim)"></div>
+            <div style="width:3px;height:100%;background:var(--fg-dim)"></div>
+            <div style="width:1px;height:85%;background:var(--fg-dim)"></div>
+            <div style="width:2px;height:100%;background:var(--fg-dim)"></div>
+            <div style="width:2px;height:65%;background:var(--fg-dim)"></div>
+            <div style="width:1px;height:100%;background:var(--fg-dim)"></div>
+            <div style="width:3px;height:90%;background:var(--fg-dim)"></div>
+            <div style="width:1px;height:100%;background:var(--fg-dim)"></div>
+            <div style="width:2px;height:70%;background:var(--fg-dim)"></div>
+            <div style="width:1px;height:100%;background:var(--fg-dim)"></div>
+          </div>
+          <div style="font-size:7px;letter-spacing:0.08em;color:rgba(240,237,232,0.2);margin-top:3px">0:0</div>
+        </div>
+        <!-- Circular seal -->
+        <svg width="64" height="64" viewBox="0 0 80 80" fill="none">
+          <defs><path id="sp" d="M 40 6 A 34 34 0 1 1 39.99 6"/></defs>
+          <text fill="var(--fg-dim)" font-family="Space Mono" font-size="5.5" letter-spacing="2">
+            <textPath href="#sp">BY FREYJA &bull; SEIDR &bull; AUTONOMOUS &bull;</textPath>
+          </text>
+          <svg x="22" y="22" width="36" height="36" viewBox="0 0 100 100" class="topo-mark" style="color:var(--fg-dim)"><use href="#topo"/></svg>
+        </svg>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     ROW 4: MEMORY + FIELD
+     ═══════════════════════════════════════════════ -->
+<div class="row">
+
+  <!-- MEMORY PANEL -->
+  <div class="panel" style="flex:1;min-height:540px;display:flex;flex-direction:column;background:var(--bg)">
+    <div style="padding:16px 20px;font-size:10px;letter-spacing:0.18em;color:var(--fg-dim);display:flex;align-items:center;gap:8px">
+      <svg width="16" height="16" viewBox="0 0 100 100" style="color:var(--fg-dim)"><use href="#disc"/></svg>
+      AUTONOMOUS MEMORY OPERATIONS
+    </div>
+    <div style="height:5px;background:var(--blue)"></div>
+    <div style="display:flex;flex:1">
+      <!-- Bars -->
+      <div style="width:130px;background:var(--bg);padding:20px 14px;display:flex;flex-direction:column;gap:4px;justify-content:center">
+        <div style="height:15px;width:90%;background:var(--fg)"></div>
+        <div style="height:15px;width:55%;background:var(--fg)"></div>
+        <div style="height:15px;width:100%;background:var(--amber)"></div>
+        <div style="height:15px;width:40%;background:var(--fg)"></div>
+        <div style="height:15px;width:75%;background:var(--blue)"></div>
+        <div style="height:15px;width:30%;background:var(--fg)"></div>
+        <div style="height:15px;width:85%;background:var(--fg)"></div>
+        <div style="height:15px;width:48%;background:var(--amber)"></div>
+        <div style="height:15px;width:68%;background:var(--fg)"></div>
+        <div style="height:15px;width:35%;background:var(--blue)"></div>
+        <div style="height:15px;width:92%;background:var(--fg)"></div>
+      </div>
+      <!-- Amber panel -->
+      <div style="flex:1;background:var(--amber);padding:32px 36px;color:var(--bg);position:relative">
+        <div style="position:absolute;inset:0;pointer-events:none;background-image:linear-gradient(rgba(0,0,0,0.04) 1px,transparent 1px),linear-gradient(90deg,rgba(0,0,0,0.04) 1px,transparent 1px);background-size:32px 32px"></div>
+        <div style="position:relative;z-index:2">
+          <div style="font-family:'Outfit';font-weight:900;font-size:44px;letter-spacing:0.03em;line-height:1">MEMORY &mdash; V.1</div>
+          <div style="margin-top:24px;font-size:12px;letter-spacing:0.1em">
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>SYSTEM STATE: ACTIVE</span><span>/</span></div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>LOOP: CONTINUOUS</span><span>SF</span></div>
+            <div style="margin:6px 0;opacity:0.3">-</div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>EVICTION: ENABLED</span><span>&gt;</span></div>
+            <div style="display:flex;justify-content:space-between"><span>ADAPTATION: SELF-IMPROVING</span><span>ALIVE</span></div>
+          </div>
+          <div style="margin-top:20px;font-size:11px;line-height:1.6;opacity:0.7;max-width:380px">
+            Freyja treats the context window like scarce RAM with a layered eviction strategy. Skills unload at 60%. Episodes compress at 70%. Tool results truncate at 80%. Full compaction fires at 90%.
+          </div>
+        </div>
+        <div style="position:absolute;right:12px;bottom:32px;writing-mode:vertical-rl;font-family:'Outfit';font-weight:900;font-size:16px;opacity:0.15;letter-spacing:0.15em">Freyja</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FIELD REPORT -->
+  <div class="panel" style="flex:1;background:#111;padding:48px 52px;min-height:540px;display:flex;flex-direction:column">
+    <!-- + marks -->
+    <div style="position:absolute;top:32px;right:100px;color:var(--amber);font-size:11px;opacity:0.45">+</div>
+    <div style="position:absolute;top:80px;right:60px;color:var(--amber);font-size:11px;opacity:0.35">+</div>
+    <div style="position:absolute;top:140px;right:140px;color:var(--amber);font-size:11px;opacity:0.5">+</div>
+    <div style="position:absolute;top:260px;right:120px;color:var(--amber);font-size:11px;opacity:0.4">+</div>
+    <div style="position:absolute;top:400px;right:90px;color:var(--amber);font-size:11px;opacity:0.5">+</div>
+    <div style="position:absolute;top:180px;right:220px;color:var(--amber);font-size:11px;opacity:0.3">+</div>
+
+    <div style="display:flex;justify-content:space-between;align-items:flex-start">
+      <div>
+        <span style="font-family:'DM Serif Display';font-size:30px;color:var(--fg)">Sub-Agents</span><br>
+        <span style="font-family:'DM Serif Display';font-size:30px;color:var(--amber);font-weight:700">Deployed</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px">
+        <svg width="18" height="18" viewBox="0 0 100 95" style="color:var(--amber)"><use href="#peak"/></svg>
+        <span style="font-size:11px;letter-spacing:0.15em;color:var(--amber)">&#10095;&#10095;&#10095;</span>
+      </div>
+    </div>
+
+    <!-- Topographic contour terrain + log -->
+    <div style="display:flex;align-items:center;gap:28px;flex:1;margin:12px 0">
+      <svg width="220" height="200" viewBox="0 0 280 240" fill="none" style="flex-shrink:0;
+        mask-image:radial-gradient(ellipse 90% 90% at 50% 50%,black 40%,transparent 80%);
+        -webkit-mask-image:radial-gradient(ellipse 90% 90% at 50% 50%,black 40%,transparent 80%)">
+        <g stroke="var(--fg)" stroke-width="1.2" opacity="0.2" stroke-linecap="round">
+          <path d="M 0 30 Q 50 18, 100 28 Q 150 38, 200 24 Q 240 14, 280 30"/>
+          <path d="M 0 52 Q 60 40, 110 50 Q 160 62, 210 48 Q 250 36, 280 52"/>
+          <path d="M 0 74 Q 40 60, 90 72 Q 140 84, 190 68 Q 230 56, 280 74"/>
+        </g>
+        <g stroke="var(--fg)" stroke-width="1.4" opacity="0.35" stroke-linecap="round">
+          <path d="M 0 96 Q 55 82, 105 94 Q 155 108, 205 90 Q 245 78, 280 96"/>
+          <path d="M 0 118 Q 65 104, 115 116 Q 165 130, 215 112 Q 250 100, 280 118"/>
+          <path d="M 0 140 Q 45 126, 95 138 Q 145 152, 195 134 Q 240 122, 280 140"/>
+        </g>
+        <g stroke="var(--blue)" stroke-width="1.6" opacity="0.45" stroke-linecap="round">
+          <path d="M 0 162 Q 60 148, 110 160 Q 160 174, 210 156 Q 248 144, 280 162"/>
+          <path d="M 0 184 Q 50 170, 100 182 Q 150 196, 200 178 Q 242 166, 280 184"/>
+        </g>
+        <g stroke="var(--violet)" stroke-width="1.8" opacity="0.5" stroke-linecap="round">
+          <path d="M 0 206 Q 55 192, 105 204 Q 155 218, 205 200 Q 246 188, 280 206"/>
+          <path d="M 0 228 Q 65 214, 115 226 Q 165 240, 215 222 Q 250 210, 280 228"/>
+        </g>
+      </svg>
+      <div style="font-size:9px;letter-spacing:0.08em;color:rgba(240,237,232,0.3);line-height:1.9;text-transform:uppercase">
+        LOG 00:02:14<br>FORMATION PATTERN: ADAPTIVE SWARM<br>SESSION DURATION: 14.2 HRS<br>CONTEXT MAINTAINED: 128 EPISODES<br>CORRECTION PROPAGATED IN 0.43 SECONDS<br>NO HUMAN INPUT
+      </div>
+    </div>
+
+    <div style="font-family:'DM Serif Display';font-size:72px;color:var(--fg);line-height:0.92;letter-spacing:-0.01em">
+      Runtime<br>Proven
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     ROW 5: BLUE + CREAM
+     ═══════════════════════════════════════════════ -->
+<div class="row">
+
+  <!-- BLUE PANEL -->
+  <div class="panel" style="flex:1;background:var(--blue);padding:48px 52px;min-height:480px;color:var(--bg);display:flex;flex-direction:column">
+    <div style="position:absolute;inset:0;pointer-events:none;background-image:linear-gradient(rgba(0,0,0,0.04) 1px,transparent 1px),linear-gradient(90deg,rgba(0,0,0,0.04) 1px,transparent 1px);background-size:36px 36px"></div>
+    <div style="position:relative;z-index:2;flex:1;display:flex;flex-direction:column">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:auto">
+        <span style="font-size:10px;letter-spacing:0.18em;opacity:0.5">ALL AGENTS READY</span>
+        <svg width="24" height="24" viewBox="0 0 100 100" style="color:var(--bg);opacity:0.35"><use href="#wave"/></svg>
+      </div>
+      <div style="font-family:'Outfit';font-weight:900;font-size:70px;line-height:0.92;letter-spacing:0.04em">SEIDR<br>READY<br>STATE</div>
+      <div style="position:absolute;top:55px;right:0;font-family:'Outfit';font-weight:900;font-size:88px;opacity:0.12">24/7</div>
+
+      <!-- Geometric bars -->
+      <div style="display:flex;gap:5px;margin-top:auto">
+        <div style="height:28px;flex:2;background:var(--bg);border-radius:14px"></div>
+        <div style="height:28px;flex:1;background:var(--bg);border-radius:14px"></div>
+        <div style="height:28px;flex:3;background:var(--bg);border-radius:14px"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-top:12px;font-size:9px;letter-spacing:0.12em;opacity:0.45">
+        <span>LONG RUNNING AGENTS &mdash; 2341429</span>
+        <span>STATUS: ACTIVE &mdash; DEPLOYED &nbsp;&#10095;&#10095;&#10095;</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- CREAM PANEL -->
+  <div class="panel" style="flex:1;background:#e8e4de;padding:40px 48px;min-height:480px;color:#1a1a1a;display:flex;flex-direction:column">
+    <div style="position:absolute;inset:0;pointer-events:none;background-image:linear-gradient(rgba(0,0,0,0.03) 1px,transparent 1px),linear-gradient(90deg,rgba(0,0,0,0.03) 1px,transparent 1px);background-size:28px 28px"></div>
+    <div style="position:relative;z-index:2;flex:1;display:flex;flex-direction:column">
+      <div style="display:flex;justify-content:space-between;margin-bottom:20px">
+        <span style="font-size:10px;letter-spacing:0.12em;opacity:0.4">SYSTEM MODE: ACTIVE MEMORY CALIBRATION</span>
+        <svg width="20" height="20" viewBox="0 0 100 100" style="color:rgba(26,26,26,0.2)"><use href="#wave"/></svg>
+      </div>
+
+      <!-- System log -->
+      <div style="padding:14px 18px;border:1px solid rgba(26,26,26,0.08);background:rgba(26,26,26,0.02);margin-bottom:20px">
+        <div style="font-size:10px;line-height:1.8;opacity:0.45">[ SYSTEM LOG ]<br># INIT... OK<br># MEMORY LOCK... STABLE<br># SKILL RELAY... CONNECTED<br># SEIDR HANDSHAKE... COMPLETE<br># FWD LINK 02... ONLINE</div>
+      </div>
+
+      <div style="font-family:'DM Serif Display';font-size:42px;line-height:1.1;margin-bottom:12px">Scaling autonomous<br>intelligence networks</div>
+      <div style="font-size:11px;line-height:1.65;max-width:440px;opacity:0.55;margin-bottom:20px">Freyja is developing the underlying architecture for next-generation desktop AI &mdash; an autonomous agent capable of learning, reasoning, and coordinating across all operational layers.</div>
+
+      <!-- Button -->
+      <div style="display:inline-flex;align-items:center;align-self:flex-start;margin-bottom:auto">
+        <div style="width:8px;height:8px;border-top:1.5px solid;border-left:1.5px solid;opacity:0.4"></div>
+        <span style="padding:6px 16px;background:var(--amber);color:#e8e4de;font-family:'Outfit';font-weight:900;font-size:10px;letter-spacing:0.18em">LEARN MORE</span>
+        <div style="width:8px;height:8px;border-bottom:1.5px solid;border-right:1.5px solid;opacity:0.4"></div>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:auto">
+        <div><div style="font-family:'Outfit';font-weight:900;font-size:56px">98%</div><div style="font-size:9px;letter-spacing:0.12em;opacity:0.4;margin-top:2px">CONTEXT RETENTION RATE</div></div>
+        <div style="text-align:right;font-size:9px;letter-spacing:0.1em;opacity:0.35">14.2 HRS<br>SUSTAINED AUTONOMY</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     ROW 6: INSTITUTIONAL
+     ═══════════════════════════════════════════════ -->
+<div class="panel" style="background:var(--bg);padding:56px 72px;min-height:460px;display:grid;grid-template-columns:1fr 1fr;gap:56px">
+
+  <!-- Left -->
+  <div style="display:flex;flex-direction:column">
+    <div style="display:flex;align-items:flex-start;gap:24px;margin-bottom:36px">
+      <!-- Disc logo mark (scan-line bars forming circle) -->
+      <div style="width:90px;height:90px;flex-shrink:0;color:var(--fg)">
+        <svg width="90" height="90" viewBox="0 0 100 100"><use href="#disc"/></svg>
+      </div>
+      <div>
+        <div style="font-family:'DM Serif Display';font-size:42px;color:var(--fg);line-height:1.05">
+          Freyja<span style="font-size:16px;vertical-align:super;margin-left:6px;opacity:0.4">&#174;</span><br>Autonomous<br>Systems
+        </div>
+      </div>
+    </div>
+
+    <div style="font-family:'Outfit';font-weight:900;font-size:11px;letter-spacing:0.35em;color:var(--fg-dim);margin-bottom:20px">
+      SELF-IMPROVING &nbsp;&nbsp; DESKTOP &nbsp;&nbsp; INTELLIGENCE
+    </div>
+
+    <div style="display:flex;gap:20px;margin-bottom:20px">
+      <div style="font-size:10px;letter-spacing:0.12em;color:var(--fg-dim);line-height:1.7">AUTONOMOUS<br>AGENT<br>DEVELOPMENT</div>
+      <svg width="18" height="18" viewBox="0 0 20 20" style="color:var(--fg-dim);align-self:center"><use href="#fstar"/></svg>
+      <div style="font-size:10px;letter-spacing:0.12em;color:var(--fg-dim);line-height:1.7">EXPERIMENTAL<br>DESKTOP<br>UNITS</div>
+    </div>
+
+    <div style="font-size:10px;letter-spacing:0.1em;color:rgba(240,237,232,0.25);margin-top:auto;display:flex;align-items:center;gap:8px">
+      BADGE ID: FRY-01-CTRL &nbsp;/
+      <svg width="14" height="14" viewBox="0 0 20 20" style="color:rgba(240,237,232,0.25)"><use href="#fstar"/></svg>
+    </div>
+  </div>
+
+  <!-- Right -->
+  <div style="display:flex;flex-direction:column">
+    <div style="display:flex;justify-content:flex-end;margin-bottom:28px">
+      <svg width="150" height="150" viewBox="0 0 180 180" fill="none">
+        <defs><path id="sp2" d="M 90 12 A 78 78 0 1 1 89.99 12"/></defs>
+        <text fill="var(--fg-dim)" font-family="Space Mono" font-size="7.5" letter-spacing="3">
+          <textPath href="#sp2">FREYJA AUTONOMOUS SYSTEMS &bull; SEIDR FORESIGHT &bull;</textPath>
+        </text>
+        <circle cx="90" cy="90" r="65" stroke="rgba(240,237,232,0.1)" stroke-width="0.6" stroke-dasharray="2 4"/>
+        <!-- Dome icon at center of seal -->
+        <svg x="50" y="58" width="80" height="52" viewBox="0 0 80 52" class="dome" style="color:var(--fg-dim)"><use href="#dome"/></svg>
+      </svg>
+    </div>
+
+    <div style="font-family:'DM Serif Display';font-size:36px;color:var(--fg);line-height:1.15;margin-bottom:16px">
+      Experimental Lab<br>San Francisco &nbsp;/
+    </div>
+
+    <div style="padding:14px 18px;border:1.5px solid rgba(240,237,232,0.15);background:rgba(240,237,232,0.03)">
+      <div style="font-size:10px;letter-spacing:0.12em;color:var(--fg-dim);line-height:1.6">
+        DEPLOY SELF-IMPROVING AUTONOMOUS<br>AGENTS ACROSS ALL OPERATIONAL LAYERS
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     SECTION DIVIDER: DITHERED IMAGE SERIES
+     ═══════════════════════════════════════════════ -->
+<div style="display:flex;align-items:center;gap:20px;margin:48px 0 8px">
+  <div style="flex:1;height:1px;background:rgba(240,237,232,0.06)"></div>
+  <span style="font-size:9px;letter-spacing:0.35em;color:rgba(240,237,232,0.2)">SERIES VII — DITHERED SUBSTRATES</span>
+  <div style="flex:1;height:1px;background:rgba(240,237,232,0.06)"></div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     ROW 7: FULL-WIDTH DITHERED GLACIER BANNER
+     ═══════════════════════════════════════════════ -->
+<div class="panel" style="background:#0a0a0a;min-height:480px;position:relative">
+
+  <!-- Canvas: Floyd-Steinberg dithered glacier/mountain landscape -->
+  <canvas id="canvas-glacier" width="1500" height="480"
+    style="position:absolute;inset:0;width:100%;height:100%;display:block;opacity:0.35"></canvas>
+  <div class="scanlines-fine"></div>
+
+  <!-- Crosshair guides -->
+  <div style="position:absolute;top:50%;left:0;right:0;border-top:1px dashed rgba(212,100,74,0.06)"></div>
+  <div style="position:absolute;left:50%;top:0;bottom:0;border-left:1px dashed rgba(212,100,74,0.06)"></div>
+
+  <!-- Ghost FREYJA watermark -->
+  <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    font-family:'Outfit';font-weight:900;font-size:220px;color:rgba(240,237,232,0.04);
+    letter-spacing:0.12em;white-space:nowrap;pointer-events:none;z-index:2">FREYJA</div>
+
+  <!-- Top bar -->
+  <div style="position:absolute;top:28px;left:36px;z-index:5;display:flex;align-items:center;gap:12px">
+    <svg width="20" height="20" viewBox="0 0 100 100" class="topo-mark" style="color:var(--cyan)"><use href="#topo"/></svg>
+    <span style="font-size:10px;letter-spacing:0.22em;color:rgba(240,237,232,0.5);text-transform:uppercase">FREYJA SYSTEMS — TERRAIN SUBSTRATE</span>
+  </div>
+  <div style="position:absolute;top:28px;right:36px;z-index:5;text-align:right">
+    <span style="font-size:10px;letter-spacing:0.2em;color:rgba(240,237,232,0.5);text-transform:uppercase">DITHER: FLOYD-STEINBERG</span>
+    <div style="font-size:8px;letter-spacing:0.12em;color:rgba(240,237,232,0.2);margin-top:4px">ΔE≤0.001 / QUANTIZE: 1BPP</div>
+  </div>
+
+  <!-- Right: breathing contour rings (replacing R badge) -->
+  <div style="position:absolute;right:80px;top:50%;transform:translateY(-50%);z-index:5;width:200px;height:200px">
+    <svg width="200" height="200" viewBox="0 0 100 100" fill="none" stroke="var(--fg)" stroke-width="1.4" stroke-linejoin="round">
+      <path class="breathe-ring" d="M55.0,50.0 L55.1,50.7 L55.0,51.3 L54.7,51.9 L54.2,52.4 L53.7,52.8 L53.1,53.1 L52.6,53.4 L52.1,53.7 L51.6,53.9 L51.1,54.1 L50.6,54.2 L50.0,54.3 L49.4,54.2 L48.9,54.2 L48.3,54.2 L47.6,54.2 L46.9,54.1 L46.1,53.9 L45.5,53.5 L44.9,52.9 L44.6,52.2 L44.6,51.5 L44.7,50.7 L45.0,50.0 L45.3,49.4 L45.6,48.8 L45.9,48.3 L46.1,47.7 L46.4,47.2 L46.7,46.7 L47.1,46.2 L47.6,45.8 L48.1,45.5 L48.7,45.2 L49.3,44.9 L50.0,44.7 L50.7,44.6 L51.4,44.7 L52.1,44.9 L52.7,45.3 L53.2,45.9 L53.5,46.5 L53.8,47.1 L54.0,47.7 L54.2,48.2 L54.5,48.8 L54.8,49.4 L55.0,50.0 Z" opacity="1"/>
+      <path class="breathe-ring" d="M59.7,50.0 L59.8,51.3 L59.7,52.6 L59.1,53.8 L58.2,54.7 L57.2,55.5 L56.2,56.2 L55.2,56.8 L54.3,57.4 L53.3,58.0 L52.3,58.6 L51.2,59.1 L50.0,59.4 L48.8,59.5 L47.5,59.5 L46.1,59.3 L44.7,59.1 L43.3,58.7 L41.9,58.1 L40.7,57.2 L39.7,55.9 L39.3,54.4 L39.3,52.9 L39.8,51.3 L40.4,50.0 L41.1,48.8 L41.7,47.8 L42.1,46.7 L42.4,45.6 L42.8,44.4 L43.3,43.3 L44.0,42.2 L45.0,41.3 L46.1,40.6 L47.3,40.1 L48.6,39.7 L50.0,39.5 L51.4,39.5 L52.8,39.7 L54.1,40.2 L55.2,41.0 L56.0,42.1 L56.7,43.3 L57.1,44.5 L57.5,45.6 L58.0,46.7 L58.6,47.7 L59.2,48.8 L59.7,50.0 Z" opacity="0.94"/>
+      <path class="breathe-ring" d="M64.5,50.0 L64.8,52.0 L64.7,53.9 L63.9,55.7 L62.6,57.3 L61.1,58.5 L59.6,59.6 L58.1,60.6 L56.7,61.6 L55.3,62.8 L53.7,63.9 L52.0,64.8 L50.0,65.5 L47.9,65.7 L45.8,65.6 L43.7,65.1 L41.7,64.4 L39.7,63.4 L37.8,62.2 L36.3,60.5 L35.2,58.5 L34.8,56.3 L35.0,54.0 L35.7,51.9 L36.6,50.0 L37.6,48.4 L38.3,46.9 L38.7,45.3 L38.9,43.6 L39.2,41.7 L39.8,39.8 L40.8,38.0 L42.3,36.6 L44.0,35.6 L46.0,35.0 L48.0,34.7 L50.0,34.6 L52.0,34.8 L53.9,35.3 L55.8,36.1 L57.3,37.3 L58.6,38.8 L59.6,40.4 L60.3,42.1 L61.0,43.7 L61.8,45.1 L62.7,46.6 L63.7,48.2 L64.5,50.0 Z" opacity="0.89"/>
+      <path class="breathe-ring" d="M70.0,50.0 L70.6,52.7 L70.4,55.5 L69.4,58.0 L67.7,60.2 L65.6,62.0 L63.4,63.4 L61.4,64.8 L59.4,66.3 L57.4,67.9 L55.2,69.6 L52.8,70.9 L50.0,71.8 L47.1,72.0 L44.2,71.5 L41.5,70.5 L39.0,69.0 L36.7,67.3 L34.7,65.3 L33.1,63.0 L31.9,60.4 L31.5,57.7 L31.8,54.9 L32.5,52.3 L33.6,50.0 L34.5,48.0 L35.1,46.0 L35.2,43.9 L35.3,41.5 L35.4,38.8 L36.1,36.1 L37.4,33.5 L39.4,31.6 L41.8,30.3 L44.6,29.7 L47.3,29.6 L50.0,30.0 L52.6,30.5 L55.0,31.3 L57.3,32.3 L59.4,33.7 L61.2,35.4 L62.6,37.4 L63.8,39.4 L64.9,41.4 L66.1,43.3 L67.5,45.3 L68.8,47.5 L70.0,50.0 Z" opacity="0.83"/>
+      <path class="breathe-ring" d="M76.1,50.0 L76.8,53.5 L76.5,57.1 L75.1,60.4 L72.9,63.2 L70.1,65.5 L67.3,67.3 L64.5,69.0 L62.0,70.7 L59.4,72.7 L56.6,74.7 L53.5,76.3 L50.0,77.3 L46.4,77.3 L42.9,76.4 L39.8,74.7 L37.0,72.5 L34.7,70.0 L32.6,67.4 L31.0,64.6 L29.8,61.7 L29.2,58.6 L29.1,55.6 L29.6,52.7 L30.3,50.0 L30.8,47.5 L31.1,44.9 L31.0,42.1 L30.7,38.9 L30.8,35.3 L31.6,31.6 L33.4,28.4 L36.1,25.9 L39.4,24.5 L43.1,24.1 L46.6,24.5 L50.0,25.3 L53.1,26.3 L56.1,27.3 L58.9,28.5 L61.6,29.9 L64.0,31.7 L66.1,33.9 L68.0,36.2 L69.7,38.6 L71.3,41.2 L73.1,43.8 L74.7,46.7 L76.1,50.0 Z" opacity="0.78"/>
+      <path class="breathe-ring" d="M82.1,50.0 L82.6,54.3 L82.0,58.6 L80.2,62.5 L77.4,65.8 L74.0,68.4 L70.5,70.5 L67.1,72.3 L64.0,74.2 L60.9,76.4 L57.7,78.6 L54.0,80.4 L50.0,81.5 L45.9,81.4 L41.9,80.1 L38.5,77.9 L35.5,75.0 L33.1,72.0 L31.1,68.9 L29.3,65.9 L27.7,62.9 L26.5,59.7 L25.8,56.5 L25.5,53.2 L25.4,50.0 L25.4,46.8 L25.3,43.4 L25.0,39.6 L24.8,35.5 L25.2,30.9 L26.5,26.5 L29.0,22.6 L32.6,19.9 L37.0,18.5 L41.6,18.5 L46.0,19.4 L50.0,20.8 L53.7,22.2 L57.1,23.5 L60.5,24.7 L63.8,26.0 L67.1,27.8 L70.0,30.0 L72.7,32.6 L75.0,35.6 L77.0,38.8 L79.0,42.2 L80.8,45.9 L82.1,50.0 Z" opacity="0.72"/>
+      <path class="breathe-ring" d="M87.2,50.0 L87.3,54.9 L86.3,59.7 L84.1,64.1 L80.9,67.8 L77.0,70.7 L72.9,72.9 L69.1,74.9 L65.5,76.9 L62.1,79.3 L58.5,81.7 L54.5,83.9 L50.0,85.2 L45.4,85.2 L41.0,83.8 L37.1,81.2 L33.9,77.9 L31.3,74.4 L28.9,71.1 L26.7,67.9 L24.4,64.8 L22.3,61.5 L20.4,57.9 L19.1,54.1 L18.3,50.0 L17.8,45.8 L17.6,41.3 L17.5,36.5 L17.8,31.4 L18.9,26.1 L21.1,21.1 L24.7,17.0 L29.4,14.2 L34.7,13.2 L40.3,13.7 L45.4,15.2 L50.0,17.2 L54.1,19.0 L58.0,20.3 L61.9,21.3 L66.0,22.4 L70.1,23.9 L74.0,26.0 L77.4,29.0 L80.3,32.5 L82.6,36.5 L84.6,40.7 L86.2,45.2 L87.2,50.0 Z" opacity="0.66"/>
+      <path class="breathe-ring" d="M91.2,50.0 L90.9,55.4 L89.6,60.6 L87.1,65.4 L83.6,69.4 L79.5,72.6 L75.1,75.1 L71.0,77.4 L67.2,79.7 L63.4,82.4 L59.5,85.4 L55.0,88.0 L50.0,89.7 L44.7,89.9 L39.7,88.5 L35.2,85.7 L31.5,82.1 L28.4,78.2 L25.5,74.5 L22.5,71.1 L19.4,67.7 L16.2,64.0 L13.2,59.9 L10.9,55.1 L9.5,50.0 L8.9,44.6 L9.0,39.0 L9.8,33.3 L11.2,27.6 L13.4,21.9 L16.8,16.8 L21.4,12.8 L27.1,10.3 L33.3,9.7 L39.5,10.7 L45.1,12.7 L50.0,15.0 L54.4,16.8 L58.6,17.9 L63.1,18.5 L67.9,19.0 L72.9,20.1 L77.8,22.2 L82.1,25.4 L85.5,29.5 L87.9,34.3 L89.6,39.4 L90.7,44.6 L91.2,50.0 Z" opacity="0.61"/>
+      <path class="breathe-ring" d="M94.8,50.0 L94.0,55.8 L92.5,61.4 L90.0,66.6 L86.5,71.1 L82.4,74.9 L78.0,78.0 L73.6,80.8 L69.5,83.7 L65.3,87.0 L60.8,90.4 L55.7,93.6 L50.0,95.7 L43.9,96.2 L38.0,94.8 L32.7,91.8 L28.2,87.7 L24.5,83.3 L21.0,79.0 L17.4,75.0 L13.4,71.1 L9.3,66.9 L5.5,61.9 L2.6,56.2 L0.9,50.0 L0.7,43.5 L1.7,37.1 L3.7,30.8 L6.5,24.9 L10.0,19.3 L14.5,14.5 L20.0,10.9 L26.2,8.8 L32.8,8.4 L39.2,9.5 L44.9,11.6 L50.0,13.6 L54.6,15.1 L59.2,15.6 L64.3,15.5 L70.0,15.3 L76.1,16.0 L82.0,18.0 L87.1,21.6 L90.9,26.4 L93.3,32.1 L94.6,38.1 L95.0,44.1 L94.8,50.0 Z" opacity="0.55"/>
+    </svg>
+  </div>
+
+  <!-- Bottom info -->
+  <div style="position:absolute;bottom:28px;left:36px;z-index:5">
+    <span style="font-size:10px;letter-spacing:0.18em;color:rgba(240,237,232,0.4);text-transform:uppercase">NORDIC TERRAIN ANALYSIS — GLACIER SUBSTRATE</span>
+  </div>
+  <div style="position:absolute;bottom:28px;right:36px;z-index:5">
+    <span style="font-size:10px;letter-spacing:0.18em;color:rgba(240,237,232,0.4);text-transform:uppercase">NATIVE DESKTOP INTELLIGENCE</span>
+  </div>
+  <div style="position:absolute;bottom:28px;left:50%;transform:translateX(-50%);z-index:5">
+    <span style="font-size:8px;letter-spacing:0.2em;color:rgba(212,100,74,0.4);text-transform:uppercase">SUBSTRATE: CREAM / FLOYD-STEINBERG / 1BPP</span>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     ROW 8: HALFTONE TERRAIN + BAYER NEURAL
+     ═══════════════════════════════════════════════ -->
+<div class="row">
+
+  <!-- PANEL: HALFTONE TERRAIN (coral dots on black) -->
+  <div class="panel" style="flex:1;min-height:560px;background:#0a0a0a;position:relative">
+    <canvas id="canvas-terrain" width="740" height="560"
+      style="position:absolute;inset:0;width:100%;height:100%;display:block"></canvas>
+    <div class="scanlines-coral"></div>
+
+    <!-- Overlay: bottom gradient fade with content -->
+    <div style="position:absolute;bottom:0;left:0;right:0;padding:36px 32px;
+      background:linear-gradient(transparent,rgba(10,10,10,0.9));z-index:5">
+      <div style="font-family:'Outfit';font-weight:900;font-size:48px;color:var(--fg);line-height:0.95;letter-spacing:0.04em;margin-bottom:10px">
+        TERRAIN<br>MAPPING
+      </div>
+      <!-- Dissolve dots -->
+      <div style="height:14px;margin-top:-2px;width:260px;
+        background-image:radial-gradient(circle,var(--amber) 1px,transparent 1px);
+        background-size:4px 4px;
+        mask-image:linear-gradient(180deg,rgba(0,0,0,0.35) 0%,transparent 100%);
+        -webkit-mask-image:linear-gradient(180deg,rgba(0,0,0,0.35) 0%,transparent 100%)"></div>
+      <div style="font-size:9px;letter-spacing:0.18em;color:rgba(212,100,74,0.7);text-transform:uppercase;margin-top:12px">HALFTONE: CORAL / HEX PATTERN / 6px</div>
+      <div style="font-size:9px;letter-spacing:0.1em;color:rgba(240,237,232,0.35);text-transform:uppercase;line-height:1.8;margin-top:6px">
+        ELEVATION: ±4200M<br>
+        CONTOUR INTERVAL: 20M<br>
+        DATUM: WGS84
+      </div>
+    </div>
+
+    <!-- Top label -->
+    <div style="position:absolute;top:20px;left:24px;z-index:5">
+      <span style="font-size:9px;letter-spacing:0.2em;color:rgba(212,100,74,0.5);text-transform:uppercase">SUBSTRATE / TOPO-01</span>
+    </div>
+    <div style="position:absolute;top:20px;right:24px;z-index:5">
+      <svg width="18" height="18" viewBox="0 0 100 95" style="color:var(--amber);opacity:0.5"><use href="#peak"/></svg>
+    </div>
+
+    <div class="reg tl"></div><div class="reg tr"></div>
+    <div class="reg bl"></div><div class="reg br"></div>
+  </div>
+
+  <!-- PANEL: BAYER DITHERED NEURAL (blue tones) -->
+  <div class="panel" style="flex:1;min-height:560px;background:#0a0a0a;position:relative">
+    <canvas id="canvas-neural" width="740" height="560"
+      style="position:absolute;inset:0;width:100%;height:100%;display:block;opacity:0.45"></canvas>
+    <div class="scanlines-fine"></div>
+    <div class="grid-overlay"></div>
+
+    <!-- Content overlaid -->
+    <div style="position:relative;z-index:5;padding:40px 36px;display:flex;flex-direction:column;height:100%">
+      <!-- Top -->
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <div style="font-family:'Outfit';font-weight:900;font-size:12px;letter-spacing:0.25em;color:var(--fg-dim)">NEURAL SUBSTRATE</div>
+          <div style="font-size:9px;letter-spacing:0.12em;color:rgba(240,237,232,0.2);margin-top:4px">BAYER ORDERED / 4×4 MATRIX</div>
+        </div>
+        <svg width="22" height="22" viewBox="0 0 100 100" style="color:var(--blue)"><use href="#rings"/></svg>
+      </div>
+
+      <!-- Center: big type -->
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:center">
+        <div style="font-family:'Outfit';font-weight:900;font-size:72px;line-height:0.92;letter-spacing:0.03em" class="gt">SEIDR<br>CORE</div>
+        <!-- Gradient dissolve -->
+        <div style="height:16px;margin-top:-2px;width:300px;
+          background-image:radial-gradient(circle,var(--violet) 1px,transparent 1px);
+          background-size:4.5px 4.5px;
+          mask-image:linear-gradient(180deg,rgba(0,0,0,0.3) 0%,transparent 100%);
+          -webkit-mask-image:linear-gradient(180deg,rgba(0,0,0,0.3) 0%,transparent 100%)"></div>
+        <div style="font-size:11px;letter-spacing:0.15em;color:var(--fg-dim);margin-top:16px;max-width:360px;line-height:1.7;text-transform:uppercase">
+          The foresight engine that enables multi-session learning, episodic memory, and autonomous skill composition.
+        </div>
+      </div>
+
+      <!-- Bottom: stat row -->
+      <div style="display:flex;gap:32px;padding-top:16px;border-top:1px solid rgba(240,237,232,0.06)">
+        <div>
+          <div style="font-family:'Outfit';font-weight:900;font-size:28px;color:var(--blue);line-height:1">128</div>
+          <div style="font-size:8px;letter-spacing:0.1em;color:var(--fg-dim);margin-top:3px">EPISODES</div>
+        </div>
+        <div style="width:1px;background:rgba(240,237,232,0.06)"></div>
+        <div>
+          <div style="font-family:'Outfit';font-weight:900;font-size:28px;color:var(--violet);line-height:1">0.43s</div>
+          <div style="font-size:8px;letter-spacing:0.1em;color:var(--fg-dim);margin-top:3px">CORRECTION</div>
+        </div>
+        <div style="width:1px;background:rgba(240,237,232,0.06)"></div>
+        <div>
+          <div style="font-family:'Outfit';font-weight:900;font-size:28px;color:var(--cyan);line-height:1">∞</div>
+          <div style="font-size:8px;letter-spacing:0.1em;color:var(--fg-dim);margin-top:3px">LOOP</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Ghost -->
+    <div style="position:absolute;bottom:80px;right:20px;font-family:'Outfit';font-weight:900;font-size:110px;color:rgba(240,237,232,0.025);line-height:1;letter-spacing:0.03em;pointer-events:none;z-index:3">AI</div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     ROW 9: RADAR TRACKING + AURORA FORESIGHT
+     ═══════════════════════════════════════════════ -->
+<div class="row">
+
+  <!-- PANEL: ANIMATED RADAR / AGENT TRACKING -->
+  <div class="panel" style="flex:1;min-height:560px;background:#030603;position:relative;display:flex;align-items:center;justify-content:center">
+
+    <!-- Subtle grid underlay -->
+    <div style="position:absolute;inset:0;pointer-events:none;
+      background-image:linear-gradient(rgba(122,230,255,0.02) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(122,230,255,0.02) 1px,transparent 1px);background-size:40px 40px"></div>
+
+    <!-- Radar SVG -->
+    <svg width="420" height="420" viewBox="0 0 400 400" fill="none" style="position:relative;z-index:2">
+      <!-- Concentric range rings -->
+      <circle cx="200" cy="200" r="180" stroke="rgba(122,230,255,0.06)" stroke-width="0.8"/>
+      <circle cx="200" cy="200" r="140" stroke="rgba(122,230,255,0.08)" stroke-width="0.8"/>
+      <circle cx="200" cy="200" r="100" stroke="rgba(122,230,255,0.1)" stroke-width="0.8"/>
+      <circle cx="200" cy="200" r="60" stroke="rgba(122,230,255,0.12)" stroke-width="0.8"/>
+      <circle cx="200" cy="200" r="20" stroke="rgba(122,230,255,0.15)" stroke-width="0.8"/>
+      <!-- Crosshairs -->
+      <line x1="200" y1="10" x2="200" y2="390" stroke="rgba(122,230,255,0.05)" stroke-width="0.6"/>
+      <line x1="10" y1="200" x2="390" y2="200" stroke="rgba(122,230,255,0.05)" stroke-width="0.6"/>
+      <line x1="65" y1="65" x2="335" y2="335" stroke="rgba(122,230,255,0.03)" stroke-width="0.5"/>
+      <line x1="335" y1="65" x2="65" y2="335" stroke="rgba(122,230,255,0.03)" stroke-width="0.5"/>
+      <!-- Range labels -->
+      <text x="204" y="66" font-family="Space Mono" font-size="7" fill="rgba(122,230,255,0.2)" letter-spacing="1">140</text>
+      <text x="204" y="106" font-family="Space Mono" font-size="7" fill="rgba(122,230,255,0.2)" letter-spacing="1">100</text>
+      <text x="204" y="146" font-family="Space Mono" font-size="7" fill="rgba(122,230,255,0.2)" letter-spacing="1">060</text>
+
+      <!-- Sweep arm with gradient trail -->
+      <g style="transform-origin:200px 200px;animation:radar-spin 5s linear infinite">
+        <line x1="200" y1="200" x2="200" y2="20" stroke="rgba(122,230,255,0.7)" stroke-width="1.5"/>
+        <!-- Fade trail (wedge) -->
+        <path d="M200,200 L200,20 A180,180 0 0,0 92,56 Z" fill="url(#radarGrad)" opacity="0.5"/>
+      </g>
+      <defs>
+        <linearGradient id="radarGrad" x1="200" y1="20" x2="92" y2="56" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="rgba(122,230,255,0.12)"/>
+          <stop offset="100%" stop-color="rgba(122,230,255,0)"/>
+        </linearGradient>
+      </defs>
+
+      <!-- Agent blips -->
+      <circle cx="260" cy="120" r="4" fill="var(--cyan)" opacity="0.8">
+        <animate attributeName="opacity" values="0.8;0.2;0.8" dur="2.5s" repeatCount="indefinite"/>
+        <animate attributeName="r" values="4;3;4" dur="2.5s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="140" cy="160" r="3.5" fill="var(--violet)" opacity="0.7">
+        <animate attributeName="opacity" values="0.7;0.15;0.7" dur="3.2s" repeatCount="indefinite"/>
+        <animate attributeName="r" values="3.5;2.5;3.5" dur="3.2s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="290" cy="240" r="3" fill="var(--blue)" opacity="0.6">
+        <animate attributeName="opacity" values="0.6;0.1;0.6" dur="2.8s" repeatCount="indefinite"/>
+        <animate attributeName="r" values="3;2;3" dur="2.8s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="170" cy="290" r="4.5" fill="var(--cyan)" opacity="0.9">
+        <animate attributeName="opacity" values="0.9;0.25;0.9" dur="2.1s" repeatCount="indefinite"/>
+        <animate attributeName="r" values="4.5;3;4.5" dur="2.1s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="310" cy="160" r="2.5" fill="var(--purple)" opacity="0.5">
+        <animate attributeName="opacity" values="0.5;0.1;0.5" dur="3.8s" repeatCount="indefinite"/>
+        <animate attributeName="r" values="2.5;1.5;2.5" dur="3.8s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="120" cy="250" r="3" fill="var(--blue)" opacity="0.65">
+        <animate attributeName="opacity" values="0.65;0.15;0.65" dur="2.6s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="240" cy="310" r="2" fill="var(--violet)" opacity="0.4">
+        <animate attributeName="opacity" values="0.4;0.05;0.4" dur="4.2s" repeatCount="indefinite"/>
+      </circle>
+
+      <!-- Center dot -->
+      <circle cx="200" cy="200" r="3" fill="var(--cyan)"/>
+      <circle cx="200" cy="200" r="6" stroke="var(--cyan)" stroke-width="0.8" fill="none" opacity="0.4"/>
+
+      <!-- Blip labels (tiny) -->
+      <text x="268" y="118" font-family="Space Mono" font-size="6" fill="rgba(122,230,255,0.4)">EXPLORE</text>
+      <text x="148" y="156" font-family="Space Mono" font-size="6" fill="rgba(180,176,255,0.4)">PLAN</text>
+      <text x="175" y="304" font-family="Space Mono" font-size="6" fill="rgba(122,230,255,0.4)">GENERAL</text>
+      <text x="296" y="254" font-family="Space Mono" font-size="6" fill="rgba(168,212,252,0.4)">COMPUTE</text>
+    </svg>
+
+    <!-- Top-left label -->
+    <div style="position:absolute;top:24px;left:24px;z-index:5">
+      <div style="font-family:'Outfit';font-weight:900;font-size:11px;letter-spacing:0.25em;color:rgba(122,230,255,0.4)">AGENT TRACKING</div>
+      <div style="font-size:8px;letter-spacing:0.12em;color:rgba(122,230,255,0.2);margin-top:4px">SEIDR / SWARM MONITOR</div>
+    </div>
+
+    <!-- Bottom-left: big type -->
+    <div style="position:absolute;bottom:32px;left:28px;z-index:5">
+      <div style="font-family:'Outfit';font-weight:900;font-size:48px;line-height:0.92;letter-spacing:0.03em" class="gt">SWARM<br>ACTIVE</div>
+      <div style="display:flex;gap:16px;margin-top:14px">
+        <div style="display:flex;align-items:center;gap:5px">
+          <div style="width:6px;height:6px;border-radius:50%;background:var(--cyan);box-shadow:0 0 6px var(--cyan)"></div>
+          <span style="font-size:8px;letter-spacing:0.1em;color:rgba(122,230,255,0.45)">7 AGENTS</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:5px">
+          <div style="width:6px;height:6px;border-radius:50%;background:var(--violet);box-shadow:0 0 6px var(--violet)"></div>
+          <span style="font-size:8px;letter-spacing:0.1em;color:rgba(180,176,255,0.45)">3 PLANNING</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom-right: status readouts -->
+    <div style="position:absolute;bottom:32px;right:28px;z-index:5;text-align:right">
+      <div style="font-size:8px;letter-spacing:0.1em;color:rgba(122,230,255,0.25);line-height:1.8;text-transform:uppercase">
+        SWEEP..... 5.0s<br>
+        RANGE..... 180<br>
+        FREQ...... 200Hz<br>
+        MODE...... AUTONOMOUS
+      </div>
+    </div>
+  </div>
+
+  <!-- PANEL: DITHERED AURORA / SEIDR FORESIGHT -->
+  <div class="panel" style="flex:1;min-height:560px;background:#0a0a0a;position:relative">
+    <!-- Canvas: dithered aurora/fjord in Freyja gradient colors -->
+    <canvas id="canvas-aurora" width="740" height="560"
+      style="position:absolute;inset:0;width:100%;height:100%;display:block;opacity:0.4"></canvas>
+
+    <!-- Gradient overlay to tint the dither toward Freyja colors -->
+    <div style="position:absolute;inset:0;pointer-events:none;z-index:2;
+      background:linear-gradient(180deg,rgba(122,230,255,0.04) 0%,rgba(180,176,255,0.06) 40%,rgba(200,154,255,0.05) 100%);
+      mix-blend-mode:screen"></div>
+
+    <!-- Content -->
+    <div style="position:relative;z-index:5;padding:40px 36px;display:flex;flex-direction:column;height:100%">
+      <!-- Top -->
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <div style="font-family:'Outfit';font-weight:900;font-size:11px;letter-spacing:0.25em;color:var(--fg-dim)">SEIDR FORESIGHT</div>
+          <div style="font-size:8px;letter-spacing:0.12em;color:rgba(240,237,232,0.2);margin-top:4px">NORSE PREDICTIVE ENGINE</div>
+        </div>
+        <div style="width:140px;height:140px">
+          <svg width="140" height="140" viewBox="0 0 100 100" fill="none" stroke="var(--fg)" stroke-width="1.2" stroke-linejoin="round">
+            <path class="breathe-ring" d="M55.0,50.0 L55.1,50.7 L55.0,51.3 L54.7,51.9 L54.2,52.4 L53.7,52.8 L53.1,53.1 L52.6,53.4 L52.1,53.7 L51.6,53.9 L51.1,54.1 L50.6,54.2 L50.0,54.3 L49.4,54.2 L48.9,54.2 L48.3,54.2 L47.6,54.2 L46.9,54.1 L46.1,53.9 L45.5,53.5 L44.9,52.9 L44.6,52.2 L44.6,51.5 L44.7,50.7 L45.0,50.0 L45.3,49.4 L45.6,48.8 L45.9,48.3 L46.1,47.7 L46.4,47.2 L46.7,46.7 L47.1,46.2 L47.6,45.8 L48.1,45.5 L48.7,45.2 L49.3,44.9 L50.0,44.7 L50.7,44.6 L51.4,44.7 L52.1,44.9 L52.7,45.3 L53.2,45.9 L53.5,46.5 L53.8,47.1 L54.0,47.7 L54.2,48.2 L54.5,48.8 L54.8,49.4 L55.0,50.0 Z" opacity="1"/>
+            <path class="breathe-ring" d="M59.7,50.0 L59.8,51.3 L59.7,52.6 L59.1,53.8 L58.2,54.7 L57.2,55.5 L56.2,56.2 L55.2,56.8 L54.3,57.4 L53.3,58.0 L52.3,58.6 L51.2,59.1 L50.0,59.4 L48.8,59.5 L47.5,59.5 L46.1,59.3 L44.7,59.1 L43.3,58.7 L41.9,58.1 L40.7,57.2 L39.7,55.9 L39.3,54.4 L39.3,52.9 L39.8,51.3 L40.4,50.0 L41.1,48.8 L41.7,47.8 L42.1,46.7 L42.4,45.6 L42.8,44.4 L43.3,43.3 L44.0,42.2 L45.0,41.3 L46.1,40.6 L47.3,40.1 L48.6,39.7 L50.0,39.5 L51.4,39.5 L52.8,39.7 L54.1,40.2 L55.2,41.0 L56.0,42.1 L56.7,43.3 L57.1,44.5 L57.5,45.6 L58.0,46.7 L58.6,47.7 L59.2,48.8 L59.7,50.0 Z" opacity="0.9"/>
+            <path class="breathe-ring" d="M64.5,50.0 L64.8,52.0 L64.7,53.9 L63.9,55.7 L62.6,57.3 L61.1,58.5 L59.6,59.6 L58.1,60.6 L56.7,61.6 L55.3,62.8 L53.7,63.9 L52.0,64.8 L50.0,65.5 L47.9,65.7 L45.8,65.6 L43.7,65.1 L41.7,64.4 L39.7,63.4 L37.8,62.2 L36.3,60.5 L35.2,58.5 L34.8,56.3 L35.0,54.0 L35.7,51.9 L36.6,50.0 L37.6,48.4 L38.3,46.9 L38.7,45.3 L38.9,43.6 L39.2,41.7 L39.8,39.8 L40.8,38.0 L42.3,36.6 L44.0,35.6 L46.0,35.0 L48.0,34.7 L50.0,34.6 L52.0,34.8 L53.9,35.3 L55.8,36.1 L57.3,37.3 L58.6,38.8 L59.6,40.4 L60.3,42.1 L61.0,43.7 L61.8,45.1 L62.7,46.6 L63.7,48.2 L64.5,50.0 Z" opacity="0.8"/>
+            <path class="breathe-ring" d="M70.0,50.0 L70.6,52.7 L70.4,55.5 L69.4,58.0 L67.7,60.2 L65.6,62.0 L63.4,63.4 L61.4,64.8 L59.4,66.3 L57.4,67.9 L55.2,69.6 L52.8,70.9 L50.0,71.8 L47.1,72.0 L44.2,71.5 L41.5,70.5 L39.0,69.0 L36.7,67.3 L34.7,65.3 L33.1,63.0 L31.9,60.4 L31.5,57.7 L31.8,54.9 L32.5,52.3 L33.6,50.0 L34.5,48.0 L35.1,46.0 L35.2,43.9 L35.3,41.5 L35.4,38.8 L36.1,36.1 L37.4,33.5 L39.4,31.6 L41.8,30.3 L44.6,29.7 L47.3,29.6 L50.0,30.0 L52.6,30.5 L55.0,31.3 L57.3,32.3 L59.4,33.7 L61.2,35.4 L62.6,37.4 L63.8,39.4 L64.9,41.4 L66.1,43.3 L67.5,45.3 L68.8,47.5 L70.0,50.0 Z" opacity="0.7"/>
+            <path class="breathe-ring" d="M76.1,50.0 L76.8,53.5 L76.5,57.1 L75.1,60.4 L72.9,63.2 L70.1,65.5 L67.3,67.3 L64.5,69.0 L62.0,70.7 L59.4,72.7 L56.6,74.7 L53.5,76.3 L50.0,77.3 L46.4,77.3 L42.9,76.4 L39.8,74.7 L37.0,72.5 L34.7,70.0 L32.6,67.4 L31.0,64.6 L29.8,61.7 L29.2,58.6 L29.1,55.6 L29.6,52.7 L30.3,50.0 L30.8,47.5 L31.1,44.9 L31.0,42.1 L30.7,38.9 L30.8,35.3 L31.6,31.6 L33.4,28.4 L36.1,25.9 L39.4,24.5 L43.1,24.1 L46.6,24.5 L50.0,25.3 L53.1,26.3 L56.1,27.3 L58.9,28.5 L61.6,29.9 L64.0,31.7 L66.1,33.9 L68.0,36.2 L69.7,38.6 L71.3,41.2 L73.1,43.8 L74.7,46.7 L76.1,50.0 Z" opacity="0.6"/>
+            <path class="breathe-ring" d="M82.1,50.0 L82.6,54.3 L82.0,58.6 L80.2,62.5 L77.4,65.8 L74.0,68.4 L70.5,70.5 L67.1,72.3 L64.0,74.2 L60.9,76.4 L57.7,78.6 L54.0,80.4 L50.0,81.5 L45.9,81.4 L41.9,80.1 L38.5,77.9 L35.5,75.0 L33.1,72.0 L31.1,68.9 L29.3,65.9 L27.7,62.9 L26.5,59.7 L25.8,56.5 L25.5,53.2 L25.4,50.0 L25.4,46.8 L25.3,43.4 L25.0,39.6 L24.8,35.5 L25.2,30.9 L26.5,26.5 L29.0,22.6 L32.6,19.9 L37.0,18.5 L41.6,18.5 L46.0,19.4 L50.0,20.8 L53.7,22.2 L57.1,23.5 L60.5,24.7 L63.8,26.0 L67.1,27.8 L70.0,30.0 L72.7,32.6 L75.0,35.6 L77.0,38.8 L79.0,42.2 L80.8,45.9 L82.1,50.0 Z" opacity="0.5"/>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Center: big editorial text -->
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:center">
+        <div style="font-family:'DM Serif Display';font-size:64px;color:var(--fg);line-height:1.05;margin-bottom:16px">
+          Foresight<br><span style="font-style:italic;color:var(--violet)">Engine</span>
+        </div>
+        <div style="font-size:11px;letter-spacing:0.08em;color:var(--fg-dim);line-height:1.7;max-width:380px">
+          Named for the Norse practice of Seiðr — the art of seeing what is yet to come. Freyja anticipates, plans, and acts before you ask.
+        </div>
+      </div>
+
+      <!-- Bottom -->
+      <div style="display:flex;justify-content:space-between;align-items:flex-end">
+        <div style="display:flex;gap:20px">
+          <div>
+            <div style="font-family:'Outfit';font-weight:900;font-size:32px;line-height:1" class="gt">∞</div>
+            <div style="font-size:8px;letter-spacing:0.1em;color:var(--fg-dim);margin-top:3px">HORIZON</div>
+          </div>
+          <div style="width:1px;background:rgba(240,237,232,0.06)"></div>
+          <div>
+            <div style="font-family:'Outfit';font-weight:900;font-size:32px;color:var(--violet);line-height:1">SEIDR</div>
+            <div style="font-size:8px;letter-spacing:0.1em;color:var(--fg-dim);margin-top:3px">PROTOCOL</div>
+          </div>
+        </div>
+        <div style="font-size:8px;letter-spacing:0.1em;color:rgba(240,237,232,0.15);text-align:right">
+          PREDICTIVE PLANNING<br>PROACTIVE EXECUTION
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     SECTION DIVIDER: PLATFORM SHOWCASE
+     ═══════════════════════════════════════════════ -->
+<div style="display:flex;align-items:center;gap:20px;margin:48px 0 8px">
+  <div style="flex:1;height:1px;background:rgba(240,237,232,0.06)"></div>
+  <span style="font-size:9px;letter-spacing:0.35em;color:rgba(240,237,232,0.2)">SERIES VIII — PLATFORM SHOWCASE</span>
+  <div style="flex:1;height:1px;background:rgba(240,237,232,0.06)"></div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     ROW 10: PLATFORM HERO BANNER
+     ═══════════════════════════════════════════════ -->
+<div class="panel" style="background:var(--bg);min-height:620px;display:grid;grid-template-columns:1fr 1fr;position:relative">
+
+  <!-- Left: Product messaging -->
+  <div style="padding:64px 72px;display:flex;flex-direction:column;justify-content:center;position:relative;z-index:2">
+    <!-- Eyebrow -->
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:28px">
+      <svg width="22" height="22" viewBox="0 0 100 100" class="topo-mark" style="color:var(--cyan)"><use href="#topo"/></svg>
+      <span style="font-family:'Outfit';font-weight:900;font-size:10px;letter-spacing:0.3em;color:var(--fg-dim)">FREYJA PLATFORM</span>
+      <div style="height:1px;flex:1;background:rgba(240,237,232,0.08)"></div>
+    </div>
+
+    <!-- Hero text -->
+    <div style="font-family:'DM Serif Display';font-size:56px;color:var(--fg);line-height:1.08;margin-bottom:20px">
+      The self-improving<br>desktop agent
+    </div>
+    <div style="font-size:12px;letter-spacing:0.06em;color:var(--fg-dim);line-height:1.7;max-width:440px;margin-bottom:36px">
+      Freyja deploys autonomous agents that learn, adapt, and coordinate across every operational layer — no human input required.
+    </div>
+
+    <!-- CTA row -->
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:44px">
+      <div style="display:inline-flex;align-items:center">
+        <div style="width:8px;height:8px;border-top:1.5px solid var(--fg);border-left:1.5px solid var(--fg);opacity:0.3"></div>
+        <span style="padding:10px 24px;background:var(--amber);color:var(--fg);font-family:'Outfit';font-weight:900;font-size:10px;letter-spacing:0.2em">GET STARTED</span>
+        <div style="width:8px;height:8px;border-bottom:1.5px solid var(--fg);border-right:1.5px solid var(--fg);opacity:0.3"></div>
+      </div>
+      <span style="font-size:10px;letter-spacing:0.15em;color:var(--fg-dim)">READ THE DOCS &#8594;</span>
+    </div>
+
+    <!-- Stats row -->
+    <div style="display:flex;gap:40px">
+      <div>
+        <div style="font-family:'Outfit';font-weight:900;font-size:40px;line-height:1" class="gt">98%</div>
+        <div style="font-size:8px;letter-spacing:0.12em;color:var(--fg-dim);margin-top:4px">CONTEXT<br>RETENTION</div>
+      </div>
+      <div>
+        <div style="font-family:'Outfit';font-weight:900;font-size:40px;line-height:1" class="gt">14.2h</div>
+        <div style="font-size:8px;letter-spacing:0.12em;color:var(--fg-dim);margin-top:4px">SUSTAINED<br>AUTONOMY</div>
+      </div>
+      <div>
+        <div style="font-family:'Outfit';font-weight:900;font-size:40px;line-height:1" class="gt">4.2×</div>
+        <div style="font-size:8px;letter-spacing:0.12em;color:var(--fg-dim);margin-top:4px">TASK<br>SPEEDUP</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right: Dithered product visual -->
+  <div style="position:relative;display:flex;align-items:center;justify-content:center">
+    <canvas id="canvas-product" width="740" height="620"
+      style="position:absolute;inset:0;width:100%;height:100%;display:block;opacity:0.25"></canvas>
+    <div class="scanlines-fine"></div>
+
+    <!-- Floating app window mock -->
+    <div style="position:relative;z-index:5;width:380px;background:rgba(10,10,10,0.9);border:1px solid rgba(240,237,232,0.1);box-shadow:0 40px 80px rgba(0,0,0,0.6)" class="float">
+      <!-- Window titlebar -->
+      <div style="display:flex;align-items:center;padding:10px 14px;border-bottom:1px solid rgba(240,237,232,0.06);gap:6px">
+        <div style="width:10px;height:10px;border-radius:50%;background:#ff5f57"></div>
+        <div style="width:10px;height:10px;border-radius:50%;background:#febc2e"></div>
+        <div style="width:10px;height:10px;border-radius:50%;background:#28c840"></div>
+        <span style="margin-left:auto;font-size:9px;letter-spacing:0.12em;color:var(--fg-dim)">FREYJA v0.1</span>
+      </div>
+      <!-- Window content -->
+      <div style="padding:20px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">
+          <svg width="16" height="16" viewBox="0 0 100 100" class="topo-mark" style="color:var(--cyan)"><use href="#topo"/></svg>
+          <span style="font-size:10px;letter-spacing:0.08em" class="gt">ubα</span>
+          <div style="height:12px;width:1px;background:rgba(240,237,232,0.1)"></div>
+          <div style="display:flex;align-items:center;gap:4px;padding:2px 8px;background:rgba(58,200,64,0.1);border-radius:4px">
+            <div style="width:5px;height:5px;border-radius:50%;background:#28c840"></div>
+            <span style="font-size:8px;color:#28c840;letter-spacing:0.08em">LIVE</span>
+          </div>
+        </div>
+        <!-- Fake chat bubbles -->
+        <div style="background:rgba(240,237,232,0.04);padding:10px 12px;border-radius:6px;margin-bottom:6px">
+          <div style="font-size:9px;color:var(--fg-dim);line-height:1.5">Deploy the monitoring agent to track all API endpoints and alert on anomalies.</div>
+        </div>
+        <div style="background:rgba(122,230,255,0.06);padding:10px 12px;border-radius:6px;margin-bottom:6px;border-left:2px solid var(--cyan)">
+          <div style="font-size:9px;color:var(--fg-dim);line-height:1.5">Agent deployed. Monitoring 47 endpoints. First anomaly scan in 30s.</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:10px;padding:8px 10px;background:rgba(240,237,232,0.02);border:1px solid rgba(240,237,232,0.05);border-radius:4px">
+          <span style="font-size:9px;color:rgba(240,237,232,0.25);flex:1">Ask Freyja anything...</span>
+          <span style="font-size:10px;color:var(--cyan)">&#10095;</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Faint vertical divider -->
+  <div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:rgba(240,237,232,0.04)"></div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     ROW 11: FEATURE CARDS GRID
+     ═══════════════════════════════════════════════ -->
+<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px">
+
+  <!-- Card 1: MEMORY -->
+  <div class="showcase-card" style="min-height:320px">
+    <div class="showcase-num">01</div>
+    <svg width="40" height="40" viewBox="0 0 100 100" style="color:var(--cyan);margin-bottom:20px"><use href="#disc"/></svg>
+    <div style="font-family:'Outfit';font-weight:900;font-size:22px;color:var(--fg);letter-spacing:0.04em;margin-bottom:10px">EPISODIC<br>MEMORY</div>
+    <div style="font-size:10px;letter-spacing:0.06em;color:var(--fg-dim);line-height:1.7;margin-bottom:auto">
+      4-layer eviction strategy treats context like scarce RAM. Skills unload at 60%. Episodes compress at 70%. Full compaction at 90%.
+    </div>
+    <div style="margin-top:20px;display:flex;align-items:center;gap:8px">
+      <div style="height:3px;flex:1;background:var(--cyan);opacity:0.4"></div>
+      <span style="font-size:8px;letter-spacing:0.12em;color:var(--cyan);opacity:0.6">128 EPISODES</span>
+    </div>
+  </div>
+
+  <!-- Card 2: AGENTS -->
+  <div class="showcase-card" style="min-height:320px">
+    <div class="showcase-num">02</div>
+    <svg width="40" height="40" viewBox="0 0 100 100" style="color:var(--violet);margin-bottom:20px"><use href="#rings"/></svg>
+    <div style="font-family:'Outfit';font-weight:900;font-size:22px;color:var(--fg);letter-spacing:0.04em;margin-bottom:10px">AGENT<br>SWARMS</div>
+    <div style="font-size:10px;letter-spacing:0.06em;color:var(--fg-dim);line-height:1.7;margin-bottom:auto">
+      Multi-agent orchestration with shared episodic memory. Sub-agents spawn, coordinate, and self-correct without human intervention.
+    </div>
+    <div style="margin-top:20px;display:flex;align-items:center;gap:8px">
+      <div style="height:3px;flex:1;background:var(--violet);opacity:0.4"></div>
+      <span style="font-size:8px;letter-spacing:0.12em;color:var(--violet);opacity:0.6">4.2× SPEEDUP</span>
+    </div>
+  </div>
+
+  <!-- Card 3: SKILLS -->
+  <div class="showcase-card" style="min-height:320px">
+    <div class="showcase-num">03</div>
+    <svg width="40" height="40" viewBox="0 0 100 95" style="color:var(--amber);margin-bottom:20px"><use href="#peak"/></svg>
+    <div style="font-family:'Outfit';font-weight:900;font-size:22px;color:var(--fg);letter-spacing:0.04em;margin-bottom:10px">SKILL<br>RELAY</div>
+    <div style="font-size:10px;letter-spacing:0.06em;color:var(--fg-dim);line-height:1.7;margin-bottom:auto">
+      Composable skill graph that grows with usage. Each session teaches the system new capabilities that persist across restarts.
+    </div>
+    <div style="margin-top:20px;display:flex;align-items:center;gap:8px">
+      <div style="height:3px;flex:1;background:var(--amber);opacity:0.4"></div>
+      <span style="font-size:8px;letter-spacing:0.12em;color:var(--amber);opacity:0.6">SELF-IMPROVING</span>
+    </div>
+  </div>
+
+  <!-- Card 4: SEIDR -->
+  <div class="showcase-card" style="min-height:320px">
+    <div class="showcase-num">04</div>
+    <svg width="40" height="40" viewBox="0 0 100 100" class="topo-mark" style="color:var(--purple);margin-bottom:20px" stroke-width="2"><use href="#topo"/></svg>
+    <div style="font-family:'Outfit';font-weight:900;font-size:22px;color:var(--fg);letter-spacing:0.04em;margin-bottom:10px">SEIDR<br>FORESIGHT</div>
+    <div style="font-size:10px;letter-spacing:0.06em;color:var(--fg-dim);line-height:1.7;margin-bottom:auto">
+      Predictive planning engine that anticipates user needs before they're expressed. Proactive, not reactive.
+    </div>
+    <div style="margin-top:20px;display:flex;align-items:center;gap:8px">
+      <div style="height:3px;flex:1;background:var(--purple);opacity:0.4"></div>
+      <span style="font-size:8px;letter-spacing:0.12em;color:var(--purple);opacity:0.6">FORESIGHT</span>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════
+     ROW 12: PLATFORM CLOSING — WIDE BANNER
+     ═══════════════════════════════════════════════ -->
+<div class="panel" style="background:linear-gradient(135deg,#0a0a0a 0%,#0f0d12 50%,#0a0a0a 100%);min-height:360px;display:flex;align-items:center;position:relative">
+  <!-- Dithered cosmos canvas underneath -->
+  <canvas id="canvas-cosmos" width="1500" height="360"
+    style="position:absolute;inset:0;width:100%;height:100%;display:block;opacity:0.2"></canvas>
+  <div class="scanlines-fine"></div>
+
+  <div style="position:relative;z-index:5;padding:0 72px;display:flex;align-items:center;justify-content:space-between;width:100%">
+    <!-- Left: big quote -->
+    <div style="max-width:680px">
+      <div style="font-family:'DM Serif Display';font-size:44px;color:var(--fg);line-height:1.15;margin-bottom:16px">
+        "Deploy once.<br>Learn forever."
+      </div>
+      <div style="font-size:11px;letter-spacing:0.12em;color:var(--fg-dim);line-height:1.6;max-width:480px">
+        Freyja agents maintain continuous context, adapt their behavior through episodic reinforcement, and coordinate across all operational layers without human intervention.
+      </div>
+    </div>
+
+    <!-- Right: breathing contour mark (no scan lines — rings move on their own) -->
+    <div style="display:flex;flex-direction:column;align-items:center;gap:16px">
+      <div style="width:180px;height:180px">
+        <svg width="180" height="180" viewBox="0 0 100 100" fill="none" stroke="var(--fg)" stroke-width="1.4" stroke-linejoin="round">
+          <path class="breathe-ring" d="M55.0,50.0 L55.1,50.7 L55.0,51.3 L54.7,51.9 L54.2,52.4 L53.7,52.8 L53.1,53.1 L52.6,53.4 L52.1,53.7 L51.6,53.9 L51.1,54.1 L50.6,54.2 L50.0,54.3 L49.4,54.2 L48.9,54.2 L48.3,54.2 L47.6,54.2 L46.9,54.1 L46.1,53.9 L45.5,53.5 L44.9,52.9 L44.6,52.2 L44.6,51.5 L44.7,50.7 L45.0,50.0 L45.3,49.4 L45.6,48.8 L45.9,48.3 L46.1,47.7 L46.4,47.2 L46.7,46.7 L47.1,46.2 L47.6,45.8 L48.1,45.5 L48.7,45.2 L49.3,44.9 L50.0,44.7 L50.7,44.6 L51.4,44.7 L52.1,44.9 L52.7,45.3 L53.2,45.9 L53.5,46.5 L53.8,47.1 L54.0,47.7 L54.2,48.2 L54.5,48.8 L54.8,49.4 L55.0,50.0 Z" opacity="1"/>
+          <path class="breathe-ring" d="M59.7,50.0 L59.8,51.3 L59.7,52.6 L59.1,53.8 L58.2,54.7 L57.2,55.5 L56.2,56.2 L55.2,56.8 L54.3,57.4 L53.3,58.0 L52.3,58.6 L51.2,59.1 L50.0,59.4 L48.8,59.5 L47.5,59.5 L46.1,59.3 L44.7,59.1 L43.3,58.7 L41.9,58.1 L40.7,57.2 L39.7,55.9 L39.3,54.4 L39.3,52.9 L39.8,51.3 L40.4,50.0 L41.1,48.8 L41.7,47.8 L42.1,46.7 L42.4,45.6 L42.8,44.4 L43.3,43.3 L44.0,42.2 L45.0,41.3 L46.1,40.6 L47.3,40.1 L48.6,39.7 L50.0,39.5 L51.4,39.5 L52.8,39.7 L54.1,40.2 L55.2,41.0 L56.0,42.1 L56.7,43.3 L57.1,44.5 L57.5,45.6 L58.0,46.7 L58.6,47.7 L59.2,48.8 L59.7,50.0 Z" opacity="0.94"/>
+          <path class="breathe-ring" d="M64.5,50.0 L64.8,52.0 L64.7,53.9 L63.9,55.7 L62.6,57.3 L61.1,58.5 L59.6,59.6 L58.1,60.6 L56.7,61.6 L55.3,62.8 L53.7,63.9 L52.0,64.8 L50.0,65.5 L47.9,65.7 L45.8,65.6 L43.7,65.1 L41.7,64.4 L39.7,63.4 L37.8,62.2 L36.3,60.5 L35.2,58.5 L34.8,56.3 L35.0,54.0 L35.7,51.9 L36.6,50.0 L37.6,48.4 L38.3,46.9 L38.7,45.3 L38.9,43.6 L39.2,41.7 L39.8,39.8 L40.8,38.0 L42.3,36.6 L44.0,35.6 L46.0,35.0 L48.0,34.7 L50.0,34.6 L52.0,34.8 L53.9,35.3 L55.8,36.1 L57.3,37.3 L58.6,38.8 L59.6,40.4 L60.3,42.1 L61.0,43.7 L61.8,45.1 L62.7,46.6 L63.7,48.2 L64.5,50.0 Z" opacity="0.89"/>
+          <path class="breathe-ring" d="M70.0,50.0 L70.6,52.7 L70.4,55.5 L69.4,58.0 L67.7,60.2 L65.6,62.0 L63.4,63.4 L61.4,64.8 L59.4,66.3 L57.4,67.9 L55.2,69.6 L52.8,70.9 L50.0,71.8 L47.1,72.0 L44.2,71.5 L41.5,70.5 L39.0,69.0 L36.7,67.3 L34.7,65.3 L33.1,63.0 L31.9,60.4 L31.5,57.7 L31.8,54.9 L32.5,52.3 L33.6,50.0 L34.5,48.0 L35.1,46.0 L35.2,43.9 L35.3,41.5 L35.4,38.8 L36.1,36.1 L37.4,33.5 L39.4,31.6 L41.8,30.3 L44.6,29.7 L47.3,29.6 L50.0,30.0 L52.6,30.5 L55.0,31.3 L57.3,32.3 L59.4,33.7 L61.2,35.4 L62.6,37.4 L63.8,39.4 L64.9,41.4 L66.1,43.3 L67.5,45.3 L68.8,47.5 L70.0,50.0 Z" opacity="0.83"/>
+          <path class="breathe-ring" d="M76.1,50.0 L76.8,53.5 L76.5,57.1 L75.1,60.4 L72.9,63.2 L70.1,65.5 L67.3,67.3 L64.5,69.0 L62.0,70.7 L59.4,72.7 L56.6,74.7 L53.5,76.3 L50.0,77.3 L46.4,77.3 L42.9,76.4 L39.8,74.7 L37.0,72.5 L34.7,70.0 L32.6,67.4 L31.0,64.6 L29.8,61.7 L29.2,58.6 L29.1,55.6 L29.6,52.7 L30.3,50.0 L30.8,47.5 L31.1,44.9 L31.0,42.1 L30.7,38.9 L30.8,35.3 L31.6,31.6 L33.4,28.4 L36.1,25.9 L39.4,24.5 L43.1,24.1 L46.6,24.5 L50.0,25.3 L53.1,26.3 L56.1,27.3 L58.9,28.5 L61.6,29.9 L64.0,31.7 L66.1,33.9 L68.0,36.2 L69.7,38.6 L71.3,41.2 L73.1,43.8 L74.7,46.7 L76.1,50.0 Z" opacity="0.78"/>
+          <path class="breathe-ring" d="M82.1,50.0 L82.6,54.3 L82.0,58.6 L80.2,62.5 L77.4,65.8 L74.0,68.4 L70.5,70.5 L67.1,72.3 L64.0,74.2 L60.9,76.4 L57.7,78.6 L54.0,80.4 L50.0,81.5 L45.9,81.4 L41.9,80.1 L38.5,77.9 L35.5,75.0 L33.1,72.0 L31.1,68.9 L29.3,65.9 L27.7,62.9 L26.5,59.7 L25.8,56.5 L25.5,53.2 L25.4,50.0 L25.4,46.8 L25.3,43.4 L25.0,39.6 L24.8,35.5 L25.2,30.9 L26.5,26.5 L29.0,22.6 L32.6,19.9 L37.0,18.5 L41.6,18.5 L46.0,19.4 L50.0,20.8 L53.7,22.2 L57.1,23.5 L60.5,24.7 L63.8,26.0 L67.1,27.8 L70.0,30.0 L72.7,32.6 L75.0,35.6 L77.0,38.8 L79.0,42.2 L80.8,45.9 L82.1,50.0 Z" opacity="0.72"/>
+          <path class="breathe-ring" d="M87.2,50.0 L87.3,54.9 L86.3,59.7 L84.1,64.1 L80.9,67.8 L77.0,70.7 L72.9,72.9 L69.1,74.9 L65.5,76.9 L62.1,79.3 L58.5,81.7 L54.5,83.9 L50.0,85.2 L45.4,85.2 L41.0,83.8 L37.1,81.2 L33.9,77.9 L31.3,74.4 L28.9,71.1 L26.7,67.9 L24.4,64.8 L22.3,61.5 L20.4,57.9 L19.1,54.1 L18.3,50.0 L17.8,45.8 L17.6,41.3 L17.5,36.5 L17.8,31.4 L18.9,26.1 L21.1,21.1 L24.7,17.0 L29.4,14.2 L34.7,13.2 L40.3,13.7 L45.4,15.2 L50.0,17.2 L54.1,19.0 L58.0,20.3 L61.9,21.3 L66.0,22.4 L70.1,23.9 L74.0,26.0 L77.4,29.0 L80.3,32.5 L82.6,36.5 L84.6,40.7 L86.2,45.2 L87.2,50.0 Z" opacity="0.66"/>
+          <path class="breathe-ring" d="M91.2,50.0 L90.9,55.4 L89.6,60.6 L87.1,65.4 L83.6,69.4 L79.5,72.6 L75.1,75.1 L71.0,77.4 L67.2,79.7 L63.4,82.4 L59.5,85.4 L55.0,88.0 L50.0,89.7 L44.7,89.9 L39.7,88.5 L35.2,85.7 L31.5,82.1 L28.4,78.2 L25.5,74.5 L22.5,71.1 L19.4,67.7 L16.2,64.0 L13.2,59.9 L10.9,55.1 L9.5,50.0 L8.9,44.6 L9.0,39.0 L9.8,33.3 L11.2,27.6 L13.4,21.9 L16.8,16.8 L21.4,12.8 L27.1,10.3 L33.3,9.7 L39.5,10.7 L45.1,12.7 L50.0,15.0 L54.4,16.8 L58.6,17.9 L63.1,18.5 L67.9,19.0 L72.9,20.1 L77.8,22.2 L82.1,25.4 L85.5,29.5 L87.9,34.3 L89.6,39.4 L90.7,44.6 L91.2,50.0 Z" opacity="0.61"/>
+          <path class="breathe-ring" d="M94.8,50.0 L94.0,55.8 L92.5,61.4 L90.0,66.6 L86.5,71.1 L82.4,74.9 L78.0,78.0 L73.6,80.8 L69.5,83.7 L65.3,87.0 L60.8,90.4 L55.7,93.6 L50.0,95.7 L43.9,96.2 L38.0,94.8 L32.7,91.8 L28.2,87.7 L24.5,83.3 L21.0,79.0 L17.4,75.0 L13.4,71.1 L9.3,66.9 L5.5,61.9 L2.6,56.2 L0.9,50.0 L0.7,43.5 L1.7,37.1 L3.7,30.8 L6.5,24.9 L10.0,19.3 L14.5,14.5 L20.0,10.9 L26.2,8.8 L32.8,8.4 L39.2,9.5 L44.9,11.6 L50.0,13.6 L54.6,15.1 L59.2,15.6 L64.3,15.5 L70.0,15.3 L76.1,16.0 L82.0,18.0 L87.1,21.6 L90.9,26.4 L93.3,32.1 L94.6,38.1 L95.0,44.1 L94.8,50.0 Z" opacity="0.55"/>
+        </svg>
+      </div>
+      <div style="display:flex;gap:12px;align-items:center">
+        <svg width="20" height="20" viewBox="0 0 20 20" style="color:var(--fg-dim)"><use href="#fstar"/></svg>
+        <span style="font-family:'Outfit';font-weight:900;font-size:10px;letter-spacing:0.2em;color:var(--fg-dim)">FREYJA SYSTEMS</span>
+        <svg width="20" height="20" viewBox="0 0 20 20" style="color:var(--fg-dim)"><use href="#fstar"/></svg>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+</div><!-- end .board -->
+
+
+<!-- ══════════════════════════════════════════════════════
+     EFFECTS ENGINE: Canvas dithering / halftone / ASCII
+     ══════════════════════════════════════════════════════ -->
+<script>
+function clamp(v){return Math.max(0,Math.min(255,v))}
+
+const FX={
+  // Floyd-Steinberg dithering
+  dither(ctx,w,h,{fg=[240,237,232],bg=[10,10,10],threshold=128}={}){
+    const od=ctx.getImageData(0,0,w,h).data;
+    const gray=new Float32Array(w*h);
+    for(let i=0;i<w*h;i++)gray[i]=od[i*4]*0.299+od[i*4+1]*0.587+od[i*4+2]*0.114;
+    for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+      const idx=y*w+x,oldG=gray[idx],newG=oldG>threshold?255:0,err=oldG-newG;
+      gray[idx]=newG;
+      if(x+1<w)gray[idx+1]=clamp(gray[idx+1]+err*7/16);
+      if(y+1<h){
+        if(x>0)gray[idx+w-1]=clamp(gray[idx+w-1]+err*3/16);
+        gray[idx+w]=clamp(gray[idx+w]+err*5/16);
+        if(x+1<w)gray[idx+w+1]=clamp(gray[idx+w+1]+err*1/16);
+      }
+    }
+    const r=ctx.createImageData(w,h),rd=r.data;
+    for(let i=0;i<w*h;i++){const on=gray[i]>128;rd[i*4]=on?fg[0]:bg[0];rd[i*4+1]=on?fg[1]:bg[1];rd[i*4+2]=on?fg[2]:bg[2];rd[i*4+3]=255}
+    ctx.putImageData(r,0,0);
+  },
+
+  // Halftone dots (hex-offset grid)
+  halftone(ctx,imageData,w,h,{spacing=7,dotColor='rgba(212,100,74,0.92)',bg='#0a0a0a',hexOffset=true,maxRadius=null}={}){
+    ctx.fillStyle=bg;ctx.fillRect(0,0,w,h);
+    const d=imageData.data,mr=maxRadius||spacing*0.62;
+    for(let y=0;y<h+spacing;y+=spacing){
+      const row=Math.floor(y/spacing),xOff=hexOffset&&row%2===1?spacing*0.5:0;
+      for(let x=-spacing;x<w+spacing;x+=spacing){
+        const px=Math.round(x+xOff),py=Math.round(y);
+        const sx=Math.max(0,Math.min(w-1,px)),sy=Math.max(0,Math.min(h-1,py));
+        const idx=(sy*w+sx)*4;
+        const brightness=(d[idx]*0.299+d[idx+1]*0.587+d[idx+2]*0.114)/255;
+        const r=mr*(1-brightness);
+        if(r<0.35)continue;
+        ctx.beginPath();ctx.arc(px+spacing*0.5,py+spacing*0.5,r,0,Math.PI*2);
+        ctx.fillStyle=dotColor;ctx.fill();
+      }
+    }
+  },
+
+  // ASCII art rendering
+  ascii(ctx,imageData,w,h,{cols=75,fg='#3aff6e',bg='#000',fontPx=7}={}){
+    const chars=' .\'`^",:;Il!i><~+_-?][}{1)(|/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$';
+    const cw=w/cols,ch=cw*1.85,rows=Math.ceil(h/ch);
+    ctx.fillStyle=bg;ctx.fillRect(0,0,w,h);
+    ctx.font=`${fontPx}px 'Space Mono',monospace`;ctx.textBaseline='top';
+    const d=imageData.data;
+    for(let row=0;row<rows;row++)for(let col=0;col<cols;col++){
+      const sx=Math.min(w-1,Math.round((col+0.5)*cw)),sy=Math.min(h-1,Math.round((row+0.5)*ch));
+      const i=(sy*w+sx)*4;
+      const brightness=(d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114)/255;
+      const ci=Math.min(chars.length-1,Math.floor(brightness*chars.length));
+      ctx.fillStyle=fg;ctx.globalAlpha=0.3+brightness*0.7;
+      ctx.fillText(chars[ci],col*cw,row*ch);
+    }
+    ctx.globalAlpha=1;
+  },
+
+  // Ordered Bayer dithering
+  bayer(ctx,w,h,{fg=[168,212,252],bg=[10,10,10]}={}){
+    const M=[[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]];
+    const id=ctx.getImageData(0,0,w,h),d=id.data;
+    for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+      const i=(y*w+x)*4,g=d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114;
+      const t=(M[y%4][x%4]/16)*255,on=g>t;
+      d[i]=on?fg[0]:bg[0];d[i+1]=on?fg[1]:bg[1];d[i+2]=on?fg[2]:bg[2];
+    }
+    ctx.putImageData(id,0,0);
+  },
+
+  // Procedural noise fallback
+  noise(ctx,w,h,{fg=[240,237,232],bg=[10,10,10],density=0.4}={}){
+    const id=ctx.createImageData(w,h),d=id.data;
+    for(let i=0;i<w*h;i++){const on=Math.random()>density;d[i*4]=on?fg[0]:bg[0];d[i*4+1]=on?fg[1]:bg[1];d[i*4+2]=on?fg[2]:bg[2];d[i*4+3]=255}
+    ctx.putImageData(id,0,0);
+  }
+};
+
+function applyEffect(canvasId,srcs,effect,opts={},postFn=null){
+  const canvas=document.getElementById(canvasId);
+  if(!canvas)return;
+  const ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height;
+  const srcList=Array.isArray(srcs)?srcs:[srcs];
+  let srcIdx=0;
+  function tryLoad(){
+    if(srcIdx>=srcList.length){FX.noise(ctx,w,h,opts.noiseFallback||{});if(postFn)postFn(ctx,w,h);return}
+    const img=new Image();img.crossOrigin='anonymous';
+    img.onload=function(){
+      const ir=img.width/img.height,cr=w/h;let sw,sh,sx,sy;
+      if(ir>cr){sh=h;sw=h*ir;sy=0;sx=(w-sw)/2}else{sw=w;sh=w/ir;sx=0;sy=(h-sh)/2}
+      ctx.drawImage(img,sx,sy,sw,sh);
+      if(effect==='halftone'||effect==='ascii'){const imageData=ctx.getImageData(0,0,w,h);ctx.clearRect(0,0,w,h);FX[effect](ctx,imageData,w,h,opts)}
+      else if(effect==='dither'||effect==='bayer'){FX[effect](ctx,w,h,opts)}
+      if(postFn)postFn(ctx,w,h);
+    };
+    img.onerror=function(){srcIdx++;tryLoad()};
+    img.src=srcList[srcIdx];
+  }
+  tryLoad();
+}
+
+// ── Animation keyframe for scan sweep ──
+const scanStyle=document.createElement('style');
+scanStyle.textContent=`@keyframes scan-sweep{0%{top:-5%;opacity:0.6}100%{top:110%;opacity:0}} @keyframes radar-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`;
+document.head.appendChild(scanStyle);
+
+// ══════════════════════════════════════════════════════
+// INIT: Wire up all canvases
+// ══════════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded',function(){
+
+  // ── Glacier banner: Floyd-Steinberg dithered landscape ──
+  applyEffect('canvas-glacier',
+    [
+      'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=1500&q=80&auto=format',
+      'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?w=1500&q=80&auto=format',
+      'https://images.unsplash.com/photo-1519681393784-d120267933ba?w=1500&q=80&auto=format'
+    ],
+    'dither',
+    {fg:[240,237,232],bg:[10,10,10],threshold:120}
+  );
+
+  // ── Terrain panel: halftone dots (coral) ──
+  applyEffect('canvas-terrain',
+    [
+      'https://images.unsplash.com/photo-1526404746352-668ded4e4e5b?w=800&q=80&auto=format',
+      'https://images.unsplash.com/photo-1509316785289-025f5b846b35?w=800&q=80&auto=format',
+      'https://images.unsplash.com/photo-1483728642387-6c3bdd6c93e5?w=800&q=80&auto=format'
+    ],
+    'halftone',
+    {spacing:6,dotColor:'rgba(212,100,74,0.92)',bg:'#0a0a0a',hexOffset:true}
+  );
+
+  // ── Neural panel: Bayer ordered dither (blue/violet) ──
+  applyEffect('canvas-neural',
+    [
+      'https://images.unsplash.com/photo-1558494949-ef5e09a7d92c?w=800&q=80&auto=format',
+      'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=800&q=80&auto=format',
+      'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=800&q=80&auto=format'
+    ],
+    'bayer',
+    {fg:[168,212,252],bg:[10,10,10]}
+  );
+
+  // ── Aurora/fjord panel: dithered in violet tones ──
+  applyEffect('canvas-aurora',
+    [
+      'https://images.unsplash.com/photo-1483347756197-71ef80e95f73?w=800&q=80&auto=format',
+      'https://images.unsplash.com/photo-1531366936337-7c912a4589a7?w=800&q=80&auto=format',
+      'https://images.unsplash.com/photo-1507400492013-162706c8c05e?w=800&q=80&auto=format',
+      'https://images.unsplash.com/photo-1476111021705-ac3b3304fe20?w=800&q=80&auto=format'
+    ],
+    'dither',
+    {fg:[180,176,255],bg:[10,10,10],threshold:115}
+  );
+
+  // ── Product visual: dithered desktop/workspace image ──
+  applyEffect('canvas-product',
+    [
+      'https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=800&q=80&auto=format',
+      'https://images.unsplash.com/photo-1517694712202-14dd9538aa97?w=800&q=80&auto=format',
+      'https://images.unsplash.com/photo-1461749280684-dccba630e2f6?w=800&q=80&auto=format'
+    ],
+    'dither',
+    {fg:[180,176,255],bg:[10,10,10],threshold:130}
+  );
+
+  // ── Cosmos closing banner: halftone space (gradient colors) ──
+  applyEffect('canvas-cosmos',
+    [
+      'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=1500&q=80&auto=format',
+      'https://images.unsplash.com/photo-1614730347834-7eb8c4de6a69?w=1500&q=80&auto=format',
+      'https://images.unsplash.com/photo-1419242902214-272b3f66ee7a?w=1500&q=80&auto=format'
+    ],
+    'halftone',
+    {spacing:5,dotColor:'rgba(200,154,255,0.7)',bg:'#0a0a0a',hexOffset:true}
+  );
+
+});
+</script>
+
+</body>
+</html>

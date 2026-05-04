@@ -1,0 +1,84 @@
+{
+  "name": "freyja",
+  "version": "0.1.0",
+  "description": "Agentic AI desktop app",
+  "main": "dist-main/main.cjs",
+  "private": true,
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build:renderer": "vite build",
+    "build:main": "node scripts/build-main.mjs",
+    "build": "npm run build:renderer && npm run build:main",
+    "start": "npm run build && electron .",
+    "package": "npm run build && electron-builder --mac --dir",
+    "dist": "npm run build && electron-builder --mac --dir && node scripts/create-dmg.mjs"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.24.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.15",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "unicode-animations": "^1.0.3",
+    "zustand": "^5.0.2"
+  },
+  "build": {
+    "appId": "co.freyja.desktop",
+    "productName": "Freyja",
+    "directories": {
+      "output": "out"
+    },
+    "files": [
+      "dist-main/**/*",
+      "dist-preload/**/*",
+      "dist-renderer/**/*",
+      "bridge/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.icns",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "identity": null
+    },
+    "afterPack": "./scripts/sign-resources.js",
+    "extraResources": [
+      {
+        "from": "bridge",
+        "to": "bridge"
+      },
+      {
+        "from": "engine",
+        "to": "engine"
+      },
+      {
+        "from": "python-bundle",
+        "to": "python-bundle"
+      },
+      {
+        "from": ".env",
+        "to": ".env"
+      }
+    ]
+  }
+}

@@ -1,0 +1,296 @@
+<!-- ═══════════════════════════════════════════
+     X. SKILL COMPOSITION & CONFLICT RESOLUTION
+     ═══════════════════════════════════════════ -->
+<section id="composition" class="reveal">
+<div class="section-label"><span class="section-num">X</span> composition &amp; conflict</div>
+<h2 style="font-size: 22px; margin-bottom: 16px;">Skills aren't standalone — they form networks</h2>
+
+<p>Every system we surveyed eventually converges on the same realisation: an individual skill is a node, not a product. Value emerges from <em>composition</em> — how skills chain, branch, loop, and occasionally contradict each other. The hard problem isn't writing skills; it's making them compose reliably and resolving the conflicts that inevitably arise when they do.</p>
+
+<h3 style="font-size: 18px; margin-top: 36px; margin-bottom: 16px;">PSN's Programmatic Skill Networks</h3>
+
+<p>Programmatic Skill Networks (PSN) is the deepest treatment of composition we found.<a href="https://arxiv.org/abs/2601.03509" class="cite">[PSN]</a> Skills are symbolic programs — not prompt snippets — with typed preconditions and postconditions forming a directed acyclic graph. Composition happens through explicit invocation links:</p>
+
+<div class="approach-grid">
+  <div class="approach-card">
+    <div class="card-tag">Sequence</div>
+    <h4>f → g → h</h4>
+    <p>Skill <code>f</code> calls <code>g</code>, then <code>h</code>. Each postcondition satisfies the next precondition. The simplest composition — and the most common.</p>
+  </div>
+  <div class="approach-card">
+    <div class="card-tag">Conditional</div>
+    <h4>if precond: A else B</h4>
+    <p>Runtime branching based on precondition checks. Enables context-sensitive behaviour without separate skills for each branch.</p>
+  </div>
+  <div class="approach-card">
+    <div class="card-tag">Loop</div>
+    <h4>until postcond(σ)</h4>
+    <p>Repeated invocation until a postcondition is satisfied. Used for iterative refinement — polish a draft, retry a flaky API, converge on a threshold.</p>
+  </div>
+  <div class="approach-card">
+    <div class="card-tag" style="color: var(--red);">Parallel — not yet</div>
+    <h4>f ∥ g — absent</h4>
+    <p>No parallel composition in the current PSN spec. This is the obvious next frontier — and the hardest, because it requires conflict resolution at the postcondition level.</p>
+  </div>
+</div>
+
+<p>The planner uses backward chaining to select skills: <code>select_skill(goal) = argmax<sub>{σ: postcond(σ)⊇goal}</sub> V(σ)</code> — find the skill whose postconditions cover the goal, weighted by the skill's value estimate <code>V</code>.</p>
+
+<h3 style="font-size: 18px; margin-top: 36px; margin-bottom: 16px;">2-Phase Credit Assignment — PSN's crown jewel</h3>
+
+<p>When a composed skill chain fails, <em>which skill is at fault?</em> PSN's answer is a two-phase process that's structurally analogous to backpropagation in neural networks — but operates on symbolic programs instead of tensors.</p>
+
+<div class="diagram" style="margin: 36px 0;">
+  <div class="diagram-label">Fig. X.1 — PSN 2-Phase Credit Assignment</div>
+  <svg viewBox="0 0 760 370" xmlns="http://www.w3.org/2000/svg" style="font-family: 'JetBrains Mono', monospace;">
+    <defs>
+      <marker id="arr-comp-down" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#a05050" stroke-width="1"/></marker>
+      <marker id="arr-comp-up" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#5b7a5b" stroke-width="1"/></marker>
+      <marker id="arr-comp-gray" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#70808d" stroke-width="1"/></marker>
+    </defs>
+
+    <!-- Phase labels -->
+    <text x="110" y="22" font-size="9" font-weight="700" letter-spacing="0.08em" fill="#a05050" text-anchor="middle">PHASE I: TOP-DOWN REFLECT</text>
+    <text x="580" y="22" font-size="9" font-weight="700" letter-spacing="0.08em" fill="#5b7a5b" text-anchor="middle">PHASE II: BOTTOM-UP UPDATE</text>
+    <line x1="340" y1="10" x2="340" y2="360" stroke="#ccc" stroke-width="1" stroke-dasharray="4,4"/>
+
+    <!-- Phase I — Top-down symbolic differentiation -->
+    <!-- Goal node -->
+    <rect x="50" y="42" width="120" height="34" rx="2" fill="none" stroke="#a05050" stroke-width="1.5"/>
+    <text x="110" y="63" font-size="10" fill="#a05050" text-anchor="middle" font-weight="700">GOAL (failed)</text>
+
+    <!-- Arrow down -->
+    <line x1="110" y1="76" x2="110" y2="100" stroke="#a05050" stroke-width="1.2" marker-end="url(#arr-comp-down)"/>
+    <text x="136" y="93" font-size="8" fill="#a05050">reflect</text>
+
+    <!-- Composed skill (root) -->
+    <rect x="30" y="104" width="160" height="34" rx="2" fill="rgba(160,80,80,0.06)" stroke="#a05050" stroke-width="1.5"/>
+    <text x="110" y="125" font-size="10" fill="#1a1a1a" text-anchor="middle" font-weight="600">build_house()</text>
+
+    <!-- Diagnostic output -->
+    <rect x="210" y="104" width="110" height="34" rx="2" fill="none" stroke="#ccc" stroke-width="1" stroke-dasharray="3,3"/>
+    <text x="265" y="118" font-size="8" fill="#666" text-anchor="middle">faulty control?</text>
+    <text x="265" y="130" font-size="8" fill="#666" text-anchor="middle">violated precond?</text>
+    <line x1="190" y1="121" x2="210" y2="121" stroke="#ccc" stroke-width="1" marker-end="url(#arr-comp-gray)"/>
+
+    <!-- Arrow down to children -->
+    <line x1="75" y1="138" x2="55" y2="168" stroke="#a05050" stroke-width="1.2" marker-end="url(#arr-comp-down)"/>
+    <line x1="145" y1="138" x2="165" y2="168" stroke="#a05050" stroke-width="1.2" marker-end="url(#arr-comp-down)"/>
+
+    <!-- Subskill A -->
+    <rect x="10" y="172" width="100" height="30" rx="2" fill="rgba(160,80,80,0.06)" stroke="#a05050" stroke-width="1.2"/>
+    <text x="60" y="191" font-size="9" fill="#1a1a1a" text-anchor="middle">lay_foundation()</text>
+
+    <!-- Subskill B -->
+    <rect x="125" y="172" width="100" height="30" rx="2" fill="rgba(160,80,80,0.06)" stroke="#a05050" stroke-width="1.2"/>
+    <text x="175" y="191" font-size="9" fill="#1a1a1a" text-anchor="middle">frame_walls()</text>
+
+    <!-- Diagnostic for sub B -->
+    <rect x="230" y="172" width="95" height="30" rx="2" fill="none" stroke="#ccc" stroke-width="1" stroke-dasharray="3,3"/>
+    <text x="278" y="186" font-size="8" fill="#666" text-anchor="middle">misaligned params</text>
+    <text x="278" y="196" font-size="8" fill="#a05050" text-anchor="middle" font-weight="700">← BLAMED</text>
+    <line x1="225" y1="187" x2="230" y2="187" stroke="#ccc" stroke-width="1"/>
+
+    <!-- Leaf skills from subskill A -->
+    <line x1="40" y1="202" x2="30" y2="228" stroke="#a05050" stroke-width="1" marker-end="url(#arr-comp-down)"/>
+    <line x1="80" y1="202" x2="90" y2="228" stroke="#a05050" stroke-width="1" marker-end="url(#arr-comp-down)"/>
+    <rect x="5" y="232" width="55" height="26" rx="2" fill="none" stroke="#999" stroke-width="1"/>
+    <text x="33" y="249" font-size="8" fill="#666" text-anchor="middle">dig()</text>
+    <rect x="68" y="232" width="55" height="26" rx="2" fill="none" stroke="#999" stroke-width="1"/>
+    <text x="96" y="249" font-size="8" fill="#666" text-anchor="middle">pour()</text>
+
+    <!-- Leaf skills from subskill B -->
+    <line x1="155" y1="202" x2="145" y2="228" stroke="#a05050" stroke-width="1" marker-end="url(#arr-comp-down)"/>
+    <line x1="195" y1="202" x2="205" y2="228" stroke="#a05050" stroke-width="1" marker-end="url(#arr-comp-down)"/>
+    <rect x="118" y="232" width="55" height="26" rx="2" fill="none" stroke="#a05050" stroke-width="1.2"/>
+    <text x="146" y="249" font-size="8" fill="#a05050" text-anchor="middle" font-weight="700">cut()</text>
+    <rect x="180" y="232" width="55" height="26" rx="2" fill="none" stroke="#a05050" stroke-width="1.2"/>
+    <text x="208" y="249" font-size="8" fill="#a05050" text-anchor="middle" font-weight="700">nail()</text>
+
+    <!-- Summary text -->
+    <text x="110" y="290" font-size="9" fill="#a05050" text-anchor="middle">Decomposes failure along execution trace</text>
+    <text x="110" y="305" font-size="9" fill="#a05050" text-anchor="middle">→ identifies faulty subskills + root cause</text>
+
+    <!-- ═══ Phase II — Bottom-up gradient application ═══ -->
+    <!-- Leaf skills (updated first) -->
+    <rect x="448" y="232" width="55" height="26" rx="2" fill="rgba(91,122,91,0.12)" stroke="#5b7a5b" stroke-width="1.2"/>
+    <text x="476" y="249" font-size="8" fill="#5b7a5b" text-anchor="middle" font-weight="700">cut() ✓</text>
+    <rect x="518" y="232" width="55" height="26" rx="2" fill="rgba(91,122,91,0.12)" stroke="#5b7a5b" stroke-width="1.2"/>
+    <text x="546" y="249" font-size="8" fill="#5b7a5b" text-anchor="middle" font-weight="700">nail() ✓</text>
+
+    <text x="470" y="220" font-size="8" fill="#5b7a5b" font-weight="700">① update leaves first</text>
+
+    <!-- Arrows up from leaves to subskill B -->
+    <line x1="476" y1="232" x2="490" y2="210" stroke="#5b7a5b" stroke-width="1.2" marker-end="url(#arr-comp-up)"/>
+    <line x1="546" y1="232" x2="530" y2="210" stroke="#5b7a5b" stroke-width="1.2" marker-end="url(#arr-comp-up)"/>
+
+    <!-- Subskill B (updated second) -->
+    <rect x="458" y="176" width="105" height="30" rx="2" fill="rgba(91,122,91,0.08)" stroke="#5b7a5b" stroke-width="1.2"/>
+    <text x="510" y="195" font-size="9" fill="#1a1a1a" text-anchor="middle">frame_walls() ✓</text>
+
+    <text x="590" y="185" font-size="8" fill="#5b7a5b" font-weight="700">② then parents</text>
+
+    <!-- Non-blamed subskill A (untouched) -->
+    <rect x="370" y="176" width="78" height="30" rx="2" fill="none" stroke="#ccc" stroke-width="1"/>
+    <text x="409" y="195" font-size="9" fill="#999" text-anchor="middle">lay_found… —</text>
+
+    <!-- Arrow up to root -->
+    <line x1="409" y1="176" x2="490" y2="146" stroke="#5b7a5b" stroke-width="1.2" marker-end="url(#arr-comp-up)"/>
+    <line x1="510" y1="176" x2="510" y2="146" stroke="#5b7a5b" stroke-width="1.2" marker-end="url(#arr-comp-up)"/>
+
+    <!-- Root skill -->
+    <rect x="420" y="108" width="160" height="34" rx="2" fill="rgba(91,122,91,0.08)" stroke="#5b7a5b" stroke-width="1.5"/>
+    <text x="500" y="129" font-size="10" fill="#1a1a1a" text-anchor="middle" font-weight="600">build_house() ✓</text>
+
+    <text x="612" y="120" font-size="8" fill="#5b7a5b" font-weight="700">③ root last</text>
+
+    <!-- Maturity gate annotation -->
+    <rect x="400" y="286" width="270" height="48" rx="2" fill="rgba(154,122,58,0.08)" stroke="#9a7a3a" stroke-width="1" stroke-dasharray="4,3"/>
+    <text x="535" y="304" font-size="9" fill="#9a7a3a" text-anchor="middle" font-weight="700">MATURITY-AWARE GATING</text>
+    <text x="535" y="320" font-size="9" fill="#9a7a3a" text-anchor="middle">P(update|σ) = 1 − sigmoid(V/threshold) + ε</text>
+
+    <!-- Summary text -->
+    <text x="535" y="354" font-size="9" fill="#5b7a5b" text-anchor="middle">Dependency-respecting update order</text>
+    <text x="535" y="366" font-size="9" fill="#5b7a5b" text-anchor="middle">→ stable skills stay frozen, immature ones stay plastic</text>
+  </svg>
+  <p class="caption">Phase I walks the execution trace top-down, decomposing failures into root causes. Phase II applies fixes bottom-up, leaves first, ensuring child updates are settled before parents re-compose.</p>
+</div>
+
+<p>The maturity gate is critical: <code>P(update|σ) = 1 − sigmoid(V/threshold) + ε</code>. A skill with a high value estimate <code>V</code> — meaning it reliably succeeds — is unlikely to be updated. Immature skills with low <code>V</code> stay plastic. The <code>ε</code> ensures even mature skills can be corrected if they're genuinely broken.</p>
+
+<div class="dark-panel">
+  <h3 style="font-size: 16px;">5 Canonical Refactor Patterns</h3>
+  <p style="margin-bottom: 20px;">PSN performs structural refactoring via five graph rewrites. These shrink the library over time — the opposite of what you'd expect from an additive system.</p>
+  <div class="table-wrap">
+    <table style="color: #e8e9e9;">
+      <tr><th style="color: #999; border-bottom-color: #444;">Pattern</th><th style="color: #999; border-bottom-color: #444;">Trigger</th><th style="color: #999; border-bottom-color: #444;">Action</th></tr>
+      <tr><td style="border-bottom-color: #333;"><span class="accent-text">Parametric Coverage</span></td><td style="border-bottom-color: #333;">Specialised variant duplicates a general skill</td><td style="border-bottom-color: #333;">Replace with parameterised wrapper</td></tr>
+      <tr><td style="border-bottom-color: #333;"><span class="accent-text">Behavioral Coverage</span></td><td style="border-bottom-color: #333;">Skill reimplements existing subskill behavior</td><td style="border-bottom-color: #333;">Replace body with call to existing skill</td></tr>
+      <tr><td style="border-bottom-color: #333;"><span class="accent-text">Sibling Specialisations</span></td><td style="border-bottom-color: #333;">Multiple skills share structure, differ in detail</td><td style="border-bottom-color: #333;">Extract abstract parent + specialised overrides</td></tr>
+      <tr><td style="border-bottom-color: #333;"><span class="accent-text">Common Subskill Extraction</span></td><td style="border-bottom-color: #333;">Repeated code block across multiple skills</td><td style="border-bottom-color: #333;">Extract shared subskill, update callers</td></tr>
+      <tr><td><span class="accent-text">Duplication Removal</span></td><td>Two skills are functionally identical</td><td>Merge into one, redirect all references</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="stat-row">
+  <div class="stat-card">
+    <div class="stat-value">51</div>
+    <div class="stat-label">PSN iterations to Diamond</div>
+    <div class="stat-source">vs. Voyager's 102</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value" style="color: var(--green);">↓</div>
+    <div class="stat-label">Library size over time</div>
+    <div class="stat-source">Refactoring shrinks it</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">5</div>
+    <div class="stat-label">Rolling buffer depth</div>
+    <div class="stat-source">Consistency window</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">20%</div>
+    <div class="stat-label">Rollback threshold</div>
+    <div class="stat-source">3-task safety window</div>
+  </div>
+</div>
+
+<h3 style="font-size: 18px; margin-top: 36px; margin-bottom: 16px;">Knowledge Activation's Continuation Graphs</h3>
+
+<p>Where PSN uses top-down planning, Knowledge Activation takes a decentralised approach. Each skill has three typed continuation edges — <code>success</code>, <code>failure</code>, <code>escalation</code> — and the agent traverses locally with no central orchestrator. Topology validation at commit-time catches cycles, uniqueness violations, and dangling references before deployment. It's less powerful than PSN's planner but dramatically simpler to reason about at scale.</p>
+
+<div class="callout">
+  <div class="callout-label">The counterintuitive finding</div>
+  <p>SkillCraft found that <strong>flat libraries outperform hierarchical ones</strong> — errors propagate and compound through nested compositions.<a href="https://arxiv.org/abs/2603.00718" class="cite">[SC]</a> But PSN demonstrates that hierarchy <em>does</em> work when paired with 2-phase credit assignment. The reconciliation is clear: <strong>hierarchy needs a feedback mechanism</strong>. Without credit assignment, a failure in a leaf skill silently corrupts the entire chain. With it, blame is localised and repair is surgical.</p>
+</div>
+
+<div class="finding"><div class="finding-num">⚡</div>
+  <h4>STEPS Compositional Threshold</h4>
+  <p>Training on binary skill combinations (<code>k=2</code>) triggers a sharp performance jump: WB-Score goes from <strong style="color: var(--red);">−22.75</strong> to <strong style="color: var(--green);">+23.91</strong>. But <code>k&gt;4</code> degrades performance. This suggests a fundamental ceiling on how many skills can be effectively composed in a single operation — and it's lower than anyone expected.</p>
+</div>
+
+<hr style="margin: 48px 0;">
+
+<h3 style="font-size: 18px; margin-bottom: 16px;">How Conflicts Are Resolved</h3>
+
+<p>When composed skills disagree — or when multiple skills claim authority over the same goal — the system needs a resolution hierarchy. Across the literature, we see the same four-layer pattern emerge independently in multiple frameworks:</p>
+
+<div class="diagram" style="margin: 36px 0;">
+  <div class="diagram-label">Fig. X.2 — 4-Layer Conflict Resolution Stack</div>
+  <svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="font-family: 'JetBrains Mono', monospace;">
+    <!-- Layer 4 (top — least frequent, highest latency) -->
+    <polygon points="350,16 560,80 140,80" fill="rgba(160,80,80,0.08)" stroke="#a05050" stroke-width="1.5"/>
+    <text x="350" y="54" font-size="10" fill="#a05050" text-anchor="middle" font-weight="700">LAYER 4: HUMAN ESCALATION</text>
+    <text x="350" y="70" font-size="8" fill="#a05050" text-anchor="middle">hours · stakes / novelty / ethics triggers</text>
+    <text x="600" y="60" font-size="8" fill="#999" text-anchor="start">rare</text>
+
+    <!-- Layer 3 -->
+    <polygon points="140,84 560,84 610,158 90,158" fill="rgba(154,122,58,0.08)" stroke="#9a7a3a" stroke-width="1.5"/>
+    <text x="350" y="112" font-size="10" fill="#9a7a3a" text-anchor="middle" font-weight="700">LAYER 3: ML NEGOTIATION</text>
+    <text x="350" y="128" font-size="8" fill="#9a7a3a" text-anchor="middle">minutes · Symbolic-MoE routing · RL bargaining · Pareto search</text>
+    <text x="350" y="148" font-size="8" fill="#666" text-anchor="middle">top-k experts selected per query, aggregator LLM synthesises conflicting outputs</text>
+
+    <!-- Layer 2 -->
+    <polygon points="90,162 610,162 656,236 44,236" fill="rgba(112,128,141,0.08)" stroke="#70808d" stroke-width="1.5"/>
+    <text x="350" y="190" font-size="10" fill="#70808d" text-anchor="middle" font-weight="700">LAYER 2: WEIGHTED VOTING</text>
+    <text x="350" y="206" font-size="8" fill="#70808d" text-anchor="middle">seconds · accuracy-weighted, domain-weighted skill votes</text>
+    <text x="350" y="224" font-size="8" fill="#666" text-anchor="middle">each skill's vote scaled by historical accuracy in the relevant domain</text>
+
+    <!-- Layer 1 (base — most frequent, lowest latency) -->
+    <polygon points="44,240 656,240 700,314 0,314" fill="rgba(91,122,91,0.08)" stroke="#5b7a5b" stroke-width="1.5"/>
+    <text x="350" y="268" font-size="10" fill="#5b7a5b" text-anchor="middle" font-weight="700">LAYER 1: RULE-BASED PRIORITIES</text>
+    <text x="350" y="284" font-size="8" fill="#5b7a5b" text-anchor="middle">milliseconds · Safety &gt; Speed &gt; Cost</text>
+    <text x="350" y="302" font-size="8" fill="#666" text-anchor="middle">deterministic, no model inference — pure priority ordering + override rules</text>
+    <text x="690" y="292" font-size="8" fill="#999" text-anchor="end">common</text>
+
+    <!-- Side annotations — latency scale -->
+    <text x="697" y="168" font-size="7" fill="#999" text-anchor="end" transform="rotate(-90, 697, 168)">← INCREASING LATENCY</text>
+    <line x1="690" y1="80" x2="690" y2="300" stroke="#ccc" stroke-width="1" marker-end="url(#arr-comp-gray)"/>
+  </svg>
+  <p class="caption">Most conflicts resolve at Layer 1 (milliseconds, deterministic). Each successive layer is slower but handles higher-ambiguity cases. Layer 4 is reserved for decisions involving stakes, novelty, or ethical judgment that no automated system should make alone.</p>
+</div>
+
+<p>Symbolic-MoE<a href="https://arxiv.org/abs/2503.05641" class="cite">[SMoE]</a> operates at Layer 3: it builds skill profiles from validation performance, selects top-<em>k</em> experts per query instance, and uses a task-specific aggregator LLM to synthesise conflicting outputs in a single round. PSN adds its own constraint at Layer 1: a <strong>rolling buffer of 5 recent proposals</strong> enforces consistency — contradictory edits to the same skill within the window are rejected before they enter the system.</p>
+
+<hr style="margin: 48px 0;">
+
+<h3 style="font-size: 18px; margin-bottom: 16px;">Dependency Management — the <code>agent.lock</code> proposal</h3>
+
+<p>As skill libraries grow, the problem shifts from "how do I compose skills?" to "how do I know which version of which skill I'm composing with?" The npm parallel is no longer a metaphor — it's a direct analogy.</p>
+
+<pre>[skills.web_search]
+name = "web_search"
+version = "1.3.2"
+sha256 = "a7f3c9e2d1b4..."
+publisher = "acme-corp"
+review_status = "audited"
+
+[skills.code_review]
+name = "code_review"
+version = "0.8.1"
+sha256 = "e5d2a1f8b3c6..."
+publisher = "internal"
+review_status = "pending"</pre>
+
+<p>The <code>agent.lock</code> proposal<a href="#" class="cite">[GL]</a> pins skills by name + version + SHA-256 hash + publisher + review status, enforceable via CI. <strong>pixi-skills</strong> ships skills as conda packages with <code>run_constraints</code> (e.g., <code>polars&gt;=1.38,&lt;2.0</code>) and pins exact versions in <code>pixi.lock</code>. EvoSkill uses git branches as skill versions — each evolution creates a new branch, with the Pareto frontier tracked via git tags.</p>
+
+<div class="table-wrap">
+  <table>
+    <tr><th>npm</th><th>Skill Ecosystem</th><th>Status</th></tr>
+    <tr><td><code>package.json</code></td><td><code>SKILL.md</code></td><td style="color: var(--green);">Established</td></tr>
+    <tr><td><code>package-lock.json</code></td><td><code>agent.lock</code> (proposed)</td><td style="color: var(--amber);">Proposed</td></tr>
+    <tr><td><code>npm install</code></td><td><code>skills add</code></td><td style="color: var(--green);">Implemented</td></tr>
+    <tr><td><code>npm audit</code></td><td><code>skill-audit</code></td><td style="color: var(--amber);">Emerging</td></tr>
+    <tr><td>semver (<code>^1.2.3</code>)</td><td>Not yet standardised</td><td style="color: var(--red);">Missing</td></tr>
+    <tr><td><code>npm registry</code></td><td>280K+ skills on skillsmp.com</td><td style="color: var(--green);">Live</td></tr>
+    <tr><td><code>npm unpublish</code></td><td>No equivalent</td><td style="color: var(--red);">Missing</td></tr>
+  </table>
+</div>
+
+<div class="callout warning">
+  <div class="callout-label">The security gap is structural</div>
+  <p>26.1% of 42,447 analysed skills contain security vulnerabilities.<a href="https://arxiv.org/abs/2601.10338" class="cite">[sec]</a> Without <code>agent.lock</code>-style pinning, a supply-chain attack can silently replace a skill between invocations. The npm ecosystem learned this lesson with <code>event-stream</code> and <code>ua-parser-js</code>. The skill ecosystem hasn't learned it yet — but with 280K+ public skills and 46.3% duplication rates, the attack surface is already enormous.</p>
+</div>
+
+</section>

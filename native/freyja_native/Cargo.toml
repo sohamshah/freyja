@@ -1,0 +1,50 @@
+[package]
+name = "freyja_native"
+version = "0.1.0"
+edition = "2021"
+description = "Native macOS bindings for Freyja computer-use tools"
+license = "MIT"
+
+[lib]
+name = "freyja_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py311"] }
+enigo = { version = "0.2", features = ["serde"] }
+core-foundation = "0.10"
+core-graphics = "0.24"
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = [
+    "NSArray",
+    "NSDate",
+    "NSString",
+    "NSURL",
+    "NSDictionary",
+    "NSError",
+    "NSGeometry",
+    "NSObject",
+    "NSValue",
+    "NSFileManager",
+    "NSNotification",
+    "NSAppleEventDescriptor",
+] }
+objc2-app-kit = { version = "0.2", features = [
+    "NSRunningApplication",
+    "NSWorkspace",
+    "NSScreen",
+    "NSApplication",
+    "libc",
+] }
+accessibility = "0.2"
+accessibility-sys = "0.2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"
+opt-level = 3

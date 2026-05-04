@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Inherit TCC grants (Accessibility, Screen Recording) from the
+         parent Freyja.app process. This is the key entitlement that lets
+         the bundled Python subprocess use CGEventPost and AX APIs via
+         responsibility inheritance. -->
+    <key>com.apple.security.inherit</key>
+    <true/>
+
+    <!-- The Rust freyja_native extension uses Enigo which allocates
+         executable memory for CGEvent trampolines -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!-- Allow loading the freyja_native .so from site-packages -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

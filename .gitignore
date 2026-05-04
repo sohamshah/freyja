@@ -46,3 +46,9 @@ bridge-diagnose.txt
 *.dmg
 *.zip
 *.app/
+
+# Bundled Python runtime — regenerate via build script
+python-bundle/
+
+# Stray asset (not referenced in code)
+5layer-partnership-ai-defense.png
