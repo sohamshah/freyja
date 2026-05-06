@@ -1459,8 +1459,8 @@ class AsyncAgentRunner:
     def _mark_context_compacted(self, context_tokens_after: int) -> None:
         """Drop stale last-call context counters after compaction."""
         try:
-            output = int(getattr(self.usage, "output", 0) or 0)
-            self.usage.last_input = max(0, context_tokens_after - output)
+            self.usage.last_input = max(0, context_tokens_after)
+            self.usage.last_output = 0
             self.usage.last_cache_read = 0
             self.usage.last_cache_write = 0
             self.usage.cache_read = 0

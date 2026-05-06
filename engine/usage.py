@@ -35,6 +35,7 @@ class UsageAccumulator:
             lastCacheRead: number;   // Last API call's cache read
             lastCacheWrite: number;  // Last API call's cache write
             lastInput: number;       // Last API call's input tokens
+            lastOutput: number;      // Last API call's output tokens
         }
 
     The "last" fields are critical for accurate context-size reporting.
@@ -52,6 +53,7 @@ class UsageAccumulator:
 
     # Last-call values (for accurate context size)
     last_input: int = 0
+    last_output: int = 0
     last_cache_read: int = 0
     last_cache_write: int = 0
 
@@ -87,6 +89,7 @@ class UsageAccumulator:
 
         # Track the most recent API call's values for context-size reporting
         self.last_input = input_tokens
+        self.last_output = output_tokens
         self.last_cache_read = cache_read
         self.last_cache_write = cache_write
 
@@ -109,22 +112,26 @@ class UsageAccumulator:
 
         From OpenClaw's toNormalizedUsage (run.ts:153-179):
             lastPromptTokens = lastInput + lastCacheRead + lastCacheWrite
-            total = lastPromptTokens + output
+            total = lastPromptTokens + lastOutput
 
         Uses the LAST API call's cache fields for context-size calculation.
         The accumulated cacheRead/cacheWrite inflate context size because
         each tool-call round-trip reports cacheRead approximately equal to
         current_context_size, and summing N calls gives N * context_size.
+        The same applies to output: cumulative generated tokens are useful
+        for billing, but only the latest response belongs on top of the last
+        request when estimating the next context payload.
         """
         last_prompt_tokens = self.last_input + self.last_cache_read + self.last_cache_write
-        return last_prompt_tokens + self.output
+        return last_prompt_tokens + self.last_output
 
     def to_stats(self) -> UsageStats:
         """
         Export final usage statistics.
 
         Uses "last" semantics for input/cache fields (accurate context size)
-        but accumulated output (total generated text this turn).
+        but accumulated output (total generated text this turn). `total_tokens`
+        is the current context-size estimate, not the billable turn total.
         """
         last_prompt_tokens = self.last_input + self.last_cache_read + self.last_cache_write
         return UsageStats(
@@ -133,7 +140,7 @@ class UsageAccumulator:
             cache_read_tokens=self.last_cache_read,
             cache_write_tokens=self.last_cache_write,
             reasoning_tokens=self.reasoning,
-            total_tokens=last_prompt_tokens + self.output,
+            total_tokens=last_prompt_tokens + self.last_output,
         )
 
     def reset(self) -> None:
@@ -145,6 +152,7 @@ class UsageAccumulator:
         self.reasoning = 0
         self.total = 0
         self.last_input = 0
+        self.last_output = 0
         self.last_cache_read = 0
         self.last_cache_write = 0
 
@@ -155,5 +163,6 @@ class UsageAccumulator:
             f"cache_read={self.cache_read}, cache_write={self.cache_write}, "
             f"reasoning={self.reasoning}, total={self.total}, "
             f"last_input={self.last_input}, last_cache_read={self.last_cache_read}, "
-            f"last_cache_write={self.last_cache_write})"
+            f"last_cache_write={self.last_cache_write}, "
+            f"last_output={self.last_output})"
         )

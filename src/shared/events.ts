@@ -318,6 +318,7 @@ export type BridgeEvent =
   | ({ type: 'skill_updated'; skill: Skill } & SessionId)
   | ({
       type: 'usage'
+      contextTokens?: number
       inputTokens: number
       outputTokens: number
       cacheReadTokens: number
@@ -326,6 +327,7 @@ export type BridgeEvent =
     } & SessionId)
   | ({
       type: 'usage_snapshot'
+      contextTokens?: number
       inputTokens: number
       outputTokens: number
       cacheReadTokens: number
@@ -363,6 +365,7 @@ export type BridgeEvent =
       type: 'session_completed'
       success: boolean
       elapsedMs: number
+      contextTokens?: number
       inputTokens?: number
       outputTokens?: number
       toolsCalled?: number

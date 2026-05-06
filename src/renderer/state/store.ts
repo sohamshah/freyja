@@ -80,6 +80,7 @@ export interface SessionSlice {
   subagents: Record<string, SubagentRecord>
   subagentOrder: string[]
   usage: {
+    currentContextTokens: number
     totalInputTokens: number
     totalOutputTokens: number
     totalCacheReadTokens: number
@@ -353,6 +354,7 @@ function emptySlice(
     subagents: {},
     subagentOrder: [],
     usage: {
+      currentContextTokens: 0,
       totalInputTokens: 0,
       totalOutputTokens: 0,
       totalCacheReadTokens: 0,
@@ -584,11 +586,32 @@ function materializeFramesForPersistence(slice: SessionSlice): SessionSlice {
 
 function normalizePersistedFrames(slice: SessionSlice): SessionSlice {
   const model = slice.model || 'claude-sonnet-4-6'
+  const contextWindow = slice.usage?.contextWindow ?? contextWindowFor(model)
+  const totalInputTokens = slice.usage?.totalInputTokens ?? 0
+  const persistedContext = (slice.usage as any)?.currentContextTokens
+  const currentContextTokens =
+    typeof persistedContext === 'number'
+      ? persistedContext
+      : totalInputTokens > contextWindow
+        ? 0
+        : totalInputTokens
   slice = {
     ...slice,
     model,
     reasoningLevel: normalizeReasoningFor(model, slice.reasoningLevel),
     fileChanges: slice.fileChanges ?? [],
+    usage: {
+      ...slice.usage,
+      currentContextTokens,
+      totalInputTokens,
+      totalOutputTokens: slice.usage?.totalOutputTokens ?? 0,
+      totalCacheReadTokens: slice.usage?.totalCacheReadTokens ?? 0,
+      totalCacheWriteTokens: slice.usage?.totalCacheWriteTokens ?? 0,
+      totalCost: slice.usage?.totalCost ?? 0,
+      lastTurnInputTokens: slice.usage?.lastTurnInputTokens ?? totalInputTokens,
+      lastTurnOutputTokens: slice.usage?.lastTurnOutputTokens ?? 0,
+      contextWindow,
+    },
   }
   let changed = false
   const toolCalls: Record<string, ToolCallRecord> = {}
@@ -934,22 +957,27 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
       return next
     }
 
-    case 'usage':
+    case 'usage': {
+      const contextTokens = ev.contextTokens ?? ev.inputTokens
       next.usage = {
         ...slice.usage,
+        currentContextTokens: contextTokens,
         totalInputTokens: ev.inputTokens,
         totalOutputTokens: ev.outputTokens,
         totalCacheReadTokens: ev.cacheReadTokens,
         totalCacheWriteTokens: ev.cacheWriteTokens,
         totalCost: ev.cost,
-        lastTurnInputTokens: ev.inputTokens,
+        lastTurnInputTokens: contextTokens,
         lastTurnOutputTokens: ev.outputTokens,
       }
       return next
+    }
 
-    case 'usage_snapshot':
+    case 'usage_snapshot': {
+      const contextTokens = ev.contextTokens ?? ev.inputTokens
       next.usage = {
         ...slice.usage,
+        currentContextTokens: contextTokens,
         totalInputTokens: ev.inputTokens,
         totalOutputTokens: ev.outputTokens,
         totalCacheReadTokens: ev.cacheReadTokens,
@@ -957,6 +985,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         totalCost: ev.cost || slice.usage.totalCost,
       }
       return next
+    }
 
     case 'turn_complete':
       // Only clear streaming state if this is the CURRENT turn. A stale

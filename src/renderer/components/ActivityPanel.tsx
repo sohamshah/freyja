@@ -72,7 +72,13 @@ export function ActivityPanel() {
     if (diagnosticAttention > 0) setDiagnosticsOpen(true)
   }, [diagnosticAttention])
 
-  const ctxPct = Math.min(100, Math.round((usage.totalInputTokens / usage.contextWindow) * 100))
+  const contextKnown = usage.currentContextTokens > 0 || usage.totalInputTokens <= usage.contextWindow
+  const contextTokens = usage.currentContextTokens > 0
+    ? usage.currentContextTokens
+    : contextKnown
+      ? usage.totalInputTokens
+      : 0
+  const ctxPct = Math.min(100, Math.round((contextTokens / usage.contextWindow) * 100))
 
   return (
     <aside
@@ -121,7 +127,7 @@ export function ActivityPanel() {
           <div className="mb-2 flex items-baseline justify-between">
             <div className="label">request context</div>
             <div className="font-mono text-[11px] text-fg-0">
-              {formatTokens(usage.totalInputTokens)}
+              {contextKnown ? formatTokens(contextTokens) : 'n/a'}
               <span className="text-fg-2">/{formatTokens(usage.contextWindow)}</span>
             </div>
           </div>
@@ -132,9 +138,12 @@ export function ActivityPanel() {
             />
           </div>
           <div className="mt-2 grid grid-cols-3 gap-2 text-[10.5px]">
-            <Metric label="request" value={formatTokens(usage.totalInputTokens)} />
+            <Metric label="request" value={contextKnown ? formatTokens(contextTokens) : 'n/a'} />
             <Metric label="output" value={formatTokens(usage.totalOutputTokens)} />
             <Metric label="cache" value={formatTokens(usage.totalCacheReadTokens)} />
+          </div>
+          <div className="mt-2 grid grid-cols-1 gap-2 text-[10.5px]">
+            <Metric label="billed input" value={formatTokens(usage.totalInputTokens)} />
           </div>
           <div className="mt-2 flex items-center justify-between border-t border-white/5 pt-2 text-[10.5px]">
             <span className="text-fg-2">session spend</span>

@@ -11,7 +11,13 @@ export function TitleBar() {
   const sessionId = useHarness((s) => s.activeSessionId)
   const isStreaming = useHarness((s) => s.isStreaming)
   const toggleMissionDashboard = useHarness((s) => s.toggleMissionDashboard)
-  const ctxPct = Math.min(100, Math.round((usage.totalInputTokens / usage.contextWindow) * 100))
+  const contextKnown = usage.currentContextTokens > 0 || usage.totalInputTokens <= usage.contextWindow
+  const contextTokens = usage.currentContextTokens > 0
+    ? usage.currentContextTokens
+    : contextKnown
+      ? usage.totalInputTokens
+      : 0
+  const ctxPct = Math.min(100, Math.round((contextTokens / usage.contextWindow) * 100))
 
   return (
     <div className="drag hairline-b flex h-[46px] shrink-0 items-center gap-3 pl-[82px] pr-4 text-[12px] text-fg-1">
@@ -58,7 +64,7 @@ export function TitleBar() {
       <TitleControl className="no-drag flex h-[30px] px-3">
         <span className="text-fg-2">ctx</span>
         <span className="ml-1.5 font-mono text-fg-0">
-          {formatTokens(usage.totalInputTokens)}
+          {contextKnown ? formatTokens(contextTokens) : 'n/a'}
           <span className="text-fg-2">/{formatTokens(usage.contextWindow)}</span>
         </span>
         <ProgressBar pct={ctxPct} className="ml-2 w-[56px]" />

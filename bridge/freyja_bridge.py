@@ -932,11 +932,16 @@ def _new_tracing_registry(base_registry, session_id: str, get_runner=None):
                     out_tok = int(getattr(u, "output", 0) or 0)
                     cr_tok = int(getattr(u, "cache_read", 0) or 0)
                     cw_tok = int(getattr(u, "cache_write", 0) or 0)
+                    try:
+                        context_tok = int(u.effective_context_tokens())
+                    except Exception:  # noqa: BLE001
+                        context_tok = in_tok
                     cost = (in_tok * 3 + out_tok * 15) / 1_000_000
                     emit(
                         {
                             "type": "usage",
                             "sessionId": session_id,
+                            "contextTokens": context_tok,
                             "inputTokens": in_tok,
                             "outputTokens": out_tok,
                             "cacheReadTokens": cr_tok,
@@ -1399,8 +1404,8 @@ class _BridgeSession:
             return
         try:
             usage = self.runner.usage
-            output = int(getattr(usage, "output", 0) or 0)
-            usage.last_input = max(0, context_tokens_after - output)
+            usage.last_input = max(0, context_tokens_after)
+            usage.last_output = 0
             usage.last_cache_read = 0
             usage.last_cache_write = 0
             usage.cache_read = 0
@@ -1637,7 +1642,8 @@ class _BridgeSession:
             {
                 "type": "usage_snapshot",
                 "sessionId": self.id,
-                "inputTokens": context_tokens_after,
+                "contextTokens": context_tokens_after,
+                "inputTokens": _cum_in,
                 "outputTokens": cum_out,
                 "cacheReadTokens": 0,
                 "cacheWriteTokens": 0,
@@ -1962,13 +1968,13 @@ class _BridgeSession:
             result = await self.runner.run(self.session, message, stream=True)
             usage = self.runner.usage
             # We emit TWO numbers the UI cares about:
-            #   - `inputTokens` = CURRENT request size (what a fresh
-            #     API call would cost), so the ctx meter reflects
+            #   - `contextTokens` = CURRENT request size (what a fresh
+            #     API call would carry), so the ctx meter reflects
             #     reality instead of an ever-growing cumulative sum.
             #     Uses `effective_context_tokens()` which mirrors
             #     OpenClaw's "last value" pattern (last_input +
             #     last_cache_read + last_cache_write + output).
-            #   - Cumulative in/out go to the cost math below so
+            #   - `inputTokens` / output are cumulative billing totals so
             #     session total spend still accrues across every
             #     tool-use round trip.
             cum_in = int(getattr(usage, "input", 0) or 0)
@@ -1993,7 +1999,8 @@ class _BridgeSession:
                 {
                     "type": "usage",
                     "sessionId": self.id,
-                    "inputTokens": effective_ctx,
+                    "contextTokens": effective_ctx,
+                    "inputTokens": cum_in,
                     "outputTokens": cum_out,
                     "cacheReadTokens": cum_cr,
                     "cacheWriteTokens": cum_cw,
@@ -2781,7 +2788,8 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 {
                     "type": "usage_snapshot",
                     "sessionId": sess.id,
-                    "inputTokens": max(context_tok, estimate_tok),
+                    "contextTokens": max(context_tok, estimate_tok),
+                    "inputTokens": in_tok,
                     "outputTokens": out_tok,
                     "cacheReadTokens": cr_tok,
                     "cacheWriteTokens": cw_tok,

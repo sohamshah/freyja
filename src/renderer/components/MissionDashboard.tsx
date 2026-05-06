@@ -467,9 +467,17 @@ export function MissionDashboard() {
   }
 
   const runningAgents = dashboard.agents.filter((agent) => agent.status === 'running').length
+  const rootContextKnown =
+    dashboard.rootUsage.currentContextTokens > 0 ||
+    dashboard.rootUsage.totalInputTokens <= dashboard.rootUsage.contextWindow
+  const rootContextTokens = dashboard.rootUsage.currentContextTokens > 0
+    ? dashboard.rootUsage.currentContextTokens
+    : rootContextKnown
+      ? dashboard.rootUsage.totalInputTokens
+      : 0
   const contextPct = Math.min(
     100,
-    Math.round((dashboard.rootUsage.totalInputTokens / dashboard.rootUsage.contextWindow) * 100),
+    Math.round((rootContextTokens / dashboard.rootUsage.contextWindow) * 100),
   )
   const changeTotals = dashboard.fileChanges.reduce(
     (acc, change) => ({
@@ -863,6 +871,14 @@ function TelemetryTab({
   const contextPrunes = events.filter((event) => event.subtype === 'context_pruning')
   const truncations = events.filter((event) => event.subtype === 'tool_truncation' || event.subtype === 'output_truncation')
   const omittedImages = mediaPrunes.reduce((acc, event) => acc + detailNumber(event, 'omitted_images'), 0)
+  const rootContextKnown =
+    rootUsage.currentContextTokens > 0 ||
+    rootUsage.totalInputTokens <= rootUsage.contextWindow
+  const rootContextTokens = rootUsage.currentContextTokens > 0
+    ? rootUsage.currentContextTokens
+    : rootContextKnown
+      ? rootUsage.totalInputTokens
+      : 0
   const tokensSaved = compactions.reduce((acc, event) => {
     const before = detailNumber(event, 'context_tokens_before') || detailNumber(event, 'tokens_before')
     const after = detailNumber(event, 'context_tokens_after') || detailNumber(event, 'tokens_after')
@@ -877,7 +893,11 @@ function TelemetryTab({
         <MetricCard label="summaries" value={String(compactions.length)} sub={`${formatTokens(tokensSaved)} saved`} tone={compactions.length ? 'ok' : 'neutral'} />
         <MetricCard label="tool trims" value={String(contextPrunes.length)} sub="old results" tone="warn" />
         <MetricCard label="output cuts" value={String(truncations.length)} sub="hard limits" tone={truncations.length ? 'warn' : 'neutral'} />
-        <MetricCard label="live context" value={formatTokens(rootUsage.totalInputTokens)} sub={`of ${formatTokens(rootUsage.contextWindow)}`} />
+        <MetricCard
+          label="live context"
+          value={rootContextKnown ? formatTokens(rootContextTokens) : 'n/a'}
+          sub={`${formatTokens(rootUsage.totalInputTokens)} billed in`}
+        />
       </section>
 
       <section className="col-span-12 flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4 xl:col-span-7">

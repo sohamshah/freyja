@@ -40,6 +40,7 @@ class SubAgentRecord:
     done_event: threading.Event = field(default_factory=threading.Event)
     input_tokens: int = 0
     output_tokens: int = 0
+    context_tokens: int = 0
     iterations: int = 0
     tools_called: int = 0
     agent_type_name: str = "general"

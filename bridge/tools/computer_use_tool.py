@@ -676,6 +676,10 @@ Parameters:
         usage = runner.usage
         record.input_tokens = int(getattr(usage, "input", 0) or 0)
         record.output_tokens = int(getattr(usage, "output", 0) or 0)
+        try:
+            record.context_tokens = int(usage.effective_context_tokens())
+        except Exception:  # noqa: BLE001
+            record.context_tokens = record.input_tokens
         record.tools_called = tool_count
         record.iterations = int(getattr(result, "iterations", 0) or 0) if result else 0
 
@@ -706,6 +710,7 @@ Parameters:
         usage_payload = {
             "type": "usage",
             "sessionId": record.id,
+            "contextTokens": record.context_tokens,
             "inputTokens": record.input_tokens,
             "outputTokens": record.output_tokens,
             "cacheReadTokens": 0,
@@ -730,6 +735,7 @@ Parameters:
                 "sessionId": record.id,
                 "success": not (cancelled or error),
                 "elapsedMs": int(record.elapsed * 1000),
+                "contextTokens": record.context_tokens,
                 "inputTokens": record.input_tokens,
                 "outputTokens": record.output_tokens,
                 "toolsCalled": record.tools_called,
