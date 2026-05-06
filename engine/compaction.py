@@ -28,12 +28,20 @@ from engine.constants import (
     SUMMARY_MAX_TOKENS,
 )
 from engine.session import TranscriptManager
-from engine.types import Message
+from engine.types import ImageBlock, Message
 
 if TYPE_CHECKING:
     from engine.providers import ModelProvider
 
 logger = logging.getLogger(__name__)
+
+
+def _count_images(messages: list[Message]) -> int:
+    total = 0
+    for msg in messages:
+        if isinstance(msg.content, list):
+            total += sum(1 for block in msg.content if isinstance(block, ImageBlock))
+    return total
 
 
 # ============================================================================
@@ -61,6 +69,18 @@ class CompactionResult:
 
     entries_removed: int = 0
     """Number of transcript entries removed."""
+
+    messages_before: int = 0
+    """Number of transcript entries before compaction."""
+
+    messages_after: int = 0
+    """Number of transcript entries after compaction."""
+
+    images_before: int = 0
+    """Number of image blocks before compaction."""
+
+    images_after: int = 0
+    """Number of image blocks after compaction."""
 
 
 # ============================================================================
@@ -210,6 +230,8 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
         """Compact the transcript by summarizing old messages."""
         messages = transcript.get_messages()
         tokens_before = transcript.estimate_tokens()
+        messages_before = len(transcript.entries)
+        images_before = _count_images(messages)
 
         if len(messages) < self.min_messages:
             return CompactionResult(
@@ -285,6 +307,8 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
 
         tokens_after = transcript.estimate_tokens()
         entries_removed = split_point
+        messages_after = len(transcript.entries)
+        images_after = _count_images(transcript.get_messages())
 
         logger.info(
             f"Compaction complete: {tokens_before} -> {tokens_after} tokens, "
@@ -297,6 +321,10 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
             tokens_before=tokens_before,
             tokens_after=tokens_after,
             entries_removed=entries_removed,
+            messages_before=messages_before,
+            messages_after=messages_after,
+            images_before=images_before,
+            images_after=images_after,
         )
 
     @staticmethod

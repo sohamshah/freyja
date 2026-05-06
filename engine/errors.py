@@ -107,6 +107,7 @@ _CONTEXT_OVERFLOW_PATTERNS: list[str] = [
     "request_too_large",
     "request size exceeds",
     "request exceeds the maximum size",
+    "too much media",
     "context length exceeded",
     "maximum context length",
     "prompt is too long",

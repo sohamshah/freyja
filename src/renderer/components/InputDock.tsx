@@ -44,6 +44,9 @@ export function InputDock() {
   const pendingAttachments = useHarness((s) => s.pendingAttachments)
   const fileMatches = useHarness((s) => s.fileMatches)
   const requestFileMatches = useHarness((s) => s.requestFileMatches)
+  const activeSessionId = useHarness((s) => s.activeSessionId)
+  const sessions = useHarness((s) => s.sessions)
+  const model = useHarness((s) => s.model)
 
   const [focused, setFocused] = useState(false)
   const [selectedSuggestion, setSelectedSuggestion] = useState(0)
@@ -56,6 +59,9 @@ export function InputDock() {
     if (!draft.startsWith('/')) return []
     return matchSlash(draft.split(/\s+/)[0])
   }, [draft])
+  const activeSession = sessions.find((session) => session.id === activeSessionId)
+  const workspaceLabel = compactPath(activeSession?.workspace || '~/')
+  const modelLabel = activeSession?.model || model
 
   // Detect the active @ token at the current caret position.
   const atToken = useMemo(() => detectAtToken(draft, caret), [draft, caret])
@@ -376,26 +382,20 @@ export function InputDock() {
               style={{ lineHeight: 1.55, maxHeight: `${MAX_PX}px` }}
             />
           </div>
-          <div className="font-mono mt-2 flex items-center justify-between px-1 text-[10.5px] text-fg-3">
-            <div className="flex items-center gap-3">
+          <div className="font-mono mt-2 flex items-center justify-between gap-4 px-1 text-[10.5px] text-fg-3">
+            <div className="flex min-w-0 items-center gap-3">
               <span>
                 <kbd className="kbd">⌘</kbd>
                 <kbd className="kbd ml-1">K</kbd> palette
               </span>
               <span>
-                <kbd className="kbd">⌘</kbd>
-                <kbd className="kbd ml-1">N</kbd> new
+                <kbd className="kbd">/</kbd> commands
               </span>
               <span>
-                <kbd className="kbd">⌘</kbd>
-                <kbd className="kbd ml-1">O</kbd> subagents
-              </span>
-              <span>
-                <kbd className="kbd">⌘</kbd>
-                <kbd className="kbd ml-1">V</kbd> paste image
+                <kbd className="kbd">@</kbd> files
               </span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex min-w-0 items-center gap-2">
               {isStreaming ? (
                 <button
                   onClick={() => cancel()}
@@ -405,7 +405,7 @@ export function InputDock() {
                   ■ force cancel (esc)
                 </button>
               ) : (
-                <span>~/work/services/freyja (main*)</span>
+                <span className="truncate">{workspaceLabel} · {modelLabel}</span>
               )}
             </div>
           </div>
@@ -413,4 +413,8 @@ export function InputDock() {
       </div>
     </div>
   )
+}
+
+function compactPath(path: string): string {
+  return path.replace(/^\/Users\/[^/]+/, '~')
 }

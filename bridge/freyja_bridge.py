@@ -43,6 +43,8 @@ _DESKTOP_DIR = _BRIDGE_DIR.parent
 if str(_DESKTOP_DIR) not in sys.path:
     sys.path.insert(0, str(_DESKTOP_DIR))
 
+from engine.compaction import SummaryCompaction
+
 
 # ─── Stdout helpers ─────────────────────────────────────────────────────────
 
@@ -136,6 +138,42 @@ def log(level: str, message: str) -> None:
 
 def emit_error(message: str, recoverable: bool = False) -> None:
     emit({"type": "error", "message": message, "recoverable": recoverable})
+
+
+def _build_user_message_with_attachments(
+    user_content: str,
+    attachments: list[dict[str, Any]] | None,
+) -> Any:
+    """Convert renderer attachments into engine content blocks."""
+    if not attachments:
+        return user_content
+
+    from engine.types import ImageBlock, TextBlock
+
+    image_blocks: list[ImageBlock] = []
+    for attachment in attachments:
+        if attachment.get("type") != "image":
+            continue
+
+        data = str(attachment.get("dataBase64") or "").strip()
+        if data.startswith("data:"):
+            _, separator, payload = data.partition(",")
+            if separator:
+                data = payload.strip()
+
+        if not data:
+            continue
+
+        media_type = str(attachment.get("mimeType") or "image/png")
+        image_blocks.append(ImageBlock.from_base64(data, media_type))
+
+    if not image_blocks:
+        return user_content
+
+    blocks: list[Any] = [*image_blocks]
+    if user_content:
+        blocks.append(TextBlock(text=user_content))
+    return blocks
 
 
 # ─── Entry point ───────────────────────────────────────────────────────────
@@ -318,14 +356,54 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "description": "Moonshot's Kimi K2.5 via Fireworks. Vision + 262k ctx.",
     },
     {
+        "id": "kimi-k2.6",
+        "family": "fireworks",
+        "label": "Kimi K2.6",
+        "tier": "max",
+        "contextWindow": 262_144,
+        "thinking": True,
+        "envVar": "FIREWORKS_API_KEY",
+        "description": "Moonshot's newer multimodal agentic model via Fireworks. Vision + 262k ctx.",
+    },
+    {
+        "id": "deepseek-v4-pro",
+        "family": "fireworks",
+        "label": "DeepSeek V4 Pro",
+        "tier": "max",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "FIREWORKS_API_KEY",
+        "description": "DeepSeek's frontier MoE reasoning model via Fireworks. 1M ctx, function calling.",
+    },
+    {
+        "id": "glm-5.1",
+        "family": "fireworks",
+        "label": "GLM 5.1",
+        "tier": "max",
+        "contextWindow": 202_752,
+        "thinking": True,
+        "envVar": "FIREWORKS_API_KEY",
+        "description": "Z.ai's newer GLM 5.1 via Fireworks. Agentic engineering, tool use, 202.8k ctx.",
+    },
+    {
         "id": "glm5",
         "family": "fireworks",
         "label": "GLM 5 (Fireworks)",
         "tier": "balanced",
-        "contextWindow": 202_800,
+        "contextWindow": 202_752,
         "thinking": False,
         "envVar": "FIREWORKS_API_KEY",
         "description": "Zhipu's GLM 5 via Fireworks.",
+    },
+    {
+        "id": "minimax-m2.7",
+        "family": "fireworks",
+        "label": "MiniMax M2.7",
+        "tier": "balanced",
+        "contextWindow": 196_608,
+        "thinking": True,
+        "envVar": "FIREWORKS_API_KEY",
+        "description": "MiniMax M2.7 via Fireworks. Agent harnesses, teams, skills, and dynamic tool search.",
     },
     {
         "id": "minimax-m2.5",
@@ -333,11 +411,130 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "label": "MiniMax M2.5",
         "tier": "fast",
         "contextWindow": 196_608,
-        "thinking": False,
+        "thinking": True,
         "envVar": "FIREWORKS_API_KEY",
         "description": "MiniMax M2.5 via Fireworks. Fast and cheap.",
     },
+    {
+        "id": "deepseek-v3.2",
+        "family": "fireworks",
+        "label": "DeepSeek v3.2",
+        "tier": "balanced",
+        "contextWindow": 163_840,
+        "thinking": True,
+        "envVar": "FIREWORKS_API_KEY",
+        "description": "DeepSeek v3.2 via Fireworks. Efficient reasoning and agent performance.",
+    },
+    {
+        "id": "qwen3.6-plus",
+        "family": "fireworks",
+        "label": "Qwen3.6 Plus",
+        "tier": "balanced",
+        "contextWindow": 1_000_000,
+        "thinking": True,
+        "envVar": "FIREWORKS_API_KEY",
+        "description": "Alibaba's Qwen3.6 Plus via Fireworks. Vision, function calling, preserved reasoning, 1M ctx.",
+    },
 ]
+
+
+MODEL_REASONING_META: dict[str, dict[str, Any]] = {
+    "claude-opus-4-7": {
+        "reasoningMode": "adaptive",
+        "reasoningLevels": ["auto"],
+        "reasoningDefault": "auto",
+    },
+    "claude-opus-4-6": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["low", "medium", "high", "max"],
+        "reasoningDefault": "max",
+    },
+    "claude-sonnet-4-6": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["low", "medium", "high"],
+        "reasoningDefault": "high",
+    },
+    "claude-haiku-4-5": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["low", "medium", "high"],
+        "reasoningDefault": "high",
+    },
+    "claude-opus-4-5": {
+        "reasoningMode": "budget",
+        "reasoningLevels": ["low", "medium", "high"],
+        "reasoningDefault": "high",
+    },
+    "claude-sonnet-4-5": {
+        "reasoningMode": "budget",
+        "reasoningLevels": ["low", "medium", "high"],
+        "reasoningDefault": "high",
+    },
+    "gpt-5.5": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["low", "medium", "high", "xhigh"],
+        "reasoningDefault": "high",
+    },
+    "gpt-5.4": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["low", "medium", "high", "xhigh"],
+        "reasoningDefault": "high",
+    },
+    "gpt-5.4-mini": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["low", "medium", "high"],
+        "reasoningDefault": "medium",
+    },
+    "gpt-5.4-nano": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["low", "medium"],
+        "reasoningDefault": "low",
+    },
+    "gpt-5.3-codex": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["low", "medium", "high", "xhigh"],
+        "reasoningDefault": "medium",
+    },
+    "deepseek-v4-pro": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high", "max"],
+        "reasoningDefault": "high",
+        "reasoningHistory": ["interleaved"],
+    },
+    "glm-5.1": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high"],
+        "reasoningDefault": "high",
+    },
+    "kimi-k2.6": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high"],
+        "reasoningDefault": "high",
+        "reasoningHistory": ["preserved"],
+    },
+    "minimax-m2.7": {
+        "reasoningMode": "required",
+        "reasoningLevels": ["low", "medium", "high"],
+        "reasoningDefault": "medium",
+        "reasoningHistory": ["interleaved"],
+    },
+    "minimax-m2.5": {
+        "reasoningMode": "required",
+        "reasoningLevels": ["low", "medium", "high"],
+        "reasoningDefault": "medium",
+        "reasoningHistory": ["interleaved"],
+    },
+    "deepseek-v3.2": {
+        "reasoningMode": "binary",
+        "reasoningLevels": ["none", "high"],
+        "reasoningDefault": "high",
+    },
+    "qwen3.6-plus": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high"],
+        "reasoningDefault": "medium",
+        "reasoningHistory": ["preserved"],
+    },
+}
 
 
 def _annotate_models(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -345,9 +542,18 @@ def _annotate_models(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for m in models:
         env = m.get("envVar", "")
+        reasoning_meta = MODEL_REASONING_META.get(
+            m["id"],
+            {
+                "reasoningMode": "none",
+                "reasoningLevels": [],
+                "reasoningDefault": "none",
+            },
+        )
         result.append(
             {
                 **m,
+                **reasoning_meta,
                 "available": bool(env and os.environ.get(env)),
             }
         )
@@ -382,6 +588,16 @@ def _default_thinking_for_model(model_id: str) -> "Any":
     if not supports_thinking:
         # Includes claude-opus-4-7 (adaptive thinking only — no explicit budget needed)
         return ThinkingConfig()
+
+    default_effort = MODEL_REASONING_META.get(model_id, {}).get("reasoningDefault")
+    if isinstance(default_effort, str) and default_effort in {
+        "low",
+        "medium",
+        "high",
+        "max",
+        "xhigh",
+    }:
+        return ThinkingConfig(enabled=True, effort=default_effort)
 
     # Opus 4.6 gets max effort; everything else gets high
     if model_id == "claude-opus-4-6":
@@ -449,7 +665,7 @@ def build_provider(model_id: str, thinking_level: str = "auto") -> Any:
             FireworksProvider,
         )
 
-        return FireworksProvider(config=FireworksConfig(model=model_id))
+        return FireworksProvider(config=FireworksConfig(model=model_id, reasoning=thinking))
 
     raise ValueError(f"Unknown model family for {model_id}")
 
@@ -864,7 +1080,10 @@ class _BridgeSession:
 
         from bridge.tools.agent_types import agent_types_for_prompt
 
-        agent_types_section = agent_types_for_prompt()
+        agent_types_section = agent_types_for_prompt(
+            workspace=Path(self.workspace),
+            parent_model=self.model_id,
+        )
         self._agent_types_section = agent_types_section
 
         self._base_system_prompt = (
@@ -916,6 +1135,7 @@ class _BridgeSession:
 
         runner = AsyncAgentRunner(
             provider=provider,
+            compaction_strategy=SummaryCompaction(),
             tool_registry=self.tool_registry,
             on_stream=self._on_stream,
             on_system_event=self._on_system_event,
@@ -1109,6 +1329,282 @@ class _BridgeSession:
             save_transcript(self.id, data)
         except Exception as exc:
             log("warn", f"failed to save transcript for {self.id}: {exc}")
+
+    def _last_provider_context_tokens(self) -> int:
+        """Return the last provider-reported request context size, if known."""
+        if self.runner is None:
+            return 0
+        try:
+            return int(self.runner.usage.effective_context_tokens())
+        except Exception:  # noqa: BLE001
+            return 0
+
+    def _current_usage_fields(self) -> tuple[int, int, int, int, float]:
+        """Best-effort cumulative runner usage for a usage_snapshot event."""
+        if self.runner is None:
+            return (0, 0, 0, 0, 0.0)
+        try:
+            usage = self.runner.usage
+            in_tok = int(getattr(usage, "input", 0) or 0)
+            out_tok = int(getattr(usage, "output", 0) or 0)
+            cr_tok = int(getattr(usage, "cache_read", 0) or 0)
+            cw_tok = int(getattr(usage, "cache_write", 0) or 0)
+            cost = (in_tok * 3 + out_tok * 15) / 1_000_000
+            return (in_tok, out_tok, cr_tok, cw_tok, cost)
+        except Exception:  # noqa: BLE001
+            return (0, 0, 0, 0, 0.0)
+
+    def _mark_usage_compacted(self, context_tokens_after: int) -> None:
+        """Clear stale provider context counters after transcript compaction."""
+        if self.runner is None:
+            return
+        try:
+            usage = self.runner.usage
+            output = int(getattr(usage, "output", 0) or 0)
+            usage.last_input = max(0, context_tokens_after - output)
+            usage.last_cache_read = 0
+            usage.last_cache_write = 0
+            usage.cache_read = 0
+            usage.cache_write = 0
+        except Exception:  # noqa: BLE001
+            return
+
+    def _write_compaction_snapshot(
+        self,
+        *,
+        phase: str,
+        compactor: SummaryCompaction,
+        request_tokens: int,
+        provider_context_tokens: int = 0,
+    ) -> dict[str, Any]:
+        """Persist an inspectable copy of transcript state around compaction."""
+        if self.session is None:
+            return {}
+        try:
+            safe_id = "".join(
+                c for c in self.id if c.isalnum() or c in ("-", "_", ".")
+            )[:120]
+            root = Path.home() / ".freyja" / "sessions" / "compactions"
+            root.mkdir(parents=True, exist_ok=True)
+            stamp = int(time.time() * 1000)
+            base = root / f"{safe_id}-{stamp}-{phase}"
+
+            messages = self.session.transcript.get_messages()
+            preview = compactor._format_conversation(messages, max_chars=12_000)  # noqa: SLF001
+            full_text = compactor._format_conversation(messages, max_chars=1_500_000)  # noqa: SLF001
+
+            md_path = base.with_suffix(".md")
+            md_path.write_text(
+                "\n".join(
+                    [
+                        f"# Compaction {phase} snapshot",
+                        "",
+                        f"- session: `{self.id}`",
+                        f"- model: `{self.model_id}`",
+                        f"- request estimate: `{request_tokens}` tokens",
+                        f"- last provider context: `{provider_context_tokens}` tokens",
+                        f"- transcript entries: `{len(self.session.transcript.entries)}`",
+                        "",
+                        "```text",
+                        full_text,
+                        "```",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            json_path = base.with_suffix(".json")
+            json_path.write_text(
+                json.dumps(
+                    self.session.serialize_transcript(),
+                    indent=2,
+                    ensure_ascii=False,
+                    default=str,
+                ),
+                encoding="utf-8",
+            )
+
+            return {
+                f"{phase}_snapshot_path": str(md_path),
+                f"{phase}_snapshot_json_path": str(json_path),
+                f"{phase}_preview": preview[:4_000],
+                f"{phase}_preview_chars": len(preview),
+            }
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"failed to write {phase} compaction snapshot: {exc}")
+            return {}
+
+    async def force_compact(self) -> None:
+        """Force an LLM summary compaction for the current session."""
+        await self.initialize()
+        if self.session is None or self.provider is None:
+            emit(
+                {
+                    "type": "system_event",
+                    "sessionId": self.id,
+                    "subtype": "compaction_skipped",
+                    "message": "Manual compaction skipped: session is not ready",
+                    "details": {"trigger": "manual", "chatVisible": True},
+                }
+            )
+            return
+
+        if self.pending_task and not self.pending_task.done():
+            emit(
+                {
+                    "type": "system_event",
+                    "sessionId": self.id,
+                    "subtype": "compaction_skipped",
+                    "message": "Manual compaction skipped: a turn is currently running",
+                    "details": {
+                        "trigger": "manual",
+                        "reason": "turn_running",
+                        "chatVisible": True,
+                    },
+                }
+            )
+            return
+
+        compactor = SummaryCompaction()
+        try:
+            request_tokens_before = int(self.session.estimate_tokens())
+        except Exception:  # noqa: BLE001
+            request_tokens_before = 0
+        try:
+            transcript_tokens_before = int(self.session.transcript.estimate_tokens())
+        except Exception:  # noqa: BLE001
+            transcript_tokens_before = 0
+        provider_context_before = self._last_provider_context_tokens()
+        context_tokens_before = max(provider_context_before, request_tokens_before)
+        entries_before = len(getattr(self.session.transcript, "entries", []))
+        before_snapshot = self._write_compaction_snapshot(
+            phase="before",
+            compactor=compactor,
+            request_tokens=request_tokens_before,
+            provider_context_tokens=provider_context_before,
+        )
+
+        emit(
+            {
+                "type": "system_event",
+                "sessionId": self.id,
+                "subtype": "compaction_start",
+                "message": (
+                    "Manual compaction started "
+                    f"({context_tokens_before:,} context tokens; "
+                    f"{transcript_tokens_before:,} transcript tokens)"
+                ),
+                "details": {
+                    "trigger": "manual",
+                    "tokens_before": context_tokens_before,
+                    "context_tokens_before": context_tokens_before,
+                    "request_tokens_before": request_tokens_before,
+                    "last_provider_context_tokens": provider_context_before,
+                    "transcript_tokens_before": transcript_tokens_before,
+                    "entries_before": entries_before,
+                    "chatVisible": True,
+                    **before_snapshot,
+                },
+            }
+        )
+
+        result = await asyncio.to_thread(
+            compactor.compact,
+            self.session.transcript,
+            self.provider,
+        )
+
+        if not result.success:
+            emit(
+                {
+                    "type": "system_event",
+                    "sessionId": self.id,
+                    "subtype": "compaction_skipped",
+                    "message": f"Manual compaction skipped: {result.error or 'not enough history to compact'}",
+                    "details": {
+                        "trigger": "manual",
+                        "reason": result.error or "unknown",
+                        "tokens_before": context_tokens_before,
+                        "tokens_after": context_tokens_before,
+                        "context_tokens_before": context_tokens_before,
+                        "context_tokens_after": context_tokens_before,
+                        "request_tokens_before": request_tokens_before,
+                        "request_tokens_after": request_tokens_before,
+                        "last_provider_context_tokens": provider_context_before,
+                        "transcript_tokens_before": transcript_tokens_before,
+                        "transcript_tokens_after": result.tokens_after,
+                        "chatVisible": True,
+                        **before_snapshot,
+                    },
+                }
+            )
+            return
+
+        self.session.compaction_count += 1
+        try:
+            request_tokens_after = int(self.session.estimate_tokens())
+        except Exception:  # noqa: BLE001
+            request_tokens_after = result.tokens_after
+        try:
+            transcript_tokens_after = int(self.session.transcript.estimate_tokens())
+        except Exception:  # noqa: BLE001
+            transcript_tokens_after = result.tokens_after
+        context_tokens_after = request_tokens_after
+        after_snapshot = self._write_compaction_snapshot(
+            phase="after",
+            compactor=compactor,
+            request_tokens=request_tokens_after,
+            provider_context_tokens=context_tokens_after,
+        )
+        self._mark_usage_compacted(context_tokens_after)
+        self._save_transcript()
+        emit(
+            {
+                "type": "system_event",
+                "sessionId": self.id,
+                "subtype": "compaction_complete",
+                "message": (
+                    f"Manual compaction complete: "
+                    f"{context_tokens_before:,} -> {context_tokens_after:,} context tokens; "
+                    f"{result.entries_removed} entries summarized"
+                ),
+                "details": {
+                    "trigger": "manual",
+                    "strategy": "llm_summary",
+                    "tokens_before": context_tokens_before,
+                    "tokens_after": context_tokens_after,
+                    "context_tokens_before": context_tokens_before,
+                    "context_tokens_after": context_tokens_after,
+                    "request_tokens_before": request_tokens_before,
+                    "request_tokens_after": request_tokens_after,
+                    "last_provider_context_tokens": provider_context_before,
+                    "transcript_tokens_before": transcript_tokens_before,
+                    "transcript_tokens_after": transcript_tokens_after,
+                    "entries_removed": result.entries_removed,
+                    "messages_before": result.messages_before,
+                    "messages_after": result.messages_after,
+                    "images_before": result.images_before,
+                    "images_after": result.images_after,
+                    "summary_chars": len(result.summary or ""),
+                    "summary_preview": (result.summary or "")[:6_000],
+                    "chatVisible": True,
+                    **before_snapshot,
+                    **after_snapshot,
+                },
+            }
+        )
+        _cum_in, cum_out, _cum_cr, _cum_cw, cost = self._current_usage_fields()
+        emit(
+            {
+                "type": "usage_snapshot",
+                "sessionId": self.id,
+                "inputTokens": context_tokens_after,
+                "outputTokens": cum_out,
+                "cacheReadTokens": 0,
+                "cacheWriteTokens": 0,
+                "cost": cost,
+            }
+        )
 
     def _refresh_knowledge_context(self, query: str) -> None:
         """Refresh dynamic memory/skill context for the next provider call."""
@@ -1421,38 +1917,7 @@ class _BridgeSession:
         self.current_turn_id = f"turn-{self.turn_counter}"
         emit({"type": "turn_start", "sessionId": self.id, "turnId": self.current_turn_id})
 
-        # Build the user message: if there are image attachments, send a
-        # content-block list; otherwise plain string.
-        message: Any = user_content
-        if attachments:
-            try:
-                from engine.types import ImageBlock, TextBlock
-
-                blocks: list[Any] = []
-                for a in attachments:
-                    if a.get("type") == "image":
-                        mime = a.get("mimeType", "image/png")
-                        data = a.get("dataBase64", "")
-                        if data.startswith("data:"):
-                            # Strip data URL prefix if present
-                            comma = data.find(",")
-                            if comma != -1:
-                                data = data[comma + 1 :]
-                        blocks.append(
-                            ImageBlock(
-                                source={
-                                    "type": "base64",
-                                    "media_type": mime,
-                                    "data": data,
-                                }
-                            )
-                        )
-                if user_content:
-                    blocks.append(TextBlock(text=user_content))
-                if blocks:
-                    message = blocks
-            except Exception as exc:  # noqa: BLE001
-                log("warn", f"failed to attach images: {exc}")
+        message: Any = _build_user_message_with_attachments(user_content, attachments)
 
         try:
             result = await self.runner.run(self.session, message, stream=True)
@@ -1985,6 +2450,30 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         )
         return
 
+    if ctype == "compact":
+        sess = await state.ensure_session(
+            session_id or f"desktop-{int(time.time() * 1000):x}",
+            model_id=cmd.get("model"),
+        )
+        try:
+            await sess.force_compact()
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"manual compaction failed: {exc}")
+            emit(
+                {
+                    "type": "system_event",
+                    "sessionId": sess.id,
+                    "subtype": "compaction_skipped",
+                    "message": f"Manual compaction failed: {exc}",
+                    "details": {
+                        "trigger": "manual",
+                        "reason": str(exc),
+                        "chatVisible": True,
+                    },
+                }
+            )
+        return
+
     if ctype == "set_model":
         new_model = cmd.get("model")
         if not new_model:
@@ -2199,12 +2688,20 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             out_tok = int(getattr(u, "output", 0) or 0)
             cr_tok = int(getattr(u, "cache_read", 0) or 0)
             cw_tok = int(getattr(u, "cache_write", 0) or 0)
+            try:
+                context_tok = int(u.effective_context_tokens())
+            except Exception:  # noqa: BLE001
+                context_tok = in_tok
+            try:
+                estimate_tok = int(sess.session.estimate_tokens()) if sess.session else 0
+            except Exception:  # noqa: BLE001
+                estimate_tok = 0
             cost = (in_tok * 3 + out_tok * 15) / 1_000_000
             emit(
                 {
                     "type": "usage_snapshot",
                     "sessionId": sess.id,
-                    "inputTokens": in_tok,
+                    "inputTokens": max(context_tok, estimate_tok),
                     "outputTokens": out_tok,
                     "cacheReadTokens": cr_tok,
                     "cacheWriteTokens": cw_tok,

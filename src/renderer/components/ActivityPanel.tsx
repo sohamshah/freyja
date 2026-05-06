@@ -17,6 +17,18 @@ export function ActivityPanel() {
 
   const [logModalOpen, setLogModalOpen] = useState(false)
   const [dragging, setDragging] = useState(false)
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
+  const mediaEvents = systemEvents.filter((event) => event.subtype === 'media_pruning')
+  const compactionEvents = systemEvents.filter((event) => event.subtype === 'compaction_complete')
+  const omittedImages = mediaEvents.reduce((acc, event) => acc + detailNumber(event, 'omitted_images'), 0)
+  const latestCompaction = compactionEvents[compactionEvents.length - 1]
+  const warningLogs = logs.filter((log) => log.level === 'error' || log.level === 'warn')
+  const attentionEvents = systemEvents.filter((event) =>
+    event.subtype.includes('failed') ||
+    event.subtype.includes('skipped') ||
+    event.subtype.includes('error'),
+  )
+  const diagnosticAttention = warningLogs.length + attentionEvents.length
 
   // Mouse-driven resize: the drag handle is a thin column on the
   // LEFT edge of the panel. We translate pageX into a new width by
@@ -55,6 +67,10 @@ export function ActivityPanel() {
       document.body.style.userSelect = ''
     }
   }, [])
+
+  useEffect(() => {
+    if (diagnosticAttention > 0) setDiagnosticsOpen(true)
+  }, [diagnosticAttention])
 
   const ctxPct = Math.min(100, Math.round((usage.totalInputTokens / usage.contextWindow) * 100))
 
@@ -103,9 +119,7 @@ export function ActivityPanel() {
         {/* ── Context meter ─────────────────────────────────── */}
         <div className="px-4 py-3 hairline-b">
           <div className="mb-2 flex items-baseline justify-between">
-            <div className="label">
-              context
-            </div>
+            <div className="label">request context</div>
             <div className="font-mono text-[11px] text-fg-0">
               {formatTokens(usage.totalInputTokens)}
               <span className="text-fg-2">/{formatTokens(usage.contextWindow)}</span>
@@ -118,14 +132,37 @@ export function ActivityPanel() {
             />
           </div>
           <div className="mt-2 grid grid-cols-3 gap-2 text-[10.5px]">
-            <Metric label="in" value={formatTokens(usage.totalInputTokens)} />
-            <Metric label="out" value={formatTokens(usage.totalOutputTokens)} />
-            <Metric label="cached" value={formatTokens(usage.totalCacheReadTokens)} />
+            <Metric label="request" value={formatTokens(usage.totalInputTokens)} />
+            <Metric label="output" value={formatTokens(usage.totalOutputTokens)} />
+            <Metric label="cache" value={formatTokens(usage.totalCacheReadTokens)} />
           </div>
           <div className="mt-2 flex items-center justify-between border-t border-white/5 pt-2 text-[10.5px]">
             <span className="text-fg-2">session spend</span>
             <span className="font-mono text-fg-0">{formatCost(usage.totalCost)}</span>
           </div>
+          <div className="mt-2 grid grid-cols-2 gap-2 border-t border-white/5 pt-2 text-[10.5px]">
+            <Metric label="img trims" value={String(omittedImages)} />
+            <Metric label="summaries" value={String(compactionEvents.length)} />
+          </div>
+          {latestCompaction && (
+            <div className="mt-2 rounded bg-ok/[0.06] px-2 py-1.5 ring-1 ring-ok/15">
+              <div className="flex items-center justify-between font-mono text-[9px] uppercase tracking-[0.08em] text-ok">
+                <span>last summary</span>
+                <span>{relativeTime(latestCompaction.at)}</span>
+              </div>
+              <div className="mt-1 font-mono text-[10.5px] text-fg-1">
+                {formatTokens(
+                  detailNumber(latestCompaction, 'context_tokens_before') ||
+                    detailNumber(latestCompaction, 'tokens_before'),
+                )}
+                <span className="text-fg-3"> → </span>
+                {formatTokens(
+                  detailNumber(latestCompaction, 'context_tokens_after') ||
+                    detailNumber(latestCompaction, 'tokens_after'),
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ── Tool calls (Gantt timeline) ─────────────────── */}
@@ -137,63 +174,76 @@ export function ActivityPanel() {
         {/* ── Artifacts ─────────────────────────────────── */}
         <ArtifactsSection />
 
-        {/* ── System events ───────────────────────────────── */}
-        <div className="px-4 py-3 hairline-b">
-          <div className="mb-2 flex items-baseline justify-between">
-            <div className="label">
-              system events
-            </div>
-            <div className="font-mono text-[10px] text-fg-3">{systemEvents.length}</div>
-          </div>
-          {systemEvents.length === 0 && (
-            <div className="py-2 text-[11px] italic text-fg-3">Quiet</div>
-          )}
-          <div className="space-y-1">
-            {systemEvents.slice(-8).reverse().map((e) => (
-              <div key={e.id} className="rounded bg-white/[0.025] px-2 py-1.5 ring-hairline">
-                <div className="flex items-center gap-2 text-[10px]">
-                  <span className="font-mono uppercase text-warn/80">{e.subtype}</span>
-                  <span className="ml-auto text-fg-3">{relativeTime(e.at)}</span>
-                </div>
-                <div className="mt-0.5 text-[11px] leading-[1.4] text-fg-1">{e.message}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* ── Log stream ───────────────────────────────────── */}
         <div className="px-4 py-3">
-          <div className="mb-2 flex items-baseline justify-between">
-            <div className="label">log stream</div>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <button
+              onClick={() => setDiagnosticsOpen((open) => !open)}
+              className={`label flex items-center gap-2 hover:text-fg-1 ${
+                diagnosticAttention > 0 ? 'text-warn' : 'text-fg-2'
+              }`}
+            >
+              <span>{diagnosticsOpen ? '▾' : '▸'}</span>
+              diagnostics
+              {diagnosticAttention > 0 && (
+                <span className="rounded bg-warn/10 px-1.5 py-[1px] font-mono text-[8.5px] text-warn ring-1 ring-warn/20">
+                  {diagnosticAttention}
+                </span>
+              )}
+            </button>
             <button
               onClick={() => setLogModalOpen(true)}
-              title="Pop out for full details (errors, stderr, etc.)"
+              title="Pop out for full details"
               className="rounded bg-white/[0.04] px-1.5 py-[2px] font-mono text-[9px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
             >
-              expand ↗
+              expand
             </button>
           </div>
-          <div className="max-h-[160px] overflow-y-auto rounded bg-black/45 p-2 font-mono text-[10px] text-fg-2 ring-hairline">
-            {logs.length === 0 && <div className="italic">— empty —</div>}
-            {logs.slice(-60).map((l, i) => (
-              <div key={i} className="truncate">
-                <span
-                  className={
-                    l.level === 'error'
-                      ? 'text-danger'
-                      : l.level === 'warn'
-                        ? 'text-warn'
-                        : l.level === 'info'
-                          ? 'text-ok'
-                          : 'text-fg-2'
-                  }
-                >
-                  {l.level}
-                </span>{' '}
-                {l.message}
+          {!diagnosticsOpen && (
+            <div className="rounded bg-white/[0.02] px-2 py-1.5 font-mono text-[10px] text-fg-3 ring-hairline">
+              {systemEvents.length} events · {logs.length} logs
+            </div>
+          )}
+          {diagnosticsOpen && (
+            <div className="space-y-2">
+              <div className="space-y-1">
+                {systemEvents.length === 0 && (
+                  <div className="rounded bg-white/[0.02] px-2 py-1.5 text-[11px] italic text-fg-3 ring-hairline">
+                    No system events
+                  </div>
+                )}
+                {systemEvents.slice(-6).reverse().map((e) => (
+                  <div key={e.id} className="rounded bg-white/[0.025] px-2 py-1.5 ring-hairline">
+                    <div className="flex items-center gap-2 text-[10px]">
+                      <span className="font-mono uppercase text-warn/80">{e.subtype}</span>
+                      <span className="ml-auto text-fg-3">{relativeTime(e.at)}</span>
+                    </div>
+                    <div className="mt-0.5 text-[11px] leading-[1.4] text-fg-1">{e.message}</div>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+              <div className="max-h-[120px] overflow-y-auto rounded bg-black/45 p-2 font-mono text-[10px] text-fg-2 ring-hairline">
+                {logs.length === 0 && <div className="italic">— empty —</div>}
+                {logs.slice(-40).map((l, i) => (
+                  <div key={i} className="truncate">
+                    <span
+                      className={
+                        l.level === 'error'
+                          ? 'text-danger'
+                          : l.level === 'warn'
+                            ? 'text-warn'
+                            : l.level === 'info'
+                              ? 'text-ok'
+                              : 'text-fg-2'
+                      }
+                    >
+                      {l.level}
+                    </span>{' '}
+                    {l.message}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
       {logModalOpen && <LogStreamModal onClose={() => setLogModalOpen(false)} />}
@@ -208,4 +258,17 @@ function Metric({ label, value }: { label: string; value: string }) {
       <div className="mt-0.5 font-mono text-[11px] text-fg-0">{value}</div>
     </div>
   )
+}
+
+function detailNumber(
+  event: { details?: Record<string, unknown> } | undefined,
+  key: string,
+): number {
+  const value = event?.details?.[key]
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string') {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return 0
 }

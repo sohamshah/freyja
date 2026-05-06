@@ -126,11 +126,16 @@ def build_desktop_registry(
     # Web tools — only if SDK + key available
     if include_web:
         try:
-            from bridge.tools.web_tools import WebFetchTool, WebSearchTool
+            from bridge.tools.web_tools import (
+                WebFetchTool,
+                WebSearchTool,
+                WebTaskTool,
+            )
 
             if os.environ.get("PARALLEL_API_KEY"):
                 tools.append(WebSearchTool())
                 tools.append(WebFetchTool())
+                tools.append(WebTaskTool())
             else:
                 logger.info(
                     "web tools skipped: PARALLEL_API_KEY not set",

@@ -16,6 +16,7 @@ import { SettingsModal } from './components/SettingsModal'
 import { EmergencyPanic } from './components/EmergencyPanic'
 import { ComputerPermissionWizard } from './components/ComputerPermissionWizard'
 import { ComputerHotkeyOverlay } from './components/ComputerHotkeyOverlay'
+import { MissionDashboard } from './components/MissionDashboard'
 import { startInRendererDemo } from './lib/inRendererDemo'
 import type { Message, ToolCallRecord } from '@shared/events'
 
@@ -96,6 +97,8 @@ function runPostEventEffects(event: any, api: any) {
 export function App() {
   const toggleCommandPalette = useHarness((s) => s.toggleCommandPalette)
   const commandPaletteOpen = useHarness((s) => s.commandPaletteOpen)
+  const missionDashboardOpen = useHarness((s) => s.missionDashboardOpen)
+  const toggleMissionDashboard = useHarness((s) => s.toggleMissionDashboard)
   const activeSubagentId = useHarness((s) => s.activeSubagentId)
   const openSubagent = useHarness((s) => s.openSubagent)
   const isStreaming = useHarness((s) => s.isStreaming)
@@ -232,6 +235,11 @@ export function App() {
         toggleCommandPalette()
         return
       }
+      if (mod && e.shiftKey && (e.key === 'm' || e.key === 'M')) {
+        e.preventDefault()
+        toggleMissionDashboard()
+        return
+      }
       if (mod && e.key === 'b') {
         // ⌘B: child session → back to parent. At the top-level session
         // this is a no-op (we used to fire a demo "burst" message here,
@@ -262,8 +270,7 @@ export function App() {
       }
       if (mod && e.key === 'o') {
         e.preventDefault()
-        const first = Object.values(useHarness.getState().subagents)[0]
-        openSubagent(activeSubagentId ? null : first?.id ?? null)
+        toggleMissionDashboard(true, 'swarm')
         return
       }
       if (mod && e.key === '[') {
@@ -308,6 +315,7 @@ export function App() {
         // agent's injected Esc won't match any of these conditions.
         if (settingsOpen) toggleSettings(false)
         else if (modelPickerOpen) toggleModelPicker(false)
+        else if (missionDashboardOpen) toggleMissionDashboard(false)
         else if (commandPaletteOpen) toggleCommandPalette(false)
         else if (debugOpen) toggleDebug(false)
         else if (activeSubagentId) openSubagent(null)
@@ -319,6 +327,8 @@ export function App() {
   }, [
     toggleCommandPalette,
     commandPaletteOpen,
+    missionDashboardOpen,
+    toggleMissionDashboard,
     activeSubagentId,
     openSubagent,
     isStreaming,
@@ -372,6 +382,7 @@ export function App() {
           )}
         </div>
         {commandPaletteOpen && <CommandPalette />}
+        {missionDashboardOpen && <MissionDashboard />}
         {activeSubagentId && <SubagentDetail id={activeSubagentId} />}
         {modelPickerOpen && <ModelPicker />}
         <SettingsModal />

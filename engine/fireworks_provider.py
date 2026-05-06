@@ -1,7 +1,8 @@
 """
 Fireworks AI provider implementation using the OpenAI-compatible API.
 
-Supports models hosted on Fireworks: Kimi K2.5, GLM5, MiniMax M2.5, etc.
+Supports models hosted on Fireworks: Kimi K2.x, GLM 5.x, DeepSeek V4,
+MiniMax M2.x, Qwen 3.6, etc.
 Uses the OpenAI Python SDK pointed at Fireworks' API endpoint.
 """
 
@@ -43,6 +44,9 @@ from engine.types import (
     StreamEvent,
     TextBlock,
     TextDeltaEvent,
+    ThinkingBlock,
+    ThinkingConfig,
+    ThinkingDeltaEvent,
     ToolInputDeltaEvent,
     ToolUseStartEvent,
     content_blocks_to_text,
@@ -54,16 +58,93 @@ FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1"
 
 # Map short model names to Fireworks model IDs
 FIREWORKS_MODEL_MAP: dict[str, str] = {
+    "deepseek-v4-pro": "accounts/fireworks/models/deepseek-v4-pro",
+    "glm-5.1": "accounts/fireworks/models/glm-5p1",
+    "kimi-k2.6": "accounts/fireworks/models/kimi-k2p6",
+    "minimax-m2.7": "accounts/fireworks/models/minimax-m2p7",
+    "deepseek-v3.2": "accounts/fireworks/models/deepseek-v3p2",
+    "qwen3.6-plus": "accounts/fireworks/models/qwen3p6-plus",
     "kimi-k2.5": "accounts/fireworks/models/kimi-k2p5",
     "glm5": "accounts/fireworks/models/glm-5",
     "minimax-m2.5": "accounts/fireworks/models/minimax-m2p5",
 }
 
+FIREWORKS_CONTEXT_WINDOWS: dict[str, int] = {
+    "deepseek-v4-pro": 1_048_576,
+    "accounts/fireworks/models/deepseek-v4-pro": 1_048_576,
+    "glm-5.1": 202_752,
+    "accounts/fireworks/models/glm-5p1": 202_752,
+    "kimi-k2.6": 262_144,
+    "accounts/fireworks/models/kimi-k2p6": 262_144,
+    "minimax-m2.7": 196_608,
+    "accounts/fireworks/models/minimax-m2p7": 196_608,
+    "deepseek-v3.2": 163_840,
+    "accounts/fireworks/models/deepseek-v3p2": 163_840,
+    "qwen3.6-plus": 1_000_000,
+    "accounts/fireworks/models/qwen3p6-plus": 1_000_000,
+    "kimi-k2.5": 262_144,
+    "accounts/fireworks/models/kimi-k2p5": 262_144,
+    "glm5": 202_752,
+    "accounts/fireworks/models/glm-5": 202_752,
+    "minimax-m2.5": 196_608,
+    "accounts/fireworks/models/minimax-m2p5": 196_608,
+}
+
 
 # Models that support vision (image_url content blocks)
 FIREWORKS_VISION_MODELS: set[str] = {
+    "kimi-k2.6",
+    "accounts/fireworks/models/kimi-k2p6",
+    "qwen3.6-plus",
+    "accounts/fireworks/models/qwen3p6-plus",
     "kimi-k2.5",
     "accounts/fireworks/models/kimi-k2p5",
+}
+
+FIREWORKS_REASONING_MODE: dict[str, str] = {
+    # Fireworks API docs: DeepSeek V4 supports none/low/medium/high/max
+    # and defaults to high. Low/medium are promoted to high by Fireworks.
+    "deepseek-v4-pro": "effort",
+    "accounts/fireworks/models/deepseek-v4-pro": "effort",
+    # GLM 5.1 exposes reasoning/tool calling in Fireworks model metadata.
+    "glm-5.1": "effort",
+    "accounts/fireworks/models/glm-5p1": "effort",
+    # Kimi K2.6 / Qwen 3.6 use Fireworks reasoning fields and support
+    # preserved reasoning history in model-specific prompt formatting.
+    "kimi-k2.6": "effort",
+    "accounts/fireworks/models/kimi-k2p6": "effort",
+    "qwen3.6-plus": "effort",
+    "accounts/fireworks/models/qwen3p6-plus": "effort",
+    # Fireworks docs list MiniMax M2 reasoning as required/on by default.
+    "minimax-m2.7": "required",
+    "accounts/fireworks/models/minimax-m2p7": "required",
+    "minimax-m2.5": "required",
+    "accounts/fireworks/models/minimax-m2p5": "required",
+    # DeepSeek V3.2 is binary on/off and defaults on.
+    "deepseek-v3.2": "binary",
+    "accounts/fireworks/models/deepseek-v3p2": "binary",
+}
+
+FIREWORKS_REASONING_LEVELS: dict[str, tuple[str, ...]] = {
+    "deepseek-v4-pro": ("none", "low", "medium", "high", "max"),
+    "accounts/fireworks/models/deepseek-v4-pro": ("none", "low", "medium", "high", "max"),
+    "minimax-m2.7": ("low", "medium", "high"),
+    "accounts/fireworks/models/minimax-m2p7": ("low", "medium", "high"),
+    "minimax-m2.5": ("low", "medium", "high"),
+    "accounts/fireworks/models/minimax-m2p5": ("low", "medium", "high"),
+}
+
+FIREWORKS_REASONING_HISTORY: dict[str, str] = {
+    "deepseek-v4-pro": "interleaved",
+    "accounts/fireworks/models/deepseek-v4-pro": "interleaved",
+    "qwen3.6-plus": "preserved",
+    "accounts/fireworks/models/qwen3p6-plus": "preserved",
+    "kimi-k2.6": "preserved",
+    "accounts/fireworks/models/kimi-k2p6": "preserved",
+    "minimax-m2.7": "interleaved",
+    "accounts/fireworks/models/minimax-m2p7": "interleaved",
+    "minimax-m2.5": "interleaved",
+    "accounts/fireworks/models/minimax-m2p5": "interleaved",
 }
 
 
@@ -125,6 +206,9 @@ class FireworksConfig:
     context_window: int = 131072
     """Context window size in tokens."""
 
+    reasoning: ThinkingConfig = field(default_factory=ThinkingConfig)
+    """Fireworks reasoning configuration. Mapped to reasoning_effort."""
+
 
 # Type aliases for callbacks
 StreamCallback = Callable[[StreamEvent], None]
@@ -149,6 +233,11 @@ class FireworksProvider:
 
         self._model = resolve_fireworks_model(self._config.model)
         self._short_model = self._config.model
+        self._context_window = (
+            FIREWORKS_CONTEXT_WINDOWS.get(self._short_model)
+            or FIREWORKS_CONTEXT_WINDOWS.get(self._model)
+            or self._config.context_window
+        )
         # max_retries=0: let 429s propagate to runner fallback chain
         self._client = openai.OpenAI(
             base_url=self._config.base_url,
@@ -175,7 +264,7 @@ class FireworksProvider:
 
     @property
     def context_window(self) -> int:
-        return self._config.context_window
+        return self._context_window
 
     def complete(
         self,
@@ -191,6 +280,7 @@ class FireworksProvider:
             tools=tools,
             system_prompt=system_prompt,
             max_tokens=max_tokens,
+            thinking=thinking,
         )
 
         try:
@@ -211,7 +301,7 @@ class FireworksProvider:
         tools: list[ToolDefinition] | None = None,
         system_prompt: str | None = None,
         max_tokens: int | None = None,
-        thinking: Any = None,  # Ignored — Fireworks doesn't support thinking
+        thinking: Any = None,
         tool_choice: dict | None = None,
     ) -> ProviderResponse:
         """Send an async completion request."""
@@ -221,6 +311,7 @@ class FireworksProvider:
             system_prompt=system_prompt,
             max_tokens=max_tokens,
             tool_choice=tool_choice,
+            thinking=thinking,
         )
         self._log_request(request_kwargs, "complete_async")
 
@@ -373,10 +464,14 @@ class FireworksProvider:
                     continue
 
                 delta = chunk.choices[0].delta
-                stream_event: StreamEvent | None = None
+                stream_events: list[StreamEvent] = []
+
+                reasoning_delta = getattr(delta, "reasoning_content", None)
+                if reasoning_delta:
+                    stream_events.append(ThinkingDeltaEvent(thinking=reasoning_delta))
 
                 if delta.content:
-                    stream_event = TextDeltaEvent(text=delta.content)
+                    stream_events.append(TextDeltaEvent(text=delta.content))
 
                 if delta.tool_calls:
                     for tc_delta in delta.tool_calls:
@@ -388,17 +483,21 @@ class FireworksProvider:
                                 "arguments": "",
                             }
                             if tc_delta.function and tc_delta.function.name:
-                                stream_event = ToolUseStartEvent(
-                                    id=tool_calls_in_progress[idx]["id"],
-                                    name=tc_delta.function.name,
+                                stream_events.append(
+                                    ToolUseStartEvent(
+                                        id=tool_calls_in_progress[idx]["id"],
+                                        name=tc_delta.function.name,
+                                    )
                                 )
                         if tc_delta.function and tc_delta.function.arguments:
                             tool_calls_in_progress[idx]["arguments"] += tc_delta.function.arguments
-                            stream_event = ToolInputDeltaEvent(
-                                partial_json=tc_delta.function.arguments
+                            stream_events.append(
+                                ToolInputDeltaEvent(
+                                    partial_json=tc_delta.function.arguments
+                                )
                             )
 
-                if stream_event:
+                for stream_event in stream_events:
                     if on_event:
                         on_event(stream_event)
                     yield stream_event
@@ -426,12 +525,14 @@ class FireworksProvider:
             tools=tools,
             system_prompt=system_prompt,
             max_tokens=max_tokens,
+            thinking=thinking,
         )
         self._log_request(request_kwargs, "stream_to_response")
         request_kwargs["stream"] = True
         request_kwargs["stream_options"] = {"include_usage": True}
 
         text_parts: list[str] = []
+        thinking_parts: list[str] = []
         tool_calls_in_progress: dict[int, dict] = {}
         usage = APIUsage()
 
@@ -440,20 +541,27 @@ class FireworksProvider:
 
             async for chunk in stream:
                 if chunk.usage:
+                    details = getattr(chunk.usage, "completion_tokens_details", None)
                     usage = APIUsage(
                         input_tokens=chunk.usage.prompt_tokens or 0,
                         output_tokens=chunk.usage.completion_tokens or 0,
+                        reasoning_tokens=getattr(details, "reasoning_tokens", 0) or 0,
                     )
 
                 if not chunk.choices:
                     continue
 
                 delta = chunk.choices[0].delta
-                stream_event: StreamEvent | None = None
+                stream_events: list[StreamEvent] = []
+
+                reasoning_delta = getattr(delta, "reasoning_content", None)
+                if reasoning_delta:
+                    thinking_parts.append(reasoning_delta)
+                    stream_events.append(ThinkingDeltaEvent(thinking=reasoning_delta))
 
                 if delta.content:
                     text_parts.append(delta.content)
-                    stream_event = TextDeltaEvent(text=delta.content)
+                    stream_events.append(TextDeltaEvent(text=delta.content))
 
                 if delta.tool_calls:
                     for tc_delta in delta.tool_calls:
@@ -465,21 +573,25 @@ class FireworksProvider:
                                 "arguments": "",
                             }
                             if tc_delta.function and tc_delta.function.name:
-                                stream_event = ToolUseStartEvent(
-                                    id=tool_calls_in_progress[idx]["id"],
-                                    name=tc_delta.function.name,
+                                stream_events.append(
+                                    ToolUseStartEvent(
+                                        id=tool_calls_in_progress[idx]["id"],
+                                        name=tc_delta.function.name,
+                                    )
                                 )
                         if tc_delta.function and tc_delta.function.arguments:
                             tool_calls_in_progress[idx]["arguments"] += tc_delta.function.arguments
-                            if stream_event is None:
-                                stream_event = ToolInputDeltaEvent(
+                            stream_events.append(
+                                ToolInputDeltaEvent(
                                     partial_json=tc_delta.function.arguments
                                 )
+                            )
 
-                if stream_event and on_event:
-                    result = on_event(stream_event)
-                    if asyncio.iscoroutine(result):
-                        await result
+                if on_event:
+                    for stream_event in stream_events:
+                        result = on_event(stream_event)
+                        if asyncio.iscoroutine(result):
+                            await result
 
             # Build tool call responses
             tool_call_responses = None
@@ -508,6 +620,9 @@ class FireworksProvider:
                 tool_calls=tool_call_responses,
                 usage=usage,
                 stop_reason=stop_reason,
+                thinking_blocks=[
+                    ThinkingBlock(thinking="".join(thinking_parts))
+                ] if thinking_parts else None,
                 model=self._short_model,
             )
 
@@ -563,6 +678,7 @@ class FireworksProvider:
         system_prompt: str | None = None,
         max_tokens: int | None = None,
         tool_choice: dict | None = None,
+        thinking: Any = None,
     ) -> dict[str, Any]:
         """Build the OpenAI-compatible request kwargs."""
         openai_messages = self._convert_messages(messages, system_prompt)
@@ -581,7 +697,65 @@ class FireworksProvider:
         if tool_choice:
             request_kwargs["tool_choice"] = tool_choice
 
+        reasoning_effort = self._resolve_reasoning_effort(thinking)
+        if reasoning_effort is not None:
+            request_kwargs["reasoning_effort"] = reasoning_effort
+
+        reasoning_history = self._reasoning_history()
+        if reasoning_history:
+            request_kwargs.setdefault("extra_body", {})["reasoning_history"] = reasoning_history
+
         return request_kwargs
+
+    def _reasoning_mode(self) -> str:
+        return (
+            FIREWORKS_REASONING_MODE.get(self._short_model)
+            or FIREWORKS_REASONING_MODE.get(self._model)
+            or "none"
+        )
+
+    def _reasoning_history(self) -> str | None:
+        return (
+            FIREWORKS_REASONING_HISTORY.get(self._short_model)
+            or FIREWORKS_REASONING_HISTORY.get(self._model)
+        )
+
+    def _resolve_reasoning_effort(self, thinking: Any = None) -> str | None:
+        """Map Freyja's ThinkingConfig to Fireworks reasoning_effort.
+
+        Fireworks' chat completions endpoint has model-specific behavior:
+        DeepSeek V4 supports explicit effort levels, DeepSeek V3.2 is
+        binary on/off, and MiniMax M2-family reasoning is mandatory.
+        """
+        mode = self._reasoning_mode()
+        if mode == "none":
+            return None
+
+        config = thinking if thinking is not None else self._config.reasoning
+        enabled = bool(getattr(config, "enabled", False))
+        effort = str(getattr(config, "effort", "high") or "high")
+
+        if not enabled:
+            if mode == "required":
+                return None
+            return "none"
+
+        if mode == "binary":
+            return "high"
+
+        if mode == "required":
+            return effort if effort in {"low", "medium", "high"} else "medium"
+
+        levels = (
+            FIREWORKS_REASONING_LEVELS.get(self._short_model)
+            or FIREWORKS_REASONING_LEVELS.get(self._model)
+            or ("none", "low", "medium", "high")
+        )
+        if effort in levels and effort != "none":
+            return effort
+        if "high" in levels:
+            return "high"
+        return next((level for level in levels if level != "none"), None)
 
     def _convert_messages(
         self, messages: list[Message], system_prompt: str | None = None
@@ -627,6 +801,10 @@ class FireworksProvider:
                 else:
                     entry["content"] = content
 
+                reasoning_content = msg.get_thinking()
+                if reasoning_content:
+                    entry["reasoning_content"] = reasoning_content
+
                 result.append(entry)
 
             elif msg.role == "tool_result":
@@ -661,10 +839,12 @@ class FireworksProvider:
         choice = response.choices[0] if response.choices else None
 
         content = ""
+        reasoning_content = None
         tool_calls = None
 
         if choice:
             content = choice.message.content or ""
+            reasoning_content = getattr(choice.message, "reasoning_content", None)
 
             if choice.message.tool_calls:
                 tool_calls = []
@@ -681,9 +861,15 @@ class FireworksProvider:
                         )
                     )
 
+        reasoning_tokens = 0
+        if response.usage:
+            details = getattr(response.usage, "completion_tokens_details", None)
+            reasoning_tokens = getattr(details, "reasoning_tokens", 0) or 0
+
         usage = APIUsage(
             input_tokens=response.usage.prompt_tokens if response.usage else 0,
             output_tokens=response.usage.completion_tokens if response.usage else 0,
+            reasoning_tokens=reasoning_tokens,
         )
 
         stop_reason = "end_turn"
@@ -697,6 +883,9 @@ class FireworksProvider:
             tool_calls=tool_calls,
             usage=usage,
             stop_reason=stop_reason,
+            thinking_blocks=[
+                ThinkingBlock(thinking=reasoning_content)
+            ] if reasoning_content else None,
             model=self._short_model,
         )
 

@@ -55,7 +55,7 @@ export function Sidebar() {
 
   const [open, setOpen] = useState<Record<Section, boolean>>({
     sessions: true,
-    skills: true,
+    skills: false,
     subagents: true,
     memory: false,
   })

@@ -20,9 +20,15 @@ const FALLBACK_MODELS: ModelChoice[] = [
   // Cerebras
   { id: 'zai-glm-4.7', family: 'cerebras', label: 'GLM 4.7 (Cerebras)', tier: 'fast', contextWindow: 131_072, thinking: false, envVar: 'CEREBRAS_API_KEY', description: '~1000 tps on Cerebras. Great for subagents and fanout.' },
   // Fireworks
-  { id: 'kimi-k2.5', family: 'fireworks', label: 'Kimi K2.5', tier: 'balanced', contextWindow: 262_144, thinking: false, envVar: 'FIREWORKS_API_KEY', description: "Moonshot's Kimi K2.5 via Fireworks. Vision + 262k ctx." },
-  { id: 'glm5', family: 'fireworks', label: 'GLM 5 (Fireworks)', tier: 'balanced', contextWindow: 202_800, thinking: false, envVar: 'FIREWORKS_API_KEY', description: "Zhipu's GLM 5 via Fireworks." },
-  { id: 'minimax-m2.5', family: 'fireworks', label: 'MiniMax M2.5', tier: 'fast', contextWindow: 196_608, thinking: false, envVar: 'FIREWORKS_API_KEY', description: 'MiniMax M2.5 via Fireworks. Fast and cheap.' },
+  { id: 'deepseek-v4-pro', family: 'fireworks', label: 'DeepSeek V4 Pro', tier: 'max', contextWindow: 1_048_576, thinking: true, reasoningMode: 'effort', reasoningLevels: ['none', 'low', 'medium', 'high', 'max'], reasoningDefault: 'high', reasoningHistory: ['interleaved'], envVar: 'FIREWORKS_API_KEY', description: "DeepSeek's frontier MoE reasoning model via Fireworks. 1M ctx, function calling." },
+  { id: 'glm-5.1', family: 'fireworks', label: 'GLM 5.1', tier: 'max', contextWindow: 202_752, thinking: true, reasoningMode: 'effort', reasoningLevels: ['none', 'low', 'medium', 'high'], reasoningDefault: 'high', envVar: 'FIREWORKS_API_KEY', description: "Z.ai's newer GLM 5.1 via Fireworks. Agentic engineering, tool use, 202.8k ctx." },
+  { id: 'kimi-k2.6', family: 'fireworks', label: 'Kimi K2.6', tier: 'max', contextWindow: 262_144, thinking: true, reasoningMode: 'effort', reasoningLevels: ['none', 'low', 'medium', 'high'], reasoningDefault: 'high', reasoningHistory: ['preserved'], envVar: 'FIREWORKS_API_KEY', description: "Moonshot's newer multimodal agentic model via Fireworks. Vision + 262k ctx." },
+  { id: 'minimax-m2.7', family: 'fireworks', label: 'MiniMax M2.7', tier: 'balanced', contextWindow: 196_608, thinking: true, reasoningMode: 'required', reasoningLevels: ['low', 'medium', 'high'], reasoningDefault: 'medium', reasoningHistory: ['interleaved'], envVar: 'FIREWORKS_API_KEY', description: 'MiniMax M2.7 via Fireworks. Agent harnesses, teams, skills, and dynamic tool search.' },
+  { id: 'deepseek-v3.2', family: 'fireworks', label: 'DeepSeek v3.2', tier: 'balanced', contextWindow: 163_840, thinking: true, reasoningMode: 'binary', reasoningLevels: ['none', 'high'], reasoningDefault: 'high', envVar: 'FIREWORKS_API_KEY', description: 'DeepSeek v3.2 via Fireworks. Efficient reasoning and agent performance.' },
+  { id: 'qwen3.6-plus', family: 'fireworks', label: 'Qwen3.6 Plus', tier: 'balanced', contextWindow: 1_000_000, thinking: true, reasoningMode: 'effort', reasoningLevels: ['none', 'low', 'medium', 'high'], reasoningDefault: 'medium', reasoningHistory: ['preserved'], envVar: 'FIREWORKS_API_KEY', description: "Alibaba's Qwen3.6 Plus via Fireworks. Vision, function calling, preserved reasoning, 1M ctx." },
+  { id: 'kimi-k2.5', family: 'fireworks', label: 'Kimi K2.5', tier: 'balanced', contextWindow: 262_144, thinking: false, reasoningMode: 'none', envVar: 'FIREWORKS_API_KEY', description: "Moonshot's Kimi K2.5 via Fireworks. Vision + 262k ctx." },
+  { id: 'glm5', family: 'fireworks', label: 'GLM 5 (Fireworks)', tier: 'balanced', contextWindow: 202_752, thinking: false, reasoningMode: 'none', envVar: 'FIREWORKS_API_KEY', description: "Zhipu's GLM 5 via Fireworks." },
+  { id: 'minimax-m2.5', family: 'fireworks', label: 'MiniMax M2.5', tier: 'fast', contextWindow: 196_608, thinking: true, reasoningMode: 'required', reasoningLevels: ['low', 'medium', 'high'], reasoningDefault: 'medium', reasoningHistory: ['interleaved'], envVar: 'FIREWORKS_API_KEY', description: 'MiniMax M2.5 via Fireworks. Fast and cheap.' },
 ]
 
 const TIER_LABEL: Record<string, string> = {
@@ -37,6 +43,26 @@ const TIER_COLOR: Record<string, string> = {
   balanced: 'text-fg-0',
   fast: 'text-ok',
   other: 'text-fg-2',
+}
+
+function reasoningLabel(model: ModelChoice): string {
+  const mode = model.reasoningMode ?? (model.thinking ? 'effort' : 'none')
+  if (mode === 'adaptive') return 'adaptive reasoning'
+  if (mode === 'budget') return `thinking ${model.reasoningDefault ?? 'on'}`
+  if (mode === 'required') return `reasoning required/${model.reasoningDefault ?? 'medium'}`
+  if (mode === 'binary') return `reasoning ${model.reasoningDefault ?? 'on'}`
+  if (mode === 'effort') return `reasoning ${model.reasoningDefault ?? 'high'}`
+  return 'no reasoning'
+}
+
+function reasoningTitle(model: ModelChoice): string {
+  const levels = model.reasoningLevels?.length
+    ? ` Levels: ${model.reasoningLevels.join(', ')}.`
+    : ''
+  const history = model.reasoningHistory?.length
+    ? ` History: ${model.reasoningHistory.join(', ')}.`
+    : ''
+  return `${reasoningLabel(model)}.${levels}${history}`
 }
 
 interface ModelPickerProps {
@@ -123,7 +149,7 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
                 )}
               </div>
               <div className="min-w-0 flex-1">
-                <div className="flex items-baseline gap-2">
+                <div className="flex flex-wrap items-baseline gap-2">
                   <span
                     className={`font-mono text-[12px] ${unavailable ? 'text-fg-3' : 'text-fg-0'}`}
                   >
@@ -142,16 +168,24 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
                   {m.thinking && (
                     <span
                       className="font-mono text-[9px] uppercase tracking-[0.08em] text-accent/70"
-                      title="Supports extended thinking"
+                      title={reasoningTitle(m)}
                     >
                       ◐
                     </span>
                   )}
                 </div>
-                <div className="mt-[2px] flex items-center gap-1.5 text-[10px] text-fg-2">
+                <div className="mt-[2px] flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-fg-2">
                   <span className="font-mono">{m.id}</span>
                   <span>·</span>
                   <span className="font-mono">{formatTokens(m.contextWindow)} ctx</span>
+                  {m.reasoningMode && m.reasoningMode !== 'none' && (
+                    <>
+                      <span>·</span>
+                      <span className="font-mono text-accent/75">
+                        {reasoningLabel(m)}
+                      </span>
+                    </>
+                  )}
                   {unavailable && (
                     <>
                       <span>·</span>

@@ -7,6 +7,7 @@ dist-main/
 dist-renderer/
 dist-preload/
 out/
+python-bundle/
 
 # Native extension build artifacts
 native/freyja_native/target/
@@ -16,6 +17,7 @@ native/freyja_native/target/
 
 # Python cache
 __pycache__/
+.pytest_cache/
 *.pyc
 *.pyo
 *.egg-info/
@@ -42,13 +44,11 @@ last-frames/
 bridge-events.jsonl
 bridge-diagnose.txt
 
+# Local profiling / throwaway visual traces
+trace-*.png
+5layer-partnership-ai-defense.png
+
 # Electron builder
 *.dmg
 *.zip
 *.app/
-
-# Bundled Python runtime — regenerate via build script
-python-bundle/
-
-# Stray asset (not referenced in code)
-5layer-partnership-ai-defense.png

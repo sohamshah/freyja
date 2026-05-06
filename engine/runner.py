@@ -26,8 +26,10 @@ from engine.constants import (
     CONSECUTIVE_IDENTICAL_CALL_THRESHOLD,
     CONTEXT_COMPACTION_THRESHOLD,
     DEFAULT_THINKING_BUDGET_TOKENS,
+    KEEP_RECENT_COMPUTER_IMAGES,
     ERROR_LOG_TRUNCATION,
     KEEP_RECENT_TOOL_RESULTS,
+    MAX_REQUEST_IMAGES_SAFETY,
     LOOP_DETECTION_EXEMPT_TOOLS,
     PRIMARY_PROBE_MAX_TOKENS,
     STEERING_TAG_CLOSE,
@@ -483,6 +485,10 @@ class AgentRunner:
         """Make a completion call to the provider."""
         provider = (
             self.fallback_chain.current if self.fallback_chain else self.provider
+        )
+        session.transcript.prune_old_tool_result_images(
+            keep_recent=KEEP_RECENT_COMPUTER_IMAGES,
+            hard_limit=MAX_REQUEST_IMAGES_SAFETY,
         )
 
         tool_defs = None
@@ -999,6 +1005,29 @@ class AsyncAgentRunner:
                 ctx.state = RunnerState.RECOVERING
                 _err_reason = classify_failover_reason(str(e))
                 _is_rate_limit = _err_reason == "rate_limit"
+                _is_too_much_media = "too much media" in str(e).lower()
+
+                if _is_too_much_media:
+                    stats = session.transcript.prune_old_tool_result_images(
+                        keep_recent=max(1, min(KEEP_RECENT_COMPUTER_IMAGES, 2)),
+                        hard_limit=min(MAX_REQUEST_IMAGES_SAFETY, 60),
+                    )
+                    if stats.changed:
+                        await self._emit_system_event(SystemEvent(
+                            type="media_pruning",
+                            message=(
+                                f"Provider rejected media payload; omitted "
+                                f"{stats.omitted_images} older screenshot image"
+                                f"{'s' if stats.omitted_images != 1 else ''} and retrying."
+                            ),
+                            details={
+                                **stats.to_details(),
+                                "trigger": "provider_error",
+                                "strategy": "recent_computer_screenshots_retry",
+                            },
+                        ))
+                        ctx.state = RunnerState.RUNNING
+                        continue
 
                 if _is_rate_limit:
                     try:
@@ -1427,11 +1456,76 @@ class AsyncAgentRunner:
             tokenizer_based = 0
         return max(api_based, tokenizer_based)
 
+    def _mark_context_compacted(self, context_tokens_after: int) -> None:
+        """Drop stale last-call context counters after compaction."""
+        try:
+            output = int(getattr(self.usage, "output", 0) or 0)
+            self.usage.last_input = max(0, context_tokens_after - output)
+            self.usage.last_cache_read = 0
+            self.usage.last_cache_write = 0
+            self.usage.cache_read = 0
+            self.usage.cache_write = 0
+        except Exception:  # noqa: BLE001
+            return
+
+    async def _ensure_media_room(self, session: Session) -> None:
+        """Keep computer-use image history inside provider media limits."""
+        stats = session.transcript.prune_old_tool_result_images(
+            keep_recent=KEEP_RECENT_COMPUTER_IMAGES,
+            hard_limit=MAX_REQUEST_IMAGES_SAFETY,
+        )
+        if not stats.changed:
+            return
+        await self._emit_system_event(SystemEvent(
+            type="media_pruning",
+            message=(
+                f"Omitted {stats.omitted_images} older screenshot image"
+                f"{'s' if stats.omitted_images != 1 else ''} from model history "
+                f"({stats.images_before} -> {stats.images_after} request images; "
+                f"keeping latest {stats.kept_recent})."
+            ),
+            details={
+                **stats.to_details(),
+                "trigger": "pre_request",
+                "strategy": "recent_computer_screenshots",
+            },
+        ))
+
+    @staticmethod
+    def _compaction_event_details(
+        result: CompactionResult,
+        *,
+        trigger: str,
+        tokens_before: int | None = None,
+        tokens_after: int | None = None,
+    ) -> dict[str, Any]:
+        before = tokens_before if tokens_before is not None else result.tokens_before
+        after = tokens_after if tokens_after is not None else result.tokens_after
+        return {
+            "tokens_before": before,
+            "tokens_after": after,
+            "context_tokens_before": before,
+            "context_tokens_after": after,
+            "transcript_tokens_before": result.tokens_before,
+            "transcript_tokens_after": result.tokens_after,
+            "entries_removed": result.entries_removed,
+            "messages_before": result.messages_before,
+            "messages_after": result.messages_after,
+            "images_before": result.images_before,
+            "images_after": result.images_after,
+            "summary_chars": len(result.summary or ""),
+            "summary_preview": (result.summary or "")[:700],
+            "trigger": trigger,
+            "strategy": "llm_summary",
+        }
+
     async def _ensure_context_room(
         self, session: Session, ctx: RunnerContext
     ) -> None:
         """Pre-request safety check: compact BEFORE sending a request
         that would overflow the provider's context window."""
+        await self._ensure_media_room(session)
+
         context_window = self.provider.context_window
         used_tokens = self._current_context_tokens(session)
         if context_window <= 0:
@@ -1469,17 +1563,23 @@ class AsyncAgentRunner:
             ))
             compaction_result = self._attempt_compaction(session, ctx)
             if compaction_result.success:
+                try:
+                    tokens_after = int(session.estimate_tokens())
+                except Exception:  # noqa: BLE001
+                    tokens_after = compaction_result.tokens_after
+                self._mark_context_compacted(tokens_after)
                 await self._emit_system_event(SystemEvent(
                     type="compaction_complete",
                     message=(
                         f"Pre-request compaction complete: "
-                        f"{tokens_before} -> {compaction_result.tokens_after} tokens"
+                        f"{tokens_before} -> {tokens_after} tokens"
                     ),
-                    details={
-                        "tokens_before": tokens_before,
-                        "tokens_after": compaction_result.tokens_after,
-                        "trigger": "pre_request",
-                    },
+                    details=self._compaction_event_details(
+                        compaction_result,
+                        trigger="pre_request",
+                        tokens_before=tokens_before,
+                        tokens_after=tokens_after,
+                    ),
                 ))
             else:
                 logger.warning(
@@ -1522,13 +1622,20 @@ class AsyncAgentRunner:
             ))
             compaction_result = self._attempt_compaction(session, ctx)
             if compaction_result.success:
+                try:
+                    tokens_after = int(session.estimate_tokens())
+                except Exception:  # noqa: BLE001
+                    tokens_after = compaction_result.tokens_after
+                self._mark_context_compacted(tokens_after)
                 await self._emit_system_event(SystemEvent(
                     type="compaction_complete",
-                    message=f"Compaction complete: {tokens_before} -> {compaction_result.tokens_after} tokens",
-                    details={
-                        "tokens_before": tokens_before,
-                        "tokens_after": compaction_result.tokens_after,
-                    },
+                    message=f"Compaction complete: {tokens_before} -> {tokens_after} tokens",
+                    details=self._compaction_event_details(
+                        compaction_result,
+                        trigger="context_pressure",
+                        tokens_before=tokens_before,
+                        tokens_after=tokens_after,
+                    ),
                 ))
             else:
                 logger.warning("Compaction failed under context pressure | session=%s", session.id)

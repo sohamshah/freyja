@@ -1,5 +1,4 @@
 import { useHarness } from '../state/store'
-import { TopographyMesh } from './TopographyMesh'
 import { TopoWordmark } from './TopoWordmark'
 
 
@@ -7,7 +6,15 @@ export function HeroWelcome() {
   const mode = useHarness((s) => s.mode)
   const requestDemoBurst = useHarness((s) => s.requestDemoBurst)
   const setInputDraft = useHarness((s) => s.setInputDraft)
-  const sendMessage = useHarness((s) => s.sendMessage)
+  const toggleMissionDashboard = useHarness((s) => s.toggleMissionDashboard)
+  const activeSessionId = useHarness((s) => s.activeSessionId)
+  const sessions = useHarness((s) => s.sessions)
+  const model = useHarness((s) => s.model)
+
+  const activeSession = sessions.find((session) => session.id === activeSessionId)
+  const workspace = compactPath(activeSession?.workspace || '~/')
+  const sessionModel = activeSession?.model || model
+  const messageCount = activeSession?.messageCount ?? 0
 
   const suggestions = [
     'Map the architecture and show me how subagents interact with the skills system',
@@ -33,18 +40,19 @@ export function HeroWelcome() {
 
       <div className="grid w-full grid-cols-1 gap-3 sm:grid-cols-2">
         <Card title="Workspace">
-          <div className="font-mono text-[12px] text-fg-0">~/work/services/freyja</div>
-          <div className="mt-1 text-[11px] text-fg-2">main* · 0 unstaged · writable</div>
+          <div className="truncate font-mono text-[12px] text-fg-0">{workspace}</div>
+          <div className="mt-1 text-[11px] text-fg-2">
+            {sessionModel} · {messageCount > 0 ? `${messageCount} messages` : 'empty session'}
+          </div>
         </Card>
         <Card title="Quick start">
-          <div className="text-[12px] text-fg-1">Type a message below — or try:</div>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {['/help', '/skills', '/subagents', '/usage'].map((c) => (
-              <span key={c} className="chip font-mono text-accent/90">
-                {c}
-              </span>
-            ))}
-          </div>
+          <div className="text-[12px] text-fg-1">Start from the input below, or open the current session map.</div>
+          <button
+            onClick={() => toggleMissionDashboard(true, 'overview')}
+            className="mt-3 rounded-md bg-accent/10 px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-accent ring-1 ring-accent/25 hover:bg-accent/18"
+          >
+            open mission dashboard
+          </button>
         </Card>
         <Card title="Jump-off prompts" wide>
           <div className="space-y-1.5">
@@ -53,7 +61,6 @@ export function HeroWelcome() {
                 key={s}
                 onClick={() => {
                   setInputDraft(s)
-                  sendMessage(s)
                 }}
                 className="block w-full rounded-lg bg-white/[0.025] px-3 py-2 text-left text-[12px] text-fg-1 ring-hairline hover:bg-white/[0.055] hover:text-fg-0"
               >
@@ -69,7 +76,7 @@ export function HeroWelcome() {
         <div className="flex items-center gap-2">
           <span className="inline-block h-1 w-1 rounded-full bg-accent" />
           <span>
-            Tip: <kbd className="kbd">⌘</kbd> <kbd className="kbd">O</kbd> opens the subagent panel
+            Tip: <kbd className="kbd">⌘</kbd> <kbd className="kbd">⇧</kbd> <kbd className="kbd">M</kbd> opens the mission dashboard
           </span>
         </div>
         {mode === 'demo' && (
@@ -85,6 +92,10 @@ export function HeroWelcome() {
   )
 }
 
+function compactPath(path: string): string {
+  return path.replace(/^\/Users\/[^/]+/, '~')
+}
+
 function Card({ title, children, wide }: { title: string; children: React.ReactNode; wide?: boolean }) {
   return (
     <div
@@ -96,35 +107,5 @@ function Card({ title, children, wide }: { title: string; children: React.ReactN
       </div>
       {children}
     </div>
-  )
-}
-
-/**
- * Diagonal hatched bar — the "////" end-caps flanking the kicker.
- * Pure SVG so the strokes stay crisp regardless of devicePixelRatio.
- * Matches the corner hatching in the CATHEDRAL reference poster.
- */
-function HatchBar() {
-  return (
-    <svg
-      width="34"
-      height="10"
-      viewBox="0 0 34 10"
-      className="shrink-0 text-fg-2/70"
-      aria-hidden
-    >
-      {[0, 4, 8, 12, 16, 20, 24, 28].map((x) => (
-        <line
-          key={x}
-          x1={x}
-          y1={10}
-          x2={x + 8}
-          y2={0}
-          stroke="currentColor"
-          strokeWidth="1"
-          strokeLinecap="square"
-        />
-      ))}
-    </svg>
   )
 }

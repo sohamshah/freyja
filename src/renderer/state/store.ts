@@ -55,6 +55,14 @@ export interface ComputerSessionState {
   summary?: string
 }
 
+export interface SystemEventRecord {
+  id: string
+  subtype: string
+  message: string
+  at: number
+  details?: Record<string, unknown>
+}
+
 /**
  * Per-session state snapshot — everything that gets swapped when the user
  * switches between sessions. Components still read flat fields off the
@@ -81,7 +89,7 @@ export interface SessionSlice {
     lastTurnOutputTokens: number
     contextWindow: number
   }
-  systemEvents: Array<{ id: string; subtype: string; message: string; at: number }>
+  systemEvents: SystemEventRecord[]
   busMessages: Array<import('@shared/events').BusMessageRecord>
   artifacts: Array<import('@shared/events').ArtifactRecord>
   model: string
@@ -98,6 +106,10 @@ export interface ModelChoice {
   contextWindow: number
   description: string
   thinking?: boolean
+  reasoningMode?: 'none' | 'adaptive' | 'budget' | 'effort' | 'binary' | 'required'
+  reasoningLevels?: string[]
+  reasoningDefault?: string
+  reasoningHistory?: string[]
   envVar?: string
   available?: boolean
 }
@@ -132,6 +144,8 @@ export interface HarnessState extends SessionSlice {
   // Derived / UI
   inputDraft: string
   commandPaletteOpen: boolean
+  missionDashboardOpen: boolean
+  missionDashboardTab: 'overview' | 'swarm' | 'findings' | 'telemetry' | 'profiles'
   activeSubagentId: string | null
   focusedPanel: 'sidebar' | 'conversation' | 'activity'
   debugOpen: boolean
@@ -170,6 +184,10 @@ export interface HarnessActions {
   setModel(model: string): Promise<void>
   openSubagent(id: string | null): void
   toggleCommandPalette(open?: boolean): void
+  toggleMissionDashboard(
+    open?: boolean,
+    tab?: HarnessState['missionDashboardTab'],
+  ): void
   toggleModelPicker(open?: boolean): void
   setFocusedPanel(p: HarnessState['focusedPanel']): void
   requestDemoBurst(): Promise<void>
@@ -247,7 +265,13 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // Cerebras context window is 131k — compaction triggers felt
   // "wrong" because the UI denominator didn't match the provider.
   'zai-glm-4.7': 131_072,
-  'glm5': 202_800,
+  'deepseek-v4-pro': 1_048_576,
+  'glm-5.1': 202_752,
+  'kimi-k2.6': 262_144,
+  'minimax-m2.7': 196_608,
+  'deepseek-v3.2': 163_840,
+  'qwen3.6-plus': 1_000_000,
+  'glm5': 202_752,
   'kimi-k2.5': 262_144,
   'minimax-m2.5': 196_608,
 }
@@ -319,6 +343,8 @@ function emptyState(): HarnessState {
     pendingAttachments: [],
     inputDraft: '',
     commandPaletteOpen: false,
+    missionDashboardOpen: false,
+    missionDashboardTab: 'overview',
     modelPickerOpen: false,
     activeSubagentId: null,
     focusedPanel: 'conversation',
@@ -766,23 +792,46 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
     case 'system_event': {
       next.systemEvents = [
         ...slice.systemEvents.slice(-100),
-        { id: nextId('sys'), subtype: ev.subtype, message: ev.message, at: Date.now() },
+        {
+          id: nextId('sys'),
+          subtype: ev.subtype,
+          message: ev.message,
+          at: Date.now(),
+          details: ev.details,
+        },
       ]
       // Capture the system prompt for session export / training data
       if (ev.subtype === 'system_prompt_set' && ev.details?.systemPrompt) {
         next.systemPrompt = ev.details.systemPrompt as string
       }
+      const chatVisible = ev.details?.chatVisible === true
+      const inlineSystemSubtypes = [
+        'compaction_start',
+        'compaction_complete',
+        'compaction_skipped',
+        'tool_truncation',
+        'context_pruning',
+        'media_pruning',
+      ]
       if (
         slice.currentStreamingMessageId &&
-        ['compaction_start', 'compaction_complete', 'tool_truncation', 'context_pruning'].includes(
-          ev.subtype,
-        )
+        (chatVisible || inlineSystemSubtypes.includes(ev.subtype))
       ) {
         next.messages = slice.messages.map((m) =>
           m.id === slice.currentStreamingMessageId
             ? { ...m, parts: [...m.parts, { type: 'system', text: ev.message, systemSubtype: ev.subtype }] }
             : m,
         )
+      } else if (chatVisible) {
+        next.messages = [
+          ...slice.messages,
+          {
+            id: nextId('msg'),
+            role: 'assistant',
+            parts: [{ type: 'system', text: ev.message, systemSubtype: ev.subtype }],
+            createdAt: Date.now(),
+          },
+        ]
       }
       return next
     }
@@ -837,7 +886,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         totalOutputTokens: ev.outputTokens,
         totalCacheReadTokens: ev.cacheReadTokens,
         totalCacheWriteTokens: ev.cacheWriteTokens,
-        totalCost: ev.cost,
+        totalCost: ev.cost || slice.usage.totalCost,
       }
       return next
 
@@ -1531,6 +1580,13 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
 
   toggleCommandPalette(open) {
     set((prev) => ({ commandPaletteOpen: open ?? !prev.commandPaletteOpen }))
+  },
+
+  toggleMissionDashboard(open, tab) {
+    set((prev) => ({
+      missionDashboardOpen: open ?? !prev.missionDashboardOpen,
+      missionDashboardTab: tab ?? prev.missionDashboardTab,
+    }))
   },
 
   toggleModelPicker(open) {
@@ -2235,6 +2291,18 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       case '/docs':
         state.toggleCommandPalette(true)
         return true
+      case '/dashboard':
+      case '/mission':
+        state.toggleMissionDashboard(true, 'overview')
+        return true
+      case '/profiles':
+      case '/agents':
+        state.toggleMissionDashboard(true, 'profiles')
+        return true
+      case '/telemetry':
+      case '/metrics':
+        state.toggleMissionDashboard(true, 'telemetry')
+        return true
       case '/clear':
       case '/new':
       case '/reset':
@@ -2242,7 +2310,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         return true
       case '/usage': {
         const u = state.usage
-        const msg = `ctx ${u.totalInputTokens} in · ${u.totalOutputTokens} out · ${u.totalCacheReadTokens} cached · $${u.totalCost.toFixed(4)}`
+        const msg = `context ${u.totalInputTokens} · output ${u.totalOutputTokens} · cache ${u.totalCacheReadTokens} · $${u.totalCost.toFixed(4)}`
         show(msg)
         return true
       }
@@ -2266,9 +2334,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         show(`${Object.keys(state.skills).length} skill(s) loaded`, 'info')
         return true
       case '/subagents': {
-        const first = Object.values(state.subagents)[0]
-        if (first) state.openSubagent(first.id)
-        else show('no sub-agents yet', 'info')
+        state.toggleMissionDashboard(true, 'swarm')
         return true
       }
       case '/tools':
@@ -2276,8 +2342,21 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         show('loading tool catalog…', 'info')
         return true
       case '/compact':
-        show('compaction is handled by the runner automatically', 'info')
+      case '/compaction': {
+        const api = (window as any).harness
+        if (!api) {
+          show('no bridge', 'warn')
+          return true
+        }
+        api
+          .sendCommand({ type: 'compact', sessionId: state.activeSessionId })
+          .then((res: { ok: boolean; error?: string } | undefined) => {
+            if (res && !res.ok) show(res.error || 'compaction request failed', 'warn')
+          })
+          .catch(() => show('compaction request failed', 'warn'))
+        show('compaction requested', 'info')
         return true
+      }
       case '/memory':
         state.setFocusedPanel('sidebar')
         show(`${Object.keys(state.memories).length} memory item(s) loaded`, 'info')

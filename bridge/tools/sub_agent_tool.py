@@ -19,10 +19,10 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from bridge.tools.agent_types import (
-    AGENT_TYPES,
     AgentType,
     get_agent_type,
-    resolve_model,
+    load_agent_types,
+    resolve_model_choice,
 )
 from bridge.tools.base import (
     ToolCall,
@@ -36,6 +36,7 @@ from bridge.tools.sub_agent_registry import (
     SubAgentRegistry,
     SubAgentState,
 )
+from engine.compaction import SummaryCompaction
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,7 @@ class SubAgentTool:
 
     @property
     def definition(self) -> ToolDefinition:
-        type_names = sorted(AGENT_TYPES.keys())
+        type_names = sorted(load_agent_types(self._spec.parent_workspace).keys())
         return ToolDefinition(
             name="sub_agent",
             summary="Delegate a focused task to a specialized sub-agent",
@@ -130,7 +131,7 @@ system prompt optimized for its role. Choose the type that fits the task.
 Parameters:
 - label: short human-friendly name shown in the UI
 - task: the task/prompt given to the sub-agent
-- type: agent specialization ({', '.join(type_names)}). Defaults to general.
+- agent_type: agent specialization ({', '.join(type_names)}). Defaults to general.
 - mode: "foreground" blocks on the child (default); "background" returns
   immediately with an agent id that can be monitored with the `subagents`
   tool.""",
@@ -175,9 +176,25 @@ Parameters:
                 is_error=True,
             )
 
-        # Resolve agent type
-        agent_type = get_agent_type(agent_type_name)
-        child_model = resolve_model(agent_type, self._spec.parent_model)
+        # Resolve agent type and model before creating the child session. This
+        # avoids a dead/stuck sub-session when every candidate model is missing
+        # the required provider configuration.
+        agent_type = get_agent_type(agent_type_name, self._spec.parent_workspace)
+        model_resolution = resolve_model_choice(agent_type, self._spec.parent_model)
+        if not model_resolution.available:
+            reasons = "; ".join(
+                f"{model}: {reason}"
+                for model, reason in model_resolution.unavailable
+            )
+            return ToolResult(
+                call_id=call_id,
+                content=(
+                    f"Error: no available model for `{agent_type.name}` "
+                    f"profile ({reasons})"
+                ),
+                is_error=True,
+            )
+        child_model = model_resolution.model
 
         # Enforce cap on concurrent running sub-agents
         running = sum(
@@ -203,6 +220,7 @@ Parameters:
         # _run_child can use them without re-resolving.
         record.agent_type = agent_type  # type: ignore[attr-defined]
         record.child_model = child_model  # type: ignore[attr-defined]
+        record.model_resolution = model_resolution  # type: ignore[attr-defined]
 
         type_tag = f" [{agent_type.name}]" if agent_type.name != "general" else ""
         # Legacy subagent_spawn for the existing inline card
@@ -223,6 +241,9 @@ Parameters:
                 "parentSessionId": self._spec.parent_session_id,
                 "title": f"{label}{type_tag}",
                 "model": child_model,
+                "modelPolicy": model_resolution.policy,
+                "modelCandidates": list(model_resolution.candidates),
+                "modelFallbackUsed": model_resolution.fallback_used,
                 "task": task,
                 "mode": mode,
                 "agentType": agent_type.name,
@@ -239,7 +260,8 @@ Parameters:
         return ToolResult(
             call_id=call_id,
             content=(
-                f"Sub-agent `{label}` queued in background (id={sub_id}). "
+                f"Sub-agent `{label}` queued in background "
+                f"(id={sub_id}, type={agent_type.name}, model={child_model}). "
                 "Use the `subagents` tool with action=wait/list/kill to manage it."
             ),
             is_error=False,
@@ -282,7 +304,11 @@ Parameters:
         from engine.runner import AsyncAgentRunner
         from engine.session import Session
 
-        agent_type: AgentType = getattr(record, "agent_type", get_agent_type("general"))
+        agent_type: AgentType = getattr(
+            record,
+            "agent_type",
+            get_agent_type("general", self._spec.parent_workspace),
+        )
         child_model: str = getattr(record, "child_model", self._spec.parent_model)
 
         # Build a child registry, applying the agent type's tool filter.
@@ -347,6 +373,15 @@ Parameters:
             )
         else:
             system_prompt = _build_sub_agent_system_prompt(child_registry)
+
+        system_prompt += (
+            "\nProfile metadata:\n"
+            f"- type: {agent_type.name}\n"
+            f"- model: {child_model}\n"
+            f"- thinking: {agent_type.thinking_effort}\n"
+            f"- max iterations: {agent_type.max_iterations}\n"
+            f"- source: {agent_type.source}\n"
+        )
 
         # Append sibling context so this agent knows what others are
         # working on and can decide whether to check the bus.
@@ -442,6 +477,18 @@ Parameters:
                     },
                 )
 
+        async def on_system_event(event: Any) -> None:
+            await _fire(
+                self._spec.emit_event,
+                {
+                    "type": "system_event",
+                    "sessionId": record.id,
+                    "subtype": getattr(event, "type", "unknown"),
+                    "message": getattr(event, "message", ""),
+                    "details": getattr(event, "details", {}) or {},
+                },
+            )
+
         # Build thinking config for the child runner
         from engine.types import ThinkingConfig
         child_thinking = ThinkingConfig()
@@ -456,8 +503,10 @@ Parameters:
 
         runner = AsyncAgentRunner(
             provider=provider,
+            compaction_strategy=SummaryCompaction(),
             tool_registry=child_registry,
             on_stream=on_stream,
+            on_system_event=on_system_event,
             thinking=child_thinking,
         )
 
@@ -581,11 +630,14 @@ Parameters:
             )
             artifact_dir.mkdir(parents=True, exist_ok=True)
             artifact_file = artifact_dir / f"{record.id}.md"
+            resolution = getattr(record, "model_resolution", None)
+            model_policy = resolution.policy if resolution is not None else "n/a"
             artifact_file.write_text(
                 f"# {record.label}\n\n"
                 f"**Agent type:** {agent_type.name}\n"
                 f"**Task:** {record.task}\n"
                 f"**Model:** {child_model}\n"
+                f"**Model policy:** {model_policy}\n"
                 f"**Tokens:** {record.input_tokens} in / {record.output_tokens} out\n"
                 f"**Tools called:** {record.tools_called}\n\n"
                 f"---\n\n"
@@ -683,6 +735,7 @@ Parameters:
 
 
 def _record_to_dict(record: SubAgentRecord) -> dict[str, Any]:
+    resolution = getattr(record, "model_resolution", None)
     return {
         "id": record.id,
         "label": record.label,
@@ -690,6 +743,11 @@ def _record_to_dict(record: SubAgentRecord) -> dict[str, Any]:
         "state": record.state.name.lower(),
         "task": record.task,
         "agentType": record.agent_type_name,
+        "model": getattr(record, "child_model", None),
+        "modelPolicy": resolution.policy if resolution is not None else None,
+        "modelFallbackUsed": (
+            resolution.fallback_used if resolution is not None else False
+        ),
         "artifactPath": record.artifact_path,
         "startedAt": int(record.start_time * 1000),
         "elapsedMs": int(record.elapsed * 1000),

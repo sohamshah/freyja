@@ -9,6 +9,7 @@ export function TitleBar() {
   const usage = useHarness((s) => s.usage)
   const sessionId = useHarness((s) => s.activeSessionId)
   const isStreaming = useHarness((s) => s.isStreaming)
+  const toggleMissionDashboard = useHarness((s) => s.toggleMissionDashboard)
   const ctxPct = Math.min(100, Math.round((usage.totalInputTokens / usage.contextWindow) * 100))
 
   return (
@@ -33,6 +34,13 @@ export function TitleBar() {
         <span className="inline-block h-[6px] w-[6px] rounded-full bg-current animate-pulse-soft" />
         <span className="ml-1.5">{modeDetail}</span>
       </Pill>
+      <button
+        className="no-drag hidden items-center rounded-md bg-accent/[0.08] px-2 py-[3px] text-accent ring-1 ring-accent/20 hover:bg-accent/[0.14] sm:flex"
+        onClick={() => toggleMissionDashboard(true, 'overview')}
+        title="Open mission dashboard (⌘⇧M)"
+      >
+        <span className="font-mono text-[10px] uppercase tracking-[0.08em]">dashboard</span>
+      </button>
       <button
         className="no-drag flex items-center rounded-md bg-white/[0.035] px-2 py-[3px] text-fg-1 ring-hairline hover:bg-white/[0.07]"
         onClick={() => useHarness.getState().toggleModelPicker(true)}

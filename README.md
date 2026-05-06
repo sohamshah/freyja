@@ -1,359 +1,315 @@
-# Freyja
+<p align="center">
+  <img src="assets/icon.png" width="108" alt="Freyja icon" />
+</p>
 
-**Agentic AI desktop app for macOS.** A standalone Electron + React UI on top
-of a Python agent engine, with native computer-use capabilities, specialized
-subagents, a session message bus, and full trajectory persistence.
+<h1 align="center">Freyja</h1>
 
-> **Platform:** macOS (Apple Silicon). Linux/Windows possible later.
-> **Status:** Internal alpha — `v0.1.0`.
+<p align="center">
+  <strong>A Mac-native cockpit for long-running, visual, multi-agent work.</strong>
+</p>
 
----
+<p align="center">
+  Freyja is an agentic desktop app that can write code, browse the web, operate your Mac,
+  launch specialist subagents, preserve the full trajectory, and show what is happening
+  while the work is still alive.
+</p>
 
-## What's in the box
+<p align="center">
+  <img src="docs/assets/freyja-system-map.svg" alt="Freyja system map" />
+</p>
 
-A single `.app` bundle containing four layers:
+> Platform: macOS on Apple Silicon<br>
+> Status: internal alpha, `v0.1.0`<br>
+> Stack: Electron, React, TypeScript, Python, Rust, pyo3
 
-| Layer | Tech | Lives in |
-|-------|------|----------|
-| **UI** | Electron + React + Vite + Tailwind + Zustand | `src/main`, `src/preload`, `src/renderer`, `src/shared` |
-| **Bridge** | Python (`asyncio`, JSONL over stdin/stdout) | `bridge/` |
-| **Engine** | Pure Python agent loop (provider chain, compaction, tool dispatch) | `engine/` |
-| **Native** | Rust + `pyo3` (CoreGraphics, Accessibility, Enigo) | `native/freyja_native/` |
+## Why Freyja Exists
 
-The Electron main process spawns `bridge/freyja_bridge.py` as a child, talks
-to it over JSONL, and proxies screen-capture / input to the bundled Python
-runtime so TCC permissions inherit cleanly.
+Most agent apps are either chat boxes with tools bolted on, or opaque runners
+that become impossible to inspect once the work gets large. Freyja is built for
+the messy middle: multi-hour sessions, many subagents, computer-use screenshots,
+tool traces, files changing under your feet, context compaction, and models with
+different strengths working together.
 
----
+The product goal is simple: give powerful agents a real desktop mission control
+surface without hiding the machinery. You should be able to watch the swarm,
+inspect the evidence, jump to a file edit, see when context was compacted, and
+recover the trajectory later.
 
-## Feature snapshot
+## What It Can Do
 
-- **13 model providers** out of the box: Claude Opus/Sonnet/Haiku 4.6 + 4.5,
-  GPT-5.4 family, GLM 4.7 (Cerebras), Kimi K2.5, GLM 5, MiniMax M2.5
-  (Fireworks). 1M-token context on Sonnet 4.6, max thinking on Opus 4.6.
-- **5 specialized agent types**: `general`, `explore`, `explore-fast`,
-  `code`, `verify`. Each defines its own model, thinking effort, tool
-  whitelist, and system prompt — see `bridge/tools/agent_types.py`.
-- **30+ tools** wired in: file read/write/edit, bash, web search/fetch,
-  glob/grep, computer-use (screenshot, click, type, scroll, AX tree, find
-  element), 14 native macOS automation primitives, sub_agent orchestration,
-  message bus, memory, tool search.
-- **Session message bus** — siblings publish findings to a shared
-  append-only log; live activity rail in the swarm monitor.
-- **Artifact persistence** — every subagent writes its full output to
-  `~/.freyja/sessions/{id}/artifacts/{sub_id}.md`, surviving truncation
-  and compaction. In-app preview for markdown, JSON, CSV, SVG, code,
-  HTML, and images.
-- **Transcript persistence** — full engine transcripts saved per turn so
-  closing and reopening the app restores context. Legacy fallback for
-  pre-persistence sessions extracts a UI-message summary.
-- **Trajectory export** in v3 JSON, ATIF v1.6, and ShareGPT formats —
-  see `docs/TRAJECTORY-TRAINING.md` and `scripts/convert-to-atif.py`.
-- **Computer use** with full TCC inheritance (Screen Recording,
-  Accessibility) — capture proxy + input proxy in the Electron main
-  process delegate to the bundled Python.
+- Run a first-class desktop chat with streaming model output, attached images,
+  tool calls, inline screenshots, and a persistent session sidebar.
+- Drive macOS directly: screenshot, click, type, scroll, inspect windows, query
+  accessibility trees, focus windows, find elements, and execute multi-step
+  computer-use loops.
+- Spawn background subagents with explicit profiles for planning, research,
+  coding, review, testing, browser QA, performance profiling, docs, and memory
+  curation.
+- Coordinate agents through a session message bus where sibling agents can
+  publish findings, read evidence, and continue work without waiting on the
+  parent chat.
+- Show live work products: file changes, diff cards, artifacts, markdown/code
+  previews, logs, screenshots, and subagent output.
+- Persist transcripts, artifacts, settings, session slices, message bus events,
+  memory, skill usage, compaction events, and trajectory exports.
+- Keep long computer-use sessions under control with request-level image pruning:
+  the UI keeps the visual trail, while provider requests keep only the most
+  recent screenshot image blocks needed for the next step.
 
----
+## Product Surface
 
-## Quick start (development)
+Freyja has a few major views that work together:
 
-> Use this for day-to-day development. Hot-reloads renderer changes via
-> Vite. Uses your local `.venv`, not a bundled Python.
+- Main conversation: streaming text, tool groups, visual computer-use frames,
+  pasted images, file changes, and the input dock.
+- Activity rail: context, spend, tool timeline, compaction/media events, changes,
+  artifacts, system events, and logs.
+- Mission dashboard: a wide operational view for swarms, findings, evidence,
+  agent health, compaction before/after points, image policy, and session lanes.
+- Artifact workspace: focused inspection for generated files, markdown, JSON,
+  SVG, HTML, images, and code.
+- Model and agent controls: provider-aware model picker, reasoning metadata,
+  subagent profile table, and slash-command workflows.
+
+## System Architecture
+
+Freyja ships as a single `.app` bundle with four layers:
+
+| Layer | Tech | What it owns |
+| --- | --- | --- |
+| UI | Electron, React, Vite, Tailwind, Zustand | Mission UI, chat, dashboard, diffs, artifacts, local persistence |
+| Bridge | Python asyncio over JSONL stdin/stdout | Sessions, commands, subagent orchestration, skills, memory, events |
+| Engine | Pure Python | Agent loop, provider adapters, compaction, context pressure, tool dispatch |
+| Native | Rust + pyo3 | macOS screen capture, input, windows, accessibility primitives |
+
+At runtime Electron spawns `bridge/freyja_bridge.py`, talks to it over JSONL,
+and proxies capture/input through the main process so macOS TCC permissions are
+owned by the app bundle instead of a random shell process.
+
+```mermaid
+flowchart LR
+  UI["Electron + React UI"] --> Bridge["Python JSONL bridge"]
+  Bridge --> Engine["Async agent engine"]
+  Engine --> Providers["Claude / GPT / Cerebras / Fireworks"]
+  Engine --> Tools["File, shell, web, browser, computer-use tools"]
+  Tools --> Native["Rust native macOS automation"]
+  Bridge --> Store["~/.freyja sessions, artifacts, memory, skills"]
+```
+
+## Model Mesh
+
+Freyja currently exposes 21 model profiles across 4 provider families:
+
+| Family | Models |
+| --- | --- |
+| Anthropic | Claude Opus 4.7, Opus 4.6, Sonnet 4.6, Sonnet 4.5, Opus 4.5, Haiku 4.5 |
+| OpenAI | GPT-5.5, GPT-5.4, GPT-5.4 Mini, GPT-5.4 Nano, GPT-5.3 Codex |
+| Cerebras | Z.ai GLM 4.7 |
+| Fireworks | Kimi K2.5, Kimi K2.6, DeepSeek V4 Pro, DeepSeek v3.2, GLM 5.1, GLM 5, MiniMax M2.7, MiniMax M2.5, Qwen3.6 Plus |
+
+The picker tracks context window, provider family, API key availability,
+reasoning mode, supported reasoning levels, and model-specific reasoning
+history behavior. Provider adapters live in `engine/*_provider.py`; the visible
+model catalog lives in `bridge/freyja_bridge.py`.
+
+## Agent Profiles
+
+Subagents are declarative profiles in `bridge/tools/agent_types.py`. Each profile
+controls model choice, fallback policy, thinking effort, tool allowlist, prompt,
+and iteration budget.
+
+Built-ins:
+
+| Profile | Purpose |
+| --- | --- |
+| `general` | Default delegation, inherits the parent model and safe tools |
+| `explore` | Deep web/file/codebase research with publishing to the bus |
+| `explore-fast` | Fast fanout lookup over a rotating low-latency model set |
+| `code` | Isolated file/code edits with high thinking and editing tools |
+| `verify` | Independent read-only validation after implementation |
+| `plan` | Read-only implementation planning before broad work |
+| `review` | Read-only code review focused on bugs, regressions, and tests |
+| `test` | Build/test execution and failure diagnosis |
+| `browser-qa` | Frontend behavior, layout, and browser screenshot checks |
+| `performance` | Profiling and low-risk optimization investigation |
+| `docs` | Documentation and design-document writing |
+| `memory-curator` | Skill and memory hygiene |
+
+Custom project/user profiles can be added as markdown files under
+`.freyja/agents` or `~/.freyja/agents`.
+
+## Tools
+
+The bridge exposes a desktop tool registry with file, shell, web, browser,
+computer-use, memory, skills, subagents, and message-bus tools. Highlights:
+
+- File system: read, write, edit, JSON edit, glob, grep, list directories.
+- Shell: bounded command execution with summarized output.
+- Web: search, fetch, and research workflows.
+- Browser: CDP-backed JavaScript and screenshot inspection for frontend QA.
+- Computer use: screenshot, click, type, key events, scroll, move mouse,
+  inspect regions, focus/list windows, read accessibility trees, find elements.
+- Collaboration: `sub_agent`, `subagents`, `publish_finding`, `read_findings`.
+- Knowledge: `record_user_preference`, `list_skills`, `search_skills`,
+  `load_skill`, with file-backed usage tracking and pruning.
+
+## Memory And Skills
+
+Freyja keeps this intentionally simple. No database is required.
+
+- Durable memory is file-backed under `~/.freyja/knowledge` and project-aware.
+- Skills are markdown files discovered from `~/.freyja/skills`,
+  `~/.claude/skills`, `knowledge/`, and `.freyja/skills`.
+- The prompt builder retrieves relevant memories and skills by query.
+- Skill loading is explicit, visible in the UI, and tracked with lightweight
+  usage metadata.
+- Skill pruning removes irrelevant loaded skill context when a session grows,
+  keeping prompts lean without deleting the skill itself.
+
+This repository includes starter project skills in `.freyja/skills`:
+`analyze-session`, `frontend-design`, `holographic-label-system`, and
+`teach-impeccable`.
+
+## Context, Compaction, And Media
+
+Long sessions are first-class. Freyja tracks context pressure, compaction
+events, image history, and request media policy instead of treating them as
+invisible backend chores.
+
+- Token pressure triggers pruning and LLM-based compaction.
+- Compactions are represented as transcript events with before/after token
+  estimates and summary text.
+- The mission dashboard shows compaction before/after cards and image history
+  policy.
+- Computer-use tool-result images are pruned from provider request history
+  after the most recent few frames, while the UI and local frame dump retain
+  the visual trail.
+- Request-level image safety leaves provider headroom for user attachments.
+
+Key constants live in `engine/constants.py`.
+
+## Quick Start
+
+Use this for development. Renderer changes hot-reload through Vite. Python
+bridge/engine changes require a bridge restart.
 
 ```bash
-# 1. Install prerequisites
-#    Node 18+, Python 3.11+, uv (https://docs.astral.sh/uv/),
-#    and the Rust toolchain (rustup) — only needed once for the
-#    native extension.
-brew install node python uv rustup-init && rustup-init
+# Prerequisites:
+# Node 18+, Python 3.11+, uv, Rust toolchain
+brew install node python uv rustup-init
+rustup-init
 
-# 2. Configure API keys
+# Configure providers
 cp .env.example .env
-# Edit .env — at minimum set ANTHROPIC_API_KEY.
+# Fill whichever keys you want:
+# ANTHROPIC_API_KEY, OPENAI_API_KEY, CEREBRAS_API_KEY, FIREWORKS_API_KEY
 
-# 3. Install dependencies
+# Install dependencies
 npm install
-uv sync
+uv sync --extra dev
 
-# 4. Build the native macOS extension (one time)
+# Build the native macOS extension once
 cd native/freyja_native
 uv run maturin develop --release
 cd ../..
 
-# 5. Run
+# Run the desktop app
 ./launch.sh
-# or directly:
+# or
 npm run dev
 ```
 
-The dev orchestrator (`scripts/dev.mjs`) starts:
+The dev orchestrator in `scripts/dev.mjs` runs Vite, watches the Electron
+main/preload bundle, and launches Electron against the local renderer URL.
 
-- `vite dev` for the renderer (HMR on `http://localhost:5173`)
-- `esbuild --watch` for `main.cjs` and `preload.cjs`
-- `electron .` once Vite is ready, pointed at the dev URL
+## Running The Bridge Standalone
 
-Edit any TypeScript/React file — the renderer hot-reloads. Edit any
-Python file in `bridge/` or `engine/` — restart the bridge with
-`⌘R` (DevTools reload) or pick **Restart Bridge** from the debug drawer.
-
-### Running the bridge standalone (no UI)
-
-Useful for debugging agent loops without Electron in the way:
+Useful when debugging engine behavior without Electron:
 
 ```bash
 uv run python -m bridge.freyja_bridge
-# Writes JSONL events to stdout, reads commands from stdin.
-# Send a test message:
-echo '{"type":"send_message","content":"hello","sessionId":"test"}' \
-  | uv run python -m bridge.freyja_bridge
 ```
 
----
+The bridge reads JSONL commands from stdin and emits JSONL events to stdout.
 
-## Building a shippable `.app` (production)
+## Build A Shippable App
 
-This is what you ship to a tester or release. Produces a self-contained
-`.app` with bundled Python runtime — the user does **not** need Python,
-Node, or Rust installed.
-
-### One-time setup
-
-You need the same prerequisites as development plus a built native
-extension and a synced venv:
+The production app bundles Python, the engine, the bridge, native extension,
+renderer assets, and Electron.
 
 ```bash
 npm install
 uv sync
 cd native/freyja_native && uv run maturin develop --release && cd ../..
-```
 
-### Step 1 — Bundle Python
-
-This packs the project's `.venv` interpreter, stdlib, and all
-site-packages (including the `freyja_native` Rust extension) into
-`python-bundle/`. The output is ~85 MB.
-
-```bash
 ./scripts/bundle-python.sh
-```
-
-The script:
-
-1. Copies `python3` from the venv's base interpreter
-2. Copies the full stdlib for that Python version
-3. Copies `site-packages` from the venv (your installed deps + the
-   compiled `_native.abi3.so`)
-4. Strips test files, docs, and `__pycache__` to shrink the bundle
-5. Re-signs every `.so` and dylib with ad-hoc codesigning so they pass
-   macOS Gatekeeper and inherit TCC permissions
-
-You only need to re-run this when:
-- Python deps change (after `uv add`/`uv sync`)
-- The native extension is rebuilt (after editing Rust code)
-- You bump the Python version
-
-### Step 2 — Build & package
-
-```bash
 npm run package
-```
-
-This:
-
-1. `vite build` → `dist-renderer/` (renderer JS/CSS, ~300 KB gzipped)
-2. `esbuild` → `dist-main/main.cjs` and `dist-preload/preload.cjs`
-3. `electron-builder --mac --dir` → `out/mac-arm64/Freyja.app/`
-4. `scripts/sign-resources.js` (afterPack hook) — ad-hoc signs every
-   binary inside the `.app`, in inside-out order, so the outer signature
-   seal is consistent
-
-The result lives at `out/mac-arm64/Freyja.app`. You can launch it
-directly:
-
-```bash
 open out/mac-arm64/Freyja.app
 ```
 
-### Step 3 — Build a DMG (optional, for distribution)
+To create a DMG:
 
 ```bash
 npm run dist
 ```
 
-This runs `npm run package` then `scripts/create-dmg.mjs`, which uses
-`hdiutil` directly to produce `out/Freyja-0.1.0.dmg`. We bypass
-electron-builder's built-in DMG step because it fails on arm64 macOS
-Tahoe (APFS → UDZO conversion errors) — `hdiutil create -srcfolder`
-works on every macOS version.
+The app is currently ad-hoc signed for internal alpha distribution. First
+launch may require right-clicking the app and choosing Open. Real distribution
+should add Developer ID signing and notarization.
 
-The DMG is what you send to a tester. They drag it to `/Applications`
-and double-click. No `.dmg` signing — it's ad-hoc, so first launch
-requires right-click → Open to bypass Gatekeeper.
+## Project Layout
 
----
-
-## Code signing & notarization
-
-Currently we ship **ad-hoc signed** (no Developer ID, no notarization).
-This is fine for internal alpha but means:
-
-- Gatekeeper warns on first launch
-- Computer-use TCC grants are scoped to the bundle ID, so users have
-  to re-grant after every rebuild that changes the signature
-- Some macOS versions may quarantine the `.dmg` — use `xattr -cr` to clear
-
-For a real release, set up a Developer ID certificate, drop the
-`identity: null` from `package.json`'s `build.mac` block, and add a
-notarization step after `electron-builder`.
-
----
-
-## What runs at runtime
-
-When you launch the `.app`:
-
-1. `dist-main/main.cjs` boots the Electron main process
-2. Main process spawns `bridge/freyja_bridge.py` using
-   `Resources/python-bundle/bin/python3`
-3. Bridge reads `Resources/.env` for API keys and announces capabilities
-4. Renderer connects via the `harness:bridge-event` IPC channel
-5. User sends a message → main forwards to bridge → engine streams
-   tokens back → renderer paints them
-
-Key paths inside the packaged `.app`:
-
-```
-Freyja.app/
-├── Contents/
-│   ├── MacOS/Freyja                     # Electron binary
-│   ├── Resources/
-│   │   ├── app.asar                     # bundled main + renderer
-│   │   ├── bridge/                      # Python source (extraResources)
-│   │   ├── engine/                      # Python source
-│   │   ├── python-bundle/               # bundled runtime (~85 MB)
-│   │   │   ├── bin/python3
-│   │   │   └── lib/python3.13/...
-│   │   └── .env                         # API keys
-│   └── Info.plist                       # bundle id: co.freyja.desktop
-```
-
-User-side data lives in `~/.freyja/`:
-
-```
-~/.freyja/
-├── sessions/
-│   └── {session-id}/
-│       ├── transcript.json              # engine transcript for context restore
-│       ├── slice.json                   # UI state for re-mount
-│       └── artifacts/                   # subagent outputs
-│           └── sub_*.md
-└── settings.json                        # permission tier, model defaults, etc.
-```
-
----
-
-## Project layout
-
-```
+```text
 freyja/
 ├── src/
-│   ├── main/         # Electron main process
-│   ├── preload/      # contextBridge to renderer
-│   ├── renderer/     # React UI (32 components)
-│   └── shared/       # IPC + event types
+│   ├── main/                 Electron main process and native proxies
+│   ├── preload/              contextBridge API
+│   ├── renderer/             React UI, mission dashboard, activity rail
+│   └── shared/               IPC and event types
 ├── bridge/
-│   ├── freyja_bridge.py            # 2k-line stdio bridge — sessions, commands
-│   ├── transcript_persistence.py   # transcript save/load
-│   └── tools/                      # 17 tool implementations + registry
+│   ├── freyja_bridge.py      JSONL bridge, sessions, commands, events
+│   ├── knowledge/            file-backed memory and skill stores
+│   └── tools/                desktop tool registry and implementations
 ├── engine/
-│   ├── runner.py            # async agent loop
-│   ├── session.py           # transcript + tool state
-│   ├── compaction.py        # summary-based compaction (artifact-aware)
-│   ├── providers.py + *_provider.py   # 4 provider families
-│   └── ...
-├── native/freyja_native/
-│   └── src/                 # Rust pyo3 — capture, input, windows, AX
-├── scripts/
-│   ├── dev.mjs                # dev orchestrator
-│   ├── bundle-python.sh       # Python runtime bundler
-│   ├── build-main.mjs         # esbuild for main + preload
-│   ├── sign-resources.js      # ad-hoc codesign afterPack hook
-│   ├── create-dmg.mjs         # hdiutil DMG builder
-│   ├── convert-to-atif.py     # v3 JSON → ATIF v1.6
-│   └── convert-to-sharegpt.py # v3 JSON → ShareGPT JSONL
-├── docs/
-│   ├── ARCHITECTURE.md
-│   ├── TRAJECTORY-TRAINING.md
-│   └── research/              # design docs, blog posts
-└── python-bundle/             # generated by bundle-python.sh
+│   ├── runner.py             async agent loop
+│   ├── session.py            transcript, compaction, image pruning
+│   ├── compaction.py         LLM summary compaction strategy
+│   └── *_provider.py         provider adapters
+├── native/freyja_native/     Rust pyo3 macOS capture/input/window/AX layer
+├── docs/                     architecture, performance, skills, research
+├── scripts/                  dev, packaging, signing, trajectory export
+├── tests/                    Python regression tests
+└── .freyja/skills/           starter project skills
 ```
 
----
-
-## Common workflows
-
-### Add a new tool
-
-1. Implement in `bridge/tools/<name>.py` following the `ToolDefinition` /
-   `execute()` pattern from existing tools.
-2. Register it in `bridge/tools/registry.py:build_desktop_registry`.
-3. (Optional) Add it to an agent type's `tool_include` whitelist in
-   `bridge/tools/agent_types.py`.
-4. Restart the bridge — the renderer learns about new tools via the
-   `tool_catalog_entry` event.
-
-### Add a new agent type
-
-One dict entry in `bridge/tools/agent_types.py:AGENT_TYPES`. The parent
-agent's system prompt auto-generates from the registry, so no other
-files need touching.
-
-### Add a new model
-
-Add an entry to `AVAILABLE_MODELS` in `bridge/freyja_bridge.py` and
-ensure `_family_for_model()` routes it to the right provider. The model
-picker in the UI populates from this list.
-
-### Update Python deps
+## Useful Commands
 
 ```bash
-uv add <package>
-uv sync
-./scripts/bundle-python.sh   # rebundle for the .app
-npm run package
+npm run build
+uv run --extra dev pytest -q
+python3 -m py_compile bridge/freyja_bridge.py engine/runner.py
 ```
 
-### Update the native Rust extension
+## Documentation
 
-```bash
-cd native/freyja_native
-uv run maturin develop --release
-cd ../..
-./scripts/bundle-python.sh   # picks up the new .so
-npm run package
-```
-
----
+- `docs/ARCHITECTURE.md`: system architecture deep dive.
+- `docs/PERFORMANCE-DEEP-DIVE.md`: renderer, media, session, and subagent
+  performance analysis.
+- `docs/SKILLS-MEMORY-DESIGN.md`: skills and memory design.
+- `docs/WARP-FILE-EDIT-UX-RESEARCH.md`: file-edit UX research and design notes.
+- `docs/TRAJECTORY-TRAINING.md`: trajectory export formats.
 
 ## Troubleshooting
 
-| Symptom | Fix |
-|---|---|
-| `npm run package` succeeds but app shows "demo mode" | Missing `.env` — check `Resources/.env` exists in the bundle |
-| Bridge fails to start in packaged app | `python-bundle/` not built. Run `./scripts/bundle-python.sh` then re-package |
-| `freyja_native not found` in dev | Run `maturin develop --release` in `native/freyja_native/` |
-| `freyja_native not found` in packaged app | The `.so` wasn't copied. `bundle-python.sh` syncs from `.venv/lib/python*/site-packages/freyja_native` — make sure you ran `maturin develop` in the project venv before bundling |
-| Computer-use tools fail with "no permission" | First launch the app, trigger a screenshot, accept TCC prompts. Re-launching after a rebuild may require re-grant because ad-hoc signatures change |
-| DMG creation fails on macOS Tahoe | Already handled by `scripts/create-dmg.mjs` — don't use electron-builder's built-in dmg target |
-| First launch blocked by Gatekeeper | Right-click the `.app` → Open. After the first allow it launches normally |
-
----
+| Symptom | Likely fix |
+| --- | --- |
+| App starts in demo mode | Check `.env` and bridge startup logs |
+| Packaged bridge cannot import modules | Re-run `./scripts/bundle-python.sh` |
+| `freyja_native` missing in dev | Run `uv run maturin develop --release` inside `native/freyja_native` |
+| Computer-use permissions fail | Grant Screen Recording and Accessibility to the app bundle, then restart |
+| Context grows with many screenshots | Use the dashboard image policy view; provider requests should prune old tool-result images automatically |
+| OpenAI image attachments are ignored | Ensure the bridge is restarted after the image attachment fix and confirm `OPENAI_API_KEY` is set |
 
 ## License
 
 MIT.
-
----
-
-*Built on top of the agent-harness engine. See `docs/ARCHITECTURE.md`
-for the deeper story.*

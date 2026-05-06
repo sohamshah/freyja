@@ -16,6 +16,8 @@ export function CommandPalette() {
   const subagents = useHarness((s) => s.subagents)
   const sessions = useHarness((s) => s.sessions)
   const openSubagent = useHarness((s) => s.openSubagent)
+  const toggleMissionDashboard = useHarness((s) => s.toggleMissionDashboard)
+  const switchSession = useHarness((s) => s.switchSession)
   const setDraft = useHarness((s) => s.setInputDraft)
   const burst = useHarness((s) => s.requestDemoBurst)
 
@@ -29,7 +31,59 @@ export function CommandPalette() {
 
   const items: PaletteItem[] = useMemo(() => {
     const out: PaletteItem[] = []
-    for (const c of SLASH_COMMANDS) {
+    out.push(
+      {
+        id: 'mission:overview',
+        title: 'Mission Dashboard',
+        subtitle: 'Overview of session health, active agents, findings, changes, and artifacts',
+        group: 'Command',
+        action: () => {
+          toggleMissionDashboard(true, 'overview')
+          close(false)
+        },
+      },
+      {
+        id: 'mission:swarm',
+        title: 'Swarm Monitor',
+        subtitle: 'Agent lanes, collaboration state, and live multi-agent activity',
+        group: 'Command',
+        action: () => {
+          toggleMissionDashboard(true, 'swarm')
+          close(false)
+        },
+      },
+      {
+        id: 'mission:findings',
+        title: 'Findings Board',
+        subtitle: 'Message-bus findings grouped by source, topic, and reuse potential',
+        group: 'Command',
+        action: () => {
+          toggleMissionDashboard(true, 'findings')
+          close(false)
+        },
+      },
+      {
+        id: 'mission:telemetry',
+        title: 'Session Telemetry',
+        subtitle: 'Screenshots, media pruning, compaction, and context pressure events',
+        group: 'Command',
+        action: () => {
+          toggleMissionDashboard(true, 'telemetry')
+          close(false)
+        },
+      },
+      {
+        id: 'mission:profiles',
+        title: 'Agent Profiles',
+        subtitle: 'Browse built-in sub-agent profiles, tools, models, and iteration caps',
+        group: 'Command',
+        action: () => {
+          toggleMissionDashboard(true, 'profiles')
+          close(false)
+        },
+      },
+    )
+    for (const c of SLASH_COMMANDS.filter((command) => !command.hidden)) {
       out.push({
         id: `cmd:${c.name}`,
         title: c.name,
@@ -75,11 +129,14 @@ export function CommandPalette() {
         title: s.title,
         subtitle: `${s.model} · ${s.workspace}`,
         group: 'Session',
-        action: () => close(false),
+        action: () => {
+          switchSession(s.id).catch(() => {})
+          close(false)
+        },
       })
     }
     return out
-  }, [skills, subagents, sessions, setDraft, close, openSubagent, burst])
+  }, [skills, subagents, sessions, setDraft, close, openSubagent, burst, toggleMissionDashboard, switchSession])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()

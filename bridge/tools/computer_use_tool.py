@@ -41,6 +41,7 @@ from bridge.tools.sub_agent_registry import (
     SubAgentState,
 )
 from bridge.tools.sub_agent_tool import SubAgentSpec, _fire, _record_to_dict
+from engine.compaction import SummaryCompaction
 
 logger = logging.getLogger(__name__)
 
@@ -326,6 +327,7 @@ Parameters:
         record = self._sub_spec.registry.register(
             id=sub_id, label=label, task=goal, mode=mode
         )
+        record.agent_type_name = "computer"
 
         # Same dual-event emission as sub_agent_tool so the UI sees the
         # child as a real session AND as an inline subagent card.
@@ -346,6 +348,7 @@ Parameters:
                 "model": self._sub_spec.parent_model,
                 "task": goal,
                 "mode": mode,
+                "agentType": "computer",
                 "workspace": self._sub_spec.parent_workspace,
                 "createdAt": int(time.time() * 1000),
                 "kind": "computer",
@@ -535,10 +538,24 @@ Parameters:
                     },
                 )
 
+        async def on_system_event(event: Any) -> None:
+            await _fire(
+                self._sub_spec.emit_event,
+                {
+                    "type": "system_event",
+                    "sessionId": record.id,
+                    "subtype": getattr(event, "type", "unknown"),
+                    "message": getattr(event, "message", ""),
+                    "details": getattr(event, "details", {}) or {},
+                },
+            )
+
         runner = AsyncAgentRunner(
             provider=provider,
+            compaction_strategy=SummaryCompaction(),
             tool_registry=wrapped_registry,
             on_stream=on_stream,
+            on_system_event=on_system_event,
         )
 
         # Optionally focus the target app before handing off to the model.

@@ -489,6 +489,7 @@ SystemEventType = Literal[
     "compaction_start",
     "compaction_complete",
     "context_pruning",
+    "media_pruning",
     "tool_truncation",
     "output_truncation",
 ]

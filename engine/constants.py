@@ -58,6 +58,16 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "gpt-4-turbo": 128_000,
     "gpt-4": 8_192,
     "gpt-3.5-turbo": 16_385,
+    # Fireworks
+    "deepseek-v4-pro": 1_048_576,
+    "glm-5.1": 202_752,
+    "kimi-k2.6": 262_144,
+    "minimax-m2.7": 196_608,
+    "deepseek-v3.2": 163_840,
+    "qwen3.6-plus": 1_000_000,
+    "kimi-k2.5": 262_144,
+    "glm5": 202_752,
+    "minimax-m2.5": 196_608,
 }
 
 # ============================================================================
@@ -72,6 +82,12 @@ CONTEXT_COMPACTION_THRESHOLD = 0.90
 
 KEEP_RECENT_TOOL_RESULTS = 3
 """Number of recent tool results preserved during pruning."""
+
+KEEP_RECENT_COMPUTER_IMAGES = 4
+"""Recent computer-use screenshots kept as image blocks in model history."""
+
+MAX_REQUEST_IMAGES_SAFETY = 80
+"""Soft request-level image ceiling; leaves provider headroom for attachments."""
 
 KEEP_RECENT_MESSAGES = 10
 """Messages kept verbatim during compaction (most recent N)."""

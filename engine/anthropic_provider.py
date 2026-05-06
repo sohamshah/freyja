@@ -934,7 +934,14 @@ class AnthropicProvider:
             lower = message.lower()
             if any(
                 term in lower
-                for term in ("context", "token", "too long", "too large", "exceeds")
+                for term in (
+                    "context",
+                    "token",
+                    "too long",
+                    "too large",
+                    "too much media",
+                    "exceeds",
+                )
             ):
                 return ContextOverflowError(message)
             return ProviderError(message, status=status, retryable=False)

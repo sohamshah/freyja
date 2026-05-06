@@ -41,9 +41,17 @@ const AGENT_TYPE_COLORS: Record<string, string> = {
   parent: '#a8d4fc',
   general: '#a8d4fc',
   explore: '#7ab8a3',
-  'explore-fast': '#a89be0',
-  code: '#5bbb5b',
-  verify: '#ffcc66',
+  'explore-fast': '#7bd3ec',
+  code: '#ffcc66',
+  verify: '#88d67f',
+  plan: '#b8a7ff',
+  review: '#f0a6ca',
+  test: '#f5b45d',
+  'browser-qa': '#79b3fa',
+  performance: '#f07878',
+  docs: '#72d0b2',
+  'memory-curator': '#c8d67f',
+  computer: '#d99bbe',
 }
 
 function fileTypeColor(ext: string): string {

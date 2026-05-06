@@ -1,0 +1,129 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 640" role="img" aria-labelledby="title desc">
+  <title id="title">Freyja System Map</title>
+  <desc id="desc">A layered architecture diagram showing the Freyja desktop UI, JSONL bridge, agent engine, provider stack, tools, native Mac automation, and persistent session memory.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#08100d"/>
+      <stop offset="48%" stop-color="#111918"/>
+      <stop offset="100%" stop-color="#050607"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#1f2d29" stop-opacity=".86"/>
+      <stop offset="100%" stop-color="#0a0e0c" stop-opacity=".92"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" x2="1">
+      <stop offset="0%" stop-color="#9ed1ff"/>
+      <stop offset="48%" stop-color="#8ce28d"/>
+      <stop offset="100%" stop-color="#f1cb64"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="7" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.55 0 0 0 0 0.82 0 0 0 0 0.88 0 0 0 .42 0"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <pattern id="grid" width="28" height="28" patternUnits="userSpaceOnUse">
+      <path d="M 28 0 L 0 0 0 28" fill="none" stroke="#ffffff" stroke-opacity=".045" stroke-width="1"/>
+    </pattern>
+    <style>
+      .label{font:700 18px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;letter-spacing:3px;fill:#e7f2e7}
+      .tiny{font:500 13px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;letter-spacing:1.2px;fill:#9ba79e}
+      .micro{font:600 12px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;letter-spacing:1.6px;fill:#6f7d76}
+      .number{font:800 34px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;fill:#eff7ef}
+      .card{fill:url(#panel);stroke:#a4d6ff;stroke-opacity:.22;stroke-width:1.2}
+      .rule{stroke:url(#accent);stroke-width:2;stroke-linecap:round;opacity:.82}
+      .wire{fill:none;stroke:#8fd6c1;stroke-width:1.4;stroke-opacity:.34}
+      .dot{fill:#9ed1ff}
+    </style>
+  </defs>
+
+  <rect width="1440" height="640" rx="32" fill="url(#bg)"/>
+  <rect width="1440" height="640" fill="url(#grid)"/>
+  <path d="M52 84 C170 52 264 104 370 72 C492 35 592 110 715 75 C850 36 947 110 1072 78 C1208 44 1298 85 1382 62" fill="none" stroke="#d9d279" stroke-opacity=".2" stroke-width="2"/>
+  <path d="M44 548 C184 592 300 512 430 560 C570 614 692 518 840 558 C1012 604 1150 518 1378 572" fill="none" stroke="#d9d279" stroke-opacity=".14" stroke-width="2"/>
+
+  <g transform="translate(64 58)">
+    <text class="micro" x="0" y="0">MAC-NATIVE AGENT COCKPIT</text>
+    <text class="label" x="0" y="38" style="font-size:44px;letter-spacing:4px">FREYJA</text>
+    <rect x="0" y="59" width="318" height="5" rx="3" fill="url(#accent)"/>
+  </g>
+
+  <g filter="url(#glow)">
+    <rect class="card" x="64" y="144" width="284" height="160" rx="18"/>
+    <text class="micro" x="92" y="182">ELECTRON / REACT</text>
+    <text class="label" x="92" y="220">MISSION UI</text>
+    <text class="tiny" x="92" y="252">dashboard, diff view, artifacts</text>
+    <text class="tiny" x="92" y="278">streaming chat, computer live view</text>
+  </g>
+
+  <g>
+    <rect class="card" x="402" y="144" width="284" height="160" rx="18"/>
+    <text class="micro" x="430" y="182">PYTHON JSONL BRIDGE</text>
+    <text class="label" x="430" y="220">SESSION ORBIT</text>
+    <text class="tiny" x="430" y="252">subagents, bus, persistence</text>
+    <text class="tiny" x="430" y="278">skills, memory, telemetry</text>
+  </g>
+
+  <g>
+    <rect class="card" x="740" y="144" width="284" height="160" rx="18"/>
+    <text class="micro" x="768" y="182">PURE PYTHON ENGINE</text>
+    <text class="label" x="768" y="220">AGENT LOOP</text>
+    <text class="tiny" x="768" y="252">provider fallback, compaction</text>
+    <text class="tiny" x="768" y="278">tool dispatch, history pruning</text>
+  </g>
+
+  <g>
+    <rect class="card" x="1078" y="144" width="298" height="160" rx="18"/>
+    <text class="micro" x="1106" y="182">MODEL MESH</text>
+    <text class="label" x="1106" y="220">21 PROFILES</text>
+    <text class="tiny" x="1106" y="252">Claude, GPT, Cerebras GLM</text>
+    <text class="tiny" x="1106" y="278">Fireworks: Kimi, Qwen, DeepSeek</text>
+  </g>
+
+  <path class="wire" d="M348 224 H402"/>
+  <path class="wire" d="M686 224 H740"/>
+  <path class="wire" d="M1024 224 H1078"/>
+  <circle class="dot" cx="375" cy="224" r="4"/>
+  <circle class="dot" cx="713" cy="224" r="4"/>
+  <circle class="dot" cx="1051" cy="224" r="4"/>
+
+  <g transform="translate(64 380)">
+    <rect class="card" x="0" y="0" width="220" height="128" rx="16"/>
+    <text class="number" x="24" y="52">35+</text>
+    <text class="micro" x="24" y="82">TOOLS</text>
+    <text class="tiny" x="24" y="108">files, shell, web, browser, Mac UI</text>
+  </g>
+
+  <g transform="translate(314 380)">
+    <rect class="card" x="0" y="0" width="220" height="128" rx="16"/>
+    <text class="number" x="24" y="52">10</text>
+    <text class="micro" x="24" y="82">AGENT LANES</text>
+    <text class="tiny" x="24" y="108">plan, code, review, QA, research</text>
+  </g>
+
+  <g transform="translate(564 380)">
+    <rect class="card" x="0" y="0" width="220" height="128" rx="16"/>
+    <text class="number" x="24" y="52">1M</text>
+    <text class="micro" x="24" y="82">CONTEXT CLASS</text>
+    <text class="tiny" x="24" y="108">compaction and media caps visible</text>
+  </g>
+
+  <g transform="translate(814 380)">
+    <rect class="card" x="0" y="0" width="220" height="128" rx="16"/>
+    <text class="number" x="24" y="52">4</text>
+    <text class="micro" x="24" y="82">SKILLS INCLUDED</text>
+    <text class="tiny" x="24" y="108">file-backed, searchable, pruned</text>
+  </g>
+
+  <g transform="translate(1064 380)">
+    <rect class="card" x="0" y="0" width="312" height="128" rx="16"/>
+    <text class="number" x="24" y="52">LIVE</text>
+    <text class="micro" x="24" y="82">TRAJECTORY CAPTURE</text>
+    <text class="tiny" x="24" y="108">messages, screenshots, diffs, artifacts</text>
+  </g>
+
+  <line class="rule" x1="64" y1="560" x2="1376" y2="560"/>
+  <text class="tiny" x="64" y="596">desktop app for running long, visual, multi-agent work without surrendering observability</text>
+</svg>

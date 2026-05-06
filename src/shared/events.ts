@@ -227,6 +227,7 @@ export type BridgeCommand =
   | { type: 'cancel'; sessionId?: string }
   | { type: 'force_cancel'; sessionId?: string }
   | { type: 'diagnose' }
+  | { type: 'compact'; sessionId?: string }
   | { type: 'set_model'; sessionId?: string; model: string }
   | { type: 'list_skills'; sessionId?: string }
   | { type: 'list_subagents'; sessionId?: string }

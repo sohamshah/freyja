@@ -17,22 +17,69 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from engine.constants import (
+    KEEP_RECENT_COMPUTER_IMAGES,
     KEEP_RECENT_TOOL_RESULTS,
     MAX_SESSION_EVENTS,
+    MAX_REQUEST_IMAGES_SAFETY,
     MESSAGE_TOKEN_OVERHEAD,
     MIN_CONTENT_LENGTH_FOR_TRUNCATION,
 )
 from engine.tools import Tool
 from engine.types import (
     ContentBlock,
+    ImageBlock,
     Message,
     RedactedThinkingBlock,
+    TextBlock,
     ThinkingBlock,
     ToolCall,
 )
 from engine.tokenizer import count_tokens
 
 logger = logging.getLogger(__name__)
+
+COMPUTER_IMAGE_TOOL_NAMES: frozenset[str] = frozenset({
+    "screenshot",
+    "click",
+    "move_mouse",
+    "type_text",
+    "press_key",
+    "key_down",
+    "key_up",
+    "scroll",
+    "wait",
+    "inspect_region",
+})
+
+
+@dataclass
+class ImagePruneResult:
+    """Summary of request-history image pruning."""
+
+    images_before: int
+    images_after: int
+    tool_result_images_before: int
+    tool_result_images_after: int
+    omitted_images: int = 0
+    modified_messages: int = 0
+    kept_recent: int = KEEP_RECENT_COMPUTER_IMAGES
+    hard_limit: int = MAX_REQUEST_IMAGES_SAFETY
+
+    @property
+    def changed(self) -> bool:
+        return self.omitted_images > 0
+
+    def to_details(self) -> dict[str, Any]:
+        return {
+            "images_before": self.images_before,
+            "images_after": self.images_after,
+            "tool_result_images_before": self.tool_result_images_before,
+            "tool_result_images_after": self.tool_result_images_after,
+            "omitted_images": self.omitted_images,
+            "modified_messages": self.modified_messages,
+            "kept_recent": self.kept_recent,
+            "hard_limit": self.hard_limit,
+        }
 
 
 # ============================================================================
@@ -353,6 +400,135 @@ class TranscriptManager:
             logger.info(f"Halved {pruned_count} old tool results")
 
         return pruned_count
+
+    def prune_old_tool_result_images(
+        self,
+        keep_recent: int = KEEP_RECENT_COMPUTER_IMAGES,
+        hard_limit: int = MAX_REQUEST_IMAGES_SAFETY,
+    ) -> ImagePruneResult:
+        """
+        Remove old computer-use screenshots from model history.
+
+        Computer-control tools can capture hundreds of frames in a long
+        session. The UI and frame dump still retain those observations, but
+        provider requests should only carry the latest few images. Older
+        image blocks are replaced by a text marker inside the same tool_result
+        message so tool-use/result adjacency stays valid.
+        """
+        keep_recent = max(0, int(keep_recent))
+        hard_limit = max(1, int(hard_limit))
+
+        tool_name_by_id: dict[str, str] = {}
+        for entry in self._entries:
+            msg = entry.message
+            if msg is None or not msg.tool_calls:
+                continue
+            for call in msg.tool_calls:
+                tool_name_by_id[call.id] = call.name
+
+        image_refs: list[tuple[int, int]] = []
+        prunable_refs: list[tuple[int, int]] = []
+        for entry_index, entry in enumerate(self._entries):
+            msg = entry.message
+            if msg is None or isinstance(msg.content, str):
+                continue
+            tool_name = tool_name_by_id.get(msg.tool_call_id or "")
+            for block_index, block in enumerate(msg.content):
+                if not isinstance(block, ImageBlock):
+                    continue
+                image_refs.append((entry_index, block_index))
+                if (
+                    msg.role == "tool_result"
+                    and (tool_name in COMPUTER_IMAGE_TOOL_NAMES or tool_name is None)
+                ):
+                    prunable_refs.append((entry_index, block_index))
+
+        images_before = len(image_refs)
+        tool_images_before = len(prunable_refs)
+        if tool_images_before == 0:
+            return ImagePruneResult(
+                images_before=images_before,
+                images_after=images_before,
+                tool_result_images_before=0,
+                tool_result_images_after=0,
+                kept_recent=keep_recent,
+                hard_limit=hard_limit,
+            )
+
+        non_prunable_images = images_before - tool_images_before
+        allowed_by_hard_limit = max(0, hard_limit - non_prunable_images)
+        actual_keep = min(keep_recent, allowed_by_hard_limit, tool_images_before)
+
+        if tool_images_before <= actual_keep and images_before <= hard_limit:
+            return ImagePruneResult(
+                images_before=images_before,
+                images_after=images_before,
+                tool_result_images_before=tool_images_before,
+                tool_result_images_after=tool_images_before,
+                kept_recent=actual_keep,
+                hard_limit=hard_limit,
+            )
+
+        refs_to_keep = set(prunable_refs[-actual_keep:]) if actual_keep > 0 else set()
+        refs_to_prune = set(prunable_refs) - refs_to_keep
+        if not refs_to_prune:
+            return ImagePruneResult(
+                images_before=images_before,
+                images_after=images_before,
+                tool_result_images_before=tool_images_before,
+                tool_result_images_after=tool_images_before,
+                kept_recent=actual_keep,
+                hard_limit=hard_limit,
+            )
+
+        omitted_images = 0
+        modified_messages = 0
+        affected_entries = {entry_index for entry_index, _ in refs_to_prune}
+        for entry_index in sorted(affected_entries):
+            entry = self._entries[entry_index]
+            msg = entry.message
+            if msg is None or isinstance(msg.content, str):
+                continue
+            new_blocks: list[ContentBlock] = []
+            removed_here = 0
+            for block_index, block in enumerate(msg.content):
+                if (entry_index, block_index) in refs_to_prune and isinstance(block, ImageBlock):
+                    removed_here += 1
+                    continue
+                new_blocks.append(block)
+            if removed_here == 0:
+                continue
+            omitted_images += removed_here
+            modified_messages += 1
+            new_blocks.append(TextBlock(text=(
+                f"\n\n[{removed_here} older screenshot image"
+                f"{'s' if removed_here != 1 else ''} omitted from model history. "
+                f"The latest {actual_keep} screenshot image"
+                f"{'s' if actual_keep != 1 else ''} remain visible to the model; "
+                "take a fresh screenshot if visual state has changed.]"
+            )))
+            msg.content = new_blocks
+
+        images_after = images_before - omitted_images
+        tool_images_after = tool_images_before - omitted_images
+        if omitted_images > 0:
+            logger.info(
+                "Pruned %d old screenshot image block(s): %d -> %d images",
+                omitted_images,
+                images_before,
+                images_after,
+            )
+
+        return ImagePruneResult(
+            images_before=images_before,
+            images_after=images_after,
+            tool_result_images_before=tool_images_before,
+            tool_result_images_after=tool_images_after,
+            omitted_images=omitted_images,
+            modified_messages=modified_messages,
+            kept_recent=actual_keep,
+            hard_limit=hard_limit,
+        )
 
     def clear(self) -> None:
         """Clear all entries."""

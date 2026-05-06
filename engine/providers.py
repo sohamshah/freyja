@@ -494,11 +494,66 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
     "gpt-5.4-nano": {"provider": "openai", "context_window": 400_000, "thinking": True},
     "gpt-5.3-codex": {"provider": "openai", "context_window": 400_000, "thinking": True},
     # Cerebras models
-    "zai-glm-4.7": {"provider": "cerebras", "context_window": 131_072, "thinking": False},
+    "zai-glm-4.7": {"provider": "cerebras", "context_window": 131_072, "thinking": False, "reasoning_mode": "disabled"},
     # Fireworks models
-    "kimi-k2.5": {"provider": "fireworks", "context_window": 262_144, "thinking": False},
-    "glm5": {"provider": "fireworks", "context_window": 202_800, "thinking": False},
-    "minimax-m2.5": {"provider": "fireworks", "context_window": 196_608, "thinking": False},
+    "deepseek-v4-pro": {
+        "provider": "fireworks",
+        "context_window": 1_048_576,
+        "thinking": True,
+        "reasoning_mode": "effort",
+        "reasoning_levels": ("none", "low", "medium", "high", "max"),
+        "reasoning_default": "high",
+    },
+    "glm-5.1": {
+        "provider": "fireworks",
+        "context_window": 202_752,
+        "thinking": True,
+        "reasoning_mode": "effort",
+        "reasoning_levels": ("none", "low", "medium", "high"),
+        "reasoning_default": "high",
+    },
+    "kimi-k2.6": {
+        "provider": "fireworks",
+        "context_window": 262_144,
+        "thinking": True,
+        "reasoning_mode": "effort",
+        "reasoning_levels": ("none", "low", "medium", "high"),
+        "reasoning_default": "high",
+    },
+    "minimax-m2.7": {
+        "provider": "fireworks",
+        "context_window": 196_608,
+        "thinking": True,
+        "reasoning_mode": "required",
+        "reasoning_levels": ("low", "medium", "high"),
+        "reasoning_default": "medium",
+    },
+    "deepseek-v3.2": {
+        "provider": "fireworks",
+        "context_window": 163_840,
+        "thinking": True,
+        "reasoning_mode": "binary",
+        "reasoning_levels": ("none", "high"),
+        "reasoning_default": "high",
+    },
+    "qwen3.6-plus": {
+        "provider": "fireworks",
+        "context_window": 1_000_000,
+        "thinking": True,
+        "reasoning_mode": "effort",
+        "reasoning_levels": ("none", "low", "medium", "high"),
+        "reasoning_default": "medium",
+    },
+    "kimi-k2.5": {"provider": "fireworks", "context_window": 262_144, "thinking": False, "reasoning_mode": "none"},
+    "glm5": {"provider": "fireworks", "context_window": 202_752, "thinking": False, "reasoning_mode": "none"},
+    "minimax-m2.5": {
+        "provider": "fireworks",
+        "context_window": 196_608,
+        "thinking": True,
+        "reasoning_mode": "required",
+        "reasoning_levels": ("low", "medium", "high"),
+        "reasoning_default": "medium",
+    },
 }
 
 MODEL_SPEED_TIERS = {
@@ -508,28 +563,35 @@ MODEL_SPEED_TIERS = {
     "openai": "gpt-5.5",         # OpenAI flagship
     "codex": "gpt-5.3-codex",    # agentic coding specialist
     "cerebras": "zai-glm-4.7",
-    "kimi": "kimi-k2.5",
-    "glm5": "glm5",
-    "minimax": "minimax-m2.5",
+    "kimi": "kimi-k2.6",
+    "glm5": "glm-5.1",
+    "deepseek": "deepseek-v4-pro",
+    "minimax": "minimax-m2.7",
 }
 
 ALL_MODEL_CHOICES = list(MODEL_REGISTRY.keys())
 
 FALLBACK_CHAINS: dict[str, list[str]] = {
-    "claude-opus-4-7": ["claude-opus-4-6", "kimi-k2.5"],
-    "claude-sonnet-4-6": ["kimi-k2.5"],
-    "claude-opus-4-6": ["kimi-k2.5"],
-    "claude-haiku-4-5": ["kimi-k2.5"],
-    "zai-glm-4.7": ["kimi-k2.5"],
+    "claude-opus-4-7": ["claude-opus-4-6", "kimi-k2.6", "deepseek-v4-pro"],
+    "claude-sonnet-4-6": ["kimi-k2.6", "deepseek-v4-pro"],
+    "claude-opus-4-6": ["kimi-k2.6", "deepseek-v4-pro"],
+    "claude-haiku-4-5": ["kimi-k2.6", "kimi-k2.5"],
+    "zai-glm-4.7": ["kimi-k2.6", "kimi-k2.5"],
     "gpt-5.5": ["gpt-5.4", "gpt-5.4-mini"],
     "gpt-5.4": ["gpt-5.4-mini"],
     "gpt-5.4-pro": ["gpt-5.4", "gpt-5.4-mini"],
     "gpt-5.4-mini": ["gpt-5.4-nano"],
     "gpt-5.4-nano": ["gpt-5.4-mini"],
     "gpt-5.3-codex": ["gpt-5.4-mini"],
-    "kimi-k2.5": ["glm5", "minimax-m2.5"],
-    "glm5": ["kimi-k2.5", "minimax-m2.5"],
-    "minimax-m2.5": ["kimi-k2.5", "glm5"],
+    "deepseek-v4-pro": ["glm-5.1", "kimi-k2.6", "deepseek-v3.2"],
+    "glm-5.1": ["deepseek-v4-pro", "kimi-k2.6", "glm5"],
+    "kimi-k2.6": ["deepseek-v4-pro", "glm-5.1", "kimi-k2.5"],
+    "minimax-m2.7": ["minimax-m2.5", "kimi-k2.6", "glm-5.1"],
+    "deepseek-v3.2": ["deepseek-v4-pro", "glm-5.1"],
+    "qwen3.6-plus": ["kimi-k2.6", "glm-5.1"],
+    "kimi-k2.5": ["kimi-k2.6", "glm5", "minimax-m2.5"],
+    "glm5": ["glm-5.1", "kimi-k2.5", "minimax-m2.5"],
+    "minimax-m2.5": ["minimax-m2.7", "kimi-k2.5", "glm5"],
 }
 
 
@@ -591,13 +653,10 @@ def _create_single_provider(
     elif provider_name == "fireworks":
         from engine.fireworks_provider import FireworksConfig, FireworksProvider
 
-        if thinking.enabled:
-            logger.warning("Fireworks doesn't support thinking -- disabling.")
-            thinking = ThinkingConfig(enabled=False)
-
         return FireworksProvider(FireworksConfig(
             model=model,
             max_tokens=max_tokens,
+            reasoning=thinking,
         ))
     else:
         from engine.anthropic_provider import AnthropicConfig, AnthropicProvider
