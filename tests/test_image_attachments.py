@@ -1,4 +1,5 @@
 from bridge.freyja_bridge import _build_user_message_with_attachments
+from engine.anthropic_provider import AnthropicConfig, AnthropicProvider
 from engine.openai_provider import OpenAIConfig, OpenAIProvider
 from engine.types import ImageBlock, Message, TextBlock
 
@@ -48,4 +49,29 @@ def test_openai_provider_formats_image_blocks_for_responses_api() -> None:
     assert content_blocks == [
         {"type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U="},
         {"type": "input_text", "text": "what is in this image?"},
+    ]
+
+
+def test_anthropic_provider_formats_image_blocks_for_claude_messages_api() -> None:
+    provider = AnthropicProvider(
+        AnthropicConfig(api_key="test-key", model="claude-opus-4-7")
+    )
+    content = _build_user_message_with_attachments(
+        "what is in this image?",
+        [{"type": "image", "mimeType": "image/png", "dataBase64": "aW1hZ2U="}],
+    )
+
+    params = provider._build_request([Message(role="user", content=content)])
+
+    content_blocks = params["messages"][0]["content"]
+    assert content_blocks == [
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "aW1hZ2U=",
+            },
+        },
+        {"type": "text", "text": "what is in this image?"},
     ]
