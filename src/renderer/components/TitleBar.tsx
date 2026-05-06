@@ -14,7 +14,7 @@ export function TitleBar() {
   const ctxPct = Math.min(100, Math.round((usage.totalInputTokens / usage.contextWindow) * 100))
 
   return (
-    <div className="drag hairline-b flex h-[44px] shrink-0 items-center gap-4 pl-[82px] pr-4 text-[12px] text-fg-1">
+    <div className="drag hairline-b flex h-[46px] shrink-0 items-center gap-3 pl-[82px] pr-4 text-[12px] text-fg-1">
       <div className="flex items-center gap-2 text-fg-0">
         <TopographicMark />
         <span
@@ -31,24 +31,22 @@ export function TitleBar() {
         </span>
       </div>
       <div className="h-[14px] w-px bg-white/10" />
-      <Pill tone={mode === 'live' ? 'ok' : mode === 'demo' ? 'warn' : 'danger'}>
-        <span className="inline-block h-[6px] w-[6px] rounded-full bg-current animate-pulse-soft" />
-        <span className="ml-1.5">{modeDetail}</span>
-      </Pill>
-      <button
-        className="no-drag hidden items-center rounded-md bg-accent/[0.08] px-2 py-[3px] text-accent ring-1 ring-accent/20 hover:bg-accent/[0.14] sm:flex"
+      <BridgeStatus mode={mode} modeDetail={modeDetail} />
+      <TitleControl
+        accent
+        className="no-drag hidden h-[30px] px-3 text-[10.5px] text-accent sm:inline-flex"
         onClick={() => toggleMissionDashboard(true, 'overview')}
         title="Open mission dashboard (⌘⇧M)"
       >
-        <span className="font-mono text-[10px] uppercase tracking-[0.08em]">dashboard</span>
-      </button>
-      <button
-        className="no-drag flex items-center rounded-md bg-white/[0.035] px-2 py-[3px] text-fg-1 ring-hairline hover:bg-white/[0.07]"
+        <span className="font-mono uppercase">dashboard</span>
+      </TitleControl>
+      <TitleControl
+        className="no-drag flex h-[30px] max-w-[min(36vw,360px)] px-3 text-fg-1"
         onClick={() => useHarness.getState().toggleModelPicker(true)}
         title="Switch model"
       >
         <span className="text-fg-2">model</span>
-        <span className="ml-1.5 font-mono text-fg-0">{model}</span>
+        <span className="ml-1.5 min-w-0 truncate font-mono text-fg-0">{model}</span>
         {reasoningLevel && reasoningLevel !== 'none' && (
           <span className="ml-1.5 font-mono text-[10px] text-accent/80">{reasoningLevel}</span>
         )}
@@ -56,19 +54,19 @@ export function TitleBar() {
           <span className="ml-1.5 font-mono text-[10px] text-fg-3">no-reasoning</span>
         )}
         <span className="ml-1.5 text-fg-3">▾</span>
-      </button>
-      <Pill>
+      </TitleControl>
+      <TitleControl className="no-drag flex h-[30px] px-3">
         <span className="text-fg-2">ctx</span>
         <span className="ml-1.5 font-mono text-fg-0">
           {formatTokens(usage.totalInputTokens)}
           <span className="text-fg-2">/{formatTokens(usage.contextWindow)}</span>
         </span>
-        <ProgressBar pct={ctxPct} className="ml-2 w-[44px]" />
-      </Pill>
-      <Pill>
+        <ProgressBar pct={ctxPct} className="ml-2 w-[56px]" />
+      </TitleControl>
+      <TitleControl className="no-drag flex h-[30px] px-3">
         <span className="text-fg-2">spend</span>
         <span className="ml-1.5 font-mono text-fg-0">{formatCost(usage.totalCost)}</span>
-      </Pill>
+      </TitleControl>
       <div className="ml-auto flex items-center gap-3 text-fg-2">
         {isStreaming && (
           <span className="flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.12em]">
@@ -82,25 +80,51 @@ export function TitleBar() {
   )
 }
 
-function Pill({
-  children,
-  tone = 'neutral',
-}: {
-  children: React.ReactNode
-  tone?: 'neutral' | 'ok' | 'warn' | 'danger'
-}) {
+function BridgeStatus({ mode, modeDetail }: { mode: string; modeDetail: string }) {
   const toneClass =
-    tone === 'ok'
+    mode === 'live'
       ? 'text-ok'
-      : tone === 'warn'
+      : mode === 'demo'
         ? 'text-warn'
-        : tone === 'danger'
-          ? 'text-danger'
-          : 'text-fg-1'
+        : 'text-danger'
+  const label = mode === 'live' ? 'live' : mode === 'demo' ? 'demo' : 'offline'
+
   return (
     <div
-      className={`no-drag flex items-center rounded-md bg-white/[0.035] px-2 py-[3px] ring-hairline ${toneClass}`}
+      className={`flex h-[24px] items-center gap-1.5 px-1 font-mono text-[10px] uppercase ${toneClass}`}
+      title={modeDetail}
     >
+      <span className="title-status-dot inline-block h-[6px] w-[6px] rounded-full bg-current" />
+      <span>{label}</span>
+    </div>
+  )
+}
+
+function TitleControl({
+  children,
+  className = '',
+  onClick,
+  title,
+  accent = false,
+}: {
+  children: React.ReactNode
+  className?: string
+  onClick?: () => void
+  title?: string
+  accent?: boolean
+}) {
+  const controlClass = `title-control items-center ${onClick ? 'title-control-button' : ''} ${accent ? 'title-control-accent' : ''} ${className}`
+
+  if (onClick) {
+    return (
+      <button className={controlClass} onClick={onClick} title={title} type="button">
+        {children}
+      </button>
+    )
+  }
+
+  return (
+    <div className={controlClass} title={title}>
       {children}
     </div>
   )
@@ -108,9 +132,9 @@ function Pill({
 
 function ProgressBar({ pct, className = '' }: { pct: number; className?: string }) {
   return (
-    <span className={`relative block h-1 overflow-hidden rounded-full bg-white/10 ${className}`}>
+    <span className={`title-progress relative block ${className}`}>
       <span
-        className="absolute left-0 top-0 h-full bg-accent/70"
+        className="absolute left-0 top-0 h-full"
         style={{ width: `${pct}%` }}
       />
     </span>
