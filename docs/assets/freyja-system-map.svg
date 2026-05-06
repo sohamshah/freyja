@@ -1,129 +1,269 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 640" role="img" aria-labelledby="title desc">
-  <title id="title">Freyja System Map</title>
-  <desc id="desc">A layered architecture diagram showing the Freyja desktop UI, JSONL bridge, agent engine, provider stack, tools, native Mac automation, and persistent session memory.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">Freyja Operating Map</title>
+  <desc id="desc">A mission-control style system map showing Freyja's desktop cockpit, JSONL event spine, agent engine, model mesh, subagent swarm, tool plane, native Mac automation, and persistent observability stores.</desc>
   <defs>
     <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
-      <stop offset="0%" stop-color="#08100d"/>
-      <stop offset="48%" stop-color="#111918"/>
-      <stop offset="100%" stop-color="#050607"/>
+      <stop offset="0%" stop-color="#07110f"/>
+      <stop offset="48%" stop-color="#101719"/>
+      <stop offset="100%" stop-color="#030506"/>
     </linearGradient>
-    <linearGradient id="panel" x1="0" x2="1" y1="0" y2="1">
-      <stop offset="0%" stop-color="#1f2d29" stop-opacity=".86"/>
-      <stop offset="100%" stop-color="#0a0e0c" stop-opacity=".92"/>
-    </linearGradient>
-    <linearGradient id="accent" x1="0" x2="1">
+    <radialGradient id="halo" cx="50%" cy="46%" r="62%">
+      <stop offset="0%" stop-color="#9ed1ff" stop-opacity=".20"/>
+      <stop offset="38%" stop-color="#78d99b" stop-opacity=".10"/>
+      <stop offset="72%" stop-color="#f4cb64" stop-opacity=".045"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="blueGreen" x1="0" x2="1">
       <stop offset="0%" stop-color="#9ed1ff"/>
-      <stop offset="48%" stop-color="#8ce28d"/>
-      <stop offset="100%" stop-color="#f1cb64"/>
+      <stop offset="52%" stop-color="#83e29a"/>
+      <stop offset="100%" stop-color="#f5cb66"/>
     </linearGradient>
-    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
-      <feGaussianBlur stdDeviation="7" result="blur"/>
-      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.55 0 0 0 0 0.82 0 0 0 0 0.88 0 0 0 .42 0"/>
+    <linearGradient id="glass" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#273735" stop-opacity=".82"/>
+      <stop offset="55%" stop-color="#111a18" stop-opacity=".74"/>
+      <stop offset="100%" stop-color="#050807" stop-opacity=".90"/>
+    </linearGradient>
+    <linearGradient id="glassHot" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#324b4f" stop-opacity=".92"/>
+      <stop offset="58%" stop-color="#13201d" stop-opacity=".82"/>
+      <stop offset="100%" stop-color="#080b0a" stop-opacity=".94"/>
+    </linearGradient>
+    <filter id="softGlow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.43 0 0 0 0 0.78 0 0 0 0 0.78 0 0 0 .42 0"/>
       <feMerge>
         <feMergeNode/>
         <feMergeNode in="SourceGraphic"/>
       </feMerge>
     </filter>
-    <pattern id="grid" width="28" height="28" patternUnits="userSpaceOnUse">
-      <path d="M 28 0 L 0 0 0 28" fill="none" stroke="#ffffff" stroke-opacity=".045" stroke-width="1"/>
+    <filter id="heavyGlow" x="-70%" y="-70%" width="240%" height="240%">
+      <feGaussianBlur stdDeviation="16" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.35 0 0 0 0 0.78 0 0 0 0 0.70 0 0 0 .50 0"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#ffffff" stroke-opacity=".045" stroke-width="1"/>
     </pattern>
+    <pattern id="fineGrid" width="8" height="8" patternUnits="userSpaceOnUse">
+      <path d="M8 0H0V8" fill="none" stroke="#ffffff" stroke-opacity=".018" stroke-width="1"/>
+    </pattern>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L10 5L0 10Z" fill="#9ed1ff" fill-opacity=".78"/>
+    </marker>
     <style>
-      .label{font:700 18px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;letter-spacing:3px;fill:#e7f2e7}
-      .tiny{font:500 13px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;letter-spacing:1.2px;fill:#9ba79e}
-      .micro{font:600 12px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;letter-spacing:1.6px;fill:#6f7d76}
-      .number{font:800 34px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;fill:#eff7ef}
-      .card{fill:url(#panel);stroke:#a4d6ff;stroke-opacity:.22;stroke-width:1.2}
-      .rule{stroke:url(#accent);stroke-width:2;stroke-linecap:round;opacity:.82}
-      .wire{fill:none;stroke:#8fd6c1;stroke-width:1.4;stroke-opacity:.34}
-      .dot{fill:#9ed1ff}
+      .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
+      .brand{font:800 54px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;letter-spacing:5px;fill:#eff8f0}
+      .kicker{font:800 12px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;letter-spacing:3.5px;fill:#8aa39a}
+      .title{font:800 22px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;letter-spacing:2.6px;fill:#eff8f0}
+      .label{font:800 14px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;letter-spacing:2.5px;fill:#a7bac0}
+      .body{font:500 14px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;letter-spacing:.8px;fill:#b6c8bd}
+      .bodyDim{font:500 13px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;letter-spacing:.8px;fill:#7f8d86}
+      .micro{font:700 10.5px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;letter-spacing:2.2px;fill:#718079}
+      .num{font:900 40px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;fill:#eff8f0}
+      .card{fill:url(#glass);stroke:#bdefff;stroke-opacity:.19;stroke-width:1.2}
+      .cardStrong{fill:url(#glassHot);stroke:#a6f0dc;stroke-opacity:.34;stroke-width:1.4}
+      .panelLine{stroke:#bdefff;stroke-opacity:.16;stroke-width:1}
+      .wire{fill:none;stroke:#9ed1ff;stroke-width:2;stroke-opacity:.62;marker-end:url(#arrow)}
+      .wireSoft{fill:none;stroke:#83e29a;stroke-width:1.6;stroke-opacity:.40}
+      .wireGold{fill:none;stroke:#f5cb66;stroke-width:1.8;stroke-opacity:.48}
+      .dotBlue{fill:#9ed1ff}
+      .dotGreen{fill:#83e29a}
+      .dotGold{fill:#f5cb66}
+      .pill{fill:#0f1716;stroke:#bdefff;stroke-opacity:.18;stroke-width:1}
     </style>
   </defs>
 
-  <rect width="1440" height="640" rx="32" fill="url(#bg)"/>
-  <rect width="1440" height="640" fill="url(#grid)"/>
-  <path d="M52 84 C170 52 264 104 370 72 C492 35 592 110 715 75 C850 36 947 110 1072 78 C1208 44 1298 85 1382 62" fill="none" stroke="#d9d279" stroke-opacity=".2" stroke-width="2"/>
-  <path d="M44 548 C184 592 300 512 430 560 C570 614 692 518 840 558 C1012 604 1150 518 1378 572" fill="none" stroke="#d9d279" stroke-opacity=".14" stroke-width="2"/>
+  <rect x="0" y="0" width="1600" height="900" rx="42" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1600" height="900" rx="42" fill="url(#halo)"/>
+  <rect x="0" y="0" width="1600" height="900" rx="42" fill="url(#grid)"/>
+  <rect x="0" y="0" width="1600" height="900" rx="42" fill="url(#fineGrid)"/>
 
-  <g transform="translate(64 58)">
-    <text class="micro" x="0" y="0">MAC-NATIVE AGENT COCKPIT</text>
-    <text class="label" x="0" y="38" style="font-size:44px;letter-spacing:4px">FREYJA</text>
-    <rect x="0" y="59" width="318" height="5" rx="3" fill="url(#accent)"/>
+  <path d="M70 125C190 79 290 158 410 112C535 64 658 161 780 111C908 58 1029 159 1157 116C1296 69 1415 123 1532 88" fill="none" stroke="#f5cb66" stroke-opacity=".18" stroke-width="2"/>
+  <path d="M72 787C233 843 343 738 498 791C668 850 782 742 955 794C1136 849 1303 742 1520 806" fill="none" stroke="#9ed1ff" stroke-opacity=".12" stroke-width="2"/>
+
+  <g transform="translate(72 72)">
+    <text class="kicker" x="0" y="0">MAC-NATIVE AGENT MISSION CONTROL</text>
+    <text class="brand" x="0" y="58">FREYJA</text>
+    <rect x="0" y="77" width="330" height="5" rx="3" fill="url(#blueGreen)"/>
+    <text class="bodyDim" x="0" y="113">long-running visual work - subagents - computer use - full trajectory</text>
   </g>
 
-  <g filter="url(#glow)">
-    <rect class="card" x="64" y="144" width="284" height="160" rx="18"/>
-    <text class="micro" x="92" y="182">ELECTRON / REACT</text>
-    <text class="label" x="92" y="220">MISSION UI</text>
-    <text class="tiny" x="92" y="252">dashboard, diff view, artifacts</text>
-    <text class="tiny" x="92" y="278">streaming chat, computer live view</text>
+  <g transform="translate(1112 70)">
+    <rect class="pill" x="0" y="0" width="114" height="34" rx="17"/>
+    <circle cx="18" cy="17" r="5" fill="#83e29a"/>
+    <text class="micro" x="33" y="21" fill="#83e29a">LIVE</text>
+    <rect class="pill" x="128" y="0" width="170" height="34" rx="17"/>
+    <text class="micro" x="150" y="21">CTX 1M CLASS</text>
+    <rect class="pill" x="312" y="0" width="150" height="34" rx="17"/>
+    <text class="micro" x="334" y="21">21 MODELS</text>
   </g>
 
-  <g>
-    <rect class="card" x="402" y="144" width="284" height="160" rx="18"/>
-    <text class="micro" x="430" y="182">PYTHON JSONL BRIDGE</text>
-    <text class="label" x="430" y="220">SESSION ORBIT</text>
-    <text class="tiny" x="430" y="252">subagents, bus, persistence</text>
-    <text class="tiny" x="430" y="278">skills, memory, telemetry</text>
+  <!-- Cockpit -->
+  <g transform="translate(72 206)">
+    <rect class="cardStrong" x="0" y="0" width="396" height="314" rx="26" filter="url(#softGlow)"/>
+    <text class="label" x="28" y="40">OPERATOR COCKPIT</text>
+    <text class="title" x="28" y="78">Mission UI</text>
+    <text class="bodyDim" x="28" y="107">conversation, dashboard, diffs, artifacts</text>
+
+    <rect x="28" y="135" width="340" height="138" rx="16" fill="#050807" stroke="#c7f7ff" stroke-opacity=".18"/>
+    <rect x="44" y="153" width="74" height="102" rx="9" fill="#16211e" stroke="#ffffff" stroke-opacity=".08"/>
+    <rect x="132" y="153" width="138" height="102" rx="9" fill="#101817" stroke="#ffffff" stroke-opacity=".08"/>
+    <rect x="284" y="153" width="66" height="102" rx="9" fill="#16211e" stroke="#ffffff" stroke-opacity=".08"/>
+    <circle cx="61" cy="174" r="4" class="dotBlue"/>
+    <rect x="73" y="168" width="32" height="8" rx="4" fill="#eaf7ef" fill-opacity=".58"/>
+    <rect x="61" y="197" width="42" height="7" rx="3" fill="#9ed1ff" fill-opacity=".28"/>
+    <rect x="61" y="217" width="34" height="7" rx="3" fill="#83e29a" fill-opacity=".26"/>
+    <rect x="150" y="170" width="88" height="11" rx="5" fill="#eaf7ef" fill-opacity=".64"/>
+    <rect x="150" y="197" width="98" height="8" rx="4" fill="#9ed1ff" fill-opacity=".28"/>
+    <rect x="150" y="216" width="72" height="8" rx="4" fill="#83e29a" fill-opacity=".27"/>
+    <rect x="300" y="173" width="34" height="8" rx="4" fill="#f5cb66" fill-opacity=".38"/>
+    <rect x="300" y="198" width="26" height="8" rx="4" fill="#9ed1ff" fill-opacity=".30"/>
+    <rect x="300" y="223" width="40" height="8" rx="4" fill="#83e29a" fill-opacity=".26"/>
+
+    <g transform="translate(28 290)">
+      <rect class="pill" x="0" y="0" width="91" height="30" rx="15"/>
+      <text class="micro" x="16" y="19">CHAT</text>
+      <rect class="pill" x="104" y="0" width="112" height="30" rx="15"/>
+      <text class="micro" x="120" y="19">MISSION</text>
+      <rect class="pill" x="229" y="0" width="111" height="30" rx="15"/>
+      <text class="micro" x="244" y="19">ACTIVITY</text>
+    </g>
   </g>
 
-  <g>
-    <rect class="card" x="740" y="144" width="284" height="160" rx="18"/>
-    <text class="micro" x="768" y="182">PURE PYTHON ENGINE</text>
-    <text class="label" x="768" y="220">AGENT LOOP</text>
-    <text class="tiny" x="768" y="252">provider fallback, compaction</text>
-    <text class="tiny" x="768" y="278">tool dispatch, history pruning</text>
+  <!-- Event spine -->
+  <g transform="translate(546 168)">
+    <circle cx="254" cy="255" r="150" fill="#09110f" stroke="#9ed1ff" stroke-opacity=".20" stroke-width="1.5" filter="url(#heavyGlow)"/>
+    <circle cx="254" cy="255" r="104" fill="#0c1513" stroke="#83e29a" stroke-opacity=".23" stroke-width="1.2"/>
+    <circle cx="254" cy="255" r="60" fill="#121d1a" stroke="#f5cb66" stroke-opacity=".30" stroke-width="1.1"/>
+    <text class="micro" x="163" y="152">PYTHON JSONL BRIDGE</text>
+    <text class="title" x="142" y="235">Event Spine</text>
+    <text class="body" x="164" y="263">sessions + bus</text>
+    <text class="bodyDim" x="139" y="291">stream every state change</text>
+    <path d="M254 93C318 120 361 185 358 255C354 333 303 389 254 417C205 389 154 333 150 255C147 185 190 120 254 93Z" fill="none" stroke="url(#blueGreen)" stroke-opacity=".42" stroke-width="2"/>
+    <circle cx="254" cy="105" r="5" class="dotGreen"/>
+    <circle cx="358" cy="255" r="5" class="dotBlue"/>
+    <circle cx="254" cy="405" r="5" class="dotGold"/>
+    <circle cx="150" cy="255" r="5" class="dotBlue"/>
   </g>
 
-  <g>
-    <rect class="card" x="1078" y="144" width="298" height="160" rx="18"/>
-    <text class="micro" x="1106" y="182">MODEL MESH</text>
-    <text class="label" x="1106" y="220">21 PROFILES</text>
-    <text class="tiny" x="1106" y="252">Claude, GPT, Cerebras GLM</text>
-    <text class="tiny" x="1106" y="278">Fireworks: Kimi, Qwen, DeepSeek</text>
+  <!-- Engine -->
+  <g transform="translate(596 580)">
+    <rect class="cardStrong" x="0" y="0" width="408" height="186" rx="24"/>
+    <text class="label" x="28" y="40">PURE PYTHON ENGINE</text>
+    <text class="title" x="28" y="78">Agent Loop Kernel</text>
+    <text class="bodyDim" x="28" y="108">provider adapters, tool dispatch, compaction</text>
+    <g transform="translate(28 132)">
+      <rect class="pill" x="0" y="0" width="98" height="30" rx="15"/>
+      <text class="micro" x="17" y="19">RUNNER</text>
+      <rect class="pill" x="112" y="0" width="126" height="30" rx="15"/>
+      <text class="micro" x="127" y="19">COMPACTOR</text>
+      <rect class="pill" x="252" y="0" width="100" height="30" rx="15"/>
+      <text class="micro" x="269" y="19">PRUNER</text>
+    </g>
   </g>
 
-  <path class="wire" d="M348 224 H402"/>
-  <path class="wire" d="M686 224 H740"/>
-  <path class="wire" d="M1024 224 H1078"/>
-  <circle class="dot" cx="375" cy="224" r="4"/>
-  <circle class="dot" cx="713" cy="224" r="4"/>
-  <circle class="dot" cx="1051" cy="224" r="4"/>
+  <!-- Model mesh -->
+  <g transform="translate(1118 178)">
+    <rect class="card" x="0" y="0" width="410" height="314" rx="26"/>
+    <text class="label" x="28" y="40">MODEL MESH</text>
+    <text class="title" x="28" y="78">Provider-Aware Routing</text>
+    <text class="bodyDim" x="28" y="107">context windows, reasoning levels, fallback chains</text>
 
-  <g transform="translate(64 380)">
-    <rect class="card" x="0" y="0" width="220" height="128" rx="16"/>
-    <text class="number" x="24" y="52">35+</text>
-    <text class="micro" x="24" y="82">TOOLS</text>
-    <text class="tiny" x="24" y="108">files, shell, web, browser, Mac UI</text>
+    <g transform="translate(205 204)">
+      <circle cx="0" cy="0" r="86" fill="#050807" stroke="#9ed1ff" stroke-opacity=".18"/>
+      <circle cx="0" cy="0" r="44" fill="#111a18" stroke="#83e29a" stroke-opacity=".24"/>
+      <text class="num" x="-36" y="13">21</text>
+      <text class="micro" x="-48" y="38">PROFILES</text>
+      <g>
+        <circle cx="0" cy="-82" r="28" fill="#152421" stroke="#83e29a" stroke-opacity=".45"/>
+        <text class="micro" x="-21" y="-78">CLAUDE</text>
+        <circle cx="118" cy="-20" r="30" fill="#182128" stroke="#9ed1ff" stroke-opacity=".45"/>
+        <text class="micro" x="101" y="-16">GPT</text>
+        <circle cx="72" cy="90" r="30" fill="#211d12" stroke="#f5cb66" stroke-opacity=".45"/>
+        <text class="micro" x="48" y="94">FIRE</text>
+        <circle cx="-72" cy="90" r="30" fill="#181d26" stroke="#9ed1ff" stroke-opacity=".35"/>
+        <text class="micro" x="-97" y="94">CEREB</text>
+        <circle cx="-118" cy="-20" r="30" fill="#17201d" stroke="#83e29a" stroke-opacity=".35"/>
+        <text class="micro" x="-143" y="-16">LOCAL</text>
+      </g>
+    </g>
   </g>
 
-  <g transform="translate(314 380)">
-    <rect class="card" x="0" y="0" width="220" height="128" rx="16"/>
-    <text class="number" x="24" y="52">10</text>
-    <text class="micro" x="24" y="82">AGENT LANES</text>
-    <text class="tiny" x="24" y="108">plan, code, review, QA, research</text>
+  <!-- Swarm -->
+  <g transform="translate(84 552)">
+    <rect class="card" x="0" y="0" width="386" height="214" rx="24"/>
+    <text class="label" x="28" y="40">SUBAGENT SWARM</text>
+    <text class="title" x="28" y="78">Typed Lanes</text>
+    <text class="bodyDim" x="28" y="107">research, code, verify, test, browser QA</text>
+    <g transform="translate(52 148)">
+      <circle cx="0" cy="0" r="22" fill="#17231f" stroke="#83e29a" stroke-opacity=".45"/>
+      <circle cx="72" cy="-34" r="22" fill="#17231f" stroke="#9ed1ff" stroke-opacity=".45"/>
+      <circle cx="144" cy="0" r="22" fill="#17231f" stroke="#f5cb66" stroke-opacity=".45"/>
+      <circle cx="216" cy="-34" r="22" fill="#17231f" stroke="#83e29a" stroke-opacity=".45"/>
+      <circle cx="288" cy="0" r="22" fill="#17231f" stroke="#9ed1ff" stroke-opacity=".45"/>
+      <path class="wireSoft" d="M0 0L72 -34L144 0L216 -34L288 0"/>
+      <text class="micro" x="-19" y="5">PLAN</text>
+      <text class="micro" x="50" y="-29">EXP</text>
+      <text class="micro" x="125" y="5">CODE</text>
+      <text class="micro" x="195" y="-29">QA</text>
+      <text class="micro" x="266" y="5">PERF</text>
+    </g>
   </g>
 
-  <g transform="translate(564 380)">
-    <rect class="card" x="0" y="0" width="220" height="128" rx="16"/>
-    <text class="number" x="24" y="52">1M</text>
-    <text class="micro" x="24" y="82">CONTEXT CLASS</text>
-    <text class="tiny" x="24" y="108">compaction and media caps visible</text>
+  <!-- Tools and native plane -->
+  <g transform="translate(1068 552)">
+    <rect class="card" x="0" y="0" width="460" height="214" rx="24"/>
+    <text class="label" x="28" y="40">TOOL + NATIVE PLANE</text>
+    <text class="title" x="28" y="78">Mac, Web, Files, Browser</text>
+    <text class="bodyDim" x="28" y="107">screen capture and input stay inside the app bundle</text>
+    <g transform="translate(30 138)">
+      <rect class="pill" x="0" y="0" width="92" height="34" rx="17"/>
+      <text class="micro" x="23" y="22">FILES</text>
+      <rect class="pill" x="104" y="0" width="96" height="34" rx="17"/>
+      <text class="micro" x="126" y="22">SHELL</text>
+      <rect class="pill" x="212" y="0" width="104" height="34" rx="17"/>
+      <text class="micro" x="232" y="22">BROWSER</text>
+      <rect class="pill" x="328" y="0" width="102" height="34" rx="17"/>
+      <text class="micro" x="354" y="22">MAC UI</text>
+    </g>
   </g>
 
-  <g transform="translate(814 380)">
-    <rect class="card" x="0" y="0" width="220" height="128" rx="16"/>
-    <text class="number" x="24" y="52">4</text>
-    <text class="micro" x="24" y="82">SKILLS INCLUDED</text>
-    <text class="tiny" x="24" y="108">file-backed, searchable, pruned</text>
+  <!-- Persistent observability -->
+  <g transform="translate(510 92)">
+    <rect class="card" x="0" y="0" width="580" height="96" rx="22"/>
+    <text class="label" x="28" y="39">PERSISTENT OBSERVABILITY</text>
+    <text class="bodyDim" x="28" y="68">transcripts - screenshots - diffs - artifacts - compactions - memory - skills</text>
+    <path class="panelLine" d="M22 82H558"/>
   </g>
 
-  <g transform="translate(1064 380)">
-    <rect class="card" x="0" y="0" width="312" height="128" rx="16"/>
-    <text class="number" x="24" y="52">LIVE</text>
-    <text class="micro" x="24" y="82">TRAJECTORY CAPTURE</text>
-    <text class="tiny" x="24" y="108">messages, screenshots, diffs, artifacts</text>
-  </g>
+  <!-- Wires -->
+  <path class="wire" d="M468 363C526 363 552 395 650 414"/>
+  <path class="wire" d="M950 414C1045 393 1067 335 1118 335"/>
+  <path class="wire" d="M800 573V472"/>
+  <path class="wireSoft" d="M700 580C624 535 538 501 470 617"/>
+  <path class="wireSoft" d="M900 580C981 536 1036 504 1068 617"/>
+  <path class="wireGold" d="M800 318V188"/>
+  <path class="wireGold" d="M510 140C399 174 411 249 468 281"/>
+  <path class="wireGold" d="M1090 140C1194 175 1185 249 1118 281"/>
 
-  <line class="rule" x1="64" y1="560" x2="1376" y2="560"/>
-  <text class="tiny" x="64" y="596">desktop app for running long, visual, multi-agent work without surrendering observability</text>
+  <!-- Metrics strip -->
+  <g transform="translate(72 806)">
+    <rect class="pill" x="0" y="0" width="190" height="44" rx="22"/>
+    <text class="num" x="24" y="31" style="font-size:28px">35+</text>
+    <text class="micro" x="91" y="28">TOOLS</text>
+    <rect class="pill" x="212" y="0" width="220" height="44" rx="22"/>
+    <text class="num" x="236" y="31" style="font-size:28px">10+</text>
+    <text class="micro" x="306" y="28">AGENT LANES</text>
+    <rect class="pill" x="454" y="0" width="214" height="44" rx="22"/>
+    <text class="num" x="478" y="31" style="font-size:28px">1M</text>
+    <text class="micro" x="540" y="28">CONTEXT</text>
+    <rect class="pill" x="690" y="0" width="282" height="44" rx="22"/>
+    <text class="num" x="714" y="31" style="font-size:28px">LIVE</text>
+    <text class="micro" x="806" y="28">TRAJECTORY CAPTURE</text>
+    <rect class="pill" x="994" y="0" width="534" height="44" rx="22"/>
+    <text class="bodyDim" x="1021" y="28">desktop app for work that needs agency and auditability</text>
+  </g>
 </svg>

@@ -15,7 +15,11 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/freyja-system-map.svg" alt="Freyja system map" />
+  <img src="docs/assets/freyja-system-map.svg" alt="Freyja operating map" />
+</p>
+
+<p align="center">
+  <em>The desktop cockpit, event spine, engine, model mesh, swarm lanes, native tools, and persistent observability plane.</em>
 </p>
 
 > Platform: macOS on Apple Silicon<br>
