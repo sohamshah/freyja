@@ -346,6 +346,7 @@ Parameters:
                 "parentSessionId": self._sub_spec.parent_session_id,
                 "title": label,
                 "model": self._sub_spec.parent_model,
+                "reasoningLevel": self._sub_spec.parent_reasoning_level,
                 "task": goal,
                 "mode": mode,
                 "agentType": "computer",
@@ -471,7 +472,10 @@ Parameters:
             else child_registry
         )
 
-        provider = self._sub_spec.build_provider(self._sub_spec.parent_model)
+        provider = self._sub_spec.build_provider(
+            self._sub_spec.parent_model,
+            self._sub_spec.parent_reasoning_level,
+        )
         session = Session.create(
             system_prompt=system_prompt,
             tools=list(child_registry._tools.values()),  # noqa: SLF001

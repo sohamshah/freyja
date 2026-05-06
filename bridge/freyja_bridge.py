@@ -446,52 +446,52 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
     },
     "claude-opus-4-6": {
         "reasoningMode": "effort",
-        "reasoningLevels": ["low", "medium", "high", "max"],
+        "reasoningLevels": ["none", "low", "medium", "high", "max"],
         "reasoningDefault": "max",
     },
     "claude-sonnet-4-6": {
         "reasoningMode": "effort",
-        "reasoningLevels": ["low", "medium", "high"],
+        "reasoningLevels": ["none", "low", "medium", "high"],
         "reasoningDefault": "high",
     },
     "claude-haiku-4-5": {
         "reasoningMode": "effort",
-        "reasoningLevels": ["low", "medium", "high"],
+        "reasoningLevels": ["none", "low", "medium", "high"],
         "reasoningDefault": "high",
     },
     "claude-opus-4-5": {
         "reasoningMode": "budget",
-        "reasoningLevels": ["low", "medium", "high"],
+        "reasoningLevels": ["none", "low", "medium", "high"],
         "reasoningDefault": "high",
     },
     "claude-sonnet-4-5": {
         "reasoningMode": "budget",
-        "reasoningLevels": ["low", "medium", "high"],
+        "reasoningLevels": ["none", "low", "medium", "high"],
         "reasoningDefault": "high",
     },
     "gpt-5.5": {
         "reasoningMode": "effort",
-        "reasoningLevels": ["low", "medium", "high", "xhigh"],
+        "reasoningLevels": ["none", "minimal", "low", "medium", "high", "xhigh"],
         "reasoningDefault": "high",
     },
     "gpt-5.4": {
         "reasoningMode": "effort",
-        "reasoningLevels": ["low", "medium", "high", "xhigh"],
+        "reasoningLevels": ["none", "minimal", "low", "medium", "high", "xhigh"],
         "reasoningDefault": "high",
     },
     "gpt-5.4-mini": {
         "reasoningMode": "effort",
-        "reasoningLevels": ["low", "medium", "high"],
+        "reasoningLevels": ["none", "minimal", "low", "medium", "high", "xhigh"],
         "reasoningDefault": "medium",
     },
     "gpt-5.4-nano": {
         "reasoningMode": "effort",
-        "reasoningLevels": ["low", "medium"],
+        "reasoningLevels": ["none", "minimal", "low", "medium", "high", "xhigh"],
         "reasoningDefault": "low",
     },
     "gpt-5.3-codex": {
         "reasoningMode": "effort",
-        "reasoningLevels": ["low", "medium", "high", "xhigh"],
+        "reasoningLevels": ["none", "minimal", "low", "medium", "high", "xhigh"],
         "reasoningDefault": "medium",
     },
     "deepseek-v4-pro": {
@@ -574,11 +574,52 @@ def _family_for_model(model_id: str) -> str:
     return "fireworks"
 
 
+def _reasoning_default_for_model(model_id: str) -> str:
+    default_effort = MODEL_REASONING_META.get(model_id, {}).get("reasoningDefault")
+    return default_effort if isinstance(default_effort, str) and default_effort else "none"
+
+
+def _normalize_reasoning_level(model_id: str, reasoning_level: str | None) -> str:
+    """Clamp a requested reasoning level to the model-specific options."""
+    raw = str(reasoning_level or "auto").strip().lower()
+    if raw in ("", "auto", "default"):
+        return _reasoning_default_for_model(model_id)
+    if raw == "off":
+        raw = "none"
+
+    meta = MODEL_REASONING_META.get(model_id, {})
+    levels = meta.get("reasoningLevels")
+    if isinstance(levels, list) and levels:
+        valid = {str(level).lower() for level in levels}
+        if raw in valid:
+            return raw
+        return _reasoning_default_for_model(model_id)
+
+    return "none"
+
+
+def _thinking_config_for_model(model_id: str, reasoning_level: str | None = "auto") -> "Any":
+    """Return the ThinkingConfig represented by a UI/provider reasoning level."""
+    from engine.types import ThinkingConfig
+
+    model_entry = next((m for m in AVAILABLE_MODELS if m["id"] == model_id), None)
+    supports_thinking = model_entry.get("thinking", False) if model_entry else False
+    if not supports_thinking:
+        return ThinkingConfig()
+
+    level = _normalize_reasoning_level(model_id, reasoning_level)
+    if level in ("none", "off"):
+        # Keep effort='none' so providers that need an explicit opt-out
+        # (OpenAI) can distinguish it from "unspecified default".
+        return ThinkingConfig(enabled=False, effort="none")
+    if level == "auto":
+        return ThinkingConfig()
+    return ThinkingConfig(enabled=True, effort=level)
+
+
 def _default_thinking_for_model(model_id: str) -> "Any":
     """Return the right ThinkingConfig for a model, enabled by default
-    for models that support extended thinking. Opus 4.7 uses adaptive
-    thinking (no budget_tokens) so thinking is left disabled here and
-    the model handles it natively. Opus 4.6 gets effort='max'."""
+    for models that support extended thinking/reasoning."""
     from engine.types import ThinkingConfig
 
     # Look up whether this model supports thinking
@@ -589,20 +630,10 @@ def _default_thinking_for_model(model_id: str) -> "Any":
         # Includes claude-opus-4-7 (adaptive thinking only — no explicit budget needed)
         return ThinkingConfig()
 
-    default_effort = MODEL_REASONING_META.get(model_id, {}).get("reasoningDefault")
-    if isinstance(default_effort, str) and default_effort in {
-        "low",
-        "medium",
-        "high",
-        "max",
-        "xhigh",
-    }:
-        return ThinkingConfig(enabled=True, effort=default_effort)
-
-    # Opus 4.6 gets max effort; everything else gets high
-    if model_id == "claude-opus-4-6":
-        return ThinkingConfig(enabled=True, effort="max")
-    return ThinkingConfig(enabled=True, effort="high")
+    default_effort = _normalize_reasoning_level(model_id, "auto")
+    if default_effort in {"none", "off", "auto"}:
+        return ThinkingConfig()
+    return ThinkingConfig(enabled=True, effort=default_effort)
 
 
 def build_provider(model_id: str, thinking_level: str = "auto") -> Any:
@@ -617,18 +648,11 @@ def build_provider(model_id: str, thinking_level: str = "auto") -> Any:
         with effort based on model tier (Opus 4.6 → max, others → high;
         Opus 4.7 uses adaptive thinking and needs no explicit config)
       - "off"/"none": disable thinking
-      - "max"/"high"/"medium"/"low": explicit effort level
+      - model-specific effort levels such as "minimal", "low",
+        "medium", "high", "xhigh", or "max"
     """
-    from engine.types import ThinkingConfig
-
     family = _family_for_model(model_id)
-
-    if thinking_level in ("auto", ""):
-        thinking = _default_thinking_for_model(model_id)
-    elif thinking_level in ("off", "none"):
-        thinking = ThinkingConfig()
-    else:
-        thinking = ThinkingConfig(enabled=True, effort=thinking_level)
+    thinking = _thinking_config_for_model(model_id, thinking_level)
 
     if family == "anthropic":
         if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -941,11 +965,14 @@ class _BridgeSession:
         *,
         workspace: str,
         model_id: str,
+        reasoning_level: str | None,
         state: "_BridgeState",
     ) -> None:
         self.id = session_id
         self.workspace = workspace
         self.model_id = model_id
+        self.reasoning_level_explicit = reasoning_level is not None
+        self.reasoning_level = _normalize_reasoning_level(model_id, reasoning_level)
         self.state = state
         self.session: Any | None = None
         self.runner: Any | None = None
@@ -988,16 +1015,14 @@ class _BridgeSession:
             return
         from engine.runner import AsyncAgentRunner
         from engine.session import Session
-        from engine.types import ThinkingConfig
-
         from bridge.tools import build_desktop_registry
         from bridge.tools.sub_agent_registry import SubAgentRegistry
         from bridge.knowledge import MemoryStore, SkillStore
         from bridge.knowledge.prompt import build_knowledge_prompt
 
-        thinking = _default_thinking_for_model(self.model_id)
+        thinking = _thinking_config_for_model(self.model_id, self.reasoning_level)
         try:
-            provider = build_provider(self.model_id)
+            provider = build_provider(self.model_id, thinking_level=self.reasoning_level)
         except ValueError as exc:
             emit_error(str(exc), recoverable=True)
             raise
@@ -1054,6 +1079,7 @@ class _BridgeSession:
             subagent_registry=sub_registry,
             subagent_provider_factory=_provider_factory,
             subagent_model=self.model_id,
+            subagent_reasoning_level=self.reasoning_level,
             subagent_emit=_emit_subagent,
             subagent_parent_session_id=self.id,
             subagent_wrap_registry=_wrap_child_registry,
@@ -1144,7 +1170,8 @@ class _BridgeSession:
         self.runner = runner
         log(
             "info",
-            f"session {self.id} ready (model={self.model_id}, tools={len(tool_names)})",
+            f"session {self.id} ready "
+            f"(model={self.model_id}, reasoning={self.reasoning_level}, tools={len(tool_names)})",
         )
         # Emit the system prompt so the renderer can include it in
         # session exports for training data. This is a one-time event
@@ -1243,6 +1270,17 @@ class _BridgeSession:
 
         log("info", f"restoring transcript for session {self.id}")
 
+        persisted_reasoning = data.get("metadata", {}).get("reasoning_level")
+        if (
+            isinstance(persisted_reasoning, str)
+            and persisted_reasoning
+            and not self.reasoning_level_explicit
+        ):
+            self.reasoning_level = _normalize_reasoning_level(
+                self.model_id,
+                persisted_reasoning,
+            )
+
         # Step 1: Initialize (creates empty Session + tools + runner).
         await self.initialize()
         if self.session is None:
@@ -1326,6 +1364,7 @@ class _BridgeSession:
             data = self.session.serialize_transcript()
             # Stash the model id so cross-provider detection works on restore.
             data.setdefault("metadata", {})["model_id"] = self.model_id
+            data.setdefault("metadata", {})["reasoning_level"] = self.reasoning_level
             save_transcript(self.id, data)
         except Exception as exc:
             log("warn", f"failed to save transcript for {self.id}: {exc}")
@@ -2106,12 +2145,29 @@ class _BridgeState:
         )
 
     async def ensure_session(
-        self, session_id: str, model_id: str | None = None
+        self,
+        session_id: str,
+        model_id: str | None = None,
+        reasoning_level: str | None = None,
     ) -> _BridgeSession:
         existing = self.sessions.get(session_id)
         if existing is not None:
+            changed = False
             if model_id and model_id != existing.model_id:
                 existing.model_id = model_id
+                existing.reasoning_level = _normalize_reasoning_level(model_id, "auto")
+                existing.reasoning_level_explicit = False
+                changed = True
+            if reasoning_level is not None:
+                next_reasoning = _normalize_reasoning_level(
+                    existing.model_id,
+                    reasoning_level,
+                )
+                if next_reasoning != existing.reasoning_level:
+                    existing.reasoning_level = next_reasoning
+                    existing.reasoning_level_explicit = True
+                    changed = True
+            if changed:
                 existing.reset()
                 # Re-restore from disk — the transcript was just wiped
                 # by reset() but the file still has the prior state.
@@ -2123,6 +2179,7 @@ class _BridgeState:
             session_id,
             workspace=self.workspace,
             model_id=model_id or self.default_model,
+            reasoning_level=reasoning_level,
             state=self,
         )
         self.sessions[session_id] = s
@@ -2454,6 +2511,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         sess = await state.ensure_session(
             session_id or f"desktop-{int(time.time() * 1000):x}",
             model_id=cmd.get("model"),
+            reasoning_level=cmd.get("reasoningLevel"),
         )
         try:
             await sess.force_compact()
@@ -2478,19 +2536,30 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         new_model = cmd.get("model")
         if not new_model:
             return
+        reasoning_level = cmd.get("reasoningLevel")
         if session_id:
-            sess = await state.ensure_session(session_id, model_id=new_model)
+            sess = await state.ensure_session(
+                session_id,
+                model_id=new_model,
+                reasoning_level=reasoning_level,
+            )
+            effective_reasoning = sess.reasoning_level
         else:
             state.default_model = new_model
             sess = None
-        log("info", f"model set to {new_model} (session={session_id})")
+            effective_reasoning = _normalize_reasoning_level(new_model, reasoning_level)
+        log(
+            "info",
+            f"model set to {new_model} "
+            f"(reasoning={effective_reasoning}, session={session_id})",
+        )
         emit(
             {
                 "type": "system_event",
                 "sessionId": session_id,
                 "subtype": "model_changed",
-                "message": f"model changed to {new_model}",
-                "details": {"model": new_model},
+                "message": f"model changed to {new_model} ({effective_reasoning})",
+                "details": {"model": new_model, "reasoningLevel": effective_reasoning},
             }
         )
         return
@@ -2502,15 +2571,23 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         # Drop any existing session with the same id so it really starts fresh.
         if session_id in state.sessions:
             del state.sessions[session_id]
-        await state.ensure_session(session_id, model_id=model)
-        log("info", f"new session {session_id} (model={model})")
+        sess = await state.ensure_session(
+            session_id,
+            model_id=model,
+            reasoning_level=cmd.get("reasoningLevel"),
+        )
+        log(
+            "info",
+            f"new session {session_id} "
+            f"(model={model}, reasoning={sess.reasoning_level})",
+        )
         emit(
             {
                 "type": "system_event",
                 "sessionId": session_id,
                 "subtype": "session_reset",
                 "message": "Started a new session",
-                "details": {"model": model},
+                "details": {"model": model, "reasoningLevel": sess.reasoning_level},
             }
         )
         return
@@ -2519,7 +2596,9 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         if not session_id:
             return
         sess = await state.ensure_session(
-            session_id, model_id=cmd.get("model")
+            session_id,
+            model_id=cmd.get("model"),
+            reasoning_level=cmd.get("reasoningLevel"),
         )
         log("info", f"switched to session {sess.id}")
         emit(
@@ -2528,7 +2607,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 "sessionId": sess.id,
                 "subtype": "session_switched",
                 "message": f"Switched to session {sess.id}",
-                "details": {"model": sess.model_id},
+                "details": {"model": sess.model_id, "reasoningLevel": sess.reasoning_level},
             }
         )
         return
@@ -2586,6 +2665,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         sess = await state.ensure_session(
             session_id or f"desktop-{int(time.time() * 1000):x}",
             model_id=cmd.get("model"),
+            reasoning_level=cmd.get("reasoningLevel"),
         )
 
         # If a turn is already running, QUEUE the message instead of

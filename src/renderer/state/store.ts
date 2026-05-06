@@ -93,6 +93,7 @@ export interface SessionSlice {
   busMessages: Array<import('@shared/events').BusMessageRecord>
   artifacts: Array<import('@shared/events').ArtifactRecord>
   model: string
+  reasoningLevel: string
   /** System prompt sent to the model. Captured from the bridge's
    *  `system_prompt_set` event for session export / training data. */
   systemPrompt?: string
@@ -181,7 +182,8 @@ export interface HarnessActions {
   setInputDraft(v: string): void
   sendMessage(content: string): Promise<void>
   cancelTurn(): Promise<void>
-  setModel(model: string): Promise<void>
+  setModel(model: string, reasoningLevel?: string): Promise<void>
+  setReasoningLevel(reasoningLevel: string): Promise<void>
   openSubagent(id: string | null): void
   toggleCommandPalette(open?: boolean): void
   toggleMissionDashboard(
@@ -191,7 +193,7 @@ export interface HarnessActions {
   toggleModelPicker(open?: boolean): void
   setFocusedPanel(p: HarnessState['focusedPanel']): void
   requestDemoBurst(): Promise<void>
-  newSession(model?: string): Promise<void>
+  newSession(model?: string, reasoningLevel?: string): Promise<void>
   switchSession(sessionId: string): Promise<void>
   listTools(): Promise<void>
   toggleDebug(open?: boolean): void
@@ -280,7 +282,65 @@ function contextWindowFor(model: string): number {
   return MODEL_CONTEXT_WINDOWS[model] ?? 200_000
 }
 
-function emptySlice(model: string = 'claude-sonnet-4-6'): SessionSlice {
+const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel: string }> = {
+  'claude-opus-4-7': { levels: ['auto'], defaultLevel: 'auto' },
+  'claude-opus-4-6': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'max' },
+  'claude-sonnet-4-6': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
+  'claude-haiku-4-5': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
+  'claude-opus-4-5': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
+  'claude-sonnet-4-5': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
+  'gpt-5.5': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], defaultLevel: 'high' },
+  'gpt-5.4': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], defaultLevel: 'high' },
+  'gpt-5.4-mini': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], defaultLevel: 'medium' },
+  'gpt-5.4-nano': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], defaultLevel: 'low' },
+  'gpt-5.3-codex': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], defaultLevel: 'medium' },
+  'deepseek-v4-pro': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'high' },
+  'glm-5.1': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
+  'kimi-k2.6': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
+  'minimax-m2.7': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
+  'deepseek-v3.2': { levels: ['none', 'high'], defaultLevel: 'high' },
+  'qwen3.6-plus': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'medium' },
+  'minimax-m2.5': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
+}
+
+function modelChoiceFor(model: string, models: ModelChoice[] = []): ModelChoice | undefined {
+  return models.find((m) => m.id === model)
+}
+
+function reasoningLevelsFor(model: string, models: ModelChoice[] = []): string[] {
+  const choice = modelChoiceFor(model, models)
+  if (choice?.reasoningLevels?.length) return choice.reasoningLevels
+  return MODEL_REASONING_FALLBACKS[model]?.levels ?? []
+}
+
+function defaultReasoningFor(model: string, models: ModelChoice[] = []): string {
+  const choice = modelChoiceFor(model, models)
+  const fallback = MODEL_REASONING_FALLBACKS[model]
+  const levels = reasoningLevelsFor(model, models)
+  if (levels.length === 0 || choice?.reasoningMode === 'none') return 'none'
+  const candidate = choice?.reasoningDefault || fallback?.defaultLevel || levels[0] || 'none'
+  return levels.includes(candidate) ? candidate : levels[0]
+}
+
+function normalizeReasoningFor(
+  model: string,
+  reasoningLevel: string | undefined,
+  models: ModelChoice[] = [],
+): string {
+  const levels = reasoningLevelsFor(model, models)
+  if (levels.length === 0) return 'none'
+  const normalized = (reasoningLevel || defaultReasoningFor(model, models)).toLowerCase()
+  if (normalized === 'off' && levels.includes('none')) return 'none'
+  if (levels.includes(normalized)) return normalized
+  return defaultReasoningFor(model, models)
+}
+
+function emptySlice(
+  model: string = 'claude-sonnet-4-6',
+  reasoningLevel?: string,
+  models: ModelChoice[] = [],
+): SessionSlice {
+  const normalizedReasoning = normalizeReasoningFor(model, reasoningLevel, models)
   return {
     messages: [],
     currentStreamingMessageId: null,
@@ -306,6 +366,7 @@ function emptySlice(model: string = 'claude-sonnet-4-6'): SessionSlice {
     busMessages: [],
     artifacts: [],
     model,
+    reasoningLevel: normalizedReasoning,
   }
 }
 
@@ -323,6 +384,7 @@ function emptyState(): HarnessState {
         title: 'Current session',
         workspace: '~/work/services/freyja',
         model: 'claude-sonnet-4-6',
+        reasoningLevel: defaultReasoningFor('claude-sonnet-4-6'),
         createdAt: Date.now(),
         updatedAt: Date.now(),
         messageCount: 0,
@@ -411,6 +473,7 @@ function sliceFromState(s: HarnessState): SessionSlice {
     busMessages: s.busMessages,
     artifacts: s.artifacts,
     model: s.model,
+    reasoningLevel: s.reasoningLevel,
     systemPrompt: s.systemPrompt,
   }
 }
@@ -420,6 +483,7 @@ type PersistedSessionMetaPayload = {
   id: string
   title: string
   model: string
+  reasoningLevel?: string
   workspace: string
   createdAt: number
   updatedAt: number
@@ -471,6 +535,7 @@ function persistedMetaFromSession(
     id: session.id,
     title: session.title || 'Session',
     model: slice?.model || session.model,
+    reasoningLevel: slice?.reasoningLevel || session.reasoningLevel,
     workspace: session.workspace || '~/',
     createdAt: session.createdAt,
     updatedAt: session.updatedAt || Date.now(),
@@ -518,8 +583,11 @@ function materializeFramesForPersistence(slice: SessionSlice): SessionSlice {
 }
 
 function normalizePersistedFrames(slice: SessionSlice): SessionSlice {
+  const model = slice.model || 'claude-sonnet-4-6'
   slice = {
     ...slice,
+    model,
+    reasoningLevel: normalizeReasoningFor(model, slice.reasoningLevel),
     fileChanges: slice.fileChanges ?? [],
   }
   let changed = false
@@ -916,6 +984,11 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       if (ev.type === 'ready') {
         const models = (ev.capabilities?.models as ModelChoice[] | undefined) ?? []
         const capModel = (ev.capabilities?.model as string | undefined) ?? prev.model
+        const nextReasoning = normalizeReasoningFor(
+          capModel,
+          prev.reasoningLevel,
+          models.length > 0 ? models : prev.availableModels,
+        )
         const firstSessionId = ev.sessionId || prev.activeSessionId
         return {
           ...prev,
@@ -926,11 +999,12 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           activeSessionId: firstSessionId,
           sessions: prev.sessions.map((s) =>
             s.id === prev.activeSessionId
-              ? { ...s, id: firstSessionId, model: capModel }
+              ? { ...s, id: firstSessionId, model: capModel, reasoningLevel: nextReasoning }
               : s,
           ),
           availableModels: models.length > 0 ? models : prev.availableModels,
           model: capModel,
+          reasoningLevel: nextReasoning,
           usage: { ...prev.usage, contextWindow: contextWindowFor(capModel) },
         }
       }
@@ -1033,11 +1107,18 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         const newSessionId = ev.sessionId!
         const existing = prev.sessions.find((s) => s.id === newSessionId)
         if (existing) return prev
+        const childModel = ev.model || prev.model
+        const childReasoning = normalizeReasoningFor(
+          childModel,
+          ev.reasoningLevel,
+          prev.availableModels,
+        )
         const snapshot: SessionSnapshot = {
           id: newSessionId,
           title: ev.title || 'Sub-agent',
           workspace: ev.workspace || prev.sessions[0]?.workspace || '~/',
-          model: ev.model || prev.model,
+          model: childModel,
+          reasoningLevel: childReasoning,
           createdAt: ev.createdAt || Date.now(),
           updatedAt: Date.now(),
           messageCount: 0,
@@ -1052,7 +1133,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         // If the new session happens to be attached to the currently
         // active session, initialize its slice in the archive so events
         // routed to it stream in. Otherwise also archive it.
-        const freshSlice = emptySlice(snapshot.model)
+        const freshSlice = emptySlice(snapshot.model, childReasoning, prev.availableModels)
         const archive = {
           ...prev.sessionArchive,
           [newSessionId]: freshSlice,
@@ -1435,7 +1516,14 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       // targeted persistence has accurate metadata for the row.
       // Without this the swarm panel rows stayed at "empty" and were
       // dropped from persistence entirely.
-      const existingArchive = prev.sessionArchive[sessionId!] ?? emptySlice(prev.model)
+      const sessionSnapshot = prev.sessions.find((s) => s.id === sessionId)
+      const existingArchive =
+        prev.sessionArchive[sessionId!] ??
+        emptySlice(
+          sessionSnapshot?.model || prev.model,
+          sessionSnapshot?.reasoningLevel || prev.reasoningLevel,
+          prev.availableModels,
+        )
       const updated = applyEventToSlice(existingArchive, ev)
       const updatedSessions = prev.sessions.map((s) =>
         s.id === sessionId
@@ -1494,6 +1582,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       // the bridge may have been restarted since the session was last
       // active and doesn't remember the model choice.
       model: state.model,
+      reasoningLevel: state.reasoningLevel,
     }
     if (attachments.length > 0) {
       cmd.attachments = attachments.map((a) => ({
@@ -1557,12 +1646,21 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       })
   },
 
-  async setModel(model) {
+  async setModel(model, reasoningLevel) {
+    const current = useHarness.getState()
+    const nextReasoning = normalizeReasoningFor(
+      model,
+      reasoningLevel ?? (model === current.model ? current.reasoningLevel : undefined),
+      current.availableModels,
+    )
     set((prev) => ({
       model,
+      reasoningLevel: nextReasoning,
       usage: { ...prev.usage, contextWindow: contextWindowFor(model) },
       sessions: prev.sessions.map((s) =>
-        s.id === prev.activeSessionId ? { ...s, model } : s,
+        s.id === prev.activeSessionId
+          ? { ...s, model, reasoningLevel: nextReasoning }
+          : s,
       ),
     }))
     const api = (window as any).harness
@@ -1571,7 +1669,13 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         type: 'set_model',
         sessionId: useHarness.getState().activeSessionId,
         model,
+        reasoningLevel: nextReasoning,
       })
+  },
+
+  async setReasoningLevel(reasoningLevel) {
+    const state = useHarness.getState()
+    await state.setModel(state.model, reasoningLevel)
   },
 
   openSubagent(id) {
@@ -1602,10 +1706,15 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     if (api) await api.requestDemoBurst()
   },
 
-  async newSession(model) {
+  async newSession(model, reasoningLevel) {
     const newSessionId = `session-${Date.now().toString(36)}`
     const state = useHarness.getState()
     const chosenModel = model || state.model
+    const chosenReasoning = normalizeReasoningFor(
+      chosenModel,
+      reasoningLevel ?? (model ? undefined : state.reasoningLevel),
+      state.availableModels,
+    )
 
     set((prev) => {
       // Archive the current slice unless it's empty (nothing to save).
@@ -1616,7 +1725,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         ? { ...prev.sessionArchive, [prev.activeSessionId]: currentSlice }
         : prev.sessionArchive
 
-      const freshSlice = emptySlice(chosenModel)
+      const freshSlice = emptySlice(chosenModel, chosenReasoning, prev.availableModels)
       return {
         ...prev,
         ...freshSlice,
@@ -1628,6 +1737,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
             title: 'New session',
             workspace: prev.sessions[0]?.workspace ?? '~/',
             model: chosenModel,
+            reasoningLevel: chosenReasoning,
             createdAt: Date.now(),
             updatedAt: Date.now(),
             messageCount: 0,
@@ -1653,6 +1763,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         type: 'new_session',
         sessionId: newSessionId,
         model: chosenModel,
+        reasoningLevel: chosenReasoning,
       })
     else (window as any).__harnessDemo?.stop?.()
   },
@@ -1671,6 +1782,15 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     if (!archivedSlice) {
       prev.showToast('Session not found', 'warn')
       return
+    }
+    const targetSnapshot = prev.sessions.find((s) => s.id === sessionId)
+    archivedSlice = {
+      ...archivedSlice,
+      reasoningLevel: normalizeReasoningFor(
+        archivedSlice.model,
+        archivedSlice.reasoningLevel || targetSnapshot?.reasoningLevel,
+        prev.availableModels,
+      ),
     }
     set((p) => {
       // Archive the current slice before swapping in the target.
@@ -1695,10 +1815,16 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     // Without this the bridge defaults to claude-sonnet-4-6 for every
     // resumed session, even if the user had picked gpt-5.4 before.
     const restoredModel = useHarness.getState().model
+    const restoredReasoning = useHarness.getState().reasoningLevel
     const sessionSnapshot = useHarness
       .getState()
       .sessions.find((s) => s.id === sessionId)
     const modelForBridge = sessionSnapshot?.model || restoredModel
+    const reasoningForBridge = normalizeReasoningFor(
+      modelForBridge,
+      sessionSnapshot?.reasoningLevel || restoredReasoning,
+      useHarness.getState().availableModels,
+    )
 
     const api = (window as any).harness
     if (api) {
@@ -1706,6 +1832,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         type: 'switch_session',
         sessionId,
         model: modelForBridge,
+        reasoningLevel: reasoningForBridge,
       })
     }
   },
@@ -1770,6 +1897,11 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         title: s.title || 'Session',
         workspace: s.workspace || prev.sessions[0]?.workspace || '~/',
         model: s.model || 'claude-sonnet-4-6',
+        reasoningLevel: normalizeReasoningFor(
+          s.model || 'claude-sonnet-4-6',
+          s.reasoningLevel,
+          prev.availableModels,
+        ),
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
         messageCount: s.messageCount ?? 0,
@@ -2036,6 +2168,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         id: snapshot.id,
         title: snapshot.title,
         model: snapshot.model,
+        reasoningLevel: slice.reasoningLevel || snapshot.reasoningLevel,
         workspace: snapshot.workspace,
         createdAt: snapshot.createdAt,
         updatedAt: snapshot.updatedAt,
@@ -2349,7 +2482,12 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           return true
         }
         api
-          .sendCommand({ type: 'compact', sessionId: state.activeSessionId })
+          .sendCommand({
+            type: 'compact',
+            sessionId: state.activeSessionId,
+            model: state.model,
+            reasoningLevel: state.reasoningLevel,
+          })
           .then((res: { ok: boolean; error?: string } | undefined) => {
             if (res && !res.ok) show(res.error || 'compaction request failed', 'warn')
           })

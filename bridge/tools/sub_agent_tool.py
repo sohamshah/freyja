@@ -97,6 +97,7 @@ class SubAgentSpec:
     parent_registry: ToolRegistry
     registry: SubAgentRegistry
     emit_event: SubAgentEventCb
+    parent_reasoning_level: str = "auto"
     parent_session_id: str = ""
     max_iterations: int = 25
     child_tool_names: frozenset[str] | None = None
@@ -241,6 +242,7 @@ Parameters:
                 "parentSessionId": self._spec.parent_session_id,
                 "title": f"{label}{type_tag}",
                 "model": child_model,
+                "reasoningLevel": agent_type.thinking_effort,
                 "modelPolicy": model_resolution.policy,
                 "modelCandidates": list(model_resolution.candidates),
                 "modelFallbackUsed": model_resolution.fallback_used,

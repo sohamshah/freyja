@@ -5,18 +5,18 @@ import { formatTokens } from '../lib/format'
 
 const FALLBACK_MODELS: ModelChoice[] = [
   // Anthropic
-  { id: 'claude-opus-4-7', family: 'anthropic', label: 'Claude Opus 4.7', tier: 'max', contextWindow: 1_000_000, thinking: false, envVar: 'ANTHROPIC_API_KEY', description: 'Latest Opus. Best for hard coding and agentic tasks. Adaptive thinking, 128k output.' },
-  { id: 'claude-opus-4-6', family: 'anthropic', label: 'Claude Opus 4.6', tier: 'max', contextWindow: 1_000_000, thinking: true, envVar: 'ANTHROPIC_API_KEY', description: 'Previous-gen Opus. Deep reasoning with extended thinking.' },
-  { id: 'claude-sonnet-4-6', family: 'anthropic', label: 'Claude Sonnet 4.6', tier: 'balanced', contextWindow: 1_000_000, thinking: true, envVar: 'ANTHROPIC_API_KEY', description: 'Balanced default. Strong quality, sane latency.' },
-  { id: 'claude-haiku-4-5', family: 'anthropic', label: 'Claude Haiku 4.5', tier: 'fast', contextWindow: 200_000, thinking: true, envVar: 'ANTHROPIC_API_KEY', description: 'Fastest Claude. Good for quick edits and fanout.' },
-  { id: 'claude-opus-4-5', family: 'anthropic', label: 'Claude Opus 4.5', tier: 'max', contextWindow: 200_000, thinking: true, envVar: 'ANTHROPIC_API_KEY', description: 'Previous-gen Opus.' },
-  { id: 'claude-sonnet-4-5', family: 'anthropic', label: 'Claude Sonnet 4.5', tier: 'balanced', contextWindow: 1_000_000, thinking: true, envVar: 'ANTHROPIC_API_KEY', description: 'Previous-gen Sonnet.' },
+  { id: 'claude-opus-4-7', family: 'anthropic', label: 'Claude Opus 4.7', tier: 'max', contextWindow: 1_000_000, thinking: false, reasoningMode: 'adaptive', reasoningLevels: ['auto'], reasoningDefault: 'auto', envVar: 'ANTHROPIC_API_KEY', description: 'Latest Opus. Best for hard coding and agentic tasks. Adaptive thinking, 128k output.' },
+  { id: 'claude-opus-4-6', family: 'anthropic', label: 'Claude Opus 4.6', tier: 'max', contextWindow: 1_000_000, thinking: true, reasoningMode: 'effort', reasoningLevels: ['none', 'low', 'medium', 'high', 'max'], reasoningDefault: 'max', envVar: 'ANTHROPIC_API_KEY', description: 'Previous-gen Opus. Deep reasoning with extended thinking.' },
+  { id: 'claude-sonnet-4-6', family: 'anthropic', label: 'Claude Sonnet 4.6', tier: 'balanced', contextWindow: 1_000_000, thinking: true, reasoningMode: 'effort', reasoningLevels: ['none', 'low', 'medium', 'high'], reasoningDefault: 'high', envVar: 'ANTHROPIC_API_KEY', description: 'Balanced default. Strong quality, sane latency.' },
+  { id: 'claude-haiku-4-5', family: 'anthropic', label: 'Claude Haiku 4.5', tier: 'fast', contextWindow: 200_000, thinking: true, reasoningMode: 'effort', reasoningLevels: ['none', 'low', 'medium', 'high'], reasoningDefault: 'high', envVar: 'ANTHROPIC_API_KEY', description: 'Fastest Claude. Good for quick edits and fanout.' },
+  { id: 'claude-opus-4-5', family: 'anthropic', label: 'Claude Opus 4.5', tier: 'max', contextWindow: 200_000, thinking: true, reasoningMode: 'budget', reasoningLevels: ['none', 'low', 'medium', 'high'], reasoningDefault: 'high', envVar: 'ANTHROPIC_API_KEY', description: 'Previous-gen Opus.' },
+  { id: 'claude-sonnet-4-5', family: 'anthropic', label: 'Claude Sonnet 4.5', tier: 'balanced', contextWindow: 1_000_000, thinking: true, reasoningMode: 'budget', reasoningLevels: ['none', 'low', 'medium', 'high'], reasoningDefault: 'high', envVar: 'ANTHROPIC_API_KEY', description: 'Previous-gen Sonnet.' },
   // OpenAI
-  { id: 'gpt-5.5', family: 'openai', label: 'GPT-5.5', tier: 'max', contextWindow: 1_050_000, thinking: true, envVar: 'OPENAI_API_KEY', description: "OpenAI's newest frontier model. Best for complex coding, reasoning, and computer use." },
-  { id: 'gpt-5.4', family: 'openai', label: 'GPT-5.4', tier: 'max', contextWindow: 1_050_000, thinking: true, envVar: 'OPENAI_API_KEY', description: 'Previous OpenAI flagship. Strong reasoning, vision, tool use.' },
-  { id: 'gpt-5.4-mini', family: 'openai', label: 'GPT-5.4 Mini', tier: 'balanced', contextWindow: 400_000, thinking: true, envVar: 'OPENAI_API_KEY', description: 'Balanced OpenAI tier. Cheap per-turn, still reasons.' },
-  { id: 'gpt-5.4-nano', family: 'openai', label: 'GPT-5.4 Nano', tier: 'fast', contextWindow: 400_000, thinking: true, envVar: 'OPENAI_API_KEY', description: 'Cheapest OpenAI tier. Good for fanout and high-volume subagents.' },
-  { id: 'gpt-5.3-codex', family: 'openai', label: 'GPT-5.3 Codex', tier: 'balanced', contextWindow: 400_000, thinking: true, envVar: 'OPENAI_API_KEY', description: 'Agentic coding specialist. Powers GPT-5.4 coding capabilities.' },
+  { id: 'gpt-5.5', family: 'openai', label: 'GPT-5.5', tier: 'max', contextWindow: 1_050_000, thinking: true, reasoningMode: 'effort', reasoningLevels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], reasoningDefault: 'high', envVar: 'OPENAI_API_KEY', description: "OpenAI's newest frontier model. Best for complex coding, reasoning, and computer use." },
+  { id: 'gpt-5.4', family: 'openai', label: 'GPT-5.4', tier: 'max', contextWindow: 1_050_000, thinking: true, reasoningMode: 'effort', reasoningLevels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], reasoningDefault: 'high', envVar: 'OPENAI_API_KEY', description: 'Previous OpenAI flagship. Strong reasoning, vision, tool use.' },
+  { id: 'gpt-5.4-mini', family: 'openai', label: 'GPT-5.4 Mini', tier: 'balanced', contextWindow: 400_000, thinking: true, reasoningMode: 'effort', reasoningLevels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], reasoningDefault: 'medium', envVar: 'OPENAI_API_KEY', description: 'Balanced OpenAI tier. Cheap per-turn, still reasons.' },
+  { id: 'gpt-5.4-nano', family: 'openai', label: 'GPT-5.4 Nano', tier: 'fast', contextWindow: 400_000, thinking: true, reasoningMode: 'effort', reasoningLevels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], reasoningDefault: 'low', envVar: 'OPENAI_API_KEY', description: 'Cheapest OpenAI tier. Good for fanout and high-volume subagents.' },
+  { id: 'gpt-5.3-codex', family: 'openai', label: 'GPT-5.3 Codex', tier: 'balanced', contextWindow: 400_000, thinking: true, reasoningMode: 'effort', reasoningLevels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], reasoningDefault: 'medium', envVar: 'OPENAI_API_KEY', description: 'Agentic coding specialist. Powers GPT-5.4 coding capabilities.' },
   // Cerebras
   { id: 'zai-glm-4.7', family: 'cerebras', label: 'GLM 4.7 (Cerebras)', tier: 'fast', contextWindow: 131_072, thinking: false, envVar: 'CEREBRAS_API_KEY', description: '~1000 tps on Cerebras. Great for subagents and fanout.' },
   // Fireworks
@@ -45,24 +45,40 @@ const TIER_COLOR: Record<string, string> = {
   other: 'text-fg-2',
 }
 
-function reasoningLabel(model: ModelChoice): string {
+function normalizeLevel(model: ModelChoice, level?: string): string {
+  const levels = model.reasoningLevels ?? []
+  if (levels.length === 0) return 'none'
+  const normalized = (level || model.reasoningDefault || levels[0]).toLowerCase()
+  if (normalized === 'off' && levels.includes('none')) return 'none'
+  return levels.includes(normalized) ? normalized : levels[0]
+}
+
+function shortReasoningLabel(level: string): string {
+  if (level === 'minimal') return 'min'
+  if (level === 'medium') return 'med'
+  if (level === 'xhigh') return 'x-high'
+  return level
+}
+
+function reasoningLabel(model: ModelChoice, selectedLevel?: string): string {
   const mode = model.reasoningMode ?? (model.thinking ? 'effort' : 'none')
+  const level = normalizeLevel(model, selectedLevel)
   if (mode === 'adaptive') return 'adaptive reasoning'
-  if (mode === 'budget') return `thinking ${model.reasoningDefault ?? 'on'}`
-  if (mode === 'required') return `reasoning required/${model.reasoningDefault ?? 'medium'}`
-  if (mode === 'binary') return `reasoning ${model.reasoningDefault ?? 'on'}`
-  if (mode === 'effort') return `reasoning ${model.reasoningDefault ?? 'high'}`
+  if (mode === 'budget') return `thinking ${level}`
+  if (mode === 'required') return `reasoning required/${level}`
+  if (mode === 'binary') return level === 'none' ? 'reasoning off' : 'reasoning on'
+  if (mode === 'effort') return `reasoning ${level}`
   return 'no reasoning'
 }
 
-function reasoningTitle(model: ModelChoice): string {
+function reasoningTitle(model: ModelChoice, selectedLevel?: string): string {
   const levels = model.reasoningLevels?.length
     ? ` Levels: ${model.reasoningLevels.join(', ')}.`
     : ''
   const history = model.reasoningHistory?.length
     ? ` History: ${model.reasoningHistory.join(', ')}.`
     : ''
-  return `${reasoningLabel(model)}.${levels}${history}`
+  return `${reasoningLabel(model, selectedLevel)}.${levels}${history}`
 }
 
 interface ModelPickerProps {
@@ -83,7 +99,9 @@ interface ModelPickerProps {
 export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPickerProps) {
   const available = useHarness((s) => s.availableModels)
   const activeModel = useHarness((s) => s.model)
+  const activeReasoningLevel = useHarness((s) => s.reasoningLevel)
   const setModel = useHarness((s) => s.setModel)
+  const setReasoningLevel = useHarness((s) => s.setReasoningLevel)
   const toggle = useHarness((s) => s.toggleModelPicker)
 
   const models = useMemo(
@@ -92,7 +110,8 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
   )
 
   const onPick = (id: string) => {
-    setModel(id)
+    const picked = models.find((m) => m.id === id)
+    setModel(id, picked ? normalizeLevel(picked) : undefined)
     onSelect?.(id)
     if (!inline) toggle(false)
   }
@@ -119,10 +138,30 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
           const isActive = m.id === activeModel
           const tierColor = TIER_COLOR[m.tier] ?? 'text-fg-2'
           const unavailable = m.available === false
+          const levels = m.reasoningLevels ?? []
+          const activeLevel = normalizeLevel(m, isActive ? activeReasoningLevel : undefined)
+          const showReasoningControls =
+            isActive &&
+            !unavailable &&
+            levels.length > 1 &&
+            (m.reasoningMode ?? 'none') !== 'none'
           return (
-            <button
+            <div
               key={m.id}
+              role="button"
+              tabIndex={0}
               onClick={() => {
+                if (unavailable) {
+                  useHarness
+                    .getState()
+                    .showToast(`${m.envVar || 'API key'} is not set`, 'warn')
+                  return
+                }
+                onPick(m.id)
+              }}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter' && e.key !== ' ') return
+                e.preventDefault()
                 if (unavailable) {
                   useHarness
                     .getState()
@@ -168,7 +207,7 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
                   {m.thinking && (
                     <span
                       className="font-mono text-[9px] uppercase tracking-[0.08em] text-accent/70"
-                      title={reasoningTitle(m)}
+                      title={reasoningTitle(m, activeLevel)}
                     >
                       ◐
                     </span>
@@ -182,7 +221,7 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
                     <>
                       <span>·</span>
                       <span className="font-mono text-accent/75">
-                        {reasoningLabel(m)}
+                        {reasoningLabel(m, activeLevel)}
                       </span>
                     </>
                   )}
@@ -196,8 +235,37 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
                 {!dense && (
                   <div className="mt-1.5 text-[11px] leading-[1.5] text-fg-2">{m.description}</div>
                 )}
+                {showReasoningControls && (
+                  <div
+                    className="mt-2 flex flex-wrap items-center gap-1.5"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <span className="label mr-1 text-[8.5px] text-fg-3">reasoning</span>
+                    {levels.map((level) => {
+                      const selected = activeLevel === level
+                      return (
+                        <button
+                          key={level}
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setReasoningLevel(level)
+                          }}
+                          className={`rounded border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.04em] transition-colors ${
+                            selected
+                              ? 'border-accent/45 bg-accent/20 text-accent'
+                              : 'border-white/10 bg-white/[0.025] text-fg-2 hover:border-white/20 hover:text-fg-0'
+                          }`}
+                          title={`Set ${m.label} reasoning to ${level}`}
+                        >
+                          {shortReasoningLabel(level)}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
-            </button>
+            </div>
           )
         })}
       </div>

@@ -188,6 +188,7 @@ export interface SessionSnapshot {
   title: string
   workspace: string
   model: string
+  reasoningLevel?: string
   createdAt: number
   updatedAt: number
   messageCount: number
@@ -222,18 +223,20 @@ export type BridgeCommand =
       type: 'send_message'
       sessionId?: string
       content: string
+      model?: string
+      reasoningLevel?: string
       attachments?: CommandAttachment[]
     }
   | { type: 'cancel'; sessionId?: string }
   | { type: 'force_cancel'; sessionId?: string }
   | { type: 'diagnose' }
-  | { type: 'compact'; sessionId?: string }
-  | { type: 'set_model'; sessionId?: string; model: string }
+  | { type: 'compact'; sessionId?: string; model?: string; reasoningLevel?: string }
+  | { type: 'set_model'; sessionId?: string; model: string; reasoningLevel?: string }
   | { type: 'list_skills'; sessionId?: string }
   | { type: 'list_subagents'; sessionId?: string }
   | { type: 'list_tools'; sessionId?: string }
-  | { type: 'new_session'; sessionId?: string; model?: string }
-  | { type: 'switch_session'; sessionId: string; model?: string }
+  | { type: 'new_session'; sessionId?: string; model?: string; reasoningLevel?: string }
+  | { type: 'switch_session'; sessionId: string; model?: string; reasoningLevel?: string }
   | { type: 'usage'; sessionId?: string }
   | { type: 'list_files'; sessionId?: string; query: string; limit?: number }
   | {
@@ -349,6 +352,7 @@ export type BridgeEvent =
       parentSessionId: string
       title: string
       model: string
+      reasoningLevel?: string
       task: string
       mode?: string
       agentType?: string

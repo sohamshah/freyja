@@ -393,14 +393,17 @@ class OpenAIProvider:
         if tool_choice:
             request_params["tool_choice"] = tool_choice
 
-        # Build reasoning config from ThinkingConfig if enabled
-        if self._config.reasoning.enabled and self._model in REASONING_MODELS:
+        # Build reasoning config from ThinkingConfig. An explicit effort="none"
+        # must still be sent; otherwise OpenAI applies the model default.
+        reasoning_effort = str(self._config.reasoning.effort or "").lower()
+        reasoning_requested = self._config.reasoning.enabled or reasoning_effort == "none"
+        if reasoning_requested and self._model in REASONING_MODELS:
             request_params["reasoning"] = {
-                "effort": self._config.reasoning.effort,
+                "effort": reasoning_effort or "high",
                 "summary": "auto",
             }
             # Request encrypted reasoning content for round-trip when store is off
-            if not self._config.store:
+            if self._config.reasoning.enabled and not self._config.store:
                 request_params["include"] = ["reasoning.encrypted_content"]
 
         return request_params

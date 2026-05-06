@@ -1,7 +1,7 @@
-from bridge.freyja_bridge import _build_user_message_with_attachments
+from bridge.freyja_bridge import _build_user_message_with_attachments, _thinking_config_for_model
 from engine.anthropic_provider import AnthropicConfig, AnthropicProvider
 from engine.openai_provider import OpenAIConfig, OpenAIProvider
-from engine.types import ImageBlock, Message, TextBlock
+from engine.types import ImageBlock, Message, TextBlock, ThinkingConfig
 
 
 def test_bridge_preserves_pasted_image_attachments_as_image_blocks() -> None:
@@ -50,6 +50,31 @@ def test_openai_provider_formats_image_blocks_for_responses_api() -> None:
         {"type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U="},
         {"type": "input_text", "text": "what is in this image?"},
     ]
+
+
+def test_openai_provider_sends_explicit_reasoning_none() -> None:
+    provider = OpenAIProvider(
+        OpenAIConfig(
+            api_key="test-key",
+            model="gpt-5.5",
+            reasoning=ThinkingConfig(enabled=False, effort="none"),
+        )
+    )
+
+    params = provider.build_request_params([Message(role="user", content="quick answer")])
+
+    assert params["reasoning"]["effort"] == "none"
+    assert "include" not in params
+
+
+def test_bridge_maps_provider_reasoning_levels_to_thinking_config() -> None:
+    openai_minimal = _thinking_config_for_model("gpt-5.5", "minimal")
+    assert openai_minimal.enabled is True
+    assert openai_minimal.effort == "minimal"
+
+    claude_none = _thinking_config_for_model("claude-sonnet-4-6", "none")
+    assert claude_none.enabled is False
+    assert claude_none.effort == "none"
 
 
 def test_anthropic_provider_formats_image_blocks_for_claude_messages_api() -> None:

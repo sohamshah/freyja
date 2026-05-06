@@ -6,6 +6,7 @@ export function TitleBar() {
   const mode = useHarness((s) => s.mode)
   const modeDetail = useHarness((s) => s.modeDetail)
   const model = useHarness((s) => s.model)
+  const reasoningLevel = useHarness((s) => s.reasoningLevel)
   const usage = useHarness((s) => s.usage)
   const sessionId = useHarness((s) => s.activeSessionId)
   const isStreaming = useHarness((s) => s.isStreaming)
@@ -48,6 +49,12 @@ export function TitleBar() {
       >
         <span className="text-fg-2">model</span>
         <span className="ml-1.5 font-mono text-fg-0">{model}</span>
+        {reasoningLevel && reasoningLevel !== 'none' && (
+          <span className="ml-1.5 font-mono text-[10px] text-accent/80">{reasoningLevel}</span>
+        )}
+        {reasoningLevel === 'none' && (
+          <span className="ml-1.5 font-mono text-[10px] text-fg-3">no-reasoning</span>
+        )}
         <span className="ml-1.5 text-fg-3">▾</span>
       </button>
       <Pill>
