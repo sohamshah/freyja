@@ -85,8 +85,8 @@ export function SettingsModal() {
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh]">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px]" onClick={() => toggle(false)} />
-      <div className="relative w-[640px] max-h-[82vh] flex flex-col overflow-hidden rounded-2xl glass-strong shadow-2xl ring-hairline-strong">
+      <div className="absolute inset-0 bg-black/62 backdrop-blur-[2px]" onClick={() => toggle(false)} />
+      <div className="relative w-[640px] max-h-[82vh] flex flex-col overflow-hidden rounded-2xl modal-opaque shadow-2xl ring-hairline-strong">
         <div className="flex items-center gap-3 px-5 py-4 hairline-b">
           <span className="label text-fg-0">settings</span>
           <span className="label text-fg-3">preferences for this machine</span>

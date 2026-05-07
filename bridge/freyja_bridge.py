@@ -1170,6 +1170,7 @@ class _BridgeSession:
             tool_registry=self.tool_registry,
             on_stream=self._on_stream,
             on_system_event=self._on_system_event,
+            on_llm_call=self._on_llm_call,
             thinking=thinking,
         )
         self.runner = runner
@@ -2128,6 +2129,66 @@ class _BridgeSession:
             )
         except Exception as exc:  # noqa: BLE001
             log("error", f"on_system_event error: {exc}")
+
+    def _on_llm_call(self, payload: dict[str, Any]) -> None:
+        """Surface per-call LLM diagnostics in the activity panel.
+
+        One human-readable info line per call (latency, tokens, cost) so the
+        diagnostics drawer and the expanded log modal pick it up. Emits an
+        error line on failure so retries are visible.
+        """
+        try:
+            from engine.providers import compute_cost
+
+            provider = payload.get("provider", "?")
+            model = payload.get("model", "?")
+            duration_ms = int(payload.get("duration_ms", 0) or 0)
+            in_tok = int(payload.get("input_tokens", 0) or 0)
+            out_tok = int(payload.get("output_tokens", 0) or 0)
+            cr_tok = int(payload.get("cache_read_tokens", 0) or 0)
+            cw_tok = int(payload.get("cache_write_tokens", 0) or 0)
+            r_tok = int(payload.get("reasoning_tokens", 0) or 0)
+            tool_calls = int(payload.get("tool_calls", 0) or 0)
+            stop_reason = payload.get("stop_reason")
+            err = payload.get("error")
+
+            if err:
+                log(
+                    "error",
+                    f"llm {provider}/{model} FAILED in {duration_ms}ms · {err}",
+                )
+                return
+
+            cost = compute_cost(
+                model,
+                input_tokens=in_tok,
+                output_tokens=out_tok,
+                cache_read_tokens=cr_tok,
+                cache_write_tokens=cw_tok,
+            )
+
+            parts: list[str] = [
+                f"llm {provider}/{model}",
+                f"{duration_ms}ms",
+                f"in={in_tok}",
+                f"out={out_tok}",
+            ]
+            if cr_tok:
+                parts.append(f"cached={cr_tok}")
+            if cw_tok:
+                parts.append(f"cache_write={cw_tok}")
+            if r_tok:
+                parts.append(f"reasoning={r_tok}")
+            if tool_calls:
+                parts.append(f"tools={tool_calls}")
+            if stop_reason:
+                parts.append(f"stop={stop_reason}")
+            if payload.get("streaming"):
+                parts.append("stream")
+            parts.append(f"cost=${cost:.4f}" if cost is not None else "cost=n/a")
+            log("info", " · ".join(parts))
+        except Exception as exc:  # noqa: BLE001
+            log("error", f"on_llm_call error: {exc}")
 
 
 class _BridgeState:

@@ -873,9 +873,11 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
     }
 
     case 'bus_message': {
+      const rawTimestamp = ev.message.timestamp || Date.now()
+      const timestamp = rawTimestamp < 1_000_000_000_000 ? rawTimestamp * 1000 : rawTimestamp
       next.busMessages = [
         ...slice.busMessages.slice(-100),
-        ev.message,
+        { ...ev.message, timestamp },
       ]
       return next
     }

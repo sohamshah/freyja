@@ -367,7 +367,11 @@ export function MissionDashboard() {
 
     const busEvents = dedupeBy(
       slices.flatMap(({ id, slice }) =>
-        slice.busMessages.map((message) => ({ ...message, sessionId: id })),
+        slice.busMessages.map((message) => ({
+          ...message,
+          timestamp: normalizeBusTimestamp(message.timestamp),
+          sessionId: id,
+        })),
       ),
       (message) => `${message.sessionId}:${message.index}:${message.timestamp}:${message.topic}`,
     ).sort((a, b) => b.timestamp - a.timestamp)
@@ -741,37 +745,42 @@ function SwarmTab({
   onAttach: (id: string) => void
 }) {
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-12 gap-3 overflow-hidden">
-      <section className="col-span-12 flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4 xl:col-span-8">
+    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
+      <section className="flex shrink-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
         <PanelHeader label="collaboration map" />
-        <div className="mt-3 h-[min(320px,38vh)] shrink-0 rounded-xl bg-black/20 p-3 ring-hairline">
+        <div className="mt-3 h-[min(520px,52vh)] min-h-[360px] shrink-0 rounded-xl bg-black/20 p-3 ring-hairline">
           <CollaborationGraph agents={agents} events={busEvents} onAttach={onAttach} />
         </div>
-        <div className="mt-3 min-h-0 flex-1 overflow-auto pr-1">
-          <AgentLaneList agents={agents} onAttach={onAttach} large />
-        </div>
       </section>
-      <section className="col-span-12 grid min-h-0 grid-rows-[minmax(0,1fr)_240px] gap-3 xl:col-span-4">
-        <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
-          <PanelHeader label="message bus" />
-          <BusFeed events={busEvents} />
-        </div>
-        <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
-          <PanelHeader label="latest evidence" />
-          <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-auto pr-1">
-            {findings.slice(0, 3).map((event) => (
-              <FindingCard
-                key={`${event.sessionId}-${event.index}-${event.timestamp}`}
-                event={event}
-                compact
-              />
-            ))}
-            {findings.length === 0 && (
-              <EmptyState title="No evidence" body="Agents can publish findings, progress, and errors to the bus." />
-            )}
+      <div className="grid min-h-0 flex-1 grid-cols-12 gap-3 overflow-hidden">
+        <section className="col-span-12 flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4 xl:col-span-8">
+          <PanelHeader label="agent lanes" />
+          <div className="mt-3 min-h-0 flex-1 overflow-auto pr-1">
+            <AgentLaneList agents={agents} onAttach={onAttach} large />
           </div>
-        </div>
-      </section>
+        </section>
+        <section className="col-span-12 grid min-h-0 grid-rows-[minmax(0,1fr)_220px] gap-3 xl:col-span-4">
+          <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
+            <PanelHeader label="message bus" />
+            <BusFeed events={busEvents} />
+          </div>
+          <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
+            <PanelHeader label="latest evidence" />
+            <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-auto pr-1">
+              {findings.slice(0, 3).map((event) => (
+                <FindingCard
+                  key={`${event.sessionId}-${event.index}-${event.timestamp}`}
+                  event={event}
+                  compact
+                />
+              ))}
+              {findings.length === 0 && (
+                <EmptyState title="No evidence" body="Agents can publish findings, progress, and errors to the bus." />
+              )}
+            </div>
+          </div>
+        </section>
+      </div>
     </div>
   )
 }
@@ -1098,31 +1107,32 @@ function CollaborationGraph({
   events: BusEventView[]
   onAttach: (id: string) => void
 }) {
-  const nodes = agents.slice(0, 12)
-  const width = 1000
-  const height = 320
+  const nodes = agents
+    .slice()
+    .sort((a, b) => agentStartedAt(a) - agentStartedAt(b))
+    .slice(0, 18)
+  const width = 1280
+  const height = 560
   const busX = width / 2
-  const busY = height / 2
-  const busW = 174
-  const busH = 104
-  const cardW = 286
-  const cardH = 64
-  const marginX = 34
-  const topPad = 42
-  const sideFor = (index: number) => (nodes.length === 1 || index % 2 === 0 ? 'left' : 'right')
-  const sideTotals = nodes.reduce(
-    (acc, _agent, index) => {
-      acc[sideFor(index)] += 1
-      return acc
-    },
-    { left: 0, right: 0 } as Record<'left' | 'right', number>,
-  )
-  const sideSeen: Record<'left' | 'right', number> = { left: 0, right: 0 }
+  const busY = 68
+  const busW = 286
+  const busH = 78
+  const rounds = groupAgentRounds(nodes)
+  const roundGap = 18
+  const leftPad = 42
+  const graphTop = 148
+  const panelH = height - graphTop - 26
+  const roundW = rounds.length
+    ? (width - leftPad * 2 - roundGap * (rounds.length - 1)) / rounds.length
+    : 0
   const eventsBySender = new Map<string, BusEventView[]>()
   for (const event of events) {
     const list = eventsBySender.get(event.senderId) ?? []
     list.push(event)
     eventsBySender.set(event.senderId, list)
+  }
+  for (const list of eventsBySender.values()) {
+    list.sort((a, b) => b.timestamp - a.timestamp)
   }
   const topicTotals = {
     findings: events.filter((event) => event.topic === 'findings').length,
@@ -1131,51 +1141,53 @@ function CollaborationGraph({
     read: events.filter((event) => event.topic === 'read').length,
   }
   const maxTopicTotal = Math.max(1, ...Object.values(topicTotals))
-  const points = nodes.map((agent, index) => {
-    const side = sideFor(index)
-    const sideIndex = sideSeen[side]
-    sideSeen[side] += 1
-    const slots = sideTotals[side]
-    const y = topPad + ((sideIndex + 1) / (slots + 1)) * (height - topPad * 2)
-    const x = side === 'left' ? marginX : width - marginX - cardW
-    const fromX = side === 'left' ? x + cardW : x
-    const fromY = y
-    const toX = side === 'left' ? busX - busW / 2 : busX + busW / 2
-    const toY = busY + (y - busY) * 0.18
-    const c1 = side === 'left' ? fromX + 84 : fromX - 84
-    const c2 = side === 'left' ? toX - 72 : toX + 72
-    const path = `M ${fromX} ${fromY} C ${c1} ${fromY} ${c2} ${toY} ${toX} ${toY}`
-    const senderEvents = eventsBySender.get(agent.session.id) ?? []
-    const published = senderEvents.filter((event) => event.topic !== 'read')
-    const reads = senderEvents.filter((event) => event.topic === 'read')
-    const latest = senderEvents[0]
-    const markerEvents = published.slice(0, 3)
-    const markers = markerEvents.map((event, markerIndex) => {
-      const t = (markerIndex + 1) / (markerEvents.length + 1)
-      const bend = Math.sin(t * Math.PI) * (side === 'left' ? -10 : 10)
-      return {
-        event,
-        x: fromX + (toX - fromX) * t,
-        y: fromY + (toY - fromY) * t + bend,
+  const positions = new Map<string, GraphAgentNode>()
+  const roundViews = rounds.map((round, roundIndex) => {
+    const x = leftPad + roundIndex * (roundW + roundGap)
+    const innerCols = round.agents.length > 5 && roundW > 430 ? 2 : 1
+    const cardGap = 10
+    const cardW = Math.min(292, (roundW - 28 - cardGap * (innerCols - 1)) / innerCols)
+    const cardH = 52
+    const maxRows = Math.max(1, Math.floor((panelH - 62) / (cardH + 8)))
+    const maxAgents = innerCols * maxRows
+    const visible = round.agents.slice(0, maxAgents)
+    const hidden = round.agents.length - visible.length
+    const rows = Math.max(1, Math.ceil(visible.length / innerCols))
+    const firstY = graphTop + 52
+    const rowGap = rows > 1 ? Math.min(10, Math.max(5, (panelH - 72 - rows * cardH) / (rows - 1))) : 0
+    const cards = visible.map((agent, index) => {
+      const col = index % innerCols
+      const row = Math.floor(index / innerCols)
+      const cardX = x + 14 + col * (cardW + cardGap)
+      const cardY = firstY + row * (cardH + rowGap)
+      const senderEvents = eventsBySender.get(agent.session.id) ?? []
+      const published = senderEvents.filter((event) => event.topic !== 'read')
+      const reads = senderEvents.filter((event) => event.topic === 'read')
+      const latest = senderEvents[0]
+      const color = PROFILE_HEX[agent.agentType] ?? PROFILE_HEX.general
+      const node: GraphAgentNode = {
+        agent,
+        x: cardX,
+        y: cardY,
+        w: cardW,
+        h: cardH,
+        cx: cardX + cardW / 2,
+        topY: cardY,
+        bottomY: cardY + cardH,
+        color,
+        published: published.length,
+        reads: reads.length,
+        latest,
       }
+      positions.set(agent.session.id, node)
+      return node
     })
-    return {
-      agent,
-      color: PROFILE_HEX[agent.agentType] ?? PROFILE_HEX.general,
-      side,
-      x,
-      y,
-      fromX,
-      fromY,
-      toX,
-      toY,
-      path,
-      latest,
-      published: published.length,
-      reads: reads.length,
-      markers,
-    }
+    return { round, x, y: graphTop, w: roundW, h: panelH, cards, hidden }
   })
+  const publishEdges = Array.from(positions.values()).filter((node) => node.published > 0)
+  const readEdges = Array.from(positions.values()).filter((node) => node.reads > 0)
+  const collaborationEdges = inferCollaborationEdges(events, positions)
+  const hasEvents = events.length > 0
   return (
     <svg viewBox={`0 0 ${width} ${height}`} className="h-full w-full" role="img" aria-label="Collaboration map">
       <defs>
@@ -1183,28 +1195,79 @@ function CollaborationGraph({
           <stop offset="0%" stopColor="#a8d4fc" stopOpacity="0.55" />
           <stop offset="100%" stopColor="#a8d4fc" stopOpacity="0" />
         </radialGradient>
+        <linearGradient id="busSpine" x1="0%" x2="100%" y1="0%" y2="0%">
+          <stop offset="0%" stopColor="#7ab8a3" stopOpacity="0" />
+          <stop offset="48%" stopColor="#a8d4fc" stopOpacity="0.44" />
+          <stop offset="100%" stopColor="#7ab8a3" stopOpacity="0" />
+        </linearGradient>
         <pattern id="collabGrid" width="32" height="32" patternUnits="userSpaceOnUse">
           <path d="M 32 0 L 0 0 0 32" fill="none" stroke="rgba(255,255,255,0.045)" strokeWidth="1" />
         </pattern>
+        <marker id="collabArrow" markerHeight="8" markerWidth="8" orient="auto" refX="7" refY="4">
+          <path d="M 0 0 L 8 4 L 0 8 z" fill="#a8d4fc" fillOpacity="0.55" />
+        </marker>
+        <marker id="collabReadArrow" markerHeight="8" markerWidth="8" orient="auto" refX="7" refY="4">
+          <path d="M 0 0 L 8 4 L 0 8 z" fill="#8a9491" fillOpacity="0.52" />
+        </marker>
       </defs>
       <rect x="0" y="0" width={width} height={height} fill="url(#collabGrid)" opacity="0.45" />
-      <circle cx={busX} cy={busY} r="138" fill="url(#busGlow)" opacity="0.18" />
+      <circle cx={busX} cy={busY + 16} r="170" fill="url(#busGlow)" opacity={hasEvents ? '0.16' : '0.08'} />
+      <rect x="54" y={busY + 68} width={width - 108} height="2" rx="1" fill="url(#busSpine)" opacity={hasEvents ? '0.72' : '0.28'} />
 
-      {points.map(({ agent, color, path, published, latest, toX, toY }) => {
-        const active = agent.status === 'running' || published > 0
+      {collaborationEdges.map((edge) => {
+        const from = positions.get(edge.fromId)
+        const to = positions.get(edge.toId)
+        if (!from || !to) return null
+        const lift = Math.max(18, Math.min(76, Math.abs(from.cx - to.cx) * 0.16))
+        const midY = Math.min(height - 18, Math.max(from.bottomY, to.bottomY) + lift)
         return (
-          <g key={`${agent.session.id}-edge`}>
+          <path
+            key={`${edge.fromId}-${edge.toId}`}
+            d={`M ${from.cx} ${from.bottomY} C ${from.cx} ${midY} ${to.cx} ${midY} ${to.cx} ${to.bottomY}`}
+            fill="none"
+            stroke="#d0a040"
+            strokeDasharray="4 7"
+            strokeLinecap="round"
+            strokeOpacity={Math.min(0.44, 0.1 + edge.count * 0.08)}
+            strokeWidth={Math.min(2.4, 0.9 + edge.count * 0.25)}
+          />
+        )
+      })}
+
+      {publishEdges.map((node) => {
+        const anchorX = busX + (node.cx - busX) * 0.16
+        const anchorY = busY + busH / 2 + 22
+        const active = node.agent.status === 'running'
+        return (
+          <g key={`${node.agent.session.id}-publish`}>
             <path
-              d={path}
+              d={`M ${node.cx} ${node.topY} C ${node.cx} ${node.topY - 52} ${anchorX} ${anchorY + 34} ${anchorX} ${anchorY}`}
               fill="none"
-              stroke={color}
-              strokeOpacity={active ? 0.46 : 0.16}
-              strokeWidth={active ? 2.2 : 1.1}
+              markerEnd="url(#collabArrow)"
+              stroke={topicHex(node.latest?.topic === 'read' ? 'findings' : (node.latest?.topic ?? 'findings'))}
+              strokeLinecap="round"
+              strokeOpacity={active ? 0.62 : 0.34}
+              strokeWidth={Math.min(4, 1.2 + node.published * 0.26)}
             />
-            {latest && (
-              <circle cx={toX} cy={toY} r={active ? 3.5 : 2.5} fill={topicHex(latest.topic)} opacity={active ? 0.9 : 0.45} />
-            )}
           </g>
+        )
+      })}
+
+      {readEdges.map((node) => {
+        const anchorX = busX + (node.cx - busX) * 0.16
+        const anchorY = busY + busH / 2 + 22
+        return (
+          <path
+            key={`${node.agent.session.id}-read`}
+            d={`M ${anchorX} ${anchorY} C ${anchorX} ${anchorY + 36} ${node.cx} ${node.topY - 44} ${node.cx} ${node.topY}`}
+            fill="none"
+            markerEnd="url(#collabReadArrow)"
+            stroke="#8a9491"
+            strokeDasharray="6 7"
+            strokeLinecap="round"
+            strokeOpacity={node.agent.status === 'running' ? 0.56 : 0.3}
+            strokeWidth={Math.min(3.2, 1 + node.reads * 0.34)}
+          />
         )
       })}
 
@@ -1213,83 +1276,110 @@ function CollaborationGraph({
         y={busY - busH / 2}
         width={busW}
         height={busH}
-        rx="18"
+        rx="16"
         fill="rgba(10,14,13,0.82)"
         stroke="rgba(168,212,252,0.42)"
       />
-      <text x={busX} y={busY - 20} textAnchor="middle" fill="#e8e8e8" fontSize="16" fontFamily="Departure Mono, monospace">
+      <rect
+        x={busX - busW / 2 + 12}
+        y={busY - busH / 2 + 12}
+        width="3"
+        height={busH - 24}
+        rx="1.5"
+        fill="#a8d4fc"
+        opacity={hasEvents ? '0.72' : '0.28'}
+      />
+      <text x={busX} y={busY - 16} textAnchor="middle" fill="#e8e8e8" fontSize="16" fontFamily="Departure Mono, monospace">
         message bus
       </text>
-      <text x={busX} y={busY + 1} textAnchor="middle" fill="#8e9a96" fontSize="10" fontFamily="Departure Mono, monospace">
-        {events.length} events / {nodes.length} agents
+      <text x={busX} y={busY + 5} textAnchor="middle" fill="#8e9a96" fontSize="10" fontFamily="Departure Mono, monospace">
+        {events.length} events / {nodes.length} agents / {rounds.length} rounds
       </text>
-      {(['findings', 'progress', 'errors', 'read'] as BusMessageRecord['topic'][]).map((topic, index) => {
-        const barW = 26 + (topicTotals[topic] / maxTopicTotal) * 96
-        return (
-          <g key={topic}>
-            <rect
-              x={busX - 62}
-              y={busY + 20 + index * 11}
-              width={barW}
-              height="5"
-              rx="2.5"
-              fill={topicHex(topic)}
-              opacity={topicTotals[topic] > 0 ? 0.72 : 0.18}
-            />
-            <text x={busX + 68} y={busY + 25 + index * 11} fill="#7a8582" fontSize="8.5" fontFamily="Departure Mono, monospace">
-              {topic} {topicTotals[topic]}
-            </text>
-          </g>
-        )
-      })}
-
-      {points.map(({ agent, color, side, x, y, fromX, fromY, markers, latest, published, reads }) => {
-        const cardActive = agent.status === 'running' || Boolean(latest)
-        const title = truncateText(agent.session.title || agent.sub?.label || agent.session.id, 30)
-        const task = truncateText(agent.session.task ?? agent.sub?.task ?? 'No task description', 26)
-        const anchorX = side === 'left' ? fromX : fromX
-        const status = agent.status.toUpperCase()
-        return (
-          <g
-            key={agent.session.id}
-            onClick={() => agent.attachable && onAttach(agent.session.id)}
-            style={{ cursor: agent.attachable ? 'pointer' : 'default' }}
-          >
-            <rect
-              x={x}
-              y={y - cardH / 2}
-              width={cardW}
-              height={cardH}
-              rx="12"
-              fill={cardActive ? 'rgba(255,255,255,0.045)' : 'rgba(255,255,255,0.025)'}
-              stroke={color}
-              strokeOpacity={cardActive ? 0.48 : 0.22}
-            />
-            <rect x={x + 10} y={y - 20} width="3" height="40" rx="1.5" fill={color} opacity="0.78" />
-            <circle cx={anchorX} cy={fromY} r="5" fill={color} />
-            <circle cx={anchorX} cy={fromY} r="15" fill="none" stroke={color} strokeOpacity={cardActive ? 0.42 : 0.18} />
-            <text x={x + 24} y={y - 13} fill="#e8e8e8" fontSize="12" fontFamily="Departure Mono, monospace">
-              {title}
-            </text>
-            <text x={x + 24} y={y + 5} fill="#7f8b87" fontSize="9.5" fontFamily="Departure Mono, monospace">
-              {agent.agentType} / {status} / tools {agent.tools.length || agent.sub?.toolsCalled || 0}
-            </text>
-            <text x={x + 24} y={y + 22} fill="#6e7774" fontSize="9" fontFamily="Departure Mono, monospace">
-              pub {published} / read {reads} / {task}
-            </text>
-            {markers.map((marker, index) => (
-              <circle
-                key={`${agent.session.id}-${marker.event.index}-${index}`}
-                cx={marker.x}
-                cy={marker.y}
-                r={4.5 - index * 0.4}
-                fill={topicHex(marker.event.topic)}
-                opacity={0.82 - index * 0.16}
+      {hasEvents ? (
+        (['findings', 'progress', 'errors', 'read'] as BusMessageRecord['topic'][]).map((topic, index) => {
+          const barW = 20 + (topicTotals[topic] / maxTopicTotal) * 82
+          return (
+            <g key={topic}>
+              <rect
+                x={busX - 92}
+                y={busY + 21 + index * 9}
+                width={barW}
+                height="4"
+                rx="2"
+                fill={topicHex(topic)}
+                opacity={topicTotals[topic] > 0 ? 0.72 : 0.18}
               />
-            ))}
-          </g>
-        )
-      })}
+              <text x={busX + 18} y={busY + 25 + index * 9} fill="#7a8582" fontSize="8" fontFamily="Departure Mono, monospace">
+                {topic} {topicTotals[topic]}
+              </text>
+            </g>
+          )
+        })
+      ) : (
+        <text x={busX} y={busY + 30} textAnchor="middle" fill="#687370" fontSize="9" fontFamily="Departure Mono, monospace">
+          no bus traffic yet
+        </text>
+      )}
+
+      {roundViews.map((view, roundIndex) => (
+        <g key={view.round.id}>
+          <rect
+            x={view.x}
+            y={view.y}
+            width={view.w}
+            height={view.h}
+            rx="18"
+            fill="rgba(255,255,255,0.018)"
+            stroke="rgba(168,212,252,0.12)"
+          />
+          <text x={view.x + 16} y={view.y + 25} fill="#a8d4fc" fontSize="10" fontFamily="Departure Mono, monospace">
+            ROUND {roundIndex + 1}
+          </text>
+          <text x={view.x + 86} y={view.y + 25} fill="#687370" fontSize="9" fontFamily="Departure Mono, monospace">
+            {view.round.agents.length} agents / {relativeTime(view.round.startAt)}
+          </text>
+          {view.cards.map((node) => {
+            const cardActive = node.agent.status === 'running'
+            const title = truncateText(node.agent.session.title || node.agent.sub?.label || node.agent.session.id, node.w > 220 ? 31 : 22)
+            const task = truncateText(node.agent.session.task ?? node.agent.sub?.task ?? 'No task description', node.w > 220 ? 34 : 24)
+            const tools = node.agent.tools.length || node.agent.sub?.toolsCalled || 0
+            return (
+              <g
+                key={node.agent.session.id}
+                onClick={() => node.agent.attachable && onAttach(node.agent.session.id)}
+                style={{ cursor: node.agent.attachable ? 'pointer' : 'default' }}
+              >
+                <rect
+                  x={node.x}
+                  y={node.y}
+                  width={node.w}
+                  height={node.h}
+                  rx="10"
+                  fill={cardActive ? 'rgba(255,255,255,0.055)' : 'rgba(255,255,255,0.032)'}
+                  stroke={node.color}
+                  strokeOpacity={cardActive ? 0.56 : 0.24}
+                />
+                <rect x={node.x + 9} y={node.y + 9} width="3" height={node.h - 18} rx="1.5" fill={node.color} opacity={cardActive ? 0.88 : 0.62} />
+                <circle cx={node.x + node.w - 16} cy={node.y + 15} r="4" fill={statusHex(node.agent.status)} opacity="0.92" />
+                <text x={node.x + 22} y={node.y + 18} fill="#e8e8e8" fontSize="10.5" fontFamily="Departure Mono, monospace">
+                  {title}
+                </text>
+                <text x={node.x + 22} y={node.y + 33} fill="#7f8b87" fontSize="8.5" fontFamily="Departure Mono, monospace">
+                  {node.agent.agentType} / {node.agent.status.toUpperCase()} / tools {tools}
+                </text>
+                <text x={node.x + 22} y={node.y + 46} fill="#6e7774" fontSize="8" fontFamily="Departure Mono, monospace">
+                  pub {node.published} / read {node.reads} / {task}
+                </text>
+              </g>
+            )
+          })}
+          {view.hidden > 0 && (
+            <text x={view.x + view.w / 2} y={view.y + view.h - 14} textAnchor="middle" fill="#7a8582" fontSize="9" fontFamily="Departure Mono, monospace">
+              +{view.hidden} more agents in lanes below
+            </text>
+          )}
+        </g>
+      ))}
 
       {agents.length > nodes.length && (
         <text x={busX} y={height - 16} textAnchor="middle" fill="#7a8582" fontSize="10" fontFamily="Departure Mono, monospace">
@@ -1297,12 +1387,123 @@ function CollaborationGraph({
         </text>
       )}
       {nodes.length === 0 && (
-        <text x={busX} y={busY + 88} textAnchor="middle" fill="#6e6e6e" fontSize="12" fontFamily="Departure Mono, monospace">
-          spawn agents to visualize collaboration
-        </text>
+        <g>
+          <rect
+            x={busX - 240}
+            y={graphTop + 72}
+            width="480"
+            height="86"
+            rx="18"
+            fill="rgba(255,255,255,0.022)"
+            stroke="rgba(255,255,255,0.08)"
+            strokeDasharray="5 7"
+          />
+          <text x={busX} y={graphTop + 112} textAnchor="middle" fill="#8e9a96" fontSize="12" fontFamily="Departure Mono, monospace">
+            spawn agents to form collaboration rounds
+          </text>
+          <text x={busX} y={graphTop + 136} textAnchor="middle" fill="#687370" fontSize="9" fontFamily="Departure Mono, monospace">
+            publish, read, and cross-agent reuse edges will appear here
+          </text>
+        </g>
       )}
     </svg>
   )
+}
+
+interface AgentRoundView {
+  id: string
+  agents: AgentView[]
+  startAt: number
+  endAt: number
+}
+
+interface GraphAgentNode {
+  agent: AgentView
+  x: number
+  y: number
+  w: number
+  h: number
+  cx: number
+  topY: number
+  bottomY: number
+  color: string
+  published: number
+  reads: number
+  latest?: BusEventView
+}
+
+function agentStartedAt(agent: AgentView): number {
+  return agent.sub?.startedAt ?? agent.session.createdAt ?? 0
+}
+
+function normalizeBusTimestamp(timestamp: number): number {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return Date.now()
+  return timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp
+}
+
+function groupAgentRounds(agents: AgentView[]): AgentRoundView[] {
+  const sorted = agents.slice().sort((a, b) => agentStartedAt(a) - agentStartedAt(b))
+  const rounds: AgentRoundView[] = []
+  const roundGapMs = 90_000
+  for (const agent of sorted) {
+    const startedAt = agentStartedAt(agent)
+    const current = rounds[rounds.length - 1]
+    if (!current || startedAt - current.endAt > roundGapMs) {
+      rounds.push({
+        id: `round-${rounds.length + 1}`,
+        agents: [agent],
+        startAt: startedAt,
+        endAt: startedAt,
+      })
+      continue
+    }
+    current.agents.push(agent)
+    current.endAt = Math.max(current.endAt, startedAt)
+  }
+  return rounds
+}
+
+function inferCollaborationEdges(
+  events: BusEventView[],
+  positions: Map<string, GraphAgentNode>,
+): Array<{ fromId: string; toId: string; count: number; lastAt: number }> {
+  const pairs = new Map<string, { fromId: string; toId: string; count: number; lastAt: number }>()
+  const latestPublishBySender = new Map<string, BusEventView>()
+  const chronological = events.slice().sort((a, b) => a.timestamp - b.timestamp)
+
+  for (const event of chronological) {
+    if (!positions.has(event.senderId)) continue
+    if (event.topic !== 'read') {
+      latestPublishBySender.set(event.senderId, event)
+      continue
+    }
+
+    const readers = Array.from(latestPublishBySender.values())
+      .filter((published) => published.senderId !== event.senderId)
+      .filter((published) => positions.has(published.senderId))
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .slice(0, 4)
+
+    for (const published of readers) {
+      const key = `${published.senderId}->${event.senderId}`
+      const existing = pairs.get(key)
+      if (existing) {
+        existing.count += 1
+        existing.lastAt = Math.max(existing.lastAt, event.timestamp)
+      } else {
+        pairs.set(key, {
+          fromId: published.senderId,
+          toId: event.senderId,
+          count: 1,
+          lastAt: event.timestamp,
+        })
+      }
+    }
+  }
+
+  return Array.from(pairs.values())
+    .sort((a, b) => b.count - a.count || b.lastAt - a.lastAt)
+    .slice(0, 24)
 }
 
 function BusFeed({ events }: { events: BusEventView[] }) {
@@ -1891,6 +2092,13 @@ function topicHex(topic: BusMessageRecord['topic']): string {
   if (topic === 'errors') return '#f07878'
   if (topic === 'findings') return '#a8d4fc'
   if (topic === 'progress') return '#88d67f'
+  return '#8a9491'
+}
+
+function statusHex(status: AgentView['status']): string {
+  if (status === 'failed' || status === 'cancelled') return '#f07878'
+  if (status === 'done') return '#88d67f'
+  if (status === 'running') return '#a8d4fc'
   return '#8a9491'
 }
 

@@ -140,7 +140,7 @@ export function Sidebar() {
   }, [subagentOrder, subagents])
 
   return (
-    <aside className="glass flex w-[256px] shrink-0 flex-col rounded-[18px]">
+    <aside className="glass glass-panel flex w-[256px] shrink-0 flex-col rounded-[18px]">
       <div className="flex items-center justify-between px-3 py-3 hairline-b">
         <div className="label">workspace</div>
         <div className="flex items-center gap-1.5">

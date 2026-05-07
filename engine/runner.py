@@ -330,7 +330,13 @@ class AgentRunner:
 
                 if response.tool_calls:
                     tool_calls_for_message = [
-                        ToolCall(id=tc.id, name=tc.name, arguments=tc.arguments)
+                        ToolCall(
+                            id=tc.id,
+                            name=tc.name,
+                            arguments=tc.arguments,
+                            provider_kind=getattr(tc, "provider_kind", None),
+                            provider_data=getattr(tc, "provider_data", {}) or {},
+                        )
                         for tc in response.tool_calls
                     ]
 
@@ -742,6 +748,7 @@ class AsyncAgentRunner:
         async_tool_call: Callable[[ToolCall], Awaitable[str | None]] | None = None,
         on_stream: StreamCallback | AsyncStreamCallback | None = None,
         on_system_event: SystemEventCallback | AsyncSystemEventCallback | None = None,
+        on_llm_call: Callable[[dict[str, Any]], None] | None = None,
         thinking: ThinkingConfig | None = None,
     ):
         self.provider = provider
@@ -754,6 +761,7 @@ class AsyncAgentRunner:
         self.async_tool_call = async_tool_call
         self.on_stream = on_stream
         self.on_system_event = on_system_event
+        self.on_llm_call = on_llm_call
         self.thinking = thinking or ThinkingConfig()
 
         # Tool result truncator
@@ -863,7 +871,13 @@ class AsyncAgentRunner:
 
                 if response.tool_calls:
                     tool_calls_for_message = [
-                        ToolCall(id=tc.id, name=tc.name, arguments=tc.arguments)
+                        ToolCall(
+                            id=tc.id,
+                            name=tc.name,
+                            arguments=tc.arguments,
+                            provider_kind=getattr(tc, "provider_kind", None),
+                            provider_data=getattr(tc, "provider_data", {}) or {},
+                        )
                         for tc in response.tool_calls
                     ]
 
@@ -1122,13 +1136,20 @@ class AsyncAgentRunner:
         if self.tool_registry and len(self.tool_registry) > 0:
             tool_defs = self.tool_registry.list_definitions()
 
-        return await provider.complete_async(
-            messages=session.get_messages(),
-            tools=tool_defs,
-            system_prompt=session.system_prompt,
-            max_tokens=self.config.max_tokens_per_turn,
-            thinking=self.thinking if self.thinking.enabled else None,
-        )
+        start = time.perf_counter()
+        try:
+            response = await provider.complete_async(
+                messages=session.get_messages(),
+                tools=tool_defs,
+                system_prompt=session.system_prompt,
+                max_tokens=self.config.max_tokens_per_turn,
+                thinking=self.thinking if self.thinking.enabled else None,
+            )
+        except Exception as exc:
+            self._notify_llm_call(provider, start, streaming=False, response=None, error=exc)
+            raise
+        self._notify_llm_call(provider, start, streaming=False, response=response, error=None)
+        return response
 
     async def _call_provider_stream(self, session: Session) -> ProviderResponse:
         """Make a streaming completion call."""
@@ -1146,14 +1167,54 @@ class AsyncAgentRunner:
                 if asyncio.iscoroutine(result):
                     await result
 
-        return await provider.stream_to_response(
-            messages=session.get_messages(),
-            tools=tool_defs,
-            system_prompt=session.system_prompt,
-            max_tokens=self.config.max_tokens_per_turn,
-            thinking=self.thinking if self.thinking.enabled else None,
-            on_event=_handle_event if self.on_stream else None,
-        )
+        start = time.perf_counter()
+        try:
+            response = await provider.stream_to_response(
+                messages=session.get_messages(),
+                tools=tool_defs,
+                system_prompt=session.system_prompt,
+                max_tokens=self.config.max_tokens_per_turn,
+                thinking=self.thinking if self.thinking.enabled else None,
+                on_event=_handle_event if self.on_stream else None,
+            )
+        except Exception as exc:
+            self._notify_llm_call(provider, start, streaming=True, response=None, error=exc)
+            raise
+        self._notify_llm_call(provider, start, streaming=True, response=response, error=None)
+        return response
+
+    def _notify_llm_call(
+        self,
+        provider: Any,
+        start: float,
+        *,
+        streaming: bool,
+        response: ProviderResponse | None,
+        error: Exception | None,
+    ) -> None:
+        """Fire the on_llm_call hook with structured per-call diagnostics."""
+        if self.on_llm_call is None:
+            return
+        usage = response.usage if response and response.usage else None
+        payload: dict[str, Any] = {
+            "provider": getattr(provider, "name", "unknown"),
+            "model": getattr(provider, "model_id", "unknown"),
+            "duration_ms": int((time.perf_counter() - start) * 1000),
+            "streaming": streaming,
+            "input_tokens": usage.input_tokens if usage else 0,
+            "output_tokens": usage.output_tokens if usage else 0,
+            "cache_read_tokens": usage.cache_read_tokens if usage else 0,
+            "cache_write_tokens": usage.cache_write_tokens if usage else 0,
+            "reasoning_tokens": usage.reasoning_tokens if usage else 0,
+            "stop_reason": response.stop_reason if response else None,
+            "tool_calls": len(response.tool_calls or []) if response else 0,
+            "thinking_blocks": len(response.thinking_blocks or []) if response else 0,
+            "error": None if error is None else f"{type(error).__name__}: {error}",
+        }
+        try:
+            self.on_llm_call(payload)
+        except Exception:  # noqa: BLE001
+            logger.exception("on_llm_call hook failed")
 
     async def _handle_tool_calls(
         self,

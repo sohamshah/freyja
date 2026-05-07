@@ -52,6 +52,9 @@ recover the trajectory later.
 - Coordinate agents through a session message bus where sibling agents can
   publish findings, read evidence, and continue work without waiting on the
   parent chat.
+- Visualize collaboration as a round-based mission graph: subagent spawn waves,
+  publish/read edges, inferred cross-agent reuse, and bus traffic stay visible
+  after the swarm completes.
 - Show live work products: file changes, diff cards, artifacts, markdown/code
   previews, logs, screenshots, and subagent output.
 - Persist transcripts, artifacts, settings, session slices, message bus events,
@@ -68,12 +71,14 @@ Freyja has a few major views that work together:
   pasted images, file changes, and the input dock.
 - Activity rail: context, spend, tool timeline, compaction/media events, changes,
   artifacts, system events, and logs.
-- Mission dashboard: a wide operational view for swarms, findings, evidence,
-  agent health, compaction before/after points, image policy, and session lanes.
+- Mission dashboard: a wide operational view for swarms, collaboration rounds,
+  message-bus edges, findings, evidence, agent health, compaction before/after
+  points, image policy, and session lanes.
 - Artifact workspace: focused inspection for generated files, markdown, JSON,
   SVG, HTML, images, and code.
-- Model and agent controls: provider-aware model picker, reasoning metadata,
-  subagent profile table, and slash-command workflows.
+- Model and agent controls: provider-aware model picker with per-model reasoning
+  choices, reasoning metadata, subagent profile table, and slash-command
+  workflows.
 
 ## System Architecture
 
@@ -153,6 +158,10 @@ computer-use, memory, skills, subagents, and message-bus tools. Highlights:
 - Browser: CDP-backed JavaScript and screenshot inspection for frontend QA.
 - Computer use: screenshot, click, type, key events, scroll, move mouse,
   inspect regions, focus/list windows, read accessibility trees, find elements.
+- Provider-native computer use: OpenAI `computer_call` requests route through
+  Freyja's shared desktop backend while returning screenshots in the provider's
+  expected native shape. Provider-specific tool protocols are isolated in a
+  small adapter layer so future models can add their own native tool formats.
 - Collaboration: `sub_agent`, `subagents`, `publish_finding`, `read_findings`.
 - Knowledge: `record_user_preference`, `list_skills`, `search_skills`,
   `load_skill`, with file-backed usage tracking and pruning.

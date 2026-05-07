@@ -261,7 +261,7 @@ export function InputDock() {
   return (
     <div className="relative shrink-0">
       {slashSuggestions.length > 0 && (
-        <div className="absolute bottom-full left-1/2 z-20 mb-3 w-[560px] -translate-x-1/2 rounded-xl glass-strong p-1.5 shadow-2xl ring-hairline-strong">
+        <div className="absolute bottom-full left-1/2 z-20 mb-3 w-[560px] -translate-x-1/2 rounded-xl menu-opaque p-1.5 shadow-2xl ring-hairline-strong">
           <div className="px-2 py-1.5 label">slash commands</div>
           <div className="max-h-[280px] overflow-y-auto">
             {slashSuggestions.map((c, i) => (

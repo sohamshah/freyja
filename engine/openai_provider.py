@@ -15,7 +15,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable
 
 try:
     import openai
@@ -26,6 +26,12 @@ except ImportError:
         "openai package not installed. Install with: uv add openai"
     )
 
+from engine.provider_native import (
+    OPENAI_COMPUTER_KIND,
+    OPENAI_COMPUTER_TOOL_NAME,
+    OPENAI_NATIVE_COMPUTER_SHADOWED_TOOLS,
+    is_openai_computer_call,
+)
 from engine.providers import (
     AuthenticationError,
     BillingError,
@@ -42,17 +48,20 @@ from engine.types import (
     DocumentBlock,
     ImageBlock,
     Message,
+    RedactedThinkingBlock,
     StreamEvent,
     TextBlock,
     TextDeltaEvent,
     ThinkingBlock,
     ThinkingConfig,
     ThinkingDeltaEvent,
-    RedactedThinkingBlock,
     ToolCall,
     ToolInputDeltaEvent,
     ToolUseStartEvent,
 )
+
+if TYPE_CHECKING:
+    from engine.providers import StructuredResponse
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +84,10 @@ REASONING_MODELS: set[str] = {
     "gpt-5.4-mini",
     "gpt-5.4-nano",
     "gpt-5.3-codex",
+}
+
+NATIVE_COMPUTER_MODELS: set[str] = {
+    "gpt-5.5",
 }
 
 # Type aliases for streaming callbacks (matching other providers)
@@ -104,6 +117,10 @@ class OpenAIConfig:
     reasoning : ThinkingConfig
         Reasoning (thinking) configuration. Controls effort level and whether
         reasoning is enabled.
+    native_computer : bool
+        Whether to expose OpenAI's native computer tool when Freyja computer
+        primitives are available. The actual desktop execution still runs
+        through Freyja's shared computer backend.
     """
 
     api_key: str | None = None
@@ -113,6 +130,7 @@ class OpenAIConfig:
     base_url: str | None = None
     store: bool = False
     reasoning: ThinkingConfig = field(default_factory=ThinkingConfig)
+    native_computer: bool = True
 
 
 class OpenAIProvider:
@@ -199,6 +217,201 @@ class OpenAIProvider:
         """
         return self._model in REASONING_MODELS
 
+    def _native_computer_enabled(
+        self, tools: list[ToolDefinition] | None
+    ) -> bool:
+        """Return True when this request should use OpenAI's computer tool."""
+
+        if (
+            not self._config.native_computer
+            or self._model not in NATIVE_COMPUTER_MODELS
+            or not tools
+        ):
+            return False
+        names = {tool.name for tool in tools}
+        return "screenshot" in names and "click" in names
+
+    @staticmethod
+    def _dump_provider_obj(value: Any) -> Any:
+        """Convert OpenAI SDK response models into plain JSON-ish values."""
+
+        if isinstance(value, dict):
+            return {
+                key: OpenAIProvider._dump_provider_obj(val)
+                for key, val in value.items()
+                if val is not None
+            }
+        if isinstance(value, list):
+            return [OpenAIProvider._dump_provider_obj(item) for item in value]
+        if hasattr(value, "model_dump"):
+            return OpenAIProvider._dump_provider_obj(value.model_dump(exclude_none=True))
+        return value
+
+    @staticmethod
+    def _image_url_for_block(block: ImageBlock) -> str:
+        if block.source_type == "url":
+            return block.url
+        return f"data:{block.media_type};base64,{block.data}"
+
+    @staticmethod
+    def _last_image_block(content: Any) -> ImageBlock | None:
+        if not isinstance(content, list):
+            return None
+        for block in reversed(content):
+            if isinstance(block, ImageBlock):
+                return block
+        return None
+
+    @staticmethod
+    def _tool_result_text(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            text_parts = [
+                block.text for block in content if isinstance(block, TextBlock)
+            ]
+            image_count = sum(1 for block in content if isinstance(block, ImageBlock))
+            suffix = (
+                f"\n\n[{image_count} image block(s) omitted from function output]"
+                if image_count
+                else ""
+            )
+            return "".join(text_parts) + suffix
+        return str(content)
+
+    @staticmethod
+    def _tool_call_lookup(messages: list[Message]) -> dict[str, ToolCall]:
+        lookup: dict[str, ToolCall] = {}
+        for message in messages:
+            for call in message.tool_calls or []:
+                lookup[call.id] = call
+        return lookup
+
+    def _computer_call_input_item(self, tool_call: ToolCall) -> dict[str, Any]:
+        data = tool_call.provider_data or {}
+        item: dict[str, Any] = {
+            "type": "computer_call",
+            "id": data.get("id") or tool_call.id,
+            "call_id": tool_call.id,
+            "status": data.get("status") or "completed",
+            "pending_safety_checks": data.get("pending_safety_checks") or [],
+        }
+        if data.get("actions") is not None:
+            item["actions"] = data["actions"]
+        elif data.get("action") is not None:
+            item["action"] = data["action"]
+        elif tool_call.arguments.get("actions") is not None:
+            item["actions"] = tool_call.arguments["actions"]
+        else:
+            item["action"] = tool_call.arguments.get("action") or tool_call.arguments
+        return item
+
+    def _computer_call_output_item(
+        self,
+        message: Message,
+        tool_call: ToolCall,
+    ) -> dict[str, Any] | None:
+        image = self._last_image_block(message.content)
+        if image is None:
+            return None
+        pending = tool_call.provider_data.get("pending_safety_checks") or []
+        output: dict[str, Any] = {
+            "type": "computer_call_output",
+            "call_id": message.tool_call_id,
+            "status": "completed",
+            "output": {
+                "type": "computer_screenshot",
+                "image_url": self._image_url_for_block(image),
+                # OpenAI's current docs recommend original detail for CUA.
+                "detail": "original",
+            },
+        }
+        if pending:
+            output["acknowledged_safety_checks"] = pending
+        return output
+
+    def _parse_output_items(
+        self,
+        output_items: Any,
+        *,
+        include_messages: bool = True,
+        include_function_calls: bool = True,
+        include_computer_calls: bool = True,
+    ) -> tuple[str, list[ToolCallResponse], list[ThinkingBlock | RedactedThinkingBlock]]:
+        text_parts: list[str] = []
+        tool_call_responses: list[ToolCallResponse] = []
+        thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] = []
+
+        for output_item in output_items:
+            item_type = getattr(output_item, "type", None)
+            if item_type == "message" and include_messages:
+                for content_block in getattr(output_item, "content", []) or []:
+                    if getattr(content_block, "type", None) == "output_text":
+                        text_parts.append(content_block.text)
+
+            elif item_type == "function_call" and include_function_calls:
+                try:
+                    arguments = getattr(output_item, "arguments", "") or ""
+                    parsed_arguments = json.loads(arguments) if arguments else {}
+                except json.JSONDecodeError:
+                    parsed_arguments = {}
+                tool_call_responses.append(
+                    ToolCallResponse(
+                        id=getattr(output_item, "call_id", ""),
+                        name=getattr(output_item, "name", ""),
+                        arguments=parsed_arguments,
+                    )
+                )
+
+            elif item_type == "computer_call" and include_computer_calls:
+                action = self._dump_provider_obj(getattr(output_item, "action", None))
+                actions = self._dump_provider_obj(getattr(output_item, "actions", None))
+                arguments: dict[str, Any] = {}
+                if actions is not None:
+                    arguments["actions"] = actions
+                if action is not None:
+                    arguments["action"] = action
+                call_id = getattr(output_item, "call_id", "")
+                provider_data = {
+                    "id": getattr(output_item, "id", "") or call_id,
+                    "status": getattr(output_item, "status", None) or "in_progress",
+                    "pending_safety_checks": self._dump_provider_obj(
+                        getattr(output_item, "pending_safety_checks", None) or []
+                    ),
+                }
+                if action is not None:
+                    provider_data["action"] = action
+                if actions is not None:
+                    provider_data["actions"] = actions
+                tool_call_responses.append(
+                    ToolCallResponse(
+                        id=call_id,
+                        name=OPENAI_COMPUTER_TOOL_NAME,
+                        arguments=arguments,
+                        provider_kind=OPENAI_COMPUTER_KIND,
+                        provider_data=provider_data,
+                    )
+                )
+
+            elif item_type == "reasoning":
+                encrypted_content = getattr(output_item, "encrypted_content", None) or ""
+                summary_texts = [
+                    summary_part.text
+                    for summary_part in (getattr(output_item, "summary", None) or [])
+                    if getattr(summary_part, "type", None) == "summary_text"
+                ]
+                if summary_texts:
+                    thinking_blocks.append(
+                        ThinkingBlock(
+                            thinking="\n".join(summary_texts),
+                            signature=encrypted_content,
+                        )
+                    )
+                elif encrypted_content:
+                    thinking_blocks.append(RedactedThinkingBlock(data=encrypted_content))
+
+        return "".join(text_parts), tool_call_responses, thinking_blocks
+
     def build_request_params(
         self,
         messages: list[Message],
@@ -239,6 +452,7 @@ class OpenAIProvider:
         """
         # -- Convert messages to Responses API input items --
         input_items: list[dict[str, Any]] = []
+        tool_calls_by_id = self._tool_call_lookup(messages)
 
         for message in messages:
 
@@ -333,6 +547,11 @@ class OpenAIProvider:
                 # Emit function_call items (from tool_calls)
                 if message.tool_calls:
                     for tool_call in message.tool_calls:
+                        if is_openai_computer_call(tool_call):
+                            input_items.append(
+                                self._computer_call_input_item(tool_call)
+                            )
+                            continue
                         serialized_arguments = (
                             json.dumps(tool_call.arguments)
                             if isinstance(tool_call.arguments, dict)
@@ -346,9 +565,18 @@ class OpenAIProvider:
                         })
 
             elif message.role == "tool_result":
+                original_call = tool_calls_by_id.get(message.tool_call_id or "")
+                if original_call is not None and is_openai_computer_call(original_call):
+                    computer_output = self._computer_call_output_item(
+                        message, original_call
+                    )
+                    if computer_output is not None:
+                        input_items.append(computer_output)
+                        continue
+
                 # Tool results become function_call_output items (bare typed).
                 # Ref: https://platform.openai.com/docs/guides/function-calling
-                tool_output = message.content if isinstance(message.content, str) else str(message.content)
+                tool_output = self._tool_result_text(message.content)
                 input_items.append({
                     "type": "function_call_output",
                     "call_id": message.tool_call_id,
@@ -377,7 +605,14 @@ class OpenAIProvider:
             from engine.cerebras_provider import _validate_tool_name
 
             converted_tools: list[dict[str, Any]] = []
+            native_computer = self._native_computer_enabled(tools)
+            if native_computer:
+                converted_tools.append({"type": "computer"})
             for tool in tools:
+                if tool.name == OPENAI_COMPUTER_TOOL_NAME:
+                    continue
+                if native_computer and tool.name in OPENAI_NATIVE_COMPUTER_SHADOWED_TOOLS:
+                    continue
                 _validate_tool_name(tool.name)
                 entry: dict[str, Any] = {
                     "type": "function",
@@ -475,57 +710,10 @@ class OpenAIProvider:
             raise ProviderError(str(api_error), retryable=True) from api_error
 
         # -- Parse response.output items into content, tool calls, and thinking blocks --
-        # SDK types: ResponseOutputMessage, ResponseFunctionToolCall, ResponseReasoningItem
-        text_parts: list[str] = []
-        tool_call_responses: list[ToolCallResponse] = []
-        thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] = []
-
-        for output_item in response.output:
-            if output_item.type == "message":
-                # ResponseOutputMessage: extract text from output_text content blocks
-                for content_block in output_item.content:
-                    if content_block.type == "output_text":
-                        text_parts.append(content_block.text)
-
-            elif output_item.type == "function_call":
-                # ResponseFunctionToolCall: call_id is the tool call identifier,
-                # arguments is a JSON string that must be parsed.
-                try:
-                    parsed_arguments = json.loads(output_item.arguments) if output_item.arguments else {}
-                except json.JSONDecodeError:
-                    parsed_arguments = {}
-                tool_call_responses.append(
-                    ToolCallResponse(
-                        id=output_item.call_id,
-                        name=output_item.name,
-                        arguments=parsed_arguments,
-                    )
-                )
-
-            elif output_item.type == "reasoning":
-                # ResponseReasoningItem: summary is a list of Summary objects,
-                # encrypted_content is an opaque string for round-trip.
-                encrypted_content = getattr(output_item, "encrypted_content", None) or ""
-                summary_texts = [
-                    summary_part.text
-                    for summary_part in (output_item.summary or [])
-                    if getattr(summary_part, "type", None) == "summary_text"
-                ]
-
-                if summary_texts:
-                    # We have visible reasoning summary -- store as ThinkingBlock
-                    # with encrypted_content in the signature field for round-trip.
-                    thinking_blocks.append(
-                        ThinkingBlock(
-                            thinking="\n".join(summary_texts),
-                            signature=encrypted_content,
-                        )
-                    )
-                elif encrypted_content:
-                    # No visible summary, only encrypted content -- store as redacted
-                    thinking_blocks.append(
-                        RedactedThinkingBlock(data=encrypted_content)
-                    )
+        # SDK types include message, function_call, computer_call, and reasoning.
+        text, tool_call_responses, thinking_blocks = self._parse_output_items(
+            response.output
+        )
 
         # -- Build usage from response.usage --
         # SDK type: ResponseUsage with nested OutputTokensDetails and InputTokensDetails
@@ -557,7 +745,7 @@ class OpenAIProvider:
             stop_reason = "max_tokens"
 
         return ProviderResponse(
-            content="".join(text_parts),
+            content=text,
             tool_calls=tool_call_responses if tool_call_responses else None,
             usage=usage,
             stop_reason=stop_reason,
@@ -627,48 +815,9 @@ class OpenAIProvider:
             raise ProviderError(str(api_error), retryable=True) from api_error
 
         # -- Parse response.output items (same logic as complete()) --
-        text_parts: list[str] = []
-        tool_call_responses: list[ToolCallResponse] = []
-        thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] = []
-
-        for output_item in response.output:
-            if output_item.type == "message":
-                for content_block in output_item.content:
-                    if content_block.type == "output_text":
-                        text_parts.append(content_block.text)
-
-            elif output_item.type == "function_call":
-                try:
-                    parsed_arguments = json.loads(output_item.arguments) if output_item.arguments else {}
-                except json.JSONDecodeError:
-                    parsed_arguments = {}
-                tool_call_responses.append(
-                    ToolCallResponse(
-                        id=output_item.call_id,
-                        name=output_item.name,
-                        arguments=parsed_arguments,
-                    )
-                )
-
-            elif output_item.type == "reasoning":
-                encrypted_content = getattr(output_item, "encrypted_content", None) or ""
-                summary_texts = [
-                    summary_part.text
-                    for summary_part in (output_item.summary or [])
-                    if getattr(summary_part, "type", None) == "summary_text"
-                ]
-
-                if summary_texts:
-                    thinking_blocks.append(
-                        ThinkingBlock(
-                            thinking="\n".join(summary_texts),
-                            signature=encrypted_content,
-                        )
-                    )
-                elif encrypted_content:
-                    thinking_blocks.append(
-                        RedactedThinkingBlock(data=encrypted_content)
-                    )
+        text, tool_call_responses, thinking_blocks = self._parse_output_items(
+            response.output
+        )
 
         # -- Build usage --
         usage = APIUsage()
@@ -696,7 +845,7 @@ class OpenAIProvider:
             stop_reason = "max_tokens"
 
         return ProviderResponse(
-            content="".join(text_parts),
+            content=text,
             tool_calls=tool_call_responses if tool_call_responses else None,
             usage=usage,
             stop_reason=stop_reason,
@@ -768,7 +917,8 @@ class OpenAIProvider:
         )
 
         logger.info(
-            "complete_structured RAW \u2190 %s | schema=%s | stop=%s | content_len=%d | in=%d out=%d | preview=%.300s",
+            "complete_structured RAW <- %s | schema=%s | stop=%s | "
+            "content_len=%d | in=%d out=%d | preview=%.300s",
             self._model,
             schema_name,
             stop_reason,
@@ -893,6 +1043,11 @@ class OpenAIProvider:
                             id=getattr(output_item, "call_id", ""),
                             name=getattr(output_item, "name", ""),
                         )
+                    elif getattr(output_item, "type", None) == "computer_call":
+                        stream_event = ToolUseStartEvent(
+                            id=getattr(output_item, "call_id", ""),
+                            name=OPENAI_COMPUTER_TOOL_NAME,
+                        )
 
                 # Function call arguments streaming
                 elif sse_event.type == "response.function_call_arguments.delta":
@@ -958,6 +1113,7 @@ class OpenAIProvider:
         text_parts: list[str] = []
         thinking_parts: list[str] = []
         tool_calls_in_progress: dict[str, dict[str, Any]] = {}
+        native_tool_calls: list[ToolCallResponse] = []
         thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] = []
         usage = APIUsage()
         response_status = "completed"
@@ -994,6 +1150,11 @@ class OpenAIProvider:
                             "arguments": "",
                         }
                         stream_event = ToolUseStartEvent(id=call_id, name=tool_name)
+                    elif getattr(output_item, "type", None) == "computer_call":
+                        call_id = getattr(output_item, "call_id", "")
+                        stream_event = ToolUseStartEvent(
+                            id=call_id, name=OPENAI_COMPUTER_TOOL_NAME
+                        )
 
                 # Function call arguments streaming
                 elif sse_event.type == "response.function_call_arguments.delta":
@@ -1015,7 +1176,9 @@ class OpenAIProvider:
                     if completed_usage:
                         reasoning_tokens = 0
                         if completed_usage.output_tokens_details:
-                            reasoning_tokens = completed_usage.output_tokens_details.reasoning_tokens or 0
+                            reasoning_tokens = (
+                                completed_usage.output_tokens_details.reasoning_tokens or 0
+                            )
                         cached_tokens = 0
                         if completed_usage.input_tokens_details:
                             cached_tokens = completed_usage.input_tokens_details.cached_tokens or 0
@@ -1027,26 +1190,16 @@ class OpenAIProvider:
                             reasoning_tokens=reasoning_tokens,
                         )
 
-                    # Extract thinking blocks from the completed response output
-                    for output_item in getattr(completed_response, "output", []):
-                        if getattr(output_item, "type", None) == "reasoning":
-                            encrypted_content = getattr(output_item, "encrypted_content", None) or ""
-                            summary_texts = [
-                                summary_part.text
-                                for summary_part in (getattr(output_item, "summary", None) or [])
-                                if getattr(summary_part, "type", None) == "summary_text"
-                            ]
-                            if summary_texts:
-                                thinking_blocks.append(
-                                    ThinkingBlock(
-                                        thinking="\n".join(summary_texts),
-                                        signature=encrypted_content,
-                                    )
-                                )
-                            elif encrypted_content:
-                                thinking_blocks.append(
-                                    RedactedThinkingBlock(data=encrypted_content)
-                                )
+                    # Computer calls do not stream JSON arguments the same way
+                    # function tools do. Parse them from the completed response.
+                    _, completed_native_calls, completed_thinking = self._parse_output_items(
+                        getattr(completed_response, "output", []),
+                        include_messages=False,
+                        include_function_calls=False,
+                        include_computer_calls=True,
+                    )
+                    native_tool_calls.extend(completed_native_calls)
+                    thinking_blocks.extend(completed_thinking)
 
                 # Dispatch the event to the callback
                 if stream_event and on_event:
@@ -1056,11 +1209,15 @@ class OpenAIProvider:
 
             # Build tool call responses from accumulated arguments
             tool_call_responses: list[ToolCallResponse] | None = None
-            if tool_calls_in_progress:
+            if tool_calls_in_progress or native_tool_calls:
                 tool_call_responses = []
                 for tool_call_data in tool_calls_in_progress.values():
                     try:
-                        parsed_args = json.loads(tool_call_data["arguments"]) if tool_call_data["arguments"] else {}
+                        parsed_args = (
+                            json.loads(tool_call_data["arguments"])
+                            if tool_call_data["arguments"]
+                            else {}
+                        )
                     except json.JSONDecodeError:
                         parsed_args = {}
                     tool_call_responses.append(
@@ -1070,6 +1227,7 @@ class OpenAIProvider:
                             arguments=parsed_args,
                         )
                     )
+                tool_call_responses.extend(native_tool_calls)
 
             # Determine stop reason
             stop_reason = "end_turn"

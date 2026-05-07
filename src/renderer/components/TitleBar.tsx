@@ -39,29 +39,33 @@ export function TitleBar() {
       <div className="h-[14px] w-px bg-white/10" />
       <BridgeStatus mode={mode} modeDetail={modeDetail} />
       <TitleControl
-        accent
-        className="no-drag hidden h-[30px] px-3 text-[10.5px] text-accent sm:inline-flex"
+        variant="aperture"
+        className="no-drag hidden h-[30px] px-3 text-[10.5px] sm:inline-flex"
         onClick={() => toggleMissionDashboard(true, 'overview')}
         title="Open mission dashboard (⌘⇧M)"
       >
+        <span className="title-aperture-dot" aria-hidden="true" />
         <span className="font-mono uppercase">dashboard</span>
       </TitleControl>
       <TitleControl
-        className="no-drag flex h-[30px] max-w-[min(36vw,360px)] px-3 text-fg-1"
+        variant="cartridge"
+        className="no-drag flex h-[30px] max-w-[min(36vw,380px)] py-0 pl-3 pr-2 text-fg-1"
         onClick={() => useHarness.getState().toggleModelPicker(true)}
         title="Switch model"
       >
-        <span className="text-fg-2">model</span>
-        <span className="ml-1.5 min-w-0 truncate font-mono text-fg-0">{model}</span>
+        <span className="title-cartridge-kicker">model</span>
+        <span className="title-cartridge-name ml-2 min-w-0 truncate font-mono text-fg-0">{model}</span>
         {reasoningLevel && reasoningLevel !== 'none' && (
-          <span className="ml-1.5 font-mono text-[10px] text-accent/80">{reasoningLevel}</span>
+          <span className="title-cartridge-effort ml-2 font-mono text-[10px]">{reasoningLevel}</span>
         )}
         {reasoningLevel === 'none' && (
-          <span className="ml-1.5 font-mono text-[10px] text-fg-3">no-reasoning</span>
+          <span className="title-cartridge-effort title-cartridge-effort-muted ml-2 font-mono text-[10px]">
+            no-reasoning
+          </span>
         )}
-        <span className="ml-1.5 text-fg-3">▾</span>
+        <span className="title-cartridge-chevron ml-2 text-fg-3">▾</span>
       </TitleControl>
-      <TitleControl className="no-drag flex h-[30px] px-3">
+      <TitleControl className="flex h-[30px] px-3">
         <span className="text-fg-2">ctx</span>
         <span className="ml-1.5 font-mono text-fg-0">
           {contextKnown ? formatTokens(contextTokens) : 'n/a'}
@@ -69,7 +73,7 @@ export function TitleBar() {
         </span>
         <ProgressBar pct={ctxPct} className="ml-2 w-[56px]" />
       </TitleControl>
-      <TitleControl className="no-drag flex h-[30px] px-3">
+      <TitleControl className="flex h-[30px] px-3">
         <span className="text-fg-2">spend</span>
         <span className="ml-1.5 font-mono text-fg-0">{formatCost(usage.totalCost)}</span>
       </TitleControl>
@@ -97,7 +101,7 @@ function BridgeStatus({ mode, modeDetail }: { mode: string; modeDetail: string }
 
   return (
     <div
-      className={`flex h-[24px] items-center gap-1.5 px-1 font-mono text-[10px] uppercase ${toneClass}`}
+      className={`title-readout title-readout-status flex h-[30px] items-center gap-1.5 px-1 font-mono text-[10px] uppercase ${toneClass}`}
       title={modeDetail}
     >
       <span className="title-status-dot inline-block h-[6px] w-[6px] rounded-full bg-current" />
@@ -112,14 +116,21 @@ function TitleControl({
   onClick,
   title,
   accent = false,
+  variant,
 }: {
   children: React.ReactNode
   className?: string
   onClick?: () => void
   title?: string
   accent?: boolean
+  variant?: 'aperture' | 'cartridge'
 }) {
-  const controlClass = `title-control items-center ${onClick ? 'title-control-button' : ''} ${accent ? 'title-control-accent' : ''} ${className}`
+  const surfaceClass = onClick
+    ? `title-control title-control-button ${accent ? 'title-control-accent' : ''} ${
+        variant ? `title-control-${variant}` : ''
+      }`
+    : 'title-readout'
+  const controlClass = `${surfaceClass} items-center ${className}`
 
   if (onClick) {
     return (

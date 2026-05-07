@@ -516,6 +516,11 @@ class ToolCall:
     id: str
     name: str
     arguments: dict[str, Any]
+    provider_kind: str | None = None
+    """Provider-native protocol marker, if this is not a plain function tool."""
+
+    provider_data: dict[str, Any] = field(default_factory=dict)
+    """Raw provider metadata needed to serialize the call back to that provider."""
 
     def to_tool_use_block(self) -> ToolUseBlock:
         """Convert to ToolUseBlock for message content."""
@@ -527,11 +532,26 @@ class ToolCall:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "name": self.name, "arguments": self.arguments}
+        out: dict[str, Any] = {
+            "id": self.id,
+            "name": self.name,
+            "arguments": self.arguments,
+        }
+        if self.provider_kind:
+            out["provider_kind"] = self.provider_kind
+        if self.provider_data:
+            out["provider_data"] = self.provider_data
+        return out
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ToolCall":
-        return cls(id=d["id"], name=d["name"], arguments=d.get("arguments", {}))
+        return cls(
+            id=d["id"],
+            name=d["name"],
+            arguments=d.get("arguments", {}),
+            provider_kind=d.get("provider_kind"),
+            provider_data=d.get("provider_data") or {},
+        )
 
 
 @dataclass

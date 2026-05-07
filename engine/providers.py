@@ -69,6 +69,11 @@ class ToolCallResponse:
     id: str
     name: str
     arguments: dict
+    provider_kind: str | None = None
+    """Provider-native protocol marker, e.g. ``openai.computer_call``."""
+
+    provider_data: dict[str, Any] = field(default_factory=dict)
+    """Raw provider metadata needed to round-trip native tool calls."""
 
 
 @dataclass
@@ -570,6 +575,62 @@ MODEL_SPEED_TIERS = {
 }
 
 ALL_MODEL_CHOICES = list(MODEL_REGISTRY.keys())
+
+
+# Approximate USD per 1M tokens. Tuple = (input, output, cache_read, cache_write).
+# `cache_write` defaults to 1.25× input when omitted (Anthropic-style markup).
+# Numbers are best-effort; missing entries make compute_cost() return None
+# rather than mislead the diagnostics panel with a wrong figure.
+MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, float, float]] = {
+    # Anthropic
+    "claude-opus-4-7": (15.0, 75.0, 1.5),
+    "claude-opus-4-6": (15.0, 75.0, 1.5),
+    "claude-opus-4-5": (15.0, 75.0, 1.5),
+    "claude-sonnet-4-6": (3.0, 15.0, 0.30),
+    "claude-sonnet-4-5": (3.0, 15.0, 0.30),
+    "claude-haiku-4-5": (0.80, 4.0, 0.08),
+    # OpenAI Responses API
+    "gpt-5.5": (5.0, 15.0, 0.50),
+    "gpt-5.4": (3.0, 12.0, 0.30),
+    "gpt-5.4-pro": (5.0, 20.0, 0.50),
+    "gpt-5.4-mini": (0.30, 1.20, 0.03),
+    "gpt-5.4-nano": (0.05, 0.40, 0.005),
+    "gpt-5.3-codex": (2.0, 8.0, 0.20),
+    # Cerebras
+    "zai-glm-4.7": (0.50, 0.85, 0.0),
+    # Fireworks
+    "deepseek-v4-pro": (0.55, 1.65, 0.0),
+    "glm-5.1": (0.55, 2.20, 0.0),
+    "kimi-k2.6": (0.55, 1.20, 0.0),
+    "kimi-k2.5": (0.55, 1.20, 0.0),
+    "minimax-m2.7": (0.30, 1.20, 0.0),
+    "minimax-m2.5": (0.30, 1.20, 0.0),
+    "deepseek-v3.2": (0.30, 1.10, 0.0),
+    "qwen3.6-plus": (0.40, 1.40, 0.0),
+    "glm5": (0.55, 2.20, 0.0),
+}
+
+
+def compute_cost(
+    model: str,
+    *,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+) -> float | None:
+    """Estimate USD cost for one API call. Returns None if model is unpriced."""
+    rates = MODEL_PRICING_PER_M.get(model)
+    if rates is None:
+        return None
+    in_rate, out_rate, cache_read_rate = rates[0], rates[1], rates[2]
+    cache_write_rate = rates[3] if len(rates) >= 4 else in_rate * 1.25
+    return (
+        input_tokens * in_rate
+        + output_tokens * out_rate
+        + cache_read_tokens * cache_read_rate
+        + cache_write_tokens * cache_write_rate
+    ) / 1_000_000
 
 FALLBACK_CHAINS: dict[str, list[str]] = {
     "claude-opus-4-7": ["claude-opus-4-6", "kimi-k2.6", "deepseek-v4-pro"],

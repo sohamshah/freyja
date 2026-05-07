@@ -15,6 +15,7 @@ from typing import Any
 
 from bridge.tools.base import ToolRegistry
 from bridge.tools.bash_tool import BashTool
+from bridge.tools.browser_tools import BrowserExecuteJsTool, BrowserScreenshotTool
 from bridge.tools.file_tools import (
     EditFileTool,
     EditJsonTool,
@@ -22,7 +23,6 @@ from bridge.tools.file_tools import (
     ReadFileTool,
     WriteFileTool,
 )
-from bridge.tools.browser_tools import BrowserExecuteJsTool, BrowserScreenshotTool
 from bridge.tools.memory_tools import RecordUserPreferenceTool
 from bridge.tools.search_tools import GlobTool, GrepTool
 from bridge.tools.skill_tools import ListSkillsTool, LoadSkillTool, SearchSkillsTool
@@ -182,6 +182,7 @@ def build_desktop_registry(
                 build_computer_tools,
             )
             from bridge.tools.computer_use_tool import ComputerUseTool
+            from bridge.tools.provider_computer_tool import OpenAIComputerToolAdapter
 
             parent_cancel = computer_cancel_event or asyncio.Event()
             parent_spec = ComputerToolSpec(
@@ -192,7 +193,16 @@ def build_desktop_registry(
                 require_approval=False,
                 owner="parent",
             )
-            tools.extend(build_computer_tools(parent_spec))
+            atomic_computer_tools = build_computer_tools(parent_spec)
+            tools.extend(atomic_computer_tools)
+            tools.append(
+                OpenAIComputerToolAdapter(
+                    {
+                        tool.definition.name: tool
+                        for tool in atomic_computer_tools
+                    }
+                )
+            )
 
             if sub_spec is not None:
                 tools.append(

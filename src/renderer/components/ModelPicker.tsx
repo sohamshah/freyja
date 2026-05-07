@@ -109,11 +109,11 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
     [available],
   )
 
-  const onPick = (id: string) => {
+  const onPick = (id: string, reasoningLevel?: string, close = true) => {
     const picked = models.find((m) => m.id === id)
-    setModel(id, picked ? normalizeLevel(picked) : undefined)
+    setModel(id, picked ? normalizeLevel(picked, reasoningLevel) : reasoningLevel)
     onSelect?.(id)
-    if (!inline) toggle(false)
+    if (close && !inline) toggle(false)
   }
 
   const content = (
@@ -140,11 +140,11 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
           const unavailable = m.available === false
           const levels = m.reasoningLevels ?? []
           const activeLevel = normalizeLevel(m, isActive ? activeReasoningLevel : undefined)
-          const showReasoningControls =
-            isActive &&
+          const hasReasoningControls =
             !unavailable &&
-            levels.length > 1 &&
+            levels.length > 0 &&
             (m.reasoningMode ?? 'none') !== 'none'
+          const needsReasoningChoice = hasReasoningControls && levels.length > 1
           return (
             <div
               key={m.id}
@@ -157,7 +157,7 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
                     .showToast(`${m.envVar || 'API key'} is not set`, 'warn')
                   return
                 }
-                onPick(m.id)
+                onPick(m.id, undefined, !needsReasoningChoice)
               }}
               onKeyDown={(e) => {
                 if (e.key !== 'Enter' && e.key !== ' ') return
@@ -168,14 +168,14 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
                     .showToast(`${m.envVar || 'API key'} is not set`, 'warn')
                   return
                 }
-                onPick(m.id)
+                onPick(m.id, undefined, !needsReasoningChoice)
               }}
-              className={`group flex w-full items-start gap-3 rounded-md px-3 py-2.5 text-left transition-colors ${
+              className={`group flex w-full items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors ${
                 isActive
-                  ? 'bg-accent/15 text-fg-0 ring-1 ring-accent/30'
+                  ? 'border-accent/25 bg-accent/12 text-fg-0 shadow-[inset_0_0_0_1px_rgba(168,212,252,0.08)]'
                   : unavailable
-                    ? 'text-fg-3 hover:bg-white/[0.02]'
-                    : 'hover:bg-white/[0.04] text-fg-1'
+                    ? 'border-transparent text-fg-3 hover:bg-white/[0.02]'
+                    : 'border-transparent text-fg-1 hover:border-white/10 hover:bg-white/[0.04]'
               }`}
             >
               <div className="mt-[3px] flex h-4 w-4 shrink-0 items-center justify-center">
@@ -235,28 +235,43 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
                 {!dense && (
                   <div className="mt-1.5 text-[11px] leading-[1.5] text-fg-2">{m.description}</div>
                 )}
-                {showReasoningControls && (
+                {hasReasoningControls && (
                   <div
                     className="mt-2 flex flex-wrap items-center gap-1.5"
                     onClick={(e) => e.stopPropagation()}
                   >
-                    <span className="label mr-1 text-[8.5px] text-fg-3">reasoning</span>
+                    <span className="label mr-1 text-[8.5px] text-fg-3">
+                      {isActive ? 'reasoning' : 'choose effort'}
+                    </span>
                     {levels.map((level) => {
-                      const selected = activeLevel === level
+                      const selected = isActive && activeLevel === level
+                      const suggested = !isActive && activeLevel === level
                       return (
                         <button
                           key={level}
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation()
-                            setReasoningLevel(level)
+                            if (isActive) {
+                              setReasoningLevel(level)
+                              onSelect?.(m.id)
+                              if (!inline) toggle(false)
+                            } else {
+                              onPick(m.id, level)
+                            }
                           }}
-                          className={`rounded border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.04em] transition-colors ${
+                          className={`rounded-md border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.04em] transition-colors ${
                             selected
-                              ? 'border-accent/45 bg-accent/20 text-accent'
-                              : 'border-white/10 bg-white/[0.025] text-fg-2 hover:border-white/20 hover:text-fg-0'
+                              ? 'border-accent/50 bg-accent/20 text-accent shadow-[0_0_14px_rgba(168,212,252,0.08)]'
+                              : suggested
+                                ? 'border-white/14 bg-white/[0.045] text-fg-1'
+                                : 'border-white/10 bg-white/[0.025] text-fg-2 hover:border-accent/30 hover:bg-accent/10 hover:text-accent'
                           }`}
-                          title={`Set ${m.label} reasoning to ${level}`}
+                          title={
+                            isActive
+                              ? `Set ${m.label} reasoning to ${level}`
+                              : `Switch to ${m.label} with ${level} reasoning`
+                          }
                         >
                           {shortReasoningLabel(level)}
                         </button>
@@ -271,7 +286,8 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
       </div>
       {!inline && (
         <div className="hairline-t mt-2 px-3 pb-1 pt-2 text-[10px] text-fg-3">
-          <span className="font-mono">⏎</span> select · <span className="font-mono">esc</span> close
+          <span className="font-mono">⏎</span> preview · effort chip selects ·{' '}
+          <span className="font-mono">esc</span> close
         </div>
       )}
     </div>
@@ -286,10 +302,10 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
   return (
     <div className="fixed inset-0 z-40 flex items-start justify-center pt-[14vh]">
       <div
-        className="absolute inset-0 bg-black/40 backdrop-blur-[2px]"
+        className="absolute inset-0 bg-black/56 backdrop-blur-[2px]"
         onClick={() => toggle(false)}
       />
-      <div className="relative w-[560px] overflow-hidden rounded-2xl glass-strong shadow-2xl ring-hairline-strong">
+      <div className="relative w-[560px] overflow-hidden rounded-2xl menu-opaque shadow-2xl ring-hairline-strong">
         {content}
       </div>
     </div>

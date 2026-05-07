@@ -82,7 +82,7 @@ export function ActivityPanel() {
 
   return (
     <aside
-      className="glass relative flex shrink-0 flex-col rounded-[18px]"
+      className="glass glass-panel relative flex shrink-0 flex-col rounded-[18px]"
       style={{ width: `${panelWidth}px` }}
     >
       {/* Drag handle — a 6px invisible strip hugging the panel's
