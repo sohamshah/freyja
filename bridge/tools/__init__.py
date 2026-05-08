@@ -16,12 +16,14 @@ from bridge.tools.file_tools import (
 )
 from bridge.tools.image_generation_tool import GenerateImageTool
 from bridge.tools.kanban_board import KanbanTool, SessionKanbanBoard
+from bridge.tools.video_analysis_tool import AnalyzeVideoTool
 from bridge.tools.memory_tools import RecordUserPreferenceTool
 from bridge.tools.registry import build_desktop_registry
 from bridge.tools.search_tools import GlobTool, GrepTool
 from bridge.tools.skill_tools import ListSkillsTool, LoadSkillTool, SearchSkillsTool
 
 __all__ = [
+    "AnalyzeVideoTool",
     "BashTool",
     "BrowserExecuteJsTool",
     "BrowserScreenshotTool",

@@ -10,6 +10,7 @@ dependencies = [
     # LLM provider SDKs
     "anthropic>=0.30",
     "openai>=1.30",
+    "google-genai>=2.0",
     "httpx>=0.25",
     # Tokenizer for context-window estimation
     "tiktoken>=0.12.0",

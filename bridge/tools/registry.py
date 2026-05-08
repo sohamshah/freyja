@@ -25,6 +25,7 @@ from bridge.tools.file_tools import (
 )
 from bridge.tools.image_generation_tool import GenerateImageTool
 from bridge.tools.kanban_board import KanbanTool
+from bridge.tools.video_analysis_tool import AnalyzeVideoTool
 from bridge.tools.memory_tools import RecordUserPreferenceTool
 from bridge.tools.search_tools import GlobTool, GrepTool
 from bridge.tools.skill_tools import ListSkillsTool, LoadSkillTool, SearchSkillsTool
@@ -132,6 +133,11 @@ def build_desktop_registry(
     # Creative media generation — WARM tier so it is discoverable, but the
     # model must explicitly load the schema before spending on generation.
     tools.append(GenerateImageTool(image_store=image_store))
+
+    # Video understanding via Gemini. Local files go through the Files API,
+    # YouTube URLs go through ``Part.from_uri`` directly. WARM so the schema
+    # only loads when the agent asks for it.
+    tools.append(AnalyzeVideoTool())
 
     # Session-local board coordination. This is intentionally only present
     # when a session starts in kanban mode, so the strategy is visible in the
