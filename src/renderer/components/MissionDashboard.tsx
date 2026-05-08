@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useHarness, type SessionSlice, type SystemEventRecord } from '../state/store'
 import type {
   ArtifactRecord,
@@ -44,15 +44,18 @@ interface KanbanCardView {
   status: string
   body?: string
   assignee?: string
+  createdBy?: string
+  priority?: number
   summary?: string
   result?: string
   parents?: string[]
   children?: string[]
   comments?: Array<{ author?: string; body: string; timestamp?: number }>
-  events?: Array<{ kind?: string; message?: string; timestamp?: number }>
+  events?: Array<{ kind?: string; actor?: string; message?: string; timestamp?: number; details?: Record<string, unknown> }>
   agents?: AgentView[]
   progress?: number
   createdAt?: number
+  startedAt?: number
   updatedAt?: number
   completedAt?: number
 }
@@ -553,22 +556,25 @@ export function MissionDashboard() {
           </div>
         </div>
         <nav className="hidden items-center gap-1 rounded-lg bg-white/[0.03] p-1 ring-hairline lg:flex">
-          {TABS.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => setTab(item.id)}
-              className={`rounded-md px-3 py-2 text-left transition ${
-                tab === item.id
-                  ? 'bg-accent/12 text-accent ring-1 ring-accent/25'
-                  : 'text-fg-2 hover:bg-white/[0.045] hover:text-fg-0'
-              }`}
-            >
-              <div className="font-mono text-[11px]">{item.label}</div>
-              <div className="font-mono text-[8.5px] uppercase tracking-[0.12em] text-fg-3">
-                {item.hint}
-              </div>
-            </button>
-          ))}
+          {TABS.map((item) => {
+            const itemMeta = dashboardTabMeta(item, dashboard.coordinationStrategy)
+            return (
+              <button
+                key={item.id}
+                onClick={() => setTab(item.id)}
+                className={`rounded-md px-3 py-2 text-left transition ${
+                  tab === item.id
+                    ? 'bg-accent/12 text-accent ring-1 ring-accent/25'
+                    : 'text-fg-2 hover:bg-white/[0.045] hover:text-fg-0'
+                }`}
+              >
+                <div className="font-mono text-[11px]">{itemMeta.label}</div>
+                <div className="font-mono text-[8.5px] uppercase tracking-[0.12em] text-fg-3">
+                  {itemMeta.hint}
+                </div>
+              </button>
+            )
+          })}
         </nav>
         <button
           onClick={() => toggleDashboard(false)}
@@ -580,19 +586,22 @@ export function MissionDashboard() {
 
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden px-5 pb-5">
         <nav className="flex gap-1 py-3 lg:hidden">
-          {TABS.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => setTab(item.id)}
-              className={`rounded-md px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.08em] ${
-                tab === item.id
-                  ? 'bg-accent/12 text-accent ring-1 ring-accent/25'
-                  : 'bg-white/[0.03] text-fg-2 ring-hairline'
-              }`}
-            >
-              {item.label}
-            </button>
-          ))}
+          {TABS.map((item) => {
+            const itemMeta = dashboardTabMeta(item, dashboard.coordinationStrategy)
+            return (
+              <button
+                key={item.id}
+                onClick={() => setTab(item.id)}
+                className={`rounded-md px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.08em] ${
+                  tab === item.id
+                    ? 'bg-accent/12 text-accent ring-1 ring-accent/25'
+                    : 'bg-white/[0.03] text-fg-2 ring-hairline'
+                }`}
+              >
+                {itemMeta.label}
+              </button>
+            )
+          })}
         </nav>
 
         {tab === 'overview' && (
@@ -882,12 +891,12 @@ function SwarmTab({
 }
 
 const KANBAN_COLUMNS = [
-  { id: 'todo', label: 'todo', hint: 'waiting' },
-  { id: 'ready', label: 'ready', hint: 'unblocked' },
-  { id: 'running', label: 'running', hint: 'owned' },
-  { id: 'blocked', label: 'blocked', hint: 'needs input' },
-  { id: 'done', label: 'done', hint: 'closed' },
-  { id: 'cancelled', label: 'cancelled', hint: 'stopped' },
+  { id: 'todo', label: 'intake', hint: 'raw tickets' },
+  { id: 'ready', label: 'plan', hint: 'punched cards' },
+  { id: 'running', label: 'build', hint: 'agent trays' },
+  { id: 'blocked', label: 'inspect', hint: 'review gates' },
+  { id: 'done', label: 'ship', hint: 'archives' },
+  { id: 'cancelled', label: 'void', hint: 'stopped' },
 ] as const
 
 function KanbanHealthView({
@@ -968,8 +977,34 @@ function KanbanAgentsView({
   source: SessionSnapshot | undefined
   onAttach: (id: string, mode?: 'replace' | 'split') => void
 }) {
+  const [selectedCardId, setSelectedCardId] = useState<string>('')
   const assigned = agents.filter((agent) => agent.kanbanTaskId)
   const unassigned = agents.filter((agent) => !agent.kanbanTaskId)
+  const defaultCardId = useMemo(
+    () =>
+      cards.find((card) => card.status === 'running')?.id ??
+      cards.find((card) => card.status === 'blocked')?.id ??
+      cards[0]?.id ??
+      '',
+    [cards],
+  )
+  useEffect(() => {
+    if (!cards.length) {
+      if (selectedCardId) setSelectedCardId('')
+      return
+    }
+    if (!selectedCardId || !cards.some((card) => card.id === selectedCardId)) {
+      setSelectedCardId(defaultCardId)
+    }
+  }, [cards, defaultCardId, selectedCardId])
+  const selectedCard = cards.find((card) => card.id === selectedCardId) ?? cards.find((card) => card.id === defaultCardId)
+  const selectedIndex = selectedCard ? cards.findIndex((card) => card.id === selectedCard.id) : -1
+  const selectedAgents = selectedCard ? agents.filter((agent) => agent.kanbanTaskId === selectedCard.id) : []
+  const selectRelativeCard = (offset: number) => {
+    if (!cards.length || selectedIndex < 0) return
+    const next = cards[(selectedIndex + offset + cards.length) % cards.length]
+    if (next) setSelectedCardId(next.id)
+  }
   return (
     <div className="grid min-h-0 flex-1 grid-cols-12 gap-3 overflow-hidden">
       <section className="col-span-12 flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4 2xl:col-span-9">
@@ -986,9 +1021,24 @@ function KanbanAgentsView({
             <BriefStat label="blocked" value={String(cards.filter((card) => card.status === 'blocked').length)} tone={cards.some((card) => card.status === 'blocked') ? 'danger' : undefined} />
           </div>
         </div>
-        <KanbanBoard cards={cards} agents={agents} onAttach={onAttach} />
+        <KanbanBoard
+          cards={cards}
+          agents={agents}
+          selectedCardId={selectedCard?.id}
+          onSelectCard={setSelectedCardId}
+          onAttach={onAttach}
+        />
       </section>
-      <section className="col-span-12 grid min-h-0 grid-rows-[minmax(0,1fr)_minmax(180px,0.45fr)] gap-3 2xl:col-span-3">
+      <section className="col-span-12 grid min-h-0 grid-rows-[minmax(360px,1.1fr)_minmax(160px,0.48fr)_minmax(140px,0.36fr)] gap-3 2xl:col-span-3">
+        <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
+          <KanbanTaskDetailPanel
+            card={selectedCard}
+            agents={selectedAgents}
+            onAttach={onAttach}
+            onPrev={() => selectRelativeCard(-1)}
+            onNext={() => selectRelativeCard(1)}
+          />
+        </div>
         <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
           <PanelHeader label="agent lanes" />
           <div className="mt-3 min-h-0 flex-1 overflow-auto pr-1">
@@ -1013,11 +1063,15 @@ function KanbanAgentsView({
 function KanbanBoard({
   cards,
   agents,
+  selectedCardId,
+  onSelectCard,
   onAttach,
   compact = false,
 }: {
   cards: KanbanCardView[]
   agents: AgentView[]
+  selectedCardId?: string
+  onSelectCard?: (id: string) => void
   onAttach: (id: string, mode?: 'replace' | 'split') => void
   compact?: boolean
 }) {
@@ -1029,6 +1083,12 @@ function KanbanBoard({
       : 'todo'
     cardsByStatus.get(status)?.push(card)
   }
+  for (const columnCards of cardsByStatus.values()) {
+    columnCards.sort((a, b) =>
+      (a.priority ?? 2) - (b.priority ?? 2)
+      || (b.updatedAt ?? 0) - (a.updatedAt ?? 0),
+    )
+  }
 
   if (cards.length === 0) {
     return (
@@ -1039,7 +1099,7 @@ function KanbanBoard({
   }
 
   return (
-    <div className="mt-3 min-h-0 flex-1 overflow-auto">
+    <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-xl bg-[radial-gradient(circle_at_50%_0%,rgba(127,184,232,0.08),transparent_36%),linear-gradient(rgba(255,255,255,0.025)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[length:auto,44px_44px,44px_44px] p-3 ring-1 ring-white/[0.055]">
       <div
         className={`grid min-w-[1180px] gap-3 ${compact ? 'grid-cols-5' : 'grid-cols-6'}`}
       >
@@ -1048,16 +1108,16 @@ function KanbanBoard({
           return (
             <section
               key={column.id}
-              className="flex min-h-[360px] flex-col rounded-xl bg-white/[0.025] p-3 ring-hairline"
+              className={`flex min-h-[360px] flex-col rounded-xl p-3 ${kanbanColumnClass(column.id)}`}
             >
               <div className="flex items-start justify-between gap-2">
                 <div>
-                  <div className={`font-mono text-[11px] uppercase ${kanbanStatusClass(column.id)}`}>
+                  <div className={`font-mono text-[12px] uppercase tracking-[0.08em] ${kanbanStatusClass(column.id)}`}>
                     {column.label}
                   </div>
                   <div className="mt-0.5 font-mono text-[9px] text-fg-3">{column.hint}</div>
                 </div>
-                <span className="rounded-md bg-black/25 px-2 py-1 font-mono text-[10px] text-fg-1 ring-hairline">
+                <span className="rounded-[3px] bg-black/35 px-2 py-1 font-mono text-[10px] text-fg-1 ring-1 ring-white/[0.09]">
                   {columnCards.length}
                 </span>
               </div>
@@ -1067,6 +1127,8 @@ function KanbanBoard({
                     key={card.id}
                     card={card}
                     agents={agents.filter((agent) => agent.kanbanTaskId === card.id)}
+                    selected={card.id === selectedCardId}
+                    onSelect={onSelectCard}
                     onAttach={onAttach}
                     compact={compact}
                   />
@@ -1085,41 +1147,355 @@ function KanbanBoard({
   )
 }
 
+function KanbanTaskDetailPanel({
+  card,
+  agents,
+  onAttach,
+  onPrev,
+  onNext,
+}: {
+  card: KanbanCardView | undefined
+  agents: AgentView[]
+  onAttach: (id: string, mode?: 'replace' | 'split') => void
+  onPrev: () => void
+  onNext: () => void
+}) {
+  if (!card) {
+    return (
+      <div className="flex min-h-0 flex-1 items-center justify-center">
+        <EmptyState title="Select a card" body="Click a board card to inspect the full ticket, handoff, activity, and assigned agent." compact />
+      </div>
+    )
+  }
+  const latest = latestKanbanActivity(card)
+  const dependencies = [
+    ...(card.parents ?? []).map((id) => ({ id, label: 'depends on' })),
+    ...(card.children ?? []).map((id) => ({ id, label: 'unblocks' })),
+  ]
+  const activity = [
+    ...(card.comments ?? []).map((comment) => ({
+      at: comment.timestamp ?? 0,
+      label: comment.author || 'comment',
+      text: comment.body,
+      kind: 'comment',
+    })),
+    ...(card.events ?? []).map((event) => ({
+      at: event.timestamp ?? 0,
+      label: event.actor || event.kind || 'event',
+      text: event.message || '',
+      kind: event.kind || 'event',
+    })),
+  ].sort((a, b) => b.at - a.at)
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="shrink-0 hairline-b pb-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="label text-accent">task detail</div>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <div className="font-mono text-[24px] leading-none text-fg-0">{card.id}</div>
+              <span className={`rounded bg-white/[0.04] px-2 py-1 font-mono text-[9px] uppercase ring-hairline ${kanbanStatusClass(card.status)}`}>
+                {card.status}
+              </span>
+              {typeof card.priority === 'number' && (
+                <span className={`rounded bg-white/[0.04] px-2 py-1 font-mono text-[9px] uppercase ring-hairline ${kanbanPriorityClass(card.priority)}`}>
+                  p{card.priority}
+                </span>
+              )}
+            </div>
+            <h2 className="mt-2 line-clamp-3 text-[15px] leading-[1.35] text-fg-0">{card.title}</h2>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={onPrev}
+              className="rounded-md bg-white/[0.04] px-2 py-1.5 font-mono text-[10px] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
+              title="Previous card"
+            >
+              &lt;
+            </button>
+            <button
+              type="button"
+              onClick={onNext}
+              className="rounded-md bg-white/[0.04] px-2 py-1.5 font-mono text-[10px] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
+              title="Next card"
+            >
+              &gt;
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-3 min-h-0 flex-1 space-y-4 overflow-auto pr-1">
+        <div className="grid grid-cols-2 gap-2">
+          <DetailStat label="agent" value={agents[0]?.session.title || card.assignee || 'unassigned'} />
+          <DetailStat label="created by" value={card.createdBy || 'parent'} />
+          <DetailStat label="updated" value={card.updatedAt ? relativeTime(card.updatedAt) : 'n/a'} />
+          <DetailStat label="progress" value={`${kanbanCardProgress(card)}%`} />
+        </div>
+
+        {card.body && (
+          <DetailSection title="description">
+            <div className="whitespace-pre-wrap text-[12px] leading-[1.6] text-fg-1">{card.body}</div>
+          </DetailSection>
+        )}
+
+        {dependencies.length > 0 && (
+          <DetailSection title="links">
+            <div className="flex flex-wrap gap-1.5">
+              {dependencies.map((dep) => (
+                <span key={`${dep.label}-${dep.id}`} className="rounded bg-white/[0.04] px-2 py-1 font-mono text-[9px] text-fg-2 ring-hairline">
+                  {dep.label} <span className="text-accent">{dep.id}</span>
+                </span>
+              ))}
+            </div>
+          </DetailSection>
+        )}
+
+        {(card.summary || card.result) && (
+          <DetailSection title={card.status === 'done' ? 'handoff' : 'notes'}>
+            {card.summary && <div className="whitespace-pre-wrap text-[12px] leading-[1.55] text-fg-1">{card.summary}</div>}
+            {card.result && <div className="mt-2 whitespace-pre-wrap rounded-md bg-black/25 p-2 text-[11px] leading-[1.5] text-fg-2 ring-hairline">{card.result}</div>}
+          </DetailSection>
+        )}
+
+        <DetailSection title={`activity ${activity.length ? activity.length : ''}`}>
+          {activity.length === 0 ? (
+            <div className="font-mono text-[10px] text-fg-3">No activity captured yet.</div>
+          ) : (
+            <div className="space-y-2">
+              {activity.slice(0, 10).map((item, index) => (
+                <div key={`${item.kind}-${item.at}-${index}`} className="grid grid-cols-[14px_minmax(0,1fr)] gap-2">
+                  <span className={`mt-1.5 h-2 w-2 rounded-full ${item.kind === 'comment' ? 'bg-accent/80' : 'bg-ok/70'}`} />
+                  <div className="min-w-0">
+                    <div className="flex items-center justify-between gap-2 font-mono text-[9px] text-fg-3">
+                      <span className="truncate text-fg-2">{item.label}</span>
+                      <span>{item.at ? relativeTime(item.at) : 'now'}</span>
+                    </div>
+                    {item.text && <div className="mt-0.5 line-clamp-3 text-[11px] leading-[1.45] text-fg-1">{item.text}</div>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </DetailSection>
+
+        <DetailSection title="agent status">
+          {agents.length === 0 ? (
+            <div className="font-mono text-[10px] text-fg-3">
+              {card.assignee ? `${card.assignee} is planned but no live worker is attached yet.` : 'No live worker attached to this card.'}
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {agents.map((agent) => (
+                <div key={agent.session.id} className="rounded-lg bg-white/[0.028] p-2 ring-hairline">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="h-2.5 w-2.5 rounded-full"
+                      style={{ background: PROFILE_HEX[agent.agentType] ?? PROFILE_HEX.general }}
+                    />
+                    <span className="min-w-0 flex-1 truncate text-[12px] text-fg-0">{agent.session.title}</span>
+                    <span className={`font-mono text-[9px] uppercase ${statusTextClass(agent.status)}`}>{agent.status}</span>
+                    {agent.attachable && (
+                      <button
+                        type="button"
+                        onClick={() => onAttach(agent.session.id, 'split')}
+                        className="rounded bg-white/[0.04] px-2 py-1 font-mono text-[9px] uppercase text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
+                      >
+                        split
+                      </button>
+                    )}
+                  </div>
+                  <div className="mt-2 grid grid-cols-3 gap-2 font-mono text-[9px] text-fg-3">
+                    <span>tools <span className="text-fg-1">{agent.tools.length || agent.sub?.toolsCalled || 0}</span></span>
+                    <span>tokens <span className="text-fg-1">{formatTokens(agent.tokensIn + agent.tokensOut)}</span></span>
+                    <span>elapsed <span className="text-fg-1">{formatDuration(agent.elapsedMs)}</span></span>
+                  </div>
+                  <ToolActivityStrip tools={agent.tools} />
+                </div>
+              ))}
+            </div>
+          )}
+        </DetailSection>
+
+        {latest && (
+          <div className="rounded-lg bg-accent/[0.035] p-3 ring-1 ring-accent/15">
+            <div className="label mb-1 text-[9px] text-accent">latest signal</div>
+            <div className="line-clamp-3 text-[11px] leading-[1.45] text-fg-1">
+              <span className="text-fg-0">{latest.label}</span>
+              {latest.text ? `: ${latest.text}` : ''}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function DetailSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="rounded-lg bg-white/[0.025] p-3 ring-hairline">
+      <div className="label mb-2 text-[9px] text-fg-3">{title}</div>
+      {children}
+    </section>
+  )
+}
+
+function DetailStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg bg-white/[0.025] p-2 ring-hairline">
+      <div className="label text-[8.5px] text-fg-3">{label}</div>
+      <div className="mt-1 truncate font-mono text-[11px] text-fg-0">{value}</div>
+    </div>
+  )
+}
+
+function KanbanCardMaterial({
+  status,
+  agents,
+  selected,
+}: {
+  status: string
+  agents: AgentView[]
+  selected: boolean
+}) {
+  if (status === 'ready') {
+    return (
+      <>
+        <div className="pointer-events-none absolute -right-1 top-2 h-full w-[96%] rounded-md border border-white/[0.07] bg-white/[0.018]" />
+        <div className="pointer-events-none absolute -right-2 top-4 h-full w-[92%] rounded-md border border-white/[0.045] bg-black/10" />
+        <div className="pointer-events-none absolute inset-y-3 left-3 z-0 flex flex-col justify-around">
+          {Array.from({ length: 5 }).map((_, index) => (
+            <span key={index} className="h-2.5 w-2.5 rounded-full bg-[#070807] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.10)]" />
+          ))}
+        </div>
+        <div className="pointer-events-none absolute inset-y-3 right-3 z-0 flex flex-col justify-around opacity-35">
+          {Array.from({ length: 3 }).map((_, index) => (
+            <span key={index} className="h-px w-5 bg-black/55" />
+          ))}
+        </div>
+      </>
+    )
+  }
+  if (status === 'running') {
+    return (
+      <>
+        <div className="pointer-events-none absolute inset-x-3 top-2 h-px bg-white/20" />
+        <div className="pointer-events-none absolute inset-x-3 bottom-2 h-px bg-black/70" />
+        <div className="pointer-events-none absolute left-2 top-3 h-1.5 w-1.5 rounded-full bg-white/20 shadow-[0_0_0_1px_rgba(0,0,0,0.55)]" />
+        <div className="pointer-events-none absolute bottom-3 right-2 h-1.5 w-1.5 rounded-full bg-black/45 shadow-[0_0_0_1px_rgba(255,255,255,0.11)]" />
+        {agents.length > 0 && (
+          <div className="pointer-events-none absolute -right-1 top-9 z-0 flex flex-col gap-1">
+            {agents.slice(0, 4).map((agent) => (
+              <span
+                key={agent.session.id}
+                className="h-5 w-2.5 rounded-l-full border border-white/15 bg-black/50"
+                style={{ boxShadow: `inset 2px 0 0 ${(PROFILE_HEX[agent.agentType] ?? PROFILE_HEX.general)}88` }}
+              />
+            ))}
+          </div>
+        )}
+      </>
+    )
+  }
+  if (status === 'blocked') {
+    return (
+      <>
+        <span className="pointer-events-none absolute left-2 top-2 h-4 w-4 border-l border-t border-danger/45" />
+        <span className="pointer-events-none absolute right-2 top-2 h-4 w-4 border-r border-t border-danger/35" />
+        <span className="pointer-events-none absolute bottom-2 left-2 h-4 w-4 border-b border-l border-white/20" />
+        <span className="pointer-events-none absolute bottom-2 right-2 h-4 w-4 border-b border-r border-white/20" />
+        <div className="pointer-events-none absolute inset-x-2 top-3 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent" />
+        <div className="pointer-events-none absolute -right-8 top-0 h-full w-16 rotate-12 bg-white/[0.025]" />
+      </>
+    )
+  }
+  if (status === 'done') {
+    return (
+      <>
+        <div className="pointer-events-none absolute inset-x-3 top-3 h-7 rounded-[3px] border border-ok/20 bg-black/25" />
+        <div className="pointer-events-none absolute right-3 top-5 flex gap-0.5 opacity-45">
+          {Array.from({ length: 8 }).map((_, index) => (
+            <span key={index} className={`h-3 bg-ok/55 ${index % 3 === 0 ? 'w-0.5' : 'w-px'}`} />
+          ))}
+        </div>
+        <div className="pointer-events-none absolute inset-x-4 bottom-3 h-px bg-ok/20" />
+      </>
+    )
+  }
+  if (status === 'cancelled') {
+    return (
+      <>
+        <div className="pointer-events-none absolute inset-0 bg-[repeating-linear-gradient(-35deg,transparent_0,transparent_8px,rgba(255,120,120,0.045)_8px,rgba(255,120,120,0.045)_10px)]" />
+        <div className="pointer-events-none absolute inset-x-4 top-1/2 border-t border-dashed border-danger/25" />
+      </>
+    )
+  }
+  return (
+    <>
+      <div className="pointer-events-none absolute inset-x-4 top-8 border-t border-dashed border-white/12" />
+      <div className="pointer-events-none absolute bottom-3 right-3 h-4 w-4 rounded-full border border-dashed border-white/18" />
+      {selected && <div className="pointer-events-none absolute inset-0 bg-accent/[0.025]" />}
+    </>
+  )
+}
+
 function KanbanCard({
   card,
   agents,
+  selected = false,
+  onSelect,
   onAttach,
   compact = false,
 }: {
   card: KanbanCardView
   agents: AgentView[]
+  selected?: boolean
+  onSelect?: (id: string) => void
   onAttach: (id: string, mode?: 'replace' | 'split') => void
   compact?: boolean
 }) {
   const progress = kanbanCardProgress(card)
   const latest = latestKanbanActivity(card)
   const blocked = card.status === 'blocked'
+  const owner = agents[0]?.session.title || card.assignee || card.createdBy || ''
+  const materialClass = kanbanCardMaterialClass(card.status, selected, Boolean(onSelect))
   return (
     <article
-      className={`rounded-lg bg-black/24 p-3 ring-1 transition ${
-        blocked
-          ? 'ring-danger/30'
-          : card.status === 'running'
-            ? 'ring-accent/25'
-            : card.status === 'done'
-              ? 'ring-ok/20'
-              : 'ring-white/10'
-      }`}
+      role={onSelect ? 'button' : undefined}
+      tabIndex={onSelect ? 0 : undefined}
+      aria-selected={onSelect ? selected : undefined}
+      onClick={() => onSelect?.(card.id)}
+      onKeyDown={(event) => {
+        if (!onSelect) return
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onSelect(card.id)
+        }
+      }}
+      className={materialClass}
     >
-      <div className="flex items-start justify-between gap-2">
+      <KanbanCardMaterial status={card.status} agents={agents} selected={selected} />
+      <div className="relative z-10 flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className="font-mono text-[10px] text-accent">{card.id}</span>
             <span className={`font-mono text-[9px] uppercase ${kanbanStatusClass(card.status)}`}>
               {card.status}
             </span>
+            {typeof card.priority === 'number' && (
+              <span className={`font-mono text-[8.5px] uppercase ${kanbanPriorityClass(card.priority)}`}>
+                p{card.priority}
+              </span>
+            )}
           </div>
           <h3 className="mt-1 line-clamp-2 text-[12px] leading-[1.35] text-fg-0">{card.title}</h3>
+          {owner && (
+            <div className="mt-1 truncate font-mono text-[9px] text-fg-3">
+              owner <span className="text-fg-2">{owner}</span>
+            </div>
+          )}
         </div>
         {agents.length > 0 && (
           <div className="flex shrink-0 -space-x-1">
@@ -1127,7 +1503,10 @@ function KanbanCard({
               <button
                 key={agent.session.id}
                 type="button"
-                onClick={() => onAttach(agent.session.id, 'split')}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  onAttach(agent.session.id, 'split')
+                }}
                 title={agent.session.title || agent.session.id}
                 className="h-6 w-6 rounded-full bg-black/50 ring-1 ring-white/15"
                 style={{ boxShadow: `inset 0 0 0 1px ${(PROFILE_HEX[agent.agentType] ?? PROFILE_HEX.general)}80` }}
@@ -1141,17 +1520,17 @@ function KanbanCard({
           </div>
         )}
       </div>
-      <div className="mt-3 h-1 overflow-hidden rounded-full bg-white/10">
+      <div className={`relative z-10 mt-3 h-1.5 overflow-hidden ${kanbanProgressTrackClass(card.status)}`}>
         <div
-          className={`h-full rounded-full ${blocked ? 'bg-danger/70' : card.status === 'done' ? 'bg-ok/70' : 'bg-accent/70'}`}
+          className={`h-full ${kanbanProgressFillClass(card.status, blocked)}`}
           style={{ width: `${progress}%` }}
         />
       </div>
       {!compact && card.body && (
-        <p className="mt-2 line-clamp-3 text-[10.5px] leading-[1.45] text-fg-2">{card.body}</p>
+        <p className="relative z-10 mt-2 line-clamp-3 text-[10.5px] leading-[1.45] text-fg-2">{card.body}</p>
       )}
       {(card.parents?.length || card.children?.length) && (
-        <div className="mt-2 flex flex-wrap gap-1 font-mono text-[9px] text-fg-3">
+        <div className="relative z-10 mt-2 flex flex-wrap gap-1 font-mono text-[9px] text-fg-3">
           {(card.parents ?? []).slice(0, 3).map((id) => (
             <span key={`p-${id}`} className="rounded bg-white/[0.04] px-1.5 py-0.5 ring-hairline">
               from {id}
@@ -1165,13 +1544,13 @@ function KanbanCard({
         </div>
       )}
       {latest && (
-        <div className="mt-2 line-clamp-2 font-mono text-[9.5px] leading-[1.4] text-fg-3">
+        <div className="relative z-10 mt-2 line-clamp-2 font-mono text-[9.5px] leading-[1.4] text-fg-3">
           <span className="text-fg-1">{latest.label}</span>
           {latest.text ? ` · ${latest.text}` : ''}
         </div>
       )}
       {card.summary && (
-        <div className="mt-2 line-clamp-2 rounded-md bg-white/[0.035] px-2 py-1.5 text-[10px] leading-[1.4] text-fg-2 ring-hairline">
+        <div className="relative z-10 mt-2 line-clamp-2 rounded-md bg-white/[0.035] px-2 py-1.5 text-[10px] leading-[1.4] text-fg-2 ring-hairline">
           {card.summary}
         </div>
       )}
@@ -1192,7 +1571,17 @@ function KanbanAssignmentList({
 }) {
   const cardById = new Map(cards.map((card) => [card.id, card]))
   const assigned = agents.filter((agent) => agent.kanbanTaskId)
+  const planned = cards.filter((card) => card.assignee && !assigned.some((agent) => agent.kanbanTaskId === card.id))
   if (assigned.length === 0) {
+    if (planned.length > 0) {
+      return (
+        <div className="space-y-2">
+          {planned.slice(0, compact ? 5 : 12).map((card) => (
+            <PlannedKanbanAssignment key={card.id} card={card} compact={compact} />
+          ))}
+        </div>
+      )
+    }
     return (
       <EmptyState
         title="No assigned agents"
@@ -1244,6 +1633,40 @@ function KanbanAssignmentList({
           </div>
         )
       })}
+      {planned.length > 0 && (
+        <div className="space-y-2 pt-2">
+          <div className="label text-[8.5px] text-fg-3">planned</div>
+          {planned.slice(0, compact ? 3 : 8).map((card) => (
+            <PlannedKanbanAssignment key={card.id} card={card} compact={compact} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function PlannedKanbanAssignment({
+  card,
+  compact,
+}: {
+  card: KanbanCardView
+  compact?: boolean
+}) {
+  return (
+    <div className="rounded-lg bg-white/[0.028] p-2.5 ring-hairline">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 font-mono text-[9px]">
+            <span className="rounded bg-accent/10 px-1.5 py-0.5 text-accent ring-1 ring-accent/20">{card.id}</span>
+            <span className={kanbanStatusClass(card.status)}>{card.status}</span>
+          </div>
+          <div className="mt-1 truncate text-[12px] text-fg-0">{card.assignee}</div>
+          {!compact && <div className="mt-1 line-clamp-2 text-[10.5px] leading-[1.4] text-fg-2">{card.title}</div>}
+        </div>
+        <span className={`font-mono text-[9px] uppercase ${kanbanPriorityClass(card.priority ?? 2)}`}>
+          p{card.priority ?? 2}
+        </span>
+      </div>
     </div>
   )
 }
@@ -1272,6 +1695,11 @@ function KanbanEventFeed({ cards }: { cards: KanbanCardView[] }) {
               {event.timestamp ? relativeTime(event.timestamp) : 'now'}
             </span>
           </div>
+          {event.actor && (
+            <div className="mt-1 truncate font-mono text-[9px] text-fg-3">
+              {event.kind || 'event'} by <span className="text-fg-2">{event.actor}</span>
+            </div>
+          )}
           <div className="mt-1 line-clamp-2 text-[10.5px] leading-[1.4] text-fg-1">
             {event.message || event.kind || event.card.title}
           </div>
@@ -3105,28 +3533,47 @@ function coordinationLabel(strategy?: CoordinationStrategy): string {
   return 'bus'
 }
 
+function dashboardTabMeta(
+  item: { id: DashboardTab; label: string; hint: string },
+  strategy?: CoordinationStrategy,
+): { label: string; hint: string } {
+  if (strategy !== 'kanban') return item
+  if (item.id === 'overview') return { label: 'health', hint: 'board run' }
+  if (item.id === 'swarm') return { label: 'board', hint: 'cards + lanes' }
+  if (item.id === 'findings') return { label: 'evidence', hint: 'findings' }
+  return item
+}
+
 function collectKanbanCards(events: TelemetryEventView[], agents: AgentView[]): KanbanCardView[] {
   const cards = new Map<string, KanbanCardView>()
   const upsert = (card: Record<string, unknown>, fallbackAt: number) => {
     const id = String(card.id ?? '')
     if (!id) return
+    const existing = cards.get(id)
+    const comments = mergeKanbanComments(existing?.comments, normalizeKanbanComments(card.comments))
+    const history = mergeKanbanEvents(existing?.events, normalizeKanbanEvents(card.events))
+    const parents = normalizeStringArray(card.parents)
+    const children = normalizeStringArray(card.children)
     cards.set(id, {
       id,
-      title: String(card.title ?? id),
-      status: String(card.status ?? 'todo'),
-      body: typeof card.body === 'string' ? card.body : undefined,
-      assignee: typeof card.assignee === 'string' ? card.assignee : undefined,
-      summary: typeof card.summary === 'string' ? card.summary : undefined,
-      result: typeof card.result === 'string' ? card.result : undefined,
-      parents: normalizeStringArray(card.parents),
-      children: normalizeStringArray(card.children),
-      comments: normalizeKanbanComments(card.comments),
-      events: normalizeKanbanEvents(card.events),
+      title: typeof card.title === 'string' ? card.title : existing?.title ?? id,
+      status: typeof card.status === 'string' ? card.status : existing?.status ?? 'todo',
+      body: typeof card.body === 'string' ? card.body : existing?.body,
+      assignee: typeof card.assignee === 'string' ? card.assignee : existing?.assignee,
+      createdBy: typeof card.createdBy === 'string' ? card.createdBy : existing?.createdBy,
+      priority: typeof card.priority === 'number' ? card.priority : existing?.priority,
+      summary: typeof card.summary === 'string' ? card.summary : existing?.summary,
+      result: typeof card.result === 'string' ? card.result : existing?.result,
+      parents: parents.length > 0 ? parents : existing?.parents ?? [],
+      children: children.length > 0 ? children : existing?.children ?? [],
+      comments,
+      events: history,
       agents: [],
       progress: 0,
-      createdAt: typeof card.createdAt === 'number' ? card.createdAt : undefined,
-      updatedAt: typeof card.updatedAt === 'number' ? card.updatedAt : fallbackAt,
-      completedAt: typeof card.completedAt === 'number' ? card.completedAt : undefined,
+      createdAt: typeof card.createdAt === 'number' ? card.createdAt : existing?.createdAt,
+      startedAt: typeof card.startedAt === 'number' ? card.startedAt : existing?.startedAt,
+      updatedAt: typeof card.updatedAt === 'number' ? card.updatedAt : existing?.updatedAt ?? fallbackAt,
+      completedAt: typeof card.completedAt === 'number' ? card.completedAt : existing?.completedAt,
     })
   }
 
@@ -3176,9 +3623,35 @@ function normalizeKanbanEvents(value: unknown): KanbanCardView['events'] {
     .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
     .map((item) => ({
       kind: typeof item.kind === 'string' ? item.kind : undefined,
+      actor: typeof item.actor === 'string' ? item.actor : undefined,
       message: typeof item.message === 'string' ? item.message : undefined,
       timestamp: typeof item.timestamp === 'number' ? item.timestamp : undefined,
+      details: item.details && typeof item.details === 'object'
+        ? item.details as Record<string, unknown>
+        : undefined,
     }))
+}
+
+function mergeKanbanComments(
+  existing: KanbanCardView['comments'] = [],
+  next: KanbanCardView['comments'] = [],
+): KanbanCardView['comments'] {
+  const merged = new Map<string, NonNullable<KanbanCardView['comments']>[number]>()
+  for (const item of [...existing, ...next]) {
+    merged.set(`${item.author ?? ''}:${item.timestamp ?? 0}:${item.body}`, item)
+  }
+  return [...merged.values()].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0))
+}
+
+function mergeKanbanEvents(
+  existing: KanbanCardView['events'] = [],
+  next: KanbanCardView['events'] = [],
+): KanbanCardView['events'] {
+  const merged = new Map<string, NonNullable<KanbanCardView['events']>[number]>()
+  for (const item of [...existing, ...next]) {
+    merged.set(`${item.kind ?? ''}:${item.actor ?? ''}:${item.timestamp ?? 0}:${item.message ?? ''}`, item)
+  }
+  return [...merged.values()].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0))
 }
 
 function kanbanProgress(cards: KanbanCardView[]): number {
@@ -3204,11 +3677,91 @@ function latestKanbanActivity(card: KanbanCardView): { label: string; text: stri
   }))
   const events = (card.events ?? []).map((event) => ({
     at: event.timestamp ?? 0,
-    label: event.kind || 'event',
+    label: event.actor || event.kind || 'event',
     text: event.message || '',
   }))
   const latest = [...comments, ...events].sort((a, b) => b.at - a.at)[0]
   return latest ? { label: latest.label, text: latest.text } : null
+}
+
+function kanbanPriorityClass(priority: number): string {
+  if (priority <= 1) return 'text-danger'
+  if (priority === 2) return 'text-warn'
+  return 'text-fg-3'
+}
+
+function kanbanColumnClass(status: string): string {
+  if (status === 'todo') {
+    return 'border border-dashed border-white/[0.11] bg-[linear-gradient(180deg,rgba(226,222,203,0.028),rgba(0,0,0,0.13))]'
+  }
+  if (status === 'ready') {
+    return 'border border-white/[0.09] bg-[radial-gradient(circle_at_20%_10%,rgba(220,224,207,0.06),transparent_34%),linear-gradient(180deg,rgba(255,255,255,0.024),rgba(0,0,0,0.17))]'
+  }
+  if (status === 'running') {
+    return 'border border-accent/[0.16] bg-[linear-gradient(180deg,rgba(127,184,232,0.035),rgba(0,0,0,0.18))] shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]'
+  }
+  if (status === 'blocked') {
+    return 'border border-danger/[0.16] bg-[linear-gradient(180deg,rgba(255,120,120,0.03),rgba(255,255,255,0.012),rgba(0,0,0,0.18))]'
+  }
+  if (status === 'done') {
+    return 'border border-ok/[0.14] bg-[linear-gradient(180deg,rgba(112,184,103,0.032),rgba(0,0,0,0.19))]'
+  }
+  return 'border border-white/[0.07] bg-white/[0.018]'
+}
+
+function kanbanCardMaterialClass(status: string, selected: boolean, selectable: boolean): string {
+  const base = [
+    'relative overflow-hidden p-3 transition focus:outline-none',
+    selectable ? 'cursor-pointer hover:-translate-y-px' : '',
+    selected
+      ? 'ring-1 ring-accent/60 shadow-[0_0_0_1px_rgba(127,184,232,0.20),0_18px_44px_rgba(0,0,0,0.34),0_0_30px_rgba(127,184,232,0.12)]'
+      : 'ring-1',
+  ].join(' ')
+  if (status === 'todo') {
+    return `${base} rounded-[5px] border border-dashed bg-[linear-gradient(180deg,rgba(231,226,207,0.10),rgba(93,87,73,0.035))] shadow-[inset_0_1px_0_rgba(255,255,255,0.10),0_8px_18px_rgba(0,0,0,0.22)] ${
+      selected ? 'border-accent/45' : 'border-white/22 ring-white/10'
+    }`
+  }
+  if (status === 'ready') {
+    return `${base} rounded-md bg-[linear-gradient(145deg,rgba(214,218,202,0.22),rgba(110,118,108,0.12)_52%,rgba(14,15,13,0.34))] pl-8 shadow-[inset_0_1px_0_rgba(255,255,255,0.18),inset_0_-1px_0_rgba(0,0,0,0.46),0_12px_24px_rgba(0,0,0,0.28)] ${
+      selected ? 'ring-accent/60' : 'ring-white/14'
+    }`
+  }
+  if (status === 'running') {
+    return `${base} rounded-lg border bg-[linear-gradient(145deg,rgba(104,125,135,0.20),rgba(16,18,20,0.58)_58%,rgba(5,6,7,0.72))] shadow-[inset_0_1px_0_rgba(255,255,255,0.17),inset_0_-10px_22px_rgba(0,0,0,0.36),0_14px_26px_rgba(0,0,0,0.34)] ${
+      selected ? 'border-accent/55 ring-accent/60' : 'border-accent/22 ring-accent/25'
+    }`
+  }
+  if (status === 'blocked') {
+    return `${base} rounded-[3px] border bg-[linear-gradient(135deg,rgba(170,210,225,0.11),rgba(255,255,255,0.045)_45%,rgba(255,112,112,0.045))] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06),0_12px_28px_rgba(0,0,0,0.30)] backdrop-blur-sm ${
+      selected ? 'border-accent/45 ring-accent/55' : 'border-danger/26 ring-white/13'
+    }`
+  }
+  if (status === 'done') {
+    return `${base} rounded-md border bg-[linear-gradient(180deg,rgba(85,116,80,0.24),rgba(26,32,25,0.54)_42%,rgba(8,11,8,0.72))] pt-12 shadow-[inset_0_1px_0_rgba(255,255,255,0.10),inset_0_-1px_0_rgba(112,184,103,0.16),0_12px_22px_rgba(0,0,0,0.30)] ${
+      selected ? 'border-accent/42 ring-accent/55' : 'border-ok/25 ring-ok/18'
+    }`
+  }
+  if (status === 'cancelled') {
+    return `${base} rounded-[5px] border border-danger/16 bg-[linear-gradient(180deg,rgba(130,90,90,0.07),rgba(0,0,0,0.25))] opacity-70 ring-danger/16`
+  }
+  return `${base} rounded-lg bg-black/24 ring-white/10`
+}
+
+function kanbanProgressTrackClass(status: string): string {
+  if (status === 'ready') return 'rounded-[2px] bg-black/35 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)]'
+  if (status === 'running') return 'rounded-[2px] bg-black/55 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.10)]'
+  if (status === 'done') return 'rounded-[1px] bg-black/50'
+  if (status === 'blocked') return 'rounded-[1px] bg-danger/10'
+  return 'rounded-full bg-white/10'
+}
+
+function kanbanProgressFillClass(status: string, blocked: boolean): string {
+  if (blocked || status === 'cancelled') return 'rounded-[1px] bg-danger/70'
+  if (status === 'done') return 'rounded-[1px] bg-ok/75 shadow-[0_0_14px_rgba(112,184,103,0.22)]'
+  if (status === 'running') return 'rounded-[1px] bg-accent/80 shadow-[0_0_16px_rgba(127,184,232,0.22)]'
+  if (status === 'ready') return 'rounded-[1px] bg-[linear-gradient(90deg,rgba(127,184,232,0.70),rgba(220,224,207,0.55))]'
+  return 'rounded-full bg-accent/70'
 }
 
 function kanbanStatusClass(status: string): string {
