@@ -27,6 +27,7 @@ interface AgentView {
   tokensOut: number
   elapsedMs: number
   kanbanTaskId?: string
+  taskId?: string
 }
 
 interface BusEventView extends BusMessageRecord {
@@ -58,6 +59,20 @@ interface KanbanCardView {
   startedAt?: number
   updatedAt?: number
   completedAt?: number
+}
+
+interface GoalStateView {
+  goal: string
+  status: string
+  turnsUsed: number
+  maxTurns: number
+  pauseReason?: string
+  lastVerdict?: {
+    done?: boolean
+    reason?: string
+    confidence?: number
+  } | null
+  events: TelemetryEventView[]
 }
 
 interface ProfileDefinition {
@@ -320,6 +335,7 @@ export function MissionDashboard() {
           parentSub?.elapsedMs ??
           ((session.completedAt ?? Date.now()) - session.createdAt),
         kanbanTaskId: session.kanbanTaskId ?? parentSub?.kanbanTaskId,
+        taskId: session.taskId ?? parentSub?.taskId,
       }
     })
 
@@ -343,6 +359,7 @@ export function MissionDashboard() {
           task: sub.task,
           agentType: sub.agentType,
           kanbanTaskId: sub.kanbanTaskId,
+          taskId: sub.taskId,
           completed: sub.state === 'done' || sub.state === 'failed' || sub.state === 'cancelled',
           success: sub.state === 'done',
         },
@@ -355,6 +372,7 @@ export function MissionDashboard() {
         tokensOut: sub.tokensOut,
         elapsedMs: sub.elapsedMs,
         kanbanTaskId: sub.kanbanTaskId,
+        taskId: sub.taskId,
       }))
 
     const computerAgents: AgentView[] = Object.values(computerSessions)
@@ -428,6 +446,7 @@ export function MissionDashboard() {
         ].includes(event.subtype),
       )
     const kanbanCards = collectKanbanCards(systemEventViews, agents)
+    const goalState = collectGoalState(systemEventViews)
 
     const allFileChanges = dedupeBy(
       slices.flatMap(({ slice }) => slice.fileChanges),
@@ -459,6 +478,7 @@ export function MissionDashboard() {
       readEvents: busEvents.filter((event) => event.topic === 'read'),
       telemetryEvents,
       kanbanCards,
+      goalState,
       fileChanges: allFileChanges,
       artifacts: allArtifacts,
       toolCalls: allToolCalls,
@@ -620,6 +640,7 @@ export function MissionDashboard() {
             screenshotFrames={dashboard.screenshotFrames}
             telemetryEvents={dashboard.telemetryEvents}
             kanbanCards={dashboard.kanbanCards}
+            goalState={dashboard.goalState}
             skillsCount={dashboard.skillsCount}
             memoriesCount={dashboard.memoriesCount}
             onTab={setTab}
@@ -635,6 +656,7 @@ export function MissionDashboard() {
             busEvents={dashboard.busEvents}
             findings={dashboard.findings}
             kanbanCards={dashboard.kanbanCards}
+            goalState={dashboard.goalState}
             fileChanges={dashboard.fileChanges}
             source={dashboard.missionSession}
             onAttach={attach}
@@ -678,6 +700,7 @@ function OverviewTab({
   screenshotFrames,
   telemetryEvents,
   kanbanCards,
+  goalState,
   skillsCount,
   memoriesCount,
   onTab,
@@ -699,6 +722,7 @@ function OverviewTab({
   screenshotFrames: number
   telemetryEvents: TelemetryEventView[]
   kanbanCards: KanbanCardView[]
+  goalState: GoalStateView | null
   skillsCount: number
   memoriesCount: number
   onTab: (tab: DashboardTab) => void
@@ -716,6 +740,23 @@ function OverviewTab({
         runningAgents={runningAgents}
         agents={agents}
         cards={kanbanCards}
+        cost={cost}
+        toolsCount={toolsCount}
+        screenshotFrames={screenshotFrames}
+        compactions={compactions}
+        onAttach={onAttach}
+        onTab={onTab}
+      />
+    )
+  }
+  if (coordinationStrategy === 'goal') {
+    return (
+      <GoalHealthView
+        objective={objective}
+        contextPct={contextPct}
+        runningAgents={runningAgents}
+        agents={agents}
+        goalState={goalState}
         cost={cost}
         toolsCount={toolsCount}
         screenshotFrames={screenshotFrames}
@@ -827,6 +868,7 @@ function SwarmTab({
   busEvents,
   findings,
   kanbanCards,
+  goalState,
   fileChanges,
   source,
   onAttach,
@@ -836,6 +878,7 @@ function SwarmTab({
   busEvents: BusEventView[]
   findings: BusEventView[]
   kanbanCards: KanbanCardView[]
+  goalState: GoalStateView | null
   fileChanges: FileChangeSet[]
   source: SessionSnapshot | undefined
   onAttach: (id: string, mode?: 'replace' | 'split') => void
@@ -846,6 +889,17 @@ function SwarmTab({
         cards={kanbanCards}
         agents={agents}
         source={source}
+        onAttach={onAttach}
+      />
+    )
+  }
+  if (coordinationStrategy === 'goal') {
+    return (
+      <GoalLoopAgentsView
+        goalState={goalState}
+        agents={agents}
+        busEvents={busEvents}
+        findings={findings}
         onAttach={onAttach}
       />
     )
@@ -886,6 +940,205 @@ function SwarmTab({
           </div>
         </div>
       </section>
+    </div>
+  )
+}
+
+function GoalHealthView({
+  objective,
+  contextPct,
+  runningAgents,
+  agents,
+  goalState,
+  cost,
+  toolsCount,
+  screenshotFrames,
+  compactions,
+  onAttach,
+  onTab,
+}: {
+  objective: string
+  contextPct: number
+  runningAgents: number
+  agents: AgentView[]
+  goalState: GoalStateView | null
+  cost: number
+  toolsCount: number
+  screenshotFrames: number
+  compactions: number
+  onAttach: (id: string, mode?: 'replace' | 'split') => void
+  onTab: (tab: DashboardTab) => void
+}) {
+  const status = goalState?.status ?? 'idle'
+  const turnsUsed = goalState?.turnsUsed ?? 0
+  const maxTurns = goalState?.maxTurns ?? 20
+  const turnPct = Math.min(100, Math.round((turnsUsed / Math.max(1, maxTurns)) * 100))
+  const verdict = goalState?.lastVerdict
+  const continuations = goalState?.events.filter((event) => event.subtype === 'goal_continue').length ?? 0
+  const judges = goalState?.events.filter((event) => event.subtype === 'goal_judge').length ?? 0
+
+  return (
+    <div className="grid min-h-0 flex-1 grid-cols-12 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden">
+      <div className="col-span-12 grid grid-cols-2 gap-3 xl:grid-cols-8">
+        <MetricCard label="goal" value={status} sub={`${turnsUsed}/${maxTurns} turns`} meter={turnPct} tone={goalStatusTone(status)} />
+        <MetricCard label="judge calls" value={String(judges)} sub={`${continuations} continuations`} tone="accent" />
+        <MetricCard label="active agents" value={String(runningAgents)} sub={`${agents.length} total`} tone="ok" />
+        <MetricCard label="context" value={`${contextPct}%`} sub="current request" meter={contextPct} />
+        <MetricCard label="tool calls" value={String(toolsCount)} sub="mission total" />
+        <MetricCard label="screenshots" value={String(screenshotFrames)} sub="captured" tone="accent" />
+        <MetricCard label="summaries" value={String(compactions)} sub="context history" tone={compactions > 0 ? 'ok' : 'neutral'} />
+        <MetricCard label="spend" value={formatCost(cost)} sub="mission total" />
+      </div>
+
+      <section className="col-span-12 flex min-h-0 flex-col rounded-xl glass-strong p-4 xl:col-span-4">
+        <PanelHeader label="active goal" action="profiles" onAction={() => onTab('profiles')} />
+        <div className="mt-3 max-h-[220px] shrink-0 overflow-auto rounded-lg bg-white/[0.035] p-3 ring-hairline">
+          <div className="label mb-2 text-fg-2">objective</div>
+          <p className="selectable text-[13px] leading-[1.55] text-fg-0">
+            {goalState?.goal || objective}
+          </p>
+        </div>
+        <div className="mt-3 grid shrink-0 grid-cols-2 gap-2">
+          <BriefStat label="strategy" value="goal" />
+          <BriefStat label="status" value={status} tone={status === 'paused' ? 'danger' : status === 'done' ? 'ok' : undefined} />
+          <BriefStat label="turns" value={`${turnsUsed}/${maxTurns}`} />
+          <BriefStat label="confidence" value={verdict?.confidence !== undefined ? `${Math.round((verdict.confidence ?? 0) * 100)}%` : 'n/a'} />
+        </div>
+        <div className="mt-3 shrink-0 rounded-lg bg-black/20 p-3 ring-hairline">
+          <div className="label mb-2">latest judge</div>
+          <p className="text-[12px] leading-[1.55] text-fg-1">
+            {verdict?.reason || 'No judge verdict yet. The first assistant turn will arm the loop.'}
+          </p>
+        </div>
+        <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-lg bg-black/20 p-3 ring-hairline">
+          <div className="label mb-3">agent roster</div>
+          <div className="space-y-2">
+            {agents.slice(0, 8).map((agent) => (
+              <CompactAgentRow key={agent.session.id} agent={agent} onAttach={onAttach} />
+            ))}
+            {agents.length === 0 && (
+              <EmptyState title="Same-session loop" body="Goal mode keeps iterating in the parent session. Delegated agents appear here if the loop spawns them." />
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section className="col-span-12 flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4 xl:col-span-8">
+        <PanelHeader label="judge timeline" action="agents" onAction={() => onTab('swarm')} />
+        <GoalTimeline goalState={goalState} />
+      </section>
+    </div>
+  )
+}
+
+function GoalLoopAgentsView({
+  goalState,
+  agents,
+  busEvents,
+  findings,
+  onAttach,
+}: {
+  goalState: GoalStateView | null
+  agents: AgentView[]
+  busEvents: BusEventView[]
+  findings: BusEventView[]
+  onAttach: (id: string, mode?: 'replace' | 'split') => void
+}) {
+  return (
+    <div className="grid min-h-0 flex-1 grid-cols-12 gap-3 overflow-hidden">
+      <section className="col-span-12 flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4 xl:col-span-8">
+        <PanelHeader label="goal loop" />
+        <div className="mt-3 grid shrink-0 grid-cols-3 gap-2">
+          <BriefStat label="status" value={goalState?.status ?? 'idle'} />
+          <BriefStat label="turn budget" value={`${goalState?.turnsUsed ?? 0}/${goalState?.maxTurns ?? 20}`} />
+          <BriefStat label="agents" value={String(agents.length)} />
+        </div>
+        <div className="mt-3 min-h-0 flex-1 overflow-hidden rounded-lg bg-black/25 ring-hairline">
+          <GoalTimeline goalState={goalState} dense />
+        </div>
+      </section>
+      <section className="col-span-12 grid min-h-0 grid-rows-[minmax(0,1fr)_220px] gap-3 xl:col-span-4">
+        <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
+          <PanelHeader label="delegated lanes" />
+          <div className="mt-3 min-h-0 flex-1 overflow-auto pr-1">
+            <AgentLaneList agents={agents} onAttach={onAttach} />
+          </div>
+        </div>
+        <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
+          <PanelHeader label="side channel" />
+          {busEvents.length > 0 ? (
+            <BusFeed events={busEvents} />
+          ) : (
+            <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-auto pr-1">
+              {findings.slice(0, 3).map((event) => (
+                <FindingCard
+                  key={`${event.sessionId}-${event.index}-${event.timestamp}`}
+                  event={event}
+                  compact
+                />
+              ))}
+              {findings.length === 0 && (
+                <EmptyState title="No side-channel traffic" body="Goal mode is same-session by default. Bus messages appear only if delegated agents publish them." />
+              )}
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function GoalTimeline({ goalState, dense = false }: { goalState: GoalStateView | null; dense?: boolean }) {
+  const events = goalState?.events ?? []
+  return (
+    <div className={`min-h-0 flex-1 overflow-auto ${dense ? 'p-3' : 'mt-3 pr-1'}`}>
+      {events.length === 0 && (
+        <EmptyState
+          title="No goal loop events yet"
+          body="Start a goal session or run /goal <objective>. Judge decisions and continuations will appear here."
+        />
+      )}
+      <div className="space-y-2">
+        {events.map((event) => {
+          const state = event.details?.goalState as Record<string, unknown> | undefined
+          const verdict = (event.details?.verdict as Record<string, unknown> | undefined) ?? (state?.lastVerdict as Record<string, unknown> | undefined)
+          return (
+            <div
+              key={event.id}
+              className={`rounded-lg bg-white/[0.035] p-3 ring-hairline ${
+                event.subtype === 'goal_done'
+                  ? 'ring-ok/30'
+                  : event.subtype === 'goal_paused'
+                    ? 'ring-warn/30'
+                    : event.subtype === 'goal_continue'
+                      ? 'ring-accent/25'
+                      : ''
+              }`}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <span className={`h-2 w-2 rounded-full ${goalEventDot(event.subtype)}`} />
+                  <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-fg-0">
+                    {event.subtype.replace(/^goal_/, '').replace(/_/g, ' ')}
+                  </span>
+                </div>
+                <span className="font-mono text-[9px] text-fg-3">{relativeTime(event.at)}</span>
+              </div>
+              <p className="mt-2 text-[12px] leading-[1.5] text-fg-1">{event.message}</p>
+              {verdict?.reason && (
+                <div className="mt-2 rounded-md bg-black/25 px-2.5 py-2 text-[11px] leading-[1.45] text-fg-2 ring-hairline">
+                  {String(verdict.reason)}
+                </div>
+              )}
+              {event.subtype === 'goal_continue' && event.details?.continuationPrompt && (
+                <div className="mt-2 max-h-[90px] overflow-auto rounded-md bg-black/25 px-2.5 py-2 font-mono text-[10px] leading-[1.45] text-fg-3 ring-hairline">
+                  {String(event.details.continuationPrompt)}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
@@ -3529,7 +3782,8 @@ function statusTextClass(status: AgentView['status']): string {
 
 function coordinationLabel(strategy?: CoordinationStrategy): string {
   if (strategy === 'kanban') return 'board'
-  if (strategy === 'isolated') return 'solo'
+  if (strategy === 'isolated') return 'tasks'
+  if (strategy === 'goal') return 'goal'
   return 'bus'
 }
 
@@ -3537,11 +3791,50 @@ function dashboardTabMeta(
   item: { id: DashboardTab; label: string; hint: string },
   strategy?: CoordinationStrategy,
 ): { label: string; hint: string } {
-  if (strategy !== 'kanban') return item
-  if (item.id === 'overview') return { label: 'health', hint: 'board run' }
-  if (item.id === 'swarm') return { label: 'board', hint: 'cards + lanes' }
-  if (item.id === 'findings') return { label: 'evidence', hint: 'findings' }
+  if (strategy === 'kanban') {
+    if (item.id === 'overview') return { label: 'health', hint: 'board run' }
+    if (item.id === 'swarm') return { label: 'board', hint: 'cards + lanes' }
+    if (item.id === 'findings') return { label: 'evidence', hint: 'findings' }
+  }
+  if (strategy === 'goal') {
+    if (item.id === 'overview') return { label: 'goal', hint: 'judge loop' }
+    if (item.id === 'swarm') return { label: 'loop', hint: 'turns + agents' }
+  }
   return item
+}
+
+function collectGoalState(events: TelemetryEventView[]): GoalStateView | null {
+  const goalEvents = events
+    .filter((event) => event.subtype.startsWith('goal_'))
+    .sort((a, b) => b.at - a.at)
+  if (goalEvents.length === 0) return null
+  const stateEvent = goalEvents.find((event) => event.details?.goalState)
+  const state = stateEvent?.details?.goalState as Record<string, unknown> | undefined
+  const lastVerdict = state?.lastVerdict as GoalStateView['lastVerdict'] | undefined
+  return {
+    goal: String(state?.goal ?? ''),
+    status: String(state?.status ?? 'active'),
+    turnsUsed: Number(state?.turnsUsed ?? 0),
+    maxTurns: Number(state?.maxTurns ?? 20),
+    pauseReason: typeof state?.pauseReason === 'string' ? state.pauseReason : undefined,
+    lastVerdict: lastVerdict ?? null,
+    events: goalEvents,
+  }
+}
+
+function goalStatusTone(status: string): 'neutral' | 'accent' | 'ok' | 'warn' {
+  if (status === 'done') return 'ok'
+  if (status === 'paused' || status === 'cleared') return 'warn'
+  if (status === 'active') return 'accent'
+  return 'neutral'
+}
+
+function goalEventDot(subtype: string): string {
+  if (subtype === 'goal_done') return 'bg-ok'
+  if (subtype === 'goal_paused' || subtype === 'goal_error') return 'bg-warn'
+  if (subtype === 'goal_continue') return 'bg-accent'
+  if (subtype === 'goal_judge') return 'bg-fg-1'
+  return 'bg-fg-3'
 }
 
 function collectKanbanCards(events: TelemetryEventView[], agents: AgentView[]): KanbanCardView[] {

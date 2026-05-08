@@ -331,8 +331,9 @@ async def _main() -> None:
                 "coordinationStrategy": "bus",
                 "coordinationStrategies": [
                     {"id": "bus", "label": "Message bus"},
-                    {"id": "isolated", "label": "Isolated"},
+                    {"id": "isolated", "label": "Tasks"},
                     {"id": "kanban", "label": "Kanban"},
+                    {"id": "goal", "label": "Goal loop"},
                 ],
                 "models": _annotate_models(AVAILABLE_MODELS),
             },
@@ -1264,6 +1265,8 @@ class _BridgeSession:
         from bridge.tools.message_bus import SessionMessageBus
         self.message_bus: SessionMessageBus = SessionMessageBus()
         self.kanban_board: Any | None = None
+        self.goal_state: Any | None = None
+        self._turn_text_parts: list[str] = []
         self._tool_list = ""
         self._agent_types_section = ""
         self._base_system_prompt = ""
@@ -1506,6 +1509,8 @@ class _BridgeSession:
         self._base_system_prompt = ""
         self._system_prompt = ""
         self.kanban_board = None
+        self.goal_state = None
+        self._turn_text_parts = []
 
     async def try_restore_transcript(self) -> bool:
         """Attempt to restore engine transcript from disk.
@@ -2238,12 +2243,182 @@ class _BridgeSession:
             "use_latest_user_image=true."
         )
 
+    def _emit_goal_event(
+        self,
+        subtype: str,
+        message: str,
+        *,
+        details: dict[str, Any] | None = None,
+        chat_visible: bool = False,
+    ) -> None:
+        payload = dict(details or {})
+        if self.goal_state is not None:
+            payload.setdefault("goalState", self.goal_state.to_dict())
+        payload.setdefault("chatVisible", chat_visible)
+        emit(
+            {
+                "type": "system_event",
+                "sessionId": self.id,
+                "subtype": subtype,
+                "message": message,
+                "details": payload,
+            }
+        )
+
+    def _set_goal(self, goal: str, *, max_turns: int | None = None, source: str = "user") -> None:
+        from bridge.tools.goal_loop import GoalState
+
+        clean_goal = goal.strip()
+        if not clean_goal:
+            return
+        budget = max(1, min(int(max_turns or 20), 100))
+        self.goal_state = GoalState(goal=clean_goal, max_turns=budget)
+        self._emit_goal_event(
+            "goal_set",
+            f"Goal loop armed ({budget} turn budget)",
+            details={"source": source},
+            chat_visible=True,
+        )
+
+    def _pause_goal(self, reason: str = "paused") -> None:
+        if self.goal_state is None:
+            return
+        self.goal_state.status = "paused"
+        self.goal_state.pause_reason = reason
+        self.goal_state.updated_at = time.time()
+        self._emit_goal_event("goal_paused", f"Goal paused: {reason}", chat_visible=True)
+
+    def _resume_goal(self) -> None:
+        if self.goal_state is None:
+            return
+        self.goal_state.status = "active"
+        self.goal_state.pause_reason = ""
+        self.goal_state.updated_at = time.time()
+        self._emit_goal_event("goal_resumed", "Goal loop resumed", chat_visible=True)
+
+    def _clear_goal(self, status: str = "cleared") -> None:
+        if self.goal_state is None:
+            return
+        self.goal_state.status = status
+        self.goal_state.updated_at = time.time()
+        self._emit_goal_event(
+            "goal_done" if status == "done" else "goal_cleared",
+            "Goal marked done" if status == "done" else "Goal cleared",
+            chat_visible=True,
+        )
+
+    async def _judge_goal(self, latest_response: str) -> Any:
+        from bridge.tools.base import ToolRegistry
+        from bridge.tools.goal_loop import (
+            GOAL_JUDGE_SYSTEM_PROMPT,
+            GOAL_JUDGE_USER_TEMPLATE,
+            GoalVerdict,
+            parse_goal_verdict,
+        )
+        from engine.runner import AsyncAgentRunner, StopCondition
+        from engine.session import Session
+
+        if self.goal_state is None:
+            return GoalVerdict(done=True, reason="No active goal.", confidence=1.0)
+
+        judge_session = Session.create(
+            system_prompt=GOAL_JUDGE_SYSTEM_PROMPT,
+            tools=[],
+            session_id=f"{self.id}-goal-judge-{int(time.time() * 1000):x}",
+        )
+        judge_provider = build_provider(self.model_id, thinking_level="none")
+        judge_runner = AsyncAgentRunner(
+            provider=judge_provider,
+            compaction_strategy=SummaryCompaction(),
+            tool_registry=ToolRegistry(),
+            thinking=_thinking_config_for_model(self.model_id, "none"),
+        )
+        prompt = GOAL_JUDGE_USER_TEMPLATE.format(
+            goal=self.goal_state.goal,
+            response=(latest_response or "").strip()[:12000],
+        )
+        try:
+            result = await judge_runner.run(
+                judge_session,
+                prompt,
+                stream=False,
+                stop_condition=StopCondition(max_iterations=1),
+            )
+            return parse_goal_verdict(result.response or "")
+        except Exception as exc:  # noqa: BLE001
+            return GoalVerdict(
+                done=False,
+                reason=f"Goal judge failed ({exc}); continuing conservatively.",
+                confidence=0.0,
+                raw=str(exc),
+            )
+
+    async def _maybe_continue_goal(self, latest_response: str) -> None:
+        from bridge.tools.coordination import STRATEGY_GOAL
+
+        if self.coordination_strategy != STRATEGY_GOAL:
+            return
+        goal = self.goal_state
+        if goal is None or not goal.active:
+            return
+        if self.queued_messages:
+            self._emit_goal_event(
+                "goal_preempted",
+                "Goal continuation paused for queued user input",
+                details={"queueDepth": len(self.queued_messages)},
+            )
+            return
+
+        goal.turns_used += 1
+        goal.updated_at = time.time()
+        verdict = await self._judge_goal(latest_response)
+        goal.last_verdict = verdict
+        goal.updated_at = time.time()
+        self._emit_goal_event(
+            "goal_judge",
+            ("Goal satisfied" if verdict.done else "Goal still active"),
+            details={"verdict": verdict.to_dict()},
+            chat_visible=verdict.done,
+        )
+
+        if verdict.done:
+            goal.status = "done"
+            goal.updated_at = time.time()
+            self._emit_goal_event(
+                "goal_done",
+                f"Goal complete: {verdict.reason}",
+                details={"verdict": verdict.to_dict()},
+                chat_visible=True,
+            )
+            return
+
+        if goal.turns_used >= goal.max_turns:
+            goal.status = "paused"
+            goal.pause_reason = "turn budget exhausted"
+            goal.updated_at = time.time()
+            self._emit_goal_event(
+                "goal_paused",
+                f"Goal paused after {goal.turns_used}/{goal.max_turns} turns",
+                details={"reason": goal.pause_reason},
+                chat_visible=True,
+            )
+            return
+
+        continuation = goal.continuation_prompt()
+        self._emit_goal_event(
+            "goal_continue",
+            f"Continuing goal loop ({goal.turns_used}/{goal.max_turns})",
+            details={"continuationPrompt": continuation},
+        )
+        await self.run_turn(continuation, None, is_goal_continuation=True)
+
     async def run_turn(
         self,
         user_content: str,
         attachments: list[dict[str, Any]] | None = None,
         *,
         pre_formed_message: Any = None,
+        is_goal_continuation: bool = False,
     ) -> None:
         await self.initialize()
         if self.runner is None or self.session is None:
@@ -2284,10 +2459,20 @@ class _BridgeSession:
             except Exception as be:  # noqa: BLE001
                 log("warn", f"pre-turn image sanitize failed: {be}")
 
+        if (
+            self.coordination_strategy == "goal"
+            and self.goal_state is None
+            and not is_goal_continuation
+            and pre_formed_message is None
+            and user_content.strip()
+        ):
+            self._set_goal(user_content, source="first_message")
+
         self._refresh_knowledge_context(user_content)
 
         self.turn_counter += 1
         self.current_turn_id = f"turn-{self.turn_counter}"
+        self._turn_text_parts = []
         emit({"type": "turn_start", "sessionId": self.id, "turnId": self.current_turn_id})
 
         if pre_formed_message is not None:
@@ -2366,6 +2551,11 @@ class _BridgeSession:
             # Persist transcript after successful turn so session can
             # be resumed after app restart.
             self._save_transcript()
+            latest_response = (getattr(result, "response", None) or "").strip()
+            if not latest_response:
+                latest_response = "".join(self._turn_text_parts).strip()
+            if result.success:
+                await self._maybe_continue_goal(latest_response)
         except asyncio.CancelledError:
             # CRITICAL: backfill synthetic tool_results for any
             # tool_use blocks the runner emitted before the cancel
@@ -2415,11 +2605,13 @@ class _BridgeSession:
         try:
             etype = getattr(event, "type", None)
             if etype == "text_delta":
+                text = getattr(event, "text", "")
+                self._turn_text_parts.append(text)
                 emit(
                     {
                         "type": "text_delta",
                         "sessionId": self.id,
-                        "text": getattr(event, "text", ""),
+                        "text": text,
                     }
                 )
             elif etype == "thinking_delta":
@@ -2895,6 +3087,67 @@ def _force_cancel_session(sess: "_BridgeSession") -> int:
     return fired
 
 
+async def _run_turn_queue(
+    sess: "_BridgeSession",
+    content: str,
+    attachments: list[dict[str, Any]] | None,
+) -> None:
+    try:
+        await sess.run_turn(content, attachments)
+    except asyncio.CancelledError:
+        log("info", f"turn cancelled (session={sess.id})")
+    except Exception as exc:  # noqa: BLE001
+        log("error", f"turn failed (session={sess.id}): {exc}")
+
+    # Drain the queue: process any messages the user sent while this
+    # turn was running. Goal-loop continuation checks the same queue
+    # before auto-continuing, so real user input preempts automation.
+    while sess.queued_messages:
+        q_content, q_attachments = sess.queued_messages.pop(0)
+        log(
+            "info",
+            f"processing queued message on session={sess.id} "
+            f"({len(sess.queued_messages)} remaining)",
+        )
+        try:
+            await sess.run_turn(q_content, q_attachments)
+        except asyncio.CancelledError:
+            log("info", f"queued turn cancelled (session={sess.id})")
+            break
+        except Exception as exc:  # noqa: BLE001
+            log("error", f"queued turn failed (session={sess.id}): {exc}")
+
+
+def _schedule_or_queue_turn(
+    sess: "_BridgeSession",
+    content: str,
+    attachments: list[dict[str, Any]] | None = None,
+) -> bool:
+    if sess.pending_task and not sess.pending_task.done():
+        sess.queued_messages.append((content, attachments))
+        log(
+            "info",
+            f"queued message on session={sess.id} "
+            f"(queue depth: {len(sess.queued_messages)})",
+        )
+        emit(
+            {
+                "type": "system_event",
+                "sessionId": sess.id,
+                "subtype": "message_queued",
+                "message": f"Message queued — will send after current turn ({len(sess.queued_messages)} in queue)",
+                "details": {"queueDepth": len(sess.queued_messages)},
+            }
+        )
+        return False
+
+    sess.pending_task = asyncio.create_task(
+        _run_turn_queue(sess, content, attachments),
+        name=f"turn-{sess.id}",
+    )
+    return True
+
+
 async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
     ctype = cmd.get("type")
     session_id = cmd.get("sessionId") or state.active_session_id
@@ -3121,6 +3374,64 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         )
         return
 
+    if ctype == "goal_control":
+        if not session_id:
+            return
+        sess = await state.ensure_session(
+            session_id,
+            model_id=cmd.get("model"),
+            reasoning_level=cmd.get("reasoningLevel"),
+            coordination_strategy=cmd.get("coordinationStrategy")
+            if state.get(session_id) is None
+            else None,
+        )
+        action = str(cmd.get("action") or "status").strip().lower()
+        if action == "set":
+            goal = str(cmd.get("goal") or "").strip()
+            if not goal:
+                sess._emit_goal_event(
+                    "goal_error",
+                    "Goal command missing objective",
+                    chat_visible=True,
+                )
+                return
+            max_turns = cmd.get("maxTurns")
+            try:
+                budget = int(max_turns) if max_turns is not None else None
+            except Exception:
+                budget = None
+            sess._set_goal(goal, max_turns=budget, source="slash")
+            _schedule_or_queue_turn(sess, goal, None)
+            return
+        if action == "pause":
+            sess._pause_goal(str(cmd.get("reason") or "user paused goal"))
+            return
+        if action == "resume":
+            sess._resume_goal()
+            return
+        if action in {"clear", "stop"}:
+            sess._clear_goal("cleared")
+            return
+        if action == "done":
+            sess._clear_goal("done")
+            return
+        # status/default
+        if sess.goal_state is None:
+            sess._emit_goal_event(
+                "goal_status",
+                "No active goal",
+                details={"goalState": None},
+                chat_visible=True,
+            )
+        else:
+            goal = sess.goal_state
+            sess._emit_goal_event(
+                "goal_status",
+                f"Goal {goal.status}: {goal.turns_used}/{goal.max_turns} turns",
+                chat_visible=True,
+            )
+        return
+
     if ctype == "new_session":
         if not session_id:
             session_id = f"desktop-{int(time.time() * 1000):x}"
@@ -3237,62 +3548,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             coordination_strategy=cmd.get("coordinationStrategy"),
         )
 
-        # If a turn is already running, QUEUE the message instead of
-        # cancelling. The task runner drains the queue after each turn
-        # completes, so the user's follow-up is processed as the next
-        # turn without losing in-flight work (subagents, tool calls).
-        if sess.pending_task and not sess.pending_task.done():
-            sess.queued_messages.append((content, attachments))
-            log(
-                "info",
-                f"queued message on session={sess.id} "
-                f"(queue depth: {len(sess.queued_messages)})",
-            )
-            emit(
-                {
-                    "type": "system_event",
-                    "sessionId": sess.id,
-                    "subtype": "message_queued",
-                    "message": f"Message queued — will send after current turn ({len(sess.queued_messages)} in queue)",
-                    "details": {"queueDepth": len(sess.queued_messages)},
-                }
-            )
-            return
-
-        # Fire-and-forget: the command loop MUST NOT block on this
-        # await. If it did, subsequent commands (including `cancel`
-        # and further `send_message`s) would sit unread in stdin
-        # until the current turn completed. We wrap the runner in a
-        # small shim that logs termination reasons so failures don't
-        # disappear silently.
-        async def _run_and_log() -> None:
-            try:
-                await sess.run_turn(content, attachments)
-            except asyncio.CancelledError:
-                log("info", f"turn cancelled (session={sess.id})")
-            except Exception as exc:  # noqa: BLE001
-                log("error", f"turn failed (session={sess.id}): {exc}")
-            # Drain the queue: process any messages the user sent while
-            # this turn was running. Each queued message becomes its own
-            # turn so the conversation stays well-structured.
-            while sess.queued_messages:
-                q_content, q_attachments = sess.queued_messages.pop(0)
-                log(
-                    "info",
-                    f"processing queued message on session={sess.id} "
-                    f"({len(sess.queued_messages)} remaining)",
-                )
-                try:
-                    await sess.run_turn(q_content, q_attachments)
-                except asyncio.CancelledError:
-                    log("info", f"queued turn cancelled (session={sess.id})")
-                    break
-                except Exception as exc:  # noqa: BLE001
-                    log("error", f"queued turn failed (session={sess.id}): {exc}")
-
-        sess.pending_task = asyncio.create_task(
-            _run_and_log(), name=f"turn-{sess.id}"
-        )
+        _schedule_or_queue_turn(sess, content, attachments)
         return
 
     if ctype == "edit_user_message":

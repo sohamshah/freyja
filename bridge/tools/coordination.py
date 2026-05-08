@@ -8,6 +8,7 @@ from dataclasses import dataclass
 STRATEGY_BUS = "bus"
 STRATEGY_ISOLATED = "isolated"
 STRATEGY_KANBAN = "kanban"
+STRATEGY_GOAL = "goal"
 
 
 @dataclass(frozen=True)
@@ -28,14 +29,19 @@ COORDINATION_STRATEGIES: dict[str, CoordinationStrategy] = {
     ),
     STRATEGY_ISOLATED: CoordinationStrategy(
         id=STRATEGY_ISOLATED,
-        label="Isolated",
-        summary="Hermes delegate-style mode: leaf agents work independently; the parent synthesizes.",
+        label="Tasks",
+        summary="Solo/task mode: the parent keeps an explicit task ledger and allocates work as needed.",
     ),
     STRATEGY_KANBAN: CoordinationStrategy(
         id=STRATEGY_KANBAN,
         label="Kanban",
         summary="Board-driven mode: plan cards, link dependencies, assign agents, and report progress through a shared board.",
         uses_kanban=True,
+    ),
+    STRATEGY_GOAL: CoordinationStrategy(
+        id=STRATEGY_GOAL,
+        label="Goal loop",
+        summary="Same-session autonomous continuation: a judge checks the goal after every turn and keeps the session moving until done.",
     ),
 }
 
@@ -50,7 +56,11 @@ def normalize_coordination_strategy(value: str | None) -> str:
         "delegation": STRATEGY_ISOLATED,
         "solo": STRATEGY_ISOLATED,
         "board": STRATEGY_KANBAN,
-        "tasks": STRATEGY_KANBAN,
+        "tasks": STRATEGY_ISOLATED,
+        "task": STRATEGY_ISOLATED,
+        "goal-loop": STRATEGY_GOAL,
+        "goals": STRATEGY_GOAL,
+        "ralph": STRATEGY_GOAL,
     }
     key = aliases.get(key, key)
     if key not in COORDINATION_STRATEGIES:
@@ -89,10 +99,17 @@ def coordination_prompt(value: str | None) -> str:
             "- Workers should inspect their card first, heartbeat/comment during long work, and complete or block it with a useful handoff.\n"
             "- Prefer board comments and card status over ad-hoc chat for cross-agent handoffs.\n"
         )
+    if strategy == STRATEGY_GOAL:
+        return (
+            "Coordination strategy: GOAL LOOP.\n"
+            "- Treat the user's first request as an active objective, not a one-turn prompt.\n"
+            "- Work normally inside this same session; use tools and sub-agents when they materially help.\n"
+            "- After each response, Freyja will judge whether the active goal is complete and may continue automatically.\n"
+            "- Finish with a clear completion note when the objective is done or explicitly blocked by missing user input.\n"
+        )
     return (
         "Coordination strategy: MESSAGE BUS.\n"
         "- Use sub-agent profiles for parallel work and ask workers to publish findings when discoveries help siblings.\n"
         "- Use `read_findings` during overlapping research or review so agents can build on each other.\n"
         "- The parent should still synthesize the final answer and resolve conflicts.\n"
     )
-

@@ -15,13 +15,18 @@ const STRATEGIES: Array<{
   },
   {
     id: 'isolated',
-    label: 'solo',
-    title: 'Isolated: leaf agents work independently; parent synthesizes',
+    label: 'tasks',
+    title: 'Tasks: parent-led work with a visible task ledger and optional workers',
   },
   {
     id: 'kanban',
     label: 'board',
     title: 'Kanban: cards, dependencies, handoffs, and worker progress',
+  },
+  {
+    id: 'goal',
+    label: 'goal',
+    title: 'Goal loop: keep the same session moving until the active objective is done',
   },
 ]
 

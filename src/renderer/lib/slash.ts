@@ -27,6 +27,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/export', description: 'Export transcript (markdown / jsonl)' },
   { name: '/compact', description: 'Force a context compaction pass' },
   { name: '/compaction', description: 'Alias for /compact', hidden: true },
+  { name: '/goal', description: 'Set, inspect, pause, resume, or clear an active goal loop' },
   { name: '/debug', description: 'Toggle the debug drawer', keys: 'Cmd+D', hidden: true },
   { name: '/docs', description: 'Open the Freyja documentation' },
   { name: '/burst', description: '(demo) trigger a scripted demo burst', keys: 'Cmd+B', hidden: true },

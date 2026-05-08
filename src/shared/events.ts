@@ -3,7 +3,7 @@
 
 export type BridgeMode = 'live' | 'demo' | 'error'
 
-export type CoordinationStrategy = 'bus' | 'isolated' | 'kanban'
+export type CoordinationStrategy = 'bus' | 'isolated' | 'kanban' | 'goal'
 
 export type SkillConfidence = 'unvalidated' | 'experimental' | 'verified' | 'deprecated'
 
@@ -57,6 +57,7 @@ export interface SubagentRecord {
   artifactPath?: string
   coordinationStrategy?: CoordinationStrategy
   kanbanTaskId?: string
+  taskId?: string
 }
 
 export interface BusMessageRecord {
@@ -224,6 +225,8 @@ export interface SessionSnapshot {
   agentType?: string
   /** Kanban card assigned to this sub-agent session in board mode. */
   kanbanTaskId?: string
+  /** Task ledger item assigned to this sub-agent session in task mode. */
+  taskId?: string
   /** Whether a sub-agent session has completed. */
   completed?: boolean
   completedAt?: number
@@ -253,6 +256,17 @@ export type BridgeCommand =
   | { type: 'force_cancel'; sessionId?: string }
   | { type: 'diagnose' }
   | { type: 'compact'; sessionId?: string; model?: string; reasoningLevel?: string; coordinationStrategy?: CoordinationStrategy }
+  | {
+      type: 'goal_control'
+      sessionId?: string
+      action: 'set' | 'status' | 'pause' | 'resume' | 'clear' | 'stop' | 'done'
+      goal?: string
+      maxTurns?: number
+      reason?: string
+      model?: string
+      reasoningLevel?: string
+      coordinationStrategy?: CoordinationStrategy
+    }
   | { type: 'set_model'; sessionId?: string; model: string; reasoningLevel?: string; coordinationStrategy?: CoordinationStrategy }
   | {
       type: 'set_coordination_strategy'
@@ -438,6 +452,7 @@ export type BridgeEvent =
       agentType?: string
       coordinationStrategy?: CoordinationStrategy
       kanbanTaskId?: string
+      taskId?: string
       workspace?: string
       createdAt: number
     } & SessionId)

@@ -465,9 +465,10 @@ function normalizeReasoningFor(
 }
 
 function normalizeCoordinationStrategy(value?: string | null): CoordinationStrategy {
-  if (value === 'isolated' || value === 'kanban' || value === 'bus') return value
+  if (value === 'isolated' || value === 'kanban' || value === 'bus' || value === 'goal') return value
   if (value === 'solo' || value === 'delegate') return 'isolated'
   if (value === 'board') return 'kanban'
+  if (value === 'goals' || value === 'goal-loop' || value === 'ralph') return 'goal'
   return 'bus'
 }
 
@@ -3083,6 +3084,41 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           })
           .catch(() => show('compaction request failed', 'warn'))
         show('compaction requested', 'info')
+        return true
+      }
+      case '/goal': {
+        const api = (window as any).harness
+        if (!api) {
+          show('no bridge', 'warn')
+          return true
+        }
+        const raw = (args ?? '').trim()
+        const [verb, ...rest] = raw.split(/\s+/)
+        const lower = (verb || '').toLowerCase()
+        const action =
+          lower === 'pause' ||
+          lower === 'resume' ||
+          lower === 'clear' ||
+          lower === 'stop' ||
+          lower === 'done' ||
+          lower === 'status'
+            ? lower
+            : raw
+              ? 'set'
+              : 'status'
+        const goal = action === 'set' ? raw : rest.join(' ')
+        api.sendCommand({
+          type: 'goal_control',
+          sessionId: state.activeSessionId,
+          action,
+          goal,
+          reason: goal || undefined,
+          model: state.model,
+          reasoningLevel: state.reasoningLevel,
+          coordinationStrategy: state.coordinationStrategy,
+        })
+        if (action === 'set') show('goal loop armed', 'ok')
+        else show(`goal ${action}`, 'info')
         return true
       }
       case '/memory':
