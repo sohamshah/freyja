@@ -153,6 +153,20 @@ export interface ToolCallRecord {
     reason?: string
     byteSize?: number
   }
+  /** Images returned by non-screenshot tools, such as image generation.
+   *  Stored through the same renderer media cache as screenshot frames,
+   *  but rendered as creative output instead of captured screen state. */
+  resultImages?: Array<{
+    frameId?: string
+    pngBase64?: string
+    mimeType: string
+    width: number
+    height: number
+    takenAt: number
+    reason?: string
+    byteSize?: number
+    label?: string
+  }>
   fileChangeSet?: FileChangeSet
 }
 
@@ -286,6 +300,14 @@ export type BridgeEvent =
       preview: string
       isError: boolean
       durationMs: number
+      images?: Array<{
+        id?: string
+        dataBase64: string
+        mimeType: string
+        width: number
+        height: number
+        label?: string
+      }>
     } & SessionId)
   | ({ type: 'file_change_set'; changeSet: FileChangeSet } & SessionId)
   | { type: 'tool_catalog_entry'; tool: ToolCatalogEntry }

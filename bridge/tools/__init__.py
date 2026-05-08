@@ -14,6 +14,7 @@ from bridge.tools.file_tools import (
     ReadFileTool,
     WriteFileTool,
 )
+from bridge.tools.image_generation_tool import GenerateImageTool
 from bridge.tools.memory_tools import RecordUserPreferenceTool
 from bridge.tools.registry import build_desktop_registry
 from bridge.tools.search_tools import GlobTool, GrepTool
@@ -26,6 +27,7 @@ __all__ = [
     "EditFileTool",
     "GlobTool",
     "GrepTool",
+    "GenerateImageTool",
     "ListDirectoryTool",
     "ListSkillsTool",
     "LoadSkillTool",

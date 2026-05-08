@@ -4,6 +4,7 @@ import { formatDuration } from '../lib/format'
 import { Spinner } from '../lib/spinner'
 import { useFrameObjectUrl } from '../lib/frameMedia'
 import { FileChangeBadge, FileChangeCard } from './FileChangeCard'
+import { ToolResultImages } from './ToolCallChip'
 import type { ToolCallRecord } from '@shared/events'
 
 /**
@@ -95,6 +96,8 @@ function ToolLane({
     s.focusedToolCallId === record.id ? s.focusedToolCallSerial : 0,
   )
   const frameUrl = useFrameObjectUrl(record.frame)
+  const resultImages = record.resultImages ?? []
+  const hasResultImages = resultImages.length > 0
 
   const isRunning = record.status === 'running'
   const isError = record.status === 'error'
@@ -170,6 +173,11 @@ function ToolLane({
               ◱
             </span>
           )}
+          {hasResultImages && (
+            <span className="font-mono text-[9px] uppercase tracking-[0.08em] text-accent">
+              image
+            </span>
+          )}
           <FileChangeBadge changeSet={record.fileChangeSet} />
           {record.durationMs != null && !isRunning && (
             <span className="font-mono">{formatDuration(record.durationMs)}</span>
@@ -227,6 +235,13 @@ function ToolLane({
             draggable={false}
           />
         </div>
+      )}
+
+      {hasResultImages && (
+        <ToolResultImages
+          images={resultImages}
+          toolCallId={record.id}
+        />
       )}
 
       {/* Expanded details */}
@@ -292,6 +307,8 @@ const TOOL_CATEGORIES: Record<string, { color: string; label: string }> = {
   // Bus
   publish_finding: { color: '#d0a040', label: 'bus' },
   read_findings:   { color: '#d0a040', label: 'bus' },
+  // Media
+  generate_image:  { color: '#b6f2ff', label: 'media' },
 }
 
 function getToolCategory(name: string) {
@@ -326,6 +343,7 @@ function summarizeArgs(name: string, args?: Record<string, unknown>): string {
     case 'grep': return str('pattern') ? `"${str('pattern').slice(0, 50)}"` : ''
     case 'publish_finding': return str('content').slice(0, 50)
     case 'sub_agent': return str('label') || ''
+    case 'generate_image': return str('prompt').slice(0, limit)
   }
   if (typeof args.path === 'string') return args.path as string
   return ''

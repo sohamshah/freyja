@@ -29,6 +29,21 @@ def test_bridge_preserves_pasted_image_attachments_as_image_blocks() -> None:
     assert message[1].text == "use this reference"
 
 
+def test_bridge_adds_image_ref_note_when_available() -> None:
+    message = _build_user_message_with_attachments(
+        "use this reference",
+        [{"type": "image", "mimeType": "image/png", "dataBase64": "aW1hZ2U="}],
+        "Image references available to tools: `img_001`, `latest_user_image`.",
+    )
+
+    assert isinstance(message, list)
+    assert isinstance(message[1], TextBlock)
+    assert message[1].text == (
+        "use this reference\n\n"
+        "[Image references available to tools: `img_001`, `latest_user_image`.]"
+    )
+
+
 def test_bridge_keeps_plain_text_when_no_valid_image_attachments() -> None:
     message = _build_user_message_with_attachments(
         "plain prompt",

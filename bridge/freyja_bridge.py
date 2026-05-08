@@ -106,6 +106,18 @@ def _write_debug_log(event: dict[str, Any]) -> None:
         trimmed = dict(event)
         if "pngBase64" in trimmed:
             trimmed["pngBase64"] = f"<{len(trimmed['pngBase64'])} b64 chars>"
+        if "images" in trimmed and isinstance(trimmed["images"], list):
+            light_images = []
+            for image in trimmed["images"]:
+                if not isinstance(image, dict):
+                    light_images.append(image)
+                    continue
+                item = dict(image)
+                data = item.get("dataBase64")
+                if isinstance(data, str):
+                    item["dataBase64"] = f"<{len(data)} b64 chars>"
+                light_images.append(item)
+            trimmed["images"] = light_images
         # Text deltas are noisy; truncate
         if "text" in trimmed and isinstance(trimmed["text"], str):
             trimmed["text"] = trimmed["text"][:60]
@@ -143,6 +155,7 @@ def emit_error(message: str, recoverable: bool = False) -> None:
 def _build_user_message_with_attachments(
     user_content: str,
     attachments: list[dict[str, Any]] | None,
+    image_refs_note: str = "",
 ) -> Any:
     """Convert renderer attachments into engine content blocks."""
     if not attachments:
@@ -170,9 +183,14 @@ def _build_user_message_with_attachments(
     if not image_blocks:
         return user_content
 
+    note = image_refs_note.strip()
+    text = user_content
+    if note:
+        text = f"{text}\n\n[{note}]" if text else f"[{note}]"
+
     blocks: list[Any] = [*image_blocks]
-    if user_content:
-        blocks.append(TextBlock(text=user_content))
+    if text:
+        blocks.append(TextBlock(text=text))
     return blocks
 
 
@@ -827,6 +845,128 @@ def _truncate_preview(text: str, limit: int = 2000) -> str:
     return f"{head}\n\n… [truncated {len(text) - limit} chars] …\n\n{tail}"
 
 
+def _image_dimensions_from_bytes(raw: bytes) -> tuple[int, int] | None:
+    """Best-effort PNG/JPEG/WebP dimension parser for tool-result previews."""
+    if len(raw) >= 24 and raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return int.from_bytes(raw[16:20], "big"), int.from_bytes(raw[20:24], "big")
+
+    if len(raw) >= 10 and raw[:3] == b"\xff\xd8\xff":
+        idx = 2
+        while idx + 9 < len(raw):
+            if raw[idx] != 0xFF:
+                idx += 1
+                continue
+            marker = raw[idx + 1]
+            idx += 2
+            if marker in (0xD8, 0xD9):
+                continue
+            if idx + 2 > len(raw):
+                return None
+            seg_len = int.from_bytes(raw[idx : idx + 2], "big")
+            if seg_len < 2:
+                return None
+            if marker in {
+                0xC0,
+                0xC1,
+                0xC2,
+                0xC3,
+                0xC5,
+                0xC6,
+                0xC7,
+                0xC9,
+                0xCA,
+                0xCB,
+                0xCD,
+                0xCE,
+                0xCF,
+            }:
+                if idx + 7 > len(raw):
+                    return None
+                height = int.from_bytes(raw[idx + 3 : idx + 5], "big")
+                width = int.from_bytes(raw[idx + 5 : idx + 7], "big")
+                return width, height
+            idx += seg_len
+
+    if len(raw) >= 30 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        chunk = raw[12:16]
+        if chunk == b"VP8X":
+            return (
+                1 + int.from_bytes(raw[24:27], "little"),
+                1 + int.from_bytes(raw[27:30], "little"),
+            )
+        if chunk == b"VP8L" and len(raw) >= 25:
+            bits = int.from_bytes(raw[21:25], "little")
+            return 1 + (bits & 0x3FFF), 1 + ((bits >> 14) & 0x3FFF)
+        if chunk == b"VP8 ":
+            return (
+                int.from_bytes(raw[26:28], "little") & 0x3FFF,
+                int.from_bytes(raw[28:30], "little") & 0x3FFF,
+            )
+
+    return None
+
+
+def _image_dimensions_from_base64(data: str) -> tuple[int, int] | None:
+    try:
+        raw = data.strip()
+        if "," in raw and raw.split(",", 1)[0].startswith("data:"):
+            raw = raw.split(",", 1)[1]
+        return _image_dimensions_from_bytes(base64.b64decode(raw))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _tool_content_preview_and_images(
+    content: Any,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Build a compact text preview and inline-image payloads for the UI."""
+    if isinstance(content, str):
+        return content, []
+
+    if not isinstance(content, list):
+        return str(content), []
+
+    text_parts: list[str] = []
+    images: list[dict[str, Any]] = []
+    for index, block in enumerate(content, 1):
+        block_type = getattr(block, "type", "")
+        if block_type == "text":
+            text_parts.append(str(getattr(block, "text", "")))
+            continue
+        if block_type == "image":
+            data = str(getattr(block, "data", "") or "")
+            source_type = str(getattr(block, "source_type", "base64") or "base64")
+            media_type = str(getattr(block, "media_type", "image/png") or "image/png")
+            if source_type == "base64" and data:
+                width = getattr(block, "width", None)
+                height = getattr(block, "height", None)
+                if not isinstance(width, int) or not isinstance(height, int):
+                    dims = _image_dimensions_from_base64(data)
+                    width, height = dims or (0, 0)
+                images.append(
+                    {
+                        "id": f"image-{index}",
+                        "dataBase64": data,
+                        "mimeType": media_type,
+                        "width": width,
+                        "height": height,
+                        "label": f"image {len(images) + 1}",
+                    }
+                )
+                text_parts.append(f"[Image: {media_type}, {width}x{height}]")
+            else:
+                url = str(getattr(block, "url", "") or "")
+                text_parts.append(f"[Image URL: {url or media_type}]")
+            continue
+        if block_type == "document":
+            media_type = str(getattr(block, "media_type", "application/pdf") or "application/pdf")
+            text_parts.append(f"[Document: {media_type}]")
+            continue
+        text_parts.append(str(block))
+
+    return "\n".join(part for part in text_parts if part), images
+
+
 def _new_tracing_registry(base_registry, session_id: str, get_runner=None):
     """Wrap a ToolRegistry so each execute() call streams events to the UI.
 
@@ -888,11 +1028,7 @@ def _new_tracing_registry(base_registry, session_id: str, get_runner=None):
 
         duration_ms = int((time.monotonic() - start) * 1000)
         content = getattr(result, "content", "")
-        if not isinstance(content, str):
-            try:
-                content = json.dumps(content, default=str)
-            except Exception:
-                content = repr(content)
+        preview, images = _tool_content_preview_and_images(content)
 
         if file_change_tracker is not None:
             try:
@@ -910,16 +1046,17 @@ def _new_tracing_registry(base_registry, session_id: str, get_runner=None):
             except Exception as exc:  # noqa: BLE001
                 log("debug", f"file-change emit failed: {exc}")
 
-        emit(
-            {
-                "type": "tool_result",
-                "sessionId": session_id,
-                "id": tool_id,
-                "preview": _truncate_preview(content),
-                "isError": bool(getattr(result, "is_error", False)),
-                "durationMs": duration_ms,
-            }
-        )
+        event = {
+            "type": "tool_result",
+            "sessionId": session_id,
+            "id": tool_id,
+            "preview": _truncate_preview(preview),
+            "isError": bool(getattr(result, "is_error", False)),
+            "durationMs": duration_ms,
+        }
+        if images:
+            event["images"] = images
+        emit(event)
 
         # Emit a live usage snapshot after each tool call so the activity
         # panel updates in real time instead of waiting for the turn to end.
@@ -986,6 +1123,8 @@ class _BridgeSession:
         self.subagent_registry: Any | None = None
         self.memory_store: Any | None = None
         self.skill_store: Any | None = None
+        from bridge.tools.image_store import SessionImageStore
+        self.image_store = SessionImageStore()
         self.permission_handler: DesktopPermissionHandler | None = None
         # Track the effective permission tier for this session independently
         # of the handler, so a `set_permission_policy` that arrives before
@@ -1095,6 +1234,7 @@ class _BridgeSession:
             message_bus=self.message_bus,
             memory_store=self.memory_store,
             skill_store=self.skill_store,
+            image_store=self.image_store,
             on_memory_updated=_emit_memory_updated,
             on_skill_event=_emit_skill_event,
         )
@@ -1922,6 +2062,44 @@ class _BridgeSession:
             stubs[skill_name] = stub
         return stubs
 
+    def _register_user_image_refs(
+        self,
+        attachments: list[dict[str, Any]] | None,
+    ) -> str:
+        if not attachments:
+            return ""
+        refs: list[str] = []
+        for index, attachment in enumerate(attachments, start=1):
+            if attachment.get("type") != "image":
+                continue
+            data = str(attachment.get("dataBase64") or "").strip()
+            if not data:
+                continue
+            media_type = str(attachment.get("mimeType") or "image/png")
+            try:
+                asset = self.image_store.add_base64(
+                    data,
+                    media_type,
+                    label=f"user attachment {index}",
+                    source="user_attachment",
+                    aliases=("latest_user_image", "latest_image"),
+                )
+            except Exception as exc:  # noqa: BLE001
+                log("warn", f"failed to register image attachment: {exc}")
+                continue
+            refs.append(asset.ref)
+
+        if not refs:
+            return ""
+        refs_text = ", ".join(f"`{ref}`" for ref in refs)
+        return (
+            "Image references available to tools: "
+            f"{refs_text}. The newest attachment is also "
+            "`latest_user_image` and `latest_image`. To transform one, call "
+            "generate_image with input_images using the ref or set "
+            "use_latest_user_image=true."
+        )
+
     async def run_turn(
         self,
         user_content: str,
@@ -1963,7 +2141,12 @@ class _BridgeSession:
         self.current_turn_id = f"turn-{self.turn_counter}"
         emit({"type": "turn_start", "sessionId": self.id, "turnId": self.current_turn_id})
 
-        message: Any = _build_user_message_with_attachments(user_content, attachments)
+        image_refs_note = self._register_user_image_refs(attachments)
+        message: Any = _build_user_message_with_attachments(
+            user_content,
+            attachments,
+            image_refs_note,
+        )
 
         try:
             result = await self.runner.run(self.session, message, stream=True)

@@ -23,6 +23,7 @@ from bridge.tools.file_tools import (
     ReadFileTool,
     WriteFileTool,
 )
+from bridge.tools.image_generation_tool import GenerateImageTool
 from bridge.tools.memory_tools import RecordUserPreferenceTool
 from bridge.tools.search_tools import GlobTool, GrepTool
 from bridge.tools.skill_tools import ListSkillsTool, LoadSkillTool, SearchSkillsTool
@@ -59,6 +60,7 @@ def build_desktop_registry(
     message_bus: Any | None = None,
     memory_store: Any | None = None,
     skill_store: Any | None = None,
+    image_store: Any | None = None,
     on_memory_updated: Any | None = None,
     on_skill_event: Any | None = None,
 ) -> ToolRegistry:
@@ -123,6 +125,10 @@ def build_desktop_registry(
     # Browser CDP tools — require browser launched with --remote-debugging-port
     tools.append(BrowserExecuteJsTool())
     tools.append(BrowserScreenshotTool())
+
+    # Creative media generation — WARM tier so it is discoverable, but the
+    # model must explicitly load the schema before spending on generation.
+    tools.append(GenerateImageTool(image_store=image_store))
 
     # Web tools — only if SDK + key available
     if include_web:

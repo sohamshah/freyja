@@ -4,9 +4,11 @@ import { formatDuration } from '../lib/format'
 import { Spinner } from '../lib/spinner'
 import { useFrameObjectUrl } from '../lib/frameMedia'
 import { FileChangeBadge, FileChangeCard } from './FileChangeCard'
+import type { ToolCallRecord } from '@shared/events'
 
-export function ToolCallChip({ id }: { id: string }) {
-  const call = useHarness((s) => s.toolCalls[id])
+export function ToolCallChip({ id, record }: { id: string; record?: ToolCallRecord }) {
+  const storeCall = useHarness((s) => s.toolCalls[id])
+  const call = record ?? storeCall
   const focusSerial = useHarness((s) =>
     s.focusedToolCallId === id ? s.focusedToolCallSerial : 0,
   )
@@ -37,6 +39,8 @@ export function ToolCallChip({ id }: { id: string }) {
     )
 
   const hasFrame = Boolean(call.frame)
+  const resultImages = call.resultImages ?? []
+  const hasResultImages = resultImages.length > 0
 
   return (
     <div
@@ -111,6 +115,13 @@ export function ToolCallChip({ id }: { id: string }) {
           </div>
         </div>
       )}
+      {hasResultImages && (
+        <ToolResultImages
+          images={resultImages}
+          toolCallId={id}
+          className="hairline-t bg-black/55 p-3"
+        />
+      )}
       {open && (
         <div className="hairline-t selectable space-y-2 bg-black/35 p-3 font-mono text-[11px] text-fg-1">
           {argsText && (
@@ -150,12 +161,87 @@ export function ToolCallChip({ id }: { id: string }) {
   )
 }
 
+export function ToolResultImages({
+  images,
+  toolCallId,
+  className = 'border-t border-white/[0.04] bg-black/45 p-3',
+}: {
+  images: NonNullable<ToolCallRecord['resultImages']>
+  toolCallId: string
+  className?: string
+}) {
+  if (images.length === 0) return null
+
+  return (
+    <div className={className}>
+      <div className={`grid gap-2 ${images.length > 1 ? 'sm:grid-cols-2' : ''}`}>
+        {images.map((image, idx) => (
+          <ToolResultImage
+            key={image.frameId ?? `${toolCallId}-image-${idx}`}
+            image={image}
+            label={image.label || `generated image ${idx + 1}`}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function summarizeArgs(name: string, args?: Record<string, unknown>): string {
   if (!args) return ''
   if (typeof args.path === 'string') return args.path
   if (typeof args.pattern === 'string') return args.pattern as string
   if (typeof args.query === 'string') return args.query as string
+  if (typeof args.prompt === 'string') return (args.prompt as string).slice(0, 120)
   if (typeof args.command === 'string') return (args.command as string).slice(0, 80)
   const keys = Object.keys(args)
   return keys.length > 0 ? keys.join(', ') : ''
+}
+
+function ToolResultImage({
+  image,
+  label,
+}: {
+  image: NonNullable<ToolCallRecord['resultImages']>[number]
+  label: string
+}) {
+  const url = useFrameObjectUrl(image)
+  if (!url) {
+    return (
+      <figure className="rounded-lg bg-black/70 p-4 ring-1 ring-danger/25">
+        <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-danger">
+          image unavailable
+        </div>
+        <div className="mt-1 text-[11px] leading-[1.5] text-fg-2">
+          The tool returned image metadata, but this renderer no longer has the image bytes.
+        </div>
+      </figure>
+    )
+  }
+
+  const dimensions =
+    image.width > 0 && image.height > 0 ? `${image.width}×${image.height}` : image.mimeType
+  const size =
+    image.byteSize && image.byteSize > 0
+      ? `${Math.round(image.byteSize / 1024)}KB`
+      : ''
+
+  return (
+    <figure className="overflow-hidden rounded-lg bg-black ring-1 ring-white/10">
+      <img
+        src={url}
+        alt={label}
+        className="block max-h-[520px] w-full object-contain"
+        loading="lazy"
+        decoding="async"
+        draggable={false}
+      />
+      <figcaption className="flex items-center justify-between gap-3 px-3 py-1.5 font-mono text-[9.5px] uppercase tracking-[0.08em] text-fg-2">
+        <span>{label}</span>
+        <span className="text-fg-3">
+          {dimensions}{size ? ` · ${size}` : ''}
+        </span>
+      </figcaption>
+    </figure>
+  )
 }

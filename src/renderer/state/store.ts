@@ -569,17 +569,26 @@ function materializeFramesForPersistence(slice: SessionSlice): SessionSlice {
   let changed = false
   const toolCalls: Record<string, ToolCallRecord> = {}
   for (const [id, call] of Object.entries(slice.toolCalls)) {
-    if (!call.frame) {
-      toolCalls[id] = call
-      continue
+    let nextCall = call
+    if (call.frame) {
+      const frame = getPersistableFrame(call.frame as FrameRef)
+      if (frame && frame !== call.frame) {
+        changed = true
+        nextCall = { ...nextCall, frame }
+      }
     }
-    const frame = getPersistableFrame(call.frame as FrameRef)
-    if (frame && frame !== call.frame) {
-      changed = true
-      toolCalls[id] = { ...call, frame }
-    } else {
-      toolCalls[id] = call
+    if (call.resultImages?.length) {
+      const resultImages = call.resultImages
+        .map((image) => {
+          const frame = getPersistableFrame(image as FrameRef)
+          return frame ? { ...frame, label: image.label } : image
+        })
+      if (resultImages.some((image, idx) => image !== call.resultImages?.[idx])) {
+        changed = true
+        nextCall = { ...nextCall, resultImages }
+      }
     }
+    toolCalls[id] = nextCall
   }
   return changed ? { ...slice, toolCalls } : slice
 }
@@ -616,22 +625,43 @@ function normalizePersistedFrames(slice: SessionSlice): SessionSlice {
   let changed = false
   const toolCalls: Record<string, ToolCallRecord> = {}
   for (const [id, call] of Object.entries(slice.toolCalls)) {
-    const frame = normalizeFrame(call.frame as FrameRef | undefined)
-    if (frame) retainFrame(frame)
-    if (frame && frame !== call.frame) {
-      changed = true
-      toolCalls[id] = { ...call, frame }
-    } else {
-      toolCalls[id] = call
-    }
+    const nextCall = normalizeToolCallFrames(call)
+    if (nextCall !== call) changed = true
+    toolCalls[id] = nextCall
   }
   return changed ? { ...slice, toolCalls } : slice
+}
+
+function normalizeToolCallFrames(call: ToolCallRecord): ToolCallRecord {
+  let changed = false
+  let nextCall = call
+  const frame = normalizeFrame(call.frame as FrameRef | undefined)
+  if (frame) retainFrame(frame)
+  if (frame && frame !== call.frame) {
+    changed = true
+    nextCall = { ...nextCall, frame }
+  }
+  if (call.resultImages?.length) {
+    const resultImages = call.resultImages.map((image) => {
+      const frameRef = normalizeFrame(image as FrameRef | undefined)
+      if (frameRef) retainFrame(frameRef)
+      return frameRef ? { ...frameRef, label: image.label } : image
+    })
+    if (resultImages.some((image, idx) => image !== call.resultImages?.[idx])) {
+      changed = true
+      nextCall = { ...nextCall, resultImages }
+    }
+  }
+  return changed ? nextCall : call
 }
 
 function releaseSliceFrames(slice?: SessionSlice): void {
   if (!slice) return
   for (const call of Object.values(slice.toolCalls)) {
     releaseFrame(call.frame as FrameRef | undefined)
+    for (const image of call.resultImages ?? []) {
+      releaseFrame(image as FrameRef | undefined)
+    }
   }
 }
 
@@ -824,6 +854,23 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
     case 'tool_result': {
       const existing = slice.toolCalls[ev.id]
       if (!existing) return next
+      const resultImages = ev.images?.map((image, index) => {
+        const frame = registerFrame({
+          pngBase64: image.dataBase64,
+          mimeType: image.mimeType || 'image/png',
+          width: image.width || 0,
+          height: image.height || 0,
+          takenAt: Date.now(),
+          reason: image.label || `result image ${index + 1}`,
+        }, `tool_${ev.id}`)
+        retainFrame(frame)
+        return { ...frame, label: image.label }
+      })
+      if (resultImages) {
+        for (const image of existing.resultImages ?? []) {
+          releaseFrame(image as FrameRef | undefined)
+        }
+      }
       next.toolCalls = {
         ...slice.toolCalls,
         [ev.id]: {
@@ -832,6 +879,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
           result: ev.preview,
           isError: ev.isError,
           durationMs: ev.durationMs,
+          ...(resultImages ? { resultImages } : {}),
         },
       }
       // Extract artifact from file-writing tool calls
