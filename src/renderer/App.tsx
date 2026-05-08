@@ -3,7 +3,7 @@ import { unstable_batchedUpdates } from 'react-dom'
 import { useHarness } from './state/store'
 import { TitleBar } from './components/TitleBar'
 import { Sidebar } from './components/Sidebar'
-import { Conversation } from './components/Conversation'
+import { SessionPanes } from './components/SessionPanes'
 import { InputDock } from './components/InputDock'
 import { ActivityPanel } from './components/ActivityPanel'
 import { CommandPalette } from './components/CommandPalette'
@@ -114,6 +114,12 @@ export function App() {
   const sidebarCollapsed = useHarness((s) => s.sidebarCollapsed)
   const activityPanelCollapsed = useHarness((s) => s.activityPanelCollapsed)
   const focusMode = useHarness((s) => s.focusMode)
+  const splitView = useHarness((s) => {
+    const panes = s.sessionPanes
+    if (panes.length > 1) return true
+    if (panes.length === 1 && panes[0].sessionId !== s.activeSessionId) return true
+    return false
+  })
   const bridgeApiRef = useRef<any>(null)
   const eventQueueRef = useRef<any[]>([])
   const rafRef = useRef<number | null>(null)
@@ -358,8 +364,8 @@ export function App() {
         <div className={`flex min-h-0 flex-1 gap-2 px-2 pb-3 ${focusMode ? 'pt-2' : 'pt-4'}`}>
           {!sidebarCollapsed && <Sidebar />}
           <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-            <Conversation />
-            <InputDock />
+            <SessionPanes />
+            {!splitView && <InputDock />}
           </main>
           {!activityPanelCollapsed && <ActivityPanel />}
         </div>

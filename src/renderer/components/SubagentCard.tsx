@@ -15,7 +15,7 @@ export function SubagentCard({ id }: { id: string }) {
   const childSnapshot = useHarness((s) =>
     s.sessions.find((session) => session.id === id),
   )
-  const switchSession = useHarness((s) => s.switchSession)
+  const openSessionPane = useHarness((s) => s.openSessionPane)
   const computerSession = useHarness((s) => s.computerSessions[id])
   const showInline = useHarness(
     (s) => s.settings.computer.showScreenshotsInline,
@@ -47,13 +47,13 @@ export function SubagentCard({ id }: { id: string }) {
         ? 'running'
         : sub.state
 
-  const handleAttach = () => {
-    if (childSnapshot) switchSession(id)
+  const handleAttach = (mode: 'replace' | 'split' = 'replace') => {
+    if (childSnapshot) openSessionPane(id, mode)
   }
 
   return (
     <div
-      onClick={handleAttach}
+      onClick={(event) => handleAttach(event.metaKey || event.ctrlKey ? 'split' : 'replace')}
       className={`group rounded-xl glass-raised p-3 transition-all ${
         childSnapshot
           ? 'cursor-pointer hover:ring-1 hover:ring-accent/40 hover:shadow-glow-accent'
@@ -82,7 +82,7 @@ export function SubagentCard({ id }: { id: string }) {
               {statusLabel}
             </span>
             {childSnapshot && isRunning && (
-              <span className="label ml-auto text-accent/70">attach ↵</span>
+              <span className="label ml-auto text-accent/70">open ↵</span>
             )}
           </div>
           <div className="mt-[2px] truncate text-[12px] text-fg-0">
@@ -100,6 +100,16 @@ export function SubagentCard({ id }: { id: string }) {
         <Stat label="tools" value={String(sub.toolsCalled)} />
         {childSnapshot && (
           <span className="ml-auto flex items-center gap-1 text-[10px] text-accent/80">
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation()
+                handleAttach('split')
+              }}
+              className="rounded px-1.5 py-[2px] font-mono text-[9px] uppercase text-fg-2 ring-hairline hover:bg-white/[0.06] hover:text-fg-0"
+            >
+              split
+            </button>
             <span className="font-mono">open ▸</span>
           </span>
         )}

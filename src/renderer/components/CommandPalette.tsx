@@ -17,7 +17,7 @@ export function CommandPalette() {
   const sessions = useHarness((s) => s.sessions)
   const openSubagent = useHarness((s) => s.openSubagent)
   const toggleMissionDashboard = useHarness((s) => s.toggleMissionDashboard)
-  const switchSession = useHarness((s) => s.switchSession)
+  const openSessionPane = useHarness((s) => s.openSessionPane)
   const setDraft = useHarness((s) => s.setInputDraft)
   const burst = useHarness((s) => s.requestDemoBurst)
 
@@ -130,13 +130,13 @@ export function CommandPalette() {
         subtitle: `${s.model} · ${s.workspace}`,
         group: 'Session',
         action: () => {
-          switchSession(s.id).catch(() => {})
+          openSessionPane(s.id, 'replace').catch(() => {})
           close(false)
         },
       })
     }
     return out
-  }, [skills, subagents, sessions, setDraft, close, openSubagent, burst, toggleMissionDashboard, switchSession])
+  }, [skills, subagents, sessions, setDraft, close, openSubagent, burst, toggleMissionDashboard, openSessionPane])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()

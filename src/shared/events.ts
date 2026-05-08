@@ -222,6 +222,8 @@ export interface SessionSnapshot {
   task?: string
   /** Agent type specialization (explore, code, verify, etc.) */
   agentType?: string
+  /** Kanban card assigned to this sub-agent session in board mode. */
+  kanbanTaskId?: string
   /** Whether a sub-agent session has completed. */
   completed?: boolean
   completedAt?: number

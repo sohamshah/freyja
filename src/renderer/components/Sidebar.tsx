@@ -47,9 +47,8 @@ export function Sidebar() {
   const subagents = useHarness((s) => s.subagents)
   const subagentOrder = useHarness((s) => s.subagentOrder)
   const computerSessions = useHarness((s) => s.computerSessions)
-  const openSubagent = useHarness((s) => s.openSubagent)
   const newSession = useHarness((s) => s.newSession)
-  const switchSession = useHarness((s) => s.switchSession)
+  const openSessionPane = useHarness((s) => s.openSessionPane)
   const messageCount = useHarness((s) => s.messages.length)
   const toggleSidebar = useHarness((s) => s.toggleSidebar)
 
@@ -175,7 +174,7 @@ export function Sidebar() {
               session={s}
               depth={s.depth}
               isActive={s.id === activeSessionId}
-              onSwitch={() => switchSession(s.id)}
+              onOpen={(mode) => openSessionPane(s.id, mode)}
             />
           ))}
         </Section>
@@ -203,7 +202,12 @@ export function Sidebar() {
             return (
               <button
                 key={child.id}
-                onClick={() => switchSession(child.id)}
+                onClick={(event) => {
+                  openSessionPane(
+                    child.id,
+                    event.metaKey || event.ctrlKey ? 'split' : 'replace',
+                  )
+                }}
                 className={`group relative flex w-full items-start gap-2 rounded-md px-2 py-[7px] text-left text-[12px] text-fg-1 hover:bg-white/[0.04] ${
                   running ? 'swarm-row-running' : ''
                 }`}
@@ -264,8 +268,18 @@ export function Sidebar() {
                     </span>
                   </div>
                 </div>
-                <span className="ml-1 self-center font-mono text-[9px] text-fg-3">
-                  attach →
+                <span
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    openSessionPane(child.id, 'split')
+                  }}
+                  className="ml-1 self-center rounded px-1.5 py-[2px] font-mono text-[9px] uppercase text-fg-3 ring-hairline opacity-0 hover:bg-white/[0.06] hover:text-fg-0 group-hover:opacity-100"
+                  title="Open in split pane"
+                >
+                  split
+                </span>
+                <span className="self-center font-mono text-[9px] text-fg-3">
+                  open →
                 </span>
               </button>
             )
@@ -484,12 +498,12 @@ function SessionRow({
   session: s,
   depth,
   isActive,
-  onSwitch,
+  onOpen,
 }: {
   session: SessionSnapshot & { depth: number }
   depth: number
   isActive: boolean
-  onSwitch: () => void
+  onOpen: (mode: 'replace' | 'split') => void
 }) {
   const renameSession = useHarness((st) => st.renameSession)
   const deleteSession = useHarness((st) => st.deleteSession)
@@ -541,12 +555,12 @@ function SessionRow({
       }}
     >
       <button
-        onClick={() => {
+        onClick={(event) => {
           if (menuOpen) {
             setMenuOpen(false)
             return
           }
-          if (!isActive) onSwitch()
+          if (!isActive) onOpen(event.metaKey || event.ctrlKey ? 'split' : 'replace')
         }}
         style={{ paddingLeft: `${leftPad}px` }}
         className={`flex w-full items-start gap-2 rounded-md py-[7px] pr-2 text-left text-[12px] hover:bg-white/[0.04] ${
@@ -595,6 +609,16 @@ function SessionRow({
           <span
             onClick={(e) => {
               e.stopPropagation()
+              onOpen('split')
+            }}
+            title="Open in split pane"
+            className="rounded px-1 py-0.5 text-[11px] text-fg-3 hover:bg-white/[0.08] hover:text-fg-0"
+          >
+            ⇱
+          </span>
+          <span
+            onClick={(e) => {
+              e.stopPropagation()
               downloadSession(s.id)
             }}
             title="Download session (JSON)"
@@ -617,6 +641,20 @@ function SessionRow({
       {/* Context menu */}
       {menuOpen && (
         <div className="absolute right-2 top-full z-30 mt-0.5 w-[140px] rounded-lg glass-strong py-1 shadow-xl ring-hairline-strong">
+          <CtxBtn
+            label="Open here"
+            onClick={() => {
+              setMenuOpen(false)
+              onOpen('replace')
+            }}
+          />
+          <CtxBtn
+            label="Open split"
+            onClick={() => {
+              setMenuOpen(false)
+              onOpen('split')
+            }}
+          />
           <CtxBtn label="Rename" onClick={startRename} />
           <CtxBtn
             label="Download"

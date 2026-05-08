@@ -1,8 +1,9 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useHarness, type SessionSlice, type SystemEventRecord } from '../state/store'
 import type {
   ArtifactRecord,
   BusMessageRecord,
+  CoordinationStrategy,
   FileChangeSet,
   SessionSnapshot,
   SubagentRecord,
@@ -25,6 +26,7 @@ interface AgentView {
   tokensIn: number
   tokensOut: number
   elapsedMs: number
+  kanbanTaskId?: string
 }
 
 interface BusEventView extends BusMessageRecord {
@@ -34,6 +36,25 @@ interface BusEventView extends BusMessageRecord {
 interface TelemetryEventView extends SystemEventRecord {
   sessionId: string
   sessionTitle: string
+}
+
+interface KanbanCardView {
+  id: string
+  title: string
+  status: string
+  body?: string
+  assignee?: string
+  summary?: string
+  result?: string
+  parents?: string[]
+  children?: string[]
+  comments?: Array<{ author?: string; body: string; timestamp?: number }>
+  events?: Array<{ kind?: string; message?: string; timestamp?: number }>
+  agents?: AgentView[]
+  progress?: number
+  createdAt?: number
+  updatedAt?: number
+  completedAt?: number
 }
 
 interface ProfileDefinition {
@@ -213,7 +234,7 @@ export function MissionDashboard() {
   const computerSessions = useHarness((s) => s.computerSessions)
   const skills = useHarness((s) => s.skills)
   const memories = useHarness((s) => s.memories)
-  const switchSession = useHarness((s) => s.switchSession)
+  const openSessionPane = useHarness((s) => s.openSessionPane)
   const focusToolCall = useHarness((s) => s.focusToolCall)
   const showToast = useHarness((s) => s.showToast)
 
@@ -295,6 +316,7 @@ export function MissionDashboard() {
         elapsedMs:
           parentSub?.elapsedMs ??
           ((session.completedAt ?? Date.now()) - session.createdAt),
+        kanbanTaskId: session.kanbanTaskId ?? parentSub?.kanbanTaskId,
       }
     })
 
@@ -317,6 +339,7 @@ export function MissionDashboard() {
           parentSessionId: missionSession?.id,
           task: sub.task,
           agentType: sub.agentType,
+          kanbanTaskId: sub.kanbanTaskId,
           completed: sub.state === 'done' || sub.state === 'failed' || sub.state === 'cancelled',
           success: sub.state === 'done',
         },
@@ -328,6 +351,7 @@ export function MissionDashboard() {
         tokensIn: sub.tokensIn,
         tokensOut: sub.tokensOut,
         elapsedMs: sub.elapsedMs,
+        kanbanTaskId: sub.kanbanTaskId,
       }))
 
     const computerAgents: AgentView[] = Object.values(computerSessions)
@@ -379,7 +403,7 @@ export function MissionDashboard() {
     ).sort((a, b) => b.timestamp - a.timestamp)
 
     const sessionTitleById = new Map(sessions.map((session) => [session.id, session.title]))
-    const telemetryEvents: TelemetryEventView[] = slices
+    const systemEventViews: TelemetryEventView[] = slices
       .flatMap(({ id, slice }) =>
         slice.systemEvents.map((event) => ({
           ...event,
@@ -387,6 +411,8 @@ export function MissionDashboard() {
           sessionTitle: sessionTitleById.get(id) ?? id,
         })),
       )
+      .sort((a, b) => b.at - a.at)
+    const telemetryEvents = systemEventViews
       .filter((event) =>
         [
           'media_pruning',
@@ -398,7 +424,7 @@ export function MissionDashboard() {
           'output_truncation',
         ].includes(event.subtype),
       )
-      .sort((a, b) => b.at - a.at)
+    const kanbanCards = collectKanbanCards(systemEventViews)
 
     const allFileChanges = dedupeBy(
       slices.flatMap(({ slice }) => slice.fileChanges),
@@ -429,6 +455,7 @@ export function MissionDashboard() {
       findings: busEvents.filter((event) => event.topic !== 'read'),
       readEvents: busEvents.filter((event) => event.topic === 'read'),
       telemetryEvents,
+      kanbanCards,
       fileChanges: allFileChanges,
       artifacts: allArtifacts,
       toolCalls: allToolCalls,
@@ -436,6 +463,7 @@ export function MissionDashboard() {
       skillsCount: Object.keys(skills).length,
       memoriesCount: Object.keys(memories).length,
       rootUsage: missionSlice?.usage ?? usage,
+      coordinationStrategy: missionSession?.coordinationStrategy ?? missionSlice?.coordinationStrategy ?? coordinationStrategy,
       screenshotFrames: Object.values(computerSessions)
         .filter((computer) => !missionSession || computer.parentSessionId === missionSession.id || computer.sessionId === missionSession.id)
         .reduce((acc, computer) => acc + computer.frameCount, 0),
@@ -450,6 +478,7 @@ export function MissionDashboard() {
     memories,
     messages,
     model,
+    coordinationStrategy,
     sessions,
     sessionArchive,
     skills,
@@ -466,8 +495,8 @@ export function MissionDashboard() {
     toggleDashboard(false)
     requestAnimationFrame(() => focusToolCall(id))
   }
-  const attach = (id: string) => {
-    switchSession(id)
+  const attach = (id: string, mode: 'replace' | 'split' = 'replace') => {
+    openSessionPane(id, mode)
       .then(() => toggleDashboard(false))
       .catch(() => showToast(`Could not attach ${id}`, 'danger'))
   }
@@ -501,7 +530,7 @@ export function MissionDashboard() {
         : 'idle'
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-[#050807]/90 backdrop-blur-[26px]">
+    <div className="fixed inset-0 z-50 flex flex-col bg-[#080808]/90 backdrop-blur-[26px]">
       <div className="pointer-events-none absolute inset-0 opacity-70">
         <div className="absolute left-[7%] top-[10%] h-[360px] w-[360px] rounded-full bg-accent/[0.045] blur-[110px]" />
         <div className="absolute right-[13%] top-[26%] h-[300px] w-[300px] rounded-full bg-ok/[0.035] blur-[90px]" />
@@ -569,6 +598,7 @@ export function MissionDashboard() {
         {tab === 'overview' && (
           <OverviewTab
             objective={dashboard.objective}
+            coordinationStrategy={dashboard.missionSession?.coordinationStrategy ?? 'bus'}
             contextPct={contextPct}
             runningAgents={runningAgents}
             agents={dashboard.agents}
@@ -580,6 +610,7 @@ export function MissionDashboard() {
             toolsCount={dashboard.toolCalls.length}
             screenshotFrames={dashboard.screenshotFrames}
             telemetryEvents={dashboard.telemetryEvents}
+            kanbanCards={dashboard.kanbanCards}
             skillsCount={dashboard.skillsCount}
             memoriesCount={dashboard.memoriesCount}
             onTab={setTab}
@@ -593,6 +624,8 @@ export function MissionDashboard() {
             agents={dashboard.agents}
             busEvents={dashboard.busEvents}
             findings={dashboard.findings}
+            fileChanges={dashboard.fileChanges}
+            source={dashboard.missionSession}
             onAttach={attach}
           />
         )}
@@ -621,6 +654,7 @@ export function MissionDashboard() {
 
 function OverviewTab({
   objective,
+  coordinationStrategy,
   contextPct,
   runningAgents,
   agents,
@@ -632,6 +666,7 @@ function OverviewTab({
   toolsCount,
   screenshotFrames,
   telemetryEvents,
+  kanbanCards,
   skillsCount,
   memoriesCount,
   onTab,
@@ -640,6 +675,7 @@ function OverviewTab({
   onCopyFinding,
 }: {
   objective: string
+  coordinationStrategy: CoordinationStrategy
   contextPct: number
   runningAgents: number
   agents: AgentView[]
@@ -651,10 +687,11 @@ function OverviewTab({
   toolsCount: number
   screenshotFrames: number
   telemetryEvents: TelemetryEventView[]
+  kanbanCards: KanbanCardView[]
   skillsCount: number
   memoriesCount: number
   onTab: (tab: DashboardTab) => void
-  onAttach: (id: string) => void
+  onAttach: (id: string, mode?: 'replace' | 'split') => void
   onJumpTool: (id: string) => void
   onCopyFinding: (event: BusEventView) => void
 }) {
@@ -680,11 +717,32 @@ function OverviewTab({
           <p className="selectable text-[13px] leading-[1.55] text-fg-0">{objective}</p>
         </div>
         <div className="mt-3 grid shrink-0 grid-cols-2 gap-2">
+          <BriefStat label="strategy" value={coordinationLabel(coordinationStrategy)} />
           <BriefStat label="agents" value={String(agents.length)} />
           <BriefStat label="evidence" value={String(findings.length)} />
-          <BriefStat label="work products" value={String(artifacts.length)} />
-          <BriefStat label="change sets" value={String(fileChanges.length)} />
+          <BriefStat label="cards" value={String(kanbanCards.length)} />
         </div>
+        {kanbanCards.length > 0 && (
+          <div className="mt-3 shrink-0 overflow-hidden rounded-lg bg-black/20 p-3 ring-hairline">
+            <div className="label mb-2">board pulse</div>
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {kanbanCards.slice(0, 8).map((card) => (
+                <div key={card.id} className="min-w-[150px] rounded-md bg-white/[0.035] px-2.5 py-2 ring-hairline">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-[10px] text-accent">{card.id}</span>
+                    <span className={`font-mono text-[9px] uppercase ${kanbanStatusClass(card.status)}`}>
+                      {card.status}
+                    </span>
+                  </div>
+                  <div className="mt-1 truncate text-[11px] text-fg-0">{card.title}</div>
+                  {card.assignee && (
+                    <div className="mt-1 truncate font-mono text-[9px] text-fg-3">{card.assignee}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg bg-black/20 p-3 ring-hairline">
           <div className="label mb-3 shrink-0">agent roster</div>
           <div className="min-h-0 flex-1 space-y-2 overflow-auto pr-1">
@@ -739,50 +797,52 @@ function SwarmTab({
   agents,
   busEvents,
   findings,
+  fileChanges,
+  source,
   onAttach,
 }: {
   agents: AgentView[]
   busEvents: BusEventView[]
   findings: BusEventView[]
-  onAttach: (id: string) => void
+  fileChanges: FileChangeSet[]
+  source: SessionSnapshot | undefined
+  onAttach: (id: string, mode?: 'replace' | 'split') => void
 }) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
-      <section className="flex shrink-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
-        <PanelHeader label="collaboration map" />
-        <div className="mt-3 h-[min(520px,52vh)] min-h-[360px] shrink-0 rounded-xl bg-black/20 p-3 ring-hairline">
-          <CollaborationGraph agents={agents} events={busEvents} onAttach={onAttach} />
+    <div className="grid min-h-0 flex-1 grid-cols-12 gap-3 overflow-hidden">
+      <section className="col-span-12 flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4 xl:col-span-8">
+        <PanelHeader label="hive mind" />
+        <div className="mt-3 flex min-h-0 flex-1 flex-col">
+          <HiveMindGraph
+            agents={agents}
+            events={busEvents}
+            fileChanges={fileChanges}
+            source={source}
+            onAttach={onAttach}
+          />
         </div>
       </section>
-      <div className="grid min-h-0 flex-1 grid-cols-12 gap-3 overflow-hidden">
-        <section className="col-span-12 flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4 xl:col-span-8">
-          <PanelHeader label="agent lanes" />
-          <div className="mt-3 min-h-0 flex-1 overflow-auto pr-1">
-            <AgentLaneList agents={agents} onAttach={onAttach} large />
+      <section className="col-span-12 grid min-h-0 grid-rows-[minmax(0,1fr)_220px] gap-3 xl:col-span-4">
+        <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
+          <PanelHeader label="message bus" />
+          <BusFeed events={busEvents} />
+        </div>
+        <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
+          <PanelHeader label="latest evidence" />
+          <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-auto pr-1">
+            {findings.slice(0, 3).map((event) => (
+              <FindingCard
+                key={`${event.sessionId}-${event.index}-${event.timestamp}`}
+                event={event}
+                compact
+              />
+            ))}
+            {findings.length === 0 && (
+              <EmptyState title="No evidence" body="Agents can publish findings, progress, and errors to the bus." />
+            )}
           </div>
-        </section>
-        <section className="col-span-12 grid min-h-0 grid-rows-[minmax(0,1fr)_220px] gap-3 xl:col-span-4">
-          <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
-            <PanelHeader label="message bus" />
-            <BusFeed events={busEvents} />
-          </div>
-          <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
-            <PanelHeader label="latest evidence" />
-            <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-auto pr-1">
-              {findings.slice(0, 3).map((event) => (
-                <FindingCard
-                  key={`${event.sessionId}-${event.index}-${event.timestamp}`}
-                  event={event}
-                  compact
-                />
-              ))}
-              {findings.length === 0 && (
-                <EmptyState title="No evidence" body="Agents can publish findings, progress, and errors to the bus." />
-              )}
-            </div>
-          </div>
-        </section>
-      </div>
+        </div>
+      </section>
     </div>
   )
 }
@@ -797,7 +857,7 @@ function FindingsTab({
   findings: BusEventView[]
   readEvents: BusEventView[]
   agents: AgentView[]
-  onAttach: (id: string) => void
+  onAttach: (id: string, mode?: 'replace' | 'split') => void
   onCopy: (event: BusEventView) => void
 }) {
   const topicCounts = countBy(findings, (event) => event.topic)
@@ -1001,7 +1061,7 @@ function AgentLaneList({
   large = false,
 }: {
   agents: AgentView[]
-  onAttach: (id: string) => void
+  onAttach: (id: string, mode?: 'replace' | 'split') => void
   large?: boolean
 }) {
   if (agents.length === 0) {
@@ -1031,7 +1091,7 @@ function AgentLane({
   large,
 }: {
   agent: AgentView
-  onAttach: (id: string) => void
+  onAttach: (id: string, mode?: 'replace' | 'split') => void
   large?: boolean
 }) {
   const latestTool = agent.tools[agent.tools.length - 1]
@@ -1088,328 +1148,802 @@ function AgentLane({
           )}
         </div>
         {canAttach && (
-          <button
-            onClick={() => onAttach(agent.session.id)}
-            className="shrink-0 rounded-md bg-accent/10 px-2 py-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-accent ring-1 ring-accent/20 hover:bg-accent/18"
-          >
-            attach
-          </button>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              onClick={() => onAttach(agent.session.id, 'split')}
+              className="rounded-md bg-white/[0.04] px-2 py-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
+            >
+              split
+            </button>
+            <button
+              onClick={() => onAttach(agent.session.id, 'replace')}
+              className="rounded-md bg-accent/10 px-2 py-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-accent ring-1 ring-accent/20 hover:bg-accent/18"
+            >
+              open
+            </button>
+          </div>
         )}
       </div>
     </div>
   )
 }
 
-function CollaborationGraph({
+// ── Hive Mind Timeline ────────────────────────────────────────────────────
+//
+// Swimlane Gantt-style view of the swarm. Each agent is a horizontal lane;
+// tool calls render as small bars within the lane; a horizontal bus rail
+// above the lanes acts as the message medium — every publish/read drops a
+// vertical connector between an agent's lane and the rail. File artifacts
+// (diffs/edits) drop into the timeline at the moment they were created
+// inside the originating agent's lane.
+//
+// Two accent colors only. Everything else is monochrome:
+//   ACCENT_BUS  — message bus + sharing connections
+//   ACCENT_FILE — artifacts / diffs
+const ACCENT_BUS = '#7fb8e8'
+const ACCENT_FILE = '#e8a854'
+
+// Detect a shared prefix across agent titles so lane labels can elide it.
+// Many swarms ship 20+ agents with names like "Dir Structure - X" —
+// stripping the boilerplate makes each lane label uniquely identifying.
+function commonTitlePrefix(titles: string[]): string {
+  if (titles.length < 3) return ''
+  let prefix = titles[0]
+  for (let i = 1; i < titles.length; i++) {
+    while (prefix && !titles[i].startsWith(prefix)) {
+      prefix = prefix.slice(0, -1)
+    }
+    if (!prefix) return ''
+  }
+  if (prefix.length < 6) return ''
+  const m = prefix.match(/^(.+?[\s\-:_·])[^\s\-:_·]*$/)
+  return m ? m[1] : prefix
+}
+
+// Strip a trailing `[bracketed-tag]` suffix and decode the most common HTML
+// entities. Many subagent titles are auto-tagged with `[explore-fast]` etc.
+// — that's already encoded in the agent-type pill at the top of the card,
+// so we elide it from the visible title to free up line height for the
+// actual semantic title.
+function cleanTitle(raw: string): string {
+  const stripped = raw.replace(/\s*\[[^\]\n]+\]\s*$/g, '').trim()
+  return decodeHtmlEntities(stripped || raw)
+}
+function decodeHtmlEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+}
+
+// ── Profile shapes ─────────────────────────────────────────────────────
+// Each agent profile family gets a distinct silhouette so you can read the
+// type at a glance without parsing the pill text. Paths are normalized to
+// a 160×100 viewBox; cards stretch them via `preserveAspectRatio="none"`.
+//
+//   rect — general / default (rounded rectangle)
+//   hex  — explore family (research / discovery)
+//   pill — plan / review / docs (long-running deliberation)
+//   oct  — operational / computer (browser-qa, performance, computer)
+//   code — code / test / verify (notched corner — "file with cut")
+const SHAPE_PATHS: Record<string, string> = {
+  rect:
+    'M 8 0.6 L 152 0.6 Q 159.4 0.6 159.4 8 L 159.4 92 Q 159.4 99.4 152 99.4 L 8 99.4 Q 0.6 99.4 0.6 92 L 0.6 8 Q 0.6 0.6 8 0.6 Z',
+  hex:
+    'M 18 0.6 L 142 0.6 L 159.4 50 L 142 99.4 L 18 99.4 L 0.6 50 Z',
+  pill:
+    'M 50 0.6 L 110 0.6 A 49.4 49.4 0 0 1 110 99.4 L 50 99.4 A 49.4 49.4 0 0 1 50 0.6 Z',
+  oct:
+    'M 18 0.6 L 142 0.6 L 159.4 18 L 159.4 82 L 142 99.4 L 18 99.4 L 0.6 82 L 0.6 18 Z',
+  // Smaller, tighter notch so the top-row content (CODE · ● status) clears
+  // the diagonal cut. Notch goes from x=138 down to y=22 (was 132/28).
+  code:
+    'M 8 0.6 L 138 0.6 L 159.4 22 L 159.4 92 Q 159.4 99.4 152 99.4 L 8 99.4 Q 0.6 99.4 0.6 92 L 0.6 8 Q 0.6 0.6 8 0.6 Z',
+}
+
+const PROFILE_SHAPE: Record<string, keyof typeof SHAPE_PATHS> = {
+  general: 'rect',
+  explore: 'hex',
+  'explore-fast': 'hex',
+  code: 'code',
+  test: 'code',
+  verify: 'code',
+  plan: 'pill',
+  review: 'pill',
+  docs: 'pill',
+  'memory-curator': 'oct',
+  'browser-qa': 'oct',
+  performance: 'oct',
+  computer: 'oct',
+}
+
+function shapeFor(agentType: string): keyof typeof SHAPE_PATHS {
+  return PROFILE_SHAPE[agentType] ?? 'rect'
+}
+
+// Per-side inset for the HTML content overlay so text never crashes into
+// a cut/curved edge. `code` gets extra right padding only — the notch is
+// in the top-right corner, so we don't waste space on the left side.
+const SHAPE_INSET: Record<
+  keyof typeof SHAPE_PATHS,
+  { left: number; right: number; top: number; bottom: number }
+> = {
+  rect: { left: 11, right: 11, top: 9, bottom: 9 },
+  hex:  { left: 22, right: 22, top: 9, bottom: 9 },
+  pill: { left: 24, right: 24, top: 9, bottom: 9 },
+  oct:  { left: 18, right: 18, top: 9, bottom: 9 },
+  code: { left: 11, right: 24, top: 9, bottom: 9 },
+}
+
+// ── HiveMindGraph ─────────────────────────────────────────────────────────
+//
+// Node-graph view of a swarm session. Orchestrator on the left, agents
+// laid out in columns by round, file artifacts in a column on the right.
+// Edges are the hero:
+//   - Delegation:  faint dashed white arc (orchestrator → round 1 agents)
+//   - Collab:      cyan curved arc bowing above the cards (publish → read)
+//   - Artifact:    amber straight arc (creating agent → file change)
+//
+// A thin event-density strip at the bottom keeps the time context without
+// the canvas itself being a wall-clock Gantt.
+
+interface CardPos {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+function HiveMindGraph({
   agents,
   events,
+  fileChanges,
+  source,
   onAttach,
 }: {
   agents: AgentView[]
   events: BusEventView[]
+  fileChanges: FileChangeSet[]
+  source: SessionSnapshot | undefined
   onAttach: (id: string) => void
 }) {
-  const nodes = agents
-    .slice()
-    .sort((a, b) => agentStartedAt(a) - agentStartedAt(b))
-    .slice(0, 18)
-  const width = 1280
-  const height = 560
-  const busX = width / 2
-  const busY = 68
-  const busW = 286
-  const busH = 78
-  const rounds = groupAgentRounds(nodes)
-  const roundGap = 18
-  const leftPad = 42
-  const graphTop = 148
-  const panelH = height - graphTop - 26
-  const roundW = rounds.length
-    ? (width - leftPad * 2 - roundGap * (rounds.length - 1)) / rounds.length
-    : 0
-  const eventsBySender = new Map<string, BusEventView[]>()
-  for (const event of events) {
-    const list = eventsBySender.get(event.senderId) ?? []
-    list.push(event)
-    eventsBySender.set(event.senderId, list)
-  }
-  for (const list of eventsBySender.values()) {
-    list.sort((a, b) => b.timestamp - a.timestamp)
-  }
-  const topicTotals = {
-    findings: events.filter((event) => event.topic === 'findings').length,
-    progress: events.filter((event) => event.topic === 'progress').length,
-    errors: events.filter((event) => event.topic === 'errors').length,
-    read: events.filter((event) => event.topic === 'read').length,
-  }
-  const maxTopicTotal = Math.max(1, ...Object.values(topicTotals))
-  const positions = new Map<string, GraphAgentNode>()
-  const roundViews = rounds.map((round, roundIndex) => {
-    const x = leftPad + roundIndex * (roundW + roundGap)
-    const innerCols = round.agents.length > 5 && roundW > 430 ? 2 : 1
-    const cardGap = 10
-    const cardW = Math.min(292, (roundW - 28 - cardGap * (innerCols - 1)) / innerCols)
-    const cardH = 52
-    const maxRows = Math.max(1, Math.floor((panelH - 62) / (cardH + 8)))
-    const maxAgents = innerCols * maxRows
-    const visible = round.agents.slice(0, maxAgents)
-    const hidden = round.agents.length - visible.length
-    const rows = Math.max(1, Math.ceil(visible.length / innerCols))
-    const firstY = graphTop + 52
-    const rowGap = rows > 1 ? Math.min(10, Math.max(5, (panelH - 72 - rows * cardH) / (rows - 1))) : 0
-    const cards = visible.map((agent, index) => {
-      const col = index % innerCols
-      const row = Math.floor(index / innerCols)
-      const cardX = x + 14 + col * (cardW + cardGap)
-      const cardY = firstY + row * (cardH + rowGap)
-      const senderEvents = eventsBySender.get(agent.session.id) ?? []
-      const published = senderEvents.filter((event) => event.topic !== 'read')
-      const reads = senderEvents.filter((event) => event.topic === 'read')
-      const latest = senderEvents[0]
-      const color = PROFILE_HEX[agent.agentType] ?? PROFILE_HEX.general
-      const node: GraphAgentNode = {
-        agent,
-        x: cardX,
-        y: cardY,
+  const sortedAgents = agents.slice().sort((a, b) => agentStartedAt(a) - agentStartedAt(b))
+  const rounds = groupAgentRounds(sortedAgents)
+  const titlePrefix = commonTitlePrefix(
+    sortedAgents.map((a) => a.session.title || a.sub?.label || a.session.id),
+  )
+
+  // Layout constants. Card sizes are tight so multiple round columns fit
+  // without horizontal scroll on a typical 700–1100px panel; canvas can
+  // still scroll if the swarm is unusually wide or tall.
+  const orchW = 184
+  const orchH = 100
+  const cardW = 168
+  const cardH = 100
+  const fileW = 172
+  const fileH = 56
+  const colGap = 56 // wider gap so collab arcs read clearly
+  const rowGap = 12
+  const topPad = 64
+  const leftPad = 28
+  const rightPad = 28
+
+  // tool → agent index lookup so artifact edges land on the right card
+  const toolToAgent = new Map<string, number>()
+  sortedAgents.forEach((agent, i) => {
+    for (const tool of agent.tools) toolToAgent.set(tool.id, i)
+  })
+  const placedArtifacts = fileChanges
+    .filter((fc) => toolToAgent.has(fc.toolCallId))
+    .sort((a, b) => a.createdAt - b.createdAt)
+  const hasArtifacts = placedArtifacts.length > 0
+
+  // Card positions
+  const orchPos: CardPos = { x: leftPad, y: topPad, w: orchW, h: orchH }
+  const agentPos = new Map<string, CardPos>()
+  rounds.forEach((round, ri) => {
+    const x = leftPad + orchW + colGap + ri * (cardW + colGap)
+    round.agents.forEach((agent, ai) => {
+      agentPos.set(agent.session.id, {
+        x,
+        y: topPad + ai * (cardH + rowGap),
         w: cardW,
         h: cardH,
-        cx: cardX + cardW / 2,
-        topY: cardY,
-        bottomY: cardY + cardH,
-        color,
-        published: published.length,
-        reads: reads.length,
-        latest,
-      }
-      positions.set(agent.session.id, node)
-      return node
+      })
     })
-    return { round, x, y: graphTop, w: roundW, h: panelH, cards, hidden }
   })
-  const publishEdges = Array.from(positions.values()).filter((node) => node.published > 0)
-  const readEdges = Array.from(positions.values()).filter((node) => node.reads > 0)
-  const collaborationEdges = inferCollaborationEdges(events, positions)
-  const hasEvents = events.length > 0
-  return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="h-full w-full" role="img" aria-label="Collaboration map">
-      <defs>
-        <radialGradient id="busGlow" cx="50%" cy="50%" r="50%">
-          <stop offset="0%" stopColor="#a8d4fc" stopOpacity="0.55" />
-          <stop offset="100%" stopColor="#a8d4fc" stopOpacity="0" />
-        </radialGradient>
-        <linearGradient id="busSpine" x1="0%" x2="100%" y1="0%" y2="0%">
-          <stop offset="0%" stopColor="#7ab8a3" stopOpacity="0" />
-          <stop offset="48%" stopColor="#a8d4fc" stopOpacity="0.44" />
-          <stop offset="100%" stopColor="#7ab8a3" stopOpacity="0" />
-        </linearGradient>
-        <pattern id="collabGrid" width="32" height="32" patternUnits="userSpaceOnUse">
-          <path d="M 32 0 L 0 0 0 32" fill="none" stroke="rgba(255,255,255,0.045)" strokeWidth="1" />
-        </pattern>
-        <marker id="collabArrow" markerHeight="8" markerWidth="8" orient="auto" refX="7" refY="4">
-          <path d="M 0 0 L 8 4 L 0 8 z" fill="#a8d4fc" fillOpacity="0.55" />
-        </marker>
-        <marker id="collabReadArrow" markerHeight="8" markerWidth="8" orient="auto" refX="7" refY="4">
-          <path d="M 0 0 L 8 4 L 0 8 z" fill="#8a9491" fillOpacity="0.52" />
-        </marker>
-      </defs>
-      <rect x="0" y="0" width={width} height={height} fill="url(#collabGrid)" opacity="0.45" />
-      <circle cx={busX} cy={busY + 16} r="170" fill="url(#busGlow)" opacity={hasEvents ? '0.16' : '0.08'} />
-      <rect x="54" y={busY + 68} width={width - 108} height="2" rx="1" fill="url(#busSpine)" opacity={hasEvents ? '0.72' : '0.28'} />
 
-      {collaborationEdges.map((edge) => {
-        const from = positions.get(edge.fromId)
-        const to = positions.get(edge.toId)
-        if (!from || !to) return null
-        const lift = Math.max(18, Math.min(76, Math.abs(from.cx - to.cx) * 0.16))
-        const midY = Math.min(height - 18, Math.max(from.bottomY, to.bottomY) + lift)
-        return (
-          <path
-            key={`${edge.fromId}-${edge.toId}`}
-            d={`M ${from.cx} ${from.bottomY} C ${from.cx} ${midY} ${to.cx} ${midY} ${to.cx} ${to.bottomY}`}
-            fill="none"
-            stroke="#d0a040"
-            strokeDasharray="4 7"
-            strokeLinecap="round"
-            strokeOpacity={Math.min(0.44, 0.1 + edge.count * 0.08)}
-            strokeWidth={Math.min(2.4, 0.9 + edge.count * 0.25)}
-          />
-        )
-      })}
+  const artifactColX = leftPad + orchW + colGap + rounds.length * (cardW + colGap)
+  const artifactPos = new Map<string, CardPos>()
+  placedArtifacts.forEach((fc, fi) => {
+    artifactPos.set(fc.id, {
+      x: artifactColX,
+      y: topPad + fi * (fileH + rowGap),
+      w: fileW,
+      h: fileH,
+    })
+  })
 
-      {publishEdges.map((node) => {
-        const anchorX = busX + (node.cx - busX) * 0.16
-        const anchorY = busY + busH / 2 + 22
-        const active = node.agent.status === 'running'
-        return (
-          <g key={`${node.agent.session.id}-publish`}>
-            <path
-              d={`M ${node.cx} ${node.topY} C ${node.cx} ${node.topY - 52} ${anchorX} ${anchorY + 34} ${anchorX} ${anchorY}`}
-              fill="none"
-              markerEnd="url(#collabArrow)"
-              stroke={topicHex(node.latest?.topic === 'read' ? 'findings' : (node.latest?.topic ?? 'findings'))}
-              strokeLinecap="round"
-              strokeOpacity={active ? 0.62 : 0.34}
-              strokeWidth={Math.min(4, 1.2 + node.published * 0.26)}
-            />
-          </g>
-        )
-      })}
-
-      {readEdges.map((node) => {
-        const anchorX = busX + (node.cx - busX) * 0.16
-        const anchorY = busY + busH / 2 + 22
-        return (
-          <path
-            key={`${node.agent.session.id}-read`}
-            d={`M ${anchorX} ${anchorY} C ${anchorX} ${anchorY + 36} ${node.cx} ${node.topY - 44} ${node.cx} ${node.topY}`}
-            fill="none"
-            markerEnd="url(#collabReadArrow)"
-            stroke="#8a9491"
-            strokeDasharray="6 7"
-            strokeLinecap="round"
-            strokeOpacity={node.agent.status === 'running' ? 0.56 : 0.3}
-            strokeWidth={Math.min(3.2, 1 + node.reads * 0.34)}
-          />
-        )
-      })}
-
-      <rect
-        x={busX - busW / 2}
-        y={busY - busH / 2}
-        width={busW}
-        height={busH}
-        rx="16"
-        fill="rgba(10,14,13,0.82)"
-        stroke="rgba(168,212,252,0.42)"
-      />
-      <rect
-        x={busX - busW / 2 + 12}
-        y={busY - busH / 2 + 12}
-        width="3"
-        height={busH - 24}
-        rx="1.5"
-        fill="#a8d4fc"
-        opacity={hasEvents ? '0.72' : '0.28'}
-      />
-      <text x={busX} y={busY - 16} textAnchor="middle" fill="#e8e8e8" fontSize="16" fontFamily="Departure Mono, monospace">
-        message bus
-      </text>
-      <text x={busX} y={busY + 5} textAnchor="middle" fill="#8e9a96" fontSize="10" fontFamily="Departure Mono, monospace">
-        {events.length} events / {nodes.length} agents / {rounds.length} rounds
-      </text>
-      {hasEvents ? (
-        (['findings', 'progress', 'errors', 'read'] as BusMessageRecord['topic'][]).map((topic, index) => {
-          const barW = 20 + (topicTotals[topic] / maxTopicTotal) * 82
-          return (
-            <g key={topic}>
-              <rect
-                x={busX - 92}
-                y={busY + 21 + index * 9}
-                width={barW}
-                height="4"
-                rx="2"
-                fill={topicHex(topic)}
-                opacity={topicTotals[topic] > 0 ? 0.72 : 0.18}
-              />
-              <text x={busX + 18} y={busY + 25 + index * 9} fill="#7a8582" fontSize="8" fontFamily="Departure Mono, monospace">
-                {topic} {topicTotals[topic]}
-              </text>
-            </g>
-          )
-        })
-      ) : (
-        <text x={busX} y={busY + 30} textAnchor="middle" fill="#687370" fontSize="9" fontFamily="Departure Mono, monospace">
-          no bus traffic yet
-        </text>
-      )}
-
-      {roundViews.map((view, roundIndex) => (
-        <g key={view.round.id}>
-          <rect
-            x={view.x}
-            y={view.y}
-            width={view.w}
-            height={view.h}
-            rx="18"
-            fill="rgba(255,255,255,0.018)"
-            stroke="rgba(168,212,252,0.12)"
-          />
-          <text x={view.x + 16} y={view.y + 25} fill="#a8d4fc" fontSize="10" fontFamily="Departure Mono, monospace">
-            ROUND {roundIndex + 1}
-          </text>
-          <text x={view.x + 86} y={view.y + 25} fill="#687370" fontSize="9" fontFamily="Departure Mono, monospace">
-            {view.round.agents.length} agents / {relativeTime(view.round.startAt)}
-          </text>
-          {view.cards.map((node) => {
-            const cardActive = node.agent.status === 'running'
-            const title = truncateText(node.agent.session.title || node.agent.sub?.label || node.agent.session.id, node.w > 220 ? 31 : 22)
-            const task = truncateText(node.agent.session.task ?? node.agent.sub?.task ?? 'No task description', node.w > 220 ? 34 : 24)
-            const tools = node.agent.tools.length || node.agent.sub?.toolsCalled || 0
-            return (
-              <g
-                key={node.agent.session.id}
-                onClick={() => node.agent.attachable && onAttach(node.agent.session.id)}
-                style={{ cursor: node.agent.attachable ? 'pointer' : 'default' }}
-              >
-                <rect
-                  x={node.x}
-                  y={node.y}
-                  width={node.w}
-                  height={node.h}
-                  rx="10"
-                  fill={cardActive ? 'rgba(255,255,255,0.055)' : 'rgba(255,255,255,0.032)'}
-                  stroke={node.color}
-                  strokeOpacity={cardActive ? 0.56 : 0.24}
-                />
-                <rect x={node.x + 9} y={node.y + 9} width="3" height={node.h - 18} rx="1.5" fill={node.color} opacity={cardActive ? 0.88 : 0.62} />
-                <circle cx={node.x + node.w - 16} cy={node.y + 15} r="4" fill={statusHex(node.agent.status)} opacity="0.92" />
-                <text x={node.x + 22} y={node.y + 18} fill="#e8e8e8" fontSize="10.5" fontFamily="Departure Mono, monospace">
-                  {title}
-                </text>
-                <text x={node.x + 22} y={node.y + 33} fill="#7f8b87" fontSize="8.5" fontFamily="Departure Mono, monospace">
-                  {node.agent.agentType} / {node.agent.status.toUpperCase()} / tools {tools}
-                </text>
-                <text x={node.x + 22} y={node.y + 46} fill="#6e7774" fontSize="8" fontFamily="Departure Mono, monospace">
-                  pub {node.published} / read {node.reads} / {task}
-                </text>
-              </g>
-            )
-          })}
-          {view.hidden > 0 && (
-            <text x={view.x + view.w / 2} y={view.y + view.h - 14} textAnchor="middle" fill="#7a8582" fontSize="9" fontFamily="Departure Mono, monospace">
-              +{view.hidden} more agents in lanes below
-            </text>
-          )}
-        </g>
-      ))}
-
-      {agents.length > nodes.length && (
-        <text x={busX} y={height - 16} textAnchor="middle" fill="#7a8582" fontSize="10" fontFamily="Departure Mono, monospace">
-          +{agents.length - nodes.length} more agents in lanes below
-        </text>
-      )}
-      {nodes.length === 0 && (
-        <g>
-          <rect
-            x={busX - 240}
-            y={graphTop + 72}
-            width="480"
-            height="86"
-            rx="18"
-            fill="rgba(255,255,255,0.022)"
-            stroke="rgba(255,255,255,0.08)"
-            strokeDasharray="5 7"
-          />
-          <text x={busX} y={graphTop + 112} textAnchor="middle" fill="#8e9a96" fontSize="12" fontFamily="Departure Mono, monospace">
-            spawn agents to form collaboration rounds
-          </text>
-          <text x={busX} y={graphTop + 136} textAnchor="middle" fill="#687370" fontSize="9" fontFamily="Departure Mono, monospace">
-            publish, read, and cross-agent reuse edges will appear here
-          </text>
-        </g>
-      )}
-    </svg>
+  // Canvas size
+  const lastColRight = hasArtifacts
+    ? artifactColX + fileW
+    : leftPad + orchW + colGap + Math.max(0, rounds.length) * (cardW + colGap) - colGap
+  const canvasW = Math.max(560, lastColRight + rightPad)
+  const tallestRound = Math.max(0, ...rounds.map((r) => r.agents.length * (cardH + rowGap) - rowGap))
+  const tallestArtifacts = placedArtifacts.length * (fileH + rowGap) - rowGap
+  const canvasH = Math.max(
+    240,
+    topPad + Math.max(orchH, tallestRound, tallestArtifacts) + 24,
   )
+
+  // Edges
+  const round1 = rounds[0]?.agents ?? []
+  const delegationEdges = round1.map((agent) => {
+    const tgt = agentPos.get(agent.session.id)!
+    return {
+      from: { x: orchPos.x + orchPos.w, y: orchPos.y + orchPos.h / 2 },
+      to: { x: tgt.x, y: tgt.y + tgt.h / 2 },
+    }
+  })
+
+  // Reuse the cross-agent collaboration inference. Compat-shape positions
+  // for the helper which expects {x, y, cx, topY, bottomY, ...}.
+  const compatPositions = new Map<string, GraphAgentNode>()
+  for (const [id, p] of agentPos) {
+    const agent = sortedAgents.find((a) => a.session.id === id)!
+    compatPositions.set(id, {
+      agent,
+      x: p.x + p.w / 2,
+      y: p.y + p.h / 2,
+      w: p.w,
+      h: p.h,
+      cx: p.x + p.w / 2,
+      topY: p.y,
+      bottomY: p.y + p.h,
+      color: PROFILE_HEX[agent.agentType] ?? PROFILE_HEX.general,
+      published: 0,
+      reads: 0,
+    })
+  }
+  // Cap visible collab edges so a saturated swarm doesn't draw a hairball.
+  // The helper already sorts by count + recency, so the slice keeps the
+  // strongest signals.
+  const collabEdges = inferCollaborationEdges(events, compatPositions).slice(0, 12)
+
+  // Artifact edges
+  const artifactEdges = placedArtifacts
+    .map((fc) => {
+      const idx = toolToAgent.get(fc.toolCallId)!
+      const agent = sortedAgents[idx]
+      const from = agentPos.get(agent.session.id)
+      const to = artifactPos.get(fc.id)
+      if (!from || !to) return null
+      return {
+        from: { x: from.x + from.w, y: from.y + from.h / 2 },
+        to: { x: to.x, y: to.y + to.h / 2 },
+        changeSet: fc,
+      }
+    })
+    .filter((e): e is NonNullable<typeof e> => Boolean(e))
+
+  // Bus density bins for the bottom strip
+  const eventTimes = events
+    .map((e) => normalizeBusTimestamp(e.timestamp))
+    .filter((t) => t > 0)
+  const sourceTokens =
+    (source?.totalInputTokens ?? 0) + (source?.totalOutputTokens ?? 0)
+  const totalAgentTokens = sortedAgents.reduce(
+    (acc, a) => acc + (a.tokensIn + a.tokensOut),
+    0,
+  )
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* Header rail */}
+      <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1.5 hairline-b pb-3">
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-fg-1">
+            hive mind
+          </span>
+          <span className="font-mono text-[10px] text-fg-3">
+            {sortedAgents.length} agent{sortedAgents.length === 1 ? '' : 's'} ·{' '}
+            {rounds.length} round{rounds.length === 1 ? '' : 's'} ·{' '}
+            {events.length} bus event{events.length === 1 ? '' : 's'} ·{' '}
+            {placedArtifacts.length} artifact{placedArtifacts.length === 1 ? '' : 's'}
+          </span>
+        </div>
+        <div className="ml-auto flex flex-wrap items-center gap-3 font-mono text-[9.5px] text-fg-3">
+          <span className="flex items-center gap-1.5">
+            <svg width="22" height="6" className="block">
+              <path
+                d="M 1 3 Q 11 -2 21 3"
+                fill="none"
+                stroke={ACCENT_BUS}
+                strokeWidth="1.4"
+              />
+            </svg>
+            <span>collab</span>
+            <span className="text-fg-1">{collabEdges.length}</span>
+          </span>
+          <span className="flex items-center gap-1.5">
+            <svg width="22" height="6" className="block">
+              <line x1="1" y1="3" x2="21" y2="3" stroke={ACCENT_FILE} strokeWidth="1.4" />
+            </svg>
+            <span>artifact</span>
+            <span className="text-fg-1">{placedArtifacts.length}</span>
+          </span>
+          <span className="flex items-center gap-1.5">
+            <svg width="22" height="6" className="block">
+              <line
+                x1="1"
+                y1="3"
+                x2="21"
+                y2="3"
+                stroke="white"
+                strokeOpacity="0.4"
+                strokeWidth="1"
+                strokeDasharray="3 3"
+              />
+            </svg>
+            <span>delegation</span>
+          </span>
+        </div>
+      </div>
+
+      {/* Graph canvas */}
+      <div className="mt-3 min-h-0 flex-1 overflow-auto">
+        {sortedAgents.length === 0 ? (
+          <div className="rounded-xl bg-white/[0.025] p-8 ring-hairline">
+            <EmptyState
+              title="No agents yet"
+              body="Spawned subagents will appear as nodes connected to the orchestrator. Cyan arcs show shared findings; amber lines lead to the artifacts each agent created."
+            />
+          </div>
+        ) : (
+          <div
+            className="relative"
+            style={{ width: `${canvasW}px`, height: `${canvasH}px` }}
+          >
+            {/* Round + artifacts column headers */}
+            {rounds.map((round, ri) => (
+              <div
+                key={`rh-${ri}`}
+                className="absolute font-mono text-[10px] uppercase tracking-[0.22em]"
+                style={{
+                  left: leftPad + orchW + colGap + ri * (cardW + colGap),
+                  top: 18,
+                  width: cardW,
+                }}
+              >
+                <span className="block text-fg-1">round {String(ri + 1).padStart(2, '0')}</span>
+                <span className="mt-0.5 block text-[9px] text-fg-3">
+                  {round.agents.length} agent{round.agents.length === 1 ? '' : 's'} ·{' '}
+                  {relativeTime(round.startAt)}
+                </span>
+              </div>
+            ))}
+            {hasArtifacts && (
+              <div
+                className="absolute font-mono text-[10px] uppercase tracking-[0.22em]"
+                style={{
+                  left: artifactColX,
+                  top: 18,
+                  width: fileW,
+                  color: ACCENT_FILE,
+                }}
+              >
+                <span className="block">artifacts</span>
+                <span className="mt-0.5 block text-[9px] text-fg-3">
+                  {placedArtifacts.length} change{placedArtifacts.length === 1 ? '' : 's'}
+                </span>
+              </div>
+            )}
+
+            {/* SVG edge layer (under cards via z-index, no pointer events) */}
+            <svg
+              width={canvasW}
+              height={canvasH}
+              className="hive-edges absolute inset-0"
+              style={{ pointerEvents: 'none' }}
+            >
+              {/* Delegation: orchestrator → round 1 agents */}
+              {delegationEdges.map((edge, i) => {
+                const dx = edge.to.x - edge.from.x
+                const c1x = edge.from.x + Math.max(20, dx * 0.55)
+                const c2x = edge.to.x - Math.max(20, dx * 0.45)
+                return (
+                  <path
+                    key={`del-${i}`}
+                    d={`M ${edge.from.x} ${edge.from.y} C ${c1x} ${edge.from.y} ${c2x} ${edge.to.y} ${edge.to.x} ${edge.to.y}`}
+                    fill="none"
+                    stroke="white"
+                    strokeOpacity="0.22"
+                    strokeWidth="1"
+                    strokeDasharray="3 4"
+                  />
+                )
+              })}
+
+              {/* Collab arcs (cyan) — solid lines bowing out to the right
+                  past the cards. Stroke width + opacity scale with how many
+                  reads the pair has shared, so heavier collaborators read
+                  louder than one-off pairings. */}
+              {collabEdges.map((edge) => {
+                const from = agentPos.get(edge.fromId)
+                const to = agentPos.get(edge.toId)
+                if (!from || !to) return null
+                const fx = from.x + from.w
+                const fy = from.y + from.h / 2
+                const tx = to.x + to.w
+                const ty = to.y + to.h / 2
+                const reach = 28 + Math.min(36, edge.count * 5)
+                const c1x = fx + reach
+                const c2x = tx + reach
+                const opacity = Math.min(0.62, 0.22 + edge.count * 0.05)
+                const width = Math.min(2.0, 0.9 + edge.count * 0.14)
+                return (
+                  <path
+                    key={`coll-${edge.fromId}-${edge.toId}`}
+                    d={`M ${fx} ${fy} C ${c1x} ${fy} ${c2x} ${ty} ${tx} ${ty}`}
+                    fill="none"
+                    stroke={ACCENT_BUS}
+                    strokeOpacity={opacity}
+                    strokeWidth={width}
+                    strokeLinecap="round"
+                    className="hive-edge-collab"
+                  />
+                )
+              })}
+
+              {/* Artifact edges (amber) — straight-ish from agent → file */}
+              {artifactEdges.map((edge, i) => {
+                const dx = edge.to.x - edge.from.x
+                const c1x = edge.from.x + Math.max(16, dx * 0.5)
+                const c2x = edge.to.x - Math.max(16, dx * 0.5)
+                return (
+                  <path
+                    key={`art-${i}`}
+                    d={`M ${edge.from.x} ${edge.from.y} C ${c1x} ${edge.from.y} ${c2x} ${edge.to.y} ${edge.to.x} ${edge.to.y}`}
+                    fill="none"
+                    stroke={ACCENT_FILE}
+                    strokeOpacity="0.62"
+                    strokeWidth="1.2"
+                  />
+                )
+              })}
+            </svg>
+
+            {/* Orchestrator card */}
+            <div
+              className="absolute"
+              style={{
+                left: orchPos.x,
+                top: orchPos.y,
+                width: orchPos.w,
+                height: orchPos.h,
+              }}
+            >
+              <OrchestratorCard
+                source={source}
+                agentCount={sortedAgents.length}
+                tokens={sourceTokens + totalAgentTokens}
+                runningCount={sortedAgents.filter((a) => a.status === 'running').length}
+              />
+            </div>
+
+            {/* Agent cards */}
+            {sortedAgents.map((agent) => {
+              const pos = agentPos.get(agent.session.id)
+              if (!pos) return null
+              return (
+                <div
+                  key={`ag-${agent.session.id}`}
+                  className="absolute"
+                  style={{
+                    left: pos.x,
+                    top: pos.y,
+                    width: pos.w,
+                    height: pos.h,
+                  }}
+                >
+                  <HiveAgentCard
+                    agent={agent}
+                    titlePrefix={titlePrefix}
+                    onAttach={onAttach}
+                  />
+                </div>
+              )
+            })}
+
+            {/* Artifact cards */}
+            {placedArtifacts.map((fc) => {
+              const pos = artifactPos.get(fc.id)
+              if (!pos) return null
+              return (
+                <div
+                  key={`fc-${fc.id}`}
+                  className="absolute"
+                  style={{
+                    left: pos.x,
+                    top: pos.y,
+                    width: pos.w,
+                    height: pos.h,
+                  }}
+                >
+                  <HiveArtifactCard changeSet={fc} />
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Event-density strip — gives time context without dominating */}
+      {eventTimes.length > 0 && <EventDensityStrip times={eventTimes} />}
+
+      {titlePrefix && (
+        <div className="shrink-0 pt-2 font-mono text-[9.5px] text-fg-3/80">
+          card titles elide shared prefix · "{titlePrefix.trim()}"
+        </div>
+      )}
+    </div>
+  )
+}
+
+function OrchestratorCard({
+  source,
+  agentCount,
+  tokens,
+  runningCount,
+}: {
+  source: SessionSnapshot | undefined
+  agentCount: number
+  tokens: number
+  runningCount: number
+}) {
+  const title = cleanTitle(source?.title || source?.task || 'Mission')
+  return (
+    <div className="hive-card relative h-full w-full">
+      <svg
+        className="hive-card-svg pointer-events-none absolute inset-0 h-full w-full"
+        viewBox="0 0 160 100"
+        preserveAspectRatio="none"
+        aria-hidden="true"
+      >
+        <path d={SHAPE_PATHS.rect} className="hive-card-fill" />
+        <path d={SHAPE_PATHS.rect} className="hive-card-stroke" fill="none" />
+      </svg>
+      <div className="relative flex h-full w-full flex-col px-3 py-2.5">
+        <div className="flex items-center justify-between gap-2 font-mono text-[9px] uppercase tracking-[0.18em] text-fg-3">
+          <span className="text-fg-1">orchestrator</span>
+          {runningCount > 0 && (
+            <span className="flex items-center gap-1 text-accent">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
+              {runningCount} live
+            </span>
+          )}
+        </div>
+        <h3 className="mt-2 line-clamp-3 font-prose text-[12px] font-medium leading-[1.32] text-fg-0">
+          {title}
+        </h3>
+        <div className="mt-auto pt-2 font-mono text-[9px] text-fg-3">
+          <span className="text-fg-1">{agentCount}</span> agents
+          <span className="text-fg-3/40"> · </span>
+          <span className="text-fg-1">{formatTokens(tokens)}</span> tokens
+          {source?.model && (
+            <>
+              <span className="text-fg-3/40"> · </span>
+              <span className="truncate text-fg-2">{source.model}</span>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function HiveAgentCard({
+  agent,
+  titlePrefix,
+  onAttach,
+}: {
+  agent: AgentView
+  titlePrefix: string
+  onAttach: (id: string) => void
+}) {
+  const accent = PROFILE_HEX[agent.agentType] ?? PROFILE_HEX.general
+  const tools = agent.tools.length || agent.sub?.toolsCalled || 0
+  const running = agent.status === 'running'
+  const canAttach = agent.attachable
+  const rawTitle = agent.session.title || agent.sub?.label || agent.session.id
+  const elided = titlePrefix && rawTitle.startsWith(titlePrefix)
+    ? rawTitle.slice(titlePrefix.length).trim()
+    : ''
+  const displayTitle = cleanTitle(elided || rawTitle)
+  const totalTokens = (agent.tokensIn || 0) + (agent.tokensOut || 0)
+  const shape = shapeFor(agent.agentType)
+  const shapePath = SHAPE_PATHS[shape]
+  const inset = SHAPE_INSET[shape]
+
+  return (
+    <button
+      type="button"
+      onClick={() => canAttach && onAttach(agent.session.id)}
+      disabled={!canAttach}
+      title={canAttach ? `Attach to ${rawTitle}` : rawTitle}
+      className={`hive-card hive-card-agent group relative h-full w-full text-left ${
+        running ? 'is-running' : ''
+      } ${canAttach ? 'is-clickable' : ''}`}
+      style={{ ['--hive-accent' as string]: accent }}
+    >
+      {/* Shape silhouette: SVG fill + stroke (replaces border-radius/box-shadow
+          so each profile family gets its own outline. preserveAspectRatio
+          "none" lets the path stretch to the card box. */}
+      <svg
+        className="hive-card-svg pointer-events-none absolute inset-0 h-full w-full"
+        viewBox="0 0 160 100"
+        preserveAspectRatio="none"
+        aria-hidden="true"
+      >
+        <path d={shapePath} className="hive-card-fill" />
+        <path d={shapePath} className="hive-card-stroke" fill="none" />
+      </svg>
+      {/* Content overlay — per-side inset so text never crashes into a
+          cut/curved edge (e.g. `code` gets extra right padding for its
+          top-right notch). */}
+      <div
+        className="relative flex h-full w-full flex-col"
+        style={{
+          paddingLeft: `${inset.left}px`,
+          paddingRight: `${inset.right}px`,
+          paddingTop: `${inset.top}px`,
+          paddingBottom: `${inset.bottom}px`,
+        }}
+      >
+        <div className="flex items-center justify-between gap-2 font-mono text-[9px] uppercase tracking-[0.12em] text-fg-3">
+          <span className="truncate" style={{ color: accent }}>
+            {agent.agentType}
+          </span>
+          <span className={`flex items-center gap-1 ${statusTextClass(agent.status)}`}>
+            <span
+              className="h-1.5 w-1.5 rounded-full"
+              style={{ background: statusHex(agent.status) }}
+            />
+            {agent.status}
+          </span>
+        </div>
+        <h3 className="mt-1.5 line-clamp-3 font-prose text-[11.5px] font-medium leading-[1.32] text-fg-0">
+          {displayTitle}
+        </h3>
+        <footer className="mt-auto flex items-center justify-between gap-1.5 pt-1.5 font-mono text-[9px] text-fg-3">
+          <span>
+            <span className="text-fg-1">{tools}</span>t
+          </span>
+          <span className="text-fg-3/40">·</span>
+          <span>
+            <span className="text-fg-1">{formatTokens(totalTokens)}</span>tk
+          </span>
+          <span className="text-fg-3/40">·</span>
+          <span className="text-fg-1">{formatDuration(agent.elapsedMs)}</span>
+        </footer>
+      </div>
+    </button>
+  )
+}
+
+function HiveArtifactCard({ changeSet }: { changeSet: FileChangeSet }) {
+  const first = changeSet.files[0]
+  const filename = first?.filename ?? 'change'
+  const path = first?.path ?? ''
+  const op = first?.operation ?? 'update'
+  const more = changeSet.files.length - 1
+  return (
+    <div
+      className="hive-card hive-card-artifact relative h-full w-full"
+      style={{ ['--hive-accent' as string]: ACCENT_FILE }}
+    >
+      {/* Artifact silhouette: file shape (notched corner). The amber stroke
+          is the file's accent — replaces the old left-edge color bar. */}
+      <svg
+        className="hive-card-svg pointer-events-none absolute inset-0 h-full w-full"
+        viewBox="0 0 160 100"
+        preserveAspectRatio="none"
+        aria-hidden="true"
+      >
+        <path d={SHAPE_PATHS.code} className="hive-card-fill" />
+        <path
+          d={SHAPE_PATHS.code}
+          className="hive-card-stroke"
+          fill="none"
+          style={{ stroke: ACCENT_FILE, strokeOpacity: 0.55 }}
+        />
+      </svg>
+      <div className="relative flex h-full w-full flex-col justify-center px-3 py-2">
+        <div className="flex items-center gap-2">
+          <svg width="10" height="12" viewBox="0 0 10 12" className="shrink-0">
+            <path
+              d="M 1 1 L 6 1 L 9 4 L 9 11 L 1 11 Z"
+              fill="none"
+              stroke={ACCENT_FILE}
+              strokeOpacity="0.85"
+              strokeWidth="1"
+            />
+            <path
+              d="M 6 1 L 6 4 L 9 4"
+              fill="none"
+              stroke={ACCENT_FILE}
+              strokeOpacity="0.6"
+              strokeWidth="1"
+            />
+          </svg>
+          <span className="truncate font-prose text-[11px] font-medium text-fg-0">
+            {filename}
+            {more > 0 && <span className="text-fg-3"> +{more}</span>}
+          </span>
+        </div>
+        {path && path !== filename && (
+          <div className="mt-1 truncate font-mono text-[9px] text-fg-3">{path}</div>
+        )}
+        <div className="mt-1 flex items-center gap-2 font-mono text-[9px]">
+          <span className="uppercase" style={{ color: ACCENT_FILE, opacity: 0.85 }}>
+            {op}
+          </span>
+          <span className="text-fg-3/40">·</span>
+          <span className="text-ok">+{changeSet.totals.additions}</span>
+          <span className="text-fg-3/40">/</span>
+          <span className="text-danger">-{changeSet.totals.deletions}</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function EventDensityStrip({ times }: { times: number[] }) {
+  if (times.length === 0) return null
+  const t0 = Math.min(...times)
+  const t1 = Math.max(...times)
+  const span = Math.max(1, t1 - t0)
+  const bins = 60
+  const counts = new Array<number>(bins).fill(0)
+  for (const t of times) {
+    const idx = Math.min(bins - 1, Math.max(0, Math.floor(((t - t0) / span) * bins)))
+    counts[idx]++
+  }
+  const max = Math.max(1, ...counts)
+  return (
+    <div className="mt-3 shrink-0 hairline-t pt-2.5">
+      <div className="flex items-center justify-between font-mono text-[9px] uppercase tracking-[0.18em] text-fg-3">
+        <span>event density</span>
+        <span>
+          <span className="text-fg-1">{times.length}</span> over{' '}
+          <span className="text-fg-1">{formatDurationMs(span)}</span>
+        </span>
+      </div>
+      <div className="mt-1.5 flex h-7 items-end gap-[2px]">
+        {counts.map((c, i) => (
+          <div
+            key={i}
+            className="flex-1 rounded-[1px] bg-white"
+            style={{
+              height: `${Math.max(6, (c / max) * 100)}%`,
+              opacity: c === 0 ? 0.04 : 0.12 + (c / max) * 0.6,
+            }}
+            title={`${c} events`}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function formatDurationMs(ms: number): string {
+  if (ms <= 0) return '0s'
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h`
+  return `${Math.floor(ms / 86_400_000)}d`
 }
 
 interface AgentRoundView {
@@ -1868,12 +2402,18 @@ function CompactAgentRow({
   onAttach,
 }: {
   agent: AgentView
-  onAttach: (id: string) => void
+  onAttach: (id: string, mode?: 'replace' | 'split') => void
 }) {
   const color = PROFILE_HEX[agent.agentType] ?? PROFILE_HEX.general
   return (
     <button
-      onClick={() => agent.attachable && onAttach(agent.session.id)}
+      onClick={(event) =>
+        agent.attachable &&
+        onAttach(
+          agent.session.id,
+          event.metaKey || event.ctrlKey ? 'split' : 'replace',
+        )
+      }
       className="flex w-full items-center gap-2 rounded-md bg-white/[0.025] px-2 py-1.5 text-left ring-hairline hover:bg-white/[0.05]"
     >
       <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: color }} />
@@ -2121,6 +2661,58 @@ function topicClass(topic: BusMessageRecord['topic']): string {
 function statusTextClass(status: AgentView['status']): string {
   if (status === 'failed' || status === 'cancelled') return 'text-danger'
   if (status === 'done') return 'text-ok'
+  if (status === 'running') return 'text-accent'
+  return 'text-fg-2'
+}
+
+function coordinationLabel(strategy?: CoordinationStrategy): string {
+  if (strategy === 'kanban') return 'board'
+  if (strategy === 'isolated') return 'solo'
+  return 'bus'
+}
+
+function collectKanbanCards(events: TelemetryEventView[]): KanbanCardView[] {
+  const cards = new Map<string, KanbanCardView>()
+  for (const event of [...events].reverse()) {
+    if (!event.subtype.startsWith('kanban_')) continue
+    const details = event.details ?? {}
+    const task = details.task
+    if (task && typeof task === 'object') {
+      const card = task as Record<string, unknown>
+      const id = String(card.id ?? '')
+      if (id) {
+        cards.set(id, {
+          id,
+          title: String(card.title ?? id),
+          status: String(card.status ?? 'todo'),
+          assignee: typeof card.assignee === 'string' ? card.assignee : undefined,
+          updatedAt: typeof card.updatedAt === 'number' ? card.updatedAt : event.at,
+        })
+      }
+    }
+    const taskList = details.tasks
+    if (Array.isArray(taskList)) {
+      for (const entry of taskList) {
+        if (!entry || typeof entry !== 'object') continue
+        const card = entry as Record<string, unknown>
+        const id = String(card.id ?? '')
+        if (!id) continue
+        cards.set(id, {
+          id,
+          title: String(card.title ?? id),
+          status: String(card.status ?? 'todo'),
+          assignee: typeof card.assignee === 'string' ? card.assignee : undefined,
+          updatedAt: typeof card.updatedAt === 'number' ? card.updatedAt : event.at,
+        })
+      }
+    }
+  }
+  return [...cards.values()].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+}
+
+function kanbanStatusClass(status: string): string {
+  if (status === 'done') return 'text-ok'
+  if (status === 'blocked' || status === 'cancelled') return 'text-danger'
   if (status === 'running') return 'text-accent'
   return 'text-fg-2'
 }

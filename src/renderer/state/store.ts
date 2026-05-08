@@ -102,6 +102,12 @@ export interface SessionSlice {
   systemPrompt?: string
 }
 
+export interface SessionPane {
+  id: string
+  sessionId: string
+  createdAt: number
+}
+
 export interface ModelChoice {
   id: string
   family: string
@@ -126,6 +132,10 @@ export interface HarnessState extends SessionSlice {
   sessions: SessionSnapshot[]
   /** Archived per-session slices, keyed by session id. */
   sessionArchive: Record<string, SessionSlice>
+  /** Center workspace panes. Only the active engine session is writable;
+   *  split panes are live read-only views of archived session slices. */
+  sessionPanes: SessionPane[]
+  activePaneId: string
   skills: Record<string, Skill>
   memories: Record<string, MemoryRecord>
   logs: Array<{ level: string; message: string; at: number }>
@@ -204,6 +214,9 @@ export interface HarnessActions {
   requestDemoBurst(): Promise<void>
   newSession(model?: string, reasoningLevel?: string): Promise<void>
   switchSession(sessionId: string): Promise<void>
+  openSessionPane(sessionId: string, mode?: 'replace' | 'split'): Promise<void>
+  closeSessionPane(paneId: string): Promise<void>
+  setActiveSessionPane(paneId: string): void
   listTools(): Promise<void>
   toggleDebug(open?: boolean): void
   toggleSidebar(collapsed?: boolean): void
@@ -414,6 +427,8 @@ function emptyState(): HarnessState {
       },
     ],
     sessionArchive: {},
+    sessionPanes: [{ id: 'pane-main', sessionId: bootId, createdAt: Date.now() }],
+    activePaneId: 'pane-main',
     skills: {},
     memories: {},
     logs: [],
@@ -1116,6 +1131,14 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
                   coordinationStrategy: nextStrategy,
                 }
               : s,
+          ),
+          sessionPanes: (prev.sessionPanes.length > 0
+            ? prev.sessionPanes
+            : [{ id: 'pane-main', sessionId: prev.activeSessionId, createdAt: Date.now() }]
+          ).map((pane) =>
+            pane.sessionId === prev.activeSessionId
+              ? { ...pane, sessionId: firstSessionId }
+              : pane,
           ),
           availableModels: models.length > 0 ? models : prev.availableModels,
           model: capModel,
@@ -1884,11 +1907,20 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         prev.availableModels,
         chosenStrategy,
       )
+      const existingPanes = prev.sessionPanes.length > 0
+        ? prev.sessionPanes
+        : [{ id: 'pane-main', sessionId: prev.activeSessionId, createdAt: Date.now() }]
+      const activePaneId = prev.activePaneId || existingPanes[0]?.id || 'pane-main'
+      const sessionPanes = existingPanes.map((pane) =>
+        pane.id === activePaneId ? { ...pane, sessionId: newSessionId } : pane,
+      )
       return {
         ...prev,
         ...freshSlice,
         activeSessionId: newSessionId,
         sessionArchive: archive,
+        sessionPanes,
+        activePaneId,
         sessions: [
           {
             id: newSessionId,
@@ -1961,11 +1993,20 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       const newArchive = { ...p.sessionArchive, [p.activeSessionId]: currentSlice }
       // Remove the target from archive since it's now the active one.
       delete newArchive[sessionId]
+      const existingPanes = p.sessionPanes.length > 0
+        ? p.sessionPanes
+        : [{ id: 'pane-main', sessionId: p.activeSessionId, createdAt: Date.now() }]
+      const activePaneId = p.activePaneId || existingPanes[0]?.id || 'pane-main'
+      const sessionPanes = existingPanes.map((pane) =>
+        pane.id === activePaneId ? { ...pane, sessionId } : pane,
+      )
       return {
         ...p,
         ...archivedSlice,
         activeSessionId: sessionId,
         sessionArchive: newArchive,
+        sessionPanes,
+        activePaneId,
         pendingAttachments: [],
       }
     })
@@ -2003,6 +2044,75 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         coordinationStrategy: strategyForBridge,
       })
     }
+  },
+
+  async openSessionPane(sessionId, mode = 'replace') {
+    const state = useHarness.getState()
+    const snapshot = state.sessions.find((session) => session.id === sessionId)
+    if (!snapshot) {
+      state.showToast('Session not found', 'warn')
+      return
+    }
+
+    if (mode === 'replace') {
+      await state.switchSession(sessionId)
+      return
+    }
+
+    if (sessionId !== state.activeSessionId && !state.sessionArchive[sessionId]) {
+      await state.loadPersistedSessionIntoArchive(sessionId)
+    }
+
+    set((prev) => {
+      const existing = prev.sessionPanes.find((pane) => pane.sessionId === sessionId)
+      if (existing) {
+        return { activePaneId: existing.id }
+      }
+      const id = nextId('pane')
+      return {
+        sessionPanes: [
+          ...prev.sessionPanes,
+          { id, sessionId, createdAt: Date.now() },
+        ],
+        activePaneId: id,
+      }
+    })
+    useHarness.getState().showToast('Opened split pane', 'info')
+  },
+
+  async closeSessionPane(paneId) {
+    const state = useHarness.getState()
+    const panes = state.sessionPanes.length > 0
+      ? state.sessionPanes
+      : [{ id: 'pane-main', sessionId: state.activeSessionId, createdAt: Date.now() }]
+    if (panes.length <= 1) {
+      state.showToast('Keep at least one session pane open', 'warn')
+      return
+    }
+    const closing = panes.find((pane) => pane.id === paneId)
+    if (!closing) return
+    const remaining = panes.filter((pane) => pane.id !== paneId)
+    const nextActivePaneId =
+      state.activePaneId === paneId
+        ? remaining[remaining.length - 1]?.id
+        : state.activePaneId
+    set({
+      sessionPanes: remaining,
+      activePaneId: nextActivePaneId || remaining[0].id,
+    })
+    if (closing.sessionId === state.activeSessionId) {
+      const replacement = remaining.find((pane) => pane.id === nextActivePaneId) ?? remaining[0]
+      if (replacement) {
+        await useHarness.getState().switchSession(replacement.sessionId)
+      }
+    }
+  },
+
+  setActiveSessionPane(paneId) {
+    set((prev) => {
+      if (!prev.sessionPanes.some((pane) => pane.id === paneId)) return {}
+      return { activePaneId: paneId }
+    })
   },
 
   async attachImage(file) {
@@ -2260,6 +2370,11 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         ...prev,
         sessions: prev.sessions.filter((s) => s.id !== sessionId),
         sessionArchive: nextArchive,
+        sessionPanes: prev.sessionPanes.filter((pane) => pane.sessionId !== sessionId),
+        activePaneId:
+          prev.sessionPanes.find((pane) => pane.id === prev.activePaneId)?.sessionId === sessionId
+            ? (prev.sessionPanes.find((pane) => pane.sessionId !== sessionId)?.id ?? prev.activePaneId)
+            : prev.activePaneId,
       }
     })
     // Remove from disk

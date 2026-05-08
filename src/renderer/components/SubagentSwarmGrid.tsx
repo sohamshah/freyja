@@ -126,7 +126,7 @@ function SubagentTile({ id }: { id: string }) {
   const childSnapshot = useHarness((s) =>
     s.sessions.find((session) => session.id === id),
   )
-  const switchSession = useHarness((s) => s.switchSession)
+  const openSessionPane = useHarness((s) => s.openSessionPane)
 
   const recentCalls = useMemo<ToolCallRecord[]>(() => {
     if (!childSlice) return []
@@ -149,8 +149,11 @@ function SubagentTile({ id }: { id: string }) {
 
   return (
     <div
-      onClick={() => canAttach && switchSession(id)}
-      title={canAttach ? 'Click to attach to this subagent' : undefined}
+      onClick={(event) =>
+        canAttach &&
+        openSessionPane(id, event.metaKey || event.ctrlKey ? 'split' : 'replace')
+      }
+      title={canAttach ? 'Click to open; ⌘-click opens a split pane' : undefined}
       className={`group relative flex min-h-[170px] flex-col overflow-hidden rounded-lg glass-raised p-3.5 transition-all ${
         canAttach ? 'cursor-pointer hover:ring-1 hover:ring-accent/40' : ''
       }`}
