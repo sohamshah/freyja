@@ -3364,6 +3364,70 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         sess.pending_task = asyncio.create_task(_run_rerun(), name=f"rerun-{sess.id}")
         return
 
+    if ctype == "branch_session":
+        if not session_id:
+            return
+        ordinal = int(cmd.get("messageOrdinal", -1))
+        if ordinal < 0:
+            return
+        new_name = str(cmd.get("newName") or f"branch of {session_id}").strip()
+        raw_children = cmd.get("childSessionIds") or []
+        child_ids: list[str] = [
+            str(cid) for cid in raw_children if isinstance(cid, str) and cid
+        ]
+
+        # Make sure the parent's transcript on disk is current. If the
+        # session is loaded in memory we flush; otherwise we trust the
+        # last persisted state.
+        sess = state.get(session_id)
+        if sess is not None and sess.session is not None:
+            try:
+                sess._save_transcript()  # noqa: SLF001
+            except Exception:  # noqa: BLE001
+                pass
+
+        from bridge.transcript_persistence import clone_transcript
+
+        stamp = int(time.time() * 1000)
+        new_parent_id = f"{session_id}-branch-{stamp:x}"
+        id_remap: dict[str, str] = {}
+        if not clone_transcript(
+            session_id,
+            new_parent_id,
+            truncate_to_message_ordinal=ordinal,
+        ):
+            emit_error(
+                f"branch_session: cannot read transcript for {session_id}",
+                recoverable=True,
+            )
+            return
+        id_remap[session_id] = new_parent_id
+
+        cloned_children: list[dict[str, str]] = []
+        for offset, child_old in enumerate(child_ids):
+            child_new = f"{child_old}-branch-{stamp:x}-{offset}"
+            if clone_transcript(child_old, child_new):
+                id_remap[child_old] = child_new
+                cloned_children.append({"oldId": child_old, "newId": child_new})
+
+        log(
+            "info",
+            f"branched {session_id} → {new_parent_id} at msg #{ordinal} "
+            f"(+{len(cloned_children)} subagent transcripts cloned)",
+        )
+        emit(
+            {
+                "type": "session_branched",
+                "originalSessionId": session_id,
+                "newSessionId": new_parent_id,
+                "newName": new_name,
+                "messageOrdinal": ordinal,
+                "idRemap": id_remap,
+                "childMappings": cloned_children,
+            }
+        )
+        return
+
     if ctype == "delete_messages_from":
         if not session_id:
             return

@@ -312,12 +312,16 @@ export type BridgeCommand =
       // Deep-clone the current session at a message boundary into a new
       // session. The new session contains messages 0..messageOrdinal-1
       // (i.e. everything BEFORE the right-clicked message). Subagent
-      // transcripts referenced in that prefix are copied with new IDs;
+      // transcripts in `childSessionIds` are copied with new IDs;
       // workspace files on disk are NOT copied.
       type: 'branch_session'
       sessionId: string
       messageOrdinal: number
       newName?: string
+      /** All descendant session ids the renderer wants cloned alongside
+       *  the parent. The bridge mirrors these as fresh transcript files
+       *  on disk and returns the id remap via `session_branched`. */
+      childSessionIds?: string[]
     }
   | { type: 'shutdown' }
 
@@ -447,6 +451,18 @@ export type BridgeEvent =
       toolsCalled?: number
       artifactPath?: string
     } & SessionId)
+  | {
+      // Bridge confirms a branch operation. `idRemap` maps every old
+      // session id (parent + each cloned subagent) to its new id; the
+      // renderer applies the same remap to its in-memory snapshots.
+      type: 'session_branched'
+      originalSessionId: string
+      newSessionId: string
+      newName: string
+      messageOrdinal: number
+      idRemap: Record<string, string>
+      childMappings: Array<{ oldId: string; newId: string }>
+    }
   // --- Computer-use events ---
   | ({
       type: 'computer_session_start'

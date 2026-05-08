@@ -75,6 +75,52 @@ def delete_transcript(session_id: str) -> None:
         pass
 
 
+def clone_transcript(
+    old_id: str,
+    new_id: str,
+    *,
+    truncate_to_message_ordinal: int | None = None,
+) -> bool:
+    """Deep-copy a transcript on disk under a new session id.
+
+    Used by the branch operation. When ``truncate_to_message_ordinal`` is
+    provided, the destination transcript is truncated so it contains
+    only the first N message-bearing entries (i.e. messages 0..N-1
+    counted across user + assistant entries; compaction entries don't
+    count). The destination's ``head_id`` is updated to the last kept
+    entry. Returns False if the source transcript can't be read.
+    """
+    src = load_transcript(old_id)
+    if src is None:
+        return False
+    # Deep copy via JSON round-trip — the structure is plain dicts +
+    # lists + strings + numbers, so this is safe and avoids accidental
+    # mutation of the in-memory original.
+    dst = json.loads(json.dumps(src))
+    dst["session_id"] = new_id
+    if truncate_to_message_ordinal is not None:
+        transcript = dst.get("transcript") or {}
+        entries = transcript.get("entries") or []
+        kept: list[Any] = []
+        new_head: str | None = None
+        msg_count = 0
+        for entry in entries:
+            has_message = entry.get("message") is not None
+            if has_message and msg_count >= truncate_to_message_ordinal:
+                break
+            kept.append(entry)
+            entry_id = entry.get("id")
+            if entry_id is not None:
+                new_head = str(entry_id)
+            if has_message:
+                msg_count += 1
+        transcript["entries"] = kept
+        transcript["head_id"] = new_head
+        dst["transcript"] = transcript
+    save_transcript(new_id, dst)
+    return True
+
+
 def provider_family(model_id: str) -> str:
     """Classify a model ID into a provider family for cross-provider detection.
 

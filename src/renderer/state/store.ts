@@ -289,6 +289,29 @@ function messageOrdinalById(messages: Message[], messageId: string): number {
   return -1
 }
 
+/** Walk the parent-child session graph and return every descendant id of
+ *  `parentId`, in BFS order. Used to enumerate which subagent transcripts
+ *  the bridge should clone alongside the parent during a branch. */
+function collectDescendantSessionIds(
+  sessions: SessionSnapshot[],
+  parentId: string,
+): string[] {
+  const out: string[] = []
+  const queue: string[] = [parentId]
+  const seen = new Set<string>([parentId])
+  while (queue.length > 0) {
+    const cur = queue.shift()!
+    for (const s of sessions) {
+      if (s.parentSessionId === cur && !seen.has(s.id)) {
+        seen.add(s.id)
+        out.push(s.id)
+        queue.push(s.id)
+      }
+    }
+  }
+  return out
+}
+
 /** Re-encode an image down to fit under the LLM provider's image cap.
  *  Tries progressively smaller (max-dim, JPEG-quality) settings until
  *  the raw byte size lands under `targetBytes`. Returns null on failure
@@ -1397,6 +1420,60 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           sessions: updatedSessions,
         }
       }
+      if (ev.type === 'session_branched') {
+        // Bridge has finished cloning transcript files on disk and
+        // hands us back a remap of every old id → new id (parent +
+        // every cloned subagent). We mirror the same shape in our
+        // in-memory snapshot graph so the new branch is immediately
+        // browsable from the sidebar, then defer a switch_session
+        // command (queueMicrotask so the reducer stays free of
+        // direct side-effects) so the bridge restores the cloned
+        // transcript on the renderer's behalf.
+        const remap = ev.idRemap || {}
+        const now = Date.now()
+        const cloned: SessionSnapshot[] = []
+        for (const [oldId, newId] of Object.entries(remap)) {
+          if (typeof oldId !== 'string' || typeof newId !== 'string') continue
+          const orig = prev.sessions.find((s) => s.id === oldId)
+          if (!orig) continue
+          const remappedParent = orig.parentSessionId
+            ? remap[orig.parentSessionId] ?? orig.parentSessionId
+            : undefined
+          const isParent = oldId === ev.originalSessionId
+          cloned.push({
+            ...orig,
+            id: newId,
+            title: isParent ? ev.newName : orig.title,
+            parentSessionId: isParent ? undefined : remappedParent,
+            childSessionIds: undefined,
+            createdAt: now,
+            updatedAt: now,
+          })
+        }
+        if (cloned.length === 0) return prev
+        // Defer the switch so the reducer remains pure: schedule a
+        // microtask that asks the store's own switchSession action
+        // to load the branched transcript. switchSession handles
+        // archiving the current slice, sending switch_session to the
+        // bridge, and waking up transcript_restored events.
+        queueMicrotask(() => {
+          try {
+            void useHarness.getState().switchSession(ev.newSessionId)
+          } catch {
+            // ignore — switchSession reports its own toast on failure
+          }
+        })
+        return {
+          ...prev,
+          sessions: [...prev.sessions, ...cloned],
+          toast: {
+            id: nextId('toast'),
+            message: `Branched to "${ev.newName}"`,
+            tone: 'ok',
+            at: now,
+          },
+        }
+      }
       if (ev.type === 'session_completed') {
         const artifactPath = (ev as any).artifactPath as string | undefined
         const sub = prev.subagents[ev.sessionId!]
@@ -2344,11 +2421,17 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     if (!api || !sessionId) return
     const ordinal = messageOrdinalById(state.messages, messageId)
     if (ordinal < 0) return
+    // Walk every descendant of the active session in the in-memory
+    // snapshot graph so the bridge can clone every subagent transcript
+    // on disk in one shot. The bridge doesn't track parent-child
+    // links itself — that graph lives in the renderer's metadata.
+    const childIds = collectDescendantSessionIds(state.sessions, sessionId)
     await api.sendCommand({
       type: 'branch_session',
       sessionId,
       messageOrdinal: ordinal,
       newName,
+      childSessionIds: childIds,
     })
   },
 
