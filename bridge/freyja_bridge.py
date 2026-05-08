@@ -29,6 +29,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import sys
 import time
 import traceback
@@ -152,6 +153,108 @@ def emit_error(message: str, recoverable: bool = False) -> None:
     emit({"type": "error", "message": message, "recoverable": recoverable})
 
 
+# Anthropic enforces a 5 MiB cap on the base64 STRING for any image
+# (`messages.X.content.Y.image.source.base64: image exceeds 5 MB maximum`).
+# We target a smaller value so there's headroom and so a single oversize
+# attachment can't poison the entire session — once an image is in the
+# transcript it's replayed every turn until the API rejects the call.
+_ANTHROPIC_IMAGE_BASE64_LIMIT = 5 * 1024 * 1024  # 5_242_880 bytes
+_IMAGE_BASE64_TARGET = 4_700_000  # ~10% headroom
+_IMAGE_DOWNSCALE_ATTEMPTS: tuple[tuple[int, int], ...] = (
+    (2400, 88),
+    (1800, 85),
+    (1400, 82),
+    (1100, 78),
+    (900, 75),
+    (720, 72),
+)
+
+
+def _downscale_b64_image(data: str, media_type: str) -> tuple[str, str, bool]:
+    """Re-encode an oversize base64 image so it fits under Anthropic's
+    5 MiB cap. Tries progressively smaller (max_dim, quality) settings
+    until the result is under the safe target. Returns
+    ``(new_b64, new_media_type, was_changed)``. On failure returns the
+    original payload unchanged.
+    """
+    if len(data) <= _IMAGE_BASE64_TARGET:
+        return data, media_type, False
+    try:
+        from io import BytesIO
+        from PIL import Image  # type: ignore[import-not-found]
+
+        raw = base64.b64decode(data, validate=False)
+        img = Image.open(BytesIO(raw))
+        img.load()
+        # JPEG can't carry alpha; convert PNG/GIF/etc. to RGB so the size
+        # collapses (alpha is what makes screenshots balloon to 5+ MiB).
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        last_b64: str | None = None
+        for max_dim, quality in _IMAGE_DOWNSCALE_ATTEMPTS:
+            w, h = img.size
+            scale = min(1.0, max_dim / max(w, h))
+            if scale < 1.0:
+                resized = img.resize(
+                    (max(1, int(w * scale)), max(1, int(h * scale))),
+                    Image.Resampling.LANCZOS,
+                )
+            else:
+                resized = img
+            buf = BytesIO()
+            resized.save(buf, format="JPEG", quality=quality, optimize=True)
+            new_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            last_b64 = new_b64
+            if len(new_b64) <= _IMAGE_BASE64_TARGET:
+                return new_b64, "image/jpeg", True
+        # Last resort — return the smallest attempt even if still over.
+        if last_b64 is not None:
+            return last_b64, "image/jpeg", True
+    except Exception as exc:  # noqa: BLE001
+        log("warn", f"image downscale failed: {exc}")
+    return data, media_type, False
+
+
+def _sanitize_session_oversize_images(session: Any) -> int:
+    """Walk the existing transcript and downscale any oversize image
+    blocks in place so the next provider call doesn't get rejected. Only
+    rewrites images above the safe target — small images are skipped.
+    Returns the count of images that were rewritten.
+    """
+    if session is None:
+        return 0
+    try:
+        from engine.types import ImageBlock
+    except Exception:  # noqa: BLE001
+        return 0
+    try:
+        entries = session.transcript.entries  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        return 0
+    rewritten = 0
+    for entry in entries:
+        content = getattr(entry, "content", None)
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, ImageBlock):
+                continue
+            if getattr(block, "source_type", "") != "base64" or not block.data:
+                continue
+            new_data, new_media, changed = _downscale_b64_image(block.data, block.media_type)
+            if changed:
+                block.data = new_data
+                block.media_type = new_media
+                rewritten += 1
+    if rewritten > 0:
+        log(
+            "info",
+            f"downscaled {rewritten} oversize image(s) in transcript "
+            f"(>{_IMAGE_BASE64_TARGET // 1024} KiB base64)",
+        )
+    return rewritten
+
+
 def _build_user_message_with_attachments(
     user_content: str,
     attachments: list[dict[str, Any]] | None,
@@ -178,6 +281,10 @@ def _build_user_message_with_attachments(
             continue
 
         media_type = str(attachment.get("mimeType") or "image/png")
+        # Defensive downscale at the boundary: if the renderer somehow
+        # sent an oversize image, fix it here before it enters the
+        # transcript.
+        data, media_type, _ = _downscale_b64_image(data, media_type)
         image_blocks.append(ImageBlock.from_base64(data, media_type))
 
     if not image_blocks:
@@ -2135,6 +2242,8 @@ class _BridgeSession:
         self,
         user_content: str,
         attachments: list[dict[str, Any]] | None = None,
+        *,
+        pre_formed_message: Any = None,
     ) -> None:
         await self.initialize()
         if self.runner is None or self.session is None:
@@ -2165,6 +2274,15 @@ class _BridgeSession:
                 _backfill_orphan_tool_results(self.session)
             except Exception as be:  # noqa: BLE001
                 log("warn", f"pre-turn orphan backfill failed: {be}")
+            # Also sweep oversize images. Anthropic caps each image's
+            # base64 string at 5 MiB; once a too-big screenshot enters
+            # the transcript, every subsequent turn fails with 400 until
+            # we shrink it. The helper is a no-op when no image is over
+            # the safe threshold.
+            try:
+                _sanitize_session_oversize_images(self.session)
+            except Exception as be:  # noqa: BLE001
+                log("warn", f"pre-turn image sanitize failed: {be}")
 
         self._refresh_knowledge_context(user_content)
 
@@ -2172,12 +2290,19 @@ class _BridgeSession:
         self.current_turn_id = f"turn-{self.turn_counter}"
         emit({"type": "turn_start", "sessionId": self.id, "turnId": self.current_turn_id})
 
-        image_refs_note = self._register_user_image_refs(attachments)
-        message: Any = _build_user_message_with_attachments(
-            user_content,
-            attachments,
-            image_refs_note,
-        )
+        if pre_formed_message is not None:
+            # `pre_formed_message` is the engine's stored content blocks
+            # (e.g. when re-running a previous user message verbatim).
+            # Skip the attachment + image-refs path; the message is
+            # already in engine format.
+            message: Any = pre_formed_message
+        else:
+            image_refs_note = self._register_user_image_refs(attachments)
+            message = _build_user_message_with_attachments(
+                user_content,
+                attachments,
+                image_refs_note,
+            )
 
         try:
             result = await self.runner.run(self.session, message, stream=True)
@@ -2525,6 +2650,109 @@ async def _command_loop(state: _BridgeState) -> None:
         except Exception as exc:
             log("error", f"command handler crashed: {exc}")
             traceback.print_exc(file=sys.stderr)
+
+
+def _truncate_session_at_message_ordinal(
+    session: Any,
+    ordinal: int,
+) -> tuple[bool, Any | None]:
+    """Drop the message-bearing entry at `ordinal` plus everything after.
+
+    `ordinal` is 0-indexed across message-bearing entries (compaction
+    entries are skipped). Returns ``(success, removed_target_entry)``.
+    On success the engine transcript is shortened so callers can re-issue
+    a turn cleanly. The removed target is returned so callers like
+    "rerun" can read the original user content back.
+    """
+    if session is None:
+        return False, None
+    try:
+        entries = session.transcript.entries
+    except Exception:  # noqa: BLE001
+        return False, None
+
+    target_index: int | None = None
+    msg_count = 0
+    for i, entry in enumerate(entries):
+        if entry.message is None:
+            continue
+        if msg_count == ordinal:
+            target_index = i
+            break
+        msg_count += 1
+
+    if target_index is None:
+        return False, None
+
+    target_entry = entries[target_index]
+
+    if target_index == 0:
+        # Wipe everything. branch_from() requires an entry to anchor on,
+        # so we touch the private list directly here.
+        session.transcript._entries = []  # noqa: SLF001
+        try:
+            session.transcript._head_id = None  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            pass
+        return True, target_entry
+
+    prev_entry = entries[target_index - 1]
+    try:
+        session.transcript.branch_from(prev_entry.id)
+    except Exception:  # noqa: BLE001
+        # Fallback if the manager's branch_from misbehaves.
+        session.transcript._entries = entries[:target_index]  # noqa: SLF001
+        try:
+            session.transcript._head_id = prev_entry.id  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            pass
+    return True, target_entry
+
+
+def _engine_user_message_to_renderer_attachments(
+    message: Any,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Decompose an engine user Message back into renderer-shape pieces.
+
+    Used for "rerun" so the same user content (text + image attachments)
+    can be replayed without losing inline images. The returned text
+    strips any trailing `[Image references…]` note that `run_turn`
+    appended on the original send — we let the new turn re-append it.
+    """
+    try:
+        from engine.types import ImageBlock, TextBlock
+    except Exception:  # noqa: BLE001
+        return "", []
+    if message is None:
+        return "", []
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content, []
+    if not isinstance(content, list):
+        return "", []
+    text_parts: list[str] = []
+    attachments: list[dict[str, Any]] = []
+    for block in content:
+        if isinstance(block, TextBlock):
+            text_parts.append(block.text)
+        elif isinstance(block, ImageBlock) and getattr(block, "source_type", "") == "base64":
+            attachments.append(
+                {
+                    "type": "image",
+                    "mimeType": block.media_type,
+                    "dataBase64": block.data,
+                }
+            )
+    text = "\n\n".join(p for p in text_parts if p).strip()
+    # Strip a trailing `[Image references available …]` note so the next
+    # send doesn't double-append it.
+    text = re.sub(
+        r"\n*\[Image references available to tools[^\]]*\]\s*$",
+        "",
+        text,
+        flags=re.DOTALL,
+    ).strip()
+    return text, attachments
 
 
 def _backfill_orphan_tool_results(session: Any) -> int:
@@ -3064,6 +3292,108 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
 
         sess.pending_task = asyncio.create_task(
             _run_and_log(), name=f"turn-{sess.id}"
+        )
+        return
+
+    if ctype == "edit_user_message":
+        if not session_id:
+            return
+        ordinal = int(cmd.get("messageOrdinal", -1))
+        new_content = str(cmd.get("content", "") or "").strip()
+        if ordinal < 0 or not new_content:
+            return
+        sess = state.get(session_id)
+        if sess is None or sess.session is None:
+            log("warn", "edit_user_message: session not initialized")
+            return
+        if sess.pending_task and not sess.pending_task.done():
+            log("warn", "edit_user_message: turn in progress, ignoring")
+            return
+        ok, target = _truncate_session_at_message_ordinal(sess.session, ordinal)
+        if not ok:
+            log("warn", f"edit_user_message: ordinal {ordinal} not found")
+            return
+        try:
+            sess._save_transcript()  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            pass
+        attachments = cmd.get("attachments") or None
+
+        async def _run_edit() -> None:
+            try:
+                await sess.run_turn(new_content, attachments)
+            except Exception as exc:  # noqa: BLE001
+                log("error", f"edit_user_message turn failed: {exc}")
+
+        sess.pending_task = asyncio.create_task(_run_edit(), name=f"edit-{sess.id}")
+        return
+
+    if ctype == "rerun_user_message":
+        if not session_id:
+            return
+        ordinal = int(cmd.get("messageOrdinal", -1))
+        if ordinal < 0:
+            return
+        sess = state.get(session_id)
+        if sess is None or sess.session is None:
+            log("warn", "rerun_user_message: session not initialized")
+            return
+        if sess.pending_task and not sess.pending_task.done():
+            log("warn", "rerun_user_message: turn in progress, ignoring")
+            return
+        ok, target = _truncate_session_at_message_ordinal(sess.session, ordinal)
+        if not ok or target is None or target.message is None:
+            log("warn", f"rerun_user_message: ordinal {ordinal} not found")
+            return
+        if target.message.role != "user":
+            log("warn", "rerun_user_message: target is not a user message")
+            return
+        original_content = target.message.content
+
+        try:
+            sess._save_transcript()  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            pass
+
+        async def _run_rerun() -> None:
+            try:
+                await sess.run_turn("", None, pre_formed_message=original_content)
+            except Exception as exc:  # noqa: BLE001
+                log("error", f"rerun_user_message turn failed: {exc}")
+
+        sess.pending_task = asyncio.create_task(_run_rerun(), name=f"rerun-{sess.id}")
+        return
+
+    if ctype == "delete_messages_from":
+        if not session_id:
+            return
+        ordinal = int(cmd.get("messageOrdinal", -1))
+        if ordinal < 0:
+            return
+        sess = state.get(session_id)
+        if sess is None or sess.session is None:
+            log("warn", "delete_messages_from: session not initialized")
+            return
+        if sess.pending_task and not sess.pending_task.done():
+            log("warn", "delete_messages_from: turn in progress, ignoring")
+            return
+        ok, _ = _truncate_session_at_message_ordinal(sess.session, ordinal)
+        if not ok:
+            log("warn", f"delete_messages_from: ordinal {ordinal} not found")
+            return
+        try:
+            sess._save_transcript()  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            pass
+        log("info", f"deleted from message ordinal={ordinal} in session={sess.id}")
+        emit(
+            {
+                "type": "system_event",
+                "sessionId": sess.id,
+                "subtype": "messages_truncated",
+                "message": f"Truncated transcript at message #{ordinal}",
+                "details": {"ordinal": ordinal},
+            }
         )
         return
 

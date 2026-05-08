@@ -282,6 +282,43 @@ export type BridgeCommand =
     }
   | { type: 'set_computer_enabled'; enabled: boolean }
   | { type: 'computer.emergency_stop'; reason?: string }
+  | {
+      // Edit a user message in place. Truncates the engine transcript to
+      // BEFORE the message at `messageOrdinal` (0-indexed across user +
+      // assistant message-bearing entries), then re-issues the turn with
+      // the new content + attachments.
+      type: 'edit_user_message'
+      sessionId: string
+      messageOrdinal: number
+      content: string
+      attachments?: CommandAttachment[]
+    }
+  | {
+      // Re-run from a user message — drops every message at/after the
+      // ordinal in the engine transcript and re-issues the user message
+      // verbatim to start a fresh assistant response.
+      type: 'rerun_user_message'
+      sessionId: string
+      messageOrdinal: number
+    }
+  | {
+      // Delete the message at `messageOrdinal` and every message after
+      // it. Truncate-and-stop: no follow-up turn is dispatched.
+      type: 'delete_messages_from'
+      sessionId: string
+      messageOrdinal: number
+    }
+  | {
+      // Deep-clone the current session at a message boundary into a new
+      // session. The new session contains messages 0..messageOrdinal-1
+      // (i.e. everything BEFORE the right-clicked message). Subagent
+      // transcripts referenced in that prefix are copied with new IDs;
+      // workspace files on disk are NOT copied.
+      type: 'branch_session'
+      sessionId: string
+      messageOrdinal: number
+      newName?: string
+    }
   | { type: 'shutdown' }
 
 // --- Events produced by the bridge and forwarded to the renderer ---

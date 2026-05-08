@@ -229,6 +229,18 @@ export interface HarnessActions {
   runSlashCommand(name: string, args?: string): boolean
   attachImage(file: File | Blob): Promise<void>
   removeAttachment(id: string): void
+  /** Edit a user message in place — local state truncates to before the
+   *  message and reinserts a new user message; bridge truncates the
+   *  engine transcript and runs a fresh turn. */
+  editUserMessage(messageId: string, content: string): Promise<void>
+  /** Re-run a user message verbatim — local state drops everything from
+   *  the message onward; bridge truncates and re-issues the same content. */
+  rerunUserMessage(messageId: string): Promise<void>
+  /** Delete a message and everything after it. No follow-up turn. */
+  deleteMessagesFrom(messageId: string): Promise<void>
+  /** Branch the current session at a message boundary. New session
+   *  contains messages 0..N-1; subagent transcripts are deep-cloned. */
+  branchSessionFrom(messageId: string, newName?: string): Promise<void>
   requestFileMatches(query: string): Promise<void>
   answerPermission(requestId: string, approved: boolean): Promise<void>
   hydrateFromDisk(): Promise<void>
@@ -261,6 +273,78 @@ let messageCounter = 0
 function nextId(prefix = 'm'): string {
   messageCounter += 1
   return `${prefix}_${Date.now().toString(36)}_${messageCounter}`
+}
+
+/** Find a message's 0-indexed ordinal among the message-bearing entries
+ *  (user + assistant) in the renderer's view. The bridge counts engine
+ *  transcript entries the same way, so this index round-trips to the
+ *  right entry on the bridge side. Returns -1 if not found. */
+function messageOrdinalById(messages: Message[], messageId: string): number {
+  let ordinal = -1
+  for (const m of messages) {
+    if (m.role !== 'user' && m.role !== 'assistant') continue
+    ordinal += 1
+    if (m.id === messageId) return ordinal
+  }
+  return -1
+}
+
+/** Re-encode an image down to fit under the LLM provider's image cap.
+ *  Tries progressively smaller (max-dim, JPEG-quality) settings until
+ *  the raw byte size lands under `targetBytes`. Returns null on failure
+ *  so the caller can fall back to the original blob.
+ *
+ *  Anthropic's API caps each image's base64 STRING at 5 MiB; raw bytes
+ *  inflate ~33% as base64, so a 3.5 MiB raw target gives ~10% headroom
+ *  on the 5 MiB ceiling. Always re-encodes as JPEG (PNGs are what blow
+ *  past the cap when screenshots carry alpha + lossless compression). */
+async function downscaleImageForLLM(
+  file: File | Blob,
+  targetBytes = 3_500_000,
+): Promise<{ bytes: Uint8Array; mimeType: string } | null> {
+  let url: string | null = null
+  try {
+    url = URL.createObjectURL(file)
+    const img = new Image()
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve()
+      img.onerror = () => reject(new Error('image decode failed'))
+      img.src = url!
+    })
+    const attempts: Array<[number, number]> = [
+      [2400, 0.88],
+      [1800, 0.85],
+      [1400, 0.82],
+      [1100, 0.78],
+      [900, 0.75],
+      [720, 0.72],
+    ]
+    let lastResult: { bytes: Uint8Array; mimeType: string } | null = null
+    for (const [maxDim, quality] of attempts) {
+      const scale = Math.min(1, maxDim / Math.max(img.width || 1, img.height || 1))
+      const w = Math.max(1, Math.round((img.width || 1) * scale))
+      const h = Math.max(1, Math.round((img.height || 1) * scale))
+      const canvas = document.createElement('canvas')
+      canvas.width = w
+      canvas.height = h
+      const ctx = canvas.getContext('2d')
+      if (!ctx) continue
+      ctx.drawImage(img, 0, 0, w, h)
+      const blob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob(resolve, 'image/jpeg', quality),
+      )
+      if (!blob) continue
+      const buf = new Uint8Array(await blob.arrayBuffer())
+      lastResult = { bytes: buf, mimeType: 'image/jpeg' }
+      if (buf.length <= targetBytes) return lastResult
+    }
+    // Last resort — return the smallest attempt even if still over.
+    return lastResult
+  } catch {
+    return null
+  } finally {
+    if (url) URL.revokeObjectURL(url)
+  }
 }
 
 const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
@@ -2117,12 +2201,24 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
 
   async attachImage(file) {
     try {
-      const buffer = await file.arrayBuffer()
-      const bytes = new Uint8Array(buffer)
+      const sourceMime = (file as any).type || 'image/png'
+      // Anthropic caps image base64 at 5 MiB. Aim for <= 3.5 MiB raw so
+      // base64 (~33% inflation) stays well under the limit. Downscale +
+      // re-encode as JPEG only when the original is over budget — small
+      // images keep their native format/quality.
+      const RAW_TARGET = 3_500_000
+      let bytes: Uint8Array = new Uint8Array(await file.arrayBuffer())
+      let mimeType = sourceMime
+      if (bytes.length > RAW_TARGET && sourceMime.startsWith('image/')) {
+        const downscaled = await downscaleImageForLLM(file, RAW_TARGET)
+        if (downscaled) {
+          bytes = downscaled.bytes
+          mimeType = downscaled.mimeType
+        }
+      }
       let binary = ''
       for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
       const dataBase64 = btoa(binary)
-      const mimeType = (file as any).type || 'image/png'
       const previewUrl = `data:${mimeType};base64,${dataBase64}`
       set((prev) => ({
         pendingAttachments: [
@@ -2145,6 +2241,115 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     set((prev) => ({
       pendingAttachments: prev.pendingAttachments.filter((a) => a.id !== id),
     }))
+  },
+
+  async editUserMessage(messageId, content) {
+    const trimmed = content.trim()
+    if (!trimmed) return
+    const api = (window as any).harness
+    const state = useHarness.getState()
+    const sessionId = state.activeSessionId
+    if (!api || !sessionId) return
+    const ordinal = messageOrdinalById(state.messages, messageId)
+    if (ordinal < 0) return
+    // Local truncate: drop everything from the edited message onward and
+    // re-insert a new user message with the new content. Streaming
+    // response will append a fresh assistant turn.
+    set((prev) => {
+      const idx = prev.messages.findIndex((m) => m.id === messageId)
+      if (idx < 0) return {}
+      const before = prev.messages.slice(0, idx)
+      const newId = nextId('msg')
+      const newMessage: Message = {
+        id: newId,
+        role: 'user',
+        parts: [{ type: 'text', text: trimmed }],
+        createdAt: Date.now(),
+      }
+      return {
+        messages: [...before, newMessage],
+        currentStreamingMessageId: null,
+        currentTurnId: null,
+        thinking: '',
+        isStreaming: false,
+      }
+    })
+    await api.sendCommand({
+      type: 'edit_user_message',
+      sessionId,
+      messageOrdinal: ordinal,
+      content: trimmed,
+    })
+  },
+
+  async rerunUserMessage(messageId) {
+    const api = (window as any).harness
+    const state = useHarness.getState()
+    const sessionId = state.activeSessionId
+    if (!api || !sessionId) return
+    const ordinal = messageOrdinalById(state.messages, messageId)
+    if (ordinal < 0) return
+    const target = state.messages.find((m) => m.id === messageId)
+    if (!target || target.role !== 'user') return
+    // Drop the user message + everything after locally; the bridge
+    // will re-add the user message via a fresh turn so it reappears
+    // in stream order.
+    set((prev) => {
+      const idx = prev.messages.findIndex((m) => m.id === messageId)
+      if (idx < 0) return {}
+      return {
+        messages: prev.messages.slice(0, idx),
+        currentStreamingMessageId: null,
+        currentTurnId: null,
+        thinking: '',
+        isStreaming: false,
+      }
+    })
+    await api.sendCommand({
+      type: 'rerun_user_message',
+      sessionId,
+      messageOrdinal: ordinal,
+    })
+  },
+
+  async deleteMessagesFrom(messageId) {
+    const api = (window as any).harness
+    const state = useHarness.getState()
+    const sessionId = state.activeSessionId
+    if (!api || !sessionId) return
+    const ordinal = messageOrdinalById(state.messages, messageId)
+    if (ordinal < 0) return
+    set((prev) => {
+      const idx = prev.messages.findIndex((m) => m.id === messageId)
+      if (idx < 0) return {}
+      return {
+        messages: prev.messages.slice(0, idx),
+        currentStreamingMessageId: null,
+        currentTurnId: null,
+        thinking: '',
+        isStreaming: false,
+      }
+    })
+    await api.sendCommand({
+      type: 'delete_messages_from',
+      sessionId,
+      messageOrdinal: ordinal,
+    })
+  },
+
+  async branchSessionFrom(messageId, newName) {
+    const api = (window as any).harness
+    const state = useHarness.getState()
+    const sessionId = state.activeSessionId
+    if (!api || !sessionId) return
+    const ordinal = messageOrdinalById(state.messages, messageId)
+    if (ordinal < 0) return
+    await api.sendCommand({
+      type: 'branch_session',
+      sessionId,
+      messageOrdinal: ordinal,
+      newName,
+    })
   },
 
   async requestFileMatches(query) {

@@ -10,11 +10,22 @@ import { ChildSessionBreadcrumb } from './ChildSessionBreadcrumb'
 import { ConversationSearch } from './ConversationSearch'
 import { Spinner } from '../lib/spinner'
 import { highlightHtml, highlightRuns } from '../lib/searchHighlight'
+import { MessageContextMenu, type MessageMenuAction } from './MessageContextMenu'
+import { BranchSessionDialog } from './BranchSessionDialog'
 import type { Message, MessagePart } from '@shared/events'
 
 /** Current search query shared across all conversation parts. Empty
  *  string means "no active search" — no highlights are rendered. */
 const SearchQueryContext = createContext<string>('')
+
+interface MessageActionsValue {
+  openMenu: (e: React.MouseEvent, message: Message) => void
+  editingId: string | null
+  beginEdit: (messageId: string) => void
+  saveEdit: (messageId: string, text: string) => void
+  cancelEdit: () => void
+}
+const MessageActionsContext = createContext<MessageActionsValue | null>(null)
 
 export function Conversation() {
   const messages = useHarness((s) => s.messages)
@@ -22,8 +33,78 @@ export function Conversation() {
   const isStreaming = useHarness((s) => s.isStreaming)
   const focusedToolCallId = useHarness((s) => s.focusedToolCallId)
   const focusedToolCallSerial = useHarness((s) => s.focusedToolCallSerial)
+  const editUserMessage = useHarness((s) => s.editUserMessage)
+  const rerunUserMessage = useHarness((s) => s.rerunUserMessage)
+  const deleteMessagesFrom = useHarness((s) => s.deleteMessagesFrom)
+  const branchSessionFrom = useHarness((s) => s.branchSessionFrom)
   const scrollerRef = useRef<HTMLDivElement>(null)
   const userScrolledUpRef = useRef(false)
+
+  // ── Message context menu, edit mode, branch dialog state ──────
+  const [menuState, setMenuState] = useState<
+    | { messageId: string; role: Message['role']; x: number; y: number }
+    | null
+  >(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [branchFor, setBranchFor] = useState<string | null>(null)
+
+  const openMenu = useCallback(
+    (e: React.MouseEvent, message: Message) => {
+      // Ignore right-clicks on links / inputs / textareas inside the
+      // message — preserve the native browser behaviour for those.
+      const target = e.target as HTMLElement
+      if (target.closest('a[href], input, textarea, [contenteditable="true"]')) return
+      e.preventDefault()
+      setMenuState({
+        messageId: message.id,
+        role: message.role,
+        x: e.clientX,
+        y: e.clientY,
+      })
+    },
+    [],
+  )
+  const closeMenu = useCallback(() => setMenuState(null), [])
+
+  const handlePick = useCallback(
+    (action: MessageMenuAction) => {
+      if (!menuState) return
+      const id = menuState.messageId
+      if (action === 'edit') {
+        setEditingId(id)
+      } else if (action === 'rerun') {
+        void rerunUserMessage(id)
+      } else if (action === 'delete') {
+        void deleteMessagesFrom(id)
+      } else if (action === 'branch') {
+        setBranchFor(id)
+      }
+    },
+    [menuState, rerunUserMessage, deleteMessagesFrom],
+  )
+
+  const beginEdit = useCallback((id: string) => setEditingId(id), [])
+  const cancelEdit = useCallback(() => setEditingId(null), [])
+  const saveEdit = useCallback(
+    (id: string, text: string) => {
+      setEditingId(null)
+      void editUserMessage(id, text)
+    },
+    [editUserMessage],
+  )
+
+  const messageActionsValue = useMemo<MessageActionsValue>(
+    () => ({ openMenu, editingId, beginEdit, saveEdit, cancelEdit }),
+    [openMenu, editingId, beginEdit, saveEdit, cancelEdit],
+  )
+
+  // Branch dialog details
+  const branchTarget = branchFor
+    ? messages.find((m) => m.id === branchFor)
+    : null
+  const branchHumanIndex = branchTarget
+    ? messages.findIndex((m) => m.id === branchFor) + 1
+    : 0
 
   // ── In-session search ──────────────────────────────────────────
   const [searchOpen, setSearchOpen] = useState(false)
@@ -216,22 +297,122 @@ export function Conversation() {
         />
       )}
       <SearchQueryContext.Provider value={searchQuery}>
-        <div ref={scrollerRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden">
-          <ChildSessionBreadcrumb />
-          <div className="mx-auto w-full max-w-[1200px] px-8 py-6">
-            {messages.map((m) => (
-              <MessageView key={m.id} message={m} />
-            ))}
-            {/* Thinking renders inline within message parts now */}
+        <MessageActionsContext.Provider value={messageActionsValue}>
+          <div ref={scrollerRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden">
+            <ChildSessionBreadcrumb />
+            <div className="mx-auto w-full max-w-[1200px] px-8 py-6">
+              {messages.map((m) => (
+                <MessageView key={m.id} message={m} />
+              ))}
+              {/* Thinking renders inline within message parts now */}
+            </div>
+          </div>
+        </MessageActionsContext.Provider>
+      </SearchQueryContext.Provider>
+      {menuState && (
+        <MessageContextMenu
+          x={menuState.x}
+          y={menuState.y}
+          isUserMessage={menuState.role === 'user'}
+          busy={isStreaming}
+          onPick={handlePick}
+          onClose={closeMenu}
+        />
+      )}
+      {branchFor && branchTarget && (
+        <BranchSessionDialog
+          defaultName={`branch @ msg ${branchHumanIndex}`}
+          branchAtHumanIndex={branchHumanIndex}
+          onCancel={() => setBranchFor(null)}
+          onConfirm={(name) => {
+            setBranchFor(null)
+            void branchSessionFrom(branchFor, name)
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+function UserMessageEditor({
+  initialText,
+  onCancel,
+  onSave,
+}: {
+  initialText: string
+  onCancel: () => void
+  onSave: (text: string) => void
+}) {
+  const [text, setText] = useState(initialText)
+  const ref = useRef<HTMLTextAreaElement | null>(null)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
+    // Auto-grow.
+    const grow = () => {
+      el.style.height = 'auto'
+      el.style.height = `${Math.min(360, el.scrollHeight)}px`
+    }
+    grow()
+    el.addEventListener('input', grow)
+    return () => el.removeEventListener('input', grow)
+  }, [])
+  const submit = () => {
+    const trimmed = text.trim()
+    if (!trimmed) {
+      onCancel()
+      return
+    }
+    onSave(trimmed)
+  }
+  return (
+    <div className="render-cached animate-fade-in mb-6 flex flex-col items-end gap-2">
+      <div className="font-prose w-full max-w-[76%] rounded-lg bg-accent/10 ring-1 ring-accent/30">
+        <textarea
+          ref={ref}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              e.preventDefault()
+              onCancel()
+            } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault()
+              submit()
+            }
+          }}
+          rows={2}
+          className="block w-full resize-none bg-transparent px-3.5 py-2 text-[12.5px] leading-[1.55] text-fg-0 placeholder:text-fg-3 focus:outline-none"
+          placeholder="Edit message…"
+        />
+        <div className="flex items-center justify-between gap-2 hairline-t px-3 py-2 font-mono text-[10px] uppercase tracking-[0.08em]">
+          <span className="text-fg-3">edit + rerun · ⌘↵ save · esc cancel</span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onCancel}
+              className="rounded bg-white/[0.05] px-2 py-[2px] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
+            >
+              cancel
+            </button>
+            <button
+              onClick={submit}
+              disabled={!text.trim()}
+              className="rounded bg-accent/15 px-2 py-[2px] text-accent ring-1 ring-accent/30 hover:bg-accent/25 disabled:opacity-60"
+            >
+              save + rerun
+            </button>
           </div>
         </div>
-      </SearchQueryContext.Provider>
+      </div>
     </div>
   )
 }
 
 const MessageView = memo(function MessageView({ message }: { message: Message }) {
   const searchQuery = useContext(SearchQueryContext)
+  const actions = useContext(MessageActionsContext)
   // Is this message the one currently receiving streamed deltas? We use
   // it to decide whether to animate the "active tail" of the message
   // (e.g. a still-rendering thinking block). Once the model emits new
@@ -240,14 +421,34 @@ const MessageView = memo(function MessageView({ message }: { message: Message })
   const currentStreamingMessageId = useHarness((s) => s.currentStreamingMessageId)
   const isStreaming = useHarness((s) => s.isStreaming)
   const isStreamingMessage = isStreaming && currentStreamingMessageId === message.id
+  const isEditing = actions?.editingId === message.id
+
+  const onContextMenu = useCallback(
+    (e: React.MouseEvent) => actions?.openMenu(e, message),
+    [actions, message],
+  )
 
   if (message.role === 'user') {
     const textContent = message.parts
       .filter((p) => p.type === 'text')
       .map((p) => p.text)
       .join('')
+
+    if (isEditing && actions) {
+      return (
+        <UserMessageEditor
+          initialText={textContent}
+          onCancel={actions.cancelEdit}
+          onSave={(text) => actions.saveEdit(message.id, text)}
+        />
+      )
+    }
+
     return (
-      <div className="render-cached animate-fade-in mb-6 flex flex-col items-end gap-2">
+      <div
+        onContextMenu={onContextMenu}
+        className="render-cached animate-fade-in mb-6 flex flex-col items-end gap-2"
+      >
         {message.attachments && message.attachments.length > 0 && (
           <div className="flex max-w-[76%] flex-wrap justify-end gap-1.5">
             {message.attachments.map((att) => (
@@ -279,7 +480,10 @@ const MessageView = memo(function MessageView({ message }: { message: Message })
   const groups = useMemo(() => groupParts(message.parts), [message.parts])
 
   return (
-    <div className={`${isStreamingMessage ? '' : 'render-cached '}animate-fade-in mb-6`}>
+    <div
+      onContextMenu={onContextMenu}
+      className={`${isStreamingMessage ? '' : 'render-cached '}animate-fade-in mb-6`}
+    >
       <div className="mb-1.5 flex items-center gap-2 label">
         <span className="inline-block h-1.5 w-1.5 rounded-full bg-accent" />
         assistant
