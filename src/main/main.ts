@@ -1,4 +1,6 @@
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, nativeImage, shell, nativeTheme } from 'electron'
+import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { HarnessBridge } from './bridge.js'
 import { startCaptureProxy, type CaptureProxy } from './captureProxy.js'
@@ -38,8 +40,34 @@ const HARNESS_ROOT = app.isPackaged
   ? (process.resourcesPath ?? ROOT)
   : ROOT
 
-import fs from 'node:fs'
-import os from 'node:os'
+function resolveUserWorkspace(): string {
+  const candidates = [
+    process.env.FREYJA_WORKSPACE,
+    process.env.INIT_CWD,
+    process.cwd(),
+    os.homedir(),
+  ].filter((value): value is string => !!value && value.trim().length > 0)
+
+  for (const candidate of candidates) {
+    const expanded = candidate.startsWith('~')
+      ? path.join(os.homedir(), candidate.slice(1))
+      : candidate
+    const resolved = path.resolve(expanded)
+    if (resolved === path.parse(resolved).root) continue
+    if (resolved.includes('.app/Contents/Resources')) continue
+    if (resolved.endsWith('.asar')) continue
+    try {
+      if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) continue
+    } catch {
+      continue
+    }
+    return resolved
+  }
+
+  return os.homedir()
+}
+
+const USER_WORKSPACE = resolveUserWorkspace()
 
 let mainWindow: BrowserWindow | null = null
 let bridge: HarnessBridge | null = null
@@ -117,7 +145,7 @@ function createWindow() {
 function initBridge() {
   bridge = new HarnessBridge({
     harnessRoot: HARNESS_ROOT,
-    workspace: HARNESS_ROOT,
+    workspace: USER_WORKSPACE,
     captureProxyUrl: captureProxy?.url,
     inputProxyUrl: inputProxy?.url,
     onEvent: (event) => {
@@ -162,7 +190,7 @@ function setupIpc() {
       version: app.getVersion(),
       electronVersion: process.versions.electron || '',
       platform: process.platform,
-      workspace: HARNESS_ROOT,
+      workspace: USER_WORKSPACE,
       harnessRoot: HARNESS_ROOT,
     }
   })
@@ -217,7 +245,7 @@ function setupIpc() {
   })
 
   // Read an artifact file from disk. Sandboxed: only allows paths under
-  // ~/.freyja/sessions/*/artifacts/ or the user's home directory — NOT
+  // ~/.freyja project/session artifacts or the user's home directory — NOT
   // arbitrary filesystem access. Returns text for text files, base64 for
   // binary (images, etc).
   ipcMain.handle(IPC.artifactRead, async (_event, filePath: string) => {

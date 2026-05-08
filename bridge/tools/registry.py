@@ -67,6 +67,7 @@ def build_desktop_registry(
     memory_store: Any | None = None,
     skill_store: Any | None = None,
     image_store: Any | None = None,
+    project_output_dir: Path | str | None = None,
     on_memory_updated: Any | None = None,
     on_skill_event: Any | None = None,
 ) -> ToolRegistry:
@@ -134,7 +135,16 @@ def build_desktop_registry(
 
     # Creative media generation — WARM tier so it is discoverable, but the
     # model must explicitly load the schema before spending on generation.
-    tools.append(GenerateImageTool(image_store=image_store))
+    tools.append(
+        GenerateImageTool(
+            image_store=image_store,
+            default_output_dir=(
+                Path(project_output_dir).expanduser().resolve() / "images"
+                if project_output_dir is not None
+                else None
+            ),
+        )
+    )
 
     # Video understanding via Gemini. Local files go through the Files API,
     # YouTube URLs go through ``Part.from_uri`` directly. WARM so the schema

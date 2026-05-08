@@ -195,7 +195,7 @@ export class HarnessBridge {
           spawnEnv.PYTHONHOME = bundleDir
         }
         const proc = spawn(cmd, args, {
-          cwd: this.opts.harnessRoot,
+          cwd: this.opts.workspace,
           env: spawnEnv,
           stdio: ['pipe', 'pipe', 'pipe'],
         })

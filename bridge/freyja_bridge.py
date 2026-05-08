@@ -45,6 +45,7 @@ if str(_DESKTOP_DIR) not in sys.path:
     sys.path.insert(0, str(_DESKTOP_DIR))
 
 from engine.compaction import SummaryCompaction
+from bridge.project_paths import project_output_dir, project_output_guidance
 
 
 # ─── Stdout helpers ─────────────────────────────────────────────────────────
@@ -306,7 +307,7 @@ def _build_user_message_with_attachments(
 
 async def _main() -> None:
     boot_session_id = f"desktop-{int(time.time() * 1000):x}"
-    workspace = os.environ.get("FREYJA_WORKSPACE", os.getcwd())
+    workspace = str(Path(os.environ.get("FREYJA_WORKSPACE", os.getcwd())).expanduser().resolve())
 
     try:
         from engine.runner import AsyncAgentRunner  # noqa: F401
@@ -1239,6 +1240,7 @@ class _BridgeSession:
         self.provider: Any | None = None
         self.tool_registry: Any | None = None
         self.subagent_registry: Any | None = None
+        self.project_output_dir = project_output_dir(self.id)
         self.memory_store: Any | None = None
         self.skill_store: Any | None = None
         from bridge.tools.image_store import SessionImageStore
@@ -1314,6 +1316,7 @@ class _BridgeSession:
             session_id=self.id,
             initial_tier=self.permission_tier,
         )
+        self.project_output_dir.mkdir(parents=True, exist_ok=True)
         self.memory_store = MemoryStore(Path(self.workspace))
         self.skill_store = SkillStore(Path(self.workspace))
         if strategy_uses_kanban(self.coordination_strategy) and self.kanban_board is None:
@@ -1375,6 +1378,7 @@ class _BridgeSession:
             memory_store=self.memory_store,
             skill_store=self.skill_store,
             image_store=self.image_store,
+            project_output_dir=self.project_output_dir,
             on_memory_updated=_emit_memory_updated,
             on_skill_event=_emit_skill_event,
         )
@@ -1401,6 +1405,8 @@ class _BridgeSession:
                 "You are running inside Freyja.\n"
                 "\n"
                 f"You are operating in the workspace `{self.workspace}`.\n"
+                "\n"
+                f"{project_output_guidance(self.id, self.workspace)}\n"
                 "\n"
                 "Available tools:\n"
                 f"{tool_list}\n"

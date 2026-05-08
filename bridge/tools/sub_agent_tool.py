@@ -37,6 +37,7 @@ from bridge.tools.sub_agent_registry import (
     SubAgentRegistry,
     SubAgentState,
 )
+from bridge.project_paths import project_output_dir, project_output_guidance
 from engine.compaction import SummaryCompaction
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,12 @@ SUB_AGENT_IDENTITY_HEADER = (
 )
 
 
-def _build_sub_agent_system_prompt(child_registry: ToolRegistry) -> str:
+def _build_sub_agent_system_prompt(
+    child_registry: ToolRegistry,
+    *,
+    parent_workspace: str,
+    parent_session_id: str,
+) -> str:
     """Inject the actual available tool list into the sub-agent prompt.
 
     Mirrors what the parent bridge does in `_BridgeSession.initialize` so
@@ -83,7 +89,11 @@ def _build_sub_agent_system_prompt(child_registry: ToolRegistry) -> str:
         f"- `{name}` — {tool.definition.summary}"
         for name, tool in sorted(child_registry._tools.items())  # noqa: SLF001
     )
-    return f"{SUB_AGENT_IDENTITY_HEADER}\nAvailable tools:\n{tool_lines}\n"
+    return (
+        f"{SUB_AGENT_IDENTITY_HEADER}\n"
+        f"{project_output_guidance(parent_session_id, parent_workspace)}\n"
+        f"Available tools:\n{tool_lines}\n"
+    )
 
 
 SubAgentEventCb = Callable[[dict[str, Any]], Awaitable[None] | None]
@@ -487,11 +497,16 @@ Parameters:
             )
             system_prompt = (
                 f"{agent_type.system_prompt}\n"
+                f"{project_output_guidance(self._spec.parent_session_id, self._spec.parent_workspace)}\n"
                 f"Available tools:\n{tool_lines}\n"
             )
             system_prompt += self._coordination_guidance(record)
         else:
-            system_prompt = _build_sub_agent_system_prompt(child_registry)
+            system_prompt = _build_sub_agent_system_prompt(
+                child_registry,
+                parent_workspace=self._spec.parent_workspace,
+                parent_session_id=self._spec.parent_session_id,
+            )
             system_prompt += self._coordination_guidance(record)
 
         system_prompt += (
@@ -756,11 +771,7 @@ Parameters:
         # survives truncation and compaction. The parent agent gets a
         # file path it can read_file on instead of losing the data.
         try:
-            from pathlib import Path
-            artifact_dir = (
-                Path.home() / ".freyja" / "sessions"
-                / self._spec.parent_session_id / "artifacts"
-            )
+            artifact_dir = project_output_dir(self._spec.parent_session_id) / "artifacts"
             artifact_dir.mkdir(parents=True, exist_ok=True)
             artifact_file = artifact_dir / f"{record.id}.md"
             resolution = getattr(record, "model_resolution", None)

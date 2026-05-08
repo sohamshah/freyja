@@ -522,7 +522,7 @@ function emptyState(): HarnessState {
       {
         id: bootId,
         title: 'Current session',
-        workspace: '~/work/services/freyja',
+        workspace: '',
         model: 'claude-sonnet-4-6',
         reasoningLevel: defaultReasoningFor('claude-sonnet-4-6'),
         coordinationStrategy: 'bus',
@@ -1218,6 +1218,10 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           models.length > 0 ? models : prev.availableModels,
         )
         const firstSessionId = ev.sessionId || prev.activeSessionId
+        const nextWorkspace = (ev.capabilities?.workspace as string | undefined)
+          || prev.sessions.find((s) => s.id === prev.activeSessionId)?.workspace
+          || prev.sessions[0]?.workspace
+          || ''
         const nextStrategy = normalizeCoordinationStrategy(
           (ev.capabilities?.coordinationStrategy as string | undefined)
           || prev.coordinationStrategy,
@@ -1234,6 +1238,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
               ? {
                   ...s,
                   id: firstSessionId,
+                  workspace: nextWorkspace,
                   model: capModel,
                   reasoningLevel: nextReasoning,
                   coordinationStrategy: nextStrategy,

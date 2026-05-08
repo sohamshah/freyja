@@ -43,13 +43,14 @@ def _save_image_to_disk(
     ref: str,
     *,
     save_path: str | None = None,
+    default_output_dir: Path | None = None,
 ) -> Path:
     """Decode base64 image and write it to disk. Returns the resolved Path.
 
     If *save_path* is given it is used as-is (expanded). If it points to an
     existing or implied directory the image is auto-named inside it.
-    Otherwise the image lands in ``FREYJA_IMAGE_OUTPUT_DIR`` (env) or the
-    default ``~/Pictures/Freyja/`` folder.
+    Otherwise the image lands in ``FREYJA_IMAGE_OUTPUT_DIR`` (env), a
+    session-scoped project image folder, or the default ``~/Pictures/Freyja/``.
     """
     raw = base64.b64decode(strip_data_url(b64))
     ext = _extension_for_media_type(media_type)
@@ -62,7 +63,11 @@ def _save_image_to_disk(
             out = out / f"freyja_{ref}_{_timestamp_str()}{ext}"
     else:
         env_dir = os.environ.get("FREYJA_IMAGE_OUTPUT_DIR", "").strip()
-        out_dir = Path(env_dir).expanduser().resolve() if env_dir else DEFAULT_IMAGE_OUTPUT_DIR
+        out_dir = (
+            Path(env_dir).expanduser().resolve()
+            if env_dir
+            else (default_output_dir or DEFAULT_IMAGE_OUTPUT_DIR)
+        )
         out_dir.mkdir(parents=True, exist_ok=True)
         out = out_dir / f"freyja_{ref}_{_timestamp_str()}{ext}"
 
@@ -200,9 +205,11 @@ class GenerateImageTool:
         self,
         client_factory: Any | None = None,
         image_store: SessionImageStore | None = None,
+        default_output_dir: Path | None = None,
     ):
         self._client_factory = client_factory
         self._image_store = image_store
+        self._default_output_dir = default_output_dir
 
     @property
     def definition(self) -> ToolDefinition:
@@ -332,7 +339,8 @@ Guidelines:
                             "Optional file or directory path where the image should be saved on disk. "
                             "Supports ~ expansion. If a directory is given the image is auto-named "
                             "freyja_<ref>_<timestamp>.<ext> inside it. If omitted the image is "
-                            "auto-saved to FREYJA_IMAGE_OUTPUT_DIR (env) or ~/Pictures/Freyja/."
+                            "auto-saved to FREYJA_IMAGE_OUTPUT_DIR (env), the session project image "
+                            "folder, or ~/Pictures/Freyja/."
                         ),
                     },
                 },
@@ -450,6 +458,7 @@ Guidelines:
                 media_type,
                 saved_ref or "img",
                 save_path=str(arguments.get("save_path") or "").strip() or None,
+                default_output_dir=self._default_output_dir,
             )
         except Exception:  # noqa: BLE001
             disk_path = None

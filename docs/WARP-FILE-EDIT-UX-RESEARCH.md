@@ -408,15 +408,15 @@ Freyja's bridge event model has generic tool events:
 - `tool_input_end`
 - `tool_result`
 
-Source: `/Users/sohamshah/work/services/freyja/src/shared/events.ts:212`
+Source: `src/shared/events.ts:212`
 
 `ToolCallRecord` stores generic call metadata, arguments, result text, status, and optional screenshot frame. It does not have file-change records, before/after snapshots, hunk state, or edit review state.
 
-Source: `/Users/sohamshah/work/services/freyja/src/shared/events.ts:62`
+Source: `src/shared/events.ts:62`
 
 The bridge wrapper emits only finalized arguments and a truncated text preview after tool execution:
 
-Source: `/Users/sohamshah/work/services/freyja/bridge/freyja_bridge.py:551`
+Source: `bridge/freyja_bridge.py:551`
 
 ### Current File Tools
 
@@ -433,9 +433,9 @@ Freyja has file tools:
 
 Sources:
 
-- registry: `/Users/sohamshah/work/services/freyja/bridge/tools/registry.py:86`
-- `write_file`: `/Users/sohamshah/work/services/freyja/bridge/tools/file_tools.py:140`
-- `edit_file`: `/Users/sohamshah/work/services/freyja/bridge/tools/file_tools.py:239`
+- registry: `bridge/tools/registry.py:86`
+- `write_file`: `bridge/tools/file_tools.py:140`
+- `edit_file`: `bridge/tools/file_tools.py:239`
 
 `edit_file` already supports line-based replacement, anchor replacement, insert after line/pattern, and exact string replacement. That is a good foundation for dynamic visualization.
 
@@ -443,15 +443,15 @@ Sources:
 
 The renderer currently detects write-like tools by name:
 
-Source: `/Users/sohamshah/work/services/freyja/src/renderer/state/store.ts:204`
+Source: `src/renderer/state/store.ts:204`
 
 On a successful `tool_result`, it reads the tool arguments, extracts a path, and creates or updates an `ArtifactRecord`.
 
-Source: `/Users/sohamshah/work/services/freyja/src/renderer/state/store.ts:614`
+Source: `src/renderer/state/store.ts:614`
 
 The conversation still renders the call as a generic `ToolCallChip`, showing arguments and text result when expanded.
 
-Source: `/Users/sohamshah/work/services/freyja/src/renderer/components/ToolCallChip.tsx:7`
+Source: `src/renderer/components/ToolCallChip.tsx:7`
 
 This is why file writes currently feel static. There is no explicit "file change" domain object for the renderer to show.
 
@@ -554,7 +554,7 @@ fileChangeIds?: string[]
 
 Create a Python helper such as:
 
-`/Users/sohamshah/work/services/freyja/bridge/tools/file_change_tracker.py`
+`bridge/tools/file_change_tracker.py`
 
 Responsibilities:
 
@@ -566,7 +566,7 @@ Responsibilities:
 - avoid binary files or huge full-content payloads
 - emit compact structured `file_change` events
 
-Use it inside `_new_tracing_registry` in `/Users/sohamshah/work/services/freyja/bridge/freyja_bridge.py`.
+Use it inside `_new_tracing_registry` in `bridge/freyja_bridge.py`.
 
 The wrapper already surrounds every tool execution and has access to:
 
@@ -577,7 +577,7 @@ The wrapper already surrounds every tool execution and has access to:
 - duration
 - session id
 
-Source: `/Users/sohamshah/work/services/freyja/bridge/freyja_bridge.py:565`
+Source: `bridge/freyja_bridge.py:565`
 
 For v1, track only explicit file mutation tools:
 
@@ -597,7 +597,7 @@ For v2, add shell-driven detection:
 
 Add:
 
-`/Users/sohamshah/work/services/freyja/src/renderer/components/FileChangeCard.tsx`
+`src/renderer/components/FileChangeCard.tsx`
 
 The card should render:
 
@@ -728,13 +728,13 @@ Scope:
 
 Files:
 
-- `/Users/sohamshah/work/services/freyja/src/shared/events.ts`
-- `/Users/sohamshah/work/services/freyja/bridge/freyja_bridge.py`
-- `/Users/sohamshah/work/services/freyja/bridge/tools/file_change_tracker.py`
-- `/Users/sohamshah/work/services/freyja/src/renderer/state/store.ts`
-- `/Users/sohamshah/work/services/freyja/src/renderer/components/FileChangeCard.tsx`
-- `/Users/sohamshah/work/services/freyja/src/renderer/components/ToolCallChip.tsx`
-- `/Users/sohamshah/work/services/freyja/src/renderer/components/ParallelToolGroup.tsx`
+- `src/shared/events.ts`
+- `bridge/freyja_bridge.py`
+- `bridge/tools/file_change_tracker.py`
+- `src/renderer/state/store.ts`
+- `src/renderer/components/FileChangeCard.tsx`
+- `src/renderer/components/ToolCallChip.tsx`
+- `src/renderer/components/ParallelToolGroup.tsx`
 
 Acceptance criteria:
 
@@ -802,6 +802,6 @@ It is the highest leverage because it upgrades the visual experience for tools F
 
 The first implementation should avoid Monaco or a heavy editor dependency. Freyja currently has a small dependency set, and `package.json` does not include an editor/diff renderer dependency. A custom line diff card is enough for the first pass and keeps render cost predictable.
 
-Source: `/Users/sohamshah/work/services/freyja/package.json:29`
+Source: `package.json:29`
 
 Once the passive cards are stable, adding `request_file_edits` becomes a clean extension instead of a one-shot large rewrite.

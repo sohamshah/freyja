@@ -40,6 +40,7 @@ from bridge.tools.sub_agent_registry import (
     SubAgentRegistry,
     SubAgentState,
 )
+from bridge.project_paths import project_output_guidance
 from bridge.tools.sub_agent_tool import SubAgentSpec, _fire, _record_to_dict
 from engine.compaction import SummaryCompaction
 
@@ -449,6 +450,10 @@ Parameters:
             for t in child_tools
         )
         system_prompt = COMPUTER_SYSTEM_PROMPT.format(tool_list=tool_list_text)
+        system_prompt += (
+            "\n\n"
+            f"{project_output_guidance(self._sub_spec.parent_session_id, self._sub_spec.parent_workspace)}"
+        )
         if target_app:
             system_prompt += (
                 f"\n\nThe user has nominated `{target_app}` as the target "
