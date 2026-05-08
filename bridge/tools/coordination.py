@@ -84,11 +84,11 @@ def coordination_prompt(value: str | None) -> str:
     strategy = normalize_coordination_strategy(value)
     if strategy == STRATEGY_ISOLATED:
         return (
-            "Coordination strategy: ISOLATED DELEGATION.\n"
-            "- Use sub-agents as independent leaf workers with tightly scoped prompts.\n"
-            "- Do not assume workers can coordinate with each other; they do not get message-bus tools.\n"
-            "- Run independent work in background when useful, then call `subagents` to collect results.\n"
-            "- The parent is responsible for comparing, reconciling, and synthesizing the final answer.\n"
+            "Coordination strategy: TASK-FIRST SOLO.\n"
+            "- Use the `tasks` tool as a lightweight visible task ledger for meaningful units of work.\n"
+            "- Claim or update tasks as you work; heartbeat during long-running work and complete/block with clear handoffs.\n"
+            "- Use sub-agents as independent workers only when useful. Pass `task_id` when spawning a worker for an existing task.\n"
+            "- Workers do not get message-bus tools; the parent owns synthesis and the task ledger is the durable coordination surface.\n"
         )
     if strategy == STRATEGY_KANBAN:
         return (

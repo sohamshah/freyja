@@ -75,6 +75,25 @@ interface GoalStateView {
   events: TelemetryEventView[]
 }
 
+interface TaskCardView {
+  id: string
+  title: string
+  status: string
+  body?: string
+  assignee?: string
+  priority?: number
+  progress?: number
+  summary?: string
+  result?: string
+  artifacts?: string[]
+  events?: Array<{ kind?: string; actor?: string; message?: string; timestamp?: number; details?: Record<string, unknown> }>
+  agents?: AgentView[]
+  createdAt?: number
+  startedAt?: number
+  updatedAt?: number
+  completedAt?: number
+}
+
 interface ProfileDefinition {
   id: string
   bestFor: string
@@ -447,6 +466,7 @@ export function MissionDashboard() {
       )
     const kanbanCards = collectKanbanCards(systemEventViews, agents)
     const goalState = collectGoalState(systemEventViews)
+    const taskCards = collectTaskCards(systemEventViews, agents)
 
     const allFileChanges = dedupeBy(
       slices.flatMap(({ slice }) => slice.fileChanges),
@@ -479,6 +499,7 @@ export function MissionDashboard() {
       telemetryEvents,
       kanbanCards,
       goalState,
+      taskCards,
       fileChanges: allFileChanges,
       artifacts: allArtifacts,
       toolCalls: allToolCalls,
@@ -641,6 +662,7 @@ export function MissionDashboard() {
             telemetryEvents={dashboard.telemetryEvents}
             kanbanCards={dashboard.kanbanCards}
             goalState={dashboard.goalState}
+            taskCards={dashboard.taskCards}
             skillsCount={dashboard.skillsCount}
             memoriesCount={dashboard.memoriesCount}
             onTab={setTab}
@@ -657,6 +679,7 @@ export function MissionDashboard() {
             findings={dashboard.findings}
             kanbanCards={dashboard.kanbanCards}
             goalState={dashboard.goalState}
+            taskCards={dashboard.taskCards}
             fileChanges={dashboard.fileChanges}
             source={dashboard.missionSession}
             onAttach={attach}
@@ -701,6 +724,7 @@ function OverviewTab({
   telemetryEvents,
   kanbanCards,
   goalState,
+  taskCards,
   skillsCount,
   memoriesCount,
   onTab,
@@ -723,6 +747,7 @@ function OverviewTab({
   telemetryEvents: TelemetryEventView[]
   kanbanCards: KanbanCardView[]
   goalState: GoalStateView | null
+  taskCards: TaskCardView[]
   skillsCount: number
   memoriesCount: number
   onTab: (tab: DashboardTab) => void
@@ -757,6 +782,23 @@ function OverviewTab({
         runningAgents={runningAgents}
         agents={agents}
         goalState={goalState}
+        cost={cost}
+        toolsCount={toolsCount}
+        screenshotFrames={screenshotFrames}
+        compactions={compactions}
+        onAttach={onAttach}
+        onTab={onTab}
+      />
+    )
+  }
+  if (coordinationStrategy === 'isolated') {
+    return (
+      <TaskHealthView
+        objective={objective}
+        contextPct={contextPct}
+        runningAgents={runningAgents}
+        agents={agents}
+        tasks={taskCards}
         cost={cost}
         toolsCount={toolsCount}
         screenshotFrames={screenshotFrames}
@@ -869,6 +911,7 @@ function SwarmTab({
   findings,
   kanbanCards,
   goalState,
+  taskCards,
   fileChanges,
   source,
   onAttach,
@@ -879,6 +922,7 @@ function SwarmTab({
   findings: BusEventView[]
   kanbanCards: KanbanCardView[]
   goalState: GoalStateView | null
+  taskCards: TaskCardView[]
   fileChanges: FileChangeSet[]
   source: SessionSnapshot | undefined
   onAttach: (id: string, mode?: 'replace' | 'split') => void
@@ -900,6 +944,16 @@ function SwarmTab({
         agents={agents}
         busEvents={busEvents}
         findings={findings}
+        onAttach={onAttach}
+      />
+    )
+  }
+  if (coordinationStrategy === 'isolated') {
+    return (
+      <TaskAgentsView
+        tasks={taskCards}
+        agents={agents}
+        source={source}
         onAttach={onAttach}
       />
     )
@@ -1000,7 +1054,7 @@ function GoalHealthView({
         </div>
         <div className="mt-3 grid shrink-0 grid-cols-2 gap-2">
           <BriefStat label="strategy" value="goal" />
-          <BriefStat label="status" value={status} tone={status === 'paused' ? 'danger' : status === 'done' ? 'ok' : undefined} />
+          <BriefStat label="status" value={status} tone={status === 'paused' ? 'danger' : undefined} />
           <BriefStat label="turns" value={`${turnsUsed}/${maxTurns}`} />
           <BriefStat label="confidence" value={verdict?.confidence !== undefined ? `${Math.round((verdict.confidence ?? 0) * 100)}%` : 'n/a'} />
         </div>
@@ -1027,6 +1081,385 @@ function GoalHealthView({
         <PanelHeader label="judge timeline" action="agents" onAction={() => onTab('swarm')} />
         <GoalTimeline goalState={goalState} />
       </section>
+    </div>
+  )
+}
+
+function TaskHealthView({
+  objective,
+  contextPct,
+  runningAgents,
+  agents,
+  tasks,
+  cost,
+  toolsCount,
+  screenshotFrames,
+  compactions,
+  onAttach,
+  onTab,
+}: {
+  objective: string
+  contextPct: number
+  runningAgents: number
+  agents: AgentView[]
+  tasks: TaskCardView[]
+  cost: number
+  toolsCount: number
+  screenshotFrames: number
+  compactions: number
+  onAttach: (id: string, mode?: 'replace' | 'split') => void
+  onTab: (tab: DashboardTab) => void
+}) {
+  const done = tasks.filter((task) => task.status === 'done').length
+  const blocked = tasks.filter((task) => task.status === 'blocked').length
+  const active = tasks.filter((task) => task.status === 'active').length
+  const progress = taskProgress(tasks)
+  return (
+    <div className="grid min-h-0 flex-1 grid-cols-12 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden">
+      <div className="col-span-12 grid grid-cols-2 gap-3 xl:grid-cols-8">
+        <MetricCard label="tasks" value={`${progress}%`} sub={`${done}/${tasks.length || 0} done`} meter={progress} tone={progress === 100 ? 'ok' : 'accent'} />
+        <MetricCard label="active" value={String(active)} sub={`${blocked} blocked`} tone={blocked ? 'warn' : 'ok'} />
+        <MetricCard label="active agents" value={String(runningAgents)} sub={`${agents.length} total`} tone="ok" />
+        <MetricCard label="context" value={`${contextPct}%`} sub="current request" meter={contextPct} />
+        <MetricCard label="tool calls" value={String(toolsCount)} sub="mission total" />
+        <MetricCard label="screenshots" value={String(screenshotFrames)} sub="captured" tone="accent" />
+        <MetricCard label="summaries" value={String(compactions)} sub="context history" tone={compactions > 0 ? 'ok' : 'neutral'} />
+        <MetricCard label="spend" value={formatCost(cost)} sub="mission total" />
+      </div>
+
+      <section className="col-span-12 flex min-h-0 flex-col rounded-xl glass-strong p-4 xl:col-span-3">
+        <PanelHeader label="solo mission" action="profiles" onAction={() => onTab('profiles')} />
+        <div className="mt-3 max-h-[170px] shrink-0 overflow-auto rounded-lg bg-white/[0.035] p-3 ring-hairline">
+          <div className="label mb-2 text-fg-2">current objective</div>
+          <p className="selectable text-[13px] leading-[1.55] text-fg-0">{objective}</p>
+        </div>
+        <div className="mt-3 grid shrink-0 grid-cols-2 gap-2">
+          <BriefStat label="strategy" value="tasks" />
+          <BriefStat label="progress" value={`${progress}%`} />
+          <BriefStat label="active" value={String(active)} />
+          <BriefStat label="blocked" value={String(blocked)} tone={blocked ? 'danger' : undefined} />
+        </div>
+        <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-lg bg-black/20 p-3 ring-hairline">
+          <div className="label mb-3">agent allocation</div>
+          <TaskAssignmentList agents={agents} tasks={tasks} onAttach={onAttach} />
+        </div>
+      </section>
+
+      <section className="col-span-12 flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4 xl:col-span-9">
+        <PanelHeader label="task ledger" action="agents" onAction={() => onTab('swarm')} />
+        <TaskBoard tasks={tasks} agents={agents} onAttach={onAttach} compact />
+      </section>
+    </div>
+  )
+}
+
+function TaskAgentsView({
+  tasks,
+  agents,
+  source,
+  onAttach,
+}: {
+  tasks: TaskCardView[]
+  agents: AgentView[]
+  source: SessionSnapshot | undefined
+  onAttach: (id: string, mode?: 'replace' | 'split') => void
+}) {
+  const [selectedTaskId, setSelectedTaskId] = useState(tasks[0]?.id ?? '')
+  useEffect(() => {
+    if (!selectedTaskId && tasks[0]) setSelectedTaskId(tasks[0].id)
+    if (selectedTaskId && !tasks.some((task) => task.id === selectedTaskId)) {
+      setSelectedTaskId(tasks[0]?.id ?? '')
+    }
+  }, [selectedTaskId, tasks])
+  const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? tasks[0]
+  const selectedAgents = selectedTask ? agents.filter((agent) => agent.taskId === selectedTask.id) : []
+  return (
+    <div className="grid min-h-0 flex-1 grid-cols-12 gap-3 overflow-hidden">
+      <section className="col-span-12 flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4 xl:col-span-9">
+        <div className="mb-3 flex shrink-0 items-start justify-between gap-3">
+          <div>
+            <PanelHeader label="task workbench" />
+            <div className="mt-1 font-mono text-[10px] text-fg-3">
+              {source?.title ?? 'Session'} · {tasks.length} tasks · {agents.filter((agent) => agent.taskId).length} assigned agents
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <MiniMetric label="progress" value={`${taskProgress(tasks)}%`} />
+            <MiniMetric label="active" value={String(tasks.filter((task) => task.status === 'active').length)} />
+            <MiniMetric label="blocked" value={String(tasks.filter((task) => task.status === 'blocked').length)} />
+          </div>
+        </div>
+        <TaskBoard tasks={tasks} agents={agents} selectedTaskId={selectedTask?.id} onSelect={setSelectedTaskId} onAttach={onAttach} />
+      </section>
+      <section className="col-span-12 grid min-h-0 grid-rows-[minmax(0,1.1fr)_minmax(0,0.9fr)] gap-3 xl:col-span-3">
+        <TaskDetailPanel task={selectedTask} agents={selectedAgents} onAttach={onAttach} />
+        <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
+          <PanelHeader label="agent lanes" />
+          <div className="mt-3 min-h-0 flex-1 overflow-auto pr-1">
+            <AgentLaneList agents={agents} onAttach={onAttach} />
+          </div>
+        </div>
+      </section>
+    </div>
+  )
+}
+
+const TASK_COLUMNS = [
+  { id: 'todo', label: 'intake', hint: 'thin tickets' },
+  { id: 'active', label: 'build', hint: 'agent trays' },
+  { id: 'blocked', label: 'inspect', hint: 'blocked work' },
+  { id: 'done', label: 'archive', hint: 'sealed' },
+  { id: 'cancelled', label: 'void', hint: 'stopped' },
+] as const
+
+function TaskBoard({
+  tasks,
+  agents,
+  selectedTaskId,
+  compact = false,
+  onSelect,
+  onAttach,
+}: {
+  tasks: TaskCardView[]
+  agents: AgentView[]
+  selectedTaskId?: string
+  compact?: boolean
+  onSelect?: (id: string) => void
+  onAttach: (id: string, mode?: 'replace' | 'split') => void
+}) {
+  return (
+    <div className={`min-h-0 flex-1 overflow-auto ${compact ? 'mt-3' : ''}`}>
+      <div className="grid min-h-full min-w-[920px] grid-cols-5 gap-3">
+        {TASK_COLUMNS.map((column) => {
+          const columnTasks = tasks.filter((task) => task.status === column.id)
+          return (
+            <div key={column.id} className="flex min-h-0 flex-col rounded-xl bg-black/22 p-3 ring-hairline">
+              <div className="mb-3 flex shrink-0 items-start justify-between gap-2">
+                <div>
+                  <div className={`font-mono text-[11px] uppercase tracking-[0.16em] ${taskStatusClass(column.id)}`}>
+                    {column.label}
+                  </div>
+                  <div className="mt-1 font-mono text-[9px] text-fg-3">{column.hint}</div>
+                </div>
+                <span className="rounded-md bg-white/[0.04] px-2 py-1 font-mono text-[10px] text-fg-2 ring-hairline">
+                  {columnTasks.length}
+                </span>
+              </div>
+              <div className="min-h-0 flex-1 space-y-3 overflow-auto pr-1">
+                {columnTasks.map((task) => (
+                  <TaskCard
+                    key={task.id}
+                    task={task}
+                    agents={agents.filter((agent) => agent.taskId === task.id)}
+                    selected={task.id === selectedTaskId}
+                    onClick={() => onSelect?.(task.id)}
+                    onAttach={onAttach}
+                  />
+                ))}
+                {columnTasks.length === 0 && (
+                  <div className="rounded-lg border border-dashed border-white/10 px-3 py-8 text-center font-mono text-[10px] text-fg-3">
+                    empty
+                  </div>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function TaskCard({
+  task,
+  agents,
+  selected,
+  onClick,
+  onAttach,
+}: {
+  task: TaskCardView
+  agents: AgentView[]
+  selected?: boolean
+  onClick?: () => void
+  onAttach: (id: string, mode?: 'replace' | 'split') => void
+}) {
+  const progress = Math.max(0, Math.min(task.progress ?? statusProgress(task.status), 100))
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`group w-full rounded-lg p-0 text-left transition ${selected ? 'ring-1 ring-accent/55' : 'hover:ring-1 hover:ring-white/18'}`}
+    >
+      <div className={`task-card-skin task-card-${task.status} rounded-lg p-3`}>
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="font-mono text-[10px] text-accent">{task.id}</div>
+            <div className="mt-1 line-clamp-2 text-[12px] leading-[1.35] text-fg-0">{task.title}</div>
+          </div>
+          <span className={`font-mono text-[9px] uppercase ${taskStatusClass(task.status)}`}>
+            {task.status}
+          </span>
+        </div>
+        <div className="mt-3 h-1 overflow-hidden rounded-full bg-white/10">
+          <div className="h-full rounded-full bg-accent/70" style={{ width: `${progress}%` }} />
+        </div>
+        {task.body && (
+          <p className="mt-2 line-clamp-3 text-[10.5px] leading-[1.45] text-fg-2">{stripMarkdown(task.body)}</p>
+        )}
+        <div className="mt-3 flex items-center justify-between gap-2">
+          <span className="truncate font-mono text-[9px] text-fg-3">
+            {task.assignee || agents[0]?.session.title || 'unassigned'}
+          </span>
+          {agents[0] && (
+            <span
+              role="button"
+              tabIndex={0}
+              onClick={(event) => {
+                event.stopPropagation()
+                onAttach(agents[0].session.id, 'replace')
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.stopPropagation()
+                  onAttach(agents[0].session.id, 'replace')
+                }
+              }}
+              className="rounded bg-white/[0.055] px-2 py-1 font-mono text-[9px] uppercase text-accent ring-hairline hover:bg-accent/10"
+            >
+              attach
+            </span>
+          )}
+        </div>
+      </div>
+    </button>
+  )
+}
+
+function TaskDetailPanel({
+  task,
+  agents,
+  onAttach,
+}: {
+  task?: TaskCardView
+  agents: AgentView[]
+  onAttach: (id: string, mode?: 'replace' | 'split') => void
+}) {
+  if (!task) {
+    return (
+      <section className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
+        <PanelHeader label="task detail" />
+        <EmptyState title="No task selected" body="Click a task card to inspect its owner, history, artifacts, and result." />
+      </section>
+    )
+  }
+  return (
+    <section className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
+      <PanelHeader label="task detail" />
+      <div className="mt-3 min-h-0 flex-1 overflow-auto pr-1">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="font-mono text-[12px] text-accent">{task.id}</div>
+            <div className="mt-1 text-[16px] leading-[1.25] text-fg-0">{task.title}</div>
+          </div>
+          <span className={`rounded-md bg-white/[0.04] px-2 py-1 font-mono text-[9px] uppercase ring-hairline ${taskStatusClass(task.status)}`}>
+            {task.status}
+          </span>
+        </div>
+        <div className="mt-4 grid grid-cols-[94px_1fr] gap-x-3 gap-y-2 font-mono text-[10px]">
+          <span className="label">agent</span>
+          <span className="text-fg-1">{agents[0]?.session.title ?? task.assignee ?? 'unassigned'}</span>
+          <span className="label">priority</span>
+          <span className="text-fg-1">P{task.priority ?? 2}</span>
+          <span className="label">progress</span>
+          <span className="text-fg-1">{task.progress ?? statusProgress(task.status)}%</span>
+        </div>
+        <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-white/10">
+          <div className="h-full rounded-full bg-accent/70" style={{ width: `${task.progress ?? statusProgress(task.status)}%` }} />
+        </div>
+        <DetailBlock title="description" body={task.body || 'No description recorded.'} />
+        {task.summary && <DetailBlock title="summary" body={task.summary} />}
+        {task.result && <DetailBlock title="result" body={task.result} />}
+        {task.artifacts && task.artifacts.length > 0 && (
+          <div className="mt-4 rounded-lg bg-black/25 p-3 ring-hairline">
+            <div className="label mb-2">artifacts</div>
+            <div className="space-y-1">
+              {task.artifacts.map((artifact) => (
+                <div key={artifact} className="truncate font-mono text-[10px] text-fg-1">{artifact}</div>
+              ))}
+            </div>
+          </div>
+        )}
+        {agents.length > 0 && (
+          <div className="mt-4 space-y-2">
+            <div className="label">assigned agents</div>
+            {agents.map((agent) => (
+              <CompactAgentRow key={agent.session.id} agent={agent} onAttach={onAttach} />
+            ))}
+          </div>
+        )}
+        {task.events && task.events.length > 0 && (
+          <div className="mt-4 space-y-2">
+            <div className="label">history</div>
+            {task.events.slice(-6).reverse().map((event, index) => (
+              <div key={`${event.timestamp}-${index}`} className="rounded-md bg-white/[0.03] px-2.5 py-2 ring-hairline">
+                <div className="flex justify-between gap-2">
+                  <span className="font-mono text-[10px] text-fg-1">{event.kind ?? 'update'}</span>
+                  {event.timestamp && <span className="font-mono text-[9px] text-fg-3">{relativeTime(event.timestamp)}</span>}
+                </div>
+                <p className="mt-1 text-[10.5px] leading-[1.45] text-fg-2">{event.message}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function DetailBlock({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="mt-4 rounded-lg bg-black/25 p-3 ring-hairline">
+      <div className="label mb-2">{title}</div>
+      <p className="selectable whitespace-pre-wrap text-[11px] leading-[1.55] text-fg-1">{body}</p>
+    </div>
+  )
+}
+
+function TaskAssignmentList({
+  agents,
+  tasks,
+  onAttach,
+}: {
+  agents: AgentView[]
+  tasks: TaskCardView[]
+  onAttach: (id: string, mode?: 'replace' | 'split') => void
+}) {
+  const assigned = agents.filter((agent) => agent.taskId)
+  if (assigned.length === 0) {
+    return <EmptyState title="No assigned agents" body="Tasks and task-bound agents will appear here as the parent decomposes work." />
+  }
+  const taskById = new Map(tasks.map((task) => [task.id, task]))
+  return (
+    <div className="space-y-2">
+      {assigned.slice(0, 8).map((agent) => {
+        const task = agent.taskId ? taskById.get(agent.taskId) : undefined
+        return (
+          <button
+            key={agent.session.id}
+            type="button"
+            onClick={() => onAttach(agent.session.id, 'replace')}
+            className="w-full rounded-lg bg-white/[0.03] p-2 text-left ring-hairline hover:bg-white/[0.055]"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate text-[11px] text-fg-0">{agent.session.title}</span>
+              <span className="font-mono text-[9px] uppercase text-accent">{agent.status}</span>
+            </div>
+            <div className="mt-1 truncate font-mono text-[9px] text-fg-3">
+              {agent.taskId} · {task?.title ?? 'task'}
+            </div>
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -1102,6 +1535,8 @@ function GoalTimeline({ goalState, dense = false }: { goalState: GoalStateView |
         {events.map((event) => {
           const state = event.details?.goalState as Record<string, unknown> | undefined
           const verdict = (event.details?.verdict as Record<string, unknown> | undefined) ?? (state?.lastVerdict as Record<string, unknown> | undefined)
+          const verdictReason = typeof verdict?.reason === 'string' ? verdict.reason : ''
+          const continuationPrompt = typeof event.details?.continuationPrompt === 'string' ? event.details.continuationPrompt : ''
           return (
             <div
               key={event.id}
@@ -1125,14 +1560,14 @@ function GoalTimeline({ goalState, dense = false }: { goalState: GoalStateView |
                 <span className="font-mono text-[9px] text-fg-3">{relativeTime(event.at)}</span>
               </div>
               <p className="mt-2 text-[12px] leading-[1.5] text-fg-1">{event.message}</p>
-              {verdict?.reason && (
+              {verdictReason && (
                 <div className="mt-2 rounded-md bg-black/25 px-2.5 py-2 text-[11px] leading-[1.45] text-fg-2 ring-hairline">
-                  {String(verdict.reason)}
+                  {verdictReason}
                 </div>
               )}
-              {event.subtype === 'goal_continue' && event.details?.continuationPrompt && (
+              {event.subtype === 'goal_continue' && continuationPrompt && (
                 <div className="mt-2 max-h-[90px] overflow-auto rounded-md bg-black/25 px-2.5 py-2 font-mono text-[10px] leading-[1.45] text-fg-3 ring-hairline">
-                  {String(event.details.continuationPrompt)}
+                  {continuationPrompt}
                 </div>
               )}
             </div>
@@ -3624,6 +4059,15 @@ function BriefStat({
   )
 }
 
+function MiniMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-[82px] rounded-lg bg-white/[0.03] px-3 py-2 ring-hairline">
+      <div className="label text-[8.5px]">{label}</div>
+      <div className="mt-1 font-mono text-[15px] leading-none text-fg-0">{value}</div>
+    </div>
+  )
+}
+
 function PanelHeader({
   label,
   action,
@@ -3820,6 +4264,121 @@ function collectGoalState(events: TelemetryEventView[]): GoalStateView | null {
     lastVerdict: lastVerdict ?? null,
     events: goalEvents,
   }
+}
+
+function collectTaskCards(events: TelemetryEventView[], agents: AgentView[]): TaskCardView[] {
+  const tasks = new Map<string, TaskCardView>()
+  const upsert = (task: Record<string, unknown>, fallbackAt: number) => {
+    const id = String(task.id ?? '')
+    if (!id) return
+    const existing = tasks.get(id)
+    const history = mergeTaskEvents(existing?.events, normalizeTaskEvents(task.events))
+    tasks.set(id, {
+      id,
+      title: typeof task.title === 'string' ? task.title : existing?.title ?? id,
+      status: typeof task.status === 'string' ? task.status : existing?.status ?? 'todo',
+      body: typeof task.body === 'string' ? task.body : existing?.body,
+      assignee: typeof task.assignee === 'string' ? task.assignee : existing?.assignee,
+      priority: typeof task.priority === 'number' ? task.priority : existing?.priority,
+      progress: typeof task.progress === 'number' ? task.progress : existing?.progress,
+      summary: typeof task.summary === 'string' ? task.summary : existing?.summary,
+      result: typeof task.result === 'string' ? task.result : existing?.result,
+      artifacts: normalizeStringArray(task.artifacts).length > 0
+        ? normalizeStringArray(task.artifacts)
+        : existing?.artifacts ?? [],
+      events: history,
+      agents: [],
+      createdAt: typeof task.createdAt === 'number' ? task.createdAt : existing?.createdAt,
+      startedAt: typeof task.startedAt === 'number' ? task.startedAt : existing?.startedAt,
+      updatedAt: typeof task.updatedAt === 'number' ? task.updatedAt : existing?.updatedAt ?? fallbackAt,
+      completedAt: typeof task.completedAt === 'number' ? task.completedAt : existing?.completedAt,
+    })
+  }
+
+  for (const event of [...events].reverse()) {
+    if (!event.subtype.startsWith('task_')) continue
+    const details = event.details ?? {}
+    const task = details.task
+    if (task && typeof task === 'object') upsert(task as Record<string, unknown>, event.at)
+    const list = details.tasks
+    if (Array.isArray(list)) {
+      for (const item of list) {
+        if (item && typeof item === 'object') upsert(item as Record<string, unknown>, event.at)
+      }
+    }
+  }
+
+  for (const task of tasks.values()) {
+    task.agents = agents.filter((agent) => agent.taskId === task.id)
+    if (task.progress === undefined) task.progress = statusProgress(task.status)
+  }
+  return [...tasks.values()].sort((a, b) => {
+    const order = { todo: 0, active: 1, blocked: 2, done: 3, cancelled: 4 } as Record<string, number>
+    return (order[a.status] ?? 99) - (order[b.status] ?? 99) || (a.createdAt ?? 0) - (b.createdAt ?? 0)
+  })
+}
+
+function normalizeTaskEvents(value: unknown): TaskCardView['events'] {
+  if (!Array.isArray(value)) return []
+  const normalized: NonNullable<TaskCardView['events']> = []
+  for (const event of value) {
+    if (!event || typeof event !== 'object') continue
+    const item = event as Record<string, unknown>
+    const message = typeof item.message === 'string' ? item.message : ''
+    if (!message) continue
+    normalized.push({
+      kind: typeof item.kind === 'string' ? item.kind : undefined,
+      actor: typeof item.actor === 'string' ? item.actor : undefined,
+      message,
+      timestamp: typeof item.timestamp === 'number' ? item.timestamp : undefined,
+      details: typeof item.details === 'object' && item.details !== null ? item.details as Record<string, unknown> : undefined,
+    })
+  }
+  return normalized
+}
+
+function mergeTaskEvents(
+  a: TaskCardView['events'] = [],
+  b: TaskCardView['events'] = [],
+): TaskCardView['events'] {
+  const seen = new Set<string>()
+  const merged: NonNullable<TaskCardView['events']> = []
+  for (const event of [...a, ...b]) {
+    const key = `${event.timestamp ?? 0}:${event.kind ?? ''}:${event.message}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    merged.push(event)
+  }
+  return merged.sort((x, y) => (x.timestamp ?? 0) - (y.timestamp ?? 0))
+}
+
+function taskProgress(tasks: TaskCardView[]): number {
+  if (tasks.length === 0) return 0
+  const total = tasks.reduce((acc, task) => acc + (task.progress ?? statusProgress(task.status)), 0)
+  return Math.round(total / tasks.length)
+}
+
+function statusProgress(status: string): number {
+  if (status === 'done') return 100
+  if (status === 'active') return 55
+  if (status === 'blocked') return 35
+  if (status === 'cancelled') return 0
+  return 8
+}
+
+function taskStatusClass(status: string): string {
+  if (status === 'done') return 'text-ok'
+  if (status === 'active') return 'text-accent'
+  if (status === 'blocked') return 'text-warn'
+  if (status === 'cancelled') return 'text-danger'
+  return 'text-fg-2'
+}
+
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/[`*_#>[\]()]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 function goalStatusTone(status: string): 'neutral' | 'accent' | 'ok' | 'warn' {

@@ -1265,6 +1265,7 @@ class _BridgeSession:
         from bridge.tools.message_bus import SessionMessageBus
         self.message_bus: SessionMessageBus = SessionMessageBus()
         self.kanban_board: Any | None = None
+        self.task_board: Any | None = None
         self.goal_state: Any | None = None
         self._turn_text_parts: list[str] = []
         self._tool_list = ""
@@ -1287,6 +1288,7 @@ class _BridgeSession:
             strategy_uses_message_bus,
         )
         from bridge.tools.kanban_board import SessionKanbanBoard
+        from bridge.tools.task_board import SessionTaskBoard
         from bridge.tools.sub_agent_registry import SubAgentRegistry
         from bridge.knowledge import MemoryStore, SkillStore
         from bridge.knowledge.prompt import build_knowledge_prompt
@@ -1316,6 +1318,8 @@ class _BridgeSession:
         self.skill_store = SkillStore(Path(self.workspace))
         if strategy_uses_kanban(self.coordination_strategy) and self.kanban_board is None:
             self.kanban_board = SessionKanbanBoard()
+        if self.coordination_strategy == "isolated" and self.task_board is None:
+            self.task_board = SessionTaskBoard()
 
         async def _emit_memory_updated(item: Any, reason: str = "") -> None:
             emit(
@@ -1367,6 +1371,7 @@ class _BridgeSession:
             ),
             coordination_strategy=self.coordination_strategy,
             kanban_board=self.kanban_board if strategy_uses_kanban(self.coordination_strategy) else None,
+            task_board=self.task_board if self.coordination_strategy == "isolated" else None,
             memory_store=self.memory_store,
             skill_store=self.skill_store,
             image_store=self.image_store,
@@ -1509,6 +1514,7 @@ class _BridgeSession:
         self._base_system_prompt = ""
         self._system_prompt = ""
         self.kanban_board = None
+        self.task_board = None
         self.goal_state = None
         self._turn_text_parts = []
 

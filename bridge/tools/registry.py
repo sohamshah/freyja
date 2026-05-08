@@ -25,6 +25,7 @@ from bridge.tools.file_tools import (
 )
 from bridge.tools.image_generation_tool import GenerateImageTool
 from bridge.tools.kanban_board import KanbanTool
+from bridge.tools.task_board import TaskBoardTool
 from bridge.tools.video_analysis_tool import AnalyzeVideoTool
 from bridge.tools.memory_tools import RecordUserPreferenceTool
 from bridge.tools.search_tools import GlobTool, GrepTool
@@ -62,6 +63,7 @@ def build_desktop_registry(
     message_bus: Any | None = None,
     coordination_strategy: str = "bus",
     kanban_board: Any | None = None,
+    task_board: Any | None = None,
     memory_store: Any | None = None,
     skill_store: Any | None = None,
     image_store: Any | None = None,
@@ -153,6 +155,17 @@ def build_desktop_registry(
             )
         )
 
+    if task_board is not None:
+        tools.append(
+            TaskBoardTool(
+                task_board,
+                actor_id=subagent_parent_session_id or "parent",
+                actor_label="parent",
+                emit_event=subagent_emit,
+                parent_session_id=subagent_parent_session_id,
+            )
+        )
+
     # Web tools — only if SDK + key available
     if include_web:
         try:
@@ -196,6 +209,7 @@ def build_desktop_registry(
             message_bus=message_bus,
             coordination_strategy=coordination_strategy,
             kanban_board=kanban_board,
+            task_board=task_board,
         )
         tools.append(SubAgentTool(sub_spec))
         tools.append(SubAgentsTool(sub_registry))

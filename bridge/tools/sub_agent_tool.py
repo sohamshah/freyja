@@ -53,6 +53,7 @@ DEFAULT_EXCLUDED_TOOLS = frozenset(
         "publish_finding",  # child-only: injected directly, not inherited
         "read_findings",  # child-only: injected directly, not inherited
         "kanban",  # child-only in board mode so the actor id is correct
+        "tasks",  # child-only in task mode so the actor id is correct
     }
 )
 
@@ -114,6 +115,8 @@ class SubAgentSpec:
     coordination_strategy: str = STRATEGY_BUS
     # Optional board used by kanban coordination mode.
     kanban_board: Any | None = None
+    # Optional task ledger used by task-first solo mode.
+    task_board: Any | None = None
 
 
 class SubAgentTool:
@@ -140,6 +143,7 @@ Parameters:
 - task: the task/prompt given to the sub-agent
 - agent_type: agent specialization ({', '.join(type_names)}). Defaults to general.
 - kanban_task_id: optional board card id when the session is in kanban mode
+- task_id: optional task ledger id when the session is in task mode
 - mode: "foreground" blocks on the child (default); "background" returns
   immediately with an agent id that can be monitored with the `subagents`
   tool.""",
@@ -171,6 +175,13 @@ Parameters:
                             "Only useful when the session coordination strategy is kanban."
                         ),
                     },
+                    "task_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional task ledger id this sub-agent should execute. "
+                            "Only useful when the session coordination strategy is tasks/solo."
+                        ),
+                    },
                 },
                 "required": ["label", "task"],
             },
@@ -182,6 +193,7 @@ Parameters:
         mode = arguments.get("mode") or "foreground"
         agent_type_name = arguments.get("agent_type") or "general"
         kanban_task_id = (arguments.get("kanban_task_id") or "").strip()
+        task_id = (arguments.get("task_id") or "").strip()
         if mode not in ("foreground", "background"):
             mode = "foreground"
 
@@ -240,6 +252,16 @@ Parameters:
         record.coordination_strategy = self._spec.coordination_strategy  # type: ignore[attr-defined]
         if kanban_task_id:
             record.kanban_task_id = kanban_task_id  # type: ignore[attr-defined]
+        if self._spec.coordination_strategy == STRATEGY_ISOLATED:
+            task_id = await self._prepare_task_assignment(
+                task_id=task_id,
+                label=label,
+                task=task,
+                agent_type=agent_type.name,
+                record_id=sub_id,
+            )
+            if task_id:
+                record.task_id = task_id  # type: ignore[attr-defined]
 
         type_tag = f" [{agent_type.name}]" if agent_type.name != "general" else ""
         # Legacy subagent_spawn for the existing inline card
@@ -269,6 +291,7 @@ Parameters:
                 "agentType": agent_type.name,
                 "coordinationStrategy": self._spec.coordination_strategy,
                 "kanbanTaskId": kanban_task_id or None,
+                "taskId": task_id or None,
                 "workspace": self._spec.parent_workspace,
                 "createdAt": int(time.time() * 1000),
             },
@@ -288,6 +311,49 @@ Parameters:
             ),
             is_error=False,
         )
+
+    async def _prepare_task_assignment(
+        self,
+        *,
+        task_id: str,
+        label: str,
+        task: str,
+        agent_type: str,
+        record_id: str,
+    ) -> str:
+        if self._spec.task_board is None:
+            return task_id
+        actor = "parent"
+        try:
+            if task_id:
+                item = await self._spec.task_board.update(
+                    task_id,
+                    actor=actor,
+                    assignee=label,
+                    note=f"Assigned to {label} ({agent_type})",
+                )
+                if item is None:
+                    return ""
+                await self._emit_task_state_event("update", item)
+                return task_id
+
+            item = await self._spec.task_board.create(
+                title=label,
+                body=task,
+                assignee=label,
+                actor=actor,
+            )
+            await self._spec.task_board.update(
+                item.id,
+                actor=actor,
+                assignee=label,
+                note=f"Auto-created for sub-agent {record_id}",
+            )
+            await self._emit_task_state_event("create", item)
+            return item.id
+        except Exception:  # noqa: BLE001
+            logger.debug("failed to prepare task assignment", exc_info=True)
+            return task_id
 
     async def _run_foreground(
         self, call_id: str, record: SubAgentRecord
@@ -397,6 +463,21 @@ Parameters:
                 )
             )
 
+        if (
+            self._spec.coordination_strategy == STRATEGY_ISOLATED
+            and self._spec.task_board is not None
+        ):
+            from bridge.tools.task_board import TaskBoardTool
+            child_registry.register(
+                TaskBoardTool(
+                    self._spec.task_board,
+                    actor_id=record.id,
+                    actor_label=record.label,
+                    emit_event=self._spec.emit_event,
+                    parent_session_id=self._spec.parent_session_id,
+                )
+            )
+
         # Build system prompt: use agent type's specialized prompt if provided,
         # otherwise fall back to default sub-agent prompt with tool list.
         if agent_type.system_prompt:
@@ -453,6 +534,7 @@ Parameters:
         )
 
         await self._mark_kanban_running(record)
+        await self._mark_task_running(record)
 
         # Emit turn_start for the child session so the UI spins up a message
         # container to stream into.
@@ -625,6 +707,7 @@ Parameters:
                 record.id, "Cancelled", SubAgentState.CANCELLED
             )
             await self._mark_kanban_terminal(record, "cancelled", "Sub-agent cancelled")
+            await self._mark_task_terminal(record, "cancelled", "Sub-agent cancelled")
             await self._emit_terminal_events(record, success=False)
             await _emit_update(self._spec, record)
             raise
@@ -634,6 +717,7 @@ Parameters:
                 record.id, "Cancelled", SubAgentState.CANCELLED
             )
             await self._mark_kanban_terminal(record, "cancelled", "Sub-agent cancelled")
+            await self._mark_task_terminal(record, "cancelled", "Sub-agent cancelled")
             await self._emit_terminal_events(record, success=False)
             await _emit_update(self._spec, record)
             return "(sub-agent cancelled)"
@@ -650,6 +734,7 @@ Parameters:
                 SubAgentState.FAILED,
             )
             await self._mark_kanban_terminal(record, "blocked", f"Error: {run_exception}")
+            await self._mark_task_terminal(record, "blocked", f"Error: {run_exception}")
             await self._emit_terminal_events(record, success=False)
             await _emit_update(self._spec, record)
             raise run_exception
@@ -707,6 +792,7 @@ Parameters:
             tools_called=record.tools_called,
         )
         await self._mark_kanban_terminal(record, "done", text)
+        await self._mark_task_terminal(record, "done", text)
         await self._emit_terminal_events(record, success=True, usage=usage)
         await _emit_update(self._spec, record)
         return text
@@ -714,11 +800,14 @@ Parameters:
     def _coordination_guidance(self, record: SubAgentRecord) -> str:
         strategy = self._spec.coordination_strategy
         if strategy == STRATEGY_ISOLATED:
+            task_id = getattr(record, "task_id", "")
+            assignment = f"`{task_id}`" if task_id else "your assigned task"
             return (
-                "\nCoordination mode: isolated delegation.\n"
-                "You do not have sibling communication tools. Treat this as a leaf assignment: "
-                "work independently, avoid scope creep, and return a structured summary with "
-                "findings, files changed, tests run, risks, and blockers.\n"
+                "\nCoordination mode: task-first solo.\n"
+                f"Your task-led assignment is {assignment}. Call `tasks` with action=`show` first "
+                "when a task id is available. Use `heartbeat` during long work, `complete` with "
+                "artifacts/results when done, or `block` with the exact blocker. You do not have "
+                "sibling communication tools; the task ledger is the durable handoff surface.\n"
             )
         if strategy == STRATEGY_KANBAN:
             task_id = getattr(record, "kanban_task_id", "")
@@ -782,6 +871,74 @@ Parameters:
             )
         except Exception:  # noqa: BLE001
             logger.debug("failed to mark kanban card terminal", exc_info=True)
+
+    async def _mark_task_running(self, record: SubAgentRecord) -> None:
+        task_id = getattr(record, "task_id", "")
+        if (
+            self._spec.coordination_strategy != STRATEGY_ISOLATED
+            or self._spec.task_board is None
+            or not task_id
+        ):
+            return
+        try:
+            task = await self._spec.task_board.update(
+                task_id,
+                actor=f"{record.label} ({record.id})",
+                status="active",
+                assignee=record.label,
+                progress=10,
+                note="Sub-agent started",
+            )
+            await self._emit_task_state_event("update", task)
+        except Exception:  # noqa: BLE001
+            logger.debug("failed to mark task running", exc_info=True)
+
+    async def _mark_task_terminal(
+        self,
+        record: SubAgentRecord,
+        status: str,
+        summary: str,
+    ) -> None:
+        task_id = getattr(record, "task_id", "")
+        if (
+            self._spec.coordination_strategy != STRATEGY_ISOLATED
+            or self._spec.task_board is None
+            or not task_id
+        ):
+            return
+        try:
+            task = await self._spec.task_board.update(
+                task_id,
+                actor=f"{record.label} ({record.id})",
+                status=status,
+                progress=100 if status == "done" else None,
+                summary=summary[:4000],
+                result=summary[:4000] if status == "done" else "",
+            )
+            await self._emit_task_state_event(
+                "complete" if status == "done" else "update",
+                task,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("failed to mark task terminal", exc_info=True)
+
+    async def _emit_task_state_event(self, action: str, task: Any | None) -> None:
+        if task is None:
+            return
+        await _fire(
+            self._spec.emit_event,
+            {
+                "type": "system_event",
+                "sessionId": self._spec.parent_session_id,
+                "subtype": f"task_{action}",
+                "message": f"Task {action}: {task.id} {task.title}",
+                "details": {
+                    "action": action,
+                    "task": task.to_dict(),
+                    "source": "sub_agent_state",
+                },
+            },
+        )
 
     async def _emit_kanban_state_event(self, action: str, task: Any | None) -> None:
         if task is None:
@@ -886,6 +1043,7 @@ def _record_to_dict(record: SubAgentRecord) -> dict[str, Any]:
         "agentType": record.agent_type_name,
         "coordinationStrategy": getattr(record, "coordination_strategy", None),
         "kanbanTaskId": getattr(record, "kanban_task_id", None),
+        "taskId": getattr(record, "task_id", None),
         "model": getattr(record, "child_model", None),
         "modelPolicy": resolution.policy if resolution is not None else None,
         "modelFallbackUsed": (

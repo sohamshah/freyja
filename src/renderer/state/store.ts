@@ -1375,6 +1375,8 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           parentSessionId: ev.parentSessionId,
           task: ev.task,
           agentType: ev.agentType,
+          kanbanTaskId: ev.kanbanTaskId,
+          taskId: ev.taskId,
           coordinationStrategy: normalizeCoordinationStrategy(
             ev.coordinationStrategy || prev.coordinationStrategy,
           ),
