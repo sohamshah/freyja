@@ -3691,59 +3691,59 @@ function kanbanPriorityClass(priority: number): string {
 }
 
 function kanbanColumnClass(status: string): string {
-  if (status === 'todo') {
-    return 'border border-dashed border-white/[0.11] bg-[linear-gradient(180deg,rgba(226,222,203,0.028),rgba(0,0,0,0.13))]'
-  }
-  if (status === 'ready') {
-    return 'border border-white/[0.09] bg-[radial-gradient(circle_at_20%_10%,rgba(220,224,207,0.06),transparent_34%),linear-gradient(180deg,rgba(255,255,255,0.024),rgba(0,0,0,0.17))]'
-  }
-  if (status === 'running') {
-    return 'border border-accent/[0.16] bg-[linear-gradient(180deg,rgba(127,184,232,0.035),rgba(0,0,0,0.18))] shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]'
-  }
-  if (status === 'blocked') {
-    return 'border border-danger/[0.16] bg-[linear-gradient(180deg,rgba(255,120,120,0.03),rgba(255,255,255,0.012),rgba(0,0,0,0.18))]'
-  }
+  // Done keeps the soft green tint as the only "shipped" affordance.
+  // All other columns use a single neutral white/gray treatment so the
+  // board doesn't feel like a traffic-light grid.
   if (status === 'done') {
     return 'border border-ok/[0.14] bg-[linear-gradient(180deg,rgba(112,184,103,0.032),rgba(0,0,0,0.19))]'
   }
-  return 'border border-white/[0.07] bg-white/[0.018]'
+  if (status === 'todo') {
+    return 'border border-dashed border-white/[0.11] bg-[linear-gradient(180deg,rgba(255,255,255,0.025),rgba(0,0,0,0.13))]'
+  }
+  return 'border border-white/[0.09] bg-[linear-gradient(180deg,rgba(255,255,255,0.022),rgba(0,0,0,0.17))]'
 }
 
 function kanbanCardMaterialClass(status: string, selected: boolean, selectable: boolean): string {
+  // Selection ring is white instead of accent-blue — keeps the board
+  // monochrome and stops every focused card from popping a coloured halo.
   const base = [
     'relative overflow-hidden p-3 transition focus:outline-none',
     selectable ? 'cursor-pointer hover:-translate-y-px' : '',
     selected
-      ? 'ring-1 ring-accent/60 shadow-[0_0_0_1px_rgba(127,184,232,0.20),0_18px_44px_rgba(0,0,0,0.34),0_0_30px_rgba(127,184,232,0.12)]'
+      ? 'ring-1 ring-white/55 shadow-[0_0_0_1px_rgba(255,255,255,0.18),0_18px_44px_rgba(0,0,0,0.34)]'
       : 'ring-1',
   ].join(' ')
-  if (status === 'todo') {
-    return `${base} rounded-[5px] border border-dashed bg-[linear-gradient(180deg,rgba(231,226,207,0.10),rgba(93,87,73,0.035))] shadow-[inset_0_1px_0_rgba(255,255,255,0.10),0_8px_18px_rgba(0,0,0,0.22)] ${
-      selected ? 'border-accent/45' : 'border-white/22 ring-white/10'
-    }`
-  }
-  if (status === 'ready') {
-    return `${base} rounded-md bg-[linear-gradient(145deg,rgba(214,218,202,0.22),rgba(110,118,108,0.12)_52%,rgba(14,15,13,0.34))] pl-8 shadow-[inset_0_1px_0_rgba(255,255,255,0.18),inset_0_-1px_0_rgba(0,0,0,0.46),0_12px_24px_rgba(0,0,0,0.28)] ${
-      selected ? 'ring-accent/60' : 'ring-white/14'
-    }`
-  }
-  if (status === 'running') {
-    return `${base} rounded-lg border bg-[linear-gradient(145deg,rgba(104,125,135,0.20),rgba(16,18,20,0.58)_58%,rgba(5,6,7,0.72))] shadow-[inset_0_1px_0_rgba(255,255,255,0.17),inset_0_-10px_22px_rgba(0,0,0,0.36),0_14px_26px_rgba(0,0,0,0.34)] ${
-      selected ? 'border-accent/55 ring-accent/60' : 'border-accent/22 ring-accent/25'
-    }`
-  }
-  if (status === 'blocked') {
-    return `${base} rounded-[3px] border bg-[linear-gradient(135deg,rgba(170,210,225,0.11),rgba(255,255,255,0.045)_45%,rgba(255,112,112,0.045))] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06),0_12px_28px_rgba(0,0,0,0.30)] backdrop-blur-sm ${
-      selected ? 'border-accent/45 ring-accent/55' : 'border-danger/26 ring-white/13'
-    }`
-  }
+
+  // Done is the one card style that stays green-tinted.
   if (status === 'done') {
     return `${base} rounded-md border bg-[linear-gradient(180deg,rgba(85,116,80,0.24),rgba(26,32,25,0.54)_42%,rgba(8,11,8,0.72))] pt-12 shadow-[inset_0_1px_0_rgba(255,255,255,0.10),inset_0_-1px_0_rgba(112,184,103,0.16),0_12px_22px_rgba(0,0,0,0.30)] ${
-      selected ? 'border-accent/42 ring-accent/55' : 'border-ok/25 ring-ok/18'
+      selected ? 'border-white/35' : 'border-ok/25 ring-ok/18'
     }`
   }
   if (status === 'cancelled') {
-    return `${base} rounded-[5px] border border-danger/16 bg-[linear-gradient(180deg,rgba(130,90,90,0.07),rgba(0,0,0,0.25))] opacity-70 ring-danger/16`
+    return `${base} rounded-[5px] border border-white/[0.10] bg-[linear-gradient(180deg,rgba(255,255,255,0.020),rgba(0,0,0,0.25))] opacity-65 ring-white/10`
+  }
+  if (status === 'todo') {
+    return `${base} rounded-[5px] border border-dashed bg-[linear-gradient(180deg,rgba(255,255,255,0.045),rgba(255,255,255,0.012))] shadow-[inset_0_1px_0_rgba(255,255,255,0.10),0_8px_18px_rgba(0,0,0,0.22)] ${
+      selected ? 'border-white/40' : 'border-white/22 ring-white/10'
+    }`
+  }
+  if (status === 'ready') {
+    // Punched-card material: warm paper tones in the original — neutralized
+    // to a pure gray gradient with no accent ring.
+    return `${base} rounded-md bg-[linear-gradient(145deg,rgba(255,255,255,0.10),rgba(255,255,255,0.04)_52%,rgba(0,0,0,0.34))] pl-8 shadow-[inset_0_1px_0_rgba(255,255,255,0.16),inset_0_-1px_0_rgba(0,0,0,0.46),0_12px_24px_rgba(0,0,0,0.28)] ${
+      selected ? 'ring-white/35' : 'ring-white/12'
+    }`
+  }
+  if (status === 'running') {
+    return `${base} rounded-lg border bg-[linear-gradient(145deg,rgba(255,255,255,0.06),rgba(16,18,20,0.58)_58%,rgba(5,6,7,0.72))] shadow-[inset_0_1px_0_rgba(255,255,255,0.14),inset_0_-10px_22px_rgba(0,0,0,0.36),0_14px_26px_rgba(0,0,0,0.34)] ${
+      selected ? 'border-white/35 ring-white/35' : 'border-white/16 ring-white/16'
+    }`
+  }
+  if (status === 'blocked') {
+    return `${base} rounded-[3px] border bg-[linear-gradient(135deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02)_45%,rgba(0,0,0,0.16))] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06),0_12px_28px_rgba(0,0,0,0.30)] backdrop-blur-sm ${
+      selected ? 'border-white/35 ring-white/35' : 'border-white/18 ring-white/12'
+    }`
   }
   return `${base} rounded-lg bg-black/24 ring-white/10`
 }
@@ -3757,17 +3757,22 @@ function kanbanProgressTrackClass(status: string): string {
 }
 
 function kanbanProgressFillClass(status: string, blocked: boolean): string {
-  if (blocked || status === 'cancelled') return 'rounded-[1px] bg-danger/70'
+  // Done is the only status that lights up green; everything else gets
+  // a neutral white bar so the board stays monochrome.
   if (status === 'done') return 'rounded-[1px] bg-ok/75 shadow-[0_0_14px_rgba(112,184,103,0.22)]'
-  if (status === 'running') return 'rounded-[1px] bg-accent/80 shadow-[0_0_16px_rgba(127,184,232,0.22)]'
-  if (status === 'ready') return 'rounded-[1px] bg-[linear-gradient(90deg,rgba(127,184,232,0.70),rgba(220,224,207,0.55))]'
-  return 'rounded-full bg-accent/70'
+  if (blocked || status === 'cancelled') return 'rounded-[1px] bg-white/40'
+  if (status === 'running') return 'rounded-[1px] bg-white/75'
+  if (status === 'ready') return 'rounded-[1px] bg-white/55'
+  return 'rounded-full bg-white/55'
 }
 
 function kanbanStatusClass(status: string): string {
+  // Done is the only status that gets a colour. Everything else stays in
+  // the neutral text ramp so the board reads as monochrome with a single
+  // green "shipped" emphasis.
   if (status === 'done') return 'text-ok'
-  if (status === 'blocked' || status === 'cancelled') return 'text-danger'
-  if (status === 'running') return 'text-accent'
+  if (status === 'blocked' || status === 'cancelled') return 'text-fg-2'
+  if (status === 'running') return 'text-fg-1'
   return 'text-fg-2'
 }
 
