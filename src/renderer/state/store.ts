@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type {
   BridgeEvent,
   BridgeMode,
+  CoordinationStrategy,
   ArtifactRecord,
   DesktopSettings,
   FileChangeSet,
@@ -95,6 +96,7 @@ export interface SessionSlice {
   artifacts: Array<import('@shared/events').ArtifactRecord>
   model: string
   reasoningLevel: string
+  coordinationStrategy: CoordinationStrategy
   /** System prompt sent to the model. Captured from the bridge's
    *  `system_prompt_set` event for session export / training data. */
   systemPrompt?: string
@@ -185,6 +187,7 @@ export interface HarnessActions {
   cancelTurn(): Promise<void>
   setModel(model: string, reasoningLevel?: string): Promise<void>
   setReasoningLevel(reasoningLevel: string): Promise<void>
+  setCoordinationStrategy(strategy: CoordinationStrategy): Promise<void>
   openSubagent(id: string | null): void
   toggleCommandPalette(open?: boolean): void
   toggleMissionDashboard(
@@ -336,10 +339,18 @@ function normalizeReasoningFor(
   return defaultReasoningFor(model, models)
 }
 
+function normalizeCoordinationStrategy(value?: string | null): CoordinationStrategy {
+  if (value === 'isolated' || value === 'kanban' || value === 'bus') return value
+  if (value === 'solo' || value === 'delegate') return 'isolated'
+  if (value === 'board') return 'kanban'
+  return 'bus'
+}
+
 function emptySlice(
   model: string = 'claude-sonnet-4-6',
   reasoningLevel?: string,
   models: ModelChoice[] = [],
+  coordinationStrategy: CoordinationStrategy = 'bus',
 ): SessionSlice {
   const normalizedReasoning = normalizeReasoningFor(model, reasoningLevel, models)
   return {
@@ -369,6 +380,7 @@ function emptySlice(
     artifacts: [],
     model,
     reasoningLevel: normalizedReasoning,
+    coordinationStrategy: normalizeCoordinationStrategy(coordinationStrategy),
   }
 }
 
@@ -387,6 +399,7 @@ function emptyState(): HarnessState {
         workspace: '~/work/services/freyja',
         model: 'claude-sonnet-4-6',
         reasoningLevel: defaultReasoningFor('claude-sonnet-4-6'),
+        coordinationStrategy: 'bus',
         createdAt: Date.now(),
         updatedAt: Date.now(),
         messageCount: 0,
@@ -476,6 +489,7 @@ function sliceFromState(s: HarnessState): SessionSlice {
     artifacts: s.artifacts,
     model: s.model,
     reasoningLevel: s.reasoningLevel,
+    coordinationStrategy: s.coordinationStrategy,
     systemPrompt: s.systemPrompt,
   }
 }
@@ -486,6 +500,7 @@ type PersistedSessionMetaPayload = {
   title: string
   model: string
   reasoningLevel?: string
+  coordinationStrategy?: CoordinationStrategy
   workspace: string
   createdAt: number
   updatedAt: number
@@ -538,6 +553,9 @@ function persistedMetaFromSession(
     title: session.title || 'Session',
     model: slice?.model || session.model,
     reasoningLevel: slice?.reasoningLevel || session.reasoningLevel,
+    coordinationStrategy: normalizeCoordinationStrategy(
+      slice?.coordinationStrategy || session.coordinationStrategy,
+    ),
     workspace: session.workspace || '~/',
     createdAt: session.createdAt,
     updatedAt: session.updatedAt || Date.now(),
@@ -608,6 +626,7 @@ function normalizePersistedFrames(slice: SessionSlice): SessionSlice {
     ...slice,
     model,
     reasoningLevel: normalizeReasoningFor(model, slice.reasoningLevel),
+    coordinationStrategy: normalizeCoordinationStrategy(slice.coordinationStrategy),
     fileChanges: slice.fileChanges ?? [],
     usage: {
       ...slice.usage,
@@ -1069,6 +1088,10 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           models.length > 0 ? models : prev.availableModels,
         )
         const firstSessionId = ev.sessionId || prev.activeSessionId
+        const nextStrategy = normalizeCoordinationStrategy(
+          (ev.capabilities?.coordinationStrategy as string | undefined)
+          || prev.coordinationStrategy,
+        )
         return {
           ...prev,
           ready: true,
@@ -1078,12 +1101,19 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           activeSessionId: firstSessionId,
           sessions: prev.sessions.map((s) =>
             s.id === prev.activeSessionId
-              ? { ...s, id: firstSessionId, model: capModel, reasoningLevel: nextReasoning }
+              ? {
+                  ...s,
+                  id: firstSessionId,
+                  model: capModel,
+                  reasoningLevel: nextReasoning,
+                  coordinationStrategy: nextStrategy,
+                }
               : s,
           ),
           availableModels: models.length > 0 ? models : prev.availableModels,
           model: capModel,
           reasoningLevel: nextReasoning,
+          coordinationStrategy: nextStrategy,
           usage: { ...prev.usage, contextWindow: contextWindowFor(capModel) },
         }
       }
@@ -1207,12 +1237,20 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           parentSessionId: ev.parentSessionId,
           task: ev.task,
           agentType: ev.agentType,
+          coordinationStrategy: normalizeCoordinationStrategy(
+            ev.coordinationStrategy || prev.coordinationStrategy,
+          ),
           completed: false,
         }
         // If the new session happens to be attached to the currently
         // active session, initialize its slice in the archive so events
         // routed to it stream in. Otherwise also archive it.
-        const freshSlice = emptySlice(snapshot.model, childReasoning, prev.availableModels)
+        const freshSlice = emptySlice(
+          snapshot.model,
+          childReasoning,
+          prev.availableModels,
+          snapshot.coordinationStrategy,
+        )
         const archive = {
           ...prev.sessionArchive,
           [newSessionId]: freshSlice,
@@ -1602,6 +1640,9 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           sessionSnapshot?.model || prev.model,
           sessionSnapshot?.reasoningLevel || prev.reasoningLevel,
           prev.availableModels,
+          normalizeCoordinationStrategy(
+            sessionSnapshot?.coordinationStrategy || prev.coordinationStrategy,
+          ),
         )
       const updated = applyEventToSlice(existingArchive, ev)
       const updatedSessions = prev.sessions.map((s) =>
@@ -1662,6 +1703,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       // active and doesn't remember the model choice.
       model: state.model,
       reasoningLevel: state.reasoningLevel,
+      coordinationStrategy: state.coordinationStrategy,
     }
     if (attachments.length > 0) {
       cmd.attachments = attachments.map((a) => ({
@@ -1749,12 +1791,36 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         sessionId: useHarness.getState().activeSessionId,
         model,
         reasoningLevel: nextReasoning,
+        coordinationStrategy: useHarness.getState().coordinationStrategy,
       })
   },
 
   async setReasoningLevel(reasoningLevel) {
     const state = useHarness.getState()
     await state.setModel(state.model, reasoningLevel)
+  },
+
+  async setCoordinationStrategy(strategy) {
+    const normalized = normalizeCoordinationStrategy(strategy)
+    const current = useHarness.getState()
+    set((prev) => ({
+      coordinationStrategy: normalized,
+      sessions: prev.sessions.map((s) =>
+        s.id === prev.activeSessionId
+          ? { ...s, coordinationStrategy: normalized, updatedAt: Date.now() }
+          : s,
+      ),
+    }))
+    const api = (window as any).harness
+    if (api) {
+      await api.sendCommand({
+        type: 'set_coordination_strategy',
+        sessionId: current.activeSessionId,
+        coordinationStrategy: normalized,
+        model: current.model,
+        reasoningLevel: current.reasoningLevel,
+      })
+    }
   },
 
   openSubagent(id) {
@@ -1794,6 +1860,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       reasoningLevel ?? (model ? undefined : state.reasoningLevel),
       state.availableModels,
     )
+    const chosenStrategy = normalizeCoordinationStrategy(state.coordinationStrategy)
 
     set((prev) => {
       // Archive the current slice unless it's empty (nothing to save).
@@ -1804,7 +1871,12 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         ? { ...prev.sessionArchive, [prev.activeSessionId]: currentSlice }
         : prev.sessionArchive
 
-      const freshSlice = emptySlice(chosenModel, chosenReasoning, prev.availableModels)
+      const freshSlice = emptySlice(
+        chosenModel,
+        chosenReasoning,
+        prev.availableModels,
+        chosenStrategy,
+      )
       return {
         ...prev,
         ...freshSlice,
@@ -1817,6 +1889,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
             workspace: prev.sessions[0]?.workspace ?? '~/',
             model: chosenModel,
             reasoningLevel: chosenReasoning,
+            coordinationStrategy: chosenStrategy,
             createdAt: Date.now(),
             updatedAt: Date.now(),
             messageCount: 0,
@@ -1829,7 +1902,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         pendingAttachments: [],
         toast: {
           id: nextId('toast'),
-          message: `New session (${chosenModel.replace('claude-', '')})`,
+          message: `New session (${chosenStrategy} · ${chosenModel.replace('claude-', '')})`,
           tone: 'info',
           at: Date.now(),
         },
@@ -1843,6 +1916,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         sessionId: newSessionId,
         model: chosenModel,
         reasoningLevel: chosenReasoning,
+        coordinationStrategy: chosenStrategy,
       })
     else (window as any).__harnessDemo?.stop?.()
   },
@@ -1870,6 +1944,9 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         archivedSlice.reasoningLevel || targetSnapshot?.reasoningLevel,
         prev.availableModels,
       ),
+      coordinationStrategy: normalizeCoordinationStrategy(
+        archivedSlice.coordinationStrategy || targetSnapshot?.coordinationStrategy,
+      ),
     }
     set((p) => {
       // Archive the current slice before swapping in the target.
@@ -1895,6 +1972,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     // resumed session, even if the user had picked gpt-5.4 before.
     const restoredModel = useHarness.getState().model
     const restoredReasoning = useHarness.getState().reasoningLevel
+    const restoredStrategy = useHarness.getState().coordinationStrategy
     const sessionSnapshot = useHarness
       .getState()
       .sessions.find((s) => s.id === sessionId)
@@ -1904,6 +1982,9 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       sessionSnapshot?.reasoningLevel || restoredReasoning,
       useHarness.getState().availableModels,
     )
+    const strategyForBridge = normalizeCoordinationStrategy(
+      sessionSnapshot?.coordinationStrategy || restoredStrategy,
+    )
 
     const api = (window as any).harness
     if (api) {
@@ -1912,6 +1993,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         sessionId,
         model: modelForBridge,
         reasoningLevel: reasoningForBridge,
+        coordinationStrategy: strategyForBridge,
       })
     }
   },
@@ -1981,6 +2063,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           s.reasoningLevel,
           prev.availableModels,
         ),
+        coordinationStrategy: normalizeCoordinationStrategy(s.coordinationStrategy),
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
         messageCount: s.messageCount ?? 0,

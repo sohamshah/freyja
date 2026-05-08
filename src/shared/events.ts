@@ -3,6 +3,8 @@
 
 export type BridgeMode = 'live' | 'demo' | 'error'
 
+export type CoordinationStrategy = 'bus' | 'isolated' | 'kanban'
+
 export type SkillConfidence = 'unvalidated' | 'experimental' | 'verified' | 'deprecated'
 
 export type SubagentState = 'pending' | 'running' | 'done' | 'failed' | 'cancelled'
@@ -53,6 +55,8 @@ export interface SubagentRecord {
   parentId?: string
   result?: string
   artifactPath?: string
+  coordinationStrategy?: CoordinationStrategy
+  kanbanTaskId?: string
 }
 
 export interface BusMessageRecord {
@@ -203,6 +207,7 @@ export interface SessionSnapshot {
   workspace: string
   model: string
   reasoningLevel?: string
+  coordinationStrategy?: CoordinationStrategy
   createdAt: number
   updatedAt: number
   messageCount: number
@@ -239,18 +244,26 @@ export type BridgeCommand =
       content: string
       model?: string
       reasoningLevel?: string
+      coordinationStrategy?: CoordinationStrategy
       attachments?: CommandAttachment[]
     }
   | { type: 'cancel'; sessionId?: string }
   | { type: 'force_cancel'; sessionId?: string }
   | { type: 'diagnose' }
-  | { type: 'compact'; sessionId?: string; model?: string; reasoningLevel?: string }
-  | { type: 'set_model'; sessionId?: string; model: string; reasoningLevel?: string }
+  | { type: 'compact'; sessionId?: string; model?: string; reasoningLevel?: string; coordinationStrategy?: CoordinationStrategy }
+  | { type: 'set_model'; sessionId?: string; model: string; reasoningLevel?: string; coordinationStrategy?: CoordinationStrategy }
+  | {
+      type: 'set_coordination_strategy'
+      sessionId: string
+      coordinationStrategy: CoordinationStrategy
+      model?: string
+      reasoningLevel?: string
+    }
   | { type: 'list_skills'; sessionId?: string }
   | { type: 'list_subagents'; sessionId?: string }
   | { type: 'list_tools'; sessionId?: string }
-  | { type: 'new_session'; sessionId?: string; model?: string; reasoningLevel?: string }
-  | { type: 'switch_session'; sessionId: string; model?: string; reasoningLevel?: string }
+  | { type: 'new_session'; sessionId?: string; model?: string; reasoningLevel?: string; coordinationStrategy?: CoordinationStrategy }
+  | { type: 'switch_session'; sessionId: string; model?: string; reasoningLevel?: string; coordinationStrategy?: CoordinationStrategy }
   | { type: 'usage'; sessionId?: string }
   | { type: 'list_files'; sessionId?: string; query: string; limit?: number }
   | {
@@ -380,6 +393,8 @@ export type BridgeEvent =
       task: string
       mode?: string
       agentType?: string
+      coordinationStrategy?: CoordinationStrategy
+      kanbanTaskId?: string
       workspace?: string
       createdAt: number
     } & SessionId)

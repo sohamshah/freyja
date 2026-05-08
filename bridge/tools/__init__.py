@@ -15,6 +15,7 @@ from bridge.tools.file_tools import (
     WriteFileTool,
 )
 from bridge.tools.image_generation_tool import GenerateImageTool
+from bridge.tools.kanban_board import KanbanTool, SessionKanbanBoard
 from bridge.tools.memory_tools import RecordUserPreferenceTool
 from bridge.tools.registry import build_desktop_registry
 from bridge.tools.search_tools import GlobTool, GrepTool
@@ -28,12 +29,14 @@ __all__ = [
     "GlobTool",
     "GrepTool",
     "GenerateImageTool",
+    "KanbanTool",
     "ListDirectoryTool",
     "ListSkillsTool",
     "LoadSkillTool",
     "ReadFileTool",
     "RecordUserPreferenceTool",
     "SearchSkillsTool",
+    "SessionKanbanBoard",
     "WriteFileTool",
     "build_desktop_registry",
 ]

@@ -24,6 +24,7 @@ from bridge.tools.file_tools import (
     WriteFileTool,
 )
 from bridge.tools.image_generation_tool import GenerateImageTool
+from bridge.tools.kanban_board import KanbanTool
 from bridge.tools.memory_tools import RecordUserPreferenceTool
 from bridge.tools.search_tools import GlobTool, GrepTool
 from bridge.tools.skill_tools import ListSkillsTool, LoadSkillTool, SearchSkillsTool
@@ -58,6 +59,8 @@ def build_desktop_registry(
     subagent_parent_session_id: str = "",
     subagent_wrap_registry: Any | None = None,
     message_bus: Any | None = None,
+    coordination_strategy: str = "bus",
+    kanban_board: Any | None = None,
     memory_store: Any | None = None,
     skill_store: Any | None = None,
     image_store: Any | None = None,
@@ -130,6 +133,20 @@ def build_desktop_registry(
     # model must explicitly load the schema before spending on generation.
     tools.append(GenerateImageTool(image_store=image_store))
 
+    # Session-local board coordination. This is intentionally only present
+    # when a session starts in kanban mode, so the strategy is visible in the
+    # tool surface instead of becoming another always-on abstraction.
+    if kanban_board is not None:
+        tools.append(
+            KanbanTool(
+                kanban_board,
+                actor_id=subagent_parent_session_id or "parent",
+                actor_label="parent",
+                emit_event=subagent_emit,
+                parent_session_id=subagent_parent_session_id,
+            )
+        )
+
     # Web tools — only if SDK + key available
     if include_web:
         try:
@@ -171,6 +188,8 @@ def build_desktop_registry(
             parent_session_id=subagent_parent_session_id,
             wrap_registry=subagent_wrap_registry,
             message_bus=message_bus,
+            coordination_strategy=coordination_strategy,
+            kanban_board=kanban_board,
         )
         tools.append(SubAgentTool(sub_spec))
         tools.append(SubAgentsTool(sub_registry))

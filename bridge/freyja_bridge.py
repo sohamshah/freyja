@@ -221,6 +221,12 @@ async def _main() -> None:
                 "subagents": True,
                 "skills": True,
                 "images": True,
+                "coordinationStrategy": "bus",
+                "coordinationStrategies": [
+                    {"id": "bus", "label": "Message bus"},
+                    {"id": "isolated", "label": "Isolated"},
+                    {"id": "kanban", "label": "Kanban"},
+                ],
                 "models": _annotate_models(AVAILABLE_MODELS),
             },
         }
@@ -1108,13 +1114,17 @@ class _BridgeSession:
         workspace: str,
         model_id: str,
         reasoning_level: str | None,
+        coordination_strategy: str | None,
         state: "_BridgeState",
     ) -> None:
+        from bridge.tools.coordination import normalize_coordination_strategy
+
         self.id = session_id
         self.workspace = workspace
         self.model_id = model_id
         self.reasoning_level_explicit = reasoning_level is not None
         self.reasoning_level = _normalize_reasoning_level(model_id, reasoning_level)
+        self.coordination_strategy = normalize_coordination_strategy(coordination_strategy)
         self.state = state
         self.session: Any | None = None
         self.runner: Any | None = None
@@ -1146,6 +1156,7 @@ class _BridgeSession:
         # Session-scoped message bus for inter-agent communication.
         from bridge.tools.message_bus import SessionMessageBus
         self.message_bus: SessionMessageBus = SessionMessageBus()
+        self.kanban_board: Any | None = None
         self._tool_list = ""
         self._agent_types_section = ""
         self._base_system_prompt = ""
@@ -1160,6 +1171,12 @@ class _BridgeSession:
         from engine.runner import AsyncAgentRunner
         from engine.session import Session
         from bridge.tools import build_desktop_registry
+        from bridge.tools.coordination import (
+            coordination_prompt,
+            strategy_uses_kanban,
+            strategy_uses_message_bus,
+        )
+        from bridge.tools.kanban_board import SessionKanbanBoard
         from bridge.tools.sub_agent_registry import SubAgentRegistry
         from bridge.knowledge import MemoryStore, SkillStore
         from bridge.knowledge.prompt import build_knowledge_prompt
@@ -1187,6 +1204,8 @@ class _BridgeSession:
         )
         self.memory_store = MemoryStore(Path(self.workspace))
         self.skill_store = SkillStore(Path(self.workspace))
+        if strategy_uses_kanban(self.coordination_strategy) and self.kanban_board is None:
+            self.kanban_board = SessionKanbanBoard()
 
         async def _emit_memory_updated(item: Any, reason: str = "") -> None:
             emit(
@@ -1231,7 +1250,13 @@ class _BridgeSession:
             include_computer=self.state.computer_enabled,
             computer_session_id=self.id,
             computer_cancel_event=self.computer_cancel,
-            message_bus=self.message_bus,
+            message_bus=(
+                self.message_bus
+                if strategy_uses_message_bus(self.coordination_strategy)
+                else None
+            ),
+            coordination_strategy=self.coordination_strategy,
+            kanban_board=self.kanban_board if strategy_uses_kanban(self.coordination_strategy) else None,
             memory_store=self.memory_store,
             skill_store=self.skill_store,
             image_store=self.image_store,
@@ -1266,6 +1291,8 @@ class _BridgeSession:
                 f"{tool_list}\n"
                 "\n"
                 f"{agent_types_section}\n"
+                "\n"
+                f"{coordination_prompt(self.coordination_strategy)}\n"
                 "\n"
                 "Use real tool calls (no XML markers). Be concise and actionable. "
                 "Prefer reading the codebase before answering questions that depend "
@@ -1328,7 +1355,10 @@ class _BridgeSession:
                 "sessionId": self.id,
                 "subtype": "system_prompt_set",
                 "message": "System prompt configured",
-                "details": {"systemPrompt": system_prompt},
+                "details": {
+                    "systemPrompt": system_prompt,
+                    "coordinationStrategy": self.coordination_strategy,
+                },
             }
         )
         for item in self.memory_store.list_items(limit=50):
@@ -1368,6 +1398,7 @@ class _BridgeSession:
         self._agent_types_section = ""
         self._base_system_prompt = ""
         self._system_prompt = ""
+        self.kanban_board = None
 
     async def try_restore_transcript(self) -> bool:
         """Attempt to restore engine transcript from disk.
@@ -2400,7 +2431,10 @@ class _BridgeState:
         session_id: str,
         model_id: str | None = None,
         reasoning_level: str | None = None,
+        coordination_strategy: str | None = None,
     ) -> _BridgeSession:
+        from bridge.tools.coordination import normalize_coordination_strategy
+
         existing = self.sessions.get(session_id)
         if existing is not None:
             changed = False
@@ -2418,6 +2452,11 @@ class _BridgeState:
                     existing.reasoning_level = next_reasoning
                     existing.reasoning_level_explicit = True
                     changed = True
+            if coordination_strategy is not None:
+                next_strategy = normalize_coordination_strategy(coordination_strategy)
+                if next_strategy != existing.coordination_strategy:
+                    existing.coordination_strategy = next_strategy
+                    changed = True
             if changed:
                 existing.reset()
                 # Re-restore from disk — the transcript was just wiped
@@ -2431,6 +2470,7 @@ class _BridgeState:
             workspace=self.workspace,
             model_id=model_id or self.default_model,
             reasoning_level=reasoning_level,
+            coordination_strategy=coordination_strategy,
             state=self,
         )
         self.sessions[session_id] = s
@@ -2763,6 +2803,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             session_id or f"desktop-{int(time.time() * 1000):x}",
             model_id=cmd.get("model"),
             reasoning_level=cmd.get("reasoningLevel"),
+            coordination_strategy=cmd.get("coordinationStrategy"),
         )
         try:
             await sess.force_compact()
@@ -2793,6 +2834,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 session_id,
                 model_id=new_model,
                 reasoning_level=reasoning_level,
+                coordination_strategy=cmd.get("coordinationStrategy"),
             )
             effective_reasoning = sess.reasoning_level
         else:
@@ -2815,6 +2857,42 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         )
         return
 
+    if ctype == "set_coordination_strategy":
+        from bridge.tools.coordination import (
+            get_coordination_strategy,
+            normalize_coordination_strategy,
+        )
+
+        strategy = normalize_coordination_strategy(cmd.get("coordinationStrategy"))
+        if not session_id:
+            return
+        sess = await state.ensure_session(
+            session_id,
+            model_id=cmd.get("model"),
+            reasoning_level=cmd.get("reasoningLevel"),
+            coordination_strategy=strategy,
+        )
+        strategy_info = get_coordination_strategy(sess.coordination_strategy)
+        log(
+            "info",
+            f"coordination strategy set to {sess.coordination_strategy} "
+            f"(session={session_id})",
+        )
+        emit(
+            {
+                "type": "system_event",
+                "sessionId": sess.id,
+                "subtype": "coordination_strategy_changed",
+                "message": f"Coordination strategy set to {strategy_info.label}",
+                "details": {
+                    "coordinationStrategy": sess.coordination_strategy,
+                    "label": strategy_info.label,
+                    "summary": strategy_info.summary,
+                },
+            }
+        )
+        return
+
     if ctype == "new_session":
         if not session_id:
             session_id = f"desktop-{int(time.time() * 1000):x}"
@@ -2826,11 +2904,13 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             session_id,
             model_id=model,
             reasoning_level=cmd.get("reasoningLevel"),
+            coordination_strategy=cmd.get("coordinationStrategy"),
         )
         log(
             "info",
             f"new session {session_id} "
-            f"(model={model}, reasoning={sess.reasoning_level})",
+            f"(model={model}, reasoning={sess.reasoning_level}, "
+            f"coordination={sess.coordination_strategy})",
         )
         emit(
             {
@@ -2838,7 +2918,11 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 "sessionId": session_id,
                 "subtype": "session_reset",
                 "message": "Started a new session",
-                "details": {"model": model, "reasoningLevel": sess.reasoning_level},
+                "details": {
+                    "model": model,
+                    "reasoningLevel": sess.reasoning_level,
+                    "coordinationStrategy": sess.coordination_strategy,
+                },
             }
         )
         return
@@ -2850,6 +2934,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             session_id,
             model_id=cmd.get("model"),
             reasoning_level=cmd.get("reasoningLevel"),
+            coordination_strategy=cmd.get("coordinationStrategy"),
         )
         log("info", f"switched to session {sess.id}")
         emit(
@@ -2858,7 +2943,11 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 "sessionId": sess.id,
                 "subtype": "session_switched",
                 "message": f"Switched to session {sess.id}",
-                "details": {"model": sess.model_id, "reasoningLevel": sess.reasoning_level},
+                "details": {
+                    "model": sess.model_id,
+                    "reasoningLevel": sess.reasoning_level,
+                    "coordinationStrategy": sess.coordination_strategy,
+                },
             }
         )
         return
@@ -2917,6 +3006,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             session_id or f"desktop-{int(time.time() * 1000):x}",
             model_id=cmd.get("model"),
             reasoning_level=cmd.get("reasoningLevel"),
+            coordination_strategy=cmd.get("coordinationStrategy"),
         )
 
         # If a turn is already running, QUEUE the message instead of
