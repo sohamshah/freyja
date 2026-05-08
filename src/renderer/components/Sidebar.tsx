@@ -9,6 +9,7 @@ import type {
 } from '@shared/events'
 import { formatDuration, formatTokens, relativeTime } from '../lib/format'
 import { Spinner } from '../lib/spinner'
+import { TopoBackdrop } from './TopoBackdrop'
 
 type Section = 'sessions' | 'skills' | 'subagents' | 'memory'
 
@@ -139,7 +140,15 @@ export function Sidebar() {
   }, [subagentOrder, subagents])
 
   return (
-    <aside className="glass glass-panel flex w-[256px] shrink-0 flex-col rounded-[18px]">
+    <aside className="glass glass-panel relative isolate flex w-[256px] shrink-0 flex-col overflow-hidden rounded-[18px]">
+      {/* Ambient topographic backdrop — paired-peak height field with
+          marching-squares contouring, same vocabulary as the logo.
+          `-z-10` plus the parent's `isolate` keeps it behind every
+          static sibling without us having to z-index them all. */}
+      <TopoBackdrop
+        seed={7}
+        className="pointer-events-none absolute inset-0 -z-10"
+      />
       <div className="flex items-center justify-between px-3 py-3 hairline-b">
         <div className="label">workspace</div>
         <div className="flex items-center gap-1.5">

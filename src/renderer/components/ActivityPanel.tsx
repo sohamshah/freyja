@@ -6,6 +6,7 @@ import { LogStreamModal } from './LogStreamModal'
 import { ArtifactsSection } from './ArtifactsSection'
 import { ToolTimeline } from './ToolTimeline'
 import { ChangesSection } from './ChangesSection'
+import { TopoBackdrop } from './TopoBackdrop'
 
 export function ActivityPanel() {
   const systemEvents = useHarness((s) => s.systemEvents)
@@ -82,9 +83,18 @@ export function ActivityPanel() {
 
   return (
     <aside
-      className="glass glass-panel relative flex shrink-0 flex-col rounded-[18px]"
+      className="glass glass-panel relative isolate flex shrink-0 flex-col overflow-hidden rounded-[18px]"
       style={{ width: `${panelWidth}px` }}
     >
+      {/* Ambient topographic backdrop — same vocabulary as Sidebar
+          (paired-peak height field, logo polar-noise), different seed
+          so the two panels don't mirror each other. `-z-10` + parent
+          `isolate` keep it behind every sibling without z-indexing
+          them individually. */}
+      <TopoBackdrop
+        seed={13}
+        className="pointer-events-none absolute inset-0 -z-10"
+      />
       {/* Drag handle — a 6px invisible strip hugging the panel's
           left edge, with a 1px hairline to hint at the affordance.
           Widens slightly (and brightens the hairline) on hover so

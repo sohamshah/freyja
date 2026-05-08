@@ -1,0 +1,597 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>freyja — topo backdrop mock</title>
+<style>
+  /* ─── design tokens — match the app ─── */
+  :root {
+    --bg:            #0a0d0f;
+    --panel:         rgba(255, 255, 255, 0.014);
+    --panel-edge:    rgba(255, 255, 255, 0.045);
+    --accent:        #a8d4fc;
+    --accent-dim:    #6a8eaf;
+    --fg-0:          #e8e8e8;
+    --fg-1:          #c4c4c4;
+    --fg-2:          #8a8a8a;
+    --mono:          'SF Mono', 'JetBrains Mono', Menlo, Monaco, monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg-0);
+    font-family: var(--mono);
+    font-size: 12px;
+    overflow: hidden;
+  }
+
+  /* The frame mimics the app shell — left sidebar, center conversation,
+     right activity panel — so we can see the backdrop in real context. */
+  .app {
+    display: grid;
+    grid-template-columns: 260px 1fr 320px;
+    height: 100%;
+  }
+
+  .panel {
+    position: relative;
+    overflow: hidden;
+    background: var(--panel);
+    box-shadow: inset 0 0 0 1px var(--panel-edge);
+  }
+
+  .panel-content {
+    position: relative;
+    z-index: 2;
+    padding: 22px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .label {
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    opacity: 0.85;
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--fg-1);
+    padding: 8px 10px;
+    background: rgba(255,255,255,0.025);
+    border-radius: 8px;
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+  }
+  .row .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent);
+  }
+
+  .center {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    padding: 60px;
+  }
+  .wordmark {
+    font-family: var(--mono);
+    font-size: 64px;
+    letter-spacing: -0.02em;
+    color: var(--fg-0);
+    opacity: 0.95;
+  }
+  .tagline {
+    color: var(--fg-2);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  /* ─── topo backdrop ─── */
+  .topo-svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 1;
+    /* fade the absolute edges so the panel boundary stays clean,
+       but let the contours read across most of the surface */
+    mask-image: linear-gradient(
+      180deg,
+      transparent 0%,
+      black 8%,
+      black 92%,
+      transparent 100%
+    );
+    -webkit-mask-image: linear-gradient(
+      180deg,
+      transparent 0%,
+      black 8%,
+      black 92%,
+      transparent 100%
+    );
+  }
+
+  /* ─── debug controls (top-right HUD) ─── */
+  .hud {
+    position: fixed;
+    top: 12px;
+    right: 12px;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px;
+    background: rgba(15, 18, 22, 0.85);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 10px;
+    font-size: 10px;
+    color: var(--fg-1);
+    backdrop-filter: blur(20px);
+    min-width: 240px;
+  }
+  .hud h3 {
+    margin: 0 0 4px;
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+    opacity: 0.85;
+  }
+  .hud label { display: flex; justify-content: space-between; gap: 10px; }
+  .hud input[type=range] { flex: 1; accent-color: var(--accent); }
+  .hud span.val { font-variant-numeric: tabular-nums; opacity: 0.8; min-width: 32px; text-align: right; }
+  .hud button {
+    margin-top: 4px;
+    background: rgba(168, 212, 252, 0.12);
+    color: var(--accent);
+    border: 1px solid rgba(168, 212, 252, 0.28);
+    border-radius: 6px;
+    padding: 5px 8px;
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .hud button:hover { background: rgba(168, 212, 252, 0.2); }
+</style>
+</head>
+<body>
+  <div class="app">
+    <!-- LEFT SIDEBAR — topo backdrop behind nav-style content -->
+    <aside class="panel" data-topo data-seed="7">
+      <svg class="topo-svg" preserveAspectRatio="xMidYMid slice"></svg>
+      <div class="panel-content">
+        <div class="label">Sessions</div>
+        <div class="row"><span class="dot"></span> map the architecture</div>
+        <div class="row"><span class="dot"></span> runner loop turn</div>
+        <div class="row"><span class="dot"></span> skills audit</div>
+        <div class="row"><span class="dot"></span> tool dry pass</div>
+      </div>
+    </aside>
+
+    <!-- CENTER — clean, no backdrop. Wordmark for visual reference. -->
+    <main class="center">
+      <div class="wordmark">freyja</div>
+      <div class="tagline">topographic backdrop · iteration mock</div>
+    </main>
+
+    <!-- RIGHT ACTIVITY PANEL — topo backdrop behind activity feed -->
+    <aside class="panel" data-topo data-seed="13">
+      <svg class="topo-svg" preserveAspectRatio="xMidYMid slice"></svg>
+      <div class="panel-content">
+        <div class="label">Activity</div>
+        <div class="row"><span class="dot"></span> bash · npm install</div>
+        <div class="row"><span class="dot"></span> read · src/store.ts</div>
+        <div class="row"><span class="dot"></span> grep · "useHarness"</div>
+        <div class="row"><span class="dot"></span> edit · TopoBackdrop.tsx</div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ─── tweak HUD ─────────────────────────────────────────────── -->
+  <div class="hud">
+    <h3>Topo controls</h3>
+    <label>Groups per panel <span class="val" id="vGroups">3</span></label>
+    <input id="iGroups" type="range" min="1" max="4" step="1" value="3" />
+
+    <label>Pair separation (× σ) <span class="val" id="vPair">1.10</span></label>
+    <input id="iPair" type="range" min="0.2" max="1.4" step="0.05" value="1.10" />
+
+    <label>Iso levels <span class="val" id="vLevels">18</span></label>
+    <input id="iLevels" type="range" min="12" max="60" step="1" value="18" />
+
+    <label>Index every <span class="val" id="vIndex">5</span></label>
+    <input id="iIndex" type="range" min="2" max="10" step="1" value="5" />
+
+    <label>Twist <span class="val" id="vTwist">1.50</span></label>
+    <input id="iTwist" type="range" min="0" max="2" step="0.05" value="1.50" />
+
+    <label>Min poly length (cull Vs) <span class="val" id="vMinPts">26</span></label>
+    <input id="iMinPts" type="range" min="2" max="40" step="1" value="26" />
+
+    <label>Group size (× minDim) <span class="val" id="vGS">0.48</span></label>
+    <input id="iGS" type="range" min="0.18" max="0.6" step="0.02" value="0.48" />
+
+    <label>Base opacity <span class="val" id="vOp">0.23</span></label>
+    <input id="iOp" type="range" min="0.04" max="0.7" step="0.01" value="0.23" />
+
+    <label>Index opacity <span class="val" id="vOpI">0.25</span></label>
+    <input id="iOpI" type="range" min="0.1" max="1" step="0.01" value="0.25" />
+
+    <button id="reseed">↻ reseed</button>
+  </div>
+
+<script type="module">
+/* ────────────────────────────────────────────────────────────────
+   Topographic backdrop — paired-peak height field with marching
+   squares contouring.
+
+   Each "group" is a pair of peaks placed close enough that their
+   Gaussian fields overlap. Lower iso-levels wrap the pair in a
+   figure-8 envelope; higher iso-levels separate into two cores —
+   the look of two adjacent topographic hills with a saddle ridge.
+   Each peak is deformed by the sum-of-sines noise from
+   TopographicMark, so the vocabulary matches the logo. Multiple
+   groups per panel, Poisson-spaced, plus a min-poly-length cull
+   that removes the V/heart micro-fragments without touching real
+   contours.
+   ──────────────────────────────────────────────────────────────── */
+
+const CFG = {
+  groups: 3,
+  peaksPerGroup: 2,
+  pairSpread: 1.10,
+  groupSize: 0.48,
+  levels: 18,
+  indexEvery: 5,
+  baseOpacity: 0.23,
+  indexOpacity: 0.25,
+  twist: 1.50,
+  cellSize: 6,
+  minRawPoints: 26,
+  smoothAbove: 18,
+  strokeBase: 0.7,
+  strokeIndex: 1.15,
+  color: '170, 186, 208',
+  panelSeedSalt: 0,
+};
+
+/* ── seeded RNG so each panel is deterministic per reload ── */
+function rng(seed) {
+  let s = (seed | 0) || 1;
+  return () => {
+    s = (s * 1664525 + 1013904223) | 0;
+    return ((s >>> 0) % 1_000_000) / 1_000_000;
+  };
+}
+
+/* ── peak group placement ──
+   Each group has N paired peaks placed along a random axis, separated
+   by a fraction of the group sigma. Groups are Poisson-spaced so
+   pairs don't collide with each other. */
+function makeField(width, height, seed) {
+  const r = rng(seed);
+  const minDim = Math.min(width, height);
+  const groupSigma = minDim * CFG.groupSize;
+  const sep = groupSigma * CFG.pairSpread;
+
+  const groups = [];
+  for (let g = 0; g < CFG.groups; g++) {
+    let cx = 0, cy = 0, best = -1;
+    for (let tries = 0; tries < 40; tries++) {
+      // Inset so the figure-8 envelope stays inside the panel.
+      const m = groupSigma * 0.6;
+      const tx = m + r() * Math.max(1, width  - 2 * m);
+      const ty = m + r() * Math.max(1, height - 2 * m);
+      let nearest = Infinity;
+      for (const og of groups) {
+        const d = Math.hypot(tx - og.cx, ty - og.cy);
+        if (d < nearest) nearest = d;
+      }
+      if (nearest > best) { best = nearest; cx = tx; cy = ty; }
+      if (nearest >= groupSigma * 1.7) break;
+    }
+    groups.push({ cx, cy });
+  }
+
+  const peaks = [];
+  for (const g of groups) {
+    const axis = r() * Math.PI * 2;
+    const ax = Math.cos(axis), ay = Math.sin(axis);
+    for (let i = 0; i < CFG.peaksPerGroup; i++) {
+      // Distribute peaks evenly along the group axis: for 2 peaks,
+      // offsets are -0.5 and +0.5; for 3 peaks, -1, 0, +1; etc.
+      const t = (CFG.peaksPerGroup === 1)
+        ? 0
+        : (i / (CFG.peaksPerGroup - 1)) - 0.5;
+      peaks.push({
+        cx: g.cx + ax * sep * t,
+        cy: g.cy + ay * sep * t,
+        // Height variance gives the saddle a slight bias — one peak
+        // a touch higher than the other, which is what real terrain
+        // pairs look like.
+        h: 0.85 + r() * 0.3,
+        sigma: groupSigma * (0.55 + r() * 0.18),
+        phase: r() * Math.PI * 2,
+        twist: CFG.twist * (0.8 + r() * 0.4),
+      });
+    }
+  }
+
+  // Logo-vocabulary polar noise — identical math to TopographicMark.
+  const polarNoise = (angle, ring, phase) =>
+    Math.sin(angle * 3 + ring * 0.35 + phase) * 0.09 +
+    Math.cos(angle * 2 + ring * 0.60 + 1.2 + phase) * 0.07 +
+    Math.sin(angle * 5 - ring * 0.20 + 0.8 + phase) * 0.04 +
+    Math.cos(angle * 1 + ring * 0.90 + 2.1 + phase) * 0.05;
+
+  const cell = CFG.cellSize;
+  const cols = Math.ceil(width / cell) + 1;
+  const rows = Math.ceil(height / cell) + 1;
+  const field = new Float32Array(cols * rows);
+
+  let min = Infinity, max = -Infinity;
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const px = x * cell, py = y * cell;
+      let v = 0;
+      for (const p of peaks) {
+        const dx = px - p.cx;
+        const dy = py - p.cy;
+        const d = Math.hypot(dx, dy);
+        const ang = Math.atan2(dy, dx);
+        const ring = d / p.sigma;
+        const def = 1 + polarNoise(ang, ring, p.phase) * p.twist;
+        const r2 = (d * def) ** 2 / (p.sigma * p.sigma);
+        v += p.h * Math.exp(-r2);
+      }
+      field[y * cols + x] = v;
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+  }
+  return { field, cols, rows, cell, min, max };
+}
+
+/* ── marching squares with saddle decider ── */
+function march(field, cols, rows, level, cell) {
+  const segs = [];
+  const lerp = (a, b) => {
+    const d = b - a;
+    if (Math.abs(d) < 1e-6) return 0.5;
+    const t = (level - a) / d;
+    return t < 0 ? 0 : t > 1 ? 1 : t;
+  };
+  for (let y = 0; y < rows - 1; y++) {
+    for (let x = 0; x < cols - 1; x++) {
+      const tl = field[y*cols+x],     tr = field[y*cols+x+1];
+      const br = field[(y+1)*cols+x+1], bl = field[(y+1)*cols+x];
+      let c = 0;
+      if (tl > level) c |= 1;
+      if (tr > level) c |= 2;
+      if (br > level) c |= 4;
+      if (bl > level) c |= 8;
+      if (c === 0 || c === 15) continue;
+      const tX = (x + lerp(tl, tr)) * cell, tY = y * cell;
+      const rX = (x + 1) * cell,            rY = (y + lerp(tr, br)) * cell;
+      const bX = (x + lerp(bl, br)) * cell, bY = (y + 1) * cell;
+      const lX = x * cell,                  lY = (y + lerp(tl, bl)) * cell;
+      switch (c) {
+        case 1: segs.push([lX,lY,tX,tY]); break;
+        case 2: segs.push([tX,tY,rX,rY]); break;
+        case 3: segs.push([lX,lY,rX,rY]); break;
+        case 4: segs.push([rX,rY,bX,bY]); break;
+        case 5: {
+          const ctr = (tl+tr+br+bl) * 0.25;
+          if (ctr > level) { segs.push([lX,lY,tX,tY]); segs.push([rX,rY,bX,bY]); }
+          else             { segs.push([lX,lY,bX,bY]); segs.push([tX,tY,rX,rY]); }
+          break;
+        }
+        case 6: segs.push([tX,tY,bX,bY]); break;
+        case 7: segs.push([lX,lY,bX,bY]); break;
+        case 8: segs.push([lX,lY,bX,bY]); break;
+        case 9: segs.push([tX,tY,bX,bY]); break;
+        case 10: {
+          const ctr = (tl+tr+br+bl) * 0.25;
+          if (ctr > level) { segs.push([tX,tY,rX,rY]); segs.push([lX,lY,bX,bY]); }
+          else             { segs.push([lX,lY,tX,tY]); segs.push([rX,rY,bX,bY]); }
+          break;
+        }
+        case 11: segs.push([tX,tY,rX,rY]); break;
+        case 12: segs.push([lX,lY,rX,rY]); break;
+        case 13: segs.push([tX,tY,rX,rY]); break;
+        case 14: segs.push([lX,lY,tX,tY]); break;
+      }
+    }
+  }
+  return segs;
+}
+
+/* ── greedy endpoint stitcher ── */
+function stitch(segments) {
+  if (!segments.length) return [];
+  const PREC = 1000;
+  const key = (x, y) => `${Math.round(x*PREC)},${Math.round(y*PREC)}`;
+  const map = new Map();
+  for (let i = 0; i < segments.length; i++) {
+    const s = segments[i];
+    const k1 = key(s[0], s[1]); const k2 = key(s[2], s[3]);
+    if (!map.has(k1)) map.set(k1, []);
+    if (!map.has(k2)) map.set(k2, []);
+    map.get(k1).push([i, 0]); map.get(k2).push([i, 1]);
+  }
+  const visited = new Uint8Array(segments.length);
+  const polys = [];
+  for (let start = 0; start < segments.length; start++) {
+    if (visited[start]) continue;
+    visited[start] = 1;
+    const s = segments[start];
+    const pts = [s[0], s[1], s[2], s[3]];
+
+    const extend = (forward) => {
+      let cur = forward ? key(s[2], s[3]) : key(s[0], s[1]);
+      while (true) {
+        const cands = map.get(cur) || [];
+        let next = -1, ei = 0;
+        for (const [idx, end] of cands) {
+          if (!visited[idx]) { next = idx; ei = end; break; }
+        }
+        if (next < 0) break;
+        visited[next] = 1;
+        const seg = segments[next];
+        const nx = ei === 0 ? seg[2] : seg[0];
+        const ny = ei === 0 ? seg[3] : seg[1];
+        if (forward) pts.push(nx, ny); else pts.unshift(nx, ny);
+        cur = key(nx, ny);
+      }
+    };
+    extend(true);
+    extend(false);
+    polys.push(new Float32Array(pts));
+  }
+  return polys;
+}
+
+/* ── Chaikin smoothing ── */
+function chaikin(poly, iters) {
+  let cur = poly;
+  for (let it = 0; it < iters; it++) {
+    const n = cur.length / 2;
+    if (n < 3) return cur;
+    const out = new Float32Array((n - 1) * 4 + 4);
+    let i = 0;
+    out[i++] = cur[0]; out[i++] = cur[1];
+    for (let k = 0; k < n - 1; k++) {
+      const x1 = cur[k*2], y1 = cur[k*2+1];
+      const x2 = cur[(k+1)*2], y2 = cur[(k+1)*2+1];
+      out[i++] = 0.75*x1 + 0.25*x2;  out[i++] = 0.75*y1 + 0.25*y2;
+      out[i++] = 0.25*x1 + 0.75*x2;  out[i++] = 0.25*y1 + 0.75*y2;
+    }
+    out[i++] = cur[(n-1)*2]; out[i++] = cur[(n-1)*2+1];
+    cur = out.subarray(0, i);
+  }
+  return cur;
+}
+
+function polyToPath(poly) {
+  if (poly.length < 4) return '';
+  let d = `M${poly[0].toFixed(1)} ${poly[1].toFixed(1)}`;
+  for (let i = 2; i < poly.length; i += 2) d += `L${poly[i].toFixed(1)} ${poly[i+1].toFixed(1)}`;
+  return d;
+}
+
+/* ── render a panel's SVG ── */
+function renderPanel(panel) {
+  const svg = panel.querySelector('svg.topo-svg');
+  const w = panel.clientWidth;
+  const h = panel.clientHeight;
+  if (w === 0 || h === 0) return;
+  svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+
+  const seed = (parseInt(panel.dataset.seed, 10) || 1) + CFG.panelSeedSalt * 97;
+  const { field, cols, rows, cell, min, max } = makeField(w, h, seed);
+
+  const frag = document.createDocumentFragment();
+
+  // Iso-levels are evenly spaced inside the field's actual range. We
+  // start a touch above `min` to skip the noisy zero-elevation rim
+  // (it produces giant near-perimeter rectangles that don't help the
+  // composition).
+  const lo = min + (max - min) * 0.04;
+  const hi = max - (max - min) * 0.02;
+
+  for (let i = 0; i < CFG.levels; i++) {
+    const t = i / (CFG.levels - 1);
+    const level = lo + (hi - lo) * t;
+    const isIndex = (i % CFG.indexEvery) === 0;
+
+    const segs = march(field, cols, rows, level, cell);
+    const polys = stitch(segs);
+
+    for (const poly of polys) {
+      // Drop the V/heart fragments — micro-iso-islands from saddle
+      // wobble interference. Threshold is set well above any real
+      // saddle ridge length but well below the shortest meaningful
+      // contour fragment we want to keep.
+      if (poly.length < CFG.minRawPoints * 2) continue;
+
+      // Chaikin on very short polys curls them into hooks; render them
+      // straight instead. Long polys still get the full 2-pass smooth.
+      const smoothed = poly.length >= CFG.smoothAbove * 2
+        ? chaikin(poly, 2)
+        : poly;
+
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', polyToPath(smoothed));
+      path.setAttribute('fill', 'none');
+      path.setAttribute('stroke', `rgba(${CFG.color}, ${(isIndex ? CFG.indexOpacity : CFG.baseOpacity).toFixed(3)})`);
+      path.setAttribute('stroke-width', (isIndex ? CFG.strokeIndex : CFG.strokeBase).toFixed(2));
+      path.setAttribute('stroke-linejoin', 'round');
+      path.setAttribute('stroke-linecap', 'round');
+      frag.appendChild(path);
+    }
+  }
+  svg.replaceChildren(frag);
+}
+
+function renderAll() {
+  document.querySelectorAll('[data-topo]').forEach(renderPanel);
+}
+
+/* ── HUD wiring ──
+   `parse` returns a Number (so arithmetic keeps working); `fmt` formats
+   it for display so floats don't render as 0.34000000000000003. */
+const bind = (id, key, parse, valId, fmt = String) => {
+  const el = document.getElementById(id);
+  const out = document.getElementById(valId);
+  el.addEventListener('input', () => {
+    CFG[key] = parse(el.value);
+    out.textContent = fmt(CFG[key]);
+    renderAll();
+  });
+};
+const i = v => parseInt(v, 10);
+const f = v => parseFloat(v);
+const f2 = v => v.toFixed(2);
+bind('iGroups', 'groups',       i, 'vGroups');
+bind('iPair',   'pairSpread',   f, 'vPair',   f2);
+bind('iLevels', 'levels',       i, 'vLevels');
+bind('iIndex',  'indexEvery',   i, 'vIndex');
+bind('iTwist',  'twist',        f, 'vTwist',  f2);
+bind('iMinPts', 'minRawPoints', i, 'vMinPts');
+bind('iGS',     'groupSize',    f, 'vGS',     f2);
+bind('iOp',     'baseOpacity',  f, 'vOp',     f2);
+bind('iOpI',    'indexOpacity', f, 'vOpI',    f2);
+document.getElementById('reseed').addEventListener('click', () => {
+  CFG.panelSeedSalt += 1;
+  renderAll();
+});
+
+/* ── kick off + redraw on resize ── */
+let raf = 0;
+const schedule = () => {
+  cancelAnimationFrame(raf);
+  raf = requestAnimationFrame(renderAll);
+};
+window.addEventListener('resize', schedule);
+schedule();
+</script>
+</body>
+</html>
