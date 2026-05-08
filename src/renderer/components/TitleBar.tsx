@@ -1,16 +1,50 @@
 import { useHarness } from '../state/store'
 import { formatTokens, formatCost } from '../lib/format'
 import { Spinner } from '../lib/spinner'
+import type { CoordinationStrategy } from '@shared/events'
+
+const STRATEGIES: Array<{
+  id: CoordinationStrategy
+  label: string
+  title: string
+}> = [
+  {
+    id: 'bus',
+    label: 'bus',
+    title: 'Message bus: profile agents can publish/read shared findings',
+  },
+  {
+    id: 'isolated',
+    label: 'solo',
+    title: 'Isolated: leaf agents work independently; parent synthesizes',
+  },
+  {
+    id: 'kanban',
+    label: 'board',
+    title: 'Kanban: cards, dependencies, handoffs, and worker progress',
+  },
+]
 
 export function TitleBar() {
   const mode = useHarness((s) => s.mode)
   const modeDetail = useHarness((s) => s.modeDetail)
   const model = useHarness((s) => s.model)
   const reasoningLevel = useHarness((s) => s.reasoningLevel)
+  const coordinationStrategy = useHarness((s) => s.coordinationStrategy)
+  const messages = useHarness((s) => s.messages)
   const usage = useHarness((s) => s.usage)
   const sessionId = useHarness((s) => s.activeSessionId)
   const isStreaming = useHarness((s) => s.isStreaming)
+  const missionDashboardOpen = useHarness((s) => s.missionDashboardOpen)
+  const sidebarCollapsed = useHarness((s) => s.sidebarCollapsed)
+  const activityPanelCollapsed = useHarness((s) => s.activityPanelCollapsed)
+  const focusMode = useHarness((s) => s.focusMode)
   const toggleMissionDashboard = useHarness((s) => s.toggleMissionDashboard)
+  const toggleSidebar = useHarness((s) => s.toggleSidebar)
+  const toggleActivityPanel = useHarness((s) => s.toggleActivityPanel)
+  const toggleFocusMode = useHarness((s) => s.toggleFocusMode)
+  const setCoordinationStrategy = useHarness((s) => s.setCoordinationStrategy)
+  const strategyLocked = messages.length > 0 || isStreaming
   const contextKnown = usage.currentContextTokens > 0 || usage.totalInputTokens <= usage.contextWindow
   const contextTokens = usage.currentContextTokens > 0
     ? usage.currentContextTokens
@@ -39,31 +73,70 @@ export function TitleBar() {
       <div className="h-[14px] w-px bg-white/10" />
       <BridgeStatus mode={mode} modeDetail={modeDetail} />
       <TitleControl
-        variant="aperture"
-        className="no-drag hidden h-[30px] px-3 text-[10.5px] sm:inline-flex"
+        className="no-drag hidden h-[28px] px-2.5 text-[10px] sm:inline-flex"
+        onClick={() => toggleSidebar()}
+        title="Toggle workspace sidebar (⌘[)"
+        active={!sidebarCollapsed}
+      >
+        <span className="font-mono uppercase">workspace</span>
+      </TitleControl>
+      <TitleControl
+        className="no-drag h-[28px] px-2.5 text-[10px]"
         onClick={() => toggleMissionDashboard(true, 'overview')}
         title="Open mission dashboard (⌘⇧M)"
+        active={missionDashboardOpen}
       >
-        <span className="title-aperture-dot" aria-hidden="true" />
         <span className="font-mono uppercase">dashboard</span>
       </TitleControl>
       <TitleControl
-        variant="cartridge"
-        className="no-drag flex h-[30px] max-w-[min(36vw,380px)] py-0 pl-3 pr-2 text-fg-1"
+        className="no-drag flex h-[28px] max-w-[min(36vw,380px)] py-0 pl-2.5 pr-2 text-fg-1"
         onClick={() => useHarness.getState().toggleModelPicker(true)}
         title="Switch model"
       >
-        <span className="title-cartridge-kicker">model</span>
-        <span className="title-cartridge-name ml-2 min-w-0 truncate font-mono text-fg-0">{model}</span>
+        <span className="title-kicker">model</span>
+        <span className="ml-2 min-w-0 truncate font-mono text-fg-0">{model}</span>
         {reasoningLevel && reasoningLevel !== 'none' && (
-          <span className="title-cartridge-effort ml-2 font-mono text-[10px]">{reasoningLevel}</span>
+          <span className="title-effort ml-2 font-mono text-[10px]">{reasoningLevel}</span>
         )}
         {reasoningLevel === 'none' && (
-          <span className="title-cartridge-effort title-cartridge-effort-muted ml-2 font-mono text-[10px]">
+          <span className="title-effort title-effort-muted ml-2 font-mono text-[10px]">
             no-reasoning
           </span>
         )}
-        <span className="title-cartridge-chevron ml-2 text-fg-3">▾</span>
+        <span className="ml-2 text-fg-3">▾</span>
+      </TitleControl>
+      <div
+        className={`no-drag title-strategy hidden h-[28px] items-center gap-0.5 px-1 lg:flex ${
+          strategyLocked ? 'title-strategy-locked' : ''
+        }`}
+        title={
+          strategyLocked
+            ? 'Coordination strategy is locked after the first message. Start a new session to choose another strategy.'
+            : 'Sub-agent coordination strategy for this session'
+        }
+      >
+        {STRATEGIES.map((strategy) => (
+          <button
+            key={strategy.id}
+            className={`title-strategy-option ${
+              coordinationStrategy === strategy.id ? 'title-strategy-option-active' : ''
+            }`}
+            type="button"
+            disabled={strategyLocked}
+            title={strategy.title}
+            onClick={() => setCoordinationStrategy(strategy.id)}
+          >
+            {strategy.label}
+          </button>
+        ))}
+      </div>
+      <TitleControl
+        className="no-drag hidden h-[28px] px-2.5 text-[10px] lg:inline-flex"
+        onClick={() => toggleFocusMode()}
+        title="Focus mode (⌘\\)"
+        active={focusMode}
+      >
+        <span className="font-mono uppercase">{focusMode ? 'restore' : 'focus'}</span>
       </TitleControl>
       <TitleControl className="flex h-[30px] px-3">
         <span className="text-fg-2">ctx</span>
@@ -78,6 +151,14 @@ export function TitleBar() {
         <span className="ml-1.5 font-mono text-fg-0">{formatCost(usage.totalCost)}</span>
       </TitleControl>
       <div className="ml-auto flex items-center gap-3 text-fg-2">
+        <TitleControl
+          className="no-drag hidden h-[28px] px-2.5 text-[10px] xl:inline-flex"
+          onClick={() => toggleActivityPanel()}
+          title="Toggle activity panel (⌘])"
+          active={!activityPanelCollapsed}
+        >
+          <span className="font-mono uppercase">activity</span>
+        </TitleControl>
         {isStreaming && (
           <span className="flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.12em]">
             <Spinner name="braillewave" className="text-accent" />
@@ -116,18 +197,18 @@ function TitleControl({
   onClick,
   title,
   accent = false,
-  variant,
+  active = false,
 }: {
   children: React.ReactNode
   className?: string
   onClick?: () => void
   title?: string
   accent?: boolean
-  variant?: 'aperture' | 'cartridge'
+  active?: boolean
 }) {
   const surfaceClass = onClick
     ? `title-control title-control-button ${accent ? 'title-control-accent' : ''} ${
-        variant ? `title-control-${variant}` : ''
+        active ? 'title-control-active' : ''
       }`
     : 'title-readout'
   const controlClass = `${surfaceClass} items-center ${className}`

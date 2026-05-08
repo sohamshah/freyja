@@ -171,62 +171,21 @@ select {
     0 4px 16px -4px rgba(0, 0, 0, 0.2);
 }
 
-/* Title bar controls — matte molded surfaces on top of the glass.
-   Clickable controls should feel tactile, closer to soft clay/resin than
-   shiny glass: diffuse light, rounded rims, broad shadows, low speculars. */
+/* Title bar controls — ghost text-tabs.
+   Idle is a flat ghost label; hover lifts; active is recessed into the
+   chrome like a physically pressed key. */
 .title-control {
   position: relative;
   min-width: 0;
   overflow: hidden;
-  border-radius: 11px;
-  border: 1px solid rgba(222, 235, 229, 0.12);
-  background:
-    radial-gradient(140% 170% at 22% 5%, rgba(245, 255, 247, 0.13), transparent 44%),
-    radial-gradient(120% 150% at 88% 88%, rgba(0, 0, 0, 0.28), transparent 58%),
-    linear-gradient(
-      180deg,
-      rgba(56, 66, 58, 0.82) 0%,
-      rgba(38, 47, 41, 0.8) 48%,
-      rgba(18, 24, 21, 0.84) 100%
-    ),
-    rgba(31, 39, 34, 0.76);
-  box-shadow:
-    inset 0 1px 1px rgba(255, 255, 255, 0.15),
-    inset 1px 0 1px rgba(255, 255, 255, 0.035),
-    inset -1px 0 1px rgba(0, 0, 0, 0.24),
-    inset 0 -2px 3px rgba(0, 0, 0, 0.34),
-    0 1px 0 rgba(255, 255, 255, 0.05),
-    0 2px 0 rgba(0, 0, 0, 0.3),
-    0 10px 18px -11px rgba(0, 0, 0, 0.92);
-  text-shadow:
-    0 1px 0 rgba(0, 0, 0, 0.72),
-    0 0 1px rgba(255, 255, 255, 0.04);
-}
-.title-control::before {
-  content: '';
-  position: absolute;
-  inset: 2px 3px auto;
-  height: 38%;
-  border-radius: 9px 9px 6px 6px;
-  background:
-    linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.07) 34%, transparent 78%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.105), rgba(255, 255, 255, 0.018));
-  opacity: 0.68;
-  pointer-events: none;
-}
-.title-control::after {
-  content: '';
-  position: absolute;
-  left: 2px;
-  right: 2px;
-  bottom: 1px;
-  height: 5px;
-  border-radius: 0 0 9px 9px;
-  background:
-    linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.26)),
-    linear-gradient(90deg, rgba(0, 0, 0, 0.22), rgba(255, 255, 255, 0.025) 48%, rgba(0, 0, 0, 0.26));
-  opacity: 0.74;
-  pointer-events: none;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(232, 232, 232, 0.72);
+  transition:
+    color 120ms ease,
+    background-color 120ms ease,
+    box-shadow 140ms ease,
+    transform 80ms ease;
 }
 .title-control > * {
   position: relative;
@@ -235,247 +194,119 @@ select {
 .title-readout {
   position: relative;
   min-width: 0;
-  color: inherit;
-  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.72);
+  color: rgba(168, 168, 168, 0.86);
 }
 .title-readout-status {
-  opacity: 0.96;
+  opacity: 0.95;
 }
 .title-control-button {
   cursor: pointer;
-  transition:
-    transform 140ms ease,
-    border-color 140ms ease,
-    box-shadow 140ms ease,
-    background 140ms ease,
-    filter 140ms ease;
 }
 .title-control-button:hover {
-  transform: translateY(-1px);
-  border-color: rgba(187, 221, 210, 0.22);
-  filter: brightness(1.055) saturate(0.94);
-  box-shadow:
-    inset 0 1px 1px rgba(255, 255, 255, 0.17),
-    inset 1px 0 1px rgba(255, 255, 255, 0.04),
-    inset -1px 0 1px rgba(0, 0, 0, 0.23),
-    inset 0 -2px 3px rgba(0, 0, 0, 0.32),
-    0 1px 0 rgba(255, 255, 255, 0.055),
-    0 3px 0 rgba(0, 0, 0, 0.28),
-    0 13px 22px -12px rgba(0, 0, 0, 0.96);
+  color: #ececec;
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
 }
 .title-control-button:active {
-  transform: translateY(1px);
-  background:
-    radial-gradient(120% 140% at 50% 100%, rgba(190, 225, 210, 0.045), transparent 56%),
-    linear-gradient(
-      180deg,
-      rgba(18, 24, 21, 0.92) 0%,
-      rgba(35, 43, 38, 0.82) 58%,
-      rgba(45, 54, 48, 0.76) 100%
-    ),
-    rgba(19, 26, 22, 0.84);
+  background: rgba(0, 0, 0, 0.28);
   box-shadow:
-    inset 0 3px 8px rgba(0, 0, 0, 0.48),
-    inset 0 1px 0 rgba(255, 255, 255, 0.055),
-    inset 0 -1px 1px rgba(255, 255, 255, 0.035),
-    0 1px 0 rgba(255, 255, 255, 0.025),
-    0 1px 2px rgba(0, 0, 0, 0.34);
+    inset 0 2px 4px rgba(0, 0, 0, 0.55),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.06);
+  transform: translateY(0.5px);
 }
 .title-control-accent {
-  border-color: rgba(166, 211, 206, 0.28);
+  color: rgba(196, 224, 252, 0.92);
+}
+/* Active = pressed-in. Carved into the chrome with a strong top inner
+   shadow, a faint bottom glint where light bounces back, and a small
+   downward shift so the label feels physically depressed. */
+.title-control-active,
+.title-control-button.title-control-active:hover {
+  color: #f3f3f3;
   background:
-    radial-gradient(130% 165% at 22% 5%, rgba(226, 252, 242, 0.155), transparent 45%),
-    radial-gradient(120% 150% at 88% 88%, rgba(0, 0, 0, 0.25), transparent 58%),
-    linear-gradient(
-      180deg,
-      rgba(52, 74, 69, 0.86) 0%,
-      rgba(34, 54, 51, 0.82) 48%,
-      rgba(16, 29, 29, 0.86) 100%
-    ),
-    rgba(28, 46, 44, 0.78);
+    linear-gradient(180deg, rgba(0, 0, 0, 0.32), rgba(0, 0, 0, 0.18));
   box-shadow:
-    inset 0 1px 1px rgba(255, 255, 255, 0.16),
-    inset 1px 0 1px rgba(255, 255, 255, 0.04),
-    inset -1px 0 1px rgba(0, 0, 0, 0.22),
-    inset 0 -2px 3px rgba(0, 0, 0, 0.32),
-    0 1px 0 rgba(255, 255, 255, 0.055),
-    0 2px 0 rgba(0, 0, 0, 0.31),
-    0 11px 20px -12px rgba(0, 0, 0, 0.95),
-    0 0 14px rgba(143, 211, 194, 0.05);
+    inset 0 2px 3px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(0, 0, 0, 0.4),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.07),
+    0 0.5px 0 rgba(255, 255, 255, 0.04);
+  transform: translateY(0.5px);
 }
-.title-control-aperture {
-  gap: 7px;
-  color: rgba(223, 244, 247, 0.96);
-  border-color: rgba(135, 224, 245, 0.22);
-  border-radius: 6px 13px 6px 13px;
+.title-strategy {
+  position: relative;
+  border-radius: 7px;
   background:
-    linear-gradient(135deg, rgba(119, 229, 246, 0.16) 0 12px, transparent 12px),
-    linear-gradient(315deg, rgba(176, 255, 214, 0.09) 0 10px, transparent 10px),
-    radial-gradient(120% 140% at 32% -42%, rgba(216, 254, 255, 0.14), transparent 46%),
-    linear-gradient(180deg, rgba(17, 31, 32, 0.72), rgba(6, 12, 13, 0.88));
-  backdrop-filter: blur(9px) saturate(150%);
-  -webkit-backdrop-filter: blur(9px) saturate(150%);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.018));
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.14),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.5),
-    inset 0 0 0 1px rgba(122, 226, 255, 0.055),
-    0 0 0 1px rgba(0, 0, 0, 0.24),
-    0 8px 18px -13px rgba(0, 0, 0, 0.96),
-    0 0 22px rgba(93, 226, 245, 0.04);
-  text-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.82),
-    0 0 9px rgba(145, 239, 255, 0.14);
+    inset 0 0 0 1px rgba(255, 255, 255, 0.055),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 4px 18px -14px rgba(0, 0, 0, 0.8);
 }
-.title-control-aperture::before {
-  inset: 3px;
-  height: auto;
-  border-radius: 4px 10px 4px 10px;
-  background:
-    linear-gradient(90deg, rgba(137, 239, 255, 0.42) 0 2px, transparent 2px),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.075), transparent 52%);
-  opacity: 0.82;
-}
-.title-control-aperture::after {
-  left: auto;
-  right: 8px;
-  top: 50%;
-  bottom: auto;
-  width: 17px;
-  height: 1px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, rgba(132, 232, 255, 0.86), transparent);
-  box-shadow: 0 0 10px rgba(105, 230, 255, 0.5);
-  opacity: 0.72;
-  transform: translateY(-50%);
-}
-.title-aperture-dot {
-  display: inline-block;
-  width: 5px;
-  height: 5px;
-  border-radius: 999px;
-  background: rgba(146, 238, 255, 0.8);
-  box-shadow:
-    0 0 0 1px rgba(185, 255, 247, 0.08),
-    0 0 10px rgba(110, 230, 255, 0.62);
-}
-.title-control-aperture:hover {
-  border-color: rgba(154, 239, 255, 0.34);
-  filter: brightness(1.08);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.16),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.48),
-    inset 0 0 0 1px rgba(122, 226, 255, 0.08),
-    0 0 0 1px rgba(0, 0, 0, 0.24),
-    0 10px 20px -14px rgba(0, 0, 0, 0.96),
-    0 0 28px rgba(93, 226, 245, 0.08);
-}
-.title-control-aperture:active {
-  background:
-    linear-gradient(135deg, rgba(119, 229, 246, 0.11) 0 12px, transparent 12px),
-    linear-gradient(180deg, rgba(5, 11, 12, 0.94), rgba(18, 31, 32, 0.74));
-  box-shadow:
-    inset 0 3px 9px rgba(0, 0, 0, 0.54),
-    inset 0 0 0 1px rgba(122, 226, 255, 0.05),
-    0 1px 2px rgba(0, 0, 0, 0.34);
-}
-.title-control-cartridge {
-  color: rgba(205, 217, 213, 0.92);
-  border-color: rgba(235, 245, 240, 0.13);
-  border-radius: 8px;
-  background:
-    linear-gradient(90deg, rgba(107, 219, 255, 0.08), transparent 34%),
-    linear-gradient(180deg, rgba(7, 10, 10, 0.93), rgba(17, 22, 21, 0.82));
-  box-shadow:
-    inset 0 2px 8px rgba(0, 0, 0, 0.76),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.065),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.032),
-    0 1px 0 rgba(255, 255, 255, 0.04),
-    0 7px 18px -14px rgba(0, 0, 0, 0.98);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.88);
-}
-.title-control-cartridge::before {
-  inset: 4px;
-  height: auto;
+.title-strategy-option {
+  height: 22px;
+  min-width: 38px;
   border-radius: 5px;
+  padding: 0 8px;
+  color: rgba(180, 190, 190, 0.74);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  transition:
+    color 120ms ease,
+    background-color 120ms ease,
+    box-shadow 120ms ease,
+    transform 80ms ease;
+}
+.title-strategy-option:hover:not(:disabled) {
+  color: rgba(238, 246, 246, 0.95);
+  background: rgba(255, 255, 255, 0.04);
+}
+.title-strategy-option-active,
+.title-strategy-option-active:hover:not(:disabled) {
+  color: #d9f3ff;
   background:
-    linear-gradient(90deg, rgba(129, 215, 255, 0.38) 0 2px, transparent 2px),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.032), transparent 58%);
-  opacity: 0.82;
+    linear-gradient(180deg, rgba(75, 122, 142, 0.32), rgba(26, 52, 62, 0.34));
+  box-shadow:
+    inset 0 0 0 1px rgba(149, 213, 255, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 0 14px rgba(94, 182, 230, 0.09);
 }
-.title-control-cartridge::after {
-  display: none;
+.title-strategy-locked {
+  opacity: 0.56;
 }
-.title-cartridge-kicker {
-  color: rgba(127, 141, 137, 0.78);
+.title-strategy-option:disabled {
+  cursor: default;
+}
+.title-kicker {
+  color: rgba(140, 140, 140, 0.7);
   font-family: var(--font-mono);
 }
-.title-cartridge-name {
-  color: rgba(233, 242, 238, 0.97);
-}
-.title-cartridge-effort {
+.title-effort {
   flex-shrink: 0;
-  border-radius: 5px;
-  border: 1px solid rgba(134, 217, 255, 0.18);
-  background:
-    linear-gradient(180deg, rgba(100, 198, 255, 0.16), rgba(60, 144, 190, 0.075)),
-    rgba(6, 12, 14, 0.55);
-  color: rgba(161, 221, 255, 0.92);
-  padding: 2px 5px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.07),
-    0 0 12px rgba(80, 185, 255, 0.055);
+  border-radius: 4px;
+  background: rgba(168, 212, 252, 0.1);
+  color: rgba(196, 224, 252, 0.95);
+  padding: 1px 5px;
 }
-.title-cartridge-effort-muted {
-  border-color: rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.035);
-  color: rgba(123, 135, 132, 0.72);
-}
-.title-cartridge-chevron {
-  color: rgba(128, 142, 139, 0.8);
-}
-.title-control-cartridge:hover {
-  border-color: rgba(178, 225, 212, 0.2);
-  filter: brightness(1.065);
-  box-shadow:
-    inset 0 2px 8px rgba(0, 0, 0, 0.72),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.08),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.038),
-    0 1px 0 rgba(255, 255, 255, 0.045),
-    0 10px 20px -15px rgba(0, 0, 0, 0.98);
-}
-.title-control-cartridge:active {
-  background:
-    linear-gradient(90deg, rgba(107, 219, 255, 0.055), transparent 34%),
-    linear-gradient(180deg, rgba(4, 7, 7, 0.97), rgba(13, 18, 17, 0.9));
-  box-shadow:
-    inset 0 4px 11px rgba(0, 0, 0, 0.8),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.045),
-    0 1px 2px rgba(0, 0, 0, 0.32);
+.title-effort-muted {
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(140, 140, 140, 0.78);
 }
 .title-status-dot {
-  box-shadow:
-    0 0 7px currentColor,
-    0 1px 0 rgba(0, 0, 0, 0.45);
+  box-shadow: 0 0 7px currentColor;
 }
 .title-progress {
-  height: 7px;
+  height: 6px;
   overflow: hidden;
   border-radius: 999px;
-  background:
-    linear-gradient(180deg, rgba(0, 0, 0, 0.46), rgba(255, 255, 255, 0.045)),
-    rgba(0, 0, 0, 0.32);
-  box-shadow:
-    inset 0 1px 3px rgba(0, 0, 0, 0.72),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.045);
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.4);
 }
 .title-progress > span {
   border-radius: inherit;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.26), rgba(255, 255, 255, 0.04)),
-    linear-gradient(90deg, #92d9ff 0%, #92e59a 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.32),
-    0 0 11px rgba(168, 212, 252, 0.32);
+  background: linear-gradient(90deg, #92d9ff 0%, #c4e0fc 100%);
+  box-shadow: 0 0 8px rgba(168, 212, 252, 0.3);
 }
 
 /* Glass panel surfaces.
@@ -494,8 +325,8 @@ select {
      .glass-chip    — tiny pills       — barely-there wash */
 .glass {
   background:
-    linear-gradient(180deg, rgba(22, 30, 26, 0.105), rgba(8, 12, 10, 0.07)),
-    rgba(7, 10, 9, 0.07);
+    linear-gradient(180deg, rgba(26, 26, 26, 0.105), rgba(10, 10, 10, 0.07)),
+    rgba(9, 9, 9, 0.07);
   box-shadow:
     inset 0 0.5px 0 0 rgba(255, 255, 255, 0.2),
     inset 0 0 0 1px rgba(255, 255, 255, 0.1),
@@ -510,9 +341,9 @@ select {
     rgba(9, 9, 9, 0.16);
 }
 .glass-strong {
-  background: rgba(10, 10, 14, 0.36);
-  backdrop-filter: blur(40px) saturate(160%);
-  -webkit-backdrop-filter: blur(40px) saturate(160%);
+  background: rgba(12, 12, 12, 0.36);
+  backdrop-filter: blur(40px) saturate(140%);
+  -webkit-backdrop-filter: blur(40px) saturate(140%);
   box-shadow:
     inset 0 0.5px 0 0 rgba(255, 255, 255, 0.14),
     inset 0 0 0 1px rgba(255, 255, 255, 0.08),
@@ -520,10 +351,10 @@ select {
 }
 .menu-opaque {
   background:
-    linear-gradient(180deg, rgba(24, 28, 30, 0.92), rgba(8, 10, 12, 0.9)),
-    rgba(8, 10, 12, 0.9);
-  backdrop-filter: blur(28px) saturate(132%);
-  -webkit-backdrop-filter: blur(28px) saturate(132%);
+    linear-gradient(180deg, rgba(26, 26, 26, 0.92), rgba(10, 10, 10, 0.9)),
+    rgba(10, 10, 10, 0.9);
+  backdrop-filter: blur(28px) saturate(120%);
+  -webkit-backdrop-filter: blur(28px) saturate(120%);
   box-shadow:
     inset 0 0.5px 0 0 rgba(255, 255, 255, 0.16),
     inset 0 0 0 1px rgba(255, 255, 255, 0.1),
@@ -531,19 +362,19 @@ select {
 }
 .modal-opaque {
   background:
-    linear-gradient(180deg, rgba(22, 25, 27, 0.94), rgba(9, 11, 13, 0.92)),
-    rgba(9, 11, 13, 0.92);
-  backdrop-filter: blur(30px) saturate(128%);
-  -webkit-backdrop-filter: blur(30px) saturate(128%);
+    linear-gradient(180deg, rgba(24, 24, 24, 0.94), rgba(10, 10, 10, 0.92)),
+    rgba(10, 10, 10, 0.92);
+  backdrop-filter: blur(30px) saturate(120%);
+  -webkit-backdrop-filter: blur(30px) saturate(120%);
   box-shadow:
     inset 0 0.5px 0 0 rgba(255, 255, 255, 0.16),
     inset 0 0 0 1px rgba(255, 255, 255, 0.1),
     0 28px 80px -18px rgba(0, 0, 0, 0.82);
 }
 .glass-raised {
-  background: rgba(12, 14, 17, 0.15);
-  backdrop-filter: blur(22px) saturate(160%);
-  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  background: rgba(14, 14, 14, 0.15);
+  backdrop-filter: blur(22px) saturate(140%);
+  -webkit-backdrop-filter: blur(22px) saturate(140%);
   box-shadow:
     inset 0 0.5px 0 0 rgba(255, 255, 255, 0.15),
     inset 0 0 0 1px rgba(255, 255, 255, 0.08),
@@ -760,19 +591,23 @@ select {
   box-shadow: 0 0 0 1px rgba(255, 204, 102, 0.9);
 }
 
-/* Input cradle — floating glass capsule at the bottom of the conversation. */
+/* Input cradle — floating glass capsule at the bottom of the conversation.
+   max-width tracks the conversation column so focus mode (no sidebars)
+   doesn't stretch the chatbox edge-to-edge. */
 .cradle {
-  background: rgba(9, 11, 13, 0.17);
-  backdrop-filter: blur(42px) saturate(170%);
-  -webkit-backdrop-filter: blur(42px) saturate(170%);
+  background: rgba(11, 11, 11, 0.17);
+  backdrop-filter: blur(42px) saturate(150%);
+  -webkit-backdrop-filter: blur(42px) saturate(150%);
   border-radius: 18px;
-  margin: 0 8px 8px;
+  margin: 0 auto 8px;
+  max-width: 1200px;
+  width: calc(100% - 16px);
   box-shadow:
     inset 0 0.5px 0 0 rgba(255, 255, 255, 0.17),
     inset 0 0 0 1px rgba(255, 255, 255, 0.085),
     0 8px 32px -6px rgba(0, 0, 0, 0.3);
+  transition: box-shadow 160ms ease;
 }
-
 .caret::after {
   content: '▋';
   margin-left: 1px;
@@ -857,4 +692,112 @@ select {
     rgba(255, 255, 255, 0.015) 3px,
     rgba(255, 255, 255, 0.015) 4px
   );
+}
+
+/* ───────────────────────────────────────────────────────────────────────
+   Council tile — Spratt-inspired agent tile. Hairline border at rest;
+   on hover the tile lifts ~2px with a soft accent-tinted drop-shadow
+   using the agent's profile color. Running agents get a slow inset
+   pulse so live work reads at a glance without competing chrome.
+   ─────────────────────────────────────────────────────────────────── */
+.council-tile {
+  background-color: rgba(255, 255, 255, 0.022);
+  box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.06);
+  transition:
+    transform 280ms cubic-bezier(0.16, 1, 0.3, 1),
+    background-color 220ms cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 280ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform;
+}
+.council-tile.is-clickable { cursor: pointer; }
+.council-tile.is-clickable:hover {
+  transform: translateY(-2px);
+  background-color: rgba(255, 255, 255, 0.045);
+  box-shadow:
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.16),
+    0 14px 36px -16px rgba(0, 0, 0, 0.55),
+    0 0 28px -10px var(--tile-accent, rgba(168, 212, 252, 0.5));
+}
+.council-tile:disabled {
+  cursor: default;
+  opacity: 0.78;
+}
+.council-tile.is-running {
+  background-color: rgba(255, 255, 255, 0.035);
+}
+.council-tile.is-running::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 1px var(--tile-accent, rgba(168, 212, 252, 0.5));
+  opacity: 0.32;
+  animation: council-tile-pulse 2.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+@keyframes council-tile-pulse {
+  0%, 100% { opacity: 0.22; }
+  50%      { opacity: 0.55; }
+}
+
+/* ───────────────────────────────────────────────────────────────────────
+   Hive Mind Graph — node + edge view of the swarm. Two accents only
+   (cyan for bus collab, amber for artifacts) live inline on the SVG
+   layer. Each agent profile family gets its own silhouette via
+   `.hive-card-fill` / `.hive-card-stroke` paths; this CSS handles the
+   per-state chrome (idle, running pulse, hover lift).
+   ─────────────────────────────────────────────────────────────────── */
+.hive-card {
+  position: relative;
+  transition: transform 240ms cubic-bezier(0.16, 1, 0.3, 1),
+              filter   240ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform;
+  cursor: default;
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+.hive-card.is-clickable { cursor: pointer; }
+.hive-card:disabled { cursor: default; opacity: 0.78; }
+
+/* Card silhouette (replaces border-radius + box-shadow). */
+.hive-card .hive-card-fill {
+  fill: rgba(255, 255, 255, 0.024);
+  transition: fill 220ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.hive-card .hive-card-stroke {
+  stroke: rgba(255, 255, 255, 0.08);
+  stroke-width: 1;
+  transition: stroke 220ms cubic-bezier(0.4, 0, 0.2, 1),
+              stroke-width 220ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Hover lift uses transform + filter:drop-shadow so the glow respects
+   the SVG silhouette (box-shadow would render a rectangle behind the
+   shape, betraying the cut-corner / hex outline). */
+.hive-card.is-clickable:hover:not(:disabled) {
+  transform: translateY(-1.5px);
+  filter:
+    drop-shadow(0 12px 22px rgba(0, 0, 0, 0.5))
+    drop-shadow(0 0 18px var(--hive-accent, rgba(168, 212, 252, 0.4)));
+}
+.hive-card.is-clickable:hover:not(:disabled) .hive-card-fill {
+  fill: rgba(255, 255, 255, 0.046);
+}
+.hive-card.is-clickable:hover:not(:disabled) .hive-card-stroke {
+  stroke: rgba(255, 255, 255, 0.18);
+}
+
+/* Running indicator: stroke breathes in the agent's profile color. */
+.hive-card.is-running .hive-card-fill {
+  fill: rgba(255, 255, 255, 0.036);
+}
+.hive-card.is-running .hive-card-stroke {
+  stroke: var(--hive-accent, rgba(168, 212, 252, 0.55));
+  stroke-width: 1.2;
+  animation: hive-card-stroke-pulse 2.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+@keyframes hive-card-stroke-pulse {
+  0%, 100% { stroke-opacity: 0.4; }
+  50%      { stroke-opacity: 0.85; }
 }

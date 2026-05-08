@@ -159,6 +159,11 @@ export interface HarnessState extends SessionSlice {
   sidebarCollapsed: boolean
   /** User preference — hide the right Activity panel for a focused view. */
   activityPanelCollapsed: boolean
+  focusMode: boolean
+  preFocusPanelState: {
+    sidebarCollapsed: boolean
+    activityPanelCollapsed: boolean
+  } | null
   /** Tool-call focus target used by changes/artifacts navigation. */
   focusedToolCallId: string | null
   focusedToolCallSerial: number
@@ -433,6 +438,8 @@ function emptyState(): HarnessState {
     activityPanelCollapsed:
       (typeof localStorage !== 'undefined' &&
         localStorage.getItem('ah.activityPanelCollapsed') === '1') || false,
+    focusMode: false,
+    preFocusPanelState: null,
     focusedToolCallId: null,
     focusedToolCallSerial: 0,
     activityPanelWidth: (() => {
@@ -2506,7 +2513,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       try {
         localStorage.setItem('ah.sidebarCollapsed', next ? '1' : '0')
       } catch {}
-      return { sidebarCollapsed: next }
+      return { sidebarCollapsed: next, focusMode: false, preFocusPanelState: null }
     })
   },
 
@@ -2516,7 +2523,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       try {
         localStorage.setItem('ah.activityPanelCollapsed', next ? '1' : '0')
       } catch {}
-      return { activityPanelCollapsed: next }
+      return { activityPanelCollapsed: next, focusMode: false, preFocusPanelState: null }
     })
   },
 
@@ -2541,23 +2548,41 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
   },
 
   toggleFocusMode(focus) {
-    // Focus mode = both side panels hidden. If neither is open we
-    // treat it as "currently in focus mode" and the toggle restores
-    // both. Otherwise collapse both.
+    // Focus mode hides both side panels completely and remembers the
+    // previous panel state so leaving focus mode restores the workspace.
     set((prev) => {
-      const currentlyFocused =
-        prev.sidebarCollapsed && prev.activityPanelCollapsed
-      const collapse = focus ?? !currentlyFocused
+      const entering = focus ?? !prev.focusMode
+      if (!entering) {
+        const restored = prev.preFocusPanelState ?? {
+          sidebarCollapsed: false,
+          activityPanelCollapsed: false,
+        }
+        try {
+          localStorage.setItem('ah.sidebarCollapsed', restored.sidebarCollapsed ? '1' : '0')
+          localStorage.setItem(
+            'ah.activityPanelCollapsed',
+            restored.activityPanelCollapsed ? '1' : '0',
+          )
+        } catch {}
+        return {
+          focusMode: false,
+          preFocusPanelState: null,
+          sidebarCollapsed: restored.sidebarCollapsed,
+          activityPanelCollapsed: restored.activityPanelCollapsed,
+        }
+      }
       try {
-        localStorage.setItem('ah.sidebarCollapsed', collapse ? '1' : '0')
-        localStorage.setItem(
-          'ah.activityPanelCollapsed',
-          collapse ? '1' : '0',
-        )
+        localStorage.setItem('ah.sidebarCollapsed', '1')
+        localStorage.setItem('ah.activityPanelCollapsed', '1')
       } catch {}
       return {
-        sidebarCollapsed: collapse,
-        activityPanelCollapsed: collapse,
+        focusMode: true,
+        preFocusPanelState: {
+          sidebarCollapsed: prev.sidebarCollapsed,
+          activityPanelCollapsed: prev.activityPanelCollapsed,
+        },
+        sidebarCollapsed: true,
+        activityPanelCollapsed: true,
       }
     })
   },

@@ -113,8 +113,7 @@ export function App() {
   const hydrateSettings = useHarness((s) => s.hydrateSettings)
   const sidebarCollapsed = useHarness((s) => s.sidebarCollapsed)
   const activityPanelCollapsed = useHarness((s) => s.activityPanelCollapsed)
-  const toggleSidebar = useHarness((s) => s.toggleSidebar)
-  const toggleActivityPanel = useHarness((s) => s.toggleActivityPanel)
+  const focusMode = useHarness((s) => s.focusMode)
   const bridgeApiRef = useRef<any>(null)
   const eventQueueRef = useRef<any[]>([])
   const rafRef = useRef<number | null>(null)
@@ -356,30 +355,13 @@ export function App() {
       {showBackdrop && <FauxBackdrop />}
       <div className="app-tint relative flex h-full w-full flex-col">
         <TitleBar />
-        <div className="flex min-h-0 flex-1 gap-2 px-2 pt-4 pb-3">
-          {sidebarCollapsed ? (
-            <CollapsedRail
-              side="left"
-              onExpand={() => toggleSidebar(false)}
-              title="Show sidebar (⌘[)"
-            />
-          ) : (
-            <Sidebar />
-          )}
+        <div className={`flex min-h-0 flex-1 gap-2 px-2 pb-3 ${focusMode ? 'pt-2' : 'pt-4'}`}>
+          {!sidebarCollapsed && <Sidebar />}
           <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-
             <Conversation />
             <InputDock />
           </main>
-          {activityPanelCollapsed ? (
-            <CollapsedRail
-              side="right"
-              onExpand={() => toggleActivityPanel(false)}
-              title="Show activity panel (⌘])"
-            />
-          ) : (
-            <ActivityPanel />
-          )}
+          {!activityPanelCollapsed && <ActivityPanel />}
         </div>
         {commandPaletteOpen && <CommandPalette />}
         {missionDashboardOpen && <MissionDashboard />}
@@ -393,35 +375,6 @@ export function App() {
         <Toast />
         <DebugDrawer />
       </div>
-    </div>
-  )
-}
-
-/**
- * Narrow edge rail shown when a side panel is collapsed. Gives the user
- * a way to reveal the panel again without memorising the keyboard shortcut.
- */
-function CollapsedRail({
-  side,
-  onExpand,
-  title,
-}: {
-  side: 'left' | 'right'
-  onExpand: () => void
-  title: string
-}) {
-  const arrow = side === 'left' ? '›' : '‹'
-  return (
-    <div
-      className="glass flex w-[14px] shrink-0 flex-col items-center justify-center rounded-[18px]"
-    >
-      <button
-        onClick={onExpand}
-        title={title}
-        className="flex h-full w-full items-center justify-center text-[12px] text-fg-3 hover:bg-white/[0.04] hover:text-fg-1"
-      >
-        {arrow}
-      </button>
     </div>
   )
 }
