@@ -1,0 +1,387 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">Freyja Mission Dashboard</title>
+  <desc id="desc">A representation of Freyja's mission dashboard showing the agent swarm graph with publish/read message-bus edges, a kanban board lane with cards moving across todo, running, blocked, and done, a findings feed, file changes, artifacts, and the per-session coordination strategy badge.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#07110f"/>
+      <stop offset="48%" stop-color="#101719"/>
+      <stop offset="100%" stop-color="#030506"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="50%" cy="46%" r="62%">
+      <stop offset="0%" stop-color="#9ed1ff" stop-opacity=".18"/>
+      <stop offset="38%" stop-color="#78d99b" stop-opacity=".09"/>
+      <stop offset="72%" stop-color="#f4cb64" stop-opacity=".035"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="blueGreen" x1="0" x2="1">
+      <stop offset="0%" stop-color="#9ed1ff"/>
+      <stop offset="52%" stop-color="#83e29a"/>
+      <stop offset="100%" stop-color="#f5cb66"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#273735" stop-opacity=".82"/>
+      <stop offset="55%" stop-color="#111a18" stop-opacity=".74"/>
+      <stop offset="100%" stop-color="#050807" stop-opacity=".90"/>
+    </linearGradient>
+    <linearGradient id="glassHot" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#324b4f" stop-opacity=".92"/>
+      <stop offset="58%" stop-color="#13201d" stop-opacity=".82"/>
+      <stop offset="100%" stop-color="#080b0a" stop-opacity=".94"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#ffffff" stroke-opacity=".045" stroke-width="1"/>
+    </pattern>
+    <pattern id="fineGrid" width="8" height="8" patternUnits="userSpaceOnUse">
+      <path d="M8 0H0V8" fill="none" stroke="#ffffff" stroke-opacity=".018" stroke-width="1"/>
+    </pattern>
+    <filter id="softGlow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.43 0 0 0 0 0.78 0 0 0 0 0.78 0 0 0 .38 0"/>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="ringGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.51 0 0 0 0 0.88 0 0 0 0 0.60 0 0 0 .55 0"/>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <marker id="arrowB" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L10 5L0 10Z" fill="#9ed1ff" fill-opacity=".75"/>
+    </marker>
+    <marker id="arrowG" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L10 5L0 10Z" fill="#83e29a" fill-opacity=".75"/>
+    </marker>
+    <marker id="arrowY" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L10 5L0 10Z" fill="#f5cb66" fill-opacity=".75"/>
+    </marker>
+    <style>
+      .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
+      .kicker{font:800 11px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;letter-spacing:3px;fill:#8aa39a}
+      .label{font:800 11px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;letter-spacing:2.5px;fill:#a7bac0}
+      .title{font:800 18px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;letter-spacing:1.5px;fill:#eff8f0}
+      .body{font:500 12px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;letter-spacing:.6px;fill:#cad4ce}
+      .bodyDim{font:500 11.5px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;letter-spacing:.6px;fill:#7f8d86}
+      .micro{font:700 9px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;letter-spacing:1.6px;fill:#7a877f}
+      .pill{fill:#0f1716;stroke:#bdefff;stroke-opacity:.18;stroke-width:1}
+      .panel{fill:url(#glass);stroke:#bdefff;stroke-opacity:.16;stroke-width:1.1}
+      .panelHot{fill:url(#glassHot);stroke:#a6f0dc;stroke-opacity:.30;stroke-width:1.3}
+      .row{fill:#13201e;stroke:#ffffff;stroke-opacity:.06}
+      .dotBlue{fill:#9ed1ff}
+      .dotGreen{fill:#83e29a}
+      .dotGold{fill:#f5cb66}
+      .dotPink{fill:#f59ec1}
+      .wireBus{fill:none;stroke:#9ed1ff;stroke-opacity:.55;stroke-width:1.6;marker-end:url(#arrowB)}
+      .wireFind{fill:none;stroke:#83e29a;stroke-opacity:.55;stroke-width:1.6;marker-end:url(#arrowG)}
+      .wireKan{fill:none;stroke:#f5cb66;stroke-opacity:.55;stroke-width:1.6;marker-end:url(#arrowY)}
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1600" height="900" rx="42" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1600" height="900" rx="42" fill="url(#halo)"/>
+  <rect x="0" y="0" width="1600" height="900" rx="42" fill="url(#grid)"/>
+  <rect x="0" y="0" width="1600" height="900" rx="42" fill="url(#fineGrid)"/>
+
+  <!-- Header ───────────────────────────────────────────── -->
+  <g transform="translate(72 60)">
+    <text class="kicker">MISSION DASHBOARD</text>
+    <text x="0" y="40" class="mono" font-weight="800" font-size="32" letter-spacing="3" fill="#eff8f0">refactor coordination engine + ship kanban mode</text>
+    <text x="0" y="64" class="bodyDim">objective · session-aware · 5 agents alive · 12 findings · 7 cards</text>
+
+    <!-- coordination + status -->
+    <g transform="translate(1182 8)">
+      <rect class="pill" x="0" y="0" width="146" height="30" rx="15"/>
+      <text class="micro" x="14" y="19">STRATEGY · KANBAN</text>
+    </g>
+    <g transform="translate(1340 8)">
+      <rect class="pill" x="0" y="0" width="116" height="30" rx="15"/>
+      <circle cx="18" cy="15" r="4" class="dotGreen"/>
+      <text class="micro" x="32" y="19" fill="#83e29a">5 RUNNING</text>
+    </g>
+  </g>
+
+  <!-- LEFT — Kanban board ──────────────────────────────── -->
+  <g transform="translate(72 168)">
+    <rect width="430" height="666" rx="18" class="panel" filter="url(#softGlow)"/>
+    <text x="20" y="32" class="label">KANBAN · 7</text>
+    <text x="20" y="58" class="title">Session board</text>
+    <text x="20" y="80" class="bodyDim">cards, deps, handoffs · session-local</text>
+
+    <!-- columns -->
+    <g transform="translate(20 100)">
+      <text class="kicker" x="0" y="0">TODO · 2</text>
+      <text class="kicker" x="138" y="0">RUNNING · 2</text>
+      <text class="kicker" x="282" y="0">DONE · 3</text>
+    </g>
+
+    <!-- TODO -->
+    <g transform="translate(20 116)">
+      <rect width="126" height="76" rx="10" class="row"/>
+      <text x="12" y="18" class="micro">K-04</text>
+      <text x="12" y="36" class="body">audit emit</text>
+      <text x="12" y="50" class="body">events</text>
+      <circle cx="12" cy="64" r="3" class="dotPink"/>
+      <text x="22" y="67" class="micro">verify</text>
+    </g>
+    <g transform="translate(20 200)">
+      <rect width="126" height="64" rx="10" class="row"/>
+      <text x="12" y="18" class="micro">K-07</text>
+      <text x="12" y="36" class="body">docs pass</text>
+      <circle cx="12" cy="52" r="3" class="dotGreen"/>
+      <text x="22" y="55" class="micro">docs</text>
+    </g>
+
+    <!-- RUNNING -->
+    <g transform="translate(154 116)">
+      <rect width="126" height="92" rx="10" fill="#0e1a18" stroke="#83e29a" stroke-opacity=".42"/>
+      <text x="12" y="18" class="micro" fill="#83e29a">K-02</text>
+      <text x="12" y="36" class="body">trace event</text>
+      <text x="12" y="50" class="body">replay path</text>
+      <circle cx="12" cy="68" r="3" class="dotGreen"/>
+      <text x="22" y="71" class="micro">code</text>
+      <rect x="12" y="78" width="80" height="3" rx="1.5" fill="#1b2a26"/>
+      <rect x="12" y="78" width="46" height="3" rx="1.5" fill="#83e29a"/>
+    </g>
+    <g transform="translate(154 216)">
+      <rect width="126" height="76" rx="10" fill="#0e1a18" stroke="#83e29a" stroke-opacity=".42"/>
+      <text x="12" y="18" class="micro" fill="#83e29a">K-03</text>
+      <text x="12" y="36" class="body">runner integ</text>
+      <text x="12" y="50" class="body">tests</text>
+      <circle cx="12" cy="64" r="3" class="dotGold"/>
+      <text x="22" y="67" class="micro">test</text>
+    </g>
+
+    <!-- DONE -->
+    <g transform="translate(288 116)">
+      <rect width="126" height="62" rx="10" fill="#0d1311" stroke="#7c8d89" stroke-opacity=".30"/>
+      <text x="12" y="18" class="micro" fill="#7c8d89">K-01 ✓</text>
+      <text x="12" y="36" class="bodyDim">design contracts</text>
+      <text x="12" y="50" class="micro">explore</text>
+    </g>
+    <g transform="translate(288 186)">
+      <rect width="126" height="62" rx="10" fill="#0d1311" stroke="#7c8d89" stroke-opacity=".30"/>
+      <text x="12" y="18" class="micro" fill="#7c8d89">K-05 ✓</text>
+      <text x="12" y="36" class="bodyDim">migrate strategy</text>
+      <text x="12" y="50" class="micro">code</text>
+    </g>
+    <g transform="translate(288 256)">
+      <rect width="126" height="62" rx="10" fill="#0d1311" stroke="#7c8d89" stroke-opacity=".30"/>
+      <text x="12" y="18" class="micro" fill="#7c8d89">K-06 ✓</text>
+      <text x="12" y="36" class="bodyDim">rename emit args</text>
+      <text x="12" y="50" class="micro">code</text>
+    </g>
+
+    <!-- dependency wires inside board -->
+    <path d="M146 152 L 154 152" class="wireKan"/>
+    <path d="M146 240 L 154 240" class="wireKan"/>
+    <path d="M280 152 L 288 145" class="wireKan"/>
+    <path d="M280 250 L 288 215" class="wireKan"/>
+
+    <line x1="20" y1="346" x2="410" y2="346" stroke="#bdefff" stroke-opacity=".10"/>
+
+    <!-- Strategies legend -->
+    <text x="20" y="370" class="label">COORDINATION STRATEGIES</text>
+    <g transform="translate(20 386)">
+      <rect width="126" height="84" rx="10" class="row"/>
+      <text x="12" y="18" class="micro" fill="#9ed1ff">BUS</text>
+      <text x="12" y="36" class="body">message bus</text>
+      <text x="12" y="50" class="bodyDim">publish_finding</text>
+      <text x="12" y="64" class="bodyDim">read_findings</text>
+      <text x="12" y="78" class="micro">profile · open</text>
+    </g>
+    <g transform="translate(154 386)">
+      <rect width="126" height="84" rx="10" class="row"/>
+      <text x="12" y="18" class="micro" fill="#f59ec1">SOLO</text>
+      <text x="12" y="36" class="body">isolated</text>
+      <text x="12" y="50" class="bodyDim">leaf workers</text>
+      <text x="12" y="64" class="bodyDim">parent merges</text>
+      <text x="12" y="78" class="micro">leaf · clean</text>
+    </g>
+    <g transform="translate(288 386)">
+      <rect width="126" height="84" rx="10" fill="#15211c" stroke="#f5cb66" stroke-opacity=".40"/>
+      <text x="12" y="18" class="micro" fill="#f5cb66">BOARD ✓</text>
+      <text x="12" y="36" class="body">kanban</text>
+      <text x="12" y="50" class="bodyDim">cards · deps</text>
+      <text x="12" y="64" class="bodyDim">heartbeat</text>
+      <text x="12" y="78" class="micro">structured</text>
+    </g>
+
+    <!-- changes -->
+    <line x1="20" y1="492" x2="410" y2="492" stroke="#bdefff" stroke-opacity=".10"/>
+    <text x="20" y="516" class="label">CHANGES · 12</text>
+    <g transform="translate(20 528)">
+      <rect width="390" height="32" rx="8" class="row"/>
+      <circle cx="14" cy="16" r="3" class="dotGreen"/>
+      <text x="24" y="14" class="body">+126 −18 · engine/runner.py</text>
+      <text x="24" y="26" class="micro">code: trace event replay path</text>
+    </g>
+    <g transform="translate(20 568)">
+      <rect width="390" height="32" rx="8" class="row"/>
+      <circle cx="14" cy="16" r="3" class="dotGold"/>
+      <text x="24" y="14" class="body">+44 · bridge/tools/coordination.py</text>
+      <text x="24" y="26" class="micro">explore: bootstrap board</text>
+    </g>
+    <g transform="translate(20 608)">
+      <rect width="390" height="32" rx="8" class="row"/>
+      <circle cx="14" cy="16" r="3" class="dotBlue"/>
+      <text x="24" y="14" class="body">+22 −9 · bridge/tools/sub_agent_tool.py</text>
+      <text x="24" y="26" class="micro">code: kanban_task_id passthrough</text>
+    </g>
+  </g>
+
+  <!-- CENTER — agent swarm graph ───────────────────────── -->
+  <g transform="translate(528 168)">
+    <rect width="704" height="666" rx="18" class="panelHot" filter="url(#softGlow)"/>
+    <text x="20" y="32" class="label">SWARM</text>
+    <text x="20" y="56" class="title">Active collaboration</text>
+    <text x="20" y="78" class="bodyDim">parent + 4 children · publish/read · kanban transitions</text>
+
+    <!-- bus traffic ring background -->
+    <circle cx="352" cy="386" r="220" fill="none" stroke="#9ed1ff" stroke-opacity=".09" stroke-width="1.2"/>
+    <circle cx="352" cy="386" r="148" fill="none" stroke="#83e29a" stroke-opacity=".11" stroke-width="1.2"/>
+    <circle cx="352" cy="386" r="72" fill="none" stroke="#f5cb66" stroke-opacity=".18" stroke-width="1.2"/>
+
+    <!-- parent -->
+    <g transform="translate(310 344)">
+      <circle cx="42" cy="42" r="42" fill="#0a1614" stroke="#a6f0dc" stroke-opacity=".48" stroke-width="1.5" filter="url(#ringGlow)"/>
+      <text x="42" y="36" text-anchor="middle" class="micro" fill="#a6f0dc">PARENT</text>
+      <text x="42" y="52" text-anchor="middle" class="body" fill="#eaf7ef">map arch</text>
+    </g>
+
+    <!-- subagents around parent -->
+    <!-- explore: top -->
+    <g transform="translate(286 198)">
+      <circle cx="34" cy="34" r="34" fill="#0d1614" stroke="#9ed1ff" stroke-opacity=".48"/>
+      <text x="34" y="32" text-anchor="middle" class="micro" fill="#9ed1ff">EXPLORE</text>
+      <text x="34" y="46" text-anchor="middle" class="body" fill="#eaf7ef">subagents</text>
+    </g>
+    <!-- verify: right -->
+    <g transform="translate(528 320)">
+      <circle cx="34" cy="34" r="34" fill="#0d1614" stroke="#f59ec1" stroke-opacity=".48"/>
+      <text x="34" y="32" text-anchor="middle" class="micro" fill="#f59ec1">VERIFY</text>
+      <text x="34" y="46" text-anchor="middle" class="body" fill="#eaf7ef">cancel</text>
+    </g>
+    <!-- code: bottom -->
+    <g transform="translate(286 532)">
+      <circle cx="34" cy="34" r="34" fill="#0d1614" stroke="#83e29a" stroke-opacity=".48"/>
+      <text x="34" y="32" text-anchor="middle" class="micro" fill="#83e29a">CODE</text>
+      <text x="34" y="46" text-anchor="middle" class="body" fill="#eaf7ef">trace</text>
+    </g>
+    <!-- test: left -->
+    <g transform="translate(112 384)">
+      <circle cx="34" cy="34" r="34" fill="#0d1614" stroke="#f5cb66" stroke-opacity=".48"/>
+      <text x="34" y="32" text-anchor="middle" class="micro" fill="#f5cb66">TEST</text>
+      <text x="34" y="46" text-anchor="middle" class="body" fill="#eaf7ef">runner</text>
+    </g>
+
+    <!-- bus edges (publish, read, kanban-handoff) -->
+    <path d="M348 286 Q352 320 352 344" class="wireFind"/>
+    <path d="M524 380 Q470 388 396 388" class="wireBus"/>
+    <path d="M352 428 Q352 480 352 528" class="wireFind"/>
+    <path d="M148 410 Q210 396 312 392" class="wireBus"/>
+    <!-- cross bus paths showing siblings reading each other -->
+    <path d="M310 234 Q220 286 144 366" class="wireBus"/>
+    <path d="M520 360 Q438 296 354 246" class="wireKan"/>
+    <path d="M520 392 Q436 462 348 530" class="wireKan"/>
+
+    <!-- finding callouts -->
+    <g transform="translate(36 122)">
+      <rect width="180" height="44" rx="10" fill="#0e1818" stroke="#83e29a" stroke-opacity=".40"/>
+      <circle cx="14" cy="22" r="4" class="dotGreen"/>
+      <text x="26" y="20" class="micro" fill="#83e29a">PUBLISH · 4</text>
+      <text x="26" y="34" class="body">"saddle skip resolves cancel"</text>
+    </g>
+    <g transform="translate(456 122)">
+      <rect width="186" height="44" rx="10" fill="#0e1416" stroke="#9ed1ff" stroke-opacity=".40"/>
+      <circle cx="14" cy="22" r="4" class="dotBlue"/>
+      <text x="26" y="20" class="micro" fill="#9ed1ff">READ · 9</text>
+      <text x="26" y="34" class="body">runner.on_finding · L334</text>
+    </g>
+    <g transform="translate(36 588)">
+      <rect width="180" height="44" rx="10" fill="#181612" stroke="#f5cb66" stroke-opacity=".40"/>
+      <circle cx="14" cy="22" r="4" class="dotGold"/>
+      <text x="26" y="20" class="micro" fill="#f5cb66">KANBAN · K-02 ▸ DONE</text>
+      <text x="26" y="34" class="body">trace event replay path</text>
+    </g>
+    <g transform="translate(456 588)">
+      <rect width="186" height="44" rx="10" fill="#181b14" stroke="#f59ec1" stroke-opacity=".40"/>
+      <circle cx="14" cy="22" r="4" class="dotPink"/>
+      <text x="26" y="20" class="micro" fill="#f59ec1">HANDOFF · K-04</text>
+      <text x="26" y="34" class="body">verify ▸ audit emit events</text>
+    </g>
+  </g>
+
+  <!-- RIGHT — bus log + agents lane ────────────────────── -->
+  <g transform="translate(1258 168)">
+    <rect width="270" height="666" rx="18" class="panel" filter="url(#softGlow)"/>
+    <text x="20" y="32" class="label">FINDINGS · 12</text>
+    <text x="20" y="58" class="title">Message bus</text>
+    <text x="20" y="78" class="bodyDim">most recent · publish · read</text>
+
+    <g transform="translate(20 100)">
+      <rect width="232" height="60" rx="10" class="row"/>
+      <text x="12" y="18" class="micro" fill="#83e29a">EXPLORE · PUBLISH · 11:48</text>
+      <text x="12" y="34" class="body" fill="#eaf7ef">"sub_agent route honors</text>
+      <text x="12" y="48" class="body" fill="#eaf7ef">kanban_task_id"</text>
+    </g>
+    <g transform="translate(20 168)">
+      <rect width="232" height="46" rx="10" class="row"/>
+      <text x="12" y="18" class="micro" fill="#9ed1ff">VERIFY · READ · 11:46</text>
+      <text x="12" y="34" class="body">cancel path, runner trace</text>
+    </g>
+    <g transform="translate(20 222)">
+      <rect width="232" height="60" rx="10" class="row"/>
+      <text x="12" y="18" class="micro" fill="#83e29a">VERIFY · PUBLISH · 11:43</text>
+      <text x="12" y="34" class="body" fill="#eaf7ef">"saddle skip resolves</text>
+      <text x="12" y="48" class="body" fill="#eaf7ef">cancel divergence"</text>
+    </g>
+    <g transform="translate(20 290)">
+      <rect width="232" height="46" rx="10" class="row"/>
+      <text x="12" y="18" class="micro" fill="#9ed1ff">CODE · READ · 11:39</text>
+      <text x="12" y="34" class="body">runner.on_finding match</text>
+    </g>
+    <g transform="translate(20 344)">
+      <rect width="232" height="46" rx="10" class="row"/>
+      <text x="12" y="18" class="micro" fill="#f5cb66">TEST · PUBLISH · 11:37</text>
+      <text x="12" y="34" class="body">7 specs green · 1 flake</text>
+    </g>
+
+    <line x1="20" y1="408" x2="250" y2="408" stroke="#bdefff" stroke-opacity=".10"/>
+
+    <text x="20" y="432" class="label">AGENTS · 5 · 18 ITER</text>
+    <g transform="translate(20 444)">
+      <rect width="232" height="34" rx="8" class="row"/>
+      <circle cx="14" cy="17" r="4" class="dotBlue"/>
+      <text x="26" y="15" class="body">explore · subagents</text>
+      <text x="26" y="27" class="micro">running · 4.2K tok</text>
+    </g>
+    <g transform="translate(20 484)">
+      <rect width="232" height="34" rx="8" class="row"/>
+      <circle cx="14" cy="17" r="4" class="dotPink"/>
+      <text x="26" y="15" class="body">verify · cancel path</text>
+      <text x="26" y="27" class="micro">done · publish 4</text>
+    </g>
+    <g transform="translate(20 524)">
+      <rect width="232" height="34" rx="8" class="row"/>
+      <circle cx="14" cy="17" r="4" class="dotGreen"/>
+      <text x="26" y="15" class="body">code · trace event</text>
+      <text x="26" y="27" class="micro">running · iter 3</text>
+    </g>
+    <g transform="translate(20 564)">
+      <rect width="232" height="34" rx="8" class="row"/>
+      <circle cx="14" cy="17" r="4" class="dotGold"/>
+      <text x="26" y="15" class="body">test · runner integ</text>
+      <text x="26" y="27" class="micro">running · 7 specs</text>
+    </g>
+
+    <line x1="20" y1="610" x2="250" y2="610" stroke="#bdefff" stroke-opacity=".10"/>
+
+    <text x="20" y="634" class="label">ARTIFACTS · 3</text>
+    <text x="20" y="652" class="bodyDim">render-pipeline.svg · trace.md · gate.json</text>
+  </g>
+
+  <!-- footer hint -->
+  <g transform="translate(72 866)">
+    <text class="micro">⌘⇧M MISSION</text>
+    <text x="120" y="0" class="micro">⌘-CLICK A SESSION TO OPEN A SPLIT PANE</text>
+    <text x="500" y="0" class="micro">CLICK A FINDING TO JUMP TO ITS TOOL CALL</text>
+  </g>
+</svg>

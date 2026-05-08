@@ -49,12 +49,18 @@ recover the trajectory later.
 - Spawn background subagents with explicit profiles for planning, research,
   coding, review, testing, browser QA, performance profiling, docs, and memory
   curation.
-- Coordinate agents through a session message bus where sibling agents can
-  publish findings, read evidence, and continue work without waiting on the
-  parent chat.
+- Pick how subagents coordinate per session — message bus (publish/read shared
+  findings), isolated (independent leaf workers, parent synthesizes), or kanban
+  (a session board with cards, dependencies, status, and handoffs).
 - Visualize collaboration as a round-based mission graph: subagent spawn waves,
-  publish/read edges, inferred cross-agent reuse, and bus traffic stay visible
-  after the swarm completes.
+  publish/read edges, inferred cross-agent reuse, kanban board state, and bus
+  traffic stay visible after the swarm completes.
+- Open multiple sessions side-by-side with split panes — the active session
+  stays writable, the rest are live read-only views of running or archived
+  trajectories.
+- Generate creative imagery in-line via the `generate_image` tool, with a
+  session-local image store so agents can refer to attachments and outputs by
+  stable refs instead of carrying base64 in tool args.
 - Show live work products: file changes, diff cards, artifacts, markdown/code
   previews, logs, screenshots, and subagent output.
 - Persist transcripts, artifacts, settings, session slices, message bus events,
@@ -65,20 +71,29 @@ recover the trajectory later.
 
 ## Product Surface
 
+<p align="center">
+  <img src="docs/assets/freyja-cockpit.svg" alt="Freyja desktop cockpit — title bar, sessions sidebar with the live swarm, streaming conversation with tool chips and a screenshot frame, and the activity panel with context, spend, tool timeline, changes, and artifacts" />
+</p>
+
+<p align="center">
+  <em>The cockpit: workspace sidebar, streaming conversation with tool calls and inline computer-use frames, and the activity rail.</em>
+</p>
+
 Freyja has a few major views that work together:
 
 - Main conversation: streaming text, tool groups, visual computer-use frames,
-  pasted images, file changes, and the input dock.
+  pasted images, file changes, and the input dock. Splittable into multiple
+  panes for side-by-side session views.
 - Activity rail: context, spend, tool timeline, compaction/media events, changes,
   artifacts, system events, and logs.
 - Mission dashboard: a wide operational view for swarms, collaboration rounds,
-  message-bus edges, findings, evidence, agent health, compaction before/after
-  points, image policy, and session lanes.
+  message-bus edges, kanban cards, findings, evidence, agent health, compaction
+  before/after points, image policy, and session lanes.
 - Artifact workspace: focused inspection for generated files, markdown, JSON,
   SVG, HTML, images, and code.
-- Model and agent controls: provider-aware model picker with per-model reasoning
-  choices, reasoning metadata, subagent profile table, and slash-command
-  workflows.
+- Title bar: model and reasoning picker, sub-agent coordination strategy,
+  workspace/dashboard/activity toggles, and a focus mode that hides the side
+  panels for distraction-free runs.
 
 ## System Architecture
 
@@ -123,6 +138,14 @@ model catalog lives in `bridge/freyja_bridge.py`.
 
 ## Agent Profiles
 
+<p align="center">
+  <img src="docs/assets/freyja-mission.svg" alt="Freyja mission dashboard — kanban board with cards moving across todo, running, and done lanes; central swarm graph with parent and four sub-agents connected by publish/read message-bus edges and kanban handoffs; findings feed and live agents lane" />
+</p>
+
+<p align="center">
+  <em>The mission dashboard: kanban board, swarm graph with publish/read edges and kanban handoffs, and a live findings feed.</em>
+</p>
+
 Subagents are declarative profiles in `bridge/tools/agent_types.py`. Each profile
 controls model choice, fallback policy, thinking effort, tool allowlist, prompt,
 and iteration budget.
@@ -162,7 +185,12 @@ computer-use, memory, skills, subagents, and message-bus tools. Highlights:
   Freyja's shared desktop backend while returning screenshots in the provider's
   expected native shape. Provider-specific tool protocols are isolated in a
   small adapter layer so future models can add their own native tool formats.
-- Collaboration: `sub_agent`, `subagents`, `publish_finding`, `read_findings`.
+- Creative media: `generate_image` for inline image generation, plus a
+  session-local image store that gives every attachment and result a stable
+  `img_…` reference for follow-up edits.
+- Collaboration: `sub_agent`, `subagents`, `publish_finding`, `read_findings`,
+  and `kanban` (session board) — the subset offered to children depends on the
+  active coordination strategy.
 - Knowledge: `record_user_preference`, `list_skills`, `search_skills`,
   `load_skill`, with file-backed usage tracking and pruning.
 
