@@ -314,7 +314,13 @@ export function InputDock() {
         </div>
       )}
 
-      <div className="cradle font-prose px-4 py-[6px]" onDrop={onDrop} onDragOver={onDragOver}>
+      <div
+        className={`cradle font-prose px-4 pt-2.5 pb-1.5 transition-shadow ${
+          focused ? 'cradle-focused' : ''
+        }`}
+        onDrop={onDrop}
+        onDragOver={onDragOver}
+      >
         <div className="mx-auto w-full max-w-[820px]">
           {/* Attachment tray */}
           {pendingAttachments.length > 0 && (
@@ -322,7 +328,7 @@ export function InputDock() {
               {pendingAttachments.map((a) => (
                 <div
                   key={a.id}
-                  className="group relative flex items-center gap-2 rounded-lg glass-raised px-2 py-1.5"
+                  className="group relative flex items-center gap-2 rounded-lg bg-white/[0.04] px-2 py-1.5 ring-hairline"
                 >
                   <img
                     src={a.previewUrl}
@@ -345,68 +351,72 @@ export function InputDock() {
             </div>
           )}
 
-          <div
-            className={`flex items-start gap-3 rounded-lg px-3 py-2.5 transition-all ${
-              focused
-                ? 'glass-raised ring-1 ring-accent/30 shadow-glow-accent'
-                : 'glass-raised'
-            }`}
-          >
-            <span
-              className="select-none text-[13px] text-accent"
-              style={{ lineHeight: '19.375px' }}
-            >
-              ❯
-            </span>
-            <textarea
-              ref={inputRef}
-              value={draft}
-              rows={1}
-              onChange={(e) => {
-                setDraft(e.target.value)
-                setCaret(e.target.selectionStart ?? e.target.value.length)
-              }}
-              onFocus={() => setFocused(true)}
-              onBlur={() => setFocused(false)}
-              onKeyDown={onKeyDown}
-              onKeyUp={onSelect}
-              onClick={onSelect}
-              onSelect={onSelect}
-              onPaste={onPaste}
-              placeholder={
-                pendingAttachments.length > 0
-                  ? 'Add a caption or send as-is'
-                  : 'Type @ to mention files, / for commands, paste images to attach'
-              }
-              className="min-h-[22px] flex-1 resize-none bg-transparent text-[12.5px] text-fg-0 placeholder:text-fg-3 focus:outline-none"
-              style={{ lineHeight: 1.55, maxHeight: `${MAX_PX}px` }}
-            />
-          </div>
-          <div className="font-mono mt-2 flex items-center justify-between gap-4 px-1 text-[10.5px] text-fg-3">
-            <div className="flex min-w-0 items-center gap-3">
-              <span>
-                <kbd className="kbd">⌘</kbd>
-                <kbd className="kbd ml-1">K</kbd> palette
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-start gap-3">
+              <span
+                className="select-none text-[13px] text-accent"
+                style={{ lineHeight: '19.375px' }}
+              >
+                ❯
               </span>
-              <span>
-                <kbd className="kbd">/</kbd> commands
-              </span>
-              <span>
-                <kbd className="kbd">@</kbd> files
-              </span>
+              <textarea
+                ref={inputRef}
+                value={draft}
+                rows={1}
+                onChange={(e) => {
+                  setDraft(e.target.value)
+                  setCaret(e.target.selectionStart ?? e.target.value.length)
+                }}
+                onFocus={() => setFocused(true)}
+                onBlur={() => setFocused(false)}
+                onKeyDown={onKeyDown}
+                onKeyUp={onSelect}
+                onClick={onSelect}
+                onSelect={onSelect}
+                onPaste={onPaste}
+                placeholder={
+                  pendingAttachments.length > 0
+                    ? 'Add a caption or send as-is'
+                    : 'Type @ to mention files, / for commands, paste images to attach'
+                }
+                className="min-h-[22px] flex-1 resize-none bg-transparent text-[12.5px] text-fg-0 placeholder:text-fg-3 focus:outline-none"
+                style={{ lineHeight: 1.55, maxHeight: `${MAX_PX}px` }}
+              />
             </div>
-            <div className="flex min-w-0 items-center gap-2">
-              {isStreaming ? (
-                <button
-                  onClick={() => cancel()}
-                  title="Force-cancel this turn and every sub-agent running under it. Also bound to ⎋."
-                  className="rounded-md bg-danger/15 px-2 py-[2px] text-[10.5px] text-danger ring-1 ring-danger/30 hover:bg-danger/25"
-                >
-                  ■ force cancel (esc)
-                </button>
-              ) : (
-                <span className="truncate">{workspaceLabel} · {modelLabel}</span>
-              )}
+            <div className="font-mono flex items-center gap-3 pl-[22px] pr-0.5 text-[10px] text-fg-3/80">
+              <div
+                className={`flex min-w-0 items-center gap-3 transition-opacity duration-150 ${
+                  focused || isStreaming
+                    ? 'opacity-100'
+                    : 'pointer-events-none opacity-0'
+                }`}
+              >
+                <span>
+                  <kbd className="kbd">⌘</kbd>
+                  <kbd className="kbd ml-1">K</kbd> palette
+                </span>
+                <span>
+                  <kbd className="kbd">/</kbd> commands
+                </span>
+                <span>
+                  <kbd className="kbd">@</kbd> files
+                </span>
+              </div>
+              <div className="ml-auto flex min-w-0 items-center">
+                {isStreaming ? (
+                  <button
+                    onClick={() => cancel()}
+                    title="Force-cancel this turn and every sub-agent running under it. Also bound to ⎋."
+                    className="rounded-md bg-danger/15 px-2 py-[2px] text-[10px] text-danger ring-1 ring-danger/30 hover:bg-danger/25"
+                  >
+                    ■ force cancel (esc)
+                  </button>
+                ) : (
+                  <span className="truncate text-fg-3/70">
+                    {workspaceLabel} · {modelLabel}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         </div>
