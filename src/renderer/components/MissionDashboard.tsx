@@ -2138,11 +2138,9 @@ function KanbanCardMaterial({
   if (status === 'done') {
     return (
       <>
-        <div className="pointer-events-none absolute inset-x-3 top-3 h-7 rounded-[3px] border border-ok/20 bg-black/25" />
-        <div className="pointer-events-none absolute right-3 top-5 flex gap-0.5 opacity-45">
-          {Array.from({ length: 8 }).map((_, index) => (
-            <span key={index} className={`h-3 bg-ok/55 ${index % 3 === 0 ? 'w-0.5' : 'w-px'}`} />
-          ))}
+        <div className="pointer-events-none absolute inset-x-3 top-3 flex h-7 items-center justify-between overflow-hidden rounded-[3px] border border-ok/20 bg-black/25 px-2.5">
+          <span className="font-mono text-[8px] uppercase tracking-[0.16em] text-ok/45">sealed</span>
+          <span className="h-2 w-2 rounded-full bg-ok/55 shadow-[0_0_12px_rgba(112,184,103,0.28)]" />
         </div>
         <div className="pointer-events-none absolute inset-x-4 bottom-3 h-px bg-ok/20" />
       </>
