@@ -4,6 +4,65 @@
 > Owner: coordination-strategy stream.
 > Related: `docs/GOAL-TASK-COORDINATION-PLAN.md`.
 
+## Implementation status (2026-05-10)
+
+The bridge half of every strategic move has shipped. The dashboard
+half is mostly still on paper: only the column-vocabulary rename
+landed with the status-machine work. Concretely:
+
+**Shipped on the bridge:**
+
+- **B — mission root card.** First user message materializes
+  `card_001` (status `running`, `metadata.role = "mission_root"`).
+  Subsequent parent-created cards auto-adopt the root as a parent;
+  the root is gating-transparent so children start in `ready`.
+- **D — two-phase creation + specifier.** New `specifier` agent
+  profile with a kanban-only tool surface. Spec fields
+  (`definition_of_done`, `references`, `verify_with`,
+  `token_budget`) live under `metadata` and surface at the top of
+  card payloads as `spec` so workers don't have to dig.
+- **F — multi-end-state + circuit breaker.** Status vocabulary is
+  now `triage / ready / running / done_unverified / done / blocked /
+  crashed / timed_out / failed / cancelled`. `consecutive_failures`
+  trips the breaker at 3 — the next failure-class transition is
+  rewritten to `failed` and the dispatcher locks the card out.
+- **E — worker tool surface slim-down.** Child `KanbanTool` built
+  with `owned_task_id` advertises a narrower enum (no `create`,
+  `claim`, `link`, `unblock`) and refuses mutations against any
+  card id other than the worker's own.
+- **A + C — auto-dispatch + verifier seal.** Background asyncio
+  loop on `_BridgeSession`, ticking every 30s plus after every
+  parent turn. Three dispatch lanes (verifier > worker >
+  specifier) capped by `max_parallel = 3`. The `verify` agent
+  profile now lists `kanban` in its tool surface and signs off via
+  `done_unverified → done` or rejects via `done_unverified →
+  running`.
+- **G — persistence.** Append-only JSONL journal at
+  `~/.freyja/sessions/{id}.kanban.jsonl`. Every board mutation
+  writes a line; session restore replays the log before any tool
+  call lands.
+- **Stale detector + reclaim sweep.** The dispatcher tick flags
+  silent running cards via `kanban_stale` after 180s and reclaims
+  them via `crashed` at 600s. Worker heartbeats refresh `updated_at`
+  so a slow-but-alive worker stays out of those windows.
+
+**Control surfaces shipped:** `/autopilot on|off` slash command;
+`kanban_autopilot` IPC. The bridge silently no-ops when the session
+isn't in kanban mode.
+
+**Pending — dashboard work.** Most of what the "Visualizing all
+this" section below describes is still pending. The renderer reads
+the new vocab into the existing columns but doesn't differentiate
+the new lanes, doesn't show the mission anchor as a cover card, and
+has no autopilot strip or dispatch ticker. The detail panel doesn't
+render the `spec` fields or `consecutive_failures` retry counter.
+See `## Dashboard build plan (next)` near the bottom for the
+sequenced shipping plan.
+
+**Pending — composition.** Kanban-with-goal-loop composition and
+cross-session board sharing are still open questions (see Open
+Questions). Not blocking dashboard work.
+
 ## Context
 
 Freyja exposes four sub-agent coordination strategies, picked per session
@@ -182,6 +241,8 @@ manually pushing forward. Six pieces add up to that picture.
 
 ### A. Auto-dispatch — the board runs the work
 
+> Status: shipped 2026-05-10 (commit 98b8c36).
+
 A background asyncio loop on `_BridgeSession`, started when the
 session's `coordination_strategy == "kanban"`, periodically scans the
 board for `ready` cards with an assignee and spawns sub-agents for
@@ -228,6 +289,8 @@ Decisions baked in for v1:
 
 ### B. Mission root card — the user's intent has an anchor
 
+> Status: shipped 2026-05-10 (commit 2e6875c).
+
 When a session enters kanban mode, auto-create `card_001` from the
 user's first message: title = first ~80 chars, body = full message,
 assignee = parent, status = `running`. Every subsequent card created
@@ -246,6 +309,8 @@ Why this matters:
   root card is what makes "resume this mission tomorrow" coherent.
 
 ### C. Verifier — completion is a promotion, not a self-declaration
+
+> Status: shipped 2026-05-10 (commit 98b8c36, paired with A).
 
 Today the worker calling `complete` is treated as ground truth. We
 know that's wrong often enough that a verification gate pays for
@@ -272,6 +337,8 @@ The verifier's prompt is grounded in the card's `definition_of_done`
 within a few cards.
 
 ### D. Two-phase creation — `triage` → `ready` via a specifier
+
+> Status: shipped 2026-05-10 (commit 57761d6).
 
 Card bodies today are freeform strings. Workers improvise and lose
 tokens reverse-engineering what the parent meant. Two changes:
@@ -300,6 +367,8 @@ spawns.
 
 ### E. Worker tool surface slim-down + ownership gate
 
+> Status: shipped 2026-05-10 (commit 989a143).
+
 When the dispatcher spawns a worker, the child `KanbanTool`
 registered for it has a *narrower* surface than the parent's. Two
 specific changes:
@@ -321,6 +390,8 @@ restructuring the board mid-task. We may relax this later for
 explicit decomposition profiles, but the default is closed.
 
 ### F. Multi-end-state status table + circuit breaker
+
+> Status: shipped 2026-05-10 (commit 989a143).
 
 Today the end-state vocabulary is `done` and `blocked` (and a
 catch-all `cancelled`). Under autonomy that's not enough — a stuck
@@ -344,6 +415,8 @@ event. This is the bound that prevents flapping workers from burning
 tokens forever — without it, auto-dispatch is dangerous.
 
 ### G. Persistence — boards survive bridge restarts
+
+> Status: shipped 2026-05-10 (commit f48129a).
 
 The board today is in-memory on `_BridgeSession` and dies with the
 process. Long missions deserve to outlive a bridge restart.
@@ -388,21 +461,21 @@ These are the punch-list items from the close read. Each is filed as
 a separate task; none of them block the strategic moves above, and a
 few are prereqs that fall out of them.
 
-| # | Fix                                                                         | Slot       |
-| - | --------------------------------------------------------------------------- | ---------- |
-| 5 | Race-safe `claim` — dispatcher-owned, single-owner state transition         | Move A prereq |
-| 6 | Cancelled-parent promotion policy — close the "todo stuck forever" stall    | Independent |
-| 7 | Stale running-card detector → `kanban_stale` event                          | Pairs with Move F |
-| 8 | `digest` action returning `{stuck, in_review, newly_unblocked, …}`          | Independent |
-| 9 | Cap `events` and `comments` to a rolling window + counters                  | Independent |
-| 10 | Persist board state via event-sourced JSONL                                 | Move G in practice |
-| 11 | Wire `priority` into list-order, then auto-dispatch order                   | Independent / Move A |
-| 12 | Heartbeats as liveness signal for the dispatcher                            | Pairs with #17 |
-| 13 | Validate status transitions — block illegal moves, support new end states  | Move F prereq |
-| 14 | `show` returns parent summaries + artifacts inline                          | Independent, helps Move C |
-| 15 | Worker `KanbanTool` slim-down + terminal-action ownership gate              | Move E in practice |
-| 16 | `consecutive_failures` counter + circuit-breaker `failed` state             | Move F in practice |
-| 17 | Stale-card reclaim path — demote stuck cards, increment failure counter    | Move F in practice |
+| # | Fix                                                                         | Slot                       | Status   |
+| - | --------------------------------------------------------------------------- | -------------------------- | -------- |
+| 5 | Race-safe `claim` — dispatcher-owned, single-owner state transition         | Move A prereq              | ✓ shipped (effectively via E + A) |
+| 6 | Cancelled-parent promotion policy — close the "todo stuck forever" stall    | Independent                | ✓ shipped (8b74501) |
+| 7 | Stale running-card detector → `kanban_stale` event                          | Pairs with Move F          | ✓ shipped (b12594d) |
+| 8 | `digest` action returning `{stuck, in_review, newly_unblocked, …}`          | Independent                | ✓ shipped (8b74501) |
+| 9 | Cap `events` and `comments` to a rolling window + counters                  | Independent                | ✓ shipped (8b74501) |
+| 10 | Persist board state via event-sourced JSONL                                 | Move G in practice         | ✓ shipped (f48129a) |
+| 11 | Wire `priority` into list-order, then auto-dispatch order                   | Independent / Move A       | ✓ shipped (8b74501) |
+| 12 | Heartbeats as liveness signal for the dispatcher                            | Pairs with #17             | ✓ shipped (b12594d) |
+| 13 | Validate status transitions — block illegal moves, support new end states  | Move F prereq              | ✓ shipped (563b4d4) |
+| 14 | `show` returns parent summaries + artifacts inline                          | Independent, helps Move C  | ✓ shipped (8b74501) |
+| 15 | Worker `KanbanTool` slim-down + terminal-action ownership gate              | Move E in practice         | ✓ shipped (989a143) |
+| 16 | `consecutive_failures` counter + circuit-breaker `failed` state             | Move F in practice         | ✓ shipped (989a143) |
+| 17 | Stale-card reclaim path — demote stuck cards, increment failure counter    | Move F in practice         | ✓ shipped (b12594d) |
 
 ## What we're deliberately not building right now
 
@@ -533,26 +606,31 @@ absorb it for v1 (a separate Plan tab is a v2 question).
 
 #### Required additions, mapped to strategic moves
 
-| Visualization element              | Belongs in   | Lands with move      | Notes                                                                                                          |
-| ---------------------------------- | ------------ | --------------------- | -------------------------------------------------------------------------------------------------------------- |
-| Mission root card "cover"          | Overview + Swarm | B                  | Always-visible card pinned above the board. User's prompt + parent's running summary. Distinct paper-folder treatment so it doesn't read as a worker card. |
-| Autopilot strip                    | Overview + Swarm | A                  | Always-on header band: `AUTOPILOT ON · 2/3 slots · next tick in 24s`. Toggle to flip on/off. Reads "AUTOPILOT OFF — manual mode" when disabled. |
-| Dispatch ticker                    | Overview     | A                     | Live feed of dispatcher decisions, verifier verdicts, reclaim events. Color-coded by event class. Primary surface on Overview, available as a togglable side rail on Swarm. |
-| Watch list                         | Overview     | A + F                 | Cards needing human attention: blocked, near-circuit-breaker, stale running, awaiting user input. Sorted by urgency. One-click jump to card detail. |
-| `triage` lane + spec-status badge  | Swarm        | D                     | Distinct visual treatment — the paper card but with a "needs spec" overlay. Specifier in-progress shows a small spinner on the card. |
-| `done_unverified` lane             | Swarm        | C                     | Amber-tinted, between `running` and `done`. Cards here show "review pending" or "verifier: [name] (running)". |
-| Verifier verdict badge             | Per-card     | C                     | `✓ verified by [verifier]` on `done` cards. `✗ rejected — see feedback` on cards bounced back to `running`. |
-| `crashed` / `timed_out` lanes      | Swarm        | F                     | Separate from `blocked`. Distinct colors (recoverable amber vs budget-exceeded peach). Show retry counter prominently. |
-| `failed` lane                      | Swarm        | F                     | Visually distinct from `cancelled` — red ring, "circuit broken" label, prominent "force-reset" affordance. |
-| Retry counter pill on card         | Per-card     | F                     | `2/3` pill on cards with `consecutive_failures > 0`. Goes red on the last attempt. |
-| Heartbeat indicator                | Per-running-card | A + #12          | Pulsing dot + `last heartbeat 30s ago`. Pulse rate maps to recency. |
-| Stale halo                         | Per-running-card | #7               | Amber outer ring when heartbeat is aging past `stale_after_seconds`. |
-| Reclaim event in stream            | Dispatch ticker + per-card events | #17  | `card_014 reclaimed (heartbeat stale 12m, demoted to ready)`. |
-| Token budget burn bar              | Per-running-card | D                  | Progress against `token_budget` on the card. Goes amber > 80%, red at 100% (triggers `timed_out`). |
-| `definition_of_done` checklist     | Detail panel | D                     | Render as a checkable list in detail. The verifier marks items checked as it goes (Move C). |
-| `references` pill chips            | Per-card + detail | D                | Tiny chips on the card body showing file/finding/card count: `📎 3 files · 2 cards`. Detail expands to the full list. |
-| `verify_with` code block           | Detail panel | D                     | Render as a small code block in the detail with the verifier's last-run output. |
-| Mission age + persistence stamp    | Overview header | G                  | `Started 2h ago · persisted across 1 restart`. Indicates the board outlived a bridge restart. |
+All rows below are pending unless marked ✓. Marked items shipped as
+part of the status-vocabulary rename in Wave 2 (commit 563b4d4) and
+need no further work.
+
+| Visualization element              | Belongs in   | Lands with move      | Status   | Notes                                                                                                          |
+| ---------------------------------- | ------------ | --------------------- | -------- | -------------------------------------------------------------------------------------------------------------- |
+| Mission root card "cover"          | Overview + Swarm | B                  | ☐ V1     | Always-visible card pinned above the board. User's prompt + parent's running summary. Distinct paper-folder treatment so it doesn't read as a worker card. |
+| Autopilot strip                    | Overview + Swarm | A                  | ☐ V1     | Always-on header band: `AUTOPILOT ON · 2/3 slots · next tick in 24s`. Toggle to flip on/off. Reads "AUTOPILOT OFF — manual mode" when disabled. |
+| Dispatch ticker                    | Overview     | A                     | ☐ V1     | Live feed of dispatcher decisions, verifier verdicts, reclaim events. Color-coded by event class. Primary surface on Overview, available as a togglable side rail on Swarm. |
+| Watch list                         | Overview     | A + F                 | ☐ V3     | Cards needing human attention: blocked, near-circuit-breaker, stale running, awaiting user input. Sorted by urgency. One-click jump to card detail. |
+| `triage` lane + spec-status badge  | Swarm        | D                     | ◐ V2     | Column exists (Wave 2). Still need distinct paper-card treatment + "needs spec" overlay + specifier-running spinner. |
+| `done_unverified` lane             | Swarm        | C                     | ◐ V2     | Column exists (Wave 2). Need amber-tinted cards + "review pending" or "verifier: [name] (running)" label. |
+| Verifier verdict badge             | Per-card     | C                     | ☐ V1     | `✓ verified by [verifier]` on `done` cards. `✗ rejected — see feedback` on cards bounced back to `running`. |
+| `crashed` / `timed_out` lanes      | Swarm        | F                     | ◐ V2     | Columns exist (Wave 2) with text colors. Still need card materials (recoverable amber vs budget-exceeded peach) and retry counter prominently shown. |
+| `failed` lane                      | Swarm        | F                     | ◐ V2     | Column exists (Wave 2). Still need red ring, "circuit broken" label, "force-reset" affordance. |
+| Retry counter pill on card         | Per-card     | F                     | ☐ V2     | `2/3` pill on cards with `consecutive_failures > 0`. Goes red on the last attempt. |
+| Heartbeat indicator                | Per-running-card | A + #12          | ☐ V2     | Pulsing dot + `last heartbeat 30s ago`. Pulse rate maps to recency. |
+| Stale halo                         | Per-running-card | #7               | ☐ V2     | Amber outer ring when heartbeat is aging past `stale_after_seconds`. |
+| Reclaim event in stream            | Dispatch ticker + per-card events | #17  | ☐ V1     | `card_014 reclaimed (heartbeat stale 12m, demoted to ready)`. Ships with the ticker. |
+| Token budget burn bar              | Per-running-card | D                  | ☐ V2     | Progress against `token_budget` on the card. Goes amber > 80%, red at 100% (triggers `timed_out`). |
+| `definition_of_done` checklist     | Detail panel | D                     | ☐ V3     | Render as a checkable list in detail. The verifier marks items checked as it goes (Move C). |
+| `references` pill chips            | Per-card + detail | D                | ☐ V3     | Tiny chips on the card body showing file/finding/card count: `📎 3 files · 2 cards`. Detail expands to the full list. |
+| `verify_with` code block           | Detail panel | D                     | ☐ V3     | Render as a small code block in the detail with the verifier's last-run output. |
+| Mission age + persistence stamp    | Overview header | G                  | ☐ V1     | `Started 2h ago · persisted across 1 restart`. Indicates the board outlived a bridge restart. |
+| Verifier-rejection comment styling | Detail panel + activity | C            | ☐ V3     | A `running` card whose latest event is a verifier rejection should style that comment distinctly so the worker (and operator reading along) doesn't miss it. |
 
 #### Existing problems to fix in the same pass
 
@@ -622,6 +700,222 @@ The fix-while-we're-in-there punch list (split board components,
 symmetric selection, drop quiet-lanes pill bar, dedupe detail panel,
 keyboard nav, filter/search) ships during whichever move is touching
 that file. None of it needs to wait.
+
+## Dashboard build plan (next)
+
+Now that the bridge is fully on the new state machine, the dashboard
+work splits into three coherent waves. Each is sized to ship as one
+or two commits without leaving the UI in a half-finished state.
+
+### Wave V1 — Mission visibility
+
+Goal: the user opens a kanban session and understands what's
+happening at a glance. Mostly additive — new components above the
+existing board, no structural refactor yet.
+
+Components:
+
+1. **`MissionCoverCard`** — pinned above the kanban board on both
+   Overview and Swarm tabs. Renders the mission root card with a
+   distinct "paper folder" treatment (heavier shadow, slightly
+   warmer paper than ready cards). Shows: title, user's original
+   prompt (truncated with expand), elapsed mission time, running
+   summary if the parent has one, child-card rollup
+   (`12 cards · 3 running · 7 done`).
+
+2. **`AutopilotStrip`** — header band above the dashboard.
+   Two states:
+
+   ```
+   ┌─────────────────────────────────────────────────────────────┐
+   │ ● AUTOPILOT ON   2/3 slots used   next tick in 24s   [pause]│
+   └─────────────────────────────────────────────────────────────┘
+   ```
+   ```
+   ┌─────────────────────────────────────────────────────────────┐
+   │ ○ AUTOPILOT OFF   manual mode                       [enable]│
+   └─────────────────────────────────────────────────────────────┘
+   ```
+
+   Click on the right-edge button toggles auto-dispatch via the
+   existing `kanban_autopilot` IPC. Slot count comes from the
+   running-sub-agent registry; tick countdown is derived locally
+   from the dispatcher's known cadence + last-tick timestamp.
+
+3. **`DispatchTicker`** — board-level event feed, distinct from
+   per-card activity. Renders `kanban_dispatched` /
+   `kanban_reclaimed` / `kanban_stale` / `kanban_autopilot_*` /
+   `kanban_orphan` events as a single stream:
+
+   ```
+   ┌─ Dispatcher pulse ──────────────────────────────────────────┐
+   │ 19:42  ↗ dispatched code on card_017 (specifier lane)       │
+   │ 19:41  ✓ verifier signed off card_014 ("tests pass")        │
+   │ 19:38  ⟲ reclaimed card_011 — heartbeat stale 12m           │
+   │ 19:35  ⓘ stale: card_009 (3m without activity)              │
+   │ 19:34  ▶ autopilot on                                        │
+   └─────────────────────────────────────────────────────────────┘
+   ```
+
+   Lives on Overview as the primary content under the
+   AutopilotStrip; available on Swarm as a togglable side rail.
+   Color: monochrome with one-character glyph prefix per event
+   class (no rainbow).
+
+4. **Mission age + persistence stamp** — small subtitle in the
+   Overview header next to the existing context-meter:
+   `Started 2h 14m ago · persisted across 1 restart`. The restart
+   count comes from a new `restartCount` counter on the kanban
+   journal (increment on each `replay_events` call past size 0).
+
+5. **Verifier verdict badge** — single per-card affordance:
+   `✓ verified by gpt-5.5` on `done` cards (when the most recent
+   transition was a verifier seal), `✗ rejected — see feedback` on
+   running cards whose latest event is a verifier rejection.
+
+Touchpoints: new components in
+`src/renderer/components/kanban/` (a new subdir),
+`MissionDashboard.tsx` for layout integration, `events.ts` for any
+new event-shape additions, `store.ts` for the autopilot toggle
+action + state slice + persistence-restart counter wiring on the
+bridge side.
+
+### Wave V2 — Lane vocabulary
+
+Goal: the new statuses get their proper visual treatment. Lane
+materials, retry counters, heartbeat indicators, token-budget
+burn bars. Most of this is per-card chrome; the column structure
+from Wave 2 stays as-is.
+
+Components:
+
+1. **Lane materials** — per-status visual differentiation:
+
+   | Status            | Treatment                                                                         |
+   | ----------------- | --------------------------------------------------------------------------------- |
+   | `triage`          | Paper card + "needs spec" overlay. Specifier-running shows a tiny spinner.        |
+   | `ready`           | Existing cream paper (unchanged).                                                 |
+   | `running`         | Existing dark gradient (unchanged).                                               |
+   | `done_unverified` | Amber tint, "review pending" or verifier-active label.                            |
+   | `done`            | Existing green tint + verifier badge (V1).                                        |
+   | `blocked`         | Existing dim glass (unchanged).                                                   |
+   | `crashed`         | Recoverable amber: warm-amber background, retry counter prominent.                |
+   | `timed_out`       | Budget-exceeded peach: cooler peach background, "exceeded budget" label, retry counter. |
+   | `failed`          | Circuit-broken red: red ring + "circuit broken" label + force-reset affordance.   |
+   | `cancelled`       | Existing dimmed (unchanged).                                                      |
+
+2. **Retry counter pill** — `2/3` pill on any card with
+   `consecutive_failures > 0`. Sits on the card's top-right.
+   Goes red on the last attempt (= one more failure trips
+   the breaker).
+
+3. **Heartbeat indicator** — pulsing dot + `last heartbeat 30s ago`
+   on `running` cards. Pulse rate maps to recency (faster when
+   fresher); silences after `KANBAN_STALE_SECONDS` and the dot
+   goes amber. After `KANBAN_RECLAIM_SECONDS` the card is no
+   longer running (it's been reclaimed to `crashed`) so the dot
+   doesn't appear on that lane.
+
+4. **Stale halo** — amber outer ring on running cards once their
+   age past `updated_at` exceeds `KANBAN_STALE_SECONDS / 2`. Same
+   threshold the dispatcher uses for emitting `kanban_stale`. The
+   ring intensifies as the card approaches `KANBAN_RECLAIM_SECONDS`.
+
+5. **Token budget burn bar** — thin progress bar at the bottom of
+   a running card showing `tokens_used / spec.token_budget` when
+   the card has a budget. Goes amber > 80%, red at 100%. The
+   underlying counter comes from the running sub-agent's usage
+   (which the renderer already tracks per agent).
+
+Touchpoints: card-component subdir
+(`src/renderer/components/kanban/cards/`), the existing
+`kanbanCardMaterialClass` / `kanbanProgressFillClass` helpers
+get split per-status, `MissionDashboard.tsx` only changes where
+it imports from.
+
+### Wave V3 — Operator workflow
+
+Goal: the Supervise-mode user can drive a board efficiently. This
+is the bigger refactor — splits the board component, restructures
+the detail panel, adds the watch list and keyboard nav.
+
+Components:
+
+1. **Split `KanbanBoard` → `KanbanMiniBoard` + `KanbanFullBoard`.**
+   The `compact` prop goes away. The mini-board (Overview) is
+   read-only and fixed-layout; the full board (Swarm) is
+   selectable, scrollable, supports wide/narrow column modes.
+
+2. **Quiet-lane stubs.** Lanes with zero cards collapse to a
+   32px-wide vertical stub showing only the label and `(0)`
+   count. Clicking expands them back. The state machine stays
+   visible without dedicating a 380px column to emptiness.
+
+3. **Watch list** — board-level "needs attention" queue on the
+   Overview. Sources:
+
+   - `blocked` cards (highest priority — needs user)
+   - `running` cards where `consecutive_failures >= 2` (one more
+     failure trips the breaker)
+   - `running` cards past `KANBAN_STALE_SECONDS` without activity
+   - `done_unverified` cards waiting > 30s for a verifier slot
+     (autopilot is saturated)
+
+   Sorted by urgency. One-click jumps to the card's detail panel
+   on the Swarm tab.
+
+4. **Detail-panel restructure.** Drop "latest signal" (duplicates
+   activity[0]), trim agent-status to identity + attach button
+   (tool strip already carries live activity). Add new structured
+   sections for cards in kanban mode:
+
+   - **Definition of done** (Move D spec.definition_of_done) —
+     rendered as a checklist. The verifier marks items checked as
+     it walks them.
+   - **References** — files / findings / sibling cards from
+     `spec.references`, each clickable.
+   - **Verify with** — `spec.verify_with` code block + last-run
+     output from the verifier.
+   - **Verifier rejection** — when a card is in `running` with a
+     prior `done_unverified` and the latest event is a verifier
+     rejection, the rejection feedback gets a distinct callout
+     above the regular activity feed so the worker doesn't miss
+     it on the next `show`.
+
+5. **Reference chips on cards.** Tiny chips on the card body
+   showing file/finding/card count: `📎 3 files · 2 cards`. Detail
+   expands to the full list.
+
+6. **Keyboard nav.** Arrow keys cycle cards in the detail panel;
+   `j`/`k` accelerators; `/` opens filter; `Esc` closes detail.
+
+7. **Filter + search.** Filter chip row above the board:
+   `status:running`, `profile:researcher`, `assigned`,
+   `blocked >5m`, free-text. State in URL params so it survives
+   navigation.
+
+Touchpoints: the entire `KanbanBoard` component splits;
+`MissionDashboard.tsx` imports change. The detail-panel
+restructure is mostly local to the existing detail component but
+adds three new structured sections from the new `spec` field.
+
+### Order to ship
+
+V1 first — it's purely additive, biggest visible impact for the
+smallest diff. V2 second — touches per-card rendering but stays
+within the existing layout. V3 last — it's where the
+structural refactor lands and needs more careful review.
+
+Within V1, the natural sub-order is:
+
+1. Persistence-stamp + autopilot strip (smallest, depends only on
+   data already flowing — stamp needs a tiny bridge counter).
+2. Mission cover card (largest visual change, needs the new
+   subdir setup).
+3. Dispatch ticker (largest data shape change — adds event
+   collation that we may also reuse for the watch list in V3).
+4. Verifier verdict badge (smallest — one expression in card
+   chrome).
 
 ## Open questions
 
