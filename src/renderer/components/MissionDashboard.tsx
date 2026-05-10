@@ -15,6 +15,7 @@ import { AgentTypeTag } from './SubagentCard'
 import { KanbanAutopilotStrip } from './kanban/AutopilotStrip'
 import { KanbanDispatchTicker } from './kanban/DispatchTicker'
 import { MissionCoverCard } from './kanban/MissionCoverCard'
+import { KanbanWatchList } from './kanban/WatchList'
 
 type DashboardTab = 'overview' | 'swarm' | 'findings' | 'telemetry' | 'profiles'
 
@@ -1689,7 +1690,8 @@ function KanbanHealthView({
           <BriefStat label="agents" value={String(agents.length)} />
           <BriefStat label="blocked" value={String(blocked)} tone={blocked ? 'danger' : undefined} />
         </div>
-        <div className="mt-3 min-h-0 flex-1">
+        <div className="mt-3 min-h-0 flex-1 space-y-3 overflow-hidden">
+          <KanbanWatchList cards={cards} />
           <KanbanDispatchTicker systemEvents={telemetryEvents} />
         </div>
       </section>
@@ -1747,6 +1749,38 @@ function KanbanAgentsView({
     const next = cards[(selectedIndex + offset + cards.length) % cards.length]
     if (next) setSelectedCardId(next.id)
   }
+  // Keyboard nav: arrows / j-k step through cards; Esc clears selection.
+  // Ignored when the user is typing in an input or textarea so the chat
+  // composer doesn't fight for the same keys.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return
+      }
+      if (event.metaKey || event.ctrlKey || event.altKey) return
+      switch (event.key) {
+        case 'ArrowDown':
+        case 'j':
+          event.preventDefault()
+          selectRelativeCard(1)
+          return
+        case 'ArrowUp':
+        case 'k':
+          event.preventDefault()
+          selectRelativeCard(-1)
+          return
+        case 'Escape':
+          if (selectedCardId) {
+            event.preventDefault()
+            setSelectedCardId('')
+          }
+          return
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [cards.length, selectedIndex, selectedCardId])
   return (
     <div className="grid min-h-0 flex-1 grid-cols-12 grid-rows-[auto_auto_minmax(0,1fr)] gap-3 overflow-hidden">
       <div className="col-span-12">
@@ -1846,8 +1880,6 @@ function KanbanBoard({
   }
   const COMPACT_HIDDEN_COLUMNS = new Set(['cancelled', 'crashed', 'timed_out', 'failed'])
   const boardColumns = KANBAN_COLUMNS.filter((column) => !compact || !COMPACT_HIDDEN_COLUMNS.has(column.id))
-  const activeColumns = boardColumns.filter((column) => (cardsByStatus.get(column.id)?.length ?? 0) > 0)
-  const quietColumns = boardColumns.filter((column) => (cardsByStatus.get(column.id)?.length ?? 0) === 0)
 
   if (cards.length === 0) {
     return (
@@ -1859,25 +1891,31 @@ function KanbanBoard({
 
   return (
     <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl bg-[radial-gradient(circle_at_50%_0%,rgba(127,184,232,0.08),transparent_36%),linear-gradient(rgba(255,255,255,0.025)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[length:auto,44px_44px,44px_44px] ring-1 ring-white/[0.055]">
-      {quietColumns.length > 0 && (
-        <div className="shrink-0 hairline-b px-3 py-2">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="label mr-1 text-[8.5px] text-fg-3">quiet lanes</span>
-            {quietColumns.map((column) => (
-              <span
-                key={column.id}
-                className={`rounded-full bg-white/[0.032] px-2 py-1 font-mono text-[9px] uppercase ring-hairline ${kanbanStatusClass(column.id)}`}
-              >
-                {column.label}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
       <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden p-3">
         <div className="flex h-full min-w-max gap-4">
-          {activeColumns.map((column) => {
+          {boardColumns.map((column) => {
             const columnCards = cardsByStatus.get(column.id) ?? []
+            if (columnCards.length === 0) {
+              // Quiet-lane stub: 36px-wide rotated label that keeps the
+              // state machine visible without a 380px empty column. Doc
+              // calls for 32px; bumped to 36 so the rotated label fits.
+              return (
+                <section
+                  key={column.id}
+                  className={`flex min-h-0 w-9 shrink-0 flex-col items-center justify-between overflow-hidden rounded-xl bg-white/[0.018] py-2 ${kanbanColumnClass(column.id)}`}
+                  title={`${column.label} — ${column.hint}`}
+                >
+                  <span className="font-mono text-[10px] text-fg-3">0</span>
+                  <span
+                    className={`whitespace-nowrap font-mono text-[10px] uppercase tracking-[0.10em] ${kanbanStatusClass(column.id)}`}
+                    style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}
+                  >
+                    {column.label}
+                  </span>
+                  <span aria-hidden className="h-3" />
+                </section>
+              )
+            }
             return (
               <section
                 key={column.id}
@@ -1938,11 +1976,11 @@ function KanbanTaskDetailPanel({
       </div>
     )
   }
-  const latest = latestKanbanActivity(card)
   const dependencies = [
     ...(card.parents ?? []).map((id) => ({ id, label: 'depends on' })),
     ...(card.children ?? []).map((id) => ({ id, label: 'unblocks' })),
   ]
+  const rejection = detectVerifierRejection(card)
   const activity = [
     ...(card.comments ?? []).map((comment) => ({
       at: comment.timestamp ?? 0,
@@ -2006,9 +2044,105 @@ function KanbanTaskDetailPanel({
           <DetailStat label="progress" value={`${kanbanCardProgress(card)}%`} />
         </div>
 
+        {rejection && (
+          <div className="rounded-lg bg-warn/[0.10] p-3 ring-1 ring-warn/30">
+            <div className="label mb-1 text-[9px] uppercase tracking-[0.10em] text-warn">
+              verifier rejected
+            </div>
+            <div className="whitespace-pre-wrap text-[11.5px] leading-[1.5] text-fg-0">
+              {rejection.text}
+            </div>
+            {rejection.actor && (
+              <div className="mt-2 font-mono text-[9px] text-warn/80">
+                — {rejection.actor}
+              </div>
+            )}
+          </div>
+        )}
+
         {card.body && (
           <DetailSection title="description">
             <div className="whitespace-pre-wrap text-[12px] leading-[1.6] text-fg-1">{card.body}</div>
+          </DetailSection>
+        )}
+
+        {card.spec?.definition_of_done && card.spec.definition_of_done.length > 0 && (
+          <DetailSection title="definition of done">
+            <ul className="space-y-1.5">
+              {card.spec.definition_of_done.map((line, i) => (
+                <li key={i} className="flex items-start gap-2 text-[11.5px] leading-[1.5] text-fg-1">
+                  <span className="mt-1 inline-block h-3 w-3 shrink-0 rounded-sm border border-fg-3/40" />
+                  <span>{line}</span>
+                </li>
+              ))}
+            </ul>
+          </DetailSection>
+        )}
+
+        {card.spec?.references &&
+          (Boolean(card.spec.references.files?.length) ||
+            Boolean(card.spec.references.findings?.length) ||
+            Boolean(card.spec.references.cards?.length)) && (
+            <DetailSection title="references">
+              <div className="space-y-2 text-[11px] leading-[1.5] text-fg-1">
+                {card.spec.references.files && card.spec.references.files.length > 0 && (
+                  <div>
+                    <div className="label mb-1 text-[8.5px] text-fg-3">files</div>
+                    <div className="flex flex-wrap gap-1">
+                      {card.spec.references.files.map((path) => (
+                        <span
+                          key={path}
+                          className="rounded bg-white/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-fg-1 ring-hairline"
+                        >
+                          {path}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {card.spec.references.cards && card.spec.references.cards.length > 0 && (
+                  <div>
+                    <div className="label mb-1 text-[8.5px] text-fg-3">related cards</div>
+                    <div className="flex flex-wrap gap-1">
+                      {card.spec.references.cards.map((id) => (
+                        <span
+                          key={id}
+                          className="rounded bg-accent/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-accent ring-1 ring-accent/15"
+                        >
+                          {id}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {card.spec.references.findings && card.spec.references.findings.length > 0 && (
+                  <div>
+                    <div className="label mb-1 text-[8.5px] text-fg-3">findings</div>
+                    <ul className="ml-1 list-disc pl-3 text-[11px] text-fg-1">
+                      {card.spec.references.findings.map((finding, i) => (
+                        <li key={i}>{finding}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            </DetailSection>
+          )}
+
+        {card.spec?.verify_with && (
+          <DetailSection title="verify with">
+            <pre className="overflow-x-auto rounded-md bg-black/40 p-2 font-mono text-[10.5px] leading-[1.5] text-fg-0">
+              {card.spec.verify_with}
+            </pre>
+          </DetailSection>
+        )}
+
+        {typeof card.spec?.token_budget === 'number' && card.spec.token_budget > 0 && (
+          <DetailSection title="token budget">
+            <div className="font-mono text-[11px] text-fg-1">
+              {card.spec.token_budget.toLocaleString()} tokens
+              <span className="ml-2 text-fg-3">— circuit breaker treats this as the wall-clock budget</span>
+            </div>
           </DetailSection>
         )}
 
@@ -2090,15 +2224,6 @@ function KanbanTaskDetailPanel({
           )}
         </DetailSection>
 
-        {latest && (
-          <div className="rounded-lg bg-accent/[0.035] p-3 ring-1 ring-accent/15">
-            <div className="label mb-1 text-[9px] text-accent">latest signal</div>
-            <div className="line-clamp-3 text-[11px] leading-[1.45] text-fg-1">
-              <span className="text-fg-0">{latest.label}</span>
-              {latest.text ? `: ${latest.text}` : ''}
-            </div>
-          </div>
-        )}
       </div>
     </div>
   )
@@ -4805,6 +4930,25 @@ function kanbanRestartCount(events: TelemetryEventView[]): number {
     if (typeof count === 'number') return count
   }
   return 0
+}
+
+function detectVerifierRejection(
+  card: KanbanCardView,
+): { text: string; actor?: string } | null {
+  // A verifier rejection lives in the comment the verifier left when
+  // it transitioned the card back to `running`. Find the most recent
+  // verifier-authored comment on a card that's currently `running`
+  // and has a prior `done_unverified -> running` transition in its
+  // event tail.
+  if (card.status !== 'running') return null
+  const comments = (card.comments ?? []).slice().reverse()
+  for (const comment of comments) {
+    const author = (comment.author || '').toLowerCase()
+    if (author.includes('verify')) {
+      return { text: comment.body, actor: comment.author }
+    }
+  }
+  return null
 }
 
 function detectVerifierVerdict(
