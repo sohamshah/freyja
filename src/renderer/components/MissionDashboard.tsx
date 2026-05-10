@@ -12,6 +12,9 @@ import type {
 import { formatCost, formatDuration, formatTokens, relativeTime } from '../lib/format'
 import { Spinner } from '../lib/spinner'
 import { AgentTypeTag } from './SubagentCard'
+import { KanbanAutopilotStrip } from './kanban/AutopilotStrip'
+import { KanbanDispatchTicker } from './kanban/DispatchTicker'
+import { MissionCoverCard } from './kanban/MissionCoverCard'
 
 type DashboardTab = 'overview' | 'swarm' | 'findings' | 'telemetry' | 'profiles'
 
@@ -490,6 +493,7 @@ export function MissionDashboard() {
     return {
       activeSession,
       missionSession,
+      missionSessionId: missionSession?.id ?? activeSessionId,
       missionSlice,
       objective,
       agents,
@@ -647,6 +651,7 @@ export function MissionDashboard() {
 
         {tab === 'overview' && (
           <OverviewTab
+            sessionId={dashboard.missionSessionId}
             objective={dashboard.objective}
             coordinationStrategy={dashboard.coordinationStrategy}
             contextPct={contextPct}
@@ -673,6 +678,7 @@ export function MissionDashboard() {
         )}
         {tab === 'swarm' && (
           <SwarmTab
+            sessionId={dashboard.missionSessionId}
             coordinationStrategy={dashboard.coordinationStrategy}
             agents={dashboard.agents}
             busEvents={dashboard.busEvents}
@@ -681,6 +687,8 @@ export function MissionDashboard() {
             goalState={dashboard.goalState}
             taskCards={dashboard.taskCards}
             fileChanges={dashboard.fileChanges}
+            telemetryEvents={dashboard.telemetryEvents}
+            runningAgents={dashboard.agents.filter((agent) => agent.status === 'running').length}
             source={dashboard.missionSession}
             onAttach={attach}
           />
@@ -709,6 +717,7 @@ export function MissionDashboard() {
 }
 
 function OverviewTab({
+  sessionId,
   objective,
   coordinationStrategy,
   contextPct,
@@ -732,6 +741,7 @@ function OverviewTab({
   onJumpTool,
   onCopyFinding,
 }: {
+  sessionId: string
   objective: string
   coordinationStrategy: CoordinationStrategy
   contextPct: number
@@ -760,6 +770,7 @@ function OverviewTab({
   if (coordinationStrategy === 'kanban') {
     return (
       <KanbanHealthView
+        sessionId={sessionId}
         objective={objective}
         contextPct={contextPct}
         runningAgents={runningAgents}
@@ -769,6 +780,7 @@ function OverviewTab({
         toolsCount={toolsCount}
         screenshotFrames={screenshotFrames}
         compactions={compactions}
+        telemetryEvents={telemetryEvents}
         onAttach={onAttach}
         onTab={onTab}
       />
@@ -905,6 +917,7 @@ function OverviewTab({
 }
 
 function SwarmTab({
+  sessionId,
   coordinationStrategy,
   agents,
   busEvents,
@@ -913,9 +926,12 @@ function SwarmTab({
   goalState,
   taskCards,
   fileChanges,
+  telemetryEvents,
+  runningAgents,
   source,
   onAttach,
 }: {
+  sessionId: string
   coordinationStrategy: CoordinationStrategy
   agents: AgentView[]
   busEvents: BusEventView[]
@@ -924,15 +940,20 @@ function SwarmTab({
   goalState: GoalStateView | null
   taskCards: TaskCardView[]
   fileChanges: FileChangeSet[]
+  telemetryEvents: TelemetryEventView[]
+  runningAgents: number
   source: SessionSnapshot | undefined
   onAttach: (id: string, mode?: 'replace' | 'split') => void
 }) {
   if (coordinationStrategy === 'kanban') {
     return (
       <KanbanAgentsView
+        sessionId={sessionId}
         cards={kanbanCards}
         agents={agents}
         source={source}
+        telemetryEvents={telemetryEvents}
+        runningAgents={runningAgents}
         onAttach={onAttach}
       />
     )
@@ -1592,6 +1613,7 @@ const KANBAN_COLUMNS = [
 ] as const
 
 function KanbanHealthView({
+  sessionId,
   objective,
   contextPct,
   runningAgents,
@@ -1601,9 +1623,11 @@ function KanbanHealthView({
   toolsCount,
   screenshotFrames,
   compactions,
+  telemetryEvents,
   onAttach,
   onTab,
 }: {
+  sessionId: string
   objective: string
   contextPct: number
   runningAgents: number
@@ -1613,6 +1637,7 @@ function KanbanHealthView({
   toolsCount: number
   screenshotFrames: number
   compactions: number
+  telemetryEvents: TelemetryEventView[]
   onAttach: (id: string, mode?: 'replace' | 'split') => void
   onTab: (tab: DashboardTab) => void
 }) {
@@ -1620,7 +1645,17 @@ function KanbanHealthView({
   const blocked = cards.filter((card) => card.status === 'blocked').length
   const done = cards.filter((card) => card.status === 'done').length
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-12 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden">
+    <div className="grid min-h-0 flex-1 grid-cols-12 grid-rows-[auto_auto_auto_minmax(0,1fr)] gap-3 overflow-hidden">
+      <div className="col-span-12">
+        <KanbanAutopilotStrip
+          sessionId={sessionId}
+          systemEvents={telemetryEvents}
+          runningAgents={runningAgents}
+        />
+      </div>
+      <div className="col-span-12">
+        <MissionCoverCard cards={cards} restartCount={kanbanRestartCount(telemetryEvents)} />
+      </div>
       <div className="col-span-12 grid grid-cols-2 gap-3 xl:grid-cols-8">
         <MetricCard label="board" value={`${progress}%`} sub={`${done}/${cards.length || 0} done`} meter={progress} tone={progress === 100 ? 'ok' : 'accent'} />
         <MetricCard label="cards" value={String(cards.length)} sub={`${blocked} blocked`} tone={blocked ? 'warn' : 'neutral'} />
@@ -1634,7 +1669,7 @@ function KanbanHealthView({
 
       <section className="col-span-12 flex min-h-0 flex-col rounded-xl glass-strong p-4 xl:col-span-3">
         <PanelHeader label="mission brief" action="profiles" onAction={() => onTab('profiles')} />
-        <div className="mt-3 max-h-[160px] shrink-0 overflow-auto rounded-lg bg-white/[0.035] p-3 ring-hairline">
+        <div className="mt-3 max-h-[140px] shrink-0 overflow-auto rounded-lg bg-white/[0.035] p-3 ring-hairline">
           <div className="label mb-2 text-fg-2">current objective</div>
           <p className="selectable text-[13px] leading-[1.55] text-fg-0">{objective}</p>
         </div>
@@ -1644,9 +1679,8 @@ function KanbanHealthView({
           <BriefStat label="agents" value={String(agents.length)} />
           <BriefStat label="blocked" value={String(blocked)} tone={blocked ? 'danger' : undefined} />
         </div>
-        <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-lg bg-black/20 p-3 ring-hairline">
-          <div className="label mb-3">active ownership</div>
-          <KanbanAssignmentList agents={agents} cards={cards} onAttach={onAttach} compact />
+        <div className="mt-3 min-h-0 flex-1">
+          <KanbanDispatchTicker systemEvents={telemetryEvents} />
         </div>
       </section>
 
@@ -1659,14 +1693,20 @@ function KanbanHealthView({
 }
 
 function KanbanAgentsView({
+  sessionId,
   cards,
   agents,
   source,
+  telemetryEvents,
+  runningAgents,
   onAttach,
 }: {
+  sessionId: string
   cards: KanbanCardView[]
   agents: AgentView[]
   source: SessionSnapshot | undefined
+  telemetryEvents: TelemetryEventView[]
+  runningAgents: number
   onAttach: (id: string, mode?: 'replace' | 'split') => void
 }) {
   const [selectedCardId, setSelectedCardId] = useState<string>('')
@@ -1698,7 +1738,17 @@ function KanbanAgentsView({
     if (next) setSelectedCardId(next.id)
   }
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-12 gap-3 overflow-hidden">
+    <div className="grid min-h-0 flex-1 grid-cols-12 grid-rows-[auto_auto_minmax(0,1fr)] gap-3 overflow-hidden">
+      <div className="col-span-12">
+        <KanbanAutopilotStrip
+          sessionId={sessionId}
+          systemEvents={telemetryEvents}
+          runningAgents={runningAgents}
+        />
+      </div>
+      <div className="col-span-12">
+        <MissionCoverCard cards={cards} restartCount={kanbanRestartCount(telemetryEvents)} />
+      </div>
       <section className="col-span-12 flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4 2xl:col-span-9">
         <div className="flex shrink-0 flex-wrap items-center gap-3 hairline-b pb-3">
           <div className="min-w-0 flex-1">
@@ -2293,6 +2343,7 @@ function KanbanCard({
                 p{card.priority}
               </span>
             )}
+            <KanbanVerdictBadge card={card} />
           </div>
           <h3 className={`mt-1 line-clamp-2 text-[12px] leading-[1.35] ${palette.title}`}>
             {card.title}
@@ -4609,6 +4660,73 @@ function kanbanProgress(cards: KanbanCardView[]): number {
   if (cards.length === 0) return 0
   const total = cards.reduce((acc, card) => acc + kanbanCardProgress(card), 0)
   return Math.round(total / cards.length)
+}
+
+function kanbanRestartCount(events: TelemetryEventView[]): number {
+  // Reads `kanban_replay` system events — the bridge emits one on each
+  // session init whose journal had prior events. The most recent
+  // event's `restartCount` is the source of truth.
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]
+    if (event.subtype !== 'kanban_replay') continue
+    const details = (event.details ?? {}) as Record<string, unknown>
+    const count = details.restartCount
+    if (typeof count === 'number') return count
+  }
+  return 0
+}
+
+function detectVerifierVerdict(
+  card: KanbanCardView,
+): { kind: 'verified' | 'rejected'; actor?: string } | null {
+  // Walk events newest-first. We classify the most recent verifier-driven
+  // transition:
+  //   • running card whose latest verifier event was an "updated -> running"
+  //     is one the verifier just rejected.
+  //   • done card whose latest verifier event was an "updated -> done" is
+  //     one the verifier just sealed.
+  const events = (card.events ?? []).slice().reverse()
+  for (const event of events) {
+    const actor = (event.actor || '').toLowerCase()
+    const message = (event.message || '').toLowerCase()
+    const detailsRaw = event.details
+    const details =
+      detailsRaw && typeof detailsRaw === 'object' ? (detailsRaw as Record<string, unknown>) : {}
+    const nextStatus =
+      typeof details.status === 'string' ? details.status.toLowerCase() : ''
+    const isVerifier = actor.includes('verify') || message.includes('verify')
+    if (!isVerifier) continue
+    if (card.status === 'done' && nextStatus === 'done') {
+      return { kind: 'verified', actor: event.actor }
+    }
+    if (card.status === 'running' && nextStatus === 'running') {
+      return { kind: 'rejected', actor: event.actor }
+    }
+  }
+  return null
+}
+
+function KanbanVerdictBadge({ card }: { card: KanbanCardView }) {
+  const verdict = detectVerifierVerdict(card)
+  if (!verdict) return null
+  if (verdict.kind === 'verified') {
+    return (
+      <span
+        className="rounded-full bg-ok/[0.12] px-1.5 py-0.5 font-mono text-[8.5px] uppercase text-ok ring-1 ring-ok/25"
+        title={verdict.actor ? `verified by ${verdict.actor}` : 'verified'}
+      >
+        ✓ verified
+      </span>
+    )
+  }
+  return (
+    <span
+      className="rounded-full bg-warn/[0.12] px-1.5 py-0.5 font-mono text-[8.5px] uppercase text-warn ring-1 ring-warn/25"
+      title="verifier rejected — see latest comment for feedback"
+    >
+      ✗ rejected
+    </span>
+  )
 }
 
 function kanbanCardProgress(card: KanbanCardView): number {

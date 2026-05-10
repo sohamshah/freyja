@@ -1458,9 +1458,31 @@ class _BridgeSession:
                 # the board so post-restart card creation continues to graft
                 # onto the right anchor.
                 self.mission_root_card_id = self.kanban_board._mission_root_id  # noqa: SLF001
+                # Count how many prior restarts the journal has seen by
+                # tallying the `restarted` events already written. The
+                # dashboard reads these via `kanban_replay` system events
+                # below so the user knows the mission outlived a restart.
+                prior_restarts = sum(
+                    1 for e in existing_events if e.get("kind") == "restarted"
+                )
+                journal.append({"kind": "restarted"})
                 log(
                     "info",
                     f"replayed {len(existing_events)} kanban events for {self.id}",
+                )
+                emit(
+                    {
+                        "type": "system_event",
+                        "sessionId": self.id,
+                        "subtype": "kanban_replay",
+                        "message": f"Replayed {len(existing_events)} kanban events",
+                        "details": {
+                            "eventCount": len(existing_events),
+                            "priorRestarts": prior_restarts,
+                            "restartCount": prior_restarts + 1,
+                            "chatVisible": False,
+                        },
+                    }
                 )
         if self.coordination_strategy == "isolated" and self.task_board is None:
             self.task_board = SessionTaskBoard()
@@ -2660,6 +2682,18 @@ class _BridgeSession:
             # User has something to say — don't burn turns on auto-dispatch
             # until they're processed. Mirrors the goal-loop preemption.
             return
+        # Emit a lightweight tick event so the renderer can show a
+        # next-tick countdown on the autopilot strip without having to
+        # poll. Idle ticks (no dispatch decisions) still send this so
+        # the countdown stays accurate.
+        self._emit_kanban_event(
+            "kanban_tick",
+            "dispatch tick",
+            details={
+                "source": source,
+                "intervalSeconds": self.KANBAN_DISPATCH_INTERVAL,
+            },
+        )
         sub_tool = self.tool_registry._tools.get("sub_agent")  # noqa: SLF001
         if sub_tool is None:
             return
