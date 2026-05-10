@@ -236,7 +236,7 @@ class KanbanTask:
 class SessionKanbanBoard:
     """Small in-memory board scoped to one Freyja session."""
 
-    def __init__(self) -> None:
+    def __init__(self, journal: Any | None = None) -> None:
         self._lock = asyncio.Lock()
         self._tasks: dict[str, KanbanTask] = {}
         self._counter = 0
@@ -247,6 +247,24 @@ class SessionKanbanBoard:
         # treated as gating-transparent in `_parents_done` — children of
         # the root start in `ready`, not `triage`.
         self._mission_root_id: str | None = None
+        # Append-only JSONL journal for cross-restart persistence (Move G).
+        # When set, every board mutation writes a single line. `None`
+        # keeps the board purely in-memory — used by tests and by code
+        # paths that don't need durability.
+        self._journal = journal
+        # While replaying from a journal we don't want to re-emit the
+        # exact same events back to the journal. Toggled by `replay_from`.
+        self._replaying = False
+
+    def _journal_append(self, event: dict[str, Any]) -> None:
+        if self._journal is None or self._replaying:
+            return
+        try:
+            self._journal.append(event)
+        except Exception:  # noqa: BLE001
+            # The journal is best-effort — never let a disk hiccup
+            # corrupt the in-memory board.
+            pass
 
     async def create(
         self,
@@ -324,6 +342,7 @@ class SessionKanbanBoard:
                 if task_id not in parent.children:
                     parent.children.append(task_id)
                     parent.updated_at = time.time()
+            self._journal_append({"kind": "create", "task": task.to_dict()})
             return task
 
     async def list(self) -> list[KanbanTask]:
@@ -418,6 +437,17 @@ class SessionKanbanBoard:
                 self._promote_unblocked_children(task.id, actor)
             elif task.status in TERMINAL_FAILURE_STATUSES:
                 self._mark_children_orphaned(task.id, actor)
+            # Snapshot the full task state on update. Replay applies the
+            # snapshot directly, which is simpler than reconstructing per-
+            # field deltas and identical in outcome.
+            self._journal_append(
+                {
+                    "kind": "update",
+                    "id": task.id,
+                    "actor": actor,
+                    "task": task.to_dict(),
+                }
+            )
             return task
 
     async def link(self, parent_id: str, child_id: str, *, actor: str) -> tuple[KanbanTask | None, str]:
@@ -438,6 +468,14 @@ class SessionKanbanBoard:
             parent.updated_at = child.updated_at = time.time()
             parent.append_event(KanbanEvent("linked", actor, f"Linked to {child_id}"))
             child.append_event(KanbanEvent("linked", actor, f"Depends on {parent_id}"))
+            self._journal_append(
+                {
+                    "kind": "link",
+                    "parent": parent_id,
+                    "child": child_id,
+                    "actor": actor,
+                }
+            )
             return child, "linked"
 
     async def exists(self, task_id: str) -> bool:
@@ -642,6 +680,9 @@ class SessionKanbanBoard:
                     "Promoted by operator override despite failed parent(s)",
                 )
             )
+            self._journal_append(
+                {"kind": "unblock", "id": task.id, "actor": actor}
+            )
             return task, "unblocked"
 
     def _would_create_cycle(self, parent_id: str, child_id: str) -> bool:
@@ -656,6 +697,141 @@ class SessionKanbanBoard:
             seen.add(current)
             stack.extend(self._tasks.get(current, KanbanTask(current, current)).parents)
         return False
+
+    def replay_events(self, events: list[dict[str, Any]]) -> None:
+        """Rebuild board state by replaying a journal log. Idempotent —
+        applies each event to the in-memory state without firing the
+        journal write-back. Should be called on a fresh board before
+        any tool calls land."""
+        self._replaying = True
+        try:
+            for event in events:
+                kind = event.get("kind")
+                if kind == "create":
+                    self._apply_create_snapshot(event.get("task") or {})
+                elif kind == "update":
+                    snapshot = event.get("task") or {}
+                    if snapshot.get("id") in self._tasks:
+                        self._apply_update_snapshot(snapshot)
+                elif kind == "link":
+                    self._apply_link(
+                        str(event.get("parent") or ""),
+                        str(event.get("child") or ""),
+                    )
+                elif kind == "unblock":
+                    cid = str(event.get("id") or "")
+                    task = self._tasks.get(cid)
+                    if task is not None:
+                        task.status = "ready"
+        finally:
+            self._replaying = False
+
+    def _apply_create_snapshot(self, snapshot: dict[str, Any]) -> None:
+        cid = snapshot.get("id")
+        if not cid or cid in self._tasks:
+            return
+        task = self._task_from_snapshot(snapshot)
+        self._tasks[task.id] = task
+        # Counter must track the highest assigned id so the next create
+        # generates a fresh, non-clashing id.
+        suffix = task.id.rsplit("_", 1)[-1]
+        if suffix.isdigit():
+            self._counter = max(self._counter, int(suffix))
+        if task.metadata.get("role") == "mission_root" and self._mission_root_id is None:
+            self._mission_root_id = task.id
+
+    def _apply_update_snapshot(self, snapshot: dict[str, Any]) -> None:
+        existing = self._tasks.get(snapshot.get("id") or "")
+        if existing is None:
+            return
+        merged = self._task_from_snapshot(snapshot)
+        existing.title = merged.title
+        existing.body = merged.body
+        existing.assignee = merged.assignee
+        existing.status = merged.status
+        existing.priority = merged.priority
+        existing.parents = list(merged.parents)
+        existing.children = list(merged.children)
+        existing.created_by = merged.created_by
+        existing.created_at = merged.created_at
+        existing.updated_at = merged.updated_at
+        existing.started_at = merged.started_at
+        existing.completed_at = merged.completed_at
+        existing.result = merged.result
+        existing.summary = merged.summary
+        existing.artifacts = list(merged.artifacts)
+        existing.metadata = dict(merged.metadata)
+        existing.comments = list(merged.comments)
+        existing.events = list(merged.events)
+        existing.comment_count = merged.comment_count
+        existing.event_count = merged.event_count
+        existing.consecutive_failures = merged.consecutive_failures
+
+    def _apply_link(self, parent_id: str, child_id: str) -> None:
+        parent = self._tasks.get(parent_id)
+        child = self._tasks.get(child_id)
+        if parent is None or child is None:
+            return
+        if child_id not in parent.children:
+            parent.children.append(child_id)
+        if parent_id not in child.parents:
+            child.parents.append(parent_id)
+
+    def _task_from_snapshot(self, snapshot: dict[str, Any]) -> KanbanTask:
+        # `to_dict()` emits timestamps in milliseconds and a few field
+        # name changes (createdBy etc.). Translate back to the dataclass
+        # shape. Unknown fields are dropped silently so a future schema
+        # bump doesn't break replay.
+        def _seconds(ms: Any) -> float | None:
+            if ms is None:
+                return None
+            try:
+                return float(ms) / 1000.0
+            except (TypeError, ValueError):
+                return None
+
+        comments = [
+            KanbanComment(
+                author=c.get("author", ""),
+                body=c.get("body", ""),
+                timestamp=(_seconds(c.get("timestamp")) or time.time()),
+            )
+            for c in (snapshot.get("comments") or [])
+        ]
+        events = [
+            KanbanEvent(
+                kind=e.get("kind", "updated"),
+                actor=e.get("actor", ""),
+                message=e.get("message", ""),
+                timestamp=(_seconds(e.get("timestamp")) or time.time()),
+                details=e.get("details") or {},
+            )
+            for e in (snapshot.get("events") or [])
+        ]
+        return KanbanTask(
+            id=str(snapshot.get("id") or ""),
+            title=str(snapshot.get("title") or ""),
+            body=str(snapshot.get("body") or ""),
+            assignee=str(snapshot.get("assignee") or ""),
+            status=str(snapshot.get("status") or "ready"),
+            priority=int(snapshot.get("priority") or 2),
+            parents=list(snapshot.get("parents") or []),
+            children=list(snapshot.get("children") or []),
+            created_by=str(snapshot.get("createdBy") or "parent"),
+            created_at=(_seconds(snapshot.get("createdAt")) or time.time()),
+            updated_at=(_seconds(snapshot.get("updatedAt")) or time.time()),
+            started_at=_seconds(snapshot.get("startedAt")),
+            completed_at=_seconds(snapshot.get("completedAt")),
+            result=str(snapshot.get("result") or ""),
+            summary=str(snapshot.get("summary") or ""),
+            artifacts=list(snapshot.get("artifacts") or []),
+            metadata=dict(snapshot.get("metadata") or {}),
+            comments=comments,
+            events=events,
+            comment_count=int(snapshot.get("commentCount") or len(comments)),
+            event_count=int(snapshot.get("eventCount") or len(events)),
+            consecutive_failures=int(snapshot.get("consecutiveFailures") or 0),
+        )
 
 
 KanbanEventCb = Callable[[dict[str, Any]], Awaitable[None] | None]

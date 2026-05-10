@@ -1447,7 +1447,21 @@ class _BridgeSession:
         self.memory_store = MemoryStore(Path(self.workspace))
         self.skill_store = SkillStore(Path(self.workspace))
         if strategy_uses_kanban(self.coordination_strategy) and self.kanban_board is None:
-            self.kanban_board = SessionKanbanBoard()
+            from bridge.kanban_journal import KanbanJournal, journal_path
+
+            journal = KanbanJournal(journal_path(self.id))
+            existing_events = journal.read_all()
+            self.kanban_board = SessionKanbanBoard(journal=journal)
+            if existing_events:
+                self.kanban_board.replay_events(existing_events)
+                # Repopulate the mission-root cache the bridge holds outside
+                # the board so post-restart card creation continues to graft
+                # onto the right anchor.
+                self.mission_root_card_id = self.kanban_board._mission_root_id  # noqa: SLF001
+                log(
+                    "info",
+                    f"replayed {len(existing_events)} kanban events for {self.id}",
+                )
         if self.coordination_strategy == "isolated" and self.task_board is None:
             self.task_board = SessionTaskBoard()
 
@@ -3656,6 +3670,50 @@ def _schedule_or_queue_turn(
     sess.pending_task = asyncio.create_task(
         _run_turn_queue(sess, content, attachments),
         name=f"turn-{sess.id}",
+    )
+    return True
+
+
+async def _inject_legacy_context_summary(
+    sess: "_BridgeSession",
+    summary: str,
+) -> bool:
+    """Inject a renderer-derived context summary into an empty runtime."""
+    if not summary:
+        return False
+    await sess.initialize()
+    if sess.session is None:
+        return False
+    try:
+        if len(sess.session.transcript) > 0:
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+
+    sess.session.add_user_message(
+        f"[Previous conversation summary — this session was started "
+        f"before transcript persistence was available. The summary "
+        f"below was extracted from the UI message history.]\n\n"
+        f"{summary}"
+    )
+    sess.session.add_assistant_message(
+        "Understood. I have context from the previous conversation "
+        "summary above. How can I help you continue?"
+    )
+    sess._save_transcript()  # noqa: SLF001
+    log(
+        "info",
+        f"injected legacy context summary for session {sess.id} "
+        f"({len(summary)} chars)",
+    )
+    emit(
+        {
+            "type": "system_event",
+            "sessionId": sess.id,
+            "subtype": "context_restored_legacy",
+            "message": f"Restored approximate context from UI history ({len(summary)} chars)",
+            "details": {"summaryLength": len(summary)},
+        }
     )
     return True
 
