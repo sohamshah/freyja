@@ -192,6 +192,15 @@ class KanbanTask:
         if len(self.comments) > DEFAULT_HISTORY_TAIL:
             del self.comments[: len(self.comments) - DEFAULT_HISTORY_TAIL]
 
+    @property
+    def spec(self) -> dict[str, Any]:
+        """Structured spec fields populated by the specifier agent
+        (Move D). Stored under `metadata` so the existing update path
+        flows through unchanged; this helper surfaces them at the top
+        level of `to_dict()` for the worker's convenience."""
+        keys = ("definition_of_done", "references", "verify_with", "token_budget")
+        return {key: self.metadata[key] for key in keys if key in self.metadata}
+
     def to_dict(self, *, include_history: bool = True) -> dict[str, Any]:
         payload = {
             "id": self.id,
@@ -215,6 +224,9 @@ class KanbanTask:
             "eventCount": self.event_count,
             "consecutiveFailures": self.consecutive_failures,
         }
+        spec = self.spec
+        if spec:
+            payload["spec"] = spec
         if include_history:
             payload["comments"] = [comment.to_dict() for comment in self.comments]
             payload["events"] = [event.to_dict() for event in self.events]

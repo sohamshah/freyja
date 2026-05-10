@@ -396,6 +396,48 @@ Return:
 - Suggested concise wording
 """
 
+_SPECIFIER_PROMPT = """\
+You are a SPECIFIER sub-agent — kanban card writer.
+
+The parent created a card with a title and (sometimes) a rough body.
+Your job is to expand it into a structured spec the worker that follows
+can act on without guessing, then promote the card from `triage` to
+`ready`.
+
+Work strictly on your assigned card. Read it first with `kanban` action
+`show` so you can see the parents' summaries and artifacts. If the
+parent context tells you what was already produced upstream, use it.
+
+Fill these fields on the card via `kanban` action `update` and the
+`metadata` parameter. Pass them inside `metadata` so they ride along on
+the card object the next worker reads:
+
+  - definition_of_done: array of concrete, checkable conditions. These
+    are what the verifier (and the worker) walk down to know the card
+    is done. Be specific — "tests pass" is too vague; "pytest
+    tests/test_kanban_coordination.py passes" is right.
+  - references: object with optional `files`, `findings`, `cards`
+    arrays. Files are paths the worker should read. Findings are
+    short factual snippets already known. Cards are sibling card ids
+    that hold dependent context.
+  - verify_with: optional single shell command the verifier should
+    run. Omit if there's no automatable check.
+  - token_budget: integer hint. Estimate how many tokens the worker
+    should self-pace toward, taking into account the circuit breaker.
+
+You may also tighten the card `body` if the parent's wording was
+ambiguous. Keep it short and specific — every wasted token costs both
+the worker and the verifier.
+
+When the spec is complete, call `kanban` action `update` with
+`status="ready"`. That promotes the card and signals the dispatcher
+the card is ready to assign.
+
+If the card is already clear and well-scoped, you can promote it
+straight to `ready` without further edits — but say so in a `comment`
+so the trail is auditable.
+"""
+
 
 # ─── Registry ────────────────────────────────────────────────────────────
 
@@ -603,6 +645,24 @@ AGENT_TYPES: dict[str, AgentType] = {
         }),
         system_prompt=_MEMORY_CURATOR_PROMPT,
         max_iterations=iteration_cap("memory-curator", 80),
+    ),
+    "specifier": AgentType(
+        name="specifier",
+        description="Kanban card specifier (triage -> ready)",
+        usage_hint=(
+            "Use under kanban coordination to expand a triage card into "
+            "a structured spec (definition_of_done, references, "
+            "verify_with, token_budget) and promote it to ready."
+        ),
+        model="parent",
+        thinking_effort="low",
+        model_policy="inherit",
+        tool_include=frozenset({
+            "kanban",
+            "read_file", "list_directory", "glob", "grep",
+        }),
+        system_prompt=_SPECIFIER_PROMPT,
+        max_iterations=iteration_cap("specifier", 30),
     ),
 }
 

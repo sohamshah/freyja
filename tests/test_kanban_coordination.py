@@ -613,6 +613,66 @@ async def test_kanban_worker_mode_rejects_mutations_on_other_cards() -> None:
     assert not good.is_error
 
 
+@pytest.mark.asyncio
+async def test_kanban_spec_fields_are_inlined_when_set() -> None:
+    """Move D — the specifier agent writes definition_of_done /
+    references / verify_with / token_budget into `metadata`. The board
+    surfaces them at the top level of show()/list() under `spec` so the
+    worker that follows doesn't have to dig through metadata."""
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+
+    create = await tool.execute(
+        "c1", {"action": "create", "title": "wire the dispatcher"},
+    )
+    card_id = json.loads(create.content)["task"]["id"]
+
+    await tool.execute(
+        "u1",
+        {
+            "action": "update",
+            "task_id": card_id,
+            "metadata": {
+                "definition_of_done": [
+                    "tests pass",
+                    "dispatcher emits kanban_dispatched events",
+                ],
+                "references": {"files": ["bridge/freyja_bridge.py"]},
+                "verify_with": "pytest tests/test_kanban_coordination.py",
+                "token_budget": 8000,
+            },
+        },
+    )
+
+    show = await tool.execute("c2", {"action": "show", "task_id": card_id})
+    task = json.loads(show.content)["task"]
+    assert "spec" in task
+    assert task["spec"]["verify_with"] == "pytest tests/test_kanban_coordination.py"
+    assert task["spec"]["token_budget"] == 8000
+    assert len(task["spec"]["definition_of_done"]) == 2
+
+    # A card without specifier-set metadata has no `spec` field — keeps
+    # the worker payload tight when there's nothing to surface.
+    plain = await tool.execute(
+        "c3", {"action": "create", "title": "no spec"},
+    )
+    assert "spec" not in json.loads(plain.content)["task"]
+
+
+def test_specifier_agent_type_registered_for_kanban() -> None:
+    """The specifier profile is wired into the global registry so the
+    dispatcher (Move A) can spawn it against triage cards."""
+    from bridge.tools.agent_types import get_agent_type
+
+    specifier = get_agent_type("specifier")
+    assert specifier.name == "specifier"
+    # Worker-narrowed: kanban + read-only file tools, nothing else.
+    assert specifier.tool_include is not None
+    assert "kanban" in specifier.tool_include
+    assert "write_file" not in specifier.tool_include
+    assert "bash" not in specifier.tool_include
+
+
 def test_registry_only_exposes_kanban_tool_in_kanban_mode(tmp_path) -> None:
     plain_registry = build_desktop_registry(
         workspace=tmp_path,
