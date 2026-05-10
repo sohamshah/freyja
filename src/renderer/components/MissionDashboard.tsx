@@ -1580,11 +1580,11 @@ function GoalTimeline({ goalState, dense = false }: { goalState: GoalStateView |
 
 const KANBAN_COLUMNS = [
   { id: 'todo', label: 'queued', hint: 'awaiting triage' },
-  { id: 'ready', label: 'ready', hint: 'planned and unblocked' },
-  { id: 'running', label: 'in progress', hint: 'owned by agents' },
+  { id: 'ready', label: 'ready', hint: 'unblocked work' },
+  { id: 'running', label: 'working', hint: 'owned by agents' },
   { id: 'blocked', label: 'blocked', hint: 'needs input' },
-  { id: 'done', label: 'complete', hint: 'handoff sealed' },
-  { id: 'cancelled', label: 'stopped', hint: 'no longer active' },
+  { id: 'done', label: 'finished', hint: 'sealed outputs' },
+  { id: 'cancelled', label: 'cancelled', hint: 'no longer active' },
 ] as const
 
 function KanbanHealthView({
@@ -1777,6 +1777,9 @@ function KanbanBoard({
       || (b.updatedAt ?? 0) - (a.updatedAt ?? 0),
     )
   }
+  const boardColumns = KANBAN_COLUMNS.filter((column) => !compact || column.id !== 'cancelled')
+  const activeColumns = boardColumns.filter((column) => (cardsByStatus.get(column.id)?.length ?? 0) > 0)
+  const quietColumns = boardColumns.filter((column) => (cardsByStatus.get(column.id)?.length ?? 0) === 0)
 
   if (cards.length === 0) {
     return (
@@ -1787,49 +1790,61 @@ function KanbanBoard({
   }
 
   return (
-    <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-xl bg-[radial-gradient(circle_at_50%_0%,rgba(127,184,232,0.08),transparent_36%),linear-gradient(rgba(255,255,255,0.025)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[length:auto,44px_44px,44px_44px] p-3 ring-1 ring-white/[0.055]">
-      <div
-        className={`grid min-w-[1180px] gap-3 ${compact ? 'grid-cols-5' : 'grid-cols-6'}`}
-      >
-        {KANBAN_COLUMNS.filter((column) => !compact || column.id !== 'cancelled').map((column) => {
-          const columnCards = cardsByStatus.get(column.id) ?? []
-          return (
-            <section
-              key={column.id}
-              className={`flex min-h-[360px] flex-col rounded-xl p-3 ${kanbanColumnClass(column.id)}`}
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <div className={`font-mono text-[12px] uppercase tracking-[0.08em] ${kanbanStatusClass(column.id)}`}>
-                    {column.label}
+    <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl bg-[radial-gradient(circle_at_50%_0%,rgba(127,184,232,0.08),transparent_36%),linear-gradient(rgba(255,255,255,0.025)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[length:auto,44px_44px,44px_44px] ring-1 ring-white/[0.055]">
+      {quietColumns.length > 0 && (
+        <div className="shrink-0 hairline-b px-3 py-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="label mr-1 text-[8.5px] text-fg-3">quiet lanes</span>
+            {quietColumns.map((column) => (
+              <span
+                key={column.id}
+                className={`rounded-full bg-white/[0.032] px-2 py-1 font-mono text-[9px] uppercase ring-hairline ${kanbanStatusClass(column.id)}`}
+              >
+                {column.label}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden p-3">
+        <div className="flex h-full min-w-max gap-4">
+          {activeColumns.map((column) => {
+            const columnCards = cardsByStatus.get(column.id) ?? []
+            return (
+              <section
+                key={column.id}
+                className={`flex min-h-0 shrink-0 flex-col overflow-hidden rounded-xl ${compact ? 'w-[320px]' : 'w-[380px]'} ${kanbanColumnClass(column.id)}`}
+              >
+                <div className="shrink-0 rounded-t-xl bg-black/18 px-3 py-3 shadow-[0_10px_24px_rgba(0,0,0,0.18)] ring-1 ring-white/[0.035] backdrop-blur-md">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className={`font-mono text-[12px] uppercase tracking-[0.08em] ${kanbanStatusClass(column.id)}`}>
+                        {column.label}
+                      </div>
+                      <div className="mt-0.5 font-mono text-[9px] text-fg-3">{column.hint}</div>
+                    </div>
+                    <span className="rounded-[3px] bg-black/35 px-2 py-1 font-mono text-[10px] text-fg-1 ring-1 ring-white/[0.09]">
+                      {columnCards.length}
+                    </span>
                   </div>
-                  <div className="mt-0.5 font-mono text-[9px] text-fg-3">{column.hint}</div>
                 </div>
-                <span className="rounded-[3px] bg-black/35 px-2 py-1 font-mono text-[10px] text-fg-1 ring-1 ring-white/[0.09]">
-                  {columnCards.length}
-                </span>
-              </div>
-              <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-auto pr-1">
-                {columnCards.map((card) => (
-                  <KanbanCard
-                    key={card.id}
-                    card={card}
-                    agents={agents.filter((agent) => agent.kanbanTaskId === card.id)}
-                    selected={card.id === selectedCardId}
-                    onSelect={onSelectCard}
-                    onAttach={onAttach}
-                    compact={compact}
-                  />
-                ))}
-                {columnCards.length === 0 && (
-                  <div className="rounded-lg border border-dashed border-white/8 px-3 py-5 text-center font-mono text-[10px] text-fg-3">
-                    empty
-                  </div>
-                )}
-              </div>
-            </section>
-          )
-        })}
+                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden px-3 py-3 pr-2">
+                  {columnCards.map((card) => (
+                    <KanbanCard
+                      key={card.id}
+                      card={card}
+                      agents={agents.filter((agent) => agent.kanbanTaskId === card.id)}
+                      selected={card.id === selectedCardId}
+                      onSelect={onSelectCard}
+                      onAttach={onAttach}
+                      compact={compact}
+                    />
+                  ))}
+                </div>
+              </section>
+            )
+          })}
+        </div>
       </div>
     </div>
   )
@@ -2041,11 +2056,9 @@ function DetailStat({ label, value }: { label: string; value: string }) {
 
 function KanbanCardMaterial({
   status,
-  agents,
   selected,
 }: {
   status: string
-  agents: AgentView[]
   selected: boolean
 }) {
   if (status === 'todo') {
@@ -2059,11 +2072,6 @@ function KanbanCardMaterial({
         <div className="pointer-events-none absolute left-3 top-1/2 flex -translate-y-1/2 flex-col gap-1.5 opacity-55">
           {Array.from({ length: 4 }).map((_, index) => (
             <span key={index} className="h-[3px] w-[3px] rounded-full bg-[#172023]" />
-          ))}
-        </div>
-        <div className="pointer-events-none absolute inset-x-8 bottom-1.5 flex justify-between opacity-45">
-          {Array.from({ length: 14 }).map((_, index) => (
-            <span key={index} className="h-[2px] w-[2px] rounded-full bg-[#172023]" />
           ))}
         </div>
       </>
@@ -2095,13 +2103,7 @@ function KanbanCardMaterial({
           ))}
         </div>
 
-        {/* Perforated tear-strip at the bottom: small dark dots like a
-            tear-off pad. */}
-        <div className="pointer-events-none absolute inset-x-9 bottom-2 z-0 flex justify-between opacity-50">
-          {Array.from({ length: 16 }).map((_, index) => (
-            <span key={index} className="h-[2px] w-[2px] rounded-full bg-[#1a1c12]" />
-          ))}
-        </div>
+        <div className="pointer-events-none absolute inset-x-9 bottom-3 z-0 border-t border-dashed border-[#1a1c12]/20" />
       </>
     )
   }
@@ -2112,23 +2114,12 @@ function KanbanCardMaterial({
         <div className="pointer-events-none absolute inset-x-3 bottom-2 h-5 rounded-[5px] border border-black/45 bg-[linear-gradient(180deg,rgba(255,255,255,0.045),rgba(0,0,0,0.52))] shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_-7px_18px_rgba(0,0,0,0.24)]" />
         <div className="pointer-events-none absolute inset-y-7 left-2 w-1.5 rounded-full bg-[linear-gradient(90deg,rgba(255,255,255,0.18),rgba(0,0,0,0.58))]" />
         <div className="pointer-events-none absolute inset-y-7 right-2 w-1.5 rounded-full bg-[linear-gradient(90deg,rgba(0,0,0,0.58),rgba(255,255,255,0.13))]" />
-        <div className="pointer-events-none absolute left-4 top-5 flex gap-1 opacity-65">
+        <div className="pointer-events-none absolute left-4 top-5 flex gap-1 opacity-55">
           {Array.from({ length: 5 }).map((_, index) => (
-            <span key={index} className="h-1 w-1 rounded-full bg-white/35 shadow-[0_0_8px_rgba(255,255,255,0.14)]" />
+            <span key={index} className="h-1 w-2 rounded-[1px] bg-white/35 shadow-[0_0_8px_rgba(255,255,255,0.14)]" />
           ))}
         </div>
         <div className="pointer-events-none absolute right-4 top-5 h-1.5 w-5 rounded-full bg-ok/45 shadow-[0_0_16px_rgba(112,184,103,0.24)]" />
-        {agents.length > 0 && (
-          <div className="pointer-events-none absolute -right-1 top-9 z-0 flex flex-col gap-1.5">
-            {agents.slice(0, 4).map((agent) => (
-              <span
-                key={agent.session.id}
-                className="h-5 w-3 rounded-l-full border border-white/18 bg-[linear-gradient(90deg,rgba(255,255,255,0.12),rgba(0,0,0,0.38))]"
-                style={{ boxShadow: `inset 2px 0 0 ${(PROFILE_HEX[agent.agentType] ?? PROFILE_HEX.general)}99, 0 0 14px ${(PROFILE_HEX[agent.agentType] ?? PROFILE_HEX.general)}22` }}
-              />
-            ))}
-          </div>
-        )}
       </>
     )
   }
@@ -2174,6 +2165,54 @@ function KanbanCardMaterial({
   )
 }
 
+function KanbanAgentBadge({
+  agents,
+  onAttach,
+  variant,
+}: {
+  agents: AgentView[]
+  onAttach: (id: string, mode?: 'replace' | 'split') => void
+  variant: 'dark' | 'paper' | 'ticket'
+}) {
+  if (agents.length === 0) return null
+  const firstAgent = agents[0]
+  if (!firstAgent) return null
+  const label = agents.length === 1
+    ? `agent ${firstAgent.agentType.replace(/-/g, ' ')}`
+    : `${agents.length} agents`
+  const title = agents
+    .map((agent) => `${agent.agentType}: ${agent.session.title || agent.session.id}`)
+    .join('\n')
+  const variantClass = variant === 'paper'
+    ? 'bg-[#0e0f08]/[0.08] text-[#11140b] ring-[#0e0f08]/18 hover:bg-[#0e0f08]/[0.12]'
+    : variant === 'ticket'
+      ? 'bg-[#10191d]/[0.075] text-[#10191d] ring-[#10191d]/18 hover:bg-[#10191d]/[0.12]'
+      : 'bg-black/38 text-fg-1 ring-white/[0.13] hover:bg-white/[0.065] hover:text-fg-0'
+
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation()
+        onAttach(firstAgent.session.id, 'split')
+      }}
+      title={title}
+      className={`group flex max-w-[142px] shrink-0 items-center gap-1.5 rounded-full px-2 py-1 font-mono text-[8.5px] uppercase leading-none ring-1 transition ${variantClass}`}
+    >
+      <span className="truncate">{label}</span>
+      <span className="flex shrink-0 items-center gap-0.5">
+        {agents.slice(0, 4).map((agent) => (
+          <span
+            key={agent.session.id}
+            className="h-1.5 w-1.5 rounded-full shadow-[0_0_10px_rgba(255,255,255,0.10)]"
+            style={{ background: PROFILE_HEX[agent.agentType] ?? PROFILE_HEX.general }}
+          />
+        ))}
+      </span>
+    </button>
+  )
+}
+
 function KanbanCard({
   card,
   agents,
@@ -2211,7 +2250,6 @@ function KanbanCard({
         latestText: 'text-[#3a3d2c]',
         pill: 'rounded bg-[#0e0f08]/[0.07] text-[#1a1c12] px-1.5 py-0.5 ring-1 ring-[#0e0f08]/15',
         summary: 'rounded-md bg-[#0e0f08]/[0.06] px-2 py-1.5 text-[10px] leading-[1.4] text-[#1a1c12] ring-1 ring-[#0e0f08]/15',
-        avatar: 'h-6 w-6 rounded-full bg-[#0e0f08]/15 ring-1 ring-[#0e0f08]/30',
       }
     : ticket
       ? {
@@ -2226,7 +2264,6 @@ function KanbanCard({
           latestText: 'text-[#334248]',
           pill: 'rounded bg-[#10191d]/[0.07] text-[#172023] px-1.5 py-0.5 ring-1 ring-[#10191d]/15',
           summary: 'rounded-md bg-[#10191d]/[0.055] px-2 py-1.5 text-[10px] leading-[1.4] text-[#172023] ring-1 ring-[#10191d]/12',
-          avatar: 'h-6 w-6 rounded-full bg-[#10191d]/12 ring-1 ring-[#10191d]/25',
         }
     : {
         id: 'text-fg-1',
@@ -2240,8 +2277,8 @@ function KanbanCard({
         latestText: 'text-fg-3',
         pill: 'rounded bg-white/[0.04] px-1.5 py-0.5 ring-hairline',
         summary: 'rounded-md bg-white/[0.035] px-2 py-1.5 text-[10px] leading-[1.4] text-fg-2 ring-hairline',
-        avatar: 'h-6 w-6 rounded-full bg-black/50 ring-1 ring-white/15',
       }
+  const agentBadgeVariant = paper ? 'paper' : ticket ? 'ticket' : 'dark'
 
   return (
     <article
@@ -2258,7 +2295,7 @@ function KanbanCard({
       }}
       className={materialClass}
     >
-      <KanbanCardMaterial status={card.status} agents={agents} selected={selected} />
+      <KanbanCardMaterial status={card.status} selected={selected} />
       <div className="relative z-10 flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -2281,28 +2318,7 @@ function KanbanCard({
             </div>
           )}
         </div>
-        {agents.length > 0 && (
-          <div className="flex shrink-0 -space-x-1">
-            {agents.slice(0, 3).map((agent) => (
-              <button
-                key={agent.session.id}
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation()
-                  onAttach(agent.session.id, 'split')
-                }}
-                title={agent.session.title || agent.session.id}
-                className={palette.avatar}
-                style={{ boxShadow: `inset 0 0 0 1px ${(PROFILE_HEX[agent.agentType] ?? PROFILE_HEX.general)}80` }}
-              >
-                <span
-                  className="mx-auto block h-2 w-2 rounded-full"
-                  style={{ background: PROFILE_HEX[agent.agentType] ?? PROFILE_HEX.general }}
-                />
-              </button>
-            ))}
-          </div>
-        )}
+        <KanbanAgentBadge agents={agents} onAttach={onAttach} variant={agentBadgeVariant} />
       </div>
       <div className={`relative z-10 mt-3 h-1.5 overflow-hidden ${kanbanProgressTrackClass(card.status)}`}>
         <div
