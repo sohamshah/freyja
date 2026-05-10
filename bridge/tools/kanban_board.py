@@ -13,6 +13,16 @@ from bridge.tools.base import ToolDefinition, ToolResult, ToolTier
 
 STATUSES = ("todo", "ready", "running", "blocked", "done", "cancelled")
 TERMINAL_STATUSES = {"done", "cancelled"}
+# Terminal states a parent can reach where its `todo` children's dependencies
+# can never be satisfied. Children of these parents get `kanban_orphan` events
+# rather than auto-promotion or auto-cancellation. Task #13 will extend this
+# with `failed` when the circuit breaker lands.
+TERMINAL_FAILURE_STATUSES = {"cancelled"}
+# Rolling-window cap on each card's `events` and `comments` lists. The full
+# history is still queryable via the `show_history` tool action; this just
+# bounds what rides along on every `to_dict()` payload so long missions don't
+# blow up the per-event JSON the dashboard ingests.
+DEFAULT_HISTORY_TAIL = 30
 
 
 @dataclass
@@ -66,8 +76,26 @@ class KanbanTask:
     summary: str = ""
     artifacts: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    # `comments` and `events` are append-only working lists trimmed to the
+    # last `DEFAULT_HISTORY_TAIL` entries. `comment_count` and `event_count`
+    # track totals so the dashboard can render "+ N older entries" affordances
+    # and an explicit `show_history` action can return the full backing log.
     comments: list[KanbanComment] = field(default_factory=list)
     events: list[KanbanEvent] = field(default_factory=list)
+    comment_count: int = 0
+    event_count: int = 0
+
+    def append_event(self, event: KanbanEvent) -> None:
+        self.events.append(event)
+        self.event_count += 1
+        if len(self.events) > DEFAULT_HISTORY_TAIL:
+            del self.events[: len(self.events) - DEFAULT_HISTORY_TAIL]
+
+    def append_comment(self, comment: KanbanComment) -> None:
+        self.comments.append(comment)
+        self.comment_count += 1
+        if len(self.comments) > DEFAULT_HISTORY_TAIL:
+            del self.comments[: len(self.comments) - DEFAULT_HISTORY_TAIL]
 
     def to_dict(self, *, include_history: bool = True) -> dict[str, Any]:
         payload = {
@@ -88,6 +116,8 @@ class KanbanTask:
             "result": self.result,
             "artifacts": self.artifacts,
             "metadata": self.metadata,
+            "commentCount": self.comment_count,
+            "eventCount": self.event_count,
         }
         if include_history:
             payload["comments"] = [comment.to_dict() for comment in self.comments]
@@ -127,12 +157,15 @@ class SessionKanbanBoard:
                 body=body.strip(),
                 assignee=assignee.strip(),
                 status=status,
-                priority=max(0, min(int(priority or 2), 5)),
+                # `priority or 2` was a footgun: priority=0 (most urgent)
+                # silently fell back to 2 (default). Distinguish "not given"
+                # from "given as 0" explicitly.
+                priority=max(0, min(int(priority if priority is not None else 2), 5)),
                 parents=clean_parents,
                 created_by=actor,
                 metadata=metadata or {},
             )
-            task.events.append(
+            task.append_event(
                 KanbanEvent(
                     "created",
                     actor,
@@ -211,14 +244,16 @@ class SessionKanbanBoard:
                 task.metadata = {**task.metadata, **metadata}
                 changes["metadata"] = sorted(metadata.keys())
             if comment:
-                task.comments.append(KanbanComment(actor, comment.strip()))
+                task.append_comment(KanbanComment(actor, comment.strip()))
                 changes["comment"] = True
             task.updated_at = now
-            task.events.append(
+            task.append_event(
                 KanbanEvent("updated", actor, f"Updated {task.id}", details=changes)
             )
             if task.status == "done":
                 self._promote_unblocked_children(task.id, actor)
+            elif task.status in TERMINAL_FAILURE_STATUSES:
+                self._mark_children_orphaned(task.id, actor)
             return task
 
     async def link(self, parent_id: str, child_id: str, *, actor: str) -> tuple[KanbanTask | None, str]:
@@ -237,13 +272,133 @@ class SessionKanbanBoard:
                 child.parents.append(parent_id)
             child.status = "ready" if self._parents_done(child) else "todo"
             parent.updated_at = child.updated_at = time.time()
-            parent.events.append(KanbanEvent("linked", actor, f"Linked to {child_id}"))
-            child.events.append(KanbanEvent("linked", actor, f"Depends on {parent_id}"))
+            parent.append_event(KanbanEvent("linked", actor, f"Linked to {child_id}"))
+            child.append_event(KanbanEvent("linked", actor, f"Depends on {parent_id}"))
             return child, "linked"
 
     async def exists(self, task_id: str) -> bool:
         async with self._lock:
             return task_id in self._tasks
+
+    async def digest(self, *, max_per_bucket: int = 8) -> dict[str, Any]:
+        """Compact triage view of the whole board.
+
+        Buckets surface the cards the parent agent most likely needs to act
+        on next: in-flight work with the assignee and age; recently-unblocked
+        cards ready to dispatch; stuck (blocked) cards needing human input;
+        and cards still waiting on dependencies. Caller can drill into any
+        id via `show`. Intentionally returns only summary fields and id —
+        ride-along payload is small enough for repeated calls."""
+        async with self._lock:
+            now = time.time()
+            running: list[dict[str, Any]] = []
+            ready: list[dict[str, Any]] = []
+            blocked: list[dict[str, Any]] = []
+            waiting: list[dict[str, Any]] = []
+            for task in self._tasks.values():
+                if task.status == "running":
+                    running.append(
+                        {
+                            "id": task.id,
+                            "title": task.title,
+                            "assignee": task.assignee,
+                            "priority": task.priority,
+                            "ageSeconds": int(now - (task.started_at or task.updated_at)),
+                            "lastUpdateSeconds": int(now - task.updated_at),
+                        }
+                    )
+                elif task.status == "ready":
+                    ready.append(
+                        {
+                            "id": task.id,
+                            "title": task.title,
+                            "assignee": task.assignee,
+                            "priority": task.priority,
+                            "promotedAtSeconds": int(now - task.updated_at),
+                        }
+                    )
+                elif task.status == "blocked":
+                    blocked.append(
+                        {
+                            "id": task.id,
+                            "title": task.title,
+                            "assignee": task.assignee,
+                            "lastUpdateSeconds": int(now - task.updated_at),
+                            "lastComment": (
+                                task.comments[-1].body if task.comments else ""
+                            ),
+                        }
+                    )
+                elif task.status == "todo":
+                    unresolved = [
+                        pid
+                        for pid in task.parents
+                        if (parent := self._tasks.get(pid)) is None
+                        or parent.status != "done"
+                    ]
+                    waiting.append(
+                        {
+                            "id": task.id,
+                            "title": task.title,
+                            "priority": task.priority,
+                            "unresolvedParents": unresolved,
+                        }
+                    )
+
+            running.sort(key=lambda r: r["lastUpdateSeconds"], reverse=True)
+            ready.sort(key=lambda r: (r["priority"], r["promotedAtSeconds"]))
+            blocked.sort(key=lambda r: r["lastUpdateSeconds"], reverse=True)
+            waiting.sort(key=lambda r: r["priority"])
+            return {
+                "running": running[:max_per_bucket],
+                "ready": ready[:max_per_bucket],
+                "blocked": blocked[:max_per_bucket],
+                "waiting": waiting[:max_per_bucket],
+                "totals": {
+                    "running": len(running),
+                    "ready": len(ready),
+                    "blocked": len(blocked),
+                    "waiting": len(waiting),
+                    "cards": len(self._tasks),
+                },
+            }
+
+    async def parent_context(self, task_id: str) -> dict[str, Any] | None:
+        """Compact upstream snapshot for one parent card. Returned inline
+        from `show` so a worker reading its assignment can see what each
+        of its parents produced without a chain of follow-up calls."""
+        async with self._lock:
+            parent = self._tasks.get(task_id)
+            if parent is None:
+                return None
+            return {
+                "id": parent.id,
+                "title": parent.title,
+                "status": parent.status,
+                "assignee": parent.assignee,
+                "summary": parent.summary,
+                "artifacts": list(parent.artifacts),
+            }
+
+    async def history(self, task_id: str) -> dict[str, Any] | None:
+        """Return the *trimmed-but-present* tail of comments/events along with
+        the total counters. The board keeps only the last DEFAULT_HISTORY_TAIL
+        entries in memory; that's the same tail `show` returns. This exists
+        as a distinct action so the agent can ask for history explicitly
+        without paying the cost on every `show` call."""
+        async with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return None
+            return {
+                "id": task.id,
+                "title": task.title,
+                "commentCount": task.comment_count,
+                "eventCount": task.event_count,
+                "tailSize": DEFAULT_HISTORY_TAIL,
+                "comments": [comment.to_dict() for comment in task.comments],
+                "events": [event.to_dict() for event in task.events],
+            }
 
     def _parents_done(self, task: KanbanTask) -> bool:
         return all(self._tasks[parent_id].status == "done" for parent_id in task.parents)
@@ -255,9 +410,67 @@ class SessionKanbanBoard:
             if child and child.status == "todo" and self._parents_done(child):
                 child.status = "ready"
                 child.updated_at = time.time()
-                child.events.append(
+                child.append_event(
                     KanbanEvent("promoted", actor, "All dependencies complete")
                 )
+
+    def _mark_children_orphaned(self, parent_id: str, actor: str) -> None:
+        """Surface an `orphaned` event on children of a terminal-failure
+        parent. We deliberately do not auto-cancel the children — the
+        parent agent gets to decide via the `unblock` action whether to
+        proceed without that dependency, cancel the child, or wait."""
+        parent = self._tasks[parent_id]
+        for child_id in parent.children:
+            child = self._tasks.get(child_id)
+            if not child or child.status not in {"todo", "ready"}:
+                continue
+            child.append_event(
+                KanbanEvent(
+                    "orphaned",
+                    actor,
+                    f"Parent {parent_id} is {parent.status}; use unblock to proceed",
+                    details={"parent": parent_id, "parent_status": parent.status},
+                )
+            )
+            child.updated_at = time.time()
+
+    async def unblock(self, task_id: str, *, actor: str) -> tuple[KanbanTask | None, str]:
+        """Operator-driven override that flips an orphaned `todo` child
+        to `ready`. Only legal when at least one of the card's parents is
+        in a terminal-failure state and all *other* parents are done."""
+        async with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return None, "card not found"
+            if task.status != "todo":
+                return task, f"card is {task.status!r}; unblock only works on todo cards"
+            if not task.parents:
+                return task, "card has no parents to unblock"
+            has_failure_parent = any(
+                (parent := self._tasks.get(pid)) is not None
+                and parent.status in TERMINAL_FAILURE_STATUSES
+                for pid in task.parents
+            )
+            if not has_failure_parent:
+                return task, "no parent has terminated in failure; nothing to unblock"
+            non_failure_parents_done = all(
+                (parent := self._tasks.get(pid)) is None
+                or parent.status == "done"
+                or parent.status in TERMINAL_FAILURE_STATUSES
+                for pid in task.parents
+            )
+            if not non_failure_parents_done:
+                return task, "other parents are still pending; cannot unblock yet"
+            task.status = "ready"
+            task.updated_at = time.time()
+            task.append_event(
+                KanbanEvent(
+                    "unblocked",
+                    actor,
+                    "Promoted by operator override despite failed parent(s)",
+                )
+            )
+            return task, "unblocked"
 
     def _would_create_cycle(self, parent_id: str, child_id: str) -> bool:
         stack = [parent_id]
@@ -313,8 +526,10 @@ complete, or block the card with useful detail.""",
                         "type": "string",
                         "enum": [
                             "list",
+                            "digest",
                             "create",
                             "show",
+                            "show_history",
                             "claim",
                             "update",
                             "comment",
@@ -322,6 +537,7 @@ complete, or block the card with useful detail.""",
                             "block",
                             "heartbeat",
                             "link",
+                            "unblock",
                         ],
                     },
                     "task_id": {"type": "string", "description": "Kanban card id"},
@@ -377,13 +593,16 @@ complete, or block the card with useful detail.""",
             tasks = [task.to_dict(include_history=False) for task in await self._board.list()]
             return {"action": action, "tasks": tasks, "count": len(tasks)}
 
+        if action == "digest":
+            return {"action": action, "digest": await self._board.digest()}
+
         if action == "create":
             task = await self._board.create(
                 title=str(arguments.get("title") or "").strip(),
                 body=str(arguments.get("body") or "").strip(),
                 assignee=str(arguments.get("assignee") or "").strip(),
                 parents=[str(pid) for pid in arguments.get("parents") or []],
-                priority=int(arguments.get("priority") or 2),
+                priority=int(arguments.get("priority")) if arguments.get("priority") is not None else 2,
                 actor=actor,
                 metadata=dict(arguments.get("metadata") or {}),
             )
@@ -391,7 +610,24 @@ complete, or block the card with useful detail.""",
 
         if action == "show":
             task = await self._require_task(arguments)
-            return {"action": action, "task": task.to_dict()}
+            # Inline each direct parent's summary, status, and artifacts so
+            # the worker doesn't have to make a separate `show` call per
+            # parent to get the upstream context it needs. One level deep
+            # only — no transitive recursion, to keep the payload bounded.
+            parent_context = [
+                ctx
+                for pid in task.parents
+                if (ctx := await self._board.parent_context(pid)) is not None
+            ]
+            payload = task.to_dict()
+            if parent_context:
+                payload["parentContext"] = parent_context
+            return {"action": action, "task": payload}
+
+        if action == "show_history":
+            task = await self._require_task(arguments)
+            history = await self._board.history(task.id)
+            return {"action": action, "history": history}
 
         if action == "claim":
             task = await self._require_task(arguments)
@@ -454,6 +690,16 @@ complete, or block the card with useful detail.""",
             if child is None:
                 raise ValueError(message)
             return {"action": action, "message": message, "task": child.to_dict()}
+
+        if action == "unblock":
+            task = await self._require_task(arguments)
+            updated, message = await self._board.unblock(task.id, actor=actor)
+            if updated is None:
+                raise ValueError(message)
+            if message != "unblocked":
+                # Surface a soft refusal as an error so the agent sees why.
+                raise ValueError(message)
+            return {"action": action, "message": message, "task": updated.to_dict()}
 
         raise ValueError(f"unknown action {action!r}")
 
