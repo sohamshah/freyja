@@ -233,3 +233,100 @@ async def test_dispatcher_preempted_by_queued_user_messages() -> None:
     session.queued_messages = [("a queued user note", None)]
     await session._kanban_tick(source="test")
     assert sub_tool.calls == []
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_reclaims_stuck_running_card() -> None:
+    """A running card with no activity past KANBAN_RECLAIM_SECONDS is
+    flipped to `crashed` and the dispatcher will re-pick it up on the
+    next tick."""
+    import time as _time
+
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    create = await tool.execute(
+        "c1", {"action": "create", "title": "work", "assignee": "code"},
+    )
+    card_id = json.loads(create.content)["task"]["id"]
+    await tool.execute(
+        "c2", {"action": "update", "task_id": card_id, "status": "running"},
+    )
+    # Backdate the card's last activity past the reclaim window.
+    card = await board.get(card_id)
+    assert card is not None
+    card.updated_at = _time.time() - (_BridgeSession.KANBAN_RECLAIM_SECONDS + 60)
+
+    # Wire the kanban tool into the stubbed registry so the sweep can
+    # invoke `update`.
+    sub_tool = _StubSubAgentTool()
+    session = _make_session(board=board, sub_tool=sub_tool)
+    kanban_tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    session.tool_registry._tools["kanban"] = kanban_tool
+
+    await session._kanban_tick(source="test")
+    refreshed = await board.get(card_id)
+    assert refreshed is not None
+    assert refreshed.status == "crashed"
+    assert refreshed.consecutive_failures == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_does_not_reclaim_fresh_running_card() -> None:
+    """A running card that's only mildly stale (past STALE_SECONDS but
+    not RECLAIM_SECONDS) gets a `kanban_stale` signal but no state
+    change — the operator decides what to do."""
+    import time as _time
+
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    create = await tool.execute(
+        "c1", {"action": "create", "title": "work", "assignee": "code"},
+    )
+    card_id = json.loads(create.content)["task"]["id"]
+    await tool.execute(
+        "c2", {"action": "update", "task_id": card_id, "status": "running"},
+    )
+    card = await board.get(card_id)
+    assert card is not None
+    card.updated_at = _time.time() - (_BridgeSession.KANBAN_STALE_SECONDS + 30)
+
+    sub_tool = _StubSubAgentTool()
+    session = _make_session(board=board, sub_tool=sub_tool)
+    session.tool_registry._tools["kanban"] = KanbanTool(
+        board, actor_id="parent", actor_label="parent"
+    )
+    await session._kanban_tick(source="test")
+    refreshed = await board.get(card_id)
+    assert refreshed is not None
+    assert refreshed.status == "running"
+    assert refreshed.consecutive_failures == 0
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_refreshes_card_updated_at() -> None:
+    """A heartbeat is the worker saying 'still alive' — it must move
+    `updated_at` forward so the dispatcher doesn't reclaim a card
+    whose worker is making slow but real progress."""
+    import time as _time
+
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    create = await tool.execute("c1", {"action": "create", "title": "slow"})
+    card_id = json.loads(create.content)["task"]["id"]
+    await tool.execute(
+        "c2", {"action": "update", "task_id": card_id, "status": "running"},
+    )
+    card = await board.get(card_id)
+    assert card is not None
+    card.updated_at = _time.time() - 120  # 2 minutes ago
+
+    worker = KanbanTool(
+        board,
+        actor_id="worker",
+        actor_label="worker",
+        owned_task_id=card_id,
+    )
+    await worker.execute("h1", {"action": "heartbeat"})
+    refreshed = await board.get(card_id)
+    assert refreshed is not None
+    assert _time.time() - refreshed.updated_at < 1.0

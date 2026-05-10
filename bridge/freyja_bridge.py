@@ -2555,6 +2555,16 @@ class _BridgeSession:
 
     KANBAN_DISPATCH_INTERVAL = 30.0
     KANBAN_MAX_PARALLEL = 3
+    # A running card with no `updated_at` activity for this long is
+    # flagged via `kanban_stale`. The flag is informational — it
+    # surfaces to the dashboard so the user can investigate.
+    KANBAN_STALE_SECONDS = 180.0
+    # A running card whose worker has gone silent for *this* long gets
+    # reclaimed: status flips crashed (so the breaker counts the
+    # failure) and the dispatcher will respawn it on its next tick.
+    # Higher than STALE_SECONDS so dashboards stay informed before any
+    # state mutation lands.
+    KANBAN_RECLAIM_SECONDS = 600.0
 
     def _emit_kanban_event(
         self,
@@ -2732,6 +2742,62 @@ class _BridgeSession:
                 log(
                     "warn",
                     f"kanban dispatch for {card.id} failed: {exc}",
+                )
+
+        # Stale-card sweep. Runs every tick regardless of capacity, so a
+        # saturated board still surfaces silent workers to the operator
+        # and can break ties when in-flight cards run too long.
+        await self._sweep_stale_kanban_cards(cards)
+
+    async def _sweep_stale_kanban_cards(self, cards: list[Any]) -> None:
+        if self.kanban_board is None:
+            return
+        now = time.time()
+        kanban_tool = self.tool_registry._tools.get("kanban") if self.tool_registry else None  # noqa: SLF001
+        for card in cards:
+            if card.status != "running":
+                continue
+            if card.metadata.get("role") == "mission_root":
+                continue
+            age = now - card.updated_at
+            if age >= self.KANBAN_RECLAIM_SECONDS and kanban_tool is not None:
+                # Hand the card back to the dispatcher by flipping it to
+                # `crashed` — the circuit breaker accounting will catch
+                # cards that flap, and the next tick will pick it up as
+                # retry-eligible.
+                try:
+                    await kanban_tool.execute(
+                        f"reclaim-{card.id}-{int(now * 1000):x}",
+                        {
+                            "action": "update",
+                            "task_id": card.id,
+                            "status": "crashed",
+                            "comment": (
+                                f"Reclaimed by dispatcher after "
+                                f"{int(age)}s without activity"
+                            ),
+                        },
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log("warn", f"reclaim of {card.id} failed: {exc}")
+                    continue
+                self._emit_kanban_event(
+                    "kanban_reclaimed",
+                    f"Reclaimed stuck card {card.id}",
+                    details={"cardId": card.id, "ageSeconds": int(age)},
+                    chat_visible=True,
+                )
+                # Drop from the in-flight set so the dispatcher can
+                # respawn it immediately on the next tick instead of
+                # waiting for a sub-agent registry refresh.
+                self._kanban_dispatched.discard(card.id)
+            elif age >= self.KANBAN_STALE_SECONDS:
+                # Informational only — no state mutation, just a signal
+                # for the dashboard so the operator notices.
+                self._emit_kanban_event(
+                    "kanban_stale",
+                    f"Card {card.id} stalled — no activity in {int(age)}s",
+                    details={"cardId": card.id, "ageSeconds": int(age)},
                 )
 
     def _board_parents_satisfied(self, card: Any) -> bool:
@@ -4081,37 +4147,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         sess = state.get(session_id)
         if sess is None:
             return
-        await sess.initialize()
-        if sess.session is None:
-            return
-        # Only inject if the transcript is truly empty — don't clobber
-        # a restored or active transcript.
-        if len(sess.session.transcript) > 0:
-            return
-        sess.session.add_user_message(
-            f"[Previous conversation summary — this session was started "
-            f"before transcript persistence was available. The summary "
-            f"below was extracted from the UI message history.]\n\n"
-            f"{summary}"
-        )
-        sess.session.add_assistant_message(
-            "Understood. I have context from the previous conversation "
-            "summary above. How can I help you continue?"
-        )
-        log(
-            "info",
-            f"injected legacy context summary for session {session_id} "
-            f"({len(summary)} chars)",
-        )
-        emit(
-            {
-                "type": "system_event",
-                "sessionId": session_id,
-                "subtype": "context_restored_legacy",
-                "message": f"Restored approximate context from UI history ({len(summary)} chars)",
-                "details": {"summaryLength": len(summary)},
-            }
-        )
+        await _inject_legacy_context_summary(sess, str(summary))
         return
 
     if ctype == "send_message":
@@ -4125,6 +4161,9 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             reasoning_level=cmd.get("reasoningLevel"),
             coordination_strategy=cmd.get("coordinationStrategy"),
         )
+        context_summary = cmd.get("contextSummary")
+        if isinstance(context_summary, str) and context_summary:
+            await _inject_legacy_context_summary(sess, context_summary)
 
         _schedule_or_queue_turn(sess, content, attachments)
         return
