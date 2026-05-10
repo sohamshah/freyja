@@ -45,6 +45,7 @@ class SubAgentRecord:
     tools_called: int = 0
     agent_type_name: str = "general"
     artifact_path: str | None = None
+    created_files: list[str] = field(default_factory=list)
     # Optional direct-cancel hook used by the computer_use tool: the
     # child session registers its asyncio.Event here, and the
     # emergency-stop command handler can wake it instantly (zero poll

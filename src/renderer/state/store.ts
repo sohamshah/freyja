@@ -1484,28 +1484,33 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       }
       if (ev.type === 'session_completed') {
         const artifactPath = (ev as any).artifactPath as string | undefined
+        const createdFiles = ((ev as any).createdFiles as string[] | undefined) ?? []
         const sub = prev.subagents[ev.sessionId!]
         // If the completed session has an artifact, add to parent's artifacts
         let nextArtifacts = prev.artifacts
-        if (artifactPath && sub) {
-          const filename = artifactPath.split('/').pop() ?? artifactPath
+        const addCompletedArtifact = (path: string, operation: string) => {
+          if (!path || !sub || nextArtifacts.some((a) => a.path === path)) return
+          const filename = path.split('/').pop() ?? path
           const ext = filename.includes('.') ? filename.split('.').pop()?.toLowerCase() ?? '' : ''
-          const exists = prev.artifacts.some((a) => a.path === artifactPath)
-          if (!exists) {
-            nextArtifacts = [
-              ...prev.artifacts,
-              {
-                id: ev.sessionId!,
-                path: artifactPath,
-                filename,
-                creator: ev.sessionId!,
-                creatorLabel: sub.label ?? 'Subagent',
-                createdAt: Date.now(),
-                fileType: ext,
-                operation: 'subagent_artifact',
-              },
-            ]
-          }
+          nextArtifacts = [
+            ...nextArtifacts,
+            {
+              id: `${ev.sessionId!}:${path}`,
+              path,
+              filename,
+              creator: ev.sessionId!,
+              creatorLabel: sub.label ?? 'Subagent',
+              createdAt: Date.now(),
+              fileType: ext,
+              operation,
+            },
+          ]
+        }
+        if (artifactPath) {
+          addCompletedArtifact(artifactPath, 'subagent_artifact')
+        }
+        for (const path of createdFiles) {
+          addCompletedArtifact(path, path === artifactPath ? 'subagent_artifact' : 'write')
         }
         // Also scan the child's archived slice for write_file calls
         const childSlice = prev.sessionArchive[ev.sessionId!]

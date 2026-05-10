@@ -55,6 +55,7 @@ export interface SubagentRecord {
   parentId?: string
   result?: string
   artifactPath?: string
+  createdFiles?: string[]
   coordinationStrategy?: CoordinationStrategy
   kanbanTaskId?: string
   taskId?: string
@@ -465,6 +466,7 @@ export type BridgeEvent =
       outputTokens?: number
       toolsCalled?: number
       artifactPath?: string
+      createdFiles?: string[]
     } & SessionId)
   | {
       // Bridge confirms a branch operation. `idRemap` maps every old

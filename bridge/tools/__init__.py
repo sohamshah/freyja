@@ -7,6 +7,7 @@ repository, replace that one shim file with vendored definitions.
 """
 
 from bridge.tools.bash_tool import BashTool
+from bridge.tools.artifacts_tool import ArtifactsTool
 from bridge.tools.browser_tools import BrowserExecuteJsTool, BrowserScreenshotTool
 from bridge.tools.file_tools import (
     EditFileTool,
@@ -24,6 +25,7 @@ from bridge.tools.skill_tools import ListSkillsTool, LoadSkillTool, SearchSkills
 
 __all__ = [
     "AnalyzeVideoTool",
+    "ArtifactsTool",
     "BashTool",
     "BrowserExecuteJsTool",
     "BrowserScreenshotTool",

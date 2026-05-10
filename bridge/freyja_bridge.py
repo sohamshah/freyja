@@ -45,6 +45,11 @@ if str(_DESKTOP_DIR) not in sys.path:
     sys.path.insert(0, str(_DESKTOP_DIR))
 
 from engine.compaction import SummaryCompaction
+from bridge.artifact_store import (
+    FilePathResolver,
+    MUTATING_FILE_TOOL_NAMES,
+    SessionArtifactStore,
+)
 from bridge.project_paths import project_output_dir, project_output_guidance
 
 
@@ -1082,7 +1087,15 @@ def _tool_content_preview_and_images(
     return "\n".join(part for part in text_parts if part), images
 
 
-def _new_tracing_registry(base_registry, session_id: str, get_runner=None):
+def _new_tracing_registry(
+    base_registry,
+    session_id: str,
+    get_runner=None,
+    *,
+    path_resolver: FilePathResolver | None = None,
+    artifact_store: SessionArtifactStore | None = None,
+    label_for_session=None,
+):
     """Wrap a ToolRegistry so each execute() call streams events to the UI.
 
     The runner has already emitted `tool_use_start` via on_stream. We inject
@@ -1100,7 +1113,14 @@ def _new_tracing_registry(base_registry, session_id: str, get_runner=None):
         start = time.monotonic()
         tool_name = getattr(call, "name", "")
         tool_id = getattr(call, "id", "")
-        tool_args = getattr(call, "arguments", {}) or {}
+        raw_args = getattr(call, "arguments", {}) or {}
+        tool_args = dict(raw_args)
+        if path_resolver is not None:
+            tool_args = path_resolver.normalize_tool_arguments(tool_name, tool_args)
+            try:
+                setattr(call, "arguments", tool_args)
+            except Exception:
+                pass
         try:
             from bridge.file_changes import create_file_change_tracker
 
@@ -1158,6 +1178,17 @@ def _new_tracing_registry(base_registry, session_id: str, get_runner=None):
                             "changeSet": change_set,
                         }
                     )
+                    if artifact_store is not None:
+                        creator_label = (
+                            label_for_session(session_id)
+                            if label_for_session is not None
+                            else session_id
+                        )
+                        artifact_store.record_change_set(
+                            change_set,
+                            creator_id=session_id,
+                            creator_label=creator_label,
+                        )
             except Exception as exc:  # noqa: BLE001
                 log("debug", f"file-change emit failed: {exc}")
 
@@ -1171,6 +1202,47 @@ def _new_tracing_registry(base_registry, session_id: str, get_runner=None):
         }
         if images:
             event["images"] = images
+        if artifact_store is not None and not bool(getattr(result, "is_error", False)):
+            if tool_name in MUTATING_FILE_TOOL_NAMES:
+                path_value = tool_args.get("path")
+                if path_value:
+                    try:
+                        creator_label = (
+                            label_for_session(session_id)
+                            if label_for_session is not None
+                            else session_id
+                        )
+                        artifact_store.record_file(
+                            Path(str(path_value)),
+                            creator_id=session_id,
+                            creator_label=creator_label,
+                            operation="write" if tool_name == "write_file" else "edit",
+                            source="tool",
+                            tool_call_id=tool_id,
+                            metadata={"tool": tool_name},
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        log("debug", f"artifact manifest record failed: {exc}")
+            if tool_name == "generate_image":
+                match = re.search(r"File saved to `([^`]+)`", str(preview or ""))
+                if match:
+                    try:
+                        creator_label = (
+                            label_for_session(session_id)
+                            if label_for_session is not None
+                            else session_id
+                        )
+                        artifact_store.record_file(
+                            Path(match.group(1)),
+                            creator_id=session_id,
+                            creator_label=creator_label,
+                            operation="create",
+                            source="generate_image",
+                            tool_call_id=tool_id,
+                            metadata={"tool": tool_name},
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        log("debug", f"image artifact manifest record failed: {exc}")
         emit(event)
 
         # Emit a live usage snapshot after each tool call so the activity
@@ -1241,6 +1313,14 @@ class _BridgeSession:
         self.tool_registry: Any | None = None
         self.subagent_registry: Any | None = None
         self.project_output_dir = project_output_dir(self.id)
+        self.artifact_store = SessionArtifactStore(
+            session_id=self.id,
+            project_dir=self.project_output_dir,
+        )
+        self.path_resolver = FilePathResolver(
+            workspace=Path(self.workspace),
+            project_dir=self.project_output_dir,
+        )
         self.memory_store: Any | None = None
         self.skill_store: Any | None = None
         from bridge.tools.image_store import SessionImageStore
@@ -1316,7 +1396,7 @@ class _BridgeSession:
             session_id=self.id,
             initial_tier=self.permission_tier,
         )
-        self.project_output_dir.mkdir(parents=True, exist_ok=True)
+        self.artifact_store.ensure()
         self.memory_store = MemoryStore(Path(self.workspace))
         self.skill_store = SkillStore(Path(self.workspace))
         if strategy_uses_kanban(self.coordination_strategy) and self.kanban_board is None:
@@ -1347,12 +1427,26 @@ class _BridgeSession:
                 }
             )
 
+        def _label_for_session(session_id: str) -> str:
+            if session_id == self.id:
+                return "Main agent"
+            record = sub_registry.get(session_id)
+            if record is not None:
+                return record.label
+            return session_id
+
         # Closure: wrap a registry with tracing scoped to a specific
         # session id. Used by the parent session (for itself) and passed
         # through to sub_agent_tool so child sessions get their own
         # tracing namespace.
         def _wrap_child_registry(reg: Any, session_id: str) -> Any:
-            return _new_tracing_registry(reg, session_id)
+            return _new_tracing_registry(
+                reg,
+                session_id,
+                path_resolver=self.path_resolver,
+                artifact_store=self.artifact_store,
+                label_for_session=_label_for_session,
+            )
 
         registry = build_desktop_registry(
             workspace=Path(self.workspace),
@@ -1379,12 +1473,18 @@ class _BridgeSession:
             skill_store=self.skill_store,
             image_store=self.image_store,
             project_output_dir=self.project_output_dir,
+            artifact_store=self.artifact_store,
             on_memory_updated=_emit_memory_updated,
             on_skill_event=_emit_skill_event,
         )
         tool_names = sorted(registry._tools.keys())  # noqa: SLF001
         self.tool_registry = _new_tracing_registry(
-            registry, self.id, get_runner=lambda: self.runner
+            registry,
+            self.id,
+            get_runner=lambda: self.runner,
+            path_resolver=self.path_resolver,
+            artifact_store=self.artifact_store,
+            label_for_session=_label_for_session,
         )
 
         tool_list = "\n".join(

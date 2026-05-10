@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from bridge.tools.base import ToolRegistry
+from bridge.tools.artifacts_tool import ArtifactsTool
 from bridge.tools.bash_tool import BashTool
 from bridge.tools.browser_tools import BrowserExecuteJsTool, BrowserScreenshotTool
 from bridge.tools.file_tools import (
@@ -68,6 +69,7 @@ def build_desktop_registry(
     skill_store: Any | None = None,
     image_store: Any | None = None,
     project_output_dir: Path | str | None = None,
+    artifact_store: Any | None = None,
     on_memory_updated: Any | None = None,
     on_skill_event: Any | None = None,
 ) -> ToolRegistry:
@@ -151,6 +153,9 @@ def build_desktop_registry(
     # only loads when the agent asks for it.
     tools.append(AnalyzeVideoTool())
 
+    if artifact_store is not None:
+        tools.append(ArtifactsTool(artifact_store))
+
     # Session-local board coordination. This is intentionally only present
     # when a session starts in kanban mode, so the strategy is visible in the
     # tool surface instead of becoming another always-on abstraction.
@@ -220,6 +225,7 @@ def build_desktop_registry(
             coordination_strategy=coordination_strategy,
             kanban_board=kanban_board,
             task_board=task_board,
+            artifact_store=artifact_store,
         )
         tools.append(SubAgentTool(sub_spec))
         tools.append(SubAgentsTool(sub_registry))

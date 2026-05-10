@@ -64,6 +64,7 @@ class KanbanTask:
     completed_at: float | None = None
     result: str = ""
     summary: str = ""
+    artifacts: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     comments: list[KanbanComment] = field(default_factory=list)
     events: list[KanbanEvent] = field(default_factory=list)
@@ -85,6 +86,7 @@ class KanbanTask:
             "completedAt": int(self.completed_at * 1000) if self.completed_at else None,
             "summary": self.summary,
             "result": self.result,
+            "artifacts": self.artifacts,
             "metadata": self.metadata,
         }
         if include_history:
@@ -169,6 +171,7 @@ class SessionKanbanBoard:
         comment: str | None = None,
         summary: str | None = None,
         result: str | None = None,
+        artifacts: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> KanbanTask | None:
         async with self._lock:
@@ -199,6 +202,11 @@ class SessionKanbanBoard:
             if result is not None:
                 task.result = result.strip()
                 changes["result"] = True
+            if artifacts:
+                for artifact in artifacts:
+                    if artifact and artifact not in task.artifacts:
+                        task.artifacts.append(artifact)
+                changes["artifacts"] = len(task.artifacts)
             if metadata:
                 task.metadata = {**task.metadata, **metadata}
                 changes["metadata"] = sorted(metadata.keys())
@@ -332,6 +340,11 @@ complete, or block the card with useful detail.""",
                     "comment": {"type": "string", "description": "Progress note or blocker reason"},
                     "summary": {"type": "string", "description": "Completion/handoff summary"},
                     "result": {"type": "string", "description": "Final result details"},
+                    "artifacts": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Verified artifact paths produced for this card",
+                    },
                     "metadata": {"type": "object", "description": "Optional structured metadata"},
                     "created_cards": {
                         "type": "array",
@@ -398,6 +411,7 @@ complete, or block the card with useful detail.""",
             summary = arguments.get("summary")
             result = arguments.get("result")
             metadata = dict(arguments.get("metadata") or {})
+            artifacts = [str(item) for item in arguments.get("artifacts") or []]
             if action == "comment":
                 if not comment:
                     raise ValueError("comment is required")
@@ -426,6 +440,7 @@ complete, or block the card with useful detail.""",
                 comment=comment or None,
                 summary=str(summary).strip() if summary is not None else None,
                 result=str(result).strip() if result is not None else None,
+                artifacts=artifacts,
                 metadata=metadata,
             )
             return {"action": action, "task": updated.to_dict() if updated else None}

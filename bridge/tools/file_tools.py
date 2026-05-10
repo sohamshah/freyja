@@ -42,7 +42,12 @@ Returns the file contents with line numbers for easy reference.""",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "The path to the file to read (absolute or relative to cwd)",
+                        "description": "The path to the file to read. Relative paths resolve against the workspace first, then the session project output directory if present.",
+                    },
+                    "base": {
+                        "type": "string",
+                        "enum": ["auto", "workspace", "project"],
+                        "description": "Optional relative path base. Use project for ~/.freyja/projects/<session_id>/ outputs; workspace for source/project files. Default: auto.",
                     },
                     "start_line": {
                         "type": "integer",
@@ -164,7 +169,12 @@ parameter must contain the actual file content - do not omit it.""",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "The path to the file to write (absolute or relative to cwd)",
+                        "description": "The path to the file to write. Relative paths default to the session project output directory unless the target already exists. Use base=workspace only when the user explicitly wants a workspace/project file.",
+                    },
+                    "base": {
+                        "type": "string",
+                        "enum": ["auto", "workspace", "project"],
+                        "description": "Where to resolve relative paths. Default auto writes new files under ~/.freyja/projects/<session_id>/; workspace writes inside the active workspace.",
                     },
                     "content": {
                         "type": "string",
@@ -276,7 +286,12 @@ Choose the mode that minimizes tokens - prefer line-based or anchor-based over s
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "The path to the file to edit",
+                        "description": "The path to the file to edit. Relative paths resolve against the workspace first, then the session project output directory if present.",
+                    },
+                    "base": {
+                        "type": "string",
+                        "enum": ["auto", "workspace", "project"],
+                        "description": "Optional relative path base. Use workspace for source/project files; project for session output artifacts. Default: auto.",
                     },
                     # Line-based mode (Phase 1)
                     "start_line": {
@@ -846,7 +861,12 @@ Unlike text-based editing, this tool:
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to the JSON file to edit",
+                        "description": "Path to the JSON file to edit. Relative paths resolve against the workspace first, then the session project output directory if present.",
+                    },
+                    "base": {
+                        "type": "string",
+                        "enum": ["auto", "workspace", "project"],
+                        "description": "Optional relative path base. Use workspace for source/project files; project for session output artifacts. Default: auto.",
                     },
                     "json_path": {
                         "type": "string",

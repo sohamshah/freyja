@@ -86,6 +86,7 @@ whole session if truly needed).""",
                     "tools_called": r.tools_called,
                     "task": r.task[:200],
                     "artifact_path": r.artifact_path,
+                    "created_files": list(r.created_files),
                 }
                 if r.result:
                     preview = str(r.result)[:300]
@@ -144,6 +145,7 @@ whole session if truly needed).""",
                 "state": record.state.name.lower(),
                 "agent_type": record.agent_type_name,
                 "artifact_path": record.artifact_path,
+                "created_files": list(record.created_files),
                 "summary": result_text[:2000] + ("..." if len(result_text) > 2000 else ""),
                 "full_length": len(result_text),
             }
@@ -184,6 +186,7 @@ whole session if truly needed).""",
                     "tools_called": r.tools_called,
                     "elapsed_s": round(r.elapsed, 2),
                     "artifact_path": r.artifact_path,
+                    "created_files": list(r.created_files),
                     "summary": result_text[:500] + ("..." if len(result_text) > 500 else ""),
                     "full_length": len(result_text),
                 }

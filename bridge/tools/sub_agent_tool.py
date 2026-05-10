@@ -127,6 +127,8 @@ class SubAgentSpec:
     kanban_board: Any | None = None
     # Optional task ledger used by task-first solo mode.
     task_board: Any | None = None
+    # Session artifact manifest shared with parent and sibling agents.
+    artifact_store: Any | None = None
 
 
 class SubAgentTool:
@@ -770,12 +772,23 @@ Parameters:
         # Proactively persist the full result to an artifact file so it
         # survives truncation and compaction. The parent agent gets a
         # file path it can read_file on instead of losing the data.
+        produced_before_final: list[str] = []
+        if self._spec.artifact_store is not None:
+            try:
+                produced_before_final = self._spec.artifact_store.paths_for_creator(record.id)
+            except Exception:  # noqa: BLE001
+                produced_before_final = []
         try:
             artifact_dir = project_output_dir(self._spec.parent_session_id) / "artifacts"
             artifact_dir.mkdir(parents=True, exist_ok=True)
             artifact_file = artifact_dir / f"{record.id}.md"
             resolution = getattr(record, "model_resolution", None)
             model_policy = resolution.policy if resolution is not None else "n/a"
+            produced_section = (
+                "\n".join(f"- `{path}`" for path in produced_before_final)
+                if produced_before_final
+                else "(no verified files recorded before final summary)"
+            )
             artifact_file.write_text(
                 f"# {record.label}\n\n"
                 f"**Agent type:** {agent_type.name}\n"
@@ -784,14 +797,36 @@ Parameters:
                 f"**Model policy:** {model_policy}\n"
                 f"**Tokens:** {record.input_tokens} in / {record.output_tokens} out\n"
                 f"**Tools called:** {record.tools_called}\n\n"
+                f"## Produced files\n\n"
+                f"{produced_section}\n\n"
                 f"---\n\n"
                 f"{text}",
                 encoding="utf-8",
             )
             record.artifact_path = str(artifact_file)
+            if self._spec.artifact_store is not None:
+                self._spec.artifact_store.record_file(
+                    artifact_file,
+                    creator_id=record.id,
+                    creator_label=record.label,
+                    operation="subagent_artifact",
+                    source="subagent",
+                    metadata={
+                        "agentType": agent_type.name,
+                        "model": child_model,
+                    },
+                )
             logger.info("Wrote artifact for %s → %s", record.id, artifact_file)
         except Exception:  # noqa: BLE001
             logger.warning("Failed to write artifact for %s", record.id, exc_info=True)
+
+        if self._spec.artifact_store is not None:
+            try:
+                record.created_files = self._spec.artifact_store.paths_for_creator(record.id)
+            except Exception:  # noqa: BLE001
+                record.created_files = [record.artifact_path] if record.artifact_path else []
+        elif record.artifact_path:
+            record.created_files = [record.artifact_path]
 
         self._spec.registry.mark_done(
             record.id,
@@ -817,7 +852,7 @@ Parameters:
                 "\nCoordination mode: task-first solo.\n"
                 f"Your task-led assignment is {assignment}. Call `tasks` with action=`show` first "
                 "when a task id is available. Use `heartbeat` during long work, `complete` with "
-                "artifacts/results when done, or `block` with the exact blocker. You do not have "
+                "verified artifacts/results when done, or `block` with the exact blocker. You do not have "
                 "sibling communication tools; the task ledger is the durable handoff surface.\n"
             )
         if strategy == STRATEGY_KANBAN:
@@ -827,7 +862,7 @@ Parameters:
                 "\nCoordination mode: kanban board.\n"
                 f"Your board assignment is {assignment}. Call `kanban` with action=`show` first "
                 "when a task id is available. Use `heartbeat` or `comment` during long work, "
-                "and call `complete` with a concise handoff when done. If blocked, call `block` "
+                "and call `complete` with verified artifact paths and a concise handoff when done. If blocked, call `block` "
                 "with the exact blocker instead of guessing.\n"
             )
         return (
@@ -875,6 +910,7 @@ Parameters:
                 actor=f"{record.label} ({record.id})",
                 status=status,
                 summary=summary[:4000],
+                artifacts=list(record.created_files),
             )
             await self._emit_kanban_state_event(
                 "complete" if status == "done" else "update",
@@ -925,6 +961,7 @@ Parameters:
                 progress=100 if status == "done" else None,
                 summary=summary[:4000],
                 result=summary[:4000] if status == "done" else "",
+                artifacts=list(record.created_files),
             )
             await self._emit_task_state_event(
                 "complete" if status == "done" else "update",
@@ -1036,6 +1073,7 @@ Parameters:
                 "outputTokens": record.output_tokens,
                 "toolsCalled": record.tools_called,
                 "artifactPath": record.artifact_path,
+                "createdFiles": list(record.created_files),
             },
         )
 
@@ -1061,6 +1099,7 @@ def _record_to_dict(record: SubAgentRecord) -> dict[str, Any]:
             resolution.fallback_used if resolution is not None else False
         ),
         "artifactPath": record.artifact_path,
+        "createdFiles": list(record.created_files),
         "startedAt": int(record.start_time * 1000),
         "elapsedMs": int(record.elapsed * 1000),
         "tokensIn": record.input_tokens,
