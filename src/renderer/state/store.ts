@@ -312,6 +312,37 @@ function collectDescendantSessionIds(
   return out
 }
 
+/** Best-known cumulative cost for a session: live `slice.usage.totalCost`
+ *  when the session is loaded, otherwise the snapshot's persisted
+ *  `totalCost` so unloaded subagents still contribute their tracked
+ *  spend. Returns 0 when neither source has it. */
+function costForSessionId(state: HarnessState, sessionId: string): number {
+  const snapshot = state.sessions.find((s) => s.id === sessionId)
+  if (state.activeSessionId === sessionId) {
+    return state.usage?.totalCost ?? snapshot?.totalCost ?? 0
+  }
+  const archive = state.sessionArchive[sessionId]
+  if (archive?.usage?.totalCost != null) return archive.usage.totalCost
+  return snapshot?.totalCost ?? 0
+}
+
+/** Sum a session's own cost with the cost of every descendant subagent.
+ *  Used by the activity panel so the "session spend" for a parent
+ *  reflects total work (parent + spawned agents + nested subagents). */
+export function aggregateSessionCost(
+  state: HarnessState,
+  sessionId: string,
+): number {
+  let total = costForSessionId(state, sessionId)
+  for (const descendantId of collectDescendantSessionIds(
+    state.sessions,
+    sessionId,
+  )) {
+    total += costForSessionId(state, descendantId)
+  }
+  return total
+}
+
 /** Re-encode an image down to fit under the LLM provider's image cap.
  *  Tries progressively smaller (max-dim, JPEG-quality) settings until
  *  the raw byte size lands under `targetBytes`. Returns null on failure
@@ -1813,6 +1844,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
                   totalInputTokens: nextSlice.usage.totalInputTokens,
                   totalOutputTokens: nextSlice.usage.totalOutputTokens,
                   cacheReadTokens: nextSlice.usage.totalCacheReadTokens,
+                  totalCost: nextSlice.usage.totalCost,
                   messageCount: nextSlice.messages.length,
                 }
               : s,
@@ -1858,6 +1890,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
               totalInputTokens: updated.usage.totalInputTokens,
               totalOutputTokens: updated.usage.totalOutputTokens,
               cacheReadTokens: updated.usage.totalCacheReadTokens,
+              totalCost: updated.usage.totalCost,
             }
           : s,
       )

@@ -1095,6 +1095,7 @@ def _new_tracing_registry(
     path_resolver: FilePathResolver | None = None,
     artifact_store: SessionArtifactStore | None = None,
     label_for_session=None,
+    get_cumulative_cost=None,
 ):
     """Wrap a ToolRegistry so each execute() call streams events to the UI.
 
@@ -1260,7 +1261,12 @@ def _new_tracing_registry(
                         context_tok = int(u.effective_context_tokens())
                     except Exception:  # noqa: BLE001
                         context_tok = in_tok
-                    cost = (in_tok * 3 + out_tok * 15) / 1_000_000
+                    cost = 0.0
+                    if get_cumulative_cost is not None:
+                        try:
+                            cost = float(get_cumulative_cost() or 0.0)
+                        except Exception:  # noqa: BLE001
+                            cost = 0.0
                     emit(
                         {
                             "type": "usage",
@@ -1335,6 +1341,13 @@ class _BridgeSession:
         self.turn_counter = 0
         self.pending_task: asyncio.Task | None = None
         self.tool_start_at: dict[str, float] = {}
+        # Cumulative USD cost across every LLM call in this session.
+        # Accumulated inside _on_llm_call from each call's compute_cost
+        # so the displayed spend tracks the actual per-model rate (the
+        # old `(in * 3 + out * 15) / 1e6` formula was hard-coded Sonnet
+        # pricing and silently undercounted by 5× on Opus and other
+        # providers, and ignored cache reads + cache writes entirely).
+        self.cumulative_cost: float = 0.0
         # Message queue — when the user sends a message while a turn is
         # in progress, we queue it here instead of cancelling. The task
         # runner drains the queue after each turn completes.
@@ -1485,6 +1498,7 @@ class _BridgeSession:
             path_resolver=self.path_resolver,
             artifact_store=self.artifact_store,
             label_for_session=_label_for_session,
+            get_cumulative_cost=lambda: self.cumulative_cost,
         )
 
         tool_list = "\n".join(
@@ -1789,8 +1803,7 @@ class _BridgeSession:
             out_tok = int(getattr(usage, "output", 0) or 0)
             cr_tok = int(getattr(usage, "cache_read", 0) or 0)
             cw_tok = int(getattr(usage, "cache_write", 0) or 0)
-            cost = (in_tok * 3 + out_tok * 15) / 1_000_000
-            return (in_tok, out_tok, cr_tok, cw_tok, cost)
+            return (in_tok, out_tok, cr_tok, cw_tok, float(self.cumulative_cost))
         except Exception:  # noqa: BLE001
             return (0, 0, 0, 0, 0.0)
 
@@ -2631,7 +2644,6 @@ class _BridgeSession:
             except Exception:  # noqa: BLE001
                 estimated_ctx = 0
             effective_ctx = max(current_ctx, estimated_ctx)
-            cost = (cum_in * 3 + cum_out * 15) / 1_000_000
             emit(
                 {
                     "type": "usage",
@@ -2641,7 +2653,7 @@ class _BridgeSession:
                     "outputTokens": cum_out,
                     "cacheReadTokens": cum_cr,
                     "cacheWriteTokens": cum_cw,
-                    "cost": cost,
+                    "cost": float(self.cumulative_cost),
                 }
             )
             await self._run_skill_maintenance(effective_ctx)
@@ -2809,6 +2821,11 @@ class _BridgeSession:
                 cache_read_tokens=cr_tok,
                 cache_write_tokens=cw_tok,
             )
+            # Accumulate per-call cost on the session so the displayed
+            # spend reflects the actual model pricing (including cache
+            # reads / writes) instead of the old hard-coded formula.
+            if cost is not None:
+                self.cumulative_cost += float(cost)
 
             parts: list[str] = [
                 f"llm {provider}/{model}",
@@ -3924,7 +3941,6 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 estimate_tok = int(sess.session.estimate_tokens()) if sess.session else 0
             except Exception:  # noqa: BLE001
                 estimate_tok = 0
-            cost = (in_tok * 3 + out_tok * 15) / 1_000_000
             emit(
                 {
                     "type": "usage_snapshot",
@@ -3934,7 +3950,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                     "outputTokens": out_tok,
                     "cacheReadTokens": cr_tok,
                     "cacheWriteTokens": cw_tok,
-                    "cost": cost,
+                    "cost": float(sess.cumulative_cost),
                 }
             )
         return

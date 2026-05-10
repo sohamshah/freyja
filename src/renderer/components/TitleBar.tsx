@@ -1,4 +1,4 @@
-import { useHarness } from '../state/store'
+import { aggregateSessionCost, useHarness } from '../state/store'
 import { formatTokens, formatCost } from '../lib/format'
 import { Spinner } from '../lib/spinner'
 import type { CoordinationStrategy } from '@shared/events'
@@ -39,6 +39,12 @@ export function TitleBar() {
   const messages = useHarness((s) => s.messages)
   const usage = useHarness((s) => s.usage)
   const sessionId = useHarness((s) => s.activeSessionId)
+  // Top-bar `spend` includes every descendant subagent's cost so the
+  // user sees the true cumulative for the active session tree, not just
+  // the parent's own LLM calls.
+  const aggregateCost = useHarness((s) =>
+    s.activeSessionId ? aggregateSessionCost(s, s.activeSessionId) : 0,
+  )
   const isStreaming = useHarness((s) => s.isStreaming)
   const missionDashboardOpen = useHarness((s) => s.missionDashboardOpen)
   const sidebarCollapsed = useHarness((s) => s.sidebarCollapsed)
@@ -153,7 +159,7 @@ export function TitleBar() {
       </TitleControl>
       <TitleControl className="flex h-[30px] px-3">
         <span className="text-fg-2">spend</span>
-        <span className="ml-1.5 font-mono text-fg-0">{formatCost(usage.totalCost)}</span>
+        <span className="ml-1.5 font-mono text-fg-0">{formatCost(aggregateCost)}</span>
       </TitleControl>
       <div className="ml-auto flex items-center gap-3 text-fg-2">
         <TitleControl

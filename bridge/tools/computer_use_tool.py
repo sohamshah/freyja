@@ -712,6 +712,21 @@ Parameters:
         cancelled: bool = False,
         error: str | None = None,
     ) -> None:
+        # Use the per-model pricing helper so the displayed spend tracks
+        # the actual rate instead of the old hard-coded $3/$15-per-M
+        # formula (which assumed Sonnet pricing for every model).
+        try:
+            from engine.providers import compute_cost as _compute_cost
+
+            cu_model = self._sub_spec.parent_model or ""
+            cost_estimate = _compute_cost(
+                cu_model,
+                input_tokens=int(record.input_tokens or 0),
+                output_tokens=int(record.output_tokens or 0),
+            )
+            computed_cost = float(cost_estimate) if cost_estimate is not None else 0.0
+        except Exception:  # noqa: BLE001
+            computed_cost = 0.0
         usage_payload = {
             "type": "usage",
             "sessionId": record.id,
@@ -720,8 +735,7 @@ Parameters:
             "outputTokens": record.output_tokens,
             "cacheReadTokens": 0,
             "cacheWriteTokens": 0,
-            "cost": (record.input_tokens * 3 + record.output_tokens * 15)
-            / 1_000_000,
+            "cost": computed_cost,
         }
         await _fire(self._sub_spec.emit_event, usage_payload)
         await _fire(

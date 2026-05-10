@@ -1038,6 +1038,29 @@ Parameters:
         cache_write = (
             int(getattr(usage, "cache_write", 0) or 0) if usage is not None else 0
         )
+        # Cost: use the engine's per-model pricing table so the displayed
+        # spend tracks the actual rate (the old hard-coded $3/$15-per-M
+        # formula assumed Sonnet pricing for every model and ignored
+        # cache reads + writes). Falls back to 0 when the model isn't
+        # priced.
+        try:
+            from engine.providers import compute_cost as _compute_cost
+
+            sub_model = (
+                getattr(record, "child_model", None)
+                or self._spec.parent_model
+                or ""
+            )
+            cost_estimate = _compute_cost(
+                sub_model,
+                input_tokens=int(record.input_tokens or 0),
+                output_tokens=int(record.output_tokens or 0),
+                cache_read_tokens=cache_read,
+                cache_write_tokens=cache_write,
+            )
+            sub_cost = float(cost_estimate) if cost_estimate is not None else 0.0
+        except Exception:  # noqa: BLE001
+            sub_cost = 0.0
         await _fire(
             self._spec.emit_event,
             {
@@ -1048,8 +1071,7 @@ Parameters:
                 "outputTokens": record.output_tokens,
                 "cacheReadTokens": cache_read,
                 "cacheWriteTokens": cache_write,
-                "cost": (record.input_tokens * 3 + record.output_tokens * 15)
-                / 1_000_000,
+                "cost": sub_cost,
             },
         )
         await _fire(

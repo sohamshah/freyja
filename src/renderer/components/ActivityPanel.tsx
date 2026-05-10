@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useHarness } from '../state/store'
+import { aggregateSessionCost, useHarness } from '../state/store'
 import { formatTokens, formatCost, relativeTime } from '../lib/format'
 import { ComputerLiveView } from './ComputerLiveView'
 import { LogStreamModal } from './LogStreamModal'
@@ -15,6 +15,16 @@ export function ActivityPanel() {
   const toggleActivityPanel = useHarness((s) => s.toggleActivityPanel)
   const panelWidth = useHarness((s) => s.activityPanelWidth)
   const setPanelWidth = useHarness((s) => s.setActivityPanelWidth)
+  // Session spend = this session's own cost + every descendant
+  // subagent's cost. The selector reads `state.sessions`,
+  // `state.sessionArchive`, and the active slice so it works whether a
+  // subagent is currently loaded or not.
+  const activeSessionId = useHarness((s) => s.activeSessionId)
+  const subagentSpend = useHarness(
+    (s) => aggregateSessionCost(s, s.activeSessionId) - (s.usage?.totalCost ?? 0),
+  )
+  const totalSpend = (usage?.totalCost ?? 0) + Math.max(0, subagentSpend)
+  void activeSessionId
 
   const [logModalOpen, setLogModalOpen] = useState(false)
   const [dragging, setDragging] = useState(false)
@@ -157,8 +167,17 @@ export function ActivityPanel() {
           </div>
           <div className="mt-2 flex items-center justify-between border-t border-white/5 pt-2 text-[10.5px]">
             <span className="text-fg-2">session spend</span>
-            <span className="font-mono text-fg-0">{formatCost(usage.totalCost)}</span>
+            <span className="font-mono text-fg-0">{formatCost(totalSpend)}</span>
           </div>
+          {subagentSpend > 0.0001 && (
+            <div className="mt-1 flex items-center justify-between text-[9.5px] text-fg-3">
+              <span>
+                self {formatCost(usage.totalCost)}
+                <span className="text-fg-3/50"> · </span>
+                subagents {formatCost(subagentSpend)}
+              </span>
+            </div>
+          )}
           <div className="mt-2 grid grid-cols-2 gap-2 border-t border-white/5 pt-2 text-[10.5px]">
             <Metric label="img trims" value={String(omittedImages)} />
             <Metric label="summaries" value={String(compactionEvents.length)} />

@@ -216,6 +216,10 @@ export interface SessionSnapshot {
   totalInputTokens: number
   totalOutputTokens: number
   cacheReadTokens: number
+  /** Cumulative USD spend for this session in isolation (not including
+   *  any subagents). The renderer aggregates parent + descendants for
+   *  display via `aggregateSessionCost`. */
+  totalCost?: number
   /** Present on sessions spawned as sub-agents. */
   parentSessionId?: string
   /** Ids of sessions spawned from this one. */
