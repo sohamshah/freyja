@@ -213,6 +213,13 @@ class SessionKanbanBoard:
         self._lock = asyncio.Lock()
         self._tasks: dict[str, KanbanTask] = {}
         self._counter = 0
+        # Mission root card id. Set when the first card with
+        # `metadata.role == "mission_root"` is created (Move B). Subsequent
+        # cards with no explicit parents adopt the root as their parent so
+        # the dashboard can render the mission top-down, but the root is
+        # treated as gating-transparent in `_parents_done` — children of
+        # the root start in `ready`, not `triage`.
+        self._mission_root_id: str | None = None
 
     async def create(
         self,
@@ -226,15 +233,38 @@ class SessionKanbanBoard:
         metadata: dict[str, Any] | None = None,
     ) -> KanbanTask:
         async with self._lock:
+            clean_meta = dict(metadata or {})
+            is_root = clean_meta.get("role") == "mission_root"
             clean_parents = [pid for pid in parents or [] if pid in self._tasks]
+            # Auto-adopt the mission root as parent when caller passed no
+            # parents and this isn't itself the root. Explicit `parents=[]`
+            # callers that want detachment can pass a sentinel via metadata
+            # (`detached_from_root=True`) — we don't expect that often.
+            if (
+                not clean_parents
+                and not is_root
+                and self._mission_root_id is not None
+                and not clean_meta.get("detached_from_root")
+            ):
+                clean_parents = [self._mission_root_id]
             self._counter += 1
             task_id = f"card_{self._counter:03d}"
             status = "ready"
-            if any(self._tasks[pid].status != "done" for pid in clean_parents):
-                # Parents still in flight — card sits in triage until they
-                # finish. (Move D will widen `triage` to also cover cards
-                # whose body hasn't been specified yet.)
+            blocking_parents = [
+                pid
+                for pid in clean_parents
+                if pid != self._mission_root_id
+                and self._tasks[pid].status != "done"
+            ]
+            if blocking_parents:
+                # Non-root parents still in flight — card sits in triage
+                # until they finish. (Move D will widen `triage` to also
+                # cover cards whose body hasn't been specified yet.)
                 status = "triage"
+            # Mission root itself starts running: the design doc treats it
+            # as the active mission container the parent owns from turn 1.
+            if is_root:
+                status = "running"
             task = KanbanTask(
                 id=task_id,
                 title=title.strip() or task_id,
@@ -247,8 +277,10 @@ class SessionKanbanBoard:
                 priority=max(0, min(int(priority if priority is not None else 2), 5)),
                 parents=clean_parents,
                 created_by=actor,
-                metadata=metadata or {},
+                metadata=clean_meta,
             )
+            if is_root:
+                task.started_at = time.time()
             task.append_event(
                 KanbanEvent(
                     "created",
@@ -258,6 +290,8 @@ class SessionKanbanBoard:
                 )
             )
             self._tasks[task_id] = task
+            if is_root and self._mission_root_id is None:
+                self._mission_root_id = task_id
             for parent_id in clean_parents:
                 parent = self._tasks[parent_id]
                 if task_id not in parent.children:
@@ -436,6 +470,7 @@ class SessionKanbanBoard:
             blocked.sort(key=lambda r: r["lastUpdateSeconds"], reverse=True)
             waiting.sort(key=lambda r: r["priority"])
             return {
+                "missionRoot": self._mission_root_id,
                 "running": running[:max_per_bucket],
                 "ready": ready[:max_per_bucket],
                 "blocked": blocked[:max_per_bucket],
@@ -487,7 +522,14 @@ class SessionKanbanBoard:
             }
 
     def _parents_done(self, task: KanbanTask) -> bool:
-        return all(self._tasks[parent_id].status == "done" for parent_id in task.parents)
+        # Mission root counts as "always satisfied" so it can stay `running`
+        # as the mission container without blocking its children from
+        # entering `ready`.
+        return all(
+            parent_id == self._mission_root_id
+            or self._tasks[parent_id].status == "done"
+            for parent_id in task.parents
+        )
 
     def _promote_unblocked_children(self, parent_id: str, actor: str) -> None:
         parent = self._tasks[parent_id]

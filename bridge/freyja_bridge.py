@@ -1318,9 +1318,10 @@ class _BridgeSession:
         self.provider: Any | None = None
         self.tool_registry: Any | None = None
         self.subagent_registry: Any | None = None
-        self.project_output_dir = project_output_dir(self.id)
+        self.project_session_id = self.id
+        self.project_output_dir = project_output_dir(self.project_session_id)
         self.artifact_store = SessionArtifactStore(
-            session_id=self.id,
+            session_id=self.project_session_id,
             project_dir=self.project_output_dir,
         )
         self.path_resolver = FilePathResolver(
@@ -1360,6 +1361,11 @@ class _BridgeSession:
         from bridge.tools.message_bus import SessionMessageBus
         self.message_bus: SessionMessageBus = SessionMessageBus()
         self.kanban_board: Any | None = None
+        # Anchor card created from the user's first message under kanban
+        # coordination. Subsequent parent-spawned cards latch onto this id
+        # so the dashboard always has a mission cover-card to draw the
+        # rest of the work off of.
+        self.mission_root_card_id: str | None = None
         self.task_board: Any | None = None
         self.goal_state: Any | None = None
         self._turn_text_parts: list[str] = []
@@ -1369,6 +1375,22 @@ class _BridgeSession:
         self._system_prompt = ""
         self.loaded_skills: dict[str, dict[str, Any]] = {}
         self.skill_maintenance_done = False
+
+    def _set_project_session_id(self, session_id: str | None) -> None:
+        """Point generated outputs at the right session project directory."""
+        next_id = session_id or self.id
+        if next_id == self.project_session_id:
+            return
+        self.project_session_id = next_id
+        self.project_output_dir = project_output_dir(self.project_session_id)
+        self.artifact_store = SessionArtifactStore(
+            session_id=self.project_session_id,
+            project_dir=self.project_output_dir,
+        )
+        self.path_resolver = FilePathResolver(
+            workspace=Path(self.workspace),
+            project_dir=self.project_output_dir,
+        )
 
     async def initialize(self) -> None:
         """Lazily build the runner + tool registry for this session."""
@@ -1520,7 +1542,7 @@ class _BridgeSession:
                 "\n"
                 f"You are operating in the workspace `{self.workspace}`.\n"
                 "\n"
-                f"{project_output_guidance(self.id, self.workspace)}\n"
+                f"{project_output_guidance(self.project_session_id, self.workspace)}\n"
                 "\n"
                 "Available tools:\n"
                 f"{tool_list}\n"
@@ -1564,6 +1586,7 @@ class _BridgeSession:
         self.session = Session.create(
             system_prompt=system_prompt,
             tools=list(registry._tools.values()),  # noqa: SLF001
+            session_id=self.id,
         )
 
         runner = AsyncAgentRunner(
@@ -1634,6 +1657,7 @@ class _BridgeSession:
         self._base_system_prompt = ""
         self._system_prompt = ""
         self.kanban_board = None
+        self.mission_root_card_id = None
         self.task_board = None
         self.goal_state = None
         self._turn_text_parts = []
@@ -1669,6 +1693,15 @@ class _BridgeSession:
                 }
             )
             return False
+
+        metadata = data.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        project_session_id = metadata.get("project_session_id") or metadata.get(
+            "parent_session_id"
+        )
+        if isinstance(project_session_id, str) and project_session_id.strip():
+            self._set_project_session_id(project_session_id.strip())
 
         transcript_data = data.get("transcript")
         if not transcript_data or not transcript_data.get("entries"):
@@ -1768,6 +1801,38 @@ class _BridgeSession:
             }
         )
         return True
+
+    async def _restore_persisted_transcript_if_empty(self) -> bool:
+        """Reload a persisted transcript if this runtime is still blank.
+
+        This matters for sub-agent sessions: the user can open the child
+        session while it is still running, which creates an empty bridge
+        runtime before the child runner has saved its final transcript. Once
+        that file exists, the next switch/send should adopt it instead of
+        continuing from a fresh conversation.
+        """
+        pending = self.pending_task
+        if pending is not None and not pending.done():
+            return False
+        if self.session is not None:
+            try:
+                if len(self.session.transcript) > 0:
+                    return False
+            except Exception:  # noqa: BLE001
+                return False
+
+        try:
+            from bridge.transcript_persistence import load_transcript
+
+            data = load_transcript(self.id)
+        except Exception:  # noqa: BLE001
+            return False
+        transcript_data = data.get("transcript") if isinstance(data, dict) else None
+        if not transcript_data or not transcript_data.get("entries"):
+            return False
+
+        self.reset()
+        return await self.try_restore_transcript()
 
     def _save_transcript(self) -> None:
         """Persist the engine transcript to disk (fire-and-forget)."""
@@ -2405,6 +2470,56 @@ class _BridgeSession:
             chat_visible=True,
         )
 
+    async def _ensure_mission_root_card(self, user_content: str) -> None:
+        """Materialize the mission anchor card on the kanban board the first
+        time a user message arrives under kanban coordination. Routes through
+        the registered KanbanTool so the same `kanban_create` event flows out
+        as any other card creation — the renderer doesn't need a separate
+        code path to learn about the root card."""
+        if self.mission_root_card_id is not None:
+            return
+        from bridge.tools.coordination import strategy_uses_kanban
+
+        if not strategy_uses_kanban(self.coordination_strategy):
+            return
+        if self.kanban_board is None or self.tool_registry is None:
+            return
+        clean = user_content.strip()
+        if not clean:
+            return
+        kanban_tool = self.tool_registry._tools.get("kanban")  # noqa: SLF001
+        if kanban_tool is None:
+            return
+        # Title: first non-empty line, trimmed to 80 chars. Body: full message
+        # so the parent can re-read the original ask without scrolling back.
+        first_line = next((line for line in clean.splitlines() if line.strip()), clean)
+        title = first_line.strip()[:80] or "Mission"
+        try:
+            await kanban_tool.execute(
+                f"root-{self.id}",
+                {
+                    "action": "create",
+                    "title": title,
+                    "body": clean,
+                    "assignee": "parent",
+                    "priority": 0,
+                    "metadata": {"role": "mission_root"},
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"mission root card creation failed: {exc}")
+            return
+        # The board assigns ids monotonically and we just created the first
+        # one in this session, so look it up off the board directly rather
+        # than parsing the tool result.
+        cards = await self.kanban_board.list()
+        if cards:
+            # The mission card is whichever we just stamped with the role tag.
+            for card in cards:
+                if card.metadata.get("role") == "mission_root":
+                    self.mission_root_card_id = card.id
+                    break
+
     def _pause_goal(self, reason: str = "paused") -> None:
         if self.goal_state is None:
             return
@@ -2592,6 +2707,9 @@ class _BridgeSession:
             and user_content.strip()
         ):
             self._set_goal(user_content, source="first_message")
+
+        if pre_formed_message is None:
+            await self._ensure_mission_root_card(user_content)
 
         self._refresh_knowledge_context(user_content)
 
@@ -2908,6 +3026,8 @@ class _BridgeState:
                 # Re-restore from disk — the transcript was just wiped
                 # by reset() but the file still has the prior state.
                 await existing.try_restore_transcript()
+            else:
+                await existing._restore_persisted_transcript_if_empty()  # noqa: SLF001
             self.active_session_id = session_id
             return existing
 

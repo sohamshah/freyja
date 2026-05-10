@@ -418,6 +418,58 @@ async def test_kanban_new_end_states_are_reachable_from_running() -> None:
     assert json.loads(show.content)["task"]["status"] == "done"
 
 
+@pytest.mark.asyncio
+async def test_kanban_mission_root_auto_adopts_children_and_is_gating_transparent() -> None:
+    """A card tagged `metadata.role == "mission_root"` becomes the board's
+    mission anchor. The root starts in `running` (not `ready`) and is
+    treated as always-satisfied by `_parents_done`, so subsequent cards
+    with no explicit parents (a) get the root injected as their parent
+    automatically, and (b) start in `ready` rather than `triage`."""
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+
+    root_result = await tool.execute(
+        "r1",
+        {
+            "action": "create",
+            "title": "Build the new dashboard",
+            "metadata": {"role": "mission_root"},
+        },
+    )
+    root_payload = json.loads(root_result.content)["task"]
+    assert root_payload["status"] == "running"
+    root_id = root_payload["id"]
+
+    # A subsequent create with no parents adopts root automatically.
+    child_result = await tool.execute(
+        "c1", {"action": "create", "title": "Research"}
+    )
+    child_payload = json.loads(child_result.content)["task"]
+    assert child_payload["parents"] == [root_id]
+    # And because root is gating-transparent, the child starts in ready.
+    assert child_payload["status"] == "ready"
+
+    # Digest exposes the missionRoot id at the top level so the renderer
+    # and downstream callers can find the anchor cheaply.
+    digest_result = await tool.execute("d1", {"action": "digest"})
+    digest = json.loads(digest_result.content)["digest"]
+    assert digest["missionRoot"] == root_id
+
+
+@pytest.mark.asyncio
+async def test_kanban_mission_root_does_not_attach_to_itself() -> None:
+    """The mission root must not get itself as its own parent."""
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+
+    root_result = await tool.execute(
+        "r1",
+        {"action": "create", "title": "Mission", "metadata": {"role": "mission_root"}},
+    )
+    root_payload = json.loads(root_result.content)["task"]
+    assert root_payload["parents"] == []
+
+
 def test_registry_only_exposes_kanban_tool_in_kanban_mode(tmp_path) -> None:
     plain_registry = build_desktop_registry(
         workspace=tmp_path,
