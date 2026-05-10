@@ -2064,16 +2064,9 @@ function KanbanCardMaterial({
   if (status === 'todo') {
     return (
       <>
-        <span className="pointer-events-none absolute -left-2 top-[42%] h-4 w-4 rounded-full border border-[#63727a]/45 bg-[#080a09]" />
-        <span className="pointer-events-none absolute -right-2 top-[42%] h-4 w-4 rounded-full border border-[#63727a]/45 bg-[#080a09]" />
-        <div className="pointer-events-none absolute inset-x-3 top-3 border-t border-dashed border-[#1a2326]/35" />
-        <div className="pointer-events-none absolute inset-x-3 bottom-3 border-t border-dashed border-[#1a2326]/30" />
-        <div className="pointer-events-none absolute right-0 top-0 h-8 w-8 rounded-bl-md border-b border-l border-[#6f7c82]/40 bg-[linear-gradient(135deg,rgba(255,255,255,0.28),rgba(31,39,41,0.12))] shadow-[inset_1px_-1px_0_rgba(0,0,0,0.12)]" />
-        <div className="pointer-events-none absolute left-3 top-1/2 flex -translate-y-1/2 flex-col gap-1.5 opacity-55">
-          {Array.from({ length: 4 }).map((_, index) => (
-            <span key={index} className="h-[3px] w-[3px] rounded-full bg-[#172023]" />
-          ))}
-        </div>
+        <div className="pointer-events-none absolute inset-y-2 left-2 w-4 rounded-[4px] border border-[#172023]/10 bg-[#172023]/[0.035]" />
+        <div className="pointer-events-none absolute inset-y-4 left-6 border-l border-dashed border-[#172023]/20" />
+        <div className="pointer-events-none absolute right-2 top-2 h-3 w-3 rounded-sm border-b border-l border-[#172023]/18 bg-[#e4edf1]/35 shadow-[inset_1px_-1px_0_rgba(0,0,0,0.08)]" />
       </>
     )
   }
@@ -2082,44 +2075,30 @@ function KanbanCardMaterial({
       <>
         {/* Paper-stack ghost cards behind the main card: cream tones so it
             reads as a stapled stack of index cards, not a layered glass panel. */}
-        <div className="pointer-events-none absolute -right-1 top-2 h-full w-[96%] rounded-md border border-[#9da08e]/45 bg-[#d4d7c5] shadow-[0_2px_0_rgba(0,0,0,0.10)]" />
-        <div className="pointer-events-none absolute -right-2 top-4 h-full w-[92%] rounded-md border border-[#8d9081]/35 bg-[#c9ccba] shadow-[0_2px_0_rgba(0,0,0,0.10)]" />
+        <div className="pointer-events-none absolute -right-1.5 top-2 h-[calc(100%-4px)] w-[96%] rounded-md border border-[#9da08e]/32 bg-[#d2d5c3] shadow-[0_2px_0_rgba(0,0,0,0.08)]" />
 
         {/* Punch holes down the left edge: recessed dark dots with a faint
             inner highlight that suggests the punched paper edge. */}
-        <div className="pointer-events-none absolute inset-y-3 left-3 z-0 flex flex-col justify-around">
+        <div className="pointer-events-none absolute inset-y-2 left-3 z-0 w-6 rounded-l-md border-r border-[#1a1c12]/12 bg-[#e6e8da]/35" />
+        <div className="pointer-events-none absolute inset-y-4 left-[15px] z-0 flex flex-col justify-around">
           {Array.from({ length: 5 }).map((_, index) => (
             <span
               key={index}
-              className="h-[9px] w-[9px] rounded-full bg-[#1c1e16] shadow-[inset_0_1px_1px_rgba(0,0,0,0.65),inset_0_-1px_0_rgba(255,255,255,0.10),0_0_0_1px_rgba(0,0,0,0.18)]"
+              className="h-2 w-2 rounded-full bg-[#1c1e16] shadow-[inset_0_1px_1px_rgba(0,0,0,0.65),inset_0_-1px_0_rgba(255,255,255,0.10),0_0_0_1px_rgba(0,0,0,0.14)]"
             />
           ))}
         </div>
-
-        {/* Faint horizontal rule lines, like a notebook page. */}
-        <div className="pointer-events-none absolute inset-x-9 top-12 bottom-9 z-0 flex flex-col justify-around opacity-[0.18]">
-          {Array.from({ length: 4 }).map((_, index) => (
-            <span key={index} className="h-px w-full bg-[#1a1c12]" />
-          ))}
-        </div>
-
-        <div className="pointer-events-none absolute inset-x-9 bottom-3 z-0 border-t border-dashed border-[#1a1c12]/20" />
       </>
     )
   }
   if (status === 'running') {
     return (
       <>
-        <div className="pointer-events-none absolute inset-x-2 top-2 h-4 rounded-[4px] border border-white/[0.12] bg-[linear-gradient(180deg,rgba(255,255,255,0.16),rgba(8,9,9,0.22))] shadow-[inset_0_1px_0_rgba(255,255,255,0.22),inset_0_-1px_0_rgba(0,0,0,0.55)]" />
-        <div className="pointer-events-none absolute inset-x-3 bottom-2 h-5 rounded-[5px] border border-black/45 bg-[linear-gradient(180deg,rgba(255,255,255,0.045),rgba(0,0,0,0.52))] shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_-7px_18px_rgba(0,0,0,0.24)]" />
-        <div className="pointer-events-none absolute inset-y-7 left-2 w-1.5 rounded-full bg-[linear-gradient(90deg,rgba(255,255,255,0.18),rgba(0,0,0,0.58))]" />
-        <div className="pointer-events-none absolute inset-y-7 right-2 w-1.5 rounded-full bg-[linear-gradient(90deg,rgba(0,0,0,0.58),rgba(255,255,255,0.13))]" />
-        <div className="pointer-events-none absolute left-4 top-5 flex gap-1 opacity-55">
-          {Array.from({ length: 5 }).map((_, index) => (
-            <span key={index} className="h-1 w-2 rounded-[1px] bg-white/35 shadow-[0_0_8px_rgba(255,255,255,0.14)]" />
-          ))}
+        <div className="pointer-events-none absolute inset-x-3 top-3 h-5 rounded-[5px] border border-white/[0.105] bg-[linear-gradient(180deg,rgba(255,255,255,0.12),rgba(8,9,9,0.24))] shadow-[inset_0_1px_0_rgba(255,255,255,0.16),inset_0_-1px_0_rgba(0,0,0,0.48)]">
+          <span className="absolute left-3 top-1/2 h-1 w-14 -translate-y-1/2 rounded-full bg-white/[0.14]" />
+          <span className="absolute right-3 top-1/2 h-1.5 w-7 -translate-y-1/2 rounded-full bg-ok/38 shadow-[0_0_12px_rgba(112,184,103,0.18)]" />
         </div>
-        <div className="pointer-events-none absolute right-4 top-5 h-1.5 w-5 rounded-full bg-ok/45 shadow-[0_0_16px_rgba(112,184,103,0.24)]" />
+        <div className="pointer-events-none absolute inset-x-3 bottom-2 h-4 rounded-[4px] border border-black/35 bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(0,0,0,0.42))] shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_-7px_18px_rgba(0,0,0,0.20)]" />
       </>
     )
   }
@@ -4690,7 +4669,7 @@ function kanbanCardMaterialClass(status: string, selected: boolean, selectable: 
     return `${base} rounded-[5px] border border-white/[0.10] bg-[linear-gradient(180deg,rgba(255,255,255,0.020),rgba(0,0,0,0.25))] opacity-65 ring-white/10`
   }
   if (status === 'todo') {
-    return `${base} rounded-[7px] border border-[#6f7c82]/55 bg-[linear-gradient(180deg,#bcc7cc_0%,#aebbc1_56%,#9ba9af_100%)] shadow-[0_1px_0_rgba(255,255,255,0.45),0_9px_20px_-8px_rgba(0,0,0,0.58),inset_0_1px_0_rgba(255,255,255,0.42),inset_0_-1px_0_rgba(0,0,0,0.13)] ${
+    return `${base} rounded-[7px] border border-[#6f7c82]/48 bg-[linear-gradient(180deg,#c0cbd0_0%,#b1bec4_58%,#9eabb1_100%)] pl-8 shadow-[0_1px_0_rgba(255,255,255,0.45),0_9px_20px_-8px_rgba(0,0,0,0.54),inset_0_1px_0_rgba(255,255,255,0.36),inset_0_-1px_0_rgba(0,0,0,0.12)] ${
       selected ? 'ring-2 ring-[#172023]/65' : 'ring-0'
     }`
   }
@@ -4699,12 +4678,12 @@ function kanbanCardMaterialClass(status: string, selected: boolean, selectable: 
     // the top edge, slight darker fold at the bottom. Drop shadow gives the
     // card lift over the dark board. The selection ring darkens to a neutral
     // ink on paper so it doesn't read as a coloured halo.
-    return `${base} pl-9 rounded-md border border-[#9da08e]/55 bg-[linear-gradient(180deg,#dee1d1_0%,#d6d9c8_55%,#cbcebd_100%)] shadow-[0_1px_0_rgba(255,255,255,0.55),0_2px_2px_rgba(0,0,0,0.18),0_10px_22px_-6px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.55),inset_0_-1px_0_rgba(0,0,0,0.10)] ${
+    return `${base} pl-12 rounded-md border border-[#9da08e]/50 bg-[linear-gradient(180deg,#e0e3d3_0%,#d7dac9_56%,#cbcebd_100%)] shadow-[0_1px_0_rgba(255,255,255,0.55),0_2px_2px_rgba(0,0,0,0.16),0_10px_22px_-6px_rgba(0,0,0,0.40),inset_0_1px_0_rgba(255,255,255,0.46),inset_0_-1px_0_rgba(0,0,0,0.09)] ${
       selected ? 'ring-2 ring-[#1a1c12]/60' : 'ring-0'
     }`
   }
   if (status === 'running') {
-    return `${base} rounded-xl border bg-[linear-gradient(145deg,rgba(122,128,124,0.34),rgba(39,42,41,0.68)_46%,rgba(8,9,9,0.82))] pt-8 shadow-[inset_0_1px_0_rgba(255,255,255,0.20),inset_0_-14px_24px_rgba(0,0,0,0.42),0_18px_34px_rgba(0,0,0,0.42)] ${
+    return `${base} rounded-xl border bg-[linear-gradient(145deg,rgba(116,122,119,0.28),rgba(39,42,41,0.66)_46%,rgba(8,9,9,0.82))] pt-12 shadow-[inset_0_1px_0_rgba(255,255,255,0.16),inset_0_-10px_20px_rgba(0,0,0,0.34),0_18px_34px_rgba(0,0,0,0.38)] ${
       selected ? 'border-white/38 ring-white/38' : 'border-white/18 ring-white/16'
     }`
   }
