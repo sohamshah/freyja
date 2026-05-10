@@ -1579,12 +1579,16 @@ function GoalTimeline({ goalState, dense = false }: { goalState: GoalStateView |
 }
 
 const KANBAN_COLUMNS = [
-  { id: 'todo', label: 'queued', hint: 'awaiting triage' },
+  { id: 'triage', label: 'triage', hint: 'specifying / awaiting parents' },
   { id: 'ready', label: 'ready', hint: 'unblocked work' },
   { id: 'running', label: 'working', hint: 'owned by agents' },
+  { id: 'done_unverified', label: 'review', hint: 'awaiting verifier' },
   { id: 'blocked', label: 'blocked', hint: 'needs input' },
-  { id: 'done', label: 'finished', hint: 'sealed outputs' },
-  { id: 'cancelled', label: 'cancelled', hint: 'no longer active' },
+  { id: 'done', label: 'done', hint: 'sealed outputs' },
+  { id: 'crashed', label: 'crashed', hint: 'worker exited unclean' },
+  { id: 'timed_out', label: 'timed out', hint: 'exceeded budget' },
+  { id: 'failed', label: 'failed', hint: 'circuit broken' },
+  { id: 'cancelled', label: 'cancelled', hint: 'stopped by operator' },
 ] as const
 
 function KanbanHealthView({
@@ -1766,9 +1770,12 @@ function KanbanBoard({
   const cardsByStatus = new Map<string, KanbanCardView[]>()
   for (const column of KANBAN_COLUMNS) cardsByStatus.set(column.id, [])
   for (const card of cards) {
+    // Legacy `todo` events from older bridge versions get rebucketed into
+    // `triage`; anything else outside the known column set also falls
+    // there so the card stays visible rather than getting silently dropped.
     const status = KANBAN_COLUMNS.some((column) => column.id === card.status)
       ? card.status
-      : 'todo'
+      : 'triage'
     cardsByStatus.get(status)?.push(card)
   }
   for (const columnCards of cardsByStatus.values()) {
@@ -1777,7 +1784,8 @@ function KanbanBoard({
       || (b.updatedAt ?? 0) - (a.updatedAt ?? 0),
     )
   }
-  const boardColumns = KANBAN_COLUMNS.filter((column) => !compact || column.id !== 'cancelled')
+  const COMPACT_HIDDEN_COLUMNS = new Set(['cancelled', 'crashed', 'timed_out', 'failed'])
+  const boardColumns = KANBAN_COLUMNS.filter((column) => !compact || !COMPACT_HIDDEN_COLUMNS.has(column.id))
   const activeColumns = boardColumns.filter((column) => (cardsByStatus.get(column.id)?.length ?? 0) > 0)
   const quietColumns = boardColumns.filter((column) => (cardsByStatus.get(column.id)?.length ?? 0) === 0)
 
@@ -2061,7 +2069,7 @@ function KanbanCardMaterial({
   status: string
   selected: boolean
 }) {
-  if (status === 'todo') {
+  if (status === 'todo' || status === 'triage') {
     return (
       <>
         <div className="pointer-events-none absolute inset-y-2 left-2 w-4 rounded-[4px] border border-[#172023]/10 bg-[#172023]/[0.035]" />
@@ -2212,7 +2220,7 @@ function KanbanCard({
   const materialClass = kanbanCardMaterialClass(card.status, selected, Boolean(onSelect))
 
   // Paper variants use dark ink instead of the standard white-on-dark ramp.
-  const ticket = card.status === 'todo'
+  const ticket = card.status === 'todo' || card.status === 'triage'
   const paper = card.status === 'ready'
   const palette = paper
     ? {
@@ -4639,7 +4647,7 @@ function kanbanColumnClass(status: string): string {
   if (status === 'done') {
     return 'border border-ok/[0.14] bg-[linear-gradient(180deg,rgba(112,184,103,0.032),rgba(0,0,0,0.19))]'
   }
-  if (status === 'todo') {
+  if (status === 'todo' || status === 'triage') {
     return 'border border-dashed border-white/[0.11] bg-[linear-gradient(180deg,rgba(139,160,165,0.035),rgba(0,0,0,0.13))]'
   }
   if (status === 'running') {
@@ -4668,7 +4676,7 @@ function kanbanCardMaterialClass(status: string, selected: boolean, selectable: 
   if (status === 'cancelled') {
     return `${base} rounded-[5px] border border-white/[0.10] bg-[linear-gradient(180deg,rgba(255,255,255,0.020),rgba(0,0,0,0.25))] opacity-65 ring-white/10`
   }
-  if (status === 'todo') {
+  if (status === 'todo' || status === 'triage') {
     return `${base} rounded-[7px] border border-[#6f7c82]/48 bg-[linear-gradient(180deg,#c0cbd0_0%,#b1bec4_58%,#9eabb1_100%)] pl-8 shadow-[0_1px_0_rgba(255,255,255,0.45),0_9px_20px_-8px_rgba(0,0,0,0.54),inset_0_1px_0_rgba(255,255,255,0.36),inset_0_-1px_0_rgba(0,0,0,0.12)] ${
       selected ? 'ring-2 ring-[#172023]/65' : 'ring-0'
     }`
@@ -4696,7 +4704,7 @@ function kanbanCardMaterialClass(status: string, selected: boolean, selectable: 
 }
 
 function kanbanProgressTrackClass(status: string): string {
-  if (status === 'todo') return 'rounded-[2px] bg-[#10191d]/15 shadow-[inset_0_0_0_1px_rgba(0,0,0,0.10)]'
+  if (status === 'todo' || status === 'triage') return 'rounded-[2px] bg-[#10191d]/15 shadow-[inset_0_0_0_1px_rgba(0,0,0,0.10)]'
   // Ready cards are paper, so the track needs to be ink-on-cream: a dark
   // hairline well sunk into the paper instead of a white track.
   if (status === 'ready') return 'rounded-[2px] bg-[#0e0f08]/15 shadow-[inset_0_0_0_1px_rgba(0,0,0,0.10)]'
@@ -4711,7 +4719,7 @@ function kanbanProgressFillClass(status: string, blocked: boolean): string {
   // a neutral bar so the board stays monochrome. Ready uses dark ink so
   // the bar reads against the cream paper.
   if (status === 'done') return 'rounded-[1px] bg-ok/75 shadow-[0_0_14px_rgba(112,184,103,0.22)]'
-  if (status === 'todo') return 'rounded-[1px] bg-[#10191d]/55'
+  if (status === 'todo' || status === 'triage') return 'rounded-[1px] bg-[#10191d]/55'
   if (status === 'ready') return 'rounded-[1px] bg-[#0e0f08]/65'
   if (blocked || status === 'cancelled') return 'rounded-[1px] bg-white/40'
   if (status === 'running') return 'rounded-[1px] bg-white/75'
@@ -4723,6 +4731,8 @@ function kanbanStatusClass(status: string): string {
   // the neutral text ramp so the board reads as monochrome with a single
   // green "shipped" emphasis.
   if (status === 'done') return 'text-ok'
+  if (status === 'done_unverified') return 'text-warn'
+  if (status === 'failed' || status === 'crashed' || status === 'timed_out') return 'text-danger'
   if (status === 'blocked' || status === 'cancelled') return 'text-fg-2'
   if (status === 'running') return 'text-fg-1'
   return 'text-fg-2'

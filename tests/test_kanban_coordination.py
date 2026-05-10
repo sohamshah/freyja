@@ -51,7 +51,7 @@ async def test_kanban_tool_create_link_complete_and_promote() -> None:
     )
     second_payload = json.loads(second.content)
     second_id = second_payload["task"]["id"]
-    assert second_payload["task"]["status"] == "todo"
+    assert second_payload["task"]["status"] == "triage"
 
     complete = await tool.execute(
         "call-3",
@@ -84,7 +84,7 @@ async def test_cancelled_parent_emits_orphan_and_unblock_promotes_child() -> Non
         {"action": "create", "title": "Execute refactor", "parents": [parent_id]},
     )
     child_id = json.loads(child_result.content)["task"]["id"]
-    assert json.loads(child_result.content)["task"]["status"] == "todo"
+    assert json.loads(child_result.content)["task"]["status"] == "triage"
 
     # Cancelling the parent should NOT auto-promote the child to ready,
     # but should record an `orphaned` event on the child.
@@ -103,7 +103,7 @@ async def test_cancelled_parent_emits_orphan_and_unblock_promotes_child() -> Non
         "call-4", {"action": "show", "task_id": child_id}
     )
     child_payload = json.loads(show_after_cancel.content)["task"]
-    assert child_payload["status"] == "todo"
+    assert child_payload["status"] == "triage"
     kinds = [event["kind"] for event in child_payload["events"]]
     assert "orphaned" in kinds
 
@@ -180,8 +180,8 @@ async def test_kanban_list_groups_by_status_first() -> None:
     listing = await tool.execute("c4", {"action": "list"})
     tasks = json.loads(listing.content)["tasks"]
     statuses = [t["status"] for t in tasks]
-    # STATUSES order: todo, ready, running, blocked, done, cancelled
-    # ready comes before running, so A appears before B regardless of priority.
+    # STATUSES order: triage, ready, running, …  — ready comes before running,
+    # so A appears before B regardless of priority.
     assert statuses == ["ready", "running"]
     assert tasks[0]["title"] == "A"
 
@@ -228,7 +228,7 @@ async def test_kanban_digest_groups_cards_by_actionable_bucket() -> None:
     tool = KanbanTool(board, actor_id="parent", actor_label="parent")
 
     # Build a board with one card in each interesting state:
-    # running, ready, blocked, todo (waiting on parent).
+    # running, ready, blocked, triage (waiting on parent).
     p_ready_high = await tool.execute(
         "c1", {"action": "create", "title": "urgent ready", "priority": 0}
     )
@@ -324,6 +324,98 @@ async def test_kanban_show_inlines_parent_context() -> None:
     assert "docs/notes.md" in by_id[a_id]["artifacts"]
     # In-flight parent shows up too with its current status.
     assert by_id[b_id]["status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_kanban_invalid_transition_is_rejected() -> None:
+    """Terminal states (done/failed/cancelled) are absorbing — writing
+    any further status to a completed card must be rejected. This is the
+    backflow guard that keeps autonomy from accidentally resurrecting
+    sealed work."""
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+
+    create = await tool.execute("c1", {"action": "create", "title": "card"})
+    card_id = json.loads(create.content)["task"]["id"]
+    await tool.execute("c2", {"action": "complete", "task_id": card_id})
+
+    bad = await tool.execute(
+        "c3", {"action": "update", "task_id": card_id, "status": "running"}
+    )
+    assert bad.is_error
+    assert "invalid transition" in bad.content
+
+    # The card stays `done` after a rejected write — no partial mutation.
+    show = await tool.execute("c4", {"action": "show", "task_id": card_id})
+    assert json.loads(show.content)["task"]["status"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_kanban_legacy_todo_normalizes_to_triage() -> None:
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+
+    parent_result = await tool.execute(
+        "c1", {"action": "create", "title": "parent"}
+    )
+    parent_id = json.loads(parent_result.content)["task"]["id"]
+    child_result = await tool.execute(
+        "c2", {"action": "create", "title": "child", "parents": [parent_id]},
+    )
+    child_id = json.loads(child_result.content)["task"]["id"]
+    # Fresh child sits in triage because parent is still in flight.
+    assert json.loads(child_result.content)["task"]["status"] == "triage"
+
+    # A caller using the legacy `todo` spelling for `update` must be
+    # accepted and round-trip as `triage` on read.
+    re_update = await tool.execute(
+        "c3", {"action": "update", "task_id": child_id, "status": "todo"}
+    )
+    assert not re_update.is_error
+    show = await tool.execute("c4", {"action": "show", "task_id": child_id})
+    assert json.loads(show.content)["task"]["status"] == "triage"
+
+
+@pytest.mark.asyncio
+async def test_kanban_new_end_states_are_reachable_from_running() -> None:
+    """Running cards must be able to reach crashed/timed_out/done_unverified
+    so the dispatcher can record outcomes precisely. done_unverified must
+    then be able to settle to done."""
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+
+    async def make_running() -> str:
+        create = await tool.execute(
+            f"c-{board._counter}", {"action": "create", "title": "work"},
+        )
+        cid = json.loads(create.content)["task"]["id"]
+        await tool.execute(
+            f"r-{board._counter}",
+            {"action": "update", "task_id": cid, "status": "running"},
+        )
+        return cid
+
+    for next_status in ("crashed", "timed_out", "done_unverified"):
+        cid = await make_running()
+        result = await tool.execute(
+            f"t-{cid}",
+            {"action": "update", "task_id": cid, "status": next_status},
+        )
+        assert not result.is_error, f"{next_status}: {result.content}"
+        show = await tool.execute(f"s-{cid}", {"action": "show", "task_id": cid})
+        assert json.loads(show.content)["task"]["status"] == next_status
+
+    # done_unverified → done is the verifier's seal-the-deal transition.
+    cid = await make_running()
+    await tool.execute(
+        f"u-{cid}", {"action": "update", "task_id": cid, "status": "done_unverified"},
+    )
+    seal = await tool.execute(
+        f"d-{cid}", {"action": "update", "task_id": cid, "status": "done"},
+    )
+    assert not seal.is_error
+    show = await tool.execute(f"f-{cid}", {"action": "show", "task_id": cid})
+    assert json.loads(show.content)["task"]["status"] == "done"
 
 
 def test_registry_only_exposes_kanban_tool_in_kanban_mode(tmp_path) -> None:

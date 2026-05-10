@@ -11,13 +11,94 @@ from typing import Any, Awaitable, Callable
 from bridge.tools.base import ToolDefinition, ToolResult, ToolTier
 
 
-STATUSES = ("todo", "ready", "running", "blocked", "done", "cancelled")
-TERMINAL_STATUSES = {"done", "cancelled"}
-# Terminal states a parent can reach where its `todo` children's dependencies
-# can never be satisfied. Children of these parents get `kanban_orphan` events
-# rather than auto-promotion or auto-cancellation. Task #13 will extend this
-# with `failed` when the circuit breaker lands.
-TERMINAL_FAILURE_STATUSES = {"cancelled"}
+# Status vocabulary. Forward path: triage → ready → running → done.
+#   triage           — card exists but body isn't yet a specifiable plan.
+#                       The specifier profile expands and promotes to ready.
+#   ready            — fully specified and dispatchable.
+#   running          — claimed by a worker, in flight.
+#   done_unverified  — worker completed; awaiting verifier sign-off.
+#   done             — verified complete.
+#   blocked          — paused, waiting on user input or external decision.
+#   crashed          — worker exited unclean; retry-eligible.
+#   timed_out        — exceeded its budget; retry-eligible.
+#   failed           — circuit-breaker tripped; dispatcher locked out.
+#   cancelled        — explicitly stopped by operator.
+STATUSES = (
+    "triage",
+    "ready",
+    "running",
+    "done_unverified",
+    "done",
+    "blocked",
+    "crashed",
+    "timed_out",
+    "failed",
+    "cancelled",
+    # Legacy alias: existing callers still write `todo` to mean "exists but
+    # not yet dispatchable." The new vocab calls this `triage`. Both are
+    # accepted to keep backward compatibility; `todo` normalizes to `triage`
+    # at write time. Listed last so it sorts after the canonical buckets.
+    "todo",
+)
+TERMINAL_STATUSES = {"done", "cancelled", "failed"}
+# Terminal states a parent can reach where its `triage`/`todo`/`ready`
+# children's dependencies can never be satisfied. Children of these parents
+# get `kanban_orphan` events rather than auto-promotion or auto-cancellation.
+TERMINAL_FAILURE_STATUSES = {"cancelled", "failed"}
+# Statuses that count as "still in the worker's hands" — claimed but not yet
+# back in the operator's queue.
+ACTIVE_STATUSES = {"running"}
+# End states from which retry is possible (via reclaim or operator action).
+RETRY_ELIGIBLE_STATUSES = {"crashed", "timed_out", "blocked"}
+
+# Allowed transitions. Anything outside this table is rejected at write
+# time so accidental backflow (e.g. `done → running`) can't happen under
+# autonomy. Keep this table mechanically reviewable: the LEFT side is the
+# *current* status; the RIGHT side is the set of valid next-statuses.
+ALLOWED_TRANSITIONS: dict[str, set[str]] = {
+    # `done` is allowed from triage/ready/blocked because the parent can
+    # legitimately seal a card via the `complete` action without ever
+    # spinning up a sub-agent. Worker writes are constrained separately
+    # by the worker-tool slim-down (Move E), not by this table.
+    "triage": {"ready", "done", "cancelled"},
+    "ready": {"running", "done", "cancelled", "blocked"},
+    "running": {
+        "done_unverified",
+        "done",  # parent agents that don't use the verifier skip straight here
+        "blocked",
+        "crashed",
+        "timed_out",
+        "cancelled",
+    },
+    "done_unverified": {"done", "running", "cancelled"},
+    "blocked": {"running", "ready", "done", "cancelled"},
+    "crashed": {"ready", "running", "failed", "cancelled"},
+    "timed_out": {"ready", "running", "failed", "cancelled"},
+    # Terminal states are absorbing — no further moves.
+    "done": set(),
+    "failed": set(),
+    "cancelled": set(),
+}
+
+
+def normalize_status(value: str | None) -> str:
+    raw = (value or "").strip().lower()
+    if not raw:
+        return ""
+    # Legacy: `todo` is the old name for `triage`. Accept either, persist as triage.
+    if raw == "todo":
+        return "triage"
+    if raw not in STATUSES:
+        raise ValueError(f"invalid status {value!r}")
+    return raw
+
+
+def is_valid_transition(current: str, next_status: str) -> bool:
+    """Self-transitions (writing the same status again) are always valid —
+    we use them as no-ops to update assignee/comment without status change."""
+    if current == next_status:
+        return True
+    return next_status in ALLOWED_TRANSITIONS.get(current, set())
 # Rolling-window cap on each card's `events` and `comments` lists. The full
 # history is still queryable via the `show_history` tool action; this just
 # bounds what rides along on every `to_dict()` payload so long missions don't
@@ -150,7 +231,10 @@ class SessionKanbanBoard:
             task_id = f"card_{self._counter:03d}"
             status = "ready"
             if any(self._tasks[pid].status != "done" for pid in clean_parents):
-                status = "todo"
+                # Parents still in flight — card sits in triage until they
+                # finish. (Move D will widen `triage` to also cover cards
+                # whose body hasn't been specified yet.)
+                status = "triage"
             task = KanbanTask(
                 id=task_id,
                 title=title.strip() or task_id,
@@ -214,15 +298,17 @@ class SessionKanbanBoard:
             now = time.time()
             changes: dict[str, Any] = {}
             if status:
-                status = status.lower()
-                if status not in STATUSES:
-                    raise ValueError(f"invalid status {status!r}")
-                if status == "running" and task.started_at is None:
+                next_status = normalize_status(status)
+                if not is_valid_transition(task.status, next_status):
+                    raise ValueError(
+                        f"invalid transition {task.status!r} -> {next_status!r}"
+                    )
+                if next_status == "running" and task.started_at is None:
                     task.started_at = now
-                if status in TERMINAL_STATUSES and task.completed_at is None:
+                if next_status in TERMINAL_STATUSES and task.completed_at is None:
                     task.completed_at = now
-                task.status = status
-                changes["status"] = status
+                task.status = next_status
+                changes["status"] = next_status
             if assignee is not None:
                 task.assignee = assignee.strip()
                 changes["assignee"] = task.assignee
@@ -270,7 +356,7 @@ class SessionKanbanBoard:
                 parent.children.append(child_id)
             if parent_id not in child.parents:
                 child.parents.append(parent_id)
-            child.status = "ready" if self._parents_done(child) else "todo"
+            child.status = "ready" if self._parents_done(child) else "triage"
             parent.updated_at = child.updated_at = time.time()
             parent.append_event(KanbanEvent("linked", actor, f"Linked to {child_id}"))
             child.append_event(KanbanEvent("linked", actor, f"Depends on {parent_id}"))
@@ -329,7 +415,7 @@ class SessionKanbanBoard:
                             ),
                         }
                     )
-                elif task.status == "todo":
+                elif task.status == "triage":
                     unresolved = [
                         pid
                         for pid in task.parents
@@ -407,7 +493,7 @@ class SessionKanbanBoard:
         parent = self._tasks[parent_id]
         for child_id in parent.children:
             child = self._tasks.get(child_id)
-            if child and child.status == "todo" and self._parents_done(child):
+            if child and child.status == "triage" and self._parents_done(child):
                 child.status = "ready"
                 child.updated_at = time.time()
                 child.append_event(
@@ -422,7 +508,7 @@ class SessionKanbanBoard:
         parent = self._tasks[parent_id]
         for child_id in parent.children:
             child = self._tasks.get(child_id)
-            if not child or child.status not in {"todo", "ready"}:
+            if not child or child.status not in {"triage", "ready"}:
                 continue
             child.append_event(
                 KanbanEvent(
@@ -435,15 +521,15 @@ class SessionKanbanBoard:
             child.updated_at = time.time()
 
     async def unblock(self, task_id: str, *, actor: str) -> tuple[KanbanTask | None, str]:
-        """Operator-driven override that flips an orphaned `todo` child
+        """Operator-driven override that flips an orphaned `triage` child
         to `ready`. Only legal when at least one of the card's parents is
         in a terminal-failure state and all *other* parents are done."""
         async with self._lock:
             task = self._tasks.get(task_id)
             if task is None:
                 return None, "card not found"
-            if task.status != "todo":
-                return task, f"card is {task.status!r}; unblock only works on todo cards"
+            if task.status != "triage":
+                return task, f"card is {task.status!r}; unblock only works on triage cards"
             if not task.parents:
                 return task, "card has no parents to unblock"
             has_failure_parent = any(
