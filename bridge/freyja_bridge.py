@@ -3732,6 +3732,51 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         sess.pending_task = asyncio.create_task(_run_rerun(), name=f"rerun-{sess.id}")
         return
 
+    if ctype == "delete_session":
+        if not session_id:
+            return
+        raw_cascade = cmd.get("cascadeSessionIds") or []
+        cascade_ids: list[str] = [
+            str(cid) for cid in raw_cascade if isinstance(cid, str) and cid
+        ]
+        all_ids = [session_id, *cascade_ids]
+
+        from bridge.transcript_persistence import delete_transcript
+
+        deleted_count = 0
+        for sid in all_ids:
+            # Cancel any in-flight turn so we don't tear down a live
+            # `_BridgeSession` while the runner still holds references.
+            existing = state.sessions.get(sid)
+            if existing is not None:
+                pending = getattr(existing, "pending_task", None)
+                if pending is not None and not pending.done():
+                    try:
+                        pending.cancel()
+                    except Exception:  # noqa: BLE001
+                        pass
+                try:
+                    del state.sessions[sid]
+                except KeyError:
+                    pass
+            try:
+                delete_transcript(sid)
+                deleted_count += 1
+            except Exception as exc:  # noqa: BLE001
+                log("warn", f"delete_session: unlink failed for {sid}: {exc}")
+
+        if cascade_ids:
+            plural = "s" if len(cascade_ids) != 1 else ""
+            cascade_note = f" (+{len(cascade_ids)} subagent{plural})"
+        else:
+            cascade_note = ""
+        log(
+            "info",
+            f"deleted session {session_id}{cascade_note} — "
+            f"{deleted_count} transcript file(s) removed",
+        )
+        return
+
     if ctype == "branch_session":
         if not session_id:
             return

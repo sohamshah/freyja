@@ -517,11 +517,32 @@ function SessionRow({
   const renameSession = useHarness((st) => st.renameSession)
   const deleteSession = useHarness((st) => st.deleteSession)
   const downloadSession = useHarness((st) => st.downloadSession)
+  const allSessions = useHarness((st) => st.sessions)
   const [menuOpen, setMenuOpen] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(s.title)
   const inputRef = useRef<HTMLInputElement>(null)
   const rowRef = useRef<HTMLDivElement>(null)
+
+  // Count every descendant subagent under this session so the Delete
+  // entry can warn the user that the cascade reaches further than the
+  // single row they right-clicked.
+  const subagentCount = useMemo(() => {
+    let count = 0
+    const queue: string[] = [s.id]
+    const seen = new Set<string>([s.id])
+    while (queue.length > 0) {
+      const cur = queue.shift()!
+      for (const other of allSessions) {
+        if (other.parentSessionId === cur && !seen.has(other.id)) {
+          seen.add(other.id)
+          count += 1
+          queue.push(other.id)
+        }
+      }
+    }
+    return count
+  }, [allSessions, s.id])
 
   // Close context menu on click outside
   useEffect(() => {
@@ -674,7 +695,11 @@ function SessionRow({
           />
           {!isActive && (
             <CtxBtn
-              label="Delete"
+              label={
+                subagentCount > 0
+                  ? `Delete (+${subagentCount} subagent${subagentCount === 1 ? '' : 's'})`
+                  : 'Delete'
+              }
               danger
               onClick={() => {
                 setMenuOpen(false)

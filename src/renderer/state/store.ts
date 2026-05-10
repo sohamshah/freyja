@@ -2662,29 +2662,70 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       state.showToast("Can't delete the active session", 'warn')
       return
     }
-    // Remove from store
+    // Cascade through every subagent / nested-subagent session of the
+    // target so the user doesn't end up with orphaned transcripts on
+    // disk after a parent is removed.
+    const descendants = collectDescendantSessionIds(state.sessions, sessionId)
+    if (descendants.includes(state.activeSessionId)) {
+      state.showToast(
+        "Can't delete — the active session is a subagent of this one. Switch first.",
+        'warn',
+      )
+      return
+    }
+    const idsToDelete = new Set<string>([sessionId, ...descendants])
+
+    // Remove from store: sessions list, archive, any panes pointing at
+    // a removed id. Frame caches get released for each archived slice.
     set((prev) => {
       const nextArchive = { ...prev.sessionArchive }
-      releaseSliceFrames(nextArchive[sessionId])
-      delete nextArchive[sessionId]
+      for (const id of idsToDelete) {
+        releaseSliceFrames(nextArchive[id])
+        delete nextArchive[id]
+      }
+      const nextPanes = prev.sessionPanes.filter(
+        (pane) => !idsToDelete.has(pane.sessionId),
+      )
+      const activePaneStillThere = nextPanes.some((p) => p.id === prev.activePaneId)
       return {
         ...prev,
-        sessions: prev.sessions.filter((s) => s.id !== sessionId),
+        sessions: prev.sessions.filter((s) => !idsToDelete.has(s.id)),
         sessionArchive: nextArchive,
-        sessionPanes: prev.sessionPanes.filter((pane) => pane.sessionId !== sessionId),
-        activePaneId:
-          prev.sessionPanes.find((pane) => pane.id === prev.activePaneId)?.sessionId === sessionId
-            ? (prev.sessionPanes.find((pane) => pane.sessionId !== sessionId)?.id ?? prev.activePaneId)
-            : prev.activePaneId,
+        sessionPanes: nextPanes,
+        activePaneId: activePaneStillThere
+          ? prev.activePaneId
+          : (nextPanes[0]?.id ?? prev.activePaneId),
       }
     })
-    // Remove from disk
+
+    // Remove from disk: renderer-side metadata file (`{id}.json`) +
+    // bridge-side transcript file (`{id}.transcript.json`) +
+    // bridge in-memory `_BridgeState.sessions` entries.
     const api = (window as any).harness
+    const allIds = [sessionId, ...descendants]
     if (api?.sessionDelete) {
-      await api.sessionDelete(sessionId)
+      await Promise.all(allIds.map((id) => api.sessionDelete(id).catch(() => {})))
+    }
+    if (api?.sendCommand) {
+      await api
+        .sendCommand({
+          type: 'delete_session',
+          sessionId,
+          cascadeSessionIds: descendants,
+        })
+        .catch(() => {})
     }
     await useHarness.getState().persistSessionIndex().catch(() => {})
-    state.showToast('Session deleted', 'info')
+
+    if (descendants.length === 0) {
+      state.showToast('Session deleted', 'info')
+    } else {
+      const noun = descendants.length === 1 ? 'subagent' : 'subagents'
+      state.showToast(
+        `Session deleted — ${descendants.length} ${noun} also removed`,
+        'info',
+      )
+    }
   },
 
   async downloadSession(sessionId) {

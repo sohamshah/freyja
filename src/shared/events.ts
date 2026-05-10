@@ -338,6 +338,16 @@ export type BridgeCommand =
        *  on disk and returns the id remap via `session_branched`. */
       childSessionIds?: string[]
     }
+  | {
+      // Delete a session: drop it from the bridge's in-memory map,
+      // cancel any pending task, and unlink its persisted transcript
+      // from ~/.freyja/sessions. The renderer is responsible for the
+      // cascade (passing every descendant id in `cascadeSessionIds`)
+      // so the bridge can drop the whole subtree atomically.
+      type: 'delete_session'
+      sessionId: string
+      cascadeSessionIds?: string[]
+    }
   | { type: 'shutdown' }
 
 // --- Events produced by the bridge and forwarded to the renderer ---
