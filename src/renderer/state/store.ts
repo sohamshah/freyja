@@ -24,6 +24,7 @@ import {
   retainFrame,
   type FrameRef,
 } from '../lib/frameMedia'
+import { extractConversationSummary } from '../lib/conversationSummary'
 
 /** Per-computer-session live state: latest screenshot frame, planned
  *  action (for the highlight ring), and action history. */
@@ -1942,6 +1943,13 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       reasoningLevel: state.reasoningLevel,
       coordinationStrategy: state.coordinationStrategy,
     }
+    const activeSnapshot = state.sessions.find((s) => s.id === state.activeSessionId)
+    if (activeSnapshot?.parentSessionId && state.messages.length > 0) {
+      const contextSummary = extractConversationSummary(state.messages, state.toolCalls)
+      if (contextSummary) {
+        cmd.contextSummary = contextSummary
+      }
+    }
     if (attachments.length > 0) {
       cmd.attachments = attachments.map((a) => ({
         type: a.type,
@@ -3205,6 +3213,25 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         })
         if (action === 'set') show('goal loop armed', 'ok')
         else show(`goal ${action}`, 'info')
+        return true
+      }
+      case '/autopilot': {
+        // /autopilot on|off — toggle kanban auto-dispatch for the
+        // active session. Bridge ignores the request when the session
+        // isn't in kanban mode, so it's safe to call from anywhere.
+        const api = (window as any).harness
+        if (!api) {
+          show('no bridge', 'warn')
+          return true
+        }
+        const raw = (args ?? '').trim().toLowerCase()
+        const enabled = raw === '' ? true : raw === 'on' || raw === 'enable' || raw === 'true'
+        api.sendCommand({
+          type: 'kanban_autopilot',
+          sessionId: state.activeSessionId,
+          enabled,
+        })
+        show(`autopilot ${enabled ? 'on' : 'off'}`, 'info')
         return true
       }
       case '/memory':

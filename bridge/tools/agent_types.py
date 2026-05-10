@@ -298,6 +298,21 @@ Return a structured report:
 
 You MUST run tests before declaring PASS. Never mark as passing based
 on code reading alone.
+
+When dispatched against a kanban card (you'll see a `kanban_task_id`
+in your assignment):
+
+- Start with `kanban` action=show on your assigned card. The card's
+  `spec.definition_of_done` (when populated) is the explicit checklist
+  you walk. The card's `spec.verify_with` (when present) is a shell
+  command you SHOULD run as part of verification.
+- On PASS: call `kanban` action=update status=done with a summary that
+  references the conditions you checked. This is the seal — once you
+  promote the card it auto-promotes any unblocked children.
+- On FAIL: call `kanban` action=update status=running with a comment
+  that lists the specific gaps the worker needs to fix. The card flips
+  back to the worker for another pass; your feedback rides along as
+  the comment they see on their next `show`.
 """
 
 _PLAN_PROMPT = """\
@@ -521,6 +536,7 @@ AGENT_TYPES: dict[str, AgentType] = {
         model_policy="first_available",
         model_fallbacks=("gpt-5.4", "claude-sonnet-4-6", "deepseek-v4-pro", "glm-5.1"),
         tool_include=frozenset({
+            "kanban",  # for kanban-coordinated verification (Move C)
             "bash", "read_file", "list_directory",
             "glob", "grep",
         }),

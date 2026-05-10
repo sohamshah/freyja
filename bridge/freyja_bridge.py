@@ -1366,6 +1366,18 @@ class _BridgeSession:
         # so the dashboard always has a mission cover-card to draw the
         # rest of the work off of.
         self.mission_root_card_id: str | None = None
+        # Auto-dispatch state (Move A). Off by default — the dashboard
+        # toggle flips it on per session. When enabled, the dispatcher
+        # tick spawns specifier/worker/verifier sub-agents against the
+        # board without the parent having to drive each one by hand.
+        self.auto_dispatch_enabled: bool = False
+        self._kanban_dispatcher_task: asyncio.Task[Any] | None = None
+        # Card ids that already have a sub-agent in flight from a
+        # previous tick. Cleared as sub-agents finish (via the
+        # subagent_finished event hook). Prevents the dispatcher from
+        # spawning a second worker for the same card while the first is
+        # still running.
+        self._kanban_dispatched: set[str] = set()
         self.task_board: Any | None = None
         self.goal_state: Any | None = None
         self._turn_text_parts: list[str] = []
@@ -1658,6 +1670,11 @@ class _BridgeSession:
         self._system_prompt = ""
         self.kanban_board = None
         self.mission_root_card_id = None
+        self.auto_dispatch_enabled = False
+        if self._kanban_dispatcher_task is not None:
+            self._kanban_dispatcher_task.cancel()
+        self._kanban_dispatcher_task = None
+        self._kanban_dispatched = set()
         self.task_board = None
         self.goal_state = None
         self._turn_text_parts = []
@@ -2520,6 +2537,247 @@ class _BridgeSession:
                     self.mission_root_card_id = card.id
                     break
 
+    # ─── Kanban auto-dispatch (Move A) + verifier (Move C) ────────────────
+
+    KANBAN_DISPATCH_INTERVAL = 30.0
+    KANBAN_MAX_PARALLEL = 3
+
+    def _emit_kanban_event(
+        self,
+        subtype: str,
+        message: str,
+        *,
+        details: dict[str, Any] | None = None,
+        chat_visible: bool = False,
+    ) -> None:
+        payload = dict(details or {})
+        payload.setdefault("chatVisible", chat_visible)
+        emit(
+            {
+                "type": "system_event",
+                "sessionId": self.id,
+                "subtype": subtype,
+                "message": message,
+                "details": payload,
+            }
+        )
+
+    def set_auto_dispatch_enabled(self, enabled: bool) -> None:
+        """Flip the kanban auto-dispatch switch for this session. Idempotent.
+        Starts the background loop on transition off→on, stops it on on→off."""
+        from bridge.tools.coordination import strategy_uses_kanban
+
+        if not strategy_uses_kanban(self.coordination_strategy):
+            self.auto_dispatch_enabled = False
+            return
+        if enabled == self.auto_dispatch_enabled:
+            return
+        self.auto_dispatch_enabled = enabled
+        if enabled:
+            self._start_kanban_dispatcher()
+            self._emit_kanban_event(
+                "kanban_autopilot_enabled",
+                "Kanban auto-dispatch enabled",
+                chat_visible=True,
+            )
+        else:
+            self._stop_kanban_dispatcher()
+            self._emit_kanban_event(
+                "kanban_autopilot_disabled",
+                "Kanban auto-dispatch disabled",
+                chat_visible=True,
+            )
+
+    def _start_kanban_dispatcher(self) -> None:
+        if self._kanban_dispatcher_task is not None and not self._kanban_dispatcher_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._kanban_dispatcher_task = loop.create_task(
+            self._run_kanban_dispatcher_loop(),
+            name=f"kanban-dispatch-{self.id}",
+        )
+
+    def _stop_kanban_dispatcher(self) -> None:
+        if self._kanban_dispatcher_task is None:
+            return
+        self._kanban_dispatcher_task.cancel()
+        self._kanban_dispatcher_task = None
+
+    async def _run_kanban_dispatcher_loop(self) -> None:
+        """Idle-tick driver. The post-turn hook calls `_kanban_tick` directly
+        for low-latency dispatch after each parent turn; this loop covers the
+        gap when no turns are happening (e.g., parent waiting on the user)."""
+        try:
+            while self.auto_dispatch_enabled:
+                await asyncio.sleep(self.KANBAN_DISPATCH_INTERVAL)
+                if not self.auto_dispatch_enabled:
+                    return
+                try:
+                    await self._kanban_tick(source="idle")
+                except Exception as exc:  # noqa: BLE001
+                    log("warn", f"kanban dispatcher tick failed: {exc}")
+        except asyncio.CancelledError:
+            return
+
+    async def _kanban_tick(self, *, source: str) -> None:
+        """One dispatch pass. Walk the board, spawn at most a few sub-agents
+        per pass so we don't blast the runner under a sudden flurry of ready
+        cards."""
+        if (
+            not self.auto_dispatch_enabled
+            or self.kanban_board is None
+            or self.tool_registry is None
+        ):
+            return
+        if self.queued_messages:
+            # User has something to say — don't burn turns on auto-dispatch
+            # until they're processed. Mirrors the goal-loop preemption.
+            return
+        sub_tool = self.tool_registry._tools.get("sub_agent")  # noqa: SLF001
+        if sub_tool is None:
+            return
+        # Refresh the in-flight set from the actual sub-agent registry so
+        # we don't keep cards locked out if a worker exited without
+        # clearing its kanban_task_id mapping (rare, but cheap to refresh).
+        live: set[str] = set()
+        if self.subagent_registry is not None:
+            for record in self.subagent_registry.list_all():
+                if record.is_running:
+                    card_id = getattr(record, "kanban_task_id", "") or ""
+                    if card_id:
+                        live.add(card_id)
+        self._kanban_dispatched = self._kanban_dispatched & live
+
+        running_count = len(live)
+        capacity = max(0, self.KANBAN_MAX_PARALLEL - running_count)
+        if capacity == 0:
+            return
+
+        cards = await self.kanban_board.list()
+        # Three dispatch lanes, in order: verifier sign-off, ready workers,
+        # then triage specifiers. Verification is highest-priority because
+        # completed work waiting on a seal is the closest to value-delivered.
+        plans: list[dict[str, Any]] = []
+        for card in cards:
+            if capacity == 0:
+                break
+            if card.id in self._kanban_dispatched or card.id in live:
+                continue
+            if card.status == "done_unverified":
+                plans.append(
+                    {
+                        "card": card,
+                        "agent_type": "verify",
+                        "label": f"verify {card.id}",
+                        "lane": "verifier",
+                    }
+                )
+                capacity -= 1
+                continue
+            if card.status == "ready" and card.assignee:
+                # Skip the mission root — it's a container, not work.
+                if card.metadata.get("role") == "mission_root":
+                    continue
+                plans.append(
+                    {
+                        "card": card,
+                        "agent_type": card.assignee,
+                        "label": f"{card.assignee} {card.id}",
+                        "lane": "worker",
+                    }
+                )
+                capacity -= 1
+                continue
+            if card.status == "triage":
+                if card.metadata.get("role") == "mission_root":
+                    continue
+                # A specifier is only useful once the card body is non-empty
+                # *or* its parents are done — otherwise there's nothing to
+                # expand. Cards still gated on a parent stay in triage.
+                if not self._board_parents_satisfied(card):
+                    continue
+                plans.append(
+                    {
+                        "card": card,
+                        "agent_type": "specifier",
+                        "label": f"specifier {card.id}",
+                        "lane": "specifier",
+                    }
+                )
+                capacity -= 1
+
+        for plan in plans:
+            card = plan["card"]
+            try:
+                await self._dispatch_kanban_card(plan, sub_tool=sub_tool, source=source)
+                self._kanban_dispatched.add(card.id)
+            except Exception as exc:  # noqa: BLE001
+                log(
+                    "warn",
+                    f"kanban dispatch for {card.id} failed: {exc}",
+                )
+
+    def _board_parents_satisfied(self, card: Any) -> bool:
+        if self.kanban_board is None:
+            return True
+        for parent_id in getattr(card, "parents", []) or []:
+            if parent_id == self.mission_root_card_id:
+                continue
+            parent = self.kanban_board._tasks.get(parent_id)  # noqa: SLF001
+            if parent is None or parent.status != "done":
+                return False
+        return True
+
+    async def _dispatch_kanban_card(
+        self,
+        plan: dict[str, Any],
+        *,
+        sub_tool: Any,
+        source: str,
+    ) -> None:
+        card = plan["card"]
+        agent_type = plan["agent_type"]
+        label = plan["label"][:60]
+        # The task instructions delivered to the worker are intentionally
+        # thin — the worker's first move should be `kanban` action `show`
+        # against its assigned card, which inlines parent context and
+        # spec fields (Move D). Repeating that here would just inflate
+        # the prompt.
+        task_text = (
+            f"You have been assigned kanban card `{card.id}` "
+            f"(`{card.title}`). Call `kanban` action=show on it first to "
+            "see the spec, parent context, and definition_of_done; then "
+            "do the work and finish by calling `complete` (or `block` if "
+            "you need user input)."
+        )
+        self._emit_kanban_event(
+            "kanban_dispatched",
+            f"Auto-dispatched {agent_type} on {card.id}",
+            details={
+                "cardId": card.id,
+                "agentType": agent_type,
+                "lane": plan["lane"],
+                "source": source,
+            },
+        )
+        # Run the spawn in background mode so the dispatcher tick doesn't
+        # block waiting for the worker. Foreground vs background here is
+        # an internal scheduling concern — from the renderer's perspective
+        # it's still a tracked sub-agent.
+        await sub_tool.execute(
+            f"auto-{card.id}-{int(time.time() * 1000):x}",
+            {
+                "label": label,
+                "task": task_text,
+                "agent_type": agent_type,
+                "mode": "background",
+                "kanban_task_id": card.id,
+            },
+        )
+
     def _pause_goal(self, reason: str = "paused") -> None:
         if self.goal_state is None:
             return
@@ -2798,6 +3056,11 @@ class _BridgeSession:
                 latest_response = "".join(self._turn_text_parts).strip()
             if result.success:
                 await self._maybe_continue_goal(latest_response)
+                if self.auto_dispatch_enabled:
+                    try:
+                        await self._kanban_tick(source="post_turn")
+                    except Exception as exc:  # noqa: BLE001
+                        log("warn", f"kanban post-turn dispatch failed: {exc}")
         except asyncio.CancelledError:
             # CRITICAL: backfill synthetic tool_results for any
             # tool_use blocks the runner emitted before the cancel
@@ -3621,6 +3884,14 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 },
             }
         )
+        return
+
+    if ctype == "kanban_autopilot":
+        if not session_id:
+            return
+        enabled = bool(cmd.get("enabled"))
+        sess = await state.ensure_session(session_id)
+        sess.set_auto_dispatch_enabled(enabled)
         return
 
     if ctype == "goal_control":
