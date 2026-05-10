@@ -1205,11 +1205,11 @@ function TaskAgentsView({
 }
 
 const TASK_COLUMNS = [
-  { id: 'todo', label: 'intake', hint: 'thin tickets' },
-  { id: 'active', label: 'build', hint: 'agent trays' },
-  { id: 'blocked', label: 'inspect', hint: 'blocked work' },
-  { id: 'done', label: 'archive', hint: 'sealed' },
-  { id: 'cancelled', label: 'void', hint: 'stopped' },
+  { id: 'todo', label: 'queued', hint: 'awaiting triage' },
+  { id: 'active', label: 'in progress', hint: 'owned by agents' },
+  { id: 'blocked', label: 'blocked', hint: 'needs input' },
+  { id: 'done', label: 'complete', hint: 'handoff sealed' },
+  { id: 'cancelled', label: 'stopped', hint: 'no longer active' },
 ] as const
 
 function TaskBoard({
@@ -1579,12 +1579,12 @@ function GoalTimeline({ goalState, dense = false }: { goalState: GoalStateView |
 }
 
 const KANBAN_COLUMNS = [
-  { id: 'todo', label: 'intake', hint: 'raw tickets' },
-  { id: 'ready', label: 'plan', hint: 'punched cards' },
-  { id: 'running', label: 'build', hint: 'agent trays' },
-  { id: 'blocked', label: 'inspect', hint: 'review gates' },
-  { id: 'done', label: 'ship', hint: 'archives' },
-  { id: 'cancelled', label: 'void', hint: 'stopped' },
+  { id: 'todo', label: 'queued', hint: 'awaiting triage' },
+  { id: 'ready', label: 'ready', hint: 'planned and unblocked' },
+  { id: 'running', label: 'in progress', hint: 'owned by agents' },
+  { id: 'blocked', label: 'blocked', hint: 'needs input' },
+  { id: 'done', label: 'complete', hint: 'handoff sealed' },
+  { id: 'cancelled', label: 'stopped', hint: 'no longer active' },
 ] as const
 
 function KanbanHealthView({
@@ -2048,19 +2048,58 @@ function KanbanCardMaterial({
   agents: AgentView[]
   selected: boolean
 }) {
+  if (status === 'todo') {
+    return (
+      <>
+        <span className="pointer-events-none absolute -left-2 top-[42%] h-4 w-4 rounded-full border border-[#63727a]/45 bg-[#080a09]" />
+        <span className="pointer-events-none absolute -right-2 top-[42%] h-4 w-4 rounded-full border border-[#63727a]/45 bg-[#080a09]" />
+        <div className="pointer-events-none absolute inset-x-3 top-3 border-t border-dashed border-[#1a2326]/35" />
+        <div className="pointer-events-none absolute inset-x-3 bottom-3 border-t border-dashed border-[#1a2326]/30" />
+        <div className="pointer-events-none absolute right-0 top-0 h-8 w-8 rounded-bl-md border-b border-l border-[#6f7c82]/40 bg-[linear-gradient(135deg,rgba(255,255,255,0.28),rgba(31,39,41,0.12))] shadow-[inset_1px_-1px_0_rgba(0,0,0,0.12)]" />
+        <div className="pointer-events-none absolute left-3 top-1/2 flex -translate-y-1/2 flex-col gap-1.5 opacity-55">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <span key={index} className="h-[3px] w-[3px] rounded-full bg-[#172023]" />
+          ))}
+        </div>
+        <div className="pointer-events-none absolute inset-x-8 bottom-1.5 flex justify-between opacity-45">
+          {Array.from({ length: 14 }).map((_, index) => (
+            <span key={index} className="h-[2px] w-[2px] rounded-full bg-[#172023]" />
+          ))}
+        </div>
+      </>
+    )
+  }
   if (status === 'ready') {
     return (
       <>
-        <div className="pointer-events-none absolute -right-1 top-2 h-full w-[96%] rounded-md border border-white/[0.07] bg-white/[0.018]" />
-        <div className="pointer-events-none absolute -right-2 top-4 h-full w-[92%] rounded-md border border-white/[0.045] bg-black/10" />
+        {/* Paper-stack ghost cards behind the main card: cream tones so it
+            reads as a stapled stack of index cards, not a layered glass panel. */}
+        <div className="pointer-events-none absolute -right-1 top-2 h-full w-[96%] rounded-md border border-[#9da08e]/45 bg-[#d4d7c5] shadow-[0_2px_0_rgba(0,0,0,0.10)]" />
+        <div className="pointer-events-none absolute -right-2 top-4 h-full w-[92%] rounded-md border border-[#8d9081]/35 bg-[#c9ccba] shadow-[0_2px_0_rgba(0,0,0,0.10)]" />
+
+        {/* Punch holes down the left edge: recessed dark dots with a faint
+            inner highlight that suggests the punched paper edge. */}
         <div className="pointer-events-none absolute inset-y-3 left-3 z-0 flex flex-col justify-around">
           {Array.from({ length: 5 }).map((_, index) => (
-            <span key={index} className="h-2.5 w-2.5 rounded-full bg-[#070807] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.10)]" />
+            <span
+              key={index}
+              className="h-[9px] w-[9px] rounded-full bg-[#1c1e16] shadow-[inset_0_1px_1px_rgba(0,0,0,0.65),inset_0_-1px_0_rgba(255,255,255,0.10),0_0_0_1px_rgba(0,0,0,0.18)]"
+            />
           ))}
         </div>
-        <div className="pointer-events-none absolute inset-y-3 right-3 z-0 flex flex-col justify-around opacity-35">
-          {Array.from({ length: 3 }).map((_, index) => (
-            <span key={index} className="h-px w-5 bg-black/55" />
+
+        {/* Faint horizontal rule lines, like a notebook page. */}
+        <div className="pointer-events-none absolute inset-x-9 top-12 bottom-9 z-0 flex flex-col justify-around opacity-[0.18]">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <span key={index} className="h-px w-full bg-[#1a1c12]" />
+          ))}
+        </div>
+
+        {/* Perforated tear-strip at the bottom: small dark dots like a
+            tear-off pad. */}
+        <div className="pointer-events-none absolute inset-x-9 bottom-2 z-0 flex justify-between opacity-50">
+          {Array.from({ length: 16 }).map((_, index) => (
+            <span key={index} className="h-[2px] w-[2px] rounded-full bg-[#1a1c12]" />
           ))}
         </div>
       </>
@@ -2069,17 +2108,23 @@ function KanbanCardMaterial({
   if (status === 'running') {
     return (
       <>
-        <div className="pointer-events-none absolute inset-x-3 top-2 h-px bg-white/20" />
-        <div className="pointer-events-none absolute inset-x-3 bottom-2 h-px bg-black/70" />
-        <div className="pointer-events-none absolute left-2 top-3 h-1.5 w-1.5 rounded-full bg-white/20 shadow-[0_0_0_1px_rgba(0,0,0,0.55)]" />
-        <div className="pointer-events-none absolute bottom-3 right-2 h-1.5 w-1.5 rounded-full bg-black/45 shadow-[0_0_0_1px_rgba(255,255,255,0.11)]" />
+        <div className="pointer-events-none absolute inset-x-2 top-2 h-4 rounded-[4px] border border-white/[0.12] bg-[linear-gradient(180deg,rgba(255,255,255,0.16),rgba(8,9,9,0.22))] shadow-[inset_0_1px_0_rgba(255,255,255,0.22),inset_0_-1px_0_rgba(0,0,0,0.55)]" />
+        <div className="pointer-events-none absolute inset-x-3 bottom-2 h-5 rounded-[5px] border border-black/45 bg-[linear-gradient(180deg,rgba(255,255,255,0.045),rgba(0,0,0,0.52))] shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_-7px_18px_rgba(0,0,0,0.24)]" />
+        <div className="pointer-events-none absolute inset-y-7 left-2 w-1.5 rounded-full bg-[linear-gradient(90deg,rgba(255,255,255,0.18),rgba(0,0,0,0.58))]" />
+        <div className="pointer-events-none absolute inset-y-7 right-2 w-1.5 rounded-full bg-[linear-gradient(90deg,rgba(0,0,0,0.58),rgba(255,255,255,0.13))]" />
+        <div className="pointer-events-none absolute left-4 top-5 flex gap-1 opacity-65">
+          {Array.from({ length: 5 }).map((_, index) => (
+            <span key={index} className="h-1 w-1 rounded-full bg-white/35 shadow-[0_0_8px_rgba(255,255,255,0.14)]" />
+          ))}
+        </div>
+        <div className="pointer-events-none absolute right-4 top-5 h-1.5 w-5 rounded-full bg-ok/45 shadow-[0_0_16px_rgba(112,184,103,0.24)]" />
         {agents.length > 0 && (
-          <div className="pointer-events-none absolute -right-1 top-9 z-0 flex flex-col gap-1">
+          <div className="pointer-events-none absolute -right-1 top-9 z-0 flex flex-col gap-1.5">
             {agents.slice(0, 4).map((agent) => (
               <span
                 key={agent.session.id}
-                className="h-5 w-2.5 rounded-l-full border border-white/15 bg-black/50"
-                style={{ boxShadow: `inset 2px 0 0 ${(PROFILE_HEX[agent.agentType] ?? PROFILE_HEX.general)}88` }}
+                className="h-5 w-3 rounded-l-full border border-white/18 bg-[linear-gradient(90deg,rgba(255,255,255,0.12),rgba(0,0,0,0.38))]"
+                style={{ boxShadow: `inset 2px 0 0 ${(PROFILE_HEX[agent.agentType] ?? PROFILE_HEX.general)}99, 0 0 14px ${(PROFILE_HEX[agent.agentType] ?? PROFILE_HEX.general)}22` }}
               />
             ))}
           </div>
@@ -2149,6 +2194,55 @@ function KanbanCard({
   const blocked = card.status === 'blocked'
   const owner = agents[0]?.session.title || card.assignee || card.createdBy || ''
   const materialClass = kanbanCardMaterialClass(card.status, selected, Boolean(onSelect))
+
+  // Paper variants use dark ink instead of the standard white-on-dark ramp.
+  const ticket = card.status === 'todo'
+  const paper = card.status === 'ready'
+  const palette = paper
+    ? {
+        id: 'text-[#1a1c12]',
+        status: 'text-[#3a3d2c]',
+        priority: kanbanPriorityClass(card.priority ?? 2),
+        title: 'text-[#0e0f08]',
+        meta: 'text-[#3a3d2c]',
+        ownerStrong: 'text-[#1a1c12]',
+        body: 'text-[#1f2117]',
+        latestLabel: 'text-[#1a1c12]',
+        latestText: 'text-[#3a3d2c]',
+        pill: 'rounded bg-[#0e0f08]/[0.07] text-[#1a1c12] px-1.5 py-0.5 ring-1 ring-[#0e0f08]/15',
+        summary: 'rounded-md bg-[#0e0f08]/[0.06] px-2 py-1.5 text-[10px] leading-[1.4] text-[#1a1c12] ring-1 ring-[#0e0f08]/15',
+        avatar: 'h-6 w-6 rounded-full bg-[#0e0f08]/15 ring-1 ring-[#0e0f08]/30',
+      }
+    : ticket
+      ? {
+          id: 'text-[#172023]',
+          status: 'text-[#314047]',
+          priority: kanbanPriorityClass(card.priority ?? 2),
+          title: 'text-[#0d1518]',
+          meta: 'text-[#314047]',
+          ownerStrong: 'text-[#172023]',
+          body: 'text-[#1d2a2f]',
+          latestLabel: 'text-[#10191d]',
+          latestText: 'text-[#334248]',
+          pill: 'rounded bg-[#10191d]/[0.07] text-[#172023] px-1.5 py-0.5 ring-1 ring-[#10191d]/15',
+          summary: 'rounded-md bg-[#10191d]/[0.055] px-2 py-1.5 text-[10px] leading-[1.4] text-[#172023] ring-1 ring-[#10191d]/12',
+          avatar: 'h-6 w-6 rounded-full bg-[#10191d]/12 ring-1 ring-[#10191d]/25',
+        }
+    : {
+        id: 'text-fg-1',
+        status: kanbanStatusClass(card.status),
+        priority: kanbanPriorityClass(card.priority ?? 2),
+        title: 'text-fg-0',
+        meta: 'text-fg-3',
+        ownerStrong: 'text-fg-2',
+        body: 'text-fg-2',
+        latestLabel: 'text-fg-1',
+        latestText: 'text-fg-3',
+        pill: 'rounded bg-white/[0.04] px-1.5 py-0.5 ring-hairline',
+        summary: 'rounded-md bg-white/[0.035] px-2 py-1.5 text-[10px] leading-[1.4] text-fg-2 ring-hairline',
+        avatar: 'h-6 w-6 rounded-full bg-black/50 ring-1 ring-white/15',
+      }
+
   return (
     <article
       role={onSelect ? 'button' : undefined}
@@ -2168,20 +2262,22 @@ function KanbanCard({
       <div className="relative z-10 flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span className="font-mono text-[10px] text-accent">{card.id}</span>
-            <span className={`font-mono text-[9px] uppercase ${kanbanStatusClass(card.status)}`}>
+            <span className={`font-mono text-[10px] ${palette.id}`}>{card.id}</span>
+            <span className={`font-mono text-[9px] uppercase ${palette.status}`}>
               {card.status}
             </span>
             {typeof card.priority === 'number' && (
-              <span className={`font-mono text-[8.5px] uppercase ${kanbanPriorityClass(card.priority)}`}>
+              <span className={`font-mono text-[8.5px] uppercase ${palette.priority}`}>
                 p{card.priority}
               </span>
             )}
           </div>
-          <h3 className="mt-1 line-clamp-2 text-[12px] leading-[1.35] text-fg-0">{card.title}</h3>
+          <h3 className={`mt-1 line-clamp-2 text-[12px] leading-[1.35] ${palette.title}`}>
+            {card.title}
+          </h3>
           {owner && (
-            <div className="mt-1 truncate font-mono text-[9px] text-fg-3">
-              owner <span className="text-fg-2">{owner}</span>
+            <div className={`mt-1 truncate font-mono text-[9px] ${palette.meta}`}>
+              owner <span className={palette.ownerStrong}>{owner}</span>
             </div>
           )}
         </div>
@@ -2196,7 +2292,7 @@ function KanbanCard({
                   onAttach(agent.session.id, 'split')
                 }}
                 title={agent.session.title || agent.session.id}
-                className="h-6 w-6 rounded-full bg-black/50 ring-1 ring-white/15"
+                className={palette.avatar}
                 style={{ boxShadow: `inset 0 0 0 1px ${(PROFILE_HEX[agent.agentType] ?? PROFILE_HEX.general)}80` }}
               >
                 <span
@@ -2215,30 +2311,32 @@ function KanbanCard({
         />
       </div>
       {!compact && card.body && (
-        <p className="relative z-10 mt-2 line-clamp-3 text-[10.5px] leading-[1.45] text-fg-2">{card.body}</p>
+        <p className={`relative z-10 mt-2 line-clamp-3 text-[10.5px] leading-[1.45] ${palette.body}`}>
+          {card.body}
+        </p>
       )}
       {(card.parents?.length || card.children?.length) && (
-        <div className="relative z-10 mt-2 flex flex-wrap gap-1 font-mono text-[9px] text-fg-3">
+        <div className={`relative z-10 mt-2 flex flex-wrap gap-1 font-mono text-[9px] ${palette.meta}`}>
           {(card.parents ?? []).slice(0, 3).map((id) => (
-            <span key={`p-${id}`} className="rounded bg-white/[0.04] px-1.5 py-0.5 ring-hairline">
+            <span key={`p-${id}`} className={palette.pill}>
               from {id}
             </span>
           ))}
           {(card.children ?? []).slice(0, 3).map((id) => (
-            <span key={`c-${id}`} className="rounded bg-white/[0.04] px-1.5 py-0.5 ring-hairline">
+            <span key={`c-${id}`} className={palette.pill}>
               to {id}
             </span>
           ))}
         </div>
       )}
       {latest && (
-        <div className="relative z-10 mt-2 line-clamp-2 font-mono text-[9.5px] leading-[1.4] text-fg-3">
-          <span className="text-fg-1">{latest.label}</span>
+        <div className={`relative z-10 mt-2 line-clamp-2 font-mono text-[9.5px] leading-[1.4] ${palette.latestText}`}>
+          <span className={palette.latestLabel}>{latest.label}</span>
           {latest.text ? ` · ${latest.text}` : ''}
         </div>
       )}
       {card.summary && (
-        <div className="relative z-10 mt-2 line-clamp-2 rounded-md bg-white/[0.035] px-2 py-1.5 text-[10px] leading-[1.4] text-fg-2 ring-hairline">
+        <div className={`relative z-10 mt-2 line-clamp-2 ${palette.summary}`}>
           {card.summary}
         </div>
       )}
@@ -4543,14 +4641,16 @@ function kanbanPriorityClass(priority: number): string {
 }
 
 function kanbanColumnClass(status: string): string {
-  // Done keeps the soft green tint as the only "shipped" affordance.
-  // All other columns use a single neutral white/gray treatment so the
-  // board doesn't feel like a traffic-light grid.
+  // Done keeps the soft green tint as the only completed affordance.
+  // Other columns stay material-led, not traffic-light colored.
   if (status === 'done') {
     return 'border border-ok/[0.14] bg-[linear-gradient(180deg,rgba(112,184,103,0.032),rgba(0,0,0,0.19))]'
   }
   if (status === 'todo') {
-    return 'border border-dashed border-white/[0.11] bg-[linear-gradient(180deg,rgba(255,255,255,0.025),rgba(0,0,0,0.13))]'
+    return 'border border-dashed border-white/[0.11] bg-[linear-gradient(180deg,rgba(139,160,165,0.035),rgba(0,0,0,0.13))]'
+  }
+  if (status === 'running') {
+    return 'border border-white/[0.11] bg-[linear-gradient(180deg,rgba(255,255,255,0.030),rgba(0,0,0,0.22))]'
   }
   return 'border border-white/[0.09] bg-[linear-gradient(180deg,rgba(255,255,255,0.022),rgba(0,0,0,0.17))]'
 }
@@ -4576,20 +4676,22 @@ function kanbanCardMaterialClass(status: string, selected: boolean, selectable: 
     return `${base} rounded-[5px] border border-white/[0.10] bg-[linear-gradient(180deg,rgba(255,255,255,0.020),rgba(0,0,0,0.25))] opacity-65 ring-white/10`
   }
   if (status === 'todo') {
-    return `${base} rounded-[5px] border border-dashed bg-[linear-gradient(180deg,rgba(255,255,255,0.045),rgba(255,255,255,0.012))] shadow-[inset_0_1px_0_rgba(255,255,255,0.10),0_8px_18px_rgba(0,0,0,0.22)] ${
-      selected ? 'border-white/40' : 'border-white/22 ring-white/10'
+    return `${base} rounded-[7px] border border-[#6f7c82]/55 bg-[linear-gradient(180deg,#bcc7cc_0%,#aebbc1_56%,#9ba9af_100%)] shadow-[0_1px_0_rgba(255,255,255,0.45),0_9px_20px_-8px_rgba(0,0,0,0.58),inset_0_1px_0_rgba(255,255,255,0.42),inset_0_-1px_0_rgba(0,0,0,0.13)] ${
+      selected ? 'ring-2 ring-[#172023]/65' : 'ring-0'
     }`
   }
   if (status === 'ready') {
-    // Punched-card material: warm paper tones in the original — neutralized
-    // to a pure gray gradient with no accent ring.
-    return `${base} rounded-md bg-[linear-gradient(145deg,rgba(255,255,255,0.10),rgba(255,255,255,0.04)_52%,rgba(0,0,0,0.34))] pl-8 shadow-[inset_0_1px_0_rgba(255,255,255,0.16),inset_0_-1px_0_rgba(0,0,0,0.46),0_12px_24px_rgba(0,0,0,0.28)] ${
-      selected ? 'ring-white/35' : 'ring-white/12'
+    // Punched index-card material: warm cream paper, soft inset highlight at
+    // the top edge, slight darker fold at the bottom. Drop shadow gives the
+    // card lift over the dark board. The selection ring darkens to a neutral
+    // ink on paper so it doesn't read as a coloured halo.
+    return `${base} pl-9 rounded-md border border-[#9da08e]/55 bg-[linear-gradient(180deg,#dee1d1_0%,#d6d9c8_55%,#cbcebd_100%)] shadow-[0_1px_0_rgba(255,255,255,0.55),0_2px_2px_rgba(0,0,0,0.18),0_10px_22px_-6px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.55),inset_0_-1px_0_rgba(0,0,0,0.10)] ${
+      selected ? 'ring-2 ring-[#1a1c12]/60' : 'ring-0'
     }`
   }
   if (status === 'running') {
-    return `${base} rounded-lg border bg-[linear-gradient(145deg,rgba(255,255,255,0.06),rgba(16,18,20,0.58)_58%,rgba(5,6,7,0.72))] shadow-[inset_0_1px_0_rgba(255,255,255,0.14),inset_0_-10px_22px_rgba(0,0,0,0.36),0_14px_26px_rgba(0,0,0,0.34)] ${
-      selected ? 'border-white/35 ring-white/35' : 'border-white/16 ring-white/16'
+    return `${base} rounded-xl border bg-[linear-gradient(145deg,rgba(122,128,124,0.34),rgba(39,42,41,0.68)_46%,rgba(8,9,9,0.82))] pt-8 shadow-[inset_0_1px_0_rgba(255,255,255,0.20),inset_0_-14px_24px_rgba(0,0,0,0.42),0_18px_34px_rgba(0,0,0,0.42)] ${
+      selected ? 'border-white/38 ring-white/38' : 'border-white/18 ring-white/16'
     }`
   }
   if (status === 'blocked') {
@@ -4601,20 +4703,25 @@ function kanbanCardMaterialClass(status: string, selected: boolean, selectable: 
 }
 
 function kanbanProgressTrackClass(status: string): string {
-  if (status === 'ready') return 'rounded-[2px] bg-black/35 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)]'
+  if (status === 'todo') return 'rounded-[2px] bg-[#10191d]/15 shadow-[inset_0_0_0_1px_rgba(0,0,0,0.10)]'
+  // Ready cards are paper, so the track needs to be ink-on-cream: a dark
+  // hairline well sunk into the paper instead of a white track.
+  if (status === 'ready') return 'rounded-[2px] bg-[#0e0f08]/15 shadow-[inset_0_0_0_1px_rgba(0,0,0,0.10)]'
   if (status === 'running') return 'rounded-[2px] bg-black/55 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.10)]'
   if (status === 'done') return 'rounded-[1px] bg-black/50'
-  if (status === 'blocked') return 'rounded-[1px] bg-danger/10'
+  if (status === 'blocked') return 'rounded-[1px] bg-white/10'
   return 'rounded-full bg-white/10'
 }
 
 function kanbanProgressFillClass(status: string, blocked: boolean): string {
   // Done is the only status that lights up green; everything else gets
-  // a neutral white bar so the board stays monochrome.
+  // a neutral bar so the board stays monochrome. Ready uses dark ink so
+  // the bar reads against the cream paper.
   if (status === 'done') return 'rounded-[1px] bg-ok/75 shadow-[0_0_14px_rgba(112,184,103,0.22)]'
+  if (status === 'todo') return 'rounded-[1px] bg-[#10191d]/55'
+  if (status === 'ready') return 'rounded-[1px] bg-[#0e0f08]/65'
   if (blocked || status === 'cancelled') return 'rounded-[1px] bg-white/40'
   if (status === 'running') return 'rounded-[1px] bg-white/75'
-  if (status === 'ready') return 'rounded-[1px] bg-white/55'
   return 'rounded-full bg-white/55'
 }
 
