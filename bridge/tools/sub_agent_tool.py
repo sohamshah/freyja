@@ -472,6 +472,10 @@ Parameters:
                     actor_label=record.label,
                     emit_event=self._spec.emit_event,
                     parent_session_id=self._spec.parent_session_id,
+                    # Worker-mode constraint (Move E): the child sees a
+                    # narrowed tool surface and can only mutate the card
+                    # it was assigned to.
+                    owned_task_id=getattr(record, "kanban_task_id", "") or None,
                 )
             )
 
@@ -548,6 +552,17 @@ Parameters:
         session = Session.create(
             system_prompt=system_prompt,
             tools=list(child_registry._tools.values()),  # noqa: SLF001
+            session_id=record.id,
+            metadata={
+                "model_id": child_model,
+                "reasoning_level": agent_type.thinking_effort,
+                "parent_session_id": self._spec.parent_session_id,
+                "project_session_id": self._spec.parent_session_id,
+                "subagent_id": record.id,
+                "subagent_label": record.label,
+                "agent_type": agent_type.name,
+                "coordination_strategy": self._spec.coordination_strategy,
+            },
         )
 
         await self._mark_kanban_running(record)
@@ -725,6 +740,13 @@ Parameters:
             )
             await self._mark_kanban_terminal(record, "cancelled", "Sub-agent cancelled")
             await self._mark_task_terminal(record, "cancelled", "Sub-agent cancelled")
+            self._persist_child_transcript(
+                record,
+                session,
+                child_model=child_model,
+                agent_type=agent_type,
+                state="cancelled",
+            )
             await self._emit_terminal_events(record, success=False)
             await _emit_update(self._spec, record)
             raise
@@ -735,6 +757,13 @@ Parameters:
             )
             await self._mark_kanban_terminal(record, "cancelled", "Sub-agent cancelled")
             await self._mark_task_terminal(record, "cancelled", "Sub-agent cancelled")
+            self._persist_child_transcript(
+                record,
+                session,
+                child_model=child_model,
+                agent_type=agent_type,
+                state="cancelled",
+            )
             await self._emit_terminal_events(record, success=False)
             await _emit_update(self._spec, record)
             return "(sub-agent cancelled)"
@@ -752,6 +781,13 @@ Parameters:
             )
             await self._mark_kanban_terminal(record, "blocked", f"Error: {run_exception}")
             await self._mark_task_terminal(record, "blocked", f"Error: {run_exception}")
+            self._persist_child_transcript(
+                record,
+                session,
+                child_model=child_model,
+                agent_type=agent_type,
+                state="failed",
+            )
             await self._emit_terminal_events(record, success=False)
             await _emit_update(self._spec, record)
             raise run_exception
@@ -828,6 +864,14 @@ Parameters:
         elif record.artifact_path:
             record.created_files = [record.artifact_path]
 
+        self._persist_child_transcript(
+            record,
+            session,
+            child_model=child_model,
+            agent_type=agent_type,
+            state="done",
+        )
+
         self._spec.registry.mark_done(
             record.id,
             text,
@@ -842,6 +886,62 @@ Parameters:
         await self._emit_terminal_events(record, success=True, usage=usage)
         await _emit_update(self._spec, record)
         return text
+
+    def _persist_child_transcript(
+        self,
+        record: SubAgentRecord,
+        session: Any,
+        *,
+        child_model: str,
+        agent_type: AgentType,
+        state: str,
+    ) -> None:
+        """Persist a sub-agent's real engine transcript for later follow-up.
+
+        The renderer can replay streamed child events, but that UI transcript
+        is not enough for a future LLM turn. Saving the engine transcript here
+        lets `switch_session` / `send_message` restore the child conversation
+        and continue it without changing the parent-visible terminal state.
+        """
+        try:
+            try:
+                from bridge.freyja_bridge import _backfill_orphan_tool_results
+
+                _backfill_orphan_tool_results(session)
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "failed to backfill child transcript before save",
+                    exc_info=True,
+                )
+
+            from bridge.transcript_persistence import save_transcript
+
+            data = session.serialize_transcript()
+            metadata = data.setdefault("metadata", {})
+            metadata.update(
+                {
+                    "model_id": child_model,
+                    "reasoning_level": agent_type.thinking_effort,
+                    "parent_session_id": self._spec.parent_session_id,
+                    "project_session_id": self._spec.parent_session_id,
+                    "subagent_id": record.id,
+                    "subagent_label": record.label,
+                    "agent_type": agent_type.name,
+                    "coordination_strategy": self._spec.coordination_strategy,
+                    "subagent_state": state,
+                    "artifact_path": record.artifact_path,
+                    "created_files": list(record.created_files),
+                }
+            )
+            data["session_id"] = record.id
+            save_transcript(record.id, data)
+            logger.info("Saved transcript for sub-agent %s", record.id)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Failed to save transcript for sub-agent %s",
+                record.id,
+                exc_info=True,
+            )
 
     def _coordination_guidance(self, record: SubAgentRecord) -> str:
         strategy = self._spec.coordination_strategy

@@ -470,6 +470,149 @@ async def test_kanban_mission_root_does_not_attach_to_itself() -> None:
     assert root_payload["parents"] == []
 
 
+@pytest.mark.asyncio
+async def test_kanban_circuit_breaker_trips_after_threshold() -> None:
+    """Repeated crashed/timed_out transitions accumulate `consecutiveFailures`
+    on the card. Past the threshold (3) the next failure transition is
+    rewritten to `failed` so the dispatcher locks the card out instead of
+    respawning a flapping worker forever."""
+    from bridge.tools.kanban_board import FAILURE_THRESHOLD
+
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+
+    create = await tool.execute("c1", {"action": "create", "title": "fragile"})
+    card_id = json.loads(create.content)["task"]["id"]
+
+    # Crash, recover, crash, recover … until the breaker is about to trip.
+    for i in range(FAILURE_THRESHOLD - 1):
+        await tool.execute(
+            f"r{i}", {"action": "update", "task_id": card_id, "status": "running"},
+        )
+        await tool.execute(
+            f"x{i}", {"action": "update", "task_id": card_id, "status": "crashed"},
+        )
+
+    show = await tool.execute("s1", {"action": "show", "task_id": card_id})
+    pre_payload = json.loads(show.content)["task"]
+    assert pre_payload["consecutiveFailures"] == FAILURE_THRESHOLD - 1
+    assert pre_payload["status"] == "crashed"
+
+    # One more crash from running must rewrite to `failed`.
+    await tool.execute(
+        "rN", {"action": "update", "task_id": card_id, "status": "ready"},
+    )
+    await tool.execute(
+        "rN2", {"action": "update", "task_id": card_id, "status": "running"},
+    )
+    trip = await tool.execute(
+        "trip", {"action": "update", "task_id": card_id, "status": "crashed"},
+    )
+    assert not trip.is_error
+    final = json.loads(trip.content)["task"]
+    assert final["status"] == "failed"
+    assert final["consecutiveFailures"] == FAILURE_THRESHOLD
+
+
+@pytest.mark.asyncio
+async def test_kanban_circuit_breaker_resets_on_done() -> None:
+    """A successful completion resets the counter so a transient blip
+    doesn't leave the card with a permanent failure budget."""
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+
+    create = await tool.execute("c1", {"action": "create", "title": "flaky"})
+    card_id = json.loads(create.content)["task"]["id"]
+
+    await tool.execute("r1", {"action": "update", "task_id": card_id, "status": "running"})
+    await tool.execute("x1", {"action": "update", "task_id": card_id, "status": "crashed"})
+    await tool.execute("r2", {"action": "update", "task_id": card_id, "status": "ready"})
+    await tool.execute("r3", {"action": "update", "task_id": card_id, "status": "running"})
+
+    mid = await tool.execute("s1", {"action": "show", "task_id": card_id})
+    assert json.loads(mid.content)["task"]["consecutiveFailures"] == 1
+
+    # Successful completion zeroes the counter.
+    await tool.execute("done", {"action": "complete", "task_id": card_id})
+    show = await tool.execute("s2", {"action": "show", "task_id": card_id})
+    assert json.loads(show.content)["task"]["consecutiveFailures"] == 0
+
+
+@pytest.mark.asyncio
+async def test_kanban_worker_mode_blocks_parent_only_actions() -> None:
+    """A KanbanTool constructed with `owned_task_id` runs in worker mode:
+    the schema enum is narrowed to the worker surface, and `create`,
+    `claim`, `link`, `unblock` are refused outright."""
+    from bridge.tools.kanban_board import WORKER_ALLOWED_ACTIONS
+
+    board = SessionKanbanBoard()
+    parent_tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    parent_created = await parent_tool.execute(
+        "p1", {"action": "create", "title": "do the thing"}
+    )
+    card_id = json.loads(parent_created.content)["task"]["id"]
+
+    worker = KanbanTool(
+        board, actor_id="worker", actor_label="worker", owned_task_id=card_id
+    )
+    # The advertised enum drops parent-only actions.
+    enum = worker.definition.parameters["properties"]["action"]["enum"]
+    assert set(enum) == set(WORKER_ALLOWED_ACTIONS)
+    assert "create" not in enum
+    assert "claim" not in enum
+    assert "link" not in enum
+    assert "unblock" not in enum
+
+    # Even if the worker forges a create request, the gate rejects it.
+    bad_create = await worker.execute(
+        "w1", {"action": "create", "title": "smuggled card"}
+    )
+    assert bad_create.is_error
+    assert "not available to workers" in bad_create.content
+
+
+@pytest.mark.asyncio
+async def test_kanban_worker_mode_rejects_mutations_on_other_cards() -> None:
+    """The ownership gate refuses worker mutations whose `task_id` points
+    at any card other than the worker's owned card. This is the primary
+    defence against models hallucinating ids from context."""
+    board = SessionKanbanBoard()
+    parent_tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    own_id = json.loads(
+        (await parent_tool.execute("p1", {"action": "create", "title": "mine"})).content
+    )["task"]["id"]
+    other_id = json.loads(
+        (await parent_tool.execute("p2", {"action": "create", "title": "not mine"})).content
+    )["task"]["id"]
+
+    worker = KanbanTool(
+        board, actor_id="worker", actor_label="worker", owned_task_id=own_id
+    )
+
+    bad = await worker.execute(
+        "w1",
+        {"action": "comment", "task_id": other_id, "comment": "hallucinated id"},
+    )
+    assert bad.is_error
+    assert "refusing mutation" in bad.content
+
+    # The other card was not mutated.
+    show_other = await parent_tool.execute(
+        "p3", {"action": "show", "task_id": other_id}
+    )
+    assert json.loads(show_other.content)["task"]["commentCount"] == 0
+
+    # Reading other cards is fine (workers need digest/show for context).
+    digest = await worker.execute("w2", {"action": "digest"})
+    assert not digest.is_error
+
+    # Mutation on the OWNED card (task_id omitted, collapses to owned) is fine.
+    good = await worker.execute(
+        "w3", {"action": "comment", "comment": "all clear"}
+    )
+    assert not good.is_error
+
+
 def test_registry_only_exposes_kanban_tool_in_kanban_mode(tmp_path) -> None:
     plain_registry = build_desktop_registry(
         workspace=tmp_path,

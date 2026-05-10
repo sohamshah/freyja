@@ -68,6 +68,10 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
         "blocked",
         "crashed",
         "timed_out",
+        # `failed` is reachable when the circuit breaker rewrites a
+        # crashed/timed_out transition past threshold (Move F). Also
+        # available as an operator emergency override.
+        "failed",
         "cancelled",
     },
     "done_unverified": {"done", "running", "cancelled"},
@@ -104,6 +108,11 @@ def is_valid_transition(current: str, next_status: str) -> bool:
 # bounds what rides along on every `to_dict()` payload so long missions don't
 # blow up the per-event JSON the dashboard ingests.
 DEFAULT_HISTORY_TAIL = 30
+# Circuit-breaker threshold. The Nth crashed/timed_out transition flips
+# the card to `failed` instead, locking the dispatcher out. Set low —
+# in autonomy a flapping card is much cheaper to surface to the parent
+# than to silently re-spawn forever.
+FAILURE_THRESHOLD = 3
 
 
 @dataclass
@@ -165,6 +174,11 @@ class KanbanTask:
     events: list[KanbanEvent] = field(default_factory=list)
     comment_count: int = 0
     event_count: int = 0
+    # Circuit breaker. Crashes and timeouts increment this; a successful
+    # run resets to zero. Past `FAILURE_THRESHOLD`, `update()` rewrites
+    # the next crashed/timed_out transition to `failed` so the
+    # dispatcher stops respawning a flapping card.
+    consecutive_failures: int = 0
 
     def append_event(self, event: KanbanEvent) -> None:
         self.events.append(event)
@@ -199,6 +213,7 @@ class KanbanTask:
             "metadata": self.metadata,
             "commentCount": self.comment_count,
             "eventCount": self.event_count,
+            "consecutiveFailures": self.consecutive_failures,
         }
         if include_history:
             payload["comments"] = [comment.to_dict() for comment in self.comments]
@@ -331,12 +346,29 @@ class SessionKanbanBoard:
                 return None
             now = time.time()
             changes: dict[str, Any] = {}
+            tripped_breaker = False
             if status:
                 next_status = normalize_status(status)
                 if not is_valid_transition(task.status, next_status):
                     raise ValueError(
                         f"invalid transition {task.status!r} -> {next_status!r}"
                     )
+                # Circuit breaker: a crashed/timed_out transition past the
+                # threshold is rewritten to `failed` so the dispatcher
+                # locks the card out. Successful completion resets the
+                # counter so a card recovering from a transient blip
+                # doesn't carry a permanent failure budget.
+                if next_status in {"crashed", "timed_out"}:
+                    task.consecutive_failures += 1
+                    changes["consecutiveFailures"] = task.consecutive_failures
+                    if task.consecutive_failures >= FAILURE_THRESHOLD:
+                        next_status = "failed"
+                        tripped_breaker = True
+                        changes["breakerTripped"] = True
+                elif next_status == "done":
+                    if task.consecutive_failures:
+                        changes["consecutiveFailures"] = 0
+                    task.consecutive_failures = 0
                 if next_status == "running" and task.started_at is None:
                     task.started_at = now
                 if next_status in TERMINAL_STATUSES and task.completed_at is None:
@@ -616,6 +648,32 @@ class SessionKanbanBoard:
 
 KanbanEventCb = Callable[[dict[str, Any]], Awaitable[None] | None]
 
+# Worker-mode surface (Move E). When a child agent's KanbanTool is built
+# with `owned_task_id` set, these are the only actions it can use. The
+# missing pieces are deliberate:
+#   - `create` / `link` — workers don't restructure the board mid-task.
+#   - `claim` — the dispatcher already assigned the card; CAS races and
+#     drift from accidental re-claims are gone by construction.
+#   - `unblock` — operator-only override; workers don't get to short-
+#     circuit a failed parent dependency.
+WORKER_ALLOWED_ACTIONS: tuple[str, ...] = (
+    "list",
+    "digest",
+    "show",
+    "show_history",
+    "update",
+    "comment",
+    "complete",
+    "block",
+    "heartbeat",
+)
+# Mutation actions a worker is allowed to take but only on its OWNED card.
+# Read-only actions (list/digest/show/show_history) stay unrestricted so
+# the worker can still see how its work fits into the mission.
+WORKER_OWNED_ACTIONS: frozenset[str] = frozenset(
+    {"update", "comment", "complete", "block", "heartbeat"}
+)
+
 
 class KanbanTool:
     """Tool wrapper around a session-local Kanban board."""
@@ -628,45 +686,67 @@ class KanbanTool:
         actor_label: str,
         emit_event: KanbanEventCb | None = None,
         parent_session_id: str = "",
+        owned_task_id: str | None = None,
     ) -> None:
         self._board = board
         self._actor_id = actor_id
         self._actor_label = actor_label
         self._emit_event = emit_event
         self._parent_session_id = parent_session_id
+        # When set, the tool is operating in worker mode (Move E): the
+        # action surface is narrowed and any mutation against a card id
+        # other than `owned_task_id` is rejected.
+        self._owned_task_id = (owned_task_id or "").strip() or None
 
     @property
     def definition(self) -> ToolDefinition:
+        full_enum = [
+            "list",
+            "digest",
+            "create",
+            "show",
+            "show_history",
+            "claim",
+            "update",
+            "comment",
+            "complete",
+            "block",
+            "heartbeat",
+            "link",
+            "unblock",
+        ]
+        # Worker-mode tools advertise a narrower enum so the model never
+        # even sees the parent-only actions (Move E).
+        action_enum = (
+            list(WORKER_ALLOWED_ACTIONS) if self._owned_task_id else full_enum
+        )
+        if self._owned_task_id:
+            description = (
+                f"Inspect and update your assigned Kanban card "
+                f"`{self._owned_task_id}`. Use `show` first to see the "
+                "ask + parent context, then `heartbeat`/`comment` while "
+                "you work, and `complete` or `block` when you finish. "
+                "Read-only `list`/`digest`/`show_history` work on any "
+                "card; mutations are restricted to your assigned card."
+            )
+        else:
+            description = (
+                "Create, inspect, and update a session-local Kanban "
+                "board. Use this in kanban coordination mode to decompose "
+                "a mission into cards, link dependency gates, assign work "
+                "to agent profiles, and leave durable handoffs."
+            )
         return ToolDefinition(
             name="kanban",
             summary="Coordinate multi-agent work through a shared Kanban board",
             tier=ToolTier.HOT,
-            description="""Create, inspect, and update a session-local Kanban board.
-
-Use this in kanban coordination mode to decompose a mission into cards, link
-dependency gates, assign work to agent profiles, and leave durable handoffs.
-Workers should call `show` first for their assigned card, then heartbeat/comment,
-complete, or block the card with useful detail.""",
+            description=description,
             parameters={
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": [
-                            "list",
-                            "digest",
-                            "create",
-                            "show",
-                            "show_history",
-                            "claim",
-                            "update",
-                            "comment",
-                            "complete",
-                            "block",
-                            "heartbeat",
-                            "link",
-                            "unblock",
-                        ],
+                        "enum": action_enum,
                     },
                     "task_id": {"type": "string", "description": "Kanban card id"},
                     "title": {"type": "string", "description": "New card title"},
@@ -702,6 +782,34 @@ complete, or block the card with useful detail.""",
 
     async def execute(self, call_id: str, arguments: dict[str, Any]) -> ToolResult:
         action = str(arguments.get("action") or "list").strip().lower()
+        # Worker-mode guardrails (Move E). Reject parent-only actions and
+        # ownership violations *before* dispatching so we don't half-execute.
+        if self._owned_task_id:
+            if action not in WORKER_ALLOWED_ACTIONS:
+                return ToolResult(
+                    call_id=call_id,
+                    content=(
+                        f"Error: action {action!r} is not available to "
+                        f"workers; assigned to card {self._owned_task_id!r}."
+                    ),
+                    is_error=True,
+                )
+            if action in WORKER_OWNED_ACTIONS:
+                target = str(arguments.get("task_id") or "").strip()
+                if target and target != self._owned_task_id:
+                    return ToolResult(
+                        call_id=call_id,
+                        content=(
+                            f"Error: worker is assigned to card "
+                            f"{self._owned_task_id!r}; refusing mutation "
+                            f"against {target!r}."
+                        ),
+                        is_error=True,
+                    )
+                # Empty task_id collapses to the assigned card so the worker
+                # doesn't need to repeat it on every call.
+                if not target:
+                    arguments = {**arguments, "task_id": self._owned_task_id}
         try:
             payload = await self._execute_action(action, arguments)
         except ValueError as exc:
