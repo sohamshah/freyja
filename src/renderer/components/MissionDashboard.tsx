@@ -62,6 +62,16 @@ interface KanbanCardView {
   startedAt?: number
   updatedAt?: number
   completedAt?: number
+  // Move F — populated by the bridge's circuit-breaker accounting.
+  consecutiveFailures?: number
+  // Move D — populated when the specifier has filled in structured fields.
+  spec?: {
+    definition_of_done?: string[]
+    references?: { files?: string[]; findings?: string[]; cards?: string[] }
+    verify_with?: string
+    token_budget?: number
+  }
+  metadata?: Record<string, unknown>
 }
 
 interface GoalStateView {
@@ -2344,6 +2354,7 @@ function KanbanCard({
               </span>
             )}
             <KanbanVerdictBadge card={card} />
+            <KanbanRetryPill card={card} />
           </div>
           <h3 className={`mt-1 line-clamp-2 text-[12px] leading-[1.35] ${palette.title}`}>
             {card.title}
@@ -2356,12 +2367,16 @@ function KanbanCard({
         </div>
         <KanbanAgentBadge agents={agents} onAttach={onAttach} variant={agentBadgeVariant} />
       </div>
+      {card.status === 'running' && (
+        <KanbanLivenessStrip card={card} palette={palette} />
+      )}
       <div className={`relative z-10 mt-3 h-1.5 overflow-hidden ${kanbanProgressTrackClass(card.status)}`}>
         <div
           className={`h-full ${kanbanProgressFillClass(card.status, blocked)}`}
           style={{ width: `${progress}%` }}
         />
       </div>
+      <KanbanTokenBurnBar card={card} />
       {!compact && card.body && (
         <p className={`relative z-10 mt-2 line-clamp-3 text-[10.5px] leading-[1.45] ${palette.body}`}>
           {card.body}
@@ -4576,6 +4591,18 @@ function collectKanbanCards(events: TelemetryEventView[], agents: AgentView[]): 
       startedAt: typeof card.startedAt === 'number' ? card.startedAt : existing?.startedAt,
       updatedAt: typeof card.updatedAt === 'number' ? card.updatedAt : existing?.updatedAt ?? fallbackAt,
       completedAt: typeof card.completedAt === 'number' ? card.completedAt : existing?.completedAt,
+      consecutiveFailures:
+        typeof card.consecutiveFailures === 'number'
+          ? card.consecutiveFailures
+          : existing?.consecutiveFailures,
+      spec:
+        card.spec && typeof card.spec === 'object'
+          ? (card.spec as KanbanCardView['spec'])
+          : existing?.spec,
+      metadata:
+        card.metadata && typeof card.metadata === 'object'
+          ? (card.metadata as Record<string, unknown>)
+          : existing?.metadata,
     })
   }
 
@@ -4660,6 +4687,110 @@ function kanbanProgress(cards: KanbanCardView[]): number {
   if (cards.length === 0) return 0
   const total = cards.reduce((acc, card) => acc + kanbanCardProgress(card), 0)
   return Math.round(total / cards.length)
+}
+
+// Matches the bridge's `KANBAN_STALE_SECONDS` constant — keep in sync.
+// At STALE_SECONDS the dispatcher emits a `kanban_stale` event; at
+// RECLAIM_SECONDS it reclaims the card to `crashed`. Showing the halo
+// from half the stale threshold gives the user advance warning.
+const KANBAN_STALE_WARN_SECONDS = 90
+const KANBAN_STALE_HARD_SECONDS = 180
+
+function KanbanRetryPill({ card }: { card: KanbanCardView }) {
+  const failures = card.consecutiveFailures ?? 0
+  if (failures <= 0) return null
+  // Bridge threshold is 3 — one more failure trips the breaker. Mark
+  // the last attempt with red text so it's unmissable.
+  const lastAttempt = failures >= 2
+  const cls = lastAttempt
+    ? 'bg-danger/[0.18] text-danger ring-1 ring-danger/40'
+    : 'bg-warn/[0.12] text-warn ring-1 ring-warn/25'
+  return (
+    <span
+      className={`rounded-full px-1.5 py-0.5 font-mono text-[8.5px] uppercase ${cls}`}
+      title={`${failures}/3 failures — circuit breaker trips on next failure`}
+    >
+      retry {failures}/3
+    </span>
+  )
+}
+
+function formatLivenessAge(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  return `${hours}h`
+}
+
+function KanbanLivenessStrip({
+  card,
+  palette,
+}: {
+  card: KanbanCardView
+  palette: { meta: string }
+}) {
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    // Re-render every 5s so the age string and dot pulse rate stay
+    // current without burning cycles when nothing's changed.
+    const handle = window.setInterval(() => setNow(Date.now()), 5000)
+    return () => window.clearInterval(handle)
+  }, [])
+  const lastSignal = card.updatedAt ?? card.startedAt
+  if (!lastSignal) return null
+  const ageMs = Math.max(0, now - lastSignal)
+  const ageSeconds = Math.floor(ageMs / 1000)
+  const isWarn = ageSeconds >= KANBAN_STALE_WARN_SECONDS
+  const isStale = ageSeconds >= KANBAN_STALE_HARD_SECONDS
+  const dotCls = isStale
+    ? 'bg-warn'
+    : isWarn
+      ? 'bg-warn/70'
+      : 'bg-accent'
+  const labelCls = isStale
+    ? 'text-warn'
+    : isWarn
+      ? 'text-warn/85'
+      : palette.meta
+  return (
+    <div
+      className={`relative z-10 mt-2 flex items-center gap-1.5 font-mono text-[9px] ${labelCls}`}
+    >
+      <span className="relative inline-flex h-1.5 w-1.5">
+        {!isStale && (
+          <span className={`absolute inset-0 animate-ping rounded-full ${dotCls} opacity-60`} />
+        )}
+        <span className={`relative inline-block h-1.5 w-1.5 rounded-full ${dotCls}`} />
+      </span>
+      <span>heartbeat {formatLivenessAge(ageSeconds)}</span>
+      {isStale && <span className="ml-1 uppercase">stale</span>}
+    </div>
+  )
+}
+
+function KanbanTokenBurnBar({ card }: { card: KanbanCardView }) {
+  if (card.status !== 'running') return null
+  const budget = card.spec?.token_budget
+  if (!budget || budget <= 0) return null
+  // We don't yet thread per-card token usage from the sub-agent runner
+  // into the card view, so render the bar at 0% as a known-empty
+  // placeholder. The bar still communicates "this card has a budget"
+  // to the operator; we'll wire actual usage in a follow-up commit.
+  const used = 0
+  const pct = Math.min(100, Math.round((used / budget) * 100))
+  const tone =
+    pct >= 100 ? 'bg-danger/65' : pct >= 80 ? 'bg-warn/70' : 'bg-accent/55'
+  return (
+    <div className="relative z-10 mt-1 flex items-center gap-1.5">
+      <div className="flex-1 h-1 overflow-hidden rounded-full bg-black/40 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]">
+        <div className={`h-full ${tone}`} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="font-mono text-[8.5px] uppercase tracking-[0.06em] text-fg-3">
+        {Math.floor(used / 1000)}k/{Math.floor(budget / 1000)}k
+      </span>
+    </div>
+  )
 }
 
 function kanbanRestartCount(events: TelemetryEventView[]): number {
@@ -4813,9 +4944,37 @@ function kanbanCardMaterialClass(status: string, selected: boolean, selectable: 
       selected ? 'border-white/38 ring-white/38' : 'border-white/18 ring-white/16'
     }`
   }
+  if (status === 'done_unverified') {
+    // Amber tint sits between `running` dark and `done` green — the card
+    // is past worker activity but not yet sealed by the verifier.
+    return `${base} rounded-xl border bg-[linear-gradient(145deg,rgba(184,135,55,0.22),rgba(54,42,22,0.62)_46%,rgba(18,14,8,0.78))] pt-12 shadow-[inset_0_1px_0_rgba(255,213,140,0.16),inset_0_-10px_20px_rgba(0,0,0,0.30),0_18px_30px_rgba(0,0,0,0.34)] ${
+      selected ? 'border-warn/55 ring-warn/45' : 'border-warn/30 ring-warn/20'
+    }`
+  }
   if (status === 'blocked') {
     return `${base} rounded-[3px] border bg-[linear-gradient(135deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02)_45%,rgba(0,0,0,0.16))] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06),0_12px_28px_rgba(0,0,0,0.30)] backdrop-blur-sm ${
       selected ? 'border-white/35 ring-white/35' : 'border-white/18 ring-white/12'
+    }`
+  }
+  if (status === 'crashed') {
+    // Recoverable amber: warmer than done_unverified, slightly cooler than
+    // timed_out. Signals "the worker died, the breaker hasn't tripped yet".
+    return `${base} rounded-md border bg-[linear-gradient(145deg,rgba(196,118,72,0.22),rgba(44,28,18,0.62)_46%,rgba(16,10,6,0.78))] shadow-[inset_0_1px_0_rgba(255,205,160,0.16),0_14px_28px_rgba(0,0,0,0.34)] ${
+      selected ? 'border-warn/55 ring-warn/40' : 'border-warn/35 ring-warn/22'
+    }`
+  }
+  if (status === 'timed_out') {
+    // Budget-exceeded peach: cooler than crashed so the operator can tell
+    // them apart at a glance. The retry pill carries the actionable detail.
+    return `${base} rounded-md border bg-[linear-gradient(145deg,rgba(168,116,108,0.22),rgba(38,24,22,0.60)_46%,rgba(14,8,8,0.76))] shadow-[inset_0_1px_0_rgba(245,200,190,0.16),0_14px_28px_rgba(0,0,0,0.34)] ${
+      selected ? 'border-warn/55 ring-warn/40' : 'border-warn/30 ring-warn/20'
+    }`
+  }
+  if (status === 'failed') {
+    // Circuit-broken red: visually distinct from cancelled (dimmed). The
+    // ring is the warning signal — "do not auto-respawn".
+    return `${base} rounded-md border-2 bg-[linear-gradient(145deg,rgba(150,52,52,0.24),rgba(48,16,16,0.58)_46%,rgba(14,6,6,0.78))] shadow-[inset_0_1px_0_rgba(255,150,150,0.14),0_14px_30px_rgba(0,0,0,0.36)] ${
+      selected ? 'border-danger/75 ring-danger/55' : 'border-danger/55 ring-danger/35'
     }`
   }
   return `${base} rounded-lg bg-black/24 ring-white/10`
@@ -4826,9 +4985,11 @@ function kanbanProgressTrackClass(status: string): string {
   // Ready cards are paper, so the track needs to be ink-on-cream: a dark
   // hairline well sunk into the paper instead of a white track.
   if (status === 'ready') return 'rounded-[2px] bg-[#0e0f08]/15 shadow-[inset_0_0_0_1px_rgba(0,0,0,0.10)]'
-  if (status === 'running') return 'rounded-[2px] bg-black/55 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.10)]'
+  if (status === 'running' || status === 'done_unverified') return 'rounded-[2px] bg-black/55 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.10)]'
   if (status === 'done') return 'rounded-[1px] bg-black/50'
   if (status === 'blocked') return 'rounded-[1px] bg-white/10'
+  if (status === 'crashed' || status === 'timed_out') return 'rounded-[1px] bg-black/40 shadow-[inset_0_0_0_1px_rgba(255,180,140,0.12)]'
+  if (status === 'failed') return 'rounded-[1px] bg-black/40 shadow-[inset_0_0_0_1px_rgba(220,90,90,0.20)]'
   return 'rounded-full bg-white/10'
 }
 
@@ -4839,6 +5000,9 @@ function kanbanProgressFillClass(status: string, blocked: boolean): string {
   if (status === 'done') return 'rounded-[1px] bg-ok/75 shadow-[0_0_14px_rgba(112,184,103,0.22)]'
   if (status === 'todo' || status === 'triage') return 'rounded-[1px] bg-[#10191d]/55'
   if (status === 'ready') return 'rounded-[1px] bg-[#0e0f08]/65'
+  if (status === 'done_unverified') return 'rounded-[1px] bg-warn/70 shadow-[0_0_10px_rgba(217,162,73,0.18)]'
+  if (status === 'crashed' || status === 'timed_out') return 'rounded-[1px] bg-warn/55'
+  if (status === 'failed') return 'rounded-[1px] bg-danger/65'
   if (blocked || status === 'cancelled') return 'rounded-[1px] bg-white/40'
   if (status === 'running') return 'rounded-[1px] bg-white/75'
   return 'rounded-full bg-white/55'
