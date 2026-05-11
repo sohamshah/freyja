@@ -1,13 +1,22 @@
 # freyja anthem
 
-A ~60-second cinematic teaser for Freyja, rendered from scratch with
-PIL + pure-Python audio synthesis + ffmpeg. The output is
-`freyja_anthem.mp4` (1920×1080, 30fps, AAC stereo).
+Two ~60-second cinematic videos for Freyja, rendered from scratch
+with PIL + pure-Python audio synthesis + ffmpeg.
 
-The piece is grounded in Freyja's design language — JetBrains Mono,
+| File                  | What                                                              | Build |
+| --------------------- | ----------------------------------------------------------------- | ----- |
+| `freyja_anthem.mp4`   | A grounded use-case demo — one mission flows through the board.   | `build.py` |
+| `freyja_meta.mp4`     | A meta vision piece — the Fehu rune as anchor, many-mind orbit, glitch beats, AWE typography. | `build_meta.py` |
+
+Both pieces share the Freyja design language — JetBrains Mono,
 restrained monochrome with a single accent, paper-textured kanban
 cards on a dark gradient, italic "stage direction" narration. No
 glow halos, no flashy transitions, no notification-bar chrome.
+
+`build_meta.py` adds surgical YouTube-poop glitch effects (chromatic
+aberration, single-frame inversion, hue rotation, horizontal slice
+displacement, brightness strobe) at peak moments — Freyja-restrained
+most of the time, then breaks open at the climaxes.
 
 ## Storyboard
 
@@ -91,4 +100,38 @@ written via the stdlib `wave` module. ~60s of mono 44.1kHz is
 
 - 1920×1080, 30 fps, H.264 (libx264, CRF 18, preset slow)
 - AAC audio @ 192k
-- File size typically ~25–40 MB at default settings
+- File size typically ~3–8 MB (dark visuals compress well)
+
+## v2 storyboard (build_meta.py)
+
+| Time      | Scene       | Beat                                                                                       |
+| --------- | ----------- | ------------------------------------------------------------------------------------------ |
+| 0:00–0:04 | summon      | rune draws itself stroke-by-stroke in the void                                             |
+| 0:04–0:10 | orbit       | many minds orbit the rune; pace accelerates; *many minds · one anchor*                      |
+| 0:10–0:14 | burst       | rune shatters into card-fragments; strobe + RGB-split; a wall of cards materializes        |
+| 0:14–0:20 | cycle       | one hero card rapidly cycles every state; 80 background cards in counterpoint              |
+| 0:20–0:26 | chorus      | 9-cell grid of agent types, each running its own tool stream                               |
+| 0:26–0:32 | galaxy      | 600-particle spiral with the rune emerging in negative space                                |
+| 0:32–0:38 | awe         | huge FREYJA reveal over cascading system events; *a system that thinks at scale*           |
+| 0:38–0:44 | pageful     | "the page writes itself." types itself three times in offset echoes                        |
+| 0:44–0:52 | reassembly  | particles stream inward; rune brightens; "freyja" types at the bottom                       |
+| 0:52–0:55 | silence     | rune fades to black                                                                        |
+
+## v2 glitch director
+
+`glitch_director(img, frame_idx, t)` post-composites surgical effects
+at specific frames:
+
+- **frame 300–302** (burst hit): brightness strobe + RGB chromatic-
+  aberration split
+- **frame 303**: single-frame negative invert
+- **frames 420–600** (cycle scene): brief invert + RGB-split every
+  18 frames so the cycling cards crackle
+- **frames 600–780** (chorus): light RGB shimmer every 30 frames
+- **frames 780–960** (galaxy): occasional hue-rotation pulse
+- **frames 1000–1001** (AWE peak): strobe + heavy RGB-split
+- **frames 1140–1320** (pageful): horizontal slice displacement every
+  40 frames — datamoshing-feel
+- reassembly + silence: clean — no glitch
+
+The rest of the runtime is pure Freyja restraint.
