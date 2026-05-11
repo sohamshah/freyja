@@ -673,6 +673,120 @@ def test_specifier_agent_type_registered_for_kanban() -> None:
     assert "bash" not in specifier.tool_include
 
 
+@pytest.mark.asyncio
+async def test_complete_seals_to_done_when_verification_not_required() -> None:
+    """The default case: a card without `requires_verification` set goes
+    straight to `done` on complete. No verifier spawn, no extra latency."""
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    create = await tool.execute(
+        "c1", {"action": "create", "title": "quick lookup"}
+    )
+    card_id = json.loads(create.content)["task"]["id"]
+    await tool.execute(
+        "c2", {"action": "update", "task_id": card_id, "status": "running"}
+    )
+    complete = await tool.execute(
+        "c3", {"action": "complete", "task_id": card_id, "summary": "found it"}
+    )
+    payload = json.loads(complete.content)["task"]
+    assert payload["status"] == "done"
+    assert payload["requiresVerification"] is False
+
+
+@pytest.mark.asyncio
+async def test_complete_routes_to_done_unverified_when_verification_required() -> None:
+    """Cards created with `requires_verification=true` route to
+    `done_unverified` on complete so the dispatcher's verifier lane
+    can pick them up for a sign-off pass."""
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    create = await tool.execute(
+        "c1",
+        {
+            "action": "create",
+            "title": "ship migration",
+            "requires_verification": True,
+        },
+    )
+    card = json.loads(create.content)["task"]
+    assert card["requiresVerification"] is True
+    card_id = card["id"]
+    await tool.execute(
+        "c2", {"action": "update", "task_id": card_id, "status": "running"}
+    )
+    complete = await tool.execute(
+        "c3", {"action": "complete", "task_id": card_id, "summary": "applied"}
+    )
+    payload = json.loads(complete.content)["task"]
+    assert payload["status"] == "done_unverified"
+    # Card stays flagged after the transition — the verifier reads it back.
+    assert payload["requiresVerification"] is True
+
+
+@pytest.mark.asyncio
+async def test_requires_verification_flag_settable_via_update() -> None:
+    """The flag is settable after creation too — the specifier expands a
+    card and decides verification is warranted, or the parent flips it
+    based on follow-up context."""
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    create = await tool.execute("c1", {"action": "create", "title": "card"})
+    card_id = json.loads(create.content)["task"]["id"]
+    # Initially false.
+    assert json.loads(create.content)["task"]["requiresVerification"] is False
+
+    upd = await tool.execute(
+        "c2",
+        {
+            "action": "update",
+            "task_id": card_id,
+            "requires_verification": True,
+        },
+    )
+    assert json.loads(upd.content)["task"]["requiresVerification"] is True
+
+    # Now complete via the worker path and confirm routing reflects the flip.
+    await tool.execute(
+        "c3", {"action": "update", "task_id": card_id, "status": "running"}
+    )
+    done = await tool.execute(
+        "c4", {"action": "complete", "task_id": card_id, "summary": "shipped"}
+    )
+    assert json.loads(done.content)["task"]["status"] == "done_unverified"
+
+
+@pytest.mark.asyncio
+async def test_done_unverified_to_done_remains_legal_for_verifier_seal() -> None:
+    """The verifier's final seal must still work: a `done_unverified` card
+    transitions to `done` via the regular update path. This guards
+    against the table being tightened past its intent."""
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    create = await tool.execute(
+        "c1",
+        {"action": "create", "title": "x", "requires_verification": True},
+    )
+    card_id = json.loads(create.content)["task"]["id"]
+    await tool.execute(
+        "c2", {"action": "update", "task_id": card_id, "status": "running"}
+    )
+    await tool.execute("c3", {"action": "complete", "task_id": card_id})
+
+    # Now simulate the verifier sealing the card.
+    seal = await tool.execute(
+        "c4",
+        {
+            "action": "update",
+            "task_id": card_id,
+            "status": "done",
+            "comment": "PASS — definition_of_done walked",
+        },
+    )
+    assert not seal.is_error
+    assert json.loads(seal.content)["task"]["status"] == "done"
+
+
 def test_registry_only_exposes_kanban_tool_in_kanban_mode(tmp_path) -> None:
     plain_registry = build_desktop_registry(
         workspace=tmp_path,

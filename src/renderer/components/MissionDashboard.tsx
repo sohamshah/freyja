@@ -65,6 +65,9 @@ interface KanbanCardView {
   completedAt?: number
   // Move F — populated by the bridge's circuit-breaker accounting.
   consecutiveFailures?: number
+  // Opt-in verification (Move C). When true, the worker's `complete`
+  // routes the card to `done_unverified` so the verifier picks it up.
+  requiresVerification?: boolean
   // Move D — populated when the specifier has filled in structured fields.
   spec?: {
     definition_of_done?: string[]
@@ -2041,7 +2044,10 @@ function KanbanTaskDetailPanel({
           <DetailStat label="agent" value={agents[0]?.session.title || card.assignee || 'unassigned'} />
           <DetailStat label="created by" value={card.createdBy || 'parent'} />
           <DetailStat label="updated" value={card.updatedAt ? relativeTime(card.updatedAt) : 'n/a'} />
-          <DetailStat label="progress" value={`${kanbanCardProgress(card)}%`} />
+          <DetailStat
+            label="verification"
+            value={card.requiresVerification ? 'required' : 'skipped'}
+          />
         </div>
 
         {rejection && (
@@ -2480,6 +2486,7 @@ function KanbanCard({
             )}
             <KanbanVerdictBadge card={card} />
             <KanbanRetryPill card={card} />
+            <KanbanVerifyOnCompletePill card={card} />
           </div>
           <h3 className={`mt-1 line-clamp-2 text-[12px] leading-[1.35] ${palette.title}`}>
             {card.title}
@@ -4720,6 +4727,10 @@ function collectKanbanCards(events: TelemetryEventView[], agents: AgentView[]): 
         typeof card.consecutiveFailures === 'number'
           ? card.consecutiveFailures
           : existing?.consecutiveFailures,
+      requiresVerification:
+        typeof card.requiresVerification === 'boolean'
+          ? card.requiresVerification
+          : existing?.requiresVerification,
       spec:
         card.spec && typeof card.spec === 'object'
           ? (card.spec as KanbanCardView['spec'])
@@ -4820,6 +4831,29 @@ function kanbanProgress(cards: KanbanCardView[]): number {
 // from half the stale threshold gives the user advance warning.
 const KANBAN_STALE_WARN_SECONDS = 90
 const KANBAN_STALE_HARD_SECONDS = 180
+
+function KanbanVerifyOnCompletePill({ card }: { card: KanbanCardView }) {
+  // Only surface the pill while the card is still pre-verification.
+  // After it lands in `done_unverified`/`done` the verdict badge takes
+  // over and this pill would be redundant noise.
+  if (!card.requiresVerification) return null
+  if (
+    card.status === 'done' ||
+    card.status === 'done_unverified' ||
+    card.status === 'cancelled' ||
+    card.status === 'failed'
+  ) {
+    return null
+  }
+  return (
+    <span
+      className="rounded-full bg-warn/[0.08] px-1.5 py-0.5 font-mono text-[8.5px] uppercase text-warn/85 ring-1 ring-warn/20"
+      title="Parent marked this card as requiring verification — complete will route to the verifier instead of sealing directly to done."
+    >
+      verify on complete
+    </span>
+  )
+}
 
 function KanbanRetryPill({ card }: { card: KanbanCardView }) {
   const failures = card.consecutiveFailures ?? 0

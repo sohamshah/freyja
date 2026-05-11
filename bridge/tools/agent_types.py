@@ -444,6 +444,15 @@ You may also tighten the card `body` if the parent's wording was
 ambiguous. Keep it short and specific — every wasted token costs both
 the worker and the verifier.
 
+Set `requires_verification` while you're at it: pass `true` on the
+same `update` call when the `definition_of_done` you wrote is the
+kind of checklist a verifier could walk (e.g. tests pass, file
+exists with expected content, schema migration applies cleanly).
+Leave it `false` (the default) when the work is open-ended,
+exploratory, ambiguous, or cheap to redo — verification spawns are
+expensive and add latency, so the bar is "is a second pair of eyes
+genuinely worth the cost here?"
+
 When the spec is complete, call `kanban` action `update` with
 `status="ready"`. That promotes the card and signals the dispatcher
 the card is ready to assign.

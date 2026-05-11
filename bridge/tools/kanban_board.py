@@ -56,12 +56,14 @@ RETRY_ELIGIBLE_STATUSES = {"crashed", "timed_out", "blocked"}
 # autonomy. Keep this table mechanically reviewable: the LEFT side is the
 # *current* status; the RIGHT side is the set of valid next-statuses.
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
-    # `done` is allowed from triage/ready/blocked because the parent can
-    # legitimately seal a card via the `complete` action without ever
-    # spinning up a sub-agent. Worker writes are constrained separately
-    # by the worker-tool slim-down (Move E), not by this table.
-    "triage": {"ready", "done", "cancelled"},
-    "ready": {"running", "done", "cancelled", "blocked"},
+    # `done` and `done_unverified` are both allowed from triage/ready/blocked
+    # because the parent can legitimately seal a card via the `complete`
+    # action without ever spinning up a sub-agent. Whether complete writes
+    # `done` or `done_unverified` depends on the card's `requires_verification`
+    # flag. Worker writes are constrained separately by the worker-tool
+    # slim-down (Move E), not by this table.
+    "triage": {"ready", "done", "done_unverified", "cancelled"},
+    "ready": {"running", "done", "done_unverified", "cancelled", "blocked"},
     "running": {
         "done_unverified",
         "done",  # parent agents that don't use the verifier skip straight here
@@ -75,7 +77,7 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
         "cancelled",
     },
     "done_unverified": {"done", "running", "cancelled"},
-    "blocked": {"running", "ready", "done", "cancelled"},
+    "blocked": {"running", "ready", "done", "done_unverified", "cancelled"},
     "crashed": {"ready", "running", "failed", "cancelled"},
     "timed_out": {"ready", "running", "failed", "cancelled"},
     # Terminal states are absorbing — no further moves.
@@ -174,6 +176,15 @@ class KanbanTask:
     events: list[KanbanEvent] = field(default_factory=list)
     comment_count: int = 0
     event_count: int = 0
+    # Opt-in verification (Move C). When True, the worker's `complete`
+    # call (or the bridge's automatic terminal-marking) routes to
+    # `done_unverified` so the dispatcher's verifier lane picks it up
+    # for a sign-off pass. When False — the default — `complete` seals
+    # the card directly to `done`. Cheap/ambiguous work (quick web
+    # lookup, image gen, exploratory bash) doesn't need verification;
+    # the parent flips this on for cards whose definition_of_done is
+    # checkable enough to be worth the extra spawn.
+    requires_verification: bool = False
     # Circuit breaker. Crashes and timeouts increment this; a successful
     # run resets to zero. Past `FAILURE_THRESHOLD`, `update()` rewrites
     # the next crashed/timed_out transition to `failed` so the
@@ -223,6 +234,7 @@ class KanbanTask:
             "commentCount": self.comment_count,
             "eventCount": self.event_count,
             "consecutiveFailures": self.consecutive_failures,
+            "requiresVerification": self.requires_verification,
         }
         spec = self.spec
         if spec:
@@ -276,6 +288,7 @@ class SessionKanbanBoard:
         priority: int = 2,
         actor: str = "parent",
         metadata: dict[str, Any] | None = None,
+        requires_verification: bool = False,
     ) -> KanbanTask:
         async with self._lock:
             clean_meta = dict(metadata or {})
@@ -323,6 +336,7 @@ class SessionKanbanBoard:
                 parents=clean_parents,
                 created_by=actor,
                 metadata=clean_meta,
+                requires_verification=bool(requires_verification),
             )
             if is_root:
                 task.started_at = time.time()
@@ -370,6 +384,7 @@ class SessionKanbanBoard:
         result: str | None = None,
         artifacts: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
+        requires_verification: bool | None = None,
     ) -> KanbanTask | None:
         async with self._lock:
             task = self._tasks.get(task_id)
@@ -426,6 +441,11 @@ class SessionKanbanBoard:
             if metadata:
                 task.metadata = {**task.metadata, **metadata}
                 changes["metadata"] = sorted(metadata.keys())
+            if requires_verification is not None:
+                next_flag = bool(requires_verification)
+                if next_flag != task.requires_verification:
+                    task.requires_verification = next_flag
+                    changes["requiresVerification"] = next_flag
             if comment:
                 task.append_comment(KanbanComment(actor, comment.strip()))
                 changes["comment"] = True
@@ -766,6 +786,7 @@ class SessionKanbanBoard:
         existing.comment_count = merged.comment_count
         existing.event_count = merged.event_count
         existing.consecutive_failures = merged.consecutive_failures
+        existing.requires_verification = merged.requires_verification
 
     def _apply_link(self, parent_id: str, child_id: str) -> None:
         parent = self._tasks.get(parent_id)
@@ -831,6 +852,7 @@ class SessionKanbanBoard:
             comment_count=int(snapshot.get("commentCount") or len(comments)),
             event_count=int(snapshot.get("eventCount") or len(events)),
             consecutive_failures=int(snapshot.get("consecutiveFailures") or 0),
+            requires_verification=bool(snapshot.get("requiresVerification") or False),
         )
 
 
@@ -922,7 +944,19 @@ class KanbanTool:
                 "Create, inspect, and update a session-local Kanban "
                 "board. Use this in kanban coordination mode to decompose "
                 "a mission into cards, link dependency gates, assign work "
-                "to agent profiles, and leave durable handoffs."
+                "to agent profiles, and leave durable handoffs.\n\n"
+                "VERIFICATION is OPT-IN per card. Set "
+                "`requires_verification=true` at create-time (or via "
+                "update) on cards whose `definition_of_done` is checkable "
+                "enough to be worth a second-pass review — typically code "
+                "changes with tests, schema migrations, or anything where "
+                "a wrong-but-plausible answer would cost more than the "
+                "extra spawn. LEAVE IT FALSE (the default) for quick web "
+                "lookups, image generation, exploratory bash, or tasks "
+                "whose success criteria are ambiguous. The worker's "
+                "`complete` call routes to `done_unverified` when the flag "
+                "is true (verifier picks up automatically) and to `done` "
+                "when it's false."
             )
         return ToolDefinition(
             name="kanban",
@@ -958,6 +992,17 @@ class KanbanTool:
                         "description": "Verified artifact paths produced for this card",
                     },
                     "metadata": {"type": "object", "description": "Optional structured metadata"},
+                    "requires_verification": {
+                        "type": "boolean",
+                        "description": (
+                            "When True, the worker's `complete` action sends the card to "
+                            "`done_unverified` for a verifier sign-off pass instead of sealing "
+                            "directly to `done`. Set this on cards whose `definition_of_done` "
+                            "is checkable enough to be worth the extra spawn cost (e.g. code "
+                            "changes with tests). Leave False (default) for quick lookups, "
+                            "image generation, ambiguous tasks, or anything cheap to redo."
+                        ),
+                    },
                     "created_cards": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -1029,6 +1074,7 @@ class KanbanTool:
                 priority=int(arguments.get("priority")) if arguments.get("priority") is not None else 2,
                 actor=actor,
                 metadata=dict(arguments.get("metadata") or {}),
+                requires_verification=bool(arguments.get("requires_verification") or False),
             )
             return {"action": action, "task": task.to_dict()}
 
@@ -1076,7 +1122,15 @@ class KanbanTool:
                 if not comment:
                     raise ValueError("comment is required")
             elif action == "complete":
-                status = "done"
+                # Verifier seal is opt-in per card. When the parent set
+                # `requires_verification=True` at create/update time, the
+                # worker's complete call routes the card to
+                # `done_unverified` so the dispatcher's verifier lane
+                # picks it up. Otherwise complete seals directly to
+                # `done` — quick lookups, image gen, ambiguous tasks
+                # whose definition_of_done isn't checkable don't need
+                # the extra spawn cost.
+                status = "done_unverified" if task.requires_verification else "done"
                 missing = [
                     str(card_id)
                     for card_id in arguments.get("created_cards") or []
@@ -1091,6 +1145,7 @@ class KanbanTool:
             elif action == "heartbeat":
                 comment = comment or "Heartbeat"
                 metadata = {**metadata, "heartbeatAt": int(time.time() * 1000)}
+            requires_verification = arguments.get("requires_verification")
             updated = await self._board.update(
                 task.id,
                 actor=actor,
@@ -1102,6 +1157,9 @@ class KanbanTool:
                 result=str(result).strip() if result is not None else None,
                 artifacts=artifacts,
                 metadata=metadata,
+                requires_verification=(
+                    bool(requires_verification) if requires_verification is not None else None
+                ),
             )
             return {"action": action, "task": updated.to_dict() if updated else None}
 

@@ -311,6 +311,13 @@ Why this matters:
 ### C. Verifier — completion is a promotion, not a self-declaration
 
 > Status: shipped 2026-05-10 (commit 98b8c36, paired with A).
+> Opt-in routing added 2026-05-11: cards carry a
+> `requires_verification` flag set by the parent (or specifier).
+> `complete` routes to `done_unverified` only when the flag is true;
+> otherwise it seals directly to `done`. Quick lookups, image gen,
+> ambiguous tasks, or anything cheap to redo skip the verifier by
+> default — the bar for flipping the flag is "is a second pair of
+> eyes worth the extra spawn cost here?"
 
 Today the worker calling `complete` is treated as ground truth. We
 know that's wrong often enough that a verification gate pays for

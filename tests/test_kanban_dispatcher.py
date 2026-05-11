@@ -93,6 +93,42 @@ async def test_dispatcher_skips_triage_cards_with_unsatisfied_parents() -> None:
 
 
 @pytest.mark.asyncio
+async def test_complete_with_verification_flag_lands_card_in_dispatcher_verifier_lane() -> None:
+    """Integration check across the opt-in seam: a card created with
+    `requires_verification=True` and completed via the worker path lands
+    in `done_unverified` and the dispatcher's verifier lane picks it up
+    on the next tick."""
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    create = await tool.execute(
+        "c1",
+        {
+            "action": "create",
+            "title": "verify me",
+            "requires_verification": True,
+        },
+    )
+    card_id = json.loads(create.content)["task"]["id"]
+    await tool.execute(
+        "c2", {"action": "update", "task_id": card_id, "status": "running"},
+    )
+    await tool.execute(
+        "c3", {"action": "complete", "task_id": card_id, "summary": "done"},
+    )
+    show = await tool.execute("c4", {"action": "show", "task_id": card_id})
+    assert json.loads(show.content)["task"]["status"] == "done_unverified"
+
+    sub_tool = _StubSubAgentTool()
+    session = _make_session(board=board, sub_tool=sub_tool)
+    await session._kanban_tick(source="test")
+    # The dispatcher's verifier lane fires exactly once for the card.
+    assert len(sub_tool.calls) == 1
+    call = sub_tool.calls[0]
+    assert call["agent_type"] == "verify"
+    assert call["kanban_task_id"] == card_id
+
+
+@pytest.mark.asyncio
 async def test_dispatcher_spawns_verify_for_done_unverified_cards() -> None:
     """A card in `done_unverified` triggers a verify-profile spawn, with
     the card id passed as `kanban_task_id` so the verifier's tool

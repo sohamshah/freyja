@@ -964,6 +964,12 @@ Parameters:
                 "when a task id is available. Use `heartbeat` or `comment` during long work, "
                 "and call `complete` with verified artifact paths and a concise handoff when done. If blocked, call `block` "
                 "with the exact blocker instead of guessing.\n"
+                "Verification routing: if your card's `requiresVerification` field is true, "
+                "calling `complete` sends the card to the verifier (status flips to "
+                "`done_unverified`) which then either signs off or bounces it back to you "
+                "with feedback. If the flag is false (the default), `complete` seals the "
+                "card directly to `done`. Either way you don't write the status yourself — "
+                "just call `complete` and the board routes correctly.\n"
             )
         return (
             "\nCoordination mode: message bus.\n"
@@ -1005,15 +1011,29 @@ Parameters:
         ):
             return
         try:
+            # Opt-in verification: a worker that finished successfully on a
+            # card with `requires_verification=True` should hand off to the
+            # verifier rather than seal the card directly. Mirrors what the
+            # worker's `complete` action does — this branch covers runs that
+            # exit cleanly without an explicit complete call (most of them).
+            target_status = status
+            if status == "done":
+                current = await self._spec.kanban_board.get(task_id)
+                if (
+                    current is not None
+                    and getattr(current, "requires_verification", False)
+                    and current.status != "done"
+                ):
+                    target_status = "done_unverified"
             task = await self._spec.kanban_board.update(
                 task_id,
                 actor=f"{record.label} ({record.id})",
-                status=status,
+                status=target_status,
                 summary=summary[:4000],
                 artifacts=list(record.created_files),
             )
             await self._emit_kanban_state_event(
-                "complete" if status == "done" else "update",
+                "complete" if target_status == "done" else "update",
                 task,
             )
         except Exception:  # noqa: BLE001
