@@ -77,10 +77,58 @@ function deriveKanbanCardSnapshot(
 
 function useKanbanCardSnapshot(taskId: string | undefined): KanbanCardSnapshot | null {
   const systemEvents = useHarness((s) => s.systemEvents)
+  // Read from the durable per-card snapshot map too — the events ring
+  // is capped at 100 entries, so a card whose lifecycle finished long
+  // ago has fallen out and the events-only fold can't see it. The
+  // store keeps a non-evicting kanbanCards map for exactly this case.
+  const persistedCard = useHarness((s) => (taskId ? s.kanbanCards[taskId] : undefined))
   return useMemo(() => {
     if (!taskId) return null
-    return deriveKanbanCardSnapshot(systemEvents, taskId)
-  }, [systemEvents, taskId])
+    const fromEvents = deriveKanbanCardSnapshot(systemEvents, taskId)
+    if (fromEvents) return fromEvents
+    if (!persistedCard) return null
+    // Build a minimal snapshot directly from the persisted task dict.
+    // The verifier-actor / rejection detection in deriveKanbanCardSnapshot
+    // walks the task's per-card event history, which the persisted
+    // payload still carries.
+    return deriveSnapshotFromTask(persistedCard as Record<string, unknown>)
+  }, [systemEvents, persistedCard, taskId])
+}
+
+function deriveSnapshotFromTask(task: Record<string, unknown>): KanbanCardSnapshot {
+  let verifierActor: string | null = null
+  let rejected = false
+  let rejectionFeedback: string | null = null
+  const events = Array.isArray(task.events) ? task.events : []
+  for (const inner of events.slice().reverse()) {
+    if (!inner || typeof inner !== 'object') continue
+    const actor = String((inner as Record<string, unknown>).actor ?? '').toLowerCase()
+    if (!actor.includes('verify')) continue
+    const innerDetails = (inner as Record<string, unknown>).details as
+      | Record<string, unknown>
+      | undefined
+    const innerStatus = String(innerDetails?.status ?? '').toLowerCase()
+    verifierActor = String((inner as Record<string, unknown>).actor)
+    rejected = innerStatus === 'running'
+    break
+  }
+  if (rejected) {
+    const comments = Array.isArray(task.comments) ? task.comments : []
+    for (const c of comments.slice().reverse()) {
+      if (!c || typeof c !== 'object') continue
+      const author = String((c as Record<string, unknown>).author ?? '').toLowerCase()
+      if (!author.includes('verify')) continue
+      rejectionFeedback = String((c as Record<string, unknown>).body ?? '') || null
+      break
+    }
+  }
+  return {
+    status: String(task.status ?? 'ready'),
+    requiresVerification: Boolean(task.requiresVerification),
+    verifierActor,
+    rejected,
+    rejectionFeedback,
+  }
 }
 
 /**

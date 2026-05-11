@@ -279,6 +279,7 @@ export function MissionDashboard() {
   const subagentOrder = useHarness((s) => s.subagentOrder)
   const usage = useHarness((s) => s.usage)
   const systemEvents = useHarness((s) => s.systemEvents)
+  const kanbanCardsSnapshot = useHarness((s) => s.kanbanCards)
   const busMessages = useHarness((s) => s.busMessages)
   const artifacts = useHarness((s) => s.artifacts)
   const model = useHarness((s) => s.model)
@@ -326,6 +327,7 @@ export function MissionDashboard() {
       subagentOrder,
       usage,
       systemEvents,
+      kanbanCards: kanbanCardsSnapshot,
       busMessages,
       artifacts,
       model,
@@ -481,7 +483,19 @@ export function MissionDashboard() {
           'output_truncation',
         ].includes(event.subtype),
       )
-    const kanbanCards = collectKanbanCards(systemEventViews, agents)
+    // Durable per-card snapshots from every slice we're aggregating.
+    // Pre-seed the collector with these so cards from earlier in a
+    // long session don't vanish once their original kanban_* event
+    // rolls out of the 100-entry systemEvents buffer.
+    const kanbanSnapshotSeed: Record<string, Record<string, unknown>> = {}
+    for (const { slice } of slices) {
+      const slicSnap = slice.kanbanCards
+      if (!slicSnap) continue
+      for (const id in slicSnap) {
+        kanbanSnapshotSeed[id] = slicSnap[id]
+      }
+    }
+    const kanbanCards = collectKanbanCards(systemEventViews, agents, kanbanSnapshotSeed)
     const goalState = collectGoalState(systemEventViews)
     const taskCards = collectTaskCards(systemEventViews, agents)
 
@@ -4756,7 +4770,11 @@ function goalEventDot(subtype: string): string {
   return 'bg-fg-3'
 }
 
-function collectKanbanCards(events: TelemetryEventView[], agents: AgentView[]): KanbanCardView[] {
+function collectKanbanCards(
+  events: TelemetryEventView[],
+  agents: AgentView[],
+  seed: Record<string, Record<string, unknown>> = {},
+): KanbanCardView[] {
   const cards = new Map<string, KanbanCardView>()
   const upsert = (card: Record<string, unknown>, fallbackAt: number) => {
     const id = String(card.id ?? '')
@@ -4803,6 +4821,16 @@ function collectKanbanCards(events: TelemetryEventView[], agents: AgentView[]): 
           ? (card.metadata as Record<string, unknown>)
           : existing?.metadata,
     })
+  }
+
+  // Seed from the durable per-card snapshot first. These are the
+  // most recent payloads the store has for each card; the events
+  // below will overlay anything fresher that's still in the ring.
+  for (const id in seed) {
+    const task = seed[id]
+    if (!task || typeof task !== 'object') continue
+    const ts = typeof task.updatedAt === 'number' ? task.updatedAt : Date.now()
+    upsert(task, ts)
   }
 
   for (const event of [...events].sort((a, b) => a.at - b.at)) {

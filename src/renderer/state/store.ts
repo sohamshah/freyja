@@ -93,6 +93,16 @@ export interface SessionSlice {
     contextWindow: number
   }
   systemEvents: SystemEventRecord[]
+  /** Durable per-card kanban snapshot. Keyed by `card_NNN` id; value
+   *  is the raw `details.task` dict from the most recent `kanban_*`
+   *  event for that card. Unlike `systemEvents` (which is a rolling
+   *  100-entry buffer), this map is NEVER trimmed — so completed
+   *  cards from earlier in a long session don't disappear when the
+   *  parent moves on to a new batch of work. The bridge keeps the
+   *  authoritative state in memory + on the journal; this is the
+   *  renderer's copy so card-state reconstruction never depends on
+   *  ephemeral events being present. */
+  kanbanCards: Record<string, Record<string, unknown>>
   busMessages: Array<import('@shared/events').BusMessageRecord>
   artifacts: Array<import('@shared/events').ArtifactRecord>
   model: string
@@ -534,6 +544,7 @@ function emptySlice(
       contextWindow: contextWindowFor(model),
     },
     systemEvents: [],
+    kanbanCards: {},
     busMessages: [],
     artifacts: [],
     model,
@@ -647,6 +658,7 @@ function sliceFromState(s: HarnessState): SessionSlice {
     subagentOrder: s.subagentOrder,
     usage: s.usage,
     systemEvents: s.systemEvents,
+    kanbanCards: s.kanbanCards,
     busMessages: s.busMessages,
     artifacts: s.artifacts,
     model: s.model,
@@ -790,6 +802,10 @@ function normalizePersistedFrames(slice: SessionSlice): SessionSlice {
     reasoningLevel: normalizeReasoningFor(model, slice.reasoningLevel),
     coordinationStrategy: normalizeCoordinationStrategy(slice.coordinationStrategy),
     fileChanges: slice.fileChanges ?? [],
+    // Defensive default for sessions persisted before the durable
+    // kanbanCards snapshot was introduced — load them as empty so
+    // downstream consumers can `... ?? {}` cleanly.
+    kanbanCards: slice.kanbanCards ?? {},
     usage: {
       ...slice.usage,
       currentContextTokens,
@@ -1122,6 +1138,41 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
           details: ev.details,
         },
       ]
+      // Durable kanban card snapshot. `kanban_*` events carry the
+      // full `task` (or `tasks[]`) payload; upsert into the per-
+      // card snapshot map so completed cards aren't lost when the
+      // 100-entry systemEvents buffer rolls over. Without this,
+      // a parent that builds a second batch of cards in the same
+      // session pushes the first batch's create events out of the
+      // ring buffer, and `collectKanbanCards` rebuilds with the
+      // older cards missing.
+      if (ev.subtype.startsWith('kanban_')) {
+        const details = (ev.details ?? {}) as Record<string, unknown>
+        const taskPayload = details.task
+        const tasksList = details.tasks
+        const existing = slice.kanbanCards ?? {}
+        let mergedKanban: Record<string, Record<string, unknown>> | null = null
+        if (taskPayload && typeof taskPayload === 'object') {
+          const task = taskPayload as Record<string, unknown>
+          const id = typeof task.id === 'string' ? task.id : null
+          if (id) {
+            mergedKanban = { ...existing, [id]: task }
+          }
+        }
+        if (Array.isArray(tasksList) && tasksList.length > 0) {
+          const merged = mergedKanban ?? { ...existing }
+          for (const entry of tasksList) {
+            if (!entry || typeof entry !== 'object') continue
+            const task = entry as Record<string, unknown>
+            const id = typeof task.id === 'string' ? task.id : null
+            if (id) merged[id] = task
+          }
+          mergedKanban = merged
+        }
+        if (mergedKanban) {
+          next.kanbanCards = mergedKanban
+        }
+      }
       // Capture the system prompt for session export / training data
       if (ev.subtype === 'system_prompt_set' && ev.details?.systemPrompt) {
         next.systemPrompt = ev.details.systemPrompt as string

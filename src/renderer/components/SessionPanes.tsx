@@ -447,6 +447,7 @@ function sliceForSessionView(
       subagentOrder: state.subagentOrder,
       usage: state.usage,
       systemEvents: state.systemEvents,
+      kanbanCards: state.kanbanCards,
       busMessages: state.busMessages,
       artifacts: state.artifacts,
       model: state.model,
