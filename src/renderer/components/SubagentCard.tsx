@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useHarness, type SystemEventRecord } from '../state/store'
 import { formatDuration, formatTokens } from '../lib/format'
 import { Spinner } from '../lib/spinner'
@@ -354,17 +355,19 @@ function SubagentPhaseChain({
   workerStartedAt: number
   taskId: string
 }) {
-  const phases = useHarness((s) => {
-    const list: typeof s.subagents[string][] = []
-    for (const id in s.subagents) {
-      if (id === workerId) continue
-      const rec = s.subagents[id]
-      if (!rec || rec.kanbanTaskId !== taskId) continue
-      if (rec.startedAt < workerStartedAt) continue
-      list.push(rec)
-    }
-    return list.sort((a, b) => a.startedAt - b.startedAt)
-  })
+  const phases = useHarness(
+    useShallow((s) => {
+      const list: typeof s.subagents[string][] = []
+      for (const id in s.subagents) {
+        if (id === workerId) continue
+        const rec = s.subagents[id]
+        if (!rec || rec.kanbanTaskId !== taskId) continue
+        if (rec.startedAt < workerStartedAt) continue
+        list.push(rec)
+      }
+      return list.sort((a, b) => a.startedAt - b.startedAt)
+    }),
+  )
   if (phases.length === 0) return null
   let workerRound = 1
   return (

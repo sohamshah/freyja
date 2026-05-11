@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
-import { aggregateSessionCost, useHarness } from '../state/store'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { aggregateSessionCost, useHarness, type SystemEventRecord } from '../state/store'
 import { formatTokens, formatCost, relativeTime } from '../lib/format'
 import { ComputerLiveView } from './ComputerLiveView'
 import { LogStreamModal } from './LogStreamModal'
@@ -33,6 +33,7 @@ export function ActivityPanel() {
   const compactionEvents = systemEvents.filter((event) => event.subtype === 'compaction_complete')
   const omittedImages = mediaEvents.reduce((acc, event) => acc + detailNumber(event, 'omitted_images'), 0)
   const latestCompaction = compactionEvents[compactionEvents.length - 1]
+  const taskItems = useMemo(() => collectActivityTasks(systemEvents), [systemEvents])
   const warningLogs = logs.filter((log) => log.level === 'error' || log.level === 'warn')
   const attentionEvents = systemEvents.filter((event) =>
     event.subtype.includes('failed') ||
@@ -203,6 +204,8 @@ export function ActivityPanel() {
           )}
         </div>
 
+        <TaskProgressSection tasks={taskItems} />
+
         {/* ── Tool calls (Gantt timeline) ─────────────────── */}
         <ToolTimeline />
 
@@ -287,6 +290,193 @@ export function ActivityPanel() {
       {logModalOpen && <LogStreamModal onClose={() => setLogModalOpen(false)} />}
     </aside>
   )
+}
+
+interface ActivityTaskItem {
+  id: string
+  title: string
+  status: string
+  progress: number
+  assignee?: string
+  updatedAt: number
+}
+
+function TaskProgressSection({ tasks }: { tasks: ActivityTaskItem[] }) {
+  if (tasks.length === 0) return null
+  const done = tasks.filter((task) => task.status === 'done').length
+  const blocked = tasks.filter((task) => task.status === 'blocked').length
+  const pct = Math.round(tasks.reduce((acc, task) => acc + task.progress, 0) / tasks.length)
+  const visible = [...tasks].sort(activityTaskSort).slice(0, 9)
+  const hidden = Math.max(0, tasks.length - visible.length)
+
+  return (
+    <div className="px-4 py-3 hairline-b">
+      <div className="mb-2 flex items-start justify-between gap-3">
+        <div>
+          <div className="label">progress</div>
+          <div className="mt-1 font-mono text-[10px] text-fg-3">
+            {done}/{tasks.length} complete{blocked > 0 ? ` · ${blocked} blocked` : ''}
+          </div>
+        </div>
+        <div className="min-w-[64px] rounded-lg bg-white/[0.035] px-2 py-1.5 text-right ring-hairline">
+          <div className="font-mono text-[15px] leading-none text-fg-0">{pct}%</div>
+          <div className="mt-1 h-1 overflow-hidden rounded-full bg-white/10">
+            <div className="h-full rounded-full bg-accent/75" style={{ width: `${pct}%` }} />
+          </div>
+        </div>
+      </div>
+      <div className="space-y-1.5">
+        {visible.map((task) => {
+          const complete = task.status === 'done'
+          const cancelled = task.status === 'cancelled'
+          return (
+            <div
+              key={task.id}
+              className={`group rounded-lg px-2.5 py-2 ring-hairline ${
+                task.status === 'blocked'
+                  ? 'bg-warn/[0.045]'
+                  : task.status === 'active'
+                    ? 'bg-accent/[0.05]'
+                    : complete
+                      ? 'bg-ok/[0.035]'
+                      : 'bg-white/[0.025]'
+              }`}
+            >
+              <div className="flex items-start gap-2.5">
+                <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full ring-1 ${activityTaskDotClass(task.status)}`}>
+                  {complete ? '✓' : task.status === 'blocked' ? '!' : ''}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className={`truncate text-[11.5px] leading-[1.35] text-fg-1 ${complete || cancelled ? 'line-through decoration-fg-3/70' : ''}`}>
+                      {task.title}
+                    </span>
+                    <span className={`shrink-0 font-mono text-[8.5px] uppercase ${activityTaskStatusClass(task.status)}`}>
+                      {activityTaskLabel(task.status)}
+                    </span>
+                  </div>
+                  <div className="mt-1 flex items-center justify-between gap-2">
+                    <span className="truncate font-mono text-[9px] text-fg-3">
+                      {task.assignee || task.id}
+                    </span>
+                    <span className="shrink-0 font-mono text-[9px] text-fg-3">{relativeTime(task.updatedAt)}</span>
+                  </div>
+                  {!complete && !cancelled && (
+                    <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-white/[0.08]">
+                      <div className="h-full rounded-full bg-accent/65" style={{ width: `${task.progress}%` }} />
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )
+        })}
+        {hidden > 0 && (
+          <div className="rounded bg-white/[0.02] px-2 py-1.5 font-mono text-[9.5px] text-fg-3 ring-hairline">
+            +{hidden} more task{hidden === 1 ? '' : 's'}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function collectActivityTasks(events: SystemEventRecord[]): ActivityTaskItem[] {
+  const tasks = new Map<string, ActivityTaskItem>()
+  const upsert = (raw: Record<string, unknown>, fallbackAt: number, subtype?: string) => {
+    const id = typeof raw.id === 'string' ? raw.id : ''
+    if (!id) return
+    const existing = tasks.get(id)
+    const status = typeof raw.status === 'string'
+      ? raw.status
+      : activityTaskStatusFromEvent(subtype) ?? existing?.status ?? 'todo'
+    const progress = typeof raw.progress === 'number' && Number.isFinite(raw.progress)
+      ? raw.progress
+      : activityTaskProgressFromEvent(subtype) ?? existing?.progress ?? activityStatusProgress(status)
+    const updatedAt = typeof raw.updatedAt === 'number' && Number.isFinite(raw.updatedAt)
+      ? raw.updatedAt
+      : fallbackAt
+    tasks.set(id, {
+      id,
+      title: typeof raw.title === 'string' ? raw.title : existing?.title ?? id,
+      status,
+      progress: Math.max(0, Math.min(100, progress)),
+      assignee: typeof raw.assignee === 'string' ? raw.assignee : existing?.assignee,
+      updatedAt,
+    })
+  }
+
+  for (const event of [...events].sort((a, b) => a.at - b.at)) {
+    if (!event.subtype.startsWith('task_')) continue
+    const details = event.details ?? {}
+    const task = details.task
+    if (task && typeof task === 'object') upsert(task as Record<string, unknown>, event.at, event.subtype)
+    const list = details.tasks
+    if (Array.isArray(list)) {
+      for (const item of list) {
+        if (item && typeof item === 'object') upsert(item as Record<string, unknown>, event.at, event.subtype)
+      }
+    }
+  }
+
+  return [...tasks.values()]
+}
+
+function activityTaskSort(a: ActivityTaskItem, b: ActivityTaskItem): number {
+  const order: Record<string, number> = {
+    active: 0,
+    blocked: 1,
+    todo: 2,
+    done: 3,
+    cancelled: 4,
+  }
+  return (order[a.status] ?? 9) - (order[b.status] ?? 9) || b.updatedAt - a.updatedAt
+}
+
+function activityStatusProgress(status: string): number {
+  if (status === 'done') return 100
+  if (status === 'active') return 55
+  if (status === 'blocked') return 35
+  if (status === 'cancelled') return 0
+  return 8
+}
+
+function activityTaskStatusFromEvent(subtype?: string): string | undefined {
+  if (!subtype) return undefined
+  if (subtype === 'task_complete') return 'done'
+  if (subtype === 'task_block') return 'blocked'
+  if (subtype === 'task_cancel') return 'cancelled'
+  if (subtype === 'task_claim' || subtype === 'task_heartbeat') return 'active'
+  if (subtype === 'task_create') return 'todo'
+  return undefined
+}
+
+function activityTaskProgressFromEvent(subtype?: string): number | undefined {
+  if (subtype === 'task_complete') return 100
+  if (subtype === 'task_cancel') return 0
+  return undefined
+}
+
+function activityTaskLabel(status: string): string {
+  if (status === 'active') return 'working'
+  if (status === 'todo') return 'queued'
+  return status
+}
+
+function activityTaskStatusClass(status: string): string {
+  if (status === 'done') return 'text-ok'
+  if (status === 'active') return 'text-accent'
+  if (status === 'blocked') return 'text-warn'
+  if (status === 'cancelled') return 'text-danger'
+  return 'text-fg-3'
+}
+
+function activityTaskDotClass(status: string): string {
+  if (status === 'done') return 'bg-accent text-bg-0 ring-accent/70'
+  if (status === 'active') return 'bg-accent/15 text-accent ring-accent/45'
+  if (status === 'blocked') return 'bg-warn/12 text-warn ring-warn/45'
+  if (status === 'cancelled') return 'bg-danger/10 text-danger ring-danger/35'
+  return 'bg-white/[0.035] text-fg-3 ring-white/15'
 }
 
 function Metric({ label, value }: { label: string; value: string }) {

@@ -1200,12 +1200,15 @@ function TaskAgentsView({
   onAttach: (id: string, mode?: 'replace' | 'split') => void
 }) {
   const [selectedTaskId, setSelectedTaskId] = useState(tasks[0]?.id ?? '')
+  const taskIdsKey = useMemo(() => tasks.map((task) => task.id).join('\u0001'), [tasks])
+  const firstTaskId = tasks[0]?.id ?? ''
   useEffect(() => {
-    if (!selectedTaskId && tasks[0]) setSelectedTaskId(tasks[0].id)
-    if (selectedTaskId && !tasks.some((task) => task.id === selectedTaskId)) {
-      setSelectedTaskId(tasks[0]?.id ?? '')
-    }
-  }, [selectedTaskId, tasks])
+    setSelectedTaskId((current) => {
+      if (!firstTaskId) return current ? '' : current
+      if (!current) return firstTaskId
+      return taskIdsKey.split('\u0001').includes(current) ? current : firstTaskId
+    })
+  }, [firstTaskId, taskIdsKey])
   const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? tasks[0]
   const selectedAgents = selectedTask ? agents.filter((agent) => agent.taskId === selectedTask.id) : []
   return (
@@ -1764,6 +1767,7 @@ function KanbanAgentsView({
   onAttach: (id: string, mode?: 'replace' | 'split') => void
 }) {
   const [selectedCardId, setSelectedCardId] = useState<string>('')
+  const cardIdsKey = useMemo(() => cards.map((card) => card.id).join('\u0001'), [cards])
   const assigned = agents.filter((agent) => agent.kanbanTaskId)
   const unassigned = agents.filter((agent) => !agent.kanbanTaskId)
   const defaultCardId = useMemo(
@@ -1775,14 +1779,12 @@ function KanbanAgentsView({
     [cards],
   )
   useEffect(() => {
-    if (!cards.length) {
-      if (selectedCardId) setSelectedCardId('')
-      return
-    }
-    if (!selectedCardId || !cards.some((card) => card.id === selectedCardId)) {
-      setSelectedCardId(defaultCardId)
-    }
-  }, [cards, defaultCardId, selectedCardId])
+    setSelectedCardId((current) => {
+      if (!defaultCardId) return current ? '' : current
+      if (!current) return defaultCardId
+      return cardIdsKey.split('\u0001').includes(current) ? current : defaultCardId
+    })
+  }, [cardIdsKey, defaultCardId])
   const selectedCard = cards.find((card) => card.id === selectedCardId) ?? cards.find((card) => card.id === defaultCardId)
   const selectedIndex = selectedCard ? cards.findIndex((card) => card.id === selectedCard.id) : -1
   const selectedAgents = selectedCard ? agents.filter((agent) => agent.kanbanTaskId === selectedCard.id) : []
@@ -4604,19 +4606,25 @@ function collectGoalState(events: TelemetryEventView[]): GoalStateView | null {
 
 function collectTaskCards(events: TelemetryEventView[], agents: AgentView[]): TaskCardView[] {
   const tasks = new Map<string, TaskCardView>()
-  const upsert = (task: Record<string, unknown>, fallbackAt: number) => {
+  const upsert = (task: Record<string, unknown>, fallbackAt: number, subtype?: string) => {
     const id = String(task.id ?? '')
     if (!id) return
     const existing = tasks.get(id)
+    const status = typeof task.status === 'string'
+      ? task.status
+      : taskStatusFromEvent(subtype) ?? existing?.status ?? 'todo'
+    const progress = typeof task.progress === 'number'
+      ? task.progress
+      : taskProgressFromEvent(subtype) ?? existing?.progress
     const history = mergeTaskEvents(existing?.events, normalizeTaskEvents(task.events))
     tasks.set(id, {
       id,
       title: typeof task.title === 'string' ? task.title : existing?.title ?? id,
-      status: typeof task.status === 'string' ? task.status : existing?.status ?? 'todo',
+      status,
       body: typeof task.body === 'string' ? task.body : existing?.body,
       assignee: typeof task.assignee === 'string' ? task.assignee : existing?.assignee,
       priority: typeof task.priority === 'number' ? task.priority : existing?.priority,
-      progress: typeof task.progress === 'number' ? task.progress : existing?.progress,
+      progress,
       summary: typeof task.summary === 'string' ? task.summary : existing?.summary,
       result: typeof task.result === 'string' ? task.result : existing?.result,
       artifacts: normalizeStringArray(task.artifacts).length > 0
@@ -4631,15 +4639,15 @@ function collectTaskCards(events: TelemetryEventView[], agents: AgentView[]): Ta
     })
   }
 
-  for (const event of [...events].reverse()) {
+  for (const event of [...events].sort((a, b) => a.at - b.at)) {
     if (!event.subtype.startsWith('task_')) continue
     const details = event.details ?? {}
     const task = details.task
-    if (task && typeof task === 'object') upsert(task as Record<string, unknown>, event.at)
+    if (task && typeof task === 'object') upsert(task as Record<string, unknown>, event.at, event.subtype)
     const list = details.tasks
     if (Array.isArray(list)) {
       for (const item of list) {
-        if (item && typeof item === 'object') upsert(item as Record<string, unknown>, event.at)
+        if (item && typeof item === 'object') upsert(item as Record<string, unknown>, event.at, event.subtype)
       }
     }
   }
@@ -4700,6 +4708,22 @@ function statusProgress(status: string): number {
   if (status === 'blocked') return 35
   if (status === 'cancelled') return 0
   return 8
+}
+
+function taskStatusFromEvent(subtype?: string): string | undefined {
+  if (!subtype) return undefined
+  if (subtype === 'task_complete') return 'done'
+  if (subtype === 'task_block') return 'blocked'
+  if (subtype === 'task_cancel') return 'cancelled'
+  if (subtype === 'task_claim' || subtype === 'task_heartbeat') return 'active'
+  if (subtype === 'task_create') return 'todo'
+  return undefined
+}
+
+function taskProgressFromEvent(subtype?: string): number | undefined {
+  if (subtype === 'task_complete') return 100
+  if (subtype === 'task_cancel') return 0
+  return undefined
 }
 
 function taskStatusClass(status: string): string {
@@ -4781,7 +4805,7 @@ function collectKanbanCards(events: TelemetryEventView[], agents: AgentView[]): 
     })
   }
 
-  for (const event of [...events].reverse()) {
+  for (const event of [...events].sort((a, b) => a.at - b.at)) {
     if (!event.subtype.startsWith('kanban_')) continue
     const details = event.details ?? {}
     const task = details.task
