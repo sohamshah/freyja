@@ -5,8 +5,9 @@ with PIL + pure-Python audio synthesis + ffmpeg.
 
 | File                  | What                                                              | Build |
 | --------------------- | ----------------------------------------------------------------- | ----- |
+| `freyja_living.mp4`   | 50s continuous-swarm piece — one particle system (~360 agents) reorganizes through task → kanban → goal → bus → composite → resolve. Icon at center pulses waves outward at peak beats. | `build_living.py` |
 | `freyja_icon.mp4`     | 15s breathing icon — the contour-line mark, animated.             | `build_icon.py` |
-| `freyja_finale.mp4`   | 50s investment piece — living icon → ASCII dissolve → 4 abstract coordination modes (task / goal / kanban / bus) → wordmark. | `build_finale.py` |
+| `freyja_finale.mp4`   | Earlier 50s slide-style cut of the same arc.                      | `build_finale.py` |
 | `freyja_anthem.mp4`   | A grounded use-case demo — one mission flows through the board.   | `build.py` |
 | `freyja_meta.mp4`     | An earlier meta piece — Fehu rune anchor, orbit, glitch beats.    | `build_meta.py` |
 
