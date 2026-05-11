@@ -479,6 +479,28 @@ select {
   color: #c4e3ff;
   text-decoration-color: rgba(196, 227, 255, 0.7);
 }
+
+/* Inline card-id mention chips. Subtle by default — the underline is
+   the discrete typographic cue that this is a reference, not a
+   pill-shaped badge. On hover the chip lifts into the eye via a
+   warmer accent + dotted underline; click opens the dashboard. */
+.md .kanban-card-mention,
+.kanban-card-mention {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.92em;
+  color: rgba(168, 212, 252, 0.85);
+  border-bottom: 1px dotted rgba(168, 212, 252, 0.35);
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background-color 0.12s;
+  padding: 0 1px;
+  border-radius: 2px;
+}
+.md .kanban-card-mention:hover,
+.kanban-card-mention:hover {
+  color: #c4e3ff;
+  border-bottom-color: rgba(196, 227, 255, 0.65);
+  background: rgba(168, 212, 252, 0.06);
+}
 .md ul,
 .md ol {
   margin: 0.65em 0 1em 1.3em;

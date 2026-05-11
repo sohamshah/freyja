@@ -1,5 +1,5 @@
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { useHarness } from '../state/store'
+import { useHarness, type SystemEventRecord } from '../state/store'
 import { renderMarkdown } from '../lib/markdown'
 import { HeroWelcome } from './HeroWelcome'
 import { ToolCallChip } from './ToolCallChip'
@@ -18,6 +18,18 @@ import type { Message, MessagePart } from '@shared/events'
  *  string means "no active search" — no highlights are rendered. */
 const SearchQueryContext = createContext<string>('')
 
+/** Snapshot map of `card_NNN` -> { status, title, assignee } so the
+ *  Part renderer can decorate card mentions in parent prose without
+ *  re-deriving from system events on every text part. */
+interface KanbanCardSnapshot {
+  status: string
+  title: string
+  assignee: string
+}
+const KanbanCardLookupContext = createContext<Map<string, KanbanCardSnapshot>>(
+  new Map(),
+)
+
 interface MessageActionsValue {
   openMenu: (e: React.MouseEvent, message: Message) => void
   editingId: string | null
@@ -29,6 +41,7 @@ const MessageActionsContext = createContext<MessageActionsValue | null>(null)
 
 export function Conversation() {
   const messages = useHarness((s) => s.messages)
+  const systemEvents = useHarness((s) => s.systemEvents)
   const thinking = useHarness((s) => s.thinking)
   const isStreaming = useHarness((s) => s.isStreaming)
   const focusedToolCallId = useHarness((s) => s.focusedToolCallId)
@@ -301,9 +314,7 @@ export function Conversation() {
           <div ref={scrollerRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden">
             <ChildSessionBreadcrumb />
             <div className="mx-auto w-full max-w-[1200px] px-8 py-6">
-              {messages.map((m) => (
-                <MessageView key={m.id} message={m} />
-              ))}
+              <ConversationStream messages={messages} systemEvents={systemEvents} />
               {/* Thinking renders inline within message parts now */}
             </div>
           </div>
@@ -408,6 +419,175 @@ function UserMessageEditor({
       </div>
     </div>
   )
+}
+
+// Narrator-voice system events. These are board-level moves the
+// dispatcher makes on its own — not part of any model turn — and they
+// render as italic stage directions interleaved with the conversation
+// by timestamp. Keep this set tight: only events the user genuinely
+// benefits from seeing in narrative flow. Per-tick noise stays in the
+// dashboard's dispatcher pulse panel.
+const NARRATOR_SUBTYPES = new Set([
+  'kanban_dispatched',
+  'kanban_reclaimed',
+  'kanban_autopilot_enabled',
+  'kanban_autopilot_disabled',
+  'kanban_replay',
+])
+
+function ConversationStream({
+  messages,
+  systemEvents,
+}: {
+  messages: Message[]
+  systemEvents: SystemEventRecord[]
+}) {
+  const narratorEvents = useMemo(
+    () => systemEvents.filter((e) => NARRATOR_SUBTYPES.has(e.subtype)),
+    [systemEvents],
+  )
+  // Walk kanban-state events to build a snapshot map keyed by card id.
+  // Used by Part text rendering to decorate `card_NNN` mentions in
+  // prose with hover tooltips + click-to-dashboard.
+  const kanbanLookup = useMemo(() => {
+    const map = new Map<string, KanbanCardSnapshot>()
+    for (const event of systemEvents) {
+      if (!event.subtype.startsWith('kanban_')) continue
+      const details = event.details as Record<string, unknown> | undefined
+      const task = details?.task as Record<string, unknown> | undefined
+      if (!task) continue
+      const id = typeof task.id === 'string' ? task.id : ''
+      if (!id) continue
+      map.set(id, {
+        status: typeof task.status === 'string' ? task.status : 'ready',
+        title: typeof task.title === 'string' ? task.title : '',
+        assignee: typeof task.assignee === 'string' ? task.assignee : '',
+      })
+    }
+    return map
+  }, [systemEvents])
+  // Build a chronologically-ordered stream. Tie-breaker on equal
+  // timestamps: messages come first so a narrator event written
+  // immediately after a parent turn lands beneath the message it
+  // followed, not before it.
+  const stream = useMemo(() => {
+    type Entry =
+      | { kind: 'message'; at: number; message: Message }
+      | { kind: 'narrator'; at: number; event: SystemEventRecord }
+    const entries: Entry[] = []
+    for (const m of messages) entries.push({ kind: 'message', at: m.createdAt, message: m })
+    for (const e of narratorEvents) entries.push({ kind: 'narrator', at: e.at, event: e })
+    entries.sort((a, b) => {
+      if (a.at !== b.at) return a.at - b.at
+      if (a.kind === b.kind) return 0
+      return a.kind === 'message' ? -1 : 1
+    })
+    return entries
+  }, [messages, narratorEvents])
+
+  const toggleMissionDashboard = useHarness((s) => s.toggleMissionDashboard)
+  // Delegated click handler for `.kanban-card-mention` spans inserted
+  // into prose by the markdown post-pass. Opens the dashboard on the
+  // swarm tab so the operator can scroll to the card; per-card focus
+  // selection is a follow-up.
+  const onClick = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      const target = event.target as HTMLElement | null
+      if (!target) return
+      const mention = target.closest('.kanban-card-mention')
+      if (!mention) return
+      event.preventDefault()
+      event.stopPropagation()
+      toggleMissionDashboard(true, 'swarm')
+    },
+    [toggleMissionDashboard],
+  )
+
+  return (
+    <KanbanCardLookupContext.Provider value={kanbanLookup}>
+      <div onClick={onClick}>
+        {stream.map((entry, idx) => {
+          if (entry.kind === 'message') {
+            return <MessageView key={entry.message.id} message={entry.message} />
+          }
+          const event = entry.event
+          return <NarratorLine key={`${event.id}-${idx}`} event={event} />
+        })}
+      </div>
+    </KanbanCardLookupContext.Provider>
+  )
+}
+
+function NarratorLine({ event }: { event: SystemEventRecord }) {
+  const text = formatNarratorEvent(event)
+  if (!text) return null
+  // No glyph chrome, no border, no badge — italic prose at low contrast
+  // that sits at the same column as the parent's text. Reads as a
+  // stage direction in the screenplay sense, not a system notification.
+  return (
+    <div className="my-3 select-text font-prose text-[12.5px] italic leading-[1.55] text-fg-3">
+      {text}
+    </div>
+  )
+}
+
+function formatNarratorEvent(event: SystemEventRecord): string {
+  const details = (event.details ?? {}) as Record<string, unknown>
+  switch (event.subtype) {
+    case 'kanban_dispatched': {
+      const agent = typeof details.agentType === 'string' ? details.agentType : 'worker'
+      const card = typeof details.cardId === 'string' ? details.cardId : ''
+      if (!card) return `dispatching ${agent}`
+      return `dispatching ${agent} on ${card}`
+    }
+    case 'kanban_reclaimed': {
+      const card = typeof details.cardId === 'string' ? details.cardId : ''
+      const ageSeconds = typeof details.ageSeconds === 'number' ? details.ageSeconds : null
+      if (!card) return 'reclaiming a stuck card'
+      if (ageSeconds === null) return `reclaiming ${card}`
+      const minutes = Math.floor(ageSeconds / 60)
+      const window = minutes > 0 ? `${minutes}m` : `${Math.floor(ageSeconds)}s`
+      return `reclaiming ${card} — heartbeat stale ${window}`
+    }
+    case 'kanban_autopilot_enabled':
+      return 'autopilot on'
+    case 'kanban_autopilot_disabled':
+      return 'autopilot off'
+    case 'kanban_replay': {
+      const count = typeof details.eventCount === 'number' ? details.eventCount : 0
+      const restarts = typeof details.restartCount === 'number' ? details.restartCount : 0
+      if (count === 0) return ''
+      const prefix = restarts > 1 ? `mission resumed (restart ${restarts})` : 'mission resumed'
+      return `${prefix} — ${count} prior events replayed`
+    }
+    default:
+      return ''
+  }
+}
+
+/** Wrap `card_NNN` mentions in rendered prose with a low-key chip that
+ *  carries the card's current status as a tooltip and is wired (via
+ *  delegated click in ConversationStream) to open the dashboard.
+ *
+ *  Naive regex pass: relies on the matched id being unlikely to appear
+ *  inside HTML attributes generated by `renderMarkdown`. Code/pre
+ *  blocks can technically contain `card_NNN` literally; if they do
+ *  they'll also be chipped. Acceptable cosmetic edge for V1. */
+function decorateCardMentions(
+  html: string,
+  lookup: Map<string, KanbanCardSnapshot>,
+): string {
+  if (lookup.size === 0) return html
+  return html.replace(/\bcard_(\d{3,})\b/g, (match) => {
+    const snapshot = lookup.get(match)
+    if (!snapshot) return match
+    const title = `${snapshot.status}${snapshot.title ? ` · ${snapshot.title}` : ''}${snapshot.assignee ? ` · ${snapshot.assignee}` : ''}`
+    return `<span class="kanban-card-mention" data-card-id="${escapeAttr(match)}" title="${escapeAttr(title)}">${match}</span>`
+  })
+}
+
+function escapeAttr(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
 }
 
 const MessageView = memo(function MessageView({ message }: { message: Message }) {
@@ -571,6 +751,7 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
     return s.toolCalls[part.toolCallId]?.name
   })
   const searchQuery = useContext(SearchQueryContext)
+  const kanbanLookup = useContext(KanbanCardLookupContext)
   const sourceText = part.type === 'text' ? part.text ?? '' : ''
   const visibleText = useCharacterReveal(
     sourceText,
@@ -582,7 +763,8 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
   )
 
   if (part.type === 'text') {
-    const html = searchQuery ? highlightHtml(renderedTextHtml, searchQuery) : renderedTextHtml
+    const decorated = decorateCardMentions(renderedTextHtml, kanbanLookup)
+    const html = searchQuery ? highlightHtml(decorated, searchQuery) : decorated
     return (
       <div
         className="md selectable"

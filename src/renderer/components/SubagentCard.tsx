@@ -1,8 +1,86 @@
-import { useState } from 'react'
-import { useHarness } from '../state/store'
+import { useMemo, useState } from 'react'
+import { useHarness, type SystemEventRecord } from '../state/store'
 import { formatDuration, formatTokens } from '../lib/format'
 import { Spinner } from '../lib/spinner'
 import { useFrameObjectUrl } from '../lib/frameMedia'
+
+/** Snapshot of a kanban card's current state, derived from the running
+ *  fold over `kanban_*` system events. Used by the subagent card to
+ *  decide whether to show "awaiting review" / "verified" / "rejected"
+ *  states instead of the bare worker `done`. */
+interface KanbanCardSnapshot {
+  status: string
+  requiresVerification: boolean
+  /** When the latest event was a verifier-authored transition, the
+   *  actor string. Used to render the verifier byline. */
+  verifierActor: string | null
+  /** True when the latest verifier transition flipped the card from
+   *  `done_unverified` back to `running`. */
+  rejected: boolean
+  /** Verifier's most recent rejection feedback, if any. */
+  rejectionFeedback: string | null
+}
+
+function deriveKanbanCardSnapshot(
+  events: SystemEventRecord[],
+  taskId: string,
+): KanbanCardSnapshot | null {
+  let task: Record<string, unknown> | null = null
+  let verifierActor: string | null = null
+  let rejected = false
+  let rejectionFeedback: string | null = null
+  for (const event of events) {
+    if (!event.subtype.startsWith('kanban_')) continue
+    const details = event.details as Record<string, unknown> | undefined
+    const eventTask = details?.task as Record<string, unknown> | undefined
+    if (!eventTask) continue
+    if (String(eventTask.id ?? '') !== taskId) continue
+    task = eventTask
+    // The verifier writes `update` with a verifier-ish actor. We track
+    // the most recent one so the byline + rejection callout reflect
+    // the latest verifier touch, not an older one.
+    const eventsList = Array.isArray(eventTask.events) ? eventTask.events : []
+    for (const inner of eventsList.slice().reverse()) {
+      if (!inner || typeof inner !== 'object') continue
+      const actor = String((inner as Record<string, unknown>).actor ?? '').toLowerCase()
+      if (!actor.includes('verify')) continue
+      const innerDetails = (inner as Record<string, unknown>).details as
+        | Record<string, unknown>
+        | undefined
+      const innerStatus = String(innerDetails?.status ?? '').toLowerCase()
+      verifierActor = String((inner as Record<string, unknown>).actor)
+      rejected = innerStatus === 'running'
+      break
+    }
+    if (rejected) {
+      // Find the comment the verifier left when bouncing the card.
+      const comments = Array.isArray(eventTask.comments) ? eventTask.comments : []
+      for (const c of comments.slice().reverse()) {
+        if (!c || typeof c !== 'object') continue
+        const author = String((c as Record<string, unknown>).author ?? '').toLowerCase()
+        if (!author.includes('verify')) continue
+        rejectionFeedback = String((c as Record<string, unknown>).body ?? '') || null
+        break
+      }
+    }
+  }
+  if (!task) return null
+  return {
+    status: String(task.status ?? 'ready'),
+    requiresVerification: Boolean(task.requiresVerification),
+    verifierActor,
+    rejected,
+    rejectionFeedback,
+  }
+}
+
+function useKanbanCardSnapshot(taskId: string | undefined): KanbanCardSnapshot | null {
+  const systemEvents = useHarness((s) => s.systemEvents)
+  return useMemo(() => {
+    if (!taskId) return null
+    return deriveKanbanCardSnapshot(systemEvents, taskId)
+  }, [systemEvents, taskId])
+}
 
 /**
  * Inline subagent card shown in the parent conversation. Slate-inspired:
@@ -32,20 +110,44 @@ export function SubagentCard({ id }: { id: string }) {
     : sub.state === 'running'
   const isDone = childSnapshot?.completed ?? sub.state === 'done'
   const isFailed = childSnapshot?.success === false && childSnapshot.completed
+  // When the subagent is bound to a kanban card with verification in
+  // play, the worker's run finishing isn't the same as the card being
+  // sealed. Read the latest card snapshot off system events and let
+  // it override the worker's bare `done` so the subagent card reflects
+  // the verifier lifecycle in-place — no new card, no shouty pill.
+  const isVerifierAgent = sub.agentType === 'verify'
+  const cardSnapshot = useKanbanCardSnapshot(
+    !isVerifierAgent ? sub.kanbanTaskId : undefined,
+  )
+  const awaitingReview =
+    isDone && cardSnapshot?.status === 'done_unverified'
+  const verified =
+    isDone && cardSnapshot?.status === 'done' && cardSnapshot.verifierActor !== null
+  const rejected = Boolean(cardSnapshot?.rejected)
   const statusColor = isFailed
     ? 'text-danger'
-    : isDone
-      ? 'text-ok'
-      : isRunning
-        ? 'text-accent'
-        : 'text-fg-2'
+    : rejected
+      ? 'text-danger'
+      : awaitingReview
+        ? 'text-warn'
+        : isDone
+          ? 'text-ok'
+          : isRunning
+            ? 'text-accent'
+            : 'text-fg-2'
   const statusLabel = isFailed
     ? 'failed'
-    : isDone
-      ? 'done'
-      : isRunning
-        ? 'running'
-        : sub.state
+    : rejected
+      ? 'rejected'
+      : awaitingReview
+        ? 'awaiting review'
+        : verified
+          ? 'verified'
+          : isDone
+            ? 'done'
+            : isRunning
+              ? 'running'
+              : sub.state
 
   const handleAttach = (mode: 'replace' | 'split' = 'replace') => {
     if (childSnapshot) openSessionPane(id, mode)
@@ -205,8 +307,187 @@ export function SubagentCard({ id }: { id: string }) {
           </div>
         </div>
       )}
+      {/* Verifier byline. Sits where a co-author credit would sit on a
+          print piece — small, italic, second-author voice. Only renders
+          once verification has actually happened on this card. */}
+      {(verified || rejected) && cardSnapshot?.verifierActor && (
+        <div className="mt-2 font-mono text-[10px] italic text-fg-3">
+          verifier · {cardSnapshot.verifierActor}
+        </div>
+      )}
+      {/* Rejection feedback callout. Quoted in the same column as the
+          worker's body so reading it feels like turning the page and
+          seeing the editor's notes. */}
+      {rejected && cardSnapshot?.rejectionFeedback && (
+        <div className="mt-2 rounded-md border-l-2 border-danger/55 bg-danger/[0.06] px-3 py-2 text-[11px] leading-[1.55] text-fg-1">
+          <div className="mb-1 font-mono text-[9.5px] uppercase tracking-[0.08em] text-danger/85">
+            rejected — verifier note
+          </div>
+          <div className="whitespace-pre-wrap">{cardSnapshot.rejectionFeedback}</div>
+        </div>
+      )}
+      {/* Phase chain — verifier and any subsequent worker re-spawns on
+          the same kanban card render beneath this worker as continuation
+          blocks. Lets the page grow downward as the card's lifecycle
+          plays out, rather than spawning new grid cards. */}
+      {!isVerifierAgent && sub.kanbanTaskId && (
+        <SubagentPhaseChain
+          workerId={id}
+          workerStartedAt={sub.startedAt}
+          taskId={sub.kanbanTaskId}
+        />
+      )}
     </div>
   )
+}
+
+/** Renders verifier + re-worker phases nested under the original worker
+ *  for cards under verification. Each phase is a compact in-place
+ *  continuation, not a separate card — visually the worker's card
+ *  grows downward as the verification lifecycle plays out. */
+function SubagentPhaseChain({
+  workerId,
+  workerStartedAt,
+  taskId,
+}: {
+  workerId: string
+  workerStartedAt: number
+  taskId: string
+}) {
+  const phases = useHarness((s) => {
+    const list: typeof s.subagents[string][] = []
+    for (const id in s.subagents) {
+      if (id === workerId) continue
+      const rec = s.subagents[id]
+      if (!rec || rec.kanbanTaskId !== taskId) continue
+      if (rec.startedAt < workerStartedAt) continue
+      list.push(rec)
+    }
+    return list.sort((a, b) => a.startedAt - b.startedAt)
+  })
+  if (phases.length === 0) return null
+  let workerRound = 1
+  return (
+    <div className="mt-3 space-y-3">
+      {phases.map((phase) => {
+        const isVerifier = phase.agentType === 'verify'
+        const heading = isVerifier
+          ? `verifier · ${phase.label}`
+          : `worker round ${++workerRound} · ${phase.label}`
+        return (
+          <PhaseBlock key={phase.id} subagentId={phase.id} heading={heading} isVerifier={isVerifier} />
+        )
+      })}
+    </div>
+  )
+}
+
+function PhaseBlock({
+  subagentId,
+  heading,
+  isVerifier,
+}: {
+  subagentId: string
+  heading: string
+  isVerifier: boolean
+}) {
+  const sub = useHarness((s) => s.subagents[subagentId])
+  const childSlice = useHarness((s) => s.sessionArchive[subagentId])
+  const openSessionPane = useHarness((s) => s.openSessionPane)
+  const childSnapshot = useHarness((s) =>
+    s.sessions.find((session) => session.id === subagentId),
+  )
+  if (!sub) return null
+
+  const recentTools = (childSlice?.toolCallOrder ?? [])
+    .slice(-5)
+    .map((tcId) => childSlice?.toolCalls[tcId])
+    .filter(Boolean)
+
+  const isRunning = sub.state === 'running' || sub.state === 'pending'
+  const isDone = sub.state === 'done'
+  const isFailed = sub.state === 'failed' || sub.state === 'cancelled'
+  const dotClass = isFailed
+    ? 'bg-danger'
+    : isRunning
+      ? 'bg-accent'
+      : isVerifier && isDone
+        ? 'bg-ok'
+        : 'bg-fg-2'
+
+  const handleAttach = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (childSnapshot) openSessionPane(subagentId, e.metaKey || e.ctrlKey ? 'split' : 'replace')
+  }
+
+  return (
+    <div className="hairline-t pt-3">
+      <div className="mb-1.5 flex items-baseline gap-2">
+        {isRunning ? (
+          <Spinner name="scan" className="text-accent" />
+        ) : (
+          <span className={`mt-1 inline-block h-1.5 w-1.5 rounded-full ${dotClass}`} />
+        )}
+        <span className="font-mono text-[11px] italic text-fg-2">{heading}</span>
+        <span className="ml-auto font-mono text-[9.5px] uppercase tracking-[0.08em] text-fg-3">
+          {sub.state}
+        </span>
+        {childSnapshot && (
+          <button
+            type="button"
+            onClick={handleAttach}
+            className="rounded px-1.5 py-[1px] font-mono text-[9px] uppercase tracking-[0.06em] text-fg-3 ring-hairline hover:bg-white/[0.04] hover:text-fg-1"
+          >
+            open
+          </button>
+        )}
+      </div>
+      <div className="line-clamp-2 text-[11px] leading-[1.45] text-fg-1">{sub.task}</div>
+      {recentTools.length > 0 && (
+        <ul className="mt-1.5 space-y-[2px] font-mono text-[10.5px] leading-[1.45] text-fg-2">
+          {recentTools.map((tc, i) => {
+            if (!tc) return null
+            const isLast = i === recentTools.length - 1
+            return (
+              <li key={tc.id} className="flex items-start gap-1.5">
+                <span className="shrink-0 text-fg-3">{isLast ? '└' : '├'}</span>
+                <span className="truncate text-fg-1">{summarizePhaseTool(tc)}</span>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+      <div className="mt-1.5 flex items-center gap-3 font-mono text-[9.5px] text-fg-3">
+        <span>{formatDuration(sub.elapsedMs)}</span>
+        <span>·</span>
+        <span>{formatTokens(sub.tokensIn + sub.tokensOut)}</span>
+        <span>·</span>
+        <span>{sub.toolsCalled} tools</span>
+      </div>
+    </div>
+  )
+}
+
+function summarizePhaseTool(tc: { name: string; arguments?: Record<string, unknown> }): string {
+  const name = tc.name
+  const args = (tc.arguments ?? {}) as Record<string, unknown>
+  if (name === 'kanban') {
+    const action = String(args.action ?? '')
+    const taskId = String(args.task_id ?? '')
+    const status = String(args.status ?? '')
+    if (action === 'update' && status) return `kanban update → ${status}`
+    if (action) return `kanban ${action}${taskId ? ` ${taskId}` : ''}`
+    return 'kanban'
+  }
+  if (name === 'bash') {
+    const cmd = String(args.command ?? '').split('\n')[0]
+    return cmd ? `$ ${cmd.slice(0, 48)}` : 'bash'
+  }
+  if (name === 'read_file' || name === 'read') {
+    return `read ${String(args.path ?? args.file_path ?? '').slice(0, 48)}`
+  }
+  if (name === 'grep') return `grep ${String(args.pattern ?? args.query ?? '').slice(0, 36)}`
+  return name
 }
 
 function Stat({ label, value }: { label: string; value: string }) {

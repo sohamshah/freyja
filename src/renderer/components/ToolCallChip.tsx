@@ -28,6 +28,31 @@ export function ToolCallChip({ id, record }: { id: string; record?: ToolCallReco
       : call.partialJson ?? ''
 
   const summary = summarizeArgs(call.name, call.arguments)
+  // Heartbeats are liveness pings — they carry no narrative value and
+  // shouldn't compete with real actions for visual weight. Render them
+  // as a one-line muted note so a string of them reads as background
+  // pulse rather than twelve interchangeable rows. No expand affordance
+  // because the args payload (`task_id` + `comment: Heartbeat`) is
+  // boring by construction.
+  const isHeartbeat =
+    call.name === 'kanban' &&
+    typeof call.arguments === 'object' &&
+    call.arguments !== null &&
+    (call.arguments as Record<string, unknown>).action === 'heartbeat'
+
+  if (isHeartbeat) {
+    return (
+      <div
+        data-tool-call-id={id}
+        className="flex items-center gap-2 px-3 py-[3px] text-fg-3/70"
+      >
+        <span className="flex w-[18px] justify-center">
+          <span className="block h-1 w-1 rounded-full bg-fg-3/55" />
+        </span>
+        <span className="font-mono text-[10.5px] italic">{summary || 'heartbeat'}</span>
+      </div>
+    )
+  }
 
   const statusIndicator =
     call.status === 'running' ? (
@@ -189,6 +214,10 @@ export function ToolResultImages({
 
 function summarizeArgs(name: string, args?: Record<string, unknown>): string {
   if (!args) return ''
+  // Kanban gets its own summary path so each chip reads as the action it
+  // is rather than a generic "kanban" pill. Otherwise twenty board moves
+  // in a row look identical.
+  if (name === 'kanban') return summarizeKanban(args)
   if (typeof args.path === 'string') return args.path
   if (typeof args.pattern === 'string') return args.pattern as string
   if (typeof args.query === 'string') return args.query as string
@@ -196,6 +225,47 @@ function summarizeArgs(name: string, args?: Record<string, unknown>): string {
   if (typeof args.command === 'string') return (args.command as string).slice(0, 80)
   const keys = Object.keys(args)
   return keys.length > 0 ? keys.join(', ') : ''
+}
+
+function summarizeKanban(args: Record<string, unknown>): string {
+  const action = typeof args.action === 'string' ? args.action : ''
+  const taskId = typeof args.task_id === 'string' ? args.task_id : ''
+  const status = typeof args.status === 'string' ? args.status : ''
+  const title = typeof args.title === 'string' ? args.title.slice(0, 48) : ''
+  const parentId = typeof args.parent_id === 'string' ? args.parent_id : ''
+  const childId = typeof args.child_id === 'string' ? args.child_id : ''
+  switch (action) {
+    case 'create': {
+      const verifies = args.requires_verification === true ? ' · verifies' : ''
+      return title ? `create "${title}"${verifies}` : `create${verifies}`
+    }
+    case 'update':
+      return taskId && status ? `update ${taskId} → ${status}` : `update ${taskId || ''}`.trim()
+    case 'complete':
+      return `complete ${taskId}`.trim()
+    case 'claim':
+      return `claim ${taskId}`.trim()
+    case 'block':
+      return `block ${taskId}`.trim()
+    case 'heartbeat':
+      return `heartbeat ${taskId}`.trim()
+    case 'comment':
+      return `comment on ${taskId}`.trim()
+    case 'show':
+      return `show ${taskId}`.trim()
+    case 'show_history':
+      return `history ${taskId}`.trim()
+    case 'link':
+      return parentId && childId ? `link ${parentId} → ${childId}` : 'link'
+    case 'unblock':
+      return `unblock ${taskId}`.trim()
+    case 'digest':
+      return 'digest'
+    case 'list':
+      return 'list'
+    default:
+      return action
+  }
 }
 
 function ToolResultImage({

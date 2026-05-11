@@ -1262,11 +1262,55 @@ function TaskBoard({
   onSelect?: (id: string) => void
   onAttach: (id: string, mode?: 'replace' | 'split') => void
 }) {
+  const knownStatuses = new Set(TASK_COLUMNS.map((column) => column.id))
+  const unknownTasks = tasks.filter((task) => !knownStatuses.has(task.status as typeof TASK_COLUMNS[number]['id']))
+  const visibleColumns: Array<{ id: string; label: string; hint: string; tasks: TaskCardView[] }> = TASK_COLUMNS.map((column) => ({
+    ...column,
+    tasks: tasks.filter((task) => task.status === column.id),
+  })).filter((column) => column.tasks.length > 0)
+  if (unknownTasks.length > 0) {
+    visibleColumns.push({
+      id: 'other',
+      label: 'other',
+      hint: 'unmapped status',
+      tasks: unknownTasks,
+    })
+  }
+  const hiddenColumns = TASK_COLUMNS.filter((column) => !visibleColumns.some((visible) => visible.id === column.id))
+  const minColumnWidth = compact ? 250 : 310
+  const minBoardWidth = Math.max(visibleColumns.length * minColumnWidth + Math.max(0, visibleColumns.length - 1) * 12, compact ? 760 : 900)
+
+  if (tasks.length === 0) {
+    return (
+      <div className={`min-h-0 flex-1 ${compact ? 'mt-3' : ''}`}>
+        <EmptyState
+          title="No tasks yet"
+          body="Task cards appear here once the parent creates or assigns work."
+        />
+      </div>
+    )
+  }
+
   return (
     <div className={`min-h-0 flex-1 overflow-auto ${compact ? 'mt-3' : ''}`}>
-      <div className="grid min-h-full min-w-[920px] grid-cols-5 gap-3">
-        {TASK_COLUMNS.map((column) => {
-          const columnTasks = tasks.filter((task) => task.status === column.id)
+      {hiddenColumns.length > 0 && (
+        <div className="mb-3 flex shrink-0 flex-wrap items-center gap-1.5">
+          <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-3">quiet lanes</span>
+          {hiddenColumns.map((column) => (
+            <span key={column.id} className="rounded bg-white/[0.025] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.08em] text-fg-3 ring-hairline">
+              {column.label}
+            </span>
+          ))}
+        </div>
+      )}
+      <div
+        className="grid min-h-full gap-3"
+        style={{
+          minWidth: `${minBoardWidth}px`,
+          gridTemplateColumns: `repeat(${visibleColumns.length}, minmax(${minColumnWidth}px, 1fr))`,
+        }}
+      >
+        {visibleColumns.map((column) => {
           return (
             <div key={column.id} className="flex min-h-0 flex-col rounded-xl bg-black/22 p-3 ring-hairline">
               <div className="mb-3 flex shrink-0 items-start justify-between gap-2">
@@ -1277,11 +1321,11 @@ function TaskBoard({
                   <div className="mt-1 font-mono text-[9px] text-fg-3">{column.hint}</div>
                 </div>
                 <span className="rounded-md bg-white/[0.04] px-2 py-1 font-mono text-[10px] text-fg-2 ring-hairline">
-                  {columnTasks.length}
+                  {column.tasks.length}
                 </span>
               </div>
               <div className="min-h-0 flex-1 space-y-3 overflow-auto pr-1">
-                {columnTasks.map((task) => (
+                {column.tasks.map((task) => (
                   <TaskCard
                     key={task.id}
                     task={task}
@@ -1291,11 +1335,6 @@ function TaskBoard({
                     onAttach={onAttach}
                   />
                 ))}
-                {columnTasks.length === 0 && (
-                  <div className="rounded-lg border border-dashed border-white/10 px-3 py-8 text-center font-mono text-[10px] text-fg-3">
-                    empty
-                  </div>
-                )}
               </div>
             </div>
           )
