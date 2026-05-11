@@ -5,6 +5,7 @@ with PIL + pure-Python audio synthesis + ffmpeg.
 
 | File                  | What                                                              | Build |
 | --------------------- | ----------------------------------------------------------------- | ----- |
+| `freyja_icon.mp4`     | 15s breathing icon — the actual contour-line mark, animated, with Departure Mono wordmark. | `build_icon.py` |
 | `freyja_anthem.mp4`   | A grounded use-case demo — one mission flows through the board.   | `build.py` |
 | `freyja_meta.mp4`     | A meta vision piece — the Fehu rune as anchor, many-mind orbit, glitch beats, AWE typography. | `build_meta.py` |
 

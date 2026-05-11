@@ -58,7 +58,10 @@ trace-*.png
 # freyja_anthem build intermediates (frames + audio + final mp4)
 tools/freyja_anthem/frames/
 tools/freyja_anthem/frames_meta/
+tools/freyja_anthem/frames_icon/
 tools/freyja_anthem/audio.wav
 tools/freyja_anthem/audio_meta.wav
+tools/freyja_anthem/audio_icon.wav
 tools/freyja_anthem/freyja_anthem.mp4
 tools/freyja_anthem/freyja_meta.mp4
+tools/freyja_anthem/freyja_icon.mp4
