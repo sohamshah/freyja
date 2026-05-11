@@ -54,3 +54,8 @@ trace-*.png
 *.dmg
 *.zip
 *.app/
+
+# freyja_anthem build intermediates (frames + audio + final mp4)
+tools/freyja_anthem/frames/
+tools/freyja_anthem/audio.wav
+tools/freyja_anthem/freyja_anthem.mp4
