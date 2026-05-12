@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useHarness } from '../state/store'
 import type {
   MemoryRecord,
@@ -716,9 +717,15 @@ function InspectorPopup({
     ? Math.round((successSignals / totalSignals) * 100)
     : null
 
-  return (
+  // The sidebar's <aside> sets `isolate` + `overflow-hidden`, so a
+  // fixed-positioned modal rendered as a descendant gets clipped to
+  // the sidebar's bounding box AND stuck behind sibling z-indices
+  // in the main pane. Portal to document.body so the overlay covers
+  // the whole window and obeys global stacking.
+  if (typeof document === 'undefined') return null
+  const content = (
     <div
-      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/55 backdrop-blur-sm"
+      className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/65 backdrop-blur-md"
       role="dialog"
       aria-modal="true"
     >
@@ -877,6 +884,7 @@ function InspectorPopup({
       </div>
     </div>
   )
+  return createPortal(content, document.body)
 }
 
 function Stat({
