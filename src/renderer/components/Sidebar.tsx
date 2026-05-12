@@ -13,6 +13,26 @@ import { TopoBackdrop } from './TopoBackdrop'
 
 type Section = 'sessions' | 'skills' | 'subagents' | 'memory'
 
+/** Token-prefix match: every token in `tokens` must appear as a
+ *  prefix of some whitespace-separated word in `haystack`. Both
+ *  sides should already be lowercase. */
+function matchesAllTokens(haystack: string, tokens: string[]): boolean {
+  if (tokens.length === 0) return true
+  // Tokenize haystack once per call. Cheap for sidebar-sized text.
+  const words = haystack.split(/[\s\W_]+/).filter(Boolean)
+  for (const token of tokens) {
+    let found = false
+    for (const word of words) {
+      if (word.startsWith(token)) {
+        found = true
+        break
+      }
+    }
+    if (!found) return false
+  }
+  return true
+}
+
 const CONFIDENCE_ORDER: Record<Skill['confidence'], number> = {
   verified: 0,
   experimental: 1,
@@ -92,6 +112,96 @@ export function Sidebar() {
     return sessions.filter((s) => s.parentSessionId === activeSessionId)
   }, [sessions, activeSessionId])
 
+  // Search query for sessions (titles + content). Empty string = no filter.
+  const [sessionQuery, setSessionQuery] = useState('')
+
+  // Inspector popup for a skill or memory, opened by clicking the row.
+  const [inspectItem, setInspectItem] = useState<
+    | { kind: 'skill'; item: Skill }
+    | { kind: 'memory'; item: MemoryRecord }
+    | null
+  >(null)
+  // Escape closes the inspector if it's open.
+  useEffect(() => {
+    if (!inspectItem) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setInspectItem(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [inspectItem])
+
+  // Ancestor chain of the active session — these auto-expand so the
+  // active session is always visible in the tree without the user
+  // having to click open every parent.
+  const activeAncestors = useMemo(() => {
+    const set = new Set<string>()
+    const byId = new Map(sessions.map((s) => [s.id, s]))
+    let cur: SessionSnapshot | undefined = byId.get(activeSessionId)
+    while (cur) {
+      set.add(cur.id)
+      if (!cur.parentSessionId) break
+      cur = byId.get(cur.parentSessionId)
+    }
+    return set
+  }, [sessions, activeSessionId])
+
+  // User-toggled expansion overrides. Adds rows that aren't in the
+  // active lineage but the user explicitly clicked open.
+  const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set())
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedSessions((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  // Searchable text per session — title + a flat dump of every message's
+  // text parts. We pull from the live slice for the active session and
+  // the archive for the rest. Memoized at the slice level so this only
+  // re-computes when those bags actually change.
+  const activeMessages = useHarness((s) => s.messages)
+  const sessionArchive = useHarness((s) => s.sessionArchive)
+  const sessionSearchIndex = useMemo(() => {
+    const index = new Map<string, string>()
+    const flatten = (parts: Array<{ type: string; text?: string }> | undefined) => {
+      if (!parts) return ''
+      const buf: string[] = []
+      for (const p of parts) {
+        if (p.type === 'text' && p.text) buf.push(p.text)
+      }
+      return buf.join(' ')
+    }
+    for (const s of sessions) {
+      const messages =
+        s.id === activeSessionId ? activeMessages : sessionArchive[s.id]?.messages
+      const body = messages ? messages.map((m) => flatten(m.parts)).join(' ') : ''
+      index.set(s.id, `${s.title}\n${body}`.toLowerCase())
+    }
+    return index
+  }, [sessions, activeSessionId, activeMessages, sessionArchive])
+
+  const searchTokens = useMemo(() => {
+    const trimmed = sessionQuery.trim().toLowerCase()
+    if (!trimmed) return []
+    return trimmed.split(/\s+/).filter(Boolean)
+  }, [sessionQuery])
+
+  // For each session, decide whether it matches the search query.
+  // Prefix match: every token in the query must appear as a prefix of
+  // some whitespace-separated word in the searchable text.
+  const matchedSessionIds = useMemo(() => {
+    if (searchTokens.length === 0) return null
+    const matched = new Set<string>()
+    for (const s of sessions) {
+      const text = sessionSearchIndex.get(s.id) ?? ''
+      if (matchesAllTokens(text, searchTokens)) matched.add(s.id)
+    }
+    return matched
+  }, [sessions, sessionSearchIndex, searchTokens])
+
   // Flatten the session list into a depth-first tree walk so subagent
   // sessions render indented under the session that spawned them. Orphan
   // children (whose parent is no longer in the list) are promoted to roots
@@ -106,7 +216,14 @@ export function Sidebar() {
   //
   //   - Top-level sessions: createdAt DESCENDING (newest at top)
   //   - Subagent sessions:  createdAt ASCENDING  (spawn order preserved)
-  const sessionTree: Array<SessionSnapshot & { depth: number }> = useMemo(() => {
+  //
+  // Visibility rule: a sub-session is only rendered when its parent
+  // chain is expanded. A parent is expanded when (a) it's part of the
+  // active session's lineage, (b) the user manually toggled it open,
+  // or (c) a search is active and we're showing matching descendants
+  // in context. This keeps the rail from drowning in background sub-
+  // agent rows for parents the user isn't looking at.
+  const sessionTree: Array<SessionSnapshot & { depth: number; hasChildren: boolean; isExpanded: boolean }> = useMemo(() => {
     const ids = new Set(sessions.map((s) => s.id))
     const byParent = new Map<string | null, SessionSnapshot[]>()
     for (const s of sessions) {
@@ -116,24 +233,50 @@ export function Sidebar() {
       byParent.get(pid)!.push(s)
     }
 
-    const out: Array<SessionSnapshot & { depth: number }> = []
+    // When a search is active, build a set of session ids that should
+    // be expanded so a descendant match remains reachable: every
+    // ancestor of every matched session.
+    const searchExpand = new Set<string>()
+    if (matchedSessionIds) {
+      const byId = new Map(sessions.map((s) => [s.id, s]))
+      for (const matchId of matchedSessionIds) {
+        let cur: SessionSnapshot | undefined = byId.get(matchId)
+        while (cur) {
+          searchExpand.add(cur.id)
+          if (!cur.parentSessionId) break
+          cur = byId.get(cur.parentSessionId)
+        }
+      }
+    }
+
+    const out: Array<SessionSnapshot & { depth: number; hasChildren: boolean; isExpanded: boolean }> = []
     const walk = (parentId: string | null, depth: number) => {
       const kids = byParent.get(parentId) ?? []
       const sorted = [...kids].sort((a, b) =>
         depth === 0
-          // Top-level: newest first.
           ? b.createdAt - a.createdAt
-          // Subagent: spawn order (oldest first).
           : a.createdAt - b.createdAt,
       )
       for (const s of sorted) {
-        out.push({ ...s, depth })
-        walk(s.id, depth + 1)
+        const hasChildren = (byParent.get(s.id) ?? []).length > 0
+        const isExpanded =
+          hasChildren &&
+          (activeAncestors.has(s.id)
+            || expandedSessions.has(s.id)
+            || searchExpand.has(s.id))
+        if (matchedSessionIds && !searchExpand.has(s.id)) {
+          // Filter out non-matching branches entirely when searching.
+          continue
+        }
+        out.push({ ...s, depth, hasChildren, isExpanded })
+        if (isExpanded) {
+          walk(s.id, depth + 1)
+        }
       }
     }
     walk(null, 0)
     return out
-  }, [sessions])
+  }, [sessions, activeAncestors, expandedSessions, matchedSessionIds])
 
   const orderedSubagents: SubagentRecord[] = useMemo(() => {
     return subagentOrder.map((id) => subagents[id]).filter(Boolean) as SubagentRecord[]
@@ -171,18 +314,29 @@ export function Sidebar() {
 
       {/* Sessions — scrollable, takes remaining space */}
       <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="px-3 pt-3 pb-2">
+          <SessionSearch value={sessionQuery} onChange={setSessionQuery} />
+        </div>
         <Section
           title="sessions"
-          count={sessions.length}
+          count={matchedSessionIds ? matchedSessionIds.size : sessions.length}
           open={open.sessions}
           onToggle={() => setOpen((p) => ({ ...p, sessions: !p.sessions }))}
         >
+          {sessionTree.length === 0 && sessionQuery.trim().length > 0 && (
+            <div className="px-2 py-2 text-[11px] italic text-fg-2">
+              No sessions match "{sessionQuery.trim()}".
+            </div>
+          )}
           {sessionTree.map((s) => (
             <SessionRow
               key={s.id}
               session={s}
               depth={s.depth}
               isActive={s.id === activeSessionId}
+              hasChildren={s.hasChildren}
+              isExpanded={s.isExpanded}
+              onToggleExpand={() => toggleExpanded(s.id)}
               onOpen={(mode) => openSessionPane(s.id, mode)}
             />
           ))}
@@ -302,7 +456,11 @@ export function Sidebar() {
           onToggle={() => setOpen((p) => ({ ...p, skills: !p.skills }))}
         >
           {sortedSkills.map((skill) => (
-            <SkillRow key={skill.id} skill={skill} />
+            <SkillRow
+              key={skill.id}
+              skill={skill}
+              onSelect={() => setInspectItem({ kind: 'skill', item: skill })}
+            />
           ))}
           {sortedSkills.length === 0 && (
             <div className="px-2 py-2 text-[11px] italic leading-[1.5] text-fg-2">
@@ -318,7 +476,11 @@ export function Sidebar() {
           onToggle={() => setOpen((p) => ({ ...p, memory: !p.memory }))}
         >
           {sortedMemories.slice(0, 8).map((memory) => (
-            <MemoryRow key={memory.id} memory={memory} />
+            <MemoryRow
+              key={memory.id}
+              memory={memory}
+              onSelect={() => setInspectItem({ kind: 'memory', item: memory })}
+            />
           ))}
           {sortedMemories.length > 8 && (
             <div className="px-2 py-1 text-[10.5px] text-fg-3">
@@ -347,6 +509,12 @@ export function Sidebar() {
           <kbd className="kbd ml-1">,</kbd>
         </span>
       </div>
+      {inspectItem && (
+        <InspectorPopup
+          item={inspectItem}
+          onClose={() => setInspectItem(null)}
+        />
+      )}
     </aside>
   )
 }
@@ -381,7 +549,41 @@ function Section({
   )
 }
 
-function SkillRow({ skill }: { skill: Skill }) {
+function SessionSearch({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (v: string) => void
+}) {
+  return (
+    <div className="relative">
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="search sessions"
+        spellCheck={false}
+        className="w-full rounded-md bg-black/30 px-3 py-1.5 pl-7 pr-7 text-[12px] text-fg-0 placeholder:text-fg-3 ring-1 ring-white/[0.07] focus:outline-none focus:ring-accent/40"
+      />
+      <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 font-mono text-[11px] text-fg-3">
+        /
+      </span>
+      {value.length > 0 && (
+        <button
+          type="button"
+          onClick={() => onChange('')}
+          title="Clear search"
+          className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded px-1 text-[12px] text-fg-3 hover:bg-white/[0.05] hover:text-fg-0"
+        >
+          ×
+        </button>
+      )}
+    </div>
+  )
+}
+
+function SkillRow({ skill, onSelect }: { skill: Skill; onSelect?: () => void }) {
   const totalSignals = skill.successSignals + skill.failureSignals
   const successRate = totalSignals > 0
     ? Math.round((skill.successSignals / totalSignals) * 100)
@@ -389,11 +591,13 @@ function SkillRow({ skill }: { skill: Skill }) {
   const status = skill.status ?? 'available'
 
   return (
-    <div
+    <button
+      type="button"
+      onClick={onSelect}
       className={`group flex w-full items-start gap-2 rounded-md px-2 py-[6px] text-left hover:bg-white/[0.04] ${
         status === 'loaded' ? 'bg-accent/[0.06]' : ''
       }`}
-      title={`${skill.description}\n\n${skill.scope ?? 'project'} · ${skill.skillType} · ${skill.confidence}\n${skill.retrievalCount} retrievals · ${skill.loadCount ?? 0} loads · ${skill.successSignals} success · ${skill.failureSignals} fail`}
+      title={`Open ${skill.name}`}
     >
       <span
         className={`mt-[7px] inline-block h-1.5 w-1.5 rounded-full ${CONFIDENCE_COLOR[skill.confidence]}`}
@@ -431,16 +635,18 @@ function SkillRow({ skill }: { skill: Skill }) {
           )}
         </div>
       </div>
-    </div>
+    </button>
   )
 }
 
-function MemoryRow({ memory }: { memory: MemoryRecord }) {
+function MemoryRow({ memory, onSelect }: { memory: MemoryRecord; onSelect?: () => void }) {
   const text = memory.summary || memory.text
   return (
-    <div
+    <button
+      type="button"
+      onClick={onSelect}
       className="group flex w-full items-start gap-2 rounded-md px-2 py-[6px] text-left hover:bg-white/[0.04]"
-      title={`${memory.text}\n\n${memory.scope} · ${memory.kind}${memory.source ? ` · ${memory.source}` : ''}`}
+      title={`Open ${memory.kind} memory`}
     >
       <span className="mt-[7px] inline-block h-1.5 w-1.5 rounded-full bg-accent" />
       <div className="min-w-0 flex-1">
@@ -459,6 +665,235 @@ function MemoryRow({ memory }: { memory: MemoryRecord }) {
           )}
         </div>
       </div>
+    </button>
+  )
+}
+
+function InspectorPopup({
+  item,
+  onClose,
+}: {
+  item:
+    | { kind: 'skill'; item: Skill }
+    | { kind: 'memory'; item: MemoryRecord }
+  onClose: () => void
+}) {
+  // Click-outside closes the popup.
+  const cardRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (cardRef.current && !cardRef.current.contains(e.target as Node)) {
+        onClose()
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [onClose])
+
+  const isSkill = item.kind === 'skill'
+  const title = isSkill ? item.item.name : `${item.item.kind} memory`
+  const kindTag = isSkill ? item.item.skillType : item.item.kind
+  const scopeTag = isSkill ? (item.item.scope ?? 'project') : item.item.scope
+  const body = isSkill ? item.item.description : item.item.text
+  const summary = isSkill ? null : item.item.summary
+  const tags = isSkill ? item.item.tags : item.item.tags
+  const triggers = isSkill ? item.item.triggers : []
+  const confidence = isSkill
+    ? item.item.confidence
+    : item.item.confidence ?? null
+  const path = isSkill ? item.item.path : item.item.path
+  const source = isSkill ? null : item.item.source
+  const status = isSkill ? (item.item.status ?? 'available') : null
+  const createdAt = !isSkill ? item.item.createdAt : null
+  const updatedAt = !isSkill ? item.item.updatedAt : null
+  // Skill activity stats
+  const retrievalCount = isSkill ? item.item.retrievalCount : 0
+  const loadCount = isSkill ? (item.item.loadCount ?? 0) : 0
+  const successSignals = isSkill ? item.item.successSignals : 0
+  const failureSignals = isSkill ? item.item.failureSignals : 0
+  const totalSignals = successSignals + failureSignals
+  const successRate = totalSignals > 0
+    ? Math.round((successSignals / totalSignals) * 100)
+    : null
+
+  return (
+    <div
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/55 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div
+        ref={cardRef}
+        className="relative flex max-h-[78vh] w-[560px] max-w-[88vw] flex-col overflow-hidden rounded-2xl glass-strong ring-hairline shadow-2xl"
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3 px-5 pt-5 pb-3 hairline-b">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 label text-fg-3">
+              <span>{isSkill ? 'skill' : 'memory'}</span>
+              {kindTag && (
+                <>
+                  <span>·</span>
+                  <span className="font-mono">{kindTag}</span>
+                </>
+              )}
+              {scopeTag && (
+                <>
+                  <span>·</span>
+                  <span className="font-mono">{scopeTag}</span>
+                </>
+              )}
+              {status && status !== 'available' && (
+                <>
+                  <span>·</span>
+                  <span className="font-mono">{status}</span>
+                </>
+              )}
+              {confidence && (
+                <>
+                  <span>·</span>
+                  <span className="font-mono">{confidence}</span>
+                </>
+              )}
+            </div>
+            <h2 className="mt-2 truncate text-[18px] leading-snug text-fg-0">
+              {title}
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            title="Close (Esc)"
+            className="rounded-md bg-white/[0.04] px-2 py-1 font-mono text-[11px] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
+          >
+            ×
+          </button>
+        </div>
+
+        {/* Body — scrollable */}
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4 text-[12.5px] leading-[1.55] text-fg-1">
+          {summary && (
+            <section>
+              <div className="label mb-1 text-[9px] text-fg-3">summary</div>
+              <p className="text-fg-0">{summary}</p>
+            </section>
+          )}
+          {body && (
+            <section>
+              <div className="label mb-1 text-[9px] text-fg-3">
+                {isSkill ? 'description' : 'body'}
+              </div>
+              <p className="selectable whitespace-pre-wrap text-fg-0">{body}</p>
+            </section>
+          )}
+          {tags && tags.length > 0 && (
+            <section>
+              <div className="label mb-1 text-[9px] text-fg-3">tags</div>
+              <div className="flex flex-wrap gap-1.5">
+                {tags.map((tag) => (
+                  <span
+                    key={tag}
+                    className="rounded-full bg-white/[0.04] px-2 py-[2px] font-mono text-[10px] text-fg-1 ring-hairline"
+                  >
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            </section>
+          )}
+          {triggers && triggers.length > 0 && (
+            <section>
+              <div className="label mb-1 text-[9px] text-fg-3">triggers</div>
+              <div className="flex flex-wrap gap-1.5">
+                {triggers.map((t) => (
+                  <span
+                    key={t}
+                    className="rounded-full bg-accent/[0.08] px-2 py-[2px] font-mono text-[10px] text-accent ring-1 ring-accent/20"
+                  >
+                    {t}
+                  </span>
+                ))}
+              </div>
+            </section>
+          )}
+          {isSkill && (
+            <section>
+              <div className="label mb-2 text-[9px] text-fg-3">activity</div>
+              <div className="grid grid-cols-2 gap-2 text-[11.5px]">
+                <Stat label="retrievals" value={String(retrievalCount)} />
+                <Stat label="loads" value={String(loadCount)} />
+                <Stat
+                  label="signals"
+                  value={`${successSignals} / ${failureSignals}`}
+                  tone={successSignals >= failureSignals ? 'ok' : 'warn'}
+                />
+                <Stat
+                  label="success rate"
+                  value={successRate !== null ? `${successRate}%` : '—'}
+                />
+              </div>
+            </section>
+          )}
+          {(path || source || createdAt || updatedAt) && (
+            <section>
+              <div className="label mb-1 text-[9px] text-fg-3">metadata</div>
+              <dl className="grid grid-cols-[120px_minmax(0,1fr)] gap-x-3 gap-y-1 text-[11.5px]">
+                {path && (
+                  <>
+                    <dt className="text-fg-3">path</dt>
+                    <dd className="truncate font-mono text-fg-1" title={path}>
+                      {path}
+                    </dd>
+                  </>
+                )}
+                {source && (
+                  <>
+                    <dt className="text-fg-3">source</dt>
+                    <dd className="text-fg-1">{source}</dd>
+                  </>
+                )}
+                {createdAt && (
+                  <>
+                    <dt className="text-fg-3">created</dt>
+                    <dd className="text-fg-1">{relativeTime(createdAt)}</dd>
+                  </>
+                )}
+                {updatedAt && (
+                  <>
+                    <dt className="text-fg-3">updated</dt>
+                    <dd className="text-fg-1">{relativeTime(updatedAt)}</dd>
+                  </>
+                )}
+              </dl>
+            </section>
+          )}
+        </div>
+
+        <div className="hairline-t px-5 py-3 text-[10px] text-fg-3">
+          <span>
+            Press <kbd className="kbd">Esc</kbd> to close.
+          </span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function Stat({
+  label,
+  value,
+  tone,
+}: {
+  label: string
+  value: string
+  tone?: 'ok' | 'warn'
+}) {
+  const toneClass =
+    tone === 'ok' ? 'text-ok' : tone === 'warn' ? 'text-warn' : 'text-fg-0'
+  return (
+    <div className="rounded-md bg-white/[0.025] p-2 ring-hairline">
+      <div className="label text-[8.5px] text-fg-3">{label}</div>
+      <div className={`mt-0.5 font-mono text-[12px] ${toneClass}`}>{value}</div>
     </div>
   )
 }
@@ -507,11 +942,17 @@ function SessionRow({
   session: s,
   depth,
   isActive,
+  hasChildren,
+  isExpanded,
+  onToggleExpand,
   onOpen,
 }: {
   session: SessionSnapshot & { depth: number }
   depth: number
   isActive: boolean
+  hasChildren: boolean
+  isExpanded: boolean
+  onToggleExpand: () => void
   onOpen: (mode: 'replace' | 'split') => void
 }) {
   const renameSession = useHarness((st) => st.renameSession)
@@ -606,6 +1047,35 @@ function SessionRow({
             isActive ? 'bg-accent' : isChild ? 'bg-fg-3/70' : 'bg-fg-3'
           }`}
         />
+        {hasChildren ? (
+          <span
+            role="button"
+            tabIndex={0}
+            onClick={(e) => {
+              e.stopPropagation()
+              onToggleExpand()
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                e.stopPropagation()
+                onToggleExpand()
+              }
+            }}
+            title={isExpanded ? 'Collapse sub-sessions' : 'Expand sub-sessions'}
+            className="mt-[6px] flex h-3 w-3 shrink-0 items-center justify-center text-fg-3 hover:text-fg-0"
+            style={{
+              transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+              transition: 'transform 120ms',
+            }}
+          >
+            <svg viewBox="0 0 10 10" width="6" height="6">
+              <path d="M3 2 L7 5 L3 8 Z" fill="currentColor" />
+            </svg>
+          </span>
+        ) : (
+          <span className="mt-[6px] inline-block h-3 w-3 shrink-0" />
+        )}
         <div className="min-w-0 flex-1">
           {renaming ? (
             <input
