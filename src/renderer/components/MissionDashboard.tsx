@@ -98,6 +98,17 @@ interface GoalVerdictPayload {
   fallbackFrom?: string | null
 }
 
+interface CalibratorMetaPayload {
+  model: string
+  ranAt: number
+  version: number
+  confidence: number
+  rationaleOverall: string
+  rationaleByField: Record<string, string>
+  calibratorSetFields: string[]
+  sessionId?: string | null
+}
+
 interface JudgeRulesPayload {
   voice: string
   rigorScore: number
@@ -107,7 +118,19 @@ interface JudgeRulesPayload {
   whenToStop: string
   judgeTools?: string[]
   judgeMaxIterations?: number
+  calibratorMeta?: CalibratorMetaPayload | null
   updatedAt?: number
+}
+
+interface CalibrationStatusView {
+  status: 'idle' | 'running' | 'applied' | 'proposed' | 'failed'
+  sessionId?: string | null
+  model?: string
+  reason?: string
+  at?: number
+  errorMessage?: string
+  proposal?: JudgeRulesPayload | null
+  willApplyAutomatically?: boolean
 }
 
 interface GoalStateView {
@@ -118,6 +141,8 @@ interface GoalStateView {
   pauseReason?: string
   lastVerdict?: GoalVerdictPayload | null
   judgeRules?: JudgeRulesPayload | null
+  judgeRulesProposal?: JudgeRulesPayload | null
+  calibration?: CalibrationStatusView | null
   verdictHistory?: GoalVerdictPayload[]
   events: TelemetryEventView[]
 }
@@ -2422,9 +2447,22 @@ function collectGoalState(events: TelemetryEventView[]): GoalStateView | null {
   // goal_* event will do; the sort puts the newest first.
   const rulesEvent = goalEvents.find((event) => event.details?.judgeRules)
   const judgeRules = (rulesEvent?.details?.judgeRules as GoalStateView['judgeRules']) ?? null
+  const proposalEvent = goalEvents.find((event) => event.details?.judgeRulesProposal)
+  const judgeRulesProposal =
+    (proposalEvent?.details?.judgeRulesProposal as GoalStateView['judgeRulesProposal']) ?? null
   const historyEvent = goalEvents.find((event) => Array.isArray(event.details?.verdictHistory))
   const verdictHistory =
     (historyEvent?.details?.verdictHistory as GoalStateView['verdictHistory']) ?? []
+  // Calibration lifecycle: take the newest calibration event and
+  // collapse it into a single status. Goal events come back newest-first.
+  const calibrationEvent = goalEvents.find((e) =>
+    e.subtype === 'goal_calibration_started' ||
+    e.subtype === 'goal_calibration_complete' ||
+    e.subtype === 'goal_calibration_failed',
+  )
+  const calibration = calibrationEvent
+    ? deriveCalibrationStatus(calibrationEvent, judgeRulesProposal)
+    : null
   return {
     goal: String(state?.goal ?? ''),
     status: String(state?.status ?? 'active'),
@@ -2433,8 +2471,50 @@ function collectGoalState(events: TelemetryEventView[]): GoalStateView | null {
     pauseReason: typeof state?.pauseReason === 'string' ? state.pauseReason : undefined,
     lastVerdict: lastVerdict ?? null,
     judgeRules,
+    judgeRulesProposal,
+    calibration,
     verdictHistory,
     events: goalEvents,
+  }
+}
+
+function deriveCalibrationStatus(
+  event: TelemetryEventView,
+  proposal: JudgeRulesPayload | null | undefined,
+): CalibrationStatusView {
+  const details = (event.details ?? {}) as Record<string, unknown>
+  const sessionId = (details.calibratorSessionId as string | null | undefined) ?? null
+  const reason = typeof details.reason === 'string' ? details.reason : undefined
+  const model = typeof details.model === 'string' ? details.model : undefined
+  if (event.subtype === 'goal_calibration_started') {
+    return {
+      status: 'running',
+      sessionId,
+      model,
+      reason,
+      at: event.at,
+      willApplyAutomatically: details.willApplyAutomatically === true,
+    }
+  }
+  if (event.subtype === 'goal_calibration_failed') {
+    return {
+      status: 'failed',
+      sessionId,
+      model,
+      reason,
+      at: event.at,
+      errorMessage: typeof details.error === 'string' ? details.error : undefined,
+    }
+  }
+  // goal_calibration_complete
+  const applied = details.applied === true
+  return {
+    status: applied ? 'applied' : 'proposed',
+    sessionId,
+    model,
+    reason,
+    at: event.at,
+    proposal: applied ? null : proposal ?? null,
   }
 }
 

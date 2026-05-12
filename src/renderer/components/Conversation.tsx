@@ -12,6 +12,8 @@ import { Spinner } from '../lib/spinner'
 import { highlightHtml, highlightRuns } from '../lib/searchHighlight'
 import { MessageContextMenu, type MessageMenuAction } from './MessageContextMenu'
 import { BranchSessionDialog } from './BranchSessionDialog'
+import { CalibrationCard } from './shared/CalibrationCard'
+import type { CalibrationStatus, JudgeRules } from './shared/types'
 import type { Message, MessagePart } from '@shared/events'
 
 /** Current search query shared across all conversation parts. Empty
@@ -30,6 +32,14 @@ const KanbanCardLookupContext = createContext<Map<string, KanbanCardSnapshot>>(
   new Map(),
 )
 
+/** Lookup table from system-event id -> SystemEventRecord so inline
+ *  parts (e.g. `goal_judge` verdict cards) can hydrate their full
+ *  payload at render time without duplicating verdict data into the
+ *  message-part shape. Populated by ConversationStream. */
+const SystemEventLookupContext = createContext<Map<string, SystemEventRecord>>(
+  new Map(),
+)
+
 interface MessageActionsValue {
   openMenu: (e: React.MouseEvent, message: Message) => void
   editingId: string | null
@@ -42,6 +52,8 @@ const MessageActionsContext = createContext<MessageActionsValue | null>(null)
 export function Conversation() {
   const messages = useHarness((s) => s.messages)
   const systemEvents = useHarness((s) => s.systemEvents)
+  const coordinationStrategy = useHarness((s) => s.coordinationStrategy)
+  const toggleMissionDashboard = useHarness((s) => s.toggleMissionDashboard)
   const thinking = useHarness((s) => s.thinking)
   const isStreaming = useHarness((s) => s.isStreaming)
   const focusedToolCallId = useHarness((s) => s.focusedToolCallId)
@@ -115,6 +127,17 @@ export function Conversation() {
     () => ({ openMenu, editingId, beginEdit, saveEdit, cancelEdit }),
     [openMenu, editingId, beginEdit, saveEdit, cancelEdit],
   )
+
+  // Goal-mode calibration ribbon: surfaces the judge calibrator in the
+  // chat pane so the operator sees the lifecycle even with the mission
+  // dashboard closed. Derived from goal_calibration_* events in the
+  // session's systemEvents stream.
+  const calibrationView = useMemo(
+    () => deriveCalibrationView(systemEvents),
+    [systemEvents],
+  )
+  const showCalibrationRibbon =
+    coordinationStrategy === 'goal' && calibrationView.calibration !== null
 
   // Branch dialog details
   const branchTarget = branchFor
@@ -319,6 +342,15 @@ export function Conversation() {
           <div ref={scrollerRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden">
             <ChildSessionBreadcrumb />
             <div className="mx-auto w-full max-w-[1200px] px-8 py-6">
+              {showCalibrationRibbon && (
+                <CalibrationCard
+                  calibration={calibrationView.calibration}
+                  judgeRules={calibrationView.judgeRules}
+                  proposal={calibrationView.proposal}
+                  variant="chat"
+                  onOpenJudgeBrief={() => toggleMissionDashboard(true, 'overview')}
+                />
+              )}
               <ConversationStream messages={messages} systemEvents={systemEvents} />
               {/* Thinking renders inline within message parts now */}
             </div>
@@ -511,17 +543,28 @@ function ConversationStream({
     [toggleMissionDashboard],
   )
 
+  // System event index keyed by id so inline system parts can hydrate
+  // their richer payloads (verdict details, etc.) without round-tripping
+  // through the global systemEvents array on every render.
+  const systemEventLookup = useMemo(() => {
+    const map = new Map<string, SystemEventRecord>()
+    for (const event of systemEvents) map.set(event.id, event)
+    return map
+  }, [systemEvents])
+
   return (
     <KanbanCardLookupContext.Provider value={kanbanLookup}>
-      <div onClick={onClick}>
-        {stream.map((entry, idx) => {
-          if (entry.kind === 'message') {
-            return <MessageView key={entry.message.id} message={entry.message} />
-          }
-          const event = entry.event
-          return <NarratorLine key={`${event.id}-${idx}`} event={event} />
-        })}
-      </div>
+      <SystemEventLookupContext.Provider value={systemEventLookup}>
+        <div onClick={onClick}>
+          {stream.map((entry, idx) => {
+            if (entry.kind === 'message') {
+              return <MessageView key={entry.message.id} message={entry.message} />
+            }
+            const event = entry.event
+            return <NarratorLine key={`${event.id}-${idx}`} event={event} />
+          })}
+        </div>
+      </SystemEventLookupContext.Provider>
     </KanbanCardLookupContext.Provider>
   )
 }
@@ -794,6 +837,14 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
     return <ThinkingBlock text={part.text} isActive={isActiveTail} />
   }
   if (part.type === 'system') {
+    // Goal verdicts get a richer inline card — the operator wants to
+    // see the judge's reasoning + criteria delta without switching to
+    // the studio view. All other system subtypes fall through to the
+    // compact warn-glyph chip used by compaction / context_pruning /
+    // tool_truncation etc.
+    if (part.systemSubtype === 'goal_judge' && part.eventId) {
+      return <InlineGoalVerdict eventId={part.eventId} />
+    }
     return (
       <div className="flex items-center gap-2 rounded-md bg-white/[0.025] px-2.5 py-1.5 text-[11px] text-fg-2 ring-hairline">
         <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="shrink-0">
@@ -807,6 +858,180 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
     )
   }
   return null
+}
+
+// ============ INLINE GOAL VERDICT ============
+//
+// Compact card that drops into the conversation after each judge turn.
+// Shows verdict badge + confidence + profile, plus the judge's reason
+// clamped to 3 lines (click to expand). Includes a criteria summary
+// row (counts by status) and a "view in studio" link. Reads the rich
+// verdict payload from systemEvents via SystemEventLookupContext —
+// the part itself only carries an eventId pointer.
+
+function InlineGoalVerdict({ eventId }: { eventId: string }) {
+  const lookup = useContext(SystemEventLookupContext)
+  const event = lookup.get(eventId)
+  const [expanded, setExpanded] = useState(false)
+  const toggleMissionDashboard = useHarness((s) => s.toggleMissionDashboard)
+  const openSessionPane = useHarness((s) => s.openSessionPane)
+
+  if (!event) {
+    // Event hasn't arrived in the global slice yet (e.g. mid-flight) —
+    // fall through to a placeholder so layout doesn't jump.
+    return (
+      <div className="flex items-center gap-2 rounded-md border border-white/[0.06] bg-white/[0.018] px-2.5 py-1.5 font-mono text-[11px] text-fg-3">
+        judge thinking…
+      </div>
+    )
+  }
+  const verdict = (event.details?.verdict ?? {}) as {
+    done?: boolean
+    confidence?: number
+    reason?: string
+    criteria?: Array<{ status?: string; priority?: string }>
+    openQuestions?: string[]
+    judgeSessionId?: string | null
+    fallbackFrom?: string | null
+  }
+  const rules = (event.details?.judgeRules ?? null) as {
+    judgeProfile?: 'quick' | 'standard' | 'deep'
+  } | null
+  const profile = rules?.judgeProfile ?? 'standard'
+  const done = !!verdict.done
+  const conf = typeof verdict.confidence === 'number' ? verdict.confidence : 0
+  const reason = verdict.reason || (done ? 'Goal satisfied.' : 'Continuing.')
+  const criteria = Array.isArray(verdict.criteria) ? verdict.criteria : []
+  const counts = {
+    met: criteria.filter((c) => c.status === 'met').length,
+    partial: criteria.filter((c) => c.status === 'partial').length,
+    missing: criteria.filter((c) => c.status === 'missing').length,
+  }
+  const openQ = Array.isArray(verdict.openQuestions) ? verdict.openQuestions : []
+
+  const accent = done
+    ? 'border-ok/[0.28] bg-ok/[0.05]'
+    : 'border-accent/[0.18] bg-accent/[0.025]'
+  const profileChip =
+    profile === 'deep'
+      ? 'border-accent/[0.32] bg-accent/[0.08] text-accent'
+      : profile === 'quick'
+      ? 'border-fg-4/[0.32] bg-white/[0.03] text-fg-1'
+      : 'border-white/[0.12] bg-white/[0.04] text-fg-1'
+
+  return (
+    <div className={`overflow-hidden rounded-lg border ${accent}`}>
+      {/* Header row */}
+      <div className="flex flex-wrap items-center gap-2.5 border-b border-white/[0.04] px-3 py-2">
+        <span className="font-mono text-[9.5px] uppercase tracking-[0.18em] text-fg-4">
+          judge
+        </span>
+        <span
+          className={`inline-flex items-center rounded-[6px] border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] ${profileChip}`}
+        >
+          {profile}
+        </span>
+        <span
+          className={`inline-flex items-center gap-1.5 rounded-[10px] border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] ${
+            done
+              ? 'border-ok/[0.32] bg-ok/[0.08] text-ok'
+              : 'border-accent/[0.22] bg-accent/[0.06] text-accent'
+          }`}
+        >
+          <span className={`h-1 w-1 rounded-full ${done ? 'bg-ok' : 'bg-accent'}`} />
+          {done ? 'done' : 'continue'}
+        </span>
+        <span className="font-mono text-[11px] tabular-nums text-fg-2">
+          conf{' '}
+          <span
+            className={
+              conf >= 0.85 ? 'text-ok' : conf >= 0.5 ? 'text-accent' : 'text-warn'
+            }
+          >
+            {conf.toFixed(2)}
+          </span>
+        </span>
+        {criteria.length > 0 ? (
+          <span className="font-mono text-[11px] text-fg-3">
+            ·{' '}
+            {counts.met > 0 ? (
+              <span className="text-ok">{counts.met} met</span>
+            ) : null}
+            {counts.met > 0 && (counts.partial > 0 || counts.missing > 0) ? ' · ' : ''}
+            {counts.partial > 0 ? (
+              <span className="text-accent">{counts.partial} partial</span>
+            ) : null}
+            {counts.partial > 0 && counts.missing > 0 ? ' · ' : ''}
+            {counts.missing > 0 ? (
+              <span className="text-warn">{counts.missing} missing</span>
+            ) : null}
+          </span>
+        ) : null}
+        {openQ.length > 0 ? (
+          <span className="font-mono text-[11px] text-warn">
+            · {openQ.length} open
+          </span>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => toggleMissionDashboard(true)}
+          className="ml-auto rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-3 transition hover:bg-white/[0.06] hover:text-fg-1"
+          title="Open goal studio for the full timeline"
+        >
+          studio ↗
+        </button>
+        {verdict.judgeSessionId ? (
+          <button
+            type="button"
+            onClick={() => openSessionPane(verdict.judgeSessionId!)}
+            className="rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-3 transition hover:bg-white/[0.06] hover:text-accent"
+            title="Open the judge subagent's own session"
+          >
+            judge session ↗
+          </button>
+        ) : null}
+      </div>
+
+      {/* Reason — 3 lines clamped by default, click to expand */}
+      {verdict.fallbackFrom ? (
+        <div className="select-text border-b border-warn/[0.12] bg-warn/[0.05] px-3 py-1.5 font-mono text-[10.5px] text-warn">
+          judge-fallback · {verdict.fallbackFrom}
+        </div>
+      ) : null}
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="block w-full cursor-text select-text px-3 py-2 text-left"
+      >
+        <p
+          className={`m-0 whitespace-pre-wrap font-mono text-[12px] leading-[1.6] text-fg-1 ${
+            expanded ? '' : 'line-clamp-3'
+          }`}
+        >
+          {reason}
+        </p>
+        {!expanded && reason.length > 200 ? (
+          <span className="mt-1 inline-block font-mono text-[10px] uppercase tracking-[0.14em] text-fg-4">
+            click to expand
+          </span>
+        ) : null}
+      </button>
+
+      {/* Open questions (expanded only) */}
+      {expanded && openQ.length > 0 ? (
+        <ul className="m-0 flex list-none flex-col gap-1 border-t border-white/[0.04] px-3 py-2">
+          {openQ.map((q, i) => (
+            <li
+              key={i}
+              className="select-text rounded-md border border-warn/[0.16] bg-warn/[0.04] px-2 py-1 font-mono text-[11.5px] leading-[1.55] text-fg-1"
+            >
+              {q}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  )
 }
 
 function ThinkingBlock({ text, isActive }: { text: string; isActive: boolean }) {
@@ -959,4 +1184,79 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
       )}
     </>
   )
+}
+
+interface CalibrationView {
+  calibration: CalibrationStatus | null
+  judgeRules: JudgeRules | null
+  proposal: JudgeRules | null
+}
+
+/** Walk the session's systemEvents stream once and return:
+ *  - the latest calibration lifecycle state
+ *  - the most recent JudgeRules snapshot (carries calibrator meta)
+ *  - any pending proposal
+ *
+ * Mirrors collectGoalState in MissionDashboard but standalone to avoid
+ * cross-importing dashboard internals into the chat surface. */
+function deriveCalibrationView(
+  events: ReadonlyArray<SystemEventRecord>,
+): CalibrationView {
+  let calibration: CalibrationStatus | null = null
+  let judgeRules: JudgeRules | null = null
+  let proposal: JudgeRules | null = null
+
+  // Walk newest-first. Pick the first goal_calibration_* event we see;
+  // pick the first event that carries judgeRules / judgeRulesProposal.
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i]
+    if (!ev.subtype.startsWith('goal_')) continue
+    const details = (ev.details ?? {}) as Record<string, unknown>
+    if (judgeRules === null && details.judgeRules) {
+      judgeRules = details.judgeRules as JudgeRules
+    }
+    if (proposal === null && details.judgeRulesProposal) {
+      proposal = details.judgeRulesProposal as JudgeRules
+    }
+    if (
+      calibration === null &&
+      (ev.subtype === 'goal_calibration_started' ||
+        ev.subtype === 'goal_calibration_complete' ||
+        ev.subtype === 'goal_calibration_failed')
+    ) {
+      const sessionId = (details.calibratorSessionId as string | null | undefined) ?? null
+      const reason = typeof details.reason === 'string' ? details.reason : undefined
+      const model = typeof details.model === 'string' ? details.model : undefined
+      if (ev.subtype === 'goal_calibration_started') {
+        calibration = {
+          status: 'running',
+          sessionId,
+          model,
+          reason,
+          at: ev.at,
+          willApplyAutomatically: details.willApplyAutomatically === true,
+        }
+      } else if (ev.subtype === 'goal_calibration_failed') {
+        calibration = {
+          status: 'failed',
+          sessionId,
+          model,
+          reason,
+          at: ev.at,
+          errorMessage: typeof details.error === 'string' ? details.error : undefined,
+        }
+      } else {
+        const applied = details.applied === true
+        calibration = {
+          status: applied ? 'applied' : 'proposed',
+          sessionId,
+          model,
+          reason,
+          at: ev.at,
+        }
+      }
+    }
+    if (calibration && judgeRules && proposal) break
+  }
+  return { calibration, judgeRules, proposal }
 }

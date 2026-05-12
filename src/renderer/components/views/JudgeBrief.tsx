@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { BriefMemo, BriefPreview, BriefSection } from '../shared/BriefMemo'
 import type {
   BriefCriterion,
+  CalibratorMeta,
   CriterionPriority,
   JudgeRules,
   GoalStateView,
@@ -122,6 +123,15 @@ export function JudgeBrief({ open, onClose, goalState }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, persistedBrief])
 
+  // Calibrator metadata + per-field rationale: surfaced as banner + inline
+  // tooltips so the operator can see WHY each field has its current value.
+  const calibratorMeta = persistedBrief.calibratorMeta ?? null
+  const recalibrate = useHarness((s) => s.recalibrateJudge)
+  const acceptProposal = useHarness((s) => s.acceptCalibratorProposal)
+  const dismissProposal = useHarness((s) => s.dismissCalibratorProposal)
+  const calibration = goalState?.calibration ?? null
+  const proposal = goalState?.judgeRulesProposal ?? null
+
   if (!goalState) return null
 
   const save = () => {
@@ -176,7 +186,20 @@ export function JudgeBrief({ open, onClose, goalState }: Props) {
         />
       }
     >
-      <BriefSection marker="§ 0" title="Judge profile">
+      <CalibratorBanner
+        meta={calibratorMeta}
+        calibration={calibration}
+        proposal={proposal}
+        onRecalibrate={recalibrate}
+        onAcceptProposal={acceptProposal}
+        onDismissProposal={dismissProposal}
+      />
+
+      <BriefSection
+        marker="§ 0"
+        title="Judge profile"
+        control={<RationaleTip rationale={calibratorMeta?.rationaleByField?.judgeProfile} />}
+      >
         <p className="m-0 mb-3 font-mono text-[12.5px] leading-[1.6] text-fg-2">
           Profile picks the model + thinking budget for every judge call. Cheaper profiles are
           faster but rubber-stamp more often; deeper profiles catch more but cost more.
@@ -211,7 +234,11 @@ export function JudgeBrief({ open, onClose, goalState }: Props) {
         </div>
       </BriefSection>
 
-      <BriefSection marker="§ 1" title="Rigor">
+      <BriefSection
+        marker="§ 1"
+        title="Rigor"
+        control={<RationaleTip rationale={calibratorMeta?.rationaleByField?.rigorScore} />}
+      >
         <div className="flex items-center gap-4">
           <input
             type="range"
@@ -230,7 +257,11 @@ export function JudgeBrief({ open, onClose, goalState }: Props) {
         </p>
       </BriefSection>
 
-      <BriefSection marker="§ 2" title="Voice">
+      <BriefSection
+        marker="§ 2"
+        title="Voice"
+        control={<RationaleTip rationale={calibratorMeta?.rationaleByField?.voice} />}
+      >
         <textarea
           value={voice}
           onChange={(e) => setVoice(e.target.value)}
@@ -244,22 +275,25 @@ export function JudgeBrief({ open, onClose, goalState }: Props) {
         marker="§ 3"
         title="Required criteria"
         control={
-          <button
-            type="button"
-            onClick={() =>
-              setCriteria([
-                ...criteria,
-                {
-                  id: `crit_${Math.random().toString(16).slice(2, 10)}`,
-                  text: '',
-                  priority: 'must',
-                },
-              ])
-            }
-            className="rounded border border-white/[0.06] bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-2 transition hover:bg-white/[0.08] hover:text-fg-0"
-          >
-            + add
-          </button>
+          <span className="inline-flex items-center gap-2">
+            <RationaleTip rationale={calibratorMeta?.rationaleByField?.criteria} />
+            <button
+              type="button"
+              onClick={() =>
+                setCriteria([
+                  ...criteria,
+                  {
+                    id: `crit_${Math.random().toString(16).slice(2, 10)}`,
+                    text: '',
+                    priority: 'must',
+                  },
+                ])
+              }
+              className="rounded border border-white/[0.06] bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-2 transition hover:bg-white/[0.08] hover:text-fg-0"
+            >
+              + add
+            </button>
+          </span>
         }
       >
         {criteria.length === 0 ? (
@@ -316,13 +350,16 @@ export function JudgeBrief({ open, onClose, goalState }: Props) {
         marker="§ 4"
         title="Never do (hard constraints)"
         control={
-          <button
-            type="button"
-            onClick={() => setNeverDo([...neverDo, ''])}
-            className="rounded border border-white/[0.06] bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-2 transition hover:bg-white/[0.08] hover:text-fg-0"
-          >
-            + add
-          </button>
+          <span className="inline-flex items-center gap-2">
+            <RationaleTip rationale={calibratorMeta?.rationaleByField?.neverDo} />
+            <button
+              type="button"
+              onClick={() => setNeverDo([...neverDo, ''])}
+              className="rounded border border-white/[0.06] bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-2 transition hover:bg-white/[0.08] hover:text-fg-0"
+            >
+              + add
+            </button>
+          </span>
         }
       >
         {neverDo.length === 0 ? (
@@ -361,7 +398,11 @@ export function JudgeBrief({ open, onClose, goalState }: Props) {
         )}
       </BriefSection>
 
-      <BriefSection marker="§ 5" title="When to stop">
+      <BriefSection
+        marker="§ 5"
+        title="When to stop"
+        control={<RationaleTip rationale={calibratorMeta?.rationaleByField?.whenToStop} />}
+      >
         <textarea
           value={whenToStop}
           onChange={(e) => setWhenToStop(e.target.value)}
@@ -372,7 +413,18 @@ export function JudgeBrief({ open, onClose, goalState }: Props) {
       </BriefSection>
 
       {judgeProfile === 'deep' && (
-        <BriefSection marker="§ 6" title="Deep judge controls">
+        <BriefSection
+          marker="§ 6"
+          title="Deep judge controls"
+          control={
+            <RationaleTip
+              rationale={
+                calibratorMeta?.rationaleByField?.judgeTools ||
+                calibratorMeta?.rationaleByField?.judgeMaxIterations
+              }
+            />
+          }
+        >
           <p className="m-0 mb-3 font-mono text-[12.5px] leading-[1.6] text-fg-2">
             The deep judge runs as a subagent with read-only tools and extended thinking.
             Toggle individual tools to constrain its surface; raise iterations when verdicts
@@ -546,4 +598,141 @@ function dateStr(): string {
   const d = new Date()
   const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
   return `${months[d.getMonth()]} ${d.getDate()} · ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+function CalibratorBanner({
+  meta,
+  calibration,
+  proposal,
+  onRecalibrate,
+  onAcceptProposal,
+  onDismissProposal,
+}: {
+  meta: CalibratorMeta | null
+  calibration: GoalStateView['calibration']
+  proposal: JudgeRules | null
+  onRecalibrate: () => void
+  onAcceptProposal: () => void
+  onDismissProposal: () => void
+}) {
+  // Three states this banner can be in:
+  //   running   :: calibrator firing in flight; live indicator + cancel-able-ish
+  //   proposed  :: calibrator finished but operator pre-authored rules; offer to adopt
+  //   applied   :: calibrator finished; meta drives editor's per-field tooltips
+  // No-op when there's nothing useful to surface.
+  const status = calibration?.status ?? (meta ? 'applied' : 'idle')
+  if (status === 'idle' || status === 'failed') return null
+
+  if (status === 'running') {
+    return (
+      <section className="-mt-2 mb-1 flex items-center gap-3 rounded-md border border-accent/[0.22] bg-accent/[0.04] px-3.5 py-2.5">
+        <span className="relative inline-flex h-2 w-2 items-center justify-center">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-50" />
+          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-accent" />
+        </span>
+        <span className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-accent">
+          calibrating
+        </span>
+        <span className="font-mono text-[12px] leading-[1.55] text-fg-2">
+          {calibration?.model ?? 'frontier model'} is reading the goal and proposing the
+          optimal judge configuration. usually 5–15s.
+        </span>
+      </section>
+    )
+  }
+
+  if (status === 'proposed') {
+    return (
+      <section className="-mt-2 mb-1 flex flex-col gap-2 rounded-md border border-accent/[0.22] bg-accent/[0.04] px-3.5 py-2.5">
+        <div className="flex items-center gap-3">
+          <span className="inline-block h-2 w-2 rounded-full border border-accent" />
+          <span className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-accent">
+            calibrator proposal pending
+          </span>
+          <span className="font-mono text-[11.5px] text-fg-2">
+            {proposal?.judgeProfile ?? '?'} · rigor {proposal?.rigorScore ?? '?'} ·{' '}
+            {proposal?.criteria?.length ?? 0} criteria
+          </span>
+          <span className="ml-auto flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={onAcceptProposal}
+              className="rounded border border-accent/[0.32] bg-accent/[0.12] px-2.5 py-0.5 font-mono text-[10.5px] uppercase tracking-[0.14em] text-accent transition hover:bg-accent/[0.18]"
+            >
+              accept
+            </button>
+            <button
+              type="button"
+              onClick={onDismissProposal}
+              className="rounded border border-white/[0.08] bg-white/[0.02] px-2.5 py-0.5 font-mono text-[10.5px] uppercase tracking-[0.14em] text-fg-2 transition hover:border-white/[0.16] hover:bg-white/[0.06] hover:text-fg-0"
+            >
+              dismiss
+            </button>
+          </span>
+        </div>
+        {(proposal?.calibratorMeta?.rationaleOverall ?? '') && (
+          <p className="m-0 select-text font-mono text-[12px] leading-[1.55] text-fg-1">
+            {proposal?.calibratorMeta?.rationaleOverall}
+          </p>
+        )}
+      </section>
+    )
+  }
+
+  // applied
+  return (
+    <section className="-mt-2 mb-1 flex items-center gap-3 rounded-md border border-white/[0.08] bg-white/[0.02] px-3.5 py-2">
+      <span className="inline-block h-1.5 w-1.5 rounded-full bg-ok" />
+      <span className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-fg-3">
+        calibrated
+      </span>
+      <span className="font-mono text-[11.5px] text-fg-2">
+        by {meta?.model ?? 'calibrator'}
+        {meta?.confidence ? ` · ${(meta.confidence * 100).toFixed(0)}% confidence` : ''}
+      </span>
+      <button
+        type="button"
+        onClick={onRecalibrate}
+        className="ml-auto rounded border border-white/[0.08] bg-white/[0.02] px-2.5 py-0.5 font-mono text-[10.5px] uppercase tracking-[0.14em] text-fg-2 transition hover:border-white/[0.16] hover:bg-white/[0.06] hover:text-fg-0"
+        title="Re-run the calibrator. Always overwrites current rules."
+      >
+        recalibrate
+      </button>
+    </section>
+  )
+}
+
+function RationaleTip({ rationale }: { rationale?: string | null }) {
+  // Per-field rationale tooltip — appears only when the calibrator
+  // wrote a sentence for this field. Hover to expand. Hidden entirely
+  // when no rationale exists, so non-calibrated sessions look identical
+  // to before.
+  const text = (rationale ?? '').trim()
+  const [open, setOpen] = useState(false)
+  if (!text) return null
+  return (
+    <span className="relative inline-flex">
+      <button
+        type="button"
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-accent/[0.30] bg-accent/[0.06] font-mono text-[9px] text-accent transition hover:bg-accent/[0.14]"
+        aria-label="Calibrator rationale"
+        title="Why the calibrator picked this"
+      >
+        i
+      </button>
+      {open && (
+        <span className="absolute right-0 top-[calc(100%+6px)] z-10 w-[280px] rounded-md border border-white/[0.10] bg-bg-1 px-3 py-2 text-left font-mono text-[11.5px] leading-[1.55] text-fg-1 shadow-lg">
+          <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-accent">
+            calibrator note
+          </span>
+          {text}
+        </span>
+      )}
+    </span>
+  )
 }

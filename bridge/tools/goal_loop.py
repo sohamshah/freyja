@@ -126,7 +126,32 @@ within the read-only contract.
 Use the minimum number of tool calls needed to verify the agent's
 claims. The operator is paying per call. After you have what you need,
 return the structured JSON verdict and stop. Do not let tool exploration
-become the main activity."""
+become the main activity.
+
+═══════════════════════════════════════════════════════════════════════
+OUTPUT FORMAT — READ THIS LAST, OBEY EXACTLY
+═══════════════════════════════════════════════════════════════════════
+Your final response MUST be a single JSON object and nothing else.
+
+  · NO preamble. Do not write "Here is my verdict:" or "Based on the
+    work…". Start with `{`.
+  · NO markdown fences. Do not wrap the JSON in ``` or ```json.
+  · NO postamble. Do not append "Let me know if you need clarification."
+    The closing `}` is the end of your response.
+  · NO trailing commas. NO comments. NO single quotes around keys or
+    string values.
+  · ALL keys exactly as shown below (camelCase). Use `open_questions`
+    OR `openQuestions` — both are accepted by the parser, but pick one
+    and stick with it within a response.
+
+A valid response looks exactly like this (template — substitute your
+own values; preserve the field order and types):
+
+{"done": false, "confidence": 0.42, "reason": "The handbook addresses three of four required topics but the verdict-flow section is missing. The 'tools' section quotes `bridge/tools/goal_loop.py:254` but the actual content at that line is the DEFAULT_DEEP_JUDGE_TOOLS declaration, not what the handbook claims it says. Fix that quote, add the verdict-flow section, and resubmit.", "criteria": [{"id": "crit_a1", "text": "Four required sections present", "priority": "must", "status": "partial", "note": "Three of four present; verdict flow missing."}, {"id": "crit_a2", "text": "Every verbatim quote matches the cited file at the cited line", "priority": "must", "status": "missing", "note": "Spot-checked 2 of 5 quotes; one mismatch at goal_loop.py:254."}], "open_questions": ["Where is the verdict-flow section?", "Will the operator accept paraphrased quotes if marked as paraphrase?"]}
+
+If you emit anything other than a single JSON object in that exact
+shape, the loop will treat it as a parse failure and discard your
+verdict. Do not let that happen."""
 
 
 GOAL_JUDGE_USER_TEMPLATE = """STANDING GOAL
@@ -147,6 +172,140 @@ AGENT'S RECENT WORK (most recent first)
 Return your verdict as strict JSON per the schema in the system prompt. Be
 detailed in `reason`. Name specific gaps in `open_questions`. Default to
 `done: false` unless every must criterion is explicitly met."""
+
+
+JUDGE_CALIBRATOR_SYSTEM_PROMPT = """You are the JUDGE CALIBRATOR — a one-shot configuration agent.
+
+You read a freshly-armed goal and propose the optimal judge configuration
+for that specific goal. The judge is what evaluates whether the agent's
+work satisfies the goal on every loop turn; bad judge config means
+either the agent gets rubber-stamped at "good enough" or the loop runs
+forever without ever satisfying invented criteria. Your job is to thread
+that needle.
+
+You have one shot. No tools. No follow-ups. Read the goal, infer what
+*kind* of work this is and what its dominant failure modes are, and
+return a structured JSON configuration.
+
+The judge has three profiles:
+  · `quick`    — Haiku 4.5, no thinking, single-call. Use when the goal is
+                 small, mechanical, or genuinely easy to evaluate (e.g.
+                 "rename this function", "format this file"). Cheap.
+  · `standard` — same model as the agent, no thinking, single-call. The
+                 default. Use for routine work where the verdict
+                 doesn't need deep verification.
+  · `deep`     — same model as the agent with HIGH thinking, runs as a
+                 subagent with read-only tools (read_file, list_directory,
+                 grep, glob, bash, fetch_url). Use when the goal asks for
+                 something *checkable* — claims that can be verified by
+                 reading files or fetching URLs, citations, line numbers,
+                 quantitative assertions. The deep judge will actually
+                 grep the codebase to catch fabrication.
+
+Heuristics:
+  · The goal demands verifiable claims (file refs, citations, code
+    that must compile/run, exact quotes) → `deep`, rigor 7-9.
+  · The goal is a pure-text deliverable with no checkable claims
+    (haiku, brainstorm, persona writing) → `standard`, rigor 4-6.
+  · The goal is a tiny mechanical task (rename, format, reword) →
+    `quick`, rigor 4-6.
+  · The goal is open-ended exploration / research with no clear
+    "done" → `deep`, rigor 6-8, with explicit when-to-stop logic.
+
+Voice: write a short paragraph (3-6 sentences) telling the judge what
+to be skeptical of FOR THIS SPECIFIC GOAL. Reference the dominant
+failure modes you anticipate from the goal type. Don't write generic
+"be skeptical" — name the specific traps (e.g. "agents writing
+documentation tend to paraphrase quotes; demand exact match" or "for
+research deliverables, watch for confident assertions without
+attribution").
+
+Criteria: 3-6 items total. At least 2 should be `must`. Each must be
+checkable — not aspirational. Phrase as a condition the judge can mark
+met / partial / missing. Avoid restating the goal verbatim. Stable IDs
+prefixed with `cal_` so the operator can tell at a glance which were
+calibrator-authored.
+
+Never-do: 1-3 items naming specific behaviors that should disqualify
+the work even if criteria look met. Common entries: "fabricate file
+paths", "paraphrase a quote and call it verbatim", "ship without
+running the cited command". Only include never-dos that are plausible
+failure modes for THIS goal type.
+
+When-to-stop: optional. Use only if the goal's natural termination
+isn't already implied by criteria. Examples: "stop after the first
+passing test if the user-facing behavior is verified" or "stop on the
+third regression — additional turns are likely to make things worse".
+
+Tools (deep profile only): omit unless you want to narrow the default
+allowlist. Default is read_file/list_directory/grep/glob/bash/fetch_url.
+Narrow only if a tool is clearly wrong for the goal (e.g. drop
+fetch_url for a goal that has no URLs; drop bash for a goal where
+file reads alone suffice).
+
+Max iterations (deep profile only): default 3 is usually right. Raise
+to 5-7 if the goal involves verifying many distinct claims (10+
+citations, multiple files to spot-check, multi-step verification).
+Lower to 1-2 if the verdict can be reached from a single read.
+
+You will return STRICT JSON in this exact shape, with no surrounding
+prose and no markdown fence:
+
+{
+  "judgeProfile": "quick" | "standard" | "deep",
+  "rigorScore": 1..10,
+  "voice": "<3-6 sentence paragraph>",
+  "criteria": [
+    {"id": "cal_xx", "text": "...", "priority": "must" | "should" | "may"}
+  ],
+  "neverDo": ["..."],
+  "whenToStop": "<optional, may be empty string>",
+  "judgeTools": ["..."],
+  "judgeMaxIterations": 1..10,
+  "rationaleOverall": "<one paragraph naming the goal type, the dominant failure modes you inferred, and why you picked this profile + rigor>",
+  "rationaleByField": {
+    "judgeProfile": "<one sentence>",
+    "rigorScore": "<one sentence>",
+    "voice": "<one sentence>",
+    "criteria": "<one sentence>",
+    "neverDo": "<one sentence>",
+    "whenToStop": "<one sentence; may be empty if the field is empty>",
+    "judgeTools": "<one sentence; may say 'using profile defaults'>",
+    "judgeMaxIterations": "<one sentence>"
+  },
+  "confidence": 0.0..1.0
+}
+
+Hard rules:
+  · Output a SINGLE JSON object — no preamble, no fences, no postamble.
+    Start with `{`, end with `}`.
+  · Every field listed above must be present. Use empty strings or
+    empty arrays for fields you intentionally leave blank, but the
+    KEY must exist.
+  · `criteria` must have between 3 and 6 entries.
+  · `rationaleByField` must have one entry per JudgeRules field even
+    if the field is blank ("using default for this goal type" is fine).
+  · IDs in `criteria` must be unique within your response and prefixed
+    with `cal_`.
+  · `confidence` is your overall confidence in the configuration. If
+    the goal is too ambiguous to calibrate well, return 0.4-0.6 and say
+    so in `rationaleOverall`.
+
+This is your only chance to shape the judge for this goal. Make it
+count."""
+
+
+JUDGE_CALIBRATOR_USER_TEMPLATE = """A new goal has just been armed. Calibrate the judge.
+
+STANDING GOAL
+{goal}
+
+ADDITIONAL CONTEXT (recent operator messages, may be empty)
+{context_block}
+
+Return the structured JSON configuration. Be specific to THIS goal —
+generic configurations are useless. Name the dominant failure modes
+you anticipate by goal type in your rationale."""
 
 
 GOAL_CONTINUATION_TEMPLATE = """[Continuing toward the active Freyja goal]
@@ -223,6 +382,66 @@ class GoalVerdict:
         }
 
 
+# JSON schema for the judge's structured response. Used by providers that
+# support constrained decoding (OpenAI Responses API json_schema strict
+# mode, Anthropic tool_use shape). The shape mirrors the parser's
+# expectations — every field the parser reads is declared here, and the
+# parser's lenient cleanups handle the cases where a model doesn't
+# honor the schema.
+GOAL_VERDICT_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["done", "confidence", "reason", "criteria", "open_questions"],
+    "properties": {
+        "done": {
+            "type": "boolean",
+            "description": (
+                "True ONLY when every must-criterion is met, there are "
+                "no open questions, and your confidence is >= 0.85."
+            ),
+        },
+        "confidence": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "description": "How certain you are of your overall judgment, 0.0-1.0.",
+        },
+        "reason": {
+            "type": "string",
+            "description": (
+                "A thorough multi-sentence verdict. Walk through what the "
+                "work covers, what's missing, where evidence is thin, and "
+                "what would change your verdict. Quote the work where useful."
+            ),
+        },
+        "criteria": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["id", "text", "priority", "status"],
+                "properties": {
+                    "id": {"type": "string"},
+                    "text": {"type": "string"},
+                    "priority": {"type": "string", "enum": ["must", "should", "may"]},
+                    "status": {"type": "string", "enum": ["met", "partial", "missing"]},
+                    "note": {"type": "string"},
+                },
+            },
+        },
+        "open_questions": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Concrete questions whose answers would materially change "
+                "your verdict. If empty AND done=false, you have not thought "
+                "carefully enough."
+            ),
+        },
+    },
+}
+
+
 @dataclass
 class RuleCriterion:
     """An operator-defined criterion that gets injected into every judge call."""
@@ -262,6 +481,95 @@ DEFAULT_DEEP_JUDGE_TOOLS: tuple[str, ...] = (
 
 
 @dataclass
+class CalibratorMeta:
+    """Provenance + rationale for the auto-calibrated judge rules.
+
+    When the judge-calibrator subagent runs on goal-set, it returns a
+    proposed JudgeRules plus per-field reasoning. We attach that
+    reasoning here so the JudgeBrief modal can show the operator *why*
+    each value was chosen, and the editor can mark which fields the
+    operator has since hand-edited.
+    """
+
+    model: str = ""
+    ran_at: float = 0.0
+    version: int = 1
+    confidence: float = 0.0
+    rationale_overall: str = ""
+    rationale_by_field: dict[str, str] = field(default_factory=dict)
+    # Names of JudgeRules fields the calibrator set. Lets the UI tag
+    # specific fields as "set by calibrator" so the operator can tell at
+    # a glance what's machine-suggested vs. their own edits.
+    calibrator_set_fields: list[str] = field(default_factory=list)
+    # Source session id of the calibrator child run (so the UI can link
+    # to the calibrator's transcript and thinking).
+    session_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "ranAt": int(self.ran_at * 1000) if self.ran_at else 0,
+            "version": self.version,
+            "confidence": self.confidence,
+            "rationaleOverall": self.rationale_overall,
+            "rationaleByField": dict(self.rationale_by_field),
+            "calibratorSetFields": list(self.calibrator_set_fields),
+            "sessionId": self.session_id,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Any) -> "CalibratorMeta | None":
+        if not isinstance(payload, dict):
+            return None
+        try:
+            ran_at_ms = int(payload.get("ranAt") or 0)
+        except Exception:
+            ran_at_ms = 0
+        try:
+            confidence = float(payload.get("confidence") or 0.0)
+        except Exception:
+            confidence = 0.0
+        rbf_raw = payload.get("rationaleByField")
+        rbf = (
+            {str(k): str(v) for k, v in rbf_raw.items() if str(v).strip()}
+            if isinstance(rbf_raw, dict) else {}
+        )
+        return cls(
+            model=str(payload.get("model") or ""),
+            ran_at=ran_at_ms / 1000.0 if ran_at_ms else 0.0,
+            version=int(payload.get("version") or 1),
+            confidence=max(0.0, min(confidence, 1.0)),
+            rationale_overall=str(payload.get("rationaleOverall") or ""),
+            rationale_by_field=rbf,
+            calibrator_set_fields=[
+                str(f).strip() for f in (payload.get("calibratorSetFields") or [])
+                if str(f).strip()
+            ],
+            session_id=(
+                str(payload.get("sessionId")).strip()
+                if isinstance(payload.get("sessionId"), str) and payload.get("sessionId").strip()
+                else None
+            ),
+        )
+
+
+# Names of every JudgeRules field the calibrator may set. The calibrator
+# is required to return a value for each in its structured response, but
+# we record which ones it actually set on the rules so the UI can tag
+# them in the editor.
+CALIBRATOR_FIELDS: tuple[str, ...] = (
+    "voice",
+    "rigorScore",
+    "judgeProfile",
+    "criteria",
+    "neverDo",
+    "whenToStop",
+    "judgeTools",
+    "judgeMaxIterations",
+)
+
+
+@dataclass
 class JudgeRules:
     """Operator-authored rules the judge applies on every turn. Persists
     per session.
@@ -273,6 +581,13 @@ class JudgeRules:
     default (empty → use the default for the active profile).
     `judge_max_iterations` caps how many turns the judge may take when
     running as a subagent (deep profile).
+
+    `calibrator_meta` is set by the auto-calibrator that fires on goal
+    set; it carries the model + per-field rationale so the editor can
+    surface why each value was picked. Operator hand-edits do NOT clear
+    the meta — instead the UI compares current values against the
+    calibrator's snapshot to decide which fields are still "calibrator
+    authored" vs. operator-touched.
 
     The operator should write `voice` like a memo to a colleague —
     multiple sentences, specific guidance — not a one-liner.
@@ -291,6 +606,7 @@ class JudgeRules:
     # path); quick / standard are always single-call.
     judge_max_iterations: int = 3
     updated_at: float = field(default_factory=time.time)
+    calibrator_meta: CalibratorMeta | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -303,6 +619,7 @@ class JudgeRules:
             "judgeTools": list(self.judge_tools),
             "judgeMaxIterations": self.judge_max_iterations,
             "updatedAt": int(self.updated_at * 1000),
+            "calibratorMeta": self.calibrator_meta.to_dict() if self.calibrator_meta else None,
         }
 
     @classmethod
@@ -338,6 +655,7 @@ class JudgeRules:
             judge_tools=[str(t).strip() for t in (payload.get("judgeTools") or []) if str(t).strip()],
             judge_max_iterations=max(1, min(max_iter, 10)),
             updated_at=time.time(),
+            calibrator_meta=CalibratorMeta.from_dict(payload.get("calibratorMeta")),
         )
 
     def effective_tools(self) -> tuple[str, ...]:
@@ -452,24 +770,117 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{hashlib.md5(seed.encode()).hexdigest()[:8]}"
 
 
+def _extract_first_json_object(text: str) -> dict[str, Any] | None:
+    """Pull the first JSON object out of arbitrary model text.
+
+    Real-world judge outputs include any of: bare JSON, fenced JSON
+    (```json ... ``` or ``` ... ```), preamble ("Here is the verdict:"),
+    postamble ("Let me know if you need …"), trailing commas, smart
+    quotes. This walks the string with a balanced-brace scanner that
+    respects string literals + escape sequences, then attempts a
+    sequence of increasingly lenient cleanups before giving up.
+
+    Returns the parsed dict, or None if no parseable object is found.
+    """
+    if not text:
+        return None
+    candidate = text.strip()
+
+    # 1. Strip a single outer markdown code fence if present. We handle
+    #    ```json … ```, ``` … ```, and bare leading triple-backticks on
+    #    their own line. Inner fences are left alone — they'll be ignored
+    #    by the balanced-brace scanner since they're not braces.
+    fence = re.match(r"^```(?:json)?\s*\n(.*?)\n```\s*$", candidate, re.DOTALL)
+    if fence:
+        candidate = fence.group(1).strip()
+
+    # 2. Try a straight parse first — fastest path when the model
+    #    actually obeyed.
+    parsed = _try_parse_lenient(candidate)
+    if parsed is not None:
+        return parsed
+
+    # 3. Balanced-brace scan. Walk every '{' as a potential JSON start
+    #    and find its matching '}', then attempt to parse that slice.
+    #    Respects string literals + escape sequences so braces inside
+    #    quoted text don't throw off the count.
+    for start in (i for i, c in enumerate(candidate) if c == "{"):
+        depth = 0
+        in_string = False
+        escape = False
+        for end in range(start, len(candidate)):
+            ch = candidate[end]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    slice_ = candidate[start : end + 1]
+                    parsed = _try_parse_lenient(slice_)
+                    if parsed is not None:
+                        return parsed
+                    break  # try the next outer '{' instead
+
+    return None
+
+
+def _try_parse_lenient(s: str) -> dict[str, Any] | None:
+    """Attempt to JSON-parse a string, with two fallback cleanups."""
+    s = s.strip()
+    if not s:
+        return None
+    # Direct parse — happy path.
+    try:
+        out = json.loads(s)
+        return out if isinstance(out, dict) else None
+    except Exception:
+        pass
+    # Cleanup pass 1: smart quotes → ASCII; non-breaking space → space.
+    cleaned = (
+        s.replace("“", '"').replace("”", '"')
+        .replace("‘", "'").replace("’", "'")
+        .replace(" ", " ")
+    )
+    try:
+        out = json.loads(cleaned)
+        return out if isinstance(out, dict) else None
+    except Exception:
+        pass
+    # Cleanup pass 2: strip trailing commas before } or ]. The most common
+    # GPT mistake. Two-character lookbehind plus a single-pass regex.
+    no_trailing = re.sub(r",(\s*[}\]])", r"\1", cleaned)
+    try:
+        out = json.loads(no_trailing)
+        return out if isinstance(out, dict) else None
+    except Exception:
+        return None
+
+
 def parse_goal_verdict(text: str) -> GoalVerdict:
     """Parse a goal judge response.
 
     Handles the new structured shape (criteria, open_questions) AND the
     legacy {done, reason, confidence} shape — graceful fallback when the
     judge regresses or an old model is used.
+
+    The parser is intentionally lenient: it accepts preamble + postamble,
+    markdown code fences, smart quotes, and trailing commas. The judge is
+    instructed to emit strict JSON only, but real models drift; the
+    parser absorbs the drift so the loop doesn't stall on cosmetic noise.
     """
     raw = (text or "").strip()
-    payload: dict[str, Any] | None = None
-    try:
-        payload = json.loads(raw)
-    except Exception:
-        match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if match:
-            try:
-                payload = json.loads(match.group(0))
-            except Exception:
-                payload = None
+    payload = _extract_first_json_object(raw)
 
     if not isinstance(payload, dict):
         return GoalVerdict(
@@ -609,6 +1020,131 @@ def verdict_from_dict(payload: Any) -> GoalVerdict | None:
         judge_session_id=str(js_id).strip() if isinstance(js_id, str) and js_id.strip() else None,
         fallback_from=str(fb).strip() if isinstance(fb, str) and fb.strip() else None,
     )
+
+
+def parse_calibrator_response(text: str, *, session_id: str | None = None, model: str = "") -> tuple[JudgeRules | None, CalibratorMeta | None]:
+    """Parse the calibrator subagent's structured response into a JudgeRules
+    + CalibratorMeta pair.
+
+    Returns (rules, meta) on success; (None, None) if the response is
+    unparseable or missing required fields. The bridge falls back to
+    leaving the operator's existing rules alone in that case.
+    """
+    if not text:
+        return None, None
+    payload = _extract_first_json_object(text)
+    if not isinstance(payload, dict):
+        return None, None
+
+    # Per-field rationale — an empty dict is fine; we render the editor
+    # without per-field tooltips in that case.
+    rbf_raw = payload.get("rationaleByField")
+    rationale_by_field: dict[str, str] = {}
+    if isinstance(rbf_raw, dict):
+        for k, v in rbf_raw.items():
+            ks = str(k).strip()
+            vs = str(v or "").strip()
+            if ks and vs:
+                rationale_by_field[ks] = vs
+
+    # Build the rules. Track which fields the calibrator actually populated
+    # (vs left blank) so the UI can label them as calibrator-set.
+    crits: list[RuleCriterion] = []
+    set_fields: list[str] = []
+
+    profile = _clamp_judge_profile(payload.get("judgeProfile"))
+    if str(payload.get("judgeProfile") or "").strip().lower() in JUDGE_PROFILES:
+        set_fields.append("judgeProfile")
+
+    try:
+        rigor = int(payload.get("rigorScore") or 6)
+    except Exception:
+        rigor = 6
+    rigor = max(1, min(rigor, 10))
+    if "rigorScore" in payload:
+        set_fields.append("rigorScore")
+
+    voice = str(payload.get("voice") or "").strip()
+    if voice:
+        set_fields.append("voice")
+
+    raw_crits = payload.get("criteria") or []
+    if isinstance(raw_crits, list):
+        for raw in raw_crits:
+            if not isinstance(raw, dict):
+                continue
+            text_val = str(raw.get("text") or "").strip()
+            if not text_val:
+                continue
+            cid = str(raw.get("id") or "").strip() or _new_id("cal")
+            crits.append(
+                RuleCriterion(
+                    id=cid,
+                    text=text_val,
+                    priority=_clamp_priority(raw.get("priority")),
+                )
+            )
+    if crits:
+        set_fields.append("criteria")
+
+    never_do = [
+        str(x).strip()
+        for x in (payload.get("neverDo") or [])
+        if str(x).strip()
+    ]
+    if never_do:
+        set_fields.append("neverDo")
+
+    when_to_stop = str(payload.get("whenToStop") or "").strip()
+    if when_to_stop:
+        set_fields.append("whenToStop")
+
+    judge_tools = [
+        str(t).strip()
+        for t in (payload.get("judgeTools") or [])
+        if str(t).strip()
+    ]
+    if judge_tools:
+        set_fields.append("judgeTools")
+
+    try:
+        max_iter = int(payload.get("judgeMaxIterations") or 3)
+    except Exception:
+        max_iter = 3
+    max_iter = max(1, min(max_iter, 10))
+    if "judgeMaxIterations" in payload:
+        set_fields.append("judgeMaxIterations")
+
+    try:
+        confidence = float(payload.get("confidence") or 0.0)
+    except Exception:
+        confidence = 0.0
+    confidence = max(0.0, min(confidence, 1.0))
+
+    meta = CalibratorMeta(
+        model=model,
+        ran_at=time.time(),
+        version=1,
+        confidence=confidence,
+        rationale_overall=str(payload.get("rationaleOverall") or "").strip(),
+        rationale_by_field=rationale_by_field,
+        calibrator_set_fields=set_fields,
+        session_id=session_id,
+    )
+
+    rules = JudgeRules(
+        voice=voice,
+        rigor_score=rigor,
+        judge_profile=profile,
+        criteria=crits,
+        never_do=never_do,
+        when_to_stop=when_to_stop,
+        judge_tools=judge_tools,
+        judge_max_iterations=max_iter,
+        updated_at=time.time(),
+        calibrator_meta=meta,
+    )
+    return rules, meta
 
 
 def rules_has_content(payload: Any) -> bool:

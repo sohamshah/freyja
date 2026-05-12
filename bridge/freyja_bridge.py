@@ -1477,6 +1477,12 @@ class _BridgeSession:
         # Persists per-session; surfaces into every judge call.
         from bridge.tools.goal_loop import JudgeRules
         self.judge_rules: Any = JudgeRules()
+        # Calibrator's proposed JudgeRules, set when the auto-calibrator
+        # ran but the operator already had pre-authored rules — so we
+        # surface the proposal as a suggestion instead of clobbering them.
+        # Cleared by accept-proposal flow or by `recalibrate_judge` (which
+        # always overwrites).
+        self.judge_rules_proposal: Any | None = None
         # Rolling history of verdicts for this goal, for trajectory + judge context.
         # Trimmed in _maybe_continue_goal.
         self.goal_verdict_history: list[Any] = []
@@ -1669,7 +1675,16 @@ class _BridgeSession:
             # below; SummarizeContextTool is only invoked by the agent
             # mid-turn, by which point everything is populated.
             summarize_context_session_getter=lambda: self.session,
-            summarize_context_provider_getter=lambda: self.provider,
+            # Follow fallback chain: if the primary provider failed
+            # earlier in the session and we fell over, the summarizer
+            # should use the currently-live provider, not the dead one
+            # the bridge originally constructed.
+            summarize_context_provider_getter=lambda: (
+                self.runner.fallback_chain.current
+                if self.runner is not None
+                and getattr(self.runner, "fallback_chain", None) is not None
+                else self.provider
+            ),
             summarize_context_compactor_getter=lambda: (
                 getattr(self.runner, "compaction", None) if self.runner else None
             ),
@@ -2057,6 +2072,11 @@ class _BridgeSession:
                 "verdictHistory": [
                     v.to_dict() for v in (self.goal_verdict_history or [])
                 ],
+                "judgeRulesProposal": (
+                    self.judge_rules_proposal.to_dict()
+                    if getattr(self, "judge_rules_proposal", None) is not None
+                    else None
+                ),
             }
             # Skip when there's nothing meaningful to save (avoid creating
             # empty sidecars for sessions that never enter goal mode).
@@ -2098,6 +2118,11 @@ class _BridgeSession:
         rules_dict = data.get("judgeRules")
         if isinstance(rules_dict, dict):
             self.judge_rules = JudgeRules.from_dict(rules_dict)
+
+        # Hydrate calibrator proposal (if any pending review).
+        proposal_dict = data.get("judgeRulesProposal")
+        if isinstance(proposal_dict, dict):
+            self.judge_rules_proposal = JudgeRules.from_dict(proposal_dict)
 
         # Hydrate goal state.
         gs = data.get("goalState")
@@ -2718,6 +2743,14 @@ class _BridgeSession:
             payload.setdefault("goalState", self.goal_state.to_dict())
         if self.judge_rules is not None:
             payload.setdefault("judgeRules", self.judge_rules.to_dict())
+        # Calibrator's pending proposal — surfaced in every goal_ event so
+        # the renderer's collectGoalState always sees it (events come back
+        # newest-first; including it on every event means stale events
+        # don't drop it). None when no proposal pending.
+        if getattr(self, "judge_rules_proposal", None) is not None:
+            payload.setdefault(
+                "judgeRulesProposal", self.judge_rules_proposal.to_dict()
+            )
         # Trajectory: a compact list of recent verdicts so the renderer
         # can show confidence-over-time without reconstructing from events.
         if self.goal_verdict_history:
@@ -2765,6 +2798,19 @@ class _BridgeSession:
             details={"source": source},
             chat_visible=True,
         )
+        # Auto-calibrate the judge for this specific goal. Fires in parallel —
+        # we do not block goal_set on it. The calibrator emits its own
+        # goal_calibration_started / _complete / _failed events; the loop
+        # picks up whatever JudgeRules exist when the first verdict fires
+        # (calibrator usually finishes before the user sends their first
+        # chat message, but if it doesn't, the first verdict just runs with
+        # whatever rules exist and subsequent verdicts use the calibrated
+        # rules). Skip when operator already authored rules — auto-apply
+        # would clobber their work.
+        try:
+            asyncio.create_task(self._run_judge_calibrator(reason="goal_set"))
+        except Exception as exc:  # noqa: BLE001
+            log("warning", f"failed to schedule judge calibrator: {exc}")
 
     async def _ensure_mission_root_card(self, user_content: str) -> None:
         """Materialize the mission anchor card on the kanban board the first
@@ -3260,16 +3306,24 @@ class _BridgeSession:
         return verdict
 
     async def _run_inline_judge(self, prompt: str, *, profile: str) -> Any:
-        """Single-call judge (no tools, no thinking-loop) for quick + standard
-        profiles, also used as the crash fallback for deep."""
-        from bridge.tools.base import ToolRegistry
+        """Single-call judge for quick + standard profiles, also used as
+        the crash fallback for deep.
+
+        Uses provider.complete_structured() so the model's response is
+        constrained by GOAL_VERDICT_JSON_SCHEMA — OpenAI enforces it via
+        json_schema strict mode, Anthropic via a synthesized forced tool
+        call. Both paths return a parsed dict, eliminating the
+        "Judge response was not valid JSON" failure mode the parser used
+        to absorb. Parser still runs on the leftover .raw payload as a
+        belt-and-suspenders fallback for shapes outside the schema.
+        """
         from bridge.tools.goal_loop import (
             GOAL_JUDGE_SYSTEM_PROMPT,
+            GOAL_VERDICT_JSON_SCHEMA,
             GoalVerdict,
             parse_goal_verdict,
         )
-        from engine.runner import AsyncAgentRunner, StopCondition
-        from engine.session import Session
+        from engine.types import Message, MessageRole
 
         if profile == "quick":
             judge_model = "claude-haiku-4-5-20251001"
@@ -3278,26 +3332,25 @@ class _BridgeSession:
             judge_model = self.model_id
             judge_thinking_level = "none"
 
-        judge_session = Session.create(
-            system_prompt=GOAL_JUDGE_SYSTEM_PROMPT,
-            tools=[],
-            session_id=f"{self.id}-goal-judge-{int(time.time() * 1000):x}",
+        judge_provider = build_provider(
+            judge_model, thinking_level=judge_thinking_level
         )
-        judge_provider = build_provider(judge_model, thinking_level=judge_thinking_level)
-        judge_runner = AsyncAgentRunner(
-            provider=judge_provider,
-            compaction_strategy=SummaryCompaction(),
-            tool_registry=ToolRegistry(),
-            thinking=_thinking_config_for_model(judge_model, judge_thinking_level),
-        )
+        messages = [Message(role=MessageRole.USER, content=prompt)]
         try:
-            result = await judge_runner.run(
-                judge_session,
-                prompt,
-                stream=False,
-                stop_condition=StopCondition(max_iterations=1),
+            structured = await judge_provider.complete_structured(
+                messages,
+                schema=GOAL_VERDICT_JSON_SCHEMA,
+                schema_name="goal_verdict",
+                schema_description=(
+                    "Skeptical-by-default verdict on whether the agent's "
+                    "work satisfies the standing goal."
+                ),
+                system_prompt=GOAL_JUDGE_SYSTEM_PROMPT,
+                strict=True,
+                thinking=_thinking_config_for_model(
+                    judge_model, judge_thinking_level
+                ),
             )
-            return parse_goal_verdict(result.response or "")
         except Exception as exc:  # noqa: BLE001
             return GoalVerdict(
                 done=False,
@@ -3307,6 +3360,19 @@ class _BridgeSession:
                 open_questions=[f"Judge call raised: {exc}"],
                 raw=str(exc),
             )
+
+        # Happy path: structured-output succeeded with a non-empty dict.
+        # Round-trip through parse_goal_verdict so the rubber-stamp guard
+        # (flips done=true → false when must-criteria aren't actually met)
+        # runs identically for both structured + raw paths.
+        if structured.success and isinstance(structured.data, dict):
+            return parse_goal_verdict(json.dumps(structured.data))
+
+        # Structured output didn't return clean data — try parsing the
+        # raw_text the provider captured. parse_goal_verdict is the same
+        # lenient parser the deep judge uses, so fenced JSON / preamble
+        # / trailing-comma drift all get absorbed here too.
+        return parse_goal_verdict(structured.raw_text or "")
 
     async def _run_deep_judge_subagent(self, prompt: str) -> Any:
         """Spawn the `judge-deep` AgentType as a real child session with
@@ -3488,6 +3554,301 @@ class _BridgeSession:
             except Exception:
                 pass
 
+    async def _run_judge_calibrator(self, *, reason: str = "goal_set") -> None:
+        """Spawn the judge-calibrator subagent and apply its proposal to
+        JudgeRules when the operator hasn't pre-authored rules.
+
+        Fires in parallel from `_set_goal` (auto-calibration) or via the
+        `recalibrate_judge` action handler (operator-initiated).
+
+        Mirrors the _run_deep_judge_subagent envelope: emit session_spawned
+        + session_completed for first-class child-session treatment in the
+        renderer, plus profile_invocation / profile_completion telemetry."""
+        from bridge.tools.base import ToolRegistry
+        from bridge.tools.agent_types import (
+            get_agent_type,
+            resolve_model_choice,
+        )
+        from bridge.tools.goal_loop import (
+            JUDGE_CALIBRATOR_USER_TEMPLATE,
+            parse_calibrator_response,
+            rules_has_content,
+        )
+        from engine.runner import AsyncAgentRunner, StopCondition
+        from engine.session import Session
+
+        if self.goal_state is None:
+            return
+
+        force = reason == "recalibrate"
+
+        existing_rules_dict = (
+            self.judge_rules.to_dict() if self.judge_rules is not None else None
+        )
+        operator_authored = bool(
+            existing_rules_dict and rules_has_content(existing_rules_dict)
+        )
+        # Operator-initiated recalibration always overwrites. Auto-fire on
+        # goal_set respects pre-authored rules — we don't clobber the
+        # operator's work, but we still run the calibrator and surface the
+        # proposal so they can review + accept manually.
+        will_apply_default = not operator_authored or force
+
+        agent_type = get_agent_type("judge-calibrator", self.workspace)
+        try:
+            model_resolution = resolve_model_choice(agent_type, self.model_id)
+        except Exception as exc:  # noqa: BLE001
+            self._emit_goal_event(
+                "goal_calibration_failed",
+                f"Calibrator unavailable: {exc}",
+                details={"reason": reason, "stage": "model_resolution"},
+                chat_visible=False,
+            )
+            return
+        if not model_resolution.available:
+            reasons = "; ".join(
+                f"{m}: {r}" for m, r in model_resolution.unavailable
+            )
+            self._emit_goal_event(
+                "goal_calibration_failed",
+                f"Calibrator unavailable: no model ({reasons})",
+                details={"reason": reason, "stage": "model_resolution"},
+                chat_visible=False,
+            )
+            return
+        cal_model = model_resolution.model
+
+        cal_session_id = f"{self.id}-judge-cal-{int(time.time() * 1000):x}"
+        prompt = JUDGE_CALIBRATOR_USER_TEMPLATE.format(
+            goal=self.goal_state.goal,
+            context_block=self._build_calibrator_context_block(),
+        )
+
+        # Announce the calibration start before any heavy work, so the UI
+        # can show its "calibrating…" affordance immediately.
+        self._emit_goal_event(
+            "goal_calibration_started",
+            "Calibrating judge for this goal",
+            details={
+                "reason": reason,
+                "model": cal_model,
+                "calibratorSessionId": cal_session_id,
+                "willApplyAutomatically": will_apply_default,
+                "operatorAuthored": operator_authored,
+            },
+            chat_visible=True,
+        )
+
+        emit(
+            {
+                "type": "session_spawned",
+                "sessionId": cal_session_id,
+                "parentSessionId": self.id,
+                "title": "Judge calibrator",
+                "model": cal_model,
+                "reasoningLevel": agent_type.thinking_effort,
+                "modelPolicy": model_resolution.policy,
+                "modelCandidates": list(model_resolution.candidates),
+                "modelFallbackUsed": model_resolution.fallback_used,
+                "task": "Calibrate judge configuration for the standing goal.",
+                "mode": "foreground",
+                "agentType": agent_type.name,
+                "coordinationStrategy": self.coordination_strategy,
+                "kanbanTaskId": None,
+                "taskId": None,
+                "workspace": self.workspace,
+                "createdAt": int(time.time() * 1000),
+            }
+        )
+
+        try:
+            from bridge.compaction_telemetry import append_telemetry
+
+            append_telemetry({
+                "type": "profile_invocation",
+                "session_id": cal_session_id,
+                "parent_session_id": self.id,
+                "agent_type": agent_type.name,
+                "model": cal_model,
+                "max_iterations": agent_type.max_iterations,
+                "task_preview": "judge calibration",
+            })
+        except Exception:
+            pass
+
+        # Build a tool-list-aware system prompt (calibrator gets none —
+        # so the prompt just notes that explicitly to keep the model from
+        # hallucinating tool calls).
+        system_prompt = (
+            f"{agent_type.system_prompt}\n\n"
+            "No tools are available in this session. Reason directly from "
+            "the goal text and any provided context, then return the JSON.\n"
+        )
+
+        # No tools, but still wrap the registry through the tracing closure
+        # so that any future tool addition (e.g. fetching docs) lands in
+        # the calibrator's session pane and not the parent's.
+        child_registry = ToolRegistry()
+        wrap = getattr(self, "_wrap_child_registry", None)
+        if wrap is not None:
+            child_registry = wrap(child_registry, cal_session_id)
+
+        cal_session = Session.create(
+            system_prompt=system_prompt,
+            tools=[],
+            session_id=cal_session_id,
+            metadata={
+                "model_id": cal_model,
+                "reasoning_level": agent_type.thinking_effort,
+                "parent_session_id": self.id,
+                "project_session_id": self.id,
+                "subagent_id": cal_session_id,
+            },
+        )
+        cal_provider = build_provider(
+            cal_model, thinking_level=agent_type.thinking_effort
+        )
+        cal_runner = AsyncAgentRunner(
+            provider=cal_provider,
+            compaction_strategy=SummaryCompaction(),
+            tool_registry=child_registry,
+            thinking=_thinking_config_for_model(cal_model, agent_type.thinking_effort),
+        )
+
+        spawned_at = time.time()
+        outcome = "success"
+        try:
+            try:
+                result = await cal_runner.run(
+                    cal_session,
+                    prompt,
+                    stream=False,
+                    stop_condition=StopCondition(max_iterations=agent_type.max_iterations),
+                )
+            except Exception as exc:  # noqa: BLE001
+                outcome = "error"
+                log("warning", f"judge calibrator runner crashed: {exc}")
+                self._emit_goal_event(
+                    "goal_calibration_failed",
+                    f"Calibrator crashed ({type(exc).__name__})",
+                    details={
+                        "reason": reason,
+                        "calibratorSessionId": cal_session_id,
+                        "stage": "runner",
+                        "error": str(exc),
+                    },
+                    chat_visible=False,
+                )
+                return
+
+            proposed_rules, meta = parse_calibrator_response(
+                result.response or "",
+                session_id=cal_session_id,
+                model=cal_model,
+            )
+            if proposed_rules is None or meta is None:
+                outcome = "error"
+                log(
+                    "warning",
+                    "judge calibrator returned unparseable response; leaving rules untouched",
+                )
+                self._emit_goal_event(
+                    "goal_calibration_failed",
+                    "Calibrator returned an unparseable response",
+                    details={
+                        "reason": reason,
+                        "calibratorSessionId": cal_session_id,
+                        "stage": "parse",
+                        "rawPreview": (result.response or "")[:240],
+                    },
+                    chat_visible=False,
+                )
+                return
+
+            applied = will_apply_default
+            if applied:
+                self.judge_rules = proposed_rules
+                applied_msg = (
+                    "Judge auto-calibrated · "
+                    f"{proposed_rules.judge_profile} · rigor "
+                    f"{proposed_rules.rigor_score} · {len(proposed_rules.criteria)} criteria"
+                )
+            else:
+                # Operator already authored rules; keep theirs but stash
+                # the proposal as a suggestion the editor can surface for
+                # review. We persist via a dedicated field on the goal
+                # state so it doesn't masquerade as the active rules.
+                self.judge_rules_proposal = proposed_rules
+                applied_msg = (
+                    "Judge calibration ready for review · "
+                    f"{proposed_rules.judge_profile} · rigor {proposed_rules.rigor_score}"
+                )
+
+            self._emit_goal_event(
+                "goal_calibration_complete",
+                applied_msg,
+                details={
+                    "reason": reason,
+                    "calibratorSessionId": cal_session_id,
+                    "applied": applied,
+                    "proposal": proposed_rules.to_dict(),
+                    "calibratorMeta": meta.to_dict(),
+                },
+                chat_visible=True,
+            )
+        finally:
+            duration_s = time.time() - spawned_at
+            emit(
+                {
+                    "type": "session_completed",
+                    "sessionId": cal_session_id,
+                    "parentSessionId": self.id,
+                    "outcome": outcome,
+                    "completedAt": int(time.time() * 1000),
+                }
+            )
+            try:
+                from bridge.compaction_telemetry import append_telemetry
+
+                append_telemetry({
+                    "type": "profile_completion",
+                    "session_id": cal_session_id,
+                    "parent_session_id": self.id,
+                    "agent_type": agent_type.name,
+                    "model": cal_model,
+                    "outcome": outcome,
+                    "duration_s": round(duration_s, 3),
+                })
+            except Exception:
+                pass
+
+    def _build_calibrator_context_block(self) -> str:
+        """Pull the most recent operator messages from the parent session
+        so the calibrator can refine its inference. Empty when nothing
+        useful exists (which is the common case at goal_set time)."""
+        if self.session is None:
+            return "(no operator messages yet — calibrate from the goal text alone)"
+        msgs: list[str] = []
+        try:
+            for m in self.session.transcript.get_messages():
+                role = str(getattr(m, "role", "")).lower()
+                if role != "user":
+                    continue
+                text = m.get_text() if hasattr(m, "get_text") else str(getattr(m, "content", ""))
+                text = (text or "").strip()
+                if not text:
+                    continue
+                msgs.append(text[:2000])
+        except Exception:
+            pass
+        if not msgs:
+            return "(no operator messages yet — calibrate from the goal text alone)"
+        # Newest 3, oldest first within the slice so chronology reads naturally.
+        slice_msgs = msgs[-3:]
+        return "\n\n".join(
+            f"OP MSG {i+1}:\n{txt}" for i, txt in enumerate(slice_msgs)
+        )
+
     async def _maybe_continue_goal(self, latest_response: str) -> None:
         from bridge.tools.coordination import STRATEGY_GOAL
 
@@ -3514,11 +3875,17 @@ class _BridgeSession:
         self.goal_verdict_history.append(verdict)
         if len(self.goal_verdict_history) > 12:
             self.goal_verdict_history = self.goal_verdict_history[-12:]
+        # Every verdict (continue + done) is chat-visible — the renderer
+        # picks them up as a system part inline beneath the agent's reply
+        # so the operator sees the judge's reasoning without switching
+        # to the studio view. The chat-visible message is intentionally
+        # terse ("Goal satisfied" / "Goal still active"); the rich
+        # render reads the full verdict from event.details.verdict.
         self._emit_goal_event(
             "goal_judge",
             ("Goal satisfied" if verdict.done else "Goal still active"),
             details={"verdict": verdict.to_dict()},
-            chat_visible=verdict.done,
+            chat_visible=True,
         )
 
         if verdict.done:
@@ -4961,6 +5328,52 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 "goal_rules_status",
                 "Judge rules snapshot",
                 details={"rules": sess.judge_rules.to_dict() if sess.judge_rules else None},
+                chat_visible=False,
+            )
+            return
+        if action == "recalibrate_judge":
+            # Operator-initiated recalibration. Always overwrites (unlike the
+            # auto-fire on goal_set which respects pre-authored rules).
+            # Async scheduling — the calibrator emits its own events.
+            if sess.goal_state is None:
+                sess._emit_goal_event(
+                    "goal_calibration_failed",
+                    "Cannot calibrate — no active goal",
+                    details={"reason": "recalibrate", "stage": "no_goal"},
+                    chat_visible=False,
+                )
+                return
+            try:
+                asyncio.create_task(sess._run_judge_calibrator(reason="recalibrate"))
+            except Exception as exc:  # noqa: BLE001
+                log("warning", f"failed to schedule recalibration: {exc}")
+            return
+        if action == "accept_calibration":
+            # Operator accepted the pending calibrator proposal — copy it
+            # into active rules and clear the proposal slot.
+            proposal = getattr(sess, "judge_rules_proposal", None)
+            if proposal is None:
+                sess._emit_goal_event(
+                    "goal_rules_status",
+                    "No pending calibrator proposal to accept",
+                    chat_visible=False,
+                )
+                return
+            sess.judge_rules = proposal
+            sess.judge_rules_proposal = None
+            sess._emit_goal_event(
+                "goal_rules_updated",
+                "Adopted calibrator proposal",
+                details={"rules": sess.judge_rules.to_dict(), "source": "calibrator-accept"},
+                chat_visible=True,
+            )
+            return
+        if action == "dismiss_calibration":
+            # Operator dismissed the pending proposal without adopting it.
+            sess.judge_rules_proposal = None
+            sess._emit_goal_event(
+                "goal_rules_status",
+                "Calibrator proposal dismissed",
                 chat_visible=False,
             )
             return

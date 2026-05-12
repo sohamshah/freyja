@@ -9,6 +9,7 @@ import type {
 } from '../shared/types'
 import type { ToolCallRecord } from '../../../shared/events'
 import { useHarness } from '../../state/store'
+import { CalibrationCard } from '../shared/CalibrationCard'
 
 interface Props {
   goalState: GoalStateView | null
@@ -79,9 +80,22 @@ export function GoalStudioView({ goalState, agents, contextPct, cost, onOpenJudg
 
       <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_320px] overflow-hidden">
         <main className="min-h-0 overflow-y-auto px-10 py-8">
+          {goalState.calibration ? (
+            <div className="mx-auto mb-5 max-w-[820px]">
+              <CalibrationCard
+                calibration={goalState.calibration}
+                judgeRules={goalState.judgeRules}
+                proposal={goalState.judgeRulesProposal}
+                variant="studio"
+                onOpenJudgeBrief={onOpenJudgeBrief}
+              />
+            </div>
+          ) : null}
           {verdicts.length === 0 ? (
             <div className="py-14 text-center font-mono text-[12px] tracking-[0.06em] text-fg-3">
-              no verdicts yet — the judge will fire after the first agent turn.
+              {goalState.calibration?.status === 'running'
+                ? 'judge is calibrating · then will fire after the first agent turn.'
+                : 'no verdicts yet — the judge will fire after the first agent turn.'}
             </div>
           ) : (
             <div className="mx-auto flex max-w-[820px] flex-col gap-5">
@@ -121,7 +135,16 @@ export function GoalStudioView({ goalState, agents, contextPct, cost, onOpenJudg
   )
 }
 
-// ============ HEADER STRIP (compact) ============
+// ============ HEADER STRIP ============
+//
+// Two-row layout. Row 1 is the goal heading (large serif, clamps to two
+// lines, click-to-expand) plus the Judge Rules action button. Row 2 is
+// a single meta strip grouped into three sections by content type:
+//   left:    status + turn progress (with a thin progress bar)
+//   center:  judge config (profile + rigor)
+//   right:   live telemetry (agents, ctx, spend)
+// Sections separate with vertical dividers, not extra whitespace —
+// reads as one strip, not a wall of dots.
 
 function HeaderStrip({
   goalState,
@@ -140,19 +163,27 @@ function HeaderStrip({
   const running = agents.filter((a) => a.status === 'running').length
   const profile = goalState.judgeRules?.judgeProfile ?? 'standard'
   const rigor = goalState.judgeRules?.rigorScore ?? 6
+  const turnPct = Math.min(
+    100,
+    Math.max(0, (goalState.turnsUsed / Math.max(1, goalState.maxTurns)) * 100),
+  )
+
   return (
-    <header className="border-b border-white/[0.06] px-10 py-5">
-      <div className="flex flex-wrap items-baseline gap-4">
-        <span className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-fg-3">goal</span>
+    <header className="border-b border-white/[0.06]">
+      {/* Row 1 — goal heading */}
+      <div className="flex items-start gap-5 px-10 pb-3.5 pt-5">
+        <span className="mt-[7px] shrink-0 font-mono text-[10px] uppercase tracking-[0.18em] text-fg-4">
+          goal
+        </span>
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
-          className="group flex-1 cursor-text select-text text-left"
-          title={goalState.goal}
+          className="min-w-0 flex-1 cursor-text select-text text-left"
+          title={expanded ? 'click to collapse' : goalState.goal}
         >
           <h1
-            className={`m-0 font-serif font-light leading-[1.45] tracking-[-0.005em] text-fg-1 ${
-              expanded ? 'text-[17px]' : 'text-[16px] line-clamp-2'
+            className={`m-0 font-serif font-light leading-[1.4] tracking-[-0.005em] text-fg-0 ${
+              expanded ? 'text-[18px]' : 'text-[17px] line-clamp-2'
             }`}
           >
             {goalState.goal || <span className="italic text-fg-3">no objective set</span>}
@@ -161,39 +192,127 @@ function HeaderStrip({
         <button
           type="button"
           onClick={onOpenJudgeBrief}
-          className="rounded-md border border-accent/[0.22] bg-accent/[0.06] px-3 py-1.5 font-mono text-[10.5px] uppercase tracking-[0.14em] text-accent transition hover:bg-accent/[0.12]"
+          className="shrink-0 rounded-md border border-accent/[0.22] bg-accent/[0.05] px-3 py-1.5 font-mono text-[10.5px] uppercase tracking-[0.14em] text-accent transition hover:border-accent/[0.32] hover:bg-accent/[0.12]"
         >
           Judge Rules
         </button>
       </div>
-      <div className="mt-3 flex flex-wrap gap-4 font-mono text-[11.5px] tracking-[0.06em] text-fg-2">
-        <span>
-          <span className="tabular-nums text-fg-0">turn {goalState.turnsUsed}</span>{' '}
-          <span className="text-fg-3">of</span>{' '}
-          <span className="tabular-nums text-fg-0">{goalState.maxTurns}</span>
-        </span>
-        <StatusBadge status={goalState.status} />
-        <span>
-          judge: <span className="text-fg-0">{profile}</span>{' '}
-          <span className="text-fg-3">· rigor {rigor}/10</span>
-        </span>
-        <span className="text-fg-3">·</span>
-        <span>
-          <span className="tabular-nums text-fg-0">{running}</span> agents
-        </span>
-        <span>
-          <span className="tabular-nums text-fg-0">{contextPct}%</span> ctx
-        </span>
-        <span>
-          <span className="tabular-nums text-fg-0">${cost.toFixed(2)}</span> spend
-        </span>
+
+      {/* Row 2 — grouped meta strip */}
+      <div className="flex items-center gap-0 border-t border-white/[0.04] bg-black/[0.16] px-10 py-2.5">
+        {/* Left — status + turn progress */}
+        <div className="flex items-center gap-3 pr-5">
+          <StatusBadge status={goalState.status} />
+          <div className="flex items-baseline gap-2 font-mono text-[11.5px] tabular-nums text-fg-2">
+            <span className="text-fg-0">{goalState.turnsUsed}</span>
+            <span className="text-fg-4">/</span>
+            <span>{goalState.maxTurns}</span>
+            <span className="text-fg-4">turns</span>
+          </div>
+          <div className="h-1 w-20 overflow-hidden rounded-full bg-white/[0.05]">
+            <div
+              className="h-full rounded-full bg-accent/[0.55]"
+              style={{ width: `${turnPct}%` }}
+            />
+          </div>
+        </div>
+
+        <div className="h-3.5 w-px shrink-0 bg-white/[0.08]" />
+
+        {/* Center — judge config */}
+        <div className="flex items-center gap-2.5 px-5">
+          <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-fg-4">
+            judge
+          </span>
+          <ProfileChip profile={profile} />
+          <span className="font-mono text-[11.5px] tabular-nums text-fg-2">
+            rigor <span className="text-fg-0">{rigor}</span>
+            <span className="text-fg-4">/10</span>
+          </span>
+          <CalibrationTag calibration={goalState.calibration} />
+        </div>
+
+        <div className="h-3.5 w-px shrink-0 bg-white/[0.08]" />
+
+        {/* Right — telemetry, push to far right */}
+        <div className="ml-auto flex items-center gap-4 font-mono text-[11.5px] text-fg-2">
+          <MetaItem label="agents" value={String(running)} />
+          <MetaItem label="ctx" value={`${contextPct}%`} />
+          <MetaItem label="spend" value={`$${cost.toFixed(2)}`} />
+        </div>
       </div>
+
       {goalState.pauseReason ? (
-        <div className="mt-2 select-text font-mono text-[12px] text-warn">
+        <div className="select-text border-t border-warn/[0.18] bg-warn/[0.05] px-10 py-1.5 font-mono text-[11.5px] text-warn">
           paused · {goalState.pauseReason}
         </div>
       ) : null}
     </header>
+  )
+}
+
+function MetaItem({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="inline-flex items-baseline gap-1.5">
+      <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-fg-4">
+        {label}
+      </span>
+      <span className="tabular-nums text-fg-0">{value}</span>
+    </span>
+  )
+}
+
+function CalibrationTag({ calibration }: { calibration: GoalStateView['calibration'] }) {
+  // Tiny inline indicator that lives in the header strip's judge config
+  // group so the operator can see, at a glance, that the current judge
+  // configuration came from the auto-calibrator (or that one is in
+  // flight). Stays compact — the full card lives below.
+  if (!calibration) return null
+  if (calibration.status === 'running') {
+    return (
+      <span className="inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-accent">
+        <span className="relative inline-flex h-2 w-2 items-center justify-center">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-50" />
+          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-accent" />
+        </span>
+        calibrating
+      </span>
+    )
+  }
+  if (calibration.status === 'applied') {
+    return (
+      <span className="inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-3">
+        <span className="inline-block h-1.5 w-1.5 rounded-full bg-ok" />
+        calibrated
+      </span>
+    )
+  }
+  if (calibration.status === 'proposed') {
+    return (
+      <span className="inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-accent">
+        <span className="inline-block h-2 w-2 rounded-full border border-accent" />
+        proposal pending
+      </span>
+    )
+  }
+  return null
+}
+
+function ProfileChip({ profile }: { profile: string }) {
+  // Visually distinct chips per profile so the operator never has to ask
+  // "which judge am I getting?" — color encodes cost/depth.
+  const tone =
+    profile === 'deep'
+      ? 'border-accent/[0.32] bg-accent/[0.08] text-accent'
+      : profile === 'quick'
+      ? 'border-fg-4/[0.32] bg-white/[0.03] text-fg-1'
+      : 'border-white/[0.12] bg-white/[0.04] text-fg-1'
+  return (
+    <span
+      className={`inline-flex items-center rounded-[6px] border px-1.5 py-0.5 font-mono text-[10.5px] uppercase tracking-[0.12em] ${tone}`}
+    >
+      {profile}
+    </span>
   )
 }
 
@@ -221,6 +340,14 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 // ============ TRAJECTORY STRIP ============
+//
+// Compact confidence trajectory. The chart renders at a FIXED pixel
+// width derived from turn count (no stretch-to-fill), so the line
+// keeps a sane shape regardless of viewport width and the threshold
+// label stays a normal-sized HTML pill rather than a smeared SVG text.
+// Layout: metadata text on the left, chart in the middle (clipped to
+// a sensible max width with horizontal scroll if the loop runs long),
+// threshold pill on the right. All on one row.
 
 function TrajectoryStrip({
   verdicts,
@@ -230,88 +357,147 @@ function TrajectoryStrip({
   onJumpTo: (turn: number) => void
 }) {
   if (verdicts.length === 0) return null
+
+  // Chart geometry — fixed pixel dimensions so nothing stretches.
+  const stepPx = 32        // horizontal spacing between turns
+  const padX = 10          // left/right inner padding for the line
+  const h = 56             // SVG height
+  const minW = 200
+  const maxW = 560
+  const naturalW = padX * 2 + (verdicts.length - 1) * stepPx
+  const w = Math.max(minW, Math.min(maxW, naturalW))
+  const innerW = w - padX * 2
+  const xStep = verdicts.length > 1 ? innerW / (verdicts.length - 1) : 0
+
   const conf = verdicts.map((v) => (typeof v.confidence === 'number' ? v.confidence : 0))
-  const w = 100
-  const h = 32
-  const xStep = verdicts.length > 1 ? w / (verdicts.length - 1) : w
-  const points = conf
-    .map((c, i) => `${(i * xStep).toFixed(2)},${(h - c * h).toFixed(2)}`)
-    .join(' ')
+  const xy = conf.map((c, i) => ({
+    x: padX + i * xStep,
+    y: 6 + (h - 12) * (1 - c),  // 6px top/bottom margin so dots clear the edges
+  }))
+  const linePoints = xy.map((p) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' ')
+  const areaPoints =
+    linePoints +
+    ` ${xy[xy.length - 1].x.toFixed(2)},${h - 1} ${xy[0].x.toFixed(2)},${h - 1}`
+  const thresholdY = 6 + (h - 12) * (1 - 0.85)
+  const latest = verdicts[verdicts.length - 1]
+  const latestConf = typeof latest.confidence === 'number' ? latest.confidence : 0
+  const trend = useMemo(() => trendDescriptor(conf), [conf])
 
   return (
-    <div className="border-b border-white/[0.06] bg-black/[0.18] px-10 py-3">
-      <div className="mb-2 flex items-baseline justify-between font-mono text-[10px] uppercase tracking-[0.14em] text-fg-3">
-        <span>
-          confidence trajectory · <span className="font-mono normal-case tracking-normal text-fg-1 tabular-nums">{verdicts.length}</span> verdicts
-        </span>
-        <span className="font-mono normal-case tracking-normal text-fg-3">
-          dashed line is the 0.85 done-threshold
-        </span>
-      </div>
-      <div className="flex items-center gap-3">
-        <svg
-          viewBox={`0 0 ${w} ${h}`}
-          preserveAspectRatio="none"
-          className="h-12 flex-1"
-          style={{ overflow: 'visible' }}
-        >
-          {/* done threshold */}
-          <line
-            x1="0"
-            y1={h - 0.85 * h}
-            x2={w}
-            y2={h - 0.85 * h}
-            stroke="rgba(136,214,127,0.25)"
-            strokeDasharray="2,2"
-            strokeWidth="0.5"
-            vectorEffect="non-scaling-stroke"
-          />
-          <polyline
-            points={points}
-            fill="none"
-            stroke="rgba(168,212,252,0.85)"
-            strokeWidth="1.2"
-            strokeLinejoin="round"
-            strokeLinecap="round"
-            vectorEffect="non-scaling-stroke"
-          />
-          {verdicts.map((v, i) => {
-            const c = typeof v.confidence === 'number' ? v.confidence : 0
-            const done = !!v.done
-            return (
-              <g key={i} className="cursor-pointer" onClick={() => onJumpTo(i + 1)}>
-                <circle
-                  cx={(i * xStep).toFixed(2)}
-                  cy={(h - c * h).toFixed(2)}
-                  r={1.6}
-                  fill={done ? 'rgb(168,176,168)' : 'rgb(168,212,252)'}
-                  vectorEffect="non-scaling-stroke"
-                />
-                <title>{`turn ${i + 1} · conf ${c.toFixed(2)} · ${done ? 'done' : 'continue'}`}</title>
-              </g>
-            )
-          })}
-        </svg>
-        <div className="flex gap-1.5">
-          {verdicts.map((v, i) => {
-            const done = !!v.done
-            return (
-              <button
-                key={i}
-                type="button"
-                onClick={() => onJumpTo(i + 1)}
-                className={`rounded px-1.5 py-0.5 font-mono text-[10px] tabular-nums transition hover:bg-white/[0.06] ${
-                  done ? 'text-ok' : 'text-fg-2'
-                }`}
-              >
-                t{i + 1}
-              </button>
-            )
-          })}
+    <div className="border-b border-white/[0.06] bg-black/[0.22] px-10 py-3">
+      <div className="flex items-center gap-5">
+        {/* Left: metadata */}
+        <div className="flex shrink-0 flex-col gap-0.5">
+          <span className="font-mono text-[9.5px] uppercase tracking-[0.18em] text-fg-4">
+            trajectory
+          </span>
+          <span className="font-mono text-[11px] tabular-nums text-fg-2">
+            <span className={confidenceColor(latestConf)}>{latestConf.toFixed(2)}</span>
+            <span className="text-fg-4">
+              {' '}· {verdicts.length} turn{verdicts.length === 1 ? '' : 's'} · {trend}
+            </span>
+          </span>
         </div>
+
+        {/* Center: chart, fixed pixel width, scrollable if it overflows */}
+        <div
+          className="relative min-w-0 overflow-x-auto"
+          style={{ maxWidth: `${w}px` }}
+        >
+          <svg
+            width={w}
+            height={h}
+            viewBox={`0 0 ${w} ${h}`}
+            className="block"
+            style={{ overflow: 'visible' }}
+          >
+            <defs>
+              <linearGradient id="confArea" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="rgba(168,212,252,0.22)" />
+                <stop offset="100%" stopColor="rgba(168,212,252,0.01)" />
+              </linearGradient>
+            </defs>
+
+            {/* threshold dashed line — no in-SVG label, HTML pill renders that */}
+            <line
+              x1={padX}
+              y1={thresholdY}
+              x2={w - padX}
+              y2={thresholdY}
+              stroke="rgba(136,214,127,0.28)"
+              strokeDasharray="3,3"
+              strokeWidth="1"
+            />
+
+            {/* area fill (only when there's >1 point to fill under) */}
+            {verdicts.length > 1 ? (
+              <polygon points={areaPoints} fill="url(#confArea)" />
+            ) : null}
+
+            {/* trend line */}
+            <polyline
+              points={linePoints}
+              fill="none"
+              stroke="rgba(168,212,252,0.85)"
+              strokeWidth="1.3"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+
+            {/* turn circles — clickable */}
+            {verdicts.map((v, i) => {
+              const c = typeof v.confidence === 'number' ? v.confidence : 0
+              const done = !!v.done
+              const isLatest = i === verdicts.length - 1
+              return (
+                <g
+                  key={i}
+                  className="cursor-pointer"
+                  onClick={() => onJumpTo(i + 1)}
+                >
+                  {isLatest ? (
+                    <circle
+                      cx={xy[i].x.toFixed(2)}
+                      cy={xy[i].y.toFixed(2)}
+                      r={5}
+                      fill="none"
+                      stroke={done ? 'rgba(136,214,127,0.45)' : 'rgba(168,212,252,0.45)'}
+                      strokeWidth="1"
+                      className="animate-pulse-soft"
+                    />
+                  ) : null}
+                  <circle
+                    cx={xy[i].x.toFixed(2)}
+                    cy={xy[i].y.toFixed(2)}
+                    r={isLatest ? 2.8 : 2.2}
+                    fill={done ? 'rgb(136,214,127)' : 'rgb(168,212,252)'}
+                  />
+                  <title>{`turn ${i + 1} · conf ${c.toFixed(2)} · ${done ? 'done' : 'continue'}`}</title>
+                </g>
+              )
+            })}
+          </svg>
+        </div>
+
+        {/* Right: threshold pill — explains the dashed line without polluting the chart */}
+        <span className="shrink-0 rounded-[4px] border border-ok/[0.28] bg-ok/[0.04] px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-ok/80">
+          done · 0.85
+        </span>
       </div>
     </div>
   )
+}
+
+function trendDescriptor(conf: number[]): string {
+  if (conf.length < 2) return 'just started'
+  const last = conf[conf.length - 1]
+  const prev = conf[conf.length - 2]
+  const d = last - prev
+  if (Math.abs(d) < 0.02) return 'holding'
+  if (d > 0.12) return 'climbing fast'
+  if (d > 0) return 'climbing'
+  if (d < -0.12) return 'falling fast'
+  return 'falling'
 }
 
 // ============ TURN CARD ============

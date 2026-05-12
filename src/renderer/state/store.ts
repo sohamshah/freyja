@@ -272,6 +272,15 @@ export interface HarnessActions {
     judgeTools?: string[]
     judgeMaxIterations?: number
   }): void
+  /** Operator-initiated judge calibration. Always overwrites existing
+   *  rules with the calibrator's proposal. Auto-fires once on /goal set
+   *  too (in that case, only applies if rules are still default). */
+  recalibrateJudge(): void
+  /** Adopt the calibrator's pending proposal (when auto-apply was
+   *  blocked because the operator had pre-authored rules). */
+  acceptCalibratorProposal(): void
+  /** Dismiss the pending proposal without adopting it. */
+  dismissCalibratorProposal(): void
   attachImage(file: File | Blob): Promise<void>
   removeAttachment(id: string): void
   /** Edit a user message in place — local state truncates to before the
@@ -1173,10 +1182,14 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
     }
 
     case 'system_event': {
+      // Generate the system-event id once and reuse it when threading
+      // a system part into the message stream — that lets the inline
+      // verdict card look up its rich payload by the same id.
+      const sysEventId = nextId('sys')
       next.systemEvents = [
         ...slice.systemEvents.slice(-100),
         {
-          id: nextId('sys'),
+          id: sysEventId,
           subtype: ev.subtype,
           message: ev.message,
           at: Date.now(),
@@ -1237,7 +1250,18 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
       ) {
         next.messages = slice.messages.map((m) =>
           m.id === slice.currentStreamingMessageId
-            ? { ...m, parts: [...m.parts, { type: 'system', text: ev.message, systemSubtype: ev.subtype }] }
+            ? {
+                ...m,
+                parts: [
+                  ...m.parts,
+                  {
+                    type: 'system',
+                    text: ev.message,
+                    systemSubtype: ev.subtype,
+                    eventId: sysEventId,
+                  },
+                ],
+              }
             : m,
         )
       } else if (chatVisible) {
@@ -1246,7 +1270,14 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
           {
             id: nextId('msg'),
             role: 'assistant',
-            parts: [{ type: 'system', text: ev.message, systemSubtype: ev.subtype }],
+            parts: [
+              {
+                type: 'system',
+                text: ev.message,
+                systemSubtype: ev.subtype,
+                eventId: sysEventId,
+              },
+            ],
             createdAt: Date.now(),
           },
         ]
@@ -3267,6 +3298,42 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       sessionId: state.activeSessionId,
       action: 'set_rules',
       rules,
+    })
+  },
+
+  recalibrateJudge() {
+    const state = get()
+    if (!state.activeSessionId) return
+    const api = (window as any).harness
+    if (!api) return
+    api.sendCommand({
+      type: 'goal_control',
+      sessionId: state.activeSessionId,
+      action: 'recalibrate_judge',
+    })
+  },
+
+  acceptCalibratorProposal() {
+    const state = get()
+    if (!state.activeSessionId) return
+    const api = (window as any).harness
+    if (!api) return
+    api.sendCommand({
+      type: 'goal_control',
+      sessionId: state.activeSessionId,
+      action: 'accept_calibration',
+    })
+  },
+
+  dismissCalibratorProposal() {
+    const state = get()
+    if (!state.activeSessionId) return
+    const api = (window as any).harness
+    if (!api) return
+    api.sendCommand({
+      type: 'goal_control',
+      sessionId: state.activeSessionId,
+      action: 'dismiss_calibration',
     })
   },
 

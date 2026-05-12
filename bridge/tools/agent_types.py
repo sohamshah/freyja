@@ -20,7 +20,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from bridge.tools.goal_loop import GOAL_JUDGE_SYSTEM_PROMPT
+from bridge.tools.goal_loop import (
+    GOAL_JUDGE_SYSTEM_PROMPT,
+    JUDGE_CALIBRATOR_SYSTEM_PROMPT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -553,6 +556,31 @@ AGENT_TYPES: dict[str, AgentType] = {
         }),
         system_prompt=_VERIFY_PROMPT,
         max_iterations=iteration_cap("verify", 100),
+    ),
+    "judge-calibrator": AgentType(
+        name="judge-calibrator",
+        description=(
+            "One-shot judge configurator. Reads a freshly-armed goal and "
+            "returns a structured JudgeRules proposal (profile, rigor, voice, "
+            "criteria, never-do, when-to-stop, tools, max iterations) plus "
+            "per-field rationale. No tools — pure reasoning."
+        ),
+        usage_hint=(
+            "Auto-fired by the goal loop on `/goal set` to pick sensible "
+            "judge defaults for the operator. Other agents can also call "
+            "this to calibrate a sub-task's verifier when spawning a "
+            "judge-deep child of their own. Single-call, single output: "
+            "ALWAYS returns a strict-JSON CalibratedJudgeRules object."
+        ),
+        model="parent",
+        thinking_effort="high",
+        model_policy="prefer_parent",
+        model_fallbacks=("claude-opus-4-7", "gpt-5.5", "claude-sonnet-4-6"),
+        # No tools — calibration is a pure reasoning task. The goal text +
+        # any operator context are the entire input.
+        tool_include=frozenset(),
+        system_prompt=JUDGE_CALIBRATOR_SYSTEM_PROMPT,
+        max_iterations=iteration_cap("judge-calibrator", 1),
     ),
     "judge-deep": AgentType(
         name="judge-deep",

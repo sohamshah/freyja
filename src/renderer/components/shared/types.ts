@@ -108,6 +108,30 @@ export interface BriefCriterion {
 
 export type JudgeProfile = 'quick' | 'standard' | 'deep'
 
+export interface CalibratorMeta {
+  /** The model that produced this calibration. */
+  model: string
+  /** Epoch ms when calibration completed. */
+  ranAt: number
+  /** Schema version, lets future calibrator output evolve safely. */
+  version: number
+  /** Calibrator's overall confidence in the configuration (0-1). */
+  confidence: number
+  /** One paragraph explaining the goal type, dominant failure modes, and
+   * the high-level reason for the chosen profile + rigor. */
+  rationaleOverall: string
+  /** Per-field one-sentence rationale. Keyed by JudgeRules field name in
+   * camelCase (judgeProfile, rigorScore, voice, criteria, neverDo,
+   * whenToStop, judgeTools, judgeMaxIterations). */
+  rationaleByField: Record<string, string>
+  /** Field names the calibrator actually populated. The editor uses this
+   * to render a "set by calibrator" affordance next to those fields. */
+  calibratorSetFields: string[]
+  /** Calibrator child session id — links the editor's "open calibrator"
+   * button to the right session pane. */
+  sessionId?: string | null
+}
+
 export interface JudgeRules {
   voice: string
   rigorScore: number
@@ -122,7 +146,35 @@ export interface JudgeRules {
   /** Max number of tool/think iterations the deep judge may take per
    * verdict. Bounded [1, 10]. Only meaningful for the `deep` profile. */
   judgeMaxIterations?: number
+  /** Provenance from the auto-calibrator. Null when no calibration has
+   * run for this goal (e.g. operator authored the rules manually). */
+  calibratorMeta?: CalibratorMeta | null
   updatedAt?: number
+}
+
+/** Pending calibrator proposal — set when the operator already had
+ * pre-authored JudgeRules at calibration time so we surface the proposal
+ * for review instead of clobbering them. The renderer pulls this from
+ * goal events on every render. */
+export interface CalibrationStatus {
+  /** Lifecycle: idle | running | applied | proposed | failed */
+  status: 'idle' | 'running' | 'applied' | 'proposed' | 'failed'
+  /** Calibrator child session id (when running or completed). */
+  sessionId?: string | null
+  /** Model that's running / ran the calibration. */
+  model?: string
+  /** Reason the calibrator fired: 'goal_set' | 'recalibrate' */
+  reason?: string
+  /** Epoch ms when the latest event landed. */
+  at?: number
+  /** Failure detail when status === 'failed'. */
+  errorMessage?: string
+  /** When status === 'proposed', the pending JudgeRules the operator can
+   * accept or dismiss. Null otherwise. */
+  proposal?: JudgeRules | null
+  /** Whether the calibrator was about to auto-apply (false if operator
+   * had pre-authored rules). Useful for the UI's "Apply" prompt. */
+  willApplyAutomatically?: boolean
 }
 
 export interface GoalStateView {
@@ -133,6 +185,11 @@ export interface GoalStateView {
   pauseReason?: string
   lastVerdict?: GoalVerdict | null
   judgeRules?: JudgeRules | null
+  /** Pending calibrator proposal when the operator's existing rules
+   * blocked auto-apply. Editor offers an "Apply" button to adopt. */
+  judgeRulesProposal?: JudgeRules | null
+  /** Live calibrator lifecycle — set by goal_calibration_* events. */
+  calibration?: CalibrationStatus | null
   verdictHistory?: GoalVerdict[]
   events: TelemetryEventView[]
 }
