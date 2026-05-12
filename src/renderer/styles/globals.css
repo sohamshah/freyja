@@ -325,8 +325,8 @@ select {
      .glass-chip    — tiny pills       — barely-there wash */
 .glass {
   background:
-    linear-gradient(180deg, rgba(26, 26, 26, 0.105), rgba(10, 10, 10, 0.07)),
-    rgba(9, 9, 9, 0.07);
+    linear-gradient(180deg, rgba(26, 26, 26, 0.22), rgba(10, 10, 10, 0.18)),
+    rgba(9, 9, 9, 0.18);
   box-shadow:
     inset 0 0.5px 0 0 rgba(255, 255, 255, 0.2),
     inset 0 0 0 1px rgba(255, 255, 255, 0.1),
@@ -337,11 +337,11 @@ select {
    Uses neutral grey rgba (R=G=B) so higher alpha doesn't surface a tint. */
 .glass-panel {
   background:
-    linear-gradient(180deg, rgba(24, 24, 24, 0.2), rgba(10, 10, 10, 0.16)),
-    rgba(9, 9, 9, 0.16);
+    linear-gradient(180deg, rgba(24, 24, 24, 0.36), rgba(10, 10, 10, 0.32)),
+    rgba(9, 9, 9, 0.32);
 }
 .glass-strong {
-  background: rgba(12, 12, 12, 0.36);
+  background: rgba(12, 12, 12, 0.54);
   backdrop-filter: blur(40px) saturate(140%);
   -webkit-backdrop-filter: blur(40px) saturate(140%);
   box-shadow:
@@ -372,7 +372,7 @@ select {
     0 28px 80px -18px rgba(0, 0, 0, 0.82);
 }
 .glass-raised {
-  background: rgba(14, 14, 14, 0.15);
+  background: rgba(14, 14, 14, 0.30);
   backdrop-filter: blur(22px) saturate(140%);
   -webkit-backdrop-filter: blur(22px) saturate(140%);
   box-shadow:
