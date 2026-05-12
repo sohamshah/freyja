@@ -17,6 +17,7 @@ import { EmergencyPanic } from './components/EmergencyPanic'
 import { ComputerPermissionWizard } from './components/ComputerPermissionWizard'
 import { ComputerHotkeyOverlay } from './components/ComputerHotkeyOverlay'
 import { MissionDashboard } from './components/MissionDashboard'
+import { MetricsDashboard } from './components/MetricsDashboard'
 import { startInRendererDemo } from './lib/inRendererDemo'
 import { extractConversationSummary } from './lib/conversationSummary'
 
@@ -238,7 +239,7 @@ export function App() {
       }
       if (mod && e.key === 'o') {
         e.preventDefault()
-        toggleMissionDashboard(true, 'swarm')
+        toggleMissionDashboard(true, 'overview')
         return
       }
       if (mod && e.key === '[') {
@@ -334,6 +335,8 @@ export function App() {
         </div>
         {commandPaletteOpen && <CommandPalette />}
         {missionDashboardOpen && <MissionDashboard />}
+        <MetricsDashboard />
+
         {activeSubagentId && <SubagentDetail id={activeSubagentId} />}
         {modelPickerOpen && <ModelPicker />}
         <SettingsModal />

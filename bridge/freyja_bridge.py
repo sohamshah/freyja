@@ -1219,13 +1219,28 @@ def _new_tracing_registry(
         # token-usage tag to every tool result so the agent has continuous
         # pressure visibility. Escalates wording at the soft / strong
         # suggestion bands. No-op below CONTEXT_AWARENESS_THRESHOLD.
+        #
+        # Channel 3 (Approach A): if the runner flagged a mid-turn band
+        # crossing during the last provider call, *prepend* an advisory
+        # to the next tool result that comes back. Pre-pending keeps the
+        # advisory in front of the actual tool output where the model is
+        # most likely to read it before issuing more tool calls. One-shot:
+        # consume_channel3_advisory() clears the slot.
         if get_runner is not None:
             try:
                 runner_ref = get_runner()
                 if runner_ref is not None and result is not None:
-                    tag = _build_pressure_tag(runner_ref)
-                    if tag and isinstance(result.content, str):
-                        result.content = result.content + "\n\n" + tag
+                    if isinstance(result.content, str):
+                        advisory = ""
+                        try:
+                            advisory = runner_ref.consume_channel3_advisory()
+                        except Exception:  # noqa: BLE001
+                            advisory = ""
+                        if advisory:
+                            result.content = advisory + "\n\n" + result.content
+                        tag = _build_pressure_tag(runner_ref)
+                        if tag:
+                            result.content = result.content + "\n\n" + tag
             except Exception:  # noqa: BLE001
                 pass
 
@@ -1385,6 +1400,11 @@ class _BridgeSession:
         self.provider: Any | None = None
         self.tool_registry: Any | None = None
         self.subagent_registry: Any | None = None
+        # Profile identity: set when this session was spawned as a
+        # subagent. Root sessions leave both fields at None and the
+        # dashboard renders them under a synthetic "root" profile.
+        self.agent_type: str | None = None
+        self.parent_session_id: str | None = None
         self.project_session_id = self.id
         self.project_output_dir = project_output_dir(self.project_session_id)
         self.artifact_store = SessionArtifactStore(
@@ -1455,8 +1475,8 @@ class _BridgeSession:
         self.goal_state: Any | None = None
         # Operator-authored brief for the judge — see bridge/tools/goal_loop.py.
         # Persists per-session; surfaces into every judge call.
-        from bridge.tools.goal_loop import GoalBrief
-        self.goal_brief: Any = GoalBrief()
+        from bridge.tools.goal_loop import JudgeRules
+        self.judge_rules: Any = JudgeRules()
         # Rolling history of verdicts for this goal, for trajectory + judge context.
         # Trimmed in _maybe_continue_goal.
         self.goal_verdict_history: list[Any] = []
@@ -1611,6 +1631,11 @@ class _BridgeSession:
                 label_for_session=_label_for_session,
             )
 
+        # Stash on self so non-sub_agent code paths (e.g. _judge_goal when
+        # the `deep` profile spawns a child session) can use the same tool
+        # event scoping the sub_agent_tool uses.
+        self._wrap_child_registry = _wrap_child_registry  # type: ignore[attr-defined]
+
         registry = build_desktop_registry(
             workspace=Path(self.workspace),
             subagent_registry=sub_registry,
@@ -1639,6 +1664,17 @@ class _BridgeSession:
             artifact_store=self.artifact_store,
             on_memory_updated=_emit_memory_updated,
             on_skill_event=_emit_skill_event,
+            # Cooperative compaction surface. The lazy getters resolve
+            # after this method finishes building the session + runner
+            # below; SummarizeContextTool is only invoked by the agent
+            # mid-turn, by which point everything is populated.
+            summarize_context_session_getter=lambda: self.session,
+            summarize_context_provider_getter=lambda: self.provider,
+            summarize_context_compactor_getter=lambda: (
+                getattr(self.runner, "compaction", None) if self.runner else None
+            ),
+            summarize_context_pressure_getter=lambda: self._current_pressure_pct(),
+            summarize_context_telemetry=self._on_summarize_context_call,
         )
         tool_names = sorted(registry._tools.keys())  # noqa: SLF001
         self.tool_registry = _new_tracing_registry(
@@ -1724,6 +1760,7 @@ class _BridgeSession:
             on_stream=self._on_stream,
             on_system_event=self._on_system_event,
             on_llm_call=self._on_llm_call,
+            on_tool_metric=self._on_tool_metric,
             thinking=thinking,
         )
         self.runner = runner
@@ -1874,6 +1911,25 @@ class _BridgeSession:
             log("warn", f"transcript restore failed for {self.id}: {exc}")
             return False
 
+        # Step 2b: Rehydrate goal state from the goal sidecar (if any).
+        # This is what lets the operator close + reopen the app and find
+        # their verdict history and brief intact.
+        try:
+            restored_goal = self._restore_goal_state()
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"goal-state restore failed for {self.id}: {exc}")
+            restored_goal = False
+        if restored_goal and self.goal_state is not None:
+            # Re-emit a goal_status so the renderer rebuilds its view from
+            # the rehydrated state instead of from a 100-event rolling buffer
+            # that's empty after restart.
+            self._emit_goal_event(
+                "goal_status",
+                f"Goal rehydrated: {self.goal_state.turns_used}/{self.goal_state.max_turns} turns",
+                details={"reason": "restored_from_disk"},
+                chat_visible=False,
+            )
+
         # Step 3: Detect provider family mismatch.
         persisted_model = data.get("metadata", {}).get("model_id", "")
         if persisted_model and provider_family(persisted_model) != provider_family(self.model_id):
@@ -1981,6 +2037,89 @@ class _BridgeSession:
             save_transcript(self.id, data)
         except Exception as exc:
             log("warn", f"failed to save transcript for {self.id}: {exc}")
+        # Save goal state alongside the transcript so the loop survives reload.
+        # Sidecar file `~/.freyja/sessions/{id}.goal.json`.
+        self._save_goal_state()
+
+    def _save_goal_state(self) -> None:
+        """Persist goal_state + judge_rules + goal_verdict_history to disk.
+
+        Without this, the goal loop loses every verdict and the operator's
+        brief on app restart. See `bridge/transcript_persistence.save_goal_state`
+        for the schema.
+        """
+        try:
+            from bridge.transcript_persistence import save_goal_state
+
+            payload = {
+                "goalState": self.goal_state.to_dict() if self.goal_state else None,
+                "judgeRules": self.judge_rules.to_dict() if self.judge_rules else None,
+                "verdictHistory": [
+                    v.to_dict() for v in (self.goal_verdict_history or [])
+                ],
+            }
+            # Skip when there's nothing meaningful to save (avoid creating
+            # empty sidecars for sessions that never enter goal mode).
+            from bridge.tools.goal_loop import rules_has_content as _rules_has_content_helper
+            if (
+                payload["goalState"] is None
+                and not payload["verdictHistory"]
+                and (
+                    not payload["judgeRules"]
+                    or not _rules_has_content_helper(payload["judgeRules"])
+                )
+            ):
+                return
+            save_goal_state(self.id, payload)
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"failed to save goal state for {self.id}: {exc}")
+
+    def _restore_goal_state(self) -> bool:
+        """Best-effort hydration of goal state from the sidecar file.
+
+        Called during try_restore_transcript so the goal loop comes back with
+        its history intact. Re-emits a goal_status event so the renderer
+        rebuilds its dashboard view from the rehydrated data.
+        """
+        try:
+            from bridge.transcript_persistence import load_goal_state
+            from bridge.tools.goal_loop import (
+                JudgeRules,
+                GoalState,
+                verdict_from_dict as _verdict_from_dict_helper,
+            )
+        except Exception:
+            return False
+        data = load_goal_state(self.id)
+        if not isinstance(data, dict):
+            return False
+
+        # Hydrate brief.
+        rules_dict = data.get("judgeRules")
+        if isinstance(rules_dict, dict):
+            self.judge_rules = JudgeRules.from_dict(rules_dict)
+
+        # Hydrate goal state.
+        gs = data.get("goalState")
+        if isinstance(gs, dict):
+            verdict = _verdict_from_dict_helper(gs.get("lastVerdict"))
+            self.goal_state = GoalState(
+                goal=str(gs.get("goal", "")),
+                status=str(gs.get("status", "active")),
+                turns_used=int(gs.get("turnsUsed", 0) or 0),
+                max_turns=int(gs.get("maxTurns", 20) or 20),
+                pause_reason=str(gs.get("pauseReason", "") or ""),
+            )
+            self.goal_state.last_verdict = verdict
+
+        # Hydrate verdict history (list of verdict dicts in chrono order).
+        hist = data.get("verdictHistory") or []
+        if isinstance(hist, list):
+            self.goal_verdict_history = [
+                v for v in (_verdict_from_dict_helper(h) for h in hist) if v is not None
+            ]
+
+        return True
 
     def _last_provider_context_tokens(self) -> int:
         """Return the last provider-reported request context size, if known."""
@@ -2577,6 +2716,15 @@ class _BridgeSession:
         payload = dict(details or {})
         if self.goal_state is not None:
             payload.setdefault("goalState", self.goal_state.to_dict())
+        if self.judge_rules is not None:
+            payload.setdefault("judgeRules", self.judge_rules.to_dict())
+        # Trajectory: a compact list of recent verdicts so the renderer
+        # can show confidence-over-time without reconstructing from events.
+        if self.goal_verdict_history:
+            payload.setdefault(
+                "verdictHistory",
+                [v.to_dict() for v in self.goal_verdict_history[-12:]],
+            )
         payload.setdefault("chatVisible", chat_visible)
         emit(
             {
@@ -2587,6 +2735,17 @@ class _BridgeSession:
                 "details": payload,
             }
         )
+        # Goal state, brief, and verdict history mutate exclusively through
+        # this event path — set / pause / resume / clear / judge / continue
+        # / brief-update all funnel here. Persisting the sidecar at the same
+        # point makes the on-disk copy authoritative even when the change
+        # isn't accompanied by a transcript save, which fixes the
+        # close-and-reopen amnesia bug for goal-only mutations.
+        if subtype.startswith("goal_"):
+            try:
+                self._save_goal_state()
+            except Exception as exc:  # noqa: BLE001
+                log("warn", f"goal sidecar save raised: {exc}")
 
     def _set_goal(self, goal: str, *, max_turns: int | None = None, source: str = "user") -> None:
         from bridge.tools.goal_loop import GoalState
@@ -2596,6 +2755,10 @@ class _BridgeSession:
             return
         budget = max(1, min(int(max_turns or 20), 100))
         self.goal_state = GoalState(goal=clean_goal, max_turns=budget)
+        # New goal — reset verdict history so the new loop doesn't inherit
+        # the old goal's trajectory. Brief stays (it's the operator's
+        # persistent preference for how the judge should think).
+        self.goal_verdict_history = []
         self._emit_goal_event(
             "goal_set",
             f"Goal loop armed ({budget} turn budget)",
@@ -3008,7 +3171,7 @@ class _BridgeSession:
             build_previous_criteria_block,
             build_recent_work_block,
             build_verdict_history_block,
-            merge_brief_criteria_into_verdict,
+            merge_rule_criteria_into_verdict,
             parse_goal_verdict,
         )
         from engine.runner import AsyncAgentRunner, StopCondition
@@ -3021,7 +3184,7 @@ class _BridgeSession:
         # several recent assistant turns rather than just the latest snippet.
         # This is the user-flagged calibration move — the judge was rubber-stamping
         # because it was only seeing a thin slice of the work.
-        brief_block = self.goal_brief.render_for_prompt() if self.goal_brief else "(no brief)"
+        rules_block = self.judge_rules.render_for_prompt() if self.judge_rules else "(no judge rules set)"
         previous_criteria = (
             self.goal_state.last_verdict.criteria
             if self.goal_state.last_verdict and self.goal_state.last_verdict.criteria
@@ -3052,24 +3215,80 @@ class _BridgeSession:
             recent_messages = [{"role": "assistant", "content": latest_response}]
         recent_block = build_recent_work_block(recent_messages, limit=5, per_msg_chars=4000)
 
+        profile = (
+            self.judge_rules.judge_profile if self.judge_rules else "standard"
+        )
+
+        prompt = GOAL_JUDGE_USER_TEMPLATE.format(
+            goal=self.goal_state.goal,
+            rules_block=rules_block,
+            previous_criteria_block=previous_block,
+            verdict_history_block=history_block,
+            recent_work_block=recent_block,
+        )
+
+        # Deep profile is a real subagent: thinking on, read-only tool surface,
+        # multi-iteration verification of agent claims. Runs out-of-band from
+        # the main session but emits session_spawned/_completed so the
+        # renderer treats it as a child session you can drill into.
+        if profile == "deep":
+            try:
+                verdict = await self._run_deep_judge_subagent(prompt)
+                verdict = merge_rule_criteria_into_verdict(self.judge_rules, verdict)
+                return verdict
+            except Exception as exc:  # noqa: BLE001
+                # Q5 fallback: if the deep subagent path crashes for any reason
+                # (provider error, tool registry mismatch, network), do not lose
+                # the turn. Fall through to a normal inline standard call and
+                # mark the verdict so the UI can show the degradation.
+                log("warning", f"deep judge crashed, falling back to inline: {exc}")
+                fallback_verdict = await self._run_inline_judge(
+                    prompt, profile="standard"
+                )
+                fallback_verdict.fallback_from = f"deep:{type(exc).__name__}: {exc}"
+                fallback_verdict.reason = (
+                    "[judge-fallback] " + (fallback_verdict.reason or "")
+                )
+                fallback_verdict = merge_rule_criteria_into_verdict(
+                    self.judge_rules, fallback_verdict
+                )
+                return fallback_verdict
+
+        # quick + standard remain inline single-call.
+        verdict = await self._run_inline_judge(prompt, profile=profile)
+        verdict = merge_rule_criteria_into_verdict(self.judge_rules, verdict)
+        return verdict
+
+    async def _run_inline_judge(self, prompt: str, *, profile: str) -> Any:
+        """Single-call judge (no tools, no thinking-loop) for quick + standard
+        profiles, also used as the crash fallback for deep."""
+        from bridge.tools.base import ToolRegistry
+        from bridge.tools.goal_loop import (
+            GOAL_JUDGE_SYSTEM_PROMPT,
+            GoalVerdict,
+            parse_goal_verdict,
+        )
+        from engine.runner import AsyncAgentRunner, StopCondition
+        from engine.session import Session
+
+        if profile == "quick":
+            judge_model = "claude-haiku-4-5-20251001"
+            judge_thinking_level = "none"
+        else:  # standard (and fallback)
+            judge_model = self.model_id
+            judge_thinking_level = "none"
+
         judge_session = Session.create(
             system_prompt=GOAL_JUDGE_SYSTEM_PROMPT,
             tools=[],
             session_id=f"{self.id}-goal-judge-{int(time.time() * 1000):x}",
         )
-        judge_provider = build_provider(self.model_id, thinking_level="none")
+        judge_provider = build_provider(judge_model, thinking_level=judge_thinking_level)
         judge_runner = AsyncAgentRunner(
             provider=judge_provider,
             compaction_strategy=SummaryCompaction(),
             tool_registry=ToolRegistry(),
-            thinking=_thinking_config_for_model(self.model_id, "none"),
-        )
-        prompt = GOAL_JUDGE_USER_TEMPLATE.format(
-            goal=self.goal_state.goal,
-            brief_block=brief_block,
-            previous_criteria_block=previous_block,
-            verdict_history_block=history_block,
-            recent_work_block=recent_block,
+            thinking=_thinking_config_for_model(judge_model, judge_thinking_level),
         )
         try:
             result = await judge_runner.run(
@@ -3078,11 +3297,7 @@ class _BridgeSession:
                 stream=False,
                 stop_condition=StopCondition(max_iterations=1),
             )
-            verdict = parse_goal_verdict(result.response or "")
-            # Carry forward criteria IDs the judge dropped — operator-authored
-            # criteria should persist across turns even if the model misses them.
-            verdict = merge_brief_criteria_into_verdict(self.goal_brief, verdict)
-            return verdict
+            return parse_goal_verdict(result.response or "")
         except Exception as exc:  # noqa: BLE001
             return GoalVerdict(
                 done=False,
@@ -3092,6 +3307,186 @@ class _BridgeSession:
                 open_questions=[f"Judge call raised: {exc}"],
                 raw=str(exc),
             )
+
+    async def _run_deep_judge_subagent(self, prompt: str) -> Any:
+        """Spawn the `judge-deep` AgentType as a real child session with
+        thinking on and the read-only tool surface enabled.
+
+        Emits session_spawned + session_completed events so the renderer
+        renders the judge as a first-class child session (you can drill in
+        and see its tool calls + transcript). Also emits the same
+        profile_invocation telemetry rows that sub_agent_tool emits, so
+        the metrics dashboard can attribute judge work to the profile."""
+        from bridge.tools.base import ToolRegistry
+        from bridge.tools.agent_types import (
+            get_agent_type,
+            resolve_model_choice,
+        )
+        from bridge.tools.goal_loop import GoalVerdict, parse_goal_verdict
+        from engine.runner import AsyncAgentRunner, StopCondition
+        from engine.session import Session
+
+        agent_type = get_agent_type("judge-deep", self.workspace)
+        model_resolution = resolve_model_choice(agent_type, self.model_id)
+        if not model_resolution.available:
+            raise RuntimeError(
+                "no available model for judge-deep profile: "
+                + "; ".join(
+                    f"{m}: {r}" for m, r in model_resolution.unavailable
+                )
+            )
+        judge_model = model_resolution.model
+
+        # Tool surface: brief override wins, otherwise profile default. The
+        # operator may have narrowed the deep judge's allowlist further (e.g.
+        # disabled bash entirely) — respect that.
+        if self.judge_rules is not None:
+            allowed_tools = frozenset(self.judge_rules.effective_tools())
+        else:
+            allowed_tools = frozenset(agent_type.tool_include or ())
+        # Always intersect with what the parent actually has registered, and
+        # always strip recursion escapes.
+        from bridge.tools.sub_agent_tool import DEFAULT_EXCLUDED_TOOLS
+        parent_tools = self.tool_registry._tools  # noqa: SLF001
+        allowed_tools = (allowed_tools & frozenset(parent_tools.keys())) - DEFAULT_EXCLUDED_TOOLS
+
+        child_registry = ToolRegistry()
+        for name in sorted(allowed_tools):
+            tool = parent_tools.get(name)
+            if tool is not None:
+                child_registry.register(tool)
+
+        # Generate a stable session id and emit session_spawned BEFORE building
+        # the runner — so any tool_result events that fire mid-run have a
+        # session row to land in.
+        judge_session_id = f"{self.id}-goal-judge-{int(time.time() * 1000):x}"
+        max_iter = (
+            self.judge_rules.judge_max_iterations
+            if self.judge_rules
+            else agent_type.max_iterations
+        )
+        max_iter = max(1, min(max_iter, 10))
+
+        # Build a system prompt with the tool list inlined, mirroring what
+        # sub_agent_tool does, so the judge sees what it can actually use.
+        tool_lines = "\n".join(
+            f"- `{name}` — {tool.definition.summary}"
+            for name, tool in sorted(child_registry._tools.items())  # noqa: SLF001
+        )
+        system_prompt = (
+            f"{agent_type.system_prompt}\n\n"
+            f"Available tools:\n{tool_lines}\n"
+        )
+
+        # Wrap the registry so tool_call/tool_result events get tagged with
+        # the judge session id, not the main session id. This is the same
+        # closure sub_agent_tool uses for its children.
+        wrap = getattr(self, "_wrap_child_registry", None)
+        if wrap is not None:
+            child_registry = wrap(child_registry, judge_session_id)
+
+        emit(
+            {
+                "type": "session_spawned",
+                "sessionId": judge_session_id,
+                "parentSessionId": self.id,
+                "title": "Goal judge (deep)",
+                "model": judge_model,
+                "reasoningLevel": agent_type.thinking_effort,
+                "modelPolicy": model_resolution.policy,
+                "modelCandidates": list(model_resolution.candidates),
+                "modelFallbackUsed": model_resolution.fallback_used,
+                "task": "Adjudicate the standing goal against the agent's recent work.",
+                "mode": "foreground",
+                "agentType": agent_type.name,
+                "coordinationStrategy": self.coordination_strategy,
+                "kanbanTaskId": None,
+                "taskId": None,
+                "workspace": self.workspace,
+                "createdAt": int(time.time() * 1000),
+            }
+        )
+
+        try:
+            from bridge.compaction_telemetry import append_telemetry
+
+            append_telemetry({
+                "type": "profile_invocation",
+                "session_id": judge_session_id,
+                "parent_session_id": self.id,
+                "agent_type": agent_type.name,
+                "model": judge_model,
+                "max_iterations": max_iter,
+                "task_preview": "goal-judge adjudication",
+            })
+        except Exception:
+            pass
+
+        judge_session = Session.create(
+            system_prompt=system_prompt,
+            tools=list(child_registry._tools.values()),  # noqa: SLF001
+            session_id=judge_session_id,
+            metadata={
+                "model_id": judge_model,
+                "reasoning_level": agent_type.thinking_effort,
+                "parent_session_id": self.id,
+                "project_session_id": self.id,
+                "subagent_id": judge_session_id,
+            },
+        )
+        judge_provider = build_provider(
+            judge_model, thinking_level=agent_type.thinking_effort
+        )
+        judge_runner = AsyncAgentRunner(
+            provider=judge_provider,
+            compaction_strategy=SummaryCompaction(),
+            tool_registry=child_registry,
+            thinking=_thinking_config_for_model(
+                judge_model, agent_type.thinking_effort
+            ),
+        )
+
+        spawned_at = time.time()
+        outcome = "success"
+        verdict: Any = None
+        try:
+            result = await judge_runner.run(
+                judge_session,
+                prompt,
+                stream=False,
+                stop_condition=StopCondition(max_iterations=max_iter),
+            )
+            verdict = parse_goal_verdict(result.response or "")
+            verdict.judge_session_id = judge_session_id
+            return verdict
+        except Exception:
+            outcome = "error"
+            raise
+        finally:
+            duration_s = time.time() - spawned_at
+            emit(
+                {
+                    "type": "session_completed",
+                    "sessionId": judge_session_id,
+                    "parentSessionId": self.id,
+                    "outcome": outcome,
+                    "completedAt": int(time.time() * 1000),
+                }
+            )
+            try:
+                from bridge.compaction_telemetry import append_telemetry
+
+                append_telemetry({
+                    "type": "profile_completion",
+                    "session_id": judge_session_id,
+                    "parent_session_id": self.id,
+                    "agent_type": agent_type.name,
+                    "model": judge_model,
+                    "outcome": outcome,
+                    "duration_s": round(duration_s, 3),
+                })
+            except Exception:
+                pass
 
     async def _maybe_continue_goal(self, latest_response: str) -> None:
         from bridge.tools.coordination import STRATEGY_GOAL
@@ -3490,6 +3885,8 @@ class _BridgeSession:
             append_telemetry({
                 "type": "pressure_signal",
                 "session_id": self.id,
+                "agent_type": self.agent_type,
+                "parent_session_id": self.parent_session_id,
                 "band": band,
                 "pressure_pct": ratio * 100,
                 "used_tokens": used,
@@ -3573,6 +3970,8 @@ class _BridgeSession:
                     "type": "llm_call_metric",
                     "session_id": self.id,
                     "turn_id": self.current_turn_id,
+                    "agent_type": self.agent_type,
+                    "parent_session_id": self.parent_session_id,
                     "model": model,
                     "input_tokens": in_tok,
                     "output_tokens": out_tok,
@@ -3615,6 +4014,97 @@ class _BridgeSession:
             log("info", " · ".join(parts))
         except Exception as exc:  # noqa: BLE001
             log("error", f"on_llm_call error: {exc}")
+
+    def _on_tool_metric(self, payload: dict[str, Any]) -> None:
+        """Persist a ``tool_call_metric`` JSONL row per tool execution.
+
+        Fired by the runner after every tool call resolves. Powers the
+        dashboard's per-tool histograms and the profile-detail drawer's
+        "top tools" view. Errors here are swallowed — telemetry must
+        never break the main loop.
+        """
+        try:
+            from bridge.compaction_telemetry import append_telemetry
+
+            append_telemetry({
+                "type": "tool_call_metric",
+                "session_id": self.id,
+                "turn_id": self.current_turn_id,
+                "agent_type": self.agent_type,
+                "parent_session_id": self.parent_session_id,
+                "tool_call_id": payload.get("tool_call_id"),
+                "tool_name": payload.get("tool_name") or "unknown",
+                "duration_ms": int(payload.get("duration_ms", 0) or 0),
+                "ok": bool(payload.get("ok", True)),
+                "result_bytes": int(payload.get("result_bytes", 0) or 0),
+            })
+        except Exception:  # noqa: BLE001
+            # Telemetry must never break the agent loop.
+            pass
+
+    def _current_pressure_pct(self) -> float | None:
+        """Read the runner's current pressure ratio as a percent.
+
+        Used by ``summarize_context`` telemetry to label every decision
+        point with the pressure level at the moment the agent chose to
+        compact. Returns None if the runner isn't ready or the math
+        underflows.
+        """
+        try:
+            runner = self.runner
+            if runner is None:
+                return None
+            provider = getattr(runner, "provider", None)
+            config = getattr(runner, "config", None)
+            usage = getattr(runner, "usage", None)
+            if provider is None or config is None or usage is None:
+                return None
+            window = int(getattr(provider, "context_window", 0) or 0)
+            if window <= 0:
+                return None
+            reserved = int(getattr(config, "max_tokens_per_turn", 0) or 0)
+            effective = max(1, window - reserved)
+            used = int(usage.effective_context_tokens())
+            return (used / effective) * 100
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _on_summarize_context_call(self, payload: dict[str, Any]) -> None:
+        """Persist a ``summarize_context_call`` JSONL row per agent decision.
+
+        This is the *trigger-decision* corpus (Dataset 1 from the design
+        doc): every call the agent makes — with its chosen ``scope``,
+        ``level``, ``preserve_facts``, and free-text ``reason`` — is the
+        supervised signal a future trained policy can learn from.
+        """
+        try:
+            from bridge.compaction_telemetry import append_telemetry
+
+            row: dict[str, Any] = {
+                "type": "summarize_context_call",
+                "session_id": self.id,
+                "turn_id": self.current_turn_id,
+                "agent_type": self.agent_type,
+                "parent_session_id": self.parent_session_id,
+                "scope": payload.get("scope"),
+                "level_requested": payload.get("level_requested"),
+                "level_used": payload.get("level_used"),
+                "preserve_facts_count": int(payload.get("preserve_facts_count", 0) or 0),
+                "preserve_facts_missing": payload.get("preserve_facts_missing") or [],
+                "reason": payload.get("reason"),
+                "pressure_pct_at_call": payload.get("pressure_pct_at_call"),
+                "tokens_before": int(payload.get("tokens_before", 0) or 0),
+                "tokens_after": int(payload.get("tokens_after", 0) or 0),
+                "resumed_from_previous": bool(payload.get("resumed_from_previous", False)),
+                "entries_removed": int(payload.get("entries_removed", 0) or 0),
+                "success": bool(payload.get("success", False)),
+                "error": payload.get("error"),
+                "elapsed_ms": int(payload.get("elapsed_ms", 0) or 0),
+                "model": self.model_id,
+            }
+            append_telemetry(row)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 class _BridgeState:
@@ -4445,6 +4935,35 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         if action == "done":
             sess._clear_goal("done")
             return
+        if action == "set_rules" or action == "set_brief":
+            # Operator updates the judge rules. Payload mirrors JudgeRules.to_dict():
+            # { voice, rigorScore, judgeProfile, criteria: [{id, text, priority}],
+            #   neverDo, whenToStop, judgeTools, judgeMaxIterations }
+            # ('set_brief' is kept as a legacy alias from the rename.)
+            from bridge.tools.goal_loop import JudgeRules
+            rules_payload = (
+                cmd.get("rules") or cmd.get("brief")
+                if isinstance(cmd.get("rules") or cmd.get("brief"), dict)
+                else cmd
+            )
+            new_rules = JudgeRules.from_dict(rules_payload)
+            sess.judge_rules = new_rules
+            # Subtype starts with goal_ so _emit_goal_event persists the sidecar.
+            sess._emit_goal_event(
+                "goal_rules_updated",
+                "Judge rules updated",
+                details={"rules": new_rules.to_dict()},
+                chat_visible=False,
+            )
+            return
+        if action == "get_rules" or action == "get_brief":
+            sess._emit_goal_event(
+                "goal_rules_status",
+                "Judge rules snapshot",
+                details={"rules": sess.judge_rules.to_dict() if sess.judge_rules else None},
+                chat_visible=False,
+            )
+            return
         # status/default
         if sess.goal_state is None:
             sess._emit_goal_event(
@@ -4552,6 +5071,50 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             await _inject_legacy_context_summary(sess, context_summary)
 
         _schedule_or_queue_turn(sess, content, attachments)
+        return
+
+    if ctype == "toggle_entry_pin":
+        if not session_id:
+            return
+        ordinal = int(cmd.get("messageOrdinal", -1))
+        pinned = bool(cmd.get("pinned", False))
+        if ordinal < 0:
+            return
+        sess = state.get(session_id)
+        if sess is None or sess.session is None:
+            return
+        target_entry_id: str | None = None
+        try:
+            msg_count = 0
+            for entry in sess.session.transcript.entries:
+                if entry.message is None:
+                    continue
+                if msg_count == ordinal:
+                    target_entry_id = entry.id
+                    break
+                msg_count += 1
+        except Exception:  # noqa: BLE001
+            target_entry_id = None
+        if not target_entry_id:
+            log("warn", f"toggle_entry_pin: ordinal {ordinal} not found")
+            return
+        try:
+            ok = sess.session.transcript.set_entry_pinned(target_entry_id, pinned)
+        except Exception as exc:  # noqa: BLE001
+            log("error", f"toggle_entry_pin failed: {exc}")
+            return
+        if ok:
+            emit({
+                "type": "entry_pin_changed",
+                "sessionId": session_id,
+                "entryId": target_entry_id,
+                "messageOrdinal": ordinal,
+                "pinned": pinned,
+            })
+            try:
+                sess._save_transcript()  # noqa: SLF001
+            except Exception:  # noqa: BLE001
+                pass
         return
 
     if ctype == "edit_user_message":

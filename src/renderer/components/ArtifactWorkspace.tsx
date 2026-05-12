@@ -37,21 +37,22 @@ const TYPE_COLORS: Record<string, string> = {
   tex: '#7a9cd9', latex: '#7a9cd9',
 }
 
+// Monochrome agent palette — parent gets accent, others use neutral grey.
 const AGENT_TYPE_COLORS: Record<string, string> = {
   parent: '#a8d4fc',
-  general: '#a8d4fc',
-  explore: '#7ab8a3',
-  'explore-fast': '#7bd3ec',
-  code: '#ffcc66',
-  verify: '#88d67f',
-  plan: '#b8a7ff',
-  review: '#f0a6ca',
-  test: '#f5b45d',
-  'browser-qa': '#79b3fa',
-  performance: '#f07878',
-  docs: '#72d0b2',
-  'memory-curator': '#c8d67f',
-  computer: '#d99bbe',
+  general: '#a8a8a8',
+  explore: '#a8a8a8',
+  'explore-fast': '#a8a8a8',
+  code: '#a8a8a8',
+  verify: '#a8a8a8',
+  plan: '#a8a8a8',
+  review: '#a8a8a8',
+  test: '#a8a8a8',
+  'browser-qa': '#a8a8a8',
+  performance: '#a8a8a8',
+  docs: '#a8a8a8',
+  'memory-curator': '#a8a8a8',
+  computer: '#a8a8a8',
 }
 
 function fileTypeColor(ext: string): string {

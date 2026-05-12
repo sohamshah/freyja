@@ -25,6 +25,7 @@ from engine.constants import (
     MAX_CHARS_TO_SUMMARIZE,
     MIN_CONTENT_LENGTH_FOR_TRUNCATION,
     MIN_MESSAGES_TO_COMPACT,
+    MIN_TOKENS_TO_SUMMARIZE,
     SUMMARY_MAX_TOKENS,
 )
 from engine.session import TranscriptManager
@@ -82,6 +83,10 @@ class CompactionResult:
     images_after: int = 0
     """Number of image blocks after compaction."""
 
+    resumed_from_previous: bool = False
+    """True if this compaction iteratively extended the prior summary
+    rather than re-deriving from scratch (Gap 2 / iterative path)."""
+
 
 # ============================================================================
 # Compaction Strategy Protocol
@@ -122,6 +127,25 @@ class SummaryCompaction:
     Uses the model to generate a summary of older conversation
     history, replacing detailed exchanges with a condensed summary.
     """
+
+    SUMMARY_UPDATE_PROMPT = """Your task is to UPDATE an existing summary by incorporating new conversation turns that have happened since it was written.
+
+You will be given (a) the previous structured summary covering turns 1..K and (b) the new turns since (K+1..N). Your job is to extend the summary so it covers 1..N while preserving every fact in the prior summary that is still relevant.
+
+CRITICAL RULES:
+- PRESERVE every concrete fact from the previous summary (file paths, function signatures, error messages, decisions, artifact paths, user requests). Do not drop them, do not paraphrase them away.
+- EXTEND the relevant sections — for example, append newly-completed actions to "Files and Code Sections", append new user requests to "All User Messages", update "Current Work" to reflect the latest state.
+- REMOVE only material that has been superseded (e.g. an old "Current Work" task that is now complete moves to "Files and Code Sections"; a "Pending Task" that's now done moves into completed work).
+- KEEP the same 9-section structure as the previous summary.
+- If the previous summary preserved a fact verbatim and that fact is still relevant, keep it verbatim.
+
+PREVIOUS SUMMARY:
+{previous_summary}
+
+NEW TURNS TO INCORPORATE:
+{conversation}
+
+Respond with <analysis>...</analysis> followed by <summary>...</summary>. The <summary> block must contain the FULL updated summary (not just a diff)."""
 
     SUMMARY_PROMPT = """Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions.
 
@@ -227,19 +251,32 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
         transcript: TranscriptManager,
         provider: "ModelProvider",
     ) -> CompactionResult:
-        """Compact the transcript by summarizing old messages."""
+        """Compact the transcript by summarizing old messages.
+
+        Gating: rather than a strict ``len(messages) >= min_messages``
+        floor (which mis-rejected short-but-heavy sessions — e.g. one
+        huge tool_result image and a few replies — even when the user
+        explicitly hit compact), we require either (a) enough messages
+        to be worth summarizing, OR (b) enough *summarizable* tokens —
+        content outside the ``keep_recent`` tail. Either path proves
+        there is real material to compress.
+        """
         messages = transcript.get_messages()
         tokens_before = transcript.estimate_tokens()
         messages_before = len(transcript.entries)
         images_before = _count_images(messages)
 
-        if len(messages) < self.min_messages:
+        if len(messages) <= self.keep_recent:
             return CompactionResult(
                 success=False,
                 summary=None,
                 tokens_before=tokens_before,
                 tokens_after=tokens_before,
-                error="Not enough messages to compact",
+                error=(
+                    f"Nothing to summarize — only {len(messages)} message"
+                    f"{'s' if len(messages) != 1 else ''} exist and the "
+                    f"recent-tail keeps {self.keep_recent}"
+                ),
             )
 
         split_point = len(messages) - self.keep_recent
@@ -252,6 +289,39 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
                 error="All messages are recent",
             )
 
+        # Estimate tokens in the to-summarize slice. ~4 chars/token is
+        # the rough heuristic used elsewhere in the codebase; this gates
+        # against summarizing trivially-small old slices that wouldn't
+        # recover meaningful space. Use Message.get_text() directly to
+        # avoid the heavier per-call formatting overhead.
+        summarizable_chars = 0
+        for m in messages[:split_point]:
+            try:
+                text = m.get_text() if hasattr(m, "get_text") else str(m.content)
+                summarizable_chars += len(text or "")
+            except Exception:
+                # Defensive: never let a malformed message block the gate.
+                pass
+        summarizable_tokens = summarizable_chars // 4
+        if (
+            len(messages) < self.min_messages
+            and summarizable_tokens < MIN_TOKENS_TO_SUMMARIZE
+        ):
+            return CompactionResult(
+                success=False,
+                summary=None,
+                tokens_before=tokens_before,
+                tokens_after=tokens_before,
+                error=(
+                    f"Nothing worth summarizing — {split_point} older "
+                    f"message{'s' if split_point != 1 else ''} totals "
+                    f"~{summarizable_tokens:,} tokens "
+                    f"(threshold {MIN_TOKENS_TO_SUMMARIZE:,}). If a single "
+                    "block is oversized (e.g. an image), the bridge will "
+                    "prune it instead of summarizing."
+                ),
+            )
+
         split_point = self._find_safe_split(messages, split_point)
         if split_point <= 0:
             return CompactionResult(
@@ -262,14 +332,48 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
                 error="Cannot find safe split point (all messages are in tool-call groups)",
             )
 
+        # Respect pinned (compaction_excluded=True) entries: if any pin
+        # would land in the to_summarize slice, pull split_point back to
+        # the earliest pin's index so pinned content stays in the kept
+        # tail. F1 from the design doc.
+        split_point = self._honor_pins(transcript, split_point)
+        if split_point <= 0:
+            return CompactionResult(
+                success=False,
+                summary=None,
+                tokens_before=tokens_before,
+                tokens_after=tokens_before,
+                error="Nothing to summarize after honoring pinned entries",
+            )
+
+        # Anchor the latest user message in the kept tail. Without this,
+        # `_find_safe_split` can pull split_point past a recent user
+        # message when walking backward through a tool-call group, which
+        # makes the summarizer write the active task into a section the
+        # post-compaction system prompt tells the model NOT to act on —
+        # the agent then either stalls or repeats completed work.
+        split_point = self._ensure_latest_user_message_kept(messages, split_point)
+
         to_summarize = messages[:split_point]
         to_keep = messages[split_point:]
 
         conversation_text = self._format_conversation(to_summarize)
 
+        # Iterative path (Gap 2): if the transcript already has a prior
+        # compaction entry, ask the summarizer to EXTEND that summary
+        # rather than re-derive everything from scratch. The previous
+        # compaction's summary is the canonical reference for turns
+        # 1..K; we only need to merge the new turns since then.
+        previous_summary = self._find_previous_summary(transcript)
+        resumed_from_previous = previous_summary is not None
+
         summary: str | None = None
         try:
-            summary = self._generate_summary(conversation_text, provider)
+            summary = self._generate_summary(
+                conversation_text,
+                provider,
+                previous_summary=previous_summary,
+            )
         except Exception as e:
             logger.warning(f"Summary generation failed: {e}")
             error_str = str(e).lower()
@@ -320,12 +424,90 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
             summary=summary,
             tokens_before=tokens_before,
             tokens_after=tokens_after,
+            resumed_from_previous=resumed_from_previous,
             entries_removed=entries_removed,
             messages_before=messages_before,
             messages_after=messages_after,
             images_before=images_before,
             images_after=images_after,
         )
+
+    @staticmethod
+    def _honor_pins(transcript: TranscriptManager, split_point: int) -> int:
+        """Pull split_point back to before any pinned (compaction_excluded)
+        entry in the to_summarize range.
+
+        Maps transcript-entry indices to message-list indices: not every
+        entry produces a message (compaction-summary entries don't), so
+        we walk both sequences in lockstep. The returned split_point is
+        in message-list coordinates (matching the caller's convention).
+        """
+        try:
+            entries = transcript.entries
+        except Exception:  # noqa: BLE001
+            return split_point
+        if not entries:
+            return split_point
+
+        # message_idx counts only entries whose ``message`` field is
+        # non-None — these are the items in ``transcript.get_messages()``.
+        message_idx = 0
+        earliest_pin_message_idx = None
+        for entry in entries:
+            if entry.message is None:
+                continue
+            if entry.message is not None and getattr(entry, "compaction_excluded", False):
+                if message_idx < split_point:
+                    earliest_pin_message_idx = message_idx
+                    break
+            message_idx += 1
+        if earliest_pin_message_idx is None:
+            return split_point
+        # Pull back to right BEFORE the earliest pin so the pin stays in
+        # the kept tail. Min with the original split_point so we never
+        # *expand* the to_summarize range.
+        return max(0, min(split_point, earliest_pin_message_idx))
+
+    @staticmethod
+    def _find_previous_summary(transcript: TranscriptManager) -> str | None:
+        """Return the most recent compaction entry's summary, if any.
+
+        Walks ``transcript.entries`` newest-to-oldest looking for the
+        latest ``is_compaction=True`` entry. Used by the iterative
+        summary path to extend the prior summary instead of re-deriving
+        from scratch. Returns None on a fresh session.
+        """
+        for entry in reversed(transcript.entries):
+            if getattr(entry, "is_compaction", False):
+                summary = getattr(entry, "compaction_summary", None)
+                if summary:
+                    return str(summary)
+        return None
+
+    @staticmethod
+    def _ensure_latest_user_message_kept(
+        messages: list[Message], split_point: int
+    ) -> int:
+        """Guarantee the most recent user message survives compaction.
+
+        If the latest user-role message at index `latest_idx >= split_point`
+        we're fine. Otherwise the safe-split walk pulled the boundary past
+        it (typically when the user message is followed by an interrupted
+        tool_use group) — pull split_point back to the user message so
+        the summary doesn't swallow the active task.
+
+        Mirrors hermes-agent's `_ensure_last_user_message_in_tail`
+        (context_compressor.py:1148-1193), which originated as a bug fix
+        for active-task loss after compression.
+        """
+        latest_user_idx = -1
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].role == "user":
+                latest_user_idx = i
+                break
+        if latest_user_idx < 0 or latest_user_idx >= split_point:
+            return split_point
+        return max(0, latest_user_idx)
 
     @staticmethod
     def _find_safe_split(messages: list[Message], split_point: int) -> int:
@@ -425,11 +607,37 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
         self,
         conversation: str,
         provider: "ModelProvider",
+        *,
+        previous_summary: str | None = None,
     ) -> str:
-        """Generate a summary using the model provider."""
-        import re
+        """Generate a summary using the model provider.
 
-        prompt = self.SUMMARY_PROMPT.format(conversation=conversation)
+        Two-pass redaction: scrub credentials from the input we send to
+        the summarizer, then scrub the output the summarizer returns
+        (some models echo credentials back verbatim even when prompted
+        not to). The summary persists across the session, so a leaked
+        key sticks around.
+
+        When ``previous_summary`` is provided this is the iterative
+        path (Gap 2): we ask the model to EXTEND the existing summary
+        rather than re-derive the whole conversation from scratch.
+        Saves the per-compaction summarizer cost for long sessions and
+        keeps early-turn facts pinned across many compactions, since the
+        model doesn't have to rediscover them from the (now-shorter)
+        conversation slice.
+        """
+        import re
+        from engine.redact import redact_sensitive_text
+
+        safe_conversation = redact_sensitive_text(conversation)
+        if previous_summary:
+            safe_previous = redact_sensitive_text(previous_summary)
+            prompt = self.SUMMARY_UPDATE_PROMPT.format(
+                previous_summary=safe_previous,
+                conversation=safe_conversation,
+            )
+        else:
+            prompt = self.SUMMARY_PROMPT.format(conversation=safe_conversation)
 
         response = provider.complete(
             messages=[Message(role="user", content=prompt)],
@@ -455,7 +663,7 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
         if not summary:
             raise ValueError("Could not extract summary from model output")
 
-        return summary
+        return redact_sensitive_text(summary)
 
     def _generate_fallback_summary(self, messages: list[Message]) -> str:
         """Generate a simple fallback summary when LLM summarization fails."""

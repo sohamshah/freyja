@@ -550,20 +550,22 @@ function Stat({ label, value }: { label: string; value: string }) {
   )
 }
 
+// Monochrome role badges — every role uses the same neutral chip.
+// The agent's identity is carried by name + position, not color.
 const AGENT_TYPE_COLORS: Record<string, string> = {
-  general: 'bg-sky-500/15 text-sky-300 ring-sky-500/30',
-  explore: 'bg-blue-500/15 text-blue-400 ring-blue-500/30',
-  'explore-fast': 'bg-cyan-500/15 text-cyan-400 ring-cyan-500/30',
-  code: 'bg-amber-500/15 text-amber-400 ring-amber-500/30',
-  verify: 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/30',
-  plan: 'bg-violet-500/15 text-violet-300 ring-violet-500/30',
-  review: 'bg-pink-500/15 text-pink-300 ring-pink-500/30',
-  test: 'bg-orange-500/15 text-orange-300 ring-orange-500/30',
-  'browser-qa': 'bg-indigo-500/15 text-indigo-300 ring-indigo-500/30',
-  performance: 'bg-red-500/15 text-red-300 ring-red-500/30',
-  docs: 'bg-teal-500/15 text-teal-300 ring-teal-500/30',
-  'memory-curator': 'bg-lime-500/15 text-lime-300 ring-lime-500/30',
-  computer: 'bg-fuchsia-500/15 text-fuchsia-300 ring-fuchsia-500/30',
+  general: 'bg-white/[0.05] text-fg-1 ring-white/[0.10]',
+  explore: 'bg-white/[0.05] text-fg-1 ring-white/[0.10]',
+  'explore-fast': 'bg-white/[0.05] text-fg-1 ring-white/[0.10]',
+  code: 'bg-white/[0.05] text-fg-1 ring-white/[0.10]',
+  verify: 'bg-white/[0.05] text-fg-1 ring-white/[0.10]',
+  plan: 'bg-white/[0.05] text-fg-1 ring-white/[0.10]',
+  review: 'bg-white/[0.05] text-fg-1 ring-white/[0.10]',
+  test: 'bg-white/[0.05] text-fg-1 ring-white/[0.10]',
+  'browser-qa': 'bg-white/[0.05] text-fg-1 ring-white/[0.10]',
+  performance: 'bg-white/[0.05] text-fg-1 ring-white/[0.10]',
+  docs: 'bg-white/[0.05] text-fg-1 ring-white/[0.10]',
+  'memory-curator': 'bg-white/[0.05] text-fg-1 ring-white/[0.10]',
+  computer: 'bg-white/[0.05] text-fg-1 ring-white/[0.10]',
 }
 
 export function AgentTypeTag({ type }: { type: string }) {

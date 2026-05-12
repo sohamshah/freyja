@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from bridge.tools.goal_loop import GOAL_JUDGE_SYSTEM_PROMPT
+
 logger = logging.getLogger(__name__)
 
 
@@ -551,6 +553,40 @@ AGENT_TYPES: dict[str, AgentType] = {
         }),
         system_prompt=_VERIFY_PROMPT,
         max_iterations=iteration_cap("verify", 100),
+    ),
+    "judge-deep": AgentType(
+        name="judge-deep",
+        description=(
+            "Skeptical-by-default goal-mode judge with thinking and read-only "
+            "verification tools. Returns a strict JSON verdict (done, confidence, "
+            "reason, criteria, open_questions)."
+        ),
+        usage_hint=(
+            "Use when you need a rigorous third-party adjudication of whether a "
+            "qualitative goal has actually been satisfied — not just whether work "
+            "was produced. Good for: deciding when an iterative goal loop should "
+            "stop, deep skeptical review of a research deliverable or design "
+            "rationale, end-of-task audits where you want a different model to "
+            "press hard on the must-criteria. NOT a fit for: code execution, "
+            "writing fixes, broad codebase refactors, anything that requires "
+            "mutating state — this profile is intentionally read-only and stops "
+            "as soon as it has enough evidence to issue a verdict. The judge "
+            "may use bash, but ONLY for read/exploration (grep/awk/find/cat/head, "
+            "compound pipes); writes, installs, and git mutations are forbidden."
+        ),
+        model="parent",
+        thinking_effort="high",
+        model_policy="prefer_parent",
+        model_fallbacks=("claude-sonnet-4-6", "gpt-5.5", "deepseek-v4-pro"),
+        tool_include=frozenset({
+            "read_file", "list_directory", "glob", "grep", "bash", "fetch_url",
+        }),
+        # System prompt is the same skeptical judge contract used in goal mode.
+        # When the goal loop invokes this profile, GOAL_JUDGE_USER_TEMPLATE
+        # carries the live context; when another agent spawns it via
+        # `sub_agent`, the parent's task description fills that role.
+        system_prompt=GOAL_JUDGE_SYSTEM_PROMPT,
+        max_iterations=iteration_cap("judge-deep", 3),
     ),
     "plan": AgentType(
         name="plan",

@@ -47,6 +47,7 @@ from engine.errors import (
 from engine.providers import (
     AuthProfileManager,
     ContextOverflowError,
+    ImagePayloadTooLargeError,
     ModelFallbackChain,
     ModelProvider,
     ProviderError,
@@ -153,6 +154,18 @@ class RunnerContext:
 
     loop_break_injected: bool = False
     """Whether a loop-break correction has been injected this run."""
+
+    # Anti-thrash tracking: when consecutive compactions each save very
+    # little (the compactor is going in circles), skip further compaction
+    # attempts and surface the condition. Same pattern as hermes-agent
+    # (`_ineffective_compression_count >= 2` -> bail).
+    last_compaction_savings_pct: float = 100.0
+    """Percent of tokens removed by the most recent compaction (0..100)."""
+
+    ineffective_compaction_count: int = 0
+    """Count of consecutive compactions that saved < 10% — when this
+    reaches 2, further compactions are skipped until the agent does
+    something that resets the count (e.g. user sends a fresh message)."""
 
 
 def _call_key(name: str, arguments: dict) -> str:
@@ -318,6 +331,7 @@ class AgentRunner:
 
         while ctx.iteration < max_iterations and ctx.state == RunnerState.RUNNING:
             ctx.iteration += 1
+            self.current_iteration = ctx.iteration
             logger.debug(f"Iteration {ctx.iteration}/{max_iterations}")
 
             try:
@@ -438,6 +452,20 @@ class AgentRunner:
 
             except ProviderError as e:
                 ctx.state = RunnerState.RECOVERING
+
+                # Per-image payload-size cap — handled before the generic
+                # provider-error path because the right remedy is pruning
+                # the oversized block, not retrying the same payload.
+                if isinstance(e, ImagePayloadTooLargeError):
+                    max_bytes = e.max_bytes or 5 * 1024 * 1024
+                    stats = session.transcript.prune_oversized_images(
+                        max_bytes=max_bytes,
+                    )
+                    if stats.changed:
+                        ctx.consecutive_errors = 0
+                        ctx.state = RunnerState.RUNNING
+                        continue
+
                 should_continue = self._handle_provider_error(e, session, ctx)
                 if not should_continue:
                     ctx.state = RunnerState.FAILED
@@ -649,7 +677,49 @@ class AgentRunner:
         session: Session,
         ctx: RunnerContext,
     ) -> CompactionResult:
-        """Attempt context compaction."""
+        """Attempt context compaction with anti-thrash protection.
+
+        Skips compaction when the last 2 attempts each saved < 10% — the
+        agent is in a loop where compaction can't free meaningful space
+        and the right action is to halt with a clear signal rather than
+        burn API calls on summaries that don't help.
+        """
+        if ctx.ineffective_compaction_count >= 2:
+            tokens = session.estimate_tokens()
+            logger.warning(
+                "Compaction skipped — last %d attempts each saved <10%% "
+                "(thrash detector tripped) | session=%s",
+                ctx.ineffective_compaction_count, session.id,
+            )
+            # Surface to the telemetry stream so the metrics dashboard
+            # can count thrash-skip events.
+            try:
+                from bridge.compaction_telemetry import append_telemetry  # type: ignore[import-not-found]
+
+                append_telemetry({
+                    "type": "compaction_event",
+                    "session_id": session.id,
+                    "subtype": "thrash_skip",
+                    "mechanism": "thrash_skip",
+                    "trigger": "thrash_detector",
+                    "tokens_before": tokens,
+                    "tokens_after": tokens,
+                    "ineffective_run": ctx.ineffective_compaction_count,
+                })
+            except Exception:  # noqa: BLE001
+                pass
+            return CompactionResult(
+                success=False,
+                summary=None,
+                tokens_before=tokens,
+                tokens_after=tokens,
+                error=(
+                    f"Compaction thrash detected ({ctx.ineffective_compaction_count} "
+                    f"ineffective compactions in a row). Recommend starting a fresh "
+                    f"session or branching from an earlier message."
+                ),
+            )
+
         ctx.compaction_attempts += 1
         session.compaction_count += 1
 
@@ -658,6 +728,18 @@ class AgentRunner:
                 session.transcript,
                 self.provider,
             )
+            # Track savings for the thrash detector. <10% savings on
+            # this attempt counts toward the cooldown counter.
+            if result.success and result.tokens_before > 0:
+                savings_pct = (
+                    (result.tokens_before - result.tokens_after)
+                    / result.tokens_before * 100
+                )
+                ctx.last_compaction_savings_pct = savings_pct
+                if savings_pct < 10:
+                    ctx.ineffective_compaction_count += 1
+                else:
+                    ctx.ineffective_compaction_count = 0
             return result
         except Exception as e:
             logger.error(f"Compaction failed with exception: {e}")
@@ -749,6 +831,7 @@ class AsyncAgentRunner:
         on_stream: StreamCallback | AsyncStreamCallback | None = None,
         on_system_event: SystemEventCallback | AsyncSystemEventCallback | None = None,
         on_llm_call: Callable[[dict[str, Any]], None] | None = None,
+        on_tool_metric: Callable[[dict[str, Any]], None] | None = None,
         thinking: ThinkingConfig | None = None,
     ):
         self.provider = provider
@@ -762,6 +845,7 @@ class AsyncAgentRunner:
         self.on_stream = on_stream
         self.on_system_event = on_system_event
         self.on_llm_call = on_llm_call
+        self.on_tool_metric = on_tool_metric
         self.thinking = thinking or ThinkingConfig()
 
         # Tool result truncator
@@ -769,6 +853,16 @@ class AsyncAgentRunner:
 
         # Usage tracking
         self.usage = UsageAccumulator()
+        # Live iteration count — readable after a cancel/fail so callers
+        # (e.g. sub_agent_tool's cancellation paths) can attribute partial
+        # work to the agent before the AgentResult was produced.
+        self.current_iteration: int = 0
+        # Pressure-band crossing detector for Channel 3 (mid-stream
+        # advisory). Tracks the band as observed at the start of the
+        # *current* turn so that mid-turn tool-result wrappers can
+        # decide whether the band escalated *during* the turn.
+        self._turn_start_pressure_band: int = 0
+        self._channel3_advisory_pending: str = ""
 
     def _compute_truncation_budget(self, session: Session) -> int:
         """Compute a context-aware token budget for truncating a tool result."""
@@ -849,6 +943,11 @@ class AsyncAgentRunner:
 
         while ctx.iteration < max_iterations and ctx.state == RunnerState.RUNNING:
             ctx.iteration += 1
+            self.current_iteration = ctx.iteration
+            # Reset the Channel 3 start-of-turn band snapshot. Each
+            # iteration is a fresh "turn" for the purposes of detecting
+            # mid-turn pressure escalation.
+            self.reset_turn_pressure_state()
             logger.info(
                 "Agent iteration %d/%d | session=%s",
                 ctx.iteration, max_iterations, session.id,
@@ -864,6 +963,11 @@ class AsyncAgentRunner:
                     response = await self._call_provider_async(session)
 
                 self.usage.update(response.usage)
+                # Channel 3 (mid-stream advisory): now that usage is
+                # updated and the band is current, see if pressure
+                # crossed mid-turn so the next tool result wrapper can
+                # surface the advisory.
+                self.mark_channel3_crossing()
                 await self._handle_context_pressure_async(session, ctx)
 
                 ctx.consecutive_errors = 0
@@ -1021,6 +1125,36 @@ class AsyncAgentRunner:
                 _is_rate_limit = _err_reason == "rate_limit"
                 _is_too_much_media = "too much media" in str(e).lower()
 
+                # Per-image payload-size cap (Anthropic: 5 MB, OpenAI: 20 MB).
+                # Distinct from context overflow — summarization keeps the
+                # offending image in the recent tail, so we have to prune
+                # the specific oversized block. Retry once the transcript
+                # is rewritten; if nothing was prunable we fall through to
+                # the standard error handler.
+                if isinstance(e, ImagePayloadTooLargeError):
+                    max_bytes = e.max_bytes or 5 * 1024 * 1024
+                    stats = session.transcript.prune_oversized_images(
+                        max_bytes=max_bytes,
+                    )
+                    if stats.changed:
+                        await self._emit_system_event(SystemEvent(
+                            type="media_pruning",
+                            message=(
+                                f"Provider rejected image payload ({stats.omitted_images} "
+                                f"image{'s' if stats.omitted_images != 1 else ''} exceeded "
+                                f"{max_bytes // (1024 * 1024)} MB); pruned oversized blocks and retrying."
+                            ),
+                            details={
+                                **stats.to_details(),
+                                "trigger": "provider_error",
+                                "strategy": "oversized_image_prune",
+                                "max_bytes": max_bytes,
+                            },
+                        ))
+                        ctx.consecutive_errors = 0
+                        ctx.state = RunnerState.RUNNING
+                        continue
+
                 if _is_too_much_media:
                     stats = session.transcript.prune_old_tool_result_images(
                         keep_recent=max(1, min(KEEP_RECENT_COMPUTER_IMAGES, 2)),
@@ -1141,7 +1275,7 @@ class AsyncAgentRunner:
             response = await provider.complete_async(
                 messages=session.get_messages(),
                 tools=tool_defs,
-                system_prompt=session.system_prompt,
+                system_prompt=self._system_prompt_with_pressure(session),
                 max_tokens=self.config.max_tokens_per_turn,
                 thinking=self.thinking if self.thinking.enabled else None,
             )
@@ -1172,7 +1306,7 @@ class AsyncAgentRunner:
             response = await provider.stream_to_response(
                 messages=session.get_messages(),
                 tools=tool_defs,
-                system_prompt=session.system_prompt,
+                system_prompt=self._system_prompt_with_pressure(session),
                 max_tokens=self.config.max_tokens_per_turn,
                 thinking=self.thinking if self.thinking.enabled else None,
                 on_event=_handle_event if self.on_stream else None,
@@ -1182,6 +1316,138 @@ class AsyncAgentRunner:
             raise
         self._notify_llm_call(provider, start, streaming=True, response=response, error=None)
         return response
+
+    def _current_pressure_ratio(self) -> float:
+        """Live pressure ratio = effective context tokens / effective window.
+
+        ``effective_window`` = ``context_window - max_tokens_per_turn`` —
+        the same math used by `_emit_pressure_telemetry_if_changed` in the
+        bridge. Returns 0.0 when the math underflows (e.g. before the
+        first call's usage lands).
+        """
+        try:
+            provider = (
+                self.fallback_chain.current if self.fallback_chain else self.provider
+            )
+            window = int(getattr(provider, "context_window", 0) or 0)
+            if window <= 0:
+                return 0.0
+            reserved = int(getattr(self.config, "max_tokens_per_turn", 0) or 0)
+            effective = max(1, window - reserved)
+            used = int(self.usage.effective_context_tokens())
+            return used / effective
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    def _build_pressure_system_note(self, ratio: float) -> str:
+        """Channel 2: pressure-aware system-prompt suffix.
+
+        Empty below 40% (soft band) so we don't churn the prompt cache
+        unnecessarily. Above 40% we accept the cache eviction in exchange
+        for active pressure context — the doc's pressure ladder considers
+        soft-band onset the right moment to start nudging the agent.
+        """
+        if ratio < 0.40:
+            return ""
+        pct = int(ratio * 100)
+        if ratio >= 0.80:
+            recommendation = (
+                "call summarize_context() NOW — runtime fallback is imminent "
+                "and further tool calls may be rejected"
+            )
+        elif ratio >= 0.60:
+            recommendation = (
+                "call summarize_context() before issuing more tool calls; "
+                "scope='since_last_compaction' is the cheapest option"
+            )
+        else:
+            recommendation = (
+                "call summarize_context() at the next natural break "
+                "(after this task completes, before starting a new one). "
+                "scope='since_last_compaction' extends the prior summary"
+            )
+        return (
+            "\n\n"
+            "[FREYJA CONTEXT PRESSURE]\n"
+            f"Current usage:    {pct}% of the active context window.\n"
+            f"Recommendation:   {recommendation}.\n"
+        )
+
+    @staticmethod
+    def _classify_pressure_band(ratio: float) -> int:
+        """Coarse band: 0 clean, 1 awareness, 2 soft, 3 strong, 4 fallback."""
+        if ratio >= 0.80:
+            return 4
+        if ratio >= 0.60:
+            return 3
+        if ratio >= 0.40:
+            return 2
+        if ratio >= 0.25:
+            return 1
+        return 0
+
+    def _system_prompt_with_pressure(self, session: Session) -> str:
+        """Apply Channel 2 to the system prompt for one call.
+
+        Also snapshots the band for Channel 3's "crossed during this
+        turn" detection (see ``mark_channel3_crossing`` below).
+        """
+        ratio = self._current_pressure_ratio()
+        band = self._classify_pressure_band(ratio)
+        # Update on the FIRST call of this turn (turn_start_band == 0
+        # means we haven't recorded yet). Subsequent calls within the
+        # same turn shouldn't overwrite the start-of-turn snapshot.
+        if self._turn_start_pressure_band == 0:
+            self._turn_start_pressure_band = band
+        note = self._build_pressure_system_note(ratio)
+        if not note:
+            return session.system_prompt
+        return session.system_prompt + note
+
+    def mark_channel3_crossing(self) -> None:
+        """Channel 3 (Approach A): detect mid-turn band escalation.
+
+        Call this after a provider response lands. If the band crossed
+        upward into ≥ strong during the turn, stash an advisory string
+        that the bridge's tool-result wrapper will prepend to the *next*
+        tool result. Piggybacks on the natural reactor cadence (no
+        stream interruption) per the design doc's preferred Approach A.
+        """
+        try:
+            ratio = self._current_pressure_ratio()
+            band_now = self._classify_pressure_band(ratio)
+            band_then = self._turn_start_pressure_band
+            # Only fire on a real escalation INTO ≥ strong (3) — soft
+            # already has Channel 2 nudging via the pre-turn system note;
+            # mid-turn injection earns its keep at strong+.
+            if band_now >= 3 and band_now > band_then:
+                pct_now = int(ratio * 100)
+                self._channel3_advisory_pending = (
+                    f"[!CTX PRESSURE: window crossed {pct_now}% during this turn "
+                    f"(was band {band_then} at turn start). Finish your current "
+                    "immediate goal, then call summarize_context() before issuing "
+                    "more tool calls. Tool calls beyond ~5 more may be rejected.]"
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
+    def consume_channel3_advisory(self) -> str:
+        """Pop the pending Channel 3 advisory (one-shot).
+
+        Called by the bridge's tool-result wrapper to inject the
+        advisory into the *first* tool result after the crossing. Once
+        consumed, the slot is cleared so we don't spam advisories for
+        every tool call in a multi-tool turn.
+        """
+        advisory = self._channel3_advisory_pending
+        self._channel3_advisory_pending = ""
+        return advisory
+
+    def reset_turn_pressure_state(self) -> None:
+        """Reset start-of-turn band snapshot at the top of each iteration."""
+        self._turn_start_pressure_band = 0
+        # Don't clear _channel3_advisory_pending here — it may have been
+        # set during the previous turn and not yet consumed.
 
     def _notify_llm_call(
         self,
@@ -1356,6 +1622,26 @@ class AsyncAgentRunner:
                 sid, result_preview,
             )
 
+        # Fire the per-tool telemetry hook. Lets the bridge persist a
+        # tool_call_metric JSONL row that powers the dashboard's
+        # per-profile tool histograms and re-fetch detection.
+        if self.on_tool_metric is not None:
+            try:
+                if isinstance(result_content, str):
+                    result_bytes = len(result_content.encode("utf-8", errors="ignore"))
+                else:
+                    result_bytes = 0
+                self.on_tool_metric({
+                    "tool_call_id": tc.id,
+                    "tool_name": tc.name,
+                    "duration_ms": int(_tool_duration),
+                    "ok": not is_error,
+                    "result_bytes": result_bytes,
+                    "arguments_preview": args_preview,
+                })
+            except Exception:
+                logger.exception("on_tool_metric hook failed")
+
         # Truncate if needed
         if isinstance(result_content, str):
             if session is not None:
@@ -1488,7 +1774,49 @@ class AsyncAgentRunner:
         session: Session,
         ctx: RunnerContext,
     ) -> CompactionResult:
-        """Attempt context compaction."""
+        """Attempt context compaction with anti-thrash protection.
+
+        Skips compaction when the last 2 attempts each saved < 10% — the
+        agent is in a loop where compaction can't free meaningful space
+        and the right action is to halt with a clear signal rather than
+        burn API calls on summaries that don't help.
+        """
+        if ctx.ineffective_compaction_count >= 2:
+            tokens = session.estimate_tokens()
+            logger.warning(
+                "Compaction skipped — last %d attempts each saved <10%% "
+                "(thrash detector tripped) | session=%s",
+                ctx.ineffective_compaction_count, session.id,
+            )
+            # Surface to the telemetry stream so the metrics dashboard
+            # can count thrash-skip events.
+            try:
+                from bridge.compaction_telemetry import append_telemetry  # type: ignore[import-not-found]
+
+                append_telemetry({
+                    "type": "compaction_event",
+                    "session_id": session.id,
+                    "subtype": "thrash_skip",
+                    "mechanism": "thrash_skip",
+                    "trigger": "thrash_detector",
+                    "tokens_before": tokens,
+                    "tokens_after": tokens,
+                    "ineffective_run": ctx.ineffective_compaction_count,
+                })
+            except Exception:  # noqa: BLE001
+                pass
+            return CompactionResult(
+                success=False,
+                summary=None,
+                tokens_before=tokens,
+                tokens_after=tokens,
+                error=(
+                    f"Compaction thrash detected ({ctx.ineffective_compaction_count} "
+                    f"ineffective compactions in a row). Recommend starting a fresh "
+                    f"session or branching from an earlier message."
+                ),
+            )
+
         ctx.compaction_attempts += 1
         session.compaction_count += 1
 
@@ -1497,6 +1825,18 @@ class AsyncAgentRunner:
                 session.transcript,
                 self.provider,
             )
+            # Track savings for the thrash detector. <10% savings on
+            # this attempt counts toward the cooldown counter.
+            if result.success and result.tokens_before > 0:
+                savings_pct = (
+                    (result.tokens_before - result.tokens_after)
+                    / result.tokens_before * 100
+                )
+                ctx.last_compaction_savings_pct = savings_pct
+                if savings_pct < 10:
+                    ctx.ineffective_compaction_count += 1
+                else:
+                    ctx.ineffective_compaction_count = 0
             return result
         except Exception as e:
             logger.error(f"Compaction failed with exception: {e}")
@@ -1588,10 +1928,15 @@ class AsyncAgentRunner:
         await self._ensure_media_room(session)
 
         context_window = self.provider.context_window
+        # Effective window subtracts the reserved output budget — the
+        # provider rejects a request whose input + max_tokens_per_turn
+        # exceeds the raw window, so the threshold needs to track the
+        # space we actually have for input bytes, not the nominal total.
+        effective_window = max(1, context_window - self.config.max_tokens_per_turn)
         used_tokens = self._current_context_tokens(session)
         if context_window <= 0:
             return
-        usage_fraction = used_tokens / context_window
+        usage_fraction = used_tokens / effective_window
 
         if usage_fraction > self.config.compaction_threshold:
             pruned = session.transcript.prune_old_tool_results(
@@ -1654,8 +1999,9 @@ class AsyncAgentRunner:
     ) -> None:
         """Handle context pressure using REAL token count from API response."""
         context_window = self.provider.context_window
+        effective_window = max(1, context_window - self.config.max_tokens_per_turn)
         used_tokens = self.usage.effective_context_tokens()
-        usage_fraction = used_tokens / context_window
+        usage_fraction = used_tokens / effective_window
 
         if usage_fraction > self.config.compaction_threshold:
             pruned = session.transcript.prune_old_tool_results(keep_recent=KEEP_RECENT_TOOL_RESULTS)

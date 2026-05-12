@@ -199,10 +199,12 @@ export interface HarnessState extends SessionSlice {
   focusedToolCallId: string | null
   focusedToolCallSerial: number
   /** User preference — pixel width of the Activity panel when open.
-   *  The left Sidebar is intentionally NOT resizable; only the right
-   *  panel needs to grow for reading long log streams. Persisted to
-   *  localStorage so the preference survives reloads. */
+   *  Persisted to localStorage so the preference survives reloads. */
   activityPanelWidth: number
+  /** User preference — pixel width of the Sidebar workspace panel when
+   *  open. Same drag-handle pattern as the activity panel, mirrored to
+   *  the right edge. Persisted to localStorage. */
+  sidebarWidth: number
   settings: DesktopSettings
   toast: { id: string; message: string; tone: 'info' | 'ok' | 'warn' | 'danger'; at: number } | null
   /** Live state for each active computer-use session. Frames are
@@ -251,11 +253,25 @@ export interface HarnessActions {
   toggleSidebar(collapsed?: boolean): void
   toggleActivityPanel(collapsed?: boolean): void
   setActivityPanelWidth(width: number): void
+  setSidebarWidth(width: number): void
   focusToolCall(id: string): void
   toggleFocusMode(focus?: boolean): void
   showToast(message: string, tone?: 'info' | 'ok' | 'warn' | 'danger'): void
   clearToast(): void
   runSlashCommand(name: string, args?: string): boolean
+  /** Goal brief CRUD bridged via IPC. The brief is the operator-authored
+   *  instruction set the judge consumes on every turn (rigor, voice,
+   *  must/should/may criteria, never-do list, when-to-stop). */
+  updateJudgeRules(brief: {
+    voice: string
+    rigorScore: number
+    judgeProfile: 'quick' | 'standard' | 'deep'
+    criteria: Array<{ id: string; text: string; priority: 'must' | 'should' | 'may' }>
+    neverDo: string[]
+    whenToStop: string
+    judgeTools?: string[]
+    judgeMaxIterations?: number
+  }): void
   attachImage(file: File | Blob): Promise<void>
   removeAttachment(id: string): void
   /** Edit a user message in place — local state truncates to before the
@@ -267,6 +283,9 @@ export interface HarnessActions {
   rerunUserMessage(messageId: string): Promise<void>
   /** Delete a message and everything after it. No follow-up turn. */
   deleteMessagesFrom(messageId: string): Promise<void>
+  /** Pin (or unpin) a message so the compactor preserves it verbatim
+   *  through every future summary. */
+  toggleEntryPin(messageId: string, pinned: boolean): Promise<void>
   /** Branch the current session at a message boundary. New session
    *  contains messages 0..N-1; subagent transcripts are deep-cloned. */
   branchSessionFrom(messageId: string, newName?: string): Promise<void>
@@ -635,6 +654,13 @@ function emptyState(): HarnessState {
       // the panel unusable.
       if (!Number.isFinite(parsed)) return 320
       return Math.max(260, Math.min(900, parsed))
+    })(),
+    sidebarWidth: (() => {
+      if (typeof localStorage === 'undefined') return 256
+      const raw = localStorage.getItem('ah.sidebarWidth')
+      const parsed = raw ? parseInt(raw, 10) : NaN
+      if (!Number.isFinite(parsed)) return 256
+      return Math.max(220, Math.min(640, parsed))
     })(),
     settings: {
       version: 1,
@@ -1406,6 +1432,24 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         return {
           ...prev,
           memories: { ...prev.memories, [ev.memory.id]: ev.memory },
+        }
+      }
+      // Bridge-driven pin toggle (in case future tool surfaces toggle
+      // pins without a renderer round-trip). Idempotent with the
+      // optimistic update in toggleEntryPin().
+      if ((ev as any).type === 'entry_pin_changed') {
+        const ordinal = (ev as any).messageOrdinal as number
+        const pinned = Boolean((ev as any).pinned)
+        if (typeof ordinal !== 'number' || ordinal < 0) return prev
+        const userAssistant = prev.messages
+        if (ordinal >= userAssistant.length) return prev
+        const targetId = userAssistant[ordinal]?.id
+        if (!targetId) return prev
+        return {
+          ...prev,
+          messages: prev.messages.map((m) =>
+            m.id === targetId ? { ...m, pinned } : m,
+          ),
         }
       }
       if (ev.type === 'skill_retrieved' || ev.type === 'skill_loaded' || ev.type === 'skill_pruned') {
@@ -2542,6 +2586,27 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     })
   },
 
+  async toggleEntryPin(messageId, pinned) {
+    const api = (window as any).harness
+    const state = useHarness.getState()
+    const sessionId = state.activeSessionId
+    if (!api || !sessionId) return
+    const ordinal = messageOrdinalById(state.messages, messageId)
+    if (ordinal < 0) return
+    // Optimistic update — bridge confirms via entry_pin_changed event.
+    set((prev) => ({
+      messages: prev.messages.map((m) =>
+        m.id === messageId ? { ...m, pinned } : m,
+      ),
+    }))
+    await api.sendCommand({
+      type: 'toggle_entry_pin',
+      sessionId,
+      messageOrdinal: ordinal,
+      pinned,
+    })
+  },
+
   async branchSessionFrom(messageId, newName) {
     const api = (window as any).harness
     const state = useHarness.getState()
@@ -2844,6 +2909,63 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
   },
 
   async downloadSession(sessionId) {
+    // Helper hoisted inside the function so we don't pollute the module
+    // surface — only used by this exporter.
+    //
+    // EVERYTHING IS CHRONOLOGICAL (oldest → newest) — matches `verdictHistory`
+    // on the bridge and reads top-to-bottom like a session transcript.
+    // Future analyzers (including any LLM asked to summarize a goal run)
+    // should iterate the verdicts array in array order to follow the loop
+    // forward in time.
+    function collectGoalLoopForExport(events: SystemEventRecord[] | undefined): {
+      goalState: Record<string, unknown> | null
+      brief: Record<string, unknown> | null
+      // Last 12 verdicts in chronological order (matches the bridge's
+      // verdict_history field). Provided as a stable per-event snapshot.
+      verdictHistory: Record<string, unknown>[]
+      // Every goal_judge event's full verdict, chronological. Preserved
+      // even if the rolling 100-event renderer buffer dropped early ones,
+      // because the bridge's verdictHistory carries them through.
+      verdicts: Array<{
+        at: number
+        turnsUsed: number | null
+        verdict: Record<string, unknown>
+      }>
+      // Convenience: every goal event in chronological order. Useful for
+      // reconstructing the timeline (set / continue / pause / done) when
+      // analyzing a session externally.
+      events: Array<{ at: number; subtype: string; message: string }>
+    } | null {
+      if (!events || events.length === 0) return null
+      const goalEvents = events
+        .filter((e) => (e.subtype ?? '').startsWith('goal_'))
+        .sort((a, b) => a.at - b.at) // chronological
+      if (goalEvents.length === 0) return null
+      const latest = goalEvents[goalEvents.length - 1]
+      const latestDetails = (latest.details as Record<string, unknown> | undefined) ?? {}
+      const judgeEvents = goalEvents.filter((e) => e.subtype === 'goal_judge')
+      return {
+        goalState: (latestDetails.goalState as Record<string, unknown> | null) ?? null,
+        brief: (latestDetails.judgeRules as Record<string, unknown> | null) ?? null,
+        verdictHistory:
+          (latestDetails.verdictHistory as Record<string, unknown>[] | undefined) ?? [],
+        verdicts: judgeEvents.map((e) => {
+          const d = (e.details as Record<string, unknown> | undefined) ?? {}
+          const gs = d.goalState as Record<string, unknown> | undefined
+          return {
+            at: e.at,
+            turnsUsed: typeof gs?.turnsUsed === 'number' ? (gs.turnsUsed as number) : null,
+            verdict: (d.verdict as Record<string, unknown>) ?? {},
+          }
+        }),
+        events: goalEvents.map((e) => ({
+          at: e.at,
+          subtype: e.subtype ?? '',
+          message: e.message ?? '',
+        })),
+      }
+    }
+
     const state = useHarness.getState()
     // Build the export payload: session snapshot + full slice + metadata
     const snapshot = state.sessions.find((s) => s.id === sessionId)
@@ -2968,6 +3090,13 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       // ─── Aggregated metrics ──────────────────────────────────
       usage: slice.usage,
       systemEvents: slice.systemEvents,
+      // ─── Goal loop snapshot ──────────────────────────────────
+      // Lifts goal state / brief / verdict history out of the
+      // event stream into a dedicated block so they survive the
+      // rolling 100-event buffer and analyzers don't have to scan
+      // systemEvents to find them. Pulled from the most recent
+      // goal_* event's payload (every goal event includes them).
+      goalLoop: collectGoalLoopForExport(slice.systemEvents),
     }
 
     // Create a downloadable file
@@ -3128,6 +3257,19 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     set((prev) => ({ debugOpen: open ?? !prev.debugOpen }))
   },
 
+  updateJudgeRules(rules) {
+    const state = get()
+    if (!state.activeSessionId) return
+    const api = (window as any).harness
+    if (!api) return
+    api.sendCommand({
+      type: 'goal_control',
+      sessionId: state.activeSessionId,
+      action: 'set_rules',
+      rules,
+    })
+  },
+
   toggleSidebar(collapsed) {
     set((prev) => {
       const next = collapsed ?? !prev.sidebarCollapsed
@@ -3157,6 +3299,17 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     set({ activityPanelWidth: clamped })
     try {
       localStorage.setItem('ah.activityPanelWidth', String(clamped))
+    } catch {}
+  },
+
+  setSidebarWidth(width) {
+    // Lower bound: workspace header (label + "+ new" + collapse) still
+    // fits without clipping. Upper bound: leaves room for the
+    // conversation column on common laptop widths.
+    const clamped = Math.max(220, Math.min(640, Math.round(width)))
+    set({ sidebarWidth: clamped })
+    try {
+      localStorage.setItem('ah.sidebarWidth', String(clamped))
     } catch {}
   },
 

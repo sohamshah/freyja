@@ -4,6 +4,7 @@ import type { FileChangeSet } from '@shared/events'
 import { relativeTime } from '../lib/format'
 import { ArtifactWorkspace } from './ArtifactWorkspace'
 import { FileChangeCard } from './FileChangeCard'
+import { StickyHeader } from './StickyHeader'
 
 export function ChangesSection() {
   const changeSets = useHarness((s) => s.fileChanges)
@@ -35,42 +36,44 @@ export function ChangesSection() {
   )
 
   return (
-    <div className="px-4 py-3 hairline-b">
+    <div className="hairline-b">
       {workspaceOpen && (
         <ArtifactWorkspace
           initialView="changes"
           onClose={() => setWorkspaceOpen(false)}
         />
       )}
-      <div className="mb-2 flex items-baseline justify-between">
-        <button
-          onClick={() => setExpanded((v) => !v)}
-          className="flex items-baseline gap-2 text-left"
-        >
-          <div className="label">changes</div>
-          <span className="font-mono text-[10px] text-fg-3">{changeSets.length}</span>
-          {changeSets.length > 0 && (
-            <span className="font-mono text-[9px] text-fg-3">
-              {totals.files} files · <span className="text-ok">+{totals.additions}</span>{' '}
-              <span className="text-danger">-{totals.deletions}</span>
-            </span>
-          )}
-          <span className="text-[9px] text-fg-3">{expanded ? '▾' : '▸'}</span>
-        </button>
-        {changeSets.length > 0 && (
+      <StickyHeader>
+        <div className="flex w-full items-baseline justify-between gap-2 px-4 py-2">
           <button
-            onClick={() => setWorkspaceOpen(true)}
-            className="rounded bg-white/[0.04] px-1.5 py-[2px] font-mono text-[9px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
+            onClick={() => setExpanded((v) => !v)}
+            className="flex items-baseline gap-2 text-left"
           >
-            diff view ↗
+            <div className="label">changes</div>
+            <span className="font-mono text-[10px] text-fg-3">{changeSets.length}</span>
+            {changeSets.length > 0 && (
+              <span className="font-mono text-[9px] text-fg-3">
+                {totals.files} files · <span className="text-ok">+{totals.additions}</span>{' '}
+                <span className="text-danger">-{totals.deletions}</span>
+              </span>
+            )}
+            <span className="text-[9px] text-fg-3">{expanded ? '▾' : '▸'}</span>
           </button>
-        )}
-      </div>
+          {changeSets.length > 0 && (
+            <button
+              onClick={() => setWorkspaceOpen(true)}
+              className="rounded bg-white/[0.04] px-1.5 py-[2px] font-mono text-[9px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
+            >
+              diff view ↗
+            </button>
+          )}
+        </div>
+      </StickyHeader>
 
       {!expanded ? null : ordered.length === 0 ? (
-        <div className="py-2 text-[11px] italic text-fg-3">No file changes yet</div>
+        <div className="px-4 pb-3 pt-1 text-[11px] italic text-fg-3">No file changes yet</div>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-2 px-4 pb-3 pt-1">
           {ordered.slice(0, 8).map((changeSet) => (
             <ChangeSetRow
               key={changeSet.id}

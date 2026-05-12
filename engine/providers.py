@@ -158,6 +158,21 @@ class ContextOverflowError(ProviderError):
         super().__init__(message, status=400, retryable=True, **kwargs)
 
 
+class ImagePayloadTooLargeError(ProviderError):
+    """A single image block exceeds the provider's per-image payload limit.
+
+    Distinct from ``ContextOverflowError`` — this is *not* about message
+    count or aggregate token usage. Recovery is to prune the oversized
+    image specifically; running summarization will not help because the
+    offending image is typically pinned in the recent-tail of the
+    transcript that summarization keeps verbatim.
+    """
+
+    def __init__(self, message: str, max_bytes: int | None = None, **kwargs):
+        super().__init__(message, status=400, retryable=True, **kwargs)
+        self.max_bytes = max_bytes
+
+
 class ModelNotFoundError(ProviderError):
     """Model does not exist."""
 

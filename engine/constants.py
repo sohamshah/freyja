@@ -74,11 +74,38 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
 # Context Pressure & Compaction
 # ============================================================================
 
-CONTEXT_PRESSURE_THRESHOLD = 0.80
-"""Fraction of context window that triggers tool-result pruning."""
+CONTEXT_PRESSURE_THRESHOLD = 0.25
+"""Fraction of EFFECTIVE context window (window minus reserved output) that
+triggers cheap pruning — tool-result halving, image trim, dedup. Silent
+to the agent. Lowered from 0.80 to 0.25 as part of the cooperative
+early-trigger compaction architecture (see docs/COMPACTION-DECISION-DRAFT.md).
+"""
 
-CONTEXT_COMPACTION_THRESHOLD = 0.90
-"""Fraction of context window that triggers LLM compaction."""
+CONTEXT_COMPACTION_THRESHOLD = 0.40
+"""Fraction of EFFECTIVE context window that triggers LLM-based summary
+compaction. Lowered from 0.90 to 0.40 — informed by Chroma's context-rot
+research showing model quality degrades well before the window fills,
+and by the cooperative architecture which expects the agent to drive
+compaction at natural breaks in its work."""
+
+CONTEXT_AWARENESS_THRESHOLD = 0.25
+"""Fraction at which we start appending per-observation token-usage
+tags so the agent has continuous pressure visibility. Same as
+CONTEXT_PRESSURE_THRESHOLD by design — pruning and awareness fire
+together at the same band."""
+
+CONTEXT_SOFT_SUGGEST_THRESHOLD = 0.40
+"""Fraction at which the observation tag escalates from informational
+to 'consider summarize_context() at next break'."""
+
+CONTEXT_STRONG_SUGGEST_THRESHOLD = 0.60
+"""Fraction at which we recommend compaction before the agent issues
+more tool calls."""
+
+CONTEXT_FALLBACK_THRESHOLD = 0.80
+"""Fraction at which the runtime stops trusting the agent to drive
+compaction and forces it. Logged as 'fallback fired' for the training
+corpus — every fallback is a label for 'the agent missed the cue'."""
 
 KEEP_RECENT_TOOL_RESULTS = 3
 """Number of recent tool results preserved during pruning."""
@@ -93,7 +120,16 @@ KEEP_RECENT_MESSAGES = 10
 """Messages kept verbatim during compaction (most recent N)."""
 
 MIN_MESSAGES_TO_COMPACT = 20
-"""Don't compact if fewer than this many messages in history."""
+"""Don't *auto-trigger* compaction if fewer than this many messages — but
+the manual compact path bypasses this in favor of a content-size check so
+that short-but-heavy conversations (e.g. a single huge image) are still
+recoverable. See ``compaction.MIN_TOKENS_TO_SUMMARIZE``."""
+
+MIN_TOKENS_TO_SUMMARIZE = 2_000
+"""Minimum estimated tokens of *summarizable* content (messages NOT in
+the kept recent tail) before ``Compactor.compact()`` will run. Replaces
+the old strict ``len(messages) < MIN_MESSAGES_TO_COMPACT`` floor so heavy
+short sessions (one giant image, a few replies) can still be compacted."""
 
 MAX_COMPACTION_ATTEMPTS = 3
 """How many times compaction can be retried in a single turn."""

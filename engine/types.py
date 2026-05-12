@@ -825,8 +825,12 @@ class AgentConfig:
     probe_interval_seconds: float = 30.0
 
     # Compaction settings
-    compaction_threshold: float = 0.8
-    """Fraction of context window that triggers compaction."""
+    compaction_threshold: float = 0.25
+    """Fraction of effective context window that triggers cheap pruning
+    (tool-result halving). Lowered from 0.8 as part of the cooperative
+    early-trigger architecture — pruning at 25% is silent and cheap.
+    The companion CONTEXT_COMPACTION_THRESHOLD (0.40) triggers the
+    LLM summary path."""
 
     # Token limits
     max_tokens_per_turn: int = 50000

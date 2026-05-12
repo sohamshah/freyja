@@ -48,7 +48,7 @@ export function CommandPalette() {
         subtitle: 'Agent lanes, collaboration state, and live multi-agent activity',
         group: 'Command',
         action: () => {
-          toggleMissionDashboard(true, 'swarm')
+          toggleMissionDashboard(true, 'overview')
           close(false)
         },
       },

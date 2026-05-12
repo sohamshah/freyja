@@ -3,6 +3,7 @@ import { useHarness, type ComputerSessionState } from '../state/store'
 import { formatDuration } from '../lib/format'
 import { Spinner } from '../lib/spinner'
 import { useFrameObjectUrl } from '../lib/frameMedia'
+import { StickyHeader } from './StickyHeader'
 
 /**
  * Live screenshot viewer for an active computer-use session.
@@ -51,44 +52,48 @@ export function ComputerLiveView() {
   if (!displayed) return null
 
   return (
-    <div className="px-4 py-3 hairline-b">
-      <div className="mb-2 flex items-center justify-between">
-        <div className="label flex items-center gap-1.5">
-          {displayed.status === 'running' ? (
-            <Spinner name="scan" className="text-accent" />
-          ) : (
-            <span
-              className={`block h-1.5 w-1.5 rounded-full ${
-                displayed.status === 'done'
-                  ? 'bg-ok'
-                  : displayed.status === 'failed'
-                    ? 'bg-danger'
-                    : 'bg-fg-2'
-              }`}
-            />
+    <div className="hairline-b">
+      <StickyHeader>
+        <div className="flex w-full items-center justify-between gap-2 px-4 py-2">
+          <div className="label flex items-center gap-1.5">
+            {displayed.status === 'running' ? (
+              <Spinner name="scan" className="text-accent" />
+            ) : (
+              <span
+                className={`block h-1.5 w-1.5 rounded-full ${
+                  displayed.status === 'done'
+                    ? 'bg-ok'
+                    : displayed.status === 'failed'
+                      ? 'bg-danger'
+                      : 'bg-fg-2'
+                }`}
+              />
+            )}
+            computer
+            <span className="font-mono text-[10px] text-fg-3">
+              {displayed.status}
+            </span>
+            <span className="font-mono text-[9.5px] text-fg-3">
+              · {displayed.frameCount} frame
+              {displayed.frameCount === 1 ? '' : 's'}
+            </span>
+          </div>
+          {displayed.status === 'running' && (
+            <button
+              onClick={() => emergencyStop('live-view-stop')}
+              className="rounded-md bg-danger/10 px-2 py-[2px] font-mono text-[10px] uppercase tracking-[0.08em] text-danger ring-1 ring-danger/30 hover:bg-danger/20"
+              title="Emergency stop (also: triple-Esc, ⌘⇧Esc)"
+            >
+              ■ stop
+            </button>
           )}
-          computer
-          <span className="font-mono text-[10px] text-fg-3">
-            {displayed.status}
-          </span>
-          <span className="font-mono text-[9.5px] text-fg-3">
-            · {displayed.frameCount} frame
-            {displayed.frameCount === 1 ? '' : 's'}
-          </span>
         </div>
-        {displayed.status === 'running' && (
-          <button
-            onClick={() => emergencyStop('live-view-stop')}
-            className="rounded-md bg-danger/10 px-2 py-[2px] font-mono text-[10px] uppercase tracking-[0.08em] text-danger ring-1 ring-danger/30 hover:bg-danger/20"
-            title="Emergency stop (also: triple-Esc, ⌘⇧Esc)"
-          >
-            ■ stop
-          </button>
-        )}
+      </StickyHeader>
+      <div className="px-4 pb-3 pt-1">
+        <ScreenshotCanvas session={displayed} />
+        <Narration session={displayed} />
+        <MiniHistory session={displayed} />
       </div>
-      <ScreenshotCanvas session={displayed} />
-      <Narration session={displayed} />
-      <MiniHistory session={displayed} />
     </div>
   )
 }

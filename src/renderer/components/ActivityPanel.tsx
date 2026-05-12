@@ -7,6 +7,7 @@ import { ArtifactsSection } from './ArtifactsSection'
 import { ToolTimeline } from './ToolTimeline'
 import { ChangesSection } from './ChangesSection'
 import { TopoBackdrop } from './TopoBackdrop'
+import { StickyHeader } from './StickyHeader'
 
 export function ActivityPanel() {
   const systemEvents = useHarness((s) => s.systemEvents)
@@ -144,14 +145,17 @@ export function ActivityPanel() {
         {/* ── Computer live view (only when a session is active) ── */}
         <ComputerLiveView />
         {/* ── Context meter ─────────────────────────────────── */}
-        <div className="px-4 py-3 hairline-b">
-          <div className="mb-2 flex items-baseline justify-between">
-            <div className="label">request context</div>
-            <div className="font-mono text-[11px] text-fg-0">
-              {contextKnown ? formatTokens(contextTokens) : 'n/a'}
-              <span className="text-fg-2">/{formatTokens(usage.contextWindow)}</span>
+        <div className="hairline-b">
+          <StickyHeader>
+            <div className="flex w-full items-baseline justify-between px-4 py-2">
+              <div className="label">request context</div>
+              <div className="font-mono text-[11px] text-fg-0">
+                {contextKnown ? formatTokens(contextTokens) : 'n/a'}
+                <span className="text-fg-2">/{formatTokens(usage.contextWindow)}</span>
+              </div>
             </div>
-          </div>
+          </StickyHeader>
+          <div className="px-4 pb-3 pt-1">
           <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-white/[0.06]">
             <div
               className="absolute left-0 top-0 h-full bg-gradient-to-r from-accent/70 to-accent"
@@ -202,6 +206,7 @@ export function ActivityPanel() {
               </div>
             </div>
           )}
+          </div>
         </div>
 
         <TaskProgressSection tasks={taskItems} />
@@ -215,30 +220,33 @@ export function ActivityPanel() {
         {/* ── Artifacts ─────────────────────────────────── */}
         <ArtifactsSection />
 
-        <div className="px-4 py-3">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <button
-              onClick={() => setDiagnosticsOpen((open) => !open)}
-              className={`label flex items-center gap-2 hover:text-fg-1 ${
-                diagnosticAttention > 0 ? 'text-warn' : 'text-fg-2'
-              }`}
-            >
-              <span>{diagnosticsOpen ? '▾' : '▸'}</span>
-              diagnostics
-              {diagnosticAttention > 0 && (
-                <span className="rounded bg-warn/10 px-1.5 py-[1px] font-mono text-[8.5px] text-warn ring-1 ring-warn/20">
-                  {diagnosticAttention}
-                </span>
-              )}
-            </button>
-            <button
-              onClick={() => setLogModalOpen(true)}
-              title="Pop out for full details"
-              className="rounded bg-white/[0.04] px-1.5 py-[2px] font-mono text-[9px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
-            >
-              expand
-            </button>
-          </div>
+        <div>
+          <StickyHeader>
+            <div className="flex w-full items-center justify-between gap-2 px-4 py-2">
+              <button
+                onClick={() => setDiagnosticsOpen((open) => !open)}
+                className={`label flex items-center gap-2 hover:text-fg-1 ${
+                  diagnosticAttention > 0 ? 'text-warn' : 'text-fg-2'
+                }`}
+              >
+                <span>{diagnosticsOpen ? '▾' : '▸'}</span>
+                diagnostics
+                {diagnosticAttention > 0 && (
+                  <span className="rounded bg-warn/10 px-1.5 py-[1px] font-mono text-[8.5px] text-warn ring-1 ring-warn/20">
+                    {diagnosticAttention}
+                  </span>
+                )}
+              </button>
+              <button
+                onClick={() => setLogModalOpen(true)}
+                title="Pop out for full details"
+                className="rounded bg-white/[0.04] px-1.5 py-[2px] font-mono text-[9px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
+              >
+                expand
+              </button>
+            </div>
+          </StickyHeader>
+          <div className="px-4 pb-3 pt-1">
           {!diagnosticsOpen && (
             <div className="rounded bg-white/[0.02] px-2 py-1.5 font-mono text-[10px] text-fg-3 ring-hairline">
               {systemEvents.length} events · {logs.length} logs
@@ -285,6 +293,7 @@ export function ActivityPanel() {
               </div>
             </div>
           )}
+          </div>
         </div>
       </div>
       {logModalOpen && <LogStreamModal onClose={() => setLogModalOpen(false)} />}
@@ -310,22 +319,24 @@ function TaskProgressSection({ tasks }: { tasks: ActivityTaskItem[] }) {
   const hidden = Math.max(0, tasks.length - visible.length)
 
   return (
-    <div className="px-4 py-3 hairline-b">
-      <div className="mb-2 flex items-start justify-between gap-3">
-        <div>
-          <div className="label">progress</div>
-          <div className="mt-1 font-mono text-[10px] text-fg-3">
-            {done}/{tasks.length} complete{blocked > 0 ? ` · ${blocked} blocked` : ''}
+    <div className="hairline-b">
+      <StickyHeader>
+        <div className="flex w-full items-center justify-between gap-3 px-4 py-2">
+          <div className="flex items-baseline gap-2">
+            <div className="label">progress</div>
+            <div className="font-mono text-[10px] text-fg-3">
+              {done}/{tasks.length}{blocked > 0 ? ` · ${blocked} blocked` : ''}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="h-1 w-14 overflow-hidden rounded-full bg-white/10">
+              <div className="h-full rounded-full bg-accent/75" style={{ width: `${pct}%` }} />
+            </div>
+            <span className="font-mono text-[11px] leading-none text-fg-0">{pct}%</span>
           </div>
         </div>
-        <div className="min-w-[64px] rounded-lg bg-white/[0.035] px-2 py-1.5 text-right ring-hairline">
-          <div className="font-mono text-[15px] leading-none text-fg-0">{pct}%</div>
-          <div className="mt-1 h-1 overflow-hidden rounded-full bg-white/10">
-            <div className="h-full rounded-full bg-accent/75" style={{ width: `${pct}%` }} />
-          </div>
-        </div>
-      </div>
-      <div className="space-y-1.5">
+      </StickyHeader>
+      <div className="space-y-1.5 px-4 pb-3 pt-1">
         {visible.map((task) => {
           const complete = task.status === 'done'
           const cancelled = task.status === 'cancelled'

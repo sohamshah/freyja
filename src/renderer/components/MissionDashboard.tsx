@@ -12,12 +12,16 @@ import type {
 import { formatCost, formatDuration, formatTokens, relativeTime } from '../lib/format'
 import { Spinner } from '../lib/spinner'
 import { AgentTypeTag } from './SubagentCard'
-import { KanbanAutopilotStrip } from './kanban/AutopilotStrip'
-import { KanbanDispatchTicker } from './kanban/DispatchTicker'
-import { MissionCoverCard } from './kanban/MissionCoverCard'
-import { KanbanWatchList } from './kanban/WatchList'
+import { TasksListRailView } from './views/TasksListRailView'
+import { GoalStudioView } from './views/GoalStudioView'
+import { KanbanBridgeView } from './views/KanbanBridgeView'
+import { JudgeBrief } from './views/JudgeBrief'
+import { DispatcherBrief } from './views/DispatcherBrief'
+import { ActivityView } from './views/ActivityView'
 
-type DashboardTab = 'overview' | 'swarm' | 'findings' | 'telemetry' | 'profiles'
+// 'swarm' / 'findings' / 'telemetry' kept for legacy callers; they all
+// redirect to the corresponding live tab below.
+type DashboardTab = 'overview' | 'activity' | 'profiles' | 'swarm' | 'findings' | 'telemetry'
 
 interface AgentView {
   session: SessionSnapshot
@@ -78,17 +82,43 @@ interface KanbanCardView {
   metadata?: Record<string, unknown>
 }
 
+interface GoalVerdictPayload {
+  done?: boolean
+  reason?: string
+  confidence?: number
+  criteria?: Array<{
+    id: string
+    text: string
+    priority: 'must' | 'should' | 'may'
+    status: 'met' | 'partial' | 'missing'
+    note?: string
+  }>
+  openQuestions?: string[]
+  judgeSessionId?: string | null
+  fallbackFrom?: string | null
+}
+
+interface JudgeRulesPayload {
+  voice: string
+  rigorScore: number
+  judgeProfile: 'quick' | 'standard' | 'deep'
+  criteria: Array<{ id: string; text: string; priority: 'must' | 'should' | 'may' }>
+  neverDo: string[]
+  whenToStop: string
+  judgeTools?: string[]
+  judgeMaxIterations?: number
+  updatedAt?: number
+}
+
 interface GoalStateView {
   goal: string
   status: string
   turnsUsed: number
   maxTurns: number
   pauseReason?: string
-  lastVerdict?: {
-    done?: boolean
-    reason?: string
-    confidence?: number
-  } | null
+  lastVerdict?: GoalVerdictPayload | null
+  judgeRules?: JudgeRulesPayload | null
+  verdictHistory?: GoalVerdictPayload[]
   events: TelemetryEventView[]
 }
 
@@ -123,9 +153,7 @@ interface ProfileDefinition {
 
 const TABS: Array<{ id: DashboardTab; label: string; hint: string }> = [
   { id: 'overview', label: 'health', hint: 'current run' },
-  { id: 'swarm', label: 'agents', hint: 'lanes + bus' },
-  { id: 'findings', label: 'evidence', hint: 'findings' },
-  { id: 'telemetry', label: 'history', hint: 'context + media' },
+  { id: 'activity', label: 'activity', hint: 'session timeline' },
   { id: 'profiles', label: 'profiles', hint: 'subagents' },
 ]
 
@@ -249,20 +277,22 @@ const AGENT_PROFILES: ProfileDefinition[] = [
   },
 ]
 
+// Monochrome profile palette: agents are identified by name, not color.
+// Steel-blue accent is reserved for the active/focused state.
 const PROFILE_HEX: Record<string, string> = {
-  general: '#a8d4fc',
-  explore: '#7ab8a3',
-  'explore-fast': '#7bd3ec',
-  code: '#ffcc66',
-  verify: '#88d67f',
-  plan: '#b8a7ff',
-  review: '#f0a6ca',
-  test: '#f5b45d',
-  'browser-qa': '#79b3fa',
-  performance: '#f07878',
-  docs: '#72d0b2',
-  'memory-curator': '#c8d67f',
-  computer: '#d99bbe',
+  general: '#a8a8a8',
+  explore: '#a8a8a8',
+  'explore-fast': '#a8a8a8',
+  code: '#a8a8a8',
+  verify: '#a8a8a8',
+  plan: '#a8a8a8',
+  review: '#a8a8a8',
+  test: '#a8a8a8',
+  'browser-qa': '#a8a8a8',
+  performance: '#a8a8a8',
+  docs: '#a8a8a8',
+  'memory-curator': '#a8a8a8',
+  computer: '#a8a8a8',
 }
 
 export function MissionDashboard() {
@@ -606,54 +636,43 @@ export function MissionDashboard() {
         : 'idle'
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-[#080808]/90 backdrop-blur-[26px]">
-      <div className="pointer-events-none absolute inset-0 opacity-70">
-        <div className="absolute left-[7%] top-[10%] h-[360px] w-[360px] rounded-full bg-accent/[0.045] blur-[110px]" />
-        <div className="absolute right-[13%] top-[26%] h-[300px] w-[300px] rounded-full bg-ok/[0.035] blur-[90px]" />
-        <div className="absolute bottom-[8%] left-[35%] h-[260px] w-[420px] rounded-full bg-warn/[0.025] blur-[120px]" />
-      </div>
-
-      <header className="relative flex shrink-0 items-center gap-4 py-4 pl-[88px] pr-6 hairline-b">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-3">
-            <span className="label text-accent">mission dashboard</span>
-            <StatusPill status={missionStatus} />
-            {dashboard.missionSession && (
-              <span className="truncate font-mono text-[10px] text-fg-3">
-                {dashboard.missionSession.id}
-              </span>
-            )}
-          </div>
-          <div className="mt-2 truncate text-[18px] leading-none text-fg-0">
-            {dashboard.objective}
-          </div>
+    <div className="fixed inset-0 z-50 flex flex-col bg-bg-0">
+      <header className="relative flex shrink-0 items-center gap-5 border-b border-white/[0.06] py-3 pl-[88px] pr-5">
+        <div className="flex min-w-0 items-center gap-3 font-mono text-[10.5px] uppercase tracking-[0.14em] text-fg-3">
+          <span className="text-fg-1">mission dashboard</span>
+          <span className="h-3 w-px bg-white/[0.10]" />
+          <StatusPill status={missionStatus} />
         </div>
-        <nav className="hidden items-center gap-1 rounded-lg bg-white/[0.03] p-1 ring-hairline lg:flex">
+        <nav className="ml-2 hidden items-center gap-0.5 lg:flex">
           {TABS.map((item) => {
             const itemMeta = dashboardTabMeta(item, dashboard.coordinationStrategy)
+            const active = tab === item.id
             return (
               <button
                 key={item.id}
                 onClick={() => setTab(item.id)}
-                className={`rounded-md px-3 py-2 text-left transition ${
-                  tab === item.id
-                    ? 'bg-accent/12 text-accent ring-1 ring-accent/25'
-                    : 'text-fg-2 hover:bg-white/[0.045] hover:text-fg-0'
+                className={`rounded-md px-3 py-1.5 font-mono text-[11px] tracking-[0.04em] transition ${
+                  active
+                    ? 'bg-accent/[0.08] text-accent ring-1 ring-accent/[0.22]'
+                    : 'text-fg-2 hover:bg-white/[0.04] hover:text-fg-0'
                 }`}
               >
-                <div className="font-mono text-[11px]">{itemMeta.label}</div>
-                <div className="font-mono text-[8.5px] uppercase tracking-[0.12em] text-fg-3">
-                  {itemMeta.hint}
-                </div>
+                {itemMeta.label}
               </button>
             )
           })}
         </nav>
+        <span className="flex-1" />
+        {dashboard.missionSession ? (
+          <span className="hidden truncate font-mono text-[10px] text-fg-3 lg:inline">
+            {dashboard.missionSession.id.slice(0, 12)}
+          </span>
+        ) : null}
         <button
           onClick={() => toggleDashboard(false)}
-          className="rounded-md bg-white/[0.04] px-3 py-2 font-mono text-[10px] uppercase tracking-[0.12em] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
+          className="rounded-md border border-white/[0.06] bg-white/[0.03] px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-fg-2 transition hover:bg-white/[0.07] hover:text-fg-0"
         >
-          esc close
+          esc · close
         </button>
       </header>
 
@@ -704,38 +723,13 @@ export function MissionDashboard() {
             onCopyFinding={(event) => copyFinding(event, showToast)}
           />
         )}
-        {tab === 'swarm' && (
-          <SwarmTab
-            sessionId={dashboard.missionSessionId}
-            coordinationStrategy={dashboard.coordinationStrategy}
-            agents={dashboard.agents}
-            busEvents={dashboard.busEvents}
-            findings={dashboard.findings}
-            kanbanCards={dashboard.kanbanCards}
-            goalState={dashboard.goalState}
-            taskCards={dashboard.taskCards}
-            fileChanges={dashboard.fileChanges}
-            telemetryEvents={dashboard.telemetryEvents}
-            runningAgents={dashboard.agents.filter((agent) => agent.status === 'running').length}
-            source={dashboard.missionSession}
-            onAttach={attach}
-          />
-        )}
-        {tab === 'findings' && (
-          <FindingsTab
+        {(tab === 'activity' || tab === 'findings' || tab === 'telemetry') && (
+          <ActivityView
             findings={dashboard.findings}
             readEvents={dashboard.readEvents}
+            telemetryEvents={dashboard.telemetryEvents}
             agents={dashboard.agents}
-            onAttach={attach}
-            onCopy={(event) => copyFinding(event, showToast)}
-          />
-        )}
-        {tab === 'telemetry' && (
-          <TelemetryTab
-            events={dashboard.telemetryEvents}
-            screenshotFrames={dashboard.screenshotFrames}
-            agents={dashboard.agents}
-            rootUsage={dashboard.rootUsage}
+            onCopyFinding={(event) => copyFinding(event, showToast)}
           />
         )}
         {tab === 'profiles' && <ProfilesTab />}
@@ -795,56 +789,56 @@ function OverviewTab({
 }) {
   const compactions = telemetryEvents.filter((event) => event.subtype === 'compaction_complete').length
   const mediaPrunes = telemetryEvents.filter((event) => event.subtype === 'media_pruning').length
+  const [judgeBriefOpen, setJudgeBriefOpen] = useState(false)
+  const [dispatcherBriefOpen, setDispatcherBriefOpen] = useState(false)
+
   if (coordinationStrategy === 'kanban') {
     return (
-      <KanbanHealthView
-        sessionId={sessionId}
-        objective={objective}
-        contextPct={contextPct}
-        runningAgents={runningAgents}
-        agents={agents}
-        cards={kanbanCards}
-        cost={cost}
-        toolsCount={toolsCount}
-        screenshotFrames={screenshotFrames}
-        compactions={compactions}
-        telemetryEvents={telemetryEvents}
-        onAttach={onAttach}
-        onTab={onTab}
-      />
+      <>
+        <KanbanBridgeView
+          objective={objective}
+          cards={kanbanCards}
+          agents={agents}
+          telemetryEvents={telemetryEvents}
+          contextPct={contextPct}
+          cost={cost}
+          onAttach={onAttach}
+          onOpenDispatcherBrief={() => setDispatcherBriefOpen(true)}
+        />
+        <DispatcherBrief
+          open={dispatcherBriefOpen}
+          onClose={() => setDispatcherBriefOpen(false)}
+          cards={kanbanCards}
+          agents={agents}
+          objective={objective}
+        />
+      </>
     )
   }
   if (coordinationStrategy === 'goal') {
     return (
-      <GoalHealthView
-        objective={objective}
-        contextPct={contextPct}
-        runningAgents={runningAgents}
-        agents={agents}
-        goalState={goalState}
-        cost={cost}
-        toolsCount={toolsCount}
-        screenshotFrames={screenshotFrames}
-        compactions={compactions}
-        onAttach={onAttach}
-        onTab={onTab}
-      />
+      <>
+        <GoalStudioView
+          goalState={goalState}
+          agents={agents}
+          contextPct={contextPct}
+          cost={cost}
+          onOpenJudgeBrief={() => setJudgeBriefOpen(true)}
+        />
+        <JudgeBrief open={judgeBriefOpen} onClose={() => setJudgeBriefOpen(false)} goalState={goalState} />
+      </>
     )
   }
   if (coordinationStrategy === 'isolated') {
     return (
-      <TaskHealthView
+      <TasksListRailView
         objective={objective}
-        contextPct={contextPct}
-        runningAgents={runningAgents}
-        agents={agents}
         tasks={taskCards}
+        agents={agents}
+        events={telemetryEvents}
+        contextPct={contextPct}
         cost={cost}
-        toolsCount={toolsCount}
-        screenshotFrames={screenshotFrames}
-        compactions={compactions}
         onAttach={onAttach}
-        onTab={onTab}
       />
     )
   }
@@ -908,7 +902,7 @@ function OverviewTab({
       </section>
 
       <section className="col-span-12 flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4 lg:col-span-5">
-        <PanelHeader label="agent lanes" action="open" onAction={() => onTab('swarm')} />
+        <PanelHeader label="agent lanes" />
         <div className="mt-3 min-h-0 flex-1 overflow-auto pr-1">
           <AgentLaneList agents={agents} onAttach={onAttach} />
         </div>
@@ -938,1994 +932,6 @@ function OverviewTab({
             artifacts={artifacts}
             onJumpTool={onJumpTool}
           />
-        </div>
-      </section>
-    </div>
-  )
-}
-
-function SwarmTab({
-  sessionId,
-  coordinationStrategy,
-  agents,
-  busEvents,
-  findings,
-  kanbanCards,
-  goalState,
-  taskCards,
-  fileChanges,
-  telemetryEvents,
-  runningAgents,
-  source,
-  onAttach,
-}: {
-  sessionId: string
-  coordinationStrategy: CoordinationStrategy
-  agents: AgentView[]
-  busEvents: BusEventView[]
-  findings: BusEventView[]
-  kanbanCards: KanbanCardView[]
-  goalState: GoalStateView | null
-  taskCards: TaskCardView[]
-  fileChanges: FileChangeSet[]
-  telemetryEvents: TelemetryEventView[]
-  runningAgents: number
-  source: SessionSnapshot | undefined
-  onAttach: (id: string, mode?: 'replace' | 'split') => void
-}) {
-  if (coordinationStrategy === 'kanban') {
-    return (
-      <KanbanAgentsView
-        sessionId={sessionId}
-        cards={kanbanCards}
-        agents={agents}
-        source={source}
-        telemetryEvents={telemetryEvents}
-        runningAgents={runningAgents}
-        onAttach={onAttach}
-      />
-    )
-  }
-  if (coordinationStrategy === 'goal') {
-    return (
-      <GoalLoopAgentsView
-        goalState={goalState}
-        agents={agents}
-        busEvents={busEvents}
-        findings={findings}
-        onAttach={onAttach}
-      />
-    )
-  }
-  if (coordinationStrategy === 'isolated') {
-    return (
-      <TaskAgentsView
-        tasks={taskCards}
-        agents={agents}
-        source={source}
-        onAttach={onAttach}
-      />
-    )
-  }
-
-  return (
-    <div className="grid min-h-0 flex-1 grid-cols-12 gap-3 overflow-hidden">
-      <section className="col-span-12 flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4 xl:col-span-8">
-        <PanelHeader label="hive mind" />
-        <div className="mt-3 flex min-h-0 flex-1 flex-col">
-          <HiveMindGraph
-            agents={agents}
-            events={busEvents}
-            fileChanges={fileChanges}
-            source={source}
-            onAttach={onAttach}
-          />
-        </div>
-      </section>
-      <section className="col-span-12 grid min-h-0 grid-rows-[minmax(0,1fr)_220px] gap-3 xl:col-span-4">
-        <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
-          <PanelHeader label="message bus" />
-          <BusFeed events={busEvents} />
-        </div>
-        <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
-          <PanelHeader label="latest evidence" />
-          <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-auto pr-1">
-            {findings.slice(0, 3).map((event) => (
-              <FindingCard
-                key={`${event.sessionId}-${event.index}-${event.timestamp}`}
-                event={event}
-                compact
-              />
-            ))}
-            {findings.length === 0 && (
-              <EmptyState title="No evidence" body="Agents can publish findings, progress, and errors to the bus." />
-            )}
-          </div>
-        </div>
-      </section>
-    </div>
-  )
-}
-
-function GoalHealthView({
-  objective,
-  contextPct,
-  runningAgents,
-  agents,
-  goalState,
-  cost,
-  toolsCount,
-  screenshotFrames,
-  compactions,
-  onAttach,
-  onTab,
-}: {
-  objective: string
-  contextPct: number
-  runningAgents: number
-  agents: AgentView[]
-  goalState: GoalStateView | null
-  cost: number
-  toolsCount: number
-  screenshotFrames: number
-  compactions: number
-  onAttach: (id: string, mode?: 'replace' | 'split') => void
-  onTab: (tab: DashboardTab) => void
-}) {
-  const status = goalState?.status ?? 'idle'
-  const turnsUsed = goalState?.turnsUsed ?? 0
-  const maxTurns = goalState?.maxTurns ?? 20
-  const turnPct = Math.min(100, Math.round((turnsUsed / Math.max(1, maxTurns)) * 100))
-  const verdict = goalState?.lastVerdict
-  const continuations = goalState?.events.filter((event) => event.subtype === 'goal_continue').length ?? 0
-  const judges = goalState?.events.filter((event) => event.subtype === 'goal_judge').length ?? 0
-
-  return (
-    <div className="grid min-h-0 flex-1 grid-cols-12 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden">
-      <div className="col-span-12 grid grid-cols-2 gap-3 xl:grid-cols-8">
-        <MetricCard label="goal" value={status} sub={`${turnsUsed}/${maxTurns} turns`} meter={turnPct} tone={goalStatusTone(status)} />
-        <MetricCard label="judge calls" value={String(judges)} sub={`${continuations} continuations`} tone="accent" />
-        <MetricCard label="active agents" value={String(runningAgents)} sub={`${agents.length} total`} tone="ok" />
-        <MetricCard label="context" value={`${contextPct}%`} sub="current request" meter={contextPct} />
-        <MetricCard label="tool calls" value={String(toolsCount)} sub="mission total" />
-        <MetricCard label="screenshots" value={String(screenshotFrames)} sub="captured" tone="accent" />
-        <MetricCard label="summaries" value={String(compactions)} sub="context history" tone={compactions > 0 ? 'ok' : 'neutral'} />
-        <MetricCard label="spend" value={formatCost(cost)} sub="mission total" />
-      </div>
-
-      <section className="col-span-12 flex min-h-0 flex-col rounded-xl glass-strong p-4 xl:col-span-4">
-        <PanelHeader label="active goal" action="profiles" onAction={() => onTab('profiles')} />
-        <div className="mt-3 max-h-[220px] shrink-0 overflow-auto rounded-lg bg-white/[0.035] p-3 ring-hairline">
-          <div className="label mb-2 text-fg-2">objective</div>
-          <p className="selectable text-[13px] leading-[1.55] text-fg-0">
-            {goalState?.goal || objective}
-          </p>
-        </div>
-        <div className="mt-3 grid shrink-0 grid-cols-2 gap-2">
-          <BriefStat label="strategy" value="goal" />
-          <BriefStat label="status" value={status} tone={status === 'paused' ? 'danger' : undefined} />
-          <BriefStat label="turns" value={`${turnsUsed}/${maxTurns}`} />
-          <BriefStat label="confidence" value={verdict?.confidence !== undefined ? `${Math.round((verdict.confidence ?? 0) * 100)}%` : 'n/a'} />
-        </div>
-        <div className="mt-3 shrink-0 rounded-lg bg-black/20 p-3 ring-hairline">
-          <div className="label mb-2">latest judge</div>
-          <p className="text-[12px] leading-[1.55] text-fg-1">
-            {verdict?.reason || 'No judge verdict yet. The first assistant turn will arm the loop.'}
-          </p>
-        </div>
-        <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-lg bg-black/20 p-3 ring-hairline">
-          <div className="label mb-3">agent roster</div>
-          <div className="space-y-2">
-            {agents.slice(0, 8).map((agent) => (
-              <CompactAgentRow key={agent.session.id} agent={agent} onAttach={onAttach} />
-            ))}
-            {agents.length === 0 && (
-              <EmptyState title="Same-session loop" body="Goal mode keeps iterating in the parent session. Delegated agents appear here if the loop spawns them." />
-            )}
-          </div>
-        </div>
-      </section>
-
-      <section className="col-span-12 flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4 xl:col-span-8">
-        <PanelHeader label="judge timeline" action="agents" onAction={() => onTab('swarm')} />
-        <GoalTimeline goalState={goalState} />
-      </section>
-    </div>
-  )
-}
-
-function TaskHealthView({
-  objective,
-  contextPct,
-  runningAgents,
-  agents,
-  tasks,
-  cost,
-  toolsCount,
-  screenshotFrames,
-  compactions,
-  onAttach,
-  onTab,
-}: {
-  objective: string
-  contextPct: number
-  runningAgents: number
-  agents: AgentView[]
-  tasks: TaskCardView[]
-  cost: number
-  toolsCount: number
-  screenshotFrames: number
-  compactions: number
-  onAttach: (id: string, mode?: 'replace' | 'split') => void
-  onTab: (tab: DashboardTab) => void
-}) {
-  const done = tasks.filter((task) => task.status === 'done').length
-  const blocked = tasks.filter((task) => task.status === 'blocked').length
-  const active = tasks.filter((task) => task.status === 'active').length
-  const progress = taskProgress(tasks)
-  return (
-    <div className="grid min-h-0 flex-1 grid-cols-12 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden">
-      <div className="col-span-12 grid grid-cols-2 gap-3 xl:grid-cols-8">
-        <MetricCard label="tasks" value={`${progress}%`} sub={`${done}/${tasks.length || 0} done`} meter={progress} tone={progress === 100 ? 'ok' : 'accent'} />
-        <MetricCard label="active" value={String(active)} sub={`${blocked} blocked`} tone={blocked ? 'warn' : 'ok'} />
-        <MetricCard label="active agents" value={String(runningAgents)} sub={`${agents.length} total`} tone="ok" />
-        <MetricCard label="context" value={`${contextPct}%`} sub="current request" meter={contextPct} />
-        <MetricCard label="tool calls" value={String(toolsCount)} sub="mission total" />
-        <MetricCard label="screenshots" value={String(screenshotFrames)} sub="captured" tone="accent" />
-        <MetricCard label="summaries" value={String(compactions)} sub="context history" tone={compactions > 0 ? 'ok' : 'neutral'} />
-        <MetricCard label="spend" value={formatCost(cost)} sub="mission total" />
-      </div>
-
-      <section className="col-span-12 flex min-h-0 flex-col rounded-xl glass-strong p-4 xl:col-span-3">
-        <PanelHeader label="solo mission" action="profiles" onAction={() => onTab('profiles')} />
-        <div className="mt-3 max-h-[170px] shrink-0 overflow-auto rounded-lg bg-white/[0.035] p-3 ring-hairline">
-          <div className="label mb-2 text-fg-2">current objective</div>
-          <p className="selectable text-[13px] leading-[1.55] text-fg-0">{objective}</p>
-        </div>
-        <div className="mt-3 grid shrink-0 grid-cols-2 gap-2">
-          <BriefStat label="strategy" value="tasks" />
-          <BriefStat label="progress" value={`${progress}%`} />
-          <BriefStat label="active" value={String(active)} />
-          <BriefStat label="blocked" value={String(blocked)} tone={blocked ? 'danger' : undefined} />
-        </div>
-        <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-lg bg-black/20 p-3 ring-hairline">
-          <div className="label mb-3">agent allocation</div>
-          <TaskAssignmentList agents={agents} tasks={tasks} onAttach={onAttach} />
-        </div>
-      </section>
-
-      <section className="col-span-12 flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4 xl:col-span-9">
-        <PanelHeader label="task ledger" action="agents" onAction={() => onTab('swarm')} />
-        <TaskBoard tasks={tasks} agents={agents} onAttach={onAttach} compact />
-      </section>
-    </div>
-  )
-}
-
-function TaskAgentsView({
-  tasks,
-  agents,
-  source,
-  onAttach,
-}: {
-  tasks: TaskCardView[]
-  agents: AgentView[]
-  source: SessionSnapshot | undefined
-  onAttach: (id: string, mode?: 'replace' | 'split') => void
-}) {
-  const [selectedTaskId, setSelectedTaskId] = useState(tasks[0]?.id ?? '')
-  const taskIdsKey = useMemo(() => tasks.map((task) => task.id).join('\u0001'), [tasks])
-  const firstTaskId = tasks[0]?.id ?? ''
-  useEffect(() => {
-    setSelectedTaskId((current) => {
-      if (!firstTaskId) return current ? '' : current
-      if (!current) return firstTaskId
-      return taskIdsKey.split('\u0001').includes(current) ? current : firstTaskId
-    })
-  }, [firstTaskId, taskIdsKey])
-  const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? tasks[0]
-  const selectedAgents = selectedTask ? agents.filter((agent) => agent.taskId === selectedTask.id) : []
-  return (
-    <div className="grid min-h-0 flex-1 grid-cols-12 gap-3 overflow-hidden">
-      <section className="col-span-12 flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4 xl:col-span-9">
-        <div className="mb-3 flex shrink-0 items-start justify-between gap-3">
-          <div>
-            <PanelHeader label="task workbench" />
-            <div className="mt-1 font-mono text-[10px] text-fg-3">
-              {source?.title ?? 'Session'} · {tasks.length} tasks · {agents.filter((agent) => agent.taskId).length} assigned agents
-            </div>
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            <MiniMetric label="progress" value={`${taskProgress(tasks)}%`} />
-            <MiniMetric label="active" value={String(tasks.filter((task) => task.status === 'active').length)} />
-            <MiniMetric label="blocked" value={String(tasks.filter((task) => task.status === 'blocked').length)} />
-          </div>
-        </div>
-        <TaskBoard tasks={tasks} agents={agents} selectedTaskId={selectedTask?.id} onSelect={setSelectedTaskId} onAttach={onAttach} />
-      </section>
-      <section className="col-span-12 grid min-h-0 grid-rows-[minmax(0,1.1fr)_minmax(0,0.9fr)] gap-3 xl:col-span-3">
-        <TaskDetailPanel task={selectedTask} agents={selectedAgents} onAttach={onAttach} />
-        <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
-          <PanelHeader label="agent lanes" />
-          <div className="mt-3 min-h-0 flex-1 overflow-auto pr-1">
-            <AgentLaneList agents={agents} onAttach={onAttach} />
-          </div>
-        </div>
-      </section>
-    </div>
-  )
-}
-
-const TASK_COLUMNS = [
-  { id: 'todo', label: 'queued', hint: 'awaiting triage' },
-  { id: 'active', label: 'in progress', hint: 'owned by agents' },
-  { id: 'blocked', label: 'blocked', hint: 'needs input' },
-  { id: 'done', label: 'complete', hint: 'handoff sealed' },
-  { id: 'cancelled', label: 'stopped', hint: 'no longer active' },
-] as const
-
-function TaskBoard({
-  tasks,
-  agents,
-  selectedTaskId,
-  compact = false,
-  onSelect,
-  onAttach,
-}: {
-  tasks: TaskCardView[]
-  agents: AgentView[]
-  selectedTaskId?: string
-  compact?: boolean
-  onSelect?: (id: string) => void
-  onAttach: (id: string, mode?: 'replace' | 'split') => void
-}) {
-  const knownStatuses = new Set(TASK_COLUMNS.map((column) => column.id))
-  const unknownTasks = tasks.filter((task) => !knownStatuses.has(task.status as typeof TASK_COLUMNS[number]['id']))
-  const visibleColumns: Array<{ id: string; label: string; hint: string; tasks: TaskCardView[] }> = TASK_COLUMNS.map((column) => ({
-    ...column,
-    tasks: tasks.filter((task) => task.status === column.id),
-  })).filter((column) => column.tasks.length > 0)
-  if (unknownTasks.length > 0) {
-    visibleColumns.push({
-      id: 'other',
-      label: 'other',
-      hint: 'unmapped status',
-      tasks: unknownTasks,
-    })
-  }
-  const hiddenColumns = TASK_COLUMNS.filter((column) => !visibleColumns.some((visible) => visible.id === column.id))
-  const minColumnWidth = compact ? 250 : 310
-  const minBoardWidth = Math.max(visibleColumns.length * minColumnWidth + Math.max(0, visibleColumns.length - 1) * 12, compact ? 760 : 900)
-
-  if (tasks.length === 0) {
-    return (
-      <div className={`min-h-0 flex-1 ${compact ? 'mt-3' : ''}`}>
-        <EmptyState
-          title="No tasks yet"
-          body="Task cards appear here once the parent creates or assigns work."
-        />
-      </div>
-    )
-  }
-
-  return (
-    <div className={`min-h-0 flex-1 overflow-auto ${compact ? 'mt-3' : ''}`}>
-      {hiddenColumns.length > 0 && (
-        <div className="mb-3 flex shrink-0 flex-wrap items-center gap-1.5">
-          <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-3">quiet lanes</span>
-          {hiddenColumns.map((column) => (
-            <span key={column.id} className="rounded bg-white/[0.025] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.08em] text-fg-3 ring-hairline">
-              {column.label}
-            </span>
-          ))}
-        </div>
-      )}
-      <div
-        className="grid min-h-full gap-3"
-        style={{
-          minWidth: `${minBoardWidth}px`,
-          gridTemplateColumns: `repeat(${visibleColumns.length}, minmax(${minColumnWidth}px, 1fr))`,
-        }}
-      >
-        {visibleColumns.map((column) => {
-          return (
-            <div key={column.id} className="flex min-h-0 flex-col rounded-xl bg-black/22 p-3 ring-hairline">
-              <div className="mb-3 flex shrink-0 items-start justify-between gap-2">
-                <div>
-                  <div className={`font-mono text-[11px] uppercase tracking-[0.16em] ${taskStatusClass(column.id)}`}>
-                    {column.label}
-                  </div>
-                  <div className="mt-1 font-mono text-[9px] text-fg-3">{column.hint}</div>
-                </div>
-                <span className="rounded-md bg-white/[0.04] px-2 py-1 font-mono text-[10px] text-fg-2 ring-hairline">
-                  {column.tasks.length}
-                </span>
-              </div>
-              <div className="min-h-0 flex-1 space-y-3 overflow-auto pr-1">
-                {column.tasks.map((task) => (
-                  <TaskCard
-                    key={task.id}
-                    task={task}
-                    agents={agents.filter((agent) => agent.taskId === task.id)}
-                    selected={task.id === selectedTaskId}
-                    onClick={() => onSelect?.(task.id)}
-                    onAttach={onAttach}
-                  />
-                ))}
-              </div>
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-function TaskCard({
-  task,
-  agents,
-  selected,
-  onClick,
-  onAttach,
-}: {
-  task: TaskCardView
-  agents: AgentView[]
-  selected?: boolean
-  onClick?: () => void
-  onAttach: (id: string, mode?: 'replace' | 'split') => void
-}) {
-  const progress = Math.max(0, Math.min(task.progress ?? statusProgress(task.status), 100))
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`group w-full rounded-lg p-0 text-left transition ${selected ? 'ring-1 ring-accent/55' : 'hover:ring-1 hover:ring-white/18'}`}
-    >
-      <div className={`task-card-skin task-card-${task.status} rounded-lg p-3`}>
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <div className="font-mono text-[10px] text-accent">{task.id}</div>
-            <div className="mt-1 line-clamp-2 text-[12px] leading-[1.35] text-fg-0">{task.title}</div>
-          </div>
-          <span className={`font-mono text-[9px] uppercase ${taskStatusClass(task.status)}`}>
-            {task.status}
-          </span>
-        </div>
-        <div className="mt-3 h-1 overflow-hidden rounded-full bg-white/10">
-          <div className="h-full rounded-full bg-accent/70" style={{ width: `${progress}%` }} />
-        </div>
-        {task.body && (
-          <p className="mt-2 line-clamp-3 text-[10.5px] leading-[1.45] text-fg-2">{stripMarkdown(task.body)}</p>
-        )}
-        <div className="mt-3 flex items-center justify-between gap-2">
-          <span className="truncate font-mono text-[9px] text-fg-3">
-            {task.assignee || agents[0]?.session.title || 'unassigned'}
-          </span>
-          {agents[0] && (
-            <span
-              role="button"
-              tabIndex={0}
-              onClick={(event) => {
-                event.stopPropagation()
-                onAttach(agents[0].session.id, 'replace')
-              }}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.stopPropagation()
-                  onAttach(agents[0].session.id, 'replace')
-                }
-              }}
-              className="rounded bg-white/[0.055] px-2 py-1 font-mono text-[9px] uppercase text-accent ring-hairline hover:bg-accent/10"
-            >
-              attach
-            </span>
-          )}
-        </div>
-      </div>
-    </button>
-  )
-}
-
-function TaskDetailPanel({
-  task,
-  agents,
-  onAttach,
-}: {
-  task?: TaskCardView
-  agents: AgentView[]
-  onAttach: (id: string, mode?: 'replace' | 'split') => void
-}) {
-  if (!task) {
-    return (
-      <section className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
-        <PanelHeader label="task detail" />
-        <EmptyState title="No task selected" body="Click a task card to inspect its owner, history, artifacts, and result." />
-      </section>
-    )
-  }
-  return (
-    <section className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
-      <PanelHeader label="task detail" />
-      <div className="mt-3 min-h-0 flex-1 overflow-auto pr-1">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <div className="font-mono text-[12px] text-accent">{task.id}</div>
-            <div className="mt-1 text-[16px] leading-[1.25] text-fg-0">{task.title}</div>
-          </div>
-          <span className={`rounded-md bg-white/[0.04] px-2 py-1 font-mono text-[9px] uppercase ring-hairline ${taskStatusClass(task.status)}`}>
-            {task.status}
-          </span>
-        </div>
-        <div className="mt-4 grid grid-cols-[94px_1fr] gap-x-3 gap-y-2 font-mono text-[10px]">
-          <span className="label">agent</span>
-          <span className="text-fg-1">{agents[0]?.session.title ?? task.assignee ?? 'unassigned'}</span>
-          <span className="label">priority</span>
-          <span className="text-fg-1">P{task.priority ?? 2}</span>
-          <span className="label">progress</span>
-          <span className="text-fg-1">{task.progress ?? statusProgress(task.status)}%</span>
-        </div>
-        <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-white/10">
-          <div className="h-full rounded-full bg-accent/70" style={{ width: `${task.progress ?? statusProgress(task.status)}%` }} />
-        </div>
-        <DetailBlock title="description" body={task.body || 'No description recorded.'} />
-        {task.summary && <DetailBlock title="summary" body={task.summary} />}
-        {task.result && <DetailBlock title="result" body={task.result} />}
-        {task.artifacts && task.artifacts.length > 0 && (
-          <div className="mt-4 rounded-lg bg-black/25 p-3 ring-hairline">
-            <div className="label mb-2">artifacts</div>
-            <div className="space-y-1">
-              {task.artifacts.map((artifact) => (
-                <div key={artifact} className="truncate font-mono text-[10px] text-fg-1">{artifact}</div>
-              ))}
-            </div>
-          </div>
-        )}
-        {agents.length > 0 && (
-          <div className="mt-4 space-y-2">
-            <div className="label">assigned agents</div>
-            {agents.map((agent) => (
-              <CompactAgentRow key={agent.session.id} agent={agent} onAttach={onAttach} />
-            ))}
-          </div>
-        )}
-        {task.events && task.events.length > 0 && (
-          <div className="mt-4 space-y-2">
-            <div className="label">history</div>
-            {task.events.slice(-6).reverse().map((event, index) => (
-              <div key={`${event.timestamp}-${index}`} className="rounded-md bg-white/[0.03] px-2.5 py-2 ring-hairline">
-                <div className="flex justify-between gap-2">
-                  <span className="font-mono text-[10px] text-fg-1">{event.kind ?? 'update'}</span>
-                  {event.timestamp && <span className="font-mono text-[9px] text-fg-3">{relativeTime(event.timestamp)}</span>}
-                </div>
-                <p className="mt-1 text-[10.5px] leading-[1.45] text-fg-2">{event.message}</p>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </section>
-  )
-}
-
-function DetailBlock({ title, body }: { title: string; body: string }) {
-  return (
-    <div className="mt-4 rounded-lg bg-black/25 p-3 ring-hairline">
-      <div className="label mb-2">{title}</div>
-      <p className="selectable whitespace-pre-wrap text-[11px] leading-[1.55] text-fg-1">{body}</p>
-    </div>
-  )
-}
-
-function TaskAssignmentList({
-  agents,
-  tasks,
-  onAttach,
-}: {
-  agents: AgentView[]
-  tasks: TaskCardView[]
-  onAttach: (id: string, mode?: 'replace' | 'split') => void
-}) {
-  const assigned = agents.filter((agent) => agent.taskId)
-  if (assigned.length === 0) {
-    return <EmptyState title="No assigned agents" body="Tasks and task-bound agents will appear here as the parent decomposes work." />
-  }
-  const taskById = new Map(tasks.map((task) => [task.id, task]))
-  return (
-    <div className="space-y-2">
-      {assigned.slice(0, 8).map((agent) => {
-        const task = agent.taskId ? taskById.get(agent.taskId) : undefined
-        return (
-          <button
-            key={agent.session.id}
-            type="button"
-            onClick={() => onAttach(agent.session.id, 'replace')}
-            className="w-full rounded-lg bg-white/[0.03] p-2 text-left ring-hairline hover:bg-white/[0.055]"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="truncate text-[11px] text-fg-0">{agent.session.title}</span>
-              <span className="font-mono text-[9px] uppercase text-accent">{agent.status}</span>
-            </div>
-            <div className="mt-1 truncate font-mono text-[9px] text-fg-3">
-              {agent.taskId} · {task?.title ?? 'task'}
-            </div>
-          </button>
-        )
-      })}
-    </div>
-  )
-}
-
-function GoalLoopAgentsView({
-  goalState,
-  agents,
-  busEvents,
-  findings,
-  onAttach,
-}: {
-  goalState: GoalStateView | null
-  agents: AgentView[]
-  busEvents: BusEventView[]
-  findings: BusEventView[]
-  onAttach: (id: string, mode?: 'replace' | 'split') => void
-}) {
-  return (
-    <div className="grid min-h-0 flex-1 grid-cols-12 gap-3 overflow-hidden">
-      <section className="col-span-12 flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4 xl:col-span-8">
-        <PanelHeader label="goal loop" />
-        <div className="mt-3 grid shrink-0 grid-cols-3 gap-2">
-          <BriefStat label="status" value={goalState?.status ?? 'idle'} />
-          <BriefStat label="turn budget" value={`${goalState?.turnsUsed ?? 0}/${goalState?.maxTurns ?? 20}`} />
-          <BriefStat label="agents" value={String(agents.length)} />
-        </div>
-        <div className="mt-3 min-h-0 flex-1 overflow-hidden rounded-lg bg-black/25 ring-hairline">
-          <GoalTimeline goalState={goalState} dense />
-        </div>
-      </section>
-      <section className="col-span-12 grid min-h-0 grid-rows-[minmax(0,1fr)_220px] gap-3 xl:col-span-4">
-        <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
-          <PanelHeader label="delegated lanes" />
-          <div className="mt-3 min-h-0 flex-1 overflow-auto pr-1">
-            <AgentLaneList agents={agents} onAttach={onAttach} />
-          </div>
-        </div>
-        <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
-          <PanelHeader label="side channel" />
-          {busEvents.length > 0 ? (
-            <BusFeed events={busEvents} />
-          ) : (
-            <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-auto pr-1">
-              {findings.slice(0, 3).map((event) => (
-                <FindingCard
-                  key={`${event.sessionId}-${event.index}-${event.timestamp}`}
-                  event={event}
-                  compact
-                />
-              ))}
-              {findings.length === 0 && (
-                <EmptyState title="No side-channel traffic" body="Goal mode is same-session by default. Bus messages appear only if delegated agents publish them." />
-              )}
-            </div>
-          )}
-        </div>
-      </section>
-    </div>
-  )
-}
-
-function GoalTimeline({ goalState, dense = false }: { goalState: GoalStateView | null; dense?: boolean }) {
-  const events = goalState?.events ?? []
-  return (
-    <div className={`min-h-0 flex-1 overflow-auto ${dense ? 'p-3' : 'mt-3 pr-1'}`}>
-      {events.length === 0 && (
-        <EmptyState
-          title="No goal loop events yet"
-          body="Start a goal session or run /goal <objective>. Judge decisions and continuations will appear here."
-        />
-      )}
-      <div className="space-y-2">
-        {events.map((event) => {
-          const state = event.details?.goalState as Record<string, unknown> | undefined
-          const verdict = (event.details?.verdict as Record<string, unknown> | undefined) ?? (state?.lastVerdict as Record<string, unknown> | undefined)
-          const verdictReason = typeof verdict?.reason === 'string' ? verdict.reason : ''
-          const continuationPrompt = typeof event.details?.continuationPrompt === 'string' ? event.details.continuationPrompt : ''
-          return (
-            <div
-              key={event.id}
-              className={`rounded-lg bg-white/[0.035] p-3 ring-hairline ${
-                event.subtype === 'goal_done'
-                  ? 'ring-ok/30'
-                  : event.subtype === 'goal_paused'
-                    ? 'ring-warn/30'
-                    : event.subtype === 'goal_continue'
-                      ? 'ring-accent/25'
-                      : ''
-              }`}
-            >
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <span className={`h-2 w-2 rounded-full ${goalEventDot(event.subtype)}`} />
-                  <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-fg-0">
-                    {event.subtype.replace(/^goal_/, '').replace(/_/g, ' ')}
-                  </span>
-                </div>
-                <span className="font-mono text-[9px] text-fg-3">{relativeTime(event.at)}</span>
-              </div>
-              <p className="mt-2 text-[12px] leading-[1.5] text-fg-1">{event.message}</p>
-              {verdictReason && (
-                <div className="mt-2 rounded-md bg-black/25 px-2.5 py-2 text-[11px] leading-[1.45] text-fg-2 ring-hairline">
-                  {verdictReason}
-                </div>
-              )}
-              {event.subtype === 'goal_continue' && continuationPrompt && (
-                <div className="mt-2 max-h-[90px] overflow-auto rounded-md bg-black/25 px-2.5 py-2 font-mono text-[10px] leading-[1.45] text-fg-3 ring-hairline">
-                  {continuationPrompt}
-                </div>
-              )}
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-const KANBAN_COLUMNS = [
-  { id: 'triage', label: 'triage', hint: 'specifying / awaiting parents' },
-  { id: 'ready', label: 'ready', hint: 'unblocked work' },
-  { id: 'running', label: 'working', hint: 'owned by agents' },
-  { id: 'done_unverified', label: 'review', hint: 'awaiting verifier' },
-  { id: 'blocked', label: 'blocked', hint: 'needs input' },
-  { id: 'done', label: 'done', hint: 'sealed outputs' },
-  { id: 'crashed', label: 'crashed', hint: 'worker exited unclean' },
-  { id: 'timed_out', label: 'timed out', hint: 'exceeded budget' },
-  { id: 'failed', label: 'failed', hint: 'circuit broken' },
-  { id: 'cancelled', label: 'cancelled', hint: 'stopped by operator' },
-] as const
-
-function KanbanHealthView({
-  sessionId,
-  objective,
-  contextPct,
-  runningAgents,
-  agents,
-  cards,
-  cost,
-  toolsCount,
-  screenshotFrames,
-  compactions,
-  telemetryEvents,
-  onAttach,
-  onTab,
-}: {
-  sessionId: string
-  objective: string
-  contextPct: number
-  runningAgents: number
-  agents: AgentView[]
-  cards: KanbanCardView[]
-  cost: number
-  toolsCount: number
-  screenshotFrames: number
-  compactions: number
-  telemetryEvents: TelemetryEventView[]
-  onAttach: (id: string, mode?: 'replace' | 'split') => void
-  onTab: (tab: DashboardTab) => void
-}) {
-  const progress = kanbanProgress(cards)
-  const blocked = cards.filter((card) => card.status === 'blocked').length
-  const done = cards.filter((card) => card.status === 'done').length
-  return (
-    <div className="grid min-h-0 flex-1 grid-cols-12 grid-rows-[auto_auto_auto_minmax(0,1fr)] gap-3 overflow-hidden">
-      <div className="col-span-12">
-        <KanbanAutopilotStrip
-          sessionId={sessionId}
-          systemEvents={telemetryEvents}
-          runningAgents={runningAgents}
-        />
-      </div>
-      <div className="col-span-12">
-        <MissionCoverCard cards={cards} restartCount={kanbanRestartCount(telemetryEvents)} />
-      </div>
-      <div className="col-span-12 grid grid-cols-2 gap-3 xl:grid-cols-8">
-        <MetricCard label="board" value={`${progress}%`} sub={`${done}/${cards.length || 0} done`} meter={progress} tone={progress === 100 ? 'ok' : 'accent'} />
-        <MetricCard label="cards" value={String(cards.length)} sub={`${blocked} blocked`} tone={blocked ? 'warn' : 'neutral'} />
-        <MetricCard label="active agents" value={String(runningAgents)} sub={`${agents.length} total`} tone="ok" />
-        <MetricCard label="context" value={`${contextPct}%`} sub="current request" meter={contextPct} />
-        <MetricCard label="tool calls" value={String(toolsCount)} sub="mission total" />
-        <MetricCard label="screenshots" value={String(screenshotFrames)} sub="captured" tone="accent" />
-        <MetricCard label="summaries" value={String(compactions)} sub="context history" tone={compactions > 0 ? 'ok' : 'neutral'} />
-        <MetricCard label="spend" value={formatCost(cost)} sub="mission total" />
-      </div>
-
-      <section className="col-span-12 flex min-h-0 flex-col rounded-xl glass-strong p-4 xl:col-span-3">
-        <PanelHeader label="mission brief" action="profiles" onAction={() => onTab('profiles')} />
-        <div className="mt-3 max-h-[140px] shrink-0 overflow-auto rounded-lg bg-white/[0.035] p-3 ring-hairline">
-          <div className="label mb-2 text-fg-2">current objective</div>
-          <p className="selectable text-[13px] leading-[1.55] text-fg-0">{objective}</p>
-        </div>
-        <div className="mt-3 grid shrink-0 grid-cols-2 gap-2">
-          <BriefStat label="strategy" value="board" />
-          <BriefStat label="progress" value={`${progress}%`} />
-          <BriefStat label="agents" value={String(agents.length)} />
-          <BriefStat label="blocked" value={String(blocked)} tone={blocked ? 'danger' : undefined} />
-        </div>
-        <div className="mt-3 min-h-0 flex-1 space-y-3 overflow-hidden">
-          <KanbanWatchList cards={cards} />
-          <KanbanDispatchTicker systemEvents={telemetryEvents} />
-        </div>
-      </section>
-
-      <section className="col-span-12 flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4 xl:col-span-9">
-        <PanelHeader label="kanban board" action="agents" onAction={() => onTab('swarm')} />
-        <KanbanBoard cards={cards} agents={agents} onAttach={onAttach} compact />
-      </section>
-    </div>
-  )
-}
-
-function KanbanAgentsView({
-  sessionId,
-  cards,
-  agents,
-  source,
-  telemetryEvents,
-  runningAgents,
-  onAttach,
-}: {
-  sessionId: string
-  cards: KanbanCardView[]
-  agents: AgentView[]
-  source: SessionSnapshot | undefined
-  telemetryEvents: TelemetryEventView[]
-  runningAgents: number
-  onAttach: (id: string, mode?: 'replace' | 'split') => void
-}) {
-  const [selectedCardId, setSelectedCardId] = useState<string>('')
-  const cardIdsKey = useMemo(() => cards.map((card) => card.id).join('\u0001'), [cards])
-  const assigned = agents.filter((agent) => agent.kanbanTaskId)
-  const unassigned = agents.filter((agent) => !agent.kanbanTaskId)
-  const defaultCardId = useMemo(
-    () =>
-      cards.find((card) => card.status === 'running')?.id ??
-      cards.find((card) => card.status === 'blocked')?.id ??
-      cards[0]?.id ??
-      '',
-    [cards],
-  )
-  useEffect(() => {
-    setSelectedCardId((current) => {
-      if (!defaultCardId) return current ? '' : current
-      if (!current) return defaultCardId
-      return cardIdsKey.split('\u0001').includes(current) ? current : defaultCardId
-    })
-  }, [cardIdsKey, defaultCardId])
-  const selectedCard = cards.find((card) => card.id === selectedCardId) ?? cards.find((card) => card.id === defaultCardId)
-  const selectedIndex = selectedCard ? cards.findIndex((card) => card.id === selectedCard.id) : -1
-  const selectedAgents = selectedCard ? agents.filter((agent) => agent.kanbanTaskId === selectedCard.id) : []
-  const selectRelativeCard = (offset: number) => {
-    if (!cards.length || selectedIndex < 0) return
-    const next = cards[(selectedIndex + offset + cards.length) % cards.length]
-    if (next) setSelectedCardId(next.id)
-  }
-  // Keyboard nav: arrows / j-k step through cards; Esc clears selection.
-  // Ignored when the user is typing in an input or textarea so the chat
-  // composer doesn't fight for the same keys.
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
-        return
-      }
-      if (event.metaKey || event.ctrlKey || event.altKey) return
-      switch (event.key) {
-        case 'ArrowDown':
-        case 'j':
-          event.preventDefault()
-          selectRelativeCard(1)
-          return
-        case 'ArrowUp':
-        case 'k':
-          event.preventDefault()
-          selectRelativeCard(-1)
-          return
-        case 'Escape':
-          if (selectedCardId) {
-            event.preventDefault()
-            setSelectedCardId('')
-          }
-          return
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [cards.length, selectedIndex, selectedCardId])
-  return (
-    <div className="grid min-h-0 flex-1 grid-cols-12 grid-rows-[auto_auto_minmax(0,1fr)] gap-3 overflow-hidden">
-      <div className="col-span-12">
-        <KanbanAutopilotStrip
-          sessionId={sessionId}
-          systemEvents={telemetryEvents}
-          runningAgents={runningAgents}
-        />
-      </div>
-      <div className="col-span-12">
-        <MissionCoverCard cards={cards} restartCount={kanbanRestartCount(telemetryEvents)} />
-      </div>
-      <section className="col-span-12 flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4 2xl:col-span-9">
-        <div className="flex shrink-0 flex-wrap items-center gap-3 hairline-b pb-3">
-          <div className="min-w-0 flex-1">
-            <PanelHeader label="kanban board" />
-            <div className="mt-2 truncate font-mono text-[10px] text-fg-3">
-              {cleanTitle(source?.title || source?.task || 'Mission')} · {cards.length} cards · {assigned.length} assigned agents
-            </div>
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            <BriefStat label="progress" value={`${kanbanProgress(cards)}%`} />
-            <BriefStat label="running" value={String(cards.filter((card) => card.status === 'running').length)} />
-            <BriefStat label="blocked" value={String(cards.filter((card) => card.status === 'blocked').length)} tone={cards.some((card) => card.status === 'blocked') ? 'danger' : undefined} />
-          </div>
-        </div>
-        <KanbanBoard
-          cards={cards}
-          agents={agents}
-          selectedCardId={selectedCard?.id}
-          onSelectCard={setSelectedCardId}
-          onAttach={onAttach}
-        />
-      </section>
-      <section className="col-span-12 grid min-h-0 grid-rows-[minmax(360px,1.1fr)_minmax(160px,0.48fr)_minmax(140px,0.36fr)] gap-3 2xl:col-span-3">
-        <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
-          <KanbanTaskDetailPanel
-            card={selectedCard}
-            agents={selectedAgents}
-            onAttach={onAttach}
-            onPrev={() => selectRelativeCard(-1)}
-            onNext={() => selectRelativeCard(1)}
-          />
-        </div>
-        <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
-          <PanelHeader label="agent lanes" />
-          <div className="mt-3 min-h-0 flex-1 overflow-auto pr-1">
-            <KanbanAssignmentList agents={agents} cards={cards} onAttach={onAttach} />
-            {unassigned.length > 0 && (
-              <div className="mt-4">
-                <div className="label mb-2">unassigned</div>
-                <AgentLaneList agents={unassigned} onAttach={onAttach} />
-              </div>
-            )}
-          </div>
-        </div>
-        <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
-          <PanelHeader label="board log" />
-          <KanbanEventFeed cards={cards} />
-        </div>
-      </section>
-    </div>
-  )
-}
-
-function KanbanBoard({
-  cards,
-  agents,
-  selectedCardId,
-  onSelectCard,
-  onAttach,
-  compact = false,
-}: {
-  cards: KanbanCardView[]
-  agents: AgentView[]
-  selectedCardId?: string
-  onSelectCard?: (id: string) => void
-  onAttach: (id: string, mode?: 'replace' | 'split') => void
-  compact?: boolean
-}) {
-  const cardsByStatus = new Map<string, KanbanCardView[]>()
-  for (const column of KANBAN_COLUMNS) cardsByStatus.set(column.id, [])
-  for (const card of cards) {
-    // Legacy `todo` events from older bridge versions get rebucketed into
-    // `triage`; anything else outside the known column set also falls
-    // there so the card stays visible rather than getting silently dropped.
-    const status = KANBAN_COLUMNS.some((column) => column.id === card.status)
-      ? card.status
-      : 'triage'
-    cardsByStatus.get(status)?.push(card)
-  }
-  for (const columnCards of cardsByStatus.values()) {
-    columnCards.sort((a, b) =>
-      (a.priority ?? 2) - (b.priority ?? 2)
-      || (b.updatedAt ?? 0) - (a.updatedAt ?? 0),
-    )
-  }
-  const COMPACT_HIDDEN_COLUMNS = new Set(['cancelled', 'crashed', 'timed_out', 'failed'])
-  const boardColumns = KANBAN_COLUMNS.filter((column) => !compact || !COMPACT_HIDDEN_COLUMNS.has(column.id))
-
-  if (cards.length === 0) {
-    return (
-      <div className="mt-3 flex min-h-0 flex-1 items-center justify-center rounded-xl bg-white/[0.025] p-8 ring-hairline">
-        <EmptyState title="No board cards yet" body="Kanban card activity will appear here as soon as the session creates board work." />
-      </div>
-    )
-  }
-
-  return (
-    <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl bg-[radial-gradient(circle_at_50%_0%,rgba(127,184,232,0.08),transparent_36%),linear-gradient(rgba(255,255,255,0.025)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[length:auto,44px_44px,44px_44px] ring-1 ring-white/[0.055]">
-      <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden p-3">
-        <div className="flex h-full min-w-max gap-4">
-          {boardColumns.map((column) => {
-            const columnCards = cardsByStatus.get(column.id) ?? []
-            if (columnCards.length === 0) {
-              // Quiet-lane stub: 36px-wide rotated label that keeps the
-              // state machine visible without a 380px empty column. Doc
-              // calls for 32px; bumped to 36 so the rotated label fits.
-              return (
-                <section
-                  key={column.id}
-                  className={`flex min-h-0 w-9 shrink-0 flex-col items-center justify-between overflow-hidden rounded-xl bg-white/[0.018] py-2 ${kanbanColumnClass(column.id)}`}
-                  title={`${column.label} — ${column.hint}`}
-                >
-                  <span className="font-mono text-[10px] text-fg-3">0</span>
-                  <span
-                    className={`whitespace-nowrap font-mono text-[10px] uppercase tracking-[0.10em] ${kanbanStatusClass(column.id)}`}
-                    style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}
-                  >
-                    {column.label}
-                  </span>
-                  <span aria-hidden className="h-3" />
-                </section>
-              )
-            }
-            return (
-              <section
-                key={column.id}
-                className={`flex min-h-0 shrink-0 flex-col overflow-hidden rounded-xl ${compact ? 'w-[320px]' : 'w-[380px]'} ${kanbanColumnClass(column.id)}`}
-              >
-                <div className="shrink-0 rounded-t-xl bg-black/18 px-3 py-3 shadow-[0_10px_24px_rgba(0,0,0,0.18)] ring-1 ring-white/[0.035] backdrop-blur-md">
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <div className={`font-mono text-[12px] uppercase tracking-[0.08em] ${kanbanStatusClass(column.id)}`}>
-                        {column.label}
-                      </div>
-                      <div className="mt-0.5 font-mono text-[9px] text-fg-3">{column.hint}</div>
-                    </div>
-                    <span className="rounded-[3px] bg-black/35 px-2 py-1 font-mono text-[10px] text-fg-1 ring-1 ring-white/[0.09]">
-                      {columnCards.length}
-                    </span>
-                  </div>
-                </div>
-                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden px-3 py-3 pr-2">
-                  {columnCards.map((card) => (
-                    <KanbanCard
-                      key={card.id}
-                      card={card}
-                      agents={agents.filter((agent) => agent.kanbanTaskId === card.id)}
-                      selected={card.id === selectedCardId}
-                      onSelect={onSelectCard}
-                      onAttach={onAttach}
-                      compact={compact}
-                    />
-                  ))}
-                </div>
-              </section>
-            )
-          })}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function KanbanTaskDetailPanel({
-  card,
-  agents,
-  onAttach,
-  onPrev,
-  onNext,
-}: {
-  card: KanbanCardView | undefined
-  agents: AgentView[]
-  onAttach: (id: string, mode?: 'replace' | 'split') => void
-  onPrev: () => void
-  onNext: () => void
-}) {
-  if (!card) {
-    return (
-      <div className="flex min-h-0 flex-1 items-center justify-center">
-        <EmptyState title="Select a card" body="Click a board card to inspect the full ticket, handoff, activity, and assigned agent." compact />
-      </div>
-    )
-  }
-  const dependencies = [
-    ...(card.parents ?? []).map((id) => ({ id, label: 'depends on' })),
-    ...(card.children ?? []).map((id) => ({ id, label: 'unblocks' })),
-  ]
-  const rejection = detectVerifierRejection(card)
-  const activity = [
-    ...(card.comments ?? []).map((comment) => ({
-      at: comment.timestamp ?? 0,
-      label: comment.author || 'comment',
-      text: comment.body,
-      kind: 'comment',
-    })),
-    ...(card.events ?? []).map((event) => ({
-      at: event.timestamp ?? 0,
-      label: event.actor || event.kind || 'event',
-      text: event.message || '',
-      kind: event.kind || 'event',
-    })),
-  ].sort((a, b) => b.at - a.at)
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="shrink-0 hairline-b pb-3">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="label text-accent">task detail</div>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <div className="font-mono text-[24px] leading-none text-fg-0">{card.id}</div>
-              <span className={`rounded bg-white/[0.04] px-2 py-1 font-mono text-[9px] uppercase ring-hairline ${kanbanStatusClass(card.status)}`}>
-                {card.status}
-              </span>
-              {typeof card.priority === 'number' && (
-                <span className={`rounded bg-white/[0.04] px-2 py-1 font-mono text-[9px] uppercase ring-hairline ${kanbanPriorityClass(card.priority)}`}>
-                  p{card.priority}
-                </span>
-              )}
-            </div>
-            <h2 className="mt-2 line-clamp-3 text-[15px] leading-[1.35] text-fg-0">{card.title}</h2>
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              onClick={onPrev}
-              className="rounded-md bg-white/[0.04] px-2 py-1.5 font-mono text-[10px] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
-              title="Previous card"
-            >
-              &lt;
-            </button>
-            <button
-              type="button"
-              onClick={onNext}
-              className="rounded-md bg-white/[0.04] px-2 py-1.5 font-mono text-[10px] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
-              title="Next card"
-            >
-              &gt;
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-3 min-h-0 flex-1 space-y-4 overflow-auto pr-1">
-        <div className="grid grid-cols-2 gap-2">
-          <DetailStat label="agent" value={agents[0]?.session.title || card.assignee || 'unassigned'} />
-          <DetailStat label="created by" value={card.createdBy || 'parent'} />
-          <DetailStat label="updated" value={card.updatedAt ? relativeTime(card.updatedAt) : 'n/a'} />
-          <DetailStat
-            label="verification"
-            value={card.requiresVerification ? 'required' : 'skipped'}
-          />
-        </div>
-
-        {rejection && (
-          <div className="rounded-lg bg-warn/[0.10] p-3 ring-1 ring-warn/30">
-            <div className="label mb-1 text-[9px] uppercase tracking-[0.10em] text-warn">
-              verifier rejected
-            </div>
-            <div className="whitespace-pre-wrap text-[11.5px] leading-[1.5] text-fg-0">
-              {rejection.text}
-            </div>
-            {rejection.actor && (
-              <div className="mt-2 font-mono text-[9px] text-warn/80">
-                — {rejection.actor}
-              </div>
-            )}
-          </div>
-        )}
-
-        {card.body && (
-          <DetailSection title="description">
-            <div className="whitespace-pre-wrap text-[12px] leading-[1.6] text-fg-1">{card.body}</div>
-          </DetailSection>
-        )}
-
-        {card.spec?.definition_of_done && card.spec.definition_of_done.length > 0 && (
-          <DetailSection title="definition of done">
-            <ul className="space-y-1.5">
-              {card.spec.definition_of_done.map((line, i) => (
-                <li key={i} className="flex items-start gap-2 text-[11.5px] leading-[1.5] text-fg-1">
-                  <span className="mt-1 inline-block h-3 w-3 shrink-0 rounded-sm border border-fg-3/40" />
-                  <span>{line}</span>
-                </li>
-              ))}
-            </ul>
-          </DetailSection>
-        )}
-
-        {card.spec?.references &&
-          (Boolean(card.spec.references.files?.length) ||
-            Boolean(card.spec.references.findings?.length) ||
-            Boolean(card.spec.references.cards?.length)) && (
-            <DetailSection title="references">
-              <div className="space-y-2 text-[11px] leading-[1.5] text-fg-1">
-                {card.spec.references.files && card.spec.references.files.length > 0 && (
-                  <div>
-                    <div className="label mb-1 text-[8.5px] text-fg-3">files</div>
-                    <div className="flex flex-wrap gap-1">
-                      {card.spec.references.files.map((path) => (
-                        <span
-                          key={path}
-                          className="rounded bg-white/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-fg-1 ring-hairline"
-                        >
-                          {path}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {card.spec.references.cards && card.spec.references.cards.length > 0 && (
-                  <div>
-                    <div className="label mb-1 text-[8.5px] text-fg-3">related cards</div>
-                    <div className="flex flex-wrap gap-1">
-                      {card.spec.references.cards.map((id) => (
-                        <span
-                          key={id}
-                          className="rounded bg-accent/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-accent ring-1 ring-accent/15"
-                        >
-                          {id}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {card.spec.references.findings && card.spec.references.findings.length > 0 && (
-                  <div>
-                    <div className="label mb-1 text-[8.5px] text-fg-3">findings</div>
-                    <ul className="ml-1 list-disc pl-3 text-[11px] text-fg-1">
-                      {card.spec.references.findings.map((finding, i) => (
-                        <li key={i}>{finding}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            </DetailSection>
-          )}
-
-        {card.spec?.verify_with && (
-          <DetailSection title="verify with">
-            <pre className="overflow-x-auto rounded-md bg-black/40 p-2 font-mono text-[10.5px] leading-[1.5] text-fg-0">
-              {card.spec.verify_with}
-            </pre>
-          </DetailSection>
-        )}
-
-        {typeof card.spec?.token_budget === 'number' && card.spec.token_budget > 0 && (
-          <DetailSection title="token budget">
-            <div className="font-mono text-[11px] text-fg-1">
-              {card.spec.token_budget.toLocaleString()} tokens
-              <span className="ml-2 text-fg-3">— circuit breaker treats this as the wall-clock budget</span>
-            </div>
-          </DetailSection>
-        )}
-
-        {dependencies.length > 0 && (
-          <DetailSection title="links">
-            <div className="flex flex-wrap gap-1.5">
-              {dependencies.map((dep) => (
-                <span key={`${dep.label}-${dep.id}`} className="rounded bg-white/[0.04] px-2 py-1 font-mono text-[9px] text-fg-2 ring-hairline">
-                  {dep.label} <span className="text-accent">{dep.id}</span>
-                </span>
-              ))}
-            </div>
-          </DetailSection>
-        )}
-
-        {(card.summary || card.result) && (
-          <DetailSection title={card.status === 'done' ? 'handoff' : 'notes'}>
-            {card.summary && <div className="whitespace-pre-wrap text-[12px] leading-[1.55] text-fg-1">{card.summary}</div>}
-            {card.result && <div className="mt-2 whitespace-pre-wrap rounded-md bg-black/25 p-2 text-[11px] leading-[1.5] text-fg-2 ring-hairline">{card.result}</div>}
-          </DetailSection>
-        )}
-
-        <DetailSection title={`activity ${activity.length ? activity.length : ''}`}>
-          {activity.length === 0 ? (
-            <div className="font-mono text-[10px] text-fg-3">No activity captured yet.</div>
-          ) : (
-            <div className="space-y-2">
-              {activity.slice(0, 10).map((item, index) => (
-                <div key={`${item.kind}-${item.at}-${index}`} className="grid grid-cols-[14px_minmax(0,1fr)] gap-2">
-                  <span className={`mt-1.5 h-2 w-2 rounded-full ${item.kind === 'comment' ? 'bg-accent/80' : 'bg-ok/70'}`} />
-                  <div className="min-w-0">
-                    <div className="flex items-center justify-between gap-2 font-mono text-[9px] text-fg-3">
-                      <span className="truncate text-fg-2">{item.label}</span>
-                      <span>{item.at ? relativeTime(item.at) : 'now'}</span>
-                    </div>
-                    {item.text && <div className="mt-0.5 line-clamp-3 text-[11px] leading-[1.45] text-fg-1">{item.text}</div>}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </DetailSection>
-
-        <DetailSection title="agent status">
-          {agents.length === 0 ? (
-            <div className="font-mono text-[10px] text-fg-3">
-              {card.assignee ? `${card.assignee} is planned but no live worker is attached yet.` : 'No live worker attached to this card.'}
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {agents.map((agent) => (
-                <div key={agent.session.id} className="rounded-lg bg-white/[0.028] p-2 ring-hairline">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="h-2.5 w-2.5 rounded-full"
-                      style={{ background: PROFILE_HEX[agent.agentType] ?? PROFILE_HEX.general }}
-                    />
-                    <span className="min-w-0 flex-1 truncate text-[12px] text-fg-0">{agent.session.title}</span>
-                    <span className={`font-mono text-[9px] uppercase ${statusTextClass(agent.status)}`}>{agent.status}</span>
-                    {agent.attachable && (
-                      <button
-                        type="button"
-                        onClick={() => onAttach(agent.session.id, 'split')}
-                        className="rounded bg-white/[0.04] px-2 py-1 font-mono text-[9px] uppercase text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
-                      >
-                        split
-                      </button>
-                    )}
-                  </div>
-                  <div className="mt-2 grid grid-cols-3 gap-2 font-mono text-[9px] text-fg-3">
-                    <span>tools <span className="text-fg-1">{agent.tools.length || agent.sub?.toolsCalled || 0}</span></span>
-                    <span>tokens <span className="text-fg-1">{formatTokens(agent.tokensIn + agent.tokensOut)}</span></span>
-                    <span>elapsed <span className="text-fg-1">{formatDuration(agent.elapsedMs)}</span></span>
-                  </div>
-                  <ToolActivityStrip tools={agent.tools} />
-                </div>
-              ))}
-            </div>
-          )}
-        </DetailSection>
-
-      </div>
-    </div>
-  )
-}
-
-function DetailSection({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="rounded-lg bg-white/[0.025] p-3 ring-hairline">
-      <div className="label mb-2 text-[9px] text-fg-3">{title}</div>
-      {children}
-    </section>
-  )
-}
-
-function DetailStat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg bg-white/[0.025] p-2 ring-hairline">
-      <div className="label text-[8.5px] text-fg-3">{label}</div>
-      <div className="mt-1 truncate font-mono text-[11px] text-fg-0">{value}</div>
-    </div>
-  )
-}
-
-function KanbanCardMaterial({
-  status,
-  selected,
-}: {
-  status: string
-  selected: boolean
-}) {
-  if (status === 'todo' || status === 'triage') {
-    return (
-      <>
-        <div className="pointer-events-none absolute inset-y-2 left-2 w-4 rounded-[4px] border border-[#172023]/10 bg-[#172023]/[0.035]" />
-        <div className="pointer-events-none absolute inset-y-4 left-6 border-l border-dashed border-[#172023]/20" />
-        <div className="pointer-events-none absolute right-2 top-2 h-3 w-3 rounded-sm border-b border-l border-[#172023]/18 bg-[#e4edf1]/35 shadow-[inset_1px_-1px_0_rgba(0,0,0,0.08)]" />
-      </>
-    )
-  }
-  if (status === 'ready') {
-    return (
-      <>
-        {/* Paper-stack ghost cards behind the main card: cream tones so it
-            reads as a stapled stack of index cards, not a layered glass panel. */}
-        <div className="pointer-events-none absolute -right-1.5 top-2 h-[calc(100%-4px)] w-[96%] rounded-md border border-[#9da08e]/32 bg-[#d2d5c3] shadow-[0_2px_0_rgba(0,0,0,0.08)]" />
-
-        {/* Punch holes down the left edge: recessed dark dots with a faint
-            inner highlight that suggests the punched paper edge. */}
-        <div className="pointer-events-none absolute inset-y-2 left-3 z-0 w-6 rounded-l-md border-r border-[#1a1c12]/12 bg-[#e6e8da]/35" />
-        <div className="pointer-events-none absolute inset-y-4 left-[15px] z-0 flex flex-col justify-around">
-          {Array.from({ length: 5 }).map((_, index) => (
-            <span
-              key={index}
-              className="h-2 w-2 rounded-full bg-[#1c1e16] shadow-[inset_0_1px_1px_rgba(0,0,0,0.65),inset_0_-1px_0_rgba(255,255,255,0.10),0_0_0_1px_rgba(0,0,0,0.14)]"
-            />
-          ))}
-        </div>
-      </>
-    )
-  }
-  if (status === 'running') {
-    return (
-      <>
-        <div className="pointer-events-none absolute inset-x-3 top-3 h-5 rounded-[5px] border border-white/[0.105] bg-[linear-gradient(180deg,rgba(255,255,255,0.12),rgba(8,9,9,0.24))] shadow-[inset_0_1px_0_rgba(255,255,255,0.16),inset_0_-1px_0_rgba(0,0,0,0.48)]">
-          <span className="absolute left-3 top-1/2 h-1 w-14 -translate-y-1/2 rounded-full bg-white/[0.14]" />
-          <span className="absolute right-3 top-1/2 h-1.5 w-7 -translate-y-1/2 rounded-full bg-ok/38 shadow-[0_0_12px_rgba(112,184,103,0.18)]" />
-        </div>
-        <div className="pointer-events-none absolute inset-x-3 bottom-2 h-4 rounded-[4px] border border-black/35 bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(0,0,0,0.42))] shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_-7px_18px_rgba(0,0,0,0.20)]" />
-      </>
-    )
-  }
-  if (status === 'blocked') {
-    return (
-      <>
-        <span className="pointer-events-none absolute left-2 top-2 h-4 w-4 border-l border-t border-danger/45" />
-        <span className="pointer-events-none absolute right-2 top-2 h-4 w-4 border-r border-t border-danger/35" />
-        <span className="pointer-events-none absolute bottom-2 left-2 h-4 w-4 border-b border-l border-white/20" />
-        <span className="pointer-events-none absolute bottom-2 right-2 h-4 w-4 border-b border-r border-white/20" />
-        <div className="pointer-events-none absolute inset-x-2 top-3 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent" />
-        <div className="pointer-events-none absolute -right-8 top-0 h-full w-16 rotate-12 bg-white/[0.025]" />
-      </>
-    )
-  }
-  if (status === 'done') {
-    return (
-      <>
-        <div className="pointer-events-none absolute inset-x-3 top-3 flex h-7 items-center justify-between overflow-hidden rounded-[3px] border border-ok/20 bg-black/25 px-2.5">
-          <span className="font-mono text-[8px] uppercase tracking-[0.16em] text-ok/45">sealed</span>
-          <span className="h-2 w-2 rounded-full bg-ok/55 shadow-[0_0_12px_rgba(112,184,103,0.28)]" />
-        </div>
-        <div className="pointer-events-none absolute inset-x-4 bottom-3 h-px bg-ok/20" />
-      </>
-    )
-  }
-  if (status === 'cancelled') {
-    return (
-      <>
-        <div className="pointer-events-none absolute inset-0 bg-[repeating-linear-gradient(-35deg,transparent_0,transparent_8px,rgba(255,120,120,0.045)_8px,rgba(255,120,120,0.045)_10px)]" />
-        <div className="pointer-events-none absolute inset-x-4 top-1/2 border-t border-dashed border-danger/25" />
-      </>
-    )
-  }
-  return (
-    <>
-      <div className="pointer-events-none absolute inset-x-4 top-8 border-t border-dashed border-white/12" />
-      <div className="pointer-events-none absolute bottom-3 right-3 h-4 w-4 rounded-full border border-dashed border-white/18" />
-      {selected && <div className="pointer-events-none absolute inset-0 bg-accent/[0.025]" />}
-    </>
-  )
-}
-
-function KanbanAgentBadge({
-  agents,
-  onAttach,
-  variant,
-}: {
-  agents: AgentView[]
-  onAttach: (id: string, mode?: 'replace' | 'split') => void
-  variant: 'dark' | 'paper' | 'ticket'
-}) {
-  if (agents.length === 0) return null
-  const firstAgent = agents[0]
-  if (!firstAgent) return null
-  const label = agents.length === 1
-    ? `agent ${firstAgent.agentType.replace(/-/g, ' ')}`
-    : `${agents.length} agents`
-  const title = agents
-    .map((agent) => `${agent.agentType}: ${agent.session.title || agent.session.id}`)
-    .join('\n')
-  const variantClass = variant === 'paper'
-    ? 'bg-[#0e0f08]/[0.08] text-[#11140b] ring-[#0e0f08]/18 hover:bg-[#0e0f08]/[0.12]'
-    : variant === 'ticket'
-      ? 'bg-[#10191d]/[0.075] text-[#10191d] ring-[#10191d]/18 hover:bg-[#10191d]/[0.12]'
-      : 'bg-black/38 text-fg-1 ring-white/[0.13] hover:bg-white/[0.065] hover:text-fg-0'
-
-  return (
-    <button
-      type="button"
-      onClick={(event) => {
-        event.stopPropagation()
-        onAttach(firstAgent.session.id, 'split')
-      }}
-      title={title}
-      className={`group flex max-w-[142px] shrink-0 items-center gap-1.5 rounded-full px-2 py-1 font-mono text-[8.5px] uppercase leading-none ring-1 transition ${variantClass}`}
-    >
-      <span className="truncate">{label}</span>
-      <span className="flex shrink-0 items-center gap-0.5">
-        {agents.slice(0, 4).map((agent) => (
-          <span
-            key={agent.session.id}
-            className="h-1.5 w-1.5 rounded-full shadow-[0_0_10px_rgba(255,255,255,0.10)]"
-            style={{ background: PROFILE_HEX[agent.agentType] ?? PROFILE_HEX.general }}
-          />
-        ))}
-      </span>
-    </button>
-  )
-}
-
-function KanbanCard({
-  card,
-  agents,
-  selected = false,
-  onSelect,
-  onAttach,
-  compact = false,
-}: {
-  card: KanbanCardView
-  agents: AgentView[]
-  selected?: boolean
-  onSelect?: (id: string) => void
-  onAttach: (id: string, mode?: 'replace' | 'split') => void
-  compact?: boolean
-}) {
-  const progress = kanbanCardProgress(card)
-  const latest = latestKanbanActivity(card)
-  const blocked = card.status === 'blocked'
-  const owner = agents[0]?.session.title || card.assignee || card.createdBy || ''
-  const materialClass = kanbanCardMaterialClass(card.status, selected, Boolean(onSelect))
-
-  // Paper variants use dark ink instead of the standard white-on-dark ramp.
-  const ticket = card.status === 'todo' || card.status === 'triage'
-  const paper = card.status === 'ready'
-  const palette = paper
-    ? {
-        id: 'text-[#1a1c12]',
-        status: 'text-[#3a3d2c]',
-        priority: kanbanPriorityClass(card.priority ?? 2),
-        title: 'text-[#0e0f08]',
-        meta: 'text-[#3a3d2c]',
-        ownerStrong: 'text-[#1a1c12]',
-        body: 'text-[#1f2117]',
-        latestLabel: 'text-[#1a1c12]',
-        latestText: 'text-[#3a3d2c]',
-        pill: 'rounded bg-[#0e0f08]/[0.07] text-[#1a1c12] px-1.5 py-0.5 ring-1 ring-[#0e0f08]/15',
-        summary: 'rounded-md bg-[#0e0f08]/[0.06] px-2 py-1.5 text-[10px] leading-[1.4] text-[#1a1c12] ring-1 ring-[#0e0f08]/15',
-      }
-    : ticket
-      ? {
-          id: 'text-[#172023]',
-          status: 'text-[#314047]',
-          priority: kanbanPriorityClass(card.priority ?? 2),
-          title: 'text-[#0d1518]',
-          meta: 'text-[#314047]',
-          ownerStrong: 'text-[#172023]',
-          body: 'text-[#1d2a2f]',
-          latestLabel: 'text-[#10191d]',
-          latestText: 'text-[#334248]',
-          pill: 'rounded bg-[#10191d]/[0.07] text-[#172023] px-1.5 py-0.5 ring-1 ring-[#10191d]/15',
-          summary: 'rounded-md bg-[#10191d]/[0.055] px-2 py-1.5 text-[10px] leading-[1.4] text-[#172023] ring-1 ring-[#10191d]/12',
-        }
-    : {
-        id: 'text-fg-1',
-        status: kanbanStatusClass(card.status),
-        priority: kanbanPriorityClass(card.priority ?? 2),
-        title: 'text-fg-0',
-        meta: 'text-fg-3',
-        ownerStrong: 'text-fg-2',
-        body: 'text-fg-2',
-        latestLabel: 'text-fg-1',
-        latestText: 'text-fg-3',
-        pill: 'rounded bg-white/[0.04] px-1.5 py-0.5 ring-hairline',
-        summary: 'rounded-md bg-white/[0.035] px-2 py-1.5 text-[10px] leading-[1.4] text-fg-2 ring-hairline',
-      }
-  const agentBadgeVariant = paper ? 'paper' : ticket ? 'ticket' : 'dark'
-
-  return (
-    <article
-      role={onSelect ? 'button' : undefined}
-      tabIndex={onSelect ? 0 : undefined}
-      aria-selected={onSelect ? selected : undefined}
-      onClick={() => onSelect?.(card.id)}
-      onKeyDown={(event) => {
-        if (!onSelect) return
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault()
-          onSelect(card.id)
-        }
-      }}
-      className={materialClass}
-    >
-      <KanbanCardMaterial status={card.status} selected={selected} />
-      <div className="relative z-10 flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className={`font-mono text-[10px] ${palette.id}`}>{card.id}</span>
-            <span className={`font-mono text-[9px] uppercase ${palette.status}`}>
-              {card.status}
-            </span>
-            {typeof card.priority === 'number' && (
-              <span className={`font-mono text-[8.5px] uppercase ${palette.priority}`}>
-                p{card.priority}
-              </span>
-            )}
-            <KanbanVerdictBadge card={card} />
-            <KanbanRetryPill card={card} />
-            <KanbanVerifyOnCompletePill card={card} />
-          </div>
-          <h3 className={`mt-1 line-clamp-2 text-[12px] leading-[1.35] ${palette.title}`}>
-            {card.title}
-          </h3>
-          {owner && (
-            <div className={`mt-1 truncate font-mono text-[9px] ${palette.meta}`}>
-              owner <span className={palette.ownerStrong}>{owner}</span>
-            </div>
-          )}
-        </div>
-        <KanbanAgentBadge agents={agents} onAttach={onAttach} variant={agentBadgeVariant} />
-      </div>
-      {card.status === 'running' && (
-        <KanbanLivenessStrip card={card} palette={palette} />
-      )}
-      <div className={`relative z-10 mt-3 h-1.5 overflow-hidden ${kanbanProgressTrackClass(card.status)}`}>
-        <div
-          className={`h-full ${kanbanProgressFillClass(card.status, blocked)}`}
-          style={{ width: `${progress}%` }}
-        />
-      </div>
-      <KanbanTokenBurnBar card={card} />
-      {!compact && card.body && (
-        <p className={`relative z-10 mt-2 line-clamp-3 text-[10.5px] leading-[1.45] ${palette.body}`}>
-          {card.body}
-        </p>
-      )}
-      {(card.parents?.length || card.children?.length) && (
-        <div className={`relative z-10 mt-2 flex flex-wrap gap-1 font-mono text-[9px] ${palette.meta}`}>
-          {(card.parents ?? []).slice(0, 3).map((id) => (
-            <span key={`p-${id}`} className={palette.pill}>
-              from {id}
-            </span>
-          ))}
-          {(card.children ?? []).slice(0, 3).map((id) => (
-            <span key={`c-${id}`} className={palette.pill}>
-              to {id}
-            </span>
-          ))}
-        </div>
-      )}
-      {latest && (
-        <div className={`relative z-10 mt-2 line-clamp-2 font-mono text-[9.5px] leading-[1.4] ${palette.latestText}`}>
-          <span className={palette.latestLabel}>{latest.label}</span>
-          {latest.text ? ` · ${latest.text}` : ''}
-        </div>
-      )}
-      {card.summary && (
-        <div className={`relative z-10 mt-2 line-clamp-2 ${palette.summary}`}>
-          {card.summary}
-        </div>
-      )}
-    </article>
-  )
-}
-
-function KanbanAssignmentList({
-  agents,
-  cards,
-  onAttach,
-  compact = false,
-}: {
-  agents: AgentView[]
-  cards: KanbanCardView[]
-  onAttach: (id: string, mode?: 'replace' | 'split') => void
-  compact?: boolean
-}) {
-  const cardById = new Map(cards.map((card) => [card.id, card]))
-  const assigned = agents.filter((agent) => agent.kanbanTaskId)
-  const planned = cards.filter((card) => card.assignee && !assigned.some((agent) => agent.kanbanTaskId === card.id))
-  if (assigned.length === 0) {
-    if (planned.length > 0) {
-      return (
-        <div className="space-y-2">
-          {planned.slice(0, compact ? 5 : 12).map((card) => (
-            <PlannedKanbanAssignment key={card.id} card={card} compact={compact} />
-          ))}
-        </div>
-      )
-    }
-    return (
-      <EmptyState
-        title="No assigned agents"
-        body="Agents attached to board cards will appear here with their current lane."
-        compact
-      />
-    )
-  }
-  return (
-    <div className="space-y-2">
-      {assigned.map((agent) => {
-        const card = agent.kanbanTaskId ? cardById.get(agent.kanbanTaskId) : undefined
-        const color = PROFILE_HEX[agent.agentType] ?? PROFILE_HEX.general
-        return (
-          <div key={agent.session.id} className="rounded-lg bg-white/[0.028] p-2.5 ring-hairline">
-            <div className="flex items-start gap-2">
-              <span
-                className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full"
-                style={{ background: color, boxShadow: `0 0 16px ${color}55` }}
-              />
-              <div className="min-w-0 flex-1">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="truncate text-[12px] text-fg-0">{agent.session.title}</span>
-                  <span className={`font-mono text-[9px] uppercase ${statusTextClass(agent.status)}`}>{agent.status}</span>
-                </div>
-                <div className="mt-1 flex flex-wrap items-center gap-1.5 font-mono text-[9px] text-fg-3">
-                  <span className="rounded bg-accent/10 px-1.5 py-0.5 text-accent ring-1 ring-accent/20">
-                    {agent.kanbanTaskId}
-                  </span>
-                  {card && <span className={kanbanStatusClass(card.status)}>{card.status}</span>}
-                  <span>{agent.tools.length || agent.sub?.toolsCalled || 0} tools</span>
-                </div>
-                {!compact && card && (
-                  <div className="mt-1 line-clamp-2 text-[10.5px] leading-[1.4] text-fg-2">
-                    {card.title}
-                  </div>
-                )}
-              </div>
-              {agent.attachable && (
-                <button
-                  type="button"
-                  onClick={() => onAttach(agent.session.id, 'split')}
-                  className="rounded bg-white/[0.04] px-2 py-1 font-mono text-[9px] uppercase text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
-                >
-                  split
-                </button>
-              )}
-            </div>
-          </div>
-        )
-      })}
-      {planned.length > 0 && (
-        <div className="space-y-2 pt-2">
-          <div className="label text-[8.5px] text-fg-3">planned</div>
-          {planned.slice(0, compact ? 3 : 8).map((card) => (
-            <PlannedKanbanAssignment key={card.id} card={card} compact={compact} />
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function PlannedKanbanAssignment({
-  card,
-  compact,
-}: {
-  card: KanbanCardView
-  compact?: boolean
-}) {
-  return (
-    <div className="rounded-lg bg-white/[0.028] p-2.5 ring-hairline">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 font-mono text-[9px]">
-            <span className="rounded bg-accent/10 px-1.5 py-0.5 text-accent ring-1 ring-accent/20">{card.id}</span>
-            <span className={kanbanStatusClass(card.status)}>{card.status}</span>
-          </div>
-          <div className="mt-1 truncate text-[12px] text-fg-0">{card.assignee}</div>
-          {!compact && <div className="mt-1 line-clamp-2 text-[10.5px] leading-[1.4] text-fg-2">{card.title}</div>}
-        </div>
-        <span className={`font-mono text-[9px] uppercase ${kanbanPriorityClass(card.priority ?? 2)}`}>
-          p{card.priority ?? 2}
-        </span>
-      </div>
-    </div>
-  )
-}
-
-function KanbanEventFeed({ cards }: { cards: KanbanCardView[] }) {
-  const events = cards
-    .flatMap((card) =>
-      (card.events ?? []).map((event) => ({
-        ...event,
-        card,
-        timestamp: event.timestamp ?? card.updatedAt ?? 0,
-      })),
-    )
-    .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0))
-    .slice(0, 20)
-  if (events.length === 0) {
-    return <EmptyState title="No board events" body="Card updates will collect here." compact />
-  }
-  return (
-    <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-auto pr-1">
-      {events.map((event, index) => (
-        <div key={`${event.card.id}-${event.timestamp}-${index}`} className="rounded-lg bg-white/[0.028] p-2.5 ring-hairline">
-          <div className="flex items-center justify-between gap-2">
-            <span className="font-mono text-[9px] text-accent">{event.card.id}</span>
-            <span className="font-mono text-[9px] text-fg-3">
-              {event.timestamp ? relativeTime(event.timestamp) : 'now'}
-            </span>
-          </div>
-          {event.actor && (
-            <div className="mt-1 truncate font-mono text-[9px] text-fg-3">
-              {event.kind || 'event'} by <span className="text-fg-2">{event.actor}</span>
-            </div>
-          )}
-          <div className="mt-1 line-clamp-2 text-[10.5px] leading-[1.4] text-fg-1">
-            {event.message || event.kind || event.card.title}
-          </div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function FindingsTab({
-  findings,
-  readEvents,
-  agents,
-  onAttach,
-  onCopy,
-}: {
-  findings: BusEventView[]
-  readEvents: BusEventView[]
-  agents: AgentView[]
-  onAttach: (id: string, mode?: 'replace' | 'split') => void
-  onCopy: (event: BusEventView) => void
-}) {
-  const topicCounts = countBy(findings, (event) => event.topic)
-  return (
-    <div className="grid min-h-0 flex-1 grid-cols-12 gap-3 overflow-hidden">
-      <section className="col-span-12 flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4 xl:col-span-8">
-        <PanelHeader label="evidence board" />
-        <div className="mt-3 grid shrink-0 grid-cols-3 gap-2">
-          <BriefStat label="findings" value={String(topicCounts.findings ?? 0)} />
-          <BriefStat label="progress" value={String(topicCounts.progress ?? 0)} />
-          <BriefStat label="errors" value={String(topicCounts.errors ?? 0)} tone="danger" />
-        </div>
-        <div className="mt-3 grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-auto pr-1 2xl:grid-cols-2">
-          {findings.map((event) => (
-            <FindingCard
-              key={`${event.sessionId}-${event.index}-${event.timestamp}`}
-              event={event}
-              onCopy={() => onCopy(event)}
-            />
-          ))}
-          {findings.length === 0 && (
-            <EmptyState title="Nothing on the board yet" body="The board becomes useful as agents publish progress and findings." />
-          )}
-        </div>
-      </section>
-      <section className="col-span-12 grid min-h-0 grid-rows-[minmax(0,1fr)_220px] gap-3 xl:col-span-4">
-        <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
-          <PanelHeader label="sources" />
-          <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-auto pr-1">
-            {agents.map((agent) => (
-              <CompactAgentRow
-                key={agent.session.id}
-                agent={agent}
-                onAttach={onAttach}
-              />
-            ))}
-            {agents.length === 0 && (
-              <EmptyState title="No sources" body="Sub-agent sessions will appear as evidence sources." />
-            )}
-          </div>
-        </div>
-        <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
-          <PanelHeader label="read receipts" />
-          <div className="mt-3 min-h-0 flex-1 space-y-1.5 overflow-auto pr-1">
-            {readEvents.slice(0, 10).map((event) => (
-              <div
-                key={`${event.sessionId}-${event.index}-${event.timestamp}`}
-                className="rounded-md bg-white/[0.025] px-2 py-1.5 font-mono text-[10px] text-fg-2 ring-hairline"
-              >
-                <span className="text-fg-1">{event.senderLabel}</span>
-                <span className="text-fg-3"> read bus </span>
-                <span className="text-fg-3">{relativeTime(event.timestamp)}</span>
-              </div>
-            ))}
-            {readEvents.length === 0 && (
-              <EmptyState title="No reads yet" body="Bus read activity will show up here." compact />
-            )}
-          </div>
-        </div>
-      </section>
-    </div>
-  )
-}
-
-function TelemetryTab({
-  events,
-  screenshotFrames,
-  agents,
-  rootUsage,
-}: {
-  events: TelemetryEventView[]
-  screenshotFrames: number
-  agents: AgentView[]
-  rootUsage: SessionSlice['usage']
-}) {
-  const compactions = events
-    .filter((event) => event.subtype === 'compaction_complete')
-    .sort((a, b) => b.at - a.at)
-  const mediaPrunes = events
-    .filter((event) => event.subtype === 'media_pruning')
-    .sort((a, b) => b.at - a.at)
-  const contextPrunes = events.filter((event) => event.subtype === 'context_pruning')
-  const truncations = events.filter((event) => event.subtype === 'tool_truncation' || event.subtype === 'output_truncation')
-  const omittedImages = mediaPrunes.reduce((acc, event) => acc + detailNumber(event, 'omitted_images'), 0)
-  const rootContextKnown =
-    rootUsage.currentContextTokens > 0 ||
-    rootUsage.totalInputTokens <= rootUsage.contextWindow
-  const rootContextTokens = rootUsage.currentContextTokens > 0
-    ? rootUsage.currentContextTokens
-    : rootContextKnown
-      ? rootUsage.totalInputTokens
-      : 0
-  const tokensSaved = compactions.reduce((acc, event) => {
-    const before = detailNumber(event, 'context_tokens_before') || detailNumber(event, 'tokens_before')
-    const after = detailNumber(event, 'context_tokens_after') || detailNumber(event, 'tokens_after')
-    return acc + Math.max(0, before - after)
-  }, 0)
-  const latestMedia = mediaPrunes[0]
-  return (
-    <div className="grid min-h-0 flex-1 grid-cols-12 gap-3 overflow-hidden">
-      <section className="col-span-12 grid shrink-0 grid-cols-2 gap-3 xl:col-span-12 xl:grid-cols-6">
-        <MetricCard label="screenshots" value={String(screenshotFrames)} sub="captured" tone="accent" />
-        <MetricCard label="image trims" value={String(mediaPrunes.length)} sub={`${omittedImages} omitted`} tone={mediaPrunes.length ? 'ok' : 'neutral'} />
-        <MetricCard label="summaries" value={String(compactions.length)} sub={`${formatTokens(tokensSaved)} saved`} tone={compactions.length ? 'ok' : 'neutral'} />
-        <MetricCard label="tool trims" value={String(contextPrunes.length)} sub="old results" tone="warn" />
-        <MetricCard label="output cuts" value={String(truncations.length)} sub="hard limits" tone={truncations.length ? 'warn' : 'neutral'} />
-        <MetricCard
-          label="live context"
-          value={rootContextKnown ? formatTokens(rootContextTokens) : 'n/a'}
-          sub={`${formatTokens(rootUsage.totalInputTokens)} billed in`}
-        />
-      </section>
-
-      <section className="col-span-12 flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4 xl:col-span-7">
-        <PanelHeader label="context summaries" />
-        <div className="mt-3 min-h-0 flex-1 overflow-auto pr-1">
-          {compactions.length === 0 ? (
-            <EmptyState
-              title="No LLM compactions yet"
-              body="When history is summarized, the before/after token, message, and image deltas will appear here."
-            />
-          ) : (
-            <div className="space-y-3">
-              {compactions.map((event) => (
-                <CompactionCard key={event.id} event={event} />
-              ))}
-            </div>
-          )}
-        </div>
-      </section>
-
-      <section className="col-span-12 grid min-h-0 grid-rows-[minmax(0,1fr)_220px] gap-3 xl:col-span-5">
-        <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
-          <PanelHeader label="screenshot history" />
-          <div className="mt-3 grid shrink-0 grid-cols-3 gap-2">
-            <BriefStat label="kept recent" value={String(detailNumber(latestMedia, 'kept_recent') || 4)} />
-            <BriefStat label="safety cap" value={String(detailNumber(latestMedia, 'hard_limit') || 80)} />
-            <BriefStat label="omitted" value={String(omittedImages)} />
-          </div>
-          <div className="mt-3 min-h-0 flex-1 overflow-auto pr-1">
-            {mediaPrunes.length === 0 ? (
-              <EmptyState
-                title="No media pruning needed"
-                body="The session has not accumulated enough screenshot media to trim request history."
-                compact
-              />
-            ) : (
-              <div className="space-y-2">
-                {mediaPrunes.map((event) => (
-                  <MediaPruneRow key={event.id} event={event} />
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="flex min-h-0 flex-col overflow-hidden rounded-xl glass-strong p-4">
-          <PanelHeader label="affected sessions" />
-          <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-auto pr-1">
-            {agents.map((agent) => (
-              <TelemetryAgentRow key={agent.session.id} agent={agent} events={events} />
-            ))}
-            {agents.length === 0 && (
-              <EmptyState title="No lanes yet" body="Sub-agents and computer sessions will be grouped here as they run." compact />
-            )}
-          </div>
         </div>
       </section>
     </div>
@@ -3346,7 +1352,7 @@ function HiveMindGraph({
       {/* Header rail */}
       <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1.5 hairline-b pb-3">
         <div className="flex items-center gap-2">
-          <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-fg-1">
+          <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-fg-1">
             hive mind
           </span>
           <span className="font-mono text-[10px] text-fg-3">
@@ -3412,7 +1418,7 @@ function HiveMindGraph({
             {rounds.map((round, ri) => (
               <div
                 key={`rh-${ri}`}
-                className="absolute font-mono text-[10px] uppercase tracking-[0.22em]"
+                className="absolute font-mono text-[10px] uppercase tracking-[0.14em]"
                 style={{
                   left: leftPad + orchW + colGap + ri * (cardW + colGap),
                   top: 18,
@@ -3428,7 +1434,7 @@ function HiveMindGraph({
             ))}
             {hasArtifacts && (
               <div
-                className="absolute font-mono text-[10px] uppercase tracking-[0.22em]"
+                className="absolute font-mono text-[10px] uppercase tracking-[0.14em]"
                 style={{
                   left: artifactColX,
                   top: 18,
@@ -4052,200 +2058,6 @@ function FindingCard({
   )
 }
 
-function CompactionCard({ event }: { event: TelemetryEventView }) {
-  const beforeTokens = detailNumber(event, 'context_tokens_before') || detailNumber(event, 'tokens_before')
-  const afterTokens = detailNumber(event, 'context_tokens_after') || detailNumber(event, 'tokens_after')
-  const requestBefore = detailNumber(event, 'request_tokens_before')
-  const requestAfter = detailNumber(event, 'request_tokens_after')
-  const providerBefore = detailNumber(event, 'last_provider_context_tokens')
-  const transcriptBefore = detailNumber(event, 'transcript_tokens_before')
-  const transcriptAfter = detailNumber(event, 'transcript_tokens_after')
-  const entriesRemoved = detailNumber(event, 'entries_removed')
-  const beforeMessages = detailNumber(event, 'messages_before')
-  const afterMessages = detailNumber(event, 'messages_after')
-  const beforeImages = detailNumber(event, 'images_before')
-  const afterImages = detailNumber(event, 'images_after')
-  const summary = detailString(event, 'summary_preview')
-  const beforePreview = detailString(event, 'before_preview')
-  const beforeSnapshotPath = detailString(event, 'before_snapshot_path')
-  const beforeSnapshotJsonPath = detailString(event, 'before_snapshot_json_path')
-  const afterSnapshotPath = detailString(event, 'after_snapshot_path')
-  const saved = Math.max(0, beforeTokens - afterTokens)
-  const pct = beforeTokens > 0 ? Math.max(4, Math.min(100, Math.round((afterTokens / beforeTokens) * 100))) : 100
-  return (
-    <div className="rounded-xl bg-white/[0.028] p-4 ring-hairline">
-      <div className="mb-3 flex items-start gap-3">
-        <div className="mt-1 grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-ok/10 ring-1 ring-ok/25">
-          <span className="font-mono text-[13px] text-ok">Σ</span>
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-ok">llm summary</span>
-            <span className="rounded bg-white/[0.04] px-1.5 py-[1px] font-mono text-[9px] text-fg-3 ring-hairline">
-              {detailString(event, 'trigger') || 'context'}
-            </span>
-            <span className="ml-auto font-mono text-[9px] text-fg-3">{relativeTime(event.at)}</span>
-          </div>
-          <div className="mt-1 truncate font-mono text-[10px] text-fg-2">{event.sessionTitle}</div>
-        </div>
-      </div>
-      <div className="grid gap-2 md:grid-cols-[1fr_auto_1fr]">
-        <CompactionPoint label="before" tokens={beforeTokens} messages={beforeMessages} images={beforeImages} />
-        <div className="hidden items-center px-2 text-fg-3 md:flex">→</div>
-        <CompactionPoint label="after" tokens={afterTokens} messages={afterMessages} images={afterImages} tone="ok" />
-      </div>
-      <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-        <BriefStat label="request estimate" value={`${formatTokens(requestBefore || beforeTokens)} -> ${formatTokens(requestAfter || afterTokens)}`} />
-        <BriefStat label="text payload" value={`${formatTokens(transcriptBefore)} -> ${formatTokens(transcriptAfter)}`} />
-        <BriefStat label="entries summarized" value={String(entriesRemoved || beforeMessages)} />
-        <BriefStat label="last api context" value={providerBefore ? formatTokens(providerBefore) : 'n/a'} />
-      </div>
-      <div className="mt-3">
-        <div className="mb-1 flex items-center justify-between font-mono text-[9px] text-fg-3">
-          <span>context retained</span>
-          <span>{formatTokens(saved)} saved</span>
-        </div>
-        <div className="h-2 overflow-hidden rounded-full bg-white/[0.07]">
-          <div className="h-full rounded-full bg-ok/65" style={{ width: `${pct}%` }} />
-        </div>
-      </div>
-      {(beforeSnapshotPath || afterSnapshotPath || beforeSnapshotJsonPath) && (
-        <div className="mt-3 flex flex-wrap gap-2">
-          {beforeSnapshotPath && (
-            <button
-              type="button"
-              onClick={() => openExternal(beforeSnapshotPath)}
-              className="rounded bg-white/[0.045] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.08em] text-accent ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
-            >
-              before snapshot
-            </button>
-          )}
-          {beforeSnapshotJsonPath && (
-            <button
-              type="button"
-              onClick={() => openExternal(beforeSnapshotJsonPath)}
-              className="rounded bg-white/[0.035] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
-            >
-              raw transcript
-            </button>
-          )}
-          {afterSnapshotPath && (
-            <button
-              type="button"
-              onClick={() => openExternal(afterSnapshotPath)}
-              className="rounded bg-ok/10 px-2 py-1 font-mono text-[9px] uppercase tracking-[0.08em] text-ok ring-1 ring-ok/20 hover:bg-ok/16 hover:text-fg-0"
-            >
-              after snapshot
-            </button>
-          )}
-        </div>
-      )}
-      <div className="mt-3 grid gap-3 xl:grid-cols-2">
-        <SnapshotPreview
-          title="original before compaction"
-          text={beforePreview || 'No before snapshot preview was captured for this event.'}
-        />
-        <SnapshotPreview
-          title="llm summary after compaction"
-          text={summary || 'No summary preview was captured for this event.'}
-        />
-      </div>
-    </div>
-  )
-}
-
-function CompactionPoint({
-  label,
-  tokens,
-  messages,
-  images,
-  tone,
-}: {
-  label: string
-  tokens: number
-  messages: number
-  images: number
-  tone?: 'ok'
-}) {
-  return (
-    <div className="rounded-lg bg-white/[0.025] p-2 ring-hairline">
-      <div className={`label text-[9px] ${tone === 'ok' ? 'text-ok' : 'text-fg-3'}`}>{label}</div>
-      <div className="mt-1 font-mono text-[17px] leading-none text-fg-0">{formatTokens(tokens)}</div>
-      <div className="mt-2 flex items-center gap-3 font-mono text-[9px] text-fg-3">
-        <span>{messages} entries</span>
-        <span>{images} imgs</span>
-      </div>
-    </div>
-  )
-}
-
-function SnapshotPreview({ title, text }: { title: string; text: string }) {
-  return (
-    <div className="rounded-lg bg-black/25 p-3 ring-hairline">
-      <div className="label mb-2 text-[9px]">{title}</div>
-      <div className="max-h-[260px] overflow-auto whitespace-pre-wrap pr-1 font-mono text-[10.5px] leading-[1.55] text-fg-2">
-        {text}
-      </div>
-    </div>
-  )
-}
-
-function MediaPruneRow({ event }: { event: TelemetryEventView }) {
-  const before = detailNumber(event, 'images_before')
-  const after = detailNumber(event, 'images_after')
-  const omitted = detailNumber(event, 'omitted_images')
-  return (
-    <div className="rounded-lg bg-white/[0.025] p-2 ring-hairline">
-      <div className="flex items-center gap-2">
-        <span className="rounded bg-accent/10 px-1.5 py-[1px] font-mono text-[9px] uppercase tracking-[0.08em] text-accent ring-1 ring-accent/20">
-          images
-        </span>
-        <span className="truncate font-mono text-[10px] text-fg-2">{event.sessionTitle}</span>
-        <span className="ml-auto font-mono text-[9px] text-fg-3">{relativeTime(event.at)}</span>
-      </div>
-      <div className="mt-2 flex items-center justify-between gap-3 font-mono text-[11px]">
-        <span className="text-fg-1">{before} → {after}</span>
-        <span className="text-ok">{omitted} omitted</span>
-      </div>
-      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/[0.07]">
-        <div
-          className="h-full rounded-full bg-accent/70"
-          style={{ width: `${before > 0 ? Math.max(5, Math.min(100, (after / before) * 100)) : 100}%` }}
-        />
-      </div>
-    </div>
-  )
-}
-
-function TelemetryAgentRow({
-  agent,
-  events,
-}: {
-  agent: AgentView
-  events: TelemetryEventView[]
-}) {
-  const mine = events.filter((event) => event.sessionId === agent.session.id)
-  const compactions = mine.filter((event) => event.subtype === 'compaction_complete').length
-  const mediaPrunes = mine.filter((event) => event.subtype === 'media_pruning').length
-  const color = PROFILE_HEX[agent.agentType] ?? PROFILE_HEX.general
-  return (
-    <div className="rounded-lg bg-white/[0.025] px-2 py-2 ring-hairline">
-      <div className="flex items-center gap-2">
-        <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: color }} />
-        <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-fg-0">
-          {agent.session.title || agent.session.id}
-        </span>
-        <span className={`font-mono text-[9px] uppercase ${statusTextClass(agent.status)}`}>{agent.status}</span>
-      </div>
-      <div className="mt-1 flex items-center gap-3 font-mono text-[9px] text-fg-3">
-        <span>{agent.agentType}</span>
-        <span>{compactions} summaries</span>
-        <span>{mediaPrunes} image trims</span>
-      </div>
-    </div>
-  )
-}
-
 function ProfileCard({ profile }: { profile: ProfileDefinition }) {
   const color = PROFILE_HEX[profile.id] ?? PROFILE_HEX.general
   return (
@@ -4542,15 +2354,15 @@ function detailString(event: TelemetryEventView | undefined, key: string): strin
 }
 
 function topicHex(topic: BusMessageRecord['topic']): string {
-  if (topic === 'errors') return '#f07878'
+  if (topic === 'errors') return '#b48282'
   if (topic === 'findings') return '#a8d4fc'
-  if (topic === 'progress') return '#88d67f'
+  if (topic === 'progress') return '#a8b0a8'
   return '#8a9491'
 }
 
 function statusHex(status: AgentView['status']): string {
-  if (status === 'failed' || status === 'cancelled') return '#f07878'
-  if (status === 'done') return '#88d67f'
+  if (status === 'failed' || status === 'cancelled') return '#b48282'
+  if (status === 'done') return '#a8b0a8'
   if (status === 'running') return '#a8d4fc'
   return '#8a9491'
 }
@@ -4588,13 +2400,11 @@ function dashboardTabMeta(
   strategy?: CoordinationStrategy,
 ): { label: string; hint: string } {
   if (strategy === 'kanban') {
-    if (item.id === 'overview') return { label: 'health', hint: 'board run' }
-    if (item.id === 'swarm') return { label: 'board', hint: 'cards + lanes' }
+    if (item.id === 'overview') return { label: 'board', hint: 'cards · lanes · dispatch' }
     if (item.id === 'findings') return { label: 'evidence', hint: 'findings' }
   }
   if (strategy === 'goal') {
-    if (item.id === 'overview') return { label: 'goal', hint: 'judge loop' }
-    if (item.id === 'swarm') return { label: 'loop', hint: 'turns + agents' }
+    if (item.id === 'overview') return { label: 'studio', hint: 'judge · draft · loop' }
   }
   return item
 }
@@ -4607,6 +2417,14 @@ function collectGoalState(events: TelemetryEventView[]): GoalStateView | null {
   const stateEvent = goalEvents.find((event) => event.details?.goalState)
   const state = stateEvent?.details?.goalState as Record<string, unknown> | undefined
   const lastVerdict = state?.lastVerdict as GoalStateView['lastVerdict'] | undefined
+  // Pull the most recent judge rules + verdict history from any event that
+  // carries them. _emit_goal_event includes both in every payload so any
+  // goal_* event will do; the sort puts the newest first.
+  const rulesEvent = goalEvents.find((event) => event.details?.judgeRules)
+  const judgeRules = (rulesEvent?.details?.judgeRules as GoalStateView['judgeRules']) ?? null
+  const historyEvent = goalEvents.find((event) => Array.isArray(event.details?.verdictHistory))
+  const verdictHistory =
+    (historyEvent?.details?.verdictHistory as GoalStateView['verdictHistory']) ?? []
   return {
     goal: String(state?.goal ?? ''),
     status: String(state?.status ?? 'active'),
@@ -4614,6 +2432,8 @@ function collectGoalState(events: TelemetryEventView[]): GoalStateView | null {
     maxTurns: Number(state?.maxTurns ?? 20),
     pauseReason: typeof state?.pauseReason === 'string' ? state.pauseReason : undefined,
     lastVerdict: lastVerdict ?? null,
+    judgeRules,
+    verdictHistory,
     events: goalEvents,
   }
 }
@@ -5151,130 +2971,6 @@ function latestKanbanActivity(card: KanbanCardView): { label: string; text: stri
   }))
   const latest = [...comments, ...events].sort((a, b) => b.at - a.at)[0]
   return latest ? { label: latest.label, text: latest.text } : null
-}
-
-function kanbanPriorityClass(priority: number): string {
-  if (priority <= 1) return 'text-danger'
-  if (priority === 2) return 'text-warn'
-  return 'text-fg-3'
-}
-
-function kanbanColumnClass(status: string): string {
-  // Done keeps the soft green tint as the only completed affordance.
-  // Other columns stay material-led, not traffic-light colored.
-  if (status === 'done') {
-    return 'border border-ok/[0.14] bg-[linear-gradient(180deg,rgba(112,184,103,0.032),rgba(0,0,0,0.19))]'
-  }
-  if (status === 'todo' || status === 'triage') {
-    return 'border border-dashed border-white/[0.11] bg-[linear-gradient(180deg,rgba(139,160,165,0.035),rgba(0,0,0,0.13))]'
-  }
-  if (status === 'running') {
-    return 'border border-white/[0.11] bg-[linear-gradient(180deg,rgba(255,255,255,0.030),rgba(0,0,0,0.22))]'
-  }
-  return 'border border-white/[0.09] bg-[linear-gradient(180deg,rgba(255,255,255,0.022),rgba(0,0,0,0.17))]'
-}
-
-function kanbanCardMaterialClass(status: string, selected: boolean, selectable: boolean): string {
-  // Selection ring is white instead of accent-blue — keeps the board
-  // monochrome and stops every focused card from popping a coloured halo.
-  const base = [
-    'relative overflow-hidden p-3 transition focus:outline-none',
-    selectable ? 'cursor-pointer hover:-translate-y-px' : '',
-    selected
-      ? 'ring-1 ring-white/55 shadow-[0_0_0_1px_rgba(255,255,255,0.18),0_18px_44px_rgba(0,0,0,0.34)]'
-      : 'ring-1',
-  ].join(' ')
-
-  // Done is the one card style that stays green-tinted.
-  if (status === 'done') {
-    return `${base} rounded-md border bg-[linear-gradient(180deg,rgba(85,116,80,0.24),rgba(26,32,25,0.54)_42%,rgba(8,11,8,0.72))] pt-12 shadow-[inset_0_1px_0_rgba(255,255,255,0.10),inset_0_-1px_0_rgba(112,184,103,0.16),0_12px_22px_rgba(0,0,0,0.30)] ${
-      selected ? 'border-white/35' : 'border-ok/25 ring-ok/18'
-    }`
-  }
-  if (status === 'cancelled') {
-    return `${base} rounded-[5px] border border-white/[0.10] bg-[linear-gradient(180deg,rgba(255,255,255,0.020),rgba(0,0,0,0.25))] opacity-65 ring-white/10`
-  }
-  if (status === 'todo' || status === 'triage') {
-    return `${base} rounded-[7px] border border-[#6f7c82]/48 bg-[linear-gradient(180deg,#c0cbd0_0%,#b1bec4_58%,#9eabb1_100%)] pl-8 shadow-[0_1px_0_rgba(255,255,255,0.45),0_9px_20px_-8px_rgba(0,0,0,0.54),inset_0_1px_0_rgba(255,255,255,0.36),inset_0_-1px_0_rgba(0,0,0,0.12)] ${
-      selected ? 'ring-2 ring-[#172023]/65' : 'ring-0'
-    }`
-  }
-  if (status === 'ready') {
-    // Punched index-card material: warm cream paper, soft inset highlight at
-    // the top edge, slight darker fold at the bottom. Drop shadow gives the
-    // card lift over the dark board. The selection ring darkens to a neutral
-    // ink on paper so it doesn't read as a coloured halo.
-    return `${base} pl-12 rounded-md border border-[#9da08e]/50 bg-[linear-gradient(180deg,#e0e3d3_0%,#d7dac9_56%,#cbcebd_100%)] shadow-[0_1px_0_rgba(255,255,255,0.55),0_2px_2px_rgba(0,0,0,0.16),0_10px_22px_-6px_rgba(0,0,0,0.40),inset_0_1px_0_rgba(255,255,255,0.46),inset_0_-1px_0_rgba(0,0,0,0.09)] ${
-      selected ? 'ring-2 ring-[#1a1c12]/60' : 'ring-0'
-    }`
-  }
-  if (status === 'running') {
-    return `${base} rounded-xl border bg-[linear-gradient(145deg,rgba(116,122,119,0.28),rgba(39,42,41,0.66)_46%,rgba(8,9,9,0.82))] pt-12 shadow-[inset_0_1px_0_rgba(255,255,255,0.16),inset_0_-10px_20px_rgba(0,0,0,0.34),0_18px_34px_rgba(0,0,0,0.38)] ${
-      selected ? 'border-white/38 ring-white/38' : 'border-white/18 ring-white/16'
-    }`
-  }
-  if (status === 'done_unverified') {
-    // Amber tint sits between `running` dark and `done` green — the card
-    // is past worker activity but not yet sealed by the verifier.
-    return `${base} rounded-xl border bg-[linear-gradient(145deg,rgba(184,135,55,0.22),rgba(54,42,22,0.62)_46%,rgba(18,14,8,0.78))] pt-12 shadow-[inset_0_1px_0_rgba(255,213,140,0.16),inset_0_-10px_20px_rgba(0,0,0,0.30),0_18px_30px_rgba(0,0,0,0.34)] ${
-      selected ? 'border-warn/55 ring-warn/45' : 'border-warn/30 ring-warn/20'
-    }`
-  }
-  if (status === 'blocked') {
-    return `${base} rounded-[3px] border bg-[linear-gradient(135deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02)_45%,rgba(0,0,0,0.16))] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06),0_12px_28px_rgba(0,0,0,0.30)] backdrop-blur-sm ${
-      selected ? 'border-white/35 ring-white/35' : 'border-white/18 ring-white/12'
-    }`
-  }
-  if (status === 'crashed') {
-    // Recoverable amber: warmer than done_unverified, slightly cooler than
-    // timed_out. Signals "the worker died, the breaker hasn't tripped yet".
-    return `${base} rounded-md border bg-[linear-gradient(145deg,rgba(196,118,72,0.22),rgba(44,28,18,0.62)_46%,rgba(16,10,6,0.78))] shadow-[inset_0_1px_0_rgba(255,205,160,0.16),0_14px_28px_rgba(0,0,0,0.34)] ${
-      selected ? 'border-warn/55 ring-warn/40' : 'border-warn/35 ring-warn/22'
-    }`
-  }
-  if (status === 'timed_out') {
-    // Budget-exceeded peach: cooler than crashed so the operator can tell
-    // them apart at a glance. The retry pill carries the actionable detail.
-    return `${base} rounded-md border bg-[linear-gradient(145deg,rgba(168,116,108,0.22),rgba(38,24,22,0.60)_46%,rgba(14,8,8,0.76))] shadow-[inset_0_1px_0_rgba(245,200,190,0.16),0_14px_28px_rgba(0,0,0,0.34)] ${
-      selected ? 'border-warn/55 ring-warn/40' : 'border-warn/30 ring-warn/20'
-    }`
-  }
-  if (status === 'failed') {
-    // Circuit-broken red: visually distinct from cancelled (dimmed). The
-    // ring is the warning signal — "do not auto-respawn".
-    return `${base} rounded-md border-2 bg-[linear-gradient(145deg,rgba(150,52,52,0.24),rgba(48,16,16,0.58)_46%,rgba(14,6,6,0.78))] shadow-[inset_0_1px_0_rgba(255,150,150,0.14),0_14px_30px_rgba(0,0,0,0.36)] ${
-      selected ? 'border-danger/75 ring-danger/55' : 'border-danger/55 ring-danger/35'
-    }`
-  }
-  return `${base} rounded-lg bg-black/24 ring-white/10`
-}
-
-function kanbanProgressTrackClass(status: string): string {
-  if (status === 'todo' || status === 'triage') return 'rounded-[2px] bg-[#10191d]/15 shadow-[inset_0_0_0_1px_rgba(0,0,0,0.10)]'
-  // Ready cards are paper, so the track needs to be ink-on-cream: a dark
-  // hairline well sunk into the paper instead of a white track.
-  if (status === 'ready') return 'rounded-[2px] bg-[#0e0f08]/15 shadow-[inset_0_0_0_1px_rgba(0,0,0,0.10)]'
-  if (status === 'running' || status === 'done_unverified') return 'rounded-[2px] bg-black/55 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.10)]'
-  if (status === 'done') return 'rounded-[1px] bg-black/50'
-  if (status === 'blocked') return 'rounded-[1px] bg-white/10'
-  if (status === 'crashed' || status === 'timed_out') return 'rounded-[1px] bg-black/40 shadow-[inset_0_0_0_1px_rgba(255,180,140,0.12)]'
-  if (status === 'failed') return 'rounded-[1px] bg-black/40 shadow-[inset_0_0_0_1px_rgba(220,90,90,0.20)]'
-  return 'rounded-full bg-white/10'
-}
-
-function kanbanProgressFillClass(status: string, blocked: boolean): string {
-  // Done is the only status that lights up green; everything else gets
-  // a neutral bar so the board stays monochrome. Ready uses dark ink so
-  // the bar reads against the cream paper.
-  if (status === 'done') return 'rounded-[1px] bg-ok/75 shadow-[0_0_14px_rgba(112,184,103,0.22)]'
-  if (status === 'todo' || status === 'triage') return 'rounded-[1px] bg-[#10191d]/55'
-  if (status === 'ready') return 'rounded-[1px] bg-[#0e0f08]/65'
-  if (status === 'done_unverified') return 'rounded-[1px] bg-warn/70 shadow-[0_0_10px_rgba(217,162,73,0.18)]'
-  if (status === 'crashed' || status === 'timed_out') return 'rounded-[1px] bg-warn/55'
-  if (status === 'failed') return 'rounded-[1px] bg-danger/65'
-  if (blocked || status === 'cancelled') return 'rounded-[1px] bg-white/40'
-  if (status === 'running') return 'rounded-[1px] bg-white/75'
-  return 'rounded-full bg-white/55'
 }
 
 function kanbanStatusClass(status: string): string {

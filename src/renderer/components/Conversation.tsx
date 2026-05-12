@@ -49,6 +49,7 @@ export function Conversation() {
   const editUserMessage = useHarness((s) => s.editUserMessage)
   const rerunUserMessage = useHarness((s) => s.rerunUserMessage)
   const deleteMessagesFrom = useHarness((s) => s.deleteMessagesFrom)
+  const toggleEntryPin = useHarness((s) => s.toggleEntryPin)
   const branchSessionFrom = useHarness((s) => s.branchSessionFrom)
   const scrollerRef = useRef<HTMLDivElement>(null)
   const userScrolledUpRef = useRef(false)
@@ -91,9 +92,13 @@ export function Conversation() {
         void deleteMessagesFrom(id)
       } else if (action === 'branch') {
         setBranchFor(id)
+      } else if (action === 'pin') {
+        void toggleEntryPin(id, true)
+      } else if (action === 'unpin') {
+        void toggleEntryPin(id, false)
       }
     },
-    [menuState, rerunUserMessage, deleteMessagesFrom],
+    [menuState, rerunUserMessage, deleteMessagesFrom, toggleEntryPin],
   )
 
   const beginEdit = useCallback((id: string) => setEditingId(id), [])
@@ -326,6 +331,9 @@ export function Conversation() {
           y={menuState.y}
           isUserMessage={menuState.role === 'user'}
           busy={isStreaming}
+          isPinned={Boolean(
+            messages.find((m) => m.id === menuState.messageId)?.pinned,
+          )}
           onPick={handlePick}
           onClose={closeMenu}
         />
@@ -498,7 +506,7 @@ function ConversationStream({
       if (!mention) return
       event.preventDefault()
       event.stopPropagation()
-      toggleMissionDashboard(true, 'swarm')
+      toggleMissionDashboard(true, 'overview')
     },
     [toggleMissionDashboard],
   )

@@ -227,6 +227,10 @@ export interface Message {
   cacheReadTokens?: number
   cacheWriteTokens?: number
   attachments?: MessageAttachmentRef[]
+  /** True when the user pinned this message so the compactor never folds
+   *  it into a summary (F1). Toggled via the message context menu and
+   *  broadcast back via the entry_pin_changed event. */
+  pinned?: boolean
 }
 
 export interface SessionSnapshot {
@@ -392,6 +396,17 @@ export type BridgeCommand =
       note?: string
     }
   | { type: 'memory_delete'; sessionId: string; id: string; note?: string }
+  | {
+      // Pin / unpin a transcript entry so the compactor never folds it
+      // into a summary (F1 — see docs/COMPACTION-DECISION-DRAFT.md).
+      // ``messageOrdinal`` matches the addressing scheme used by
+      // edit_user_message / rerun_user_message / delete_messages_from
+      // — 0-indexed across user+assistant message-bearing entries.
+      type: 'toggle_entry_pin'
+      sessionId: string
+      messageOrdinal: number
+      pinned: boolean
+    }
   | { type: 'memory_restore'; sessionId: string; id: string; note?: string }
   | {
       type: 'memory_merge'
@@ -623,6 +638,8 @@ export type CompactionTelemetryRow =
       type: 'pressure_signal'
       ts: number
       session_id: string
+      agent_type?: string | null
+      parent_session_id?: string | null
       band: 'clean' | 'pruning' | 'awareness' | 'soft' | 'strong' | 'fallback'
       pressure_pct: number
       used_tokens: number
@@ -633,6 +650,8 @@ export type CompactionTelemetryRow =
       type: 'compaction_event'
       ts: number
       session_id: string
+      agent_type?: string | null
+      parent_session_id?: string | null
       subtype: string
       model?: string
       tokens_before: number
@@ -645,12 +664,47 @@ export type CompactionTelemetryRow =
       ts: number
       session_id: string
       turn_id?: string
+      agent_type?: string | null
+      parent_session_id?: string | null
       model: string
       input_tokens: number
       output_tokens: number
       cache_read_tokens: number
       cache_write_tokens: number
       cost_usd: number | null
+      duration_ms: number
+    }
+  | {
+      type: 'tool_call_metric'
+      ts: number
+      session_id: string
+      turn_id?: string
+      agent_type?: string | null
+      parent_session_id?: string | null
+      tool_call_id?: string
+      tool_name: string
+      duration_ms: number
+      ok: boolean
+      result_bytes: number
+    }
+  | {
+      type: 'profile_invocation'
+      ts: number
+      session_id: string
+      parent_session_id: string
+      agent_type: string
+      model: string
+      max_iterations: number
+      task_preview: string
+    }
+  | {
+      type: 'profile_completion'
+      ts: number
+      session_id: string
+      parent_session_id: string
+      agent_type: string
+      iterations_used: number
+      final_outcome: 'success' | 'error' | 'cancelled'
       duration_ms: number
     }
 

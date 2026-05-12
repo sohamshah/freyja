@@ -31,9 +31,11 @@ from bridge.tools.video_analysis_tool import AnalyzeVideoTool
 from bridge.tools.memory_tools import MemoryTool, RecordUserPreferenceTool
 from bridge.tools.search_tools import GlobTool, GrepTool
 from bridge.tools.skill_tools import ListSkillsTool, LoadSkillTool, SearchSkillsTool
+from bridge.tools.session_memory_tool import SessionMemoryTool
 from bridge.tools.sub_agent_registry import SubAgentRegistry
 from bridge.tools.sub_agent_tool import SubAgentSpec, SubAgentTool
 from bridge.tools.subagents_tool import SubAgentsTool
+from bridge.tools.summarize_context_tool import SummarizeContextTool
 from bridge.tools.tool_search_tool import ToolSearchTool
 
 # Computer-use tools are imported lazily below — they pull in
@@ -72,6 +74,11 @@ def build_desktop_registry(
     artifact_store: Any | None = None,
     on_memory_updated: Any | None = None,
     on_skill_event: Any | None = None,
+    summarize_context_session_getter: Any | None = None,
+    summarize_context_provider_getter: Any | None = None,
+    summarize_context_compactor_getter: Any | None = None,
+    summarize_context_pressure_getter: Any | None = None,
+    summarize_context_telemetry: Any | None = None,
 ) -> ToolRegistry:
     """Construct a ToolRegistry containing all desktop tools.
 
@@ -129,6 +136,8 @@ def build_desktop_registry(
             actor=_mem_actor,
         )
     )
+    if _mem_session:
+        tools.append(SessionMemoryTool(session_id=_mem_session))
     tools.append(
         MemoryTool(
             workspace=workspace_path,
@@ -294,6 +303,26 @@ def build_desktop_registry(
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("computer-use tools init failed: %s", exc)
+
+    # Cooperative compaction tool. Lazy getters because session/runner
+    # don't exist when the registry is being built — they're populated
+    # later in _BridgeSession.initialize. We just need the getters to
+    # return the right object by the time the agent actually invokes
+    # the tool.
+    if (
+        summarize_context_session_getter is not None
+        and summarize_context_provider_getter is not None
+        and summarize_context_compactor_getter is not None
+    ):
+        tools.append(
+            SummarizeContextTool(
+                get_session=summarize_context_session_getter,
+                get_provider=summarize_context_provider_getter,
+                get_compactor=summarize_context_compactor_getter,
+                on_summarize_call=summarize_context_telemetry,
+                get_current_pressure_pct=summarize_context_pressure_getter,
+            )
+        )
 
     registered: list[str] = []
     for tool in tools:

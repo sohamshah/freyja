@@ -23,17 +23,20 @@ module.exports = {
           hi: '#c4e0fc',
           lo: '#7aafea',
         },
-        ok: '#88d67f',
-        warn: '#ffcc66',
-        danger: '#ff6b6b',
-        mention: '#79b3fa',
+        // Status colors are deliberately muted toward greyscale.
+        // Steel-blue accent is the only saturated color in the palette.
+        ok: '#a8b0a8',
+        warn: '#b8a078',
+        danger: '#b48282',
+        mention: '#a8d4fc',
       },
       fontFamily: {
-        // Every font class resolves to Departure Mono. We keep separate
-        // aliases so future surfaces (e.g. long-form prose) can swap in a
-        // different companion face without touching every component.
+        // Geist Mono is the single primary face. Departure Mono is kept
+        // only as a deeper fallback for legacy surfaces; nothing new
+        // should opt into it.
         sans: [
-          '"Departure Mono"',
+          '"Geist Mono"',
+          'ui-monospace',
           '"SF Mono"',
           '"JetBrains Mono"',
           'Menlo',
@@ -41,7 +44,8 @@ module.exports = {
           'monospace',
         ],
         mono: [
-          '"Departure Mono"',
+          '"Geist Mono"',
+          'ui-monospace',
           '"SF Mono"',
           '"JetBrains Mono"',
           'Menlo',
@@ -49,12 +53,20 @@ module.exports = {
           'monospace',
         ],
         display: [
-          '"Departure Mono"',
+          '"Geist Mono"',
+          'ui-monospace',
           '"SF Mono"',
           '"JetBrains Mono"',
           'Menlo',
           'Monaco',
           'monospace',
+        ],
+        // Editorial serif — only for the mission objective h1 in each
+        // view header and the drawer / brief memo title. Used sparingly.
+        serif: [
+          'Fraunces',
+          'Georgia',
+          'serif',
         ],
       },
       fontSize: {

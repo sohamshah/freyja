@@ -47,6 +47,8 @@ export function TitleBar() {
   )
   const isStreaming = useHarness((s) => s.isStreaming)
   const missionDashboardOpen = useHarness((s) => s.missionDashboardOpen)
+  const metricsDashboardOpen = useHarness((s) => s.metricsDashboardOpen)
+  const toggleMetricsDashboard = useHarness((s) => s.toggleMetricsDashboard)
   const sidebarCollapsed = useHarness((s) => s.sidebarCollapsed)
   const activityPanelCollapsed = useHarness((s) => s.activityPanelCollapsed)
   const focusMode = useHarness((s) => s.focusMode)
@@ -98,6 +100,14 @@ export function TitleBar() {
         active={missionDashboardOpen}
       >
         <span className="font-mono uppercase">dashboard</span>
+      </TitleControl>
+      <TitleControl
+        className="no-drag h-[28px] px-2.5 text-[10px]"
+        onClick={() => toggleMetricsDashboard(true)}
+        title="Open compaction metrics (cross-session aggregation of pressure signals, compaction events, spend)"
+        active={metricsDashboardOpen}
+      >
+        <span className="font-mono uppercase">metrics</span>
       </TitleControl>
       <TitleControl
         className="no-drag flex h-[28px] max-w-[min(36vw,380px)] py-0 pl-2.5 pr-2 text-fg-1"

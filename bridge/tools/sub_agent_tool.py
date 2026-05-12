@@ -309,6 +309,33 @@ Parameters:
             },
         )
 
+        # Persist a profile_invocation JSONL row so the metrics dashboard's
+        # Profiles view can count spawns per agent_type and link back to
+        # the spawning task. We snapshot the task description (truncated)
+        # rather than the live task — long-running profiles may have their
+        # record edited later, and the dashboard wants the *original* prompt.
+        try:
+            from bridge.compaction_telemetry import append_telemetry
+
+            task_preview = task.strip().replace("\n", " ")
+            if len(task_preview) > 240:
+                task_preview = task_preview[:237] + "..."
+            append_telemetry({
+                "type": "profile_invocation",
+                "session_id": sub_id,
+                "parent_session_id": self._spec.parent_session_id,
+                "agent_type": agent_type.name,
+                "model": child_model,
+                "max_iterations": agent_type.max_iterations,
+                "task_preview": task_preview,
+            })
+        except Exception:
+            pass
+
+        # Stash a spawn timestamp so we can compute the duration in the
+        # paired profile_completion row when the run ends.
+        record.spawned_at_ts = time.time()  # type: ignore[attr-defined]
+
         if mode == "foreground":
             return await self._run_foreground(call_id, record)
 
@@ -656,12 +683,78 @@ Parameters:
             else:
                 child_thinking = ThinkingConfig(enabled=True, effort=effort)
 
+        # Telemetry callbacks tagged with this subagent's profile. Mirror
+        # the parent's `_on_llm_call` / `_on_tool_metric` shape so the
+        # dashboard sees uniform rows whether emitted by a root session
+        # or a subagent.
+        sub_id_local = record.id
+        agent_type_name = agent_type.name
+        parent_session_id_local = self._spec.parent_session_id
+        turn_counter = {"n": 0}
+
+        def _on_sub_llm_call(payload: dict[str, Any]) -> None:
+            try:
+                from bridge.compaction_telemetry import append_telemetry
+                from engine.providers import compute_cost
+
+                if payload.get("error"):
+                    return
+                turn_counter["n"] += 1
+                model = payload.get("model") or child_model
+                in_tok = int(payload.get("input_tokens", 0) or 0)
+                out_tok = int(payload.get("output_tokens", 0) or 0)
+                cr_tok = int(payload.get("cache_read_tokens", 0) or 0)
+                cw_tok = int(payload.get("cache_write_tokens", 0) or 0)
+                cost = compute_cost(
+                    model,
+                    input_tokens=in_tok,
+                    output_tokens=out_tok,
+                    cache_read_tokens=cr_tok,
+                    cache_write_tokens=cw_tok,
+                )
+                append_telemetry({
+                    "type": "llm_call_metric",
+                    "session_id": sub_id_local,
+                    "turn_id": f"{sub_id_local}-t{turn_counter['n']}",
+                    "agent_type": agent_type_name,
+                    "parent_session_id": parent_session_id_local,
+                    "model": model,
+                    "input_tokens": in_tok,
+                    "output_tokens": out_tok,
+                    "cache_read_tokens": cr_tok,
+                    "cache_write_tokens": cw_tok,
+                    "cost_usd": float(cost) if cost is not None else None,
+                    "duration_ms": int(payload.get("duration_ms", 0) or 0),
+                })
+            except Exception:
+                pass
+
+        def _on_sub_tool_metric(payload: dict[str, Any]) -> None:
+            try:
+                from bridge.compaction_telemetry import append_telemetry
+                append_telemetry({
+                    "type": "tool_call_metric",
+                    "session_id": sub_id_local,
+                    "turn_id": f"{sub_id_local}-t{turn_counter['n']}",
+                    "agent_type": agent_type_name,
+                    "parent_session_id": parent_session_id_local,
+                    "tool_call_id": payload.get("tool_call_id"),
+                    "tool_name": payload.get("tool_name") or "unknown",
+                    "duration_ms": int(payload.get("duration_ms", 0) or 0),
+                    "ok": bool(payload.get("ok", True)),
+                    "result_bytes": int(payload.get("result_bytes", 0) or 0),
+                })
+            except Exception:
+                pass
+
         runner = AsyncAgentRunner(
             provider=provider,
             compaction_strategy=SummaryCompaction(),
             tool_registry=child_registry,
             on_stream=on_stream,
             on_system_event=on_system_event,
+            on_llm_call=_on_sub_llm_call,
+            on_tool_metric=_on_sub_tool_metric,
             thinking=child_thinking,
         )
 
@@ -735,8 +828,10 @@ Parameters:
                     await t
                 except BaseException:  # noqa: BLE001
                     pass
+            record.iterations = int(getattr(runner, "current_iteration", 0) or 0)
             self._spec.registry.mark_done(
-                record.id, "Cancelled", SubAgentState.CANCELLED
+                record.id, "Cancelled", SubAgentState.CANCELLED,
+                iterations=record.iterations,
             )
             await self._mark_kanban_terminal(record, "cancelled", "Sub-agent cancelled")
             await self._mark_task_terminal(record, "cancelled", "Sub-agent cancelled")
@@ -752,8 +847,10 @@ Parameters:
             raise
 
         if cancelled_by_watchdog:
+            record.iterations = int(getattr(runner, "current_iteration", 0) or 0)
             self._spec.registry.mark_done(
-                record.id, "Cancelled", SubAgentState.CANCELLED
+                record.id, "Cancelled", SubAgentState.CANCELLED,
+                iterations=record.iterations,
             )
             await self._mark_kanban_terminal(record, "cancelled", "Sub-agent cancelled")
             await self._mark_task_terminal(record, "cancelled", "Sub-agent cancelled")
@@ -774,10 +871,12 @@ Parameters:
             # exception inside the sub-agent runner left the UI
             # session row spinning forever even though the
             # underlying task was dead.
+            record.iterations = int(getattr(runner, "current_iteration", 0) or 0)
             self._spec.registry.mark_done(
                 record.id,
                 f"Error: {run_exception}",
                 SubAgentState.FAILED,
+                iterations=record.iterations,
             )
             await self._mark_kanban_terminal(record, "blocked", f"Error: {run_exception}")
             await self._mark_task_terminal(record, "blocked", f"Error: {run_exception}")
@@ -1218,6 +1317,39 @@ Parameters:
                 "createdFiles": list(record.created_files),
             },
         )
+
+        # Persist a profile_completion JSONL row so the Profiles view can
+        # show outcome mix (success / error / cancelled) and iterations
+        # used vs the agent type's budget.
+        #
+        # Outcome classification: trust the ``success`` parameter directly
+        # (every terminal call site sets it explicitly) and use the record
+        # state only to distinguish CANCELLED from FAILED in the !success
+        # case. The earlier ``record.state.name.lower() == "done"`` check
+        # was correct in principle but fragile to any future change that
+        # tweaks the state-set ordering — using the explicit boolean keeps
+        # the dashboard's success-rate honest no matter how the record
+        # transitioned.
+        try:
+            from bridge.compaction_telemetry import append_telemetry
+
+            if success:
+                outcome = "success"
+            elif record.state == SubAgentState.CANCELLED:
+                outcome = "cancelled"
+            else:
+                outcome = "error"
+            append_telemetry({
+                "type": "profile_completion",
+                "session_id": record.id,
+                "parent_session_id": self._spec.parent_session_id,
+                "agent_type": getattr(record, "agent_type_name", "general"),
+                "iterations_used": int(getattr(record, "iterations", 0) or 0),
+                "final_outcome": outcome,
+                "duration_ms": int(record.elapsed * 1000),
+            })
+        except Exception:
+            pass
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────

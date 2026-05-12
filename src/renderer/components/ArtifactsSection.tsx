@@ -3,6 +3,7 @@ import { useHarness } from '../state/store'
 import type { ArtifactRecord } from '@shared/events'
 import { relativeTime } from '../lib/format'
 import { ArtifactWorkspace } from './ArtifactWorkspace'
+import { StickyHeader } from './StickyHeader'
 
 /**
  * File type to icon/color mapping for the artifact list.
@@ -66,31 +67,33 @@ export function ArtifactsSection() {
   }
 
   return (
-    <div className="px-4 py-3 hairline-b">
+    <div className="hairline-b">
       {workspaceOpen && <ArtifactWorkspace onClose={() => setWorkspaceOpen(false)} />}
-      <div className="mb-2 flex items-baseline justify-between">
-        <button
-          onClick={() => setExpanded((v) => !v)}
-          className="flex items-baseline gap-2 text-left"
-        >
-          <div className="label">artifacts</div>
-          <span className="font-mono text-[10px] text-fg-3">{artifacts.length}</span>
-          <span className="text-[9px] text-fg-3">{expanded ? '▾' : '▸'}</span>
-        </button>
-        {artifacts.length > 0 && (
+      <StickyHeader>
+        <div className="flex w-full items-baseline justify-between gap-2 px-4 py-2">
           <button
-            onClick={() => setWorkspaceOpen(true)}
-            className="rounded bg-white/[0.04] px-1.5 py-[2px] font-mono text-[9px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
+            onClick={() => setExpanded((v) => !v)}
+            className="flex items-baseline gap-2 text-left"
           >
-            workspace ↗
+            <div className="label">artifacts</div>
+            <span className="font-mono text-[10px] text-fg-3">{artifacts.length}</span>
+            <span className="text-[9px] text-fg-3">{expanded ? '▾' : '▸'}</span>
           </button>
-        )}
-      </div>
+          {artifacts.length > 0 && (
+            <button
+              onClick={() => setWorkspaceOpen(true)}
+              className="rounded bg-white/[0.04] px-1.5 py-[2px] font-mono text-[9px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
+            >
+              workspace ↗
+            </button>
+          )}
+        </div>
+      </StickyHeader>
 
       {!expanded ? null : artifacts.length === 0 ? (
-        <div className="py-2 text-[11px] italic text-fg-3">No file changes yet</div>
+        <div className="px-4 pb-3 pt-1 text-[11px] italic text-fg-3">No file changes yet</div>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-3 px-4 pb-3 pt-1">
           {groups.map((group) => (
             <div key={group.creatorId}>
               {/* Creator header */}

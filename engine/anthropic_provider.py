@@ -32,6 +32,7 @@ from engine.providers import (
     AuthenticationError,
     BillingError,
     ContextOverflowError,
+    ImagePayloadTooLargeError,
     ModelNotFoundError,
     ProviderError,
     ProviderResponse,
@@ -675,6 +676,16 @@ class AnthropicProvider:
             anthropic_tools[-1]["cache_control"] = {"type": "ephemeral"}
             request_kwargs["tools"] = anthropic_tools
 
+        # Third cache breakpoint: the most recent compaction summary, if
+        # one is in the message list. The summary text is stable across
+        # iterations (it changes only when a new compaction happens, by
+        # which point the cache reset is unavoidable anyway), so adding
+        # a third ephemeral breakpoint here lets long-lived sessions
+        # keep cache reuse going past the system + tools prefix.
+        # Anthropic allows up to 4 cache_control markers per request;
+        # we still have one in reserve for future use.
+        _try_cache_compaction_summary(anthropic_messages)
+
         # Anthropic format: {"type": "tool", "name": "..."}
         if tool_choice:
             request_kwargs["tool_choice"] = tool_choice
@@ -930,8 +941,27 @@ class AnthropicProvider:
         elif status == 404:
             return ModelNotFoundError(message)
         elif status == 400:
-            # Check for context overflow
             lower = message.lower()
+            # Per-image payload-size errors. Match these BEFORE the
+            # generic "exceeds" heuristic — they share the word "exceeds"
+            # but represent a different problem and need image-specific
+            # recovery, not summarization. Example:
+            #   "messages.2.content.1.tool_result.content.1.image.source.
+            #    base64: image exceeds 5 MB maximum: 5433096 bytes >
+            #    5242880 bytes"
+            if "image" in lower and (
+                ("exceeds" in lower and "bytes" in lower)
+                or "image exceeds" in lower
+            ):
+                max_bytes: int | None = None
+                m = re.search(r">\s*(\d+)\s*bytes", message)
+                if m:
+                    try:
+                        max_bytes = int(m.group(1))
+                    except ValueError:
+                        max_bytes = None
+                return ImagePayloadTooLargeError(message, max_bytes=max_bytes)
+            # Context overflow heuristic.
             if any(
                 term in lower
                 for term in (
@@ -949,6 +979,49 @@ class AnthropicProvider:
             return ProviderError(message, status=status, retryable=True)
         else:
             return ProviderError(message, status=status, retryable=False)
+
+
+_COMPACTION_SUMMARY_MARKER = "[Previous conversation summary]"
+
+
+def _try_cache_compaction_summary(anthropic_messages: list[dict[str, Any]]) -> None:
+    """Mark the most-recent compaction summary message as a cache breakpoint.
+
+    `engine.session.TranscriptManager.get_messages` injects compaction
+    summaries as system-role messages, which Anthropic's API doesn't
+    support inside ``messages`` — the provider's message-builder rewrites
+    them as ``role=user`` with a ``[System context]: [Previous
+    conversation summary]\n...`` prefix. This helper walks the rewritten
+    message list from the end forward, finds the latest such message,
+    and attaches ``cache_control: ephemeral`` to its content so the
+    summary text is part of the cached prefix. No-op if no summary is
+    present.
+
+    Caps to one cache_control per call to stay under Anthropic's 4-marker
+    limit (system + last tool + here = 3 markers, leaving headroom).
+    """
+    for msg in reversed(anthropic_messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            if _COMPACTION_SUMMARY_MARKER not in content:
+                continue
+            msg["content"] = [
+                {
+                    "type": "text",
+                    "text": content,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+            return
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text" and _COMPACTION_SUMMARY_MARKER in (block.get("text") or ""):
+                    block["cache_control"] = {"type": "ephemeral"}
+                    return
 
 
 def create_anthropic_provider(

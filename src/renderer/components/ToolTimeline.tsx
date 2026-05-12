@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { useHarness } from '../state/store'
 import { formatDuration } from '../lib/format'
 import type { ToolCallRecord } from '@shared/events'
+import { StickyHeader } from './StickyHeader'
 
 /**
  * Gantt-style micro timeline for the activity panel.
@@ -173,30 +174,47 @@ export function ToolTimeline() {
 
   const totalRows = rows.length > 0 ? Math.max(...rows.map((r) => r.row)) + 1 : 0
   const ROW_HEIGHT = 16
+  // Internal padding above the bars: gives first-row tooltips room to
+  // pop upward without escaping the chart's visual frame. Matched by
+  // an 8px buffer baked into the overall chart height so the bars sit
+  // in a comfortable middle band.
+  const TOP_PAD = 24
   const chartHeight = Math.max(40, totalRows * ROW_HEIGHT + 8)
 
   if (records.length === 0) {
     return (
-      <div className="px-4 py-3 hairline-b">
-        <div className="label mb-2">tool calls</div>
-        <div className="py-2 text-[11px] italic text-fg-3">No tool calls yet</div>
+      <div className="hairline-b">
+        <StickyHeader>
+          <div className="flex w-full items-baseline justify-between gap-2 px-4 py-2">
+            <div className="label">tool calls</div>
+            <div className="font-mono text-[10px] text-fg-3">0</div>
+          </div>
+        </StickyHeader>
+        <div className="px-4 pb-3 pt-1 text-[11px] italic text-fg-3">No tool calls yet</div>
       </div>
     )
   }
 
   return (
-    <div className="px-4 py-3 hairline-b">
-      <div className="mb-2 flex items-baseline justify-between">
-        <div className="label">tool calls</div>
-        <div className="font-mono text-[10px] text-fg-3">
-          {records.length} · {formatDuration(totalSpan)}
+    <div className="hairline-b">
+      <StickyHeader>
+        <div className="flex w-full items-baseline justify-between gap-2 px-4 py-2">
+          <div className="label">tool calls</div>
+          <div className="font-mono text-[10px] text-fg-3">
+            {records.length} · {formatDuration(totalSpan)}
+          </div>
         </div>
-      </div>
+      </StickyHeader>
 
-      {/* Gantt chart */}
+      <div className="px-4 pb-3 pt-1">
+      {/* Gantt chart. We keep the rounded frame + ring on the outer,
+          but drop overflow:hidden so first-row tooltips can extend
+          upward without being clipped. A 24px top buffer + 8px bottom
+          buffer is baked into the bar y-coords so tooltips land inside
+          this breathing room rather than escaping the box. */}
       <div
-        className="relative w-full overflow-hidden rounded-lg bg-black/25 ring-hairline"
-        style={{ height: `${chartHeight}px` }}
+        className="relative w-full rounded-lg bg-black/25 ring-hairline"
+        style={{ height: `${chartHeight + 32}px` }}
       >
         {/* Segment backgrounds — subtle highlight per activity segment */}
         {layout.segments.map((seg, i) => (
@@ -270,32 +288,44 @@ export function ToolTimeline() {
               style={{
                 left: `${startPct}%`,
                 width: `${Math.max(1.5, widthPct)}%`,
-                top: `${row * ROW_HEIGHT + 4}px`,
+                top: `${row * ROW_HEIGHT + 4 + TOP_PAD}px`,
                 height: `${ROW_HEIGHT - 4}px`,
               }}
             >
               {/* Bar */}
               <div
-                className={`h-full rounded-sm transition-opacity ${
+                className={`h-full rounded-sm transition-all duration-150 group-hover:scale-y-110 group-hover:brightness-125 ${
                   isRunning ? 'animate-pulse' : ''
                 }`}
                 style={{
                   backgroundColor: isError ? '#e05050' : color,
-                  opacity: isRunning ? 0.6 : 0.8,
+                  opacity: isRunning ? 0.6 : 0.85,
+                  boxShadow: 'inset 0 0.5px 0 0 rgba(255,255,255,0.18)',
                 }}
               />
 
-              {/* Tooltip on hover */}
-              <div className="pointer-events-none absolute bottom-full left-0 z-20 mb-1 hidden rounded-md bg-[#1a1a1e] px-2 py-1 text-[9px] text-fg-0 shadow-lg ring-1 ring-white/10 group-hover:block whitespace-nowrap">
+              {/* Tooltip on hover — escapes the chart via overflow-visible
+                   on the chart container. z-30 keeps it above sibling bars
+                   and the activity panel drag handle (z-10). */}
+              <div className="pointer-events-none absolute bottom-full left-0 z-30 mb-1.5 hidden rounded-md bg-[#0e0e10]/95 px-2 py-1 text-[9.5px] text-fg-0 shadow-[0_8px_20px_-8px_rgba(0,0,0,0.7)] ring-1 ring-white/[0.08] backdrop-blur-md group-hover:block whitespace-nowrap">
                 <span className="font-bold" style={{ color }}>{record.name}</span>
                 {record.durationMs != null && (
                   <span className="ml-1.5 text-fg-3">{formatDuration(record.durationMs)}</span>
                 )}
                 {summarizeShort(record) && (
-                  <div className="mt-0.5 text-fg-2 max-w-[200px] truncate">
+                  <div className="mt-0.5 max-w-[220px] truncate text-fg-2">
                     {summarizeShort(record)}
                   </div>
                 )}
+                {/* Pointer caret connecting the tooltip to the bar */}
+                <span
+                  className="absolute left-3 top-full h-0 w-0"
+                  style={{
+                    borderLeft: '4px solid transparent',
+                    borderRight: '4px solid transparent',
+                    borderTop: '4px solid rgba(14,14,16,0.95)',
+                  }}
+                />
               </div>
             </div>
           )
@@ -320,6 +350,7 @@ export function ToolTimeline() {
             <span className="font-mono text-[8px] text-fg-3">{name}</span>
           </div>
         ))}
+      </div>
       </div>
     </div>
   )

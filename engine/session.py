@@ -120,6 +120,12 @@ class TranscriptEntry:
     parent_id: str | None = None
     """ID of the parent entry (for branching support)."""
 
+    compaction_excluded: bool = False
+    """True if this entry is pinned and must survive future compactions
+    verbatim (F1 from the design doc). The compactor pulls
+    ``split_point`` back to before the earliest pinned message so
+    pinned content stays in the kept-tail."""
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize for transcript persistence."""
         d: dict[str, Any] = {
@@ -137,6 +143,8 @@ class TranscriptEntry:
             d["tokens_after"] = self.tokens_after
         if self.parent_id is not None:
             d["parent_id"] = self.parent_id
+        if self.compaction_excluded:
+            d["compaction_excluded"] = True
         return d
 
     @classmethod
@@ -154,6 +162,7 @@ class TranscriptEntry:
             tokens_after=d.get("tokens_after"),
             timestamp=d.get("timestamp", 0.0),
             parent_id=d.get("parent_id"),
+            compaction_excluded=bool(d.get("compaction_excluded", False)),
         )
 
 
@@ -529,6 +538,124 @@ class TranscriptManager:
             kept_recent=actual_keep,
             hard_limit=hard_limit,
         )
+
+    def prune_oversized_images(self, max_bytes: int) -> ImagePruneResult:
+        """Replace any base64 image block whose payload exceeds ``max_bytes``.
+
+        Anthropic enforces a hard 5 MB per-image limit independent of
+        context-window usage; OpenAI's vision endpoints have a similar
+        20 MB cap. When the provider rejects a request for this reason,
+        summarization cannot help (the offending image is typically in
+        the recent-tail that summarization preserves verbatim). The
+        targeted fix is to swap the oversized block for a small text
+        marker so tool_use/tool_result adjacency and message ordering
+        stay intact.
+
+        The byte estimate uses the raw base64-encoded length, which
+        slightly overestimates the binary size — that's what the
+        provider sees on the wire, so it's the right number to compare.
+        """
+        max_bytes = max(1024, int(max_bytes))
+
+        image_refs: list[tuple[int, int, int]] = []  # (entry, block, bytes)
+        for entry_index, entry in enumerate(self._entries):
+            msg = entry.message
+            if msg is None or isinstance(msg.content, str):
+                continue
+            for block_index, block in enumerate(msg.content):
+                if not isinstance(block, ImageBlock):
+                    continue
+                if block.source_type != "base64" or not block.data:
+                    continue
+                size = len(block.data)
+                if size > max_bytes:
+                    image_refs.append((entry_index, block_index, size))
+
+        # Count total images across the transcript so the stats line up
+        # with prune_old_tool_result_images for downstream telemetry.
+        total_images = 0
+        for entry in self._entries:
+            msg = entry.message
+            if msg is None or isinstance(msg.content, str):
+                continue
+            for block in msg.content:
+                if isinstance(block, ImageBlock):
+                    total_images += 1
+
+        if not image_refs:
+            return ImagePruneResult(
+                images_before=total_images,
+                images_after=total_images,
+                tool_result_images_before=0,
+                tool_result_images_after=0,
+                kept_recent=0,
+                hard_limit=max_bytes,
+            )
+
+        affected = {entry_index for entry_index, _, _ in image_refs}
+        omitted = 0
+        modified = 0
+        target_set = {(e, b) for (e, b, _) in image_refs}
+        for entry_index in sorted(affected):
+            entry = self._entries[entry_index]
+            msg = entry.message
+            if msg is None or isinstance(msg.content, str):
+                continue
+            new_blocks: list[ContentBlock] = []
+            removed_here_sizes: list[int] = []
+            for block_index, block in enumerate(msg.content):
+                if (
+                    (entry_index, block_index) in target_set
+                    and isinstance(block, ImageBlock)
+                ):
+                    # Record approximate raw byte size for the marker.
+                    size = (len(block.data) * 3) // 4
+                    removed_here_sizes.append(size)
+                    continue
+                new_blocks.append(block)
+            if not removed_here_sizes:
+                continue
+            omitted += len(removed_here_sizes)
+            modified += 1
+            total_mb = sum(removed_here_sizes) / (1024 * 1024)
+            limit_mb = max_bytes / (1024 * 1024)
+            new_blocks.append(TextBlock(text=(
+                f"\n\n[{len(removed_here_sizes)} image"
+                f"{'s' if len(removed_here_sizes) != 1 else ''} omitted from "
+                f"model history: total {total_mb:.1f} MB exceeded the "
+                f"{limit_mb:.1f} MB per-image API limit. Take a fresh "
+                "screenshot or re-attach a smaller version if needed.]"
+            )))
+            msg.content = new_blocks
+
+        logger.info(
+            "Pruned %d oversized image block(s) (> %d bytes each)",
+            omitted, max_bytes,
+        )
+
+        return ImagePruneResult(
+            images_before=total_images,
+            images_after=total_images - omitted,
+            tool_result_images_before=omitted,
+            tool_result_images_after=0,
+            omitted_images=omitted,
+            modified_messages=modified,
+            kept_recent=0,
+            hard_limit=max_bytes,
+        )
+
+    def set_entry_pinned(self, entry_id: str, pinned: bool) -> bool:
+        """Toggle the compaction_excluded flag on a single entry.
+
+        Returns True if an entry was found and updated, False if no
+        entry matched ``entry_id``. Pinning a message tells the
+        compactor to keep it verbatim across every future summary (F1).
+        """
+        for entry in self._entries:
+            if entry.id == entry_id:
+                entry.compaction_excluded = bool(pinned)
+                return True
+        return False
 
     def clear(self) -> None:
         """Clear all entries."""

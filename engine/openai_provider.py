@@ -95,6 +95,45 @@ StreamCallback = Callable[[StreamEvent], None]
 AsyncStreamCallback = Callable[[StreamEvent], Awaitable[None]]
 
 
+def _api_usage_from_response_usage(response_usage: Any) -> APIUsage:
+    """Convert OpenAI's ResponseUsage to our internal ``APIUsage``.
+
+    OpenAI's ``input_tokens`` is the *total* prompt token count and
+    ``input_tokens_details.cached_tokens`` is a SUBSET of that count
+    (already included). Anthropic, by contrast, reports the three input
+    buckets as disjoint. The rest of this codebase — ``engine.usage`` and
+    ``engine.providers.compute_cost`` — assumes the disjoint convention.
+
+    If we passed OpenAI's totals through unchanged, ``compute_cost`` would
+    bill the cached portion twice (once at the full rate via input_tokens,
+    once at the cache rate via cache_read_tokens), inflating displayed
+    costs ~10× whenever a cache hit happens. Subtract the cached slice
+    here so downstream code sees disjoint values for every provider.
+    """
+    if response_usage is None:
+        return APIUsage()
+
+    reasoning_tokens = 0
+    output_details = getattr(response_usage, "output_tokens_details", None)
+    if output_details is not None:
+        reasoning_tokens = getattr(output_details, "reasoning_tokens", 0) or 0
+
+    cached_tokens = 0
+    input_details = getattr(response_usage, "input_tokens_details", None)
+    if input_details is not None:
+        cached_tokens = getattr(input_details, "cached_tokens", 0) or 0
+
+    raw_input = getattr(response_usage, "input_tokens", 0) or 0
+    fresh_input = max(0, raw_input - cached_tokens)
+
+    return APIUsage(
+        input_tokens=fresh_input,
+        output_tokens=getattr(response_usage, "output_tokens", 0) or 0,
+        cache_read_tokens=cached_tokens,
+        reasoning_tokens=reasoning_tokens,
+    )
+
+
 @dataclass
 class OpenAIConfig:
     """Configuration for the OpenAI Responses API provider.
@@ -717,22 +756,7 @@ class OpenAIProvider:
 
         # -- Build usage from response.usage --
         # SDK type: ResponseUsage with nested OutputTokensDetails and InputTokensDetails
-        usage = APIUsage()
-        if response.usage:
-            reasoning_tokens = 0
-            if response.usage.output_tokens_details:
-                reasoning_tokens = response.usage.output_tokens_details.reasoning_tokens or 0
-
-            cached_tokens = 0
-            if response.usage.input_tokens_details:
-                cached_tokens = response.usage.input_tokens_details.cached_tokens or 0
-
-            usage = APIUsage(
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
-                cache_read_tokens=cached_tokens,
-                reasoning_tokens=reasoning_tokens,
-            )
+        usage = _api_usage_from_response_usage(response.usage)
 
         # -- Determine stop_reason from response.status --
         # "completed" + tool calls -> "tool_use"
@@ -820,22 +844,7 @@ class OpenAIProvider:
         )
 
         # -- Build usage --
-        usage = APIUsage()
-        if response.usage:
-            reasoning_tokens = 0
-            if response.usage.output_tokens_details:
-                reasoning_tokens = response.usage.output_tokens_details.reasoning_tokens or 0
-
-            cached_tokens = 0
-            if response.usage.input_tokens_details:
-                cached_tokens = response.usage.input_tokens_details.cached_tokens or 0
-
-            usage = APIUsage(
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
-                cache_read_tokens=cached_tokens,
-                reasoning_tokens=reasoning_tokens,
-            )
+        usage = _api_usage_from_response_usage(response.usage)
 
         # -- Determine stop_reason --
         stop_reason = "end_turn"
@@ -911,10 +920,7 @@ class OpenAIProvider:
         content = "".join(text_parts)
         stop_reason = getattr(response, "stop_reason", None) or "end_turn"
 
-        usage = APIUsage(
-            input_tokens=response.usage.input_tokens if response.usage else 0,
-            output_tokens=response.usage.output_tokens if response.usage else 0,
-        )
+        usage = _api_usage_from_response_usage(response.usage)
 
         logger.info(
             "complete_structured RAW <- %s | schema=%s | stop=%s | "
@@ -1174,21 +1180,7 @@ class OpenAIProvider:
                     # Extract usage from the completed response
                     completed_usage = getattr(completed_response, "usage", None)
                     if completed_usage:
-                        reasoning_tokens = 0
-                        if completed_usage.output_tokens_details:
-                            reasoning_tokens = (
-                                completed_usage.output_tokens_details.reasoning_tokens or 0
-                            )
-                        cached_tokens = 0
-                        if completed_usage.input_tokens_details:
-                            cached_tokens = completed_usage.input_tokens_details.cached_tokens or 0
-
-                        usage = APIUsage(
-                            input_tokens=completed_usage.input_tokens,
-                            output_tokens=completed_usage.output_tokens,
-                            cache_read_tokens=cached_tokens,
-                            reasoning_tokens=reasoning_tokens,
-                        )
+                        usage = _api_usage_from_response_usage(completed_usage)
 
                     # Computer calls do not stream JSON arguments the same way
                     # function tools do. Parse them from the completed response.

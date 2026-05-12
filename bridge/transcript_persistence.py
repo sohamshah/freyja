@@ -30,6 +30,70 @@ def _transcript_path(session_id: str) -> Path:
     return SESSIONS_DIR / f"{safe_id}.transcript.json"
 
 
+def _goal_path(session_id: str) -> Path:
+    """Return the path to a session's goal-state sidecar file."""
+    safe_id = "".join(c for c in session_id if c.isalnum() or c in "_-.")[:160]
+    return SESSIONS_DIR / f"{safe_id}.goal.json"
+
+
+def save_goal_state(session_id: str, data: dict[str, Any]) -> None:
+    """Persist the goal loop's state, brief, and verdict history to disk.
+
+    Lives in a sidecar `~/.freyja/sessions/{id}.goal.json` so it can be
+    loaded independently of the transcript and reloaded incrementally
+    when only goal state changes (every judge call, every brief edit).
+    Atomic write via tmp+rename.
+
+    Schema (camelCase to match the wire format):
+      {
+        "version": 1,
+        "sessionId": str,
+        "goalState": GoalState.to_dict() | None,
+        "judgeRules": JudgeRules.to_dict(),
+        "verdictHistory": [GoalVerdict.to_dict(), ...]
+      }
+    """
+    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    dest = _goal_path(session_id)
+    tmp = dest.with_suffix(".tmp")
+    payload = dict(data)
+    payload.setdefault("version", 1)
+    payload.setdefault("sessionId", session_id)
+    try:
+        tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+        tmp.replace(dest)
+    except Exception:
+        logger.exception("Failed to save goal state for %s", session_id)
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def load_goal_state(session_id: str) -> dict[str, Any] | None:
+    """Load persisted goal state, brief, and verdict history. None if absent."""
+    path = _goal_path(session_id)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or data.get("version") != 1:
+            logger.warning("Goal state version mismatch for %s, ignoring", session_id)
+            return None
+        return data
+    except Exception:
+        logger.exception("Failed to load goal state for %s", session_id)
+        return None
+
+
+def delete_goal_state(session_id: str) -> None:
+    """Remove a persisted goal-state sidecar file."""
+    try:
+        _goal_path(session_id).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def save_transcript(session_id: str, data: dict[str, Any]) -> None:
     """Persist a serialized transcript to disk.
 

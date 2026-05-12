@@ -10,6 +10,7 @@ import type {
 } from '@shared/events'
 import { formatDuration, formatTokens, relativeTime } from '../lib/format'
 import { Spinner } from '../lib/spinner'
+import { StickyHeader } from './StickyHeader'
 import { TopoBackdrop } from './TopoBackdrop'
 
 type Section = 'sessions' | 'skills' | 'subagents' | 'memory'
@@ -73,6 +74,42 @@ export function Sidebar() {
   const openSessionPane = useHarness((s) => s.openSessionPane)
   const messageCount = useHarness((s) => s.messages.length)
   const toggleSidebar = useHarness((s) => s.toggleSidebar)
+  const sidebarWidth = useHarness((s) => s.sidebarWidth)
+  const setSidebarWidth = useHarness((s) => s.setSidebarWidth)
+  const [resizing, setResizing] = useState(false)
+
+  // Mouse-driven resize: drag handle hugs the RIGHT edge of the
+  // sidebar, mirror of the activity panel's left-edge handle. The
+  // sidebar starts at the window's left edge, so `pageX` is the new
+  // width directly. Store clamps to a sane range.
+  const onResizeMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault()
+      setResizing(true)
+      const onMove = (ev: MouseEvent) => {
+        setSidebarWidth(ev.pageX)
+      }
+      const onUp = () => {
+        setResizing(false)
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+        document.body.style.cursor = ''
+        document.body.style.userSelect = ''
+      }
+      window.addEventListener('mousemove', onMove)
+      window.addEventListener('mouseup', onUp)
+      document.body.style.cursor = 'col-resize'
+      document.body.style.userSelect = 'none'
+    },
+    [setSidebarWidth],
+  )
+
+  useEffect(() => {
+    return () => {
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+  }, [])
 
   const [open, setOpen] = useState<Record<Section, boolean>>({
     sessions: true,
@@ -101,11 +138,13 @@ export function Sidebar() {
   }, [skills])
 
   const sortedMemories = useMemo(() => {
-    return Object.values(memories).sort((a, b) => {
-      const at = a.updatedAt ?? a.createdAt ?? 0
-      const bt = b.updatedAt ?? b.createdAt ?? 0
-      return bt - at
-    })
+    return Object.values(memories)
+      .filter((m) => !m.archived)
+      .sort((a, b) => {
+        const at = a.updatedAt ?? a.createdAt ?? 0
+        const bt = b.updatedAt ?? b.createdAt ?? 0
+        return bt - at
+      })
   }, [memories])
 
   // Children of the active session — treat each as a first-class sub-session.
@@ -284,7 +323,10 @@ export function Sidebar() {
   }, [subagentOrder, subagents])
 
   return (
-    <aside className="glass glass-panel relative isolate flex w-[256px] shrink-0 flex-col overflow-hidden rounded-[18px]">
+    <aside
+      className="glass glass-panel relative isolate flex shrink-0 flex-col overflow-hidden rounded-[18px]"
+      style={{ width: `${sidebarWidth}px` }}
+    >
       {/* Ambient topographic backdrop — paired-peak height field with
           marching-squares contouring, same vocabulary as the logo.
           `-z-10` plus the parent's `isolate` keeps it behind every
@@ -293,6 +335,27 @@ export function Sidebar() {
         seed={7}
         className="pointer-events-none absolute inset-0 -z-10"
       />
+      {/* Drag handle — mirror of the activity panel's left-edge handle,
+          here on the RIGHT edge. 6px hit target, 1px hairline. */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sidebar"
+        title="Drag to resize (⌘[ collapses)"
+        onMouseDown={onResizeMouseDown}
+        onDoubleClick={() => setSidebarWidth(256)}
+        className={`group absolute right-0 top-0 z-10 h-full w-[6px] translate-x-[3px] cursor-col-resize select-none ${
+          resizing ? 'bg-accent/20' : ''
+        }`}
+      >
+        <div
+          className={`absolute left-1/2 top-0 h-full w-px -translate-x-1/2 transition-colors ${
+            resizing
+              ? 'bg-accent/60'
+              : 'bg-transparent group-hover:bg-accent/40'
+          }`}
+        />
+      </div>
       <div className="flex items-center justify-between px-3 py-3 hairline-b">
         <div className="label">workspace</div>
         <div className="flex items-center gap-1.5">
@@ -533,19 +596,24 @@ function Section({
   onToggle: () => void
   children: React.ReactNode
 }) {
+  // The title row is wrapped in StickyHeader, which pins it to the
+  // top of the scroll container and morphs it into a centered chip
+  // once the user scrolls past its natural position.
   return (
-    <div className="px-2 py-2">
-      <button
-        onClick={onToggle}
-        className="mb-1 flex w-full items-center justify-between px-1 label hover:text-fg-1"
-      >
-        <span className="flex items-center gap-1.5">
-          <Caret open={open} />
-          {title}
-        </span>
-        <span className="font-mono text-fg-3">{count}</span>
-      </button>
-      {open && <div className="space-y-0.5">{children}</div>}
+    <div>
+      <StickyHeader>
+        <button
+          onClick={onToggle}
+          className="flex w-full items-center justify-between px-3 py-2 label hover:text-fg-1"
+        >
+          <span className="flex items-center gap-1.5">
+            <Caret open={open} />
+            {title}
+          </span>
+          <span className="font-mono text-fg-3">{count}</span>
+        </button>
+      </StickyHeader>
+      {open && <div className="space-y-0.5 px-2 pb-2 pt-1">{children}</div>}
     </div>
   )
 }

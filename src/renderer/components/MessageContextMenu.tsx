@@ -1,7 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
-export type MessageMenuAction = 'edit' | 'rerun' | 'delete' | 'branch'
+export type MessageMenuAction =
+  | 'edit'
+  | 'rerun'
+  | 'delete'
+  | 'branch'
+  | 'pin'
+  | 'unpin'
 
 interface MessageContextMenuProps {
   /** Anchor in viewport coordinates (e.g. clientX/clientY from the
@@ -13,6 +19,8 @@ interface MessageContextMenuProps {
   isUserMessage: boolean
   /** Whether actions are temporarily blocked (e.g. a turn is streaming). */
   busy?: boolean
+  /** True when this message is currently pinned (compaction_excluded). */
+  isPinned?: boolean
   onPick: (action: MessageMenuAction) => void
   onClose: () => void
 }
@@ -28,6 +36,7 @@ export function MessageContextMenu({
   y,
   isUserMessage,
   busy,
+  isPinned,
   onPick,
   onClose,
 }: MessageContextMenuProps) {
@@ -90,6 +99,12 @@ export function MessageContextMenu({
       label: 'rerun',
       hint: 'replay verbatim',
       disabled: !isUserMessage || busy,
+    },
+    {
+      action: isPinned ? 'unpin' : 'pin',
+      label: isPinned ? 'unpin' : 'pin',
+      hint: isPinned ? 'allow compaction again' : 'keep through compactions',
+      disabled: busy,
     },
     {
       action: 'delete',
