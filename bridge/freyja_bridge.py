@@ -261,6 +261,59 @@ def _sanitize_session_oversize_images(session: Any) -> int:
     return rewritten
 
 
+# Threshold bands for the cooperative early-trigger compaction protocol.
+# Kept in sync with engine/constants.py — duplicated locally so we can
+# build pressure tags without importing engine internals in the hot path.
+_PRESSURE_TAG_AWARENESS = 0.25
+_PRESSURE_TAG_SOFT = 0.40
+_PRESSURE_TAG_STRONG = 0.60
+_PRESSURE_TAG_FALLBACK = 0.80
+
+
+def _build_pressure_tag(runner: Any) -> str:
+    """Build the per-observation token-usage tag for Channel 1 of the
+    cooperative compaction protocol.
+
+    Returns the empty string below the awareness threshold so the tag
+    only appears when there's something the agent might want to act on.
+    The escalating wording mirrors Context-1's continuous-awareness
+    pattern, lowered to fire much earlier than today's runtime-only
+    compaction.
+    """
+    try:
+        provider = getattr(runner, "provider", None)
+        config = getattr(runner, "config", None)
+        usage = getattr(runner, "usage", None)
+        if provider is None or config is None or usage is None:
+            return ""
+        window = int(getattr(provider, "context_window", 0) or 0)
+        if window <= 0:
+            return ""
+        reserved = int(getattr(config, "max_tokens_per_turn", 0) or 0)
+        effective = max(1, window - reserved)
+        used = int(usage.effective_context_tokens())
+        ratio = used / effective
+        if ratio < _PRESSURE_TAG_AWARENESS:
+            return ""
+        pct = int(ratio * 100)
+        if ratio >= _PRESSURE_TAG_FALLBACK:
+            advisory = (
+                "fallback imminent — call summarize_context() NOW or further "
+                "tool calls may be rejected"
+            )
+        elif ratio >= _PRESSURE_TAG_STRONG:
+            advisory = "summarize_context() recommended before continuing"
+        elif ratio >= _PRESSURE_TAG_SOFT:
+            advisory = "consider summarize_context() at next break"
+        else:
+            advisory = "no action needed"
+        return (
+            f"[ctx: {pct}% ({used:,}/{effective:,}) · {advisory}]"
+        )
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _build_user_message_with_attachments(
     user_content: str,
     attachments: list[dict[str, Any]] | None,
@@ -1162,6 +1215,20 @@ def _new_tracing_registry(
             )
             raise
 
+        # Channel 1 of the cooperative compaction protocol: append a
+        # token-usage tag to every tool result so the agent has continuous
+        # pressure visibility. Escalates wording at the soft / strong
+        # suggestion bands. No-op below CONTEXT_AWARENESS_THRESHOLD.
+        if get_runner is not None:
+            try:
+                runner_ref = get_runner()
+                if runner_ref is not None and result is not None:
+                    tag = _build_pressure_tag(runner_ref)
+                    if tag and isinstance(result.content, str):
+                        result.content = result.content + "\n\n" + tag
+            except Exception:  # noqa: BLE001
+                pass
+
         duration_ms = int((time.monotonic() - start) * 1000)
         content = getattr(result, "content", "")
         preview, images = _tool_content_preview_and_images(content)
@@ -1349,6 +1416,12 @@ class _BridgeSession:
         # pricing and silently undercounted by 5× on Opus and other
         # providers, and ignored cache reads + cache writes entirely).
         self.cumulative_cost: float = 0.0
+
+        # Last observed pressure band — used to emit a telemetry event
+        # only when the band changes, not on every LLM call. Bands match
+        # engine/constants.py: clean / pruning / awareness / soft /
+        # strong / fallback.
+        self.last_pressure_band: str = "clean"
         # Message queue — when the user sends a message while a turn is
         # in progress, we queue it here instead of cancelling. The task
         # runner drains the queue after each turn completes.
@@ -1380,6 +1453,13 @@ class _BridgeSession:
         self._kanban_dispatched: set[str] = set()
         self.task_board: Any | None = None
         self.goal_state: Any | None = None
+        # Operator-authored brief for the judge — see bridge/tools/goal_loop.py.
+        # Persists per-session; surfaces into every judge call.
+        from bridge.tools.goal_loop import GoalBrief
+        self.goal_brief: Any = GoalBrief()
+        # Rolling history of verdicts for this goal, for trajectory + judge context.
+        # Trimmed in _maybe_continue_goal.
+        self.goal_verdict_history: list[Any] = []
         self._turn_text_parts: list[str] = []
         self._tool_list = ""
         self._agent_types_section = ""
@@ -2925,6 +3005,10 @@ class _BridgeSession:
             GOAL_JUDGE_SYSTEM_PROMPT,
             GOAL_JUDGE_USER_TEMPLATE,
             GoalVerdict,
+            build_previous_criteria_block,
+            build_recent_work_block,
+            build_verdict_history_block,
+            merge_brief_criteria_into_verdict,
             parse_goal_verdict,
         )
         from engine.runner import AsyncAgentRunner, StopCondition
@@ -2932,6 +3016,41 @@ class _BridgeSession:
 
         if self.goal_state is None:
             return GoalVerdict(done=True, reason="No active goal.", confidence=1.0)
+
+        # Assemble extended context: brief, prior criteria, recent verdicts, and
+        # several recent assistant turns rather than just the latest snippet.
+        # This is the user-flagged calibration move — the judge was rubber-stamping
+        # because it was only seeing a thin slice of the work.
+        brief_block = self.goal_brief.render_for_prompt() if self.goal_brief else "(no brief)"
+        previous_criteria = (
+            self.goal_state.last_verdict.criteria
+            if self.goal_state.last_verdict and self.goal_state.last_verdict.criteria
+            else []
+        )
+        previous_block = build_previous_criteria_block(previous_criteria)
+        history_block = build_verdict_history_block(list(self.goal_verdict_history))
+
+        # Pull the recent transcript from the main session, last 5 assistant turns.
+        recent_messages: list[dict[str, Any]] = []
+        try:
+            if self.session is not None:
+                msgs = self.session.transcript.get_messages()
+                for m in msgs:
+                    if not hasattr(m, "role"):
+                        continue
+                    recent_messages.append(
+                        {
+                            "role": str(getattr(m, "role", "")),
+                            "content": (
+                                m.get_text() if hasattr(m, "get_text") else str(getattr(m, "content", ""))
+                            ),
+                        }
+                    )
+        except Exception:
+            recent_messages = []
+        if not recent_messages and latest_response:
+            recent_messages = [{"role": "assistant", "content": latest_response}]
+        recent_block = build_recent_work_block(recent_messages, limit=5, per_msg_chars=4000)
 
         judge_session = Session.create(
             system_prompt=GOAL_JUDGE_SYSTEM_PROMPT,
@@ -2947,7 +3066,10 @@ class _BridgeSession:
         )
         prompt = GOAL_JUDGE_USER_TEMPLATE.format(
             goal=self.goal_state.goal,
-            response=(latest_response or "").strip()[:12000],
+            brief_block=brief_block,
+            previous_criteria_block=previous_block,
+            verdict_history_block=history_block,
+            recent_work_block=recent_block,
         )
         try:
             result = await judge_runner.run(
@@ -2956,12 +3078,18 @@ class _BridgeSession:
                 stream=False,
                 stop_condition=StopCondition(max_iterations=1),
             )
-            return parse_goal_verdict(result.response or "")
+            verdict = parse_goal_verdict(result.response or "")
+            # Carry forward criteria IDs the judge dropped — operator-authored
+            # criteria should persist across turns even if the model misses them.
+            verdict = merge_brief_criteria_into_verdict(self.goal_brief, verdict)
+            return verdict
         except Exception as exc:  # noqa: BLE001
             return GoalVerdict(
                 done=False,
                 reason=f"Goal judge failed ({exc}); continuing conservatively.",
                 confidence=0.0,
+                criteria=[],
+                open_questions=[f"Judge call raised: {exc}"],
                 raw=str(exc),
             )
 
@@ -2986,6 +3114,11 @@ class _BridgeSession:
         verdict = await self._judge_goal(latest_response)
         goal.last_verdict = verdict
         goal.updated_at = time.time()
+        # Track verdict history (last 12) so the judge can see trajectory
+        # on subsequent turns and the UI can render a confidence sparkline.
+        self.goal_verdict_history.append(verdict)
+        if len(self.goal_verdict_history) > 12:
+            self.goal_verdict_history = self.goal_verdict_history[-12:]
         self._emit_goal_event(
             "goal_judge",
             ("Goal satisfied" if verdict.done else "Goal still active"),
@@ -3268,17 +3401,109 @@ class _BridgeSession:
 
     async def _on_system_event(self, event: Any) -> None:
         try:
+            subtype = getattr(event, "type", "unknown")
+            details = getattr(event, "details", {}) or {}
             emit(
                 {
                     "type": "system_event",
                     "sessionId": self.id,
-                    "subtype": getattr(event, "type", "unknown"),
+                    "subtype": subtype,
                     "message": getattr(event, "message", ""),
-                    "details": getattr(event, "details", {}) or {},
+                    "details": details,
                 }
             )
+            # Mirror compaction events to the telemetry log so the
+            # metrics dashboard can aggregate across sessions.
+            if subtype in {
+                "compaction_complete", "compaction_start", "compaction_skipped",
+                "context_pruning", "media_pruning",
+            }:
+                try:
+                    from bridge.compaction_telemetry import append_telemetry
+
+                    append_telemetry({
+                        "type": "compaction_event",
+                        "session_id": self.id,
+                        "subtype": subtype,
+                        "model": self.model_id,
+                        "tokens_before": int(details.get("tokens_before") or details.get("context_tokens_before") or 0),
+                        "tokens_after": int(details.get("tokens_after") or details.get("context_tokens_after") or 0),
+                        "mechanism": (
+                            details.get("strategy")
+                            or ("summary" if subtype == "compaction_complete"
+                                else "tool_halve" if subtype == "context_pruning"
+                                else "image_prune" if subtype == "media_pruning"
+                                else subtype)
+                        ),
+                        "trigger": details.get("trigger"),
+                    })
+                except Exception:  # noqa: BLE001
+                    pass
         except Exception as exc:  # noqa: BLE001
             log("error", f"on_system_event error: {exc}")
+
+    def _emit_pressure_telemetry_if_changed(self) -> None:
+        """Detect pressure-band crossings and emit a telemetry event +
+        live renderer event when the band changes. Bands are aligned
+        with engine/constants.py thresholds."""
+        if self.runner is None or self.session is None:
+            return
+        try:
+            provider = self.runner.provider
+            config = self.runner.config
+            usage = self.runner.usage
+            window = int(getattr(provider, "context_window", 0) or 0)
+            if window <= 0:
+                return
+            reserved = int(getattr(config, "max_tokens_per_turn", 0) or 0)
+            effective = max(1, window - reserved)
+            used = int(usage.effective_context_tokens())
+            ratio = used / effective
+            if ratio < 0.15:
+                band = "clean"
+            elif ratio < _PRESSURE_TAG_AWARENESS:
+                band = "pruning"
+            elif ratio < _PRESSURE_TAG_SOFT:
+                band = "awareness"
+            elif ratio < _PRESSURE_TAG_STRONG:
+                band = "soft"
+            elif ratio < _PRESSURE_TAG_FALLBACK:
+                band = "strong"
+            else:
+                band = "fallback"
+            if band == self.last_pressure_band:
+                return
+            self.last_pressure_band = band
+
+            from bridge.compaction_telemetry import append_telemetry
+
+            payload = {
+                "type": "pressure_signal",
+                "sessionId": self.id,
+                "turnId": self.current_turn_id,
+                "band": band,
+                "pressurePct": round(ratio * 100, 1),
+                "usedTokens": used,
+                "effectiveWindow": effective,
+                "model": self.model_id,
+            }
+            append_telemetry({
+                "type": "pressure_signal",
+                "session_id": self.id,
+                "band": band,
+                "pressure_pct": ratio * 100,
+                "used_tokens": used,
+                "effective_window": effective,
+                "model": self.model_id,
+            })
+            emit(payload)
+            log(
+                "info",
+                f"ctx pressure → {band} ({ratio:.0%}) "
+                f"[{used:,}/{effective:,}] session={self.id}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("debug", f"pressure telemetry failed: {exc}")
 
     def _on_llm_call(self, payload: dict[str, Any]) -> None:
         """Surface per-call LLM diagnostics in the activity panel.
@@ -3321,6 +3546,52 @@ class _BridgeSession:
             # reads / writes) instead of the old hard-coded formula.
             if cost is not None:
                 self.cumulative_cost += float(cost)
+
+            # Telemetry: persist per-call metrics for the metrics dashboard.
+            # Also emit a live event so the renderer can update in real time
+            # without re-reading the JSONL file on every keystroke.
+            try:
+                from bridge.compaction_telemetry import append_telemetry
+
+                metric_event = {
+                    "type": "llm_call_metric",
+                    "sessionId": self.id,
+                    "turnId": self.current_turn_id,
+                    "model": model,
+                    "provider": provider,
+                    "durationMs": duration_ms,
+                    "inputTokens": in_tok,
+                    "outputTokens": out_tok,
+                    "cacheReadTokens": cr_tok,
+                    "cacheWriteTokens": cw_tok,
+                    "reasoningTokens": r_tok,
+                    "stopReason": stop_reason,
+                    "toolCalls": tool_calls,
+                    "costUsd": float(cost) if cost is not None else None,
+                }
+                append_telemetry({
+                    "type": "llm_call_metric",
+                    "session_id": self.id,
+                    "turn_id": self.current_turn_id,
+                    "model": model,
+                    "input_tokens": in_tok,
+                    "output_tokens": out_tok,
+                    "cache_read_tokens": cr_tok,
+                    "cache_write_tokens": cw_tok,
+                    "cost_usd": float(cost) if cost is not None else None,
+                    "duration_ms": duration_ms,
+                })
+                emit(metric_event)
+            except Exception:  # noqa: BLE001
+                pass
+
+            # Also emit pressure-band telemetry if the runner crossed a
+            # threshold during this call. The dashboard aggregates these
+            # to show how often each band fires across sessions.
+            try:
+                self._emit_pressure_telemetry_if_changed()
+            except Exception:  # noqa: BLE001
+                pass
 
             parts: list[str] = [
                 f"llm {provider}/{model}",
@@ -4050,6 +4321,87 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         enabled = bool(cmd.get("enabled"))
         sess = await state.ensure_session(session_id)
         sess.set_auto_dispatch_enabled(enabled)
+        return
+
+    if ctype in ("memory_update", "memory_delete", "memory_restore", "memory_merge"):
+        # All memory mutation commands need a session id so the audit
+        # trail records which session the user was in when they made the
+        # edit. Fall back to the active session if not provided.
+        if not session_id:
+            return
+        sess = await state.ensure_session(session_id)
+        if sess.memory_store is None:
+            return
+        actor = "user"
+        try:
+            if ctype == "memory_update":
+                item = sess.memory_store.update_item(
+                    str(cmd.get("id") or ""),
+                    text=cmd.get("text") if isinstance(cmd.get("text"), str) else None,
+                    kind=cmd.get("kind") if isinstance(cmd.get("kind"), str) else None,
+                    scope=cmd.get("scope") if isinstance(cmd.get("scope"), str) else None,
+                    tags=list(cmd.get("tags")) if isinstance(cmd.get("tags"), list) else None,
+                    session_id=session_id,
+                    actor=actor,
+                    note=str(cmd.get("note") or ""),
+                )
+            elif ctype == "memory_delete":
+                item = sess.memory_store.delete_item(
+                    str(cmd.get("id") or ""),
+                    session_id=session_id,
+                    actor=actor,
+                    note=str(cmd.get("note") or ""),
+                )
+            elif ctype == "memory_restore":
+                item = sess.memory_store.restore_item(
+                    str(cmd.get("id") or ""),
+                    session_id=session_id,
+                    actor=actor,
+                    note=str(cmd.get("note") or ""),
+                )
+            else:  # memory_merge
+                ids = cmd.get("ids")
+                if not isinstance(ids, list) or len(ids) < 2:
+                    return
+                item = sess.memory_store.merge_items(
+                    [str(i) for i in ids],
+                    text=str(cmd.get("text") or ""),
+                    kind=str(cmd.get("kind") or ""),
+                    scope=str(cmd.get("scope") or ""),
+                    tags=list(cmd.get("tags")) if isinstance(cmd.get("tags"), list) else None,
+                    session_id=session_id,
+                    actor=actor,
+                    note=str(cmd.get("note") or ""),
+                )
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"memory {ctype} failed: {exc}")
+            return
+        if item is None:
+            return
+        # Push the updated record to the renderer so the sidebar and any
+        # open inspector popup refresh immediately.
+        emit(
+            {
+                "type": "memory_updated",
+                "sessionId": session_id,
+                "memory": item.to_event(),
+                "reason": ctype,
+            }
+        )
+        if ctype == "memory_merge":
+            # Also push events for the archived source items so the
+            # renderer can update them in place (their archived flag flipped).
+            for src_id in cmd.get("ids", []):
+                src = sess.memory_store.get_item(str(src_id))
+                if src is not None:
+                    emit(
+                        {
+                            "type": "memory_updated",
+                            "sessionId": session_id,
+                            "memory": src.to_event(),
+                            "reason": "memory_merge_source",
+                        }
+                    )
         return
 
     if ctype == "goal_control":

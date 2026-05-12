@@ -170,7 +170,17 @@ export interface HarnessState extends SessionSlice {
   inputDraft: string
   commandPaletteOpen: boolean
   missionDashboardOpen: boolean
-  missionDashboardTab: 'overview' | 'swarm' | 'findings' | 'telemetry' | 'profiles'
+  // 'swarm' / 'findings' / 'telemetry' are kept for legacy callers; the
+  // live tab set is overview / activity / profiles.
+  missionDashboardTab:
+    | 'overview'
+    | 'activity'
+    | 'profiles'
+    | 'swarm'
+    | 'findings'
+    | 'telemetry'
+  /** Cross-session compaction metrics dashboard (header button toggle). */
+  metricsDashboardOpen: boolean
   activeSubagentId: string | null
   focusedPanel: 'sidebar' | 'conversation' | 'activity'
   debugOpen: boolean
@@ -220,6 +230,7 @@ export interface HarnessActions {
     open?: boolean,
     tab?: HarnessState['missionDashboardTab'],
   ): void
+  toggleMetricsDashboard(open?: boolean): void
   toggleModelPicker(open?: boolean): void
   setFocusedPanel(p: HarnessState['focusedPanel']): void
   requestDemoBurst(): Promise<void>
@@ -228,6 +239,13 @@ export interface HarnessActions {
   openSessionPane(sessionId: string, mode?: 'replace' | 'split'): Promise<void>
   closeSessionPane(paneId: string): Promise<void>
   setActiveSessionPane(paneId: string): void
+  /** Memory CRUD bridged via IPC. The bridge writes through to disk
+   *  and broadcasts a memory_updated event the store picks up; these
+   *  helpers are thin wrappers around sendCommand. */
+  updateMemory(id: string, patch: { text?: string; kind?: string; scope?: string; tags?: string[]; note?: string }): Promise<void>
+  deleteMemory(id: string, note?: string): Promise<void>
+  restoreMemory(id: string, note?: string): Promise<void>
+  mergeMemories(ids: string[], text: string, opts?: { kind?: string; scope?: string; tags?: string[]; note?: string }): Promise<void>
   listTools(): Promise<void>
   toggleDebug(open?: boolean): void
   toggleSidebar(collapsed?: boolean): void
@@ -593,6 +611,7 @@ function emptyState(): HarnessState {
     commandPaletteOpen: false,
     missionDashboardOpen: false,
     missionDashboardTab: 'overview',
+    metricsDashboardOpen: false,
     modelPickerOpen: false,
     activeSubagentId: null,
     focusedPanel: 'conversation',
@@ -2134,6 +2153,10 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     }))
   },
 
+  toggleMetricsDashboard(open) {
+    set((prev) => ({ metricsDashboardOpen: open ?? !prev.metricsDashboardOpen }))
+  },
+
   toggleModelPicker(open) {
     set((prev) => ({ modelPickerOpen: open ?? !prev.modelPickerOpen }))
   },
@@ -3052,6 +3075,55 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     if (api) await api.sendCommand({ type: 'list_tools' })
   },
 
+  async updateMemory(id, patch) {
+    const api = (window as any).harness
+    if (!api) return
+    const sessionId = useHarness.getState().activeSessionId
+    await api.sendCommand({
+      type: 'memory_update',
+      sessionId,
+      id,
+      ...patch,
+    })
+  },
+
+  async deleteMemory(id, note) {
+    const api = (window as any).harness
+    if (!api) return
+    const sessionId = useHarness.getState().activeSessionId
+    await api.sendCommand({
+      type: 'memory_delete',
+      sessionId,
+      id,
+      note,
+    })
+  },
+
+  async restoreMemory(id, note) {
+    const api = (window as any).harness
+    if (!api) return
+    const sessionId = useHarness.getState().activeSessionId
+    await api.sendCommand({
+      type: 'memory_restore',
+      sessionId,
+      id,
+      note,
+    })
+  },
+
+  async mergeMemories(ids, text, opts) {
+    const api = (window as any).harness
+    if (!api) return
+    const sessionId = useHarness.getState().activeSessionId
+    await api.sendCommand({
+      type: 'memory_merge',
+      sessionId,
+      ids,
+      text,
+      ...(opts ?? {}),
+    })
+  },
+
   toggleDebug(open) {
     set((prev) => ({ debugOpen: open ?? !prev.debugOpen }))
   },
@@ -3203,7 +3275,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         show(`${Object.keys(state.skills).length} skill(s) loaded`, 'info')
         return true
       case '/subagents': {
-        state.toggleMissionDashboard(true, 'swarm')
+        state.toggleMissionDashboard(true, 'overview')
         return true
       }
       case '/tools':

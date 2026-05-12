@@ -28,7 +28,7 @@ from bridge.tools.image_generation_tool import GenerateImageTool
 from bridge.tools.kanban_board import KanbanTool
 from bridge.tools.task_board import TaskBoardTool
 from bridge.tools.video_analysis_tool import AnalyzeVideoTool
-from bridge.tools.memory_tools import RecordUserPreferenceTool
+from bridge.tools.memory_tools import MemoryTool, RecordUserPreferenceTool
 from bridge.tools.search_tools import GlobTool, GrepTool
 from bridge.tools.skill_tools import ListSkillsTool, LoadSkillTool, SearchSkillsTool
 from bridge.tools.sub_agent_registry import SubAgentRegistry
@@ -112,12 +112,30 @@ def build_desktop_registry(
         tools.append(EditFileTool())
         tools.append(EditJsonTool())
 
-    # Memory (writes to MEMORY.md + structured JSONL)
+    # Memory (writes to MEMORY.md + structured JSONL). Two tool entries:
+    # `record_user_preference` keeps existing transcripts working;
+    # `memory` is the new action-based curation surface (list / show /
+    # record / update / delete / restore / merge). Both share the same
+    # MemoryStore and both pass the calling session id + a "parent"
+    # actor label into the per-item audit trail.
+    _mem_actor = "parent"
+    _mem_session = subagent_parent_session_id or ""
     tools.append(
         RecordUserPreferenceTool(
             workspace=workspace_path,
             memory_store=memory_store,
             on_memory_updated=on_memory_updated,
+            session_id=_mem_session,
+            actor=_mem_actor,
+        )
+    )
+    tools.append(
+        MemoryTool(
+            workspace=workspace_path,
+            memory_store=memory_store,
+            on_memory_updated=on_memory_updated,
+            session_id=_mem_session,
+            actor=_mem_actor,
         )
     )
 

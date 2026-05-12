@@ -679,9 +679,40 @@ function InspectorPopup({
     | { kind: 'memory'; item: MemoryRecord }
   onClose: () => void
 }) {
-  // Click-outside closes the popup.
+  const updateMemory = useHarness((s) => s.updateMemory)
+  const deleteMemory = useHarness((s) => s.deleteMemory)
+  const restoreMemory = useHarness((s) => s.restoreMemory)
+  const showToast = useHarness((s) => s.showToast)
+  // The live record — re-derived from the store on every render so an
+  // edit fired off through the IPC pipeline reflects back here without
+  // the parent component having to re-pass the item.
+  const liveMemory = useHarness((s) =>
+    item.kind === 'memory' ? s.memories[item.item.id] ?? item.item : null,
+  )
+
+  // Edit state for memories.
+  const [editing, setEditing] = useState(false)
+  const [editText, setEditText] = useState(item.kind === 'memory' ? item.item.text : '')
+  const [editKind, setEditKind] = useState(item.kind === 'memory' ? item.item.kind : '')
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  // Reset edit fields when the live memory changes (e.g. another
+  // session updated it mid-edit). If the user has unsaved edits, leave
+  // them alone.
+  useEffect(() => {
+    if (!editing && item.kind === 'memory' && liveMemory) {
+      setEditText(liveMemory.text)
+      setEditKind(liveMemory.kind)
+    }
+  }, [liveMemory?.text, liveMemory?.kind, editing, item.kind])
+
+  // Click-outside closes the popup. While editing or confirming delete
+  // we suppress the auto-close so a stray click in the field can't drop
+  // the user's typing on the floor.
   const cardRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
+    if (editing || confirmDelete) return
     const handler = (e: MouseEvent) => {
       if (cardRef.current && !cardRef.current.contains(e.target as Node)) {
         onClose()
@@ -689,24 +720,32 @@ function InspectorPopup({
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
-  }, [onClose])
+  }, [onClose, editing, confirmDelete])
 
   const isSkill = item.kind === 'skill'
-  const title = isSkill ? item.item.name : `${item.item.kind} memory`
-  const kindTag = isSkill ? item.item.skillType : item.item.kind
-  const scopeTag = isSkill ? (item.item.scope ?? 'project') : item.item.scope
-  const body = isSkill ? item.item.description : item.item.text
-  const summary = isSkill ? null : item.item.summary
-  const tags = isSkill ? item.item.tags : item.item.tags
+  const memoryRecord = !isSkill && liveMemory ? liveMemory : null
+  const title = isSkill ? item.item.name : `${memoryRecord?.kind ?? item.item.kind} memory`
+  const kindTag = isSkill ? item.item.skillType : memoryRecord?.kind ?? item.item.kind
+  const scopeTag = isSkill ? (item.item.scope ?? 'project') : memoryRecord?.scope ?? item.item.scope
+  const body = isSkill ? item.item.description : memoryRecord?.text ?? item.item.text
+  const summary = isSkill ? null : memoryRecord?.summary ?? item.item.summary
+  const tags = isSkill ? item.item.tags : memoryRecord?.tags ?? item.item.tags
   const triggers = isSkill ? item.item.triggers : []
   const confidence = isSkill
     ? item.item.confidence
-    : item.item.confidence ?? null
-  const path = isSkill ? item.item.path : item.item.path
-  const source = isSkill ? null : item.item.source
+    : memoryRecord?.confidence ?? item.item.confidence ?? null
+  const path = isSkill ? item.item.path : memoryRecord?.path ?? item.item.path
+  const source = isSkill ? null : memoryRecord?.source ?? item.item.source
   const status = isSkill ? (item.item.status ?? 'available') : null
-  const createdAt = !isSkill ? item.item.createdAt : null
-  const updatedAt = !isSkill ? item.item.updatedAt : null
+  const createdAt = !isSkill ? memoryRecord?.createdAt ?? item.item.createdAt : null
+  const updatedAt = !isSkill ? memoryRecord?.updatedAt ?? item.item.updatedAt : null
+  // Memory-specific audit fields
+  const createdBySession = !isSkill ? memoryRecord?.createdBySession ?? item.item.createdBySession ?? '' : ''
+  const createdByActor = !isSkill ? memoryRecord?.createdByActor ?? item.item.createdByActor ?? '' : ''
+  const revisions = !isSkill ? memoryRecord?.revisions ?? item.item.revisions ?? [] : []
+  const supersedes = !isSkill ? memoryRecord?.supersedes ?? item.item.supersedes ?? [] : []
+  const supersededBy = !isSkill ? memoryRecord?.supersededBy ?? item.item.supersededBy ?? '' : ''
+  const archived = !isSkill ? Boolean(memoryRecord?.archived ?? item.item.archived) : false
   // Skill activity stats
   const retrievalCount = isSkill ? item.item.retrievalCount : 0
   const loadCount = isSkill ? (item.item.loadCount ?? 0) : 0
@@ -716,6 +755,56 @@ function InspectorPopup({
   const successRate = totalSignals > 0
     ? Math.round((successSignals / totalSignals) * 100)
     : null
+
+  const handleSave = useCallback(async () => {
+    if (item.kind !== 'memory') return
+    const trimmed = editText.trim()
+    if (!trimmed) {
+      showToast('Memory text cannot be empty', 'warn')
+      return
+    }
+    setSaving(true)
+    try {
+      await updateMemory(item.item.id, {
+        text: trimmed,
+        kind: editKind.trim() || undefined,
+      })
+      showToast('Memory updated', 'ok')
+      setEditing(false)
+    } catch {
+      showToast('Failed to update memory', 'danger')
+    } finally {
+      setSaving(false)
+    }
+  }, [editText, editKind, item, showToast, updateMemory])
+
+  const handleDelete = useCallback(async () => {
+    if (item.kind !== 'memory') return
+    setSaving(true)
+    try {
+      await deleteMemory(item.item.id)
+      showToast('Memory archived', 'ok')
+      setConfirmDelete(false)
+      onClose()
+    } catch {
+      showToast('Failed to archive memory', 'danger')
+    } finally {
+      setSaving(false)
+    }
+  }, [item, deleteMemory, showToast, onClose])
+
+  const handleRestore = useCallback(async () => {
+    if (item.kind !== 'memory') return
+    setSaving(true)
+    try {
+      await restoreMemory(item.item.id)
+      showToast('Memory restored', 'ok')
+    } catch {
+      showToast('Failed to restore memory', 'danger')
+    } finally {
+      setSaving(false)
+    }
+  }, [item, restoreMemory, showToast])
 
   // The sidebar's <aside> sets `isolate` + `overflow-hidden`, so a
   // fixed-positioned modal rendered as a descendant gets clipped to
@@ -779,20 +868,54 @@ function InspectorPopup({
 
         {/* Body — scrollable */}
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4 text-[12.5px] leading-[1.55] text-fg-1">
-          {summary && (
+          {archived && (
+            <div className="rounded-md bg-warn/[0.08] px-3 py-2 text-[11.5px] text-warn ring-1 ring-warn/25">
+              This memory is archived — hidden from agent context.
+              {' '}
+              <button
+                type="button"
+                onClick={handleRestore}
+                disabled={saving}
+                className="ml-1 font-mono text-[11px] underline hover:text-fg-0 disabled:opacity-50"
+              >
+                Restore
+              </button>
+            </div>
+          )}
+          {summary && !editing && (
             <section>
               <div className="label mb-1 text-[9px] text-fg-3">summary</div>
               <p className="text-fg-0">{summary}</p>
             </section>
           )}
-          {body && (
+          {editing && !isSkill ? (
+            <section>
+              <div className="label mb-1 text-[9px] text-fg-3">edit body</div>
+              <textarea
+                value={editText}
+                onChange={(e) => setEditText(e.target.value)}
+                spellCheck={false}
+                className="min-h-[140px] w-full rounded-md bg-black/40 px-3 py-2 text-[12.5px] leading-[1.55] text-fg-0 ring-1 ring-white/[0.08] focus:outline-none focus:ring-accent/40"
+              />
+              <div className="mt-2 flex items-center gap-2">
+                <span className="label text-[9px] text-fg-3">category</span>
+                <input
+                  type="text"
+                  value={editKind}
+                  onChange={(e) => setEditKind(e.target.value)}
+                  spellCheck={false}
+                  className="w-40 rounded bg-black/40 px-2 py-1 font-mono text-[11px] text-fg-0 ring-1 ring-white/[0.08] focus:outline-none focus:ring-accent/40"
+                />
+              </div>
+            </section>
+          ) : body ? (
             <section>
               <div className="label mb-1 text-[9px] text-fg-3">
                 {isSkill ? 'description' : 'body'}
               </div>
               <p className="selectable whitespace-pre-wrap text-fg-0">{body}</p>
             </section>
-          )}
+          ) : null}
           {tags && tags.length > 0 && (
             <section>
               <div className="label mb-1 text-[9px] text-fg-3">tags</div>
@@ -841,7 +964,7 @@ function InspectorPopup({
               </div>
             </section>
           )}
-          {(path || source || createdAt || updatedAt) && (
+          {(path || source || createdAt || updatedAt || createdBySession || createdByActor) && (
             <section>
               <div className="label mb-1 text-[9px] text-fg-3">metadata</div>
               <dl className="grid grid-cols-[120px_minmax(0,1fr)] gap-x-3 gap-y-1 text-[11.5px]">
@@ -859,6 +982,23 @@ function InspectorPopup({
                     <dd className="text-fg-1">{source}</dd>
                   </>
                 )}
+                {createdByActor && (
+                  <>
+                    <dt className="text-fg-3">recorded by</dt>
+                    <dd className="font-mono text-fg-1">{createdByActor}</dd>
+                  </>
+                )}
+                {createdBySession && (
+                  <>
+                    <dt className="text-fg-3">session</dt>
+                    <dd
+                      className="truncate font-mono text-[11px] text-fg-2"
+                      title={createdBySession}
+                    >
+                      {createdBySession}
+                    </dd>
+                  </>
+                )}
                 {createdAt && (
                   <>
                     <dt className="text-fg-3">created</dt>
@@ -874,13 +1014,174 @@ function InspectorPopup({
               </dl>
             </section>
           )}
+          {/* Supersedes / superseded-by links (memories only) */}
+          {(supersedes.length > 0 || supersededBy) && (
+            <section>
+              <div className="label mb-1 text-[9px] text-fg-3">links</div>
+              {supersedes.length > 0 && (
+                <div className="text-[11.5px] text-fg-2">
+                  Supersedes:{' '}
+                  {supersedes.map((id, idx) => (
+                    <span key={id}>
+                      <span className="font-mono text-fg-1">{id}</span>
+                      {idx < supersedes.length - 1 ? ', ' : null}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {supersededBy && (
+                <div className="mt-1 text-[11.5px] text-fg-2">
+                  Replaced by:{' '}
+                  <span className="font-mono text-fg-1">{supersededBy}</span>
+                </div>
+              )}
+            </section>
+          )}
+          {/* Audit trail (memories only) — full revision history */}
+          {revisions.length > 0 && (
+            <section>
+              <div className="label mb-1 text-[9px] text-fg-3">
+                audit trail · {revisions.length}{' '}
+                revision{revisions.length === 1 ? '' : 's'}
+              </div>
+              <ol className="space-y-1.5">
+                {[...revisions]
+                  .sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0))
+                  .map((rev, idx) => (
+                    <li
+                      key={`${rev.ts}-${idx}`}
+                      className="rounded-md bg-white/[0.025] px-3 py-2 ring-hairline"
+                    >
+                      <div className="flex items-baseline justify-between gap-2 font-mono text-[10px] text-fg-3">
+                        <span className="uppercase tracking-[0.08em] text-fg-2">
+                          {rev.action}
+                        </span>
+                        <span>{rev.ts ? relativeTime(rev.ts) : '—'}</span>
+                      </div>
+                      <div className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px] text-fg-2">
+                        {rev.actor && (
+                          <span>
+                            by <span className="font-mono text-fg-1">{rev.actor}</span>
+                          </span>
+                        )}
+                        {rev.session_id && (
+                          <span
+                            className="truncate font-mono text-[10px] text-fg-3"
+                            title={rev.session_id}
+                          >
+                            in {rev.session_id.slice(0, 16)}
+                            {rev.session_id.length > 16 ? '…' : ''}
+                          </span>
+                        )}
+                      </div>
+                      {rev.note && (
+                        <div className="mt-1 text-[11px] italic text-fg-2">
+                          {rev.note}
+                        </div>
+                      )}
+                      {rev.prev_text && (
+                        <details className="mt-1 text-[11px] text-fg-3">
+                          <summary className="cursor-pointer hover:text-fg-1">
+                            prior body
+                          </summary>
+                          <p className="mt-1 whitespace-pre-wrap rounded bg-black/30 px-2 py-1.5 font-mono text-[10.5px] leading-[1.5] text-fg-2">
+                            {rev.prev_text}
+                          </p>
+                        </details>
+                      )}
+                    </li>
+                  ))}
+              </ol>
+            </section>
+          )}
         </div>
 
-        <div className="hairline-t px-5 py-3 text-[10px] text-fg-3">
-          <span>
-            Press <kbd className="kbd">Esc</kbd> to close.
-          </span>
-        </div>
+        {/* Footer — action bar for memories; help line for skills */}
+        {!isSkill ? (
+          <div className="hairline-t flex items-center justify-between gap-2 px-5 py-3">
+            <div className="text-[10px] text-fg-3">
+              <span>
+                Press <kbd className="kbd">Esc</kbd> to close.
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              {editing ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditing(false)
+                      setEditText(memoryRecord?.text ?? '')
+                      setEditKind(memoryRecord?.kind ?? '')
+                    }}
+                    disabled={saving}
+                    className="rounded-md bg-white/[0.04] px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0 disabled:opacity-50"
+                  >
+                    cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSave}
+                    disabled={saving || !editText.trim()}
+                    className="rounded-md bg-accent/15 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-accent ring-1 ring-accent/30 hover:bg-accent/25 disabled:opacity-50"
+                  >
+                    {saving ? 'saving…' : 'save'}
+                  </button>
+                </>
+              ) : confirmDelete ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDelete(false)}
+                    disabled={saving}
+                    className="rounded-md bg-white/[0.04] px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0 disabled:opacity-50"
+                  >
+                    cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDelete}
+                    disabled={saving}
+                    className="rounded-md bg-danger/15 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-danger ring-1 ring-danger/30 hover:bg-danger/25 disabled:opacity-50"
+                  >
+                    {saving ? 'archiving…' : 'confirm delete'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  {!archived && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDelete(true)}
+                        className="rounded-md bg-white/[0.04] px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:bg-danger/15 hover:text-danger"
+                      >
+                        delete
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditText(memoryRecord?.text ?? '')
+                          setEditKind(memoryRecord?.kind ?? '')
+                          setEditing(true)
+                        }}
+                        className="rounded-md bg-accent/15 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-accent ring-1 ring-accent/30 hover:bg-accent/25"
+                      >
+                        edit
+                      </button>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="hairline-t px-5 py-3 text-[10px] text-fg-3">
+            <span>
+              Press <kbd className="kbd">Esc</kbd> to close.
+            </span>
+          </div>
+        )}
       </div>
     </div>
   )

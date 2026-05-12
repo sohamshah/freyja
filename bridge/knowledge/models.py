@@ -25,6 +25,52 @@ def _millis(ts: float | int | None) -> int:
 
 
 @dataclass
+class MemoryRevision:
+    """One entry in a memory's audit trail. Recorded every time the
+    memory is created, updated, archived/restored, or merged."""
+    ts: int
+    session_id: str
+    actor: str
+    action: str  # 'create' | 'update' | 'archive' | 'restore' | 'merge_into' | 'merge_from'
+    note: str = ""
+    # Snapshot of prior values for diffing in the audit UI. Optional;
+    # only populated when the change overwrote something meaningful.
+    prev_text: str = ""
+    prev_kind: str = ""
+    prev_scope: str = ""
+
+    def to_json(self) -> dict[str, Any]:
+        out = {
+            "ts": self.ts,
+            "session_id": self.session_id,
+            "actor": self.actor,
+            "action": self.action,
+        }
+        if self.note:
+            out["note"] = self.note
+        if self.prev_text:
+            out["prev_text"] = self.prev_text
+        if self.prev_kind:
+            out["prev_kind"] = self.prev_kind
+        if self.prev_scope:
+            out["prev_scope"] = self.prev_scope
+        return out
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "MemoryRevision":
+        return cls(
+            ts=_millis(raw.get("ts") or 0),
+            session_id=str(raw.get("session_id") or ""),
+            actor=str(raw.get("actor") or ""),
+            action=str(raw.get("action") or "update"),
+            note=str(raw.get("note") or ""),
+            prev_text=str(raw.get("prev_text") or ""),
+            prev_kind=str(raw.get("prev_kind") or ""),
+            prev_scope=str(raw.get("prev_scope") or ""),
+        )
+
+
+@dataclass
 class MemoryItem:
     id: str
     scope: str
@@ -37,11 +83,28 @@ class MemoryItem:
     confidence: str = "active"
     created_at: int = 0
     updated_at: int = 0
+    # Audit trail — who created this and every change since.
+    created_by_session: str = ""
+    created_by_actor: str = ""
+    revisions: list[MemoryRevision] = field(default_factory=list)
+    # Explicit links: this entry replaces the ids in `supersedes`.
+    supersedes: list[str] = field(default_factory=list)
+    # If this entry has itself been replaced, the new entry's id.
+    superseded_by: str = ""
+    # Soft delete — hidden from list_items + tool listings, but kept
+    # in the JSONL so the audit trail is intact.
+    archived: bool = False
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "MemoryItem":
         text = str(raw.get("text") or raw.get("preference") or "").strip()
         summary = str(raw.get("summary") or text[:120]).strip()
+        revisions_raw = raw.get("revisions") or []
+        revisions: list[MemoryRevision] = []
+        if isinstance(revisions_raw, list):
+            for r in revisions_raw:
+                if isinstance(r, dict):
+                    revisions.append(MemoryRevision.from_dict(r))
         return cls(
             id=str(raw.get("id") or raw.get("memory_id") or ""),
             scope=str(raw.get("scope") or "user"),
@@ -54,6 +117,12 @@ class MemoryItem:
             confidence=str(raw.get("confidence") or "active"),
             created_at=_millis(raw.get("createdAt") or raw.get("created_at")),
             updated_at=_millis(raw.get("updatedAt") or raw.get("updated_at")),
+            created_by_session=str(raw.get("created_by_session") or raw.get("createdBySession") or ""),
+            created_by_actor=str(raw.get("created_by_actor") or raw.get("createdByActor") or ""),
+            revisions=revisions,
+            supersedes=_as_list(raw.get("supersedes")),
+            superseded_by=str(raw.get("superseded_by") or raw.get("supersededBy") or ""),
+            archived=bool(raw.get("archived") or False),
         )
 
     def to_json(self) -> dict[str, Any]:
@@ -69,6 +138,12 @@ class MemoryItem:
             "confidence": self.confidence,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "created_by_session": self.created_by_session,
+            "created_by_actor": self.created_by_actor,
+            "revisions": [r.to_json() for r in self.revisions],
+            "supersedes": self.supersedes,
+            "superseded_by": self.superseded_by,
+            "archived": self.archived,
         }
 
     def to_event(self) -> dict[str, Any]:
@@ -84,6 +159,12 @@ class MemoryItem:
             "confidence": self.confidence,
             "createdAt": self.created_at,
             "updatedAt": self.updated_at,
+            "createdBySession": self.created_by_session,
+            "createdByActor": self.created_by_actor,
+            "revisions": [r.to_json() for r in self.revisions],
+            "supersedes": self.supersedes,
+            "supersededBy": self.superseded_by,
+            "archived": self.archived,
         }
 
 

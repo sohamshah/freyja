@@ -26,6 +26,17 @@ export interface Skill {
   path?: string
 }
 
+export interface MemoryRevision {
+  ts: number
+  session_id?: string
+  actor?: string
+  action: string
+  note?: string
+  prev_text?: string
+  prev_kind?: string
+  prev_scope?: string
+}
+
 export interface MemoryRecord {
   id: string
   scope: 'user' | 'project' | 'session' | 'subagent'
@@ -38,6 +49,21 @@ export interface MemoryRecord {
   confidence?: string
   createdAt?: number
   updatedAt?: number
+  /** Session id of whoever first recorded the memory. */
+  createdBySession?: string
+  /** Actor label of the original recorder (e.g. "parent", "user",
+   *  "record_user_preference"). */
+  createdByActor?: string
+  /** Per-revision audit trail. Append-only — every edit, archive,
+   *  restore, or merge_into/merge_from event is captured here. */
+  revisions?: MemoryRevision[]
+  /** Memory ids this entry replaces (for merged canonicals). */
+  supersedes?: string[]
+  /** If this memory has itself been replaced, the new id. */
+  supersededBy?: string
+  /** Soft-delete flag. Archived items are hidden from agent context
+   *  and from the default sidebar listing. */
+  archived?: boolean
 }
 
 export interface SubagentRecord {
@@ -352,6 +378,31 @@ export type BridgeCommand =
       sessionId: string
       cascadeSessionIds?: string[]
     }
+  | {
+      // Memory curation from the renderer. The bridge updates the
+      // structured JSONL, appends a revision capturing actor/session,
+      // and broadcasts a memory_updated event so the sidebar refreshes.
+      type: 'memory_update'
+      sessionId: string
+      id: string
+      text?: string
+      kind?: string
+      scope?: string
+      tags?: string[]
+      note?: string
+    }
+  | { type: 'memory_delete'; sessionId: string; id: string; note?: string }
+  | { type: 'memory_restore'; sessionId: string; id: string; note?: string }
+  | {
+      type: 'memory_merge'
+      sessionId: string
+      ids: string[]
+      text: string
+      kind?: string
+      scope?: string
+      tags?: string[]
+      note?: string
+    }
   | { type: 'shutdown' }
 
 // --- Events produced by the bridge and forwarded to the renderer ---
@@ -558,7 +609,50 @@ export const IPC = {
   settingsUpdate: 'settings:update',
   artifactRead: 'artifact:read',
   artifactWrite: 'artifact:write',
+  compactionMetrics: 'compaction:metrics',
 } as const
+
+export interface CompactionMetricsResult {
+  ok: boolean
+  rows: CompactionTelemetryRow[]
+  error?: string
+}
+
+export type CompactionTelemetryRow =
+  | {
+      type: 'pressure_signal'
+      ts: number
+      session_id: string
+      band: 'clean' | 'pruning' | 'awareness' | 'soft' | 'strong' | 'fallback'
+      pressure_pct: number
+      used_tokens: number
+      effective_window: number
+      model?: string
+    }
+  | {
+      type: 'compaction_event'
+      ts: number
+      session_id: string
+      subtype: string
+      model?: string
+      tokens_before: number
+      tokens_after: number
+      mechanism: string
+      trigger?: string
+    }
+  | {
+      type: 'llm_call_metric'
+      ts: number
+      session_id: string
+      turn_id?: string
+      model: string
+      input_tokens: number
+      output_tokens: number
+      cache_read_tokens: number
+      cache_write_tokens: number
+      cost_usd: number | null
+      duration_ms: number
+    }
 
 /** Response from the artifact:read IPC. */
 export interface ArtifactReadResult {
