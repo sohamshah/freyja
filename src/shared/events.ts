@@ -208,6 +208,10 @@ export interface MessagePart {
   toolCallId?: string
   subagentId?: string
   systemSubtype?: string
+  /** Stable id of the originating system event when `type === 'system'`.
+   *  Lets the inline renderer look up the full event payload (e.g. the
+   *  judge's verdict details) without duplicating data into the part. */
+  eventId?: string
 }
 
 export interface MessageAttachmentRef {
@@ -529,6 +533,11 @@ export type BridgeEvent =
       model: string
       reasoningLevel?: string
       task: string
+      /** Full system prompt the child runner is configured with. Stored
+       *  on the child slice so the conversation pane can render it as a
+       *  collapsible header — useful for inspecting judge / calibrator
+       *  child sessions where the system prompt is the whole contract. */
+      systemPrompt?: string
       mode?: string
       agentType?: string
       coordinationStrategy?: CoordinationStrategy
@@ -706,6 +715,30 @@ export type CompactionTelemetryRow =
       iterations_used: number
       final_outcome: 'success' | 'error' | 'cancelled'
       duration_ms: number
+    }
+  | {
+      type: 'summarize_context_call'
+      ts: number
+      session_id: string
+      turn_id?: string
+      agent_type?: string | null
+      parent_session_id?: string | null
+      scope: string
+      level_requested?: string
+      level_used?: string
+      preserve_facts_count?: number
+      preserve_facts_missing?: string[]
+      pinned_ordinals?: number[]
+      reason?: string
+      pressure_pct_at_call?: number | null
+      tokens_before: number
+      tokens_after: number
+      resumed_from_previous?: boolean
+      entries_removed?: number
+      success: boolean
+      error?: string | null
+      elapsed_ms?: number
+      model?: string
     }
 
 /** Response from the artifact:read IPC. */

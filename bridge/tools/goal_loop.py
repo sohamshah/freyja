@@ -1201,12 +1201,30 @@ def merge_rule_criteria_into_verdict(brief: "JudgeRules | None", verdict: GoalVe
     return verdict
 
 
-def build_recent_work_block(messages: list[dict[str, Any]], limit: int = 5, per_msg_chars: int = 4000) -> str:
+def build_recent_work_block(
+    messages: list[dict[str, Any]],
+    limit: int = 5,
+    per_msg_chars: int = 4000,
+    *,
+    latest_per_msg_chars: int = 80_000,
+) -> str:
     """Serialize the last `limit` assistant turns into the judge prompt.
 
     `messages` is a list of `{role, content}` dicts (or anything with those
     keys). We pick the last `limit` assistant turns, in reverse chronological
-    order (newest first), and truncate each to `per_msg_chars`.
+    order (newest first).
+
+    Truncation rules:
+      · The MOST RECENT turn (the one being judged) gets `latest_per_msg_chars`
+        — generously sized so the judge sees the full work it's adjudicating.
+        Default 80k characters covers a ~12k-token critique, well above what
+        any single assistant turn realistically produces.
+      · Older turns (kept for trajectory context) get `per_msg_chars`
+        truncation since they're already represented in the verdict history.
+      · When we DO truncate, the slice is annotated with an explicit marker
+        showing the original length and that the cut wasn't agent-side.
+        Without this, the judge can't tell apart "agent stopped mid-sentence"
+        from "prompt slice landed mid-sentence" — a real failure mode.
     """
     if not messages:
         return "(no agent work yet — first turn)"
@@ -1228,7 +1246,21 @@ def build_recent_work_block(messages: list[dict[str, Any]], limit: int = 5, per_
         text = str(body or "").strip()
         if not text:
             continue
-        assistant_turns.append(text[:per_msg_chars])
+        is_latest = len(assistant_turns) == 0
+        cap = latest_per_msg_chars if is_latest else per_msg_chars
+        original_len = len(text)
+        if original_len > cap:
+            # Keep the head — that's where the agent's structure is. Append
+            # an explicit marker so the judge knows this is prompt-side
+            # truncation, not agent stoppage.
+            text = (
+                text[:cap]
+                + f"\n\n[...PROMPT-SIDE TRUNCATION: showing first {cap:,} of "
+                f"{original_len:,} chars. The agent's full message was longer; "
+                f"the rest was dropped to fit the judge prompt budget — "
+                f"this is NOT agent stoppage.]"
+            )
+        assistant_turns.append(text)
         if len(assistant_turns) >= limit:
             break
     if not assistant_turns:

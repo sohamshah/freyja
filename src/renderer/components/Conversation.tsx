@@ -52,6 +52,7 @@ const MessageActionsContext = createContext<MessageActionsValue | null>(null)
 export function Conversation() {
   const messages = useHarness((s) => s.messages)
   const systemEvents = useHarness((s) => s.systemEvents)
+  const systemPrompt = useHarness((s) => s.systemPrompt)
   const coordinationStrategy = useHarness((s) => s.coordinationStrategy)
   const toggleMissionDashboard = useHarness((s) => s.toggleMissionDashboard)
   const thinking = useHarness((s) => s.thinking)
@@ -342,6 +343,9 @@ export function Conversation() {
           <div ref={scrollerRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden">
             <ChildSessionBreadcrumb />
             <div className="mx-auto w-full max-w-[1200px] px-8 py-6">
+              {systemPrompt && systemPrompt.trim() && (
+                <SystemPromptHeader prompt={systemPrompt} />
+              )}
               {showCalibrationRibbon && (
                 <CalibrationCard
                   calibration={calibrationView.calibration}
@@ -1183,6 +1187,41 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
         ),
       )}
     </>
+  )
+}
+
+/** Collapsible header that surfaces the active session's system prompt
+ *  at the top of the conversation. Useful for inspecting judge /
+ *  calibrator child sessions where the system prompt IS the contract.
+ *  Rendered for any session with a stored systemPrompt — main sessions
+ *  rarely have one set, so this is functionally subagent-only today. */
+function SystemPromptHeader({ prompt }: { prompt: string }) {
+  const [open, setOpen] = useState(false)
+  const lineCount = useMemo(() => prompt.split(/\n/).length, [prompt])
+  const charCount = prompt.length
+  return (
+    <section className="mb-4 overflow-hidden rounded-md border border-white/[0.06] bg-white/[0.02]">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-3 px-3.5 py-2 text-left transition hover:bg-white/[0.04]"
+      >
+        <span className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-fg-3">
+          system prompt
+        </span>
+        <span className="font-mono text-[11px] tabular-nums text-fg-4">
+          {lineCount.toLocaleString()} lines · {charCount.toLocaleString()} chars
+        </span>
+        <span className="ml-auto font-mono text-[10px] uppercase tracking-[0.14em] text-fg-4">
+          {open ? '▾' : '▸'}
+        </span>
+      </button>
+      {open && (
+        <pre className="m-0 max-h-[480px] select-text overflow-y-auto border-t border-white/[0.05] px-3.5 py-3 font-mono text-[11.5px] leading-[1.55] text-fg-1 whitespace-pre-wrap">
+          {prompt}
+        </pre>
+      )}
+    </section>
   )
 }
 

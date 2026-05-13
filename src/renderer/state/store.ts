@@ -1573,6 +1573,26 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           prev.availableModels,
           snapshot.coordinationStrategy,
         )
+        // Seed the slice with an initial user message from `task` so the
+        // conversation pane is non-empty the moment you click into a
+        // child session. Also stash the system prompt on the slice so
+        // the conversation header can render it. Without this, judge /
+        // calibrator child panes look empty until the runner's
+        // text_delta events catch up.
+        if (ev.task && ev.task.trim()) {
+          const userMsgId = `${newSessionId}-seed-user`
+          freshSlice.messages = [
+            {
+              id: userMsgId,
+              role: 'user',
+              parts: [{ type: 'text', text: ev.task }],
+              createdAt: ev.createdAt || Date.now(),
+            },
+          ]
+        }
+        if (ev.systemPrompt && ev.systemPrompt.trim()) {
+          freshSlice.systemPrompt = ev.systemPrompt
+        }
         const archive = {
           ...prev.sessionArchive,
           [newSessionId]: freshSlice,

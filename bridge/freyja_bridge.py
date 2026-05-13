@@ -1690,6 +1690,13 @@ class _BridgeSession:
             ),
             summarize_context_pressure_getter=lambda: self._current_pressure_pct(),
             summarize_context_telemetry=self._on_summarize_context_call,
+            # Gap N: inline marker so agent-driven compactions appear
+            # in the conversation timeline alongside runtime ones.
+            summarize_context_on_system_event=self._emit_summarize_event,
+            # Gap M: pin-change broadcast so the renderer's pin badge
+            # appears without waiting for a session reload after the
+            # agent uses pin_entries on summarize_context.
+            summarize_context_on_pin_changed=self._emit_summarize_event,
         )
         tool_names = sorted(registry._tools.keys())  # noqa: SLF001
         self.tool_registry = _new_tracing_registry(
@@ -1766,6 +1773,11 @@ class _BridgeSession:
             system_prompt=system_prompt,
             tools=list(registry._tools.values()),  # noqa: SLF001
             session_id=self.id,
+            # Append-only raw transcript log. Survives compaction
+            # because it's outside the engine transcript — every
+            # message ever sent/received goes here. Powers the
+            # "raw_transcript" view in the session export bundle.
+            on_message_appended=self._append_raw_message_log,
         )
 
         runner = AsyncAgentRunner(
@@ -3208,6 +3220,65 @@ class _BridgeSession:
             chat_visible=True,
         )
 
+    def _build_subagent_stream_forwarders(self, child_session_id: str) -> tuple[Any, Any]:
+        """Return (on_stream, on_system_event) callbacks that forward the
+        child runner's stream events out as bridge events tagged with the
+        child's session id. Without these, the judge / calibrator child
+        sessions are visible in the sidebar (via session_spawned) but
+        their panes show empty — no text deltas, no tool calls, no
+        thinking. Mirrors what sub_agent_tool wires for its real
+        sub-agents."""
+
+        # turn_start has to fire before any text_delta lands, so the
+        # renderer's applyEventToSlice has a currentStreamingMessageId
+        # to append into. The runner emits one turn_start per LLM call;
+        # we forward each one verbatim with the child's session id.
+        async def on_stream(event: Any) -> None:
+            etype = getattr(event, "type", None)
+            if etype == "turn_start":
+                emit({
+                    "type": "turn_start",
+                    "sessionId": child_session_id,
+                    "turnId": getattr(event, "turn_id", None) or f"{child_session_id}-t",
+                })
+            elif etype == "text_delta":
+                emit({
+                    "type": "text_delta",
+                    "sessionId": child_session_id,
+                    "text": getattr(event, "text", ""),
+                })
+            elif etype == "thinking_delta":
+                emit({
+                    "type": "thinking_delta",
+                    "sessionId": child_session_id,
+                    "thinking": getattr(event, "thinking", ""),
+                })
+            elif etype == "tool_use_start":
+                emit({
+                    "type": "tool_use_start",
+                    "sessionId": child_session_id,
+                    "id": getattr(event, "id", ""),
+                    "name": getattr(event, "name", ""),
+                })
+            elif etype == "tool_input_delta":
+                emit({
+                    "type": "tool_input_delta",
+                    "sessionId": child_session_id,
+                    "id": getattr(event, "id", ""),
+                    "partialJson": getattr(event, "partial_json", ""),
+                })
+
+        async def on_system_event(event: Any) -> None:
+            emit({
+                "type": "system_event",
+                "sessionId": child_session_id,
+                "subtype": getattr(event, "type", "unknown"),
+                "message": getattr(event, "message", ""),
+                "details": getattr(event, "details", {}) or {},
+            })
+
+        return on_stream, on_system_event
+
     async def _judge_goal(self, latest_response: str) -> Any:
         from bridge.tools.base import ToolRegistry
         from bridge.tools.goal_loop import (
@@ -3451,6 +3522,11 @@ class _BridgeSession:
         if wrap is not None:
             child_registry = wrap(child_registry, judge_session_id)
 
+        # Emit session_spawned WITH the system prompt + user task inline
+        # so the renderer can seed the child slice with everything visible
+        # the moment you click into the session — no events left to wait
+        # on. Without this, drilling into a judge session shows the empty
+        # HeroWelcome until tool_use_start lands.
         emit(
             {
                 "type": "session_spawned",
@@ -3462,7 +3538,8 @@ class _BridgeSession:
                 "modelPolicy": model_resolution.policy,
                 "modelCandidates": list(model_resolution.candidates),
                 "modelFallbackUsed": model_resolution.fallback_used,
-                "task": "Adjudicate the standing goal against the agent's recent work.",
+                "task": prompt,
+                "systemPrompt": system_prompt,
                 "mode": "foreground",
                 "agentType": agent_type.name,
                 "coordinationStrategy": self.coordination_strategy,
@@ -3503,10 +3580,13 @@ class _BridgeSession:
         judge_provider = build_provider(
             judge_model, thinking_level=agent_type.thinking_effort
         )
+        on_stream, on_system_event = self._build_subagent_stream_forwarders(judge_session_id)
         judge_runner = AsyncAgentRunner(
             provider=judge_provider,
             compaction_strategy=SummaryCompaction(),
             tool_registry=child_registry,
+            on_stream=on_stream,
+            on_system_event=on_system_event,
             thinking=_thinking_config_for_model(
                 judge_model, agent_type.thinking_effort
             ),
@@ -3519,7 +3599,7 @@ class _BridgeSession:
             result = await judge_runner.run(
                 judge_session,
                 prompt,
-                stream=False,
+                stream=True,
                 stop_condition=StopCondition(max_iterations=max_iter),
             )
             verdict = parse_goal_verdict(result.response or "")
@@ -3639,6 +3719,20 @@ class _BridgeSession:
             chat_visible=True,
         )
 
+        # Build the system prompt + child registry FIRST so we can include
+        # both on session_spawned — that way drilling into the calibrator
+        # session immediately shows the operator what the calibrator is
+        # being asked to do, without waiting for events.
+        system_prompt = (
+            f"{agent_type.system_prompt}\n\n"
+            "No tools are available in this session. Reason directly from "
+            "the goal text and any provided context, then return the JSON.\n"
+        )
+        child_registry = ToolRegistry()
+        wrap = getattr(self, "_wrap_child_registry", None)
+        if wrap is not None:
+            child_registry = wrap(child_registry, cal_session_id)
+
         emit(
             {
                 "type": "session_spawned",
@@ -3650,7 +3744,8 @@ class _BridgeSession:
                 "modelPolicy": model_resolution.policy,
                 "modelCandidates": list(model_resolution.candidates),
                 "modelFallbackUsed": model_resolution.fallback_used,
-                "task": "Calibrate judge configuration for the standing goal.",
+                "task": prompt,
+                "systemPrompt": system_prompt,
                 "mode": "foreground",
                 "agentType": agent_type.name,
                 "coordinationStrategy": self.coordination_strategy,
@@ -3676,23 +3771,6 @@ class _BridgeSession:
         except Exception:
             pass
 
-        # Build a tool-list-aware system prompt (calibrator gets none —
-        # so the prompt just notes that explicitly to keep the model from
-        # hallucinating tool calls).
-        system_prompt = (
-            f"{agent_type.system_prompt}\n\n"
-            "No tools are available in this session. Reason directly from "
-            "the goal text and any provided context, then return the JSON.\n"
-        )
-
-        # No tools, but still wrap the registry through the tracing closure
-        # so that any future tool addition (e.g. fetching docs) lands in
-        # the calibrator's session pane and not the parent's.
-        child_registry = ToolRegistry()
-        wrap = getattr(self, "_wrap_child_registry", None)
-        if wrap is not None:
-            child_registry = wrap(child_registry, cal_session_id)
-
         cal_session = Session.create(
             system_prompt=system_prompt,
             tools=[],
@@ -3708,10 +3786,13 @@ class _BridgeSession:
         cal_provider = build_provider(
             cal_model, thinking_level=agent_type.thinking_effort
         )
+        on_stream, on_system_event = self._build_subagent_stream_forwarders(cal_session_id)
         cal_runner = AsyncAgentRunner(
             provider=cal_provider,
             compaction_strategy=SummaryCompaction(),
             tool_registry=child_registry,
+            on_stream=on_stream,
+            on_system_event=on_system_event,
             thinking=_thinking_config_for_model(cal_model, agent_type.thinking_effort),
         )
 
@@ -3722,7 +3803,7 @@ class _BridgeSession:
                 result = await cal_runner.run(
                     cal_session,
                     prompt,
-                    stream=False,
+                    stream=True,
                     stop_condition=StopCondition(max_iterations=agent_type.max_iterations),
                 )
             except Exception as exc:  # noqa: BLE001
@@ -4198,9 +4279,33 @@ class _BridgeSession:
                                 else subtype)
                         ),
                         "trigger": details.get("trigger"),
+                        # Excerpt only in cross-session telemetry to
+                        # keep the JSONL line size manageable. Full
+                        # summary lives in the per-session compactions
+                        # log below (consumed by session export).
+                        "summary_excerpt": (
+                            (details.get("summary_text") or details.get("summary_preview") or "")[:240]
+                            or None
+                        ),
                     })
                 except Exception:  # noqa: BLE001
                     pass
+                # Per-session compaction history with FULL summary text.
+                # Source of truth for the "compactions[]" view in the
+                # session export bundle.
+                self._append_compaction_log({
+                    "ts": time.time(),
+                    "subtype": subtype,
+                    "trigger": details.get("trigger") or "runtime",
+                    "mechanism": details.get("strategy") or subtype,
+                    "tokens_before": int(details.get("tokens_before") or details.get("context_tokens_before") or 0),
+                    "tokens_after": int(details.get("tokens_after") or details.get("context_tokens_after") or 0),
+                    "entries_removed": int(details.get("entries_removed") or 0),
+                    "summary_text": details.get("summary_text") or details.get("summary_preview") or "",
+                    "scope": details.get("scope"),
+                    "reason": details.get("reason"),
+                    "resumed_from_previous": bool(details.get("resumed_from_previous") or False),
+                })
         except Exception as exc:  # noqa: BLE001
             log("error", f"on_system_event error: {exc}")
 
@@ -4470,6 +4575,139 @@ class _BridgeSession:
                 "model": self.model_id,
             }
             append_telemetry(row)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _append_compaction_log(self, payload: dict[str, Any]) -> None:
+        """Per-session compaction history with FULL summary text.
+
+        Path: ``<project_output_dir>/compactions.jsonl``. Source of
+        truth for the "compactions[]" view in the session export bundle.
+        Both runtime-driven (from ``_on_system_event``) and agent-driven
+        (from ``_emit_summarize_event``) compactions write here.
+
+        Defensive: telemetry must never break the agent loop.
+        """
+        try:
+            from pathlib import Path
+            import json as _json
+
+            base = self.project_output_dir
+            Path(base).mkdir(parents=True, exist_ok=True)
+            target = Path(base) / "compactions.jsonl"
+            row = {
+                "session_id": self.id,
+                "model": self.model_id,
+                "turn_id": self.current_turn_id,
+                **payload,
+            }
+            with target.open("a", encoding="utf-8") as fh:
+                fh.write(_json.dumps(row, ensure_ascii=False))
+                fh.write("\n")
+        except Exception:
+            log("debug", f"compactions log append failed for {self.id}")
+
+    def _append_raw_message_log(self, message: Any) -> None:
+        """Persist every appended message to a per-session JSONL log.
+
+        Path: ``<project_output_dir>/raw_messages.jsonl``. Append-only,
+        outside the engine transcript, so compaction never touches it.
+        This file is the source of truth for the "raw_transcript" view
+        in session exports — everything the user and agent ever
+        exchanged, even after summarization folded the live transcript.
+
+        Defensive: telemetry must never break the agent loop, so all
+        exceptions are caught and logged but not raised.
+        """
+        try:
+            from pathlib import Path
+            import json as _json
+
+            base = self.project_output_dir
+            Path(base).mkdir(parents=True, exist_ok=True)
+            target = Path(base) / "raw_messages.jsonl"
+            payload: dict[str, Any] = {
+                "ts": time.time(),
+                "session_id": self.id,
+                "turn_id": self.current_turn_id,
+                "message": message.to_dict() if hasattr(message, "to_dict") else None,
+            }
+            with target.open("a", encoding="utf-8") as fh:
+                fh.write(_json.dumps(payload, ensure_ascii=False))
+                fh.write("\n")
+        except Exception:  # noqa: BLE001
+            log("debug", f"raw_messages append failed for {self.id}")
+
+    def _emit_summarize_event(self, event: dict[str, Any]) -> None:
+        """Forward agent-driven compaction system_events / pin events
+        to the renderer through the standard emit channel (Gaps M, N).
+        Also runs the bridge's own compaction-event mirror so the
+        agent-driven event lands in JSONL telemetry alongside the
+        runtime-driven ones.
+        """
+        try:
+            emit(event)
+        except Exception:
+            pass
+        # If this is a compaction system_event, mirror to the existing
+        # telemetry path so the dashboard's trigger/savings surfaces
+        # pick it up (matches the existing _on_system_event mirror).
+        try:
+            subtype = event.get("subtype")
+            if subtype in {
+                "compaction_start", "compaction_complete",
+                "compaction_skipped", "context_pruning", "media_pruning",
+            }:
+                details = event.get("details") or {}
+                from bridge.compaction_telemetry import append_telemetry
+
+                # Keep the JSONL row compact — full summary text lives
+                # in transcript.json; we record a short excerpt + the
+                # decision metadata that the dashboard needs.
+                append_telemetry({
+                    "type": "compaction_event",
+                    "session_id": self.id,
+                    "agent_type": self.agent_type,
+                    "parent_session_id": self.parent_session_id,
+                    "subtype": subtype,
+                    "model": self.model_id,
+                    "tokens_before": int(details.get("tokens_before") or 0),
+                    "tokens_after": int(details.get("tokens_after") or 0),
+                    "mechanism": details.get("mechanism") or subtype,
+                    "trigger": details.get("trigger") or "agent_summarize_context",
+                    "scope": details.get("scope"),
+                    "reason": (details.get("reason") or "")[:240] or None,
+                    "summary_excerpt": (details.get("summary_excerpt") or "")[:240] or None,
+                })
+                # Also write to the per-session compactions.jsonl so
+                # the session export bundle has the FULL summary text
+                # for this agent-driven compaction. The system_event
+                # carries only an excerpt over the wire (UI sizing);
+                # the full text comes from the just-appended
+                # compaction entry on the transcript.
+                full_summary = ""
+                try:
+                    sess = self.session
+                    if sess is not None:
+                        for e in reversed(sess.transcript.entries):
+                            if getattr(e, "is_compaction", False) and e.compaction_summary:
+                                full_summary = e.compaction_summary
+                                break
+                except Exception:
+                    pass
+                self._append_compaction_log({
+                    "ts": time.time(),
+                    "subtype": subtype,
+                    "trigger": details.get("trigger") or "agent_summarize_context",
+                    "mechanism": details.get("mechanism") or subtype,
+                    "tokens_before": int(details.get("tokens_before") or 0),
+                    "tokens_after": int(details.get("tokens_after") or 0),
+                    "entries_removed": int(details.get("entries_removed") or 0),
+                    "summary_text": full_summary or details.get("summary_excerpt") or "",
+                    "scope": details.get("scope"),
+                    "reason": details.get("reason"),
+                    "resumed_from_previous": bool(details.get("resumed_from_previous") or False),
+                })
         except Exception:  # noqa: BLE001
             pass
 
