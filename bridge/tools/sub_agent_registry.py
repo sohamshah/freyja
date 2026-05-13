@@ -53,6 +53,15 @@ class SubAgentRecord:
     # bridge. Typed as Any to avoid a hard asyncio import.
     asyncio_cancel: Any = None
     loop: Any = None  # the event loop owning asyncio_cancel, for thread-safe set
+    # Per-session inbox for inter-agent + operator-to-agent talk.
+    # Attached at spawn time inside SubAgentTool._run_child; drained by
+    # the runner's pre-iteration hook. Typed as Any to keep the
+    # registry module dependency-free.
+    inbox: Any = None
+    # Parent session id stashed here so TalkRouter can resolve the
+    # "parent" alias for sibling-to-sibling discovery without walking
+    # registries. Set by the spawn path.
+    parent_session_id: str = ""
 
     @property
     def elapsed(self) -> float:

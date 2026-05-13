@@ -36,6 +36,12 @@ from bridge.tools.sub_agent_registry import SubAgentRegistry
 from bridge.tools.sub_agent_tool import SubAgentSpec, SubAgentTool
 from bridge.tools.subagents_tool import SubAgentsTool
 from bridge.tools.summarize_context_tool import SummarizeContextTool
+from bridge.tools.talk_tool import (
+    ListAgentSessionsTool,
+    TalkRouter,
+    TalkRouterContext,
+    TalkTool,
+)
 from bridge.tools.tool_search_tool import ToolSearchTool
 
 # Computer-use tools are imported lazily below — they pull in
@@ -79,6 +85,13 @@ def build_desktop_registry(
     summarize_context_compactor_getter: Any | None = None,
     summarize_context_pressure_getter: Any | None = None,
     summarize_context_telemetry: Any | None = None,
+    summarize_context_on_system_event: Any | None = None,
+    summarize_context_on_pin_changed: Any | None = None,
+    talk_router: TalkRouter | None = None,
+    talk_caller_session_id: str = "",
+    talk_caller_label: str = "",
+    talk_caller_role: str = "agent",
+    talk_parent_session_id: str | None = None,
 ) -> ToolRegistry:
     """Construct a ToolRegistry containing all desktop tools.
 
@@ -253,9 +266,23 @@ def build_desktop_registry(
             kanban_board=kanban_board,
             task_board=task_board,
             artifact_store=artifact_store,
+            talk_router=talk_router,
         )
         tools.append(SubAgentTool(sub_spec))
         tools.append(SubAgentsTool(sub_registry))
+
+    # Inter-agent messaging tools. Need a TalkRouter (bridge-side
+    # dispatcher with global session lookup + re-wake) plus a per-caller
+    # context (so 'parent' / 'siblings' aliases resolve correctly).
+    if talk_router is not None and talk_caller_session_id:
+        talk_ctx = TalkRouterContext(
+            caller_session_id=talk_caller_session_id,
+            caller_label=talk_caller_label or talk_caller_session_id,
+            caller_role=talk_caller_role,
+            parent_session_id=talk_parent_session_id,
+        )
+        tools.append(TalkTool(router=talk_router, ctx=talk_ctx))
+        tools.append(ListAgentSessionsTool(router=talk_router, ctx=talk_ctx))
 
     # Computer-use tools: atomic primitives for the parent + a `computer_use`
     # sub-agent tool that runs the whole observe→act loop in a child session.
@@ -321,6 +348,8 @@ def build_desktop_registry(
                 get_compactor=summarize_context_compactor_getter,
                 on_summarize_call=summarize_context_telemetry,
                 get_current_pressure_pct=summarize_context_pressure_getter,
+                on_system_event=summarize_context_on_system_event,
+                on_pin_changed=summarize_context_on_pin_changed,
             )
         )
 

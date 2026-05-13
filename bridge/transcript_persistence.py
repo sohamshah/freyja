@@ -94,6 +94,105 @@ def delete_goal_state(session_id: str) -> None:
         pass
 
 
+def _inbox_path(session_id: str) -> Path:
+    return SESSIONS_DIR / f"{session_id}.inbox.json"
+
+
+def save_inbox_state(session_id: str, data: dict[str, Any]) -> None:
+    """Persist a session's inbox queue + recent delivered history.
+
+    Schema mirrors SessionInbox.to_dict(); see bridge/inbox.py.
+    Writes atomically; safe across crashes.
+    """
+    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    dest = _inbox_path(session_id)
+    tmp = dest.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
+        tmp.replace(dest)
+    except Exception:
+        logger.exception("Failed to save inbox for %s", session_id)
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def load_inbox_state(session_id: str) -> dict[str, Any] | None:
+    """Load a session's inbox from disk. Returns None if absent/corrupt."""
+    path = _inbox_path(session_id)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.exception("Failed to load inbox for %s", session_id)
+        return None
+
+
+def delete_inbox_state(session_id: str) -> None:
+    try:
+        _inbox_path(session_id).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _subagent_path(session_id: str) -> Path:
+    """Sidecar path for a paused / completed sub-agent that may be
+    re-woken later via a talk() message."""
+    return SESSIONS_DIR / f"{session_id}.subagent.json"
+
+
+def save_subagent_state(session_id: str, data: dict[str, Any]) -> None:
+    """Persist a sub-agent's full state for later re-wake.
+
+    `data` shape (see bridge/freyja_bridge.py:_run_child finally hook):
+        {
+          "sessionId":          <id>,
+          "parentSessionId":    <id>,
+          "agentType":          <profile name>,
+          "model":              <resolved model id>,
+          "reasoningLevel":     <level>,
+          "task":               <original task string>,
+          "systemPrompt":       <fully-resolved system prompt>,
+          "transcript":         <serialized transcript dict>,
+          "coordinationStrategy": <strategy>,
+          "label":              <display label>,
+          "savedAt":            <ms>,
+        }
+    """
+    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    dest = _subagent_path(session_id)
+    tmp = dest.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
+        tmp.replace(dest)
+    except Exception:
+        logger.exception("Failed to save subagent state for %s", session_id)
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def load_subagent_state(session_id: str) -> dict[str, Any] | None:
+    path = _subagent_path(session_id)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.exception("Failed to load subagent state for %s", session_id)
+        return None
+
+
+def delete_subagent_state(session_id: str) -> None:
+    try:
+        _subagent_path(session_id).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def save_transcript(session_id: str, data: dict[str, Any]) -> None:
     """Persist a serialized transcript to disk.
 

@@ -337,6 +337,7 @@ export function MissionDashboard() {
   const systemEvents = useHarness((s) => s.systemEvents)
   const kanbanCardsSnapshot = useHarness((s) => s.kanbanCards)
   const busMessages = useHarness((s) => s.busMessages)
+  const inboxEvents = useHarness((s) => s.inboxEvents)
   const artifacts = useHarness((s) => s.artifacts)
   const model = useHarness((s) => s.model)
   const reasoningLevel = useHarness((s) => s.reasoningLevel)
@@ -385,6 +386,7 @@ export function MissionDashboard() {
       systemEvents,
       kanbanCards: kanbanCardsSnapshot,
       busMessages,
+      inboxEvents,
       artifacts,
       model,
       reasoningLevel,

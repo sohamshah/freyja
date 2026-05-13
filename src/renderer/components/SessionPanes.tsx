@@ -350,11 +350,16 @@ function PaneChatbox({
   const draft = useHarness((s) => (writable ? s.inputDraft : ''))
   const setDraft = useHarness((s) => s.setInputDraft)
   const sendMessage = useHarness((s) => s.sendMessage)
+  const operatorTalk = useHarness((s) => s.operatorTalk)
   const isStreaming = useHarness((s) => (writable ? s.isStreaming : false))
   const cancel = useHarness((s) => s.cancelTurn)
-  const switchSession = useHarness((s) => s.switchSession)
   const [localDraft, setLocalDraft] = useState('')
   const [focused, setFocused] = useState(false)
+  // Force toggle for non-writable panes — interrupts the recipient
+  // mid-operation (cancels their current LLM stream / tool call so they
+  // process this message immediately). Auto-resets to off after each
+  // send so urgency stays a deliberate choice.
+  const [forceArmed, setForceArmed] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   const value = writable ? draft : localDraft
@@ -367,11 +372,17 @@ function PaneChatbox({
   const submit = async () => {
     const content = value.trim()
     if (!content) return
-    if (!writable) {
-      setLocalDraft('')
-      await switchSession(sessionId)
+    if (writable) {
+      // Active root session — normal turn pipeline.
+      await sendMessage(content)
+      return
     }
-    await sendMessage(content)
+    // Non-active session — route as operator talk (root or sub-agent
+    // — bridge's TalkRouter handles either). DOES NOT switch active
+    // session; the operator stays where they are.
+    setLocalDraft('')
+    await operatorTalk(sessionId, content, forceArmed)
+    setForceArmed(false)
   }
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -384,7 +395,7 @@ function PaneChatbox({
   return (
     <div
       className={`hairline-t flex shrink-0 items-start gap-2 px-3 py-2 transition-shadow ${
-        focused && writable ? 'shadow-[inset_0_1px_0_rgba(168,212,252,0.18)]' : ''
+        focused ? 'shadow-[inset_0_1px_0_rgba(168,212,252,0.18)]' : ''
       }`}
       onMouseDown={(event) => {
         event.stopPropagation()
@@ -395,7 +406,7 @@ function PaneChatbox({
         className="select-none pt-[3px] text-[12px] text-accent"
         style={{ lineHeight: '17px' }}
       >
-        ❯
+        {writable ? '❯' : '↳'}
       </span>
       <textarea
         ref={inputRef}
@@ -408,10 +419,29 @@ function PaneChatbox({
         }}
         onBlur={() => setFocused(false)}
         onKeyDown={onKeyDown}
-        placeholder={writable ? 'Reply…' : 'Click to chat with this session'}
+        placeholder={writable ? 'Reply…' : 'Send to this session…'}
         className="min-h-[20px] max-h-[160px] flex-1 resize-none bg-transparent font-prose text-[12px] text-fg-0 placeholder:text-fg-3 focus:outline-none"
         style={{ lineHeight: 1.5 }}
       />
+      {!writable && (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation()
+            setForceArmed((v) => !v)
+          }}
+          className={`shrink-0 rounded-md px-2 py-1 font-mono text-[9.5px] uppercase tracking-[0.12em] ring-1 transition ${
+            forceArmed
+              ? 'bg-warn/15 text-warn ring-warn/30 hover:bg-warn/25'
+              : 'bg-white/[0.025] text-fg-3 ring-white/[0.06] hover:bg-white/[0.06] hover:text-fg-1'
+          }`}
+          title={forceArmed
+            ? 'Force armed — next message interrupts the recipient mid-operation'
+            : 'Click to arm force — interrupts recipient mid-operation'}
+        >
+          force
+        </button>
+      )}
       {isStreaming && writable ? (
         <button
           type="button"
@@ -449,6 +479,7 @@ function sliceForSessionView(
       systemEvents: state.systemEvents,
       kanbanCards: state.kanbanCards,
       busMessages: state.busMessages,
+      inboxEvents: state.inboxEvents,
       artifacts: state.artifacts,
       model: state.model,
       reasoningLevel: state.reasoningLevel,

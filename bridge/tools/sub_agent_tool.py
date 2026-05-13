@@ -132,6 +132,10 @@ class SubAgentSpec:
     task_board: Any | None = None
     # Session artifact manifest shared with parent and sibling agents.
     artifact_store: Any | None = None
+    # Inter-agent messaging router. When set, each spawned child gets
+    # talk + list_agent_sessions tools wired with a context bound to
+    # the child's session id + parent id.
+    talk_router: Any | None = None
 
 
 class SubAgentTool:
@@ -265,6 +269,15 @@ Parameters:
         record.child_model = child_model  # type: ignore[attr-defined]
         record.model_resolution = model_resolution  # type: ignore[attr-defined]
         record.coordination_strategy = self._spec.coordination_strategy  # type: ignore[attr-defined]
+        record.parent_session_id = self._spec.parent_session_id or ""
+        # Attach a fresh inbox so TalkRouter can deliver into this child.
+        # Re-wake path (Phase 4) will pre-populate from the inbox sidecar
+        # before spawn; for live spawns it starts empty.
+        try:
+            from bridge.inbox import SessionInbox
+            record.inbox = SessionInbox(session_id=sub_id)
+        except Exception:
+            record.inbox = None
         if kanban_task_id:
             record.kanban_task_id = kanban_task_id  # type: ignore[attr-defined]
         if self._spec.coordination_strategy == STRATEGY_ISOLATED:
@@ -463,6 +476,27 @@ Parameters:
             tool = parent_tools.get(name)
             if tool is not None:
                 child_registry.register(tool)
+
+        # Inter-agent messaging — talk + list_agent_sessions, bound to
+        # this child's session id + parent. Always registered when the
+        # spec carries a talk router (i.e. running under a bridge that
+        # supports the messaging primitive).
+        if self._spec.talk_router is not None:
+            from bridge.tools.talk_tool import (
+                ListAgentSessionsTool,
+                TalkRouterContext,
+                TalkTool,
+            )
+            talk_ctx = TalkRouterContext(
+                caller_session_id=record.id,
+                caller_label=record.label or record.id,
+                caller_role="agent",
+                parent_session_id=self._spec.parent_session_id or None,
+            )
+            child_registry.register(TalkTool(router=self._spec.talk_router, ctx=talk_ctx))
+            child_registry.register(
+                ListAgentSessionsTool(router=self._spec.talk_router, ctx=talk_ctx)
+            )
 
         # Inject message bus tools BEFORE building the system prompt so
         # the tool list in the prompt includes publish_finding / read_findings.
@@ -842,6 +876,21 @@ Parameters:
                 session_id=record.id,
             )  # noqa: SLF001
 
+        # Pre-iteration hook: drain this sub-agent's inbox and prepend
+        # incoming messages as attributed user turns before each LLM
+        # call. Mirrors the main session's _drain_inbox_into_session.
+        sub_inbox_ref = record.inbox
+
+        async def _drain_subagent_inbox(sub_session: Any, iteration: int) -> None:
+            if sub_inbox_ref is None or not sub_inbox_ref.has_unread():
+                return
+            msgs = sub_inbox_ref.drain()
+            for m in msgs:
+                try:
+                    sub_session.add_user_message(m.as_user_block())
+                except Exception:
+                    continue
+
         runner = AsyncAgentRunner(
             provider=provider,
             compaction_strategy=SummaryCompaction(),
@@ -850,6 +899,7 @@ Parameters:
             on_system_event=on_system_event,
             on_llm_call=_on_sub_llm_call,
             on_tool_metric=_on_sub_tool_metric,
+            on_pre_iteration=_drain_subagent_inbox,
             thinking=child_thinking,
         )
         sub_runner_holder["runner"] = runner
@@ -899,6 +949,33 @@ Parameters:
                     await run_task
                 except BaseException:  # noqa: BLE001
                     pass
+                # Force-message compliance iteration: if the watchdog
+                # fired because a force=true inbox message arrived (vs.
+                # an external cancel), run ONE more bounded iteration
+                # so the agent can acknowledge / comply with the force
+                # message rather than dying mid-stream. The inbox
+                # pre-iteration hook drains the force message as the
+                # first thing the new iteration sees.
+                if (
+                    record.inbox is not None
+                    and record.inbox.has_force_unread()
+                ):
+                    try:
+                        # Reset cancel flags for the compliance pass.
+                        cancelled.clear()
+                        try:
+                            asyncio_cancel.clear()
+                        except Exception:
+                            pass
+                        compliance_result = await runner.run(
+                            session,
+                            "[INTERRUPT] Operator/parent force-stopped you. Read the message just delivered, summarize what you have, and exit.",
+                            stream=True,
+                            stop_condition=StopCondition(max_iterations=1),
+                        )
+                        result = compliance_result
+                    except BaseException as exc:  # noqa: BLE001
+                        run_exception = exc
             else:
                 watch_task.cancel()
                 try:
@@ -1131,6 +1208,27 @@ Parameters:
             data["session_id"] = record.id
             save_transcript(record.id, data)
             logger.info("Saved transcript for sub-agent %s", record.id)
+
+            # Additionally write a SUBAGENT sidecar carrying every piece
+            # of spawn config a future re-wake would need (talk() to an
+            # archived sub-agent). Lets a follow-up message bring the
+            # agent back to life with full context from its last run.
+            try:
+                from bridge.transcript_persistence import save_subagent_state
+                save_subagent_state(record.id, {
+                    "sessionId": record.id,
+                    "parentSessionId": self._spec.parent_session_id,
+                    "agentType": agent_type.name,
+                    "model": child_model,
+                    "reasoningLevel": agent_type.thinking_effort,
+                    "task": record.task,
+                    "label": record.label,
+                    "coordinationStrategy": self._spec.coordination_strategy,
+                    "transcript": data,
+                    "savedAt": int(time.time() * 1000),
+                })
+            except Exception:  # noqa: BLE001
+                logger.debug("failed to save subagent sidecar", exc_info=True)
         except Exception:  # noqa: BLE001
             logger.warning(
                 "Failed to save transcript for sub-agent %s",

@@ -159,6 +159,45 @@ def emit_error(message: str, recoverable: bool = False) -> None:
     emit({"type": "error", "message": message, "recoverable": recoverable})
 
 
+def _resolve_archived_subagent(session_id: str) -> dict[str, Any] | None:
+    """Lookup helper used by TalkRouter to find a saved sub-agent
+    sidecar by session id. Phase 4 (T11) populates these sidecars on
+    sub-agent completion; for now this just reads whatever is on disk."""
+    try:
+        from bridge.transcript_persistence import load_subagent_state
+    except Exception:
+        return None
+    return load_subagent_state(session_id)
+
+
+async def _wake_archived_subagent(state: Any, session_id: str, msg: Any) -> None:
+    """Re-wake a saved sub-agent by spawning a fresh runner with the
+    persisted transcript + the incoming message. Full implementation
+    lands in Phase 4 (T11); for now this saves the message into the
+    sidecar's inbox so a future implementation can drain it on wake."""
+    try:
+        from bridge.transcript_persistence import (
+            save_inbox_state,
+            load_inbox_state,
+        )
+    except Exception:
+        return
+    # Append to whatever inbox is already persisted for that session,
+    # so when the re-wake path is built it picks up everything queued.
+    existing = load_inbox_state(session_id) or {
+        "sessionId": session_id,
+        "unread": [],
+        "delivered": [],
+    }
+    unread = list(existing.get("unread") or [])
+    unread.append(msg.to_dict())
+    existing["unread"] = unread
+    try:
+        save_inbox_state(session_id, existing)
+    except Exception:
+        pass
+
+
 # Anthropic enforces a 5 MiB cap on the base64 STRING for any image
 # (`messages.X.content.Y.image.source.base64: image exceeds 5 MB maximum`).
 # We target a smaller value so there's headroom and so a single oversize
@@ -1541,6 +1580,11 @@ class _BridgeSession:
         self.provider: Any | None = None
         self.tool_registry: Any | None = None
         self.subagent_registry: Any | None = None
+        # Inbox for inter-agent + operator-to-agent talk. Drained at
+        # iteration boundaries by the runner pre-hook below.
+        from bridge.inbox import SessionInbox
+        self.inbox: SessionInbox = SessionInbox(session_id=self.id)
+        self.inbox.on_change = self._on_inbox_change
         # Profile identity: set when this session was spawned as a
         # subagent. Root sessions leave both fields at None and the
         # dashboard renders them under a synthetic "root" profile.
@@ -1783,6 +1827,19 @@ class _BridgeSession:
         # event scoping the sub_agent_tool uses.
         self._wrap_child_registry = _wrap_child_registry  # type: ignore[attr-defined]
 
+        # TalkRouter: shared inter-agent messaging dispatcher. Stashed on
+        # self so sub_agent_tool's child registry (built later, per-spawn)
+        # can pass the same router in for child agents.
+        from bridge.tools.talk_tool import TalkRouter as _TalkRouter
+        self._talk_router = _TalkRouter(
+            bridge_state=self.state,
+            get_running_sessions=lambda: dict(self.state.sessions),
+            resolve_archived_sub=_resolve_archived_subagent,
+            wake_archived_sub=lambda sid, msg: _wake_archived_subagent(
+                self.state, sid, msg
+            ),
+        )
+
         registry = build_desktop_registry(
             workspace=Path(self.workspace),
             subagent_registry=sub_registry,
@@ -1811,6 +1868,11 @@ class _BridgeSession:
             artifact_store=self.artifact_store,
             on_memory_updated=_emit_memory_updated,
             on_skill_event=_emit_skill_event,
+            talk_router=self._talk_router,
+            talk_caller_session_id=self.id,
+            talk_caller_label=getattr(self, "_session_title", None) or self.id,
+            talk_caller_role="agent",
+            talk_parent_session_id=self.parent_session_id,
             # Cooperative compaction surface. The lazy getters resolve
             # after this method finishes building the session + runner
             # below; SummarizeContextTool is only invoked by the agent
@@ -1930,6 +1992,7 @@ class _BridgeSession:
             on_system_event=self._on_system_event,
             on_llm_call=self._on_llm_call,
             on_tool_metric=self._on_tool_metric,
+            on_pre_iteration=self._drain_inbox_into_session,
             thinking=thinking,
         )
         self.runner = runner
@@ -2088,6 +2151,13 @@ class _BridgeSession:
         except Exception as exc:  # noqa: BLE001
             log("warn", f"goal-state restore failed for {self.id}: {exc}")
             restored_goal = False
+
+        # Step 2c: Rehydrate inbox sidecar so messages queued while the
+        # session was asleep (re-wake path) are picked up on next turn.
+        try:
+            self._restore_inbox()
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"inbox restore failed for {self.id}: {exc}")
         if restored_goal and self.goal_state is not None:
             # Re-emit a goal_status so the renderer rebuilds its view from
             # the rehydrated state instead of from a 100-event rolling buffer
@@ -2191,6 +2261,86 @@ class _BridgeSession:
 
         self.reset()
         return await self.try_restore_transcript()
+
+    async def _drain_inbox_into_session(self, session: Any, iteration: int) -> None:
+        """Runner pre-iteration hook. Drains any pending inbox messages
+        and prepends each one as an attributed user turn so the agent
+        sees inbound talk at the next provider call.
+
+        Runs on every iteration including the first — a force message
+        could arrive before the agent's first LLM call.
+        """
+        if self.inbox is None or not self.inbox.has_unread():
+            return
+        if session is None:
+            return
+        msgs = self.inbox.drain()
+        if not msgs:
+            return
+        for m in msgs:
+            try:
+                session.add_user_message(m.as_user_block())
+            except Exception as exc:  # noqa: BLE001
+                log("warn", f"failed to inject inbox msg {m.id[:8]}: {exc}")
+                continue
+        # Persist after drain so a crash mid-iteration doesn't double-deliver.
+        try:
+            self._save_inbox()
+        except Exception:
+            pass
+
+    def _on_inbox_change(self, action: str, msg: Any) -> None:
+        """Bridge hook fired by SessionInbox on every push/drain/drop.
+
+        Emits an inbox_event so the renderer can surface inline chips
+        and "↳ N unread" indicators. Also persists the inbox sidecar
+        opportunistically so re-wakes pick up pending messages.
+        """
+        try:
+            emit({
+                "type": "inbox_event",
+                "sessionId": self.id,
+                "action": action,                  # enqueued | delivered | dropped
+                "message": msg.to_dict(),
+            })
+        except Exception:
+            pass
+        # Persist after every change so a re-wake on a non-running
+        # session immediately picks up the new message from disk.
+        try:
+            self._save_inbox()
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"inbox sidecar save failed: {exc}")
+
+    def _save_inbox(self) -> None:
+        try:
+            from bridge.transcript_persistence import save_inbox_state
+        except Exception:
+            return
+        if self.inbox is None:
+            return
+        try:
+            save_inbox_state(self.id, self.inbox.to_dict())
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"failed to save inbox for {self.id}: {exc}")
+
+    def _restore_inbox(self) -> bool:
+        try:
+            from bridge.transcript_persistence import load_inbox_state
+            from bridge.inbox import SessionInbox
+        except Exception:
+            return False
+        data = load_inbox_state(self.id)
+        if not isinstance(data, dict):
+            return False
+        restored = SessionInbox.from_dict(data)
+        if restored is None:
+            return False
+        # Preserve our existing on_change hook + session_id.
+        restored.session_id = self.id
+        restored.on_change = self._on_inbox_change
+        self.inbox = restored
+        return True
 
     def _save_transcript(self) -> None:
         """Persist the engine transcript to disk (fire-and-forget)."""
@@ -5997,6 +6147,61 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             await _inject_legacy_context_summary(sess, context_summary)
 
         _schedule_or_queue_turn(sess, content, attachments)
+        return
+
+    if ctype == "operator_talk":
+        # Operator types into a per-session input dock (works on any
+        # session — root, sub-agent, or archived sub-agent). The
+        # message routes through the TalkRouter so root + sub-agent
+        # + re-wake paths all share one delivery primitive.
+        target_id = (cmd.get("sessionId") or "").strip()
+        content = (cmd.get("content") or "").strip()
+        force = bool(cmd.get("force") or False)
+        if not target_id or not content:
+            return
+        # Find the TalkRouter from whichever root session is active.
+        # All root sessions share the same router instance (built once
+        # per BridgeState) — we just need any handle to it.
+        router = None
+        for sess in state.sessions.values():
+            r = getattr(sess, "_talk_router", None)
+            if r is not None:
+                router = r
+                break
+        if router is None:
+            log("warn", "operator_talk: no TalkRouter available")
+            return
+        from bridge.inbox import InboxMessage, new_message_id
+        msg = InboxMessage(
+            id=new_message_id(),
+            from_session="operator",
+            from_label="operator",
+            from_role="operator",
+            content=content,
+            force=force,
+        )
+        # Resolve and deliver. The router handles root vs sub-agent vs
+        # archived all in one shot.
+        # Build a synthetic context so resolve_ref doesn't gate on a
+        # caller relationship (operator can address anything).
+        from bridge.tools.talk_tool import TalkRouterContext
+        ctx = TalkRouterContext(
+            caller_session_id="operator",
+            caller_label="operator",
+            caller_role="operator",
+            parent_session_id=None,
+        )
+        resolved_id, live_root, sub_rec, archived = router.resolve_ref(target_id, ctx)
+        if not resolved_id:
+            log("warn", f"operator_talk: unresolved recipient '{target_id}'")
+            return
+        try:
+            result = await router.deliver(
+                resolved_id, live_root, sub_rec, archived, msg
+            )
+            log("info", f"operator_talk → {resolved_id[:8]}: {result}")
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"operator_talk delivery failed: {exc}")
         return
 
     if ctype == "toggle_entry_pin":

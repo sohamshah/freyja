@@ -104,6 +104,22 @@ export interface SessionSlice {
    *  ephemeral events being present. */
   kanbanCards: Record<string, Record<string, unknown>>
   busMessages: Array<import('@shared/events').BusMessageRecord>
+  /** Inbox events — every inter-agent or operator→agent message that
+   *  touched this session (sent OR received). Used for inline chip
+   *  rendering in the parent transcript and "you have N unread"
+   *  indicators in the sidebar. Capped at 100 most recent. */
+  inboxEvents: Array<{
+    id: string
+    action: 'enqueued' | 'delivered' | 'dropped'
+    fromSession: string
+    fromLabel: string
+    fromRole: 'operator' | 'agent'
+    content: string
+    force: boolean
+    replyTo: string | null
+    timestamp: number
+    sessionId: string  // the session that received this event
+  }>
   artifacts: Array<import('@shared/events').ArtifactRecord>
   model: string
   reasoningLevel: string
@@ -222,6 +238,12 @@ export interface HarnessActions {
   handleEvent(ev: BridgeEvent): void
   setInputDraft(v: string): void
   sendMessage(content: string): Promise<void>
+  /** Operator-typed message into any agent session's inbox. Routes
+   *  through the bridge's TalkRouter so root sessions, live sub-agents,
+   *  and archived (re-wakeable) sub-agents all work uniformly.
+   *  - sessionId can be any visible session id.
+   *  - force=true interrupts the recipient mid-operation. */
+  operatorTalk(sessionId: string, content: string, force?: boolean): Promise<void>
   cancelTurn(): Promise<void>
   setModel(model: string, reasoningLevel?: string): Promise<void>
   setReasoningLevel(reasoningLevel: string): Promise<void>
@@ -590,6 +612,7 @@ function emptySlice(
     systemEvents: [],
     kanbanCards: {},
     busMessages: [],
+    inboxEvents: [],
     artifacts: [],
     model,
     reasoningLevel: normalizedReasoning,
@@ -712,6 +735,7 @@ function sliceFromState(s: HarnessState): SessionSlice {
     systemEvents: s.systemEvents,
     kanbanCards: s.kanbanCards,
     busMessages: s.busMessages,
+    inboxEvents: s.inboxEvents,
     artifacts: s.artifacts,
     model: s.model,
     reasoningLevel: s.reasoningLevel,
@@ -1175,6 +1199,27 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
       next.busMessages = [
         ...slice.busMessages.slice(-100),
         { ...ev.message, timestamp },
+      ]
+      return next
+    }
+
+    case 'inbox_event': {
+      if (!ev.sessionId) return next
+      const m = ev.message
+      next.inboxEvents = [
+        ...slice.inboxEvents.slice(-99),
+        {
+          id: m.id,
+          action: ev.action,
+          fromSession: m.fromSession,
+          fromLabel: m.fromLabel,
+          fromRole: m.fromRole,
+          content: m.content,
+          force: !!m.force,
+          replyTo: m.replyTo ?? null,
+          timestamp: m.timestamp,
+          sessionId: ev.sessionId,
+        },
       ]
       return next
     }
@@ -2125,6 +2170,19 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     } else {
       ;(window as any).__harnessDemo?.send(content)
     }
+  },
+
+  async operatorTalk(sessionId, content, force = false) {
+    const text = (content ?? '').trim()
+    if (!sessionId || !text) return
+    const api = (window as any).harness
+    if (!api) return
+    await api.sendCommand({
+      type: 'operator_talk',
+      sessionId,
+      content: text,
+      force: !!force,
+    })
   },
 
   async cancelTurn() {

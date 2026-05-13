@@ -482,6 +482,21 @@ export type BridgeEvent =
   | ({ type: 'subagent_done'; id: string; result: string; elapsedMs: number } & SessionId)
   | ({ type: 'bus_message'; message: BusMessageRecord } & SessionId)
   | ({
+      type: 'inbox_event'
+      action: 'enqueued' | 'delivered' | 'dropped'
+      message: {
+        id: string
+        fromSession: string
+        fromLabel: string
+        fromRole: 'operator' | 'agent'
+        content: string
+        force: boolean
+        replyTo: string | null
+        timestamp: number
+        deliveredAt: number | null
+      }
+    } & SessionId)
+  | ({
       type: 'subagent_event'
       id: string
       payload: {
@@ -672,6 +687,16 @@ export type CompactionTelemetryRow =
       tokens_after: number
       mechanism: string
       trigger?: string
+      scope?: string | null
+      reason?: string | null
+      resumed_from_previous?: boolean
+      /** First ~240 chars of the produced summary — for at-a-glance
+       *  lists where the full text is too long. */
+      summary_excerpt?: string | null
+      /** Full produced summary text. Powers the clickable
+       *  compaction-log rows in the dashboard so users can inspect
+       *  exactly what was summarized. */
+      summary_text?: string | null
     }
   | {
       type: 'llm_call_metric'

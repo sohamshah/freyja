@@ -833,6 +833,7 @@ class AsyncAgentRunner:
         on_llm_call: Callable[[dict[str, Any]], None] | None = None,
         on_tool_metric: Callable[[dict[str, Any]], None] | None = None,
         thinking: ThinkingConfig | None = None,
+        on_pre_iteration: Callable[[Any, int], Awaitable[None]] | None = None,
     ):
         self.provider = provider
         self.config = config or AgentConfig()
@@ -847,6 +848,12 @@ class AsyncAgentRunner:
         self.on_llm_call = on_llm_call
         self.on_tool_metric = on_tool_metric
         self.thinking = thinking or ThinkingConfig()
+        # Pre-iteration hook: invoked at the top of every iteration in
+        # the async loop, BEFORE _ensure_context_room and BEFORE the
+        # provider call. Bridge wires this to drain the session's inbox
+        # and prepend incoming messages as attributed user turns.
+        # Signature: async (session, iteration_index) -> None
+        self.on_pre_iteration = on_pre_iteration
 
         # Tool result truncator
         self.truncator = ToolResultTruncator(self.config)
@@ -860,8 +867,11 @@ class AsyncAgentRunner:
         # Pressure-band crossing detector for Channel 3 (mid-stream
         # advisory). Tracks the band as observed at the start of the
         # *current* turn so that mid-turn tool-result wrappers can
-        # decide whether the band escalated *during* the turn.
-        self._turn_start_pressure_band: int = 0
+        # decide whether the band escalated *during* the turn. Use
+        # ``None`` as the "not yet recorded this turn" sentinel; ``0``
+        # is a valid band (clean) and would conflate uninitialized
+        # with "actually-clean" if used as the sentinel.
+        self._turn_start_pressure_band: int | None = None
         self._channel3_advisory_pending: str = ""
 
     def _compute_truncation_budget(self, session: Session) -> int:
@@ -952,6 +962,17 @@ class AsyncAgentRunner:
                 "Agent iteration %d/%d | session=%s",
                 ctx.iteration, max_iterations, session.id,
             )
+
+            # Pre-iteration hook: lets the bridge drain the session's
+            # inbox and prepend any new operator/agent messages as
+            # attributed user turns before this iteration's LLM call.
+            # Runs even on iteration 1 — a force-message can arrive
+            # before the first provider call.
+            if self.on_pre_iteration is not None:
+                try:
+                    await self.on_pre_iteration(session, ctx.iteration)
+                except Exception:
+                    logger.exception("on_pre_iteration hook raised")
 
             try:
                 # Pre-request safety check: compact BEFORE sending
@@ -1271,11 +1292,19 @@ class AsyncAgentRunner:
             tool_defs = self.tool_registry.list_definitions()
 
         start = time.perf_counter()
+        # Channel 2 of the cooperative protocol: snapshot the pressure
+        # band before the call, then tail-append the pressure note to
+        # the last user message (not the system prompt — see
+        # ``_augment_messages_with_pressure_note``).
+        self._snapshot_turn_start_band()
+        request_messages = self._augment_messages_with_pressure_note(
+            session.get_messages(),
+        )
         try:
             response = await provider.complete_async(
-                messages=session.get_messages(),
+                messages=request_messages,
                 tools=tool_defs,
-                system_prompt=self._system_prompt_with_pressure(session),
+                system_prompt=session.system_prompt,
                 max_tokens=self.config.max_tokens_per_turn,
                 thinking=self.thinking if self.thinking.enabled else None,
             )
@@ -1302,11 +1331,17 @@ class AsyncAgentRunner:
                     await result
 
         start = time.perf_counter()
+        # Channel 2 of the cooperative protocol — see the non-stream
+        # ``_call_provider_async`` for rationale.
+        self._snapshot_turn_start_band()
+        request_messages = self._augment_messages_with_pressure_note(
+            session.get_messages(),
+        )
         try:
             response = await provider.stream_to_response(
-                messages=session.get_messages(),
+                messages=request_messages,
                 tools=tool_defs,
-                system_prompt=self._system_prompt_with_pressure(session),
+                system_prompt=session.system_prompt,
                 max_tokens=self.config.max_tokens_per_turn,
                 thinking=self.thinking if self.thinking.enabled else None,
                 on_event=_handle_event if self.on_stream else None,
@@ -1339,17 +1374,39 @@ class AsyncAgentRunner:
         except Exception:  # noqa: BLE001
             return 0.0
 
-    def _build_pressure_system_note(self, ratio: float) -> str:
-        """Channel 2: pressure-aware system-prompt suffix.
+    def _build_pressure_note(self, ratio: float) -> str:
+        """Channel 2: pressure-aware advisory text.
 
-        Empty below 40% (soft band) so we don't churn the prompt cache
-        unnecessarily. Above 40% we accept the cache eviction in exchange
-        for active pressure context — the doc's pressure ladder considers
-        soft-band onset the right moment to start nudging the agent.
+        Empty below 40% (soft band). Above 40% the percentage is
+        *quantized* into 10-point bands so the text is stable within
+        each band and changes only on band crossings.
+
+        Why ``<system-reminder>`` framing: the note lives in the last
+        user-role message (cache-friendly — see
+        ``_augment_messages_with_pressure_note``), but a plain
+        TextBlock at the tail of a 50KB tool_results blob is easy to
+        miss. Anthropic-family models are trained to attend to
+        ``<system-reminder>...</system-reminder>`` blocks as automated
+        runtime guidance — not user intent, not the model's own
+        thought, just a side-channel notification. OpenAI/Fireworks
+        models read it as plain text with a clearly demarcated
+        wrapper, which still works. This dodges the awkwardness of
+        pretending to be the user (the previous framing) or trying
+        to inject a synthetic assistant message (Anthropic's prefill
+        mode contaminates the response and bills at output rate).
+
+        Why NOT the system prompt: injecting into ``system`` would
+        evict the cache_control breakpoint on the static system block
+        every band crossing, billing the cache_write rate (1.25× input
+        on Anthropic) for a ~30k token block to deliver ~200 bytes of
+        dynamic guidance.
         """
         if ratio < 0.40:
             return ""
-        pct = int(ratio * 100)
+        # Quantize: ratio 0.42 → "40-49%", 0.55 → "50-59%", 0.61 → "60-69%".
+        decile_low = int(ratio * 10) * 10
+        decile_high = min(99, decile_low + 9)
+        band_label = f"{decile_low}-{decile_high}%"
         if ratio >= 0.80:
             recommendation = (
                 "call summarize_context() NOW — runtime fallback is imminent "
@@ -1368,9 +1425,10 @@ class AsyncAgentRunner:
             )
         return (
             "\n\n"
-            "[FREYJA CONTEXT PRESSURE]\n"
-            f"Current usage:    {pct}% of the active context window.\n"
-            f"Recommendation:   {recommendation}.\n"
+            "<system-reminder>\n"
+            f"Context window is at {band_label} of capacity. "
+            f"Recommendation: {recommendation}.\n"
+            "</system-reminder>"
         )
 
     @staticmethod
@@ -1386,23 +1444,77 @@ class AsyncAgentRunner:
             return 1
         return 0
 
-    def _system_prompt_with_pressure(self, session: Session) -> str:
-        """Apply Channel 2 to the system prompt for one call.
+    def _snapshot_turn_start_band(self) -> None:
+        """Snapshot the pressure band at turn start for Channel 3.
 
-        Also snapshots the band for Channel 3's "crossed during this
-        turn" detection (see ``mark_channel3_crossing`` below).
+        Called once per iteration before the provider call. Records the
+        band so ``mark_channel3_crossing`` (run after the response)
+        can detect an upward crossing into ≥ strong during the turn.
+        Subsequent calls within the same iteration leave the snapshot
+        alone — only the FIRST call sets it.
+        """
+        if self._turn_start_pressure_band is None:
+            self._turn_start_pressure_band = self._classify_pressure_band(
+                self._current_pressure_ratio(),
+            )
+
+    def _augment_messages_with_pressure_note(
+        self, messages: list[Message],
+    ) -> list[Message]:
+        """Channel 2: tail-append the pressure note to the last user-role
+        message in the request, without mutating the session transcript.
+
+        Why not the system prompt: appending to ``system`` invalidates
+        Anthropic's cache_control breakpoint on the static system block
+        every time the pressure band changes — paying the cache_write
+        rate (1.25× input) for ~30k tokens to deliver ~200 bytes of
+        dynamic guidance. Tail-appending leaves the system + tools +
+        compaction-summary cache markers intact; only the suffix of the
+        last user message is reprocessed at full input rate (~200
+        tokens), which is the right cost shape.
+
+        Why the last user message: at every provider-call moment the
+        last entry in the messages list is a user-role message —
+        either the initial user prompt (iter 1) or the most recent
+        tool_results batch. Anthropic + OpenAI both accept extra text
+        content appended to the end of that message. Tool_use_id /
+        tool_result_id pairing is unaffected because we add a new
+        TextBlock alongside the existing tool_result blocks (or
+        concatenate to string content).
+
+        Returns a new list with a single cloned tail message so the
+        transcript stays clean; the original session entries are
+        never mutated.
         """
         ratio = self._current_pressure_ratio()
-        band = self._classify_pressure_band(ratio)
-        # Update on the FIRST call of this turn (turn_start_band == 0
-        # means we haven't recorded yet). Subsequent calls within the
-        # same turn shouldn't overwrite the start-of-turn snapshot.
-        if self._turn_start_pressure_band == 0:
-            self._turn_start_pressure_band = band
-        note = self._build_pressure_system_note(ratio)
-        if not note:
-            return session.system_prompt
-        return session.system_prompt + note
+        note = self._build_pressure_note(ratio)
+        if not note or not messages:
+            return messages
+        last = messages[-1]
+        if last.role != "user":
+            # Conservative: don't touch non-user trailing messages. In
+            # practice the loop only sends after a user/tool_result is
+            # appended, so this guard rarely fires.
+            return messages
+        if isinstance(last.content, str):
+            new_content: Any = last.content + note
+        elif isinstance(last.content, list):
+            from engine.types import TextBlock as _TextBlock
+            new_content = list(last.content) + [_TextBlock(text=note)]
+        else:
+            return messages
+        cloned = Message(
+            role=last.role,
+            content=new_content,
+            tool_calls=last.tool_calls,
+            tool_call_id=last.tool_call_id,
+            thinking_blocks=last.thinking_blocks,
+            input_tokens=last.input_tokens,
+            output_tokens=last.output_tokens,
+            cache_read_tokens=last.cache_read_tokens,
+            cache_write_tokens=last.cache_write_tokens,
+        )
+        return messages[:-1] + [cloned]
 
     def mark_channel3_crossing(self) -> None:
         """Channel 3 (Approach A): detect mid-turn band escalation.
@@ -1417,16 +1529,25 @@ class AsyncAgentRunner:
             ratio = self._current_pressure_ratio()
             band_now = self._classify_pressure_band(ratio)
             band_then = self._turn_start_pressure_band
+            # If the snapshot wasn't taken (very first call after reset)
+            # treat it as 0 — we can't claim "escalation" against an
+            # unknown baseline, so the comparison naturally short-circuits.
+            if band_then is None:
+                band_then = band_now
             # Only fire on a real escalation INTO ≥ strong (3) — soft
             # already has Channel 2 nudging via the pre-turn system note;
             # mid-turn injection earns its keep at strong+.
             if band_now >= 3 and band_now > band_then:
-                pct_now = int(ratio * 100)
+                # Quantized window label keeps the advisory cache-friendly
+                # if it ever ends up in a cached prefix.
+                decile_low = int(ratio * 10) * 10
+                decile_high = min(99, decile_low + 9)
                 self._channel3_advisory_pending = (
-                    f"[!CTX PRESSURE: window crossed {pct_now}% during this turn "
-                    f"(was band {band_then} at turn start). Finish your current "
-                    "immediate goal, then call summarize_context() before issuing "
-                    "more tool calls. Tool calls beyond ~5 more may be rejected.]"
+                    f"[!CTX PRESSURE: window crossed {decile_low}-{decile_high}% "
+                    f"during this turn (was band {band_then} at turn start). "
+                    "Finish your current immediate goal, then call "
+                    "summarize_context() before issuing more tool calls. "
+                    "Tool calls beyond ~5 more may be rejected.]"
                 )
         except Exception:  # noqa: BLE001
             pass
@@ -1445,7 +1566,7 @@ class AsyncAgentRunner:
 
     def reset_turn_pressure_state(self) -> None:
         """Reset start-of-turn band snapshot at the top of each iteration."""
-        self._turn_start_pressure_band = 0
+        self._turn_start_pressure_band = None
         # Don't clear _channel3_advisory_pending here — it may have been
         # set during the previous turn and not yet consumed.
 
@@ -1916,6 +2037,12 @@ class AsyncAgentRunner:
             "images_after": result.images_after,
             "summary_chars": len(result.summary or ""),
             "summary_preview": (result.summary or "")[:700],
+            # Full summary text preserved for the session-export bundle.
+            # The bridge writes this to a per-session compactions log
+            # so the export can reconstruct every compaction's actual
+            # output, not just an excerpt.
+            "summary_text": (result.summary or ""),
+            "resumed_from_previous": getattr(result, "resumed_from_previous", False),
             "trigger": trigger,
             "strategy": "llm_summary",
         }
