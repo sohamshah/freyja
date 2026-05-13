@@ -213,15 +213,17 @@ export function JudgeBrief({ open, onClose, goalState }: Props) {
                 key={p}
                 type="button"
                 onClick={() => setJudgeProfile(p)}
-                className={`flex flex-col gap-1 rounded-md border px-3 py-2.5 text-left transition ${
+                className={`flex min-w-0 flex-col gap-2 rounded-md border px-3.5 py-3 text-left transition ${
                   active
                     ? 'border-accent/[0.4] bg-accent/[0.10]'
                     : 'border-white/[0.06] bg-white/[0.018] hover:border-white/[0.16] hover:bg-white/[0.04]'
                 }`}
               >
-                <div className="flex items-baseline justify-between font-mono text-[12px]">
-                  <span className={active ? 'text-accent' : 'text-fg-0'}>{meta.name}</span>
-                  <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-fg-3">
+                <div className="flex flex-col gap-0.5">
+                  <span className={`font-mono text-[12.5px] ${active ? 'text-accent' : 'text-fg-0'}`}>
+                    {meta.name}
+                  </span>
+                  <span className="font-mono text-[9.5px] uppercase tracking-[0.16em] text-fg-4">
                     {meta.cost}
                   </span>
                 </div>
