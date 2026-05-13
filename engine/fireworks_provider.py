@@ -62,7 +62,6 @@ FIREWORKS_MODEL_MAP: dict[str, str] = {
     "glm-5.1": "accounts/fireworks/models/glm-5p1",
     "kimi-k2.6": "accounts/fireworks/models/kimi-k2p6",
     "minimax-m2.7": "accounts/fireworks/models/minimax-m2p7",
-    "deepseek-v3.2": "accounts/fireworks/models/deepseek-v3p2",
     "qwen3.6-plus": "accounts/fireworks/models/qwen3p6-plus",
     "kimi-k2.5": "accounts/fireworks/models/kimi-k2p5",
     "glm5": "accounts/fireworks/models/glm-5",
@@ -78,8 +77,6 @@ FIREWORKS_CONTEXT_WINDOWS: dict[str, int] = {
     "accounts/fireworks/models/kimi-k2p6": 262_144,
     "minimax-m2.7": 196_608,
     "accounts/fireworks/models/minimax-m2p7": 196_608,
-    "deepseek-v3.2": 163_840,
-    "accounts/fireworks/models/deepseek-v3p2": 163_840,
     "qwen3.6-plus": 1_000_000,
     "accounts/fireworks/models/qwen3p6-plus": 1_000_000,
     "kimi-k2.5": 262_144,
@@ -120,9 +117,6 @@ FIREWORKS_REASONING_MODE: dict[str, str] = {
     "accounts/fireworks/models/minimax-m2p7": "required",
     "minimax-m2.5": "required",
     "accounts/fireworks/models/minimax-m2p5": "required",
-    # DeepSeek V3.2 is binary on/off and defaults on.
-    "deepseek-v3.2": "binary",
-    "accounts/fireworks/models/deepseek-v3p2": "binary",
 }
 
 FIREWORKS_REASONING_LEVELS: dict[str, tuple[str, ...]] = {
@@ -724,8 +718,8 @@ class FireworksProvider:
         """Map Freyja's ThinkingConfig to Fireworks reasoning_effort.
 
         Fireworks' chat completions endpoint has model-specific behavior:
-        DeepSeek V4 supports explicit effort levels, DeepSeek V3.2 is
-        binary on/off, and MiniMax M2-family reasoning is mandatory.
+        DeepSeek V4 supports explicit effort levels, and MiniMax M2-family
+        reasoning is mandatory.
         """
         mode = self._reasoning_mode()
         if mode == "none":

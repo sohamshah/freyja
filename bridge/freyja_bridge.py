@@ -607,16 +607,6 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "description": "MiniMax M2.5 via Fireworks. Fast and cheap.",
     },
     {
-        "id": "deepseek-v3.2",
-        "family": "fireworks",
-        "label": "DeepSeek v3.2",
-        "tier": "balanced",
-        "contextWindow": 163_840,
-        "thinking": True,
-        "envVar": "FIREWORKS_API_KEY",
-        "description": "DeepSeek v3.2 via Fireworks. Efficient reasoning and agent performance.",
-    },
-    {
         "id": "qwen3.6-plus",
         "family": "fireworks",
         "label": "Qwen3.6 Plus",
@@ -713,11 +703,6 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningLevels": ["low", "medium", "high"],
         "reasoningDefault": "medium",
         "reasoningHistory": ["interleaved"],
-    },
-    "deepseek-v3.2": {
-        "reasoningMode": "binary",
-        "reasoningLevels": ["none", "high"],
-        "reasoningDefault": "high",
     },
     "qwen3.6-plus": {
         "reasoningMode": "effort",

@@ -509,7 +509,7 @@ AGENT_TYPES: dict[str, AgentType] = {
             "when you need breadth over depth. Spawn 3-5 of these in "
             "background mode for broad coverage."
         ),
-        model=["kimi-k2.6", "deepseek-v3.2", "minimax-m2.7", "zai-glm-4.7"],
+        model=["kimi-k2.6", "minimax-m2.7", "zai-glm-4.7"],
         thinking_effort="off",
         model_policy="random_available",
         model_fallbacks=("claude-haiku-4-5",),

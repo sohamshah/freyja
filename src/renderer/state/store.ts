@@ -488,7 +488,6 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   'glm-5.1': 202_752,
   'kimi-k2.6': 262_144,
   'minimax-m2.7': 196_608,
-  'deepseek-v3.2': 163_840,
   'qwen3.6-plus': 1_000_000,
   'glm5': 202_752,
   'kimi-k2.5': 262_144,
@@ -515,7 +514,6 @@ const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel
   'glm-5.1': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
   'kimi-k2.6': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
   'minimax-m2.7': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
-  'deepseek-v3.2': { levels: ['none', 'high'], defaultLevel: 'high' },
   'qwen3.6-plus': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'medium' },
   'minimax-m2.5': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
 }

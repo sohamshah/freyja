@@ -129,7 +129,7 @@ Freyja currently exposes 21 model profiles across 4 provider families:
 | Anthropic | Claude Opus 4.7, Opus 4.6, Sonnet 4.6, Sonnet 4.5, Opus 4.5, Haiku 4.5 |
 | OpenAI | GPT-5.5, GPT-5.4, GPT-5.4 Mini, GPT-5.4 Nano, GPT-5.3 Codex |
 | Cerebras | Z.ai GLM 4.7 |
-| Fireworks | Kimi K2.5, Kimi K2.6, DeepSeek V4 Pro, DeepSeek v3.2, GLM 5.1, GLM 5, MiniMax M2.7, MiniMax M2.5, Qwen3.6 Plus |
+| Fireworks | Kimi K2.5, Kimi K2.6, DeepSeek V4 Pro, GLM 5.1, GLM 5, MiniMax M2.7, MiniMax M2.5, Qwen3.6 Plus |
 
 The picker tracks context window, provider family, API key availability,
 reasoning mode, supported reasoning levels, and model-specific reasoning

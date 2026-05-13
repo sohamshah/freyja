@@ -353,7 +353,6 @@ The pattern is consistent: orchestration and planning use the most capable (and 
 | GPT-5.4 Mini | `gpt-5.4-mini` | 400K | $0.75 | $4.50 | — | Cheap subagent, lightweight tasks |
 | Gemini 3.1 Pro | `gemini-3.1-pro-preview` | 1M | ~$2.00 | ~$12.00 | 80.6% | Price-performance, high volume |
 | Gemini 3 Flash | `gemini-3-flash-preview` | — | $0.50 | $3.00 | — | Fast, cheap exploration |
-| DeepSeek V3.2 | `deepseek-v3.2` | 164K | $0.26 | $0.38 | 73.0% | Budget coding, open-source |
 | Grok 4.20 | `grok-4.20-beta` | 2M | $2.00 | $6.00 | — | Largest context (2M) |
 
 **Routing priority.** The model router resolves the model for each request in the following order:

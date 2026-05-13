@@ -63,7 +63,6 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "glm-5.1": 202_752,
     "kimi-k2.6": 262_144,
     "minimax-m2.7": 196_608,
-    "deepseek-v3.2": 163_840,
     "qwen3.6-plus": 1_000_000,
     "kimi-k2.5": 262_144,
     "glm5": 202_752,
@@ -81,12 +80,22 @@ to the agent. Lowered from 0.80 to 0.25 as part of the cooperative
 early-trigger compaction architecture (see docs/COMPACTION-DECISION-DRAFT.md).
 """
 
-CONTEXT_COMPACTION_THRESHOLD = 0.40
-"""Fraction of EFFECTIVE context window that triggers LLM-based summary
-compaction. Lowered from 0.90 to 0.40 — informed by Chroma's context-rot
-research showing model quality degrades well before the window fills,
-and by the cooperative architecture which expects the agent to drive
-compaction at natural breaks in its work."""
+CONTEXT_COMPACTION_THRESHOLD = 0.80
+"""Fraction of EFFECTIVE context window that triggers *runtime-driven*
+LLM compaction. This is the cooperative protocol's safety net — not its
+primary mechanism.
+
+History: this constant was lowered to 0.40 in the original Phase-1
+ship, but that put the runtime on top of the soft-band pressure note
+(Channel 2 also activates at 0.40). The runtime preempted the agent
+every time → Channels 2 and 3 were inert. Restored to 0.80 for Phase 2
+so the agent has a real 40–80% cooperation window: pressure notes
+arrive at 40%, the strong-band advisory at 60%, and only at 80% does
+the runtime stop trusting the agent to drive compaction itself.
+
+Phase 3 will drop this back to ~0.50 once we've measured how often the
+agent actually heeds the cooperative cues. See
+docs/COMPACTION-DECISION-DRAFT.md."""
 
 CONTEXT_AWARENESS_THRESHOLD = 0.25
 """Fraction at which we start appending per-observation token-usage
