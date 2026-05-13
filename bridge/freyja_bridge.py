@@ -3426,10 +3426,14 @@ class _BridgeSession:
                 "details": getattr(event, "details", {}) or {},
             })
 
-        # Spend telemetry — without this the child session pane shows $0.0000
-        # and "0 tokens" even when the model burned real budget. Mirrors
-        # _on_sub_llm_call in sub_agent_tool.
+        # Spend telemetry + live usage events for the child's activity
+        # panel. Without the `usage` emit, the renderer's slice.usage stays
+        # at zero — tokens, $$, and context-bar all read 0 in the right
+        # rail. Mirror what _BridgeSession does after each turn for the
+        # main session: emit a cumulative `usage` event tagged with the
+        # child sessionId.
         parent_id = self.id
+        cum = {"in": 0, "out": 0, "cr": 0, "cw": 0, "cost": 0.0, "last_in": 0}
 
         def on_llm_call(payload: dict[str, Any]) -> None:
             try:
@@ -3450,6 +3454,7 @@ class _BridgeSession:
                     cache_read_tokens=cr_tok,
                     cache_write_tokens=cw_tok,
                 )
+                # Telemetry row (lands in the metrics dashboard later).
                 append_telemetry({
                     "type": "llm_call_metric",
                     "session_id": child_session_id,
@@ -3463,6 +3468,24 @@ class _BridgeSession:
                     "cache_write_tokens": cw_tok,
                     "cost_usd": float(cost) if cost is not None else None,
                     "duration_ms": int(payload.get("duration_ms", 0) or 0),
+                })
+                # Accumulate + emit a `usage` event so the child session's
+                # activity panel (right rail) updates live during the run.
+                cum["in"] += in_tok
+                cum["out"] += out_tok
+                cum["cr"] += cr_tok
+                cum["cw"] += cw_tok
+                cum["cost"] += float(cost or 0.0)
+                cum["last_in"] = in_tok
+                emit({
+                    "type": "usage",
+                    "sessionId": child_session_id,
+                    "contextTokens": in_tok,
+                    "inputTokens": cum["in"],
+                    "outputTokens": cum["out"],
+                    "cacheReadTokens": cum["cr"],
+                    "cacheWriteTokens": cum["cw"],
+                    "cost": cum["cost"],
                 })
             except Exception:
                 pass
@@ -4511,14 +4534,26 @@ class _BridgeSession:
                                 else subtype)
                         ),
                         "trigger": details.get("trigger"),
-                        # Excerpt only in cross-session telemetry to
-                        # keep the JSONL line size manageable. Full
-                        # summary lives in the per-session compactions
-                        # log below (consumed by session export).
+                        "scope": details.get("scope"),
+                        "reason": details.get("reason") or None,
+                        "resumed_from_previous": bool(
+                            details.get("resumed_from_previous") or False
+                        ),
+                        # Excerpt for at-a-glance lists.
                         "summary_excerpt": (
                             (details.get("summary_text") or details.get("summary_preview") or "")[:240]
                             or None
                         ),
+                        # Full summary text — powers the clickable
+                        # compaction-log rows in the dashboard so users
+                        # can actually inspect what was summarized.
+                        # Per-session compactions.jsonl is still the
+                        # source of truth for the export bundle, but
+                        # cross-session telemetry now also carries the
+                        # full text for in-dashboard reading.
+                        "summary_text": (
+                            details.get("summary_text") or details.get("summary_preview") or ""
+                        ) or None,
                     })
                 except Exception:  # noqa: BLE001
                     pass
@@ -4908,8 +4943,16 @@ class _BridgeSession:
                     "mechanism": details.get("mechanism") or subtype,
                     "trigger": details.get("trigger") or "agent_summarize_context",
                     "scope": details.get("scope"),
-                    "reason": (details.get("reason") or "")[:240] or None,
+                    "reason": details.get("reason") or None,
                     "summary_excerpt": (details.get("summary_excerpt") or "")[:240] or None,
+                    # Full summary so the dashboard's clickable
+                    # compaction-log rows can render the actual
+                    # content, not just an excerpt.
+                    "summary_text": (
+                        details.get("summary_text")
+                        or details.get("summary_excerpt")
+                        or ""
+                    ) or None,
                 })
                 # Also write to the per-session compactions.jsonl so
                 # the session export bundle has the FULL summary text
