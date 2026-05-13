@@ -3,6 +3,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
+
+
+def current_datetime_block() -> str:
+    """Return a one-line "current date and time" block for inclusion in
+    every agent system prompt.
+
+    Models behave very differently when they don't know the current
+    date — they fall back to their training cutoff, refuse temporal
+    questions, or hallucinate. Includes both ISO-8601 UTC (machine-
+    readable) and a local-tz human format (the local time the operator
+    sees on their machine).
+    """
+    now_local = datetime.now().astimezone()
+    iso_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    human = now_local.strftime("%A %B %d, %Y at %H:%M %Z")
+    return (
+        f"The current date and time is: {human} "
+        f"(ISO-8601 UTC: {iso_utc})."
+    )
 
 
 STRATEGY_BUS = "bus"

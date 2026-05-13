@@ -1723,6 +1723,9 @@ class _BridgeSession:
         )
         self._agent_types_section = agent_types_section
 
+        # The date/time is intentionally NOT baked into _base_system_prompt —
+        # _refresh_knowledge_context prepends a fresh one on every call so
+        # long-running sessions don't drift stale.
         self._base_system_prompt = (
                 "You are running inside Freyja.\n"
                 "\n"
@@ -1762,8 +1765,10 @@ class _BridgeSession:
             memory_store=self.memory_store,
             skill_store=self.skill_store,
         )
+        from bridge.tools.coordination import current_datetime_block
         system_prompt = (
-            self._base_system_prompt
+            current_datetime_block() + "\n\n"
+            + self._base_system_prompt
             + ("\n\n" + knowledge_prompt if knowledge_prompt else "")
         )
         # Stash for the session export so training data includes the prompt
@@ -2446,8 +2451,10 @@ class _BridgeSession:
                 skill_store=self.skill_store,
                 query=query,
             )
+            from bridge.tools.coordination import current_datetime_block
             system_prompt = (
-                self._base_system_prompt
+                current_datetime_block() + "\n\n"
+                + self._base_system_prompt
                 + ("\n\n" + knowledge_prompt if knowledge_prompt else "")
             )
             self.session.system_prompt = system_prompt
@@ -3388,6 +3395,7 @@ class _BridgeSession:
         to absorb. Parser still runs on the leftover .raw payload as a
         belt-and-suspenders fallback for shapes outside the schema.
         """
+        from bridge.tools.coordination import current_datetime_block
         from bridge.tools.goal_loop import (
             GOAL_JUDGE_SYSTEM_PROMPT,
             GOAL_VERDICT_JSON_SCHEMA,
@@ -3416,7 +3424,10 @@ class _BridgeSession:
                     "Skeptical-by-default verdict on whether the agent's "
                     "work satisfies the standing goal."
                 ),
-                system_prompt=GOAL_JUDGE_SYSTEM_PROMPT,
+                system_prompt=(
+                    f"{GOAL_JUDGE_SYSTEM_PROMPT}\n\n"
+                    f"{current_datetime_block()}"
+                ),
                 strict=True,
                 thinking=_thinking_config_for_model(
                     judge_model, judge_thinking_level
@@ -3506,12 +3517,14 @@ class _BridgeSession:
 
         # Build a system prompt with the tool list inlined, mirroring what
         # sub_agent_tool does, so the judge sees what it can actually use.
+        from bridge.tools.coordination import current_datetime_block
         tool_lines = "\n".join(
             f"- `{name}` — {tool.definition.summary}"
             for name, tool in sorted(child_registry._tools.items())  # noqa: SLF001
         )
         system_prompt = (
             f"{agent_type.system_prompt}\n\n"
+            f"{current_datetime_block()}\n\n"
             f"Available tools:\n{tool_lines}\n"
         )
 
@@ -3723,8 +3736,10 @@ class _BridgeSession:
         # both on session_spawned — that way drilling into the calibrator
         # session immediately shows the operator what the calibrator is
         # being asked to do, without waiting for events.
+        from bridge.tools.coordination import current_datetime_block
         system_prompt = (
             f"{agent_type.system_prompt}\n\n"
+            f"{current_datetime_block()}\n\n"
             "No tools are available in this session. Reason directly from "
             "the goal text and any provided context, then return the JSON.\n"
         )

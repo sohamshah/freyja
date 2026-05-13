@@ -85,13 +85,16 @@ def _build_sub_agent_system_prompt(
     Mirrors what the parent bridge does in `_BridgeSession.initialize` so
     the sub-agent knows what it can call.
     """
+    from bridge.tools.coordination import current_datetime_block
+
     tool_lines = "\n".join(
         f"- `{name}` — {tool.definition.summary}"
         for name, tool in sorted(child_registry._tools.items())  # noqa: SLF001
     )
     return (
         f"{SUB_AGENT_IDENTITY_HEADER}\n"
-        f"{project_output_guidance(parent_session_id, parent_workspace)}\n"
+        f"\n{current_datetime_block()}\n"
+        f"\n{project_output_guidance(parent_session_id, parent_workspace)}\n"
         f"Available tools:\n{tool_lines}\n"
     )
 
@@ -524,13 +527,15 @@ Parameters:
         # Build system prompt: use agent type's specialized prompt if provided,
         # otherwise fall back to default sub-agent prompt with tool list.
         if agent_type.system_prompt:
+            from bridge.tools.coordination import current_datetime_block
             tool_lines = "\n".join(
                 f"- `{name}` — {tool.definition.summary}"
                 for name, tool in sorted(child_registry._tools.items())  # noqa: SLF001
             )
             system_prompt = (
                 f"{agent_type.system_prompt}\n"
-                f"{project_output_guidance(self._spec.parent_session_id, self._spec.parent_workspace)}\n"
+                f"\n{current_datetime_block()}\n"
+                f"\n{project_output_guidance(self._spec.parent_session_id, self._spec.parent_workspace)}\n"
                 f"Available tools:\n{tool_lines}\n"
             )
             system_prompt += self._coordination_guidance(record)
@@ -747,6 +752,96 @@ Parameters:
             except Exception:
                 pass
 
+        # Subagent tool isolation (Gap J). Two tools the child registry
+        # inherited from the parent are stateful in ways that DON'T
+        # transfer correctly:
+        #
+        #   * SummarizeContextTool closes over the parent's session /
+        #     provider / runner / pressure-pct getter. If the subagent
+        #     called it, it would compact the parent's transcript, not
+        #     its own.
+        #   * SessionMemoryTool captured the parent's session_id in its
+        #     constructor → writes go to the parent's memory.md file.
+        #
+        # We rebuild both per-subagent here, scoped to the child
+        # session/runner. The runner doesn't exist yet at this point,
+        # so SummarizeContextTool uses a small holder dict that gets
+        # populated below.
+        from bridge.tools.session_memory_tool import SessionMemoryTool
+        from bridge.tools.summarize_context_tool import SummarizeContextTool
+
+        sub_runner_holder: dict[str, Any] = {"runner": None}
+
+        def _sub_summarize_pressure_pct() -> float | None:
+            r = sub_runner_holder.get("runner")
+            if r is None:
+                return None
+            try:
+                provider_local = r.provider
+                config_local = r.config
+                usage = r.usage
+                window = int(getattr(provider_local, "context_window", 0) or 0)
+                if window <= 0:
+                    return None
+                reserved = int(getattr(config_local, "max_tokens_per_turn", 0) or 0)
+                effective = max(1, window - reserved)
+                used = int(usage.effective_context_tokens())
+                return (used / effective) * 100
+            except Exception:
+                return None
+
+        def _on_sub_summarize_call(payload: dict[str, Any]) -> None:
+            try:
+                from bridge.compaction_telemetry import append_telemetry
+                append_telemetry({
+                    "type": "summarize_context_call",
+                    "session_id": sub_id_local,
+                    "turn_id": f"{sub_id_local}-t{turn_counter['n']}",
+                    "agent_type": agent_type_name,
+                    "parent_session_id": parent_session_id_local,
+                    "scope": payload.get("scope"),
+                    "level_requested": payload.get("level_requested"),
+                    "level_used": payload.get("level_used"),
+                    "preserve_facts_count": int(payload.get("preserve_facts_count", 0) or 0),
+                    "preserve_facts_missing": payload.get("preserve_facts_missing") or [],
+                    "pinned_ordinals": payload.get("pinned_ordinals") or [],
+                    "reason": payload.get("reason"),
+                    "pressure_pct_at_call": payload.get("pressure_pct_at_call"),
+                    "tokens_before": int(payload.get("tokens_before", 0) or 0),
+                    "tokens_after": int(payload.get("tokens_after", 0) or 0),
+                    "resumed_from_previous": bool(payload.get("resumed_from_previous", False)),
+                    "entries_removed": int(payload.get("entries_removed", 0) or 0),
+                    "success": bool(payload.get("success", False)),
+                    "error": payload.get("error"),
+                    "elapsed_ms": int(payload.get("elapsed_ms", 0) or 0),
+                    "model": child_model,
+                })
+            except Exception:
+                pass
+
+        sub_summarize_tool = SummarizeContextTool(
+            get_session=lambda: session,
+            get_provider=lambda: provider,
+            get_compactor=lambda: (
+                sub_runner_holder["runner"].compaction
+                if sub_runner_holder.get("runner") is not None
+                else None
+            ),
+            on_summarize_call=_on_sub_summarize_call,
+            get_current_pressure_pct=_sub_summarize_pressure_pct,
+        )
+
+        # Register the subagent-scoped instances IN PLACE so existing
+        # references to child_registry (and the system_prompt that
+        # already listed the tools by name) stay valid. Mutating the
+        # private map keeps the registration order from registry build.
+        if "summarize_context" in child_registry._tools:  # noqa: SLF001
+            child_registry._tools["summarize_context"] = sub_summarize_tool  # noqa: SLF001
+        if "session_memory" in child_registry._tools:  # noqa: SLF001
+            child_registry._tools["session_memory"] = SessionMemoryTool(
+                session_id=record.id,
+            )  # noqa: SLF001
+
         runner = AsyncAgentRunner(
             provider=provider,
             compaction_strategy=SummaryCompaction(),
@@ -757,6 +852,7 @@ Parameters:
             on_tool_metric=_on_sub_tool_metric,
             thinking=child_thinking,
         )
+        sub_runner_holder["runner"] = runner
 
         # Register the asyncio cancel token on the record so the
         # bridge's force-cancel path can wake us directly, and also
