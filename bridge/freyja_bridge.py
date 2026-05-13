@@ -2220,7 +2220,7 @@ class _BridgeSession:
             # that's empty after restart.
             self._emit_goal_event(
                 "goal_status",
-                f"Goal rehydrated: {self.goal_state.turns_used}/{self.goal_state.max_turns} turns",
+                f"Goal rehydrated (turn {self.goal_state.turns_used})",
                 details={"reason": "restored_from_disk"},
                 chat_visible=False,
             )
@@ -3148,7 +3148,11 @@ class _BridgeSession:
         clean_goal = goal.strip()
         if not clean_goal:
             return
-        budget = max(1, min(int(max_turns or 20), 100))
+        # max_turns is no longer enforced; the loop runs until the judge
+        # marks the goal done or the operator pauses it. The value is
+        # still threaded through so the data model stays the same shape
+        # for persistence + renderer code.
+        budget = max(1, int(max_turns or 20))
         self.goal_state = GoalState(goal=clean_goal, max_turns=budget)
         # New goal — reset verdict history so the new loop doesn't inherit
         # the old goal's trajectory. Brief stays (it's the operator's
@@ -3156,7 +3160,7 @@ class _BridgeSession:
         self.goal_verdict_history = []
         self._emit_goal_event(
             "goal_set",
-            f"Goal loop armed ({budget} turn budget)",
+            "Goal loop armed",
             details={"source": source},
             chat_visible=True,
         )
@@ -3570,134 +3574,6 @@ class _BridgeSession:
             chat_visible=True,
         )
 
-    def _build_subagent_stream_forwarders(
-        self,
-        child_session_id: str,
-        *,
-        agent_type_name: str = "",
-        child_model: str = "",
-    ) -> tuple[Any, Any, Any]:
-        """Return (on_stream, on_system_event, on_llm_call) callbacks that
-        forward the child runner's stream events out as bridge events
-        tagged with the child's session id.
-
-        Note: turn_start / turn_complete are NOT runner stream events —
-        they're framing events the bridge emits around each runner.run
-        call (mirrors what _BridgeSession.handle_user_message does for
-        the main session at line ~4234). The caller is responsible for
-        emitting them; this helper only forwards stream content.
-        """
-
-        # Track tool ids so tool_input_delta can be tagged with the
-        # currently-streaming tool, the same way sub_agent_tool does.
-        current_tool_id: dict[str, str] = {"id": ""}
-
-        async def on_stream(event: Any) -> None:
-            etype = getattr(event, "type", None)
-            if etype == "text_delta":
-                emit({
-                    "type": "text_delta",
-                    "sessionId": child_session_id,
-                    "text": getattr(event, "text", ""),
-                })
-            elif etype == "thinking_delta":
-                emit({
-                    "type": "thinking_delta",
-                    "sessionId": child_session_id,
-                    "thinking": getattr(event, "thinking", ""),
-                })
-            elif etype == "tool_use_start":
-                tid = getattr(event, "id", "")
-                current_tool_id["id"] = tid
-                emit({
-                    "type": "tool_use_start",
-                    "sessionId": child_session_id,
-                    "id": tid,
-                    "name": getattr(event, "name", ""),
-                })
-            elif etype == "tool_input_delta":
-                emit({
-                    "type": "tool_input_delta",
-                    "sessionId": child_session_id,
-                    "id": current_tool_id["id"],
-                    "partialJson": getattr(event, "partial_json", ""),
-                })
-
-        async def on_system_event(event: Any) -> None:
-            emit({
-                "type": "system_event",
-                "sessionId": child_session_id,
-                "subtype": getattr(event, "type", "unknown"),
-                "message": getattr(event, "message", ""),
-                "details": getattr(event, "details", {}) or {},
-            })
-
-        # Spend telemetry + live usage events for the child's activity
-        # panel. Without the `usage` emit, the renderer's slice.usage stays
-        # at zero — tokens, $$, and context-bar all read 0 in the right
-        # rail. Mirror what _BridgeSession does after each turn for the
-        # main session: emit a cumulative `usage` event tagged with the
-        # child sessionId.
-        parent_id = self.id
-        cum = {"in": 0, "out": 0, "cr": 0, "cw": 0, "cost": 0.0, "last_in": 0}
-
-        def on_llm_call(payload: dict[str, Any]) -> None:
-            try:
-                from bridge.compaction_telemetry import append_telemetry
-                from engine.providers import compute_cost
-
-                if payload.get("error"):
-                    return
-                model = payload.get("model") or child_model
-                in_tok = int(payload.get("input_tokens", 0) or 0)
-                out_tok = int(payload.get("output_tokens", 0) or 0)
-                cr_tok = int(payload.get("cache_read_tokens", 0) or 0)
-                cw_tok = int(payload.get("cache_write_tokens", 0) or 0)
-                cost = compute_cost(
-                    model,
-                    input_tokens=in_tok,
-                    output_tokens=out_tok,
-                    cache_read_tokens=cr_tok,
-                    cache_write_tokens=cw_tok,
-                )
-                # Telemetry row (lands in the metrics dashboard later).
-                append_telemetry({
-                    "type": "llm_call_metric",
-                    "session_id": child_session_id,
-                    "turn_id": f"{child_session_id}-t1",
-                    "agent_type": agent_type_name,
-                    "parent_session_id": parent_id,
-                    "model": model,
-                    "input_tokens": in_tok,
-                    "output_tokens": out_tok,
-                    "cache_read_tokens": cr_tok,
-                    "cache_write_tokens": cw_tok,
-                    "cost_usd": float(cost) if cost is not None else None,
-                    "duration_ms": int(payload.get("duration_ms", 0) or 0),
-                })
-                # Accumulate + emit a `usage` event so the child session's
-                # activity panel (right rail) updates live during the run.
-                cum["in"] += in_tok
-                cum["out"] += out_tok
-                cum["cr"] += cr_tok
-                cum["cw"] += cw_tok
-                cum["cost"] += float(cost or 0.0)
-                cum["last_in"] = in_tok
-                emit({
-                    "type": "usage",
-                    "sessionId": child_session_id,
-                    "contextTokens": in_tok,
-                    "inputTokens": cum["in"],
-                    "outputTokens": cum["out"],
-                    "cacheReadTokens": cum["cr"],
-                    "cacheWriteTokens": cum["cw"],
-                    "cost": cum["cost"],
-                })
-            except Exception:
-                pass
-
-        return on_stream, on_system_event, on_llm_call
-
     async def _judge_goal(self, latest_response: str) -> Any:
         from bridge.tools.base import ToolRegistry
         from bridge.tools.goal_loop import (
@@ -3869,241 +3745,70 @@ class _BridgeSession:
         return parse_goal_verdict(structured.raw_text or "")
 
     async def _run_deep_judge_subagent(self, prompt: str) -> Any:
-        """Spawn the `judge-deep` AgentType as a real child session with
-        thinking on and the read-only tool surface enabled.
+        """Spawn the judge-deep AgentType as a first-class sub-agent.
 
-        Emits session_spawned + session_completed events so the renderer
-        renders the judge as a first-class child session (you can drill in
-        and see its tool calls + transcript). Also emits the same
-        profile_invocation telemetry rows that sub_agent_tool emits, so
-        the metrics dashboard can attribute judge work to the profile."""
-        from bridge.tools.base import ToolRegistry
-        from bridge.tools.agent_types import (
-            get_agent_type,
-            resolve_model_choice,
-        )
-        from bridge.tools.goal_loop import GoalVerdict, parse_goal_verdict
-        from engine.runner import AsyncAgentRunner, StopCondition
-        from engine.session import Session
+        Thin wrapper around SubAgentTool.spawn_programmatically — the
+        full machinery (session_spawned + systemPrompt event, registry
+        wrapping, inbox auto-drain, force-cancel + compliance iteration,
+        re-wake via talk(), profile telemetry, session_completed) is
+        shared with every other sub-agent path. Operator overrides on
+        JudgeRules drive the tool surface + iteration cap.
+        """
+        from bridge.tools.goal_loop import parse_goal_verdict
 
-        agent_type = get_agent_type("judge-deep", self.workspace)
-        model_resolution = resolve_model_choice(agent_type, self.model_id)
-        if not model_resolution.available:
-            raise RuntimeError(
-                "no available model for judge-deep profile: "
-                + "; ".join(
-                    f"{m}: {r}" for m, r in model_resolution.unavailable
-                )
-            )
-        judge_model = model_resolution.model
+        sub_tool = self.tool_registry._tools.get("sub_agent")  # noqa: SLF001
+        if sub_tool is None:
+            raise RuntimeError("sub_agent tool not registered on parent")
 
-        # Tool surface: brief override wins, otherwise profile default. The
-        # operator may have narrowed the deep judge's allowlist further (e.g.
-        # disabled bash entirely) — respect that.
+        # Tool surface: brief override wins, otherwise profile default.
+        tool_filter: frozenset[str] | None = None
+        max_iter_override: int | None = None
         if self.judge_rules is not None:
-            allowed_tools = frozenset(self.judge_rules.effective_tools())
-        else:
-            allowed_tools = frozenset(agent_type.tool_include or ())
-        # Always intersect with what the parent actually has registered, and
-        # always strip recursion escapes.
-        from bridge.tools.sub_agent_tool import DEFAULT_EXCLUDED_TOOLS
-        parent_tools = self.tool_registry._tools  # noqa: SLF001
-        allowed_tools = (allowed_tools & frozenset(parent_tools.keys())) - DEFAULT_EXCLUDED_TOOLS
+            tool_filter = frozenset(self.judge_rules.effective_tools())
+            max_iter_override = self.judge_rules.judge_max_iterations
 
-        child_registry = ToolRegistry()
-        for name in sorted(allowed_tools):
-            tool = parent_tools.get(name)
-            if tool is not None:
-                child_registry.register(tool)
-
-        # Generate a stable session id and emit session_spawned BEFORE building
-        # the runner — so any tool_result events that fire mid-run have a
-        # session row to land in.
-        judge_session_id = f"{self.id}-goal-judge-{int(time.time() * 1000):x}"
-        max_iter = (
-            self.judge_rules.judge_max_iterations
-            if self.judge_rules
-            else agent_type.max_iterations
+        record, response_text, error = await sub_tool.spawn_programmatically(
+            agent_type_name="judge-deep",
+            label="Goal judge (deep)",
+            task=prompt,
+            tool_filter=tool_filter,
+            max_iterations_override=max_iter_override,
         )
-        max_iter = max(1, min(max_iter, 10))
-
-        # Build a system prompt with the tool list inlined, mirroring what
-        # sub_agent_tool does, so the judge sees what it can actually use.
-        from bridge.tools.coordination import current_datetime_block
-        tool_lines = "\n".join(
-            f"- `{name}` — {tool.definition.summary}"
-            for name, tool in sorted(child_registry._tools.items())  # noqa: SLF001
-        )
-        system_prompt = (
-            f"{agent_type.system_prompt}\n\n"
-            f"{current_datetime_block()}\n\n"
-            f"Available tools:\n{tool_lines}\n"
-        )
-
-        # Wrap the registry so tool_call/tool_result events get tagged with
-        # the judge session id, not the main session id. This is the same
-        # closure sub_agent_tool uses for its children.
-        wrap = getattr(self, "_wrap_child_registry", None)
-        if wrap is not None:
-            child_registry = wrap(child_registry, judge_session_id)
-
-        # Emit session_spawned WITH the system prompt + user task inline
-        # so the renderer can seed the child slice with everything visible
-        # the moment you click into the session — no events left to wait
-        # on. Without this, drilling into a judge session shows the empty
-        # HeroWelcome until tool_use_start lands.
-        emit(
-            {
-                "type": "session_spawned",
-                "sessionId": judge_session_id,
-                "parentSessionId": self.id,
-                "title": "Goal judge (deep)",
-                "model": judge_model,
-                "reasoningLevel": agent_type.thinking_effort,
-                "modelPolicy": model_resolution.policy,
-                "modelCandidates": list(model_resolution.candidates),
-                "modelFallbackUsed": model_resolution.fallback_used,
-                "task": prompt,
-                "systemPrompt": system_prompt,
-                "mode": "foreground",
-                "agentType": agent_type.name,
-                "coordinationStrategy": self.coordination_strategy,
-                "kanbanTaskId": None,
-                "taskId": None,
-                "workspace": self.workspace,
-                "createdAt": int(time.time() * 1000),
-            }
-        )
-
-        try:
-            from bridge.compaction_telemetry import append_telemetry
-
-            append_telemetry({
-                "type": "profile_invocation",
-                "session_id": judge_session_id,
-                "parent_session_id": self.id,
-                "agent_type": agent_type.name,
-                "model": judge_model,
-                "max_iterations": max_iter,
-                "task_preview": "goal-judge adjudication",
-            })
-        except Exception:
-            pass
-
-        judge_session = Session.create(
-            system_prompt=system_prompt,
-            tools=list(child_registry._tools.values()),  # noqa: SLF001
-            session_id=judge_session_id,
-            metadata={
-                "model_id": judge_model,
-                "reasoning_level": agent_type.thinking_effort,
-                "parent_session_id": self.id,
-                "project_session_id": self.id,
-                "subagent_id": judge_session_id,
-            },
-        )
-        judge_provider = build_provider(
-            judge_model, thinking_level=agent_type.thinking_effort
-        )
-        on_stream, on_system_event, on_llm_call = self._build_subagent_stream_forwarders(
-            judge_session_id,
-            agent_type_name=agent_type.name,
-            child_model=judge_model,
-        )
-        judge_runner = AsyncAgentRunner(
-            provider=judge_provider,
-            compaction_strategy=SummaryCompaction(),
-            tool_registry=child_registry,
-            on_stream=on_stream,
-            on_system_event=on_system_event,
-            on_llm_call=on_llm_call,
-            thinking=_thinking_config_for_model(
-                judge_model, agent_type.thinking_effort
-            ),
-        )
-
-        # turn_start frames the assistant message slot in the renderer's
-        # slice — without it text_delta events get dropped. turn_complete
-        # in the finally block flips isStreaming off.
-        turn_id = f"{judge_session_id}-t1"
-        emit({"type": "turn_start", "sessionId": judge_session_id, "turnId": turn_id})
-
-        spawned_at = time.time()
-        outcome = "success"
-        verdict: Any = None
-        try:
-            result = await judge_runner.run(
-                judge_session,
-                prompt,
-                stream=True,
-                stop_condition=StopCondition(max_iterations=max_iter),
-            )
-            verdict = parse_goal_verdict(result.response or "")
-            verdict.judge_session_id = judge_session_id
-            return verdict
-        except Exception:
-            outcome = "error"
-            raise
-        finally:
-            duration_s = time.time() - spawned_at
-            emit({
-                "type": "turn_complete",
-                "sessionId": judge_session_id,
-                "turnId": turn_id,
-                "success": outcome == "success",
-            })
-            emit(
-                {
-                    "type": "session_completed",
-                    "sessionId": judge_session_id,
-                    "parentSessionId": self.id,
-                    "outcome": outcome,
-                    "completedAt": int(time.time() * 1000),
-                }
-            )
-            try:
-                from bridge.compaction_telemetry import append_telemetry
-
-                append_telemetry({
-                    "type": "profile_completion",
-                    "session_id": judge_session_id,
-                    "parent_session_id": self.id,
-                    "agent_type": agent_type.name,
-                    "model": judge_model,
-                    "outcome": outcome,
-                    "duration_s": round(duration_s, 3),
-                })
-            except Exception:
-                pass
+        if error is not None:
+            raise error
+        verdict = parse_goal_verdict(response_text or "")
+        verdict.judge_session_id = record.id
+        return verdict
 
     async def _run_judge_calibrator(self, *, reason: str = "goal_set") -> None:
-        """Spawn the judge-calibrator subagent and apply its proposal to
-        JudgeRules when the operator hasn't pre-authored rules.
+        """Spawn the judge-calibrator AgentType as a first-class sub-agent.
 
-        Fires in parallel from `_set_goal` (auto-calibration) or via the
-        `recalibrate_judge` action handler (operator-initiated).
-
-        Mirrors the _run_deep_judge_subagent envelope: emit session_spawned
-        + session_completed for first-class child-session treatment in the
-        renderer, plus profile_invocation / profile_completion telemetry."""
-        from bridge.tools.base import ToolRegistry
-        from bridge.tools.agent_types import (
-            get_agent_type,
-            resolve_model_choice,
-        )
+        Same thin-wrapper pattern as _run_deep_judge_subagent — delegates
+        all the runner / event / telemetry / inbox-drain plumbing to
+        SubAgentTool.spawn_programmatically and focuses here on the
+        goal-mode specifics (parse response, apply rules vs. propose,
+        emit goal_calibration_* events).
+        """
         from bridge.tools.goal_loop import (
             JUDGE_CALIBRATOR_USER_TEMPLATE,
             parse_calibrator_response,
             rules_has_content,
         )
-        from engine.runner import AsyncAgentRunner, StopCondition
-        from engine.session import Session
 
         if self.goal_state is None:
             return
 
-        force = reason == "recalibrate"
+        sub_tool = self.tool_registry._tools.get("sub_agent")  # noqa: SLF001
+        if sub_tool is None:
+            self._emit_goal_event(
+                "goal_calibration_failed",
+                "Calibrator unavailable: sub_agent tool not registered",
+                details={"reason": reason, "stage": "wiring"},
+                chat_visible=False,
+            )
+            return
 
+        force = reason == "recalibrate"
         existing_rules_dict = (
             self.judge_rules.to_dict() if self.judge_rules is not None else None
         )
@@ -4116,253 +3821,96 @@ class _BridgeSession:
         # proposal so they can review + accept manually.
         will_apply_default = not operator_authored or force
 
-        agent_type = get_agent_type("judge-calibrator", self.workspace)
-        try:
-            model_resolution = resolve_model_choice(agent_type, self.model_id)
-        except Exception as exc:  # noqa: BLE001
-            self._emit_goal_event(
-                "goal_calibration_failed",
-                f"Calibrator unavailable: {exc}",
-                details={"reason": reason, "stage": "model_resolution"},
-                chat_visible=False,
-            )
-            return
-        if not model_resolution.available:
-            reasons = "; ".join(
-                f"{m}: {r}" for m, r in model_resolution.unavailable
-            )
-            self._emit_goal_event(
-                "goal_calibration_failed",
-                f"Calibrator unavailable: no model ({reasons})",
-                details={"reason": reason, "stage": "model_resolution"},
-                chat_visible=False,
-            )
-            return
-        cal_model = model_resolution.model
-
-        cal_session_id = f"{self.id}-judge-cal-{int(time.time() * 1000):x}"
         prompt = JUDGE_CALIBRATOR_USER_TEMPLATE.format(
             goal=self.goal_state.goal,
             context_block=self._build_calibrator_context_block(),
         )
 
-        # Announce the calibration start before any heavy work, so the UI
-        # can show its "calibrating…" affordance immediately.
+        # Announce calibration start so the UI shows "calibrating…"
+        # immediately while the sub-agent spins up.
         self._emit_goal_event(
             "goal_calibration_started",
             "Calibrating judge for this goal",
             details={
                 "reason": reason,
-                "model": cal_model,
-                "calibratorSessionId": cal_session_id,
                 "willApplyAutomatically": will_apply_default,
                 "operatorAuthored": operator_authored,
             },
             chat_visible=True,
         )
 
-        # Build the system prompt + child registry FIRST so we can include
-        # both on session_spawned — that way drilling into the calibrator
-        # session immediately shows the operator what the calibrator is
-        # being asked to do, without waiting for events.
-        from bridge.tools.coordination import current_datetime_block
-        system_prompt = (
-            f"{agent_type.system_prompt}\n\n"
-            f"{current_datetime_block()}\n\n"
-            "No tools are available in this session. Reason directly from "
-            "the goal text and any provided context, then return the JSON.\n"
-        )
-        child_registry = ToolRegistry()
-        wrap = getattr(self, "_wrap_child_registry", None)
-        if wrap is not None:
-            child_registry = wrap(child_registry, cal_session_id)
-
-        emit(
-            {
-                "type": "session_spawned",
-                "sessionId": cal_session_id,
-                "parentSessionId": self.id,
-                "title": "Judge calibrator",
-                "model": cal_model,
-                "reasoningLevel": agent_type.thinking_effort,
-                "modelPolicy": model_resolution.policy,
-                "modelCandidates": list(model_resolution.candidates),
-                "modelFallbackUsed": model_resolution.fallback_used,
-                "task": prompt,
-                "systemPrompt": system_prompt,
-                "mode": "foreground",
-                "agentType": agent_type.name,
-                "coordinationStrategy": self.coordination_strategy,
-                "kanbanTaskId": None,
-                "taskId": None,
-                "workspace": self.workspace,
-                "createdAt": int(time.time() * 1000),
-            }
+        record, response_text, error = await sub_tool.spawn_programmatically(
+            agent_type_name="judge-calibrator",
+            label="Judge calibrator",
+            task=prompt,
         )
 
-        try:
-            from bridge.compaction_telemetry import append_telemetry
-
-            append_telemetry({
-                "type": "profile_invocation",
-                "session_id": cal_session_id,
-                "parent_session_id": self.id,
-                "agent_type": agent_type.name,
-                "model": cal_model,
-                "max_iterations": agent_type.max_iterations,
-                "task_preview": "judge calibration",
-            })
-        except Exception:
-            pass
-
-        cal_session = Session.create(
-            system_prompt=system_prompt,
-            tools=[],
-            session_id=cal_session_id,
-            metadata={
-                "model_id": cal_model,
-                "reasoning_level": agent_type.thinking_effort,
-                "parent_session_id": self.id,
-                "project_session_id": self.id,
-                "subagent_id": cal_session_id,
-            },
-        )
-        cal_provider = build_provider(
-            cal_model, thinking_level=agent_type.thinking_effort
-        )
-        on_stream, on_system_event, on_llm_call = self._build_subagent_stream_forwarders(
-            cal_session_id,
-            agent_type_name=agent_type.name,
-            child_model=cal_model,
-        )
-        cal_runner = AsyncAgentRunner(
-            provider=cal_provider,
-            compaction_strategy=SummaryCompaction(),
-            tool_registry=child_registry,
-            on_stream=on_stream,
-            on_system_event=on_system_event,
-            on_llm_call=on_llm_call,
-            thinking=_thinking_config_for_model(cal_model, agent_type.thinking_effort),
-        )
-
-        # turn_start frames the assistant message slot in the renderer's
-        # slice — without it text_delta events get dropped. turn_complete
-        # in the finally block flips isStreaming off.
-        turn_id = f"{cal_session_id}-t1"
-        emit({"type": "turn_start", "sessionId": cal_session_id, "turnId": turn_id})
-
-        spawned_at = time.time()
-        outcome = "success"
-        try:
-            try:
-                result = await cal_runner.run(
-                    cal_session,
-                    prompt,
-                    stream=True,
-                    stop_condition=StopCondition(max_iterations=agent_type.max_iterations),
-                )
-            except Exception as exc:  # noqa: BLE001
-                outcome = "error"
-                log("warning", f"judge calibrator runner crashed: {exc}")
-                self._emit_goal_event(
-                    "goal_calibration_failed",
-                    f"Calibrator crashed ({type(exc).__name__})",
-                    details={
-                        "reason": reason,
-                        "calibratorSessionId": cal_session_id,
-                        "stage": "runner",
-                        "error": str(exc),
-                    },
-                    chat_visible=False,
-                )
-                return
-
-            proposed_rules, meta = parse_calibrator_response(
-                result.response or "",
-                session_id=cal_session_id,
-                model=cal_model,
-            )
-            if proposed_rules is None or meta is None:
-                outcome = "error"
-                log(
-                    "warning",
-                    "judge calibrator returned unparseable response; leaving rules untouched",
-                )
-                self._emit_goal_event(
-                    "goal_calibration_failed",
-                    "Calibrator returned an unparseable response",
-                    details={
-                        "reason": reason,
-                        "calibratorSessionId": cal_session_id,
-                        "stage": "parse",
-                        "rawPreview": (result.response or "")[:240],
-                    },
-                    chat_visible=False,
-                )
-                return
-
-            applied = will_apply_default
-            if applied:
-                self.judge_rules = proposed_rules
-                applied_msg = (
-                    "Judge auto-calibrated · "
-                    f"{proposed_rules.judge_profile} · rigor "
-                    f"{proposed_rules.rigor_score} · {len(proposed_rules.criteria)} criteria"
-                )
-            else:
-                # Operator already authored rules; keep theirs but stash
-                # the proposal as a suggestion the editor can surface for
-                # review. We persist via a dedicated field on the goal
-                # state so it doesn't masquerade as the active rules.
-                self.judge_rules_proposal = proposed_rules
-                applied_msg = (
-                    "Judge calibration ready for review · "
-                    f"{proposed_rules.judge_profile} · rigor {proposed_rules.rigor_score}"
-                )
-
+        if error is not None:
             self._emit_goal_event(
-                "goal_calibration_complete",
-                applied_msg,
+                "goal_calibration_failed",
+                f"Calibrator crashed ({type(error).__name__})",
                 details={
                     "reason": reason,
-                    "calibratorSessionId": cal_session_id,
-                    "applied": applied,
-                    "proposal": proposed_rules.to_dict(),
-                    "calibratorMeta": meta.to_dict(),
+                    "calibratorSessionId": record.id,
+                    "stage": "runner",
+                    "error": str(error),
                 },
-                chat_visible=True,
+                chat_visible=False,
             )
-        finally:
-            duration_s = time.time() - spawned_at
-            emit({
-                "type": "turn_complete",
-                "sessionId": cal_session_id,
-                "turnId": turn_id,
-                "success": outcome == "success",
-            })
-            emit(
-                {
-                    "type": "session_completed",
-                    "sessionId": cal_session_id,
-                    "parentSessionId": self.id,
-                    "outcome": outcome,
-                    "completedAt": int(time.time() * 1000),
-                }
-            )
-            try:
-                from bridge.compaction_telemetry import append_telemetry
+            return
 
-                append_telemetry({
-                    "type": "profile_completion",
-                    "session_id": cal_session_id,
-                    "parent_session_id": self.id,
-                    "agent_type": agent_type.name,
-                    "model": cal_model,
-                    "outcome": outcome,
-                    "duration_s": round(duration_s, 3),
-                })
-            except Exception:
-                pass
+        proposed_rules, meta = parse_calibrator_response(
+            response_text or "",
+            session_id=record.id,
+            model=getattr(record, "child_model", ""),
+        )
+        if proposed_rules is None or meta is None:
+            log(
+                "warning",
+                "judge calibrator returned unparseable response; leaving rules untouched",
+            )
+            self._emit_goal_event(
+                "goal_calibration_failed",
+                "Calibrator returned an unparseable response",
+                details={
+                    "reason": reason,
+                    "calibratorSessionId": record.id,
+                    "stage": "parse",
+                    "rawPreview": (response_text or "")[:240],
+                },
+                chat_visible=False,
+            )
+            return
+
+        applied = will_apply_default
+        if applied:
+            self.judge_rules = proposed_rules
+            applied_msg = (
+                "Judge auto-calibrated · "
+                f"{proposed_rules.judge_profile} · rigor "
+                f"{proposed_rules.rigor_score} · {len(proposed_rules.criteria)} criteria"
+            )
+        else:
+            # Operator already authored rules; keep theirs but stash the
+            # proposal for review.
+            self.judge_rules_proposal = proposed_rules
+            applied_msg = (
+                "Judge calibration ready for review · "
+                f"{proposed_rules.judge_profile} · rigor {proposed_rules.rigor_score}"
+            )
+
+        self._emit_goal_event(
+            "goal_calibration_complete",
+            applied_msg,
+            details={
+                "reason": reason,
+                "calibratorSessionId": record.id,
+                "applied": applied,
+                "proposal": proposed_rules.to_dict(),
+                "calibratorMeta": meta.to_dict(),
+            },
+            chat_visible=True,
+        )
 
     def _build_calibrator_context_block(self) -> str:
         """Pull the most recent operator messages from the parent session
@@ -4441,22 +3989,16 @@ class _BridgeSession:
             )
             return
 
-        if goal.turns_used >= goal.max_turns:
-            goal.status = "paused"
-            goal.pause_reason = "turn budget exhausted"
-            goal.updated_at = time.time()
-            self._emit_goal_event(
-                "goal_paused",
-                f"Goal paused after {goal.turns_used}/{goal.max_turns} turns",
-                details={"reason": goal.pause_reason},
-                chat_visible=True,
-            )
-            return
+        # No turn budget — the loop continues until the judge marks the
+        # goal done, the operator pauses it, or the runner hits an error.
+        # The previous `turns_used >= max_turns` pause was removed per
+        # operator request; `max_turns` is kept as a data field so saved
+        # sidecars and renderer code don't break, but it is not enforced.
 
         continuation = goal.continuation_prompt()
         self._emit_goal_event(
             "goal_continue",
-            f"Continuing goal loop ({goal.turns_used}/{goal.max_turns})",
+            f"Continuing goal loop (turn {goal.turns_used})",
             details={"continuationPrompt": continuation},
         )
         await self.run_turn(continuation, None, is_goal_continuation=True)
@@ -6108,7 +5650,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             goal = sess.goal_state
             sess._emit_goal_event(
                 "goal_status",
-                f"Goal {goal.status}: {goal.turns_used}/{goal.max_turns} turns",
+                f"Goal {goal.status} (turn {goal.turns_used})",
                 chat_visible=True,
             )
         return

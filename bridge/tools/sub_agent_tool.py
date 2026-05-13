@@ -526,6 +526,169 @@ Parameters:
             logger.debug("failed to prepare task assignment", exc_info=True)
             return task_id
 
+    async def spawn_programmatically(
+        self,
+        *,
+        agent_type_name: str,
+        label: str,
+        task: str,
+        title: str | None = None,
+        tool_filter: frozenset[str] | None = None,
+        max_iterations_override: int | None = None,
+        mode: str = "foreground",
+    ) -> tuple[SubAgentRecord, str | None, Exception | None]:
+        """Spawn a sub-agent from internal bridge code (not via a model
+        tool call). Same machinery as `execute()` — same record, same
+        runner, same telemetry, same inbox + cancel + force support —
+        but returns raw response text rather than a ToolResult, and
+        accepts dynamic per-call overrides for the tool surface and
+        max_iterations cap.
+
+        Used by `_judge_goal` / `_set_goal` to spawn judge-deep and
+        judge-calibrator profiles. Replaces the previous ~200-line
+        bespoke spawners that bypassed SubAgentTool entirely and
+        therefore couldn't participate in the talk system.
+
+        Returns (record, response_text, error_or_None). One of
+        (response_text, error) is set; the record is always populated
+        so the caller can read tokens/iterations regardless.
+        """
+        from bridge.compaction_telemetry import append_telemetry
+
+        # ---- model resolution ----
+        agent_type = get_agent_type(agent_type_name, self._spec.parent_workspace)
+        try:
+            model_resolution = resolve_model_choice(agent_type, self._spec.parent_model)
+        except Exception as exc:  # noqa: BLE001
+            return (
+                self._spec.registry.register(
+                    id=f"sub_failed_{int(time.time()*1000):x}",
+                    label=label,
+                    task=task,
+                    mode=mode,
+                ),
+                None,
+                exc,
+            )
+        if not model_resolution.available:
+            reasons = "; ".join(
+                f"{m}: {r}" for m, r in model_resolution.unavailable
+            )
+            return (
+                self._spec.registry.register(
+                    id=f"sub_unavail_{int(time.time()*1000):x}",
+                    label=label,
+                    task=task,
+                    mode=mode,
+                ),
+                None,
+                RuntimeError(
+                    f"No available model for `{agent_type.name}`: {reasons}"
+                ),
+            )
+        child_model = model_resolution.model
+
+        # ---- concurrency cap ----
+        running = sum(1 for r in self._spec.registry.list_all() if r.is_running)
+        if running >= MAX_ACTIVE_SUBAGENTS:
+            return (
+                self._spec.registry.register(
+                    id=f"sub_full_{int(time.time()*1000):x}",
+                    label=label,
+                    task=task,
+                    mode=mode,
+                ),
+                None,
+                RuntimeError(
+                    f"Too many active sub-agents ({running}/{MAX_ACTIVE_SUBAGENTS})"
+                ),
+            )
+
+        # ---- register record + attach metadata ----
+        self._counter += 1
+        sub_id = f"sub_{int(time.time() * 1000):x}_{self._counter}"
+        record = self._spec.registry.register(
+            id=sub_id, label=label, task=task, mode=mode
+        )
+        record.agent_type_name = agent_type.name
+        record.agent_type = agent_type  # type: ignore[attr-defined]
+        record.child_model = child_model  # type: ignore[attr-defined]
+        record.model_resolution = model_resolution  # type: ignore[attr-defined]
+        record.coordination_strategy = self._spec.coordination_strategy  # type: ignore[attr-defined]
+        record.parent_session_id = self._spec.parent_session_id or ""
+        record.spawned_at_ts = time.time()  # type: ignore[attr-defined]
+
+        # Per-call overrides — _run_child reads these.
+        if tool_filter is not None:
+            record.tool_filter_override = tool_filter  # type: ignore[attr-defined]
+        if max_iterations_override is not None:
+            record.max_iterations_override = max_iterations_override  # type: ignore[attr-defined]
+
+        # Inbox so this spawn participates in the talk system on day 1.
+        try:
+            from bridge.inbox import SessionInbox
+            record.inbox = SessionInbox(session_id=sub_id)
+        except Exception:
+            record.inbox = None
+
+        # ---- spawn / session_spawned events ----
+        type_tag = f" [{agent_type.name}]" if agent_type.name != "general" else ""
+        await _fire(
+            self._spec.emit_event,
+            {"type": "subagent_spawn", "record": _record_to_dict(record)},
+        )
+        await _fire(
+            self._spec.emit_event,
+            {
+                "type": "session_spawned",
+                "sessionId": sub_id,
+                "parentSessionId": self._spec.parent_session_id,
+                "title": title or f"{label}{type_tag}",
+                "model": child_model,
+                "reasoningLevel": agent_type.thinking_effort,
+                "modelPolicy": model_resolution.policy,
+                "modelCandidates": list(model_resolution.candidates),
+                "modelFallbackUsed": model_resolution.fallback_used,
+                "task": task,
+                "mode": mode,
+                "agentType": agent_type.name,
+                "coordinationStrategy": self._spec.coordination_strategy,
+                "workspace": self._spec.parent_workspace,
+                "createdAt": int(time.time() * 1000),
+            },
+        )
+
+        # ---- profile_invocation telemetry ----
+        try:
+            task_preview = task.strip().replace("\n", " ")[:240]
+            append_telemetry({
+                "type": "profile_invocation",
+                "session_id": sub_id,
+                "parent_session_id": self._spec.parent_session_id,
+                "agent_type": agent_type.name,
+                "model": child_model,
+                "max_iterations": max_iterations_override or agent_type.max_iterations,
+                "task_preview": task_preview,
+            })
+        except Exception:
+            pass
+
+        # ---- run ----
+        if mode != "foreground":
+            asyncio.create_task(self._run_background(record), name=f"prog-{sub_id}")
+            return record, None, None
+
+        try:
+            text = await self._run_child(record)
+            return record, text, None
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("programmatic sub-agent %s failed", sub_id)
+            self._spec.registry.mark_done(
+                sub_id, f"Error: {exc}", SubAgentState.FAILED
+            )
+            await _emit_update(self._spec, record)
+            return record, None, exc
+
     async def _run_foreground(
         self, call_id: str, record: SubAgentRecord
     ) -> ToolResult:
@@ -571,9 +734,16 @@ Parameters:
         child_model: str = getattr(record, "child_model", self._spec.parent_model)
 
         # Build a child registry, applying the agent type's tool filter.
+        # `record.tool_filter_override` (set by spawn_programmatically)
+        # wins over the agent_type's static tool_include so programmatic
+        # callers (judge-deep with operator-tuned judge_tools) can pass
+        # a dynamic per-call surface.
         parent_tools = self._spec.parent_registry._tools  # noqa: SLF001
+        tool_filter_override = getattr(record, "tool_filter_override", None)
 
-        if agent_type.tool_include is not None:
+        if tool_filter_override is not None:
+            allowed = frozenset(tool_filter_override) & frozenset(parent_tools.keys())
+        elif agent_type.tool_include is not None:
             # Whitelist: only these tools (intersected with what parent has)
             allowed = agent_type.tool_include & frozenset(parent_tools.keys())
         elif self._spec.child_tool_names is not None:
@@ -723,6 +893,23 @@ Parameters:
                 "to their work. Use `read_findings` midway if their topics "
                 "overlap with yours.\n"
             )
+
+        # Surface the fully-resolved system prompt so the renderer's
+        # SystemPromptHeader can show it on the child's pane. Goes out
+        # as a system_event so the existing applyEventToSlice handler
+        # (subtype='system_prompt_set') picks it up without renderer-side
+        # changes. Useful for ANY sub-agent, particularly the judge /
+        # calibrator profiles where the system prompt IS the contract.
+        await _fire(
+            self._spec.emit_event,
+            {
+                "type": "system_event",
+                "sessionId": record.id,
+                "subtype": "system_prompt_set",
+                "message": "System prompt configured",
+                "details": {"systemPrompt": system_prompt},
+            },
+        )
 
         # Wrap the child registry with a tracing wrapper scoped to the
         # child's session id, so tool_result events land in the child's slice.
@@ -1054,7 +1241,14 @@ Parameters:
                     pass
 
         from engine.runner import StopCondition
-        stop = StopCondition(max_iterations=agent_type.max_iterations)
+        # max_iterations_override (set by spawn_programmatically) wins
+        # over the agent_type cap. Lets the deep judge use the
+        # operator-tuned JudgeRules.judge_max_iterations.
+        effective_max_iter = (
+            getattr(record, "max_iterations_override", None)
+            or agent_type.max_iterations
+        )
+        stop = StopCondition(max_iterations=effective_max_iter)
 
         run_task = asyncio.create_task(
             runner.run(

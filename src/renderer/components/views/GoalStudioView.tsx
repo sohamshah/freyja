@@ -111,7 +111,6 @@ export function GoalStudioView({ goalState, agents, contextPct, cost, onOpenJudg
                       key={turn}
                       turn={turn}
                       totalTurns={verdicts.length}
-                      maxTurns={goalState.maxTurns}
                       verdict={v}
                       prior={prior}
                       eventAt={ev?.at}
@@ -163,10 +162,10 @@ function HeaderStrip({
   const running = agents.filter((a) => a.status === 'running').length
   const profile = goalState.judgeRules?.judgeProfile ?? 'standard'
   const rigor = goalState.judgeRules?.rigorScore ?? 2
-  const turnPct = Math.min(
-    100,
-    Math.max(0, (goalState.turnsUsed / Math.max(1, goalState.maxTurns)) * 100),
-  )
+  // Turn budget is no longer enforced — the loop runs until the judge
+  // marks done or the operator pauses. Treat any active goal as an
+  // open-ended counter instead of a progress bar.
+  void goalState
 
   return (
     <header className="border-b border-white/[0.06]">
@@ -200,20 +199,12 @@ function HeaderStrip({
 
       {/* Row 2 — grouped meta strip */}
       <div className="flex items-center gap-0 border-t border-white/[0.04] bg-black/[0.16] px-10 py-2.5">
-        {/* Left — status + turn progress */}
+        {/* Left — status + turn counter (no upper bound) */}
         <div className="flex items-center gap-3 pr-5">
           <StatusBadge status={goalState.status} />
           <div className="flex items-baseline gap-2 font-mono text-[11.5px] tabular-nums text-fg-2">
+            <span className="text-fg-4">turn</span>
             <span className="text-fg-0">{goalState.turnsUsed}</span>
-            <span className="text-fg-4">/</span>
-            <span>{goalState.maxTurns}</span>
-            <span className="text-fg-4">turns</span>
-          </div>
-          <div className="h-1 w-20 overflow-hidden rounded-full bg-white/[0.05]">
-            <div
-              className="h-full rounded-full bg-accent/[0.55]"
-              style={{ width: `${turnPct}%` }}
-            />
           </div>
         </div>
 
@@ -505,7 +496,6 @@ function trendDescriptor(conf: number[]): string {
 function TurnCard({
   turn,
   totalTurns,
-  maxTurns,
   verdict,
   prior,
   eventAt,
@@ -515,7 +505,6 @@ function TurnCard({
 }: {
   turn: number
   totalTurns: number
-  maxTurns: number
   verdict: GoalVerdict
   prior: GoalVerdict | null
   eventAt?: number
@@ -570,8 +559,7 @@ function TurnCard({
     >
       <header className="flex flex-wrap items-baseline gap-3 border-b border-white/[0.06] px-5 py-3">
         <span className="font-mono text-[12px] text-fg-0">
-          Turn <span className="tabular-nums">{turn}</span>{' '}
-          <span className="text-fg-3">of {maxTurns}</span>
+          Turn <span className="tabular-nums">{turn}</span>
         </span>
         <VerdictBadge done={verdict.done} />
         <span className="font-mono text-[11px] tabular-nums text-fg-2">

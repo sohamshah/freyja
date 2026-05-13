@@ -100,9 +100,6 @@ export function JudgeBrief({ open, onClose, goalState }: Props) {
   // operator can toggle a single tool off without committing to managing
   // the whole list manually.
   const [judgeTools, setJudgeTools] = useState<string[]>(persistedBrief.judgeTools ?? [])
-  const [judgeMaxIter, setJudgeMaxIter] = useState<number>(
-    persistedBrief.judgeMaxIterations ?? 3,
-  )
 
   // Tracks whether the most recent state was set by an *open* transition.
   // The sync effect below treats the first sync after open as authoritative
@@ -117,8 +114,7 @@ export function JudgeBrief({ open, onClose, goalState }: Props) {
     JSON.stringify(criteria) !== JSON.stringify(persistedBrief.criteria) ||
     JSON.stringify(neverDo) !== JSON.stringify(persistedBrief.neverDo) ||
     whenToStop !== persistedBrief.whenToStop ||
-    JSON.stringify(judgeTools) !== JSON.stringify(persistedBrief.judgeTools ?? []) ||
-    judgeMaxIter !== (persistedBrief.judgeMaxIterations ?? 3)
+    JSON.stringify(judgeTools) !== JSON.stringify(persistedBrief.judgeTools ?? [])
 
   // Reset the just-opened flag whenever the modal opens.
   useEffect(() => {
@@ -140,7 +136,6 @@ export function JudgeBrief({ open, onClose, goalState }: Props) {
     setNeverDo(persistedBrief.neverDo)
     setWhenToStop(persistedBrief.whenToStop)
     setJudgeTools(persistedBrief.judgeTools ?? [])
-    setJudgeMaxIter(persistedBrief.judgeMaxIterations ?? 3)
     // We intentionally exclude `dirty` from the deps — its identity changes
     // every render and would loop. justOpenedRef covers the initial-open
     // path; remote updates while editing fall through the dirty check.
@@ -169,7 +164,6 @@ export function JudgeBrief({ open, onClose, goalState }: Props) {
       neverDo: neverDo.map((s) => s.trim()).filter((s) => s.length > 0),
       whenToStop: whenToStop.trim(),
       judgeTools,
-      judgeMaxIterations: clamp(judgeMaxIter, 1, 10),
     })
   }
 
@@ -458,23 +452,19 @@ export function JudgeBrief({ open, onClose, goalState }: Props) {
       {judgeProfile === 'deep' && (
         <BriefSection
           marker="§ 6"
-          title="Deep judge controls"
+          title="Deep judge tools"
           control={
             <RationaleTip
-              rationale={
-                calibratorMeta?.rationaleByField?.judgeTools ||
-                calibratorMeta?.rationaleByField?.judgeMaxIterations
-              }
+              rationale={calibratorMeta?.rationaleByField?.judgeTools}
             />
           }
         >
           <p className="m-0 mb-3 font-mono text-[12.5px] leading-[1.6] text-fg-2">
             The deep judge runs as a subagent with read-only tools and extended thinking.
-            Toggle individual tools to constrain its surface; raise iterations when verdicts
-            need more verification work per turn.
+            Toggle individual tools to constrain its verification surface.
           </p>
 
-          <div className="mb-3">
+          <div>
             <div className="mb-1.5 flex items-center justify-between font-mono text-[10.5px] uppercase tracking-[0.14em] text-fg-3">
               <span>Tool allowlist</span>
               <span className="text-fg-4">
@@ -514,27 +504,6 @@ export function JudgeBrief({ open, onClose, goalState }: Props) {
                 )
               })}
             </div>
-          </div>
-
-          <div>
-            <div className="mb-1.5 flex items-center justify-between font-mono text-[10.5px] uppercase tracking-[0.14em] text-fg-3">
-              <span>Max iterations per verdict</span>
-              <span className="font-mono text-[11px] tabular-nums text-fg-1">
-                <span className="text-fg-0">{judgeMaxIter}</span>/10
-              </span>
-            </div>
-            <input
-              type="range"
-              min={1}
-              max={10}
-              value={judgeMaxIter}
-              onChange={(e) => setJudgeMaxIter(parseInt(e.target.value, 10))}
-              className="w-full accent-[#a8d4fc]"
-            />
-            <p className="m-0 mt-1.5 font-mono text-[11.5px] italic leading-[1.55] text-fg-3">
-              Each iteration = one think+act step. The judge usually finishes in 1–3 with
-              read-only tools; raise this if you want it to verify multiple claims in depth.
-            </p>
           </div>
         </BriefSection>
       )}
