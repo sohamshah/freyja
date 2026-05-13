@@ -276,7 +276,11 @@ Track the highest index you've seen and pass it as since_index next time.""",
             "latest_index": self._bus.latest_index,
         }
 
-        # Emit read event to renderer so the UI shows who's reading
+        # Emit read event to renderer so the UI shows who's reading. Also
+        # carry the exact indices the read returned — the bus flow view's
+        # timeline draws arcs from each of these back to the publisher's
+        # chip; without indices the arcs would have to be inferred from
+        # since_index + topic which is fragile.
         if self._emit:
             import asyncio
             import time as _time
@@ -290,6 +294,7 @@ Track the highest index you've seen and pass it as since_index next time.""",
                     "senderLabel": self._agent_label,
                     "content": f"Read {len(messages)} message(s)" + (f" on topic '{topic}'" if topic else ""),
                     "timestamp": _time.time(),
+                    "messageIndices": [m.index for m in messages],
                 },
             }
             result_or_coro = self._emit(evt)

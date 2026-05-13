@@ -15,6 +15,7 @@ import { AgentTypeTag } from './SubagentCard'
 import { TasksListRailView } from './views/TasksListRailView'
 import { GoalStudioView } from './views/GoalStudioView'
 import { KanbanBridgeView } from './views/KanbanBridgeView'
+import { BusFlowView } from './views/BusFlowView'
 import { JudgeBrief } from './views/JudgeBrief'
 import { DispatcherBrief } from './views/DispatcherBrief'
 import { ActivityView } from './views/ActivityView'
@@ -861,6 +862,18 @@ function OverviewTab({
         tasks={taskCards}
         agents={agents}
         events={telemetryEvents}
+        contextPct={contextPct}
+        cost={cost}
+        onAttach={onAttach}
+      />
+    )
+  }
+  if (coordinationStrategy === 'bus') {
+    return (
+      <BusFlowView
+        objective={objective}
+        agents={agents}
+        findings={findings}
         contextPct={contextPct}
         cost={cost}
         onAttach={onAttach}

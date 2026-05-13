@@ -94,6 +94,11 @@ export interface BusMessageRecord {
   senderLabel: string
   content: string
   timestamp: number
+  /** Populated only on read events (topic === 'read') — the exact indices
+   *  returned by that read_findings call. Lets the bus flow view's
+   *  timeline draw an arc from the read row to each source finding chip
+   *  instead of inferring from since_index. */
+  messageIndices?: number[]
 }
 
 export interface ArtifactRecord {
