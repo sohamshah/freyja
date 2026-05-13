@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { unstable_batchedUpdates } from 'react-dom'
 import { useHarness } from './state/store'
 import { TitleBar } from './components/TitleBar'
@@ -18,6 +18,7 @@ import { ComputerPermissionWizard } from './components/ComputerPermissionWizard'
 import { ComputerHotkeyOverlay } from './components/ComputerHotkeyOverlay'
 import { MissionDashboard } from './components/MissionDashboard'
 import { MetricsDashboard } from './components/MetricsDashboard'
+import { SplashScreen } from './components/SplashScreen'
 import { startInRendererDemo } from './lib/inRendererDemo'
 import { extractConversationSummary } from './lib/conversationSummary'
 
@@ -87,6 +88,10 @@ export function App() {
   const bridgeApiRef = useRef<any>(null)
   const eventQueueRef = useRef<any[]>([])
   const rafRef = useRef<number | null>(null)
+  // Boot splash plays once per process lifetime — App only mounts once,
+  // so this state survives reloads of the underlying session but is
+  // re-evaluated on every cold launch.
+  const [splashShowing, setSplashShowing] = useState(true)
 
   const flushBridgeEvents = useCallback(() => {
     rafRef.current = null
@@ -323,6 +328,7 @@ export function App() {
   return (
     <div className="relative flex h-full w-full flex-col text-fg-0">
       {showBackdrop && <FauxBackdrop />}
+      {splashShowing && <SplashScreen onComplete={() => setSplashShowing(false)} />}
       <div className="app-tint relative flex h-full w-full flex-col">
         <TitleBar />
         <div className={`flex min-h-0 flex-1 gap-2 px-2 pb-3 ${focusMode ? 'pt-2' : 'pt-4'}`}>

@@ -50,7 +50,15 @@ export function StickyHeader({
         className="sticky-section-header sticky z-[5]"
         style={{ top: `${topOffset}px` }}
       >
-        <div className="sticky-section-inner">{children}</div>
+        {/* Two layers:
+            - .sticky-section-strip is a full-width transparent strip
+              that gains a faint frosted tint only when stuck, just
+              enough to soften scrolling content passing underneath.
+            - .sticky-section-chip wraps the actual title row and
+              morphs into a centered pill when stuck. */}
+        <div className="sticky-section-strip">
+          <div className="sticky-section-chip">{children}</div>
+        </div>
       </div>
     </>
   )
