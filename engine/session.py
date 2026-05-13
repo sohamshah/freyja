@@ -14,7 +14,7 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from engine.constants import (
     KEEP_RECENT_COMPUTER_IMAGES,
@@ -735,11 +735,18 @@ class Session:
         tools: list[Tool] | None = None,
         session_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        on_message_appended: Callable[[Message], None] | None = None,
     ) -> Session:
-        """Create a new session."""
+        """Create a new session.
+
+        ``on_message_appended`` lets callers persist every message to a
+        durable log outside the engine transcript — used by the bridge
+        to write ``raw_messages.jsonl`` so the original conversation is
+        preserved even after compaction truncates the live transcript.
+        """
         return cls(
             id=session_id or str(uuid.uuid4()),
-            transcript=TranscriptManager(),
+            transcript=TranscriptManager(on_append=on_message_appended),
             system_prompt=system_prompt,
             tools=tools or [],
             metadata=metadata or {},

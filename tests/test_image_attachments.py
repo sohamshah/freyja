@@ -453,3 +453,411 @@ def test_pinned_entry_excluded_from_compaction() -> None:
     assert split_point <= 2, (
         f"expected split_point ≤ pin index (2), got {split_point}"
     )
+
+
+def test_honor_pins_after_prior_compaction_no_off_by_one() -> None:
+    """After a prior compaction, get_messages injects a sys_summary
+    pseudo-message at messages[0]. The pin walker must account for it,
+    else any pin near the start blocks compaction entirely (Gap D)."""
+    from engine.compaction import SummaryCompaction
+    from engine.session import TranscriptManager
+    from engine.types import Message
+
+    tm = TranscriptManager()
+    # Build a transcript: 5 messages, then a compaction-summary entry,
+    # then 25 more messages. Pin the FIRST message after the compaction.
+    for i in range(5):
+        tm.append_message(Message(role="user", content=f"early u{i} " + "x" * 800))
+    tm.append_compaction(
+        summary="prior summary covering the first five user turns",
+        first_kept_id="",
+        tokens_before=10_000,
+    )
+    # The append_compaction with empty first_kept_id wipes everything
+    # — but post-call, the transcript has just the compaction entry.
+    # Re-add 25 messages.
+    for i in range(25):
+        tm.append_message(Message(role="user", content=f"new u{i} " + "y" * 800))
+
+    # Pin the FIRST real message after the compaction (most-likely
+    # bug-trigger case).
+    target_entry = next(e for e in tm.entries if e.message is not None)
+    tm.set_entry_pinned(target_entry.id, True)
+
+    compactor = SummaryCompaction()
+    messages = tm.get_messages()
+    # messages[0] = sys_summary inject, messages[1] = the pinned entry
+    assert messages[0].role == "system"
+    split_point = len(messages) - compactor.keep_recent
+    split_point = compactor._find_safe_split(messages, split_point)  # noqa: SLF001
+    pinned_split = compactor._honor_pins(tm, split_point)  # noqa: SLF001
+    # With the fix, pinned_split == 1 (the pin is at messages[1]).
+    # Without the fix it would be 0 (the bug).
+    assert pinned_split == 1, (
+        f"expected pinned_split=1 (pin at messages[1] after sys_summary inject), "
+        f"got {pinned_split}"
+    )
+
+
+def test_iterative_path_strips_sys_summary_inject_from_to_summarize() -> None:
+    """The second compaction must not feed the prior summary to the
+    summarizer twice (once via SUMMARY_UPDATE_PROMPT's PREVIOUS SUMMARY
+    section, once via the injected sys_summary message in to_summarize)
+    — Gap F."""
+    from engine.compaction import SummaryCompaction
+    from engine.session import TranscriptManager
+    from engine.types import Message
+
+    tm = TranscriptManager()
+    # Seed a transcript and immediately add a prior compaction entry.
+    for i in range(15):
+        tm.append_message(Message(role="user", content=f"early {i} " + "x" * 200))
+    tm.append_compaction(
+        summary="UNIQUE_PRIOR_SUMMARY_MARKER_42",
+        first_kept_id="",
+        tokens_before=8_000,
+    )
+    # Add fresh content to summarize.
+    for i in range(15):
+        tm.append_message(Message(role="user", content=f"fresh {i} " + "z" * 4_000))
+
+    compactor = SummaryCompaction()
+
+    class _CapturingProvider:
+        def __init__(self):
+            self.prompt_text = ""
+        def complete(self, *args, **kwargs):
+            self.prompt_text = kwargs["messages"][0].content
+            class _R:
+                content = "<summary>updated summary text</summary>"
+                tool_calls: list = []
+                usage = None
+            return _R()
+
+    provider = _CapturingProvider()
+    res = compactor.compact(tm, provider)
+    assert res.success and res.resumed_from_previous
+
+    # The prior summary appears once — in the PREVIOUS SUMMARY: section
+    # of the update prompt. It must NOT appear a second time in the
+    # NEW TURNS section.
+    prior_marker = "UNIQUE_PRIOR_SUMMARY_MARKER_42"
+    occurrences = provider.prompt_text.count(prior_marker)
+    assert occurrences == 1, (
+        f"prior summary should appear exactly once in the iterative "
+        f"prompt; found {occurrences} occurrence(s)"
+    )
+
+
+def test_session_on_message_appended_callback_fires_for_every_message() -> None:
+    """The Session.create on_message_appended hook is what drives the
+    bridge's raw_messages.jsonl log. Must fire for every append, never
+    for compaction entries (those go through append_compaction)."""
+    from engine.session import Session
+    from engine.types import Message
+
+    seen: list[Message] = []
+    sess = Session.create(
+        system_prompt="",
+        on_message_appended=lambda m: seen.append(m),
+    )
+    sess.add_user_message("hello")
+    sess.add_assistant_message("hi back")
+    sess.transcript.append_compaction(
+        summary="should NOT trigger callback",
+        first_kept_id="",
+        tokens_before=10,
+    )
+    sess.add_user_message("after compaction")
+
+    # 3 message appends; compaction skipped.
+    assert len(seen) == 3
+    assert seen[0].role == "user" and seen[0].content == "hello"
+    assert seen[1].role == "assistant"
+    assert seen[2].content == "after compaction"
+
+
+def test_preserve_facts_auto_repair_appends_missing() -> None:
+    """If the summarizer paraphrases a preserve_facts entry, the tool
+    auto-appends a Preserved Facts section to the just-written summary
+    so the verbatim string is literally present (Gap E)."""
+    from bridge.tools.summarize_context_tool import SummarizeContextTool
+    from engine.compaction import SummaryCompaction
+    from engine.session import Session, TranscriptManager
+    from engine.types import Message
+    import asyncio
+
+    tm = TranscriptManager()
+    for i in range(15):
+        tm.append_message(Message(role="user", content=f"u{i} " + "x" * 2_000))
+
+    class _SuperficialProvider:
+        model_id = "fake"
+        def complete(self, *args, **kwargs):
+            class _R:
+                # Crucially does NOT contain the api_key string.
+                content = "<summary>generic summary without secrets</summary>"
+                tool_calls: list = []
+                usage = None
+            return _R()
+
+    session = Session(id="test-sess", transcript=tm, system_prompt="")
+    provider = _SuperficialProvider()
+    compactor = SummaryCompaction()
+    tool = SummarizeContextTool(
+        get_session=lambda: session,
+        get_provider=lambda: provider,
+        get_compactor=lambda: compactor,
+        on_summarize_call=None,
+        get_current_pressure_pct=None,
+    )
+
+    secret = "api_key=SECRET_TOKEN_DEADBEEF"
+    result = asyncio.new_event_loop().run_until_complete(
+        tool.execute("call-1", {
+            "scope": "all",
+            "preserve_facts": [secret],
+            "reason": "testing preserve_facts repair",
+        })
+    )
+    # Tool result reports the auto-repair.
+    assert not result.is_error
+    assert "preserve_facts_missing" in result.content
+    # The summary in the transcript now contains the verbatim string.
+    last_compaction = next(
+        e for e in reversed(tm.entries) if e.is_compaction
+    )
+    assert secret in last_compaction.compaction_summary
+
+
+def test_channel2_pressure_note_attaches_to_last_user_message_not_system() -> None:
+    """Channel 2 must not touch the system prompt — that would invalidate
+    Anthropic's cache_control breakpoint on the static system block
+    every band crossing. Instead the note tail-appends to the last
+    user-role message, preserving the cached prefix."""
+    from engine.runner import AsyncAgentRunner
+    from engine.types import Message, TextBlock
+
+    class _StubProvider:
+        name = "stub"
+        model_id = "fake"
+        context_window = 100_000
+
+    class _StubConfig:
+        max_tokens_per_turn = 4_000
+
+    class _StubUsage:
+        def effective_context_tokens(self) -> int:
+            return 50_000  # 50% of effective window (96k) → soft band
+
+    runner = AsyncAgentRunner.__new__(AsyncAgentRunner)
+    runner.provider = _StubProvider()
+    runner.fallback_chain = None
+    runner.config = _StubConfig()
+    runner.usage = _StubUsage()
+    runner._turn_start_pressure_band = None  # noqa: SLF001
+
+    base_system = "You are a helpful assistant. " + ("x" * 500)
+    messages = [
+        Message(role="user", content="initial prompt"),
+        Message(role="assistant", content="ack"),
+        Message(role="user", content=[TextBlock(text="follow-up question")]),
+    ]
+    augmented = runner._augment_messages_with_pressure_note(messages)  # noqa: SLF001
+
+    # System prompt is untouched (no Channel 2 method anymore for it).
+    # Verify the augmentation only affected the last message.
+    assert len(augmented) == len(messages)
+    assert augmented[0] is messages[0]
+    assert augmented[1] is messages[1]
+    # Last message is a CLONE, not the original — transcript stays clean.
+    assert augmented[-1] is not messages[-1]
+    # Content is a list with the original block plus a new TextBlock
+    # containing the pressure note.
+    last_blocks = augmented[-1].content
+    assert isinstance(last_blocks, list)
+    assert len(last_blocks) == 2
+    assert isinstance(last_blocks[1], TextBlock)
+    # New framing: <system-reminder> wrapper that Anthropic-family
+    # models are trained to attend to as runtime guidance (not user
+    # voice, not assistant thought).
+    assert "<system-reminder>" in last_blocks[1].text
+    assert "</system-reminder>" in last_blocks[1].text
+    assert "50-59%" in last_blocks[1].text  # quantized band
+    # Original list reference is unmodified.
+    assert len(messages[-1].content) == 1
+
+
+def test_channel2_no_op_below_soft_band() -> None:
+    """Below 40% the note must not attach — keeps awareness band quiet."""
+    from engine.runner import AsyncAgentRunner
+    from engine.types import Message
+
+    class _StubProvider:
+        name = "stub"
+        model_id = "fake"
+        context_window = 100_000
+
+    class _StubConfig:
+        max_tokens_per_turn = 4_000
+
+    class _StubUsage:
+        def effective_context_tokens(self) -> int:
+            return 20_000  # ~20% — below 40% soft threshold
+
+    runner = AsyncAgentRunner.__new__(AsyncAgentRunner)
+    runner.provider = _StubProvider()
+    runner.fallback_chain = None
+    runner.config = _StubConfig()
+    runner.usage = _StubUsage()
+    runner._turn_start_pressure_band = None  # noqa: SLF001
+
+    messages = [Message(role="user", content="hi")]
+    augmented = runner._augment_messages_with_pressure_note(messages)
+    assert augmented is messages  # same list, untouched
+
+
+def test_summarize_context_system_event_carries_full_summary_text() -> None:
+    """The compaction_complete system event must include the FULL
+    summary text in details so the in-session ActivityView's expandable
+    compaction card and the dashboard's clickable compaction-log rows
+    can render the actual content (not just a 240-char excerpt)."""
+    from bridge.tools.summarize_context_tool import SummarizeContextTool
+    from engine.compaction import SummaryCompaction
+    from engine.session import Session, TranscriptManager
+    from engine.types import Message
+    import asyncio
+
+    tm = TranscriptManager()
+    for i in range(15):
+        tm.append_message(Message(role="user", content=f"u{i} " + "x" * 2_000))
+
+    # Summarizer that returns a long, distinctive summary so we can
+    # verify the FULL text (not just the first 240 chars) made it into
+    # the system event details.
+    long_summary = "<summary>" + ("A" * 1_500) + " UNIQUE_TAIL_MARKER_77 </summary>"
+
+    class _Provider:
+        model_id = "fake"
+        def complete(self, *args, **kwargs):
+            class _R:
+                content = long_summary
+                tool_calls: list = []
+                usage = None
+            return _R()
+
+    session = Session(id="test-full-summary", transcript=tm, system_prompt="")
+    compactor = SummaryCompaction()
+    events: list[dict] = []
+    tool = SummarizeContextTool(
+        get_session=lambda: session,
+        get_provider=lambda: _Provider(),
+        get_compactor=lambda: compactor,
+        on_system_event=lambda e: events.append(e),
+    )
+    asyncio.new_event_loop().run_until_complete(
+        tool.execute("call-full", {"scope": "all", "reason": "test"})
+    )
+    complete = next(e for e in events if e.get("subtype") == "compaction_complete")
+    details = complete["details"]
+    # Excerpt is capped, but summary_text must be the FULL produced text.
+    assert "summary_excerpt" in details
+    assert len(details["summary_excerpt"]) <= 240
+    assert "summary_text" in details
+    assert "UNIQUE_TAIL_MARKER_77" in details["summary_text"]
+    assert len(details["summary_text"]) > 1_000
+    # Other detail fields the renderer expects.
+    assert details["scope"] == "all"
+    assert details["trigger"] == "agent_summarize_context"
+    assert details["reason"] == "test"
+
+
+def test_summarize_context_emits_system_event_on_success() -> None:
+    """Agent-driven compactions must surface as a compaction_start +
+    compaction_complete pair so the conversation timeline shows the
+    same inline marker the runtime path produces (Gap N)."""
+    from bridge.tools.summarize_context_tool import SummarizeContextTool
+    from engine.compaction import SummaryCompaction
+    from engine.session import Session, TranscriptManager
+    from engine.types import Message
+    import asyncio
+
+    tm = TranscriptManager()
+    for i in range(15):
+        tm.append_message(Message(role="user", content=f"u{i} " + "x" * 2_000))
+
+    class _Provider:
+        model_id = "fake"
+        def complete(self, *args, **kwargs):
+            class _R:
+                content = "<summary>fake summary content</summary>"
+                tool_calls: list = []
+                usage = None
+            return _R()
+
+    session = Session(id="test-emit", transcript=tm, system_prompt="")
+    compactor = SummaryCompaction()
+    events: list[dict] = []
+    tool = SummarizeContextTool(
+        get_session=lambda: session,
+        get_provider=lambda: _Provider(),
+        get_compactor=lambda: compactor,
+        on_system_event=lambda e: events.append(e),
+    )
+    result = asyncio.new_event_loop().run_until_complete(
+        tool.execute("call-N", {"scope": "all"})
+    )
+    assert not result.is_error
+    subtypes = [e.get("subtype") for e in events]
+    assert "compaction_start" in subtypes
+    assert "compaction_complete" in subtypes
+    complete = next(e for e in events if e.get("subtype") == "compaction_complete")
+    assert complete["details"]["trigger"] == "agent_summarize_context"
+
+
+def test_summarize_context_pin_entries_notifies_renderer() -> None:
+    """Agent pin_entries fires an entry_pin_changed event for each
+    successfully-pinned ordinal so the renderer's pin badge appears
+    without a session reload (Gap M)."""
+    from bridge.tools.summarize_context_tool import SummarizeContextTool
+    from engine.compaction import SummaryCompaction
+    from engine.session import Session, TranscriptManager
+    from engine.types import Message
+    import asyncio
+
+    tm = TranscriptManager()
+    for i in range(20):
+        tm.append_message(Message(role="user", content=f"u{i} " + "z" * 1_000))
+
+    class _Provider:
+        model_id = "fake"
+        def complete(self, *args, **kwargs):
+            class _R:
+                content = "<summary>fake</summary>"
+                tool_calls: list = []
+                usage = None
+            return _R()
+
+    session = Session(id="test-pin", transcript=tm, system_prompt="")
+    compactor = SummaryCompaction()
+    pin_events: list[dict] = []
+    tool = SummarizeContextTool(
+        get_session=lambda: session,
+        get_provider=lambda: _Provider(),
+        get_compactor=lambda: compactor,
+        on_pin_changed=lambda e: pin_events.append(e),
+    )
+    asyncio.new_event_loop().run_until_complete(
+        tool.execute("call-pin", {
+            "scope": "all",
+            "pin_entries": [3, 5, 18],
+        })
+    )
+    pinned_ords = {e["messageOrdinal"] for e in pin_events}
+    # The compactor's pinning step may not pin every requested ord if
+    # the transcript shape doesn't match (e.g. ordinals beyond range).
+    # Here all are valid → all three fired.
+    assert pinned_ords == {3, 5, 18}
+    for e in pin_events:
+        assert e["pinned"] is True
+        assert e["source"] == "agent_summarize_context"

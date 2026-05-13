@@ -72,12 +72,21 @@ class SummarizeContextTool:
         get_compactor: Callable[[], Any],
         on_summarize_call: Callable[[dict[str, Any]], None] | None = None,
         get_current_pressure_pct: Callable[[], float | None] | None = None,
+        on_system_event: Callable[[dict[str, Any]], None] | None = None,
+        on_pin_changed: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self._get_session = get_session
         self._get_provider = get_provider
         self._get_compactor = get_compactor
         self._on_summarize_call = on_summarize_call
         self._get_current_pressure_pct = get_current_pressure_pct
+        # System-event emit so agent-driven compactions show up inline
+        # in the conversation timeline alongside runtime-driven ones
+        # (Gap N). Bridge wires this to its renderer emit channel.
+        self._on_system_event = on_system_event
+        # Pin-change emit so the renderer's pin badge appears when the
+        # agent pins via pin_entries on this tool (Gap M).
+        self._on_pin_changed = on_pin_changed
 
     @property
     def definition(self) -> ToolDefinition:
@@ -128,7 +137,22 @@ class SummarizeContextTool:
                         "items": {"type": "string"},
                         "description": (
                             "Short verbatim strings the summary MUST contain. "
-                            "Use for credentials, exact paths, error messages."
+                            "Use for credentials, exact paths, error messages. "
+                            "If the summarizer paraphrases any of these, the "
+                            "runtime auto-appends them to the summary."
+                        ),
+                    },
+                    "pin_entries": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": (
+                            "Message ordinals (0-indexed across user+assistant "
+                            "message-bearing entries) to PIN before compaction "
+                            "runs. Pinned messages are excluded from the "
+                            "summarized slice and survive verbatim through "
+                            "this and every future compaction. Use when a "
+                            "specific tool result or user message is "
+                            "load-bearing for ongoing work."
                         ),
                     },
                     "reason": {
@@ -158,6 +182,16 @@ class SummarizeContextTool:
             for item in preserve_raw:
                 if isinstance(item, str) and item.strip():
                     preserve_facts.append(item.strip())
+        pin_raw = arguments.get("pin_entries") or []
+        pin_ordinals: list[int] = []
+        if isinstance(pin_raw, list):
+            for item in pin_raw:
+                try:
+                    n = int(item)
+                except (TypeError, ValueError):
+                    continue
+                if n >= 0:
+                    pin_ordinals.append(n)
         reason = str(arguments.get("reason") or "").strip()
 
         session = self._get_session()
@@ -170,27 +204,128 @@ class SummarizeContextTool:
         if transcript is None:
             return _err(call_id, "summarize_context unavailable (no transcript)")
 
+        # Apply pin_entries BEFORE the compactor runs so _honor_pins
+        # sees the new flags. We pin by message ordinal (the same
+        # addressing scheme used by edit/rerun/delete IPC commands)
+        # rather than transcript-entry id since the agent doesn't have
+        # entry-id visibility. Each ordinal maps to the Nth message
+        # across user+assistant entries that contain a Message.
+        pinned_now: list[int] = []
+        if pin_ordinals:
+            try:
+                pinned_now = _apply_pins_by_ordinal(transcript, pin_ordinals)
+                # Notify the renderer for each successful pin so the pin
+                # badge appears without waiting for a session reload
+                # (Gap M).
+                session_id_for_pin = getattr(session, "id", "") or ""
+                for ord_idx in pinned_now:
+                    self._emit_pin_changed({
+                        "type": "entry_pin_changed",
+                        "sessionId": session_id_for_pin,
+                        "entryId": None,
+                        "messageOrdinal": ord_idx,
+                        "pinned": True,
+                        "source": "agent_summarize_context",
+                    })
+            except Exception:
+                logger.exception("pin_entries application failed")
+
         tokens_before = transcript.estimate_tokens()
         pressure_pct = (
             self._get_current_pressure_pct() if self._get_current_pressure_pct else None
         )
         started_at = time.time()
 
+        # Gap N: emit a compaction_start system event so the agent-driven
+        # compaction shows up inline in the conversation timeline (same
+        # way runtime-driven compactions do via _attempt_compaction).
+        # Best-effort — telemetry errors must never block the actual
+        # compaction.
+        self._emit_system_event({
+            "type": "system_event",
+            "sessionId": getattr(session, "id", "") or "",
+            "subtype": "compaction_start",
+            "message": (
+                f"Agent-driven compaction started "
+                f"(scope={scope}, {tokens_before:,} tokens before)"
+            ),
+            "details": {
+                "trigger": "agent_summarize_context",
+                "scope": scope,
+                "tokens_before": tokens_before,
+                "reason": reason[:240] if reason else None,
+                "pressure_pct_at_call": pressure_pct,
+            },
+        })
+
         try:
             result = self._dispatch(scope, level, compactor, transcript, provider)
         except Exception as exc:  # noqa: BLE001
             logger.exception("summarize_context dispatch failed")
+            self._emit_system_event({
+                "type": "system_event",
+                "sessionId": getattr(session, "id", "") or "",
+                "subtype": "compaction_skipped",
+                "message": f"Agent-driven compaction failed: {exc}",
+                "details": {
+                    "trigger": "agent_summarize_context",
+                    "scope": scope,
+                    "error": str(exc),
+                },
+            })
             return _err(call_id, f"Compaction failed: {exc}")
 
-        # Verify preserve_facts — fail (or warn) if any are missing.
+        # Verify preserve_facts — repair (or warn) if any are missing.
+        # The summarizer may paraphrase even verbatim strings; if the
+        # agent declared a fact preserve-worthy we owe it a stronger
+        # guarantee than "we asked nicely". Two-tier remedy:
+        #   1. If exact substring missing, append a "Preserved facts"
+        #      appendix to the just-written summary so the strings are
+        #      literally present (this also passes the verification
+        #      check on subsequent reads).
+        #   2. Surface the missing list in the tool response so the
+        #      agent knows the summary text didn't naturally contain
+        #      them and can adjust strategy (e.g. pin source messages).
         missing: list[str] = []
         if result.success and result.summary and preserve_facts:
             for fact in preserve_facts:
                 if fact and fact not in result.summary:
                     missing.append(fact)
+            if missing:
+                self._repair_preserve_facts(transcript, missing)
+                # Re-read the (now repaired) summary from the transcript
+                # so result.summary reflects the appendix we just added.
+                # Defensive: tolerate transcript shape changes.
+                try:
+                    last_entry = next(
+                        (
+                            e for e in reversed(transcript.entries)
+                            if getattr(e, "is_compaction", False)
+                        ),
+                        None,
+                    )
+                    if last_entry and last_entry.compaction_summary:
+                        result.summary = last_entry.compaction_summary
+                except Exception:
+                    pass
 
         # Always emit telemetry, even on failure — the bad outcomes are
         # part of the training corpus.
+        # Two rows per call:
+        #   1. summarize_context_call (the trigger-decision corpus) —
+        #      via the on_summarize_call callback; the bridge writes it.
+        #   2. compaction_event (the aggregate-metrics row) — written
+        #      directly here so the existing dashboard surfaces
+        #      (trigger-source bar, savings trend, per-session compaction
+        #      count) include agent-driven compactions alongside the
+        #      runtime-driven ones. Without this, the Profiles + Sessions
+        #      views under-count compactions on cooperative sessions.
+        # compaction_event JSONL rows are written by the bridge's
+        # _emit_summarize_event handler when it sees the
+        # compaction_complete / context_pruning system_event above —
+        # that path also enriches the row with scope/reason/excerpt.
+        # Writing here would double-count.
+
         try:
             if self._on_summarize_call is not None:
                 self._on_summarize_call({
@@ -199,6 +334,7 @@ class SummarizeContextTool:
                     "level_used": _classify_level(level, result),
                     "preserve_facts_count": len(preserve_facts),
                     "preserve_facts_missing": missing,
+                    "pinned_ordinals": pinned_now,
                     "reason": reason[:1000],
                     "pressure_pct_at_call": pressure_pct,
                     "tokens_before": result.tokens_before,
@@ -213,10 +349,63 @@ class SummarizeContextTool:
             logger.exception("summarize_context telemetry failed")
 
         if not result.success:
+            self._emit_system_event({
+                "type": "system_event",
+                "sessionId": getattr(session, "id", "") or "",
+                "subtype": "compaction_skipped",
+                "message": (
+                    f"Agent-driven compaction skipped: "
+                    f"{result.error or 'unknown reason'}"
+                ),
+                "details": {
+                    "trigger": "agent_summarize_context",
+                    "scope": scope,
+                    "reason": result.error,
+                    "tokens_before": result.tokens_before,
+                    "tokens_after": result.tokens_after,
+                },
+            })
             return _err(
                 call_id,
                 f"Compaction failed: {result.error or 'unknown'}",
             )
+
+        # Emit a compaction_complete inline marker so the UI shows the
+        # agent's compaction at the right place in the timeline.
+        completion_subtype = (
+            "context_pruning"
+            if scope in ("tool_results_only", "exploration_only")
+            else "compaction_complete"
+        )
+        self._emit_system_event({
+            "type": "system_event",
+            "sessionId": getattr(session, "id", "") or "",
+            "subtype": completion_subtype,
+            "message": (
+                f"Agent-driven compaction complete "
+                f"({result.tokens_before:,} → {result.tokens_after:,} tokens; "
+                f"scope={scope})"
+            ),
+            "details": {
+                "trigger": "agent_summarize_context",
+                "scope": scope,
+                "mechanism": (
+                    scope if scope in ("tool_results_only", "exploration_only")
+                    else "summary_iterative"
+                    if getattr(result, "resumed_from_previous", False)
+                    else "summary"
+                ),
+                "tokens_before": result.tokens_before,
+                "tokens_after": result.tokens_after,
+                "entries_removed": result.entries_removed,
+                "resumed_from_previous": getattr(result, "resumed_from_previous", False),
+                "reason": reason or None,
+                # Excerpt for the inline glance, FULL text for the
+                # expand panel and dashboard detail view.
+                "summary_excerpt": (result.summary or "")[:240],
+                "summary_text": result.summary or "",
+            },
+        })
 
         # If a preserve_facts check failed, surface a warning but don't
         # fail the call — the summary is still useful; the agent gets
@@ -230,12 +419,16 @@ class SummarizeContextTool:
             "level_used": _classify_level(level, result),
             "summary_excerpt": (result.summary or "")[:240],
         }
+        if pinned_now:
+            body["pinned_ordinals"] = pinned_now
         if missing:
             body["preserve_facts_missing"] = missing
             body["warning"] = (
-                f"{len(missing)} preserve_facts entries did not appear "
-                "verbatim in the produced summary. Consider re-calling with "
-                "a narrower scope or pinning the affected messages instead."
+                f"{len(missing)} preserve_facts entries were auto-appended to "
+                "the summary because the summarizer paraphrased them. Future "
+                "reads of the summary will contain them verbatim. If a fact "
+                "is load-bearing for ongoing work, prefer pinning the source "
+                "message via pin_entries on this tool."
             )
 
         return ToolResult(
@@ -243,6 +436,58 @@ class SummarizeContextTool:
             content=json.dumps(body, indent=2),
             is_error=False,
         )
+
+    def _emit_system_event(self, event: dict[str, Any]) -> None:
+        """Fire the on_system_event callback if wired. Swallows all
+        exceptions — UI plumbing must never block a real compaction."""
+        if self._on_system_event is None:
+            return
+        try:
+            self._on_system_event(event)
+        except Exception:
+            logger.exception("summarize_context system_event emit failed")
+
+    def _emit_pin_changed(self, payload: dict[str, Any]) -> None:
+        """Fire the on_pin_changed callback if wired (Gap M)."""
+        if self._on_pin_changed is None:
+            return
+        try:
+            self._on_pin_changed(payload)
+        except Exception:
+            logger.exception("summarize_context pin_changed emit failed")
+
+    def _repair_preserve_facts(self, transcript: Any, missing: list[str]) -> None:
+        """Append a Preserved Facts appendix to the most recent compaction
+        entry's summary so the missing strings literally appear.
+
+        Pragmatic, deterministic, no extra LLM call: when the summarizer
+        paraphrases a fact the agent flagged as load-bearing, we just
+        tack the verbatim string onto the end of the summary inside a
+        clearly-labeled section. The summary now passes the substring
+        check on every subsequent read (including by the iterative-
+        path's PREVIOUS SUMMARY include) and the agent can still see
+        which strings needed repair via the tool result's
+        preserve_facts_missing field.
+        """
+        try:
+            target_entry = None
+            for entry in reversed(transcript.entries):
+                if getattr(entry, "is_compaction", False):
+                    target_entry = entry
+                    break
+            if target_entry is None or not target_entry.compaction_summary:
+                return
+            appendix_lines = ["", "## Preserved Facts (auto-repaired)"]
+            for fact in missing:
+                appendix_lines.append(f"- {fact}")
+            target_entry.compaction_summary = (
+                target_entry.compaction_summary.rstrip()
+                + "\n"
+                + "\n".join(appendix_lines)
+                + "\n"
+            )
+        except Exception:
+            logger.exception("preserve_facts repair failed")
 
     def _dispatch(
         self,
@@ -380,6 +625,30 @@ class SummarizeContextTool:
             entries_removed=0,
             error=None if rewritten > 0 else "no exploration results were condensable",
         )
+
+
+def _apply_pins_by_ordinal(transcript: Any, ordinals: list[int]) -> list[int]:
+    """Mark transcript entries pinned, addressed by message ordinal.
+
+    Ordinal indexing matches the bridge's IPC convention used by edit /
+    rerun / delete commands: 0-indexed across entries that carry a
+    Message (i.e. excluding compaction-only entries). Returns the
+    ordinals that were successfully pinned.
+    """
+    seen = set(ordinals)
+    pinned: list[int] = []
+    idx = 0
+    for entry in transcript.entries:
+        if entry.message is None:
+            continue
+        if idx in seen:
+            try:
+                transcript.set_entry_pinned(entry.id, True)
+                pinned.append(idx)
+            except Exception:
+                pass
+        idx += 1
+    return pinned
 
 
 def _err(call_id: str, message: str) -> ToolResult:

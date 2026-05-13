@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react'
+import { formatTokens } from '../../lib/format'
 import type { AgentView, BusEventView, TelemetryEventView } from '../shared/types'
 
 interface Props {
@@ -243,26 +244,185 @@ function EventRow({
           {expanded ? 'collapse' : 'expand'}
         </span>
       </button>
-      {expanded && event.body ? (
-        <div className="ml-[170px] mr-3 mb-2 mt-1 whitespace-pre-wrap rounded-md border border-white/[0.06] bg-white/[0.015] px-3 py-2.5 font-mono text-[12.5px] leading-[1.7] text-fg-1">
-          {event.body}
-          {onCopy ? (
-            <div className="mt-2 flex justify-end">
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onCopy()
-                }}
-                className="rounded border border-white/[0.06] bg-white/[0.03] px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.18em] text-fg-2 transition hover:bg-white/[0.06] hover:text-fg-0"
-              >
-                copy
-              </button>
+      {expanded ? (
+        <div className="ml-[170px] mr-3 mb-2 mt-1">
+          {event.category === 'summary' &&
+          !isBusFinding(event.raw) &&
+          isCompactionTelemetry(event.raw) ? (
+            <CompactionDetailPanel telemetry={event.raw} />
+          ) : event.body ? (
+            <div className="whitespace-pre-wrap rounded-md border border-white/[0.06] bg-white/[0.015] px-3 py-2.5 font-mono text-[12.5px] leading-[1.7] text-fg-1">
+              {event.body}
+              {onCopy ? (
+                <div className="mt-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onCopy()
+                    }}
+                    className="rounded border border-white/[0.06] bg-white/[0.03] px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.18em] text-fg-2 transition hover:bg-white/[0.06] hover:text-fg-0"
+                  >
+                    copy
+                  </button>
+                </div>
+              ) : null}
             </div>
           ) : null}
         </div>
       ) : null}
     </li>
+  )
+}
+
+function isCompactionTelemetry(raw: BusEventView | TelemetryEventView): raw is TelemetryEventView {
+  if ('topic' in raw) return false
+  const sub = (raw as TelemetryEventView).subtype
+  return (
+    sub === 'compaction_complete' ||
+    sub === 'compaction_start' ||
+    sub === 'compaction_skipped' ||
+    sub === 'context_pruning' ||
+    sub === 'media_pruning'
+  )
+}
+
+/**
+ * Structured detail panel for compaction system events. Replaces the
+ * old single-line key-value summarization with a layout that surfaces
+ * the actual content: scope/mechanism/trigger chips, tokens
+ * before→after with delta and percent saved, agent's free-text reason,
+ * and the full summary text in a scrollable container the user can
+ * copy.
+ *
+ * Falls back to the message itself for events that don't carry a
+ * summary (e.g. context_pruning, media_pruning, compaction_skipped).
+ */
+function CompactionDetailPanel({
+  telemetry,
+}: {
+  telemetry: TelemetryEventView
+}) {
+  const details = (telemetry.details ?? {}) as Record<string, unknown>
+  const scope = (details.scope as string | undefined) || null
+  const mechanism = (details.mechanism as string | undefined)
+    || (details.strategy as string | undefined)
+    || telemetry.subtype
+  const trigger = (details.trigger as string | undefined) || null
+  const reason = (details.reason as string | undefined) || null
+  const resumed = Boolean(details.resumed_from_previous)
+  const tokensBefore = Number(
+    details.tokens_before ?? details.context_tokens_before ?? 0,
+  )
+  const tokensAfter = Number(
+    details.tokens_after ?? details.context_tokens_after ?? 0,
+  )
+  const summaryText =
+    (details.summary_text as string | undefined)
+    ?? (details.summary_preview as string | undefined)
+    ?? (details.summary_excerpt as string | undefined)
+    ?? ''
+  const entriesRemoved = Number(details.entries_removed ?? 0)
+
+  const delta = tokensBefore - tokensAfter
+  const percentSaved =
+    tokensBefore > 0 ? Math.round((delta / tokensBefore) * 100) : 0
+
+  return (
+    <div className="rounded-md border border-white/[0.06] bg-white/[0.015] px-3 py-2.5 font-mono text-[12px] text-fg-1">
+      {/* Metadata chips */}
+      <div className="flex flex-wrap items-center gap-2 text-[10.5px]">
+        {scope ? <Chip label="scope" value={scope} /> : null}
+        <Chip label="mechanism" value={mechanism} />
+        {trigger ? (
+          <Chip
+            label="trigger"
+            value={trigger}
+            tone={trigger === 'agent_summarize_context' ? 'accent' : 'neutral'}
+          />
+        ) : null}
+        {resumed ? <Chip label="iterative" value="yes" tone="accent" /> : null}
+        {entriesRemoved > 0 ? (
+          <Chip label="entries" value={`${entriesRemoved}`} />
+        ) : null}
+      </div>
+
+      {/* Tokens before → after */}
+      {(tokensBefore > 0 || tokensAfter > 0) && (
+        <div className="mt-2.5 flex flex-wrap items-baseline gap-3 text-[12px]">
+          <span className="text-fg-3">tokens</span>
+          <span className="text-fg-0">{formatTokens(tokensBefore)}</span>
+          <span className="text-fg-3">→</span>
+          <span className="text-fg-0">{formatTokens(tokensAfter)}</span>
+          {delta > 0 ? (
+            <span className="text-ok">
+              −{formatTokens(delta)} ({percentSaved}%)
+            </span>
+          ) : null}
+        </div>
+      )}
+
+      {/* Reason (agent rationale) */}
+      {reason ? (
+        <div className="mt-2.5 rounded bg-white/[0.025] px-2.5 py-1.5">
+          <div className="text-[10px] uppercase tracking-[0.14em] text-fg-3">
+            reason
+          </div>
+          <div className="mt-1 whitespace-pre-wrap text-[12px] leading-[1.55] text-fg-1">
+            {reason}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Full summary text — the actual content the agent will see in
+          place of the truncated transcript. Scrollable so big
+          summaries don't blow out the activity feed. */}
+      {summaryText ? (
+        <div className="mt-2.5">
+          <div className="mb-1 flex items-center justify-between">
+            <span className="text-[10px] uppercase tracking-[0.14em] text-fg-3">
+              summary
+            </span>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                void navigator.clipboard?.writeText(summaryText)
+              }}
+              className="rounded border border-white/[0.06] bg-white/[0.03] px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] text-fg-2 transition hover:bg-white/[0.06] hover:text-fg-0"
+            >
+              copy
+            </button>
+          </div>
+          <pre className="max-h-[420px] overflow-y-auto whitespace-pre-wrap rounded bg-black/30 px-3 py-2 text-[12px] leading-[1.55] text-fg-1 ring-1 ring-white/[0.04]">
+            {summaryText}
+          </pre>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function Chip({
+  label,
+  value,
+  tone = 'neutral',
+}: {
+  label: string
+  value: string
+  tone?: 'neutral' | 'accent'
+}) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded px-1.5 py-[1px] text-[10px] ${
+        tone === 'accent'
+          ? 'bg-accent/[0.15] text-accent ring-1 ring-accent/30'
+          : 'bg-white/[0.04] text-fg-1 ring-1 ring-white/[0.06]'
+      }`}
+    >
+      <span className="text-fg-3">{label}</span>
+      <span>{value}</span>
+    </span>
   )
 }
 

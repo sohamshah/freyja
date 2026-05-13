@@ -338,23 +338,188 @@ export function buildSessionTrace(id: string): string | null {
 }
 
 /**
- * Export the raw JSON session file to a user-chosen destination. Also
- * writes a `.trace.txt` sibling with the condensed human-readable trace
- * so future diagnosis is one file-read away.
+ * Three views of a session for export:
+ *   - ``raw_transcript``: every Message ever exchanged, sourced from
+ *     ``~/.freyja/projects/<sid>/raw_messages.jsonl`` which the bridge
+ *     writes append-only on every ``transcript.append_message`` call.
+ *     Never truncated by compaction.
+ *   - ``live_transcript``: the renderer's current message slice (what
+ *     the user sees) — the compacted view the agent is running on.
+ *   - ``compactions``: every successful compaction (runtime AND agent
+ *     driven) with full summary text, scope, reason, tokens before /
+ *     after. Sourced from
+ *     ``~/.freyja/projects/<sid>/compactions.jsonl``.
+ */
+interface SessionExportBundle {
+  version: 2
+  exportedAt: number
+  metadata: {
+    id: string
+    title: string
+    model: string
+    workspace: string
+    createdAt: number
+    updatedAt: number
+    messageCount: number
+    totalInputTokens: number
+    totalOutputTokens: number
+    cacheReadTokens: number
+    parentSessionId?: string
+    childSessionIds?: string[]
+    agentType?: string
+    task?: string
+  }
+  raw_transcript: Array<{
+    ts: number
+    session_id: string
+    turn_id: string | null
+    message: unknown
+  }>
+  live_transcript: unknown[]
+  compactions: Array<{
+    ts: number
+    session_id: string
+    subtype: string
+    trigger: string
+    mechanism: string
+    tokens_before: number
+    tokens_after: number
+    summary_text: string
+    scope?: string
+    reason?: string
+    resumed_from_previous?: boolean
+    entries_removed?: number
+  }>
+}
+
+function sanitizeForFsId(id: string): string {
+  return id.replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^[.-]+|[.-]+$/g, '') || 'session'
+}
+
+function readJsonl(filePath: string): unknown[] {
+  if (!fs.existsSync(filePath)) return []
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8')
+    const rows: unknown[] = []
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      try {
+        rows.push(JSON.parse(trimmed))
+      } catch {
+        // Skip malformed lines — append-only logs are robust to a
+        // truncated tail line from an interrupted write.
+      }
+    }
+    return rows
+  } catch {
+    return []
+  }
+}
+
+function loadSessionExportBundle(id: string): SessionExportBundle | null {
+  const sess = loadSession(id)
+  if (!sess) return null
+  const safeId = sanitizeForFsId(id)
+  const projectDir = path.join(os.homedir(), '.freyja', 'projects', safeId)
+  const rawPath = path.join(projectDir, 'raw_messages.jsonl')
+  const compactionsPath = path.join(projectDir, 'compactions.jsonl')
+
+  const rawRows = readJsonl(rawPath) as Array<{
+    ts: number
+    session_id: string
+    turn_id: string | null
+    message: unknown
+  }>
+  const compactionRows = readJsonl(compactionsPath) as Array<{
+    ts: number
+    session_id: string
+    subtype: string
+    trigger: string
+    mechanism: string
+    tokens_before: number
+    tokens_after: number
+    summary_text: string
+    scope?: string
+    reason?: string
+    resumed_from_previous?: boolean
+    entries_removed?: number
+  }>
+
+  const slice = (sess as any).slice ?? {}
+  const liveMessages: unknown[] = Array.isArray(slice.messages) ? slice.messages : []
+
+  return {
+    version: 2,
+    exportedAt: Date.now(),
+    metadata: {
+      id: sess.id,
+      title: sess.title,
+      model: sess.model,
+      workspace: sess.workspace,
+      createdAt: sess.createdAt,
+      updatedAt: sess.updatedAt,
+      messageCount: sess.messageCount,
+      totalInputTokens: sess.totalInputTokens,
+      totalOutputTokens: sess.totalOutputTokens,
+      cacheReadTokens: sess.cacheReadTokens,
+      parentSessionId: (sess as any).parentSessionId,
+      childSessionIds: (sess as any).childSessionIds,
+      agentType: (sess as any).agentType,
+      task: (sess as any).task,
+    },
+    raw_transcript: rawRows,
+    live_transcript: liveMessages,
+    compactions: compactionRows,
+  }
+}
+
+/**
+ * Export the session to a user-chosen destination as three files:
+ *   - ``<dest>.json`` — the existing renderer-slice payload (back-compat
+ *     for anything that reads the v1 format).
+ *   - ``<dest>.bundle.json`` — the v2 three-view bundle: raw +
+ *     live + compactions with full summary text.
+ *   - ``<dest>.trace.txt`` — human-readable condensed trace.
  */
 export function exportSessionToFile(
   id: string,
   destPath: string,
-): { ok: true; jsonPath: string; tracePath: string } | { ok: false; error: string } {
+): {
+  ok: true
+  jsonPath: string
+  bundlePath: string
+  tracePath: string
+} | { ok: false; error: string } {
   try {
     const sess = loadSession(id)
     if (!sess) return { ok: false, error: 'session not found' }
     const rawJson = JSON.stringify(sess, null, 2)
     fs.writeFileSync(destPath, rawJson, 'utf8')
-    const tracePath = destPath.replace(/\.json$/i, '') + '.trace.txt'
+
+    const base = destPath.replace(/\.json$/i, '')
+    const bundlePath = `${base}.bundle.json`
+    const tracePath = `${base}.trace.txt`
+
+    const bundle = loadSessionExportBundle(id)
+    if (bundle) {
+      fs.writeFileSync(bundlePath, JSON.stringify(bundle, null, 2), 'utf8')
+    } else {
+      // Still write a bundle stub so callers can rely on the file existing.
+      fs.writeFileSync(
+        bundlePath,
+        JSON.stringify(
+          { version: 2, error: 'session not found', exportedAt: Date.now() },
+          null,
+          2,
+        ),
+        'utf8',
+      )
+    }
+
     const trace = buildSessionTrace(id) ?? ''
     fs.writeFileSync(tracePath, trace, 'utf8')
-    return { ok: true, jsonPath: destPath, tracePath }
+    return { ok: true, jsonPath: destPath, bundlePath, tracePath }
   } catch (err) {
     return { ok: false, error: String(err) }
   }

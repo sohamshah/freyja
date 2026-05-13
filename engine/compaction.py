@@ -37,6 +37,29 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+_SUMMARY_INJECT_MARKER = "[Previous conversation summary]"
+
+
+def _is_summary_inject(msg: Message) -> bool:
+    """True if ``msg`` is the synthetic sys_summary inserted by
+    ``TranscriptManager.get_messages()`` to surface a prior compaction's
+    summary to the model. We strip these from the iterative summarizer
+    input so the previous summary isn't double-counted (the iterative
+    prompt template already embeds the prior summary explicitly).
+    """
+    if getattr(msg, "role", "") != "system":
+        return False
+    content = getattr(msg, "content", "")
+    if isinstance(content, str):
+        return content.lstrip().startswith(_SUMMARY_INJECT_MARKER)
+    if isinstance(content, list):
+        for block in content:
+            text = getattr(block, "text", None)
+            if isinstance(text, str) and text.lstrip().startswith(_SUMMARY_INJECT_MARKER):
+                return True
+    return False
+
+
 def _count_images(messages: list[Message]) -> int:
     total = 0
     for msg in messages:
@@ -357,8 +380,6 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
         to_summarize = messages[:split_point]
         to_keep = messages[split_point:]
 
-        conversation_text = self._format_conversation(to_summarize)
-
         # Iterative path (Gap 2): if the transcript already has a prior
         # compaction entry, ask the summarizer to EXTEND that summary
         # rather than re-derive everything from scratch. The previous
@@ -366,6 +387,23 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
         # 1..K; we only need to merge the new turns since then.
         previous_summary = self._find_previous_summary(transcript)
         resumed_from_previous = previous_summary is not None
+
+        # When the iterative path is in play, the messages list starts
+        # with the [Previous conversation summary] sys_summary inject
+        # (from TranscriptManager.get_messages). That message carries
+        # the full prior summary text. Without filtering, we'd feed the
+        # previous summary to the summarizer TWICE — once via the
+        # SUMMARY_UPDATE_PROMPT's PREVIOUS SUMMARY: section, and once
+        # embedded in the conversation transcript itself. Strip the
+        # inject from the to_summarize slice in that case so the
+        # summarizer sees only NEW turns.
+        if resumed_from_previous:
+            to_summarize = [
+                m for m in to_summarize
+                if not _is_summary_inject(m)
+            ]
+
+        conversation_text = self._format_conversation(to_summarize)
 
         summary: str | None = None
         try:
@@ -437,10 +475,23 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
         """Pull split_point back to before any pinned (compaction_excluded)
         entry in the to_summarize range.
 
-        Maps transcript-entry indices to message-list indices: not every
-        entry produces a message (compaction-summary entries don't), so
-        we walk both sequences in lockstep. The returned split_point is
-        in message-list coordinates (matching the caller's convention).
+        Maps transcript-entry indices to message-list indices so the
+        returned split_point matches the caller's coordinate system.
+        Key subtlety: ``get_messages()`` injects a synthetic system
+        message (``[Previous conversation summary]\n...``) right before
+        the FIRST real message that follows a compaction entry. The
+        messages list therefore has the SAME length as transcript.entries
+        — but the inject sits where the compaction entry would have, so
+        every real message after a compaction is at a message-list index
+        ONE HIGHER than a naive "skip compaction entries" walk would
+        give you. We track the inject explicitly via ``inject_pending``.
+
+        Bug history: the previous implementation skipped compaction
+        entries entirely and never counted them, so any pin on a message
+        right after a prior compaction reported earliest_pin_message_idx=0
+        — split_point was forced to 0 and compaction failed with
+        "Nothing to summarize after honoring pinned entries" even though
+        there were plenty of older messages to compact.
         """
         try:
             entries = transcript.entries
@@ -449,14 +500,30 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
         if not entries:
             return split_point
 
-        # message_idx counts only entries whose ``message`` field is
-        # non-None — these are the items in ``transcript.get_messages()``.
         message_idx = 0
-        earliest_pin_message_idx = None
+        inject_pending = False
+        earliest_pin_message_idx: int | None = None
         for entry in entries:
-            if entry.message is None:
+            if getattr(entry, "is_compaction", False):
+                # A compaction entry contributes a sys_summary inject
+                # immediately before the NEXT real message — but only
+                # if there's a real summary to inject and a real
+                # message will follow it. Defer accounting until we see
+                # the next real message.
+                if entry.compaction_summary:
+                    inject_pending = True
                 continue
-            if entry.message is not None and getattr(entry, "compaction_excluded", False):
+            if entry.message is None:
+                # Defensive: ignore non-compaction entries with no
+                # message. Don't drop a pending inject — wait for the
+                # actual next real message.
+                continue
+            if inject_pending:
+                # The sys_summary occupies this slot; the real message
+                # takes the NEXT slot.
+                message_idx += 1
+                inject_pending = False
+            if getattr(entry, "compaction_excluded", False):
                 if message_idx < split_point:
                     earliest_pin_message_idx = message_idx
                     break

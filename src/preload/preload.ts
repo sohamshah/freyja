@@ -60,6 +60,8 @@ const api = {
     ok: boolean
     cancelled?: boolean
     jsonPath?: string
+    /** Three-view (raw / live / compactions) bundle sibling. */
+    bundlePath?: string
     tracePath?: string
     error?: string
   }> {

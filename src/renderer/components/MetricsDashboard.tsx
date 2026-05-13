@@ -297,6 +297,53 @@ export function MetricsDashboard() {
               className="col-span-6 lg:col-span-2"
             />
 
+            {/* Cooperative effectiveness — Phase 2 measurement. Does
+                the agent actually drive compaction in the 40-80% band,
+                or does the runtime fallback at 80% catch most of them?
+                Tells us whether Phase 3 (drop fallback to 50%) is
+                justified yet. */}
+            {(() => {
+              const cs = aggregate.cooperativeStats
+              const totalDriven = cs.agentDrivenCount + cs.runtimeFallbackCount
+              const agentShare =
+                totalDriven > 0 ? (cs.agentDrivenCount / totalDriven) * 100 : null
+              const sub =
+                totalDriven === 0
+                  ? 'no compactions yet'
+                  : (
+                      `agent @ ${
+                        cs.meanPressurePctAgent != null
+                          ? `${cs.meanPressurePctAgent.toFixed(0)}%`
+                          : '—'
+                      } · runtime @ ${
+                        cs.meanPressurePctRuntime != null
+                          ? `${cs.meanPressurePctRuntime.toFixed(0)}%`
+                          : '—'
+                      }`
+                    )
+              return (
+                <StatTile
+                  label="cooperation"
+                  value={
+                    agentShare != null
+                      ? `${agentShare.toFixed(0)}% agent`
+                      : 'n/a'
+                  }
+                  sub={sub}
+                  tone={
+                    agentShare == null
+                      ? 'neutral'
+                      : agentShare >= 70
+                        ? 'ok'
+                        : agentShare >= 40
+                          ? 'neutral'
+                          : 'warn'
+                  }
+                  className="col-span-6 lg:col-span-2"
+                />
+              )
+            })()}
+
             {/* Band distribution */}
             <section className="col-span-12 flex flex-col gap-3 rounded-xl glass-raised p-4 ring-hairline lg:col-span-7">
               <div className="flex items-center justify-between">
@@ -376,6 +423,31 @@ export function MetricsDashboard() {
                 formatX={(v) => `$${v.toFixed(2)}`}
               />
             </section>
+
+            {/* Agent compaction decisions — surfaces the
+                summarize_context_call corpus (Dataset 1 from the
+                design doc) so we can SEE what scopes the agent picks,
+                with what reasons, at what pressure. */}
+            {aggregate.agentDecisions.length > 0 && (
+              <section className="col-span-12 flex flex-col gap-3 rounded-xl glass-raised p-4 ring-hairline">
+                <div className="flex items-center justify-between">
+                  <span className="label">agent compaction decisions</span>
+                  <span className="font-mono text-[10px] text-fg-3">
+                    {aggregate.agentDecisions.length} call
+                    {aggregate.agentDecisions.length === 1 ? '' : 's'}
+                    {' · '}
+                    {
+                      aggregate.agentDecisions.filter((d) => d.success).length
+                    }{' '}
+                    succeeded
+                  </span>
+                </div>
+                <AgentDecisionsPanel
+                  decisions={aggregate.agentDecisions}
+                  scopeCounts={aggregate.agentDecisionsScopeCounts}
+                />
+              </section>
+            )}
 
             {/* Per-session table with sparklines */}
             <section className="col-span-12 flex flex-col gap-3 rounded-xl glass-raised p-4 ring-hairline">
@@ -468,6 +540,11 @@ interface CompactionEventRow {
   trigger?: string
   tokens_before: number
   tokens_after: number
+  /** Full produced summary, for the clickable detail view. */
+  summary_text?: string | null
+  scope?: string | null
+  reason?: string | null
+  resumed_from_previous?: boolean
 }
 
 interface PressureRow {
@@ -504,6 +581,34 @@ interface AggregateView {
   savingsSeries: Array<{ ts: number; pct: number }>
   turnHistogram: Array<{ low: number; high: number; count: number }>
   perSession: PerSessionRow[]
+  /** Agent-driven summarize_context calls — the trigger-decision
+   *  corpus the cooperative protocol generates. Each row is one
+   *  decision: scope chosen, reason, pressure at the moment, etc. */
+  agentDecisions: AgentDecisionRow[]
+  agentDecisionsScopeCounts: Record<string, number>
+  /** Cooperative protocol effectiveness — does the agent actually
+   *  drive compaction in the 40–80% band, or does the runtime have to
+   *  step in at fallback? Tells us whether Phase 3 (drop fallback to
+   *  50%) is justified. */
+  cooperativeStats: {
+    agentDrivenCount: number
+    runtimeFallbackCount: number
+    meanPressurePctAgent: number | null
+    meanPressurePctRuntime: number | null
+  }
+}
+
+interface AgentDecisionRow {
+  ts: number
+  sessionId: string
+  scope: string
+  levelUsed?: string
+  reason: string
+  pressurePctAtCall: number | null
+  tokensFreed: number
+  resumedFromPrevious: boolean
+  preserveFactsMissing: string[]
+  success: boolean
 }
 
 const BAND_ORDER: BandKey[] = [
@@ -591,6 +696,28 @@ function aggregateRows(
   const savingsSeries: Array<{ ts: number; pct: number }> = []
   const spendSeries: Array<{ t: number; cum: number }> = []
   const turnCosts = new Map<string, number>()
+  const agentDecisions: AgentDecisionRow[] = []
+  const agentDecisionsScopeCounts: Record<string, number> = {}
+  // Tally compaction events by trigger lineage so we can compute the
+  // cooperative-effectiveness tile (Phase 2 measurement).
+  const agentDrivenTriggers = new Set([
+    'agent_summarize_context',
+  ])
+  const runtimeFallbackTriggers = new Set([
+    'pre_request',
+    'overflow_cascade',
+    'context_overflow',
+    'runtime',
+  ])
+  let cooperativeAgentCount = 0
+  let cooperativeRuntimeCount = 0
+  const cooperativeAgentPressureSamples: number[] = []
+  const cooperativeRuntimePressureSamples: number[] = []
+  // Per-session last-seen pressure pct — when a compaction_event row
+  // arrives we attribute the most-recent pressure_signal pct as the
+  // pressure at the moment of compaction. Approximates the agent's
+  // pressure_pct_at_call when it's not on the row directly.
+  const lastSeenPressureBySession = new Map<string, number>()
 
   for (const row of sorted as any[]) {
     if (!row || !row.type) continue
@@ -647,6 +774,9 @@ function aggregateRows(
     } else if (row.type === 'pressure_signal') {
       const band: BandKey = (row.band as BandKey) || 'clean'
       bandCounts[band] = (bandCounts[band] || 0) + 1
+      if (sid) {
+        lastSeenPressureBySession.set(sid, row.pressure_pct || 0)
+      }
       if (cur) {
         if (BAND_RANK[band] > BAND_RANK[cur.highestBand]) cur.highestBand = band
         cur.pressureRows.push({
@@ -669,6 +799,27 @@ function aggregateRows(
       }
       const trig = row.trigger || row.mechanism || 'unknown'
       triggerCounts[trig] = (triggerCounts[trig] || 0) + 1
+      // Cooperative-effectiveness accounting. Only count the
+      // "complete" events (not start/skip) since those are the actual
+      // compactions that happened.
+      if (sub === 'compaction_complete') {
+        const pressureAtCompaction = sid
+          ? lastSeenPressureBySession.get(sid) ?? null
+          : null
+        if (agentDrivenTriggers.has(trig)) {
+          cooperativeAgentCount += 1
+          if (pressureAtCompaction != null) {
+            cooperativeAgentPressureSamples.push(pressureAtCompaction)
+          }
+        } else if (
+          runtimeFallbackTriggers.has(trig) || trig === 'unknown'
+        ) {
+          cooperativeRuntimeCount += 1
+          if (pressureAtCompaction != null) {
+            cooperativeRuntimePressureSamples.push(pressureAtCompaction)
+          }
+        }
+      }
       if (cur) {
         cur.compactions += 1
         if (sub === 'thrash_skip') cur.thrashTrips += 1
@@ -679,10 +830,43 @@ function aggregateRows(
           trigger: row.trigger,
           tokens_before: before,
           tokens_after: after,
+          // New fields from the enriched compaction_event JSONL row —
+          // surfaced in the clickable compaction-log detail panel.
+          summary_text: (row as any).summary_text ?? (row as any).summary_excerpt ?? null,
+          scope: (row as any).scope ?? null,
+          reason: (row as any).reason ?? null,
+          resumed_from_previous: Boolean((row as any).resumed_from_previous),
         })
       }
+    } else if (row.type === 'summarize_context_call') {
+      // Agent-driven trigger decision. Per-row scope + reason + the
+      // pressure context at the moment of the decision = Dataset 1
+      // from the design doc. Surface in the dashboard's new "agent
+      // compaction decisions" panel.
+      const scope = (row.scope as string) || 'unknown'
+      agentDecisionsScopeCounts[scope] = (agentDecisionsScopeCounts[scope] || 0) + 1
+      agentDecisions.push({
+        ts,
+        sessionId: sid || '',
+        scope,
+        levelUsed: row.level_used,
+        reason: (row.reason as string) || '',
+        pressurePctAtCall:
+          typeof row.pressure_pct_at_call === 'number'
+            ? row.pressure_pct_at_call
+            : null,
+        tokensFreed: Math.max(0, (row.tokens_before || 0) - (row.tokens_after || 0)),
+        resumedFromPrevious: Boolean(row.resumed_from_previous),
+        preserveFactsMissing: Array.isArray(row.preserve_facts_missing)
+          ? row.preserve_facts_missing
+          : [],
+        success: Boolean(row.success),
+      })
     }
   }
+
+  // Newest decisions first for the recent-decisions list.
+  agentDecisions.sort((a, b) => b.ts - a.ts)
 
   // Per-session list, sorted by spend.
   let perSession = Array.from(sessionMap.values())
@@ -746,6 +930,22 @@ function aggregateRows(
     savingsSeries,
     turnHistogram,
     perSession,
+    agentDecisions,
+    agentDecisionsScopeCounts,
+    cooperativeStats: {
+      agentDrivenCount: cooperativeAgentCount,
+      runtimeFallbackCount: cooperativeRuntimeCount,
+      meanPressurePctAgent:
+        cooperativeAgentPressureSamples.length > 0
+          ? cooperativeAgentPressureSamples.reduce((a, b) => a + b, 0) /
+            cooperativeAgentPressureSamples.length
+          : null,
+      meanPressurePctRuntime:
+        cooperativeRuntimePressureSamples.length > 0
+          ? cooperativeRuntimePressureSamples.reduce((a, b) => a + b, 0) /
+            cooperativeRuntimePressureSamples.length
+          : null,
+    },
   }
 }
 
@@ -933,6 +1133,129 @@ function RankedBars({
           </div>
         )
       })}
+    </div>
+  )
+}
+
+function AgentDecisionsPanel({
+  decisions,
+  scopeCounts,
+}: {
+  decisions: AgentDecisionRow[]
+  scopeCounts: Record<string, number>
+}) {
+  const scopeEntries = Object.entries(scopeCounts).sort((a, b) => b[1] - a[1])
+  const totalTokensFreed = decisions.reduce((a, d) => a + d.tokensFreed, 0)
+  const successCount = decisions.filter((d) => d.success).length
+  const successRate = decisions.length > 0 ? (successCount / decisions.length) * 100 : 0
+  const iterativeCount = decisions.filter((d) => d.resumedFromPrevious).length
+  return (
+    <div className="grid grid-cols-12 gap-3">
+      <div className="col-span-12 flex flex-col gap-2 rounded bg-white/[0.02] p-3 ring-hairline lg:col-span-5">
+        <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-fg-3">
+          scope mix
+        </span>
+        <RankedBars rows={scopeEntries} accent="#a8d4fc" />
+        <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-[10px]">
+          <div className="flex flex-col">
+            <span className="text-fg-3">tokens freed</span>
+            <span className="text-fg-0">
+              {formatTokens(totalTokensFreed)}
+            </span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-fg-3">success</span>
+            <span
+              className={successRate >= 80 ? 'text-ok' : 'text-fg-0'}
+            >
+              {successRate.toFixed(0)}%
+            </span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-fg-3">iterative</span>
+            <span className="text-fg-0">
+              {decisions.length > 0
+                ? `${((iterativeCount / decisions.length) * 100).toFixed(0)}%`
+                : '—'}
+            </span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-fg-3">avg / call</span>
+            <span className="text-fg-0">
+              {decisions.length > 0
+                ? formatTokens(Math.round(totalTokensFreed / decisions.length))
+                : '—'}
+            </span>
+          </div>
+        </div>
+      </div>
+      <div className="col-span-12 flex flex-col gap-1.5 lg:col-span-7">
+        <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-fg-3">
+          recent decisions
+        </span>
+        <div className="max-h-[280px] overflow-y-auto rounded bg-black/30 ring-hairline">
+          <ul className="flex flex-col font-mono text-[10.5px]">
+            {decisions.slice(0, 30).map((d, i) => (
+              <li
+                key={`${d.ts}-${i}`}
+                className={`flex flex-col gap-1 border-t border-white/[0.04] px-2.5 py-1.5 first:border-t-0 ${
+                  d.success ? '' : 'bg-danger/[0.06]'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-fg-3">
+                    {new Date(d.ts * 1000).toLocaleTimeString()}
+                  </span>
+                  <span
+                    className="rounded bg-accent/[0.18] px-1.5 py-[1px] text-[9px] uppercase text-accent ring-1 ring-accent/30"
+                    title={`scope=${d.scope}`}
+                  >
+                    {d.scope}
+                  </span>
+                  {d.resumedFromPrevious && (
+                    <span className="rounded bg-white/[0.06] px-1.5 py-[1px] text-[9px] uppercase text-fg-3">
+                      iter
+                    </span>
+                  )}
+                  {d.levelUsed && d.levelUsed !== d.scope && (
+                    <span className="text-fg-3">· {d.levelUsed}</span>
+                  )}
+                  <span className="ml-auto text-fg-2">
+                    {formatTokens(d.tokensFreed)} freed
+                  </span>
+                  {d.pressurePctAtCall != null && (
+                    <span className="text-fg-3">
+                      @ {d.pressurePctAtCall.toFixed(0)}%
+                    </span>
+                  )}
+                  {!d.success && (
+                    <span className="rounded bg-danger/15 px-1 py-[1px] text-[9px] uppercase text-danger ring-1 ring-danger/30">
+                      err
+                    </span>
+                  )}
+                  {d.preserveFactsMissing.length > 0 && (
+                    <span
+                      className="rounded bg-warn/15 px-1 py-[1px] text-[9px] uppercase text-warn ring-1 ring-warn/30"
+                      title={`Auto-appended: ${d.preserveFactsMissing.join(', ')}`}
+                    >
+                      {d.preserveFactsMissing.length} repaired
+                    </span>
+                  )}
+                </div>
+                {d.reason && (
+                  <p className="line-clamp-2 text-fg-1">
+                    {d.reason}
+                  </p>
+                )}
+                <span className="text-[9px] text-fg-3/70" title={d.sessionId}>
+                  {d.sessionId.slice(0, 28)}
+                  {d.sessionId.length > 28 ? '…' : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
     </div>
   )
 }
@@ -1386,6 +1709,8 @@ function SessionDetailDrawer({
   const calls = session.callRows.slice().sort((a, b) => a.ts - b.ts)
   const compactions = session.compactionRows.slice().sort((a, b) => a.ts - b.ts)
   const pressures = session.pressureRows.slice().sort((a, b) => a.ts - b.ts)
+  // Which compaction-log row is currently expanded (one at a time).
+  const [expandedCompactionTs, setExpandedCompactionTs] = useState<number | null>(null)
   const tMin = calls[0]?.ts ?? session.firstSeenTs
   const tMax = calls[calls.length - 1]?.ts ?? session.lastSeenTs
   const tSpan = Math.max(1, tMax - tMin)
@@ -1618,31 +1943,63 @@ function SessionDetailDrawer({
                     : c.subtype === 'thrash_skip'
                       ? '#f07878'
                       : '#f5b45d'
+                const isExpanded = expandedCompactionTs === c.ts
+                const hasDetails =
+                  Boolean(c.summary_text) || Boolean(c.scope) || Boolean(c.reason)
                 return (
-                  <div
-                    key={i}
-                    className="flex items-center gap-2 rounded bg-white/[0.025] px-2.5 py-1.5 font-mono text-[10px] ring-hairline"
-                  >
-                    <span
-                      className="h-1.5 w-1.5 shrink-0 rounded-full"
-                      style={{ background: color }}
-                    />
-                    <span className="text-fg-3">{new Date(c.ts * 1000).toLocaleTimeString()}</span>
-                    <span className="text-fg-1">{c.subtype}</span>
-                    <span className="text-fg-3">·</span>
-                    <span className="text-fg-2">{c.mechanism}</span>
-                    {c.trigger && (
-                      <>
-                        <span className="text-fg-3">·</span>
-                        <span className="text-fg-3">{c.trigger}</span>
-                      </>
+                  <div key={i} className="flex flex-col">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!hasDetails) return
+                        setExpandedCompactionTs(isExpanded ? null : c.ts)
+                      }}
+                      disabled={!hasDetails}
+                      className={`flex items-center gap-2 rounded px-2.5 py-1.5 font-mono text-[10px] ring-hairline transition ${
+                        hasDetails
+                          ? isExpanded
+                            ? 'bg-accent/[0.08] cursor-pointer'
+                            : 'bg-white/[0.025] cursor-pointer hover:bg-white/[0.05]'
+                          : 'bg-white/[0.025] cursor-default'
+                      }`}
+                    >
+                      <span
+                        className="h-1.5 w-1.5 shrink-0 rounded-full"
+                        style={{ background: color }}
+                      />
+                      <span className="text-fg-3">{new Date(c.ts * 1000).toLocaleTimeString()}</span>
+                      <span className="text-fg-1">{c.subtype}</span>
+                      <span className="text-fg-3">·</span>
+                      <span className="text-fg-2">{c.mechanism}</span>
+                      {c.trigger && (
+                        <>
+                          <span className="text-fg-3">·</span>
+                          <span
+                            className={
+                              c.trigger === 'agent_summarize_context'
+                                ? 'text-accent'
+                                : 'text-fg-3'
+                            }
+                          >
+                            {c.trigger}
+                          </span>
+                        </>
+                      )}
+                      <span className="ml-auto text-fg-2">
+                        {formatTokens(c.tokens_before)} → {formatTokens(c.tokens_after)}
+                      </span>
+                      <span className={savings < 10 ? 'text-danger' : 'text-ok'}>
+                        {savings.toFixed(0)}%
+                      </span>
+                      {hasDetails && (
+                        <span className="ml-1 text-[9px] uppercase tracking-[0.14em] text-fg-3">
+                          {isExpanded ? '−' : '+'}
+                        </span>
+                      )}
+                    </button>
+                    {isExpanded && hasDetails && (
+                      <CompactionRowDetail row={c} />
                     )}
-                    <span className="ml-auto text-fg-2">
-                      {formatTokens(c.tokens_before)} → {formatTokens(c.tokens_after)}
-                    </span>
-                    <span className={savings < 10 ? 'text-danger' : 'text-ok'}>
-                      {savings.toFixed(0)}%
-                    </span>
                   </div>
                 )
               })}
@@ -1651,6 +2008,98 @@ function SessionDetailDrawer({
         </section>
       </div>
     </aside>
+  )
+}
+
+/**
+ * Expanded detail panel for a compaction-log row in the session
+ * drawer. Mirrors the in-session ActivityView's compaction card: scope
+ * / mechanism / trigger / iterative chips, tokens before→after with
+ * delta + %, agent's free-text reason, and the full produced summary
+ * in a scrollable container with copy.
+ */
+function CompactionRowDetail({ row }: { row: CompactionEventRow }) {
+  const delta = row.tokens_before - row.tokens_after
+  const pct = row.tokens_before > 0 ? Math.round((delta / row.tokens_before) * 100) : 0
+  return (
+    <div className="mt-1 rounded-md bg-white/[0.015] px-3 py-2.5 font-mono text-[10.5px] text-fg-1 ring-hairline">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {row.scope && <DetailChip label="scope" value={row.scope} />}
+        <DetailChip label="mechanism" value={row.mechanism} />
+        {row.trigger && (
+          <DetailChip
+            label="trigger"
+            value={row.trigger}
+            tone={row.trigger === 'agent_summarize_context' ? 'accent' : 'neutral'}
+          />
+        )}
+        {row.resumed_from_previous && (
+          <DetailChip label="iterative" value="yes" tone="accent" />
+        )}
+      </div>
+      <div className="mt-2 flex flex-wrap items-baseline gap-2">
+        <span className="text-fg-3">tokens</span>
+        <span className="text-fg-0">{formatTokens(row.tokens_before)}</span>
+        <span className="text-fg-3">→</span>
+        <span className="text-fg-0">{formatTokens(row.tokens_after)}</span>
+        {delta > 0 && (
+          <span className="text-ok">
+            −{formatTokens(delta)} ({pct}%)
+          </span>
+        )}
+      </div>
+      {row.reason && (
+        <div className="mt-2 rounded bg-white/[0.025] px-2 py-1.5">
+          <div className="text-[9px] uppercase tracking-[0.14em] text-fg-3">reason</div>
+          <div className="mt-0.5 whitespace-pre-wrap leading-[1.55] text-fg-1">
+            {row.reason}
+          </div>
+        </div>
+      )}
+      {row.summary_text && (
+        <div className="mt-2">
+          <div className="mb-1 flex items-center justify-between">
+            <span className="text-[9px] uppercase tracking-[0.14em] text-fg-3">summary</span>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                void navigator.clipboard?.writeText(row.summary_text || '')
+              }}
+              className="rounded bg-white/[0.04] px-1.5 py-[1px] text-[9px] uppercase tracking-[0.18em] text-fg-2 ring-1 ring-white/[0.06] hover:bg-white/[0.07] hover:text-fg-0"
+            >
+              copy
+            </button>
+          </div>
+          <pre className="max-h-[320px] overflow-y-auto whitespace-pre-wrap rounded bg-black/30 px-2.5 py-1.5 text-[10.5px] leading-[1.55] text-fg-1 ring-1 ring-white/[0.04]">
+            {row.summary_text}
+          </pre>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DetailChip({
+  label,
+  value,
+  tone = 'neutral',
+}: {
+  label: string
+  value: string
+  tone?: 'neutral' | 'accent'
+}) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded px-1.5 py-[1px] text-[9.5px] ${
+        tone === 'accent'
+          ? 'bg-accent/[0.15] text-accent ring-1 ring-accent/30'
+          : 'bg-white/[0.04] text-fg-1 ring-1 ring-white/[0.06]'
+      }`}
+    >
+      <span className="text-fg-3">{label}</span>
+      <span>{value}</span>
+    </span>
   )
 }
 
