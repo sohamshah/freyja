@@ -827,6 +827,162 @@ def _default_thinking_for_model(model_id: str) -> "Any":
     return ThinkingConfig(enabled=True, effort=default_effort)
 
 
+# ─── System prompt blocks ────────────────────────────────────────────────
+#
+# Composed into the main agent's system prompt by _BridgeSession.initialize.
+# Kept as module-level constants + small builder functions so the shape is
+# easy to scan, tune, and unit-test in isolation. Sub-agent prompts are
+# built separately in bridge/tools/sub_agent_tool.py.
+
+_IDENTITY_BLOCK = (
+    "You are an AI agent operating inside Freyja, a desktop AI assistant "
+    "that gives you authenticated access to the user's local machine, "
+    "files, browser, and a network of specialized sub-agents. Your job is "
+    "to complete tasks the user delegates to you using the tools below; "
+    "sub-agents are an option when work is parallelizable, isolated, or "
+    "benefits from a specialized profile."
+)
+
+_DOING_TASKS_BLOCK = """# Doing tasks
+- Prefer dedicated tools over Bash when one fits — `read_file`, `edit_file`,
+  `write_file`, `glob`, `grep` are auditable in the UI, fail with clearer
+  errors, and avoid permission prompts. Reserve bash for compound shell
+  operations the dedicated tools can't express.
+- If you intend to call multiple tools and there are no dependencies between
+  them, send them in a single response with multiple tool-use blocks.
+  Maximize parallel tool calls — serial exploration burns wall time and
+  tokens for no benefit.
+- For irreversible or shared-state actions (rm -rf, force pushes, killing
+  user processes, sending external messages, deleting branches, modifying
+  CI), confirm with the user before proceeding unless they've authorized
+  that scope. Reversible local actions (file edits, running tests, reading
+  state) — proceed.
+- When you hit an obstacle, identify the root cause; don't take destructive
+  shortcuts to make it go away. Don't skip hooks, bypass validation, or
+  delete unfamiliar files without understanding what they are."""
+
+_OUTPUT_DISCIPLINE_BLOCK = """# Output discipline
+- Before your first tool call, state in one sentence what you're about to do.
+- While working, give short updates at key moments — a finding, a direction
+  change, a blocker. One sentence is almost always enough.
+- End of turn: one or two sentences. What changed and what's next.
+- Use real tool calls (no XML markers). Use fenced code blocks for code,
+  inline backticks for identifiers, GitHub-style `|---|` tables for tabular
+  data."""
+
+_GOAL_MODE_BLOCK = """# Goal mode is active
+This session is in goal mode — every assistant turn is evaluated by a judge
+against operator-defined criteria. Run `/goal status` to see the current
+goal, the active criteria, and the most recent verdict. When a verdict
+names open questions, address them explicitly in your next turn — don't
+paper over them."""
+
+_MEMORY_AND_SKILLS_BLOCK = """# Memory and skills
+- Save durable facts about the user (role, tooling preferences, project
+  conventions) to `memory`. Use `record_user_preference` when the user
+  expresses a clear preference you should remember.
+- Use `session_memory` for in-conversation scratch that should survive
+  context compaction (long task notes, partial results, reference data
+  you'll re-read).
+- Browse `list_skills` / `search_skills` whenever you encounter a domain
+  (TouchDesigner, Slack APIs, Figma plugins, specific libraries) you
+  might have specialized guidance for. Load the matching skill before
+  guessing."""
+
+_INSTALL_DEPS_BLOCK = """# Installing dependencies
+On a missing-package error, install the package and retry — yolo tier
+auto-approves. Prefer `uv pip install` in venvs, otherwise `uv add`,
+`npm install`, `brew install`. Common Python import → package map:
+`fitz`→pymupdf, `cv2`→opencv-python, `PIL`→pillow, `yaml`→pyyaml,
+`sklearn`→scikit-learn."""
+
+# Tool grouping for the system prompt's "Available tools" section. Listing
+# tools by functional category (instead of a flat alphabetical wall) helps
+# the agent pick the right one without a 50-line scan, and saves prompt
+# tokens by collapsing per-tool summaries — the agent gets full schemas via
+# the API tool definitions anyway. Tools NOT in any group fall through to
+# an "Other" section at the bottom with their summaries preserved.
+_TOOL_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Filesystem", (
+        "read_file", "write_file", "edit_file", "edit_json",
+        "glob", "grep", "list_directory", "artifacts",
+    )),
+    ("Shell", ("bash",)),
+    ("Web", ("web_search", "web_fetch", "web_research")),
+    ("Browser", ("browser_execute_js", "browser_screenshot")),
+    ("Computer", (
+        "screenshot", "click", "move_mouse", "scroll", "type_text",
+        "press_key", "key_down", "key_up", "cursor_position",
+        "list_displays", "list_windows", "focus_window",
+        "find_element", "read_ax_tree", "computer", "computer_use", "wait",
+    )),
+    ("Media", ("generate_image", "analyze_video")),
+    ("Knowledge", (
+        "list_skills", "search_skills", "load_skill",
+        "memory", "session_memory", "record_user_preference",
+    )),
+    ("Coordination", (
+        "sub_agent", "subagents", "summarize_context", "tool_search",
+    )),
+)
+
+
+def _grouped_tool_list(tools: dict[str, Any]) -> str:
+    """Render the registry as grouped categories, with Other for stragglers."""
+    available = set(tools.keys())
+    seen: set[str] = set()
+    lines: list[str] = []
+    for category, names in _TOOL_GROUPS:
+        members = [n for n in names if n in available]
+        if not members:
+            continue
+        # Pad category to align — keeps the output legible in monospace.
+        lines.append(f"{category:<13}· {', '.join(members)}")
+        seen.update(members)
+    leftover = sorted(available - seen)
+    if leftover:
+        lines.append("")
+        lines.append("Other (uncategorized):")
+        for name in leftover:
+            summary = tools[name].definition.summary
+            lines.append(f"- `{name}` — {summary}")
+    return "\n".join(lines)
+
+
+def _environment_block(
+    *,
+    model_id: str,
+    workspace: str,
+    project_output_dir: str,
+    coordination_strategy: str,
+) -> str:
+    """Build the per-session environment metadata block. Pulls platform
+    + shell from the host so the agent picks the right shell idioms
+    (gsed vs sed, pbcopy vs xclip, etc.) and knows what model it is."""
+    import os
+    import platform
+
+    system = platform.system()
+    if system == "Darwin":
+        ver = platform.mac_ver()[0] or platform.release()
+        platform_str = f"darwin · macOS {ver}"
+    elif system == "Linux":
+        platform_str = f"linux · {platform.release()}"
+    elif system == "Windows":
+        platform_str = f"windows · {platform.release()}"
+    else:
+        platform_str = system.lower()
+    shell = os.path.basename(os.environ.get("SHELL") or "/bin/sh") or "sh"
+    return (
+        "# Environment\n"
+        f"- Model: {model_id}\n"
+        f"- Platform: {platform_str} · {shell}\n"
+        f"- Workspace: `{workspace}`\n"
+        f"- Project output dir: `{project_output_dir}`\n"
+        f"- Coordination strategy: {coordination_strategy.upper()}"
+    )
+
+
 def build_provider(model_id: str, thinking_level: str = "auto") -> Any:
     """Create a fresh provider for the given model id.
 
@@ -1709,10 +1865,7 @@ class _BridgeSession:
             get_cumulative_cost=lambda: self.cumulative_cost,
         )
 
-        tool_list = "\n".join(
-            f"- `{name}` — {registry._tools[name].definition.summary}"  # noqa: SLF001
-            for name in tool_names
-        )
+        tool_list = _grouped_tool_list(registry._tools)  # noqa: SLF001
         self._tool_list = tool_list
 
         from bridge.tools.agent_types import agent_types_for_prompt
@@ -1723,44 +1876,43 @@ class _BridgeSession:
         )
         self._agent_types_section = agent_types_section
 
+        env_block = _environment_block(
+            model_id=self.model_id,
+            workspace=self.workspace,
+            project_output_dir=self.project_output_dir,
+            coordination_strategy=self.coordination_strategy,
+        )
+        goal_mode_block = (
+            _GOAL_MODE_BLOCK if self.coordination_strategy == "goal" else ""
+        )
+
         # The date/time is intentionally NOT baked into _base_system_prompt —
         # _refresh_knowledge_context prepends a fresh one on every call so
         # long-running sessions don't drift stale.
         self._base_system_prompt = (
-                "You are running inside Freyja.\n"
-                "\n"
-                f"You are operating in the workspace `{self.workspace}`.\n"
-                "\n"
-                f"{project_output_guidance(self.project_session_id, self.workspace)}\n"
-                "\n"
-                "Available tools:\n"
-                f"{tool_list}\n"
-                "\n"
-                f"{agent_types_section}\n"
-                "\n"
-                f"{coordination_prompt(self.coordination_strategy)}\n"
-                "\n"
-                "Use real tool calls (no XML markers). Be concise and actionable. "
-                "Prefer reading the codebase before answering questions that depend "
-                "on it. Use fenced code blocks for code and inline backticks for "
-                "identifiers. When presenting tabular data, use GitHub-style "
-                "tables with `|` and `---`.\n"
-                "\n"
-                "INSTALLING DEPENDENCIES: if a tool call fails because a "
-                "package or binary is missing, just install it yourself and "
-                "retry. You do NOT need to ask permission — in the default "
-                "yolo tier every package install is auto-approved. Prefer "
-                "`uv pip install <pkg>` inside the project's venv over raw "
-                "pip. Use `uv add <pkg>` only when the change should be "
-                "persisted to pyproject.toml. For npm use `npm install`, "
-                "for macOS system tools use `brew install`. Common Python "
-                "import → package mappings: `import fitz` → `pymupdf`, "
-                "`import cv2` → `opencv-python`, `import PIL` → `pillow`, "
-                "`import yaml` → `pyyaml`, `import sklearn` → "
-                "`scikit-learn`. On a ModuleNotFoundError, install the "
-                "right package and retry the same code on the next turn — "
-                "do not give up or switch to a worse approach."
-            )
+            f"{_IDENTITY_BLOCK}\n"
+            "\n"
+            f"{env_block}\n"
+            "\n"
+            f"# Workspace and file output\n"
+            f"{project_output_guidance(self.project_session_id, self.workspace)}\n"
+            "\n"
+            f"{_DOING_TASKS_BLOCK}\n"
+            "\n"
+            f"{_OUTPUT_DISCIPLINE_BLOCK}\n"
+            + (f"\n{goal_mode_block}\n" if goal_mode_block else "")
+            + "\n"
+            f"{_MEMORY_AND_SKILLS_BLOCK}\n"
+            "\n"
+            f"{_INSTALL_DEPS_BLOCK}\n"
+            "\n"
+            f"# Available tools\n"
+            f"{tool_list}\n"
+            "\n"
+            f"{agent_types_section}\n"
+            "\n"
+            f"{coordination_prompt(self.coordination_strategy)}\n"
+        )
         knowledge_prompt = build_knowledge_prompt(
             memory_store=self.memory_store,
             skill_store=self.skill_store,
