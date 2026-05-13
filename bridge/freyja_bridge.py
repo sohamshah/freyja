@@ -3379,28 +3379,31 @@ class _BridgeSession:
             chat_visible=True,
         )
 
-    def _build_subagent_stream_forwarders(self, child_session_id: str) -> tuple[Any, Any]:
-        """Return (on_stream, on_system_event) callbacks that forward the
-        child runner's stream events out as bridge events tagged with the
-        child's session id. Without these, the judge / calibrator child
-        sessions are visible in the sidebar (via session_spawned) but
-        their panes show empty — no text deltas, no tool calls, no
-        thinking. Mirrors what sub_agent_tool wires for its real
-        sub-agents."""
+    def _build_subagent_stream_forwarders(
+        self,
+        child_session_id: str,
+        *,
+        agent_type_name: str = "",
+        child_model: str = "",
+    ) -> tuple[Any, Any, Any]:
+        """Return (on_stream, on_system_event, on_llm_call) callbacks that
+        forward the child runner's stream events out as bridge events
+        tagged with the child's session id.
 
-        # turn_start has to fire before any text_delta lands, so the
-        # renderer's applyEventToSlice has a currentStreamingMessageId
-        # to append into. The runner emits one turn_start per LLM call;
-        # we forward each one verbatim with the child's session id.
+        Note: turn_start / turn_complete are NOT runner stream events —
+        they're framing events the bridge emits around each runner.run
+        call (mirrors what _BridgeSession.handle_user_message does for
+        the main session at line ~4234). The caller is responsible for
+        emitting them; this helper only forwards stream content.
+        """
+
+        # Track tool ids so tool_input_delta can be tagged with the
+        # currently-streaming tool, the same way sub_agent_tool does.
+        current_tool_id: dict[str, str] = {"id": ""}
+
         async def on_stream(event: Any) -> None:
             etype = getattr(event, "type", None)
-            if etype == "turn_start":
-                emit({
-                    "type": "turn_start",
-                    "sessionId": child_session_id,
-                    "turnId": getattr(event, "turn_id", None) or f"{child_session_id}-t",
-                })
-            elif etype == "text_delta":
+            if etype == "text_delta":
                 emit({
                     "type": "text_delta",
                     "sessionId": child_session_id,
@@ -3413,17 +3416,19 @@ class _BridgeSession:
                     "thinking": getattr(event, "thinking", ""),
                 })
             elif etype == "tool_use_start":
+                tid = getattr(event, "id", "")
+                current_tool_id["id"] = tid
                 emit({
                     "type": "tool_use_start",
                     "sessionId": child_session_id,
-                    "id": getattr(event, "id", ""),
+                    "id": tid,
                     "name": getattr(event, "name", ""),
                 })
             elif etype == "tool_input_delta":
                 emit({
                     "type": "tool_input_delta",
                     "sessionId": child_session_id,
-                    "id": getattr(event, "id", ""),
+                    "id": current_tool_id["id"],
                     "partialJson": getattr(event, "partial_json", ""),
                 })
 
@@ -3436,7 +3441,48 @@ class _BridgeSession:
                 "details": getattr(event, "details", {}) or {},
             })
 
-        return on_stream, on_system_event
+        # Spend telemetry — without this the child session pane shows $0.0000
+        # and "0 tokens" even when the model burned real budget. Mirrors
+        # _on_sub_llm_call in sub_agent_tool.
+        parent_id = self.id
+
+        def on_llm_call(payload: dict[str, Any]) -> None:
+            try:
+                from bridge.compaction_telemetry import append_telemetry
+                from engine.providers import compute_cost
+
+                if payload.get("error"):
+                    return
+                model = payload.get("model") or child_model
+                in_tok = int(payload.get("input_tokens", 0) or 0)
+                out_tok = int(payload.get("output_tokens", 0) or 0)
+                cr_tok = int(payload.get("cache_read_tokens", 0) or 0)
+                cw_tok = int(payload.get("cache_write_tokens", 0) or 0)
+                cost = compute_cost(
+                    model,
+                    input_tokens=in_tok,
+                    output_tokens=out_tok,
+                    cache_read_tokens=cr_tok,
+                    cache_write_tokens=cw_tok,
+                )
+                append_telemetry({
+                    "type": "llm_call_metric",
+                    "session_id": child_session_id,
+                    "turn_id": f"{child_session_id}-t1",
+                    "agent_type": agent_type_name,
+                    "parent_session_id": parent_id,
+                    "model": model,
+                    "input_tokens": in_tok,
+                    "output_tokens": out_tok,
+                    "cache_read_tokens": cr_tok,
+                    "cache_write_tokens": cw_tok,
+                    "cost_usd": float(cost) if cost is not None else None,
+                    "duration_ms": int(payload.get("duration_ms", 0) or 0),
+                })
+            except Exception:
+                pass
+
+        return on_stream, on_system_event, on_llm_call
 
     async def _judge_goal(self, latest_response: str) -> Any:
         from bridge.tools.base import ToolRegistry
@@ -3745,17 +3791,28 @@ class _BridgeSession:
         judge_provider = build_provider(
             judge_model, thinking_level=agent_type.thinking_effort
         )
-        on_stream, on_system_event = self._build_subagent_stream_forwarders(judge_session_id)
+        on_stream, on_system_event, on_llm_call = self._build_subagent_stream_forwarders(
+            judge_session_id,
+            agent_type_name=agent_type.name,
+            child_model=judge_model,
+        )
         judge_runner = AsyncAgentRunner(
             provider=judge_provider,
             compaction_strategy=SummaryCompaction(),
             tool_registry=child_registry,
             on_stream=on_stream,
             on_system_event=on_system_event,
+            on_llm_call=on_llm_call,
             thinking=_thinking_config_for_model(
                 judge_model, agent_type.thinking_effort
             ),
         )
+
+        # turn_start frames the assistant message slot in the renderer's
+        # slice — without it text_delta events get dropped. turn_complete
+        # in the finally block flips isStreaming off.
+        turn_id = f"{judge_session_id}-t1"
+        emit({"type": "turn_start", "sessionId": judge_session_id, "turnId": turn_id})
 
         spawned_at = time.time()
         outcome = "success"
@@ -3775,6 +3832,12 @@ class _BridgeSession:
             raise
         finally:
             duration_s = time.time() - spawned_at
+            emit({
+                "type": "turn_complete",
+                "sessionId": judge_session_id,
+                "turnId": turn_id,
+                "success": outcome == "success",
+            })
             emit(
                 {
                     "type": "session_completed",
@@ -3953,15 +4016,26 @@ class _BridgeSession:
         cal_provider = build_provider(
             cal_model, thinking_level=agent_type.thinking_effort
         )
-        on_stream, on_system_event = self._build_subagent_stream_forwarders(cal_session_id)
+        on_stream, on_system_event, on_llm_call = self._build_subagent_stream_forwarders(
+            cal_session_id,
+            agent_type_name=agent_type.name,
+            child_model=cal_model,
+        )
         cal_runner = AsyncAgentRunner(
             provider=cal_provider,
             compaction_strategy=SummaryCompaction(),
             tool_registry=child_registry,
             on_stream=on_stream,
             on_system_event=on_system_event,
+            on_llm_call=on_llm_call,
             thinking=_thinking_config_for_model(cal_model, agent_type.thinking_effort),
         )
+
+        # turn_start frames the assistant message slot in the renderer's
+        # slice — without it text_delta events get dropped. turn_complete
+        # in the finally block flips isStreaming off.
+        turn_id = f"{cal_session_id}-t1"
+        emit({"type": "turn_start", "sessionId": cal_session_id, "turnId": turn_id})
 
         spawned_at = time.time()
         outcome = "success"
@@ -4046,6 +4120,12 @@ class _BridgeSession:
             )
         finally:
             duration_s = time.time() - spawned_at
+            emit({
+                "type": "turn_complete",
+                "sessionId": cal_session_id,
+                "turnId": turn_id,
+                "success": outcome == "success",
+            })
             emit(
                 {
                     "type": "session_completed",
