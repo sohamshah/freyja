@@ -486,6 +486,9 @@ function ConversationStream({
   messages: Message[]
   systemEvents: SystemEventRecord[]
 }) {
+  const inboxEvents = useHarness((s) => s.inboxEvents)
+  const openSessionPane = useHarness((s) => s.openSessionPane)
+  const sessions = useHarness((s) => s.sessions)
   const narratorEvents = useMemo(
     () => systemEvents.filter((e) => NARRATOR_SUBTYPES.has(e.subtype)),
     [systemEvents],
@@ -510,6 +513,15 @@ function ConversationStream({
     }
     return map
   }, [systemEvents])
+  // Inbox events: only show "enqueued" actions (each message at the
+  // moment it landed in this session's inbox). Delivered duplicates
+  // would clutter the stream. Cap to recent — the slice already trims
+  // at 100, but a long-running session might still have many.
+  const inboxArrivals = useMemo(
+    () => inboxEvents.filter((e) => e.action === 'enqueued'),
+    [inboxEvents],
+  )
+
   // Build a chronologically-ordered stream. Tie-breaker on equal
   // timestamps: messages come first so a narrator event written
   // immediately after a parent turn lands beneath the message it
@@ -518,16 +530,20 @@ function ConversationStream({
     type Entry =
       | { kind: 'message'; at: number; message: Message }
       | { kind: 'narrator'; at: number; event: SystemEventRecord }
+      | { kind: 'inbox'; at: number; event: typeof inboxArrivals[number] }
     const entries: Entry[] = []
     for (const m of messages) entries.push({ kind: 'message', at: m.createdAt, message: m })
     for (const e of narratorEvents) entries.push({ kind: 'narrator', at: e.at, event: e })
+    for (const e of inboxArrivals) entries.push({ kind: 'inbox', at: e.timestamp, event: e })
     entries.sort((a, b) => {
       if (a.at !== b.at) return a.at - b.at
       if (a.kind === b.kind) return 0
-      return a.kind === 'message' ? -1 : 1
+      // messages first, then inbox chips, then narrator lines
+      const order = { message: 0, inbox: 1, narrator: 2 } as const
+      return order[a.kind] - order[b.kind]
     })
     return entries
-  }, [messages, narratorEvents])
+  }, [messages, narratorEvents, inboxArrivals])
 
   const toggleMissionDashboard = useHarness((s) => s.toggleMissionDashboard)
   // Delegated click handler for `.kanban-card-mention` spans inserted
@@ -564,6 +580,26 @@ function ConversationStream({
             if (entry.kind === 'message') {
               return <MessageView key={entry.message.id} message={entry.message} />
             }
+            if (entry.kind === 'inbox') {
+              const ev = entry.event
+              const senderSession = sessions.find((s) => s.id === ev.fromSession)
+              return (
+                <InboxChip
+                  key={`inbox-${ev.id}-${idx}`}
+                  fromLabel={ev.fromLabel}
+                  fromRole={ev.fromRole}
+                  content={ev.content}
+                  force={ev.force}
+                  replyTo={ev.replyTo}
+                  senderSessionId={ev.fromSession}
+                  onOpenSender={
+                    senderSession
+                      ? () => openSessionPane(ev.fromSession, 'split')
+                      : undefined
+                  }
+                />
+              )
+            }
             const event = entry.event
             return <NarratorLine key={`${event.id}-${idx}`} event={event} />
           })}
@@ -582,6 +618,82 @@ function NarratorLine({ event }: { event: SystemEventRecord }) {
   return (
     <div className="my-3 select-text font-prose text-[12.5px] italic leading-[1.55] text-fg-3">
       {text}
+    </div>
+  )
+}
+
+/** Inline chip rendering for an inbox message that arrived at this
+ *  session. Shows sender attribution (operator / agent + label), the
+ *  message content (truncated), a force flag, and a click target to
+ *  open the sender's session pane. */
+function InboxChip({
+  fromLabel,
+  fromRole,
+  content,
+  force,
+  replyTo,
+  senderSessionId,
+  onOpenSender,
+}: {
+  fromLabel: string
+  fromRole: 'operator' | 'agent'
+  content: string
+  force: boolean
+  replyTo: string | null
+  senderSessionId: string
+  onOpenSender?: () => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const preview = content.length > 160 ? content.slice(0, 157) + '…' : content
+  const roleTone =
+    fromRole === 'operator'
+      ? 'text-accent border-accent/[0.30] bg-accent/[0.05]'
+      : 'text-fg-1 border-white/[0.10] bg-white/[0.02]'
+  return (
+    <div
+      className={`my-2 select-text rounded-md border px-3 py-1.5 font-mono text-[11.5px] leading-[1.55] ${roleTone} ${
+        force ? 'ring-1 ring-warn/[0.30]' : ''
+      }`}
+    >
+      <div className="flex items-center gap-2 text-[10.5px] uppercase tracking-[0.14em]">
+        <span className="text-fg-3">↳ message</span>
+        {senderSessionId && onOpenSender ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onOpenSender()
+            }}
+            className={`rounded px-1.5 py-0.5 normal-case tracking-normal transition hover:bg-white/[0.06] ${
+              fromRole === 'operator' ? 'text-accent' : 'text-fg-2 hover:text-fg-0'
+            }`}
+            title={`Open ${fromLabel}'s session pane`}
+          >
+            {fromLabel}
+          </button>
+        ) : (
+          <span className={fromRole === 'operator' ? 'text-accent' : 'text-fg-2'}>
+            {fromLabel}
+          </span>
+        )}
+        {force && (
+          <span className="rounded border border-warn/[0.40] bg-warn/[0.06] px-1.5 py-0.5 text-[9.5px] tracking-[0.14em] text-warn">
+            force
+          </span>
+        )}
+        {replyTo && (
+          <span className="text-fg-4">· reply to {replyTo.slice(0, 6)}</span>
+        )}
+      </div>
+      <div
+        onClick={() => setExpanded((v) => !v)}
+        className="mt-1 cursor-pointer whitespace-pre-wrap"
+      >
+        {expanded ? content : preview}
+        {!expanded && content.length > preview.length && (
+          <span className="ml-1 text-fg-4">[click to expand]</span>
+        )}
+      </div>
     </div>
   )
 }

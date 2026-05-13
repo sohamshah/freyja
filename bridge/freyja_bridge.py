@@ -172,30 +172,86 @@ def _resolve_archived_subagent(session_id: str) -> dict[str, Any] | None:
 
 async def _wake_archived_subagent(state: Any, session_id: str, msg: Any) -> None:
     """Re-wake a saved sub-agent by spawning a fresh runner with the
-    persisted transcript + the incoming message. Full implementation
-    lands in Phase 4 (T11); for now this saves the message into the
-    sidecar's inbox so a future implementation can drain it on wake."""
+    persisted transcript + the incoming message.
+
+    Flow:
+      1. Append the new message to the inbox sidecar so it survives
+         even if spawn fails (it'll be picked up on next try).
+      2. Load the SUBAGENT sidecar (spawn config + transcript).
+      3. Find a host root session that has a `sub_agent` tool we can
+         spawn through — prefer the original parent if still running,
+         otherwise any root.
+      4. Call SubAgentTool.resume_archived(...) which:
+           - registers a record with the SAME session id
+           - restores the saved transcript onto a fresh Session
+           - attaches an inbox hydrated from the sidecar
+           - fires session_spawned + the agent loop
+      5. The pre-iteration drain hook delivers the message as the
+         first user turn of the resumed run.
+    """
     try:
         from bridge.transcript_persistence import (
             save_inbox_state,
             load_inbox_state,
+            load_subagent_state,
         )
     except Exception:
         return
-    # Append to whatever inbox is already persisted for that session,
-    # so when the re-wake path is built it picks up everything queued.
-    existing = load_inbox_state(session_id) or {
+
+    # Step 1: append to inbox sidecar (so spawn failures don't drop msg).
+    existing_inbox = load_inbox_state(session_id) or {
         "sessionId": session_id,
         "unread": [],
         "delivered": [],
     }
-    unread = list(existing.get("unread") or [])
+    unread = list(existing_inbox.get("unread") or [])
     unread.append(msg.to_dict())
-    existing["unread"] = unread
+    existing_inbox["unread"] = unread
     try:
-        save_inbox_state(session_id, existing)
+        save_inbox_state(session_id, existing_inbox)
     except Exception:
         pass
+
+    # Step 2: load the spawn config.
+    sidecar = load_subagent_state(session_id)
+    if not sidecar:
+        log("warn", f"_wake_archived_subagent: no sidecar for {session_id}")
+        return
+
+    # Step 3: find a host root session whose SubAgentTool we can call.
+    # Prefer the original parent; fall back to any root.
+    preferred_parent = str(sidecar.get("parentSessionId") or "")
+    host_sess = None
+    if preferred_parent and preferred_parent in state.sessions:
+        host_sess = state.sessions[preferred_parent]
+    else:
+        for root in state.sessions.values():
+            if root.tool_registry is not None:
+                host_sess = root
+                break
+    if host_sess is None or host_sess.tool_registry is None:
+        log("warn", f"_wake_archived_subagent: no host root running for {session_id}")
+        return
+
+    # Step 4: find the SubAgentTool on the host's registry. The tool is
+    # registered under name "sub_agent" — the same tool exposed to the
+    # agent for spawning new sub-agents. We use it programmatically.
+    try:
+        sub_tool = host_sess.tool_registry._tools.get("sub_agent")  # noqa: SLF001
+    except Exception:
+        sub_tool = None
+    if sub_tool is None:
+        log("warn", f"_wake_archived_subagent: host has no sub_agent tool for {session_id}")
+        return
+
+    # Step 5: spawn the resume. msg.from_role tells us the wake source.
+    woken_by = "operator" if getattr(msg, "from_role", "") == "operator" else "agent"
+    try:
+        result_id = await sub_tool.resume_archived(sidecar, woken_by=woken_by)
+        if result_id:
+            log("info", f"_wake_archived_subagent: resumed {result_id} (woken_by={woken_by})")
+    except Exception as exc:  # noqa: BLE001
+        log("warn", f"_wake_archived_subagent: resume_archived raised: {exc}")
 
 
 # Anthropic enforces a 5 MiB cap on the base64 STRING for any image

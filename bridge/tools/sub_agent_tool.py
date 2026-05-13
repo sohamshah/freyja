@@ -367,6 +367,122 @@ Parameters:
             is_error=False,
         )
 
+    async def resume_archived(
+        self,
+        sidecar_data: dict[str, Any],
+        *,
+        woken_by: str = "agent",
+    ) -> str | None:
+        """Re-wake an archived sub-agent from its saved sidecar.
+
+        Mirrors execute() but:
+          - reuses the saved session id so the renderer's existing slice
+            picks up where it left off
+          - skips the registration counter (we keep the original id)
+          - restores the saved engine transcript onto the new Session
+          - hydrates the record's inbox from the inbox sidecar so any
+            messages queued while the agent was asleep flow into the
+            first iteration via the pre-iteration drain hook
+
+        Returns the resumed session id, or None on failure.
+
+        `woken_by` propagates to the session_spawned metadata so the
+        renderer can show a "↻ rewoken by agent / operator" chip.
+        """
+        from bridge.tools.agent_types import (
+            get_agent_type,
+            resolve_model_choice,
+        )
+
+        sub_id = str(sidecar_data.get("sessionId") or "").strip()
+        if not sub_id:
+            return None
+        if sub_id in {r.id for r in self._spec.registry.list_all() if r.is_running}:
+            # Already running — message was already delivered via the
+            # live inbox path; nothing to do.
+            return sub_id
+
+        agent_type_name = str(sidecar_data.get("agentType") or "general")
+        label = str(sidecar_data.get("label") or sub_id)
+        task = str(sidecar_data.get("task") or "")
+        coord = str(sidecar_data.get("coordinationStrategy") or self._spec.coordination_strategy)
+        transcript = sidecar_data.get("transcript") if isinstance(sidecar_data.get("transcript"), dict) else None
+
+        agent_type = get_agent_type(agent_type_name, self._spec.parent_workspace)
+        model_resolution = resolve_model_choice(agent_type, self._spec.parent_model)
+        if not model_resolution.available:
+            return None
+        child_model = model_resolution.model
+
+        # Concurrency cap still applies.
+        running = sum(1 for r in self._spec.registry.list_all() if r.is_running)
+        if running >= MAX_ACTIVE_SUBAGENTS:
+            return None
+
+        # Register using the ORIGINAL sub_id so the renderer reuses its
+        # existing session slice — no new pane, the old one wakes back up.
+        record = self._spec.registry.register(
+            id=sub_id, label=label, task=task, mode="foreground"
+        )
+        record.agent_type_name = agent_type.name
+        record.agent_type = agent_type  # type: ignore[attr-defined]
+        record.child_model = child_model  # type: ignore[attr-defined]
+        record.model_resolution = model_resolution  # type: ignore[attr-defined]
+        record.coordination_strategy = coord  # type: ignore[attr-defined]
+        record.parent_session_id = self._spec.parent_session_id or ""
+        # Resume markers — _run_child checks these to switch into the
+        # restored-transcript path instead of the fresh-spawn path.
+        record.restored_transcript = transcript  # type: ignore[attr-defined]
+        record.resume_mode = True  # type: ignore[attr-defined]
+        record.woken_by = woken_by  # type: ignore[attr-defined]
+        record.spawned_at_ts = time.time()  # type: ignore[attr-defined]
+
+        # Attach an inbox + hydrate from the sidecar so messages queued
+        # while the agent was archived flow in on the first iteration.
+        try:
+            from bridge.inbox import SessionInbox
+            from bridge.transcript_persistence import load_inbox_state
+
+            record.inbox = SessionInbox(session_id=sub_id)
+            stored_inbox = load_inbox_state(sub_id)
+            if isinstance(stored_inbox, dict):
+                restored = SessionInbox.from_dict(stored_inbox)
+                if restored and restored.unread:
+                    for m in restored.unread:
+                        record.inbox.push(m)
+        except Exception:
+            record.inbox = None
+
+        # Fire session_spawned so the renderer wakes the existing slice.
+        # task carries the resume marker as a system note so the agent
+        # knows it's being re-engaged.
+        await _fire(
+            self._spec.emit_event,
+            {
+                "type": "session_spawned",
+                "sessionId": sub_id,
+                "parentSessionId": self._spec.parent_session_id,
+                "title": f"{label} (resumed)",
+                "model": child_model,
+                "reasoningLevel": agent_type.thinking_effort,
+                "task": task,
+                "mode": "foreground",
+                "agentType": agent_type.name,
+                "coordinationStrategy": coord,
+                "kanbanTaskId": getattr(record, "kanban_task_id", None),
+                "taskId": getattr(record, "task_id", None),
+                "workspace": self._spec.parent_workspace,
+                "createdAt": int(time.time() * 1000),
+                "wokenBy": woken_by,
+                "resumed": True,
+            },
+        )
+
+        # Background spawn — caller is the bridge router, not an agent
+        # tool call, so there's no ToolResult to return.
+        asyncio.create_task(self._run_background(record), name=f"resume-{sub_id}")
+        return sub_id
+
     async def _prepare_task_assignment(
         self,
         *,
@@ -630,6 +746,20 @@ Parameters:
                 "coordination_strategy": self._spec.coordination_strategy,
             },
         )
+
+        # Resume path: if the record carries a saved transcript (set
+        # by resume_archived), restore it onto the new Session. The
+        # incoming inbox message (also pre-loaded onto record.inbox)
+        # will be drained by the runner's pre-iteration hook and
+        # appear as the next user turn.
+        if getattr(record, "resume_mode", False) and getattr(record, "restored_transcript", None):
+            try:
+                session.restore_transcript(record.restored_transcript)
+                logger.info("Restored transcript onto resumed sub-agent %s", record.id)
+            except Exception:
+                logger.exception(
+                    "failed to restore transcript on resumed sub-agent %s", record.id
+                )
 
         await self._mark_kanban_running(record)
         await self._mark_task_running(record)
@@ -927,7 +1057,19 @@ Parameters:
         stop = StopCondition(max_iterations=agent_type.max_iterations)
 
         run_task = asyncio.create_task(
-            runner.run(session, record.task, stream=True, stop_condition=stop),
+            runner.run(
+                session,
+                # On resume, the saved transcript already carries the
+                # original task + prior turns. We feed a thin "you
+                # are being re-engaged; check your inbox" prompt
+                # instead so the pre-iteration drain inserts the real
+                # wake message before the LLM call.
+                "[RESUME] You are being re-engaged after a pause. New messages have arrived in your inbox — read them and continue."
+                if getattr(record, "resume_mode", False)
+                else record.task,
+                stream=True,
+                stop_condition=stop,
+            ),
             name=f"sub-run-{record.id}",
         )
         watch_task = asyncio.create_task(

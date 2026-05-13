@@ -275,6 +275,13 @@ export interface SessionSnapshot {
   completed?: boolean
   completedAt?: number
   success?: boolean
+  /** How this session came to exist:
+   *   - 'operator'  : root session the operator opened
+   *   - 'agent'     : sub-agent spawned by another agent
+   *   - 'rewoken-agent'    : archived sub-agent re-woken via an agent talk()
+   *   - 'rewoken-operator' : archived sub-agent re-woken via an operator talk()
+   *  Set from the session_spawned event payload. */
+  wokenBy?: 'operator' | 'agent' | 'rewoken-agent' | 'rewoken-operator'
 }
 
 export interface CommandAttachment {
@@ -565,6 +572,9 @@ export type BridgeEvent =
       taskId?: string
       workspace?: string
       createdAt: number
+      /** Re-wake metadata — set by SubAgentTool.resume_archived. */
+      wokenBy?: 'operator' | 'agent'
+      resumed?: boolean
     } & SessionId)
   | ({
       type: 'session_completed'

@@ -451,11 +451,17 @@ export function Sidebar() {
                     }}
                   />
                 )}
-                <span className="mt-[3px] flex h-3 w-3 items-center justify-center">
+                <span className="mt-[3px] flex h-3 w-[18px] items-center justify-center">
                   {running ? (
-                    <Spinner
-                      name="scan"
-                      className={isComputer ? 'text-warn' : 'text-accent'}
+                    <PixelDither
+                      tone={
+                        isComputer
+                          ? 'warn'
+                          : child.wokenBy === 'rewoken-agent' ||
+                            child.wokenBy === 'rewoken-operator'
+                          ? 'rewoken'
+                          : 'accent'
+                      }
                     />
                   ) : (
                     <span
@@ -473,6 +479,7 @@ export function Sidebar() {
                         computer
                       </span>
                     )}
+                    <WokenByChip wokenBy={child.wokenBy} />
                   </div>
                   <div className="mt-[2px] flex items-center gap-1.5 text-[10px] text-fg-2">
                     <span className="font-mono">
@@ -1581,5 +1588,95 @@ function CtxBtn({
     >
       {label}
     </button>
+  )
+}
+
+/** PixelDither — small 5×2 grid of animated squares used as a
+ *  "running" indicator in the sidebar next to active sessions. Each
+ *  cell carries a staggered animation-delay so the eye reads it as a
+ *  scan, not random twinkle. Three tones:
+ *    - accent: normal sub-agent (steel-blue)
+ *    - warn:   computer-use sub-agent (amber)
+ *    - rewoken: re-engaged sub-agent (warmer accent — distinguishes
+ *               revived agents from fresh spawns)
+ */
+function PixelDither({
+  tone = 'accent',
+}: {
+  tone?: 'accent' | 'warn' | 'rewoken'
+}) {
+  const fill =
+    tone === 'warn'
+      ? 'rgb(245, 182, 64)'
+      : tone === 'rewoken'
+      ? 'rgb(196, 168, 240)'  // soft lilac to distinguish from default accent
+      : 'rgb(168, 212, 252)'
+  // 5 columns × 2 rows = 10 cells. Cell 3px × 3px, gap 1px → total 19×7px.
+  const cells: Array<{ x: number; y: number; delay: number }> = []
+  for (let row = 0; row < 2; row++) {
+    for (let col = 0; col < 5; col++) {
+      cells.push({
+        x: col * 4,
+        y: row * 4,
+        // Diagonal scan: top-left fires first, bottom-right last
+        delay: (col + row) * 80,
+      })
+    }
+  }
+  return (
+    <svg
+      width={19}
+      height={7}
+      viewBox="0 0 19 7"
+      aria-label="running"
+      role="img"
+    >
+      {cells.map((cell, i) => (
+        <rect
+          key={i}
+          x={cell.x}
+          y={cell.y}
+          width={3}
+          height={3}
+          fill={fill}
+          className="pixel-dither-cell"
+          style={{ animationDelay: `${cell.delay}ms` }}
+        />
+      ))}
+    </svg>
+  )
+}
+
+/** WokenByChip — small inline chip on a sub-agent row that explains
+ *  why the session is alive: spawned by an agent (default — hidden),
+ *  re-woken by an agent talk(), or re-woken by an operator talk().
+ *  Operator-initiated root sessions don't render a chip since that's
+ *  the default case for top-level work.
+ */
+function WokenByChip({
+  wokenBy,
+}: {
+  wokenBy?: 'operator' | 'agent' | 'rewoken-agent' | 'rewoken-operator'
+}) {
+  if (!wokenBy || wokenBy === 'operator' || wokenBy === 'agent') return null
+  // Both rewoken variants share the same glyph; only the tint differs
+  // so the operator can tell apart "I woke this" from "an agent woke this".
+  const tone =
+    wokenBy === 'rewoken-operator'
+      ? 'bg-accent/[0.10] text-accent ring-accent/[0.30]'
+      : 'bg-fg-3/[0.10] text-fg-1 ring-white/[0.10]'
+  const label =
+    wokenBy === 'rewoken-operator' ? '↻ op' : '↻ agent'
+  return (
+    <span
+      className={`shrink-0 rounded px-1 py-[1px] font-mono text-[8.5px] uppercase tracking-[0.10em] ring-1 ${tone}`}
+      title={
+        wokenBy === 'rewoken-operator'
+          ? 'Re-woken by the operator'
+          : 'Re-woken by an agent'
+      }
+    >
+      {label}
+    </span>
   )
 }

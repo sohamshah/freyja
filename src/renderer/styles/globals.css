@@ -16,6 +16,25 @@
   );
 }
 
+/* ─── Pixel-dither running indicator
+   ──────────────────────────────────────────────────────────────────
+   A small 5×2 grid of squares that scan left → right then dim out,
+   used in the sidebar next to actively-running sessions. Each cell
+   gets a staggered animation-delay (50 / 75 / 100 / 125 / 150 ms)
+   so the eye reads it as a directional pulse, not random twinkle.
+   The same animation drives the warn-toned variant for computer-use
+   sessions and the rewoken variant for re-engaged sub-agents. */
+@keyframes pixel-dither {
+  0%   { opacity: 0.15; }
+  20%  { opacity: 1; }
+  60%  { opacity: 0.35; }
+  100% { opacity: 0.15; }
+}
+
+.pixel-dither-cell {
+  animation: pixel-dither 1100ms cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
 /* ─── Departure Mono ───────────────────────────────────────────────
    helenazhang.com · departuremono.com · SIL OFL license. Copied into
    assets/fonts/. Pixel-perfect at 11px increments per the designer's
@@ -683,79 +702,53 @@ select {
 
 /* ── Sticky section headers (Sidebar + Activity panel)
    ──────────────────────────────────────────────────────────────────
-   Two visual states driven by `data-stuck` on the outer wrapper:
-   - false  → full-bleed frosted bar, flush with the scroll surface
-   - true   → centered pill, lifted off the content with a soft drop
-              shadow so it reads as "anchored" rather than inline
-   The transition animates margins, padding, radius, background, and
-   box-shadow simultaneously — all properties that interpolate cleanly. */
+   At rest the whole header is transparent — text sits on the panel's
+   own glass+topo backdrop. When the header becomes stuck the .chip
+   layer morphs into a centered glass pill that floats over scrolling
+   content. There is no full-width tint behind the pill; the chip's
+   own backdrop-blur does the concealment work, scoped to itself. */
 .sticky-section-header {
-  /* Default visual is full-width. The outer's only job is positioning;
-     the .sticky-section-inner element holds the look so its background
-     can shrink in from the edges when stuck. */
   pointer-events: none;
 }
-.sticky-section-inner {
+.sticky-section-strip {
+  /* Passthrough wrapper — no styling, just the positioning context
+     for the chip. Kept in markup so the structure mirrors any future
+     full-width treatments without another JSX rewrite. */
   pointer-events: auto;
+}
+.sticky-section-chip {
   display: block;
   margin: 0;
-  padding: 0;
   border-radius: 0;
-  background: linear-gradient(
-    180deg,
-    rgba(14, 14, 14, 0.78),
-    rgba(14, 14, 14, 0.66)
-  );
-  -webkit-backdrop-filter: blur(14px) saturate(140%);
-  backdrop-filter: blur(14px) saturate(140%);
-  box-shadow:
-    inset 0 -1px 0 0 rgba(255, 255, 255, 0.04),
-    0 0 0 0 rgba(0, 0, 0, 0);
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
   transition:
-    margin 320ms cubic-bezier(0.22, 1, 0.36, 1),
-    padding 320ms cubic-bezier(0.22, 1, 0.36, 1),
-    border-radius 320ms cubic-bezier(0.22, 1, 0.36, 1),
-    background 320ms cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 320ms cubic-bezier(0.22, 1, 0.36, 1),
-    transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
+    margin 360ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-radius 360ms cubic-bezier(0.22, 1, 0.36, 1),
+    background 360ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 360ms cubic-bezier(0.22, 1, 0.36, 1),
+    -webkit-backdrop-filter 360ms cubic-bezier(0.22, 1, 0.36, 1),
+    backdrop-filter 360ms cubic-bezier(0.22, 1, 0.36, 1);
 }
-.sticky-section-header[data-stuck='true'] .sticky-section-inner {
-  /* Pull inward from both edges so it visually shrinks into a pill,
-     lift it off the content with a soft elevation, and switch to the
-     fully-rounded chip shape. The inner padding bumps a touch so the
-     content sits clean inside the pill. */
-  margin: 6px 16% 6px 16%;
-  padding-top: 2px;
-  padding-bottom: 2px;
+.sticky-section-header[data-stuck='true'] .sticky-section-chip {
+  /* Pulls inward to a centered pill with its own scoped frost. Fill
+     opacity is set high enough that the chip clearly reads as a
+     button against scrolling content, while still letting some of
+     the topo backdrop bleed through for continuity with the panel. */
+  margin: 4px 14%;
   border-radius: 9999px;
-  background: linear-gradient(
-    180deg,
-    rgba(20, 20, 20, 0.92),
-    rgba(10, 10, 10, 0.86)
-  );
+  background: rgba(255, 255, 255, 0.20);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  backdrop-filter: blur(18px) saturate(140%);
   box-shadow:
-    inset 0 0.5px 0 0 rgba(255, 255, 255, 0.14),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
-    0 10px 26px -10px rgba(0, 0, 0, 0.7);
-  transform: translateY(0);
+    inset 0 0.5px 0 0 rgba(255, 255, 255, 0.24),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.10),
+    0 6px 18px -10px rgba(0, 0, 0, 0.45);
 }
-/* The first child inside the inner is the actual title row (label +
-   count + any side controls). When stuck we tighten its layout so the
-   chip wraps tightly around its content. */
-.sticky-section-inner > * {
-  transition:
-    gap 280ms cubic-bezier(0.22, 1, 0.36, 1),
-    padding 280ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-.sticky-section-header[data-stuck='true'] .sticky-section-inner > * {
-  /* Slightly tighter spacing inside the chip. */
-  padding-left: 10px;
-  padding-right: 10px;
-}
-/* Respect users who request reduced motion. */
 @media (prefers-reduced-motion: reduce) {
-  .sticky-section-inner,
-  .sticky-section-inner > * {
+  .sticky-section-chip {
     transition: none;
   }
 }
@@ -972,4 +965,77 @@ select {
   background:
     repeating-linear-gradient(45deg, rgba(255,255,255,0.025) 0 6px, transparent 6px 12px),
     rgba(255,255,255,0.02);
+}
+
+/* ── Boot splash
+   ──────────────────────────────────────────────────────────────────
+   The SplashScreen component renders a full-viewport WebGL ripple
+   under a centred glass plate holding the freyja wordmark + subtitle.
+   The plate is hidden at first (scaled down, blurred, off-axis) and
+   animates in with Apple's heavy ease-out — same gesture as the
+   reference but the chrome is keyed for our dark substrate. */
+.splash-plate {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 3.5rem 5.5rem 2.8rem;
+  border-radius: 32px;
+  /* Dark glass plate — same visionOS gesture as the reference, but
+     keyed for our dark substrate so it reads as a translucent obsidian
+     pane rather than an icy pearl one. */
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.015) 70%);
+  -webkit-backdrop-filter: blur(40px) saturate(140%);
+  backdrop-filter: blur(40px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.22),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.04),
+    0 30px 60px -12px rgba(0, 0, 0, 0.6),
+    0 2px 6px rgba(0, 0, 0, 0.35);
+  /* Cinematic entry — scaled down, off-axis, blurred. The .revealed
+     class swaps every property simultaneously over 4s. */
+  opacity: 0;
+  transform: scale(0.92) translateY(15px);
+  filter: blur(10px);
+  transition: opacity 4s cubic-bezier(0.19, 1, 0.22, 1),
+              transform 4s cubic-bezier(0.19, 1, 0.22, 1),
+              filter 4s cubic-bezier(0.19, 1, 0.22, 1);
+}
+.splash-plate.revealed {
+  opacity: 1;
+  transform: scale(1) translateY(0);
+  filter: blur(0);
+}
+.splash-wordmark {
+  width: 100%;
+  max-width: 560px;
+}
+.splash-subtitle {
+  margin-top: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: rgba(196, 224, 252, 0.55);
+  font-weight: 500;
+  /* Subtitle reveals on its own delayed transition so it lands a beat
+     after the plate's body has settled — a tiny choreography that
+     reads as a "ready" beat rather than everything arriving at once. */
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 1.6s ease 1.6s, transform 1.6s ease 1.6s;
+}
+.splash-plate.revealed .splash-subtitle {
+  opacity: 1;
+  transform: translateY(0);
+}
+@media (prefers-reduced-motion: reduce) {
+  .splash-plate,
+  .splash-subtitle {
+    transition: opacity 0.4s ease;
+    filter: none !important;
+    transform: none !important;
+  }
 }

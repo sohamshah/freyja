@@ -1578,7 +1578,32 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         // to land.
         const newSessionId = ev.sessionId!
         const existing = prev.sessions.find((s) => s.id === newSessionId)
-        if (existing) return prev
+        if (existing) {
+          // Resume path: the session already exists from its first spawn.
+          // We DON'T create a duplicate; instead refresh status flags so
+          // the sidebar's running indicator + the new wokenBy marker
+          // pick up the re-engagement.
+          if (ev.resumed) {
+            const newWokenBy: SessionSnapshot['wokenBy'] =
+              ev.wokenBy === 'operator' ? 'rewoken-operator' : 'rewoken-agent'
+            return {
+              ...prev,
+              sessions: prev.sessions.map((s) =>
+                s.id === newSessionId
+                  ? {
+                      ...s,
+                      completed: false,
+                      success: undefined,
+                      completedAt: undefined,
+                      wokenBy: newWokenBy,
+                      updatedAt: Date.now(),
+                    }
+                  : s,
+              ),
+            }
+          }
+          return prev
+        }
         const childModel = ev.model || prev.model
         const childReasoning = normalizeReasoningFor(
           childModel,
@@ -1606,6 +1631,15 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
             ev.coordinationStrategy || prev.coordinationStrategy,
           ),
           completed: false,
+          // Provenance: resume events carry an explicit wokenBy ("agent"
+          // or "operator"); brand-new spawns are always agent-initiated
+          // (parent created them); root sessions with no parent are
+          // operator-initiated. The sidebar surfaces this as a chip.
+          wokenBy: ev.resumed
+            ? (ev.wokenBy === 'operator' ? 'rewoken-operator' : 'rewoken-agent')
+            : ev.parentSessionId
+              ? 'agent'
+              : 'operator',
         }
         // If the new session happens to be attached to the currently
         // active session, initialize its slice in the archive so events
