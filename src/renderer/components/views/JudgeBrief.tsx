@@ -19,6 +19,30 @@ interface Props {
 const PRIORITIES: CriterionPriority[] = ['must', 'should', 'may']
 const JUDGE_PROFILES: JudgeProfile[] = ['quick', 'standard', 'deep']
 
+const RIGOR_LEVELS: ReadonlyArray<1 | 2 | 3 | 4> = [1, 2, 3, 4]
+const RIGOR_META: Record<1 | 2 | 3 | 4, { name: string; tagline: string; detail: string }> = {
+  1: {
+    name: 'Lenient',
+    tagline: 'broad fit',
+    detail: 'Lenient — accepts work that broadly addresses the goal. Partial criteria count as met. For brainstorm, ideation, drafts.',
+  },
+  2: {
+    name: 'Standard',
+    tagline: 'routine',
+    detail: 'Standard (default) — accepts when all `must` criteria are at least partial and no never-do is violated. For routine deliverables.',
+  },
+  3: {
+    name: 'Strict',
+    tagline: 'fully met',
+    detail: 'Strict — every `must` criterion must be `met` (not partial). Open questions disqualify. Confidence ≥ 0.85. For deliverables that will be acted on.',
+  },
+  4: {
+    name: 'Adversarial',
+    tagline: 'audit-grade',
+    detail: 'Adversarial — defaults to not-done. Demands verifiable evidence for every factual claim. Treats unsourced assertions and paraphrased quotes as failures. For audits and citation-heavy work.',
+  },
+}
+
 // Tool surface the deep judge can use to verify agent claims. Read-only by
 // design — see GOAL_JUDGE_SYSTEM_PROMPT for the bash-read-only contract.
 const DEEP_TOOLS: Array<{ id: string; label: string; hint: string }> = [
@@ -137,7 +161,7 @@ export function JudgeBrief({ open, onClose, goalState }: Props) {
   const save = () => {
     updateJudgeRules({
       voice: voice.trim(),
-      rigorScore: clamp(rigor, 1, 10),
+      rigorScore: clamp(rigor, 1, 4),
       judgeProfile,
       criteria: criteria
         .filter((c) => c.text.trim().length > 0)
@@ -241,21 +265,38 @@ export function JudgeBrief({ open, onClose, goalState }: Props) {
         title="Rigor"
         control={<RationaleTip rationale={calibratorMeta?.rationaleByField?.rigorScore} />}
       >
-        <div className="flex items-center gap-4">
-          <input
-            type="range"
-            min={1}
-            max={10}
-            value={rigor}
-            onChange={(e) => setRigor(parseInt(e.target.value, 10))}
-            className="flex-1 accent-[#a8d4fc]"
-          />
-          <div className="min-w-[110px] font-mono text-[12px] tabular-nums text-fg-1">
-            <span className="text-fg-0">{rigor}</span>/10 · {rigorLabel(rigor)}
-          </div>
+        <div className="grid grid-cols-4 gap-2">
+          {RIGOR_LEVELS.map((level) => {
+            const meta = RIGOR_META[level]
+            const active = rigor === level
+            return (
+              <button
+                key={level}
+                type="button"
+                onClick={() => setRigor(level)}
+                className={`flex min-w-0 flex-col gap-1.5 rounded-md border px-3 py-2.5 text-left transition ${
+                  active
+                    ? 'border-accent/[0.4] bg-accent/[0.10]'
+                    : 'border-white/[0.06] bg-white/[0.018] hover:border-white/[0.16] hover:bg-white/[0.04]'
+                }`}
+              >
+                <div className="flex items-baseline gap-1.5">
+                  <span className={`font-mono text-[12.5px] tabular-nums ${active ? 'text-accent' : 'text-fg-0'}`}>
+                    {level}
+                  </span>
+                  <span className={`font-mono text-[11px] uppercase tracking-[0.10em] ${active ? 'text-accent' : 'text-fg-1'}`}>
+                    {meta.name}
+                  </span>
+                </div>
+                <span className="font-mono text-[11px] leading-[1.5] text-fg-3">
+                  {meta.tagline}
+                </span>
+              </button>
+            )
+          })}
         </div>
         <p className="m-0 mt-2 font-mono text-[11.5px] italic leading-[1.55] text-fg-3">
-          Higher rigor = more demanding evidence required, fewer "good enough" verdicts.
+          {RIGOR_META[rigor as 1 | 2 | 3 | 4]?.detail ?? ''}
         </p>
       </BriefSection>
 
@@ -576,7 +617,7 @@ function PreviewPane({
 function defaultBrief(): JudgeRules {
   return {
     voice: '',
-    rigorScore: 6,
+    rigorScore: 2,
     judgeProfile: 'standard',
     criteria: [],
     neverDo: [],
@@ -588,13 +629,6 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(n, hi))
 }
 
-function rigorLabel(score: number): string {
-  if (score <= 2) return 'lenient'
-  if (score <= 4) return 'easy'
-  if (score <= 6) return 'moderate'
-  if (score <= 8) return 'demanding'
-  return 'unforgiving'
-}
 
 function dateStr(): string {
   const d = new Date()

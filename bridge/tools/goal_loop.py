@@ -43,9 +43,9 @@ mind. Rubber-stamping is a failure mode; resist it.
 
 You will be given:
   · the standing goal, verbatim;
-  · the operator's BRIEF — voice instructions, a rigor score (1 lenient ↔
-    10 demanding), explicit must/should/may criteria with stable IDs,
-    a never-do list, and when-to-stop logic;
+  · the operator's BRIEF — voice instructions, a rigor level (1–4 with
+    explicit semantics, see below), explicit must/should/may criteria
+    with stable IDs, a never-do list, and when-to-stop logic;
   · the criteria from the previous turn so you can update statuses across
     turns instead of starting fresh;
   · the agent's recent work — several assistant turns, not just the latest
@@ -90,9 +90,27 @@ Hard rules for the verdict:
     materially change your verdict. If you can't name any open questions
     when marking `done: false`, you have not thought carefully enough —
     name at least one specific gap.
-  · Apply the operator's voice instructions and rigor score. Higher rigor
-    means demanding harder evidence and resisting "good enough" more often.
-    Always honor the never-do list as hard constraints.
+  · Apply the operator's voice instructions and rigor level. The rigor
+    scale has four discrete levels with explicit semantics — apply them
+    literally, not as "higher number = stricter":
+        1 LENIENT — accept the work if it broadly addresses the goal.
+            Partial criteria count as met. Open questions may be left
+            unresolved if the substance is there. Use for brainstorm,
+            ideation, drafts where breadth matters.
+        2 STANDARD (default) — accept if all `must` criteria are at
+            least partial AND no never-do is violated AND the
+            substance addresses the goal. Open questions are
+            tolerated if they're follow-ups, not gaps.
+        3 STRICT — every `must` criterion must be status `met` (not
+            partial). Open questions disqualify. Confidence must be
+            ≥ 0.85. Use when the deliverable will be acted on.
+        4 ADVERSARIAL — strictest. Default to `done: false`. Demand
+            verifiable evidence for every factual claim. Treat
+            unsourced assertions, paraphrased quotes, and round
+            numbers as failures. Use for audits, research with
+            citations, anything high-stakes.
+    Always honor the never-do list as hard constraints, regardless
+    of rigor.
 
 If the agent's recent work contains a contradiction, a regression from a
 previous turn's progress, or an unsupported claim, surface it in `reason`
@@ -202,15 +220,32 @@ The judge has three profiles:
                  quantitative assertions. The deep judge will actually
                  grep the codebase to catch fabrication.
 
-Heuristics:
+Rigor is a 4-level scale with literal semantics — pick the one whose
+description fits the goal, NOT a number on a sliding scale:
+    1 LENIENT — accept work that broadly addresses the goal; partial
+        criteria and open follow-ups are tolerated. Use for
+        brainstorm, ideation, drafts where breadth matters.
+    2 STANDARD (default) — accept if all `must` criteria are at
+        least partial and no never-do is violated. Open questions
+        tolerated as follow-ups, not gaps. Routine deliverables.
+    3 STRICT — every `must` must be status `met` (not partial);
+        any open question disqualifies; confidence ≥ 0.85. For
+        deliverables that will be acted on.
+    4 ADVERSARIAL — strictest. Default to not-done. Demand
+        verifiable evidence for every factual claim. For audits,
+        citation-heavy work, anything high-stakes.
+
+Heuristics for picking profile + rigor:
   · The goal demands verifiable claims (file refs, citations, code
-    that must compile/run, exact quotes) → `deep`, rigor 7-9.
+    that must compile/run, exact quotes) → `deep`, rigor 4.
+  · The goal is open-ended research / exploration with no clear
+    "done" → `deep`, rigor 3, with explicit when-to-stop logic.
+  · The goal is a routine writing or analysis deliverable that will
+    be acted on (memo, summary, plan) → `standard`, rigor 3.
   · The goal is a pure-text deliverable with no checkable claims
-    (haiku, brainstorm, persona writing) → `standard`, rigor 4-6.
+    (haiku, brainstorm, persona writing) → `standard`, rigor 2.
   · The goal is a tiny mechanical task (rename, format, reword) →
-    `quick`, rigor 4-6.
-  · The goal is open-ended exploration / research with no clear
-    "done" → `deep`, rigor 6-8, with explicit when-to-stop logic.
+    `quick`, rigor 1 or 2.
 
 Voice: write a short paragraph (3-6 sentences) telling the judge what
 to be skeptical of FOR THIS SPECIFIC GOAL. Reference the dominant
@@ -253,7 +288,7 @@ prose and no markdown fence:
 
 {
   "judgeProfile": "quick" | "standard" | "deep",
-  "rigorScore": 1..10,
+  "rigorScore": 1 | 2 | 3 | 4,
   "voice": "<3-6 sentence paragraph>",
   "criteria": [
     {"id": "cal_xx", "text": "...", "priority": "must" | "should" | "may"}
@@ -460,6 +495,63 @@ class RuleCriterion:
 JUDGE_PROFILES = ("quick", "standard", "deep")
 
 
+# Rigor: 4 discrete levels with literal semantics. See
+# GOAL_JUDGE_SYSTEM_PROMPT for the exact rules each level applies.
+RIGOR_LEVELS = (1, 2, 3, 4)
+RIGOR_LABELS: dict[int, str] = {
+    1: "lenient",
+    2: "standard",
+    3: "strict",
+    4: "adversarial",
+}
+RIGOR_DESCRIPTIONS: dict[int, str] = {
+    1: (
+        "Accept the work if it broadly addresses the goal. Partial criteria "
+        "count as met. Open follow-ups are tolerated. Default to 'done' "
+        "when the substance is there."
+    ),
+    2: (
+        "Accept if all `must` criteria are at least partial AND no never-do "
+        "is violated. Open questions are tolerated as follow-ups, not gaps. "
+        "Default rigor for routine deliverables."
+    ),
+    3: (
+        "Every `must` criterion must be status `met` (not partial). Any open "
+        "question disqualifies. Confidence must be at or above 0.85. For "
+        "deliverables that will be acted on."
+    ),
+    4: (
+        "Strictest. Default to `done: false`. Demand verifiable evidence for "
+        "every factual claim. Treat unsourced assertions, paraphrased quotes, "
+        "and round numbers as failures. For audits, citation-heavy work, "
+        "anything high-stakes."
+    ),
+}
+
+
+def _migrate_rigor(value: int) -> int:
+    """Map legacy 1–10 rigor scores onto the new 1–4 scale.
+
+    Old briefs persisted to the sidecar before the scale was tightened
+    use 1–10. This compresses them so re-loaded sessions don't reset
+    or look broken: 1-2→1 lenient, 3-5→2 standard, 6-8→3 strict, 9-10→4
+    adversarial. Already-clamped 1–4 values pass through untouched.
+    """
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return 2
+    if v <= 0:
+        return 2
+    if v <= 4:
+        return v
+    if v <= 5:
+        return 2
+    if v <= 8:
+        return 3
+    return 4
+
+
 def _clamp_judge_profile(value: Any) -> str:
     v = str(value or "").strip().lower()
     return v if v in JUDGE_PROFILES else "standard"
@@ -574,8 +666,9 @@ class JudgeRules:
     """Operator-authored rules the judge applies on every turn. Persists
     per session.
 
-    `voice` is a detailed freeform paragraph; `rigor_score` is 1 (lenient)
-    to 10 (demanding); `judge_profile` is one of "quick" / "standard" /
+    `voice` is a detailed freeform paragraph; `rigor_score` is a discrete
+    1–4 level (1 lenient · 2 standard · 3 strict · 4 adversarial — see
+    GOAL_JUDGE_SYSTEM_PROMPT for exact semantics); `judge_profile` is one of "quick" / "standard" /
     "deep" — picks the model + thinking budget for the judge call.
     `judge_tools` is an optional allowlist that overrides the profile
     default (empty → use the default for the active profile).
@@ -594,7 +687,7 @@ class JudgeRules:
     """
 
     voice: str = ""
-    rigor_score: int = 6
+    rigor_score: int = 2
     judge_profile: str = "standard"
     criteria: list[RuleCriterion] = field(default_factory=list)
     never_do: list[str] = field(default_factory=list)
@@ -638,16 +731,17 @@ class JudgeRules:
                 )
             )
         try:
-            rigor = int(payload.get("rigorScore", 6))
+            rigor = int(payload.get("rigorScore", 2))
         except Exception:
-            rigor = 6
+            rigor = 2
+        rigor = _migrate_rigor(rigor)
         try:
             max_iter = int(payload.get("judgeMaxIterations", 3))
         except Exception:
             max_iter = 3
         return cls(
             voice=str(payload.get("voice") or ""),
-            rigor_score=max(1, min(rigor, 10)),
+            rigor_score=max(1, min(rigor, 4)),
             judge_profile=_clamp_judge_profile(payload.get("judgeProfile")),
             criteria=crits,
             never_do=[str(x) for x in (payload.get("neverDo") or []) if str(x).strip()],
@@ -672,13 +766,12 @@ class JudgeRules:
     def render_for_prompt(self) -> str:
         """Serialize the brief for inclusion in the judge user template."""
         out: list[str] = []
-        rigor_label = (
-            "1 (lenient)" if self.rigor_score <= 2 else
-            "10 (demanding)" if self.rigor_score >= 9 else
-            f"{self.rigor_score} (moderate-strict)" if self.rigor_score >= 6 else
-            f"{self.rigor_score} (moderate-lenient)"
-        )
-        out.append(f"Rigor: {self.rigor_score}/10 — {rigor_label}")
+        level = max(1, min(int(self.rigor_score or 2), 4))
+        label = RIGOR_LABELS.get(level, "standard")
+        desc = RIGOR_DESCRIPTIONS.get(level, "")
+        out.append(f"Rigor: {level}/4 — {label}")
+        if desc:
+            out.append(f"  ({desc})")
         if self.voice.strip():
             out.append("")
             out.append("Voice (apply throughout):")
@@ -697,7 +790,14 @@ class JudgeRules:
             out.append("")
             out.append("Additional when-to-stop conditions:")
             out.append(self.when_to_stop.strip())
-        if not (self.voice or self.criteria or self.never_do or self.when_to_stop):
+        non_default_rigor = max(1, min(int(self.rigor_score or 2), 4)) != 2
+        if not (
+            self.voice
+            or self.criteria
+            or self.never_do
+            or self.when_to_stop
+            or non_default_rigor
+        ):
             return "(no operator brief — apply default judgment)"
         return "\n".join(out)
 
@@ -1057,10 +1157,10 @@ def parse_calibrator_response(text: str, *, session_id: str | None = None, model
         set_fields.append("judgeProfile")
 
     try:
-        rigor = int(payload.get("rigorScore") or 6)
+        rigor = int(payload.get("rigorScore") or 2)
     except Exception:
-        rigor = 6
-    rigor = max(1, min(rigor, 10))
+        rigor = 2
+    rigor = max(1, min(_migrate_rigor(rigor), 4))
     if "rigorScore" in payload:
         set_fields.append("rigorScore")
 
@@ -1159,9 +1259,10 @@ def rules_has_content(payload: Any) -> bool:
         return True
     if [n for n in (payload.get("neverDo") or []) if str(n).strip()]:
         return True
-    # rigorScore default is 6; treat anything other than 6 as content
+    # rigorScore default is 2 (standard); anything else counts as
+    # operator-authored content.
     try:
-        if int(payload.get("rigorScore") or 6) != 6:
+        if _migrate_rigor(int(payload.get("rigorScore") or 2)) != 2:
             return True
     except Exception:
         pass

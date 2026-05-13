@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useEffect } from 'react'
 
 interface BriefMemoProps {
   open: boolean
@@ -48,11 +48,28 @@ export function BriefMemo({
   children,
   preview,
 }: BriefMemoProps) {
+  // ESC closes — wired here so every brief surface gets it for free
+  // and the close button can advertise the keystroke.
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        onClose()
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [open, onClose])
+
   if (!open) return null
   return (
     <div className="fixed inset-0 z-[70] flex flex-col bg-black/65 backdrop-blur-[8px]">
-      {/* Strip header — scope + status, balanced by the close button */}
-      <div className="flex items-center gap-4 border-b border-white/[0.06] bg-bg-0/95 px-7 py-3 backdrop-blur-[10px]">
+      {/* Strip header — scope + status, balanced by the close button.
+          pl-[88px] clears the OS-level traffic-light buttons (rendered
+          on top of the window content under hiddenInset titleBarStyle).
+          no-drag on the close button so the OS doesn't intercept clicks. */}
+      <div className="flex items-center gap-4 border-b border-white/[0.06] bg-bg-0/95 py-3 pl-[88px] pr-4 backdrop-blur-[10px]">
         <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-fg-3">
           {to}
         </span>
@@ -60,7 +77,7 @@ export function BriefMemo({
           <span className="h-1.5 w-1.5 rounded-full bg-accent shadow-[0_0_5px_rgba(168,212,252,0.55)]" />
           {toRole}
         </span>
-        <span className="hidden truncate font-mono text-[11.5px] text-fg-3 lg:inline">
+        <span className="hidden min-w-0 truncate font-mono text-[11.5px] text-fg-3 lg:inline">
           {re}
         </span>
         {date ? (
@@ -73,9 +90,10 @@ export function BriefMemo({
         <button
           type="button"
           onClick={onClose}
-          className="rounded px-3 py-1 font-mono text-[10.5px] uppercase tracking-[0.18em] text-fg-2 transition hover:bg-white/[0.06] hover:text-fg-0"
+          aria-label="Close"
+          className="no-drag relative z-[1] flex h-7 items-center justify-center rounded border border-white/[0.08] bg-white/[0.025] px-3 font-mono text-[10.5px] uppercase tracking-[0.16em] text-fg-2 transition hover:border-white/[0.18] hover:bg-white/[0.08] hover:text-fg-0"
         >
-          close
+          close · esc
         </button>
       </div>
 

@@ -162,7 +162,7 @@ function HeaderStrip({
   const [expanded, setExpanded] = useState(false)
   const running = agents.filter((a) => a.status === 'running').length
   const profile = goalState.judgeRules?.judgeProfile ?? 'standard'
-  const rigor = goalState.judgeRules?.rigorScore ?? 6
+  const rigor = goalState.judgeRules?.rigorScore ?? 2
   const turnPct = Math.min(
     100,
     Math.max(0, (goalState.turnsUsed / Math.max(1, goalState.maxTurns)) * 100),
@@ -227,7 +227,7 @@ function HeaderStrip({
           <ProfileChip profile={profile} />
           <span className="font-mono text-[11.5px] tabular-nums text-fg-2">
             rigor <span className="text-fg-0">{rigor}</span>
-            <span className="text-fg-4">/10</span>
+            <span className="text-fg-4">/4</span>
           </span>
           <CalibrationTag calibration={goalState.calibration} />
         </div>
@@ -1057,7 +1057,7 @@ function BriefSummary({ brief }: { brief?: JudgeRules | null }) {
           profile <span className="font-mono normal-case tracking-normal text-fg-0">{brief.judgeProfile}</span>
         </span>
         <span>
-          rigor <span className="font-mono normal-case tracking-normal tabular-nums text-fg-0">{brief.rigorScore}/10</span>
+          rigor <span className="font-mono normal-case tracking-normal tabular-nums text-fg-0">{brief.rigorScore}/4</span>
         </span>
       </div>
       {brief.voice ? (
