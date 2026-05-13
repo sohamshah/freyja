@@ -199,10 +199,35 @@ class TalkRouter:
             return "delivered to root session"
 
         if sub_record is not None and getattr(sub_record, "inbox", None) is not None:
-            sub_record.inbox.push(msg)
-            if msg.force:
-                self._signal_force_cancel_record(sub_record)
-            return "delivered to sub-agent"
+            # Terminal sub-agents stay in the registry post-completion so
+            # the renderer can still see them, but their runners are gone
+            # and nothing will ever drain their inbox. Push-to-dead-inbox
+            # silently swallows messages and any wait_for_reply hangs.
+            # Detect terminal state and fall through to the re-wake path
+            # — the saved sidecar gets spawned afresh with the message
+            # queued for iteration 1.
+            from bridge.tools.sub_agent_registry import SubAgentState
+            is_terminal = sub_record.state in (
+                SubAgentState.DONE,
+                SubAgentState.FAILED,
+                SubAgentState.CANCELLED,
+            )
+            if not is_terminal:
+                sub_record.inbox.push(msg)
+                if msg.force:
+                    self._signal_force_cancel_record(sub_record)
+                return "delivered to sub-agent"
+            # Terminal — try re-wake. Look up sidecar from disk; if no
+            # sidecar exists (very early-failed agent that never wrote
+            # one), fall back to pushing to the dead inbox + emit a
+            # warning in the status so the operator sees it.
+            archived_state = archived_state or self._resolve_archived_sub(recipient_id)
+            if archived_state is None:
+                sub_record.inbox.push(msg)
+                return (
+                    "delivered to terminal sub-agent (no sidecar — message "
+                    "may not be processed)"
+                )
 
         if archived_state is not None:
             try:

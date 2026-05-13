@@ -102,6 +102,42 @@ def _build_sub_agent_system_prompt(
 SubAgentEventCb = Callable[[dict[str, Any]], Awaitable[None] | None]
 
 
+def _attach_inbox_emitter(record: Any, _emit_event: SubAgentEventCb) -> None:
+    """Wire the sub-agent record's SessionInbox.on_change to fire
+    `inbox_event` events scoped to the record's session id. Mirrors
+    what `_BridgeSession.__init__` does for root sessions.
+
+    Without this, push/drain/drop on a SubAgentRecord's inbox is
+    invisible to the renderer — no inline chips, no telemetry, no
+    audit trail. Root-session inboxes have always emitted these
+    events; sub-agent inboxes were silently dropped on the floor.
+
+    Note: we bypass the async _spec.emit_event (which would force us
+    to schedule a task from a sync callback) and use the top-level
+    sync `emit()` from freyja_bridge. Same channel root sessions use.
+    """
+    if record is None or getattr(record, "inbox", None) is None:
+        return
+
+    sub_id = record.id
+
+    def _fire_inbox(action: str, msg: Any) -> None:
+        try:
+            # Lazy import to dodge the circular sub_agent_tool ↔ bridge.
+            from bridge.freyja_bridge import emit as _bridge_emit
+
+            _bridge_emit({
+                "type": "inbox_event",
+                "sessionId": sub_id,
+                "action": action,
+                "message": msg.to_dict(),
+            })
+        except Exception:
+            pass
+
+    record.inbox.on_change = _fire_inbox
+
+
 @dataclass
 class SubAgentSpec:
     """Static configuration for spawning sub-agents."""
@@ -276,6 +312,7 @@ Parameters:
         try:
             from bridge.inbox import SessionInbox
             record.inbox = SessionInbox(session_id=sub_id)
+            _attach_inbox_emitter(record, self._spec.emit_event)
         except Exception:
             record.inbox = None
         if kanban_task_id:
@@ -444,6 +481,7 @@ Parameters:
             from bridge.transcript_persistence import load_inbox_state
 
             record.inbox = SessionInbox(session_id=sub_id)
+            _attach_inbox_emitter(record, self._spec.emit_event)
             stored_inbox = load_inbox_state(sub_id)
             if isinstance(stored_inbox, dict):
                 restored = SessionInbox.from_dict(stored_inbox)
@@ -628,6 +666,7 @@ Parameters:
         try:
             from bridge.inbox import SessionInbox
             record.inbox = SessionInbox(session_id=sub_id)
+            _attach_inbox_emitter(record, self._spec.emit_event)
         except Exception:
             record.inbox = None
 
