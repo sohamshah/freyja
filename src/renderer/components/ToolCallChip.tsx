@@ -12,12 +12,17 @@ export function ToolCallChip({ id, record }: { id: string; record?: ToolCallReco
   const focusSerial = useHarness((s) =>
     s.focusedToolCallId === id ? s.focusedToolCallSerial : 0,
   )
-  const [open, setOpen] = useState(false)
+  // `userOpen` is null until the operator clicks the chevron; the
+  // effective open state falls back to "expanded while the call is
+  // still streaming" so the operator can watch the JSON build instead
+  // of staring at a spinner. Once they click, their choice wins — we
+  // never collapse out from under them.
+  const [userOpen, setUserOpen] = useState<boolean | null>(null)
   const [imgExpanded, setImgExpanded] = useState(false)
   const frameUrl = useFrameObjectUrl(call?.frame)
 
   useEffect(() => {
-    if (focusSerial > 0) setOpen(true)
+    if (focusSerial > 0) setUserOpen(true)
   }, [focusSerial])
 
   if (!call) return null
@@ -27,7 +32,17 @@ export function ToolCallChip({ id, record }: { id: string; record?: ToolCallReco
       ? JSON.stringify(call.arguments, null, 2)
       : call.partialJson ?? ''
 
-  const summary = summarizeArgs(call.name, call.arguments)
+  // Header summary — prefer the parsed-args summary once available,
+  // else regex-scrape the most useful key out of the partial JSON
+  // mid-stream so the chip header isn't a blank "tool_name spinner"
+  // while the agent is still emitting its arguments.
+  const summary =
+    summarizeArgs(call.name, call.arguments) ||
+    summarizePartialJson(call.name, call.partialJson)
+
+  const isStreaming = call.status === 'running'
+  const hasAnyArgs = call.arguments !== undefined || !!call.partialJson
+  const open = userOpen ?? (isStreaming && hasAnyArgs)
   // Heartbeats are liveness pings — they carry no narrative value and
   // shouldn't compete with real actions for visual weight. Render them
   // as a one-line muted note so a string of them reads as background
@@ -75,7 +90,7 @@ export function ToolCallChip({ id, record }: { id: string; record?: ToolCallReco
       }`}
     >
       <button
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => setUserOpen((prev) => !(prev ?? open))}
         className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-white/[0.025]"
       >
         <span className="flex w-[18px] justify-center">{statusIndicator}</span>
@@ -151,8 +166,11 @@ export function ToolCallChip({ id, record }: { id: string; record?: ToolCallReco
         <div className="hairline-t selectable space-y-2 bg-black/35 p-3 font-mono text-[11px] text-fg-1">
           {argsText && (
             <div>
-              <div className="mb-1 text-[9.5px] uppercase tracking-[0.12em] text-fg-2">
-                arguments
+              <div className="mb-1 flex items-center gap-1.5 text-[9.5px] uppercase tracking-[0.12em] text-fg-2">
+                <span>arguments</span>
+                {isStreaming && call.arguments === undefined && (
+                  <span className="font-mono text-[9.5px] text-accent/80">· streaming</span>
+                )}
               </div>
               <pre className="max-h-[180px] overflow-auto whitespace-pre-wrap rounded-md bg-black/45 p-2 text-[11px] text-fg-0">
                 {argsText}
@@ -225,6 +243,43 @@ function summarizeArgs(name: string, args?: Record<string, unknown>): string {
   if (typeof args.command === 'string') return (args.command as string).slice(0, 80)
   const keys = Object.keys(args)
   return keys.length > 0 ? keys.join(', ') : ''
+}
+
+/** Pull the first useful key out of a partial JSON arg blob mid-stream
+ *  so the chip header shows something more than a spinner before the
+ *  full JSON parses. Order matches `summarizeArgs` so the live summary
+ *  doesn't visually re-shuffle when the full args land. Returns the
+ *  empty string when nothing meaningful is available yet. Exported so
+ *  ParallelToolGroup can share the same regex extraction. */
+export function summarizePartialJson(name: string, partial?: string): string {
+  if (!partial) return ''
+  const grab = (key: string, max?: number): string | undefined => {
+    const re = new RegExp(`"${key}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*?)(?:"|$)`)
+    const m = partial.match(re)
+    if (!m) return undefined
+    const raw = m[1].replace(/\\n/g, ' ').replace(/\\"/g, '"')
+    return max != null ? raw.slice(0, max) : raw
+  }
+  if (name === 'kanban') {
+    const action = grab('action')
+    const taskId = grab('task_id')
+    return action ? (taskId ? `${action} ${taskId}` : action) : ''
+  }
+  const path = grab('path')
+  if (path) return path
+  const pattern = grab('pattern')
+  if (pattern) return pattern
+  const query = grab('query')
+  if (query) return query
+  const prompt = grab('prompt', 120)
+  if (prompt) return prompt
+  const command = grab('command', 80)
+  if (command) return command
+  // Last resort — surface whatever key appears first so an opaque tool
+  // call at least shows "title", "id", "to", etc. while the rest
+  // streams.
+  const firstKey = partial.match(/"([a-zA-Z_][\w]*)"\s*:/)
+  return firstKey ? firstKey[1] : ''
 }
 
 function summarizeKanban(args: Record<string, unknown>): string {

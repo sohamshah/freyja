@@ -119,8 +119,26 @@ export interface SessionSlice {
     replyTo: string | null
     timestamp: number
     sessionId: string  // the session that received this event
+    /** `'spawn'` if this event was synthesized at sub-agent spawn time
+     *  (no real inbox push happened — the runner already delivers the
+     *  task as the first user message). Lets the conversation chip
+     *  rail render spawn events as ambient stage directions instead
+     *  of duplicate message cards. */
+    kind?: 'spawn'
   }>
   artifacts: Array<import('@shared/events').ArtifactRecord>
+  /** Generative-UI widgets keyed by the tool call that emitted them.
+   *  The conversation renderer reads this when rendering a `show_widget`
+   *  tool-call part — if a record exists for that call id, an inline
+   *  iframe is mounted just below the tool-call chip. */
+  widgets: Record<string, {
+    id: string
+    title: string
+    kind: 'html' | 'svg'
+    code: string
+    loadingMessages: string[]
+    createdAt: number
+  }>
   model: string
   reasoningLevel: string
   coordinationStrategy: CoordinationStrategy
@@ -614,6 +632,7 @@ function emptySlice(
     busMessages: [],
     inboxEvents: [],
     artifacts: [],
+    widgets: {},
     model,
     reasoningLevel: normalizedReasoning,
     coordinationStrategy: normalizeCoordinationStrategy(coordinationStrategy),
@@ -737,6 +756,7 @@ function sliceFromState(s: HarnessState): SessionSlice {
     busMessages: s.busMessages,
     inboxEvents: s.inboxEvents,
     artifacts: s.artifacts,
+    widgets: s.widgets,
     model: s.model,
     reasoningLevel: s.reasoningLevel,
     coordinationStrategy: s.coordinationStrategy,
@@ -882,6 +902,7 @@ function normalizePersistedFrames(slice: SessionSlice): SessionSlice {
     // kanbanCards snapshot was introduced — load them as empty so
     // downstream consumers can `... ?? {}` cleanly.
     kanbanCards: slice.kanbanCards ?? {},
+    widgets: slice.widgets ?? {},
     usage: {
       ...slice.usage,
       currentContextTokens,
@@ -1219,8 +1240,30 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
           replyTo: m.replyTo ?? null,
           timestamp: m.timestamp,
           sessionId: ev.sessionId,
+          ...(m.kind ? { kind: m.kind } : {}),
         },
       ]
+      return next
+    }
+
+    case 'widget_render': {
+      // Generative-UI widget — index by the tool call id so the
+      // conversation renderer can mount the iframe right below the
+      // matching tool-call chip. Idempotent: a second emit for the
+      // same call id overwrites (last-write-wins, useful for
+      // partial-stream re-rendering once we add it).
+      const w = ev.widget
+      next.widgets = {
+        ...slice.widgets,
+        [ev.toolCallId]: {
+          id: w.id,
+          title: w.title,
+          kind: w.kind,
+          code: w.code,
+          loadingMessages: w.loadingMessages ?? [],
+          createdAt: w.createdAt,
+        },
+      }
       return next
     }
 
@@ -1287,9 +1330,20 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         'context_pruning',
         'media_pruning',
       ]
+      // The runner's automatic "halved N old tool results" pruning
+      // (engine/runner.py:2078,2141) fires on most turns once context
+      // pressure crosses ~25%. It's pure noise in the chat — the
+      // dashboard's telemetry view still captures every event for
+      // anyone who wants to audit. Agent-driven compactions (which
+      // also use the context_pruning subtype but carry richer
+      // narration) stay visible.
+      const isRunnerToolHalving =
+        ev.subtype === 'context_pruning' &&
+        /halved \d+\s+old tool results/i.test(ev.message ?? '')
       if (
         slice.currentStreamingMessageId &&
-        (chatVisible || inlineSystemSubtypes.includes(ev.subtype))
+        (chatVisible ||
+          (inlineSystemSubtypes.includes(ev.subtype) && !isRunnerToolHalving))
       ) {
         next.messages = slice.messages.map((m) =>
           m.id === slice.currentStreamingMessageId

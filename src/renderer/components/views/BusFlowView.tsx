@@ -24,6 +24,12 @@ import type { AgentView, BusEventView } from '../shared/types'
 interface Props {
   objective: string
   agents: AgentView[]
+  /** The FULL bus event stream — published findings AND read events
+   *  (topic === 'read'). BusFlowView splits these internally:
+   *  publishedFindings drive lane chips, readEvents drive the arc
+   *  overlay back to source publishers. Pass the pre-filtered
+   *  `dashboard.findings` here by mistake and you'll see "0 reads"
+   *  with no arcs — the symptom that originally surfaced this. */
   findings: BusEventView[]
   contextPct: number
   cost: number

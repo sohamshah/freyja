@@ -4,7 +4,7 @@ import { formatDuration } from '../lib/format'
 import { Spinner } from '../lib/spinner'
 import { useFrameObjectUrl } from '../lib/frameMedia'
 import { FileChangeBadge, FileChangeCard } from './FileChangeCard'
-import { ToolResultImages } from './ToolCallChip'
+import { summarizePartialJson, ToolResultImages } from './ToolCallChip'
 import type { ToolCallRecord } from '@shared/events'
 
 /**
@@ -90,7 +90,10 @@ function ToolLane({
   isLast: boolean
   maxDuration: number
 }) {
-  const [open, setOpen] = useState(false)
+  // See ToolCallChip for the rationale — keep the args panel auto-open
+  // while the call is streaming so the operator can watch the JSON
+  // build, then defer to whatever the operator explicitly toggled.
+  const [userOpen, setUserOpen] = useState<boolean | null>(null)
   const [imgExpanded, setImgExpanded] = useState(false)
   const focusSerial = useHarness((s) =>
     s.focusedToolCallId === record.id ? s.focusedToolCallSerial : 0,
@@ -103,7 +106,11 @@ function ToolLane({
   const isError = record.status === 'error'
   const durationPct = record.durationMs ? Math.min(100, (record.durationMs / maxDuration) * 100) : 0
 
-  const summary = summarizeArgs(record.name, record.arguments)
+  const summary =
+    summarizeArgs(record.name, record.arguments) ||
+    summarizePartialJson(record.name, record.partialJson)
+  const hasAnyArgs = record.arguments !== undefined || !!record.partialJson
+  const open = userOpen ?? (isRunning && hasAnyArgs)
   const toolCategory = getToolCategory(record.name)
 
   const statusDot = isRunning ? (
@@ -124,7 +131,7 @@ function ToolLane({
     : 'rounded-lg glass-raised overflow-hidden'
 
   useEffect(() => {
-    if (focusSerial > 0) setOpen(true)
+    if (focusSerial > 0) setUserOpen(true)
   }, [focusSerial])
 
   return (
@@ -135,7 +142,7 @@ function ToolLane({
       }`}
     >
       <button
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => setUserOpen((prev) => !(prev ?? open))}
         className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-white/[0.025] transition-colors"
       >
         {/* Junction indicator for parallel */}
@@ -247,11 +254,18 @@ function ToolLane({
       {/* Expanded details */}
       {open && (
         <div className="border-t border-white/[0.04] selectable space-y-2 bg-black/25 p-3 font-mono text-[11px] text-fg-1">
-          {record.arguments && (
+          {(record.arguments !== undefined || record.partialJson) && (
             <div>
-              <div className="mb-1 text-[9px] uppercase tracking-[0.1em] text-fg-3">arguments</div>
+              <div className="mb-1 flex items-center gap-1.5 text-[9px] uppercase tracking-[0.1em] text-fg-3">
+                <span>arguments</span>
+                {isRunning && record.arguments === undefined && (
+                  <span className="font-mono text-[9px] text-accent/80">· streaming</span>
+                )}
+              </div>
               <pre className="max-h-[160px] overflow-auto whitespace-pre-wrap rounded-md bg-black/40 p-2 text-[10.5px] text-fg-0">
-                {JSON.stringify(record.arguments, null, 2)}
+                {record.arguments !== undefined
+                  ? JSON.stringify(record.arguments, null, 2)
+                  : record.partialJson}
               </pre>
             </div>
           )}

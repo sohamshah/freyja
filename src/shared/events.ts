@@ -501,6 +501,12 @@ export type BridgeEvent =
         replyTo: string | null
         timestamp: number
         deliveredAt: number | null
+        /** Optional origin tag. `'spawn'` marks a synthetic event emitted
+         *  at sub-agent spawn time so the comm graph can show parent →
+         *  child intent (the task itself is delivered as the runner's
+         *  initial user message, not via inbox push). Regular talk() and
+         *  operator_talk traffic omits this field. */
+        kind?: 'spawn'
       }
     } & SessionId)
   | ({
@@ -512,6 +518,23 @@ export type BridgeEvent =
         thinking?: string
         tool_name?: string
         tool_id?: string
+      }
+    } & SessionId)
+  | ({
+      /** Generative UI widget — emitted by the `show_widget` tool when
+       *  an agent wants to render an interactive HTML/SVG fragment
+       *  inline in the conversation. The renderer keys widgets by
+       *  `toolCallId` so they appear at the exact spot in the message
+       *  stream where the tool was invoked. */
+      type: 'widget_render'
+      toolCallId: string
+      widget: {
+        id: string
+        title: string
+        kind: 'html' | 'svg'
+        code: string
+        loadingMessages: string[]
+        createdAt: number
       }
     } & SessionId)
   | ({ type: 'memory_retrieved'; memory: MemoryRecord; reason?: string } & SessionId)

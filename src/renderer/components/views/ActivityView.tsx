@@ -16,6 +16,12 @@ export interface InboxEventRecord {
   replyTo: string | null
   timestamp: number
   sessionId: string  // the recipient session
+  /** `'spawn'` marks synthetic events emitted at sub-agent spawn time
+   *  (the task was delivered as the runner's initial user message, not
+   *  via an inbox push). Used to style spawn arcs distinctly so the
+   *  operator can tell "this was a spawn-time request" vs a later
+   *  talk() call. */
+  kind?: 'spawn'
 }
 
 interface Props {
@@ -413,111 +419,113 @@ function EventRow({
 }) {
   const glyph = GLYPHS[event.category]
   const glyphClass = GLYPH_CLASSES[event.category]
-  // Show "expand for context" affordance only when expansion will
-  // actually surface something useful — full body, related events,
-  // or compaction detail. Skip the chevron on bare rows so the chrome
-  // doesn't promise data that isn't there.
   const hasRelations =
     (readers && readers.length > 0) ||
     (readFindings && readFindings.length > 0)
   const hasBodyDifferentFromTitle =
     event.body !== undefined && event.body.trim() !== event.title.trim()
+  const isCompactionDetail =
+    event.category === 'summary' &&
+    !isBusFinding(event.raw) &&
+    isCompactionTelemetry(event.raw)
   const hasExpansion =
-    hasRelations ||
-    hasBodyDifferentFromTitle ||
-    (event.category === 'summary' &&
-      !isBusFinding(event.raw) &&
-      isCompactionTelemetry(event.raw))
+    hasRelations || hasBodyDifferentFromTitle || isCompactionDetail
 
   return (
     <li ref={rowRef as any}>
-      <button
-        type="button"
-        onClick={hasExpansion ? onToggle : undefined}
-        className={`group grid w-full grid-cols-[56px_92px_18px_1fr_auto] items-baseline gap-3 rounded-md border px-3 py-2.5 text-left transition ${
+      <div
+        className={`overflow-hidden rounded-md border transition ${
           expanded
             ? 'border-white/[0.10] bg-white/[0.028]'
             : isPulsing
             ? 'border-accent/[0.30] bg-accent/[0.06]'
             : 'border-transparent hover:bg-white/[0.025]'
-        } ${hasExpansion ? 'cursor-pointer' : 'cursor-default'}`}
+        }`}
       >
-        <span className="font-mono text-[11px] tabular-nums text-fg-3">{tsStr(event.at)}</span>
-        <span className="truncate font-mono text-[11px] text-fg-2">{event.author}</span>
-        <span className={`text-center text-[13px] ${glyphClass}`}>{glyph}</span>
-        <span className="min-w-0 font-mono text-[13px] leading-[1.5] text-fg-0">
-          <span className="mr-2 text-[10px] uppercase tracking-[0.14em] text-fg-3">
-            {LABELS[event.category]}
-          </span>
-          {event.title}
-          {!expanded && hasRelations ? (
-            <span className="ml-2 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-4">
-              {readers && readers.length > 0
-                ? `· read by ${readers.length}`
-                : `· ${readFindings?.length ?? 0} read`}
-            </span>
-          ) : null}
-        </span>
-        <span
-          className={`font-mono text-[10.5px] uppercase tracking-[0.18em] text-fg-3 transition ${
-            hasExpansion
-              ? 'opacity-0 group-hover:opacity-100'
-              : 'opacity-0'
+        <button
+          type="button"
+          onClick={hasExpansion ? onToggle : undefined}
+          className={`group grid w-full grid-cols-[56px_92px_18px_1fr_auto] items-baseline gap-3 px-3 py-2.5 text-left ${
+            hasExpansion ? 'cursor-pointer' : 'cursor-default'
           }`}
         >
-          {expanded ? '▾' : '▸'}
-        </span>
-      </button>
-      {expanded && hasExpansion ? (
-        <ExpandedEventDetail
-          event={event}
-          readers={readers}
-          readFindings={readFindings}
-          onJumpTo={onJumpTo}
-        />
-      ) : null}
+          <span className="font-mono text-[11px] tabular-nums text-fg-3">{tsStr(event.at)}</span>
+          <span className="truncate font-mono text-[11px] text-fg-2">{event.author}</span>
+          <span className={`text-center text-[13px] ${glyphClass}`}>{glyph}</span>
+          <span className="min-w-0 font-mono text-[13px] leading-[1.5] text-fg-0">
+            <span className="mr-2 text-[10px] uppercase tracking-[0.14em] text-fg-3">
+              {LABELS[event.category]}
+            </span>
+            {event.title}
+            {!expanded && hasRelations ? (
+              <span className="ml-2 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-4">
+                {readers && readers.length > 0
+                  ? `· read by ${readers.length}`
+                  : `· ${readFindings?.length ?? 0} read`}
+              </span>
+            ) : null}
+          </span>
+          <span
+            className={`font-mono text-[10.5px] uppercase tracking-[0.18em] text-fg-3 transition ${
+              hasExpansion
+                ? expanded
+                  ? 'opacity-100'
+                  : 'opacity-0 group-hover:opacity-100'
+                : 'opacity-0'
+            }`}
+          >
+            {expanded ? '▾' : '▸'}
+          </span>
+        </button>
+        {expanded && hasExpansion ? (
+          <ExpandedBody
+            event={event}
+            isCompaction={isCompactionDetail}
+            hasBodyDifferentFromTitle={hasBodyDifferentFromTitle}
+            readers={readers}
+            readFindings={readFindings}
+            onJumpTo={onJumpTo}
+          />
+        ) : null}
+      </div>
     </li>
   )
 }
 
-/** Rich event detail panel. Renders different content depending on
- *  the category — relationship chips for findings (read by who?) and
- *  reads (which findings?), full body + readers for findings, full
- *  body for everything else, CompactionDetailPanel for summaries. */
-function ExpandedEventDetail({
+/** Body shown inline inside the same row container when expanded.
+ *  No inner card / border / background — content flows directly
+ *  inside the row box so the operator perceives one container, not
+ *  two. Replaces the prior floating panel that visually duplicated
+ *  the row above. */
+function ExpandedBody({
   event,
+  isCompaction,
+  hasBodyDifferentFromTitle,
   readers,
   readFindings,
   onJumpTo,
 }: {
   event: UnifiedEvent
+  isCompaction: boolean
+  hasBodyDifferentFromTitle: boolean
   readers?: ReaderInfo[]
   readFindings?: ReadFindingInfo[]
   onJumpTo: (eventId: string) => void
 }) {
-  // Compaction summaries get their bespoke panel — keep that path
-  // intact since it carries token-savings data that doesn't fit the
-  // generic prose layout.
-  if (
-    event.category === 'summary' &&
-    !isBusFinding(event.raw) &&
-    isCompactionTelemetry(event.raw)
-  ) {
+  if (isCompaction) {
     return (
-      <div className="ml-[170px] mr-3 mb-2 mt-1">
-        <CompactionDetailPanel telemetry={event.raw} />
+      <div className="pl-[170px] pr-3 pb-3">
+        <CompactionDetailPanel telemetry={event.raw as TelemetryEventView} />
       </div>
     )
   }
 
   const fullBody = event.body ?? ''
-  const showBody =
-    fullBody.trim().length > 0 && fullBody.trim() !== event.title.trim()
 
   return (
-    <div className="ml-[170px] mr-3 mb-2 mt-1 flex flex-col gap-2">
-      {showBody && (
-        <div className="select-text whitespace-pre-wrap rounded-md border border-white/[0.06] bg-white/[0.015] px-3 py-2.5 font-mono text-[12.5px] leading-[1.7] text-fg-1">
+    <div className="flex flex-col gap-2 pl-[170px] pr-3 pb-3">
+      {hasBodyDifferentFromTitle && (
+        <div className="select-text whitespace-pre-wrap font-mono text-[12.5px] leading-[1.7] text-fg-1">
           {fullBody}
         </div>
       )}
@@ -658,7 +666,7 @@ function CompactionDetailPanel({
     tokensBefore > 0 ? Math.round((delta / tokensBefore) * 100) : 0
 
   return (
-    <div className="rounded-md border border-white/[0.06] bg-white/[0.015] px-3 py-2.5 font-mono text-[12px] text-fg-1">
+    <div className="font-mono text-[12px] text-fg-1">
       {/* Metadata chips */}
       <div className="flex flex-wrap items-center gap-2 text-[10.5px]">
         {scope ? <Chip label="scope" value={scope} /> : null}
@@ -923,9 +931,14 @@ function CommPane({
         .sort((a, b) => a.timestamp - b.timestamp),
     [inboxEvents],
   )
+  // The "operator" pseudo-id is the human typing into a session pane
+  // (via the operator_talk IPC). The parent / root agent is just
+  // another session — operator is NOT the parent agent. Rendered as
+  // "you" so the distinction is obvious to the operator reading the
+  // graph.
   const labelFor = useCallback(
     (id: string): string => {
-      if (id === 'operator') return 'operator'
+      if (id === 'operator') return 'you'
       const sess = sessions.find((s) => s.id === id)
       if (sess) return sess.title
       return id.slice(0, 8)
@@ -972,7 +985,7 @@ function CommPane({
               className="font-mono text-[10.5px] tabular-nums"
               style={{ color: COMM_COLORS.operator.text }}
             >
-              · {counts.external} from operator
+              · {counts.external} from you
             </span>
           )}
           {counts.force > 0 && (
@@ -1145,7 +1158,14 @@ function CommGraph({
             )
           })}
 
-          {/* Sender → recipient curves (drawn below chips) */}
+          {/* Sender → recipient curves + animated motes (drawn below
+            * chips). The static path conveys topology; the moving dot
+            * along it conveys direction + message type:
+            *   regular  — filled mote, solid arc
+            *   force    — filled mote + pulsing halo, faster animation
+            *   spawn    — hollow ring mote on a dashed arc, marking
+            *              the parent → child spawn-time task assignment
+            *              (synthetic — see _emit_spawn_inbox_event). */}
           {enqueued.map((e) => {
             const senderIdx = participants.indexOf(e.fromSession)
             const recipIdx = participants.indexOf(e.sessionId)
@@ -1154,24 +1174,81 @@ function CommGraph({
             const y1 = laneY(senderIdx)
             const y2 = laneY(recipIdx)
             const isOperator = e.fromRole === 'operator'
+            const isSpawn = e.kind === 'spawn'
             const baseStroke = isOperator
               ? COMM_COLORS.operator.arc
               : COMM_COLORS.agent.arc
+            const moteFill = isOperator
+              ? COMM_COLORS.operator.chip
+              : COMM_COLORS.agent.chip
             const isSelected = selectedId === e.id
             const cp1y = y1 + (y2 - y1) * 0.25
             const cp2y = y1 + (y2 - y1) * 0.75
             const midX = x + (Math.abs(y2 - y1) > LANE_HEIGHT ? 6 : 0)
             const d = `M ${x} ${y1} C ${midX} ${cp1y}, ${midX} ${cp2y}, ${x} ${y2}`
+            const pathId = `comm-arc-${e.id}`
+            const dur = e.force ? '1.4s' : isSpawn ? '3.2s' : '2.6s'
+            // Self-loop sentinel — sender == recipient produces a
+            // degenerate path; skip the mote to avoid an invisible
+            // stationary dot.
+            const isLoop = senderIdx === recipIdx
             return (
-              <path
-                key={`arc-${e.id}`}
-                d={d}
-                fill="none"
-                stroke={baseStroke}
-                strokeWidth={isSelected ? 2 : e.force ? 1.6 : 1}
-                opacity={isSelected ? 1 : 0.85}
-                strokeLinecap="round"
-              />
+              <g key={`arc-${e.id}`}>
+                <path
+                  id={pathId}
+                  d={d}
+                  fill="none"
+                  stroke={baseStroke}
+                  strokeWidth={isSelected ? 2 : e.force ? 1.6 : 1}
+                  strokeDasharray={isSpawn ? '4 3' : undefined}
+                  opacity={isSelected ? 1 : isSpawn ? 0.6 : 0.85}
+                  strokeLinecap="round"
+                />
+                {!isLoop && (
+                  <circle
+                    r={e.force ? 2.6 : isSpawn ? 2.8 : 2.1}
+                    fill={isSpawn ? 'none' : moteFill}
+                    stroke={isSpawn ? moteFill : 'none'}
+                    strokeWidth={isSpawn ? 1.3 : 0}
+                    opacity={0.95}
+                  >
+                    <animateMotion
+                      dur={dur}
+                      repeatCount="indefinite"
+                    >
+                      <mpath xlinkHref={`#${pathId}`} />
+                    </animateMotion>
+                  </circle>
+                )}
+                {!isLoop && e.force && (
+                  <circle
+                    r={4}
+                    fill="none"
+                    stroke={COMM_COLORS.force.ring}
+                    strokeWidth={1}
+                    opacity={0.5}
+                  >
+                    <animateMotion
+                      dur={dur}
+                      repeatCount="indefinite"
+                    >
+                      <mpath xlinkHref={`#${pathId}`} />
+                    </animateMotion>
+                    <animate
+                      attributeName="r"
+                      values="3;5.5;3"
+                      dur={dur}
+                      repeatCount="indefinite"
+                    />
+                    <animate
+                      attributeName="opacity"
+                      values="0.25;0.7;0.25"
+                      dur={dur}
+                      repeatCount="indefinite"
+                    />
+                  </circle>
+                )}
+              </g>
             )
           })}
 
@@ -1184,6 +1261,7 @@ function CommGraph({
             const cy = laneY(recipIdx)
             const senderY = senderIdx >= 0 ? laneY(senderIdx) : cy
             const isOperator = e.fromRole === 'operator'
+            const isSpawn = e.kind === 'spawn'
             const fill = isOperator
               ? COMM_COLORS.operator.chip
               : COMM_COLORS.agent.chip
@@ -1226,14 +1304,20 @@ function CommGraph({
                   cx={cx}
                   cy={cy}
                   r={r}
-                  fill={fill}
-                  stroke={isSelected ? 'rgba(255,255,255,0.95)' : 'rgba(0,0,0,0.35)'}
-                  strokeWidth={isSelected ? 1.8 : 1}
+                  fill={isSpawn ? 'none' : fill}
+                  stroke={
+                    isSelected
+                      ? 'rgba(255,255,255,0.95)'
+                      : isSpawn
+                      ? fill
+                      : 'rgba(0,0,0,0.35)'
+                  }
+                  strokeWidth={isSelected ? 1.8 : isSpawn ? 1.4 : 1}
                 >
                   <title>
-                    {`${e.fromLabel} → ${labelFor(e.sessionId)}${
+                    {`${labelFor(e.fromSession)} → ${labelFor(e.sessionId)}${
                       e.force ? ' (force)' : ''
-                    }\n${tsStr(e.timestamp)} · ${preview}`}
+                    }${isSpawn ? ' (spawn task)' : ''}\n${tsStr(e.timestamp)} · ${preview}`}
                   </title>
                 </circle>
               </g>
@@ -1246,16 +1330,21 @@ function CommGraph({
 }
 
 /** Legend strip — actual chip samples next to labels so the operator
- *  doesn't have to guess what "operator color" or "force ring"
- *  actually look like. */
+ *  doesn't have to guess what "you color" or "force ring" actually
+ *  look like. "you" tags messages typed by the human via the talk
+ *  pane; "agent" tags any agent-to-agent message (including ones
+ *  from the parent / root agent). */
 function Legend() {
   return (
-    <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-3">
+    <div
+      className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-3"
+      title="‘you’ = human typing in the talk pane. ‘agent’ = any agent calling talk(), including the parent agent."
+    >
       <span className="inline-flex items-center gap-1.5">
         <svg width={12} height={12} viewBox="0 0 12 12" aria-hidden>
           <circle cx={6} cy={6} r={4} fill={COMM_COLORS.operator.chip} />
         </svg>
-        operator
+        you
       </span>
       <span className="inline-flex items-center gap-1.5">
         <svg width={12} height={12} viewBox="0 0 12 12" aria-hidden>
@@ -1276,6 +1365,36 @@ function Legend() {
           <circle cx={7} cy={7} r={3} fill="rgba(232,196,132,0.85)" />
         </svg>
         force
+      </span>
+      <span
+        className="inline-flex items-center gap-1.5"
+        title="Synthetic event marking when a sub-agent was spawned with an initial task. The task itself is delivered as the first user message, not via the inbox."
+      >
+        <svg width={14} height={14} viewBox="0 0 14 14" aria-hidden>
+          <line
+            x1={2}
+            y1={7}
+            x2={12}
+            y2={7}
+            stroke={COMM_COLORS.agent.chip}
+            strokeWidth={1.2}
+            strokeDasharray="2 1.5"
+            opacity={0.7}
+          />
+          <circle
+            cx={7}
+            cy={7}
+            r={2.8}
+            fill="none"
+            stroke={COMM_COLORS.agent.chip}
+            strokeWidth={1.2}
+          />
+        </svg>
+        spawn task
+      </span>
+      <span className="inline-flex items-center gap-1.5 text-fg-4 normal-case tracking-normal">
+        <span aria-hidden>→</span>
+        moving dot = direction of message
       </span>
     </div>
   )
@@ -1325,13 +1444,26 @@ function ConversationLog({
                     : COMM_COLORS.agent.text,
                 }}
               >
-                {e.fromLabel}
+                {labelFor(e.fromSession)}
               </span>
               <span className="text-fg-4">→</span>
               <span className="truncate text-fg-2">{labelFor(e.sessionId)}</span>
-              {e.force && (
+              {e.kind === 'spawn' && (
                 <span
                   className="ml-auto rounded border px-1.5 py-[1px] text-[9px] uppercase tracking-[0.14em]"
+                  style={{
+                    color: COMM_COLORS.agent.text,
+                    borderColor: 'rgba(232, 196, 132, 0.45)',
+                    background: 'rgba(232, 196, 132, 0.06)',
+                  }}
+                  title="Spawn-time task assignment — delivered as the runner's initial user message rather than via an inbox push. Shown here for directional context."
+                >
+                  spawn task
+                </span>
+              )}
+              {e.force && (
+                <span
+                  className={`${e.kind === 'spawn' ? '' : 'ml-auto'} rounded border px-1.5 py-[1px] text-[9px] uppercase tracking-[0.14em]`}
                   style={{
                     color: COMM_COLORS.force.ring,
                     borderColor: COMM_COLORS.force.ring,
@@ -1342,7 +1474,7 @@ function ConversationLog({
                 </span>
               )}
               {e.replyTo && (
-                <span className="ml-auto font-mono text-[10px] text-fg-4">
+                <span className={`${e.kind === 'spawn' || e.force ? '' : 'ml-auto'} font-mono text-[10px] text-fg-4`}>
                   ↪ reply
                 </span>
               )}

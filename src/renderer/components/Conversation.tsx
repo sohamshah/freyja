@@ -3,6 +3,7 @@ import { useHarness, type SystemEventRecord } from '../state/store'
 import { renderMarkdown } from '../lib/markdown'
 import { HeroWelcome } from './HeroWelcome'
 import { ToolCallChip } from './ToolCallChip'
+import { Widget } from './Widget'
 import { ParallelToolGroup } from './ParallelToolGroup'
 import { SubagentCard } from './SubagentCard'
 import { SubagentSwarmGrid } from './SubagentSwarmGrid'
@@ -517,8 +518,17 @@ function ConversationStream({
   // moment it landed in this session's inbox). Delivered duplicates
   // would clutter the stream. Cap to recent — the slice already trims
   // at 100, but a long-running session might still have many.
+  //
+  // `kind === 'spawn'` events are synthetic — they exist only so the
+  // activity comm graph can show parent → child intent. The actual
+  // task is already rendered as the first user message in this
+  // transcript, so we'd just be double-printing it as a chip. Skip
+  // them in the inline rail.
   const inboxArrivals = useMemo(
-    () => inboxEvents.filter((e) => e.action === 'enqueued'),
+    () =>
+      inboxEvents.filter(
+        (e) => e.action === 'enqueued' && (e as { kind?: string }).kind !== 'spawn',
+      ),
     [inboxEvents],
   )
 
@@ -851,11 +861,14 @@ const MessageView = memo(function MessageView({ message }: { message: Message })
 type PartGroup =
   | { kind: 'subagents'; ids: string[] }
   | { kind: 'parallel_tools'; ids: string[] }
+  | { kind: 'widget'; toolCallId: string }
   | { kind: 'single'; part: MessagePart }
 
 function groupParts(parts: MessagePart[]): PartGroup[] {
   const out: PartGroup[] = []
-  const toolCalls = useHarness.getState().toolCalls
+  const state = useHarness.getState()
+  const toolCalls = state.toolCalls
+  const widgets = state.widgets
   for (const part of parts) {
     if (part.type === 'subagent' && part.subagentId) {
       const last = out[out.length - 1]
@@ -871,6 +884,20 @@ function groupParts(parts: MessagePart[]): PartGroup[] {
       const tc = toolCalls[part.toolCallId]
       if (tc && SUBAGENT_SPAWN_TOOLS.has(tc.name)) {
         continue
+      }
+      // Generative-UI widgets — the tool chip + parallel-group chrome
+      // are dead weight; the widget IS the artifact. Pull these out of
+      // parallel grouping so each renders chromeless floating directly
+      // in the message stream. Errored calls (no widget, status=error)
+      // fall through to the normal chip so the operator sees what
+      // failed.
+      if (tc?.name === 'show_widget') {
+        const hasWidget = !!widgets[part.toolCallId]
+        const stillRunning = tc.status === 'running'
+        if (hasWidget || stillRunning) {
+          out.push({ kind: 'widget', toolCallId: part.toolCallId })
+          continue
+        }
       }
       // Group consecutive tool calls with the same groupId
       if (tc?.groupId) {
@@ -899,7 +926,32 @@ function PartGroupView({ group, isActiveTail }: { group: PartGroup; isActiveTail
   if (group.kind === 'parallel_tools') {
     return <ParallelToolGroup ids={group.ids} />
   }
+  if (group.kind === 'widget') {
+    return <FloatingWidget toolCallId={group.toolCallId} />
+  }
   return <Part part={group.part} isActiveTail={isActiveTail} />
+}
+
+/** Chromeless widget wrapper used inline in the message stream.
+ *  Subscribes by id so an unrelated widget render doesn't re-render
+ *  every group. Maps the live tool-call state into the Widget
+ *  component's streaming flag — while the agent is still emitting the
+ *  widget_code argument, the iframe stays unmounted and we show a
+ *  cycling loader so partial markup never reflows mid-stream. */
+function FloatingWidget({ toolCallId }: { toolCallId: string }) {
+  const widget = useHarness((s) => s.widgets[toolCallId])
+  const toolStatus = useHarness((s) => s.toolCalls[toolCallId]?.status)
+  const isStreaming = toolStatus === 'running' || !widget
+  return (
+    <Widget
+      toolCallId={toolCallId}
+      title={widget?.title ?? 'widget'}
+      code={widget?.code ?? ''}
+      kind={widget?.kind ?? 'html'}
+      loadingMessages={widget?.loadingMessages ?? []}
+      isStreaming={isStreaming}
+    />
+  )
 }
 
 // Tool calls that spawn subagents are already fully represented by the
@@ -944,6 +996,10 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
     if (spawnToolName && SUBAGENT_SPAWN_TOOLS.has(spawnToolName)) {
       return null
     }
+    // `show_widget` tool calls never reach Part — `groupParts` lifts
+    // them into the `widget` group kind which renders FloatingWidget
+    // directly. So the chip path here is the right fallback for any
+    // non-widget tool call.
     return <ToolCallChip id={part.toolCallId} />
   }
   if (part.type === 'subagent' && part.subagentId) {

@@ -43,6 +43,7 @@ from bridge.tools.talk_tool import (
     TalkTool,
 )
 from bridge.tools.tool_search_tool import ToolSearchTool
+from bridge.tools.widget_tool import ReadWidgetSpecTool, ShowWidgetTool
 
 # Computer-use tools are imported lazily below — they pull in
 # `freyja_native` which may not be built in every environment.
@@ -243,6 +244,18 @@ def build_desktop_registry(
 
     # Meta tool — lets the model load WARM-tier schemas on demand
     tools.append(ToolSearchTool(registry))
+
+    # Generative-UI widget tools. `widget_spec` (WARM) returns the
+    # design-system markdown; `show_widget` (HOT) mounts an inline
+    # iframe. Both are session-scoped so emitted widget_render events
+    # carry the right sessionId for the renderer to route on.
+    tools.append(ReadWidgetSpecTool())
+    tools.append(
+        ShowWidgetTool(
+            session_id=subagent_parent_session_id or "",
+            emit_event=subagent_emit,
+        )
+    )
 
     # Sub-agents (must be wired last so they see the full parent tool set)
     sub_registry = subagent_registry or SubAgentRegistry()

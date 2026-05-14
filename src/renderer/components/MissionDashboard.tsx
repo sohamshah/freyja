@@ -339,6 +339,7 @@ export function MissionDashboard() {
   const busMessages = useHarness((s) => s.busMessages)
   const inboxEvents = useHarness((s) => s.inboxEvents)
   const artifacts = useHarness((s) => s.artifacts)
+  const widgets = useHarness((s) => s.widgets)
   const model = useHarness((s) => s.model)
   const reasoningLevel = useHarness((s) => s.reasoningLevel)
   const coordinationStrategy = useHarness((s) => s.coordinationStrategy)
@@ -388,6 +389,7 @@ export function MissionDashboard() {
       busMessages,
       inboxEvents,
       artifacts,
+      widgets,
       model,
       reasoningLevel,
       coordinationStrategy,
@@ -747,6 +749,7 @@ export function MissionDashboard() {
             runningAgents={runningAgents}
             agents={dashboard.agents}
             findings={dashboard.findings}
+            busEvents={dashboard.busEvents}
             fileChanges={dashboard.fileChanges}
             artifacts={dashboard.artifacts}
             cost={dashboard.cost}
@@ -790,6 +793,7 @@ function OverviewTab({
   runningAgents,
   agents,
   findings,
+  busEvents,
   fileChanges,
   artifacts,
   cost,
@@ -814,6 +818,10 @@ function OverviewTab({
   runningAgents: number
   agents: AgentView[]
   findings: BusEventView[]
+  /** Full bus event stream (findings + reads). BusFlowView needs reads
+   *  too — `findings` alone is pre-filtered to topic !== 'read' and
+   *  would silently strip the read overlay. */
+  busEvents: BusEventView[]
   fileChanges: FileChangeSet[]
   artifacts: ArtifactRecord[]
   cost: number
@@ -887,11 +895,16 @@ function OverviewTab({
     )
   }
   if (coordinationStrategy === 'bus') {
+    // Pass the *unfiltered* bus event stream — BusFlowView splits it
+    // internally into published findings (chips on the timeline) and
+    // read events (arcs back to the source). The `findings` collection
+    // above is pre-filtered to `topic !== 'read'`, which silently
+    // erased the read overlay and made the lane count "0 reads".
     return (
       <BusFlowView
         objective={objective}
         agents={agents}
-        findings={findings}
+        findings={busEvents}
         contextPct={contextPct}
         cost={cost}
         onAttach={onAttach}

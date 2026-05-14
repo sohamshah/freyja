@@ -5,6 +5,7 @@ import { renderMarkdown } from '../lib/markdown'
 import { formatDuration, formatTokens } from '../lib/format'
 import { Conversation } from './Conversation'
 import { ToolCallChip } from './ToolCallChip'
+import { Widget } from './Widget'
 import type { Message, MessagePart, SessionSnapshot, SubagentRecord } from '@shared/events'
 
 export function SessionPanes() {
@@ -272,7 +273,28 @@ function PanePart({ part, slice }: { part: MessagePart; slice: SessionSlice }) {
   }
 
   if (part.type === 'tool_call' && part.toolCallId) {
-    return <ToolCallChip id={part.toolCallId} record={slice.toolCalls?.[part.toolCallId]} />
+    const tcRecord = slice.toolCalls?.[part.toolCallId]
+    const widget = slice.widgets?.[part.toolCallId]
+    const widgetStreaming = !!tcRecord && tcRecord.status === 'running'
+    // For `show_widget` calls, hide the tool chip and render the
+    // widget chromeless — the widget IS the artifact; the chip
+    // duplicates info nobody cares about. While the call is still in
+    // flight we mount the Widget in its loading state. Errored calls
+    // (status=error with no widget) fall through to the chip so the
+    // operator sees what failed.
+    if (tcRecord?.name === 'show_widget' && (widget || widgetStreaming)) {
+      return (
+        <Widget
+          toolCallId={part.toolCallId}
+          title={widget?.title ?? 'widget'}
+          code={widget?.code ?? ''}
+          kind={widget?.kind ?? 'html'}
+          loadingMessages={widget?.loadingMessages ?? []}
+          isStreaming={widgetStreaming || !widget}
+        />
+      )
+    }
+    return <ToolCallChip id={part.toolCallId} record={tcRecord} />
   }
 
   if (part.type === 'subagent' && part.subagentId) {
@@ -481,6 +503,7 @@ function sliceForSessionView(
       busMessages: state.busMessages,
       inboxEvents: state.inboxEvents,
       artifacts: state.artifacts,
+      widgets: state.widgets,
       model: state.model,
       reasoningLevel: state.reasoningLevel,
       coordinationStrategy: state.coordinationStrategy,

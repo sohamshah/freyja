@@ -229,6 +229,53 @@ invisible backend chores.
 
 Key constants live in `engine/constants.py`.
 
+## Generative UI Widgets
+
+Agents can render interactive HTML/SVG widgets directly in the conversation
+— metric dashboards, diagrams, charts, and structured input forms that
+submit back as the next user message. The architecture mirrors Claude
+Desktop's "Imagine" pattern and the MCP Apps SEP-1865 wire shape so a
+future MCP client integration is a thin shim, not a rewrite.
+
+- Two bridge tools (`bridge/tools/widget_tool.py`): `widget_spec` returns
+  the design-system reference (CSS classes, color ramps, Tabler icons,
+  elicit form chrome, hard constraints), `show_widget` emits a
+  `widget_render` event carrying the agent's HTML/SVG fragment keyed by
+  tool-call id.
+- The renderer mounts each widget in a sandboxed iframe
+  (`allow-scripts allow-popups`, no `allow-same-origin` — opaque origin
+  blocks parent DOM access) with a Freyja-flavored design-system runtime
+  (`src/renderer/widgetRuntime.ts`): CSS variables matching the mono
+  palette, pre-built SVG classes, nine color ramps × seven stops, the
+  Tabler webfont via jsDelivr, `sendPrompt(text)` / `openLink(url)`
+  globals, and auto-wired `.elicit-*` forms (zero JS in the agent's
+  fragment — the shell handles selection state, multi-select,
+  "Other"-reveal, and submit collection in the documented
+  `Subject — Field: value · Field: value` format).
+- Widgets render chromeless directly in the chat — `groupParts` pulls
+  `show_widget` tool calls out of the parallel-tools grouping into a
+  dedicated `widget` group kind so the tool chip is hidden entirely and
+  the widget floats on the chat surface (see `FloatingWidget` in
+  `src/renderer/components/Conversation.tsx`).
+- The iframe declares `color-scheme: dark` three ways so `background:
+  transparent` actually resolves to transparent (Chromium's default
+  light-mode fallback was painting widgets against a white rectangle).
+
+**Pending / next steps:**
+- MCP client wired into the bridge so external MCP Apps servers
+  (Claude Desktop's `visualize`, mcpui.dev catalog, etc.) can connect and
+  return `ui://` resources that route through the same `widget_render`
+  path. The renderer side is reusable — only the Python MCP client +
+  resource-fetch loop need writing.
+- Bundle Tabler icons locally (currently ~650KB jsDelivr fetch on first
+  widget per session) and route `openLink` through Electron's
+  `shell.openExternal` via preload IPC for a proper OS handoff.
+- `update_widget` semantics — currently each `show_widget` call produces
+  an independent iframe; stepper-style multi-turn forms need design.
+- Preload Chart.js / Mermaid in the runtime so chart and diagram
+  widgets don't pay a per-iframe CDN cost.
+- Light-mode CSS variables — runtime is dark-only today.
+
 ## Quick Start
 
 Use this for development. Renderer changes hot-reload through Vite. Python

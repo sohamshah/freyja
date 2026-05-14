@@ -102,6 +102,55 @@ def _build_sub_agent_system_prompt(
 SubAgentEventCb = Callable[[dict[str, Any]], Awaitable[None] | None]
 
 
+async def _emit_spawn_inbox_event(
+    emit_event: SubAgentEventCb,
+    *,
+    parent_session_id: str,
+    child_session_id: str,
+    task: str,
+) -> None:
+    """Emit a synthetic inbox_event so the activity comm graph (and
+    per-session transcript chip rail) sees the spawn-time task as a
+    parent → child message.
+
+    Spawns deliver `task` as the runner's initial user message — it
+    never lands in the child's inbox, so the inbox_event channel that
+    the comm visualization listens on stays silent for spawns. From the
+    operator's perspective this hides half of the directional traffic
+    (only post-spawn talk() replies are visible). Emitting this synthetic
+    event closes the gap WITHOUT changing runtime delivery: nothing is
+    pushed to record.inbox; the runner still consumes the task as
+    before.
+
+    `parent_session_id` must be set (otherwise we can't draw a sender
+    lane). The deterministic message id `spawn:<child_id>` keeps
+    aggregation/dedupe idempotent if a slice replays."""
+    if not parent_session_id:
+        return
+    try:
+        await _fire(
+            emit_event,
+            {
+                "type": "inbox_event",
+                "sessionId": child_session_id,
+                "action": "enqueued",
+                "message": {
+                    "id": f"spawn:{child_session_id}",
+                    "fromSession": parent_session_id,
+                    "fromLabel": "parent",
+                    "fromRole": "agent",
+                    "content": task,
+                    "force": False,
+                    "replyTo": None,
+                    "timestamp": int(time.time() * 1000),
+                    "kind": "spawn",
+                },
+            },
+        )
+    except Exception:
+        pass
+
+
 def _attach_inbox_emitter(record: Any, _emit_event: SubAgentEventCb) -> None:
     """Wire the sub-agent record's SessionInbox.on_change to fire
     `inbox_event` events scoped to the record's session id. Mirrors
@@ -360,6 +409,20 @@ Parameters:
                 "workspace": self._spec.parent_workspace,
                 "createdAt": int(time.time() * 1000),
             },
+        )
+
+        # Synthetic inbox_event so the activity comm graph + per-session
+        # transcript reflect spawn-time intent. The task itself is fed
+        # via runner.run() as the initial user message — this event
+        # carries no real InboxMessage and is NOT pushed to the child's
+        # inbox; it exists purely so direction-of-traffic visualization
+        # captures the parent → child request that would otherwise be
+        # invisible (the comm graph only sees post-spawn talk() calls).
+        await _emit_spawn_inbox_event(
+            self._spec.emit_event,
+            parent_session_id=self._spec.parent_session_id,
+            child_session_id=sub_id,
+            task=task,
         )
 
         # Persist a profile_invocation JSONL row so the metrics dashboard's
@@ -697,6 +760,17 @@ Parameters:
             },
         )
 
+        # Same synthetic spawn-inbox event as the public execute() path
+        # — judge sub-agents, deep-search children, and other
+        # programmatic spawns also issue a parent → child request that
+        # should show up in the activity comm graph.
+        await _emit_spawn_inbox_event(
+            self._spec.emit_event,
+            parent_session_id=self._spec.parent_session_id,
+            child_session_id=sub_id,
+            task=task,
+        )
+
         # ---- profile_invocation telemetry ----
         try:
             task_preview = task.strip().replace("\n", " ")[:240]
@@ -822,6 +896,23 @@ Parameters:
             child_registry.register(
                 ListAgentSessionsTool(router=self._spec.talk_router, ctx=talk_ctx)
             )
+
+        # Generative-UI widget tool — override the parent-bound instance
+        # so widget_render events carry THIS sub-agent's session id (the
+        # parent's copy would route widgets into the parent's slice
+        # instead of the child's). widget_spec is stateless so the
+        # inherited parent copy is fine.
+        try:
+            from bridge.tools.widget_tool import ShowWidgetTool
+
+            child_registry.register(
+                ShowWidgetTool(
+                    session_id=record.id,
+                    emit_event=self._spec.emit_event,
+                )
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
         # Inject message bus tools BEFORE building the system prompt so
         # the tool list in the prompt includes publish_finding / read_findings.
