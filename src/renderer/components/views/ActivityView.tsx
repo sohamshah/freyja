@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { formatTokens } from '../../lib/format'
 import type { AgentView, BusEventView, TelemetryEventView } from '../shared/types'
 import type { SessionSnapshot } from '../../../shared/events'
@@ -89,11 +89,122 @@ export function ActivityView({
 
   const [filters, setFilters] = useState<Set<Category>>(() => new Set(CATEGORIES))
   const [expanded, setExpanded] = useState<string | null>(null)
+  // Scroll-to-event request — set when a chip elsewhere wants to jump
+  // here. Cleared by the scroll effect after firing.
+  const [scrollToEventId, setScrollToEventId] = useState<string | null>(null)
+  const eventRowRefs = useRef<Map<string, HTMLElement>>(new Map())
+
+  // Resizable left/right divider — drag handle between event timeline
+  // and comm pane. Default 480px (wider than the original 360 so the
+  // chat-log cards have room); range 320-720. Persisted to
+  // localStorage so the operator's preference sticks across sessions.
+  const [commWidth, setCommWidth] = useState<number>(() => {
+    try {
+      const stored = localStorage.getItem('freyja.activity.commWidth')
+      const n = stored ? parseInt(stored, 10) : 480
+      return Number.isFinite(n) ? Math.max(320, Math.min(720, n)) : 480
+    } catch {
+      return 480
+    }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('freyja.activity.commWidth', String(commWidth)) } catch {}
+  }, [commWidth])
 
   const visible = useMemo(
     () => events.filter((e) => filters.has(e.category)),
     [events, filters],
   )
+
+  // Relationship index. Built once per event set so chip expansion +
+  // scroll-to-jump can resolve cross-references without rescanning:
+  //   readersByFindingIndex: which read events consumed a given finding
+  //   findingsByReadId:      which findings a given read event pulled
+  //   findingByIndex:        finding lookup by bus index
+  //   eventIdByFindingIndex: ActivityView event id for a finding (so
+  //                          chips can jump to the right row)
+  //   eventIdByReadId:       same for reads
+  const relations = useMemo(() => {
+    const readersByFindingIndex = new Map<number, Array<{
+      readerLabel: string
+      readerSessionId: string
+      readEventTimestamp: number
+      readEventId: string
+    }>>()
+    const findingsByReadId = new Map<string, Array<{
+      index: number
+      sender: string
+      timestamp: number
+      eventId: string
+      preview: string
+    }>>()
+    const findingByIndex = new Map<number, BusEventView>()
+    const eventIdByFindingIndex = new Map<number, string>()
+    const eventIdByReadId = new Map<string, string>()
+
+    for (const f of findings) {
+      findingByIndex.set(f.index, f)
+      const id = `f:${f.sessionId}:${f.index}:${f.timestamp}`
+      eventIdByFindingIndex.set(f.index, id)
+    }
+    for (const r of readEvents) {
+      const readEventId = `r:${r.sessionId}:${r.index}:${r.timestamp}`
+      eventIdByReadId.set(readEventId, readEventId)
+      const indices = (r as any).messageIndices as number[] | undefined
+      if (!indices || indices.length === 0) continue
+      const fLinks: Array<{
+        index: number
+        sender: string
+        timestamp: number
+        eventId: string
+        preview: string
+      }> = []
+      for (const idx of indices) {
+        const src = findingByIndex.get(idx)
+        const arr = readersByFindingIndex.get(idx) ?? []
+        arr.push({
+          readerLabel: r.senderLabel || r.sessionId.slice(0, 8),
+          readerSessionId: r.sessionId,
+          readEventTimestamp: r.timestamp,
+          readEventId,
+        })
+        readersByFindingIndex.set(idx, arr)
+        if (src) {
+          fLinks.push({
+            index: idx,
+            sender: src.senderLabel || src.sessionId.slice(0, 8),
+            timestamp: src.timestamp,
+            eventId: eventIdByFindingIndex.get(idx) ?? '',
+            preview: oneLine(src.content),
+          })
+        }
+      }
+      findingsByReadId.set(readEventId, fLinks)
+    }
+    return {
+      readersByFindingIndex,
+      findingsByReadId,
+      findingByIndex,
+      eventIdByFindingIndex,
+      eventIdByReadId,
+    }
+  }, [findings, readEvents])
+
+  // Scroll-to-event effect. Triggered when a relationship chip is
+  // clicked anywhere — left-pane chip in an expanded EventRow, or a
+  // right-pane chat-log card. Scrolls the row into view, expands it,
+  // and pulses the row briefly so the operator can find it.
+  useEffect(() => {
+    if (!scrollToEventId) return
+    const node = eventRowRefs.current.get(scrollToEventId)
+    if (node) {
+      node.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      setExpanded(scrollToEventId)
+    }
+    // Clear after the scroll fires so the same id can be re-clicked later.
+    const t = setTimeout(() => setScrollToEventId(null), 600)
+    return () => clearTimeout(t)
+  }, [scrollToEventId])
 
   const toggle = (c: Category) =>
     setFilters((prev) => {
@@ -159,13 +270,9 @@ export function ActivityView({
         </button>
       </div>
 
-      <main
-        className={`min-h-0 flex-1 overflow-hidden pb-20 pt-6 ${
-          hasComms ? 'grid grid-cols-[minmax(0,1fr)_360px] gap-0' : ''
-        }`}
-      >
-        <div className={`min-h-0 overflow-y-auto px-10 ${hasComms ? '' : ''}`}>
-          <div className={`mx-auto ${hasComms ? 'max-w-[680px]' : 'max-w-[820px]'}`}>
+      <main className="flex min-h-0 flex-1 overflow-hidden pt-2">
+        <div className="min-h-0 flex-1 overflow-y-auto px-10 pb-20 pt-4">
+          <div className={`mx-auto ${hasComms ? 'max-w-[760px]' : 'max-w-[820px]'}`}>
             {visible.length === 0 ? (
               <div className="py-14 text-center font-mono text-[12px] tracking-[0.06em] text-fg-3">
                 {events.length === 0
@@ -179,12 +286,23 @@ export function ActivityView({
                     key={ev.id}
                     event={ev}
                     expanded={expanded === ev.id}
+                    isPulsing={scrollToEventId === ev.id}
                     onToggle={() => setExpanded((cur) => (cur === ev.id ? null : ev.id))}
-                    onCopy={
-                      isBusFinding(ev.raw)
-                        ? () => onCopyFinding(ev.raw as BusEventView)
+                    onJumpTo={(targetId) => setScrollToEventId(targetId)}
+                    readers={
+                      ev.category === 'finding' && isBusFinding(ev.raw)
+                        ? relations.readersByFindingIndex.get((ev.raw as BusEventView).index)
                         : undefined
                     }
+                    readFindings={
+                      ev.category === 'read'
+                        ? relations.findingsByReadId.get(ev.id)
+                        : undefined
+                    }
+                    rowRef={(el) => {
+                      if (el) eventRowRefs.current.set(ev.id, el)
+                      else eventRowRefs.current.delete(ev.id)
+                    }}
                   />
                 ))}
               </ol>
@@ -192,13 +310,23 @@ export function ActivityView({
           </div>
         </div>
         {hasComms && (
-          <aside className="min-h-0 overflow-y-auto border-l border-white/[0.06] bg-black/[0.10] px-5 py-2">
-            <CommGraph
-              inboxEvents={inboxEvents}
-              sessions={sessions}
-              agents={agents}
+          <>
+            <ResizeHandle
+              width={commWidth}
+              onResize={(next) => setCommWidth(Math.max(320, Math.min(720, next)))}
             />
-          </aside>
+            <aside
+              className="min-h-0 overflow-y-auto border-l border-white/[0.06] bg-black/[0.10]"
+              style={{ width: commWidth, flexShrink: 0 }}
+            >
+              <CommPane
+                inboxEvents={inboxEvents}
+                sessions={sessions}
+                agents={agents}
+                onCopyFinding={onCopyFinding}
+              />
+            </aside>
+          </>
         )}
       </main>
     </div>
@@ -250,69 +378,229 @@ function FilterChip({
 
 // ============ row ============
 
+interface ReaderInfo {
+  readerLabel: string
+  readerSessionId: string
+  readEventTimestamp: number
+  readEventId: string
+}
+interface ReadFindingInfo {
+  index: number
+  sender: string
+  timestamp: number
+  eventId: string
+  preview: string
+}
+
 function EventRow({
   event,
   expanded,
+  isPulsing,
   onToggle,
-  onCopy,
+  onJumpTo,
+  readers,
+  readFindings,
+  rowRef,
 }: {
   event: UnifiedEvent
   expanded: boolean
+  isPulsing: boolean
   onToggle: () => void
-  onCopy?: () => void
+  onJumpTo: (eventId: string) => void
+  readers?: ReaderInfo[]
+  readFindings?: ReadFindingInfo[]
+  rowRef: (el: HTMLElement | null) => void
 }) {
   const glyph = GLYPHS[event.category]
   const glyphClass = GLYPH_CLASSES[event.category]
+  // Show "expand for context" affordance only when expansion will
+  // actually surface something useful — full body, related events,
+  // or compaction detail. Skip the chevron on bare rows so the chrome
+  // doesn't promise data that isn't there.
+  const hasRelations =
+    (readers && readers.length > 0) ||
+    (readFindings && readFindings.length > 0)
+  const hasBodyDifferentFromTitle =
+    event.body !== undefined && event.body.trim() !== event.title.trim()
+  const hasExpansion =
+    hasRelations ||
+    hasBodyDifferentFromTitle ||
+    (event.category === 'summary' &&
+      !isBusFinding(event.raw) &&
+      isCompactionTelemetry(event.raw))
+
   return (
-    <li>
+    <li ref={rowRef as any}>
       <button
         type="button"
-        onClick={onToggle}
-        className={`group grid w-full grid-cols-[56px_88px_18px_1fr_auto] items-baseline gap-3 rounded-md border border-transparent px-3 py-2.5 text-left transition ${
-          expanded ? 'border-white/[0.08] bg-white/[0.022]' : 'hover:bg-white/[0.025]'
-        }`}
+        onClick={hasExpansion ? onToggle : undefined}
+        className={`group grid w-full grid-cols-[56px_92px_18px_1fr_auto] items-baseline gap-3 rounded-md border px-3 py-2.5 text-left transition ${
+          expanded
+            ? 'border-white/[0.10] bg-white/[0.028]'
+            : isPulsing
+            ? 'border-accent/[0.30] bg-accent/[0.06]'
+            : 'border-transparent hover:bg-white/[0.025]'
+        } ${hasExpansion ? 'cursor-pointer' : 'cursor-default'}`}
       >
         <span className="font-mono text-[11px] tabular-nums text-fg-3">{tsStr(event.at)}</span>
         <span className="truncate font-mono text-[11px] text-fg-2">{event.author}</span>
         <span className={`text-center text-[13px] ${glyphClass}`}>{glyph}</span>
-        <span className="min-w-0 font-mono text-[13px] leading-[1.45] text-fg-0">
+        <span className="min-w-0 font-mono text-[13px] leading-[1.5] text-fg-0">
           <span className="mr-2 text-[10px] uppercase tracking-[0.14em] text-fg-3">
             {LABELS[event.category]}
           </span>
           {event.title}
+          {!expanded && hasRelations ? (
+            <span className="ml-2 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-4">
+              {readers && readers.length > 0
+                ? `· read by ${readers.length}`
+                : `· ${readFindings?.length ?? 0} read`}
+            </span>
+          ) : null}
         </span>
-        <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-fg-3 opacity-0 transition group-hover:opacity-100">
-          {expanded ? 'collapse' : 'expand'}
+        <span
+          className={`font-mono text-[10.5px] uppercase tracking-[0.18em] text-fg-3 transition ${
+            hasExpansion
+              ? 'opacity-0 group-hover:opacity-100'
+              : 'opacity-0'
+          }`}
+        >
+          {expanded ? '▾' : '▸'}
         </span>
       </button>
-      {expanded ? (
-        <div className="ml-[170px] mr-3 mb-2 mt-1">
-          {event.category === 'summary' &&
-          !isBusFinding(event.raw) &&
-          isCompactionTelemetry(event.raw) ? (
-            <CompactionDetailPanel telemetry={event.raw} />
-          ) : event.body ? (
-            <div className="whitespace-pre-wrap rounded-md border border-white/[0.06] bg-white/[0.015] px-3 py-2.5 font-mono text-[12.5px] leading-[1.7] text-fg-1">
-              {event.body}
-              {onCopy ? (
-                <div className="mt-2 flex justify-end">
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onCopy()
-                    }}
-                    className="rounded border border-white/[0.06] bg-white/[0.03] px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.18em] text-fg-2 transition hover:bg-white/[0.06] hover:text-fg-0"
-                  >
-                    copy
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
+      {expanded && hasExpansion ? (
+        <ExpandedEventDetail
+          event={event}
+          readers={readers}
+          readFindings={readFindings}
+          onJumpTo={onJumpTo}
+        />
       ) : null}
     </li>
+  )
+}
+
+/** Rich event detail panel. Renders different content depending on
+ *  the category — relationship chips for findings (read by who?) and
+ *  reads (which findings?), full body + readers for findings, full
+ *  body for everything else, CompactionDetailPanel for summaries. */
+function ExpandedEventDetail({
+  event,
+  readers,
+  readFindings,
+  onJumpTo,
+}: {
+  event: UnifiedEvent
+  readers?: ReaderInfo[]
+  readFindings?: ReadFindingInfo[]
+  onJumpTo: (eventId: string) => void
+}) {
+  // Compaction summaries get their bespoke panel — keep that path
+  // intact since it carries token-savings data that doesn't fit the
+  // generic prose layout.
+  if (
+    event.category === 'summary' &&
+    !isBusFinding(event.raw) &&
+    isCompactionTelemetry(event.raw)
+  ) {
+    return (
+      <div className="ml-[170px] mr-3 mb-2 mt-1">
+        <CompactionDetailPanel telemetry={event.raw} />
+      </div>
+    )
+  }
+
+  const fullBody = event.body ?? ''
+  const showBody =
+    fullBody.trim().length > 0 && fullBody.trim() !== event.title.trim()
+
+  return (
+    <div className="ml-[170px] mr-3 mb-2 mt-1 flex flex-col gap-2">
+      {showBody && (
+        <div className="select-text whitespace-pre-wrap rounded-md border border-white/[0.06] bg-white/[0.015] px-3 py-2.5 font-mono text-[12.5px] leading-[1.7] text-fg-1">
+          {fullBody}
+        </div>
+      )}
+
+      {readers && readers.length > 0 && (
+        <RelationStrip
+          label={`read by ${readers.length}`}
+          icon="↻"
+        >
+          {readers.map((r, i) => (
+            <button
+              key={`${r.readEventId}-${i}`}
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                onJumpTo(r.readEventId)
+              }}
+              className="inline-flex items-center gap-1.5 rounded border border-white/[0.10] bg-white/[0.03] px-2 py-0.5 font-mono text-[11px] text-fg-1 transition hover:border-accent/[0.32] hover:bg-accent/[0.06] hover:text-accent"
+              title={`Jump to ${r.readerLabel}'s read at ${tsStr(r.readEventTimestamp)}`}
+            >
+              <span className="text-fg-3 tabular-nums">
+                {tsStr(r.readEventTimestamp)}
+              </span>
+              <span className="truncate max-w-[200px]">{r.readerLabel}</span>
+            </button>
+          ))}
+        </RelationStrip>
+      )}
+
+      {readFindings && readFindings.length > 0 && (
+        <RelationStrip
+          label={`pulled ${readFindings.length} finding${
+            readFindings.length === 1 ? '' : 's'
+          }`}
+          icon="↦"
+        >
+          {readFindings.map((f) => (
+            <button
+              key={`f-${f.index}`}
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                onJumpTo(f.eventId)
+              }}
+              className="inline-flex max-w-[420px] items-baseline gap-2 rounded border border-white/[0.10] bg-white/[0.03] px-2 py-0.5 font-mono text-[11px] text-fg-1 transition hover:border-accent/[0.32] hover:bg-accent/[0.06] hover:text-accent"
+              title={`Jump to F${f.index} from ${f.sender} at ${tsStr(
+                f.timestamp,
+              )}`}
+            >
+              <span className="font-mono text-[10px] tabular-nums text-accent">
+                F{f.index}
+              </span>
+              <span className="text-fg-3 tabular-nums">{tsStr(f.timestamp)}</span>
+              <span className="truncate text-fg-2">{f.sender}</span>
+              <span className="truncate text-fg-3 italic">
+                {f.preview.slice(0, 60)}
+                {f.preview.length > 60 ? '…' : ''}
+              </span>
+            </button>
+          ))}
+        </RelationStrip>
+      )}
+    </div>
+  )
+}
+
+function RelationStrip({
+  label,
+  icon,
+  children,
+}: {
+  label: string
+  icon: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="flex flex-wrap items-baseline gap-2 px-1">
+      <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-fg-4">
+        <span className="mr-1.5">{icon}</span>
+        {label}
+      </span>
+      {children}
+    </div>
   )
 }
 
@@ -589,17 +877,45 @@ function tsStr(ts: number): string {
  *  the accent color so cross-mission (external-feeling) traffic is
  *  visually distinct from internal swarm chatter.
  */
-function CommGraph({
+/** Color tokens for the comm visualization. Operator and agent
+ *  occupy distinctly different hues (cool steel-blue vs warm amber)
+ *  so they're separable at a glance — not just by lightness. Force
+ *  gets a high-contrast hot-orange ring that reads on top of either
+ *  base color. */
+const COMM_COLORS = {
+  operator: {
+    chip: 'rgb(120, 180, 255)',           // bright steel blue, full sat
+    chipDim: 'rgba(120, 180, 255, 0.55)',
+    arc: 'rgba(120, 180, 255, 0.55)',
+    text: 'rgb(168, 212, 252)',           // matches Tailwind accent
+  },
+  agent: {
+    chip: 'rgb(232, 196, 132)',           // warm amber/tan, full sat
+    chipDim: 'rgba(232, 196, 132, 0.45)',
+    arc: 'rgba(232, 196, 132, 0.40)',
+    text: 'rgb(232, 196, 132)',
+  },
+  force: {
+    ring: 'rgb(245, 130, 80)',            // hot orange — pops on either base
+  },
+}
+
+/** Wraps the SVG comm graph + the conversation log into one scrollable
+ *  pane. ActivityView renders this in the resizable right column when
+ *  there's any inbox traffic. */
+function CommPane({
   inboxEvents,
   sessions,
   agents,
+  onCopyFinding,
 }: {
   inboxEvents: InboxEventRecord[]
   sessions: SessionSnapshot[]
   agents: AgentView[]
+  onCopyFinding: (event: BusEventView) => void
 }) {
-  // Filter to enqueued only — drops and delivered duplicates would
-  // clutter the graph. Time-sort ascending.
+  void agents
+  void onCopyFinding
   const enqueued = useMemo(
     () =>
       inboxEvents
@@ -607,16 +923,119 @@ function CommGraph({
         .sort((a, b) => a.timestamp - b.timestamp),
     [inboxEvents],
   )
+  const labelFor = useCallback(
+    (id: string): string => {
+      if (id === 'operator') return 'operator'
+      const sess = sessions.find((s) => s.id === id)
+      if (sess) return sess.title
+      return id.slice(0, 8)
+    },
+    [sessions],
+  )
+  const counts = useMemo(() => {
+    let internal = 0
+    let external = 0
+    let force = 0
+    for (const e of enqueued) {
+      if (e.fromRole === 'operator') external++
+      else internal++
+      if (e.force) force++
+    }
+    return { internal, external, force, total: enqueued.length }
+  }, [enqueued])
 
-  // Pre-build participant set (every unique sender + recipient) and a
-  // lookup for human-readable labels. Operator gets a virtual id.
+  // Selected message — clicking a chip in the graph or a card in the
+  // log highlights the same message in both panes. Powers cross-pane
+  // navigation without a fancy state machine.
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const logRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!selectedId) return
+    const node = logRef.current?.querySelector(
+      `[data-msg-id="${selectedId}"]`,
+    ) as HTMLElement | null
+    if (node) node.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [selectedId])
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="border-b border-white/[0.06] px-5 pb-3 pt-4">
+        <div className="flex items-baseline gap-3">
+          <span className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-fg-3">
+            agent talk
+          </span>
+          <span className="font-mono text-[11.5px] tabular-nums text-fg-2">
+            <span className="text-fg-0">{counts.total}</span> msgs
+          </span>
+          {counts.external > 0 && (
+            <span
+              className="font-mono text-[10.5px] tabular-nums"
+              style={{ color: COMM_COLORS.operator.text }}
+            >
+              · {counts.external} from operator
+            </span>
+          )}
+          {counts.force > 0 && (
+            <span
+              className="font-mono text-[10.5px] tabular-nums"
+              style={{ color: COMM_COLORS.force.ring }}
+            >
+              · {counts.force} force
+            </span>
+          )}
+        </div>
+        <Legend />
+      </header>
+
+      <div className="border-b border-white/[0.06] bg-black/[0.10] px-3 py-3">
+        <CommGraph
+          enqueued={enqueued}
+          labelFor={labelFor}
+          selectedId={selectedId}
+          onSelect={(id) => setSelectedId((cur) => (cur === id ? null : id))}
+        />
+      </div>
+
+      <div
+        ref={logRef}
+        className="min-h-0 flex-1 overflow-y-auto px-3 py-3"
+      >
+        {enqueued.length === 0 ? (
+          <div className="py-10 text-center font-mono text-[11.5px] italic text-fg-3">
+            no talk activity yet
+          </div>
+        ) : (
+          <ConversationLog
+            messages={enqueued}
+            labelFor={labelFor}
+            selectedId={selectedId}
+            onSelect={(id) => setSelectedId((cur) => (cur === id ? null : id))}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** SVG swim-row diagram of inbox traffic. Pulled out of CommPane so
+ *  the layout logic stays focused. */
+function CommGraph({
+  enqueued,
+  labelFor,
+  selectedId,
+  onSelect,
+}: {
+  enqueued: InboxEventRecord[]
+  labelFor: (id: string) => string
+  selectedId: string | null
+  onSelect: (id: string) => void
+}) {
   const participants = useMemo(() => {
     const set = new Set<string>()
     for (const e of enqueued) {
       set.add(e.fromSession)
       set.add(e.sessionId)
     }
-    // Order: operator first, then by first-mention timestamp
     const firstSeen = new Map<string, number>()
     for (const e of enqueued) {
       if (!firstSeen.has(e.fromSession)) firstSeen.set(e.fromSession, e.timestamp)
@@ -631,26 +1050,6 @@ function CommGraph({
     return arr
   }, [enqueued])
 
-  const labelFor = (id: string): string => {
-    if (id === 'operator') return 'operator'
-    const sess = sessions.find((s) => s.id === id)
-    if (sess) return sess.title
-    return id.slice(0, 8)
-  }
-
-  const counts = useMemo(() => {
-    let internal = 0
-    let external = 0
-    let force = 0
-    for (const e of enqueued) {
-      if (e.fromRole === 'operator') external++
-      else internal++
-      if (e.force) force++
-    }
-    return { internal, external, force, total: enqueued.length }
-  }, [enqueued])
-
-  // Time domain — pad 3% each side so endpoints don't hug the edges.
   const { tMin, tMax } = useMemo(() => {
     if (enqueued.length === 0) {
       const now = Date.now()
@@ -663,14 +1062,13 @@ function CommGraph({
     return { tMin: min - span * 0.03, tMax: max + span * 0.03 }
   }, [enqueued])
 
-  // Layout
-  const LANE_HEIGHT = 26
-  const LABEL_WIDTH = 110
-  const TOP_PADDING = 22
+  const LANE_HEIGHT = 28
+  const LABEL_WIDTH = 132
+  const TOP_PADDING = 10
   const SIDE_PADDING = 8
-  const containerRef = React.useRef<HTMLDivElement>(null)
-  const [width, setWidth] = useState(320)
-  React.useEffect(() => {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [width, setWidth] = useState(420)
+  useEffect(() => {
     const el = containerRef.current
     if (!el) return
     const ro = new ResizeObserver((entries) => {
@@ -684,33 +1082,16 @@ function CommGraph({
   const tSpan = Math.max(1, tMax - tMin)
   const tToX = (t: number) => SIDE_PADDING + ((t - tMin) / tSpan) * innerWidth
   const laneY = (i: number) => TOP_PADDING + i * LANE_HEIGHT + LANE_HEIGHT / 2
-
-  const totalHeight = Math.max(120, TOP_PADDING + participants.length * LANE_HEIGHT + 12)
+  const totalHeight = Math.max(
+    80,
+    TOP_PADDING + participants.length * LANE_HEIGHT + 12,
+  )
 
   return (
-    <div className="flex flex-col gap-3" ref={containerRef}>
-      <header className="flex items-baseline gap-3 pt-3">
-        <span className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-fg-3">
-          agent talk
-        </span>
-        <span className="font-mono text-[11px] tabular-nums text-fg-2">
-          <span className="text-fg-0">{counts.total}</span> msgs
-        </span>
-        {counts.external > 0 && (
-          <span className="font-mono text-[10.5px] text-accent">
-            · <span className="tabular-nums">{counts.external}</span> from operator
-          </span>
-        )}
-        {counts.force > 0 && (
-          <span className="font-mono text-[10.5px] text-warn">
-            · <span className="tabular-nums">{counts.force}</span> force
-          </span>
-        )}
-      </header>
-
+    <div ref={containerRef}>
       {enqueued.length === 0 ? (
-        <div className="py-10 text-center font-mono text-[11.5px] italic text-fg-3">
-          no talk activity yet
+        <div className="py-6 text-center font-mono text-[11px] italic text-fg-3">
+          waiting for talk activity
         </div>
       ) : (
         <svg
@@ -719,7 +1100,7 @@ function CommGraph({
           className="block"
           aria-label="agent talk graph"
         >
-          {/* Lane labels + horizontal rules */}
+          {/* Lanes — labels left, faint dashed rule across */}
           {participants.map((pid, i) => {
             const y = laneY(i)
             const isOperator = pid === 'operator'
@@ -732,15 +1113,21 @@ function CommGraph({
                   height={22}
                 >
                   <div
-                    className={`flex h-full items-center truncate font-mono text-[10.5px] ${
-                      isOperator ? 'text-accent' : 'text-fg-2'
-                    }`}
+                    className="flex h-full items-center gap-1.5 truncate font-mono text-[10.5px]"
+                    style={{
+                      color: isOperator
+                        ? COMM_COLORS.operator.text
+                        : 'rgba(232, 196, 132, 0.95)',
+                    }}
                     title={labelFor(pid)}
                   >
-                    <span className="mr-1.5 inline-block h-1 w-1 rounded-full"
-                          style={{
-                            background: isOperator ? 'rgb(168, 212, 252)' : 'rgba(255,255,255,0.45)',
-                          }}
+                    <span
+                      className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
+                      style={{
+                        background: isOperator
+                          ? COMM_COLORS.operator.chip
+                          : COMM_COLORS.agent.chip,
+                      }}
                     />
                     <span className="truncate">{labelFor(pid)}</span>
                   </div>
@@ -750,7 +1137,7 @@ function CommGraph({
                   y1={y}
                   x2={LABEL_WIDTH + innerWidth + SIDE_PADDING}
                   y2={y}
-                  stroke="rgba(255,255,255,0.06)"
+                  stroke="rgba(255,255,255,0.05)"
                   strokeWidth={1}
                   strokeDasharray="2,3"
                 />
@@ -758,8 +1145,7 @@ function CommGraph({
             )
           })}
 
-          {/* Curves: sender → recipient at message timestamp. Drawn
-              first so the chips sit on top. */}
+          {/* Sender → recipient curves (drawn below chips) */}
           {enqueued.map((e) => {
             const senderIdx = participants.indexOf(e.fromSession)
             const recipIdx = participants.indexOf(e.sessionId)
@@ -768,63 +1154,81 @@ function CommGraph({
             const y1 = laneY(senderIdx)
             const y2 = laneY(recipIdx)
             const isOperator = e.fromRole === 'operator'
-            const color = isOperator
-              ? 'rgba(168,212,252,0.55)'
-              : 'rgba(255,255,255,0.35)'
-            // Cubic bezier curve that bows slightly so concurrent
-            // messages don't overlap as one flat line.
-            const midX = x + (Math.abs(y2 - y1) > LANE_HEIGHT ? 6 : 0)
+            const baseStroke = isOperator
+              ? COMM_COLORS.operator.arc
+              : COMM_COLORS.agent.arc
+            const isSelected = selectedId === e.id
             const cp1y = y1 + (y2 - y1) * 0.25
             const cp2y = y1 + (y2 - y1) * 0.75
+            const midX = x + (Math.abs(y2 - y1) > LANE_HEIGHT ? 6 : 0)
             const d = `M ${x} ${y1} C ${midX} ${cp1y}, ${midX} ${cp2y}, ${x} ${y2}`
             return (
               <path
                 key={`arc-${e.id}`}
                 d={d}
                 fill="none"
-                stroke={color}
-                strokeWidth={e.force ? 1.4 : 0.8}
-                opacity={0.85}
+                stroke={baseStroke}
+                strokeWidth={isSelected ? 2 : e.force ? 1.6 : 1}
+                opacity={isSelected ? 1 : 0.85}
                 strokeLinecap="round"
               />
             )
           })}
 
-          {/* Recipient chips — small filled circles on the recipient
-              lane, brighter than the sender end (which is just a
-              tail of the curve). Operator messages tinted accent. */}
+          {/* Recipient chips + sender ring */}
           {enqueued.map((e) => {
-            const recipIdx = participants.indexOf(e.sessionId)
             const senderIdx = participants.indexOf(e.fromSession)
+            const recipIdx = participants.indexOf(e.sessionId)
             if (recipIdx < 0) return null
             const cx = LABEL_WIDTH + tToX(e.timestamp)
             const cy = laneY(recipIdx)
-            const isOperator = e.fromRole === 'operator'
-            const r = e.force ? 4 : 3
             const senderY = senderIdx >= 0 ? laneY(senderIdx) : cy
+            const isOperator = e.fromRole === 'operator'
+            const fill = isOperator
+              ? COMM_COLORS.operator.chip
+              : COMM_COLORS.agent.chip
+            const isSelected = selectedId === e.id
+            const r = isSelected ? 5 : e.force ? 4.5 : 3.5
             const preview =
               e.content.length > 80 ? e.content.slice(0, 77) + '…' : e.content
             return (
-              <g key={`chip-${e.id}`}>
-                {/* Sender end as a small hollow dot */}
+              <g
+                key={`chip-${e.id}`}
+                style={{ cursor: 'pointer' }}
+                onClick={(ev) => {
+                  ev.stopPropagation()
+                  onSelect(e.id)
+                }}
+              >
                 {senderIdx >= 0 && (
                   <circle
                     cx={cx}
                     cy={senderY}
                     r={2}
                     fill="none"
-                    stroke={isOperator ? 'rgba(168,212,252,0.65)' : 'rgba(255,255,255,0.45)'}
+                    stroke={fill}
                     strokeWidth={1}
+                    opacity={0.85}
                   />
                 )}
-                {/* Recipient chip — the head of the arrow */}
+                {/* force halo — drawn outside the chip */}
+                {e.force && (
+                  <circle
+                    cx={cx}
+                    cy={cy}
+                    r={r + 3}
+                    fill="none"
+                    stroke={COMM_COLORS.force.ring}
+                    strokeWidth={1.6}
+                  />
+                )}
                 <circle
                   cx={cx}
                   cy={cy}
                   r={r}
-                  fill={isOperator ? 'rgba(168,212,252,0.85)' : 'rgba(255,255,255,0.65)'}
-                  stroke={e.force ? 'rgb(245, 182, 64)' : 'rgba(0,0,0,0.35)'}
-                  strokeWidth={e.force ? 1.4 : 0.8}
+                  fill={fill}
+                  stroke={isSelected ? 'rgba(255,255,255,0.95)' : 'rgba(0,0,0,0.35)'}
+                  strokeWidth={isSelected ? 1.8 : 1}
                 >
                   <title>
                     {`${e.fromLabel} → ${labelFor(e.sessionId)}${
@@ -837,59 +1241,170 @@ function CommGraph({
           })}
         </svg>
       )}
+    </div>
+  )
+}
 
-      {/* Compact legend */}
-      {enqueued.length > 0 && (
-        <div className="flex flex-wrap gap-3 px-1 pb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-4">
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-            operator
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-1.5 w-1.5 rounded-full bg-white/50" />
-            agent
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full border border-warn" />
-            force
-          </span>
-        </div>
-      )}
+/** Legend strip — actual chip samples next to labels so the operator
+ *  doesn't have to guess what "operator color" or "force ring"
+ *  actually look like. */
+function Legend() {
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-3">
+      <span className="inline-flex items-center gap-1.5">
+        <svg width={12} height={12} viewBox="0 0 12 12" aria-hidden>
+          <circle cx={6} cy={6} r={4} fill={COMM_COLORS.operator.chip} />
+        </svg>
+        operator
+      </span>
+      <span className="inline-flex items-center gap-1.5">
+        <svg width={12} height={12} viewBox="0 0 12 12" aria-hidden>
+          <circle cx={6} cy={6} r={4} fill={COMM_COLORS.agent.chip} />
+        </svg>
+        agent
+      </span>
+      <span className="inline-flex items-center gap-1.5">
+        <svg width={14} height={14} viewBox="0 0 14 14" aria-hidden>
+          <circle
+            cx={7}
+            cy={7}
+            r={6}
+            fill="none"
+            stroke={COMM_COLORS.force.ring}
+            strokeWidth={1.6}
+          />
+          <circle cx={7} cy={7} r={3} fill="rgba(232,196,132,0.85)" />
+        </svg>
+        force
+      </span>
+    </div>
+  )
+}
 
-      {/* Recent rows — chronological mini-log right under the graph */}
-      {enqueued.length > 0 && (
-        <div className="border-t border-white/[0.06] pt-2">
-          <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.16em] text-fg-4">
-            recent
-          </div>
-          <ul className="m-0 flex list-none flex-col gap-1 p-0">
-            {enqueued.slice(-6).reverse().map((e) => (
-              <li
-                key={`recent-${e.id}`}
-                className="grid grid-cols-[auto_1fr_auto] items-baseline gap-1.5 font-mono text-[10.5px] leading-[1.45]"
+/** Full conversation log — each message a card with proper text wrap,
+ *  sender → recipient chips, force indicator. Replaces the previous
+ *  one-line truncated "Recent" rows. Cards are clickable to highlight
+ *  in the graph above. */
+function ConversationLog({
+  messages,
+  labelFor,
+  selectedId,
+  onSelect,
+}: {
+  messages: InboxEventRecord[]
+  labelFor: (id: string) => string
+  selectedId: string | null
+  onSelect: (id: string) => void
+}) {
+  // Newest at the top of the scroller — operator looks at "what
+  // just happened" more often than "what kicked off the session".
+  const reversed = useMemo(() => [...messages].reverse(), [messages])
+  return (
+    <ul className="m-0 flex list-none flex-col gap-2 p-0">
+      {reversed.map((e) => {
+        const isOperator = e.fromRole === 'operator'
+        const selected = selectedId === e.id
+        return (
+          <li
+            key={e.id}
+            data-msg-id={e.id}
+            onClick={() => onSelect(e.id)}
+            className={`cursor-pointer overflow-hidden rounded-md border transition ${
+              selected
+                ? 'border-white/[0.18] bg-white/[0.04]'
+                : 'border-white/[0.06] bg-white/[0.015] hover:border-white/[0.12] hover:bg-white/[0.03]'
+            }`}
+          >
+            <div className="flex items-baseline gap-2 border-b border-white/[0.05] px-3 py-1.5 font-mono text-[10.5px]">
+              <span className="tabular-nums text-fg-3">{tsStr(e.timestamp)}</span>
+              <span
+                className="font-mono"
+                style={{
+                  color: isOperator
+                    ? COMM_COLORS.operator.text
+                    : COMM_COLORS.agent.text,
+                }}
               >
-                <span className="text-fg-4 tabular-nums">{tsStr(e.timestamp)}</span>
-                <span className="truncate text-fg-1" title={e.content}>
-                  <span
-                    className={
-                      e.fromRole === 'operator' ? 'text-accent' : 'text-fg-2'
-                    }
-                  >
-                    {e.fromLabel}
-                  </span>
-                  <span className="text-fg-4"> → </span>
-                  <span className="text-fg-2">{labelFor(e.sessionId)}</span>
-                  {e.force && (
-                    <span className="ml-1 rounded border border-warn/[0.30] bg-warn/[0.05] px-1 text-[8.5px] text-warn">
-                      force
-                    </span>
-                  )}
+                {e.fromLabel}
+              </span>
+              <span className="text-fg-4">→</span>
+              <span className="truncate text-fg-2">{labelFor(e.sessionId)}</span>
+              {e.force && (
+                <span
+                  className="ml-auto rounded border px-1.5 py-[1px] text-[9px] uppercase tracking-[0.14em]"
+                  style={{
+                    color: COMM_COLORS.force.ring,
+                    borderColor: COMM_COLORS.force.ring,
+                    background: 'rgba(245, 130, 80, 0.08)',
+                  }}
+                >
+                  force
                 </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+              )}
+              {e.replyTo && (
+                <span className="ml-auto font-mono text-[10px] text-fg-4">
+                  ↪ reply
+                </span>
+              )}
+            </div>
+            <p className="m-0 select-text whitespace-pre-wrap break-words px-3 py-2 font-mono text-[12px] leading-[1.6] text-fg-1">
+              {e.content}
+            </p>
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
+/** Drag handle between the event timeline (left) and comm pane
+ *  (right). 6px-wide hit area, 1px visible rule. Captures pointer
+ *  events on mousedown and resizes commWidth as the mouse moves. */
+function ResizeHandle({
+  width,
+  onResize,
+}: {
+  width: number
+  onResize: (next: number) => void
+}) {
+  const draggingRef = useRef(false)
+  const startXRef = useRef(0)
+  const startWidthRef = useRef(0)
+
+  const onMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    draggingRef.current = true
+    startXRef.current = e.clientX
+    startWidthRef.current = width
+    const move = (mv: MouseEvent) => {
+      if (!draggingRef.current) return
+      // Mouse moves right → shrink commWidth (right pane gets narrower
+      // because the divider is between left and right). Inverted.
+      const delta = mv.clientX - startXRef.current
+      onResize(startWidthRef.current - delta)
+    }
+    const up = () => {
+      draggingRef.current = false
+      document.removeEventListener('mousemove', move)
+      document.removeEventListener('mouseup', up)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    document.addEventListener('mousemove', move)
+    document.addEventListener('mouseup', up)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }
+
+  return (
+    <div
+      onMouseDown={onMouseDown}
+      className="group relative w-1.5 shrink-0 cursor-col-resize bg-transparent"
+      role="separator"
+      aria-orientation="vertical"
+      title="Drag to resize"
+    >
+      <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-white/[0.06] transition group-hover:bg-accent/[0.40]" />
     </div>
   )
 }
