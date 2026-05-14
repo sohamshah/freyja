@@ -126,26 +126,6 @@ export function BusFlowView({
     return reads
   }, [findings])
 
-  // Time domain: span from earliest agent spawn to latest event/now.
-  // Pad the start by 1% so the leftmost spawn dot doesn't hug the edge.
-  const { tMin, tMax } = useMemo(() => {
-    let min = Infinity
-    let max = -Infinity
-    for (const l of lanes) {
-      if (l.startedAt < min) min = l.startedAt
-      if (l.endedAt > max) max = l.endedAt
-    }
-    for (const f of findings) {
-      if (f.timestamp < min) min = f.timestamp
-      if (f.timestamp > max) max = f.timestamp
-    }
-    if (min === Infinity) {
-      const now = Date.now()
-      return { tMin: now - 1000, tMax: now }
-    }
-    const span = Math.max(1000, max - min)
-    return { tMin: min - span * 0.02, tMax: max + span * 0.02 }
-  }, [lanes, findings])
 
   // Findings indexed by their bus index for fast arc-target lookup.
   const findingByIndex = useMemo(() => {
@@ -181,8 +161,6 @@ export function BusFlowView({
           publishedFindings={publishedFindings}
           readEvents={readEvents}
           findingByIndex={findingByIndex}
-          tMin={tMin}
-          tMax={tMax}
           selectedFindingIndex={selectedFindingIndex}
           selectedAgentId={selectedAgentId}
           onSelectFinding={setSelectedFindingIndex}
@@ -286,8 +264,6 @@ function Timeline({
   publishedFindings,
   readEvents,
   findingByIndex,
-  tMin,
-  tMax,
   selectedFindingIndex,
   selectedAgentId,
   onSelectFinding,
@@ -299,8 +275,6 @@ function Timeline({
   publishedFindings: BusEventView[]
   readEvents: ReadEvent[]
   findingByIndex: Map<number, BusEventView>
-  tMin: number
-  tMax: number
   selectedFindingIndex: number | null
   selectedAgentId: string | null
   onSelectFinding: (idx: number | null) => void
@@ -320,17 +294,85 @@ function Timeline({
     return () => ro.disconnect()
   }, [])
 
+  const laneY = (i: number) => 18 + i * LANE_HEIGHT + LANE_HEIGHT / 2
+
+  // Even spacing: chips are placed by ORDINAL position in the merged
+  // chronological event stream, not by timestamp. This keeps old +
+  // new events equally readable when a session is reopened after a
+  // long gap — otherwise an early burst gets compressed into the
+  // first 5% of the timeline width.
+  //
+  // Time information isn't lost; it moves to per-chip labels + the
+  // tooltip + gap markers between distant events.
+  type OrderedEvent =
+    | { kind: 'finding'; id: string; t: number; ref: BusEventView }
+    | { kind: 'read'; id: string; t: number; ref: ReadEvent }
+  const ordered = useMemo<OrderedEvent[]>(() => {
+    const arr: OrderedEvent[] = []
+    for (const f of publishedFindings) {
+      arr.push({ kind: 'finding', id: `f-${f.index}`, t: f.timestamp, ref: f })
+    }
+    for (const r of readEvents) {
+      arr.push({ kind: 'read', id: r.id, t: r.timestamp, ref: r })
+    }
+    arr.sort((a, b) => a.t - b.t)
+    return arr
+  }, [publishedFindings, readEvents])
+
+  const ordinalById = useMemo(() => {
+    const m = new Map<string, number>()
+    ordered.forEach((e, i) => m.set(e.id, i))
+    return m
+  }, [ordered])
+
   const innerWidth = Math.max(100, width - LANE_LABEL_WIDTH - TIMELINE_PAD_X * 2)
-  const tSpan = Math.max(1, tMax - tMin)
-  const tToX = (t: number) => TIMELINE_PAD_X + ((t - tMin) / tSpan) * innerWidth
-  const laneY = (i: number) => 30 + i * LANE_HEIGHT + LANE_HEIGHT / 2  // 30 px top axis
+  // Even step between ordinals. With one event we center; with N we
+  // spread across innerWidth with a half-step margin on each side
+  // so nothing hugs the edge.
+  const ordinalCount = Math.max(1, ordered.length)
+  const ordinalStep = ordinalCount > 1 ? innerWidth / (ordinalCount - 1) : 0
+  const xForOrdinal = (n: number): number => {
+    if (ordered.length <= 1) return TIMELINE_PAD_X + innerWidth / 2
+    return TIMELINE_PAD_X + n * ordinalStep
+  }
+  const xForEventId = (id: string): number | null => {
+    const ord = ordinalById.get(id)
+    return ord === undefined ? null : xForOrdinal(ord)
+  }
 
-  const totalHeight = Math.max(120, 30 + lanes.length * LANE_HEIGHT + 16)
+  // Gap markers: when consecutive events are far apart in wall-clock
+  // time, place a vertical dashed line BETWEEN their ordinals with
+  // a relative-duration label. Lets the operator see "there was a
+  // 6h pause between burst A and burst B" without having to read
+  // every timestamp.
+  const gapMarkers = useMemo(() => {
+    if (ordered.length < 2) return []
+    const out: Array<{ key: string; xMid: number; label: string }> = []
+    // Threshold scales with the session's overall duration. For a
+    // 10-minute session, mark gaps > 30s; for a multi-day session,
+    // only call out gaps > 1h. Logarithmic.
+    const totalSpan = ordered[ordered.length - 1].t - ordered[0].t
+    const threshold = Math.max(30_000, totalSpan * 0.05)
+    for (let i = 1; i < ordered.length; i++) {
+      const dt = ordered[i].t - ordered[i - 1].t
+      if (dt < threshold) continue
+      const xMid =
+        (xForOrdinal(i - 1) + xForOrdinal(i)) / 2
+      out.push({
+        key: `gap-${i}`,
+        xMid,
+        label: formatDurationCompact(dt),
+      })
+    }
+    return out
+  }, [ordered, ordinalStep])
 
-  // Time axis ticks: ~5–7 ticks across the span, rounded to nice intervals.
-  const ticks = useMemo(() => buildTimeTicks(tMin, tMax, 6), [tMin, tMax])
+  const totalHeight = Math.max(120, 18 + lanes.length * LANE_HEIGHT + 18)
 
-  // Build read-arc render data, joining each read to its source findings.
+  // Build read-arc render data, using ordinal positions for both
+  // endpoints. Arcs no longer represent "time passing horizontally"
+  // — they show source → reader connectivity at whatever ordinal
+  // positions those events occupy.
   const arcs = useMemo(() => {
     const out: Array<{
       key: string
@@ -345,14 +387,16 @@ function Timeline({
     for (const r of readEvents) {
       const readerLaneIdx = laneIndexById.get(r.senderId)
       if (readerLaneIdx === undefined) continue
-      const xR = tToX(r.timestamp)
+      const xR = xForEventId(r.id)
+      if (xR === null) continue
       const yR = laneY(readerLaneIdx)
       for (const idx of r.sourceIndices) {
         const f = findingByIndex.get(idx)
         if (!f) continue
         const srcLaneIdx = laneIndexById.get(f.senderId)
         if (srcLaneIdx === undefined) continue
-        const x1 = tToX(f.timestamp)
+        const x1 = xForEventId(`f-${idx}`)
+        if (x1 === null) continue
         const y1 = laneY(srcLaneIdx)
         out.push({
           key: `${r.id}-${idx}`,
@@ -367,7 +411,7 @@ function Timeline({
       }
     }
     return out
-  }, [readEvents, publishedFindings, laneIndexById, findingByIndex, tMin, tMax, innerWidth])
+  }, [readEvents, publishedFindings, laneIndexById, findingByIndex, ordinalById, ordinalStep])
 
   if (lanes.length === 0) {
     return (
@@ -376,6 +420,12 @@ function Timeline({
       </div>
     )
   }
+
+  // Relative-time label policy: show the absolute clock time above
+  // every chip; if there are too many chips for that to be legible
+  // we'd switch to every Nth, but the limit isn't a hard wall (the
+  // labels just stack visually). At ordinalStep < 14 we drop them.
+  const showInlineTimeLabels = ordinalStep >= 14
 
   return (
     <section
@@ -391,37 +441,6 @@ function Timeline({
           onSelectFinding(null)
         }}
       >
-        {/* Time axis */}
-        <g>
-          <line
-            x1={LANE_LABEL_WIDTH}
-            y1={20}
-            x2={LANE_LABEL_WIDTH + innerWidth + TIMELINE_PAD_X}
-            y2={20}
-            stroke="rgba(255,255,255,0.08)"
-            strokeWidth={1}
-          />
-          {ticks.map((tick) => {
-            const x = LANE_LABEL_WIDTH + tToX(tick.t)
-            return (
-              <g key={tick.t}>
-                <line x1={x} y1={16} x2={x} y2={24} stroke="rgba(255,255,255,0.12)" />
-                <text
-                  x={x}
-                  y={12}
-                  textAnchor="middle"
-                  fontSize={9}
-                  fill="rgba(255,255,255,0.35)"
-                  fontFamily="ui-monospace, monospace"
-                  className="uppercase tracking-wider"
-                >
-                  {tick.label}
-                </text>
-              </g>
-            )
-          })}
-        </g>
-
         {/* Lanes */}
         {lanes.map((lane, i) => {
           const dim =
@@ -433,12 +452,9 @@ function Timeline({
               readEvents,
             ))
           const y = laneY(i)
-          const xStart = LANE_LABEL_WIDTH + tToX(lane.startedAt)
-          const xEnd = LANE_LABEL_WIDTH + tToX(lane.endedAt)
           return (
             <g key={lane.id} opacity={dim ? 0.32 : 1}>
-              {/* Lane label (clickable) — drawn as foreignObject so we can
-                  reuse Tailwind hover styles. */}
+              {/* Lane label (clickable) */}
               <foreignObject x={0} y={y - 12} width={LANE_LABEL_WIDTH - 6} height={24}>
                 <button
                   type="button"
@@ -465,26 +481,23 @@ function Timeline({
                 </button>
               </foreignObject>
 
-              {/* Lifespan line + spawn dot */}
+              {/* Lane background line — faint, full-row. Replaces
+                  the old time-anchored lifespan line. */}
               <line
-                x1={xStart}
+                x1={LANE_LABEL_WIDTH + TIMELINE_PAD_X}
                 y1={y}
-                x2={xEnd}
+                x2={LANE_LABEL_WIDTH + innerWidth + TIMELINE_PAD_X}
                 y2={y}
-                stroke={lane.ended ? 'rgba(255,255,255,0.10)' : 'rgba(168,212,252,0.25)'}
-                strokeWidth={1.25}
+                stroke={lane.ended ? 'rgba(255,255,255,0.05)' : 'rgba(168,212,252,0.10)'}
+                strokeWidth={1}
+                strokeDasharray={lane.ended ? '2,3' : undefined}
               />
-              <circle
-                cx={xStart}
-                cy={y}
-                r={3}
-                fill={lane.ended ? 'rgba(255,255,255,0.30)' : 'rgba(168,212,252,0.85)'}
-              />
+              {/* Running indicator chip at the far right of the lane */}
               {!lane.ended && (
                 <circle
-                  cx={xEnd}
+                  cx={LANE_LABEL_WIDTH + innerWidth + TIMELINE_PAD_X}
                   cy={y}
-                  r={4}
+                  r={3}
                   fill="rgba(168,212,252,0.85)"
                   className="animate-pulse-soft"
                 />
@@ -492,6 +505,38 @@ function Timeline({
             </g>
           )
         })}
+
+        {/* Gap markers — vertical dashed lines between ordinals
+            where wall-clock time jumped significantly. */}
+        <g>
+          {gapMarkers.map((g) => {
+            const x = LANE_LABEL_WIDTH + g.xMid
+            return (
+              <g key={g.key}>
+                <line
+                  x1={x}
+                  y1={6}
+                  x2={x}
+                  y2={totalHeight - 6}
+                  stroke="rgba(255,255,255,0.10)"
+                  strokeWidth={1}
+                  strokeDasharray="1,4"
+                />
+                <text
+                  x={x}
+                  y={12}
+                  textAnchor="middle"
+                  fontSize={8.5}
+                  fill="rgba(255,255,255,0.40)"
+                  fontFamily="ui-monospace, monospace"
+                  className="uppercase tracking-wider"
+                >
+                  {`↤ ${g.label} ↦`}
+                </text>
+              </g>
+            )
+          })}
+        </g>
 
         {/* Read arcs (drawn beneath chips) */}
         <g>
@@ -530,7 +575,9 @@ function Timeline({
         {publishedFindings.map((f) => {
           const laneIdx = laneIndexById.get(f.senderId)
           if (laneIdx === undefined) return null
-          const cx = LANE_LABEL_WIDTH + tToX(f.timestamp)
+          const xRel = xForEventId(`f-${f.index}`)
+          if (xRel === null) return null
+          const cx = LANE_LABEL_WIDTH + xRel
           const cy = laneY(laneIdx)
           const colors = TOPIC_COLORS[f.topic] ?? TOPIC_COLORS.findings
           const selected = selectedFindingIndex === f.index
@@ -552,9 +599,10 @@ function Timeline({
                 }}
               >
                 <title>
-                  {`F${f.index} · ${f.topic} · ${f.senderLabel || f.senderId}\n\n${f.content}`}
+                  {`F${f.index} · ${f.topic} · ${f.senderLabel || f.senderId} · ${fmtClock(f.timestamp)}\n\n${f.content}`}
                 </title>
               </circle>
+              {/* F# label above chip */}
               <text
                 x={cx}
                 y={cy - CHIP_R - 4}
@@ -566,6 +614,21 @@ function Timeline({
               >
                 F{f.index}
               </text>
+              {/* Inline clock-time label below the chip when there's
+                  room — supplements the on-hover tooltip. */}
+              {showInlineTimeLabels && (
+                <text
+                  x={cx}
+                  y={cy + CHIP_R + 10}
+                  textAnchor="middle"
+                  fontSize={8}
+                  fill="rgba(255,255,255,0.32)"
+                  fontFamily="ui-monospace, monospace"
+                  pointerEvents="none"
+                >
+                  {fmtClock(f.timestamp)}
+                </text>
+              )}
             </g>
           )
         })}
@@ -574,7 +637,9 @@ function Timeline({
         {readEvents.map((r) => {
           const laneIdx = laneIndexById.get(r.senderId)
           if (laneIdx === undefined) return null
-          const cx = LANE_LABEL_WIDTH + tToX(r.timestamp)
+          const xRel = xForEventId(r.id)
+          if (xRel === null) return null
+          const cx = LANE_LABEL_WIDTH + xRel
           const cy = laneY(laneIdx)
           const dim =
             (selectedFindingIndex !== null && !r.sourceIndices.includes(selectedFindingIndex)) ||
@@ -591,7 +656,7 @@ function Timeline({
               opacity={dim ? 0.30 : 0.85}
             >
               <title>
-                {`Read ${r.sourceIndices.length} finding(s): ${r.sourceIndices.map((i) => `F${i}`).join(', ')}`}
+                {`Read ${r.sourceIndices.length} finding(s): ${r.sourceIndices.map((i) => `F${i}`).join(', ')} · ${fmtClock(r.timestamp)}`}
               </title>
             </circle>
           )
@@ -599,6 +664,27 @@ function Timeline({
       </svg>
     </section>
   )
+}
+
+/** "HH:MM" — short clock time used above each chip. */
+function fmtClock(ts: number): string {
+  const d = new Date(ts)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+/** Compact human-readable duration: "30s", "5m", "2h", "1d6h". Used in
+ *  gap markers between distant events. */
+function formatDurationCompact(ms: number): string {
+  const s = Math.round(ms / 1000)
+  if (s < 60) return `${s}s gap`
+  const m = Math.round(s / 60)
+  if (m < 60) return `${m}m gap`
+  const h = Math.floor(m / 60)
+  const remM = m % 60
+  if (h < 24) return remM ? `${h}h${remM}m gap` : `${h}h gap`
+  const d = Math.floor(h / 24)
+  const remH = h % 24
+  return remH ? `${d}d${remH}h gap` : `${d}d gap`
 }
 
 function StatusDot({ status }: { status: AgentView['status'] }) {
@@ -634,23 +720,6 @@ function findingTouchesAgent(
     if (r.senderId === agentId && r.sourceIndices.includes(findingIndex)) return true
   }
   return false
-}
-
-function buildTimeTicks(tMin: number, tMax: number, target: number): { t: number; label: string }[] {
-  const span = Math.max(1, tMax - tMin)
-  const rawStep = span / target
-  // Snap step to nice powers
-  const steps = [1_000, 5_000, 15_000, 30_000, 60_000, 5 * 60_000, 15 * 60_000, 30 * 60_000, 60 * 60_000]
-  let step = steps[0]
-  for (const s of steps) if (s <= rawStep * 1.5) step = s
-  const start = Math.ceil(tMin / step) * step
-  const out: { t: number; label: string }[] = []
-  for (let t = start; t <= tMax; t += step) {
-    const elapsedSec = Math.round((t - tMin) / 1000)
-    const label = elapsedSec >= 60 ? `+${Math.round(elapsedSec / 60)}m` : `+${elapsedSec}s`
-    out.push({ t, label })
-  }
-  return out
 }
 
 // ===================== BUS TAPE =====================
