@@ -76,7 +76,7 @@ export function HeroWelcome() {
       >
         <div data-splash-target="hero-icon">
           <AnimatedTopographicMark
-            size={320}
+            size={190}
             className="text-accent"
             intensity={1}
             expandProgressRef={expandProgressRef}

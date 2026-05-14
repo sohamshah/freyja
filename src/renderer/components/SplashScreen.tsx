@@ -58,7 +58,7 @@ const SKIP_GUARD_MS = 600
 
 // Splash icon SVG size — matches the hero-welcome mark exactly so the
 // crossfade into the welcome layout is geometry-exact.
-const ICON_SIZE = 320
+const ICON_SIZE = 190
 
 const VERTEX_SRC = `
 attribute vec4 a_position;
