@@ -519,6 +519,18 @@ export function MissionDashboard() {
       (message) => `${message.sessionId}:${message.index}:${message.timestamp}:${message.topic}`,
     ).sort((a, b) => b.timestamp - a.timestamp)
 
+    // Inbox events from every slice in the swarm. Each event carries
+    // the RECIPIENT's session id; the FROM session is on .fromSession.
+    // Dedupe by message id (each enqueue is unique by uuid); time-sort
+    // ascending so the activity view can render them chronologically
+    // for the swim-row visualization. We don't filter by action here —
+    // the comm visual cares about enqueued events, but the activity
+    // tab may want others.
+    const inboxEventsAggregated = dedupeBy(
+      slices.flatMap(({ slice }) => slice.inboxEvents),
+      (event) => `${event.id}:${event.action}`,
+    ).sort((a, b) => a.timestamp - b.timestamp)
+
     const sessionTitleById = new Map(sessions.map((session) => [session.id, session.title]))
     const systemEventViews: TelemetryEventView[] = slices
       .flatMap(({ id, slice }) =>
@@ -583,9 +595,11 @@ export function MissionDashboard() {
       missionSlice,
       objective,
       agents,
+      sessions,
       busEvents,
       findings: busEvents.filter((event) => event.topic !== 'read'),
       readEvents: busEvents.filter((event) => event.topic === 'read'),
+      inboxEvents: inboxEventsAggregated,
       telemetryEvents,
       kanbanCards,
       goalState,
@@ -757,6 +771,8 @@ export function MissionDashboard() {
             readEvents={dashboard.readEvents}
             telemetryEvents={dashboard.telemetryEvents}
             agents={dashboard.agents}
+            sessions={dashboard.sessions}
+            inboxEvents={dashboard.inboxEvents}
             onCopyFinding={(event) => copyFinding(event, showToast)}
           />
         )}
