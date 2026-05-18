@@ -861,3 +861,173 @@ def test_summarize_context_pin_entries_notifies_renderer() -> None:
     for e in pin_events:
         assert e["pinned"] is True
         assert e["source"] == "agent_summarize_context"
+
+
+def test_compaction_result_carries_summary_tokens_and_summarizer_stats() -> None:
+    """Gap 7 + Gap 4: CompactionResult exposes a summary_tokens
+    estimate AND the summarizer call's own input/output/duration/cost
+    so the bridge can mirror them to telemetry. Without this the
+    summarizer's spend is invisible AND the dashboard can't forecast
+    future prompt-prefix size."""
+    from engine.compaction import SummaryCompaction
+    from engine.session import TranscriptManager
+    from engine.providers import APIUsage
+    from engine.types import Message
+
+    tm = TranscriptManager()
+    for i in range(15):
+        tm.append_message(Message(role="user", content=f"u{i} " + "x" * 2_000))
+
+    class _StubResponse:
+        def __init__(self, text: str, in_tok: int, out_tok: int):
+            self.content = text
+            self.usage = APIUsage(
+                input_tokens=in_tok,
+                output_tokens=out_tok,
+                cache_read_tokens=0,
+                cache_write_tokens=0,
+            )
+            self.model = "claude-opus-4-7"
+            self.stop_reason = "end_turn"
+
+    class _Provider:
+        name = "anthropic"
+        model_id = "claude-opus-4-7"
+        def complete(self, *args, **kwargs):
+            return _StubResponse(
+                "<summary>" + ("A" * 800) + "</summary>",
+                in_tok=12_345,
+                out_tok=2_222,
+            )
+
+    compactor = SummaryCompaction()
+    seen: list[dict] = []
+    result = compactor.compact(
+        tm, _Provider(), on_summarizer_call=seen.append,
+    )
+    assert result.success
+    # Gap 7: summary_tokens estimate.
+    assert result.summary_tokens > 0
+    assert result.summary_tokens == len(result.summary) // 4
+    # Gap 4: summarizer telemetry on result.
+    assert result.summarizer_input_tokens == 12_345
+    assert result.summarizer_output_tokens == 2_222
+    assert result.summarizer_model == "claude-opus-4-7"
+    assert result.summarizer_cost_usd is not None
+    assert result.summarizer_cost_usd > 0
+    assert result.summarizer_duration_ms >= 0
+    # Callback was fired with the call_kind tag.
+    assert len(seen) == 1
+    assert seen[0]["call_kind"] == "summarizer"
+    assert seen[0]["input_tokens"] == 12_345
+
+
+def test_compaction_event_details_emit_canonical_pressure_fields() -> None:
+    """Gap 5: the runner's canonical details builder emits
+    effective_window + pressure_pct_before/after so every compaction
+    event downstream uses the same denominator."""
+    from engine.compaction import CompactionResult
+    from engine.runner import AsyncAgentRunner
+
+    runner = AsyncAgentRunner.__new__(AsyncAgentRunner)
+
+    class _StubProvider:
+        context_window = 100_000
+
+    class _StubConfig:
+        max_tokens_per_turn = 4_000
+
+    runner.provider = _StubProvider()
+    runner.fallback_chain = None
+    runner.config = _StubConfig()
+    result = CompactionResult(
+        success=True,
+        summary="x" * 800,
+        tokens_before=60_000,
+        tokens_after=10_000,
+        entries_removed=20,
+        summary_tokens=200,
+        summarizer_input_tokens=8_000,
+        summarizer_output_tokens=400,
+        summarizer_cost_usd=0.05,
+        summarizer_model="claude-opus-4-7",
+    )
+    details = runner._compaction_event_details(  # noqa: SLF001
+        result, trigger="overflow_cascade",
+    )
+    # effective_window = 100k - 4k = 96k.
+    assert details["effective_window"] == 96_000
+    # 60_000 / 96_000 → 62.5%
+    assert details["pressure_pct_before"] == 62.5
+    # 10_000 / 96_000 → 10.4%
+    assert details["pressure_pct_after"] == 10.4
+    assert details["summary_tokens"] == 200
+    assert details["summarizer_input_tokens"] == 8_000
+    assert details["summarizer_cost_usd"] == 0.05
+    assert details["trigger"] == "overflow_cascade"
+
+
+def test_bridge_mirror_helper_writes_compaction_event_telemetry(tmp_path, monkeypatch) -> None:
+    """Gap 2: the bridge's _mirror_compaction_event helper writes both
+    cross-session compaction.jsonl AND per-session compactions.jsonl —
+    so the manual force_compact path (which used to bypass the runner's
+    on_system_event mirror) now lands in both stores."""
+    import json
+    from pathlib import Path
+    from bridge.freyja_bridge import _BridgeSession, _BridgeState
+
+    # Redirect HOME so the JSONL writes land in tmp_path.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    state = _BridgeState(workspace=str(tmp_path), default_model="claude-opus-4-7")
+    sess = _BridgeSession(
+        "test-mirror",
+        workspace=str(tmp_path),
+        model_id="claude-opus-4-7",
+        reasoning_level="auto",
+        coordination_strategy="bus",
+        state=state,
+    )
+    sess.agent_type = None
+    sess.parent_session_id = None
+    sess.current_turn_id = "turn-1"
+
+    sess._mirror_compaction_event(  # noqa: SLF001
+        "compaction_complete",
+        {
+            "trigger": "manual",
+            "tokens_before": 50_000,
+            "tokens_after": 8_000,
+            "summary_text": "Sample produced summary for the test.",
+            "summary_tokens": 9,
+            "effective_window": 96_000,
+            "pressure_pct_before": 52.1,
+            "pressure_pct_after": 8.3,
+            "summarizer_input_tokens": 5_000,
+            "summarizer_output_tokens": 400,
+            "summarizer_cost_usd": 0.018,
+            "scope": None,
+            "reason": None,
+            "resumed_from_previous": False,
+        },
+    )
+    # Per-session compactions.jsonl
+    per_session_path = (
+        tmp_path / ".freyja" / "projects" / "test-mirror" / "compactions.jsonl"
+    )
+    assert per_session_path.exists(), "per-session compactions log missing"
+    rows = [json.loads(line) for line in per_session_path.read_text().splitlines() if line.strip()]
+    assert len(rows) == 1
+    assert rows[0]["trigger"] == "manual"
+    assert rows[0]["summary_text"].startswith("Sample produced")
+    assert rows[0]["effective_window"] == 96_000
+
+    # Cross-session compaction.jsonl
+    cross_path = tmp_path / ".freyja" / "telemetry" / "compaction.jsonl"
+    assert cross_path.exists(), "cross-session compaction telemetry missing"
+    rows = [json.loads(line) for line in cross_path.read_text().splitlines() if line.strip()]
+    assert len(rows) == 1
+    assert rows[0]["type"] == "compaction_event"
+    assert rows[0]["summary_tokens"] == 9
+    assert rows[0]["summarizer_cost_usd"] == 0.018

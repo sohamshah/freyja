@@ -2003,6 +2003,30 @@ class _BridgeSession:
             # appears without waiting for a session reload after the
             # agent uses pin_entries on summarize_context.
             summarize_context_on_pin_changed=self._emit_summarize_event,
+            # Gap 4 (agent path): forward the summarizer's LLM call
+            # through the runner's on_llm_call hook so it shows up
+            # tagged as compaction overhead in the dashboard. The
+            # runtime + manual paths wire this directly; the agent
+            # path goes through the tool's _dispatch → compactor.compact.
+            summarize_context_on_summarizer_llm_call=(
+                lambda payload: self._on_llm_call({
+                    "provider": payload.get("provider", "unknown"),
+                    "model": payload.get("model", "unknown"),
+                    "duration_ms": payload.get("duration_ms", 0),
+                    "streaming": False,
+                    "input_tokens": payload.get("input_tokens", 0),
+                    "output_tokens": payload.get("output_tokens", 0),
+                    "cache_read_tokens": payload.get("cache_read_tokens", 0),
+                    "cache_write_tokens": payload.get("cache_write_tokens", 0),
+                    "reasoning_tokens": 0,
+                    "stop_reason": "end_turn",
+                    "tool_calls": 0,
+                    "thinking_blocks": 0,
+                    "error": None,
+                    "call_kind": "summarizer",
+                    "iterative": payload.get("iterative", False),
+                })
+            ),
         )
         tool_names = sorted(registry._tools.keys())  # noqa: SLF001
         self.tool_registry = _new_tracing_registry(
@@ -2708,6 +2732,34 @@ class _BridgeSession:
             provider_context_tokens=provider_context_before,
         )
 
+        # Compute effective window for canonical pressure-pct math.
+        eff_window: int | None = None
+        try:
+            window = int(getattr(self.provider, "context_window", 0) or 0)
+            reserved = int(
+                getattr(self.runner, "config", None).max_tokens_per_turn
+                if self.runner is not None else 0
+            )
+            eff_window = max(1, window - reserved) if window > 0 else None
+        except Exception:  # noqa: BLE001
+            eff_window = None
+        pct_before = (
+            round((context_tokens_before / eff_window) * 100, 1)
+            if eff_window and eff_window > 0 else None
+        )
+        start_details = {
+            "trigger": "manual",
+            "tokens_before": context_tokens_before,
+            "context_tokens_before": context_tokens_before,
+            "request_tokens_before": request_tokens_before,
+            "last_provider_context_tokens": provider_context_before,
+            "transcript_tokens_before": transcript_tokens_before,
+            "entries_before": entries_before,
+            "effective_window": eff_window,
+            "pressure_pct_before": pct_before,
+            "chatVisible": True,
+            **before_snapshot,
+        }
         emit(
             {
                 "type": "system_event",
@@ -2718,50 +2770,79 @@ class _BridgeSession:
                     f"({context_tokens_before:,} context tokens; "
                     f"{transcript_tokens_before:,} transcript tokens)"
                 ),
-                "details": {
-                    "trigger": "manual",
-                    "tokens_before": context_tokens_before,
-                    "context_tokens_before": context_tokens_before,
-                    "request_tokens_before": request_tokens_before,
-                    "last_provider_context_tokens": provider_context_before,
-                    "transcript_tokens_before": transcript_tokens_before,
-                    "entries_before": entries_before,
-                    "chatVisible": True,
-                    **before_snapshot,
-                },
+                "details": start_details,
             }
         )
+        # Gap 2: mirror to cross-session + per-session telemetry. The
+        # runner's on_system_event callback DOESN'T fire for manual
+        # compactions because force_compact bypasses the runner — we
+        # have to call the mirror directly.
+        self._mirror_compaction_event("compaction_start", start_details)
+
+        # Gap 4: forward the summarizer's own LLM call through the
+        # runner's on_llm_call hook (if a runner exists) so its cost
+        # lands in the dashboard tagged as compaction overhead. Without
+        # this the manual-compaction summarizer is invisible to spend
+        # metrics.
+        def _on_sum_call_manual(payload: dict[str, Any]) -> None:
+            if self.runner is None or self.runner.on_llm_call is None:
+                return
+            try:
+                self.runner.on_llm_call({
+                    "provider": payload.get("provider", "unknown"),
+                    "model": payload.get("model", "unknown"),
+                    "duration_ms": payload.get("duration_ms", 0),
+                    "streaming": False,
+                    "input_tokens": payload.get("input_tokens", 0),
+                    "output_tokens": payload.get("output_tokens", 0),
+                    "cache_read_tokens": payload.get("cache_read_tokens", 0),
+                    "cache_write_tokens": payload.get("cache_write_tokens", 0),
+                    "reasoning_tokens": 0,
+                    "stop_reason": "end_turn",
+                    "tool_calls": 0,
+                    "thinking_blocks": 0,
+                    "error": None,
+                    "call_kind": "summarizer",
+                    "iterative": payload.get("iterative", False),
+                })
+            except Exception:  # noqa: BLE001
+                pass
 
         result = await asyncio.to_thread(
             compactor.compact,
             self.session.transcript,
             self.provider,
+            on_summarizer_call=_on_sum_call_manual,
         )
 
         if not result.success:
+            skip_details = {
+                "trigger": "manual",
+                "reason": result.error or "unknown",
+                "tokens_before": context_tokens_before,
+                "tokens_after": context_tokens_before,
+                "context_tokens_before": context_tokens_before,
+                "context_tokens_after": context_tokens_before,
+                "request_tokens_before": request_tokens_before,
+                "request_tokens_after": request_tokens_before,
+                "last_provider_context_tokens": provider_context_before,
+                "transcript_tokens_before": transcript_tokens_before,
+                "transcript_tokens_after": result.tokens_after,
+                "effective_window": eff_window,
+                "pressure_pct_before": pct_before,
+                "chatVisible": True,
+                **before_snapshot,
+            }
             emit(
                 {
                     "type": "system_event",
                     "sessionId": self.id,
                     "subtype": "compaction_skipped",
                     "message": f"Manual compaction skipped: {result.error or 'not enough history to compact'}",
-                    "details": {
-                        "trigger": "manual",
-                        "reason": result.error or "unknown",
-                        "tokens_before": context_tokens_before,
-                        "tokens_after": context_tokens_before,
-                        "context_tokens_before": context_tokens_before,
-                        "context_tokens_after": context_tokens_before,
-                        "request_tokens_before": request_tokens_before,
-                        "request_tokens_after": request_tokens_before,
-                        "last_provider_context_tokens": provider_context_before,
-                        "transcript_tokens_before": transcript_tokens_before,
-                        "transcript_tokens_after": result.tokens_after,
-                        "chatVisible": True,
-                        **before_snapshot,
-                    },
+                    "details": skip_details,
                 }
             )
+            self._mirror_compaction_event("compaction_skipped", skip_details)
             return
 
         self.session.compaction_count += 1
@@ -2782,6 +2863,44 @@ class _BridgeSession:
         )
         self._mark_usage_compacted(context_tokens_after)
         self._save_transcript()
+        pct_after = (
+            round((context_tokens_after / eff_window) * 100, 1)
+            if eff_window and eff_window > 0 else None
+        )
+        complete_details = {
+            "trigger": "manual",
+            "strategy": "llm_summary",
+            "tokens_before": context_tokens_before,
+            "tokens_after": context_tokens_after,
+            "context_tokens_before": context_tokens_before,
+            "context_tokens_after": context_tokens_after,
+            "request_tokens_before": request_tokens_before,
+            "request_tokens_after": request_tokens_after,
+            "last_provider_context_tokens": provider_context_before,
+            "transcript_tokens_before": transcript_tokens_before,
+            "transcript_tokens_after": transcript_tokens_after,
+            "effective_window": eff_window,
+            "pressure_pct_before": pct_before,
+            "pressure_pct_after": pct_after,
+            "entries_removed": result.entries_removed,
+            "messages_before": result.messages_before,
+            "messages_after": result.messages_after,
+            "images_before": result.images_before,
+            "images_after": result.images_after,
+            "summary_chars": len(result.summary or ""),
+            "summary_preview": (result.summary or "")[:6_000],
+            "summary_text": result.summary or "",
+            "summary_tokens": getattr(result, "summary_tokens", 0),
+            "summarizer_input_tokens": getattr(result, "summarizer_input_tokens", 0),
+            "summarizer_output_tokens": getattr(result, "summarizer_output_tokens", 0),
+            "summarizer_duration_ms": getattr(result, "summarizer_duration_ms", 0),
+            "summarizer_model": getattr(result, "summarizer_model", None),
+            "summarizer_cost_usd": getattr(result, "summarizer_cost_usd", None),
+            "resumed_from_previous": getattr(result, "resumed_from_previous", False),
+            "chatVisible": True,
+            **before_snapshot,
+            **after_snapshot,
+        }
         emit(
             {
                 "type": "system_event",
@@ -2792,31 +2911,10 @@ class _BridgeSession:
                     f"{context_tokens_before:,} -> {context_tokens_after:,} context tokens; "
                     f"{result.entries_removed} entries summarized"
                 ),
-                "details": {
-                    "trigger": "manual",
-                    "strategy": "llm_summary",
-                    "tokens_before": context_tokens_before,
-                    "tokens_after": context_tokens_after,
-                    "context_tokens_before": context_tokens_before,
-                    "context_tokens_after": context_tokens_after,
-                    "request_tokens_before": request_tokens_before,
-                    "request_tokens_after": request_tokens_after,
-                    "last_provider_context_tokens": provider_context_before,
-                    "transcript_tokens_before": transcript_tokens_before,
-                    "transcript_tokens_after": transcript_tokens_after,
-                    "entries_removed": result.entries_removed,
-                    "messages_before": result.messages_before,
-                    "messages_after": result.messages_after,
-                    "images_before": result.images_before,
-                    "images_after": result.images_after,
-                    "summary_chars": len(result.summary or ""),
-                    "summary_preview": (result.summary or "")[:6_000],
-                    "chatVisible": True,
-                    **before_snapshot,
-                    **after_snapshot,
-                },
+                "details": complete_details,
             }
         )
+        self._mirror_compaction_event("compaction_complete", complete_details)
         _cum_in, cum_out, _cum_cr, _cum_cw, cost = self._current_usage_fields()
         emit(
             {
@@ -4308,70 +4406,171 @@ class _BridgeSession:
                 }
             )
             # Mirror compaction events to the telemetry log so the
-            # metrics dashboard can aggregate across sessions.
+            # metrics dashboard can aggregate across sessions, and to
+            # the per-session compactions.jsonl so the export bundle
+            # has the full summary text. Both writes happen inside
+            # ``_mirror_compaction_event`` — the same helper
+            # force_compact uses (Gap 2 — manual compactions used to
+            # bypass this entirely).
             if subtype in {
                 "compaction_complete", "compaction_start", "compaction_skipped",
                 "context_pruning", "media_pruning",
             }:
-                try:
-                    from bridge.compaction_telemetry import append_telemetry
+                self._mirror_compaction_event(subtype, details)
+                # Snapshot the transcript on the boundary events so the
+                # operator can always inspect what got summarized.
+                # Universal across triggers (Gap 3).
+                if subtype in ("compaction_start", "compaction_complete"):
+                    try:
+                        from engine.compaction import SummaryCompaction
 
-                    append_telemetry({
-                        "type": "compaction_event",
-                        "session_id": self.id,
-                        "subtype": subtype,
-                        "model": self.model_id,
-                        "tokens_before": int(details.get("tokens_before") or details.get("context_tokens_before") or 0),
-                        "tokens_after": int(details.get("tokens_after") or details.get("context_tokens_after") or 0),
-                        "mechanism": (
-                            details.get("strategy")
-                            or ("summary" if subtype == "compaction_complete"
-                                else "tool_halve" if subtype == "context_pruning"
-                                else "image_prune" if subtype == "media_pruning"
-                                else subtype)
-                        ),
-                        "trigger": details.get("trigger"),
-                        "scope": details.get("scope"),
-                        "reason": details.get("reason") or None,
-                        "resumed_from_previous": bool(
-                            details.get("resumed_from_previous") or False
-                        ),
-                        # Excerpt for at-a-glance lists.
-                        "summary_excerpt": (
-                            (details.get("summary_text") or details.get("summary_preview") or "")[:240]
-                            or None
-                        ),
-                        # Full summary text — powers the clickable
-                        # compaction-log rows in the dashboard so users
-                        # can actually inspect what was summarized.
-                        # Per-session compactions.jsonl is still the
-                        # source of truth for the export bundle, but
-                        # cross-session telemetry now also carries the
-                        # full text for in-dashboard reading.
-                        "summary_text": (
-                            details.get("summary_text") or details.get("summary_preview") or ""
-                        ) or None,
-                    })
-                except Exception:  # noqa: BLE001
-                    pass
-                # Per-session compaction history with FULL summary text.
-                # Source of truth for the "compactions[]" view in the
-                # session export bundle.
-                self._append_compaction_log({
-                    "ts": time.time(),
-                    "subtype": subtype,
-                    "trigger": details.get("trigger") or "runtime",
-                    "mechanism": details.get("strategy") or subtype,
-                    "tokens_before": int(details.get("tokens_before") or details.get("context_tokens_before") or 0),
-                    "tokens_after": int(details.get("tokens_after") or details.get("context_tokens_after") or 0),
-                    "entries_removed": int(details.get("entries_removed") or 0),
-                    "summary_text": details.get("summary_text") or details.get("summary_preview") or "",
-                    "scope": details.get("scope"),
-                    "reason": details.get("reason"),
-                    "resumed_from_previous": bool(details.get("resumed_from_previous") or False),
-                })
+                        phase = "before" if subtype == "compaction_start" else "after"
+                        request_tokens = int(
+                            details.get("tokens_before")
+                            if phase == "before"
+                            else details.get("tokens_after")
+                            or 0
+                        )
+                        self._write_compaction_snapshot(
+                            phase=phase,
+                            compactor=SummaryCompaction(),
+                            request_tokens=request_tokens,
+                            provider_context_tokens=self._last_provider_context_tokens(),
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                # Gap 6: persist the transcript IMMEDIATELY after a
+                # successful compaction so the on-disk view matches
+                # the JSONL row we just wrote. Without this, a crash
+                # between compaction and turn-end leaves the disk
+                # transcript in the pre-compaction state, disagreeing
+                # with the compaction-complete row in JSONL.
+                if subtype == "compaction_complete":
+                    try:
+                        self._save_transcript()
+                    except Exception:  # noqa: BLE001
+                        pass
         except Exception as exc:  # noqa: BLE001
             log("error", f"on_system_event error: {exc}")
+
+    def _mirror_compaction_event(
+        self, subtype: str, details: dict[str, Any]
+    ) -> None:
+        """Write a ``compaction_event`` JSONL row (cross-session) and
+        a per-session ``compactions.jsonl`` row with the full summary
+        text.
+
+        Called from both the runner-driven ``_on_system_event`` path
+        and from ``force_compact`` (which bypasses the runner). Same
+        canonical field set for all four trigger paths so the dashboard
+        + export bundle see consistent data regardless of who triggered
+        the compaction (Gap 2).
+        """
+        try:
+            from bridge.compaction_telemetry import append_telemetry
+
+            tb = int(
+                details.get("tokens_before")
+                or details.get("context_tokens_before")
+                or 0
+            )
+            ta = int(
+                details.get("tokens_after")
+                or details.get("context_tokens_after")
+                or 0
+            )
+            mechanism = (
+                details.get("strategy")
+                or (
+                    "summary" if subtype == "compaction_complete"
+                    else "tool_halve" if subtype == "context_pruning"
+                    else "image_prune" if subtype == "media_pruning"
+                    else subtype
+                )
+            )
+            summary_text = (
+                details.get("summary_text")
+                or details.get("summary_preview")
+                or ""
+            )
+            append_telemetry({
+                "type": "compaction_event",
+                "session_id": self.id,
+                "agent_type": self.agent_type,
+                "parent_session_id": self.parent_session_id,
+                "subtype": subtype,
+                "model": self.model_id,
+                "tokens_before": tb,
+                "tokens_after": ta,
+                "effective_window": details.get("effective_window"),
+                "pressure_pct_before": details.get("pressure_pct_before"),
+                "pressure_pct_after": details.get("pressure_pct_after"),
+                "summary_tokens": int(details.get("summary_tokens") or 0),
+                "mechanism": mechanism,
+                "trigger": details.get("trigger"),
+                "scope": details.get("scope"),
+                "reason": details.get("reason") or None,
+                "resumed_from_previous": bool(
+                    details.get("resumed_from_previous") or False
+                ),
+                "summarizer_input_tokens": int(
+                    details.get("summarizer_input_tokens") or 0
+                ),
+                "summarizer_output_tokens": int(
+                    details.get("summarizer_output_tokens") or 0
+                ),
+                "summarizer_duration_ms": int(
+                    details.get("summarizer_duration_ms") or 0
+                ),
+                "summarizer_cost_usd": details.get("summarizer_cost_usd"),
+                "summary_excerpt": (summary_text[:240] or None),
+                "summary_text": summary_text or None,
+            })
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            # Per-session log with the FULL text — source of truth for
+            # the export bundle's compactions[] view.
+            self._append_compaction_log({
+                "ts": time.time(),
+                "subtype": subtype,
+                "trigger": details.get("trigger") or "runtime",
+                "mechanism": (
+                    details.get("strategy") or subtype
+                ),
+                "tokens_before": int(
+                    details.get("tokens_before")
+                    or details.get("context_tokens_before")
+                    or 0
+                ),
+                "tokens_after": int(
+                    details.get("tokens_after")
+                    or details.get("context_tokens_after")
+                    or 0
+                ),
+                "effective_window": details.get("effective_window"),
+                "pressure_pct_before": details.get("pressure_pct_before"),
+                "pressure_pct_after": details.get("pressure_pct_after"),
+                "entries_removed": int(details.get("entries_removed") or 0),
+                "summary_text": (
+                    details.get("summary_text") or details.get("summary_preview") or ""
+                ),
+                "summary_tokens": int(details.get("summary_tokens") or 0),
+                "scope": details.get("scope"),
+                "reason": details.get("reason"),
+                "resumed_from_previous": bool(
+                    details.get("resumed_from_previous") or False
+                ),
+                "summarizer_input_tokens": int(
+                    details.get("summarizer_input_tokens") or 0
+                ),
+                "summarizer_output_tokens": int(
+                    details.get("summarizer_output_tokens") or 0
+                ),
+                "summarizer_cost_usd": details.get("summarizer_cost_usd"),
+            })
+        except Exception:  # noqa: BLE001
+            pass
 
     def _emit_pressure_telemetry_if_changed(self) -> None:
         """Detect pressure-band crossings and emit a telemetry event +
@@ -4483,6 +4682,11 @@ class _BridgeSession:
             # Telemetry: persist per-call metrics for the metrics dashboard.
             # Also emit a live event so the renderer can update in real time
             # without re-reading the JSONL file on every keystroke.
+            # Gap 4: summarizer calls forwarded through the runner's
+            # on_llm_call hook carry call_kind="summarizer". Tag the
+            # JSONL row so the dashboard can break out compaction
+            # overhead vs main-loop spend.
+            call_kind = payload.get("call_kind") or "main"
             try:
                 from bridge.compaction_telemetry import append_telemetry
 
@@ -4501,6 +4705,7 @@ class _BridgeSession:
                     "stopReason": stop_reason,
                     "toolCalls": tool_calls,
                     "costUsd": float(cost) if cost is not None else None,
+                    "callKind": call_kind,
                 }
                 append_telemetry({
                     "type": "llm_call_metric",
@@ -4515,6 +4720,12 @@ class _BridgeSession:
                     "cache_write_tokens": cw_tok,
                     "cost_usd": float(cost) if cost is not None else None,
                     "duration_ms": duration_ms,
+                    "call_kind": call_kind,
+                    "iterative_summarizer": (
+                        bool(payload.get("iterative"))
+                        if call_kind == "summarizer"
+                        else None
+                    ),
                 })
                 emit(metric_event)
             except Exception:  # noqa: BLE001
@@ -5488,6 +5699,81 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         enabled = bool(cmd.get("enabled"))
         sess = await state.ensure_session(session_id)
         sess.set_auto_dispatch_enabled(enabled)
+        return
+
+    if ctype == "kanban_operator_create":
+        # Operator-initiated card creation from the dashboard's board.
+        # Goes through the same `SessionKanbanBoard.create()` path agents
+        # use; the only difference is `actor="operator"`, which lands in
+        # the renderer's KanbanCardView as `createdBy: "operator"` and
+        # drives the "you" provenance chip. Optional `children` reparents
+        # downstream cards onto this new card via the board's `link`
+        # method — equivalent to the operator saying "block these until
+        # I finish this." After creation we kick a single dispatcher
+        # tick so autopilot (if enabled) picks the card up immediately
+        # instead of waiting for the next periodic pass.
+        if not session_id:
+            return
+        sess = await state.ensure_session(session_id)
+        if sess.kanban_board is None:
+            log("warn", "kanban_operator_create ignored: session has no kanban board")
+            return
+        title = str(cmd.get("title") or "").strip()
+        if not title:
+            log("warn", "kanban_operator_create ignored: empty title")
+            return
+        body = str(cmd.get("body") or "").strip()
+        assignee = str(cmd.get("assignee") or "").strip()
+        try:
+            priority = int(cmd.get("priority", 2))
+        except (TypeError, ValueError):
+            priority = 2
+        parents_raw = cmd.get("parents") or []
+        children_raw = cmd.get("children") or []
+        parents = [str(p) for p in parents_raw if isinstance(p, str) and p.strip()]
+        children = [str(c) for c in children_raw if isinstance(c, str) and c.strip()]
+        try:
+            task = await sess.kanban_board.create(
+                title=title,
+                body=body,
+                assignee=assignee,
+                parents=parents,
+                priority=priority,
+                actor="operator",
+                metadata={"operator_provided": True},
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"kanban_operator_create failed: {exc}")
+            return
+        # Wire reverse dependencies — cards the operator marked as
+        # "blocked by this new card". `link` enforces no-cycles and
+        # auto-flips the child's status to triage if the new parent
+        # isn't done yet.
+        for child_id in children:
+            try:
+                await sess.kanban_board.link(
+                    parent_id=task.id,
+                    child_id=child_id,
+                    actor="operator",
+                )
+            except Exception as exc:  # noqa: BLE001
+                log("warn", f"kanban_operator_create link {task.id}→{child_id} failed: {exc}")
+        # Emit a kanban_task_created system event so the renderer slice
+        # picks up the new card immediately. Mirrors what the agent
+        # `kanban` tool's `_emit('create', ...)` does, just from the
+        # operator side.
+        sess._emit_kanban_event(  # noqa: SLF001
+            "kanban_task_created",
+            f"Operator added {task.id}: {task.title}",
+            details={"task": task.to_dict(include_history=False)},
+        )
+        # Trigger an immediate dispatch tick. No-op if autopilot is
+        # disabled; the card will still wait in ready/triage for the
+        # operator to flip the switch.
+        try:
+            await sess._kanban_tick(source="operator_create")  # noqa: SLF001
+        except Exception:
+            pass
         return
 
     if ctype in ("memory_update", "memory_delete", "memory_restore", "memory_merge"):

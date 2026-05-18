@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from abc import abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 from engine.constants import (
     COMPACTION_CONTENT_HEAD,
@@ -109,6 +109,31 @@ class CompactionResult:
     resumed_from_previous: bool = False
     """True if this compaction iteratively extended the prior summary
     rather than re-deriving from scratch (Gap 2 / iterative path)."""
+
+    summary_tokens: int = 0
+    """Estimated token count of the produced summary itself. Useful
+    for forecasting how big future prompts' prefix will be (the
+    summary lives at messages[0] post-compaction) and for sanity-
+    checking the summarizer didn't go overboard."""
+
+    summarizer_input_tokens: int = 0
+    """Input tokens charged for the summarizer LLM call. Lets the
+    dashboard surface compaction overhead distinct from main-loop
+    spend (Gap 4 — without this the summarizer's cost is invisible)."""
+
+    summarizer_output_tokens: int = 0
+    """Output tokens charged for the summarizer LLM call."""
+
+    summarizer_duration_ms: int = 0
+    """Wall-clock duration of the summarizer LLM call."""
+
+    summarizer_model: str | None = None
+    """Model id that produced the summary (may differ from the main
+    session model under fallback)."""
+
+    summarizer_cost_usd: float | None = None
+    """Estimated USD cost of the summarizer call. None when the model
+    isn't in the pricing table."""
 
 
 # ============================================================================
@@ -273,6 +298,8 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
         self,
         transcript: TranscriptManager,
         provider: "ModelProvider",
+        *,
+        on_summarizer_call: "Callable[[dict[str, Any]], None] | None" = None,
     ) -> CompactionResult:
         """Compact the transcript by summarizing old messages.
 
@@ -283,6 +310,14 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
         to be worth summarizing, OR (b) enough *summarizable* tokens —
         content outside the ``keep_recent`` tail. Either path proves
         there is real material to compress.
+
+        ``on_summarizer_call`` is an optional hook fired after the
+        summarizer LLM call returns. The callback receives a payload
+        with ``model, input_tokens, output_tokens, cache_read_tokens,
+        cache_write_tokens, duration_ms, cost_usd, call_kind`` — the
+        runner uses this to thread its own ``on_llm_call`` hook so the
+        summarizer's spend shows up in the dashboard tagged as
+        compaction overhead instead of being invisible (Gap 4).
         """
         messages = transcript.get_messages()
         tokens_before = transcript.estimate_tokens()
@@ -405,12 +440,19 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
 
         conversation_text = self._format_conversation(to_summarize)
 
+        # Collect summarizer-call telemetry so the result can carry it
+        # back to the caller (Gap 4). The hook is fired regardless of
+        # whether the caller passed on_summarizer_call so we get the
+        # stats locally; the callback is just a passthrough.
+        summarizer_stats: dict[str, Any] = {}
         summary: str | None = None
         try:
             summary = self._generate_summary(
                 conversation_text,
                 provider,
                 previous_summary=previous_summary,
+                stats_out=summarizer_stats,
+                on_summarizer_call=on_summarizer_call,
             )
         except Exception as e:
             logger.warning(f"Summary generation failed: {e}")
@@ -457,6 +499,11 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
             f"{entries_removed} entries summarized"
         )
 
+        # summary_tokens estimate. ~4 chars/token is the same heuristic
+        # used by append_compaction's tokens_after fallback math; lets
+        # callers forecast prompt-prefix size after compaction.
+        summary_tokens = (len(summary) // 4) if summary else 0
+
         return CompactionResult(
             success=True,
             summary=summary,
@@ -468,6 +515,12 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
             messages_after=messages_after,
             images_before=images_before,
             images_after=images_after,
+            summary_tokens=summary_tokens,
+            summarizer_input_tokens=int(summarizer_stats.get("input_tokens", 0) or 0),
+            summarizer_output_tokens=int(summarizer_stats.get("output_tokens", 0) or 0),
+            summarizer_duration_ms=int(summarizer_stats.get("duration_ms", 0) or 0),
+            summarizer_model=summarizer_stats.get("model"),
+            summarizer_cost_usd=summarizer_stats.get("cost_usd"),
         )
 
     @staticmethod
@@ -676,6 +729,8 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
         provider: "ModelProvider",
         *,
         previous_summary: str | None = None,
+        stats_out: dict[str, Any] | None = None,
+        on_summarizer_call: Callable[[dict[str, Any]], None] | None = None,
     ) -> str:
         """Generate a summary using the model provider.
 
@@ -692,8 +747,17 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
         keeps early-turn facts pinned across many compactions, since the
         model doesn't have to rediscover them from the (now-shorter)
         conversation slice.
+
+        ``stats_out`` is populated with the summarizer call's
+        input/output/cache tokens, duration_ms, model id, and cost (if
+        priced). Caller is responsible for surfacing these in the
+        CompactionResult / telemetry. ``on_summarizer_call`` is fired
+        once with the same dict + a ``call_kind: 'summarizer'`` tag so
+        downstream hooks (the runner's on_llm_call) can tag the cost
+        as compaction overhead instead of regular session spend (Gap 4).
         """
         import re
+        import time as _time
         from engine.redact import redact_sensitive_text
 
         safe_conversation = redact_sensitive_text(conversation)
@@ -706,10 +770,66 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
         else:
             prompt = self.SUMMARY_PROMPT.format(conversation=safe_conversation)
 
+        start_perf = _time.perf_counter()
         response = provider.complete(
             messages=[Message(role="user", content=prompt)],
             max_tokens=self.summary_max_tokens,
         )
+        duration_ms = int((_time.perf_counter() - start_perf) * 1000)
+
+        # Pull usage off the response so callers can attribute the
+        # summarizer's spend (Gap 4). All providers populate APIUsage
+        # — when they don't, the fields default to 0.
+        usage = getattr(response, "usage", None)
+        in_tok = int(getattr(usage, "input_tokens", 0) or 0) if usage else 0
+        out_tok = int(getattr(usage, "output_tokens", 0) or 0) if usage else 0
+        cr_tok = int(getattr(usage, "cache_read_tokens", 0) or 0) if usage else 0
+        cw_tok = int(getattr(usage, "cache_write_tokens", 0) or 0) if usage else 0
+        model_id = (
+            getattr(response, "model", None)
+            or getattr(provider, "model_id", None)
+            or "unknown"
+        )
+        # Estimate cost via the same compute_cost the rest of the codebase
+        # uses; None if the model isn't in the pricing table.
+        cost: float | None = None
+        try:
+            from engine.providers import compute_cost
+            cost = compute_cost(
+                model_id,
+                input_tokens=in_tok,
+                output_tokens=out_tok,
+                cache_read_tokens=cr_tok,
+                cache_write_tokens=cw_tok,
+            )
+        except Exception:
+            cost = None
+        if stats_out is not None:
+            stats_out.update({
+                "input_tokens": in_tok,
+                "output_tokens": out_tok,
+                "cache_read_tokens": cr_tok,
+                "cache_write_tokens": cw_tok,
+                "duration_ms": duration_ms,
+                "model": model_id,
+                "cost_usd": cost,
+            })
+        if on_summarizer_call is not None:
+            try:
+                on_summarizer_call({
+                    "call_kind": "summarizer",
+                    "provider": getattr(provider, "name", "unknown"),
+                    "model": model_id,
+                    "input_tokens": in_tok,
+                    "output_tokens": out_tok,
+                    "cache_read_tokens": cr_tok,
+                    "cache_write_tokens": cw_tok,
+                    "duration_ms": duration_ms,
+                    "cost_usd": cost,
+                    "iterative": previous_summary is not None,
+                })
+            except Exception:
+                logger.exception("on_summarizer_call hook failed")
 
         raw_output = response.content.strip()
         if not raw_output:

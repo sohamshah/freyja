@@ -724,9 +724,40 @@ class AgentRunner:
         session.compaction_count += 1
 
         try:
+            # Thread the runner's on_llm_call hook into the compactor so
+            # the summarizer's input/output tokens land in the dashboard
+            # tagged as compaction overhead (Gap 4). Without this the
+            # summarizer call goes straight to provider.complete() and
+            # bypasses every measurement we have — its cost would be
+            # invisible.
+            def _on_sum_call(payload: dict[str, Any]) -> None:
+                if self.on_llm_call is None:
+                    return
+                try:
+                    self.on_llm_call({
+                        "provider": payload.get("provider", "unknown"),
+                        "model": payload.get("model", "unknown"),
+                        "duration_ms": payload.get("duration_ms", 0),
+                        "streaming": False,
+                        "input_tokens": payload.get("input_tokens", 0),
+                        "output_tokens": payload.get("output_tokens", 0),
+                        "cache_read_tokens": payload.get("cache_read_tokens", 0),
+                        "cache_write_tokens": payload.get("cache_write_tokens", 0),
+                        "reasoning_tokens": 0,
+                        "stop_reason": "end_turn",
+                        "tool_calls": 0,
+                        "thinking_blocks": 0,
+                        "error": None,
+                        "call_kind": "summarizer",
+                        "iterative": payload.get("iterative", False),
+                    })
+                except Exception:  # noqa: BLE001
+                    logger.exception("forwarding summarizer call to on_llm_call failed")
+
             result = self.compaction.compact(
                 session.transcript,
                 self.provider,
+                on_summarizer_call=_on_sum_call,
             )
             # Track savings for the thrash detector. <10% savings on
             # this attempt counts toward the cooldown counter.
@@ -1204,7 +1235,7 @@ class AsyncAgentRunner:
                     except Exception as ce:  # noqa: BLE001
                         logger.debug("pre-retry compaction skipped: %s", ce)
 
-                should_continue = self._handle_provider_error(e, session, ctx)
+                should_continue = await self._handle_provider_error(e, session, ctx)
                 if should_continue:
                     attempt = ctx.consecutive_errors
                     if _is_rate_limit:
@@ -1798,7 +1829,7 @@ class AsyncAgentRunner:
 
         return result_content, is_error
 
-    def _handle_provider_error(
+    async def _handle_provider_error(
         self,
         error: ProviderError,
         session: Session,
@@ -1817,7 +1848,7 @@ class AsyncAgentRunner:
         )
 
         if is_context_overflow_error(str(error)) or isinstance(error, ContextOverflowError):
-            return self._handle_overflow_cascade(session, ctx)
+            return await self._handle_overflow_cascade(session, ctx)
 
         if not is_retryable_error(str(error)) and not error.retryable:
             logger.error("Non-retryable error | session=%s: %s", session.id, error)
@@ -1849,12 +1880,18 @@ class AsyncAgentRunner:
 
         return True
 
-    def _handle_overflow_cascade(
+    async def _handle_overflow_cascade(
         self,
         session: Session,
         ctx: RunnerContext,
     ) -> bool:
-        """Handle context overflow with three-tier cascade."""
+        """Handle context overflow with three-tier cascade.
+
+        Emits compaction_start before the attempt and compaction_complete /
+        compaction_skipped after — without these the dashboard's compaction
+        count + savings trend + trigger-source breakdown all under-count
+        any session that hit context overflow (Gap 1).
+        """
         logger.warning(
             "Context overflow detected | session=%s | attempt %d/%d",
             session.id, ctx.compaction_attempts + 1, self.config.max_compaction_attempts,
@@ -1864,17 +1901,63 @@ class AsyncAgentRunner:
             logger.error("Exhausted compaction attempts | session=%s", session.id)
             return False
 
+        tokens_before = self._current_context_tokens(session)
+        await self._emit_system_event(SystemEvent(
+            type="compaction_start",
+            message=(
+                f"Overflow-cascade compaction starting "
+                f"({tokens_before:,} context tokens)"
+            ),
+            details={
+                "tokens_before": tokens_before,
+                "trigger": "overflow_cascade",
+                "attempt": ctx.compaction_attempts + 1,
+                "max_attempts": self.config.max_compaction_attempts,
+            },
+        ))
+
         ctx.state = RunnerState.COMPACTING
         result = self._attempt_compaction(session, ctx)
         ctx.state = RunnerState.RECOVERING
 
         if result.success:
+            try:
+                tokens_after = int(session.estimate_tokens())
+            except Exception:  # noqa: BLE001
+                tokens_after = result.tokens_after
+            self._mark_context_compacted(tokens_after)
             logger.warning(
                 "Summarization complete: %s -> %s tokens (%d entries) | session=%s",
                 f"{result.tokens_before:,}", f"{result.tokens_after:,}",
                 result.entries_removed, session.id,
             )
+            await self._emit_system_event(SystemEvent(
+                type="compaction_complete",
+                message=(
+                    f"Overflow-cascade compaction complete: "
+                    f"{tokens_before:,} → {tokens_after:,} tokens"
+                ),
+                details=self._compaction_event_details(
+                    result,
+                    trigger="overflow_cascade",
+                    tokens_before=tokens_before,
+                    tokens_after=tokens_after,
+                ),
+            ))
             return True
+
+        # Compaction failed — surface so the dashboard / UI know.
+        await self._emit_system_event(SystemEvent(
+            type="compaction_skipped",
+            message=f"Overflow-cascade compaction failed: {result.error or 'unknown'}",
+            details={
+                "trigger": "overflow_cascade",
+                "reason": result.error or "unknown",
+                "tokens_before": tokens_before,
+                "attempt": ctx.compaction_attempts,
+                "max_attempts": self.config.max_compaction_attempts,
+            },
+        ))
 
         if self.fallback_chain and self.fallback_chain.advance():
             logger.warning(
@@ -1942,9 +2025,40 @@ class AsyncAgentRunner:
         session.compaction_count += 1
 
         try:
+            # Thread the runner's on_llm_call hook into the compactor so
+            # the summarizer's input/output tokens land in the dashboard
+            # tagged as compaction overhead (Gap 4). Without this the
+            # summarizer call goes straight to provider.complete() and
+            # bypasses every measurement we have — its cost would be
+            # invisible.
+            def _on_sum_call(payload: dict[str, Any]) -> None:
+                if self.on_llm_call is None:
+                    return
+                try:
+                    self.on_llm_call({
+                        "provider": payload.get("provider", "unknown"),
+                        "model": payload.get("model", "unknown"),
+                        "duration_ms": payload.get("duration_ms", 0),
+                        "streaming": False,
+                        "input_tokens": payload.get("input_tokens", 0),
+                        "output_tokens": payload.get("output_tokens", 0),
+                        "cache_read_tokens": payload.get("cache_read_tokens", 0),
+                        "cache_write_tokens": payload.get("cache_write_tokens", 0),
+                        "reasoning_tokens": 0,
+                        "stop_reason": "end_turn",
+                        "tool_calls": 0,
+                        "thinking_blocks": 0,
+                        "error": None,
+                        "call_kind": "summarizer",
+                        "iterative": payload.get("iterative", False),
+                    })
+                except Exception:  # noqa: BLE001
+                    logger.exception("forwarding summarizer call to on_llm_call failed")
+
             result = self.compaction.compact(
                 session.transcript,
                 self.provider,
+                on_summarizer_call=_on_sum_call,
             )
             # Track savings for the thrash detector. <10% savings on
             # this attempt counts toward the cooldown counter.
@@ -2013,35 +2127,86 @@ class AsyncAgentRunner:
             },
         ))
 
-    @staticmethod
     def _compaction_event_details(
+        self,
         result: CompactionResult,
         *,
         trigger: str,
         tokens_before: int | None = None,
         tokens_after: int | None = None,
+        effective_window: int | None = None,
     ) -> dict[str, Any]:
-        before = tokens_before if tokens_before is not None else result.tokens_before
-        after = tokens_after if tokens_after is not None else result.tokens_after
+        """Canonical details dict for every compaction system_event.
+
+        Standardized across all triggers (Gap 5). The dashboard and
+        renderer pull the same keys regardless of which path produced
+        the event; the old per-path variations (request_tokens vs
+        context_tokens vs transcript_tokens) are still computed
+        downstream but are derived from these canonical fields.
+        """
+        # canonical pre/post sizes — transcript.estimate_tokens
+        # measured before and after append_compaction.
+        tx_before = result.tokens_before
+        tx_after = result.tokens_after
+        # Caller's perspective (e.g. ``_current_context_tokens`` for the
+        # runtime path). Falls back to the transcript measurement.
+        before = tokens_before if tokens_before is not None else tx_before
+        after = tokens_after if tokens_after is not None else tx_after
+        # Effective window for pressure-pct math. Defaults to the
+        # runner's current provider window minus reserved output budget
+        # so any path that doesn't pass effective_window explicitly
+        # still ends up with the same denominator.
+        if effective_window is None:
+            try:
+                provider = (
+                    self.fallback_chain.current
+                    if self.fallback_chain else self.provider
+                )
+                window = int(getattr(provider, "context_window", 0) or 0)
+                reserved = int(getattr(self.config, "max_tokens_per_turn", 0) or 0)
+                effective_window = max(1, window - reserved) if window > 0 else None
+            except Exception:  # noqa: BLE001
+                effective_window = None
+        pct_before = (
+            round((before / effective_window) * 100, 1)
+            if effective_window and effective_window > 0 else None
+        )
+        pct_after = (
+            round((after / effective_window) * 100, 1)
+            if effective_window and effective_window > 0 else None
+        )
         return {
+            # Canonical token fields (Gap 5).
             "tokens_before": before,
             "tokens_after": after,
+            "transcript_tokens_before": tx_before,
+            "transcript_tokens_after": tx_after,
+            # Back-compat aliases — the renderer's inline marker reads
+            # context_tokens_*; remove once that callsite is migrated.
             "context_tokens_before": before,
             "context_tokens_after": after,
-            "transcript_tokens_before": result.tokens_before,
-            "transcript_tokens_after": result.tokens_after,
+            "effective_window": effective_window,
+            "pressure_pct_before": pct_before,
+            "pressure_pct_after": pct_after,
+            # Counts.
             "entries_removed": result.entries_removed,
             "messages_before": result.messages_before,
             "messages_after": result.messages_after,
             "images_before": result.images_before,
             "images_after": result.images_after,
+            # Summary content + size.
             "summary_chars": len(result.summary or ""),
             "summary_preview": (result.summary or "")[:700],
-            # Full summary text preserved for the session-export bundle.
-            # The bridge writes this to a per-session compactions log
-            # so the export can reconstruct every compaction's actual
-            # output, not just an excerpt.
             "summary_text": (result.summary or ""),
+            "summary_tokens": getattr(result, "summary_tokens", 0),
+            # Summarizer call accounting (Gap 4) — pass through so the
+            # dashboard can show compaction overhead distinct from
+            # main-loop spend even before the on_llm_call mirror runs.
+            "summarizer_input_tokens": getattr(result, "summarizer_input_tokens", 0),
+            "summarizer_output_tokens": getattr(result, "summarizer_output_tokens", 0),
+            "summarizer_duration_ms": getattr(result, "summarizer_duration_ms", 0),
+            "summarizer_model": getattr(result, "summarizer_model", None),
+            "summarizer_cost_usd": getattr(result, "summarizer_cost_usd", None),
             "resumed_from_previous": getattr(result, "resumed_from_previous", False),
             "trigger": trigger,
             "strategy": "llm_summary",

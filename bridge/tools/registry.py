@@ -88,6 +88,7 @@ def build_desktop_registry(
     summarize_context_telemetry: Any | None = None,
     summarize_context_on_system_event: Any | None = None,
     summarize_context_on_pin_changed: Any | None = None,
+    summarize_context_on_summarizer_llm_call: Any | None = None,
     talk_router: TalkRouter | None = None,
     talk_caller_session_id: str = "",
     talk_caller_label: str = "",
@@ -363,6 +364,7 @@ def build_desktop_registry(
                 get_current_pressure_pct=summarize_context_pressure_getter,
                 on_system_event=summarize_context_on_system_event,
                 on_pin_changed=summarize_context_on_pin_changed,
+                on_summarizer_llm_call=summarize_context_on_summarizer_llm_call,
             )
         )
 

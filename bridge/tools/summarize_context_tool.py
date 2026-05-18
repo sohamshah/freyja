@@ -74,6 +74,7 @@ class SummarizeContextTool:
         get_current_pressure_pct: Callable[[], float | None] | None = None,
         on_system_event: Callable[[dict[str, Any]], None] | None = None,
         on_pin_changed: Callable[[dict[str, Any]], None] | None = None,
+        on_summarizer_llm_call: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self._get_session = get_session
         self._get_provider = get_provider
@@ -87,6 +88,12 @@ class SummarizeContextTool:
         # Pin-change emit so the renderer's pin badge appears when the
         # agent pins via pin_entries on this tool (Gap M).
         self._on_pin_changed = on_pin_changed
+        # Forwarded to ``compactor.compact(..., on_summarizer_call=...)``
+        # so the summarizer's input/output tokens land in the runner's
+        # on_llm_call hook tagged as compaction overhead (Gap 4).
+        # Without this the agent-path summarizer is invisible to spend
+        # metrics.
+        self._on_summarizer_llm_call = on_summarizer_llm_call
 
     @property
     def definition(self) -> ToolDefinition:
@@ -259,7 +266,10 @@ class SummarizeContextTool:
         })
 
         try:
-            result = self._dispatch(scope, level, compactor, transcript, provider)
+            result = self._dispatch(
+                scope, level, compactor, transcript, provider,
+                on_summarizer_call=self._on_summarizer_llm_call,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("summarize_context dispatch failed")
             self._emit_system_event({
@@ -496,6 +506,7 @@ class SummarizeContextTool:
         compactor: Any,
         transcript: Any,
         provider: Any,
+        on_summarizer_call: Callable[[dict[str, Any]], None] | None = None,
     ):
         """Execute the requested scope by invoking the compactor.
 
@@ -505,15 +516,25 @@ class SummarizeContextTool:
         ``all`` (and ``early`` at small-history) all reduce to the same
         call. The fine-grained scopes (``tool_results_only``,
         ``exploration_only``) live in their own helpers.
+
+        ``on_summarizer_call`` is forwarded into ``compactor.compact``
+        so the summarizer LLM call gets tagged in the dashboard as
+        compaction overhead (Gap 4). The in-place rewrite scopes
+        (tool_results_only / exploration_only) don't make any LLM call,
+        so the callback isn't passed there.
         """
         if scope in ("since_last_compaction", "all", "early"):
-            return compactor.compact(transcript, provider)
+            return compactor.compact(
+                transcript, provider, on_summarizer_call=on_summarizer_call,
+            )
         if scope == "tool_results_only":
             return self._compact_tool_results_only(transcript)
         if scope == "exploration_only":
             return self._compact_exploration_only(transcript)
         # Shouldn't be reached — scope was validated above.
-        return compactor.compact(transcript, provider)
+        return compactor.compact(
+            transcript, provider, on_summarizer_call=on_summarizer_call,
+        )
 
     def _compact_tool_results_only(self, transcript: Any):
         """Replace every tool-result message body with a 1-liner.
