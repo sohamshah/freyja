@@ -340,6 +340,7 @@ export function MissionDashboard() {
   const inboxEvents = useHarness((s) => s.inboxEvents)
   const artifacts = useHarness((s) => s.artifacts)
   const widgets = useHarness((s) => s.widgets)
+  const autoDispatchEnabled = useHarness((s) => s.autoDispatchEnabled)
   const model = useHarness((s) => s.model)
   const reasoningLevel = useHarness((s) => s.reasoningLevel)
   const coordinationStrategy = useHarness((s) => s.coordinationStrategy)
@@ -390,6 +391,7 @@ export function MissionDashboard() {
       inboxEvents,
       artifacts,
       widgets,
+      autoDispatchEnabled,
       model,
       reasoningLevel,
       coordinationStrategy,
@@ -614,6 +616,10 @@ export function MissionDashboard() {
       memoriesCount: Object.keys(memories).length,
       rootUsage: missionSlice?.usage ?? usage,
       coordinationStrategy: missionSession?.coordinationStrategy ?? missionSlice?.coordinationStrategy ?? coordinationStrategy,
+      // Mirror the active session's autopilot flag here too so consumers
+      // downstream (KanbanBridgeView's toggle) read the same value the
+      // store reducer updates on `kanban_autopilot_enabled/_disabled`.
+      autoDispatchEnabled,
       screenshotFrames: Object.values(computerSessions)
         .filter((computer) => !missionSession || computer.parentSessionId === missionSession.id || computer.sessionId === missionSession.id)
         .reduce((acc, computer) => acc + computer.frameCount, 0),
@@ -638,6 +644,7 @@ export function MissionDashboard() {
     toolCallOrder,
     toolCalls,
     usage,
+    autoDispatchEnabled,
   ])
 
   const setTab = (next: DashboardTab) => toggleDashboard(true, next)
@@ -762,6 +769,7 @@ export function MissionDashboard() {
             taskCards={dashboard.taskCards}
             skillsCount={dashboard.skillsCount}
             memoriesCount={dashboard.memoriesCount}
+            autoDispatchEnabled={dashboard.autoDispatchEnabled}
             onTab={setTab}
             onAttach={attach}
             onJumpTool={closeAndJumpToTool}
@@ -806,6 +814,7 @@ function OverviewTab({
   taskCards,
   skillsCount,
   memoriesCount,
+  autoDispatchEnabled,
   onTab,
   onAttach,
   onJumpTool,
@@ -834,6 +843,7 @@ function OverviewTab({
   taskCards: TaskCardView[]
   skillsCount: number
   memoriesCount: number
+  autoDispatchEnabled: boolean
   onTab: (tab: DashboardTab) => void
   onAttach: (id: string, mode?: 'replace' | 'split') => void
   onJumpTool: (id: string) => void
@@ -855,6 +865,7 @@ function OverviewTab({
           telemetryEvents={telemetryEvents}
           contextPct={contextPct}
           cost={cost}
+          autoDispatchEnabled={autoDispatchEnabled}
           onAttach={onAttach}
           onOpenDispatcherBrief={() => setDispatcherBriefOpen(true)}
         />

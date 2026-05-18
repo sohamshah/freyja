@@ -3470,20 +3470,31 @@ class _BridgeSession:
         except asyncio.CancelledError:
             return
 
-    async def _kanban_tick(self, *, source: str) -> None:
+    async def _kanban_tick(self, *, source: str, force: bool = False) -> None:
         """One dispatch pass. Walk the board, spawn at most a few sub-agents
         per pass so we don't blast the runner under a sudden flurry of ready
-        cards."""
-        if (
-            not self.auto_dispatch_enabled
-            or self.kanban_board is None
-            or self.tool_registry is None
-        ):
+        cards.
+
+        `force=True` bypasses the autopilot-enabled + queued-messages gates.
+        Used when the operator explicitly created a card via the dashboard's
+        "+ Add Task" UI — they took a direct action, so the dispatcher
+        should fire even if background autopilot is off and the runner has
+        pending user messages. Hard prerequisites (no board, no tool
+        registry) still short-circuit. Note: this only force-runs the
+        single tick; persistent dispatch behavior still requires the user
+        to flip autopilot on via `/autopilot on`, so follow-up cards from
+        downstream worker spawns won't dispatch unless they also come
+        through a force path."""
+        if self.kanban_board is None or self.tool_registry is None:
             return
-        if self.queued_messages:
-            # User has something to say — don't burn turns on auto-dispatch
-            # until they're processed. Mirrors the goal-loop preemption.
-            return
+        if not force:
+            if not self.auto_dispatch_enabled:
+                return
+            if self.queued_messages:
+                # User has something to say — don't burn turns on auto-
+                # dispatch until they're processed. Mirrors the goal-loop
+                # preemption.
+                return
         # Emit a lightweight tick event so the renderer can show a
         # next-tick countdown on the autopilot strip without having to
         # poll. Idle ticks (no dispatch decisions) still send this so
@@ -5767,13 +5778,17 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             f"Operator added {task.id}: {task.title}",
             details={"task": task.to_dict(include_history=False)},
         )
-        # Trigger an immediate dispatch tick. No-op if autopilot is
-        # disabled; the card will still wait in ready/triage for the
-        # operator to flip the switch.
+        # Force-dispatch this card RIGHT NOW. The operator just took an
+        # explicit action — they shouldn't have to flip autopilot on
+        # separately for the card they explicitly created to land on a
+        # worker. `force=True` bypasses the autopilot-enabled +
+        # queued-messages gates inside `_kanban_tick`; the dispatch logic
+        # itself (capacity, blocked-by, ready+assignee or triage) still
+        # runs and decides which lane the card belongs in.
         try:
-            await sess._kanban_tick(source="operator_create")  # noqa: SLF001
-        except Exception:
-            pass
+            await sess._kanban_tick(source="operator_create", force=True)  # noqa: SLF001
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"kanban_operator_create dispatch failed: {exc}")
         return
 
     if ctype in ("memory_update", "memory_delete", "memory_restore", "memory_merge"):

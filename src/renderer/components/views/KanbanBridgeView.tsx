@@ -12,6 +12,7 @@ import {
   DrawerSection,
   DrawerTimeline,
 } from '../shared/DetailDrawer'
+import { useHarness } from '../../state/store'
 import { AddTaskForm } from './AddTaskForm'
 import { ShinyFabricBackdrop } from './ShinyFabricBackdrop'
 
@@ -23,6 +24,11 @@ interface Props {
   telemetryEvents: TelemetryEventView[]
   contextPct: number
   cost: number
+  /** Bridge `auto_dispatch_enabled` mirror, tracked per session in the
+   *  slice. Drives the header's autopilot toggle so the operator can
+   *  flip the dispatcher on/off without knowing the `/autopilot` slash
+   *  command exists. */
+  autoDispatchEnabled: boolean
   onAttach: (id: string, mode?: 'replace' | 'split') => void
   onOpenDispatcherBrief: () => void
 }
@@ -37,9 +43,11 @@ export function KanbanBridgeView({
   telemetryEvents,
   contextPct,
   cost,
+  autoDispatchEnabled,
   onAttach,
   onOpenDispatcherBrief,
 }: Props) {
+  const setKanbanAutopilot = useHarness((s) => s.setKanbanAutopilot)
   const [openCardId, setOpenCardId] = useState<string | null>(null)
   // Operator-intake form open state — toggled by the "+ Add task"
   // affordance at the top of the board column. Lifted here (instead of
@@ -73,6 +81,10 @@ export function KanbanBridgeView({
         agentsCount={agents.length}
         contextPct={contextPct}
         cost={cost}
+        autoDispatchEnabled={autoDispatchEnabled}
+        onToggleAutopilot={() => {
+          void setKanbanAutopilot(sessionId, !autoDispatchEnabled)
+        }}
         onOpenDispatcherBrief={onOpenDispatcherBrief}
       />
 
@@ -126,6 +138,8 @@ function Header({
   agentsCount,
   contextPct,
   cost,
+  autoDispatchEnabled,
+  onToggleAutopilot,
   onOpenDispatcherBrief,
 }: {
   objective: string
@@ -134,6 +148,8 @@ function Header({
   agentsCount: number
   contextPct: number
   cost: number
+  autoDispatchEnabled: boolean
+  onToggleAutopilot: () => void
   onOpenDispatcherBrief: () => void
 }) {
   const total = buckets.done.length + buckets.ready.length + buckets.flight.length + buckets.blocked.length
@@ -180,16 +196,75 @@ function Header({
           </span>
         </div>
       </div>
-      <div className="flex gap-2 shrink-0">
+      <div className="flex items-center gap-2 shrink-0">
+        <AutopilotToggle
+          enabled={autoDispatchEnabled}
+          onClick={onToggleAutopilot}
+        />
         <button
           type="button"
           onClick={onOpenDispatcherBrief}
           className="rounded-md border border-accent/[0.22] bg-accent/[0.06] px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.14em] text-accent transition hover:bg-accent/[0.12]"
         >
-          Autopilot Rules
+          Rules
         </button>
       </div>
     </header>
+  )
+}
+
+/** Pill-shaped on/off toggle for kanban auto-dispatch. Acts as the
+ *  discoverable UI surface for the underlying `kanban_autopilot`
+ *  command — most users won't know `/autopilot on` exists, so we
+ *  surface the state + action right next to the dispatch rules
+ *  button. Operator-added cards still dispatch immediately on create
+ *  (force=True path in the bridge); this toggle controls whether
+ *  *background* dispatch picks up agent-created cards + downstream
+ *  follow-ups. */
+function AutopilotToggle({
+  enabled,
+  onClick,
+}: {
+  enabled: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      role="switch"
+      aria-checked={enabled}
+      title={
+        enabled
+          ? 'Autopilot is ON — agent-created and follow-up cards auto-dispatch as agents free up.'
+          : 'Autopilot is OFF — agent-created and follow-up cards sit in READY until you flip this on (operator-added cards still dispatch immediately).'
+      }
+      className={`group inline-flex items-center gap-2 rounded-full border px-3 py-1 font-mono text-[10.5px] uppercase tracking-[0.14em] transition ${
+        enabled
+          ? 'border-accent/[0.40] bg-accent/[0.12] text-accent shadow-[0_0_0_1px_rgba(168,212,252,0.10)]'
+          : 'border-white/[0.10] bg-bg-1 text-fg-3 hover:border-white/[0.20] hover:text-fg-1'
+      }`}
+    >
+      <span
+        className={`relative inline-flex h-3 w-6 items-center rounded-full transition ${
+          enabled ? 'bg-accent/[0.55]' : 'bg-white/[0.08]'
+        }`}
+      >
+        <span
+          className={`block h-2 w-2 rounded-full bg-fg-0 shadow-sm transition-transform ${
+            enabled ? 'translate-x-3.5' : 'translate-x-0.5'
+          }`}
+        />
+      </span>
+      <span>autopilot</span>
+      <span
+        className={`tabular-nums normal-case tracking-normal text-[10px] ${
+          enabled ? 'text-accent' : 'text-fg-4'
+        }`}
+      >
+        {enabled ? 'on' : 'off'}
+      </span>
+    </button>
   )
 }
 

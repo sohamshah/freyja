@@ -504,6 +504,7 @@ function sliceForSessionView(
       inboxEvents: state.inboxEvents,
       artifacts: state.artifacts,
       widgets: state.widgets,
+      autoDispatchEnabled: state.autoDispatchEnabled,
       model: state.model,
       reasoningLevel: state.reasoningLevel,
       coordinationStrategy: state.coordinationStrategy,

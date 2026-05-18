@@ -139,6 +139,13 @@ export interface SessionSlice {
     loadingMessages: string[]
     createdAt: number
   }>
+  /** Kanban auto-dispatch (autopilot) state. Tracks the bridge's
+   *  `auto_dispatch_enabled` flag per session so the dashboard can
+   *  render a discoverable toggle instead of forcing the operator
+   *  to know about `/autopilot on`. Updated reactively from the
+   *  `kanban_autopilot_enabled` / `kanban_autopilot_disabled`
+   *  system events the bridge emits whenever the flag flips. */
+  autoDispatchEnabled: boolean
   model: string
   reasoningLevel: string
   coordinationStrategy: CoordinationStrategy
@@ -276,6 +283,13 @@ export interface HarnessActions {
     parents?: string[]
     children?: string[]
   }): Promise<void>
+  /** Toggle the kanban auto-dispatch (autopilot) flag on the bridge.
+   *  Mirrors the `/autopilot on|off` slash command, but used by the
+   *  dashboard toggle so the operator doesn't have to know the slash
+   *  command exists. The bridge fires `kanban_autopilot_enabled` /
+   *  `_disabled` system events on flip; the store's `system_event`
+   *  reducer picks those up to keep `autoDispatchEnabled` in sync. */
+  setKanbanAutopilot(sessionId: string, enabled: boolean): Promise<void>
   cancelTurn(): Promise<void>
   setModel(model: string, reasoningLevel?: string): Promise<void>
   setReasoningLevel(reasoningLevel: string): Promise<void>
@@ -647,6 +661,7 @@ function emptySlice(
     inboxEvents: [],
     artifacts: [],
     widgets: {},
+    autoDispatchEnabled: false,
     model,
     reasoningLevel: normalizedReasoning,
     coordinationStrategy: normalizeCoordinationStrategy(coordinationStrategy),
@@ -771,6 +786,7 @@ function sliceFromState(s: HarnessState): SessionSlice {
     inboxEvents: s.inboxEvents,
     artifacts: s.artifacts,
     widgets: s.widgets,
+    autoDispatchEnabled: s.autoDispatchEnabled,
     model: s.model,
     reasoningLevel: s.reasoningLevel,
     coordinationStrategy: s.coordinationStrategy,
@@ -1334,6 +1350,18 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
       // Capture the system prompt for session export / training data
       if (ev.subtype === 'system_prompt_set' && ev.details?.systemPrompt) {
         next.systemPrompt = ev.details.systemPrompt as string
+      }
+      // Track autopilot state per session so the dashboard toggle can
+      // reflect the bridge's actual `auto_dispatch_enabled` flag. The
+      // bridge fires `kanban_autopilot_enabled` / `_disabled` whenever
+      // the flag flips (via `/autopilot` slash, the dashboard toggle,
+      // or future programmatic enables on operator-add). Default is
+      // false in `emptySlice`, matching the bridge's `_BridgeSession`
+      // init.
+      if (ev.subtype === 'kanban_autopilot_enabled') {
+        next.autoDispatchEnabled = true
+      } else if (ev.subtype === 'kanban_autopilot_disabled') {
+        next.autoDispatchEnabled = false
       }
       const chatVisible = ev.details?.chatVisible === true
       const inlineSystemSubtypes = [
@@ -2301,6 +2329,17 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       priority: payload.priority,
       parents: payload.parents?.length ? payload.parents : undefined,
       children: payload.children?.length ? payload.children : undefined,
+    })
+  },
+
+  async setKanbanAutopilot(sessionId, enabled) {
+    if (!sessionId) return
+    const api = (window as any).harness
+    if (!api?.sendCommand) return
+    await api.sendCommand({
+      type: 'kanban_autopilot',
+      sessionId,
+      enabled,
     })
   },
 
