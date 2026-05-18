@@ -262,6 +262,20 @@ export interface HarnessActions {
    *  - sessionId can be any visible session id.
    *  - force=true interrupts the recipient mid-operation. */
   operatorTalk(sessionId: string, content: string, force?: boolean): Promise<void>
+  /** Create a kanban card from the operator. Flows through the
+   *  bridge's `kanban_operator_create` IPC, which calls
+   *  `SessionKanbanBoard.create()` with actor="operator" so the card's
+   *  provenance is preserved everywhere downstream (renderer chip,
+   *  audit trail, agent-visible board state). */
+  addOperatorKanbanCard(payload: {
+    sessionId: string
+    title: string
+    body?: string
+    assignee?: string
+    priority?: number
+    parents?: string[]
+    children?: string[]
+  }): Promise<void>
   cancelTurn(): Promise<void>
   setModel(model: string, reasoningLevel?: string): Promise<void>
   setReasoningLevel(reasoningLevel: string): Promise<void>
@@ -2270,6 +2284,23 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       sessionId,
       content: text,
       force: !!force,
+    })
+  },
+
+  async addOperatorKanbanCard(payload) {
+    const api = (window as any).harness
+    if (!api?.sendCommand) return
+    const title = (payload.title ?? '').trim()
+    if (!payload.sessionId || !title) return
+    await api.sendCommand({
+      type: 'kanban_operator_create',
+      sessionId: payload.sessionId,
+      title,
+      body: payload.body?.trim() || undefined,
+      assignee: payload.assignee?.trim() || undefined,
+      priority: payload.priority,
+      parents: payload.parents?.length ? payload.parents : undefined,
+      children: payload.children?.length ? payload.children : undefined,
     })
   },
 

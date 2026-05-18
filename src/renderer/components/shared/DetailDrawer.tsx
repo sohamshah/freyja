@@ -8,6 +8,12 @@ interface DetailDrawerProps {
   width?: number
   children: React.ReactNode
   footer?: React.ReactNode
+  /** Optional decorative layer rendered absolutely behind every
+   *  other child (header / body / footer all sit on top). Designed
+   *  for animated WebGL or canvas backdrops — the drawer adds
+   *  `position:absolute inset-0 pointer-events:none` framing so the
+   *  backdrop only needs to paint pixels, not worry about layout. */
+  backdrop?: React.ReactNode
 }
 
 /**
@@ -30,6 +36,7 @@ export function DetailDrawer({
   width = 480,
   children,
   footer,
+  backdrop,
 }: DetailDrawerProps) {
   useEffect(() => {
     if (!open) return
@@ -45,9 +52,20 @@ export function DetailDrawer({
   return (
     <aside
       style={{ width }}
-      className="flex h-full flex-col overflow-hidden border-l border-white/[0.06] bg-bg-0/[0.96] shadow-[-12px_0_32px_-12px_rgba(0,0,0,0.55)] backdrop-blur-[24px] animate-fade-in"
+      className="relative flex h-full flex-col overflow-hidden border-l border-white/[0.06] bg-bg-0/[0.96] shadow-[-12px_0_32px_-12px_rgba(0,0,0,0.55)] backdrop-blur-[24px] animate-fade-in"
     >
-      <header className="flex items-center justify-between border-b border-white/[0.06] px-6 py-4">
+      {/* Decorative backdrop layer — sits behind every header/body/
+        * footer pixel via absolute positioning. Explicit z-0 keeps it
+        * below the chrome regardless of any backdrop-filter stacking
+        * weirdness on the parent <aside>. Pointer-events:none so the
+        * canvas never steals clicks from the close button. */}
+      {backdrop ? (
+        <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
+          {backdrop}
+        </div>
+      ) : null}
+
+      <header className="relative z-10 flex items-center justify-between border-b border-white/[0.06] px-6 py-4">
         {statusLabel ? (
           <span className="inline-flex items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.14em] text-accent">
             <span className="h-1.5 w-1.5 animate-pulse-soft rounded-full bg-accent shadow-[0_0_6px_rgba(168,212,252,0.6)]" />
@@ -65,7 +83,7 @@ export function DetailDrawer({
         </button>
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-7 overflow-y-auto px-7 py-6">
+      <div className="relative z-10 flex min-h-0 flex-1 flex-col gap-7 overflow-y-auto px-7 py-6">
         <h2 className="m-0 font-serif text-[26px] font-light leading-[1.3] tracking-[-0.005em] text-fg-0">
           {title}
         </h2>
@@ -73,7 +91,7 @@ export function DetailDrawer({
       </div>
 
       {footer ? (
-        <footer className="flex flex-wrap gap-2 border-t border-white/[0.06] bg-black/30 px-5 py-3">
+        <footer className="relative z-10 flex flex-wrap gap-2 border-t border-white/[0.06] bg-black/30 px-5 py-3">
           {footer}
         </footer>
       ) : null}

@@ -875,6 +875,21 @@ function tsStr(ts: number): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
+/** Compact human-readable duration label used by the comm graph's
+ *  gap markers. Picks the largest unit so a "6h 14m pause" reads as
+ *  "6h", a 90s pause reads as "1m", etc. — the gap line itself is
+ *  decoration; the label just needs to convey order of magnitude. */
+function formatGapDuration(ms: number): string {
+  const s = Math.round(ms / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.round(s / 60)
+  if (m < 60) return `${m}m`
+  const h = Math.round(m / 60)
+  if (h < 24) return `${h}h`
+  const d = Math.round(h / 24)
+  return `${d}d`
+}
+
 // ============ comm graph ============
 
 /** Swim-row visualization of agent-to-agent + operator-to-agent talk.
@@ -922,7 +937,6 @@ function CommPane({
   agents: AgentView[]
   onCopyFinding: (event: BusEventView) => void
 }) {
-  void agents
   void onCopyFinding
   const enqueued = useMemo(
     () =>
@@ -931,6 +945,21 @@ function CommPane({
         .sort((a, b) => a.timestamp - b.timestamp),
     [inboxEvents],
   )
+  // Anything outside this set is rendered as a "cross-session" lane
+  // (dashed lane line, ↗ prefix on the label, hollow chip) so the
+  // operator can tell at a glance whether a message came from inside
+  // the mission's own tree or from a disconnected session. We seed
+  // with 'operator' (the human) + every agent's session id + each
+  // agent's parentSessionId (catches the mission root, which isn't
+  // in `agents` itself).
+  const inTreeIds = useMemo(() => {
+    const s = new Set<string>(['operator'])
+    for (const a of agents) {
+      if (a.session?.id) s.add(a.session.id)
+      if (a.session?.parentSessionId) s.add(a.session.parentSessionId)
+    }
+    return s
+  }, [agents])
   // The "operator" pseudo-id is the human typing into a session pane
   // (via the operator_talk IPC). The parent / root agent is just
   // another session — operator is NOT the parent agent. Rendered as
@@ -1004,6 +1033,7 @@ function CommPane({
         <CommGraph
           enqueued={enqueued}
           labelFor={labelFor}
+          inTreeIds={inTreeIds}
           selectedId={selectedId}
           onSelect={(id) => setSelectedId((cur) => (cur === id ? null : id))}
         />
@@ -1021,6 +1051,7 @@ function CommPane({
           <ConversationLog
             messages={enqueued}
             labelFor={labelFor}
+            inTreeIds={inTreeIds}
             selectedId={selectedId}
             onSelect={(id) => setSelectedId((cur) => (cur === id ? null : id))}
           />
@@ -1031,15 +1062,20 @@ function CommPane({
 }
 
 /** SVG swim-row diagram of inbox traffic. Pulled out of CommPane so
- *  the layout logic stays focused. */
+ *  the layout logic stays focused. `inTreeIds` flags participants
+ *  that belong to the current mission's session tree; anyone else is
+ *  marked as a cross-session lane (dashed lane line, ↗ prefix,
+ *  warm-tinted chip ring). */
 function CommGraph({
   enqueued,
   labelFor,
+  inTreeIds,
   selectedId,
   onSelect,
 }: {
   enqueued: InboxEventRecord[]
   labelFor: (id: string) => string
+  inTreeIds: Set<string>
   selectedId: string | null
   onSelect: (id: string) => void
 }) {
@@ -1063,17 +1099,22 @@ function CommGraph({
     return arr
   }, [enqueued])
 
-  const { tMin, tMax } = useMemo(() => {
-    if (enqueued.length === 0) {
-      const now = Date.now()
-      return { tMin: now - 1000, tMax: now }
-    }
-    const times = enqueued.map((e) => e.timestamp)
-    const min = Math.min(...times)
-    const max = Math.max(...times)
-    const span = Math.max(1000, max - min)
-    return { tMin: min - span * 0.03, tMax: max + span * 0.03 }
-  }, [enqueued])
+  // Order events by timestamp once; everything downstream keys off the
+  // ordinal position, not the actual wall-clock time. Wall-clock-scaled
+  // X coordinates were causing the operator's pain: two messages 50ms
+  // apart looked stacked on top of each other while a third message 4h
+  // later sat alone at the far right with two-thirds of the canvas
+  // empty in between. Even spacing keeps every message readable
+  // regardless of how the conversation paced itself in real time.
+  const ordered = useMemo(
+    () => [...enqueued].sort((a, b) => a.timestamp - b.timestamp),
+    [enqueued],
+  )
+  const ordinalById = useMemo(() => {
+    const m = new Map<string, number>()
+    ordered.forEach((e, i) => m.set(e.id, i))
+    return m
+  }, [ordered])
 
   const LANE_HEIGHT = 28
   const LABEL_WIDTH = 132
@@ -1092,8 +1133,47 @@ function CommGraph({
   }, [])
 
   const innerWidth = Math.max(60, width - LABEL_WIDTH - SIDE_PADDING * 2)
-  const tSpan = Math.max(1, tMax - tMin)
-  const tToX = (t: number) => SIDE_PADDING + ((t - tMin) / tSpan) * innerWidth
+  // Even spacing between ordinals. One event → centered; many events →
+  // distributed across the inner width with half-step end caps so
+  // chips never hug the canvas edges.
+  const ordinalCount = Math.max(1, ordered.length)
+  const ordinalStep = ordinalCount > 1 ? innerWidth / (ordinalCount - 1) : 0
+  const xForOrdinal = (n: number): number => {
+    if (ordered.length <= 1) return SIDE_PADDING + innerWidth / 2
+    return SIDE_PADDING + n * ordinalStep
+  }
+  const xForId = (id: string): number => {
+    const ord = ordinalById.get(id)
+    return ord === undefined ? SIDE_PADDING : xForOrdinal(ord)
+  }
+
+  // Gap markers — when consecutive messages are far apart in wall-clock
+  // time, drop a vertical dashed line BETWEEN their ordinals with a
+  // relative-duration label so the operator still gets "there was a
+  // pause" signal without us reverting to time-scaled spacing. The
+  // threshold scales with total session duration: short conversations
+  // surface 30s-plus pauses, multi-day ones only flag hour-plus gaps.
+  const gapMarkers = useMemo(() => {
+    if (ordered.length < 2) return []
+    const totalSpan = ordered[ordered.length - 1].timestamp - ordered[0].timestamp
+    const threshold = Math.max(30_000, totalSpan * 0.05)
+    const out: Array<{ key: string; xMid: number; label: string }> = []
+    for (let i = 1; i < ordered.length; i++) {
+      const dt = ordered[i].timestamp - ordered[i - 1].timestamp
+      if (dt < threshold) continue
+      const xMid = (xForOrdinal(i - 1) + xForOrdinal(i)) / 2
+      out.push({
+        key: `gap-${ordered[i].id}`,
+        xMid,
+        label: formatGapDuration(dt),
+      })
+    }
+    return out
+    // ordinalStep is a derived value — including it pulls the recompute
+    // back onto layout changes from the resize observer.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ordered, ordinalStep])
+
   const laneY = (i: number) => TOP_PADDING + i * LANE_HEIGHT + LANE_HEIGHT / 2
   const totalHeight = Math.max(
     80,
@@ -1113,10 +1193,15 @@ function CommGraph({
           className="block"
           aria-label="agent talk graph"
         >
-          {/* Lanes — labels left, faint dashed rule across */}
+          {/* Lanes — labels left, faint dashed rule across. Cross-
+             * session participants (anything outside this mission's
+             * tree) get a ↗ prefix, italic muted label, and a warmer
+             * dashed lane line so external traffic reads as visibly
+             * "outside the swarm." */}
           {participants.map((pid, i) => {
             const y = laneY(i)
             const isOperator = pid === 'operator'
+            const isCross = !isOperator && !inTreeIds.has(pid)
             return (
               <g key={`lane-${pid}`}>
                 <foreignObject
@@ -1126,22 +1211,36 @@ function CommGraph({
                   height={22}
                 >
                   <div
-                    className="flex h-full items-center gap-1.5 truncate font-mono text-[10.5px]"
+                    className={`flex h-full items-center gap-1.5 truncate font-mono text-[10.5px] ${
+                      isCross ? 'italic' : ''
+                    }`}
                     style={{
                       color: isOperator
                         ? COMM_COLORS.operator.text
+                        : isCross
+                        ? 'rgba(245, 165, 110, 0.85)'
                         : 'rgba(232, 196, 132, 0.95)',
                     }}
-                    title={labelFor(pid)}
+                    title={
+                      isCross
+                        ? `${labelFor(pid)} — cross-session (outside this mission's tree)`
+                        : labelFor(pid)
+                    }
                   >
-                    <span
-                      className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
-                      style={{
-                        background: isOperator
-                          ? COMM_COLORS.operator.chip
-                          : COMM_COLORS.agent.chip,
-                      }}
-                    />
+                    {isCross ? (
+                      <span aria-hidden className="shrink-0 text-[10px] leading-none">
+                        ↗
+                      </span>
+                    ) : (
+                      <span
+                        className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
+                        style={{
+                          background: isOperator
+                            ? COMM_COLORS.operator.chip
+                            : COMM_COLORS.agent.chip,
+                        }}
+                      />
+                    )}
                     <span className="truncate">{labelFor(pid)}</span>
                   </div>
                 </foreignObject>
@@ -1150,13 +1249,54 @@ function CommGraph({
                   y1={y}
                   x2={LABEL_WIDTH + innerWidth + SIDE_PADDING}
                   y2={y}
-                  stroke="rgba(255,255,255,0.05)"
+                  stroke={
+                    isCross
+                      ? 'rgba(245, 165, 110, 0.18)'
+                      : 'rgba(255,255,255,0.05)'
+                  }
                   strokeWidth={1}
-                  strokeDasharray="2,3"
+                  strokeDasharray={isCross ? '1,5' : '2,3'}
                 />
               </g>
             )
           })}
+
+          {/* Gap markers — vertical dashed dividers between ordinals
+            * where wall-clock time jumped significantly. Lets the
+            * operator see "there was a 12m pause here" without us
+            * reverting to the time-scaled spacing that made the chart
+            * unreadable when activity was bursty. */}
+          {gapMarkers.length > 0 && (
+            <g>
+              {gapMarkers.map((g) => {
+                const x = LABEL_WIDTH + g.xMid
+                return (
+                  <g key={g.key}>
+                    <line
+                      x1={x}
+                      y1={2}
+                      x2={x}
+                      y2={totalHeight - 14}
+                      stroke="rgba(255,255,255,0.10)"
+                      strokeWidth={1}
+                      strokeDasharray="1,4"
+                    />
+                    <text
+                      x={x}
+                      y={totalHeight - 3}
+                      textAnchor="middle"
+                      fontSize={8}
+                      fill="rgba(255,255,255,0.30)"
+                      fontFamily="ui-monospace, monospace"
+                      pointerEvents="none"
+                    >
+                      ↔ {g.label}
+                    </text>
+                  </g>
+                )
+              })}
+            </g>
+          )}
 
           {/* Sender → recipient curves + animated motes (drawn below
             * chips). The static path conveys topology; the moving dot
@@ -1170,15 +1310,27 @@ function CommGraph({
             const senderIdx = participants.indexOf(e.fromSession)
             const recipIdx = participants.indexOf(e.sessionId)
             if (senderIdx < 0 || recipIdx < 0) return null
-            const x = LABEL_WIDTH + tToX(e.timestamp)
+            const x = LABEL_WIDTH + xForId(e.id)
             const y1 = laneY(senderIdx)
             const y2 = laneY(recipIdx)
             const isOperator = e.fromRole === 'operator'
             const isSpawn = e.kind === 'spawn'
-            const baseStroke = isOperator
+            // Cross-session arcs touch at least one participant
+            // outside the mission tree. Recolor the arc + mote to the
+            // warm cross-session tint and force a dashed stroke so the
+            // operator can spot inbound/outbound external traffic at a
+            // glance even when no chip is selected.
+            const senderCross = e.fromSession !== 'operator' && !inTreeIds.has(e.fromSession)
+            const recipCross = e.sessionId !== 'operator' && !inTreeIds.has(e.sessionId)
+            const isCross = senderCross || recipCross
+            const baseStroke = isCross
+              ? 'rgba(245, 165, 110, 0.55)'
+              : isOperator
               ? COMM_COLORS.operator.arc
               : COMM_COLORS.agent.arc
-            const moteFill = isOperator
+            const moteFill = isCross
+              ? 'rgb(245, 165, 110)'
+              : isOperator
               ? COMM_COLORS.operator.chip
               : COMM_COLORS.agent.chip
             const isSelected = selectedId === e.id
@@ -1200,16 +1352,16 @@ function CommGraph({
                   fill="none"
                   stroke={baseStroke}
                   strokeWidth={isSelected ? 2 : e.force ? 1.6 : 1}
-                  strokeDasharray={isSpawn ? '4 3' : undefined}
+                  strokeDasharray={isSpawn ? '4 3' : isCross ? '2,2' : undefined}
                   opacity={isSelected ? 1 : isSpawn ? 0.6 : 0.85}
                   strokeLinecap="round"
                 />
                 {!isLoop && (
                   <circle
                     r={e.force ? 2.6 : isSpawn ? 2.8 : 2.1}
-                    fill={isSpawn ? 'none' : moteFill}
-                    stroke={isSpawn ? moteFill : 'none'}
-                    strokeWidth={isSpawn ? 1.3 : 0}
+                    fill={isSpawn || isCross ? 'none' : moteFill}
+                    stroke={isSpawn || isCross ? moteFill : 'none'}
+                    strokeWidth={isSpawn ? 1.3 : isCross ? 1.2 : 0}
                     opacity={0.95}
                   >
                     <animateMotion
@@ -1257,7 +1409,7 @@ function CommGraph({
             const senderIdx = participants.indexOf(e.fromSession)
             const recipIdx = participants.indexOf(e.sessionId)
             if (recipIdx < 0) return null
-            const cx = LABEL_WIDTH + tToX(e.timestamp)
+            const cx = LABEL_WIDTH + xForId(e.id)
             const cy = laneY(recipIdx)
             const senderY = senderIdx >= 0 ? laneY(senderIdx) : cy
             const isOperator = e.fromRole === 'operator'
@@ -1392,6 +1544,32 @@ function Legend() {
         </svg>
         spawn task
       </span>
+      <span
+        className="inline-flex items-center gap-1.5"
+        title="Message involving a session outside this mission's tree (grandchildren, sessions from a sibling mission, or orphan workers). Hollow chip + warm dashed arc."
+      >
+        <svg width={14} height={14} viewBox="0 0 14 14" aria-hidden>
+          <line
+            x1={2}
+            y1={7}
+            x2={12}
+            y2={7}
+            stroke="rgb(245, 165, 110)"
+            strokeWidth={1.2}
+            strokeDasharray="2,2"
+            opacity={0.7}
+          />
+          <circle
+            cx={7}
+            cy={7}
+            r={2.8}
+            fill="none"
+            stroke="rgb(245, 165, 110)"
+            strokeWidth={1.2}
+          />
+        </svg>
+        ↗ cross-session
+      </span>
       <span className="inline-flex items-center gap-1.5 text-fg-4 normal-case tracking-normal">
         <span aria-hidden>→</span>
         moving dot = direction of message
@@ -1407,11 +1585,13 @@ function Legend() {
 function ConversationLog({
   messages,
   labelFor,
+  inTreeIds,
   selectedId,
   onSelect,
 }: {
   messages: InboxEventRecord[]
   labelFor: (id: string) => string
+  inTreeIds: Set<string>
   selectedId: string | null
   onSelect: (id: string) => void
 }) {
@@ -1423,6 +1603,11 @@ function ConversationLog({
       {reversed.map((e) => {
         const isOperator = e.fromRole === 'operator'
         const selected = selectedId === e.id
+        const senderCross =
+          e.fromSession !== 'operator' && !inTreeIds.has(e.fromSession)
+        const recipCross =
+          e.sessionId !== 'operator' && !inTreeIds.has(e.sessionId)
+        const isCross = senderCross || recipCross
         return (
           <li
             key={e.id}
@@ -1431,23 +1616,32 @@ function ConversationLog({
             className={`cursor-pointer overflow-hidden rounded-md border transition ${
               selected
                 ? 'border-white/[0.18] bg-white/[0.04]'
+                : isCross
+                ? 'border-white/[0.06] bg-white/[0.012] hover:border-white/[0.12] hover:bg-white/[0.025]'
                 : 'border-white/[0.06] bg-white/[0.015] hover:border-white/[0.12] hover:bg-white/[0.03]'
             }`}
           >
             <div className="flex items-baseline gap-2 border-b border-white/[0.05] px-3 py-1.5 font-mono text-[10.5px]">
               <span className="tabular-nums text-fg-3">{tsStr(e.timestamp)}</span>
               <span
-                className="font-mono"
+                className={`font-mono ${senderCross ? 'italic' : ''}`}
                 style={{
-                  color: isOperator
+                  color: senderCross
+                    ? 'rgba(245, 165, 110, 0.95)'
+                    : isOperator
                     ? COMM_COLORS.operator.text
                     : COMM_COLORS.agent.text,
                 }}
               >
-                {labelFor(e.fromSession)}
+                {senderCross ? '↗ ' : ''}{labelFor(e.fromSession)}
               </span>
               <span className="text-fg-4">→</span>
-              <span className="truncate text-fg-2">{labelFor(e.sessionId)}</span>
+              <span
+                className={`truncate ${recipCross ? 'italic' : ''}`}
+                style={recipCross ? { color: 'rgba(245, 165, 110, 0.85)' } : undefined}
+              >
+                {recipCross ? '↗ ' : ''}{labelFor(e.sessionId)}
+              </span>
               {e.kind === 'spawn' && (
                 <span
                   className="ml-auto rounded border px-1.5 py-[1px] text-[9px] uppercase tracking-[0.14em]"

@@ -19,6 +19,7 @@ import { ComputerHotkeyOverlay } from './components/ComputerHotkeyOverlay'
 import { MissionDashboard } from './components/MissionDashboard'
 import { MetricsDashboard } from './components/MetricsDashboard'
 import { SplashScreen } from './components/SplashScreen'
+import { IdleSleep } from './components/IdleSleep'
 import { startInRendererDemo } from './lib/inRendererDemo'
 import { extractConversationSummary } from './lib/conversationSummary'
 
@@ -352,6 +353,7 @@ export function App() {
         <EmergencyPanic />
         <Toast />
         <DebugDrawer />
+        {!splashShowing && <IdleSleep />}
       </div>
     </div>
   )

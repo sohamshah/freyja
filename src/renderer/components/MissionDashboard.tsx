@@ -848,6 +848,7 @@ function OverviewTab({
     return (
       <>
         <KanbanBridgeView
+          sessionId={sessionId}
           objective={objective}
           cards={kanbanCards}
           agents={agents}

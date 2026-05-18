@@ -44,7 +44,13 @@ interface AgentLane {
   startedAt: number
   endedAt: number  // === now if still running
   ended: boolean   // distinguishes "still running" from "completed"
-  agent: AgentView
+  agent: AgentView | null
+  /** True for synthetic "cross-session" lanes — senders that touched
+   *  the bus but aren't direct children of this mission. We surface
+   *  them with distinct chrome so the operator sees the traffic
+   *  instead of having it silently dropped (grandchildren, sessions
+   *  from a sibling mission, etc.). */
+  crossSession?: boolean
 }
 
 interface ReadEvent {
@@ -76,7 +82,7 @@ export function BusFlowView({
   // reads top-to-bottom as a fan-out cascade. Parent session (no
   // parentId) lives implicitly above; we don't show it as a lane since
   // the parent doesn't publish findings — only synthesizes them.
-  const lanes: AgentLane[] = useMemo(() => {
+  const mainLanes: AgentLane[] = useMemo(() => {
     const now = Date.now()
     const out: AgentLane[] = agents.map((a) => {
       const startedAt =
@@ -101,9 +107,60 @@ export function BusFlowView({
     return out
   }, [agents])
 
-  // Lookup: senderId → lane index. Findings + reads off-lane (no
-  // matching agent — could be parent or a now-archived agent) get
-  // anchored to a synthetic "off-stage" track at index -1.
+  // Discover senders that touched the bus but aren't on a main lane —
+  // grandchildren of the mission, agents from a sibling mission, or
+  // anyone whose session lineage drops outside the dashboard's scope.
+  // Each gets a synthetic "cross-session" lane appended below the main
+  // stack with distinct dashed chrome so the traffic surfaces instead
+  // of vanishing. We derive labels from the bus events themselves
+  // (senderLabel field) so the operator can still attribute each chip.
+  const crossLanes: AgentLane[] = useMemo(() => {
+    const mainIds = new Set(mainLanes.map((l) => l.id))
+    type SeedInfo = { label: string; firstAt: number }
+    const seeds = new Map<string, SeedInfo>()
+    const visit = (senderId: string, senderLabel: string | undefined, ts: number) => {
+      if (!senderId || mainIds.has(senderId)) return
+      const existing = seeds.get(senderId)
+      if (existing) {
+        if (ts < existing.firstAt) existing.firstAt = ts
+        if (senderLabel && !existing.label) existing.label = senderLabel
+        return
+      }
+      seeds.set(senderId, {
+        label: senderLabel || senderId.slice(0, 8),
+        firstAt: ts,
+      })
+    }
+    for (const f of findings) {
+      if (f.topic === 'read') continue
+      visit(f.senderId, f.senderLabel, f.timestamp)
+    }
+    for (const f of findings) {
+      if (f.topic !== 'read') continue
+      visit(f.senderId, f.senderLabel, f.timestamp)
+    }
+    return Array.from(seeds.entries())
+      .sort((a, b) => a[1].firstAt - b[1].firstAt)
+      .map(([id, info]): AgentLane => ({
+        id,
+        label: info.label,
+        agentType: 'cross-session',
+        status: 'done',
+        startedAt: info.firstAt,
+        endedAt: info.firstAt,
+        ended: true,
+        agent: null,
+        crossSession: true,
+      }))
+  }, [findings, mainLanes])
+
+  const lanes: AgentLane[] = useMemo(
+    () => [...mainLanes, ...crossLanes],
+    [mainLanes, crossLanes],
+  )
+
+  // Lookup: senderId → lane index. Includes the cross-session lanes
+  // so renderers never have to special-case "off-lane" senders.
   const laneIndexById = useMemo(() => {
     const m = new Map<string, number>()
     lanes.forEach((l, i) => m.set(l.id, i))
@@ -156,6 +213,7 @@ export function BusFlowView({
         agents={agents}
         findings={publishedFindings}
         reads={readEvents}
+        crossCount={crossLanes.length}
         contextPct={contextPct}
         cost={cost}
       />
@@ -203,6 +261,7 @@ function HeaderStrip({
   agents,
   findings,
   reads,
+  crossCount,
   contextPct,
   cost,
 }: {
@@ -210,6 +269,7 @@ function HeaderStrip({
   agents: AgentView[]
   findings: BusEventView[]
   reads: ReadEvent[]
+  crossCount: number
   contextPct: number
   cost: number
 }) {
@@ -230,6 +290,17 @@ function HeaderStrip({
           <span><span className="text-fg-0">{findings.length}</span> findings</span>
           <span className="text-fg-4">·</span>
           <span><span className="text-fg-0">{reads.length}</span> reads</span>
+          {crossCount > 0 && (
+            <>
+              <span className="text-fg-4">·</span>
+              <span
+                title="Bus senders outside this mission's session tree (grandchildren, sessions from a sibling mission, or orphan workers). Rendered as dashed lanes below the main stack."
+                style={{ color: 'rgba(245, 165, 110, 0.95)' }}
+              >
+                ↗ {crossCount} cross-session
+              </span>
+            </>
+          )}
         </div>
         <div className="h-3.5 w-px shrink-0 bg-white/[0.08]" />
         <div className="flex items-center gap-3 px-5 font-mono text-[11.5px] tabular-nums text-fg-2">
@@ -458,6 +529,11 @@ function Timeline({
               readEvents,
             ))
           const y = laneY(i)
+          const isCross = lane.crossSession === true
+          // Cross-session lanes don't have a real agent record — disable
+          // the double-click "open session" handler since there's no
+          // attachable pane to flip to. Tooltips also drop the
+          // agentType chip (it's always "cross-session" placeholder).
           return (
             <g key={lane.id} opacity={dim ? 0.32 : 1}>
               {/* Lane label (clickable) */}
@@ -470,36 +546,55 @@ function Timeline({
                   }}
                   onDoubleClick={(e) => {
                     e.stopPropagation()
-                    onOpenAgent(lane.id)
+                    if (!isCross) onOpenAgent(lane.id)
                   }}
-                  title={`${lane.label} (${lane.agentType}) — double-click to open session`}
+                  title={
+                    isCross
+                      ? `${lane.label} — cross-session sender (outside this mission's tree)`
+                      : `${lane.label} (${lane.agentType}) — double-click to open session`
+                  }
                   className={`flex h-full w-full items-center gap-1.5 truncate rounded px-2 text-left font-mono text-[11px] transition ${
                     selectedAgentId === lane.id
                       ? 'bg-accent/[0.10] text-accent'
+                      : isCross
+                      ? 'italic text-fg-3 hover:bg-white/[0.025] hover:text-fg-2'
                       : 'text-fg-1 hover:bg-white/[0.04] hover:text-fg-0'
                   }`}
                 >
-                  <StatusDot status={lane.status} />
+                  {isCross ? (
+                    <span aria-hidden className="shrink-0 text-fg-4">↗</span>
+                  ) : (
+                    <StatusDot status={lane.status} />
+                  )}
                   <span className="truncate">{lane.label}</span>
                   <span className="ml-auto shrink-0 font-mono text-[9.5px] uppercase tracking-[0.12em] text-fg-4">
-                    {lane.agentType}
+                    {isCross ? 'cross' : lane.agentType}
                   </span>
                 </button>
               </foreignObject>
 
-              {/* Lane background line — faint, full-row. Replaces
-                  the old time-anchored lifespan line. */}
+              {/* Lane background line — faint, full-row. Cross-session
+                  lanes get a sparser dash + slightly warmer tint so the
+                  whole band reads as "below the tree line". */}
               <line
                 x1={LANE_LABEL_WIDTH + TIMELINE_PAD_X}
                 y1={y}
                 x2={LANE_LABEL_WIDTH + innerWidth + TIMELINE_PAD_X}
                 y2={y}
-                stroke={lane.ended ? 'rgba(255,255,255,0.05)' : 'rgba(168,212,252,0.10)'}
+                stroke={
+                  isCross
+                    ? 'rgba(245, 165, 110, 0.18)'
+                    : lane.ended
+                    ? 'rgba(255,255,255,0.05)'
+                    : 'rgba(168,212,252,0.10)'
+                }
                 strokeWidth={1}
-                strokeDasharray={lane.ended ? '2,3' : undefined}
+                strokeDasharray={isCross ? '1,5' : lane.ended ? '2,3' : undefined}
               />
-              {/* Running indicator chip at the far right of the lane */}
-              {!lane.ended && (
+              {/* Running indicator chip — only meaningful for live
+                  in-tree lanes. Cross-session lanes are by definition
+                  not "owned" by this mission. */}
+              {!lane.ended && !isCross && (
                 <circle
                   cx={LANE_LABEL_WIDTH + innerWidth + TIMELINE_PAD_X}
                   cy={y}
@@ -590,22 +685,37 @@ function Timeline({
           const dim =
             (selectedFindingIndex !== null && !selected) ||
             (selectedAgentId !== null && selectedAgentId !== f.senderId)
+          const isCross = lanes[laneIdx]?.crossSession === true
           return (
             <g key={`f-${f.index}`} opacity={dim ? 0.30 : 1}>
+              {/* Cross-session chips render as a thin warm ring (no
+                * fill) so they read as "outside the tree" at a glance
+                * — distinct from the solid topic-colored fill used for
+                * in-tree publishers. */}
               <circle
                 cx={cx}
                 cy={cy}
                 r={selected ? CHIP_R + 2 : CHIP_R}
-                className={`${colors.fill} cursor-pointer`}
-                stroke={selected ? 'rgba(168,212,252,0.95)' : 'rgba(0,0,0,0.4)'}
-                strokeWidth={selected ? 1.5 : 1}
+                className={isCross ? 'cursor-pointer' : `${colors.fill} cursor-pointer`}
+                fill={isCross ? 'none' : undefined}
+                stroke={
+                  selected
+                    ? 'rgba(168,212,252,0.95)'
+                    : isCross
+                    ? 'rgba(245, 165, 110, 0.85)'
+                    : 'rgba(0,0,0,0.4)'
+                }
+                strokeWidth={selected ? 1.5 : isCross ? 1.3 : 1}
+                strokeDasharray={isCross && !selected ? '2,1.5' : undefined}
                 onClick={(e) => {
                   e.stopPropagation()
                   onSelectFinding(selected ? null : f.index)
                 }}
               >
                 <title>
-                  {`F${f.index} · ${f.topic} · ${f.senderLabel || f.senderId} · ${fmtClock(f.timestamp)}\n\n${f.content}`}
+                  {`F${f.index} · ${f.topic} · ${f.senderLabel || f.senderId}${
+                    isCross ? ' (cross-session)' : ''
+                  } · ${fmtClock(f.timestamp)}\n\n${f.content}`}
                 </title>
               </circle>
               {/* F# label above chip */}
@@ -650,6 +760,7 @@ function Timeline({
           const dim =
             (selectedFindingIndex !== null && !r.sourceIndices.includes(selectedFindingIndex)) ||
             (selectedAgentId !== null && selectedAgentId !== r.senderId)
+          const isCross = lanes[laneIdx]?.crossSession === true
           return (
             <circle
               key={r.id}
@@ -657,12 +768,17 @@ function Timeline({
               cy={cy}
               r={READ_R}
               fill="none"
-              stroke="rgba(168,212,252,0.65)"
+              stroke={isCross ? 'rgba(245, 165, 110, 0.70)' : 'rgba(168,212,252,0.65)'}
               strokeWidth={1.1}
+              strokeDasharray={isCross ? '1.5,1.5' : undefined}
               opacity={dim ? 0.30 : 0.85}
             >
               <title>
-                {`Read ${r.sourceIndices.length} finding(s): ${r.sourceIndices.map((i) => `F${i}`).join(', ')} · ${fmtClock(r.timestamp)}`}
+                {`Read ${r.sourceIndices.length} finding(s): ${r.sourceIndices
+                  .map((i) => `F${i}`)
+                  .join(', ')}${
+                  isCross ? ' · cross-session reader' : ''
+                } · ${fmtClock(r.timestamp)}`}
               </title>
             </circle>
           )

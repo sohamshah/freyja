@@ -434,6 +434,30 @@ export type BridgeCommand =
       tags?: string[]
       note?: string
     }
+  | {
+      /** Operator-initiated kanban card creation. Flows through the
+       *  same `SessionKanbanBoard.create()` path agents use; the only
+       *  difference is `actor="operator"` on the bridge side, which
+       *  lands in the renderer's card view as `createdBy: "operator"`.
+       *  Renderer drives this from the dashboard's board column's
+       *  "+ Add task" form. */
+      type: 'kanban_operator_create'
+      sessionId: string
+      title: string
+      body?: string
+      /** Optional agent profile (e.g. "explore", "code"). When omitted
+       *  the card lands in `triage` and a specifier agent picks it up
+       *  to figure out the right worker. */
+      assignee?: string
+      /** 0 = highest priority, 5 = lowest. Defaults to 2 (medium). */
+      priority?: number
+      /** Card ids this card depends on. Stored as parents on the
+       *  board; status auto-flips to `triage` until they're done. */
+      parents?: string[]
+      /** Card ids that this card blocks. The bridge reparents them
+       *  onto the newly created card via the board's `link` method. */
+      children?: string[]
+    }
   | { type: 'shutdown' }
 
 // --- Events produced by the bridge and forwarded to the renderer ---
@@ -745,6 +769,15 @@ export type CompactionTelemetryRow =
       cache_write_tokens: number
       cost_usd: number | null
       duration_ms: number
+      /** "main" for regular agent-loop calls; "summarizer" for
+       *  compaction LLM calls forwarded through the runner's
+       *  on_llm_call hook. Lets the dashboard break out compaction
+       *  overhead distinct from main-loop spend. */
+      call_kind?: 'main' | 'summarizer'
+      /** Only set when call_kind === 'summarizer': true iff this
+       *  summarizer call used the SUMMARY_UPDATE_PROMPT (iterative
+       *  path) instead of the fresh SUMMARY_PROMPT. */
+      iterative_summarizer?: boolean | null
     }
   | {
       type: 'tool_call_metric'
