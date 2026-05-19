@@ -865,6 +865,13 @@ class AsyncAgentRunner:
         on_tool_metric: Callable[[dict[str, Any]], None] | None = None,
         thinking: ThinkingConfig | None = None,
         on_pre_iteration: Callable[[Any, int], Awaitable[None]] | None = None,
+        # Domain-specific system-reminder source. The bridge wires this
+        # to supply (e.g.) stale-task reminders that ride alongside the
+        # runner-managed context-pressure note. Called once per provider
+        # request; returns a list of `<system-reminder>` blocks to append
+        # to the trailing user message. Empty list = nothing to add.
+        # Errors are swallowed so a bad callback can't break the runner.
+        get_extra_system_reminders: Callable[[], list[str]] | None = None,
     ):
         self.provider = provider
         self.config = config or AgentConfig()
@@ -904,6 +911,7 @@ class AsyncAgentRunner:
         # with "actually-clean" if used as the sentinel.
         self._turn_start_pressure_band: int | None = None
         self._channel3_advisory_pending: str = ""
+        self.get_extra_system_reminders = get_extra_system_reminders
 
     def _compute_truncation_budget(self, session: Session) -> int:
         """Compute a context-aware token budget for truncating a tool result."""
@@ -1489,6 +1497,26 @@ class AsyncAgentRunner:
                 self._current_pressure_ratio(),
             )
 
+    def _gather_extra_reminders(self) -> str:
+        """Call the bridge-supplied reminder source and concatenate
+        whatever it returns. Swallow exceptions so a bad source
+        callback can't break the request pipeline — we'd rather miss
+        a reminder than fail the turn."""
+        cb = self.get_extra_system_reminders
+        if cb is None:
+            return ""
+        try:
+            entries = cb() or []
+        except Exception:  # noqa: BLE001
+            return ""
+        chunks = [str(e).strip() for e in entries if str(e).strip()]
+        if not chunks:
+            return ""
+        # Each entry is expected to be a complete `<system-reminder>`
+        # block; we just join with blank lines so they don't run
+        # together visually if multiple sources fire on the same turn.
+        return "\n\n" + "\n\n".join(chunks)
+
     def _augment_messages_with_pressure_note(
         self, messages: list[Message],
     ) -> list[Message]:
@@ -1519,7 +1547,13 @@ class AsyncAgentRunner:
         """
         ratio = self._current_pressure_ratio()
         note = self._build_pressure_note(ratio)
-        if not note or not messages:
+        # Bridge-supplied extras (stale-task reminders, etc) ride
+        # alongside the pressure note via the same tail-append path so
+        # they share the same cache cost — one user-message suffix per
+        # turn instead of multiple injection mechanisms.
+        extras = self._gather_extra_reminders()
+        combined = (note or "") + (extras or "")
+        if not combined or not messages:
             return messages
         last = messages[-1]
         if last.role != "user":
@@ -1528,10 +1562,10 @@ class AsyncAgentRunner:
             # appended, so this guard rarely fires.
             return messages
         if isinstance(last.content, str):
-            new_content: Any = last.content + note
+            new_content: Any = last.content + combined
         elif isinstance(last.content, list):
             from engine.types import TextBlock as _TextBlock
-            new_content = list(last.content) + [_TextBlock(text=note)]
+            new_content = list(last.content) + [_TextBlock(text=combined)]
         else:
             return messages
         cloned = Message(

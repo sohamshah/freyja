@@ -159,6 +159,35 @@ def emit_error(message: str, recoverable: bool = False) -> None:
     emit({"type": "error", "message": message, "recoverable": recoverable})
 
 
+def _sanitize_auto_title(raw: str) -> str:
+    """Clean up Haiku's auto-rename output. Strips quotes, leading
+    article-noise like "Title:", clamps length, collapses whitespace.
+    Returns empty string on anything that doesn't look like a usable
+    title so the caller can skip the rename entirely."""
+    if not raw:
+        return ""
+    t = raw.strip()
+    # Drop common prompted-output preambles ("Title: ...", "Here's a title: ...").
+    for prefix in ("Title:", "title:", "TITLE:", "Here's a title:", "Here is a title:"):
+        if t.startswith(prefix):
+            t = t[len(prefix):].strip()
+    # Strip surrounding quotes / brackets the model sometimes adds.
+    t = t.strip().strip('"\'`*“”‘’[](){}').strip()
+    # Collapse newlines + repeated whitespace.
+    t = " ".join(t.split())
+    # Reject anything that looks like a refusal or an explanation
+    # rather than a title (sentence-ish length, ends in period, etc.).
+    if not t or len(t) > 60 or t.endswith(".") or "\n" in t:
+        # Sentence-ish output failed sanitization — better no rename
+        # than a bad one.
+        if len(t) > 60:
+            t = t[:60].rstrip(" -—:")
+        else:
+            return ""
+    # Final length clamp + return.
+    return t[:48]
+
+
 def _resolve_archived_subagent(session_id: str) -> dict[str, Any] | None:
     """Lookup helper used by TalkRouter to find a saved sub-agent
     sidecar by session id. Phase 4 (T11) populates these sidecars on
@@ -924,6 +953,16 @@ _IDENTITY_BLOCK = (
 )
 
 _DOING_TASKS_BLOCK = """# Doing tasks
+- Use the `tasks` tool to plan and track multi-step work. Create tasks for
+  any request that has 3+ distinct steps, when the user provides multiple
+  things to do, or for synthesis-heavy work (reading 3+ findings, writing a
+  multi-section deliverable, comparing options, producing structured
+  output). Flip a task to `active` BEFORE starting it; flip to `done` only
+  when fully complete (never with tests failing, partial impl, or
+  unresolved errors — use `block` with a reason instead). Skip tasks for
+  single trivial actions or pure conversation; ceremony is worse than
+  silence. The operator sees the list live in the activity rail — it's
+  how they know what you're on right now and how far along you are.
 - Prefer dedicated tools over Bash when one fits — `read_file`, `edit_file`,
   `write_file`, `glob`, `grep` are auditable in the UI, fail with clearer
   errors, and avoid permission prompts. Reserve bash for compound shell
@@ -1753,6 +1792,13 @@ class _BridgeSession:
         # board without the parent having to drive each one by hand.
         self.auto_dispatch_enabled: bool = False
         self._kanban_dispatcher_task: asyncio.Task[Any] | None = None
+        # Auto-rename guard. After the first user → assistant exchange
+        # finishes successfully, the bridge fires a one-shot Haiku call
+        # to give the session a 2-3 word title and emits
+        # `session_renamed` for the renderer. The flag flips to True
+        # before the background task starts so a retry storm can't
+        # double-fire if turns land quickly.
+        self._auto_rename_attempted: bool = False
         # Card ids that already have a sub-agent in flight from a
         # previous tick. Cleared as sub-agents finish (via the
         # subagent_finished event hook). Prevents the dispatcher from
@@ -1760,6 +1806,37 @@ class _BridgeSession:
         # still running.
         self._kanban_dispatched: set[str] = set()
         self.task_board: Any | None = None
+        # Monotonically-incrementing tool-call counter scoped to this
+        # session. Used by the stale-task reminder to figure out "has
+        # the agent done meaningful tool-call progress since this task
+        # was last touched?" Bumped in `_on_stream` on every
+        # `tool_use_start` event. Lives on the session (not the board)
+        # so future planning surfaces can read it without coupling to
+        # the task ledger.
+        self._tool_call_index: int = 0
+        # Stale-task reminder bookkeeping. We cap how many times per
+        # session a reminder fires + debounce naming the same task
+        # twice in a row, so the agent gets a useful poke but not a
+        # nagging stream of identical messages.
+        self._task_reminder_count: int = 0
+        # Maps task_id → tool_call_index at which it was last named in
+        # a reminder. We only name a task again once the counter has
+        # moved past that mark — meaning the agent has done other work
+        # since the last poke (which is when nagging starts being
+        # informative again).
+        self._task_reminded_at: dict[str, int] = {}
+        # True for one provider-call after the user sends a new turn.
+        # The reminder suppresses on this flag so a fresh user input
+        # doesn't get its content prefixed with a stale-task block —
+        # that would be confusing as the operator's first impression
+        # of the next assistant turn.
+        self._suppress_task_reminder_next_call: bool = False
+        # Per-turn fire count. Reset to 0 at the top of every run_turn.
+        # The lifetime cap on _task_reminder_count alone could be burned
+        # inside a single tool-heavy turn (5 provider calls = 5 reminders
+        # back-to-back) and then go silent forever — this caps within-turn
+        # so the agent gets at most one stale-task block per user turn.
+        self._task_reminders_this_turn: int = 0
         self.goal_state: Any | None = None
         # Operator-authored brief for the judge — see bridge/tools/goal_loop.py.
         # Persists per-session; surfaces into every judge call.
@@ -1864,6 +1941,15 @@ class _BridgeSession:
                     "info",
                     f"replayed {len(existing_events)} kanban events for {self.id}",
                 )
+                # Snapshot the rebuilt board into the event so the
+                # renderer's `kanbanCards` slice repopulates on restore.
+                # Without this the journal would silently rebuild the
+                # in-memory board while the UI stays empty until the
+                # next live tool call.
+                kanban_snapshot = [
+                    t.to_dict(include_history=False)
+                    for t in self.kanban_board._tasks.values()  # noqa: SLF001
+                ]
                 emit(
                     {
                         "type": "system_event",
@@ -1874,12 +1960,64 @@ class _BridgeSession:
                             "eventCount": len(existing_events),
                             "priorRestarts": prior_restarts,
                             "restartCount": prior_restarts + 1,
+                            "tasks": kanban_snapshot,
                             "chatVisible": False,
                         },
                     }
                 )
-        if self.coordination_strategy == "isolated" and self.task_board is None:
-            self.task_board = SessionTaskBoard()
+        # Universal task ledger — every session gets one regardless of
+        # coordination strategy. Tasks are the agent's personal
+        # planning surface (synthesis steps, multi-section deliverables,
+        # gating user requests) AND, in isolated mode specifically, the
+        # worker coordination ledger. The journal replay lets the
+        # planning state survive a bridge restart for long-running
+        # missions.
+        if self.task_board is None:
+            from bridge.task_journal import TaskJournal, journal_path as task_journal_path
+
+            task_journal = TaskJournal(task_journal_path(self.id))
+            existing_task_events = task_journal.read_all()
+            self.task_board = SessionTaskBoard(journal=task_journal)
+            if existing_task_events:
+                self.task_board.replay_events(existing_task_events)
+                # Tally the prior restarts the journal has seen so the
+                # dashboard can show the operator "this mission has
+                # been resumed N times" alongside the kanban replay
+                # marker we already emit.
+                prior_task_restarts = sum(
+                    1 for e in existing_task_events if e.get("kind") == "restarted"
+                )
+                task_journal.append({"kind": "restarted"})
+                log(
+                    "info",
+                    f"replayed {len(existing_task_events)} task events for {self.id}",
+                )
+                # Snapshot the rebuilt ledger into the event so the
+                # renderer can repopulate its `taskCards` slice on
+                # restore. Without this the journal would silently
+                # rebuild the in-memory board while the UI stays empty
+                # until the next live tool call. Safe to touch _tasks
+                # sync here — replay just finished and no concurrent
+                # tool calls can run before the runner is constructed.
+                task_snapshot = [
+                    t.to_dict(include_history=False)
+                    for t in self.task_board._tasks.values()  # noqa: SLF001
+                ]
+                emit(
+                    {
+                        "type": "system_event",
+                        "sessionId": self.id,
+                        "subtype": "task_replay",
+                        "message": f"Replayed {len(existing_task_events)} task events",
+                        "details": {
+                            "eventCount": len(existing_task_events),
+                            "priorRestarts": prior_task_restarts,
+                            "restartCount": prior_task_restarts + 1,
+                            "tasks": task_snapshot,
+                            "chatVisible": False,
+                        },
+                    }
+                )
 
         async def _emit_memory_updated(item: Any, reason: str = "") -> None:
             emit(
@@ -1963,7 +2101,16 @@ class _BridgeSession:
             ),
             coordination_strategy=self.coordination_strategy,
             kanban_board=self.kanban_board if strategy_uses_kanban(self.coordination_strategy) else None,
-            task_board=self.task_board if self.coordination_strategy == "isolated" else None,
+            # Universal — the parent always gets a task ledger now.
+            # Sub-agent propagation rules still vary by mode (isolated
+            # workers inherit the tool; bus/kanban/goal workers don't —
+            # see sub_agent_tool for the per-child filtering).
+            task_board=self.task_board,
+            # Reader for the session-wide tool-call counter — the tasks
+            # tool stamps each touched task with this counter so the
+            # stale-task reminder can later tell which tasks have been
+            # left behind while the agent did other work.
+            task_tool_call_index_getter=lambda: self._tool_call_index,
             memory_store=self.memory_store,
             skill_store=self.skill_store,
             image_store=self.image_store,
@@ -2123,6 +2270,11 @@ class _BridgeSession:
             on_tool_metric=self._on_tool_metric,
             on_pre_iteration=self._drain_inbox_into_session,
             thinking=thinking,
+            # Stale-task reminder source. Returns a list of
+            # `<system-reminder>` blocks per request; empty most of the
+            # time. Rides alongside the runner-managed context-pressure
+            # note via the same trailing-user-message append path.
+            get_extra_system_reminders=self._build_stale_task_reminders,
         )
         self.runner = runner
         log(
@@ -3410,6 +3562,99 @@ class _BridgeSession:
             }
         )
 
+    # ---- Auto-rename via Haiku ----------------------------------------
+
+    def _maybe_auto_rename_session(self) -> None:
+        """Kick off a background Haiku call to give the session a short
+        title based on its first user → assistant exchange. Idempotent
+        per session — the `_auto_rename_attempted` flag flips to True
+        as soon as we *try* (regardless of outcome) so we never re-fire
+        on subsequent turns.
+
+        Runs as a fire-and-forget task so the operator's reply path
+        doesn't wait on the title call. Worst case: the rename fails
+        silently and the session keeps its default title — no
+        behavioral impact, just a missing nice-to-have."""
+        if self._auto_rename_attempted:
+            return
+        if self.session is None:
+            return
+        # Need at least one full user → assistant pair before there's
+        # anything to summarize.
+        try:
+            messages = self.session.get_messages()
+        except Exception:
+            return
+        # MessageRole is a `Literal["user", "assistant", ...]` alias,
+        # not an enum — attribute access errors at runtime. Compare
+        # against the canonical lowercase string values directly.
+        first_user = next(
+            (m for m in messages if m.role == "user"), None,
+        )
+        first_assistant = next(
+            (m for m in messages if m.role == "assistant"), None,
+        )
+        if first_user is None or first_assistant is None:
+            return
+        user_text = first_user.get_text().strip()
+        assistant_text = first_assistant.get_text().strip()
+        if not user_text:
+            return
+        self._auto_rename_attempted = True
+        asyncio.create_task(
+            self._run_auto_rename(user_text, assistant_text),
+            name=f"auto-rename-{self.id}",
+        )
+
+    async def _run_auto_rename(self, user_text: str, assistant_text: str) -> None:
+        """Generate a 2-3 word session title via Haiku and emit
+        `session_renamed`. Best-effort — swallows every failure mode
+        because a missing title isn't worth surfacing to the operator."""
+        try:
+            from engine.types import Message
+
+            # Cap each side so the rename prompt stays cheap. Title
+            # generation doesn't need full context — first few hundred
+            # chars per role is plenty.
+            u = user_text[:600]
+            a = assistant_text[:400]
+            prompt = (
+                "Generate a short title (2-4 words, ≤32 characters) "
+                "for the conversation below. Title Case. NO quotes, "
+                "NO punctuation, NO preamble. Output ONLY the title.\n\n"
+                f"USER:\n{u}\n\n"
+                f"ASSISTANT:\n{a}"
+            )
+            provider = build_provider(
+                "claude-haiku-4-5-20251001", thinking_level="none",
+            )
+            response = await provider.complete_async(
+                # role is `Literal["user", ...]`; pass the literal string
+                # rather than chasing an attribute on the type alias.
+                messages=[Message(role="user", content=prompt)],
+                tools=None,
+                system_prompt=(
+                    "You generate concise conversation titles. Reply "
+                    "with the title and nothing else."
+                ),
+                max_tokens=32,
+                thinking=None,
+            )
+            raw = (getattr(response, "content", "") or "").strip()
+            title = _sanitize_auto_title(raw)
+            if not title:
+                return
+            emit(
+                {
+                    "type": "session_renamed",
+                    "sessionId": self.id,
+                    "title": title,
+                    "source": "auto",
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"auto-rename failed for {self.id}: {exc}")
+
     def set_auto_dispatch_enabled(self, enabled: bool) -> None:
         """Flip the kanban auto-dispatch switch for this session. Idempotent.
         Starts the background loop on transition off→on, stops it on on→off."""
@@ -3848,7 +4093,7 @@ class _BridgeSession:
             GoalVerdict,
             parse_goal_verdict,
         )
-        from engine.types import Message, MessageRole
+        from engine.types import Message
 
         if profile == "quick":
             judge_model = "claude-haiku-4-5-20251001"
@@ -3860,7 +4105,7 @@ class _BridgeSession:
         judge_provider = build_provider(
             judge_model, thinking_level=judge_thinking_level
         )
-        messages = [Message(role=MessageRole.USER, content=prompt)]
+        messages = [Message(role="user", content=prompt)]
         try:
             structured = await judge_provider.complete_structured(
                 messages,
@@ -4174,6 +4419,23 @@ class _BridgeSession:
             emit_error("runner not initialized")
             return
 
+        # Suppress the stale-task reminder on the FIRST provider call
+        # of this turn. The reasoning: when a fresh user message comes
+        # in, we don't want their input to land in the model with a
+        # `<system-reminder>` block stuck on the end about stale tasks
+        # — that competes for the agent's attention with the actual
+        # user request. Reminders fire freely on subsequent provider
+        # calls within the same turn (e.g. after tool results), where
+        # they're a side-channel signal, not the first impression.
+        # Goal-loop continuations don't suppress — there's no fresh
+        # user input to protect.
+        if not is_goal_continuation:
+            self._suppress_task_reminder_next_call = True
+        # Reset the per-turn reminder budget. The lifetime cap still
+        # applies on top; this just stops the entire lifetime budget
+        # from being consumed inside one tool-heavy turn.
+        self._task_reminders_this_turn = 0
+
         # Clear the session-wide computer cancel event at the start
         # of every turn. Without this reset, a previous turn's
         # emergency stop (or any prior cancel) leaves
@@ -4312,6 +4574,11 @@ class _BridgeSession:
                         await self._kanban_tick(source="post_turn")
                     except Exception as exc:  # noqa: BLE001
                         log("warn", f"kanban post-turn dispatch failed: {exc}")
+                # Fire-and-forget auto-rename via Haiku after the first
+                # full user → assistant exchange. Background task so the
+                # operator's response doesn't wait on the title call.
+                if not self._auto_rename_attempted:
+                    self._maybe_auto_rename_session()
         except asyncio.CancelledError:
             # CRITICAL: backfill synthetic tool_results for any
             # tool_use blocks the runner emitted before the cancel
@@ -4383,6 +4650,10 @@ class _BridgeSession:
                 name = getattr(event, "name", "")
                 self.current_tool_id = tid
                 self.tool_start_at[tid] = time.monotonic()
+                # Bump the session-wide counter so the stale-task
+                # reminder can tell which tasks the agent has "made
+                # progress past" since their last touch.
+                self._tool_call_index += 1
                 emit(
                     {
                         "type": "tool_use_start",
@@ -4799,6 +5070,125 @@ class _BridgeSession:
         except Exception:  # noqa: BLE001
             # Telemetry must never break the agent loop.
             pass
+
+    # --- stale-task reminder -------------------------------------------------
+    # Thresholds tuned for "useful nudge without nagging." Wall-clock
+    # threshold catches slow drift (task forgotten over the course of a
+    # conversation). The tool-call delta catches "agent moved on to
+    # other work without closing the loop." Both must trip for a task
+    # to count as stale — a worker grinding through 12 tool calls on
+    # the same task is "active," not "stale," even at 20 minutes.
+    _STALE_WALL_CLOCK_MS = 8 * 60 * 1000
+    _STALE_TOOL_CALL_DELTA = 3
+    _MAX_TASK_REMINDERS_PER_SESSION = 5
+    # Per-turn cap on top of the lifetime cap — a long multi-tool turn
+    # can otherwise burn the entire lifetime budget before the user
+    # gets a chance to redirect, leaving the session silent forever
+    # after.
+    _MAX_TASK_REMINDERS_PER_TURN = 1
+
+    def _build_stale_task_reminders(self) -> list[str]:
+        """Producer for the runner's `get_extra_system_reminders`.
+        Returns zero or one `<system-reminder>` blocks per call: zero
+        when nothing's stale or we're over budget, one when stale
+        tasks exist and we have room in the budget.
+
+        The reminder lists ONLY tasks the agent ought to close the loop
+        on — open status (todo/active), passed both staleness checks,
+        and not blocked-on-a-real-blocker (a task gated by an open
+        parent is legitimately waiting, not abandoned).
+        """
+        if self._suppress_task_reminder_next_call:
+            # Cleared after consumption — fires exactly once per fresh
+            # user turn.
+            self._suppress_task_reminder_next_call = False
+            return []
+        if self.task_board is None:
+            return []
+        if self._task_reminder_count >= self._MAX_TASK_REMINDERS_PER_SESSION:
+            return []
+        if self._task_reminders_this_turn >= self._MAX_TASK_REMINDERS_PER_TURN:
+            return []
+
+        now_ms = int(time.time() * 1000)
+        current_tool_index = self._tool_call_index
+        stale: list[tuple[str, str, str, int]] = []
+        # Read the board's in-memory dict directly — read-only, no lock
+        # needed (Python attr reads are atomic; worst case we miss a
+        # just-mutated value, which only delays a reminder by one turn).
+        for tid, task in self.task_board._tasks.items():  # noqa: SLF001
+            if task.status not in ("todo", "active"):
+                continue
+            # Skip tasks legitimately waiting on a non-terminal blocker
+            # — the agent isn't "ignoring" those, they're gated.
+            if self.task_board.is_blocked(task):
+                continue
+            updated_ms = int(task.updated_at * 1000)
+            if now_ms - updated_ms < self._STALE_WALL_CLOCK_MS:
+                continue
+            delta = current_tool_index - int(task.last_touched_tool_index or 0)
+            if delta < self._STALE_TOOL_CALL_DELTA:
+                continue
+            # Per-task debounce: only name the same task again once
+            # the agent has done more work since we last named it.
+            last_named_at = self._task_reminded_at.get(tid)
+            if last_named_at is not None and current_tool_index <= last_named_at:
+                continue
+            age_minutes = max(1, (now_ms - updated_ms) // 60000)
+            stale.append((tid, task.status, task.title, age_minutes))
+
+        if not stale:
+            return []
+
+        stale.sort(key=lambda row: -row[3])  # oldest first
+        # Stamp the debounce + bump the counters BEFORE returning so the
+        # producer is idempotent under double-invocation (the runner
+        # currently calls once per request, but better to be defensive).
+        self._task_reminder_count += 1
+        self._task_reminders_this_turn += 1
+        for tid, _status, _title, _age in stale:
+            self._task_reminded_at[tid] = current_tool_index
+
+        lines = [
+            "<system-reminder>",
+            "The following tasks in your ledger haven't been updated in a while. "
+            "This is the state the operator sees as your current commitments — "
+            "make sure it's still accurate. Heartbeat with progress if you're "
+            "still working on them, complete them if they're done, or cancel "
+            "if you've moved on. Tasks the operator sees but you've forgotten "
+            "about make the dashboard lie. Don't mention this reminder to the user.",
+            "",
+            "Open tasks not touched recently:",
+        ]
+        for tid, status, title, age in stale[:8]:  # cap list to keep the reminder small
+            title_short = (title or "").strip()
+            if len(title_short) > 80:
+                title_short = title_short[:77] + "…"
+            lines.append(f"#{tid} [{status}] \"{title_short}\" — {age}m ago")
+        if len(stale) > 8:
+            lines.append(f"(... {len(stale) - 8} more)")
+        lines.append("</system-reminder>")
+
+        reminder_text = "\n".join(lines)
+
+        # Telemetry — lets us watch the firing rate + see whether the
+        # agent acted on the named tasks within the next couple turns.
+        try:
+            emit({
+                "type": "system_event",
+                "sessionId": self.id,
+                "subtype": "task_stale_reminder_fired",
+                "message": f"Stale-task reminder for {len(stale)} task(s)",
+                "details": {
+                    "taskIds": [t[0] for t in stale],
+                    "reminderCount": self._task_reminder_count,
+                    "chatVisible": False,
+                },
+            })
+        except Exception:  # noqa: BLE001
+            pass
+
+        return [reminder_text]
 
     def _current_pressure_pct(self) -> float | None:
         """Read the runner's current pressure ratio as a percent.

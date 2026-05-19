@@ -213,8 +213,15 @@ class SubAgentSpec:
     coordination_strategy: str = STRATEGY_BUS
     # Optional board used by kanban coordination mode.
     kanban_board: Any | None = None
-    # Optional task ledger used by task-first solo mode.
+    # Optional task ledger. Available in every coordination mode now —
+    # in isolated, workers also get a bound TaskBoardTool; in other
+    # modes, only the parent gets it (workers' updates flow through
+    # the parent via the spawn lifecycle hook).
     task_board: Any | None = None
+    # Reader for the session-wide tool-call counter, passed to bound
+    # TaskBoardTool instances so the stale-task reminder can stamp
+    # last_touched_tool_index correctly.
+    task_tool_call_index_getter: Any | None = None
     # Session artifact manifest shared with parent and sibling agents.
     artifact_store: Any | None = None
     # Inter-agent messaging router. When set, each spawned child gets
@@ -282,8 +289,12 @@ Parameters:
                     "task_id": {
                         "type": "string",
                         "description": (
-                            "Optional task ledger id this sub-agent should execute. "
-                            "Only useful when the session coordination strategy is tasks/solo."
+                            "Optional task ledger id this sub-agent should serve. The worker's "
+                            "lifecycle drives status updates on this task — running on spawn, "
+                            "complete with summary on success, blocked on failure. Available in "
+                            "any coordination mode; in isolated mode the worker is also handed "
+                            "the full `tasks` tool and instructed to focus on this id (it can "
+                            "still read/mutate any task on the board)."
                         ),
                     },
                 },
@@ -366,6 +377,11 @@ Parameters:
             record.inbox = None
         if kanban_task_id:
             record.kanban_task_id = kanban_task_id  # type: ignore[attr-defined]
+        # Task assignment — isolated mode auto-creates a task when the
+        # caller didn't pass one (legacy behavior); other modes only
+        # stamp `record.task_id` if the caller explicitly passed one
+        # so the operator never sees surprise auto-created tasks they
+        # didn't ask for.
         if self._spec.coordination_strategy == STRATEGY_ISOLATED:
             task_id = await self._prepare_task_assignment(
                 task_id=task_id,
@@ -376,6 +392,24 @@ Parameters:
             )
             if task_id:
                 record.task_id = task_id  # type: ignore[attr-defined]
+        elif task_id and self._spec.task_board is not None:
+            # Verify the task exists + record assignee on it; emit a
+            # task event so the renderer's task slice picks up the
+            # assignment. No auto-create in non-isolated modes — the
+            # operator's mental model is "the agent updates a task I
+            # see in the rail," not "the agent invents tasks."
+            try:
+                item = await self._spec.task_board.update(
+                    task_id,
+                    actor="parent",
+                    assignee=label,
+                    note=f"Assigned to {label} ({agent_type.name})",
+                )
+                if item is not None:
+                    await self._emit_task_state_event("update", item)
+                    record.task_id = task_id  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                logger.debug("failed to attach sub-agent to task", exc_info=True)
 
         type_tag = f" [{agent_type.name}]" if agent_type.name != "general" else ""
         # Legacy subagent_spawn for the existing inline card
@@ -971,6 +1005,7 @@ Parameters:
                     actor_label=record.label,
                     emit_event=self._spec.emit_event,
                     parent_session_id=self._spec.parent_session_id,
+                    get_tool_call_index=self._spec.task_tool_call_index_getter,
                 )
             )
 
@@ -1703,6 +1738,8 @@ Parameters:
             )
 
     def _coordination_guidance(self, record: SubAgentRecord) -> str:
+        from bridge.tools.coordination import STRATEGY_GOAL
+
         strategy = self._spec.coordination_strategy
         if strategy == STRATEGY_ISOLATED:
             task_id = getattr(record, "task_id", "")
@@ -1729,6 +1766,18 @@ Parameters:
                 "with feedback. If the flag is false (the default), `complete` seals the "
                 "card directly to `done`. Either way you don't write the status yourself — "
                 "just call `complete` and the board routes correctly.\n"
+            )
+        if strategy == STRATEGY_GOAL:
+            # Goal-mode workers have no coordination surface at all — no
+            # message bus (would let them sidestep the judge), no kanban,
+            # no tasks tool. Their job is focused work-and-return; the
+            # parent is the one running the goal loop and stitching
+            # results back into milestones.
+            return (
+                "\nCoordination mode: goal loop (parent-driven).\n"
+                "Work independently on the task you've been given. You don't have sibling "
+                "messaging or shared boards in this mode — return a tight structured summary "
+                "and the parent will integrate it into its goal-loop synthesis.\n"
             )
         return (
             "\nCoordination mode: message bus.\n"
@@ -1799,12 +1848,12 @@ Parameters:
             logger.debug("failed to mark kanban card terminal", exc_info=True)
 
     async def _mark_task_running(self, record: SubAgentRecord) -> None:
+        # No coordination-strategy gate any more — task lifecycle
+        # updates fire in any mode as long as the spawn carried a
+        # `task_id`. The parent's tasks tool is universal; the worker
+        # being attached to a specific task is the signal.
         task_id = getattr(record, "task_id", "")
-        if (
-            self._spec.coordination_strategy != STRATEGY_ISOLATED
-            or self._spec.task_board is None
-            or not task_id
-        ):
+        if self._spec.task_board is None or not task_id:
             return
         try:
             task = await self._spec.task_board.update(
@@ -1826,11 +1875,7 @@ Parameters:
         summary: str,
     ) -> None:
         task_id = getattr(record, "task_id", "")
-        if (
-            self._spec.coordination_strategy != STRATEGY_ISOLATED
-            or self._spec.task_board is None
-            or not task_id
-        ):
+        if self._spec.task_board is None or not task_id:
             return
         try:
             task = await self._spec.task_board.update(

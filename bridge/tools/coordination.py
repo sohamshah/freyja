@@ -105,16 +105,19 @@ def coordination_prompt(value: str | None) -> str:
     if strategy == STRATEGY_ISOLATED:
         return (
             "Coordination strategy: TASK-FIRST SOLO.\n"
-            "- Use the `tasks` tool as a lightweight visible task ledger for meaningful units of work.\n"
-            "- Claim or update tasks as you work; heartbeat during long-running work and complete/block with clear handoffs.\n"
-            "- Use sub-agents as independent workers only when useful. Pass `task_id` when spawning a worker for an existing task.\n"
-            "- Workers do not get message-bus tools; the parent owns synthesis and the task ledger is the durable coordination surface.\n"
+            "- The `tasks` tool is BOTH your personal planning surface and the coordination ledger for sub-agents in this mode.\n"
+            "- Create tasks for meaningful units of work, claim active work, heartbeat during long-running work, and complete/block with clear handoffs.\n"
+            "- Use sub-agents as independent workers only when useful. Pass `task_id` when spawning a worker for an existing task — the worker inherits the tasks tool scoped to that task and updates it as it works.\n"
+            "- Workers do not get message-bus tools here; the parent owns synthesis and the task ledger is the durable coordination surface.\n"
         )
     if strategy == STRATEGY_KANBAN:
         return (
             "Coordination strategy: KANBAN BOARD.\n"
-            "- Use the `kanban` tool as the shared coordination surface before launching broad work.\n"
-            "- Create cards for meaningful units of work, link dependency gates, and assign profiles explicitly.\n"
+            "- TWO PLANNING SURFACES — use them for different things:\n"
+            "  - `kanban` cards = the swarm's shared work board. Anything that should be picked up by a worker, dispatched to a profile, or gated by dependencies between agents.\n"
+            "  - `tasks` = your own short-term planning that doesn't need to be visible to workers (synthesis steps, ordering decisions, drafting passes). Operator sees them; workers don't.\n"
+            "- For multi-agent work: kanban cards. For your own multi-step thinking: tasks. They're not interchangeable.\n"
+            "- Create kanban cards for meaningful units of work, link dependency gates, and assign profiles explicitly.\n"
             "- When spawning a sub-agent for a card, pass `kanban_task_id` and include the card id in the task prompt.\n"
             "- Workers should inspect their card first, heartbeat/comment during long work, and complete or block it with a useful handoff.\n"
             "- Prefer board comments and card status over ad-hoc chat for cross-agent handoffs.\n"
@@ -123,13 +126,15 @@ def coordination_prompt(value: str | None) -> str:
         return (
             "Coordination strategy: GOAL LOOP.\n"
             "- Treat the user's first request as an active objective, not a one-turn prompt.\n"
+            "- Use the `tasks` tool to break the goal into milestones the judge can verify against. Complete tasks only when their acceptance criteria are met — the judge sees what you've claimed done and may overrule.\n"
             "- Work normally inside this same session; use tools and sub-agents when they materially help.\n"
             "- After each response, Freyja will judge whether the active goal is complete and may continue automatically.\n"
             "- Finish with a clear completion note when the objective is done or explicitly blocked by missing user input.\n"
         )
     return (
         "Coordination strategy: MESSAGE BUS.\n"
+        "- Use `tasks` for your own multi-step planning — especially for synthesis-heavy work (reading multiple findings, writing a structured deliverable, comparing options). Tasks are private to you; the operator sees them.\n"
         "- Use sub-agent profiles for parallel work and ask workers to publish findings when discoveries help siblings.\n"
         "- Use `read_findings` during overlapping research or review so agents can build on each other.\n"
-        "- The parent should still synthesize the final answer and resolve conflicts.\n"
+        "- The parent should still synthesize the final answer and resolve conflicts — your task list is how the operator follows your synthesis path.\n"
     )

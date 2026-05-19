@@ -89,6 +89,13 @@ def build_desktop_registry(
     summarize_context_on_system_event: Any | None = None,
     summarize_context_on_pin_changed: Any | None = None,
     summarize_context_on_summarizer_llm_call: Any | None = None,
+    # Reader for the session-wide tool-call counter. The `tasks` tool
+    # uses it to stamp each task's `last_touched_tool_index` after an
+    # action lands, which the stale-task reminder reads to decide if
+    # the agent has done other work since the last task touch. None
+    # in test fixtures / standalone uses — the reminder simply won't
+    # fire in that case.
+    task_tool_call_index_getter: Any | None = None,
     talk_router: TalkRouter | None = None,
     talk_caller_session_id: str = "",
     talk_caller_label: str = "",
@@ -220,6 +227,7 @@ def build_desktop_registry(
                 actor_label="parent",
                 emit_event=subagent_emit,
                 parent_session_id=subagent_parent_session_id,
+                get_tool_call_index=task_tool_call_index_getter,
             )
         )
 
@@ -279,6 +287,7 @@ def build_desktop_registry(
             coordination_strategy=coordination_strategy,
             kanban_board=kanban_board,
             task_board=task_board,
+            task_tool_call_index_getter=task_tool_call_index_getter,
             artifact_store=artifact_store,
             talk_router=talk_router,
         )

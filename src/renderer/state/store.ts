@@ -212,9 +212,10 @@ export interface HarnessState extends SessionSlice {
   commandPaletteOpen: boolean
   missionDashboardOpen: boolean
   // 'swarm' / 'findings' / 'telemetry' are kept for legacy callers; the
-  // live tab set is overview / activity / profiles.
+  // live tab set is overview / tasks / activity / profiles.
   missionDashboardTab:
     | 'overview'
+    | 'tasks'
     | 'activity'
     | 'profiles'
     | 'swarm'
@@ -1665,6 +1666,33 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           ...prev,
           fileMatches: ev.matches,
           fileQuery: ev.query,
+        }
+      }
+      if (ev.type === 'session_renamed') {
+        // Auto-rename from the bridge (Haiku post-first-turn) or any
+        // future programmatic rename. Apply directly to the session
+        // snapshot. Skip if the user already manually renamed away
+        // from the default — we detect this by checking the current
+        // title is one of the defaults the auto-rename targets. Keeps
+        // an in-flight Haiku call from clobbering a fresh manual
+        // rename if both land close together.
+        const targetId = ev.sessionId!
+        const newTitle = (ev.title || '').trim()
+        if (!targetId || !newTitle) return prev
+        const DEFAULT_TITLES = new Set(['New session', 'Current session'])
+        const auto = ev.source !== 'operator'
+        return {
+          ...prev,
+          sessions: prev.sessions.map((s) => {
+            if (s.id !== targetId) return s
+            // For automatic renames, only apply if the current title
+            // still looks default. Operator-source renames (future)
+            // always win.
+            if (auto && !DEFAULT_TITLES.has(s.title) && !s.title.startsWith('session-')) {
+              return s
+            }
+            return { ...s, title: newTitle, updatedAt: Date.now() }
+          }),
         }
       }
       if (ev.type === 'session_spawned') {

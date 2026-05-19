@@ -22,7 +22,7 @@ import { ActivityView } from './views/ActivityView'
 
 // 'swarm' / 'findings' / 'telemetry' kept for legacy callers; they all
 // redirect to the corresponding live tab below.
-type DashboardTab = 'overview' | 'activity' | 'profiles' | 'swarm' | 'findings' | 'telemetry'
+type DashboardTab = 'overview' | 'tasks' | 'activity' | 'profiles' | 'swarm' | 'findings' | 'telemetry'
 
 interface AgentView {
   session: SessionSnapshot
@@ -179,9 +179,22 @@ interface ProfileDefinition {
 
 const TABS: Array<{ id: DashboardTab; label: string; hint: string }> = [
   { id: 'overview', label: 'health', hint: 'current run' },
+  { id: 'tasks', label: 'tasks', hint: 'planning ledger' },
   { id: 'activity', label: 'activity', hint: 'session timeline' },
   { id: 'profiles', label: 'profiles', hint: 'subagents' },
 ]
+
+function visibleDashboardTabs(
+  strategy?: CoordinationStrategy,
+): Array<{ id: DashboardTab; label: string; hint: string }> {
+  // In isolated mode the `overview` tab IS the tasks rail (OverviewTab
+  // short-circuits to TasksListRailView when the strategy matches). A
+  // standalone `tasks` tab would render the exact same component, so we
+  // hide it here. Every other mode keeps the dedicated tasks tab as the
+  // home for the parent's private planning ledger.
+  if (strategy === 'isolated') return TABS.filter((t) => t.id !== 'tasks')
+  return TABS
+}
 
 const AGENT_PROFILES: ProfileDefinition[] = [
   {
@@ -695,7 +708,7 @@ export function MissionDashboard() {
           <StatusPill status={missionStatus} />
         </div>
         <nav className="ml-2 hidden items-center gap-0.5 lg:flex">
-          {TABS.map((item) => {
+          {visibleDashboardTabs(dashboard.coordinationStrategy).map((item) => {
             const itemMeta = dashboardTabMeta(item, dashboard.coordinationStrategy)
             const active = tab === item.id
             return (
@@ -729,7 +742,7 @@ export function MissionDashboard() {
 
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden px-5 pb-5">
         <nav className="flex gap-1 py-3 lg:hidden">
-          {TABS.map((item) => {
+          {visibleDashboardTabs(dashboard.coordinationStrategy).map((item) => {
             const itemMeta = dashboardTabMeta(item, dashboard.coordinationStrategy)
             return (
               <button
@@ -785,6 +798,17 @@ export function MissionDashboard() {
             sessions={dashboard.sessions}
             inboxEvents={dashboard.inboxEvents}
             onCopyFinding={(event) => copyFinding(event, showToast)}
+          />
+        )}
+        {tab === 'tasks' && (
+          <TasksListRailView
+            objective={dashboard.objective}
+            tasks={dashboard.taskCards}
+            agents={dashboard.agents}
+            events={dashboard.telemetryEvents}
+            contextPct={contextPct}
+            cost={dashboard.cost}
+            onAttach={attach}
           />
         )}
         {tab === 'profiles' && <ProfilesTab />}
