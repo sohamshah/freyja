@@ -66,7 +66,20 @@ export function Conversation() {
   const toggleEntryPin = useHarness((s) => s.toggleEntryPin)
   const branchSessionFrom = useHarness((s) => s.branchSessionFrom)
   const scrollerRef = useRef<HTMLDivElement>(null)
-  const userScrolledUpRef = useRef(false)
+  // Scroll lock + "new messages" tracking. The user can scroll up to
+  // read while the agent streams; the auto-scroll effect stops forcing
+  // the viewport to the bottom and we surface a floating jump button.
+  // Lock flips immediately on `wheel` / `touchmove` (synchronous) so a
+  // streaming tick that arrives in the same frame can't yank the
+  // viewport down before the user's intent has registered — that was
+  // the bug the old `programmaticScrollRef` + rAF dance was trying to
+  // solve, but the rAF window itself was swallowing fast user input.
+  const scrolledUpRef = useRef(false)
+  const [scrolledUp, setScrolledUp] = useState(false)
+  const [unreadCount, setUnreadCount] = useState(0)
+  // Message count at the moment the user scrolled up. While they stay
+  // scrolled up, unread = messages.length - this snapshot.
+  const unreadPinRef = useRef(0)
 
   // ── Message context menu, edit mode, branch dialog state ──────
   const [menuState, setMenuState] = useState<
@@ -230,32 +243,78 @@ export function Conversation() {
     )
   }, [totalMatches])
 
-  // Track when the user manually scrolls away from the bottom so we
-  // don't yank them back down mid-read. The `programmaticScroll` flag
-  // prevents auto-scroll events from resetting the lock.
-  const programmaticScrollRef = useRef(false)
+  const lockScrollUp = useCallback(() => {
+    if (scrolledUpRef.current) return
+    scrolledUpRef.current = true
+    unreadPinRef.current = messages.length
+    setScrolledUp(true)
+    setUnreadCount(0)
+  }, [messages.length])
+
+  const unlockScroll = useCallback(() => {
+    if (!scrolledUpRef.current) {
+      // Even if the lock is already off, clear any lingering unread
+      // counter so the button label resets cleanly.
+      setUnreadCount(0)
+      return
+    }
+    scrolledUpRef.current = false
+    setScrolledUp(false)
+    setUnreadCount(0)
+  }, [])
+
+  const scrollToBottom = useCallback(() => {
+    const el = scrollerRef.current
+    if (!el) return
+    unlockScroll()
+    el.scrollTop = el.scrollHeight
+  }, [unlockScroll])
 
   useEffect(() => {
     const el = scrollerRef.current
     if (!el) return
     const onScroll = () => {
-      // Ignore scroll events caused by our own auto-scroll — they
-      // would reset userScrolledUpRef and re-enable sticky scroll
-      // right after the user tried to escape it.
-      if (programmaticScrollRef.current) return
-
       const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-      if (distFromBottom > 40) {
-        // User scrolled away from bottom — lock out auto-scroll.
-        userScrolledUpRef.current = true
-      } else if (distFromBottom < 10) {
-        // User scrolled back to the very bottom — re-enable.
-        userScrolledUpRef.current = false
+      if (distFromBottom < 10) {
+        // Back at the bottom — drop the lock and clear unread no
+        // matter how it got there (user scrolled down, jump button,
+        // auto-scroll while unlocked).
+        if (scrolledUpRef.current) {
+          scrolledUpRef.current = false
+          setScrolledUp(false)
+        }
+        setUnreadCount(0)
+      } else if (distFromBottom > 40 && !scrolledUpRef.current) {
+        // Backup path for scrollbar-drag / keyboard scrolling that
+        // doesn't fire wheel. Wheel/touchmove are the primary lock
+        // triggers — by the time scroll fires, the lock is usually
+        // already on.
+        scrolledUpRef.current = true
+        unreadPinRef.current = messages.length
+        setScrolledUp(true)
+        setUnreadCount(0)
       }
     }
-    el.addEventListener('scroll', onScroll)
-    return () => el.removeEventListener('scroll', onScroll)
-  }, [])
+    const onWheel = (e: WheelEvent) => {
+      // Any upward wheel intent → lock immediately. Downward wheels
+      // are ambiguous (could be the user catching up to the bottom),
+      // so let the scroll handler decide via position.
+      if (e.deltaY < 0) lockScrollUp()
+    }
+    const onTouchMove = () => {
+      // Trackpad / touch drags are almost always reads. Lock
+      // proactively; the scroll handler will unlock at the bottom.
+      lockScrollUp()
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    el.addEventListener('wheel', onWheel, { passive: true })
+    el.addEventListener('touchmove', onTouchMove, { passive: true })
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      el.removeEventListener('wheel', onWheel)
+      el.removeEventListener('touchmove', onTouchMove)
+    }
+  }, [lockScrollUp, messages.length])
 
   // Track the last message count so we can detect when the user sends
   // a new message (which should snap scroll back to the bottom).
@@ -266,28 +325,36 @@ export function Conversation() {
     if (!el) return
     if (searchOpen) return
 
-    // Did the user just send a new message? If the message count grew
-    // and the latest message is from the user, reset the scroll lock
-    // so the conversation snaps to show their message + the response.
     const lastMsg = messages[messages.length - 1]
-    if (
-      messages.length > prevMsgCountRef.current &&
-      lastMsg?.role === 'user'
-    ) {
-      userScrolledUpRef.current = false
-    }
+    const grew = messages.length > prevMsgCountRef.current
+    const userSent = grew && lastMsg?.role === 'user'
     prevMsgCountRef.current = messages.length
 
-    // Respect the user's scroll position — if they scrolled up to
-    // read something, don't yank them back down even while streaming.
-    if (userScrolledUpRef.current) return
+    // Operator's own message always snaps to bottom — they expect to
+    // see their own send + whatever response is about to stream.
+    if (userSent) {
+      scrolledUpRef.current = false
+      setScrolledUp(false)
+      setUnreadCount(0)
+      el.scrollTop = el.scrollHeight
+      return
+    }
 
-    // Mark as programmatic so the scroll handler ignores this event.
-    programmaticScrollRef.current = true
+    if (scrolledUpRef.current) {
+      // Scrolled-up case: don't move the viewport, but tally how many
+      // new messages have arrived since the lock landed so the jump
+      // button can read "↓ N new".
+      if (grew) {
+        setUnreadCount(messages.length - unreadPinRef.current)
+      }
+      return
+    }
+
+    // Sticky-bottom case: keep the tail glued to the bottom as
+    // streaming chunks arrive. No programmatic-scroll guard — the
+    // scroll handler's threshold-based logic already distinguishes
+    // "at bottom" (dist < 10) from "user pulled up" (dist > 40).
     el.scrollTop = el.scrollHeight
-    requestAnimationFrame(() => {
-      programmaticScrollRef.current = false
-    })
   }, [messages, thinking, isStreaming, searchOpen])
 
   useEffect(() => {
@@ -299,10 +366,10 @@ export function Conversation() {
         scroller.querySelectorAll<HTMLElement>('[data-tool-call-id]'),
       ).find((el) => el.dataset.toolCallId === focusedToolCallId)
       if (!target) return
-      userScrolledUpRef.current = true
+      lockScrollUp()
       target.scrollIntoView({ block: 'center', behavior: 'smooth' })
     })
-  }, [focusedToolCallId, focusedToolCallSerial])
+  }, [focusedToolCallId, focusedToolCallSerial, lockScrollUp])
 
   if (messages.length === 0 && !thinking) {
     return (
@@ -362,6 +429,12 @@ export function Conversation() {
           </div>
         </MessageActionsContext.Provider>
       </SearchQueryContext.Provider>
+      {scrolledUp && (
+        <ScrollToBottomButton
+          unread={unreadCount}
+          onClick={scrollToBottom}
+        />
+      )}
       {menuState && (
         <MessageContextMenu
           x={menuState.x}
@@ -386,6 +459,36 @@ export function Conversation() {
           }}
         />
       )}
+    </div>
+  )
+}
+
+/** Floating pill anchored to the bottom-center of the conversation
+ *  pane. Visible only while the user is scrolled up; label switches to
+ *  a "N new" counter once messages have arrived behind their back. */
+function ScrollToBottomButton({
+  unread,
+  onClick,
+}: {
+  unread: number
+  onClick: () => void
+}) {
+  const hasUnread = unread > 0
+  return (
+    <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center">
+      <button
+        type="button"
+        onClick={onClick}
+        className={`pointer-events-auto inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.14em] shadow-lg backdrop-blur-md transition ${
+          hasUnread
+            ? 'bg-accent/15 text-accent ring-1 ring-accent/40 hover:bg-accent/25'
+            : 'bg-white/[0.06] text-fg-1 ring-hairline hover:bg-white/[0.10] hover:text-fg-0'
+        }`}
+        title={hasUnread ? 'Jump to new messages' : 'Jump to bottom'}
+      >
+        <span aria-hidden>↓</span>
+        {hasUnread ? `${unread} new` : 'bottom'}
+      </button>
     </div>
   )
 }

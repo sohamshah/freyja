@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useHarness } from '../state/store'
 import type {
+  CoordinationStrategy,
   MemoryRecord,
   SessionSnapshot,
   Skill,
@@ -68,6 +69,10 @@ export function Sidebar() {
   const skills = useHarness((s) => s.skills)
   const memories = useHarness((s) => s.memories)
   const subagents = useHarness((s) => s.subagents)
+  // Streaming flag for the active session — used to light up the
+  // braille spinner on the active session row in the workspace list.
+  // Sub-agent run-state still comes from `subagents[id].state`.
+  const isStreaming = useHarness((s) => s.isStreaming)
   const subagentOrder = useHarness((s) => s.subagentOrder)
   const computerSessions = useHarness((s) => s.computerSessions)
   const newSession = useHarness((s) => s.newSession)
@@ -398,6 +403,11 @@ export function Sidebar() {
               session={s}
               depth={s.depth}
               isActive={s.id === activeSessionId}
+              isRunning={
+                (s.id === activeSessionId && isStreaming) ||
+                subagents[s.id]?.state === 'running' ||
+                subagents[s.id]?.state === 'pending'
+              }
               hasChildren={s.hasChildren}
               isExpanded={s.isExpanded}
               onToggleExpand={() => toggleExpanded(s.id)}
@@ -1326,6 +1336,7 @@ function SessionRow({
   session: s,
   depth,
   isActive,
+  isRunning,
   hasChildren,
   isExpanded,
   onToggleExpand,
@@ -1334,6 +1345,7 @@ function SessionRow({
   session: SessionSnapshot & { depth: number }
   depth: number
   isActive: boolean
+  isRunning: boolean
   hasChildren: boolean
   isExpanded: boolean
   onToggleExpand: () => void
@@ -1426,11 +1438,25 @@ function SessionRow({
             : ''
         }`}
       >
-        <span
-          className={`mt-[5px] inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
-            isActive ? 'bg-accent' : isChild ? 'bg-fg-3/70' : 'bg-fg-3'
-          }`}
-        />
+        {/* Status indicator. Running sessions get a braille pixel
+          * animation so the operator can spot live work at a glance
+          * scanning the sidebar; idle sessions get a static dot whose
+          * shade tracks active/child status (accent / dim grey). */}
+        {isRunning ? (
+          <span
+            className="mt-[3px] inline-flex h-3 w-3 shrink-0 items-center justify-center text-accent"
+            aria-label="running"
+            title={isActive ? 'streaming' : 'sub-agent running'}
+          >
+            <Spinner name="braille" className="text-accent" />
+          </span>
+        ) : (
+          <span
+            className={`mt-[5px] inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
+              isActive ? 'bg-accent' : isChild ? 'bg-fg-3/70' : 'bg-fg-3'
+            }`}
+          />
+        )}
         {hasChildren ? (
           <span
             role="button"
@@ -1479,6 +1505,9 @@ function SessionRow({
             <div className="truncate">{s.title}</div>
           )}
           <div className="mt-[2px] flex items-center gap-1.5 text-[10px] text-fg-2">
+            {s.coordinationStrategy ? (
+              <StrategyChip strategy={s.coordinationStrategy} />
+            ) : null}
             <span className="font-mono">
               {s.model.replace('claude-', '')}
             </span>
@@ -1565,6 +1594,54 @@ function SessionRow({
       )}
     </div>
   )
+}
+
+/** Coordination-strategy badge shown on each session row's meta
+ *  line. Maps the internal strategy ids to short operator-facing
+ *  labels (bus / task / board / goal) and gives each its own subtle
+ *  tone so the row reads at a glance: which sessions are kanban
+ *  missions, which are bus-mode swarms, which are goal-loops.
+ *
+ *  Tones are deliberately muted — this chip lives below the row's
+ *  title and shouldn't compete with the active-state accent dot or
+ *  the streaming spinner. */
+function StrategyChip({ strategy }: { strategy: CoordinationStrategy }) {
+  const meta = STRATEGY_CHIP_META[strategy]
+  if (!meta) return null
+  return (
+    <span
+      title={meta.tooltip}
+      className={`inline-flex items-center rounded px-1 py-px font-mono text-[9px] uppercase tracking-[0.10em] ${meta.cls}`}
+    >
+      {meta.label}
+    </span>
+  )
+}
+
+const STRATEGY_CHIP_META: Record<
+  CoordinationStrategy,
+  { label: string; cls: string; tooltip: string }
+> = {
+  bus: {
+    label: 'bus',
+    cls: 'text-accent/90 bg-accent/[0.07] ring-1 ring-accent/[0.18]',
+    tooltip: 'Message-bus mode — agents publish + read shared findings',
+  },
+  isolated: {
+    label: 'task',
+    cls: 'text-fg-1 bg-white/[0.05] ring-1 ring-white/[0.10]',
+    tooltip: 'Task-first solo — single-agent work ledger, no shared bus',
+  },
+  kanban: {
+    label: 'board',
+    cls: 'text-warn bg-warn/[0.08] ring-1 ring-warn/[0.20]',
+    tooltip: 'Kanban board — swarm pulls from a shared card queue',
+  },
+  goal: {
+    label: 'goal',
+    cls: 'text-ok bg-ok/[0.08] ring-1 ring-ok/[0.20]',
+    tooltip: 'Goal loop — judge verdict drives auto-continuation',
+  },
 }
 
 function CtxBtn({

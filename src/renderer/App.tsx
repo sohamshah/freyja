@@ -38,6 +38,17 @@ function runPostEventEffects(event: any, api: any) {
     state.persistSession(sid).catch(() => {})
     state.persistSessionIndex().catch(() => {})
   }
+  // Auto-rename from the bridge needs to land on disk — without
+  // persistence the new title vanishes on next app start. The reducer
+  // already updated the in-memory list; mirror that to disk here.
+  if (event?.type === 'session_renamed') {
+    const state = useHarness.getState()
+    const sid = event.sessionId as string | undefined
+    if (sid) {
+      state.persistSession(sid).catch(() => {})
+      state.persistSessionIndex().catch(() => {})
+    }
+  }
   // Legacy fallback: bridge couldn't find a transcript file for a
   // persisted session. If we have UI messages for it, extract a text
   // summary and send it so the model has context.

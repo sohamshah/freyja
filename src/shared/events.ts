@@ -601,6 +601,18 @@ export type BridgeEvent =
       details?: string
     } & SessionId)
   | ({
+      /** Renderer-side title update. The bridge fires this after the
+       *  first user → assistant exchange completes so it can give a
+       *  default-titled session a concise Haiku-generated label
+       *  ("Spec review", "Pricing audit", etc.). `source: 'auto'`
+       *  signals automatic origin so future operator/manual renames
+       *  can be distinguished if needed; nothing currently branches
+       *  on it. */
+      type: 'session_renamed'
+      title: string
+      source?: 'auto' | 'operator'
+    } & SessionId)
+  | ({
       type: 'session_spawned'
       parentSessionId: string
       title: string
