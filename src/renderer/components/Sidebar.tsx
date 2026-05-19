@@ -69,10 +69,6 @@ export function Sidebar() {
   const skills = useHarness((s) => s.skills)
   const memories = useHarness((s) => s.memories)
   const subagents = useHarness((s) => s.subagents)
-  // Streaming flag for the active session — used to light up the
-  // braille spinner on the active session row in the workspace list.
-  // Sub-agent run-state still comes from `subagents[id].state`.
-  const isStreaming = useHarness((s) => s.isStreaming)
   const subagentOrder = useHarness((s) => s.subagentOrder)
   const computerSessions = useHarness((s) => s.computerSessions)
   const newSession = useHarness((s) => s.newSession)
@@ -403,11 +399,6 @@ export function Sidebar() {
               session={s}
               depth={s.depth}
               isActive={s.id === activeSessionId}
-              isRunning={
-                (s.id === activeSessionId && isStreaming) ||
-                subagents[s.id]?.state === 'running' ||
-                subagents[s.id]?.state === 'pending'
-              }
               hasChildren={s.hasChildren}
               isExpanded={s.isExpanded}
               onToggleExpand={() => toggleExpanded(s.id)}
@@ -1336,7 +1327,6 @@ function SessionRow({
   session: s,
   depth,
   isActive,
-  isRunning,
   hasChildren,
   isExpanded,
   onToggleExpand,
@@ -1345,7 +1335,6 @@ function SessionRow({
   session: SessionSnapshot & { depth: number }
   depth: number
   isActive: boolean
-  isRunning: boolean
   hasChildren: boolean
   isExpanded: boolean
   onToggleExpand: () => void
@@ -1355,6 +1344,17 @@ function SessionRow({
   const deleteSession = useHarness((st) => st.deleteSession)
   const downloadSession = useHarness((st) => st.downloadSession)
   const allSessions = useHarness((st) => st.sessions)
+  // Per-row "is this session currently streaming" subscription. For the
+  // active session we read the top-level `isStreaming`; for everyone
+  // else we look up the archived slice. Scoping the selector to one
+  // boolean per row keeps a background session's text-delta storm from
+  // re-rendering every sibling in the workspace list.
+  const isRunning = useHarness((st) => {
+    if (st.activeSessionId === s.id) return st.isStreaming
+    if (st.sessionArchive[s.id]?.isStreaming) return true
+    const sub = st.subagents[s.id]
+    return sub?.state === 'running' || sub?.state === 'pending'
+  })
   const [menuOpen, setMenuOpen] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(s.title)
