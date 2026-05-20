@@ -79,6 +79,21 @@ export function Sidebar() {
   const setSidebarWidth = useHarness((s) => s.setSidebarWidth)
   const [resizing, setResizing] = useState(false)
 
+  // When the active session changes (quick switcher, sidebar click,
+  // pane swap), make sure that session's row is visible in the
+  // sessions list — otherwise the highlight lands off-screen and the
+  // operator has to hunt for it. `block: 'nearest'` keeps the list
+  // still when the row is already in view.
+  const sessionsScrollRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = sessionsScrollRef.current
+    if (!el || !activeSessionId) return
+    const row = el.querySelector<HTMLElement>(
+      `[data-session-id="${activeSessionId}"]`,
+    )
+    if (row) row.scrollIntoView({ block: 'nearest' })
+  }, [activeSessionId])
+
   // Mouse-driven resize: drag handle hugs the RIGHT edge of the
   // sidebar, mirror of the activity panel's left-edge handle. The
   // sidebar starts at the window's left edge, so `pageX` is the new
@@ -378,7 +393,7 @@ export function Sidebar() {
       </div>
 
       {/* Sessions — scrollable, takes remaining space */}
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div ref={sessionsScrollRef} className="min-h-0 flex-1 overflow-y-auto">
         <div className="px-3 pt-3 pb-2">
           <SessionSearch value={sessionQuery} onChange={setSessionQuery} />
         </div>
@@ -1415,6 +1430,7 @@ function SessionRow({
   return (
     <div
       ref={rowRef}
+      data-session-id={s.id}
       className="group relative"
       onContextMenu={(e) => {
         e.preventDefault()
