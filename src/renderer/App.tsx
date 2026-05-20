@@ -20,6 +20,7 @@ import { MissionDashboard } from './components/MissionDashboard'
 import { MetricsDashboard } from './components/MetricsDashboard'
 import { SplashScreen } from './components/SplashScreen'
 import { IdleSleep } from './components/IdleSleep'
+import { QuickSwitcher } from './components/QuickSwitcher'
 import { startInRendererDemo } from './lib/inRendererDemo'
 import { extractConversationSummary } from './lib/conversationSummary'
 
@@ -182,6 +183,121 @@ export function App() {
 
   // Triple-Esc detection state. Resets after 1 second of inactivity.
   const escTimesRef = useRef<number[]>([])
+
+  // Ctrl+Tab quick switcher state. `null` means closed; otherwise we
+  // hold a frozen candidate list (computed at open time so the order
+  // doesn't shift mid-cycle as background sessions finish streaming)
+  // plus the current selection index. Local state (not store) so the
+  // keydown capture handler can mutate it cheaply without bouncing
+  // through a reducer for every Tab press.
+  const [quickSwitcher, setQuickSwitcher] = useState<{
+    candidates: string[]
+    selected: number
+  } | null>(null)
+
+  const buildSwitcherCandidates = useCallback((): string[] => {
+    const state = useHarness.getState()
+    const active = state.activeSessionId
+    const sessionById = new Map(state.sessions.map((s) => [s.id, s]))
+
+    // Bucket 1: currently-streaming sessions (excluding active), most
+    // recently updated first. These are "wants your attention now."
+    const streaming = state.sessions
+      .filter(
+        (s) =>
+          s.id !== active &&
+          !!state.sessionArchive[s.id]?.isStreaming,
+      )
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .map((s) => s.id)
+
+    // Bucket 2: MRU sessions the operator actually visited, preserving
+    // recency order. Filter out anything already in bucket 1 or that
+    // no longer exists in the sessions list (deleted / unloaded).
+    const seen = new Set<string>([active, ...streaming])
+    const mru = state.sessionMRU.filter(
+      (id) => !seen.has(id) && sessionById.has(id),
+    )
+    for (const id of mru) seen.add(id)
+
+    // Bucket 3: fill out remaining slots with the most-recently-active
+    // sessions overall so a fresh-launch operator (empty MRU) still
+    // gets a useful switcher rather than an empty one.
+    const others = state.sessions
+      .filter((s) => !seen.has(s.id))
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .map((s) => s.id)
+
+    return [...streaming, ...mru, ...others].slice(0, 10)
+  }, [])
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Ctrl+Tab opens / advances; Ctrl+Shift+Tab reverses. We keep
+      // Ctrl as the modifier on macOS too — Cmd+Tab is the OS app
+      // switcher and never reaches the renderer anyway.
+      if (e.ctrlKey && e.key === 'Tab') {
+        e.preventDefault()
+        e.stopPropagation()
+        setQuickSwitcher((prev) => {
+          if (!prev) {
+            const candidates = buildSwitcherCandidates()
+            if (candidates.length === 0) return null
+            // First Tab while holding Ctrl lands on index 0 — the
+            // previously-active session if MRU has any entries, else
+            // the most-recently-streaming session. Mirrors browser /
+            // IDE Tab-switch muscle memory.
+            return { candidates, selected: 0 }
+          }
+          const step = e.shiftKey ? -1 : 1
+          const n = prev.candidates.length
+          const next = ((prev.selected + step) % n + n) % n
+          return { ...prev, selected: next }
+        })
+        return
+      }
+      // Esc while the switcher is open → cancel without switching.
+      // Must run before the existing Esc handler so panel-dismiss
+      // logic doesn't fire underneath the overlay.
+      if (e.key === 'Escape' && quickSwitcher) {
+        e.preventDefault()
+        e.stopPropagation()
+        setQuickSwitcher(null)
+        return
+      }
+    }
+    const onKeyUp = (e: KeyboardEvent) => {
+      // Releasing Ctrl commits the selection. We tolerate the user
+      // releasing Ctrl mid-flight (e.g. cramped-hand reshuffle) by
+      // only committing when the switcher is actually open.
+      if (e.key !== 'Control') return
+      setQuickSwitcher((prev) => {
+        if (!prev) return null
+        const target = prev.candidates[prev.selected]
+        if (target) {
+          useHarness
+            .getState()
+            .openSessionPane(target, 'replace')
+            .catch(() => {})
+        }
+        return null
+      })
+    }
+    // Capture phase so we intercept Tab before any focused input
+    // consumes it as a focus-shift key.
+    window.addEventListener('keydown', onKeyDown, true)
+    window.addEventListener('keyup', onKeyUp, true)
+    // If the user alt-tabs the OS while holding Ctrl, the keyup
+    // never fires for the renderer. Treat a blur as "Ctrl released" so
+    // the overlay doesn't strand open.
+    const onBlur = () => setQuickSwitcher(null)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true)
+      window.removeEventListener('keyup', onKeyUp, true)
+      window.removeEventListener('blur', onBlur)
+    }
+  }, [buildSwitcherCandidates, quickSwitcher])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -351,6 +467,12 @@ export function App() {
           </main>
           {!activityPanelCollapsed && <ActivityPanel />}
         </div>
+        {quickSwitcher && (
+          <QuickSwitcher
+            candidateIds={quickSwitcher.candidates}
+            selectedIndex={quickSwitcher.selected}
+          />
+        )}
         {commandPaletteOpen && <CommandPalette />}
         {missionDashboardOpen && <MissionDashboard />}
         <MetricsDashboard />

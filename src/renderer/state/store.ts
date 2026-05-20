@@ -182,6 +182,12 @@ export interface HarnessState extends SessionSlice {
   ready: boolean
   activeSessionId: string
   sessions: SessionSnapshot[]
+  /** Recency-ordered list of recently-activated session ids (most
+   *  recent first). Powers the Ctrl+Tab quick switcher — index 0 is
+   *  the previously-active session, which is what the first Tab press
+   *  should land on. Capped to MRU_LIMIT entries; the currently active
+   *  session is intentionally excluded. */
+  sessionMRU: string[]
   /** Archived per-session slices, keyed by session id. */
   sessionArchive: Record<string, SessionSlice>
   /** Center workspace panes. Only the active engine session is writable;
@@ -694,6 +700,7 @@ function emptyState(): HarnessState {
       },
     ],
     sessionArchive: {},
+    sessionMRU: [],
     sessionPanes: [{ id: 'pane-main', sessionId: bootId, createdAt: Date.now() }],
     activePaneId: 'pane-main',
     skills: {},
@@ -2626,11 +2633,21 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       const sessionPanes = existingPanes.map((pane) =>
         pane.id === activePaneId ? { ...pane, sessionId } : pane,
       )
+      // MRU update: the session we're leaving moves to slot 0; the
+      // session we're entering drops out (it's the active one now).
+      // Cap at 20 — the switcher only renders ~10, the extra buffer
+      // covers churn from background spawns the operator never
+      // actually visited.
+      const filteredMRU = p.sessionMRU.filter(
+        (id) => id !== sessionId && id !== p.activeSessionId,
+      )
+      const nextMRU = [p.activeSessionId, ...filteredMRU].slice(0, 20)
       return {
         ...p,
         ...archivedSlice,
         activeSessionId: sessionId,
         sessionArchive: newArchive,
+        sessionMRU: nextMRU,
         sessionPanes,
         activePaneId,
         pendingAttachments: [],
