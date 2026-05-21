@@ -258,20 +258,45 @@ export function Sidebar() {
     return matched
   }, [sessions, sessionSearchIndex, searchTokens])
 
+  // Per-session timestamp of the most recent USER message. Drives
+  // top-level recency sort below. We pick "last user message" instead
+  // of `updatedAt` deliberately: assistant streaming bumps updatedAt
+  // on every text_delta, which would make rows jitter up and down
+  // while multiple sessions stream concurrently. User messages are
+  // bursty / occasional, so this gives an order that tracks the
+  // operator's attention without thrashing.
+  const lastUserAt = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const s of sessions) {
+      const messages =
+        s.id === activeSessionId ? activeMessages : sessionArchive[s.id]?.messages
+      let ts = s.createdAt
+      if (messages) {
+        for (let i = messages.length - 1; i >= 0; i--) {
+          if (messages[i].role === 'user') {
+            ts = messages[i].createdAt
+            break
+          }
+        }
+      }
+      map.set(s.id, ts)
+    }
+    return map
+  }, [sessions, activeSessionId, activeMessages, sessionArchive])
+
   // Flatten the session list into a depth-first tree walk so subagent
   // sessions render indented under the session that spawned them. Orphan
   // children (whose parent is no longer in the list) are promoted to roots
   // so they're still reachable.
   //
-  // Ordering is based on START TIME (createdAt) — never updatedAt.
-  // We deliberately avoid update-bubbling because it causes constant
-  // re-shuffling when many subagents are running concurrently, which
-  // makes the sidebar disorienting and breaks the natural numbering of
-  // sequentially-spawned subagents (e.g. tasks 1, 2, 3, 4 should always
-  // render in that order, not whichever happened to update last).
-  //
-  //   - Top-level sessions: createdAt DESCENDING (newest at top)
-  //   - Subagent sessions:  createdAt ASCENDING  (spawn order preserved)
+  // Ordering:
+  //   - Top-level sessions: most-recent USER message first (see
+  //     `lastUserAt` above). Falls back to createdAt for sessions with
+  //     no user messages yet.
+  //   - Subagent sessions: createdAt ASCENDING — spawn order is part
+  //     of the meaning (task 1, 2, 3 stay numbered in order), and a
+  //     swarm of streaming children would re-shuffle constantly under
+  //     any recency-based scheme.
   //
   // Visibility rule: a sub-session is only rendered when its parent
   // chain is expanded. A parent is expanded when (a) it's part of the
@@ -308,11 +333,14 @@ export function Sidebar() {
     const out: Array<SessionSnapshot & { depth: number; hasChildren: boolean; isExpanded: boolean }> = []
     const walk = (parentId: string | null, depth: number) => {
       const kids = byParent.get(parentId) ?? []
-      const sorted = [...kids].sort((a, b) =>
-        depth === 0
-          ? b.createdAt - a.createdAt
-          : a.createdAt - b.createdAt,
-      )
+      const sorted = [...kids].sort((a, b) => {
+        if (depth === 0) {
+          const aTs = lastUserAt.get(a.id) ?? a.createdAt
+          const bTs = lastUserAt.get(b.id) ?? b.createdAt
+          return bTs - aTs
+        }
+        return a.createdAt - b.createdAt
+      })
       for (const s of sorted) {
         const hasChildren = (byParent.get(s.id) ?? []).length > 0
         const isExpanded =
@@ -332,7 +360,7 @@ export function Sidebar() {
     }
     walk(null, 0)
     return out
-  }, [sessions, activeAncestors, expandedSessions, matchedSessionIds])
+  }, [sessions, activeAncestors, expandedSessions, matchedSessionIds, lastUserAt])
 
   const orderedSubagents: SubagentRecord[] = useMemo(() => {
     return subagentOrder.map((id) => subagents[id]).filter(Boolean) as SubagentRecord[]
