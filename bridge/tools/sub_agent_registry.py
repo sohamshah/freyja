@@ -62,6 +62,15 @@ class SubAgentRecord:
     # "parent" alias for sibling-to-sibling discovery without walking
     # registries. Set by the spawn path.
     parent_session_id: str = ""
+    # Final transcript snapshot. Populated by `_run_child` right before
+    # the run returns; consumed by callers that need to chain a follow-up
+    # LLM call against the same conversational context (e.g. the deep
+    # judge's structured-output synthesis pass). Typed as Any so this
+    # module doesn't pull in engine.types. Empty list = subagent was
+    # cancelled / errored before populating.
+    final_messages: Any = field(default_factory=list)
+    final_system_prompt: str = ""
+    final_model_id: str = ""
 
     @property
     def elapsed(self) -> float:

@@ -278,10 +278,10 @@ Narrow only if a tool is clearly wrong for the goal (e.g. drop
 fetch_url for a goal that has no URLs; drop bash for a goal where
 file reads alone suffice).
 
-Max iterations (deep profile only): default 3 is usually right. Raise
-to 5-7 if the goal involves verifying many distinct claims (10+
-citations, multiple files to spot-check, multi-step verification).
-Lower to 1-2 if the verdict can be reached from a single read.
+There is no iteration cap to set — the deep judge investigates until
+it's satisfied (under a generous internal safety net) and then a
+separate structured-output synthesis pass renders the verdict. Your
+job is to define the rigor / criteria / voice, not the runtime.
 
 You will return STRICT JSON in this exact shape, with no surrounding
 prose and no markdown fence:
@@ -296,7 +296,6 @@ prose and no markdown fence:
   "neverDo": ["..."],
   "whenToStop": "<optional, may be empty string>",
   "judgeTools": ["..."],
-  "judgeMaxIterations": 1..10,
   "rationaleOverall": "<one paragraph naming the goal type, the dominant failure modes you inferred, and why you picked this profile + rigor>",
   "rationaleByField": {
     "judgeProfile": "<one sentence>",
@@ -305,8 +304,7 @@ prose and no markdown fence:
     "criteria": "<one sentence>",
     "neverDo": "<one sentence>",
     "whenToStop": "<one sentence; may be empty if the field is empty>",
-    "judgeTools": "<one sentence; may say 'using profile defaults'>",
-    "judgeMaxIterations": "<one sentence>"
+    "judgeTools": "<one sentence; may say 'using profile defaults'>"
   },
   "confidence": 0.0..1.0
 }
@@ -657,7 +655,6 @@ CALIBRATOR_FIELDS: tuple[str, ...] = (
     "neverDo",
     "whenToStop",
     "judgeTools",
-    "judgeMaxIterations",
 )
 
 
@@ -672,8 +669,12 @@ class JudgeRules:
     "deep" — picks the model + thinking budget for the judge call.
     `judge_tools` is an optional allowlist that overrides the profile
     default (empty → use the default for the active profile).
-    `judge_max_iterations` caps how many turns the judge may take when
-    running as a subagent (deep profile).
+
+    There is no operator-tunable iteration cap. The deep judge runs as
+    a real subagent under a generous internal safety net (see
+    `_DEEP_JUDGE_SAFETY_NET_ITERATIONS` in freyja_bridge.py); the
+    verdict shape is guaranteed by a separate structured-output
+    synthesis pass that always runs after investigation completes.
 
     `calibrator_meta` is set by the auto-calibrator that fires on goal
     set; it carries the model + per-field rationale so the editor can
@@ -695,9 +696,6 @@ class JudgeRules:
     # Empty list = use the profile default. Otherwise = explicit allowlist
     # for this brief, overriding the profile's defaults.
     judge_tools: list[str] = field(default_factory=list)
-    # Bounded [1, 10]. Only consulted for the `deep` profile (subagent
-    # path); quick / standard are always single-call.
-    judge_max_iterations: int = 3
     updated_at: float = field(default_factory=time.time)
     calibrator_meta: CalibratorMeta | None = None
 
@@ -710,7 +708,6 @@ class JudgeRules:
             "neverDo": list(self.never_do),
             "whenToStop": self.when_to_stop,
             "judgeTools": list(self.judge_tools),
-            "judgeMaxIterations": self.judge_max_iterations,
             "updatedAt": int(self.updated_at * 1000),
             "calibratorMeta": self.calibrator_meta.to_dict() if self.calibrator_meta else None,
         }
@@ -735,10 +732,6 @@ class JudgeRules:
         except Exception:
             rigor = 2
         rigor = _migrate_rigor(rigor)
-        try:
-            max_iter = int(payload.get("judgeMaxIterations", 3))
-        except Exception:
-            max_iter = 3
         return cls(
             voice=str(payload.get("voice") or ""),
             rigor_score=max(1, min(rigor, 4)),
@@ -747,7 +740,6 @@ class JudgeRules:
             never_do=[str(x) for x in (payload.get("neverDo") or []) if str(x).strip()],
             when_to_stop=str(payload.get("whenToStop") or ""),
             judge_tools=[str(t).strip() for t in (payload.get("judgeTools") or []) if str(t).strip()],
-            judge_max_iterations=max(1, min(max_iter, 10)),
             updated_at=time.time(),
             calibrator_meta=CalibratorMeta.from_dict(payload.get("calibratorMeta")),
         )
@@ -807,7 +799,6 @@ class GoalState:
     goal: str
     status: str = "active"
     turns_used: int = 0
-    max_turns: int = 20
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     last_verdict: GoalVerdict | None = None
@@ -840,7 +831,6 @@ class GoalState:
             "goal": self.goal,
             "status": self.status,
             "turnsUsed": self.turns_used,
-            "maxTurns": self.max_turns,
             "createdAt": int(self.created_at * 1000),
             "updatedAt": int(self.updated_at * 1000),
             "lastVerdict": self.last_verdict.to_dict() if self.last_verdict else None,
@@ -1208,14 +1198,6 @@ def parse_calibrator_response(text: str, *, session_id: str | None = None, model
         set_fields.append("judgeTools")
 
     try:
-        max_iter = int(payload.get("judgeMaxIterations") or 3)
-    except Exception:
-        max_iter = 3
-    max_iter = max(1, min(max_iter, 10))
-    if "judgeMaxIterations" in payload:
-        set_fields.append("judgeMaxIterations")
-
-    try:
         confidence = float(payload.get("confidence") or 0.0)
     except Exception:
         confidence = 0.0
@@ -1240,7 +1222,6 @@ def parse_calibrator_response(text: str, *, session_id: str | None = None, model
         never_do=never_do,
         when_to_stop=when_to_stop,
         judge_tools=judge_tools,
-        judge_max_iterations=max_iter,
         updated_at=time.time(),
         calibrator_meta=meta,
     )

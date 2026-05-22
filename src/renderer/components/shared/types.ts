@@ -122,7 +122,7 @@ export interface CalibratorMeta {
   rationaleOverall: string
   /** Per-field one-sentence rationale. Keyed by JudgeRules field name in
    * camelCase (judgeProfile, rigorScore, voice, criteria, neverDo,
-   * whenToStop, judgeTools, judgeMaxIterations). */
+   * whenToStop, judgeTools). */
   rationaleByField: Record<string, string>
   /** Field names the calibrator actually populated. The editor uses this
    * to render a "set by calibrator" affordance next to those fields. */
@@ -143,9 +143,6 @@ export interface JudgeRules {
    * the profile default (read_file/list_directory/grep/glob/bash/fetch_url).
    * Only meaningful for the `deep` profile. */
   judgeTools?: string[]
-  /** Max number of tool/think iterations the deep judge may take per
-   * verdict. Bounded [1, 10]. Only meaningful for the `deep` profile. */
-  judgeMaxIterations?: number
   /** Provenance from the auto-calibrator. Null when no calibration has
    * run for this goal (e.g. operator authored the rules manually). */
   calibratorMeta?: CalibratorMeta | null
@@ -181,7 +178,6 @@ export interface GoalStateView {
   goal: string
   status: string
   turnsUsed: number
-  maxTurns: number
   pauseReason?: string
   lastVerdict?: GoalVerdict | null
   judgeRules?: JudgeRules | null

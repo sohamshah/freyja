@@ -118,7 +118,6 @@ interface JudgeRulesPayload {
   neverDo: string[]
   whenToStop: string
   judgeTools?: string[]
-  judgeMaxIterations?: number
   calibratorMeta?: CalibratorMetaPayload | null
   updatedAt?: number
 }
@@ -138,7 +137,6 @@ interface GoalStateView {
   goal: string
   status: string
   turnsUsed: number
-  maxTurns: number
   pauseReason?: string
   lastVerdict?: GoalVerdictPayload | null
   judgeRules?: JudgeRulesPayload | null
@@ -2547,7 +2545,6 @@ function collectGoalState(events: TelemetryEventView[]): GoalStateView | null {
     goal: String(state?.goal ?? ''),
     status: String(state?.status ?? 'active'),
     turnsUsed: Number(state?.turnsUsed ?? 0),
-    maxTurns: Number(state?.maxTurns ?? 20),
     pauseReason: typeof state?.pauseReason === 'string' ? state.pauseReason : undefined,
     lastVerdict: lastVerdict ?? null,
     judgeRules,

@@ -184,7 +184,7 @@ export function JudgeBrief({ open, onClose, goalState }: Props) {
       onClose={onClose}
       to="judge"
       toRole={goalState.lastVerdict?.done ? 'last verdict: done' : 'acting as judge'}
-      re={`${goalState.goal} · turn ${goalState.turnsUsed} of ${goalState.maxTurns}`}
+      re={`${goalState.goal} · turn ${goalState.turnsUsed}`}
       date={dateStr()}
       title="Judge Rules"
       prelude={

@@ -312,7 +312,6 @@ export type BridgeCommand =
       sessionId?: string
       action: 'set' | 'status' | 'pause' | 'resume' | 'clear' | 'stop' | 'done'
       goal?: string
-      maxTurns?: number
       reason?: string
       model?: string
       reasoningLevel?: string
@@ -611,6 +610,24 @@ export type BridgeEvent =
       type: 'session_renamed'
       title: string
       source?: 'auto' | 'operator'
+    } & SessionId)
+  | ({
+      /** Append a single message to a session's transcript out-of-band
+       *  (i.e. not produced by the runner's turn loop). Used by the
+       *  deep judge synthesis pass to inject the "render verdict now"
+       *  user prompt into the judge subagent's session so the operator
+       *  can see investigation → synthesis as one continuous chat.
+       *
+       *  The reducer treats this as a hard append: the message lands
+       *  at the end of the existing transcript, indexed by its own id
+       *  (no merging with the streaming-message id). Use turn_start +
+       *  text_delta for streaming assistant content; this event is for
+       *  fully-formed messages whose text is known up front. */
+      type: 'message_appended'
+      role: 'user' | 'assistant' | 'system'
+      content: string
+      messageId?: string
+      createdAt?: number
     } & SessionId)
   | ({
       type: 'session_spawned'

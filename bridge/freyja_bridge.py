@@ -140,6 +140,19 @@ def _write_debug_log(event: dict[str, Any]) -> None:
         pass
 
 
+# Internal safety net for the deep-judge investigation phase. Used to
+# be operator-tunable via JudgeRules.judge_max_iterations [1..10], but
+# that cap was the root cause of the "(no output)" → "Judge response
+# was not valid JSON" failure mode: when the model exhausted its
+# budget mid-tool-use, the runner halted without ever emitting the
+# final synthesis turn. The verdict is now guaranteed by a separate
+# structured-output synthesis pass that runs against the
+# investigator's transcript, so this cap exists purely as a brake on
+# pathological tool-loops — set high enough that well-behaved
+# investigations never hit it.
+_DEEP_JUDGE_SAFETY_NET_ITERATIONS = 50
+
+
 def emit(event: dict[str, Any]) -> None:
     """Emit a single JSON line to stdout and flush immediately."""
     try:
@@ -2790,7 +2803,6 @@ class _BridgeSession:
                 goal=str(gs.get("goal", "")),
                 status=str(gs.get("status", "active")),
                 turns_used=int(gs.get("turnsUsed", 0) or 0),
-                max_turns=int(gs.get("maxTurns", 20) or 20),
                 pause_reason=str(gs.get("pauseReason", "") or ""),
             )
             self.goal_state.last_verdict = verdict
@@ -3514,18 +3526,16 @@ class _BridgeSession:
             except Exception as exc:  # noqa: BLE001
                 log("warn", f"goal sidecar save raised: {exc}")
 
-    def _set_goal(self, goal: str, *, max_turns: int | None = None, source: str = "user") -> None:
+    def _set_goal(self, goal: str, *, source: str = "user") -> None:
         from bridge.tools.goal_loop import GoalState
 
         clean_goal = goal.strip()
         if not clean_goal:
             return
-        # max_turns is no longer enforced; the loop runs until the judge
-        # marks the goal done or the operator pauses it. The value is
-        # still threaded through so the data model stays the same shape
-        # for persistence + renderer code.
-        budget = max(1, int(max_turns or 20))
-        self.goal_state = GoalState(goal=clean_goal, max_turns=budget)
+        # No turn budget. The loop runs until the judge marks the goal
+        # done (always parseable thanks to investigate→synthesize) or
+        # the operator pauses it.
+        self.goal_state = GoalState(goal=clean_goal)
         # New goal — reset verdict history so the new loop doesn't inherit
         # the old goal's trajectory. Brief stays (it's the operator's
         # persistent preference for how the judge should think).
@@ -4221,39 +4231,238 @@ class _BridgeSession:
         return parse_goal_verdict(structured.raw_text or "")
 
     async def _run_deep_judge_subagent(self, prompt: str) -> Any:
-        """Spawn the judge-deep AgentType as a first-class sub-agent.
+        """Two-phase deep judge: investigate → synthesize.
 
-        Thin wrapper around SubAgentTool.spawn_programmatically — the
-        full machinery (session_spawned + systemPrompt event, registry
-        wrapping, inbox auto-drain, force-cancel + compliance iteration,
-        re-wake via talk(), profile telemetry, session_completed) is
-        shared with every other sub-agent path. Operator overrides on
-        JudgeRules drive the tool surface + iteration cap.
+        **Phase 1 (investigation)**: spawn the judge-deep AgentType as
+        a first-class sub-agent under `_DEEP_JUDGE_SAFETY_NET_ITERATIONS`
+        as a brake against pathological tool-loops. The investigator
+        is free to read files, grep, run bash, etc. for as many turns
+        as it reasonably needs — there's no operator-tunable cap to
+        hit mid-flight.
+
+        **Phase 2 (synthesis)**: regardless of what the investigator
+        emitted as final text (could be JSON, could be `(no output)`,
+        could be prose), the bridge then runs one structured-output
+        call against the investigator's full transcript. The call uses
+        `complete_structured(GOAL_VERDICT_JSON_SCHEMA, strict=True)`,
+        which is constrained at the provider level — the model
+        literally cannot return invalid JSON for the required fields.
+        The synthesis turn is emitted as visible events into the SAME
+        judge subagent's session so the operator can see
+        "investigation messages → render-verdict prompt → verdict JSON"
+        as one continuous chat transcript.
+
+        Failure modes:
+          * Investigator raises (network, tool registry, runner bug):
+            bubbles to caller, which has a Q5 fallback to inline
+            standard judge.
+          * Synthesis call raises (API 5xx, refused completion):
+            visible system event emitted into the judge session, and
+            we return a conservative `done=false, confidence=0`
+            verdict so the loop continues safely.
         """
-        from bridge.tools.goal_loop import parse_goal_verdict
-
         sub_tool = self.tool_registry._tools.get("sub_agent")  # noqa: SLF001
         if sub_tool is None:
             raise RuntimeError("sub_agent tool not registered on parent")
 
         # Tool surface: brief override wins, otherwise profile default.
+        # judgeMaxIterations is no longer honored — see safety-net
+        # constant docs.
         tool_filter: frozenset[str] | None = None
-        max_iter_override: int | None = None
         if self.judge_rules is not None:
             tool_filter = frozenset(self.judge_rules.effective_tools())
-            max_iter_override = self.judge_rules.judge_max_iterations
 
         record, response_text, error = await sub_tool.spawn_programmatically(
             agent_type_name="judge-deep",
             label="Goal judge (deep)",
             task=prompt,
             tool_filter=tool_filter,
-            max_iterations_override=max_iter_override,
+            max_iterations_override=_DEEP_JUDGE_SAFETY_NET_ITERATIONS,
         )
         if error is not None:
             raise error
-        verdict = parse_goal_verdict(response_text or "")
+        return await self._synthesize_judge_verdict(record, response_text or "")
+
+    async def _synthesize_judge_verdict(
+        self, record: Any, investigator_text: str
+    ) -> Any:
+        """Render a guaranteed-valid GoalVerdict from a finished
+        judge-deep investigation. The structured-output call here is
+        the only mechanism that promises a parseable verdict every
+        time — `parse_goal_verdict` against free-form text used to
+        fail silently when the investigator returned `(no output)`.
+
+        Emits visible events into the judge subagent's session:
+          1. `system_event` flagging investigator exhaustion when the
+             transcript is thin or the safety-net cap was hit, so the
+             operator can spot when synthesis is leaning on weak
+             context.
+          2. `message_appended` with the synthesis user prompt — the
+             "render verdict now" turn.
+          3. `turn_start` + `text_delta(pretty JSON)` + `turn_complete`
+             for the assistant synthesis response. The renderer's
+             StructuredJsonView picks up the pretty JSON and shows it
+             as the verdict card.
+        """
+        from bridge.tools.coordination import current_datetime_block
+        from bridge.tools.goal_loop import (
+            GOAL_JUDGE_SYSTEM_PROMPT,
+            GOAL_VERDICT_JSON_SCHEMA,
+            GoalVerdict,
+            _new_id,
+            parse_goal_verdict,
+        )
+        from engine.types import Message
+
+        investigator_messages = list(getattr(record, "final_messages", []) or [])
+        iterations = int(getattr(record, "iterations", 0) or 0)
+        investigator_empty = not investigator_text.strip() or investigator_text.strip() == "(no output)"
+        hit_safety_net = iterations >= _DEEP_JUDGE_SAFETY_NET_ITERATIONS
+
+        # 1. User prompt that triggered the synthesis pass — visible
+        #    in the judge session's transcript so the operator sees
+        #    "here's what we asked it to do."
+        synthesis_prompt = (
+            "Render the verdict JSON now based on your investigation above. "
+            "Do not call any more tools. The schema is provider-enforced; "
+            "fields required: done, reason, confidence, criteria (with id/text/"
+            "priority/status), open_questions. Be precise — every must-criterion "
+            "needs an honest status. If you can't fully decide, return "
+            "done=false with confidence reflecting your uncertainty."
+        )
+        emit(
+            {
+                "type": "message_appended",
+                "sessionId": record.id,
+                "role": "user",
+                "content": synthesis_prompt,
+                "messageId": _new_id("msg"),
+                "createdAt": int(time.time() * 1000),
+            }
+        )
+
+        # 2. Optional warning chip when investigation came up thin.
+        #    `chatVisible: true` makes the reducer render this as a
+        #    standalone system chip between the user prompt and the
+        #    upcoming assistant synthesis turn.
+        if investigator_empty or hit_safety_net:
+            details: dict[str, Any] = {
+                "subagentId": record.id,
+                "iterations": iterations,
+                "investigatorEmpty": investigator_empty,
+                "safetyNetHit": hit_safety_net,
+                "safetyNetCap": _DEEP_JUDGE_SAFETY_NET_ITERATIONS,
+                "transcriptMessages": len(investigator_messages),
+                "chatVisible": True,
+            }
+            reason = []
+            if investigator_empty:
+                reason.append("investigator emitted no final text")
+            if hit_safety_net:
+                reason.append(f"hit {_DEEP_JUDGE_SAFETY_NET_ITERATIONS}-iter safety net")
+            emit(
+                {
+                    "type": "system_event",
+                    "sessionId": record.id,
+                    "subtype": "judge_investigation_thin",
+                    "message": "Investigation produced thin context: "
+                    + "; ".join(reason)
+                    + ". Synthesis will run on accumulated messages.",
+                    "details": details,
+                }
+            )
+
+        synth_model = getattr(record, "final_model_id", "") or self.model_id
+        synthesis_messages = investigator_messages + [
+            Message(role="user", content=synthesis_prompt),
+        ]
+        synth_provider = build_provider(synth_model, thinking_level="none")
+
+        try:
+            structured = await synth_provider.complete_structured(
+                synthesis_messages,
+                schema=GOAL_VERDICT_JSON_SCHEMA,
+                schema_name="goal_verdict",
+                schema_description=(
+                    "Skeptical-by-default verdict on whether the agent's "
+                    "work satisfies the standing goal."
+                ),
+                system_prompt=(
+                    f"{GOAL_JUDGE_SYSTEM_PROMPT}\n\n"
+                    f"{current_datetime_block()}"
+                ),
+                strict=True,
+                thinking=None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Hard API failure on the synthesis call. Surface visibly and
+            # return a conservative verdict so the goal loop continues.
+            emit(
+                {
+                    "type": "system_event",
+                    "sessionId": record.id,
+                    "subtype": "judge_synthesis_failed",
+                    "message": f"Synthesis call failed: {exc}",
+                    "details": {
+                        "error": str(exc),
+                        "errorType": type(exc).__name__,
+                        "chatVisible": True,
+                    },
+                }
+            )
+            return GoalVerdict(
+                done=False,
+                reason=(
+                    f"Judge synthesis call failed ({exc}); continuing "
+                    "conservatively."
+                ),
+                confidence=0.0,
+                criteria=[],
+                open_questions=[f"Synthesis raised: {exc}"],
+                raw=str(exc),
+                judge_session_id=record.id,
+            )
+
+        # Provider returned. complete_structured with strict=True is
+        # contractually obliged to deliver schema-conforming data; if
+        # it didn't, fall back to lenient parsing on raw_text and let
+        # the rubber-stamp guard inside parse_goal_verdict take over.
+        if structured.success and isinstance(structured.data, dict):
+            verdict = parse_goal_verdict(json.dumps(structured.data))
+            pretty_payload = structured.data
+        else:
+            verdict = parse_goal_verdict(structured.raw_text or "")
+            pretty_payload = verdict.to_dict()
+
         verdict.judge_session_id = record.id
+
+        # Emit the synthesis assistant turn into the judge subagent's
+        # session so the verdict JSON renders inline. The
+        # StructuredJsonView in the renderer picks up the JSON-shaped
+        # text and shows the verdict card.
+        synthesis_turn_id = f"judge-synth-{record.id}"
+        emit(
+            {
+                "type": "turn_start",
+                "sessionId": record.id,
+                "turnId": synthesis_turn_id,
+            }
+        )
+        emit(
+            {
+                "type": "text_delta",
+                "sessionId": record.id,
+                "text": json.dumps(pretty_payload, indent=2),
+            }
+        )
+        emit(
+            {
+                "type": "turn_complete",
+                "sessionId": record.id,
+                "turnId": synthesis_turn_id,
+            }
+        )
+
         return verdict
 
     async def _run_judge_calibrator(self, *, reason: str = "goal_set") -> None:
@@ -4467,10 +4676,6 @@ class _BridgeSession:
 
         # No turn budget — the loop continues until the judge marks the
         # goal done, the operator pauses it, or the runner hits an error.
-        # The previous `turns_used >= max_turns` pause was removed per
-        # operator request; `max_turns` is kept as a data field so saved
-        # sidecars and renderer code don't break, but it is not enforced.
-
         continuation = goal.continuation_prompt()
         self._emit_goal_event(
             "goal_continue",
@@ -6356,12 +6561,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                     chat_visible=True,
                 )
                 return
-            max_turns = cmd.get("maxTurns")
-            try:
-                budget = int(max_turns) if max_turns is not None else None
-            except Exception:
-                budget = None
-            sess._set_goal(goal, max_turns=budget, source="slash")
+            sess._set_goal(goal, source="slash")
             _schedule_or_queue_turn(sess, goal, None)
             return
         if action == "pause":
@@ -6379,7 +6579,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         if action == "set_rules" or action == "set_brief":
             # Operator updates the judge rules. Payload mirrors JudgeRules.to_dict():
             # { voice, rigorScore, judgeProfile, criteria: [{id, text, priority}],
-            #   neverDo, whenToStop, judgeTools, judgeMaxIterations }
+            #   neverDo, whenToStop, judgeTools }
             # ('set_brief' is kept as a legacy alias from the rename.)
             from bridge.tools.goal_loop import JudgeRules
             rules_payload = (

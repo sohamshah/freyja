@@ -345,7 +345,6 @@ export interface HarnessActions {
     neverDo: string[]
     whenToStop: string
     judgeTools?: string[]
-    judgeMaxIterations?: number
   }): void
   /** Operator-initiated judge calibration. Always overwrites existing
    *  rules with the calibrator's proposal. Auto-fires once on /goal set
@@ -1503,6 +1502,21 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         next.isStreaming = false
       }
       return next
+
+    case 'message_appended': {
+      // Hard-append a fully-formed message. Used by the bridge to
+      // inject out-of-band turns (deep judge synthesis prompt etc.)
+      // into a session's transcript so they show up in chat.
+      const id = ev.messageId || nextId('msg')
+      const newMessage: Message = {
+        id,
+        role: ev.role,
+        parts: ev.content ? [{ type: 'text', text: ev.content }] : [],
+        createdAt: ev.createdAt || Date.now(),
+      }
+      next.messages = [...slice.messages, newMessage]
+      return next
+    }
 
     default:
       return next

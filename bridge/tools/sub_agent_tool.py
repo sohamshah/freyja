@@ -1407,8 +1407,12 @@ Parameters:
 
         from engine.runner import StopCondition
         # max_iterations_override (set by spawn_programmatically) wins
-        # over the agent_type cap. Lets the deep judge use the
-        # operator-tuned JudgeRules.judge_max_iterations.
+        # over the agent_type cap. The deep judge uses a high internal
+        # safety-net via _DEEP_JUDGE_SAFETY_NET_ITERATIONS in
+        # freyja_bridge.py — the actual verdict shape is guaranteed by
+        # a separate structured-output synthesis pass after this run
+        # returns, so this cap exists only as a brake on pathological
+        # tool-loops.
         effective_max_iter = (
             getattr(record, "max_iterations_override", None)
             or agent_type.max_iterations
@@ -1577,6 +1581,22 @@ Parameters:
         record.iterations = getattr(result, "iterations", 0) or 0
 
         text = "".join(collected_text).strip() or "(no output)"
+
+        # Stash the final transcript snapshot on the record so callers
+        # that need to chain a follow-up LLM call against the SAME
+        # conversational context (deep judge synthesis pass, etc.) can
+        # do so without re-running the investigation. Captured here on
+        # the success path only — cancel/error paths return early and
+        # leave the default empty list, signalling "no usable transcript".
+        try:
+            record.final_messages = session.get_messages()
+            record.final_system_prompt = system_prompt
+            record.final_model_id = child_model
+        except Exception:  # noqa: BLE001
+            # Failing to snapshot the transcript must not break the
+            # subagent return — the downstream synthesis pass has its
+            # own fallback when final_messages is empty.
+            pass
 
         # Proactively persist the full result to an artifact file so it
         # survives truncation and compaction. The parent agent gets a

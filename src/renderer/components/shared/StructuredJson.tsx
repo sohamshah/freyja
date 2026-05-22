@@ -103,7 +103,6 @@ interface CalibratorJson {
   neverDo: string[]
   whenToStop?: string
   judgeTools?: string[]
-  judgeMaxIterations?: number
   rationaleOverall?: string
   rationaleByField?: Record<string, string>
   confidence?: number
@@ -211,11 +210,6 @@ function CalibratorCard({
         {conf != null ? (
           <span className="font-mono text-[11px] tabular-nums text-fg-2">
             conf <span className={confCls}>{conf.toFixed(2)}</span>
-          </span>
-        ) : null}
-        {typeof data.judgeMaxIterations === 'number' ? (
-          <span className="font-mono text-[11px] tabular-nums text-fg-3">
-            · max {data.judgeMaxIterations} iter
           </span>
         ) : null}
         <button
