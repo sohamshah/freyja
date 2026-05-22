@@ -14,6 +14,10 @@ import { highlightHtml, highlightRuns } from '../lib/searchHighlight'
 import { MessageContextMenu, type MessageMenuAction } from './MessageContextMenu'
 import { BranchSessionDialog } from './BranchSessionDialog'
 import { CalibrationCard } from './shared/CalibrationCard'
+import {
+  StructuredJsonView,
+  tryParseCompleteJson,
+} from './shared/StructuredJson'
 import type { CalibrationStatus, JudgeRules } from './shared/types'
 import type { Message, MessagePart } from '@shared/events'
 
@@ -1083,8 +1087,25 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
     () => (part.type === 'text' ? renderMarkdown(visibleText) : ''),
     [part.type, visibleText],
   )
+  // Detect when an assistant text part is actually a JSON payload
+  // (e.g. judge calibrator output) and short-circuit to a structured
+  // card. Only attempt this once the part is no longer the streaming
+  // tail — partial JSON parses produce flicker, and a search query
+  // means the operator wants to scan raw text, so we leave markdown
+  // in place there too.
+  const parsedJson = useMemo(() => {
+    if (part.type !== 'text') return undefined
+    if (isActiveTail) return undefined
+    if (searchQuery) return undefined
+    const parsed = tryParseCompleteJson(sourceText)
+    if (!parsed || typeof parsed !== 'object') return undefined
+    return parsed
+  }, [part.type, isActiveTail, searchQuery, sourceText])
 
   if (part.type === 'text') {
+    if (parsedJson !== undefined) {
+      return <StructuredJsonView data={parsedJson} />
+    }
     const decorated = decorateCardMentions(renderedTextHtml, kanbanLookup)
     const html = searchQuery ? highlightHtml(decorated, searchQuery) : decorated
     return (
