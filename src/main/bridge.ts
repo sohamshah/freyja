@@ -62,6 +62,37 @@ export interface HarnessBridgeOptions {
  * otherwise falls back to an in-memory DemoBridge that streams realistic
  * fake events so the UI is always populated.
  */
+/** Persistent diagnostic log written by the Electron main process.
+ *  Captures lifecycle events (bridge spawn / exit / restart, command
+ *  send failures, main-side errors) that the Python bridge cannot
+ *  log itself — because when the bridge subprocess dies, it can't
+ *  emit its own death. Sibling file to the Python-side
+ *  `bridge-events.jsonl`. */
+const MAIN_LOG_PATH = path.join(os.homedir(), '.freyja', 'main-events.jsonl')
+const MAIN_LOG_PREV_PATH = path.join(os.homedir(), '.freyja', 'main-events.prev.jsonl')
+const MAIN_LOG_ROLLOVER_BYTES = 20 * 1024 * 1024 // 20 MB
+
+function appendMainLog(entry: Record<string, unknown>): void {
+  try {
+    const dir = path.dirname(MAIN_LOG_PATH)
+    fs.mkdirSync(dir, { recursive: true })
+    // Size-based rotation. Cheap stat per write; only rotates when
+    // the threshold is crossed. .prev preserved for post-mortem.
+    try {
+      const stat = fs.statSync(MAIN_LOG_PATH)
+      if (stat.size > MAIN_LOG_ROLLOVER_BYTES) {
+        fs.renameSync(MAIN_LOG_PATH, MAIN_LOG_PREV_PATH)
+      }
+    } catch {
+      // file might not exist yet — fine
+    }
+    const line = JSON.stringify({ _t: Date.now() / 1000, ...entry }) + '\n'
+    fs.appendFileSync(MAIN_LOG_PATH, line)
+  } catch {
+    // never let logging take down the main process
+  }
+}
+
 export class HarnessBridge {
   private mode: BridgeMode = 'error'
   private proc: ChildProcessWithoutNullStreams | null = null
@@ -427,6 +458,14 @@ export class HarnessBridge {
   }
 
   private emit(event: BridgeEvent) {
+    // Mirror diagnostic-flavored events into the persistent main-side
+    // log. We intentionally filter to lifecycle / log / error events
+    // and skip the high-volume streaming traffic (text_delta etc.)
+    // that already lives in the bridge's own log file.
+    const type = (event as { type?: string }).type
+    if (type === 'log' || type === 'error' || type === 'ready' || type === 'emergency_stop') {
+      appendMainLog({ source: 'main', event })
+    }
     this.onEvent(event)
   }
 

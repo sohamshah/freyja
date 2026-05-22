@@ -22,6 +22,60 @@ import {
   type DesktopSettings,
 } from './settings.js'
 
+// Persistent crash sink for the Electron main process. Mirrors the
+// bridge-side log so a hard crash of either the Python subprocess OR
+// the Electron main process leaves a paper trail at
+// ~/.freyja/main-events.jsonl. Without these handlers, an uncaught
+// exception in main would tear down the app silently with no signal
+// for post-mortem.
+const MAIN_CRASH_LOG = path.join(os.homedir(), '.freyja', 'main-events.jsonl')
+function logMainCrash(entry: Record<string, unknown>): void {
+  try {
+    fs.mkdirSync(path.dirname(MAIN_CRASH_LOG), { recursive: true })
+    fs.appendFileSync(
+      MAIN_CRASH_LOG,
+      JSON.stringify({ _t: Date.now() / 1000, source: 'main', ...entry }) + '\n',
+    )
+  } catch {
+    // never block app teardown on logging
+  }
+}
+process.on('uncaughtException', (err) => {
+  logMainCrash({
+    event: { type: 'error', level: 'fatal', kind: 'uncaughtException' },
+    message: err?.message ?? String(err),
+    stack: err?.stack,
+  })
+  console.error('[main] uncaughtException:', err)
+})
+process.on('unhandledRejection', (reason) => {
+  const err = reason as Error | undefined
+  logMainCrash({
+    event: { type: 'error', level: 'fatal', kind: 'unhandledRejection' },
+    message: err?.message ?? String(reason),
+    stack: err?.stack,
+  })
+  console.error('[main] unhandledRejection:', reason)
+})
+app.on('render-process-gone', (_event, _webContents, details) => {
+  logMainCrash({
+    event: { type: 'log', level: 'error', kind: 'render-process-gone' },
+    reason: details.reason,
+    exitCode: details.exitCode,
+  })
+  console.error('[main] render-process-gone:', details)
+})
+app.on('child-process-gone', (_event, details) => {
+  logMainCrash({
+    event: { type: 'log', level: 'warn', kind: 'child-process-gone' },
+    type_: details.type,
+    reason: details.reason,
+    exitCode: details.exitCode,
+    name: details.name,
+  })
+  console.error('[main] child-process-gone:', details)
+})
+
 // In dev we load vite at http://localhost:5179
 // In prod we load the built renderer from dist-renderer/index.html
 const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production'

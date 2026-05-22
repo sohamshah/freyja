@@ -56,35 +56,33 @@ from bridge.project_paths import project_output_dir, project_output_guidance
 # ─── Stdout helpers ─────────────────────────────────────────────────────────
 
 
-# Diagnostic log for computer-use events. Everything we emit that has a
-# type in this set also gets appended to a JSONL file, with pngBase64
-# truncated so the file stays inspectable. Enable via the env var
-# FREYJA_DEBUG_LOG=1 (on by default when computer control is on).
-_COMPUTER_EVENT_TYPES = frozenset(
-    {
-        "computer_session_start",
-        "computer_session_end",
-        "screenshot_frame",
-        "action_planned",
-        "action_executed",
-        "emergency_stop",
-        "subagent_spawn",
-        "subagent_done",
-        "subagent_update",
-        "session_spawned",
-        "session_completed",
-        "tool_use_start",
-        "tool_input_end",
-        "tool_result",
-        "file_change_set",
-        "text_delta",
-    }
-)
-
+# Diagnostic log for the bridge. Every event the bridge emits gets
+# appended to ~/.freyja/bridge-events.jsonl, with large payloads
+# (pngBase64, image data, long text) truncated so the file stays
+# tail-able during a session. There is no type allowlist any more — log
+# / error / system_event / turn_start / turn_complete used to be
+# filtered out, which made post-mortem diagnosis nearly impossible
+# (e.g. "what happened in the 60s before this emergency_stop?" got no
+# answer from the file because `log` was filtered).
+#
+# Rollover: when the live file exceeds `_DEBUG_LOG_ROLLOVER_BYTES`,
+# the next computer_session_start (the natural "fresh trace" trigger)
+# atomically renames it to `.prev.jsonl` and starts fresh. The
+# previous trace is preserved so a crash can be reconstructed even if
+# the operator restarted the app before noticing.
+#
+# Enable via FREYJA_DEBUG_LOG=1 (default on).
 _DEBUG_LOG_PATH = Path.home() / ".freyja" / "bridge-events.jsonl"
+_DEBUG_LOG_PREV_PATH = Path.home() / ".freyja" / "bridge-events.prev.jsonl"
+_DEBUG_LOG_ROLLOVER_BYTES = 100 * 1024 * 1024  # 100 MB
 _DEBUG_LOG_ENABLED = (
     os.environ.get("FREYJA_DEBUG_LOG", "1").lower() not in ("0", "false", "no")
 )
+# Events whose `text` field should be left untruncated — useful for
+# log / error / system_event where the whole message is the point.
+# Everything else (text_delta in particular) gets clamped to 60 chars
+# so a streaming session doesn't bloat the file.
+_DEBUG_LOG_FULL_TEXT_TYPES = frozenset({"log", "error", "system_event"})
 
 SKILL_PRUNE_MIN_SKILLS = 5
 SKILL_PRUNE_MIN_SKILL_TOKENS = 5_000
@@ -93,23 +91,37 @@ SKILL_MAINTENANCE_MAX_TOKENS = 4_000
 
 
 def _write_debug_log(event: dict[str, Any]) -> None:
-    """Append a trimmed copy of the event to the diagnostic log file.
+    """Append every emitted event to the diagnostic log file.
 
-    Strips pngBase64 down to a length marker so the log stays
-    human-readable and we can tail it during a session. Truncates the
-    file on each new computer_session_start so only the most recent
-    run is there.
+    Heavy payloads (pngBase64, image dataBase64, streaming text_delta)
+    are truncated so the file stays tail-able. The previous behavior
+    was a tight allowlist that omitted `log`, `error`, `system_event`,
+    and turn boundaries — fine for a screenshot replay, useless for
+    debugging "the app froze 60 seconds before crashing." Now we log
+    everything, with size-based rotation on the next
+    computer_session_start preserving history in `.prev.jsonl`.
     """
     if not _DEBUG_LOG_ENABLED:
         return
     etype = event.get("type")
-    if etype not in _COMPUTER_EVENT_TYPES:
-        return
     try:
         _DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        # Start-of-session → wipe the file so we only keep the latest trace.
-        if etype == "computer_session_start":
-            _DEBUG_LOG_PATH.write_text("")
+        # Rotate at natural boundary events (turn_complete /
+        # computer_session_start) when the file is past the threshold.
+        # Boundaries are infrequent enough that the stat() cost is
+        # negligible while still capping file size during long-lived
+        # sessions that never touch computer-use.
+        if etype in {"turn_complete", "computer_session_start"}:
+            try:
+                if (
+                    _DEBUG_LOG_PATH.exists()
+                    and _DEBUG_LOG_PATH.stat().st_size > _DEBUG_LOG_ROLLOVER_BYTES
+                ):
+                    # os.replace is atomic on POSIX — no chance of a
+                    # half-rotated state if the bridge crashes mid-write.
+                    os.replace(_DEBUG_LOG_PATH, _DEBUG_LOG_PREV_PATH)
+            except Exception:  # noqa: BLE001
+                pass
         trimmed = dict(event)
         if "pngBase64" in trimmed:
             trimmed["pngBase64"] = f"<{len(trimmed['pngBase64'])} b64 chars>"
@@ -125,18 +137,25 @@ def _write_debug_log(event: dict[str, Any]) -> None:
                     item["dataBase64"] = f"<{len(data)} b64 chars>"
                 light_images.append(item)
             trimmed["images"] = light_images
-        # Text deltas are noisy; truncate
+        # Text-bearing events: clamp streaming-noise types to a short
+        # preview, keep log / error / system_event uncut because the
+        # message IS the diagnostic value.
         if "text" in trimmed and isinstance(trimmed["text"], str):
-            trimmed["text"] = trimmed["text"][:60]
+            if etype not in _DEBUG_LOG_FULL_TEXT_TYPES:
+                trimmed["text"] = trimmed["text"][:60]
+        if "message" in trimmed and isinstance(trimmed["message"], str):
+            if etype not in _DEBUG_LOG_FULL_TEXT_TYPES:
+                trimmed["message"] = trimmed["message"][:400]
         if "preview" in trimmed and isinstance(trimmed["preview"], str):
             trimmed["preview"] = trimmed["preview"][:200]
-        # Stamp each row with monotonic wall time
+        # Stamp each row with wall-clock time so an external watcher
+        # can correlate against system logs / crash dumps.
         trimmed["_t"] = time.time()
         with _DEBUG_LOG_PATH.open("a") as f:
             f.write(json.dumps(trimmed, ensure_ascii=False, default=str))
             f.write("\n")
     except Exception:  # noqa: BLE001
-        # Never let debug logging take down the bridge
+        # Never let debug logging take down the bridge.
         pass
 
 
@@ -503,6 +522,12 @@ def _build_user_message_with_attachments(
 async def _main() -> None:
     boot_session_id = f"desktop-{int(time.time() * 1000):x}"
     workspace = str(Path(os.environ.get("FREYJA_WORKSPACE", os.getcwd())).expanduser().resolve())
+
+    # Emit a startup marker as the very first line in the debug log
+    # so a post-mortem can see exactly when the bridge process came
+    # up. Pairs with the implicit "process died = no more events"
+    # signal at the other end.
+    log("info", f"bridge process started (pid={os.getpid()}, workspace={workspace})")
 
     try:
         from engine.runner import AsyncAgentRunner  # noqa: F401
