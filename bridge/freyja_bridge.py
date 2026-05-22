@@ -3901,15 +3901,24 @@ class _BridgeSession:
                 )
                 capacity -= 1
                 continue
-            if card.status == "ready" and card.assignee:
+            if card.status == "ready":
                 # Skip the mission root — it's a container, not work.
                 if card.metadata.get("role") == "mission_root":
                     continue
+                # Cards without an explicit assignee fall back to the
+                # `general` agent type. This is the common case when
+                # the parent session has never spawned a subagent
+                # before — there's no precedent for what kind of
+                # worker to assign, but the card is still real work
+                # that needs to land on someone. Without this default
+                # the dispatcher silently skipped unassigned cards
+                # and autopilot looked broken on fresh sessions.
+                agent_type = card.assignee or "general"
                 plans.append(
                     {
                         "card": card,
-                        "agent_type": card.assignee,
-                        "label": f"{card.assignee} {card.id}",
+                        "agent_type": agent_type,
+                        "label": f"{agent_type} {card.id}",
                         "lane": "worker",
                     }
                 )
