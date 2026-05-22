@@ -17,7 +17,7 @@ interface Props {
 }
 
 const PRIORITIES: CriterionPriority[] = ['must', 'should', 'may']
-const JUDGE_PROFILES: JudgeProfile[] = ['quick', 'standard', 'deep']
+const JUDGE_PROFILES: JudgeProfile[] = ['skip', 'quick', 'standard', 'deep']
 
 const RIGOR_LEVELS: ReadonlyArray<1 | 2 | 3 | 4> = [1, 2, 3, 4]
 const RIGOR_META: Record<1 | 2 | 3 | 4, { name: string; tagline: string; detail: string }> = {
@@ -59,6 +59,12 @@ const JUDGE_PROFILE_META: Record<
   JudgeProfile,
   { name: string; cost: string; tagline: string }
 > = {
+  skip: {
+    name: 'Skip',
+    cost: 'no cost',
+    tagline:
+      'Judge never fires. For greetings, simple factual questions, trivial conversational goals where there is nothing to verify.',
+  },
   quick: {
     name: 'Quick',
     cost: 'cheap · fast',

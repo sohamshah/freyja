@@ -92,7 +92,7 @@ export function tryParseCompleteJson(raw: string): unknown | undefined {
 }
 
 interface CalibratorJson {
-  judgeProfile: 'quick' | 'standard' | 'deep'
+  judgeProfile: 'skip' | 'quick' | 'standard' | 'deep'
   rigorScore: 1 | 2 | 3 | 4
   voice: string
   criteria: Array<{
@@ -162,6 +162,8 @@ function CalibratorCard({
       ? 'text-accent border-accent/[0.32] bg-accent/[0.08]'
       : profile === 'quick'
       ? 'text-fg-1 border-fg-4/[0.32] bg-white/[0.03]'
+      : profile === 'skip'
+      ? 'text-fg-3 border-fg-4/[0.32] bg-white/[0.02]'
       : 'text-fg-1 border-white/[0.12] bg-white/[0.04]'
   const rigor = data.rigorScore
   const rigorCls =

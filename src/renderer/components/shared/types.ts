@@ -106,7 +106,7 @@ export interface BriefCriterion {
   priority: CriterionPriority
 }
 
-export type JudgeProfile = 'quick' | 'standard' | 'deep'
+export type JudgeProfile = 'skip' | 'quick' | 'standard' | 'deep'
 
 export interface CalibratorMeta {
   /** The model that produced this calibration. */

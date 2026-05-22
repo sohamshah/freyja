@@ -205,7 +205,15 @@ You have one shot. No tools. No follow-ups. Read the goal, infer what
 *kind* of work this is and what its dominant failure modes are, and
 return a structured JSON configuration.
 
-The judge has three profiles:
+The judge has four profiles, ordered by intensity:
+  · `skip`     — no judge runs at all. The loop fires the agent turn
+                 and stops. Use ONLY when the goal has nothing
+                 verifiable to evaluate: greetings, simple factual
+                 lookups ("what time is it"), trivial conversational
+                 turns, or "goals" that are really just one-shot
+                 questions. If there is any real work to do — research,
+                 code, analysis, anything multi-turn — pick at least
+                 `quick`. When in doubt, do NOT pick skip.
   · `quick`    — Haiku 4.5, no thinking, single-call. Use when the goal is
                  small, mechanical, or genuinely easy to evaluate (e.g.
                  "rename this function", "format this file"). Cheap.
@@ -236,6 +244,10 @@ description fits the goal, NOT a number on a sliding scale:
         citation-heavy work, anything high-stakes.
 
 Heuristics for picking profile + rigor:
+  · The goal is a greeting, a single factual lookup, or a trivial
+    conversational message ("hi", "what time is it", "thanks") →
+    `skip`. Other fields still need to be present but won't be
+    consulted.
   · The goal demands verifiable claims (file refs, citations, code
     that must compile/run, exact quotes) → `deep`, rigor 4.
   · The goal is open-ended research / exploration with no clear
@@ -287,7 +299,7 @@ You will return STRICT JSON in this exact shape, with no surrounding
 prose and no markdown fence:
 
 {
-  "judgeProfile": "quick" | "standard" | "deep",
+  "judgeProfile": "skip" | "quick" | "standard" | "deep",
   "rigorScore": 1 | 2 | 3 | 4,
   "voice": "<3-6 sentence paragraph>",
   "criteria": [
@@ -490,7 +502,7 @@ class RuleCriterion:
 # Profile values determine model, thinking budget, and (later) tool
 # allowlist for the judge call. Kept on the brief so the operator picks
 # explicitly per goal. Defaults to "standard" — current behavior.
-JUDGE_PROFILES = ("quick", "standard", "deep")
+JUDGE_PROFILES = ("skip", "quick", "standard", "deep")
 
 
 # Rigor: 4 discrete levels with literal semantics. See

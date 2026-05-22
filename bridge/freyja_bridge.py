@@ -4667,6 +4667,29 @@ class _BridgeSession:
 
         goal.turns_used += 1
         goal.updated_at = time.time()
+
+        # Calibrator-chosen `skip` profile: this goal has nothing
+        # verifiable to evaluate (greeting, factual lookup, trivial
+        # conversational turn). Don't run the judge, don't auto-
+        # continue, just let the operator drive. Emit a one-time
+        # marker on the first post-arming turn so the operator sees
+        # the bypass; subsequent turns stay silent.
+        skip_profile = (
+            self.judge_rules is not None and self.judge_rules.judge_profile == "skip"
+        )
+        if skip_profile:
+            if goal.turns_used == 1:
+                self._emit_goal_event(
+                    "goal_judge_skipped",
+                    "Judge skipped — calibrator marked this goal as not needing verification.",
+                    details={
+                        "judgeProfile": "skip",
+                        "chatVisible": True,
+                    },
+                    chat_visible=True,
+                )
+            return
+
         verdict = await self._judge_goal(latest_response)
         goal.last_verdict = verdict
         goal.updated_at = time.time()

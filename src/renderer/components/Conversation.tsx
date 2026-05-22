@@ -1191,7 +1191,7 @@ function InlineGoalVerdict({ eventId }: { eventId: string }) {
     fallbackFrom?: string | null
   }
   const rules = (event.details?.judgeRules ?? null) as {
-    judgeProfile?: 'quick' | 'standard' | 'deep'
+    judgeProfile?: 'skip' | 'quick' | 'standard' | 'deep'
   } | null
   const profile = rules?.judgeProfile ?? 'standard'
   const done = !!verdict.done

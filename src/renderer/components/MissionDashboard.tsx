@@ -113,7 +113,7 @@ interface CalibratorMetaPayload {
 interface JudgeRulesPayload {
   voice: string
   rigorScore: number
-  judgeProfile: 'quick' | 'standard' | 'deep'
+  judgeProfile: 'skip' | 'quick' | 'standard' | 'deep'
   criteria: Array<{ id: string; text: string; priority: 'must' | 'should' | 'may' }>
   neverDo: string[]
   whenToStop: string
