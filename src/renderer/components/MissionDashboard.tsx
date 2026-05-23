@@ -84,6 +84,10 @@ interface KanbanCardView {
   workerSessionId?: string
   judgeSessionId?: string
   workerTerminalState?: string
+  /** Artifact file paths produced by the worker. Reducer mirrors this
+   *  from each kanban_* event's `details.task.artifacts` so the card UI
+   *  can show a count chip + the drawer can list the file paths. */
+  artifacts?: string[]
   // Move D — populated when the specifier has filled in structured fields.
   spec?: {
     definition_of_done?: string[]

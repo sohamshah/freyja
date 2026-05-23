@@ -65,6 +65,9 @@ export interface KanbanCardView {
   completedAt?: number
   consecutiveFailures?: number
   requiresVerification?: boolean
+  /** Artifact file paths produced by the worker. Used in the drawer
+   *  body and as a count chip on the kanban card. */
+  artifacts?: string[]
   /** Move R — default-on judge-review pipeline. `reviewIteration`
    *  counts how many review->rework cycles this card has been
    *  through. Sticky session ids preserve worker/judge continuity
