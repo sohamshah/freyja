@@ -65,6 +65,17 @@ export interface KanbanCardView {
   completedAt?: number
   consecutiveFailures?: number
   requiresVerification?: boolean
+  /** Move R — default-on judge-review pipeline. `reviewIteration`
+   *  counts how many review->rework cycles this card has been
+   *  through. Sticky session ids preserve worker/judge continuity
+   *  across reworks. `workerTerminalState` records what state the
+   *  worker exited at (done / failed / cancelled / crashed /
+   *  timed_out) so the UI can communicate whether a card in review
+   *  is being judged on a clean delivery or a partial crash dump. */
+  reviewIteration?: number
+  workerSessionId?: string
+  judgeSessionId?: string
+  workerTerminalState?: string
   spec?: {
     definition_of_done?: string[]
     references?: { files?: string[]; findings?: string[]; cards?: string[] }

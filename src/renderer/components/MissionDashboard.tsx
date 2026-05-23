@@ -73,6 +73,17 @@ interface KanbanCardView {
   // Opt-in verification (Move C). When true, the worker's `complete`
   // routes the card to `done_unverified` so the verifier picks it up.
   requiresVerification?: boolean
+  // Move R — default-on judge-review pipeline. `reviewIteration`
+  // counts rework cycles (worker → review → judge fail → worker).
+  // Sticky session ids for the worker and judge stay pinned across
+  // cycles so continuity is preserved. `workerTerminalState` records
+  // what state the worker exited at (done / failed / cancelled /
+  // crashed / timed_out) so the UI can show whether a card in review
+  // is being judged on a clean delivery or a partial crash dump.
+  reviewIteration?: number
+  workerSessionId?: string
+  judgeSessionId?: string
+  workerTerminalState?: string
   // Move D — populated when the specifier has filled in structured fields.
   spec?: {
     definition_of_done?: string[]
@@ -2789,6 +2800,22 @@ function collectKanbanCards(
         typeof card.requiresVerification === 'boolean'
           ? card.requiresVerification
           : existing?.requiresVerification,
+      reviewIteration:
+        typeof card.reviewIteration === 'number'
+          ? card.reviewIteration
+          : existing?.reviewIteration,
+      workerSessionId:
+        typeof card.workerSessionId === 'string'
+          ? card.workerSessionId
+          : existing?.workerSessionId,
+      judgeSessionId:
+        typeof card.judgeSessionId === 'string'
+          ? card.judgeSessionId
+          : existing?.judgeSessionId,
+      workerTerminalState:
+        typeof card.workerTerminalState === 'string'
+          ? card.workerTerminalState
+          : existing?.workerTerminalState,
       spec:
         card.spec && typeof card.spec === 'object'
           ? (card.spec as KanbanCardView['spec'])

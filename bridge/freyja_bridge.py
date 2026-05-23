@@ -172,6 +172,71 @@ def _write_debug_log(event: dict[str, Any]) -> None:
 _DEEP_JUDGE_SAFETY_NET_ITERATIONS = 50
 
 
+def _format_verdict_as_critique(card: Any, verdict: Any) -> str:
+    """Render a judge verdict as a rework prompt for the worker.
+
+    The worker resumes its session and reads this as the next user
+    turn — so it needs to be self-contained ("here's what's wrong, go
+    fix it") rather than a verdict report. Pulls out unmet criteria
+    + open questions explicitly so the worker has an actionable
+    checklist rather than just a paragraph to parse.
+    """
+    lines: list[str] = []
+    lines.append(
+        f"Card `{card.id}` (`{card.title}`) was reviewed and the judge "
+        "rejected the work. You need to rework it."
+    )
+    lines.append("")
+    lines.append("JUDGE REASON")
+    lines.append((verdict.reason or "(no reason given)").strip())
+    lines.append("")
+
+    unmet_musts: list[Any] = []
+    other_gaps: list[Any] = []
+    for crit in verdict.criteria or []:
+        status = getattr(crit, "status", "")
+        priority = getattr(crit, "priority", "")
+        if status == "met":
+            continue
+        if priority == "must":
+            unmet_musts.append(crit)
+        else:
+            other_gaps.append(crit)
+    if unmet_musts:
+        lines.append("UNMET MUST-CRITERIA (fix these or the next review will fail too)")
+        for crit in unmet_musts:
+            note = getattr(crit, "note", "") or ""
+            lines.append(
+                f"- [{getattr(crit, 'id', '?')}] {getattr(crit, 'text', '')}"
+                + (f" — {note}" if note else "")
+            )
+        lines.append("")
+    if other_gaps:
+        lines.append("OTHER GAPS")
+        for crit in other_gaps:
+            note = getattr(crit, "note", "") or ""
+            lines.append(
+                f"- [{getattr(crit, 'id', '?')}] {getattr(crit, 'text', '')}"
+                + (f" — {note}" if note else "")
+            )
+        lines.append("")
+    if verdict.open_questions:
+        lines.append("OPEN QUESTIONS THE JUDGE FLAGGED")
+        for q in verdict.open_questions:
+            lines.append(f"- {q}")
+        lines.append("")
+
+    lines.append(
+        f"This is rework iteration {card.review_iteration} of "
+        f"{getattr(_BridgeSession, 'KANBAN_MAX_REVIEW_ITERATIONS', 5)}. "
+        "Finish your fix and call `kanban` action=complete on this card "
+        "again when you're done. If you genuinely can't make progress "
+        "on the gaps named above, call `kanban` action=block with a "
+        "clear reason so the operator can intervene."
+    )
+    return "\n".join(lines)
+
+
 def emit(event: dict[str, Any]) -> None:
     """Emit a single JSON line to stdout and flush immediately."""
     try:
@@ -1892,6 +1957,11 @@ class _BridgeSession:
         # spawning a second worker for the same card while the first is
         # still running.
         self._kanban_dispatched: set[str] = set()
+        # Cards with an in-flight judge orchestrator task. Distinct
+        # from `_kanban_dispatched` (workers) so a card that finishes
+        # one judge pass and lands back in review (rework path) can
+        # be re-judged without the worker dispatch logic blocking it.
+        self._kanban_judge_pending: set[str] = set()
         self.task_board: Any | None = None
         # Monotonically-incrementing tool-call counter scoped to this
         # session. Used by the stale-task reminder to figure out "has
@@ -3639,6 +3709,12 @@ class _BridgeSession:
 
     KANBAN_DISPATCH_INTERVAL = 30.0
     KANBAN_MAX_PARALLEL = 3
+    # Hard cap on review<->rework cycles before a card moves to blocked
+    # and surfaces to the operator. The 5th failed verdict skips the
+    # worker rewake and routes straight to blocked. Mirrored in
+    # sub_agent_tool.py's `_mark_kanban_terminal` to short-circuit
+    # review-entry past the cap as a defense in depth.
+    KANBAN_MAX_REVIEW_ITERATIONS = 5
     # A running card with no `updated_at` activity for this long is
     # flagged via `kanban_stale`. The flag is informational — it
     # surfaces to the dashboard so the user can investigate.
@@ -3881,9 +3957,32 @@ class _BridgeSession:
             return
 
         cards = await self.kanban_board.list()
-        # Three dispatch lanes, in order: verifier sign-off, ready workers,
-        # then triage specifiers. Verification is highest-priority because
-        # completed work waiting on a seal is the closest to value-delivered.
+
+        # Review lane (Move R): every card sitting in `review` needs
+        # the judge to pass/fail it before it can flow forward. Each
+        # in-review card spawns its own orchestrator task so multiple
+        # judges run concurrently — judges are independent of the
+        # KANBAN_MAX_PARALLEL worker cap, since they're short
+        # read-only investigations, not long worker turns. Idempotency
+        # tracked via `_kanban_judge_pending`.
+        for card in cards:
+            if card.status != "review":
+                continue
+            # Mission-root cards are pure containers and have no
+            # deliverable to judge.
+            if card.metadata.get("role") == "mission_root":
+                continue
+            if card.id in self._kanban_judge_pending:
+                continue
+            self._kanban_judge_pending.add(card.id)
+            asyncio.create_task(
+                self._run_kanban_judge_for_card(card, sub_tool=sub_tool),
+                name=f"kanban-judge-{card.id}",
+            )
+
+        # Worker / verifier / specifier lanes below — ordered with
+        # verifier sign-off first (closest to value-delivered),
+        # workers second, specifiers last.
         plans: list[dict[str, Any]] = []
         for card in cards:
             if capacity == 0:
@@ -4064,6 +4163,348 @@ class _BridgeSession:
                 "agent_type": agent_type,
                 "mode": "background",
                 "kanban_task_id": card.id,
+            },
+        )
+
+    async def _wake_subagent_with_task(
+        self,
+        session_id: str,
+        task_text: str,
+        *,
+        woken_by: str = "kanban-dispatcher",
+        from_label: str = "kanban-dispatcher",
+    ) -> bool:
+        """Re-engage an archived subagent session and deliver a
+        follow-up task as its next user turn.
+
+        Same machinery the talk tool uses for cross-session messages
+        (InboxMessage + `_wake_archived_subagent`). The pre-iteration
+        drain hook on the resumed runner picks the message up and
+        feeds it as a user turn. The session id is preserved so the
+        UI sees the original chat continuing.
+
+        Returns True on best-effort dispatch — the wake may still
+        fail asynchronously inside `_wake_archived_subagent`, but
+        that path logs its own warnings.
+        """
+        from bridge.inbox import InboxMessage, new_message_id
+
+        msg = InboxMessage(
+            id=new_message_id(),
+            from_session=self.id,
+            from_label=from_label,
+            # `agent` role so the resumed subagent treats this as an
+            # inter-agent talk, not a fresh operator prompt — matches
+            # how the talk tool drives sibling re-engagement.
+            from_role="agent",
+            content=task_text,
+            # force=True signals the pre-iteration drain to insert
+            # this as the next user turn even if other queued items
+            # are pending.
+            force=True,
+            reply_to=None,
+        )
+        try:
+            await _wake_archived_subagent(self.state, session_id, msg)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"_wake_subagent_with_task({session_id}): {exc}")
+            return False
+
+    async def _run_kanban_judge_for_card(
+        self,
+        card: Any,
+        *,
+        sub_tool: Any,
+    ) -> None:
+        """Drive a single card through one review pass.
+
+        Steps:
+          1. If `card.judge_session_id` is empty → spawn a fresh
+             `judge-deep` subagent (foreground, blocks until the
+             investigation finishes naturally). Records the new
+             session id back on the card so subsequent reviews
+             re-engage the same judge.
+          2. Else → wake the sticky judge via the resume path,
+             delivering a kanban rework prompt as the next user turn.
+             Block until the wake completes.
+          3. Run `_synthesize_judge_verdict` against the judge's full
+             accumulated transcript — same machinery goal-mode uses,
+             which guarantees a parseable GoalVerdict via provider-
+             enforced structured output.
+          4. Hand the verdict to `_handle_kanban_verdict` which routes
+             the card forward (done / rework / blocked) and rewakes
+             the worker on rework.
+
+        Spawned as its own task per review card so multiple cards
+        get judged in parallel without blocking the dispatch loop.
+        Idempotency: caller tracks `_kanban_judge_pending` to avoid
+        firing this twice for the same card.
+        """
+        if self.kanban_board is None:
+            self._kanban_judge_pending.discard(card.id)
+            return
+
+        from bridge.tools.goal_loop import (
+            KANBAN_JUDGE_INITIAL_TEMPLATE,
+            KANBAN_JUDGE_REWORK_TEMPLATE,
+        )
+        from bridge.transcript_persistence import _transcript_path
+
+        try:
+            # Build the user prompt. Same template family for initial
+            # vs rework — the judge's session itself carries the
+            # difference (round-1 sees the initial prompt with full
+            # card context; round 2+ sees a short re-evaluation
+            # nudge because its memory of round 1 is intact).
+            artifacts_block = (
+                "\n".join(f"- `{path}`" for path in (card.artifacts or []))
+                if card.artifacts
+                else "(no artifacts produced)"
+            )
+            worker_transcript_path = (
+                str(_transcript_path(card.worker_session_id))
+                if card.worker_session_id
+                else "(worker session id not recorded)"
+            )
+            terminal_state = card.worker_terminal_state or "unknown"
+            terminal_state_hint = {
+                "done": "The worker reported clean completion; verify the artifacts actually deliver the spec.",
+                "failed": "The worker hit a failure; check whether enough was produced before the crash to satisfy the card.",
+                "cancelled": "The worker was cancelled mid-flight; treat anything produced as best-effort partial work.",
+                "crashed": "The worker crashed mid-flight; treat artifacts as potentially incomplete.",
+                "timed_out": "The worker timed out; the deliverable may be partial or unfinished.",
+            }.get(terminal_state, "Worker terminal state unknown — evaluate the artifacts directly.")
+
+            spec_block = ""
+            if card.metadata:
+                spec_lines = []
+                for key in ("definition_of_done", "references", "verify_with"):
+                    value = card.metadata.get(key)
+                    if value:
+                        spec_lines.append(f"{key}: {value}")
+                spec_block = "\n".join(spec_lines) if spec_lines else "(no explicit spec on this card)"
+            else:
+                spec_block = "(no explicit spec on this card)"
+
+            sticky = bool(card.judge_session_id)
+            if sticky:
+                prompt = KANBAN_JUDGE_REWORK_TEMPLATE.format(
+                    card_id=card.id,
+                    review_iteration=card.review_iteration,
+                    max_review_iterations=self.KANBAN_MAX_REVIEW_ITERATIONS,
+                    worker_terminal_state=terminal_state,
+                    terminal_state_hint=terminal_state_hint,
+                    artifacts_block=artifacts_block,
+                    worker_transcript_path=worker_transcript_path,
+                )
+            else:
+                prompt = KANBAN_JUDGE_INITIAL_TEMPLATE.format(
+                    card_id=card.id,
+                    card_title=card.title,
+                    card_body=card.body or "(no description provided)",
+                    card_spec_block=spec_block,
+                    worker_terminal_state=terminal_state,
+                    terminal_state_hint=terminal_state_hint,
+                    artifacts_block=artifacts_block,
+                    worker_transcript_path=worker_transcript_path,
+                )
+
+            self._emit_kanban_event(
+                "kanban_review_started",
+                f"Judge {'reviewing' if not sticky else 're-reviewing'} {card.id} (iter {card.review_iteration}/{self.KANBAN_MAX_REVIEW_ITERATIONS})",
+                details={
+                    "cardId": card.id,
+                    "reviewIteration": card.review_iteration,
+                    "sticky": sticky,
+                    "judgeSessionId": card.judge_session_id or None,
+                    "workerSessionId": card.worker_session_id or None,
+                    "workerTerminalState": terminal_state,
+                },
+            )
+
+            judge_record: Any | None = None
+
+            if not sticky:
+                # Fresh judge spawn. judge-deep AgentType — HIGH
+                # thinking, read-only tools (read_file, list_directory,
+                # grep, glob, bash, fetch_url) — under the same high
+                # safety-net cap goal-mode uses.
+                record, _resp, error = await sub_tool.spawn_programmatically(
+                    agent_type_name="judge-deep",
+                    label=f"Kanban judge ({card.id})",
+                    task=prompt,
+                    max_iterations_override=_DEEP_JUDGE_SAFETY_NET_ITERATIONS,
+                )
+                if error is not None:
+                    raise error
+                judge_record = record
+                # Pin the session id onto the card so future reviews
+                # wake this same judge.
+                await self.kanban_board.update(
+                    card.id,
+                    actor="kanban-dispatcher",
+                    judge_session_id=record.id,
+                )
+            else:
+                # Sticky wake. Resume the existing judge session with
+                # the rework prompt as its next user turn. The resume
+                # path spawns as background; we await terminal via
+                # the registry's done_event.
+                ok = await self._wake_subagent_with_task(
+                    card.judge_session_id,
+                    prompt,
+                    woken_by="kanban-dispatcher",
+                    from_label=f"kanban:{card.id}",
+                )
+                if not ok:
+                    raise RuntimeError(
+                        f"failed to wake judge {card.judge_session_id} for {card.id}"
+                    )
+                # Wait for the resumed judge to finish. registry.wait
+                # is a threading.Event.wait → wrap in to_thread so the
+                # asyncio loop isn't blocked.
+                if self.subagent_registry is None:
+                    raise RuntimeError("subagent_registry missing on session")
+                judge_record = await asyncio.to_thread(
+                    self.subagent_registry.wait, card.judge_session_id
+                )
+                if judge_record is None:
+                    raise RuntimeError(
+                        f"judge record {card.judge_session_id} disappeared after wake"
+                    )
+
+            # Synthesis pass — same machinery goal-mode uses. Reads
+            # judge_record.final_messages, runs complete_structured
+            # against GOAL_VERDICT_JSON_SCHEMA, guarantees a parseable
+            # GoalVerdict. Visible synthesis turn lands in the judge
+            # session's chat.
+            verdict = await self._synthesize_judge_verdict(
+                judge_record,
+                getattr(judge_record, "result", "") or "",
+            )
+
+            self._emit_kanban_event(
+                "kanban_judge_verdict",
+                ("Judge passed " if verdict.done else "Judge rejected ")
+                + f"{card.id} (iter {card.review_iteration}/{self.KANBAN_MAX_REVIEW_ITERATIONS})",
+                details={
+                    "cardId": card.id,
+                    "done": verdict.done,
+                    "confidence": verdict.confidence,
+                    "reason": verdict.reason,
+                    "reviewIteration": card.review_iteration,
+                    "judgeSessionId": card.judge_session_id or judge_record.id,
+                    "verdict": verdict.to_dict(),
+                    "chatVisible": True,
+                },
+            )
+
+            await self._handle_kanban_verdict(card, verdict)
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"kanban judge for {card.id} crashed: {exc}")
+            # Surface to the operator so they don't sit watching a
+            # silent review column.
+            self._emit_kanban_event(
+                "kanban_judge_failed",
+                f"Judge crashed for {card.id}: {exc}",
+                details={
+                    "cardId": card.id,
+                    "error": str(exc),
+                    "errorType": type(exc).__name__,
+                    "chatVisible": True,
+                },
+            )
+        finally:
+            self._kanban_judge_pending.discard(card.id)
+
+    async def _handle_kanban_verdict(self, card: Any, verdict: Any) -> None:
+        """Apply a judge verdict to a card.
+
+        Routing:
+          - `verdict.done == True` → card → `done`. Sticky judge can
+            stay pinned (no harm; the card is absorbing).
+          - `verdict.done == False` AND `review_iteration < cap` →
+            card → `running`, original worker rewoken with critique.
+          - `verdict.done == False` AND `review_iteration == cap` →
+            card → `blocked`. Operator territory.
+        """
+        if self.kanban_board is None:
+            return
+
+        if verdict.done:
+            try:
+                await self.kanban_board.update(
+                    card.id,
+                    actor="kanban-judge",
+                    status="done",
+                    summary=verdict.reason[:4000],
+                )
+            except Exception as exc:  # noqa: BLE001
+                log("warn", f"kanban_handle_verdict done update failed for {card.id}: {exc}")
+            return
+
+        at_cap = card.review_iteration >= self.KANBAN_MAX_REVIEW_ITERATIONS
+        if at_cap:
+            try:
+                await self.kanban_board.update(
+                    card.id,
+                    actor="kanban-judge",
+                    status="blocked",
+                    summary=(
+                        f"Blocked after {self.KANBAN_MAX_REVIEW_ITERATIONS} review iterations. "
+                        f"Last verdict: {verdict.reason[:2000]}"
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                log("warn", f"kanban_handle_verdict blocked update failed for {card.id}: {exc}")
+            self._emit_kanban_event(
+                "kanban_blocked",
+                f"{card.id} blocked at iteration cap",
+                details={
+                    "cardId": card.id,
+                    "reviewIteration": card.review_iteration,
+                    "verdict": verdict.to_dict(),
+                    "chatVisible": True,
+                },
+            )
+            return
+
+        # Rework path. Move card back to running + rewake the original
+        # worker with the verdict as a critique message.
+        critique = _format_verdict_as_critique(card, verdict)
+        if not card.worker_session_id:
+            log(
+                "warn",
+                f"kanban_handle_verdict: card {card.id} has no worker_session_id; can't rework",
+            )
+            return
+        try:
+            await self.kanban_board.update(
+                card.id,
+                actor="kanban-judge",
+                status="running",
+                summary=f"Rework iteration {card.review_iteration}: {verdict.reason[:2000]}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"kanban_handle_verdict rework status update failed for {card.id}: {exc}")
+            return
+
+        woken = await self._wake_subagent_with_task(
+            card.worker_session_id,
+            critique,
+            woken_by="kanban-judge",
+            from_label="kanban-judge",
+        )
+        self._emit_kanban_event(
+            "kanban_rework_started",
+            f"Reworking {card.id} (iter {card.review_iteration}/{self.KANBAN_MAX_REVIEW_ITERATIONS})",
+            details={
+                "cardId": card.id,
+                "reviewIteration": card.review_iteration,
+                "workerSessionId": card.worker_session_id,
+                "rewakeOk": woken,
+                "chatVisible": True,
             },
         )
 

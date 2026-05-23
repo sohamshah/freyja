@@ -585,6 +585,12 @@ const NARRATOR_SUBTYPES = new Set([
   'kanban_autopilot_enabled',
   'kanban_autopilot_disabled',
   'kanban_replay',
+  // Default-on judge-review pipeline (Move R).
+  'kanban_review_started',
+  'kanban_judge_verdict',
+  'kanban_rework_started',
+  'kanban_blocked',
+  'kanban_judge_failed',
 ])
 
 function ConversationStream({
@@ -843,6 +849,33 @@ function formatNarratorEvent(event: SystemEventRecord): string {
       if (count === 0) return ''
       const prefix = restarts > 1 ? `mission resumed (restart ${restarts})` : 'mission resumed'
       return `${prefix} — ${count} prior events replayed`
+    }
+    case 'kanban_review_started': {
+      const card = typeof details.cardId === 'string' ? details.cardId : ''
+      const iter = typeof details.reviewIteration === 'number' ? details.reviewIteration : 0
+      const sticky = details.sticky === true
+      if (!card) return 'judge reviewing'
+      return `${sticky ? 're-reviewing' : 'judging'} ${card}${iter ? ` · iter ${iter}` : ''}`
+    }
+    case 'kanban_judge_verdict': {
+      const card = typeof details.cardId === 'string' ? details.cardId : ''
+      const done = details.done === true
+      if (!card) return done ? 'judge passed a card' : 'judge rejected a card'
+      return done ? `judge passed ${card}` : `judge rejected ${card}`
+    }
+    case 'kanban_rework_started': {
+      const card = typeof details.cardId === 'string' ? details.cardId : ''
+      const iter = typeof details.reviewIteration === 'number' ? details.reviewIteration : 0
+      if (!card) return 'reworking a card'
+      return `reworking ${card}${iter ? ` · iter ${iter}/5` : ''}`
+    }
+    case 'kanban_blocked': {
+      const card = typeof details.cardId === 'string' ? details.cardId : ''
+      return card ? `blocked ${card} (5 rework attempts exhausted)` : 'card blocked at iteration cap'
+    }
+    case 'kanban_judge_failed': {
+      const card = typeof details.cardId === 'string' ? details.cardId : ''
+      return card ? `judge crashed on ${card}` : 'judge crashed'
     }
     default:
       return ''

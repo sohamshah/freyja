@@ -28,6 +28,7 @@ STATUSES = (
     "ready",
     "running",
     "done_unverified",
+    "review",
     "done",
     "blocked",
     "crashed",
@@ -40,6 +41,9 @@ STATUSES = (
     # at write time. Listed last so it sorts after the canonical buckets.
     "todo",
 )
+# `review` is in-flight from the operator's perspective — the judge subagent
+# is reading the artifacts and deciding pass/fail. Terminal statuses are the
+# ones a card stops moving from on its own.
 TERMINAL_STATUSES = {"done", "cancelled", "failed"}
 # Terminal states a parent can reach where its `triage`/`todo`/`ready`
 # children's dependencies can never be satisfied. Children of these parents
@@ -67,6 +71,7 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     "running": {
         "done_unverified",
         "done",  # parent agents that don't use the verifier skip straight here
+        "review",  # default-on judge review path (Move R)
         "blocked",
         "crashed",
         "timed_out",
@@ -76,10 +81,20 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
         "failed",
         "cancelled",
     },
-    "done_unverified": {"done", "running", "cancelled"},
-    "blocked": {"running", "ready", "done", "done_unverified", "cancelled"},
-    "crashed": {"ready", "running", "failed", "cancelled"},
-    "timed_out": {"ready", "running", "failed", "cancelled"},
+    "done_unverified": {"done", "running", "cancelled", "review"},
+    "review": {
+        # Judge verdict pass → sealed done.
+        "done",
+        # Verdict fail + iter<5 → worker rewoken, card back in flight.
+        "running",
+        # 5th failed verdict → blocked, operator territory.
+        "blocked",
+        # Escape hatch.
+        "cancelled",
+    },
+    "blocked": {"running", "ready", "done", "done_unverified", "review", "cancelled"},
+    "crashed": {"ready", "running", "failed", "cancelled", "review"},
+    "timed_out": {"ready", "running", "failed", "cancelled", "review"},
     # Terminal states are absorbing — no further moves.
     "done": set(),
     "failed": set(),
@@ -190,6 +205,24 @@ class KanbanTask:
     # the next crashed/timed_out transition to `failed` so the
     # dispatcher stops respawning a flapping card.
     consecutive_failures: int = 0
+    # Default-on judge-review machinery (Move R). Each time the worker
+    # terminates, the card lands in `review`, the dispatcher spawns or
+    # wakes the sticky judge subagent, and the verdict routes the card
+    # forward. `review_iteration` increments on each entry to review;
+    # at MAX_REVIEW_ITERATIONS (5) a fail verdict routes to `blocked`
+    # instead of rewaking the worker.
+    review_iteration: int = 0
+    # Sticky session ids. Set once on first dispatch / first judge spawn
+    # and reused for every subsequent rework / re-review cycle so the
+    # worker has continuity of context AND the judge remembers its prior
+    # verdicts when re-evaluating.
+    worker_session_id: str = ""
+    judge_session_id: str = ""
+    # What state the worker exited at — done / failed / cancelled /
+    # crashed / timed_out. The judge factors this in: a worker that
+    # crashed mid-flight may still have produced enough to satisfy the
+    # card, but the judge should know it didn't terminate cleanly.
+    worker_terminal_state: str = ""
 
     def append_event(self, event: KanbanEvent) -> None:
         self.events.append(event)
@@ -235,6 +268,10 @@ class KanbanTask:
             "eventCount": self.event_count,
             "consecutiveFailures": self.consecutive_failures,
             "requiresVerification": self.requires_verification,
+            "reviewIteration": self.review_iteration,
+            "workerSessionId": self.worker_session_id,
+            "judgeSessionId": self.judge_session_id,
+            "workerTerminalState": self.worker_terminal_state,
         }
         spec = self.spec
         if spec:
@@ -385,6 +422,10 @@ class SessionKanbanBoard:
         artifacts: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
         requires_verification: bool | None = None,
+        review_iteration: int | None = None,
+        worker_session_id: str | None = None,
+        judge_session_id: str | None = None,
+        worker_terminal_state: str | None = None,
     ) -> KanbanTask | None:
         async with self._lock:
             task = self._tasks.get(task_id)
@@ -446,6 +487,18 @@ class SessionKanbanBoard:
                 if next_flag != task.requires_verification:
                     task.requires_verification = next_flag
                     changes["requiresVerification"] = next_flag
+            if review_iteration is not None:
+                task.review_iteration = int(review_iteration)
+                changes["reviewIteration"] = task.review_iteration
+            if worker_session_id is not None:
+                task.worker_session_id = worker_session_id.strip()
+                changes["workerSessionId"] = task.worker_session_id
+            if judge_session_id is not None:
+                task.judge_session_id = judge_session_id.strip()
+                changes["judgeSessionId"] = task.judge_session_id
+            if worker_terminal_state is not None:
+                task.worker_terminal_state = worker_terminal_state.strip()
+                changes["workerTerminalState"] = task.worker_terminal_state
             if comment:
                 task.append_comment(KanbanComment(actor, comment.strip()))
                 changes["comment"] = True
@@ -853,6 +906,10 @@ class SessionKanbanBoard:
             event_count=int(snapshot.get("eventCount") or len(events)),
             consecutive_failures=int(snapshot.get("consecutiveFailures") or 0),
             requires_verification=bool(snapshot.get("requiresVerification") or False),
+            review_iteration=int(snapshot.get("reviewIteration") or 0),
+            worker_session_id=str(snapshot.get("workerSessionId") or ""),
+            judge_session_id=str(snapshot.get("judgeSessionId") or ""),
+            worker_terminal_state=str(snapshot.get("workerTerminalState") or ""),
         )
 
 

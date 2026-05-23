@@ -192,6 +192,83 @@ detailed in `reason`. Name specific gaps in `open_questions`. Default to
 `done: false` unless every must criterion is explicitly met."""
 
 
+# ─── Kanban review judge templates ──────────────────────────────────────────
+#
+# Reused infrastructure: the same `judge-deep` AgentType (read-only tools,
+# HIGH thinking), the same GOAL_JUDGE_SYSTEM_PROMPT, the same
+# GOAL_VERDICT_JSON_SCHEMA + structured-output synthesis pass that guarantees
+# a parseable verdict. Only the user prompt differs — a kanban judge
+# evaluates a single deliverable against a card spec, not a standing goal
+# across multiple turns.
+#
+# Two templates: one for the first review of a card (judge has no prior
+# memory of this card), one for the sticky re-review where the judge's own
+# session carries forward and we just nudge it to re-investigate the
+# current state.
+
+KANBAN_JUDGE_INITIAL_TEMPLATE = """A kanban card has been submitted for review.
+
+CARD
+id: {card_id}
+title: {card_title}
+
+DESCRIPTION
+{card_body}
+
+ACCEPTANCE CRITERIA / SPEC
+{card_spec_block}
+
+WORKER OUTCOME
+The assigned worker exited with state: `{worker_terminal_state}`. {terminal_state_hint}
+
+ARTIFACTS PRODUCED
+{artifacts_block}
+
+WORKER SESSION
+Transcript persisted at: {worker_transcript_path}
+You can `read_file` the transcript directly if you need to see how the
+worker reasoned. The artifact files above are the actual deliverable —
+read them, grep them, run them, fetch URLs they reference. Don't trust
+the worker's self-report; verify the work.
+
+YOUR JOB
+Decide whether the worker's output satisfies the card. Be skeptical of
+generic claims. Insist on concrete evidence the work matches the
+description and acceptance criteria. If artifacts are missing,
+malformed, or the worker exited mid-flight without finishing, name
+exactly what's missing in `open_questions`.
+
+Return your verdict as strict JSON per the schema in the system prompt.
+Default to `done: false` unless every must criterion is explicitly met."""
+
+
+KANBAN_JUDGE_REWORK_TEMPLATE = """The worker has reworked card `{card_id}` based on your previous verdict.
+
+This is review iteration {review_iteration} of {max_review_iterations}.
+
+WORKER OUTCOME (this pass)
+The worker exited with state: `{worker_terminal_state}`. {terminal_state_hint}
+
+CURRENT ARTIFACTS
+{artifacts_block}
+
+WORKER SESSION
+Transcript persisted at: {worker_transcript_path}
+The transcript now includes the worker's response to your previous
+feedback — see the messages after the critique you delivered last round.
+
+YOUR JOB
+Re-investigate the current state of the artifacts. Has the worker
+addressed the gaps you flagged? Are there new regressions? You already
+know the card and your past reasoning — focus on what's changed and
+whether it's enough now. Use your tools (read_file, grep, bash) to
+verify against the actual files, not the worker's self-report.
+
+Return your updated verdict as strict JSON. Be specific about which of
+your prior `open_questions` are now resolved and which remain.
+Default to `done: false` unless every must criterion is explicitly met."""
+
+
 JUDGE_CALIBRATOR_SYSTEM_PROMPT = """You are the JUDGE CALIBRATOR — a one-shot configuration agent.
 
 You read a freshly-armed goal and propose the optimal judge configuration

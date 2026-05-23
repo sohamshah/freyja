@@ -564,6 +564,17 @@ Parameters:
         record.model_resolution = model_resolution  # type: ignore[attr-defined]
         record.coordination_strategy = coord  # type: ignore[attr-defined]
         record.parent_session_id = self._spec.parent_session_id or ""
+        # Re-bind to the same kanban card / task ledger entry on
+        # resume. Without this the rewoken worker would finish but the
+        # bridge wouldn't route the card back to review, breaking the
+        # review<->rework loop. Stored in the sidecar by
+        # `_persist_child_transcript` at the previous terminal.
+        kanban_task_id = str(sidecar_data.get("kanbanTaskId") or "").strip()
+        if kanban_task_id:
+            record.kanban_task_id = kanban_task_id  # type: ignore[attr-defined]
+        task_id_sidecar = str(sidecar_data.get("taskId") or "").strip()
+        if task_id_sidecar:
+            record.task_id = task_id_sidecar  # type: ignore[attr-defined]
         # Resume markers — _run_child checks these to switch into the
         # restored-transcript path instead of the fresh-spawn path.
         record.restored_transcript = transcript  # type: ignore[attr-defined]
@@ -1745,6 +1756,14 @@ Parameters:
                     "task": record.task,
                     "label": record.label,
                     "coordinationStrategy": self._spec.coordination_strategy,
+                    # Persist kanban_task_id so a rewoken worker re-binds
+                    # to the same card and `_mark_kanban_terminal` fires
+                    # on its next terminal. Without this the review<->
+                    # rework loop can't close: the resumed worker would
+                    # finish, but the card would never transition back
+                    # to review for the next judge pass.
+                    "kanbanTaskId": getattr(record, "kanban_task_id", "") or "",
+                    "taskId": getattr(record, "task_id", "") or "",
                     "transcript": data,
                     "savedAt": int(time.time() * 1000),
                 })
@@ -1831,6 +1850,27 @@ Parameters:
         status: str,
         summary: str,
     ) -> None:
+        """Route a worker's terminal state through the default-on judge
+        review path (Move R).
+
+        Every worker terminal state (`done`, `failed`, `cancelled`,
+        `crashed`, `timed_out`) flips the card to `review` so the
+        dispatcher's judge lane spawns / wakes the sticky judge.
+        Worker-side success vs crash is preserved on
+        `card.worker_terminal_state` so the judge knows whether to
+        evaluate a clean delivery or a partial dump from a crashed
+        agent. The `review_iteration` counter bumps here; past the
+        cap the card routes straight to `blocked` instead of looping
+        another review.
+        """
+        from bridge.tools.kanban_board import TERMINAL_STATUSES
+
+        # Cap on review<->rework cycles before we give up and surface
+        # the card to the operator. Matches the constant the bridge
+        # uses in its verdict-routing logic; duplicated here to avoid
+        # a circular import with freyja_bridge.
+        MAX_REVIEW_ITERATIONS = 5
+
         task_id = getattr(record, "kanban_task_id", "")
         if (
             self._spec.coordination_strategy != STRATEGY_KANBAN
@@ -1839,31 +1879,46 @@ Parameters:
         ):
             return
         try:
-            # Opt-in verification: a worker that finished successfully on a
-            # card with `requires_verification=True` should hand off to the
-            # verifier rather than seal the card directly. Mirrors what the
-            # worker's `complete` action does — this branch covers runs that
-            # exit cleanly without an explicit complete call (most of them).
-            target_status = status
-            if status == "done":
-                current = await self._spec.kanban_board.get(task_id)
-                if (
-                    current is not None
-                    and getattr(current, "requires_verification", False)
-                    and current.status != "done"
-                ):
-                    target_status = "done_unverified"
+            current = await self._spec.kanban_board.get(task_id)
+            if current is None:
+                return
+            # Card is already finalised (judge passed it to done, or
+            # operator cancelled). Worker terminating later doesn't
+            # change an absorbing state.
+            if current.status in TERMINAL_STATUSES:
+                return
+
+            next_iteration = current.review_iteration + 1
+            # Sticky worker id — set once on first dispatch; rewake
+            # cycles re-use the same session id so the `or` is a
+            # no-op after the first time through.
+            sticky_worker_id = current.worker_session_id or record.id
+
+            if next_iteration > MAX_REVIEW_ITERATIONS:
+                # Out of retries. Skip review entirely and block.
+                task = await self._spec.kanban_board.update(
+                    task_id,
+                    actor=f"{record.label} ({record.id})",
+                    status="blocked",
+                    summary=summary[:4000],
+                    artifacts=list(record.created_files),
+                    worker_terminal_state=status,
+                    worker_session_id=sticky_worker_id,
+                )
+                await self._emit_kanban_state_event("update", task)
+                return
+
             task = await self._spec.kanban_board.update(
                 task_id,
                 actor=f"{record.label} ({record.id})",
-                status=target_status,
+                status="review",
                 summary=summary[:4000],
                 artifacts=list(record.created_files),
+                review_iteration=next_iteration,
+                worker_terminal_state=status,
+                worker_session_id=sticky_worker_id,
             )
-            await self._emit_kanban_state_event(
-                "complete" if target_status == "done" else "update",
-                task,
-            )
+            await self._emit_kanban_state_event("update", task)
         except Exception:  # noqa: BLE001
             logger.debug("failed to mark kanban card terminal", exc_info=True)
 

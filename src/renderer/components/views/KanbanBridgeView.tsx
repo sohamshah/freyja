@@ -152,7 +152,12 @@ function Header({
   onToggleAutopilot: () => void
   onOpenDispatcherBrief: () => void
 }) {
-  const total = buckets.done.length + buckets.ready.length + buckets.flight.length + buckets.blocked.length
+  const total =
+    buckets.done.length +
+    buckets.ready.length +
+    buckets.flight.length +
+    buckets.review.length +
+    buckets.blocked.length
   return (
     <header className="flex items-end justify-between gap-8 border-b border-white/[0.06] px-10 py-7">
       <div className="min-w-0 flex-1">
@@ -174,6 +179,11 @@ function Header({
           <span>
             <span className="text-fg-0 tabular-nums">{buckets.ready.length}</span> ready
           </span>
+          {buckets.review.length > 0 ? (
+            <span>
+              <span className="text-fg-1 tabular-nums">{buckets.review.length}</span> in review
+            </span>
+          ) : null}
           {buckets.blocked.length > 0 ? (
             <span className="text-warn">
               <span className="tabular-nums">{buckets.blocked.length}</span> blocked
@@ -484,6 +494,7 @@ function BoardColumn({
 
   const total =
     buckets.ready.length +
+    buckets.review.length +
     buckets.blocked.length +
     buckets.flight.length +
     buckets.done.length
@@ -565,6 +576,15 @@ function BoardColumn({
         nextCardId={nextCardId}
         onOpenCard={onOpenCard}
       />
+      {buckets.review.length > 0 ? (
+        <QSection
+          label="review"
+          tone="info"
+          count={`${buckets.review.length}`}
+          cards={buckets.review}
+          onOpenCard={onOpenCard}
+        />
+      ) : null}
       {buckets.blocked.length > 0 ? (
         <QSection label="blocked" tone="warn" count={`${buckets.blocked.length}`} cards={buckets.blocked} onOpenCard={onOpenCard} />
       ) : null}
@@ -727,7 +747,7 @@ function QSection({
   onOpenCard,
 }: {
   label: string
-  tone: 'accent' | 'warn' | 'ok'
+  tone: 'accent' | 'warn' | 'ok' | 'info'
   count: string
   cards: KanbanCardView[]
   compact?: boolean
@@ -739,6 +759,8 @@ function QSection({
       ? 'bg-accent shadow-[0_0_5px_rgba(168,212,252,0.6)]'
       : tone === 'warn'
       ? 'bg-warn'
+      : tone === 'info'
+      ? 'bg-fg-1'
       : 'bg-ok'
   return (
     <div className="pb-5 border-b border-white/[0.06] last:border-b-0 pt-3">
@@ -770,7 +792,7 @@ function BoardCard({
   onClick,
 }: {
   card: KanbanCardView
-  tone: 'accent' | 'warn' | 'ok'
+  tone: 'accent' | 'warn' | 'ok' | 'info'
   compact: boolean
   isNext: boolean
   onClick: () => void
@@ -956,17 +978,23 @@ function CardDrawerBody({ card, allCards }: { card: KanbanCardView; allCards: Ka
 interface Buckets {
   ready: KanbanCardView[]
   flight: KanbanCardView[]
+  review: KanbanCardView[]
   blocked: KanbanCardView[]
   done: KanbanCardView[]
 }
 
 function bucketCards(cards: KanbanCardView[]): Buckets {
-  const buckets: Buckets = { ready: [], flight: [], blocked: [], done: [] }
+  const buckets: Buckets = { ready: [], flight: [], review: [], blocked: [], done: [] }
   for (const c of cards) {
     const s = (c.status ?? '').toLowerCase()
     if (s === 'done' || s === 'complete' || s === 'completed' || s === 'sealed') buckets.done.push(c)
     else if (s === 'blocked') buckets.blocked.push(c)
-    else if (s === 'running' || s === 'in_progress' || s === 'in-progress' || s === 'done_unverified')
+    else if (s === 'review') buckets.review.push(c)
+    // `done_unverified` is the legacy verifier-lane status; the new
+    // default-on judge-review pipeline writes `review` instead but
+    // we group it with review here so old boards still bucket sanely.
+    else if (s === 'done_unverified') buckets.review.push(c)
+    else if (s === 'running' || s === 'in_progress' || s === 'in-progress')
       buckets.flight.push(c)
     else buckets.ready.push(c)
   }
@@ -1005,6 +1033,11 @@ function cardStatusLabel(card: KanbanCardView): string {
   const s = (card.status ?? '').toLowerCase()
   if (s === 'done' || s === 'sealed') return 'done'
   if (s === 'blocked') return 'blocked'
+  if (s === 'review' || s === 'done_unverified') {
+    const iter = card.reviewIteration
+    const cap = 5
+    return iter ? `in review · iter ${iter}/${cap}` : 'in review'
+  }
   if (s === 'running' || s === 'in_progress') {
     const age = card.startedAt ? `${Math.round((Date.now() - card.startedAt) / 60000)}m` : ''
     return `in flight · ${age}`.trim()
