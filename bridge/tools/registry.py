@@ -73,6 +73,7 @@ def build_desktop_registry(
     message_bus: Any | None = None,
     coordination_strategy: str = "bus",
     kanban_board: Any | None = None,
+    kanban_autopilot_state_provider: Any | None = None,
     task_board: Any | None = None,
     memory_store: Any | None = None,
     skill_store: Any | None = None,
@@ -216,6 +217,7 @@ def build_desktop_registry(
                 actor_label="parent",
                 emit_event=subagent_emit,
                 parent_session_id=subagent_parent_session_id,
+                autopilot_state_provider=kanban_autopilot_state_provider,
             )
         )
 
@@ -286,6 +288,7 @@ def build_desktop_registry(
             message_bus=message_bus,
             coordination_strategy=coordination_strategy,
             kanban_board=kanban_board,
+            kanban_autopilot_state_provider=kanban_autopilot_state_provider,
             task_board=task_board,
             task_tool_call_index_getter=task_tool_call_index_getter,
             artifact_store=artifact_store,

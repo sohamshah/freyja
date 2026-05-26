@@ -124,6 +124,136 @@ def is_valid_transition(current: str, next_status: str) -> bool:
 # history is still queryable via the `show_history` tool action; this just
 # bounds what rides along on every `to_dict()` payload so long missions don't
 # blow up the per-event JSON the dashboard ingests.
+# Caps used by `_build_worker_context` to keep the rendered ground-
+# truth block tail-able in a single LLM context window. Each cap has a
+# corresponding "[truncated …]" marker emitted when content exceeds it
+# so the worker can decide to fetch more deliberately.
+_CTX_MAX_BODY_BYTES = 8000
+_CTX_MAX_FIELD_BYTES = 2000
+_CTX_MAX_COMMENTS = 12
+_CTX_MAX_COMMENT_BYTES = 800
+
+
+def _ctx_clip(text: str, cap: int) -> str:
+    """Clip `text` to `cap` characters, appending a visible truncation
+    marker when content was cut. The marker is part of the contract —
+    the worker sees `… [truncated, N chars omitted]` and knows it's
+    working off a subset, so it can `show_history` for more if needed."""
+    if not text:
+        return ""
+    if len(text) <= cap:
+        return text
+    return text[: cap - 1].rstrip() + f"\n… [truncated, {len(text) - cap + 1} chars omitted]"
+
+
+def _build_worker_context(
+    task: Any,
+    parent_context: list[dict[str, Any]],
+    recent_by_assignee: list[dict[str, Any]],
+) -> str:
+    """Render a worker's ground-truth markdown block for a card.
+
+    Sections, all conditional on content:
+      1. Header — id / title / assignee / status / iteration / artifacts
+      2. Body — the task spec, capped at _CTX_MAX_BODY_BYTES
+      3. Parent task results — for each dependency parent, the most
+         recent summary + artifact list (1-level only)
+      4. Recent work by @assignee — implicit role continuity
+      5. Comments — capped at _CTX_MAX_COMMENTS, oldest collapsed
+
+    Mirrors the Hermes `build_worker_context` pattern. The worker calls
+    `kanban` action=show on its card and the `workerContext` field can
+    be treated as ground truth — header / parents / history all
+    pre-resolved so the worker doesn't need follow-up tool calls just
+    to orient.
+    """
+    lines: list[str] = []
+
+    # 1. Header
+    lines.append(f"# Kanban card `{task.id}`: {task.title}")
+    lines.append("")
+    lines.append(f"Assignee:   {task.assignee or '(unassigned)'}")
+    lines.append(f"Status:     {task.status}")
+    if getattr(task, "review_iteration", 0):
+        lines.append(f"Review iter: {task.review_iteration} / 5")
+    if task.priority is not None and task.priority != 2:
+        lines.append(f"Priority:   {task.priority}")
+    if task.artifacts:
+        lines.append(f"Artifacts:  {len(task.artifacts)} file(s)")
+        for path in task.artifacts[:10]:
+            lines.append(f"  · {path}")
+        if len(task.artifacts) > 10:
+            lines.append(
+                f"  · … [truncated, {len(task.artifacts) - 10} more not shown]"
+            )
+
+    # 2. Body
+    if task.body:
+        lines.append("")
+        lines.append("## Body")
+        lines.append(_ctx_clip(task.body, _CTX_MAX_BODY_BYTES))
+
+    # 3. Parent results
+    if parent_context:
+        lines.append("")
+        lines.append("## Parent card handoffs")
+        for parent in parent_context:
+            pid = parent.get("id", "?")
+            title = parent.get("title", "")
+            status = parent.get("status", "")
+            summary = parent.get("summary") or ""
+            artifacts = parent.get("artifacts") or []
+            lines.append(f"### `{pid}` — {title} [{status}]")
+            if summary:
+                lines.append(_ctx_clip(summary, _CTX_MAX_FIELD_BYTES))
+            if artifacts:
+                lines.append("")
+                lines.append("Artifacts:")
+                for path in artifacts[:5]:
+                    lines.append(f"  · {path}")
+                if len(artifacts) > 5:
+                    lines.append(
+                        f"  · … [truncated, {len(artifacts) - 5} more not shown]"
+                    )
+
+    # 4. Recent work by this assignee
+    if recent_by_assignee:
+        lines.append("")
+        lines.append(f"## Recent work by @{task.assignee}")
+        for entry in recent_by_assignee:
+            eid = entry.get("id", "?")
+            etitle = entry.get("title", "")
+            esum = entry.get("summary") or ""
+            line = f"- `{eid}` — {etitle}"
+            if esum:
+                line += f": {esum}"
+            lines.append(line)
+
+    # 5. Comments (tail)
+    comments = list(getattr(task, "comments", []) or [])
+    if comments:
+        lines.append("")
+        if len(comments) > _CTX_MAX_COMMENTS:
+            omitted = len(comments) - _CTX_MAX_COMMENTS
+            lines.append(
+                f"## Comment thread (showing {_CTX_MAX_COMMENTS} of {len(comments)};"
+                f" {omitted} earlier omitted — use `show_history` for full log)"
+            )
+            comments = comments[-_CTX_MAX_COMMENTS:]
+        else:
+            lines.append(f"## Comment thread ({len(comments)})")
+        for c in comments:
+            # Backtick-strip author to defeat any future author-forgery
+            # surface; matches the Hermes hardening pattern.
+            author = (getattr(c, "author", None) or "").replace("`", "")
+            body = _ctx_clip(getattr(c, "body", "") or "", _CTX_MAX_COMMENT_BYTES)
+            lines.append("")
+            lines.append(f"comment from `{author}`:")
+            lines.append(body)
+
+    return "\n".join(lines)
+
+
 DEFAULT_HISTORY_TAIL = 30
 # Circuit-breaker threshold. The Nth crashed/timed_out transition flips
 # the card to `failed` instead, locking the dispatcher out. Set low —
@@ -571,6 +701,11 @@ class SessionKanbanBoard:
             blocked: list[dict[str, Any]] = []
             waiting: list[dict[str, Any]] = []
             for task in self._tasks.values():
+                # Skip mission_root — see the comment in the list
+                # action handler. Agent-facing surfaces don't include
+                # the synthetic conversation container.
+                if task.metadata.get("role") == "mission_root":
+                    continue
                 if task.status == "running":
                     running.append(
                         {
@@ -638,6 +773,39 @@ class SessionKanbanBoard:
                     "cards": len(self._tasks),
                 },
             }
+
+    async def recent_work_by_assignee(
+        self,
+        assignee: str,
+        *,
+        exclude_id: str | None = None,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Return recent completed cards by the same assignee on OTHER
+        cards. Used in `show`'s `worker_context` to give the worker
+        implicit role continuity ("I'm the explore profile and my recent
+        runs were research-flavored"). Sorted newest-first by
+        `completed_at`."""
+        if not assignee:
+            return []
+        async with self._lock:
+            done = [
+                t
+                for t in self._tasks.values()
+                if t.status == "done"
+                and t.assignee == assignee
+                and (exclude_id is None or t.id != exclude_id)
+            ]
+            done.sort(key=lambda t: t.completed_at or t.updated_at or 0, reverse=True)
+            return [
+                {
+                    "id": t.id,
+                    "title": t.title,
+                    "completedAt": int((t.completed_at or t.updated_at or 0) * 1000),
+                    "summary": (t.summary or "")[:200],
+                }
+                for t in done[:limit]
+            ]
 
     async def parent_context(self, task_id: str) -> dict[str, Any] | None:
         """Compact upstream snapshot for one parent card. Returned inline
@@ -954,6 +1122,7 @@ class KanbanTool:
         emit_event: KanbanEventCb | None = None,
         parent_session_id: str = "",
         owned_task_id: str | None = None,
+        autopilot_state_provider: Callable[[], bool] | None = None,
     ) -> None:
         self._board = board
         self._actor_id = actor_id
@@ -964,6 +1133,12 @@ class KanbanTool:
         # action surface is narrowed and any mutation against a card id
         # other than `owned_task_id` is rejected.
         self._owned_task_id = (owned_task_id or "").strip() or None
+        # Callback returning the parent session's current autopilot
+        # state. The create action surfaces this in its result so the
+        # agent can see when a newly-created card has no dispatcher
+        # ready to pick it up — and tell the operator instead of
+        # silently becoming the worker.
+        self._autopilot_state_provider = autopilot_state_provider
 
     @property
     def definition(self) -> ToolDefinition:
@@ -1100,6 +1275,49 @@ class KanbanTool:
                 # doesn't need to repeat it on every call.
                 if not target:
                     arguments = {**arguments, "task_id": self._owned_task_id}
+        else:
+            # Parent / orchestrator mode. The board is for cross-agent
+            # handoffs — the parent's job is routing, not executing. Block
+            # the parent from acting as its own worker by gating
+            # complete / block / heartbeat against the card's
+            # `worker_session_id` claim. If the parent genuinely needs to
+            # do a card itself, it should explicitly `claim` it first,
+            # which sets `worker_session_id` to the parent's session and
+            # makes the intent visible on the board.
+            if action in {"complete", "block", "heartbeat"}:
+                target = str(arguments.get("task_id") or "").strip()
+                if target:
+                    card = await self._board.get(target)
+                    if card is None:
+                        return ToolResult(
+                            call_id=call_id,
+                            content=f"Error: card {target!r} not found.",
+                            is_error=True,
+                        )
+                    owner = (card.worker_session_id or "").strip()
+                    if not owner:
+                        return ToolResult(
+                            call_id=call_id,
+                            content=(
+                                f"Error: card {target!r} has no worker — "
+                                "the orchestrator does not execute cards "
+                                "itself. Either let autopilot dispatch a "
+                                "worker, or `claim` the card explicitly "
+                                "before calling " + action + "."
+                            ),
+                            is_error=True,
+                        )
+                    if owner != self._actor_id:
+                        return ToolResult(
+                            call_id=call_id,
+                            content=(
+                                f"Error: card {target!r} is owned by "
+                                f"session {owner!r}; refusing "
+                                f"{action!r} from session "
+                                f"{self._actor_id!r}."
+                            ),
+                            is_error=True,
+                        )
         try:
             payload = await self._execute_action(action, arguments)
         except ValueError as exc:
@@ -1116,7 +1334,19 @@ class KanbanTool:
     async def _execute_action(self, action: str, arguments: dict[str, Any]) -> dict[str, Any]:
         actor = f"{self._actor_label} ({self._actor_id})"
         if action == "list":
-            tasks = [task.to_dict(include_history=False) for task in await self._board.list()]
+            # Hide mission_root from the agent-facing list. It's a
+            # synthetic container the bridge auto-creates for the
+            # conversation's mission objective; it is not a unit of
+            # work and surfacing it to the agent was leading to
+            # rationalizations like "this work falls under the mission
+            # root" that skipped real card creation. The renderer
+            # still sees it for visualization purposes since the board
+            # state isn't filtered at storage time.
+            tasks = [
+                task.to_dict(include_history=False)
+                for task in await self._board.list()
+                if task.metadata.get("role") != "mission_root"
+            ]
             return {"action": action, "tasks": tasks, "count": len(tasks)}
 
         if action == "digest":
@@ -1133,7 +1363,26 @@ class KanbanTool:
                 metadata=dict(arguments.get("metadata") or {}),
                 requires_verification=bool(arguments.get("requires_verification") or False),
             )
-            return {"action": action, "task": task.to_dict()}
+            payload: dict[str, Any] = {"action": action, "task": task.to_dict()}
+            # Surface autopilot state so the agent can tell when a
+            # freshly-created card has no dispatcher to claim it. If
+            # autopilot is off, the operator needs to either flip it
+            # on or explicitly claim the card — the agent should
+            # surface that to them, not silently do the work itself.
+            if self._autopilot_state_provider is not None:
+                try:
+                    enabled = bool(self._autopilot_state_provider())
+                except Exception:  # noqa: BLE001
+                    enabled = False
+                payload["autopilotEnabled"] = enabled
+                if not enabled:
+                    payload["autopilotNote"] = (
+                        "Autopilot is OFF — this card will sit in `ready` "
+                        "until a worker claims it manually or the operator "
+                        "enables autopilot. Surface this to the operator "
+                        "rather than executing the card yourself."
+                    )
+            return payload
 
         if action == "show":
             task = await self._require_task(arguments)
@@ -1149,6 +1398,18 @@ class KanbanTool:
             payload = task.to_dict()
             if parent_context:
                 payload["parentContext"] = parent_context
+            # `worker_context` — a pre-formatted markdown block the worker
+            # can treat as ground truth for its first orient-pass. Header
+            # + body + parent handoffs + recent work by this assignee +
+            # truncated comment thread, with explicit truncation markers
+            # so the worker knows when to fetch more. Modeled after the
+            # Hermes `build_worker_context` pattern.
+            recent_by_assignee = await self._board.recent_work_by_assignee(
+                task.assignee, exclude_id=task.id, limit=5,
+            ) if task.assignee else []
+            payload["workerContext"] = _build_worker_context(
+                task, parent_context, recent_by_assignee
+            )
             return {"action": action, "task": payload}
 
         if action == "show_history":
@@ -1158,12 +1419,18 @@ class KanbanTool:
 
         if action == "claim":
             task = await self._require_task(arguments)
+            # Record the claiming session on the card so the ownership
+            # check on subsequent complete / block / heartbeat calls can
+            # match the right caller. Without this, claim was a no-op
+            # for the ownership gate and the orchestrator could mutate
+            # any card just by calling claim then complete.
             updated = await self._board.update(
                 task.id,
                 actor=actor,
                 status="running",
                 assignee=str(arguments.get("assignee") or self._actor_label),
                 comment=str(arguments.get("comment") or "Claimed card").strip(),
+                worker_session_id=self._actor_id,
             )
             return {"action": action, "task": updated.to_dict() if updated else None}
 
@@ -1175,30 +1442,79 @@ class KanbanTool:
             result = arguments.get("result")
             metadata = dict(arguments.get("metadata") or {})
             artifacts = [str(item) for item in arguments.get("artifacts") or []]
+            # Move R bookkeeping for `complete` — track review iteration
+            # bump and sticky worker id when the worker's own call lands
+            # the card in review. Set inside the elif below and threaded
+            # into the update() call so we don't have to re-fetch.
+            review_iteration_override: int | None = None
+            worker_session_id_override: str | None = None
+            worker_terminal_state_override: str | None = None
             if action == "comment":
                 if not comment:
                     raise ValueError("comment is required")
             elif action == "complete":
-                # Verifier seal is opt-in per card. When the parent set
-                # `requires_verification=True` at create/update time, the
-                # worker's complete call routes the card to
-                # `done_unverified` so the dispatcher's verifier lane
-                # picks it up. Otherwise complete seals directly to
-                # `done` — quick lookups, image gen, ambiguous tasks
-                # whose definition_of_done isn't checkable don't need
-                # the extra spawn cost.
-                status = "done_unverified" if task.requires_verification else "done"
-                missing = [
-                    str(card_id)
-                    for card_id in arguments.get("created_cards") or []
-                    if not await self._board.exists(str(card_id))
+                # Move R: every worker completion routes to `review`, not
+                # straight to `done`. The dispatcher's review lane spawns
+                # (or wakes the sticky) judge-deep against the card, the
+                # judge renders a verdict via structured output, and the
+                # outcome decides done / rework / blocked.
+                #
+                # Iteration bump here is critical — without it,
+                # `_mark_kanban_terminal` (which fires after the worker
+                # subagent terminates) would ALSO bump iteration, and we'd
+                # double-count. Doing it once at the explicit complete call
+                # makes the path deterministic.
+                #
+                # `created_cards` verification: two checks.
+                #   1. Each id must exist on the board (catches phantom
+                #      references).
+                #   2. Each card's `created_by` must include this caller's
+                #      session id (catches the "worker claims credit for
+                #      a sibling's card" failure class). Orchestrators
+                #      bypass check 2 since they legitimately route many
+                #      cards' creation.
+                created_cards = [
+                    str(card_id) for card_id in arguments.get("created_cards") or []
                 ]
+                missing: list[str] = []
+                stolen: list[str] = []
+                for card_id in created_cards:
+                    card_obj = await self._board.get(card_id)
+                    if card_obj is None:
+                        missing.append(card_id)
+                        continue
+                    if self._owned_task_id:
+                        creator = (card_obj.created_by or "")
+                        # `created_by` looks like "<label> (<session_id>)".
+                        # Worker is identified by its session id, so we
+                        # substring-match. False positives are extremely
+                        # unlikely because session ids are random.
+                        if self._actor_id and self._actor_id not in creator:
+                            stolen.append(card_id)
                 if missing:
-                    raise ValueError(f"created_cards not found: {', '.join(missing)}")
+                    raise ValueError(
+                        f"created_cards not found: {', '.join(missing)}"
+                    )
+                if stolen:
+                    raise ValueError(
+                        f"created_cards not created by this worker: "
+                        f"{', '.join(stolen)}. Only list cards your own "
+                        f"session created during this run."
+                    )
+                status = "review"
+                review_iteration_override = task.review_iteration + 1
+                worker_session_id_override = task.worker_session_id or self._actor_id
+                worker_terminal_state_override = "done"
             elif action == "block":
                 status = "blocked"
                 if not comment:
                     raise ValueError("comment is required when blocking a card")
+                # Sticky-block bookkeeping: capture the worker's session
+                # id and "terminal state" so the renderer can show why
+                # the card is blocked + the dispatcher's sweep can tell
+                # this came from the worker, not from the iteration cap.
+                worker_session_id_override = task.worker_session_id or self._actor_id
+                worker_terminal_state_override = "blocked-by-worker"
             elif action == "heartbeat":
                 comment = comment or "Heartbeat"
                 metadata = {**metadata, "heartbeatAt": int(time.time() * 1000)}
@@ -1217,6 +1533,9 @@ class KanbanTool:
                 requires_verification=(
                     bool(requires_verification) if requires_verification is not None else None
                 ),
+                review_iteration=review_iteration_override,
+                worker_session_id=worker_session_id_override,
+                worker_terminal_state=worker_terminal_state_override,
             )
             return {"action": action, "task": updated.to_dict() if updated else None}
 

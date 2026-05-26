@@ -170,6 +170,13 @@ def _write_debug_log(event: dict[str, Any]) -> None:
 # pathological tool-loops — set high enough that well-behaved
 # investigations never hit it.
 _DEEP_JUDGE_SAFETY_NET_ITERATIONS = 50
+# Cap on consecutive judge_failed verdicts before the goal loop pauses
+# itself. Catches persistent failure modes (schema 400 on every synth,
+# provider outage on every inline call) that would otherwise loop
+# forever — every turn fires the agent, judge errors, returns a
+# conservative done=false, continuation re-fires the agent. At 3 we
+# pause and let the operator decide whether to retry.
+_GOAL_JUDGE_FAILURE_CAP = 3
 
 
 def _format_verdict_as_critique(card: Any, verdict: Any) -> str:
@@ -843,6 +850,67 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "envVar": "FIREWORKS_API_KEY",
         "description": "Alibaba's Qwen3.6 Plus via Fireworks. Vision, function calling, preserved reasoning, 1M ctx.",
     },
+    # ─── Google Gemini (GEMINI_API_KEY) ────────────────────────────────
+    {
+        "id": "gemini-3.1-pro-preview",
+        "family": "google",
+        "label": "Gemini 3.1 Pro",
+        "tier": "max",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "GEMINI_API_KEY",
+        "description": "Google's frontier Gemini. Ties Claude Opus 4.7 on AA intelligence at <½ price. 1M ctx, native multimodal.",
+    },
+    {
+        "id": "gemini-3.5-flash",
+        "family": "google",
+        "label": "Gemini 3.5 Flash",
+        "tier": "balanced",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "GEMINI_API_KEY",
+        "description": "Fast Gemini at the 50+ intelligence tier (~200 tok/s). 1M ctx. Best fanout slot.",
+    },
+    {
+        "id": "gemini-3.1-flash",
+        "family": "google",
+        "label": "Gemini 3.1 Flash",
+        "tier": "balanced",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "GEMINI_API_KEY",
+        "description": "Previous-gen Flash. 1M ctx, multimodal.",
+    },
+    {
+        "id": "gemini-3.1-flash-lite",
+        "family": "google",
+        "label": "Gemini 3.1 Flash Lite",
+        "tier": "fast",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "GEMINI_API_KEY",
+        "description": "Cheapest Gemini tier. Good for high-volume subagents and quick lookups.",
+    },
+    {
+        "id": "gemini-2.5-pro",
+        "family": "google",
+        "label": "Gemini 2.5 Pro",
+        "tier": "max",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "GEMINI_API_KEY",
+        "description": "Previous-gen Gemini Pro. Kept as a stable fallback target for 3.x.",
+    },
+    {
+        "id": "gemini-2.5-flash",
+        "family": "google",
+        "label": "Gemini 2.5 Flash",
+        "tier": "balanced",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "GEMINI_API_KEY",
+        "description": "Previous-gen Gemini Flash. Cheap, fast, 1M ctx.",
+    },
 ]
 
 
@@ -937,6 +1005,39 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningDefault": "medium",
         "reasoningHistory": ["preserved"],
     },
+    # Gemini 3.x exposes a discrete ThinkingLevel enum (minimal/low/medium/high).
+    # We map our "minimal" UI rung onto Gemini MINIMAL and surface the same
+    # four levels so the existing reasoning UI works unchanged.
+    "gemini-3.1-pro-preview": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["minimal", "low", "medium", "high"],
+        "reasoningDefault": "high",
+    },
+    "gemini-3.5-flash": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["minimal", "low", "medium", "high"],
+        "reasoningDefault": "medium",
+    },
+    "gemini-3.1-flash": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["minimal", "low", "medium", "high"],
+        "reasoningDefault": "medium",
+    },
+    "gemini-3.1-flash-lite": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["minimal", "low", "medium", "high"],
+        "reasoningDefault": "low",
+    },
+    "gemini-2.5-pro": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["minimal", "low", "medium", "high"],
+        "reasoningDefault": "high",
+    },
+    "gemini-2.5-flash": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["minimal", "low", "medium", "high"],
+        "reasoningDefault": "medium",
+    },
 }
 
 
@@ -974,6 +1075,8 @@ def _family_for_model(model_id: str) -> str:
         return "openai"
     if model_id.startswith("zai-") or "glm-4" in model_id:
         return "cerebras"
+    if model_id.startswith("gemini-"):
+        return "google"
     return "fireworks"
 
 
@@ -2008,6 +2111,12 @@ class _BridgeSession:
         # Rolling history of verdicts for this goal, for trajectory + judge context.
         # Trimmed in _maybe_continue_goal.
         self.goal_verdict_history: list[Any] = []
+        # Consecutive run of judge-failed verdicts (synthesis API error,
+        # inline judge crash). When this hits _GOAL_JUDGE_FAILURE_CAP the
+        # loop pauses itself instead of burning more spend re-firing the
+        # same broken judge call. Reset to 0 on any successful verdict,
+        # including done=false-with-real-criteria.
+        self._consecutive_judge_failures: int = 0
         self._turn_text_parts: list[str] = []
         self._tool_list = ""
         self._agent_types_section = ""
@@ -2258,6 +2367,12 @@ class _BridgeSession:
             ),
             coordination_strategy=self.coordination_strategy,
             kanban_board=self.kanban_board if strategy_uses_kanban(self.coordination_strategy) else None,
+            # Live read of the session's autopilot flag, threaded into
+            # the KanbanTool so the create action can tell the agent
+            # when a freshly-created card has no dispatcher ready to
+            # claim it. Callable rather than current value because the
+            # flag flips at runtime.
+            kanban_autopilot_state_provider=lambda: self.auto_dispatch_enabled,
             # Universal — the parent always gets a task ledger now.
             # Sub-agent propagation rules still vary by mode (isolated
             # workers inherit the tool; bus/kanban/goal workers don't —
@@ -3635,6 +3750,7 @@ class _BridgeSession:
         # the old goal's trajectory. Brief stays (it's the operator's
         # persistent preference for how the judge should think).
         self.goal_verdict_history = []
+        self._consecutive_judge_failures = 0
         self._emit_goal_event(
             "goal_set",
             "Goal loop armed",
@@ -4522,6 +4638,9 @@ class _BridgeSession:
         self.goal_state.status = "active"
         self.goal_state.pause_reason = ""
         self.goal_state.updated_at = time.time()
+        # Reset the consecutive-failure counter so a resumed goal gets a
+        # fresh quota before the circuit breaker trips again.
+        self._consecutive_judge_failures = 0
         self._emit_goal_event("goal_resumed", "Goal loop resumed", chat_visible=True)
 
     def _clear_goal(self, status: str = "cleared") -> None:
@@ -4690,6 +4809,7 @@ class _BridgeSession:
                 criteria=[],
                 open_questions=[f"Judge call raised: {exc}"],
                 raw=str(exc),
+                judge_failed=True,
             )
 
         # Happy path: structured-output succeeded with a non-empty dict.
@@ -4801,9 +4921,10 @@ class _BridgeSession:
             "Render the verdict JSON now based on your investigation above. "
             "Do not call any more tools. The schema is provider-enforced; "
             "fields required: done, reason, confidence, criteria (with id/text/"
-            "priority/status), open_questions. Be precise — every must-criterion "
-            "needs an honest status. If you can't fully decide, return "
-            "done=false with confidence reflecting your uncertainty."
+            "priority/status/note — emit note as \"\" when nothing to add), "
+            "open_questions. Be precise — every must-criterion needs an honest "
+            "status. If you can't fully decide, return done=false with "
+            "confidence reflecting your uncertainty."
         )
         emit(
             {
@@ -4896,6 +5017,7 @@ class _BridgeSession:
                 open_questions=[f"Synthesis raised: {exc}"],
                 raw=str(exc),
                 judge_session_id=record.id,
+                judge_failed=True,
             )
 
         # Provider returned. complete_structured with strict=True is
@@ -5164,10 +5286,43 @@ class _BridgeSession:
         if verdict.done:
             goal.status = "done"
             goal.updated_at = time.time()
+            self._consecutive_judge_failures = 0
             self._emit_goal_event(
                 "goal_done",
                 f"Goal complete: {verdict.reason}",
                 details={"verdict": verdict.to_dict()},
+                chat_visible=True,
+            )
+            return
+
+        # Consecutive judge-failure circuit breaker. Without this, a
+        # persistent error (provider 4xx on every synthesis, malformed
+        # schema, network outage) sends the loop into runaway spend —
+        # every turn fires the agent, judge crashes, returns conservative
+        # done=false, continuation fires the agent again. Pause the goal
+        # so the operator can investigate without watching a counter
+        # tick up.
+        if verdict.judge_failed:
+            self._consecutive_judge_failures += 1
+        else:
+            self._consecutive_judge_failures = 0
+        if self._consecutive_judge_failures >= _GOAL_JUDGE_FAILURE_CAP:
+            goal.status = "paused"
+            goal.pause_reason = (
+                f"Judge failed on {self._consecutive_judge_failures} "
+                "consecutive turns — pausing to avoid runaway spend. "
+                "Investigate the judge error and `/goal resume` to continue."
+            )
+            goal.updated_at = time.time()
+            self._emit_goal_event(
+                "goal_paused",
+                goal.pause_reason,
+                details={
+                    "reason": "consecutive_judge_failures",
+                    "consecutiveFailures": self._consecutive_judge_failures,
+                    "cap": _GOAL_JUDGE_FAILURE_CAP,
+                    "lastVerdict": verdict.to_dict(),
+                },
                 chat_visible=True,
             )
             return
@@ -6855,6 +7010,19 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             f"coordination strategy set to {sess.coordination_strategy} "
             f"(session={session_id})",
         )
+        # Autopilot default-ON when entering kanban mode. The board is
+        # built around dispatcher-driven worker pickup; leaving autopilot
+        # off makes a fresh kanban session look broken to the parent
+        # (cards sit in ready, nobody claims them, parent ends up doing
+        # them itself). Operator can still flip it off via the toggle
+        # if they want manual dispatch.
+        from bridge.tools.coordination import strategy_uses_kanban
+
+        if (
+            strategy_uses_kanban(sess.coordination_strategy)
+            and not sess.auto_dispatch_enabled
+        ):
+            sess.set_auto_dispatch_enabled(True)
         emit(
             {
                 "type": "system_event",

@@ -213,6 +213,10 @@ class SubAgentSpec:
     coordination_strategy: str = STRATEGY_BUS
     # Optional board used by kanban coordination mode.
     kanban_board: Any | None = None
+    # Live read of the parent's autopilot flag. Threaded into worker
+    # KanbanTool instances so workers that create child cards see the
+    # same autopilot signal the parent sees in its create response.
+    kanban_autopilot_state_provider: Callable[[], bool] | None = None
     # Optional task ledger. Available in every coordination mode now —
     # in isolated, workers also get a bound TaskBoardTool; in other
     # modes, only the parent gets it (workers' updates flow through
@@ -1001,6 +1005,7 @@ Parameters:
                     # narrowed tool surface and can only mutate the card
                     # it was assigned to.
                     owned_task_id=getattr(record, "kanban_task_id", "") or None,
+                    autopilot_state_provider=self._spec.kanban_autopilot_state_provider,
                 )
             )
 
@@ -1805,8 +1810,11 @@ Parameters:
                 "    private scratch checklist if the ticket has internal sequential\n"
                 "    steps you want to keep straight — tasks are not dispatched or\n"
                 "    judged, they're just your own working memory.\n"
-                "  · Heartbeat / comment on the card during long work so the operator\n"
-                "    can see progress.\n"
+                "  · Heartbeat during long work. If your task may run longer than\n"
+                "    1 hour, you MUST call `kanban` action=heartbeat at least once\n"
+                "    per hour so the operator sees liveness separate from PID\n"
+                "    checks. Use `comment` for substantive progress notes you want\n"
+                "    on the durable card record.\n"
                 "  · Call `kanban` action=`complete` with verified artifact paths and\n"
                 "    a concise handoff note when you genuinely finish. Don't write\n"
                 "    the status field yourself — `complete` routes correctly.\n"
@@ -1909,10 +1917,23 @@ Parameters:
             current = await self._spec.kanban_board.get(task_id)
             if current is None:
                 return
-            # Card is already finalised (judge passed it to done, or
-            # operator cancelled). Worker terminating later doesn't
-            # change an absorbing state.
+            # Already-routed states are no-ops:
+            #   · TERMINAL_STATUSES (done/cancelled/failed) — judge passed
+            #     it or the operator killed it. Worker terminating later
+            #     doesn't change an absorbing state.
+            #   · `review` — the worker's own `kanban complete` call
+            #     already routed the card to review and bumped the
+            #     iteration. We'd double-count if we did it again here.
+            #   · `blocked` — the worker called `kanban block`. Sticky.
+            #
+            # That leaves the routing path firing only for unrouted
+            # terminals: crash, timeout, cancel-from-watchdog —
+            # situations where the worker died without calling complete
+            # or block, and we need to surface the card to the judge so
+            # it can decide whether the partial work suffices.
             if current.status in TERMINAL_STATUSES:
+                return
+            if current.status in {"review", "blocked"}:
                 return
 
             next_iteration = current.review_iteration + 1
