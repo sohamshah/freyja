@@ -439,12 +439,16 @@ the judge:
 
 > {reason}
 
+Criteria the judge is tracking (priority/status):
+{criteria_status_block}
+
 Open questions still preventing 'done':
 {open_questions_block}
 
-Continue from the current transcript. Use tools as needed. Address the open
-questions above directly, then either make concrete progress or finish with
-a clear completion note that names which criteria are now met."""
+Continue from the current transcript. Use tools as needed. Focus on the
+must-criteria above that are not yet `met` and the open questions. Either
+make concrete progress on them or finish with a clear completion note that
+names which criteria are now satisfied."""
 
 
 # ─── DATA MODEL ───────────────────────────────────────────────────────────────
@@ -490,6 +494,11 @@ class GoalVerdict:
     # profile so the UI surfaces "this verdict came from a fallback"
     # rather than silently degrading.
     fallback_from: str | None = None
+    # True when the verdict is a synthetic "judge crashed" placeholder
+    # (synthesis API error, inline judge exception). The loop counts
+    # consecutive judge_failed verdicts and pauses the goal at the
+    # threshold to prevent runaway spend on a persistent error.
+    judge_failed: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -500,6 +509,7 @@ class GoalVerdict:
             "openQuestions": list(self.open_questions),
             "judgeSessionId": self.judge_session_id,
             "fallbackFrom": self.fallback_from,
+            "judgeFailed": self.judge_failed,
             "raw": self.raw,
         }
 
@@ -541,13 +551,20 @@ GOAL_VERDICT_JSON_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["id", "text", "priority", "status"],
+                "required": ["id", "text", "priority", "status", "note"],
                 "properties": {
                     "id": {"type": "string"},
                     "text": {"type": "string"},
                     "priority": {"type": "string", "enum": ["must", "should", "may"]},
                     "status": {"type": "string", "enum": ["met", "partial", "missing"]},
-                    "note": {"type": "string"},
+                    "note": {
+                        "type": "string",
+                        "description": (
+                            "One-sentence status note. Emit \"\" when there's "
+                            "nothing useful to add — OpenAI strict mode requires "
+                            "the field to be present even when empty."
+                        ),
+                    },
                 },
             },
         },
@@ -613,6 +630,111 @@ RIGOR_DESCRIPTIONS: dict[int, str] = {
         "and round numbers as failures. For audits, citation-heavy work, "
         "anything high-stakes."
     ),
+}
+
+
+# JSON schema for the calibrator's structured response. Mirrors the output
+# shape advertised in JUDGE_CALIBRATOR_SYSTEM_PROMPT and the keys
+# `parse_calibrator_response` reads. Provider-enforced (OpenAI strict /
+# Cerebras / Anthropic forced-tool-call), so the response is guaranteed
+# parseable when this schema is the wire format. Every property is in
+# `required` to satisfy OpenAI's strict-mode invariant — fields that
+# might be intentionally empty (whenToStop, judgeTools, etc.) accept "" /
+# [] rather than being optional.
+JUDGE_CALIBRATOR_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "judgeProfile",
+        "rigorScore",
+        "voice",
+        "criteria",
+        "neverDo",
+        "whenToStop",
+        "judgeTools",
+        "rationaleOverall",
+        "rationaleByField",
+        "confidence",
+    ],
+    "properties": {
+        "judgeProfile": {
+            "type": "string",
+            "enum": list(JUDGE_PROFILES),
+            "description": "Which judge profile to use for this goal.",
+        },
+        "rigorScore": {
+            "type": "integer",
+            "enum": list(RIGOR_LEVELS),
+            "description": "1=lenient, 2=standard, 3=strict, 4=adversarial.",
+        },
+        "voice": {
+            "type": "string",
+            "description": (
+                "3-6 sentence paragraph telling the judge what to be "
+                "skeptical of for THIS specific goal."
+            ),
+        },
+        "criteria": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["id", "text", "priority"],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "Stable id, prefixed with 'cal_'.",
+                    },
+                    "text": {"type": "string"},
+                    "priority": {
+                        "type": "string",
+                        "enum": ["must", "should", "may"],
+                    },
+                },
+            },
+        },
+        "neverDo": {"type": "array", "items": {"type": "string"}},
+        "whenToStop": {
+            "type": "string",
+            "description": "Optional. Emit \"\" if no extra stop logic.",
+        },
+        "judgeTools": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Optional override of the deep-profile default tool "
+                "allowlist. Emit [] to use the default."
+            ),
+        },
+        "rationaleOverall": {"type": "string"},
+        "rationaleByField": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "judgeProfile",
+                "rigorScore",
+                "voice",
+                "criteria",
+                "neverDo",
+                "whenToStop",
+                "judgeTools",
+            ],
+            "properties": {
+                "judgeProfile": {"type": "string"},
+                "rigorScore": {"type": "string"},
+                "voice": {"type": "string"},
+                "criteria": {"type": "string"},
+                "neverDo": {"type": "string"},
+                "whenToStop": {"type": "string"},
+                "judgeTools": {"type": "string"},
+            },
+        },
+        "confidence": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0,
+        },
+    },
 }
 
 
@@ -909,9 +1031,15 @@ class GoalState:
         questions_block = (
             "\n".join(f"  · {q}" for q in questions) if questions else "  (none named)"
         )
+        criteria_block = (
+            build_previous_criteria_block(self.last_verdict.criteria)
+            if self.last_verdict and self.last_verdict.criteria
+            else "(no criteria tracked yet — first turn or judge emitted none)"
+        )
         return GOAL_CONTINUATION_TEMPLATE.format(
             goal=self.goal,
             reason=reason,
+            criteria_status_block=criteria_block,
             open_questions_block=questions_block,
         )
 
@@ -1046,7 +1174,7 @@ def _try_parse_lenient(s: str) -> dict[str, Any] | None:
         return None
 
 
-def parse_goal_verdict(text: str) -> GoalVerdict:
+def parse_goal_verdict(text: str, *, rigor: int = 2) -> GoalVerdict:
     """Parse a goal judge response.
 
     Handles the new structured shape (criteria, open_questions) AND the
@@ -1057,6 +1185,20 @@ def parse_goal_verdict(text: str) -> GoalVerdict:
     markdown code fences, smart quotes, and trailing commas. The judge is
     instructed to emit strict JSON only, but real models drift; the
     parser absorbs the drift so the loop doesn't stall on cosmetic noise.
+
+    `rigor` controls the belt-and-suspenders override on `done=true`:
+
+      · rigor 1 LENIENT / 2 STANDARD — "partial" counts as good enough
+        for must-criteria; missing still blocks. Open questions are
+        tolerated (the system prompt asks the judge to distinguish
+        follow-ups from gaps; the parser cannot, so trust the judge).
+        Sanity confidence floor 0.5 so a done=true at conf=0.0 still
+        gets flipped.
+      · rigor 3 STRICT / 4 ADVERSARIAL — every must must be `met`,
+        any open question disqualifies, confidence floor 0.85. Matches
+        the historical pre-rigor guard semantics.
+
+    Default rigor is 2 to match `JudgeRules.rigor_score` default.
     """
     raw = (text or "").strip()
     payload = _extract_first_json_object(raw)
@@ -1109,18 +1251,46 @@ def parse_goal_verdict(text: str) -> GoalVerdict:
 
     # Tighten the verdict: if the judge said done=true but criteria/conditions
     # don't actually justify it, override to false. Belt-and-suspenders against
-    # the rubber-stamping failure mode.
+    # the rubber-stamping failure mode. Thresholds depend on operator rigor —
+    # see the docstring for the level breakdown.
     if done:
-        must_unmet = any(
-            c.priority == "must" and c.status != "met" for c in criteria
-        )
-        if must_unmet or open_questions or confidence < 0.85:
+        rigor_level = max(1, min(int(rigor or 2), 4))
+        strict_regime = rigor_level >= 3
+        if strict_regime:
+            must_unmet = any(
+                c.priority == "must" and c.status != "met" for c in criteria
+            )
+            open_questions_block = bool(open_questions)
+            conf_floor = 0.85
+        else:
+            # Rigor 1-2: "partial" counts as sufficient for must-criteria;
+            # only "missing" blocks. Trust the judge on open-question
+            # severity (parser can't tell follow-ups from gaps). Keep a
+            # 0.5 floor so done=true at conf=0.0 still gets flipped.
+            must_unmet = any(
+                c.priority == "must" and c.status == "missing"
+                for c in criteria
+            )
+            open_questions_block = False
+            conf_floor = 0.5
+        violations: list[str] = []
+        if must_unmet:
+            violations.append(
+                "unmet must-criteria"
+                if strict_regime
+                else "must-criteria still status=missing"
+            )
+        if open_questions_block:
+            violations.append("open questions still listed")
+        if confidence < conf_floor:
+            violations.append(f"confidence below {conf_floor:.2f}")
+        if violations:
             done = False
             reason = (
                 (reason + "\n\n" if reason else "")
-                + "[loop guard] Judge marked done despite unmet must-criteria, "
-                "open questions, or confidence below 0.85. Verdict flipped to "
-                "continue."
+                + f"[loop guard, rigor={rigor_level}] Judge marked done but "
+                + ", ".join(violations)
+                + ". Verdict flipped to continue."
             )
 
     return GoalVerdict(
@@ -1198,6 +1368,7 @@ def verdict_from_dict(payload: Any) -> GoalVerdict | None:
         raw=str(payload.get("raw") or ""),
         judge_session_id=str(js_id).strip() if isinstance(js_id, str) and js_id.strip() else None,
         fallback_from=str(fb).strip() if isinstance(fb, str) and fb.strip() else None,
+        judge_failed=bool(payload.get("judgeFailed") or payload.get("judge_failed")),
     )
 
 

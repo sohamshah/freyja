@@ -1459,6 +1459,29 @@ def build_provider(model_id: str, thinking_level: str = "auto") -> Any:
 
         return FireworksProvider(config=FireworksConfig(model=model_id, reasoning=thinking))
 
+    if family == "google":
+        if not os.environ.get("GEMINI_API_KEY"):
+            raise ValueError("GEMINI_API_KEY is not set")
+        from engine.google_provider import GoogleConfig, GoogleProvider
+
+        # GoogleConfig has no `thinking` slot — the SDK takes thinking
+        # per-call via GenerateContentConfig.thinking_config. The runner
+        # / structured-output path forwards `thinking` on each call, so
+        # the requested thinking_level is honored even though it doesn't
+        # land on the constructor here. context_window default of 1M
+        # matches the 3.x Pro/Flash window for AVAILABLE_MODELS entries.
+        model_entry = next(
+            (m for m in AVAILABLE_MODELS if m["id"] == model_id), None
+        )
+        ctx_window = (
+            int(model_entry["contextWindow"])
+            if model_entry and model_entry.get("contextWindow")
+            else 1_048_576
+        )
+        return GoogleProvider(
+            config=GoogleConfig(model=model_id, context_window=ctx_window)
+        )
+
     raise ValueError(f"Unknown model family for {model_id}")
 
 
@@ -4812,18 +4835,21 @@ class _BridgeSession:
                 judge_failed=True,
             )
 
+        rigor = (
+            self.judge_rules.rigor_score if self.judge_rules is not None else 2
+        )
         # Happy path: structured-output succeeded with a non-empty dict.
         # Round-trip through parse_goal_verdict so the rubber-stamp guard
         # (flips done=true → false when must-criteria aren't actually met)
         # runs identically for both structured + raw paths.
         if structured.success and isinstance(structured.data, dict):
-            return parse_goal_verdict(json.dumps(structured.data))
+            return parse_goal_verdict(json.dumps(structured.data), rigor=rigor)
 
         # Structured output didn't return clean data — try parsing the
         # raw_text the provider captured. parse_goal_verdict is the same
         # lenient parser the deep judge uses, so fenced JSON / preamble
         # / trailing-comma drift all get absorbed here too.
-        return parse_goal_verdict(structured.raw_text or "")
+        return parse_goal_verdict(structured.raw_text or "", rigor=rigor)
 
     async def _run_deep_judge_subagent(self, prompt: str) -> Any:
         """Two-phase deep judge: investigate → synthesize.
@@ -5020,15 +5046,18 @@ class _BridgeSession:
                 judge_failed=True,
             )
 
+        rigor = (
+            self.judge_rules.rigor_score if self.judge_rules is not None else 2
+        )
         # Provider returned. complete_structured with strict=True is
         # contractually obliged to deliver schema-conforming data; if
         # it didn't, fall back to lenient parsing on raw_text and let
         # the rubber-stamp guard inside parse_goal_verdict take over.
         if structured.success and isinstance(structured.data, dict):
-            verdict = parse_goal_verdict(json.dumps(structured.data))
+            verdict = parse_goal_verdict(json.dumps(structured.data), rigor=rigor)
             pretty_payload = structured.data
         else:
-            verdict = parse_goal_verdict(structured.raw_text or "")
+            verdict = parse_goal_verdict(structured.raw_text or "", rigor=rigor)
             pretty_payload = verdict.to_dict()
 
         verdict.judge_session_id = record.id
@@ -5061,6 +5090,71 @@ class _BridgeSession:
         )
 
         return verdict
+
+    async def _synthesize_calibrator_response(
+        self, record: Any, original_text: str
+    ) -> tuple[Any, Any]:
+        """Re-render the calibrator response under provider-enforced schema.
+
+        Fires when the lenient `parse_calibrator_response` couldn't pull a
+        usable dict out of the calibrator subagent's free-form output —
+        typically because the model emitted preamble + prose, no JSON, or
+        a malformed object. We feed the calibrator's full transcript +
+        a "render the config now" prompt into `complete_structured` with
+        `JUDGE_CALIBRATOR_JSON_SCHEMA`, which forces the model to emit a
+        shape the parser handles cleanly.
+
+        Returns the same (rules, meta) pair `parse_calibrator_response`
+        returns. (None, None) on provider error or terminal parse fail.
+        """
+        from bridge.tools.goal_loop import (
+            JUDGE_CALIBRATOR_JSON_SCHEMA,
+            JUDGE_CALIBRATOR_SYSTEM_PROMPT,
+            parse_calibrator_response,
+        )
+        from engine.types import Message
+
+        investigator_messages = list(getattr(record, "final_messages", []) or [])
+        synth_prompt = (
+            "Re-render the judge configuration as strict JSON now. Do not "
+            "call any tools. The schema is provider-enforced; every "
+            "top-level field listed in the system prompt must be present, "
+            "including rationaleOverall, rationaleByField, and confidence. "
+            "Use empty strings or empty arrays for fields you intentionally "
+            "leave blank, but the key MUST exist."
+        )
+        synth_model = getattr(record, "final_model_id", "") or self.model_id
+        synth_provider = build_provider(synth_model, thinking_level="none")
+        synthesis_messages = investigator_messages + [
+            Message(role="user", content=synth_prompt),
+        ]
+        try:
+            structured = await synth_provider.complete_structured(
+                synthesis_messages,
+                schema=JUDGE_CALIBRATOR_JSON_SCHEMA,
+                schema_name="judge_calibrator",
+                schema_description=(
+                    "Per-goal judge configuration: profile, rigor, voice, "
+                    "criteria, never-do, when-to-stop, tools, and rationale."
+                ),
+                system_prompt=JUDGE_CALIBRATOR_SYSTEM_PROMPT,
+                strict=True,
+                thinking=None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("warning", f"calibrator synthesis call failed: {exc}")
+            return None, None
+
+        if structured.success and isinstance(structured.data, dict):
+            payload_text = json.dumps(structured.data)
+        else:
+            payload_text = structured.raw_text or original_text
+
+        return parse_calibrator_response(
+            payload_text,
+            session_id=record.id,
+            model=synth_model,
+        )
 
     async def _run_judge_calibrator(self, *, reason: str = "goal_set") -> None:
         """Spawn the judge-calibrator AgentType as a first-class sub-agent.
@@ -5147,22 +5241,31 @@ class _BridgeSession:
             model=getattr(record, "child_model", ""),
         )
         if proposed_rules is None or meta is None:
+            # Lenient parse failed. Run a structured-output synthesis
+            # pass against the calibrator's transcript — same pattern
+            # the deep judge uses to guarantee a parseable verdict.
+            # Provider-enforced JUDGE_CALIBRATOR_JSON_SCHEMA means the
+            # synthesis response cannot drift off-shape.
             log(
                 "warning",
-                "judge calibrator returned unparseable response; leaving rules untouched",
+                "judge calibrator unparseable; running structured-output synthesis",
             )
-            self._emit_goal_event(
-                "goal_calibration_failed",
-                "Calibrator returned an unparseable response",
-                details={
-                    "reason": reason,
-                    "calibratorSessionId": record.id,
-                    "stage": "parse",
-                    "rawPreview": (response_text or "")[:240],
-                },
-                chat_visible=False,
+            proposed_rules, meta = await self._synthesize_calibrator_response(
+                record, response_text or ""
             )
-            return
+            if proposed_rules is None or meta is None:
+                self._emit_goal_event(
+                    "goal_calibration_failed",
+                    "Calibrator returned an unparseable response (synthesis also failed)",
+                    details={
+                        "reason": reason,
+                        "calibratorSessionId": record.id,
+                        "stage": "synthesis",
+                        "rawPreview": (response_text or "")[:240],
+                    },
+                    chat_visible=False,
+                )
+                return
 
         applied = will_apply_default
         if applied:

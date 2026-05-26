@@ -566,6 +566,55 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
         "reasoning_levels": ("low", "medium", "high"),
         "reasoning_default": "medium",
     },
+    # Google Gemini (GEMINI_API_KEY)
+    "gemini-3.1-pro-preview": {
+        "provider": "google",
+        "context_window": 1_048_576,
+        "thinking": True,
+        "reasoning_mode": "effort",
+        "reasoning_levels": ("minimal", "low", "medium", "high"),
+        "reasoning_default": "high",
+    },
+    "gemini-3.5-flash": {
+        "provider": "google",
+        "context_window": 1_048_576,
+        "thinking": True,
+        "reasoning_mode": "effort",
+        "reasoning_levels": ("minimal", "low", "medium", "high"),
+        "reasoning_default": "medium",
+    },
+    "gemini-3.1-flash": {
+        "provider": "google",
+        "context_window": 1_048_576,
+        "thinking": True,
+        "reasoning_mode": "effort",
+        "reasoning_levels": ("minimal", "low", "medium", "high"),
+        "reasoning_default": "medium",
+    },
+    "gemini-3.1-flash-lite": {
+        "provider": "google",
+        "context_window": 1_048_576,
+        "thinking": True,
+        "reasoning_mode": "effort",
+        "reasoning_levels": ("minimal", "low", "medium", "high"),
+        "reasoning_default": "low",
+    },
+    "gemini-2.5-pro": {
+        "provider": "google",
+        "context_window": 1_048_576,
+        "thinking": True,
+        "reasoning_mode": "effort",
+        "reasoning_levels": ("minimal", "low", "medium", "high"),
+        "reasoning_default": "high",
+    },
+    "gemini-2.5-flash": {
+        "provider": "google",
+        "context_window": 1_048_576,
+        "thinking": True,
+        "reasoning_mode": "effort",
+        "reasoning_levels": ("minimal", "low", "medium", "high"),
+        "reasoning_default": "medium",
+    },
 }
 
 MODEL_SPEED_TIERS = {
@@ -614,6 +663,14 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, 
     "minimax-m2.5": (0.30, 1.20, 0.0),
     "qwen3.6-plus": (0.40, 1.40, 0.0),
     "glm5": (0.55, 2.20, 0.0),
+    # Google Gemini (USD per 1M tokens — input/output/cache_read).
+    # Cache write defaults to 1.25× input.
+    "gemini-3.1-pro-preview": (1.25, 10.0, 0.31),
+    "gemini-3.5-flash": (0.30, 2.50, 0.075),
+    "gemini-3.1-flash": (0.30, 2.50, 0.075),
+    "gemini-3.1-flash-lite": (0.10, 0.40, 0.025),
+    "gemini-2.5-pro": (1.25, 10.0, 0.31),
+    "gemini-2.5-flash": (0.30, 2.50, 0.075),
 }
 
 
@@ -658,6 +715,12 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     "kimi-k2.5": ["kimi-k2.6", "glm5", "minimax-m2.5"],
     "glm5": ["glm-5.1", "kimi-k2.5", "minimax-m2.5"],
     "minimax-m2.5": ["minimax-m2.7", "kimi-k2.5", "glm5"],
+    "gemini-3.1-pro-preview": ["gemini-3.5-flash", "gemini-3.1-flash"],
+    "gemini-3.5-flash": ["gemini-3.1-flash", "gemini-3.1-flash-lite"],
+    "gemini-3.1-flash": ["gemini-3.5-flash", "gemini-3.1-flash-lite"],
+    "gemini-3.1-flash-lite": ["gemini-3.1-flash", "gemini-3.5-flash"],
+    "gemini-2.5-pro": ["gemini-3.1-pro-preview", "gemini-2.5-flash"],
+    "gemini-2.5-flash": ["gemini-3.5-flash", "gemini-3.1-flash"],
 }
 
 
@@ -680,6 +743,8 @@ def get_provider_name(model: str) -> str:
         return "cerebras"
     if model.startswith("accounts/fireworks/"):
         return "fireworks"
+    if model.startswith("gemini-") or model.startswith("models/gemini-"):
+        return "google"
     return "anthropic"
 
 
@@ -723,6 +788,15 @@ def _create_single_provider(
             model=model,
             max_tokens=max_tokens,
             reasoning=thinking,
+        ))
+    elif provider_name == "google":
+        from engine.google_provider import GoogleConfig, GoogleProvider
+
+        ctx_window = MODEL_REGISTRY.get(model, {}).get("context_window", 1_048_576)
+        return GoogleProvider(GoogleConfig(
+            model=model,
+            max_tokens=max_tokens,
+            context_window=int(ctx_window),
         ))
     else:
         from engine.anthropic_provider import AnthropicConfig, AnthropicProvider
