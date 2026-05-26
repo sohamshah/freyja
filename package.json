@@ -11,7 +11,8 @@
     "build": "npm run build:renderer && npm run build:main",
     "start": "npm run build && electron .",
     "package": "npm run build && electron-builder --mac --dir",
-    "dist": "npm run build && electron-builder --mac --dir && node scripts/create-dmg.mjs"
+    "dist": "npm run build && electron-builder --mac --dir && node scripts/create-dmg.mjs",
+    "rebuild": "bash scripts/rebuild.sh"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",

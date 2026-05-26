@@ -1,13 +1,31 @@
 /**
- * electron-builder afterPack hook — ad-hoc codesign the entire app.
+ * electron-builder afterPack hook — codesign the entire app.
  *
  * electron-builder's built-in signing requires a Developer ID certificate
  * in the keychain. We don't have one, so we set identity=null to skip
- * its signing and handle everything here with `codesign -s -` (ad-hoc).
+ * its signing and handle everything here.
  *
- * Ad-hoc signing enables macOS TCC responsibility inheritance — child
- * processes (the bundled Python) inherit Accessibility and Screen
- * Recording grants from the parent .app.
+ * Signing identity is controlled by FREYJA_SIGN_IDENTITY:
+ *   · unset / empty  → ad-hoc signing (`codesign --sign -`). Works
+ *     for first-time use but TCC permissions DO NOT persist across
+ *     rebuilds because ad-hoc signatures have no stable identity —
+ *     macOS keys grants by per-build cdhash, which changes every
+ *     time you rebuild.
+ *   · set to a keychain identity (e.g. "Freyja Dev") → stable
+ *     signing. TCC keys grants by Designated Requirement, which
+ *     encodes the signing identity, so Screen Recording /
+ *     Accessibility / etc. persist across rebuilds as long as the
+ *     same identity is used.
+ *
+ * Recommended dev setup: create a self-signed Code Signing
+ * certificate in Keychain Access named "Freyja Dev", trust it for
+ * code signing, then export FREYJA_SIGN_IDENTITY="Freyja Dev"
+ * before running `npm run dist`. The provided `scripts/rebuild.sh`
+ * wraps this whole flow.
+ *
+ * Either way, signing enables macOS TCC responsibility inheritance
+ * — child processes (the bundled Python) inherit Accessibility and
+ * Screen Recording grants from the parent .app.
  *
  * Signing order matters: innermost binaries first, outer .app last.
  * Signing the .app creates a seal over all inner signatures, so they
@@ -18,14 +36,18 @@ const { execSync } = require('child_process')
 const path = require('path')
 const fs = require('fs')
 
+const SIGN_IDENTITY = (process.env.FREYJA_SIGN_IDENTITY || '').trim() || '-'
+
 function sign(target, entitlements, label) {
   try {
     execSync(`codesign --remove-signature "${target}"`, { stdio: 'pipe' })
   } catch {}
   const ent = entitlements ? `--entitlements "${entitlements}"` : ''
+  // Quote the identity in case it has spaces (e.g. "Freyja Dev").
+  const idArg = `"${SIGN_IDENTITY.replace(/"/g, '\\"')}"`
   try {
     execSync(
-      `codesign --force --sign - ${ent} --timestamp=none "${target}"`,
+      `codesign --force --sign ${idArg} ${ent} --timestamp=none "${target}"`,
       { stdio: 'pipe' },
     )
     if (label) console.log(`  signed: ${label}`)
