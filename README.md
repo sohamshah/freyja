@@ -276,74 +276,86 @@ future MCP client integration is a thin shim, not a rewrite.
   widgets don't pay a per-iframe CDN cost.
 - Light-mode CSS variables — runtime is dark-only today.
 
-## Quick Start
+## Setup
 
-Use this for development. Renderer changes hot-reload through Vite. Python
-bridge/engine changes require a bridge restart.
+**Prerequisites**: macOS on Apple Silicon, Node 18+, Python 3.11+, [uv](https://docs.astral.sh/uv/), Rust toolchain.
 
 ```bash
-# Prerequisites:
-# Node 18+, Python 3.11+, uv, Rust toolchain
-brew install node python uv rustup-init
-rustup-init
+brew install node python uv rustup-init && rustup-init
 
-# Configure providers
-cp .env.example .env
-# Fill whichever keys you want:
-# ANTHROPIC_API_KEY, OPENAI_API_KEY, CEREBRAS_API_KEY, FIREWORKS_API_KEY
-
-# Install dependencies
+git clone https://github.com/<you>/freyja.git && cd freyja
+cp .env.example .env   # fill the API keys you want — ANTHROPIC_API_KEY,
+                       # OPENAI_API_KEY, CEREBRAS_API_KEY, FIREWORKS_API_KEY
 npm install
 uv sync --extra dev
 
-# Build the native macOS extension once
-cd native/freyja_native
-uv run maturin develop --release
-cd ../..
+# One-time native extension build (macOS screen / input / accessibility).
+cd native/freyja_native && uv run maturin develop --release && cd ../..
+```
 
-# Run the desktop app
-./launch.sh
-# or
+That's all the dependency setup. From here you have two workflows.
+
+### Development (hot reload)
+
+```bash
 npm run dev
 ```
 
-The dev orchestrator in `scripts/dev.mjs` runs Vite, watches the Electron
-main/preload bundle, and launches Electron against the local renderer URL.
+Vite hot-reloads the renderer. Python bridge/engine edits need an app
+restart. Useful for UI iteration but does **not** produce a real `.app`
+bundle — computer-use permissions are gated by the parent process, so for
+realistic testing use the packaged build below.
 
-## Running The Bridge Standalone
-
-Useful when debugging engine behavior without Electron:
-
-```bash
-uv run python -m bridge.freyja_bridge
-```
-
-The bridge reads JSONL commands from stdin and emits JSONL events to stdout.
-
-## Build A Shippable App
-
-The production app bundles Python, the engine, the bridge, native extension,
-renderer assets, and Electron.
+### Packaged build (`.app` you actually install)
 
 ```bash
 npm install
 uv sync
 cd native/freyja_native && uv run maturin develop --release && cd ../..
 
-./scripts/bundle-python.sh
-npm run package
-open out/mac-arm64/Freyja.app
+./scripts/bundle-python.sh   # pulls a hermetic Python into python-bundle/
+npm run rebuild              # builds, signs, installs to /Applications, launches
 ```
 
-To create a DMG:
+`npm run rebuild` runs the full electron-builder pipeline, replaces
+`/Applications/Freyja.app` with the new bundle, and launches it. It
+preserves macOS TCC permissions (Screen Recording, Accessibility, Input
+Monitoring) across rebuilds by signing every build with the same
+self-signed certificate — so you only grant permissions **once**, not
+after every iteration.
+
+**One-time keychain setup** for permission persistence:
+
+1. Open **Keychain Access** → **Certificate Assistant → Create a Certificate…**
+2. Name `Freyja Dev`, Identity Type `Self Signed Root`, Certificate Type
+   `Code Signing`. Tick **Let me override defaults** if you want to extend
+   the validity beyond one year.
+3. Right-click the new cert → **Get Info → Trust → Code Signing: Always Trust**.
+4. Verify: `security find-identity -v -p codesigning | grep "Freyja Dev"`
+
+Once that's in place, `npm run rebuild` is a single command per iteration.
+The script's header (`./scripts/rebuild.sh --help`) documents flags and
+the reset path (`tccutil reset All co.freyja.desktop`) if you ever want a
+clean grant slate.
+
+If you'd rather build without the rebuild script:
 
 ```bash
-npm run dist
+npm run package           # build .app into out/mac-arm64/
+npm run dist              # also creates a DMG
 ```
 
-The app is currently ad-hoc signed for internal alpha distribution. First
-launch may require right-clicking the app and choosing Open. Real distribution
-should add Developer ID signing and notarization.
+Builds default to ad-hoc signing (no certificate needed) but TCC
+permissions will not persist across rebuilds with that path.
+
+### Bridge standalone (engine debugging)
+
+```bash
+uv run python -m bridge.freyja_bridge
+```
+
+The bridge reads JSONL commands from stdin and emits JSONL events to
+stdout — useful when debugging engine behavior without the Electron UI.
 
 ## Project Layout
 
@@ -394,7 +406,7 @@ python3 -m py_compile bridge/freyja_bridge.py engine/runner.py
 | App starts in demo mode | Check `.env` and bridge startup logs |
 | Packaged bridge cannot import modules | Re-run `./scripts/bundle-python.sh` |
 | `freyja_native` missing in dev | Run `uv run maturin develop --release` inside `native/freyja_native` |
-| Computer-use permissions fail | Grant Screen Recording and Accessibility to the app bundle, then restart |
+| Computer-use permissions fail | Grant Screen Recording, Accessibility, and Input Monitoring to the installed `/Applications/Freyja.app`, then restart. If grants vanish after each rebuild, you skipped the one-time Keychain Access cert in the Setup section — `npm run rebuild` needs the `Freyja Dev` self-signed identity for TCC to persist grants. |
 | Context grows with many screenshots | Use the dashboard image policy view; provider requests should prune old tool-result images automatically |
 | OpenAI image attachments are ignored | Ensure the bridge is restarted after the image attachment fix and confirm `OPENAI_API_KEY` is set |
 
