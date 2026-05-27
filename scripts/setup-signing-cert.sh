@@ -28,7 +28,15 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 KEY="$TMP_DIR/freyja-dev.key"
 CRT="$TMP_DIR/freyja-dev.crt"
+P12="$TMP_DIR/freyja-dev.p12"
 CFG="$TMP_DIR/openssl.cnf"
+# Real password for the PKCS#12 envelope. Required — macOS's
+# `security import` flat-out rejects empty-password PKCS#12 files
+# with "MAC verification failed" even when the password really is
+# empty, because OpenSSL and Security framework compute the empty-
+# password MAC differently. Any non-empty string works; this one is
+# ephemeral and never leaves the script.
+P12_PASS="freyja-dev-setup"
 
 # If the identity already exists, bail. Re-running this script would
 # create a second cert with the same CN, and `codesign` will then
@@ -65,30 +73,33 @@ openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
   -config "$CFG" \
   2>/dev/null
 
-echo "→ Importing into your login keychain (key + cert as separate PEMs)…"
-# Previous versions of this script bundled key+cert into a PKCS#12
-# and used `security import` on the .p12. That path is fragile on
-# modern macOS because OpenSSL 3.x's PKCS#12 encoding (even with
-# `-legacy`) sometimes still trips macOS's MAC-verification check.
-# Importing the unencrypted PEM key and the cert as separate
-# `security import` calls sidesteps the PKCS#12 layer entirely —
-# macOS reads the PEMs directly with no cipher / MAC negotiation.
-#
+echo "→ Bundling key + cert into PKCS#12 (legacy encoding for macOS)…"
+# OpenSSL 3.x defaults to AES-256 / PBKDF2 for PKCS#12. macOS's
+# Security framework only reads the older RC2/3DES + PBKDF1
+# encoding, so we need `-legacy`. LibreSSL (which is what /usr/bin/
+# openssl is on stock macOS) doesn't need it and doesn't accept it,
+# so we detect the openssl flavor first.
+OPENSSL_VERSION="$(openssl version 2>/dev/null || echo unknown)"
+LEGACY_FLAG=""
+if [[ "$OPENSSL_VERSION" =~ ^OpenSSL[[:space:]]+([3-9]|[1-9][0-9]+)\. ]]; then
+  LEGACY_FLAG="-legacy"
+fi
+openssl pkcs12 -export $LEGACY_FLAG \
+  -out "$P12" \
+  -inkey "$KEY" \
+  -in "$CRT" \
+  -name "$CERT_NAME" \
+  -password "pass:$P12_PASS"
+
+echo "→ Importing into your login keychain…"
 # -T /usr/bin/codesign whitelists codesign to use the private key
 # without prompting for a password every build. -T /usr/bin/security
 # does the same for security CLI operations.
-security import "$KEY" \
+security import "$P12" \
   -k "$LOGIN_KEYCHAIN" \
-  -t priv \
-  -f pemseq \
-  -A \
+  -P "$P12_PASS" \
   -T /usr/bin/codesign \
   -T /usr/bin/security >/dev/null
-security import "$CRT" \
-  -k "$LOGIN_KEYCHAIN" \
-  -t cert \
-  -f x509 \
-  -A >/dev/null
 
 echo "→ Trusting the cert for Code Signing (requires sudo)…"
 # Has to be in the System keychain as a trusted root so codesign +
