@@ -326,12 +326,28 @@ after every iteration.
 
 **One-time keychain setup** for permission persistence:
 
-1. Open **Keychain Access** → **Certificate Assistant → Create a Certificate…**
+Easiest path — run the bundled CLI helper (uses `openssl` + `security`,
+takes ~10 seconds, asks for `sudo` once to trust the cert):
+
+```bash
+npm run setup-signing-cert
+```
+
+Manual alternative — if you'd rather use the GUI:
+
+1. Open **Keychain Access** → menu **Keychain Access → Certificate
+   Assistant → Create a Certificate…** (if you don't see Certificate
+   Assistant under that menu, use the CLI helper above).
 2. Name `Freyja Dev`, Identity Type `Self Signed Root`, Certificate Type
-   `Code Signing`. Tick **Let me override defaults** if you want to extend
-   the validity beyond one year.
+   `Code Signing`. Tick **Let me override defaults** to extend validity
+   beyond one year.
 3. Right-click the new cert → **Get Info → Trust → Code Signing: Always Trust**.
-4. Verify: `security find-identity -v -p codesigning | grep "Freyja Dev"`
+
+Either way, verify with:
+
+```bash
+security find-identity -v -p codesigning | grep "Freyja Dev"
+```
 
 Once that's in place, `npm run rebuild` is a single command per iteration.
 The script's header (`./scripts/rebuild.sh --help`) documents flags and

@@ -13,11 +13,20 @@
 # the SAME self-signed certificate. TCC then recognises the rebuild
 # as the same app and keeps the grants.
 #
-# One-time setup (5 min, Keychain Access GUI)
-# ────────────────────────────────────────────
+# One-time setup
+# ──────────────
+# Easiest:
+#   npm run setup-signing-cert
+# That runs scripts/setup-signing-cert.sh which creates a 10-year
+# self-signed Code Signing cert named "Freyja Dev" via openssl,
+# imports it into your login keychain, and trusts it for code
+# signing (sudo prompt once).
+#
+# Manual (Keychain Access GUI):
 #   1. Open Keychain Access.
 #   2. Menu: Keychain Access → Certificate Assistant → Create a
-#      Certificate…
+#      Certificate…  (if the menu doesn't show Certificate
+#      Assistant, just use the CLI script above)
 #   3. Set:
 #        Name:              Freyja Dev
 #        Identity Type:     Self Signed Root
@@ -25,9 +34,10 @@
 #        Let me override defaults: ✓ (so you can extend validity)
 #   4. Click through defaults. After creation, right-click the cert
 #      → Get Info → Trust → set Code Signing to "Always Trust".
-#   5. Verify:
-#        security find-identity -v -p codesigning | grep "Freyja Dev"
-#      Should print one line with a hex hash.
+#
+# Either way, verify:
+#   security find-identity -v -p codesigning | grep "Freyja Dev"
+# Should print one line with a hex hash.
 #
 # After the FIRST rebuild with this script, grant Screen Recording /
 # Accessibility / Automation / Input Monitoring as usual via System

@@ -12,7 +12,8 @@
     "start": "npm run build && electron .",
     "package": "npm run build && electron-builder --mac --dir",
     "dist": "npm run build && electron-builder --mac --dir && node scripts/create-dmg.mjs",
-    "rebuild": "bash scripts/rebuild.sh"
+    "rebuild": "bash scripts/rebuild.sh",
+    "setup-signing-cert": "bash scripts/setup-signing-cert.sh"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",
