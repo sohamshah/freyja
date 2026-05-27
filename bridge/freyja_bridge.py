@@ -244,8 +244,42 @@ def _format_verdict_as_critique(card: Any, verdict: Any) -> str:
     return "\n".join(lines)
 
 
+# In-process session event listeners. The gateway daemon (Slack
+# adapter + future Telegram/Discord etc.) subscribes to events for a
+# specific session id so the stream consumer can mirror agent output
+# to the originating platform without needing to scrape stdout.
+# Renderer-spawned bridges never use this; the listener registry stays
+# empty in that path and emit() is unchanged.
+_SESSION_EVENT_LISTENERS: dict[str, list[Any]] = {}
+
+
+def register_session_listener(session_id: str, callback: Any) -> None:
+    """Register a callback fired for every event with the given
+    sessionId. Callback is invoked synchronously inside emit(); it
+    must be cheap or schedule its own async work (e.g. via
+    asyncio.create_task)."""
+    _SESSION_EVENT_LISTENERS.setdefault(session_id, []).append(callback)
+
+
+def unregister_session_listener(session_id: str, callback: Any) -> None:
+    """Remove a previously-registered listener. Idempotent."""
+    listeners = _SESSION_EVENT_LISTENERS.get(session_id)
+    if not listeners:
+        return
+    try:
+        listeners.remove(callback)
+    except ValueError:
+        return
+    if not listeners:
+        _SESSION_EVENT_LISTENERS.pop(session_id, None)
+
+
 def emit(event: dict[str, Any]) -> None:
-    """Emit a single JSON line to stdout and flush immediately."""
+    """Emit a single JSON line to stdout and flush immediately.
+
+    Also fires any per-session in-process listeners so the gateway can
+    intercept events scoped to a session without polling stdout.
+    """
     try:
         _write_debug_log(event)
         sys.stdout.write(json.dumps(event, ensure_ascii=False, default=str))
@@ -253,6 +287,22 @@ def emit(event: dict[str, Any]) -> None:
         sys.stdout.flush()
     except Exception:
         traceback.print_exc(file=sys.stderr)
+    # Per-session listener fan-out (best-effort; never let a listener
+    # take down the bridge).
+    sid = event.get("sessionId")
+    if sid and sid in _SESSION_EVENT_LISTENERS:
+        for cb in list(_SESSION_EVENT_LISTENERS.get(sid, [])):
+            try:
+                cb(event)
+            except Exception:  # noqa: BLE001
+                # Swallow + log; listener failures must not affect
+                # other listeners or the bridge itself.
+                try:
+                    sys.stderr.write(
+                        f"session listener for {sid} failed (continuing)\n"
+                    )
+                except Exception:
+                    pass
 
 
 def log(level: str, message: str) -> None:

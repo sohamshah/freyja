@@ -24,7 +24,18 @@ dependencies = [
     # The Rust pyo3 extension (freyja_native) is built via maturin
     "maturin>=1.5",
     "websockets>=16.0",
+    # Slack platform adapter (Socket Mode + Bolt event handlers).
+    "slack-bolt>=1.18",
+    "slack-sdk>=3.27",
+    # aiohttp for downloading Slack file attachments (carries auth header).
+    "aiohttp>=3.9",
 ]
+
+[project.scripts]
+# `freyja` CLI: gateway daemon control + setup wizards. Implemented in
+# bridge/gateway/cli.py. Installed automatically by `uv pip install -e .`
+# or any wheel install.
+freyja = "bridge.gateway.cli:main"
 
 [project.optional-dependencies]
 dev = [
