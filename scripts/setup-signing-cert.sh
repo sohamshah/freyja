@@ -133,17 +133,18 @@ Next steps:
   1. Run a first rebuild to install the new build into /Applications
      and re-grant TCC permissions one final time:
         npm run rebuild
-  2. Grant TCC permissions to Freyja.app in System Settings → Privacy
-     & Security:
-       · Screen Recording  (computer-use screenshots)
-       · Accessibility      (click / type / scroll, AX tree reads)
-       · Input Monitoring   (synthesized key events)
-       · Full Disk Access   (reach beyond ~/ — protected dirs,
-                              ~/Library, ~/Documents on macOS 15+,
-                              arbitrary paths in bash tools)
-     (Skip Full Disk Access if you only want the agent to touch your
-     project tree under ~/. The other three are required for any
-     computer-use work.)
+  2. Grant TCC permissions to Freyja.app once in System Settings →
+     Privacy & Security. The rebuild script's closing message walks
+     you through each one — quick summary:
+       · Screen Recording  — required. Lets agents see your screen.
+       · Accessibility      — required. Lets agents click / type /
+                              scroll / read UI structure in other apps.
+       · Input Monitoring   — required. Lets agents drive the mouse
+                              and keyboard on your behalf.
+       · Full Disk Access   — optional. Needed only if you want the
+                              agent to read/write outside ~/ or touch
+                              protected dirs (~/Library, ~/Documents,
+                              ~/Desktop on macOS 15+).
   3. From now on, \`npm run rebuild\` keeps those grants across
      iterations because every build is signed with the same identity.
 EOF

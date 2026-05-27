@@ -39,21 +39,11 @@
 #   security find-identity -v -p codesigning | grep "Freyja Dev"
 # Should print one line with a hex hash.
 #
-# After the FIRST rebuild with this script, grant the relevant TCC
-# permissions as usual via System Settings → Privacy & Security:
-#
-#   · Screen Recording   (computer-use screenshots, agent screen
-#                         observation)
-#   · Accessibility       (UI inspection, click / type / scroll, AX
-#                         tree reads)
-#   · Input Monitoring    (synthesizing key events the agent fires)
-#   · Full Disk Access    (read/write outside the home directory, plus
-#                         protected dirs like ~/Library, ~/Documents,
-#                         and ~/Desktop on macOS 15+. Skip if you only
-#                         want the agent to touch your project tree.)
-#
-# Subsequent rebuilds will not require re-granting because the signing
-# identity stays the same.
+# After the FIRST rebuild with this script, grant TCC permissions in
+# System Settings → Privacy & Security. The closing message of this
+# script walks you through what each one does and why you want it.
+# Subsequent rebuilds keep all grants because the signing identity
+# stays the same.
 #
 # Usage
 # ─────
@@ -153,13 +143,41 @@ fi
 
 echo
 echo "✓ Done."
-echo "  If this is the first rebuild with the \"$IDENTITY\" identity,"
-echo "  you'll need to grant TCC permissions once in System Settings"
-echo "  → Privacy & Security:"
-echo "    · Screen Recording  (computer-use screenshots)"
-echo "    · Accessibility      (click / type / scroll, AX tree reads)"
-echo "    · Input Monitoring   (synthesized key events)"
-echo "    · Full Disk Access   (reach beyond ~/ — protected dirs,"
-echo "                          ~/Library, ~/Documents on macOS 15+,"
-echo "                          arbitrary paths in bash tools)"
-echo "  After that, subsequent ./scripts/rebuild.sh runs keep all grants."
+cat <<'PERMS_BLOCK'
+
+  First-rebuild permission grants
+  ───────────────────────────────
+  If this is the first rebuild with the "Freyja Dev" identity, you
+  need to grant four permissions ONCE in System Settings → Privacy &
+  Security. After this, every subsequent `npm run rebuild` keeps them.
+
+  · Screen Recording
+      Required. Lets Freyja capture your screen so agents can see
+      what's on it. Without this, the agent can't see anything
+      outside Freyja's own window — computer-use is dead.
+
+  · Accessibility
+      Required. Lets Freyja read and control other apps' UI: find a
+      button by its label, click a specific element, scroll a
+      specific pane, read window layouts. Without this, the agent
+      can see pixels but can't reliably interact with any app.
+
+  · Input Monitoring
+      Required. Lets Freyja move the mouse, click, and type into
+      other apps on your behalf. Without this, the agent can look
+      and read but can't actually drive anything.
+
+  · Full Disk Access
+      Optional. Lets Freyja (and any bash command it runs) read and
+      write files outside your home directory, plus reach protected
+      directories — ~/Library, ~/Documents, ~/Desktop, ~/Downloads
+      on macOS 15+. Skip this if you only want the agent operating
+      inside your project tree under ~/.
+
+  For each one, toggle Freyja on. If you see duplicate Freyja rows
+  (from older unsigned builds), remove the unchecked ones with `-`
+  and keep only the row tied to /Applications/Freyja.app.
+
+  Quit + relaunch Freyja after granting the last one so all four
+  are active in the same running instance.
+PERMS_BLOCK
