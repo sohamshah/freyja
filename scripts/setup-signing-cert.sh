@@ -67,7 +67,20 @@ openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
   2>/dev/null
 
 echo "→ Bundling into a PKCS#12 file…"
-openssl pkcs12 -export \
+# OpenSSL 3.x defaults to AES-256 / PBKDF2 for PKCS#12, which macOS's
+# Security framework (`security import`) cannot read — fails with
+# "MAC verification failed during PKCS12 import (wrong password?)"
+# even though the password IS correct. The `-legacy` flag falls back
+# to the older RC2/3DES + PBKDF1 encoding macOS expects.
+# LibreSSL (which is what /usr/bin/openssl is on stock macOS) doesn't
+# need the flag and doesn't accept it, so we detect the flavor and
+# only pass `-legacy` when targeting OpenSSL 3+.
+OPENSSL_VERSION="$(openssl version 2>/dev/null || echo unknown)"
+LEGACY_FLAG=""
+if [[ "$OPENSSL_VERSION" =~ ^OpenSSL[[:space:]]+([3-9]|[1-9][0-9]+)\. ]]; then
+  LEGACY_FLAG="-legacy"
+fi
+openssl pkcs12 -export $LEGACY_FLAG \
   -out "$P12" \
   -inkey "$KEY" \
   -in "$CRT" \
