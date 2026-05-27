@@ -28,7 +28,6 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 KEY="$TMP_DIR/freyja-dev.key"
 CRT="$TMP_DIR/freyja-dev.crt"
-P12="$TMP_DIR/freyja-dev.p12"
 CFG="$TMP_DIR/openssl.cnf"
 
 # If the identity already exists, bail. Re-running this script would
@@ -66,35 +65,30 @@ openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
   -config "$CFG" \
   2>/dev/null
 
-echo "→ Bundling into a PKCS#12 file…"
-# OpenSSL 3.x defaults to AES-256 / PBKDF2 for PKCS#12, which macOS's
-# Security framework (`security import`) cannot read — fails with
-# "MAC verification failed during PKCS12 import (wrong password?)"
-# even though the password IS correct. The `-legacy` flag falls back
-# to the older RC2/3DES + PBKDF1 encoding macOS expects.
-# LibreSSL (which is what /usr/bin/openssl is on stock macOS) doesn't
-# need the flag and doesn't accept it, so we detect the flavor and
-# only pass `-legacy` when targeting OpenSSL 3+.
-OPENSSL_VERSION="$(openssl version 2>/dev/null || echo unknown)"
-LEGACY_FLAG=""
-if [[ "$OPENSSL_VERSION" =~ ^OpenSSL[[:space:]]+([3-9]|[1-9][0-9]+)\. ]]; then
-  LEGACY_FLAG="-legacy"
-fi
-openssl pkcs12 -export $LEGACY_FLAG \
-  -out "$P12" \
-  -inkey "$KEY" \
-  -in "$CRT" \
-  -name "$CERT_NAME" \
-  -password pass:
-
-echo "→ Importing into your login keychain…"
+echo "→ Importing into your login keychain (key + cert as separate PEMs)…"
+# Previous versions of this script bundled key+cert into a PKCS#12
+# and used `security import` on the .p12. That path is fragile on
+# modern macOS because OpenSSL 3.x's PKCS#12 encoding (even with
+# `-legacy`) sometimes still trips macOS's MAC-verification check.
+# Importing the unencrypted PEM key and the cert as separate
+# `security import` calls sidesteps the PKCS#12 layer entirely —
+# macOS reads the PEMs directly with no cipher / MAC negotiation.
+#
 # -T /usr/bin/codesign whitelists codesign to use the private key
-# without prompting for a password every build.
-security import "$P12" \
+# without prompting for a password every build. -T /usr/bin/security
+# does the same for security CLI operations.
+security import "$KEY" \
   -k "$LOGIN_KEYCHAIN" \
-  -P "" \
+  -t priv \
+  -f pemseq \
+  -A \
   -T /usr/bin/codesign \
   -T /usr/bin/security >/dev/null
+security import "$CRT" \
+  -k "$LOGIN_KEYCHAIN" \
+  -t cert \
+  -f x509 \
+  -A >/dev/null
 
 echo "→ Trusting the cert for Code Signing (requires sudo)…"
 # Has to be in the System keychain as a trusted root so codesign +
