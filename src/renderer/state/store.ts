@@ -233,6 +233,7 @@ export interface HarnessState extends SessionSlice {
   focusedPanel: 'sidebar' | 'conversation' | 'activity'
   debugOpen: boolean
   modelPickerOpen: boolean
+  slackSetupOpen: boolean
   settingsOpen: boolean
   /** User preference — hide the left Sidebar panel for a focused view. */
   sidebarCollapsed: boolean
@@ -309,6 +310,7 @@ export interface HarnessActions {
   ): void
   toggleMetricsDashboard(open?: boolean): void
   toggleModelPicker(open?: boolean): void
+  toggleSlackSetup(open?: boolean): void
   setFocusedPanel(p: HarnessState['focusedPanel']): void
   requestDemoBurst(): Promise<void>
   newSession(model?: string, reasoningLevel?: string): Promise<void>
@@ -717,6 +719,7 @@ function emptyState(): HarnessState {
     missionDashboardTab: 'overview',
     metricsDashboardOpen: false,
     modelPickerOpen: false,
+    slackSetupOpen: false,
     activeSubagentId: null,
     focusedPanel: 'conversation',
     debugOpen: false,
@@ -2517,6 +2520,9 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
 
   toggleModelPicker(open) {
     set((prev) => ({ modelPickerOpen: open ?? !prev.modelPickerOpen }))
+  },
+  toggleSlackSetup(open) {
+    set((prev) => ({ slackSetupOpen: open ?? !prev.slackSetupOpen }))
   },
 
   setFocusedPanel(p) {

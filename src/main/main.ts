@@ -1,4 +1,18 @@
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, nativeImage, shell, nativeTheme } from 'electron'
+import {
+  configureGatewayBridge,
+  handleGatewayInstall,
+  handleGatewayStart,
+  handleGatewayStatus,
+  handleGatewayStop,
+  handleGatewayUninstall,
+  handleSlackCopyManifest,
+  handleSlackGetConfig,
+  handleSlackManifest,
+  handleSlackSaveTokens,
+  handleSlackSetAllowlist,
+  handleSlackVerifyTokens,
+} from './gatewayBridge.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -562,6 +576,36 @@ function setupIpc() {
       return { ok: false, error: String(err) }
     }
   })
+
+  // ── Gateway / Slack onboarding ─────────────────────────────────
+  // Configure the helper module with our harness root so it can find
+  // the bundled Python + the freyja CLI script.
+  configureGatewayBridge({ harnessRoot: HARNESS_ROOT })
+
+  ipcMain.handle(IPC.gatewayStatus, async () => handleGatewayStatus())
+  ipcMain.handle(IPC.gatewayInstall, async () => handleGatewayInstall())
+  ipcMain.handle(IPC.gatewayUninstall, async () => handleGatewayUninstall())
+  ipcMain.handle(IPC.gatewayStart, async () => handleGatewayStart())
+  ipcMain.handle(IPC.gatewayStop, async () => handleGatewayStop())
+
+  ipcMain.handle(IPC.slackManifest, async () => handleSlackManifest())
+  ipcMain.handle(IPC.slackCopyManifest, async () => handleSlackCopyManifest())
+  ipcMain.handle(
+    IPC.slackVerifyTokens,
+    async (_e, botToken: string, appToken: string) =>
+      handleSlackVerifyTokens(botToken, appToken),
+  )
+  ipcMain.handle(
+    IPC.slackSaveTokens,
+    async (_e, botToken: string, appToken: string) =>
+      handleSlackSaveTokens(botToken, appToken),
+  )
+  ipcMain.handle(
+    IPC.slackSetAllowlist,
+    async (_e, teamId: string, userIds: string[], enforce: boolean) =>
+      handleSlackSetAllowlist(teamId, userIds, enforce),
+  )
+  ipcMain.handle(IPC.slackGetConfig, async () => handleSlackGetConfig())
 }
 
 // Hidden flag for automated UI screenshot capture:

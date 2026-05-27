@@ -740,7 +740,61 @@ export const IPC = {
   artifactRead: 'artifact:read',
   artifactWrite: 'artifact:write',
   compactionMetrics: 'compaction:metrics',
+  // Gateway / Slack onboarding
+  gatewayStatus: 'gateway:status',
+  gatewayInstall: 'gateway:install',
+  gatewayUninstall: 'gateway:uninstall',
+  gatewayStart: 'gateway:start',
+  gatewayStop: 'gateway:stop',
+  slackManifest: 'gateway:slack:manifest',
+  slackCopyManifest: 'gateway:slack:copy-manifest',
+  slackVerifyTokens: 'gateway:slack:verify-tokens',
+  slackSaveTokens: 'gateway:slack:save-tokens',
+  slackSetAllowlist: 'gateway:slack:set-allowlist',
+  slackGetConfig: 'gateway:slack:get-config',
 } as const
+
+// ── Gateway IPC result types ────────────────────────────────────
+
+export interface GatewayStatus {
+  pid: number | null
+  freyjaBin: string | null  // resolved path to the `freyja` binary
+  plistInstalled: boolean
+  plistPath: string
+  logPath: string
+  errPath: string
+  slackConfigured: boolean   // both tokens present in ~/.freyja/.env
+  workspaces: Array<{
+    teamId: string
+    teamName: string
+    botUserId: string
+    botName: string
+    allowlist: string[]      // empty = allow any in this workspace
+  }>
+  error?: string
+}
+
+export interface SlackVerifyResult {
+  ok: boolean
+  botName?: string
+  botUserId?: string
+  teamId?: string
+  teamName?: string
+  error?: string
+}
+
+export interface SlackManifestResult {
+  ok: boolean
+  manifestJson?: string
+  manifestPath?: string
+  error?: string
+}
+
+export interface SimpleResult {
+  ok: boolean
+  error?: string
+  message?: string
+}
 
 export interface CompactionMetricsResult {
   ok: boolean

@@ -49,6 +49,7 @@ except ImportError:
     AsyncSocketModeHandler = Any  # type: ignore
     AsyncWebClient = Any  # type: ignore
 
+from bridge.gateway.config import GatewayConfig, SlackConfig
 from bridge.gateway.pid import freyja_home
 from bridge.gateway.platforms.base import (
     EventCallback,
@@ -114,8 +115,19 @@ class SlackAdapter:
     _MENTIONED_THREADS_MAX = 1000
     _DEDUP_MAX = 5000
 
-    def __init__(self, *, config: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        config: dict[str, Any] | None = None,
+        slack_config: SlackConfig | None = None,
+    ) -> None:
         self.config = config or {}
+        # Per-workspace allowlist + behavioral toggles. If not provided,
+        # load from ~/.freyja/gateway.yaml.
+        self.slack_config: SlackConfig = (
+            slack_config if slack_config is not None
+            else GatewayConfig.load().slack
+        )
 
         self._on_event: EventCallback | None = None
         self._app: AsyncApp | None = None
@@ -380,6 +392,19 @@ class SlackAdapter:
         if team_id and channel_id:
             self._channel_team[channel_id] = team_id
 
+        # Workspace/user allowlist enforcement. When the operator
+        # configures gateway.yaml's `slack.allowed_user_ids`, we deny
+        # everyone outside the allowlist before routing further.
+        # Unattended Slack with no allowlist is footgun-grade — we
+        # refuse to process anything from a workspace not explicitly
+        # opted in.
+        if not self.slack_config.user_allowed(team_id, user_id):
+            logger.info(
+                "[slack] denying message from team=%s user=%s — not in allowlist",
+                team_id, user_id,
+            )
+            return
+
         # DM vs channel detection.
         channel_type = event.get("channel_type") or ""
         if not channel_type and channel_id.startswith("D"):
@@ -481,6 +506,15 @@ class SlackAdapter:
         trigger_id = command.get("trigger_id") or ""
 
         if not channel_id or not cmd:
+            return
+
+        # Same allowlist gate as inbound messages — slash commands are
+        # equally privileged. Reject before routing.
+        if not self.slack_config.user_allowed(team_id, user_id):
+            logger.info(
+                "[slack] denying /%s from team=%s user=%s — not in allowlist",
+                cmd, team_id, user_id,
+            )
             return
 
         # Stash the response_url so the next send() routes ephemerally

@@ -1,5 +1,16 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC, type BridgeCommand, type BridgeEvent, type AppInfo, type BridgeMode, type ArtifactReadResult } from '../shared/events.js'
+import {
+  IPC,
+  type BridgeCommand,
+  type BridgeEvent,
+  type AppInfo,
+  type BridgeMode,
+  type ArtifactReadResult,
+  type GatewayStatus,
+  type SlackVerifyResult,
+  type SlackManifestResult,
+  type SimpleResult,
+} from '../shared/events.js'
 
 type EventListener = (event: BridgeEvent) => void
 
@@ -83,6 +94,55 @@ const api = {
     content: string,
   ): Promise<{ ok: boolean; error?: string }> {
     return ipcRenderer.invoke(IPC.artifactWrite, filePath, content)
+  },
+  // ── Gateway / Slack setup ─────────────────────────────────
+  async gatewayStatus(): Promise<GatewayStatus> {
+    return ipcRenderer.invoke(IPC.gatewayStatus)
+  },
+  async gatewayInstall(): Promise<SimpleResult> {
+    return ipcRenderer.invoke(IPC.gatewayInstall)
+  },
+  async gatewayUninstall(): Promise<SimpleResult> {
+    return ipcRenderer.invoke(IPC.gatewayUninstall)
+  },
+  async gatewayStart(): Promise<SimpleResult> {
+    return ipcRenderer.invoke(IPC.gatewayStart)
+  },
+  async gatewayStop(): Promise<SimpleResult> {
+    return ipcRenderer.invoke(IPC.gatewayStop)
+  },
+  async slackManifest(): Promise<SlackManifestResult> {
+    return ipcRenderer.invoke(IPC.slackManifest)
+  },
+  async slackCopyManifest(): Promise<SimpleResult> {
+    return ipcRenderer.invoke(IPC.slackCopyManifest)
+  },
+  async slackVerifyTokens(
+    botToken: string,
+    appToken: string,
+  ): Promise<SlackVerifyResult> {
+    return ipcRenderer.invoke(IPC.slackVerifyTokens, botToken, appToken)
+  },
+  async slackSaveTokens(
+    botToken: string,
+    appToken: string,
+  ): Promise<SimpleResult> {
+    return ipcRenderer.invoke(IPC.slackSaveTokens, botToken, appToken)
+  },
+  async slackSetAllowlist(
+    teamId: string,
+    userIds: string[],
+    enforce: boolean,
+  ): Promise<SimpleResult> {
+    return ipcRenderer.invoke(IPC.slackSetAllowlist, teamId, userIds, enforce)
+  },
+  async slackGetConfig(): Promise<{
+    ok: boolean
+    enforce?: boolean
+    allowedByWorkspace?: Record<string, string[]>
+    error?: string
+  }> {
+    return ipcRenderer.invoke(IPC.slackGetConfig)
   },
 } as const
 

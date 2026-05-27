@@ -1549,6 +1549,14 @@ function SessionRow({
             <div className="truncate">{s.title}</div>
           )}
           <div className="mt-[2px] flex items-center gap-1.5 text-[10px] text-fg-2">
+            {s.agentType === 'gateway-slack' && (
+              <span
+                title="This session came in over the Slack gateway"
+                className="inline-flex items-center rounded px-1 py-px font-mono text-[9px] uppercase tracking-[0.10em] text-accent/90 bg-accent/[0.07] ring-1 ring-accent/[0.18]"
+              >
+                slack
+              </span>
+            )}
             {s.coordinationStrategy ? (
               <StrategyChip strategy={s.coordinationStrategy} />
             ) : null}

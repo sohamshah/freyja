@@ -295,7 +295,183 @@ class GatewayDaemon:
             )
             return True
 
+        if cmd == "mode":
+            return await self._handle_mode_command(message, adapter)
+
+        if cmd == "model":
+            return await self._handle_model_command(message, adapter)
+
+        if cmd == "goal":
+            return await self._handle_goal_command(message, adapter)
+
+        if cmd == "perms":
+            return await self._handle_perms_command(message, adapter)
+
         return False
+
+    async def _handle_mode_command(
+        self,
+        message: IncomingMessage,
+        adapter: object,
+    ) -> bool:
+        """`/mode <strategy>` — change coordination strategy on the
+        active session. Creates the session if it doesn't yet exist."""
+        from bridge.gateway.session_router import session_key_for
+        from bridge.tools.coordination import normalize_coordination_strategy  # noqa: F401
+
+        target = (message.slash_command_args or "").strip().lower()
+        if target not in {"bus", "goal", "kanban", "isolated"}:
+            await adapter.send(  # type: ignore[attr-defined]
+                message.source.chat_id,
+                "Usage: `/mode <bus|goal|kanban|isolated>`",
+                thread_id=message.source.thread_id,
+                ephemeral_user_id=message.source.user_id,
+                raw_hint=message.raw,
+            )
+            return True
+
+        key = session_key_for(message.source)
+        if self.state is None:
+            return True
+        session = await self.state.ensure_session(
+            session_id=key,
+            coordination_strategy=target,
+        )
+        # If the session existed with a different strategy, ensure_session
+        # already swapped it. Re-emit confirmation for the operator.
+        prev = getattr(session, "coordination_strategy", "?")
+        await adapter.send(  # type: ignore[attr-defined]
+            message.source.chat_id,
+            f"Coordination strategy set to `{prev}`.",
+            thread_id=message.source.thread_id,
+            ephemeral_user_id=message.source.user_id,
+            raw_hint=message.raw,
+        )
+        return True
+
+    async def _handle_model_command(
+        self,
+        message: IncomingMessage,
+        adapter: object,
+    ) -> bool:
+        """`/model <id>` — change the model the session uses for the
+        next turn."""
+        from bridge.gateway.session_router import session_key_for
+
+        target = (message.slash_command_args or "").strip()
+        if not target:
+            # Show current model for this session.
+            key = session_key_for(message.source)
+            sessions = getattr(self.state, "sessions", {}) if self.state else {}
+            session = sessions.get(key)
+            current = getattr(session, "model_id", None) if session else None
+            await adapter.send(  # type: ignore[attr-defined]
+                message.source.chat_id,
+                (
+                    f"Current model: `{current}`\nUsage: `/model <id>` "
+                    "(e.g. `claude-opus-4-7`, `claude-sonnet-4-6`, `gpt-5.5`)"
+                    if current else
+                    "No active session. Usage: `/model <id>`"
+                ),
+                thread_id=message.source.thread_id,
+                ephemeral_user_id=message.source.user_id,
+                raw_hint=message.raw,
+            )
+            return True
+
+        key = session_key_for(message.source)
+        if self.state is None:
+            return True
+        session = await self.state.ensure_session(
+            session_id=key, model_id=target,
+        )
+        applied = getattr(session, "model_id", target)
+        await adapter.send(  # type: ignore[attr-defined]
+            message.source.chat_id,
+            f"Model set to `{applied}`.",
+            thread_id=message.source.thread_id,
+            ephemeral_user_id=message.source.user_id,
+            raw_hint=message.raw,
+        )
+        return True
+
+    async def _handle_goal_command(
+        self,
+        message: IncomingMessage,
+        adapter: object,
+    ) -> bool:
+        """`/goal <objective>` — flip the session into goal mode and
+        arm the goal loop with the given objective. The next turn (the
+        operator's follow-up, or this one's body if non-empty) will be
+        evaluated by the judge each iteration."""
+        from bridge.gateway.session_router import session_key_for
+
+        objective = (message.slash_command_args or "").strip()
+        if not objective:
+            await adapter.send(  # type: ignore[attr-defined]
+                message.source.chat_id,
+                (
+                    "Usage: `/goal <objective>`\n"
+                    "Example: `/goal write me an async http client with retry`"
+                ),
+                thread_id=message.source.thread_id,
+                ephemeral_user_id=message.source.user_id,
+                raw_hint=message.raw,
+            )
+            return True
+
+        key = session_key_for(message.source)
+        if self.state is None:
+            return True
+        session = await self.state.ensure_session(
+            session_id=key, coordination_strategy="goal",
+        )
+        # Stash gateway_source so the next turn's framing carries it.
+        setattr(session, "gateway_source", message.source)
+        # _set_goal arms the loop + auto-fires the calibrator in parallel.
+        if hasattr(session, "_set_goal"):
+            session._set_goal(objective, source="gateway-slack")
+        await adapter.send(  # type: ignore[attr-defined]
+            message.source.chat_id,
+            (
+                f"Goal loop armed:\n>>> {objective}\n\n"
+                "The judge will review my work each turn. Send a follow-up "
+                "to kick off the first agent turn, or just wait — "
+                "calibration is running."
+            ),
+            thread_id=message.source.thread_id,
+            ephemeral_user_id=message.source.user_id,
+            raw_hint=message.raw,
+        )
+        return True
+
+    async def _handle_perms_command(
+        self,
+        message: IncomingMessage,
+        adapter: object,
+    ) -> bool:
+        """`/perms` — show the capability set this gateway session has."""
+        from bridge.gateway.capabilities import tools_allowed_for_gateway
+        allowed = sorted(tools_allowed_for_gateway(message.source.platform))
+        # Format as a clean list.
+        lines = ["*Slack agent permissions*"]
+        lines.append("Allowed tools (read-mostly):")
+        for t in allowed:
+            lines.append(f"  • `{t}`")
+        lines.append("")
+        lines.append(
+            "_Not allowed over Slack:_ bash, computer, browser, mouse/keyboard, "
+            "screenshot, memory mutations. To grant any of those, switch to "
+            "the Freyja desktop app for this session."
+        )
+        await adapter.send(  # type: ignore[attr-defined]
+            message.source.chat_id,
+            "\n".join(lines),
+            thread_id=message.source.thread_id,
+            ephemeral_user_id=message.source.user_id,
+            raw_hint=message.raw,
+        )
+        return True
 
     def _cancel_session(self, session_key: str) -> bool:
         if self.state is None:

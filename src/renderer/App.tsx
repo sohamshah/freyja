@@ -17,6 +17,7 @@ import { EmergencyPanic } from './components/EmergencyPanic'
 import { ComputerPermissionWizard } from './components/ComputerPermissionWizard'
 import { ComputerHotkeyOverlay } from './components/ComputerHotkeyOverlay'
 import { MissionDashboard } from './components/MissionDashboard'
+import { SlackSetupWizard } from './components/SlackSetupWizard'
 import { MetricsDashboard } from './components/MetricsDashboard'
 import { SplashScreen } from './components/SplashScreen'
 import { IdleSleep } from './components/IdleSleep'
@@ -77,6 +78,8 @@ export function App() {
   const commandPaletteOpen = useHarness((s) => s.commandPaletteOpen)
   const missionDashboardOpen = useHarness((s) => s.missionDashboardOpen)
   const toggleMissionDashboard = useHarness((s) => s.toggleMissionDashboard)
+  const slackSetupOpen = useHarness((s) => s.slackSetupOpen)
+  const toggleSlackSetup = useHarness((s) => s.toggleSlackSetup)
   const activeSubagentId = useHarness((s) => s.activeSubagentId)
   const openSubagent = useHarness((s) => s.openSubagent)
   const isStreaming = useHarness((s) => s.isStreaming)
@@ -475,6 +478,10 @@ export function App() {
         )}
         {commandPaletteOpen && <CommandPalette />}
         {missionDashboardOpen && <MissionDashboard />}
+        <SlackSetupWizard
+          open={slackSetupOpen}
+          onClose={() => toggleSlackSetup(false)}
+        />
         <MetricsDashboard />
 
         {activeSubagentId && <SubagentDetail id={activeSubagentId} />}

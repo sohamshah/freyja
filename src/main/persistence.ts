@@ -158,30 +158,113 @@ export function sessionsDirectory(): string {
 
 export function listSessions(): PersistedSessionMeta[] {
   ensureDir()
+  let rows: PersistedSessionMeta[]
   const indexed = readIndexSync()
-  if (indexed) return indexed
+  if (indexed) {
+    rows = [...indexed]
+  } else {
+    rows = []
+    let files: string[] = []
+    try {
+      files = fs.readdirSync(SESSIONS_DIR)
+    } catch {
+      return rows
+    }
+    for (const f of files) {
+      if (!f.endsWith('.json')) continue
+      if (f === SESSION_INDEX_FILE || f.endsWith('.transcript.json')) continue
+      try {
+        const raw = fs.readFileSync(path.join(SESSIONS_DIR, f), 'utf8')
+        const parsed = JSON.parse(raw) as PersistedSession
+        if (!parsed || parsed.version !== 1) continue
+        // Return only the metadata fields (not the heavy slice)
+        rows.push(toMeta(parsed))
+      } catch {
+        // Corrupt file -- skip silently; user can manually clean up.
+      }
+    }
+  }
 
-  const rows: PersistedSessionMeta[] = []
+  // Mirror gateway-created sessions (Slack, etc.) — sessions whose
+  // transcripts live in ~/.freyja/sessions/<id>.transcript.json but
+  // that don't have a renderer-owned slice. Synthesize a stub
+  // PersistedSessionMeta so the sidebar shows them with their
+  // canonical `freyja:slack:*` id. Click-through still works since
+  // the bridge will rehydrate from the transcript when the renderer
+  // attaches to that id.
+  rows = [...rows, ...mirrorGatewaySessions(new Set(rows.map((r) => r.id)))]
+
+  return sortSessions(dedupeSessions(rows))
+}
+
+/** Scan for bridge-owned transcripts that don't have a renderer-owned
+ *  slice, and produce stub meta entries so the gateway-created
+ *  sessions show up in the sidebar. */
+function mirrorGatewaySessions(known: Set<string>): PersistedSessionMeta[] {
+  const out: PersistedSessionMeta[] = []
   let files: string[] = []
   try {
     files = fs.readdirSync(SESSIONS_DIR)
   } catch {
-    return rows
+    return out
   }
   for (const f of files) {
-    if (!f.endsWith('.json')) continue
-    if (f === SESSION_INDEX_FILE || f.endsWith('.transcript.json')) continue
+    if (!f.endsWith('.transcript.json')) continue
+    const fullPath = path.join(SESSIONS_DIR, f)
+    let raw: string
     try {
-      const raw = fs.readFileSync(path.join(SESSIONS_DIR, f), 'utf8')
-      const parsed = JSON.parse(raw) as PersistedSession
-      if (!parsed || parsed.version !== 1) continue
-      // Return only the metadata fields (not the heavy slice)
-      rows.push(toMeta(parsed))
+      raw = fs.readFileSync(fullPath, 'utf8')
     } catch {
-      // Corrupt file -- skip silently; user can manually clean up.
+      continue
     }
+    let parsed: any
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      continue
+    }
+    const sessionId: string | undefined = parsed?.session_id
+    if (!sessionId) continue
+    // Only mirror gateway-shaped IDs; don't re-surface every random
+    // transcript in case the user has old files lying around.
+    if (!sessionId.startsWith('freyja:')) continue
+    if (known.has(sessionId)) continue
+    let stat: fs.Stats | null = null
+    try {
+      stat = fs.statSync(fullPath)
+    } catch {
+      // ignore
+    }
+    const messageCount = Array.isArray(parsed?.transcript?.entries)
+      ? parsed.transcript.entries.filter((e: any) => e?.message).length
+      : 0
+    // Try to extract a friendly title — for slack sessions the id
+    // already carries the workspace + chat. Strip the freyja: prefix
+    // for display.
+    const title = sessionId.replace(/^freyja:/, '')
+    out.push({
+      version: 1,
+      id: sessionId,
+      title,
+      model: parsed?.metadata?.model_id ?? '',
+      workspace: parsed?.metadata?.workspace ?? '',
+      createdAt: stat?.birthtimeMs ?? stat?.mtimeMs ?? Date.now(),
+      updatedAt: stat?.mtimeMs ?? Date.now(),
+      messageCount,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      cacheReadTokens: 0,
+      // Mark gateway-mirrored sessions so the sidebar can render them
+      // with a [slack] / [telegram] / etc badge. We piggyback on the
+      // optional `task` field which is also where regular subagent
+      // sessions store their spawn task.
+      task: '(gateway-mirrored — read-only mirror of an external chat)',
+      // Tag as gateway-mirrored so the renderer's sidebar can detect
+      // it. New custom field — see PersistedSession type.
+      agentType: 'gateway-slack',
+    })
   }
-  return sortSessions(dedupeSessions(rows))
+  return out
 }
 
 export function loadSession(id: string): PersistedSession | null {

@@ -1,7 +1,8 @@
+import { useEffect, useState } from 'react'
 import { aggregateSessionCost, useHarness } from '../state/store'
 import { formatTokens, formatCost } from '../lib/format'
 import { Spinner } from '../lib/spinner'
-import type { CoordinationStrategy } from '@shared/events'
+import type { CoordinationStrategy, GatewayStatus } from '@shared/events'
 
 const STRATEGIES: Array<{
   id: CoordinationStrategy
@@ -172,6 +173,7 @@ export function TitleBar() {
         <span className="ml-1.5 font-mono text-fg-0">{formatCost(aggregateCost)}</span>
       </TitleControl>
       <div className="ml-auto flex items-center gap-3 text-fg-2">
+        <GatewayStatusPill />
         <TitleControl
           className="no-drag hidden h-[28px] px-2.5 text-[10px] xl:inline-flex"
           onClick={() => toggleActivityPanel()}
@@ -320,5 +322,72 @@ function TopographicMark({ size = 22 }: { size?: number }) {
         />
       ))}
     </svg>
+  )
+}
+
+/**
+ * Slack gateway status pill. Three states:
+ *   · "slack live"   — daemon running + tokens configured (green dot)
+ *   · "slack stopped" — tokens configured but daemon not running (warn)
+ *   · "slack setup"  — no tokens yet (dim, opens wizard on click)
+ *
+ * Polls gatewayStatus every 6s. Cheap — single fs.exists call + read of
+ * a tiny .env in the main process.
+ */
+function GatewayStatusPill() {
+  const toggleSlackSetup = useHarness((s) => s.toggleSlackSetup)
+  const [status, setStatus] = useState<GatewayStatus | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const tick = async () => {
+      try {
+        const api = (window as any).harness
+        if (!api?.gatewayStatus) return
+        const next = await api.gatewayStatus()
+        if (!cancelled) setStatus(next)
+      } catch {
+        // ignore — pill stays in whatever last state it was in
+      } finally {
+        if (!cancelled) timer = setTimeout(tick, 6000)
+      }
+    }
+    void tick()
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [])
+
+  if (!status) return null
+
+  const configured = status.slackConfigured
+  const running = status.pid !== null
+
+  let dotClass = 'bg-fg-4'
+  let label = 'slack setup'
+  let title = 'Connect Freyja to Slack'
+
+  if (configured && running) {
+    dotClass = 'bg-ok'
+    label = 'slack live'
+    title = `Gateway running (pid ${status.pid})`
+  } else if (configured && !running) {
+    dotClass = 'bg-warn'
+    label = 'slack stopped'
+    title = 'Tokens configured but gateway not running — click to open setup'
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => toggleSlackSetup(true)}
+      title={title}
+      className="no-drag hidden h-[28px] items-center gap-1.5 rounded border border-white/[0.06] bg-white/[0.025] px-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-2 transition hover:border-white/[0.18] hover:bg-white/[0.06] hover:text-fg-0 xl:inline-flex"
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${dotClass}`} />
+      {label}
+    </button>
   )
 }

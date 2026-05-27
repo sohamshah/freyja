@@ -2520,6 +2520,32 @@ class _BridgeSession:
                 })
             ),
         )
+        # Gateway-scoped tool filter. When this session was created
+        # by the messaging gateway (Slack today), it carries a
+        # `gateway_source` attribute that names the inbound platform.
+        # Strip tools the platform shouldn't be able to run unattended
+        # — bash, computer-use, browser, etc. The operator never sees
+        # a confirmation prompt over Slack, so dangerous tools must be
+        # filtered at the registry level rather than relying on the
+        # model honoring a prompt-level hint.
+        gw_source = getattr(self, "gateway_source", None)
+        if gw_source is not None:
+            from bridge.gateway.capabilities import (
+                tools_allowed_for_gateway,
+            )
+            allowed = tools_allowed_for_gateway(
+                getattr(gw_source, "platform", None)
+            )
+            for name in list(registry._tools.keys()):  # noqa: SLF001
+                if name not in allowed:
+                    registry._tools.pop(name, None)  # noqa: SLF001
+            log(
+                "info",
+                f"gateway session {self.id}: tool surface restricted to "
+                f"{len(registry._tools)} tools "  # noqa: SLF001
+                f"({sorted(registry._tools.keys())})",  # noqa: SLF001
+            )
+
         tool_names = sorted(registry._tools.keys())  # noqa: SLF001
         self.tool_registry = _new_tracing_registry(
             registry,

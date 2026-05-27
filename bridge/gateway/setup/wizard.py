@@ -285,9 +285,50 @@ def run_slack_setup() -> int:
         f"{info['team_name']} (team {info['team_id']})"
     )
 
-    # ── Step 6: Capabilities (informational) ──
-    _step(6, TOTAL, "Default agent permissions for Slack")
-    _info("Slack-routed agent gets these tools by default:")
+    # ── Step 6a: Per-workspace allowlist ──
+    _step(6, TOTAL, "Lock down who can talk to your bot")
+    _info(
+        "Without an allowlist, anyone in the workspace can DM your bot or "
+        "@mention it. For a demo deployment we recommend allowlisting just "
+        "yourself + a small handful of trusted users."
+    )
+    _info(
+        f"Your user_id in workspace {info['team_name']}: " + _bold(info["bot_user_id"][:0] or "?")
+    )
+    _info(_dim("(That's the bot — find your own user_id in Slack: profile → ⋮ → 'Copy member ID')"))
+    print()
+    allowlist_raw = _prompt(
+        "Allowed user_ids (comma-separated, or 'any' for no restriction)",
+        default="",
+    )
+    from bridge.gateway.config import GatewayConfig, SlackConfig, write_config
+    cfg = GatewayConfig.load()
+    if allowlist_raw.strip().lower() == "any":
+        cfg.slack.enforce_workspace_allowlist = False
+        cfg.slack.allowed_user_ids = {}
+        _warn(
+            "Allowlist disabled — every user in every workspace can talk "
+            "to the bot. NOT recommended outside dev."
+        )
+    elif allowlist_raw.strip():
+        ids = [u.strip() for u in allowlist_raw.split(",") if u.strip()]
+        cfg.slack.enforce_workspace_allowlist = True
+        cfg.slack.allowed_user_ids[info["team_id"]] = ids
+        _ok(
+            f"Allowlist for {info['team_name']}: " + ", ".join(ids)
+        )
+    else:
+        cfg.slack.enforce_workspace_allowlist = True
+        cfg.slack.allowed_user_ids[info["team_id"]] = []  # empty = allow any user in this workspace
+        _ok(
+            f"Allowlist scope set to workspace {info['team_name']} "
+            "(any user in this workspace allowed; other workspaces denied)"
+        )
+    write_config(cfg)
+
+    # ── Step 6b: Capability defaults (informational) ──
+    print()
+    _info("Tool surface for Slack-routed sessions:")
     _info(_green("  ✓ read_file, list_directory, glob, grep   ") + _dim("(read-only filesystem)"))
     _info(_green("  ✓ web_search, web_fetch                   ") + _dim("(internet access)"))
     _info(_green("  ✓ sub_agent                               ") + _dim("(spawn specialized helpers)"))
