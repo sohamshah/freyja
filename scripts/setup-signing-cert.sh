@@ -3,7 +3,7 @@
 # scripts/setup-signing-cert.sh — one-shot creation of the self-signed
 # code-signing certificate used by ./scripts/rebuild.sh to preserve
 # macOS TCC permissions (Screen Recording, Accessibility, Input
-# Monitoring) across rebuilds.
+# Monitoring, Full Disk Access) across rebuilds.
 #
 # This is the CLI equivalent of the Keychain Access → Certificate
 # Assistant → Create a Certificate flow described in the README. Use
@@ -133,8 +133,17 @@ Next steps:
   1. Run a first rebuild to install the new build into /Applications
      and re-grant TCC permissions one final time:
         npm run rebuild
-  2. Grant Screen Recording, Accessibility, and Input Monitoring to
-     Freyja.app in System Settings → Privacy & Security.
+  2. Grant TCC permissions to Freyja.app in System Settings → Privacy
+     & Security:
+       · Screen Recording  (computer-use screenshots)
+       · Accessibility      (click / type / scroll, AX tree reads)
+       · Input Monitoring   (synthesized key events)
+       · Full Disk Access   (reach beyond ~/ — protected dirs,
+                              ~/Library, ~/Documents on macOS 15+,
+                              arbitrary paths in bash tools)
+     (Skip Full Disk Access if you only want the agent to touch your
+     project tree under ~/. The other three are required for any
+     computer-use work.)
   3. From now on, \`npm run rebuild\` keeps those grants across
      iterations because every build is signed with the same identity.
 EOF

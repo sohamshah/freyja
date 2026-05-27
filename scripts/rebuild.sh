@@ -2,7 +2,7 @@
 #
 # scripts/rebuild.sh — one-command rebuild + install that preserves
 # macOS TCC permissions (Screen Recording, Accessibility, Automation,
-# Input Monitoring) across builds.
+# Input Monitoring, Full Disk Access) across builds.
 #
 # How it works
 # ────────────
@@ -39,10 +39,21 @@
 #   security find-identity -v -p codesigning | grep "Freyja Dev"
 # Should print one line with a hex hash.
 #
-# After the FIRST rebuild with this script, grant Screen Recording /
-# Accessibility / Automation / Input Monitoring as usual via System
-# Settings → Privacy & Security. Subsequent rebuilds will not require
-# re-granting because the signing identity stays the same.
+# After the FIRST rebuild with this script, grant the relevant TCC
+# permissions as usual via System Settings → Privacy & Security:
+#
+#   · Screen Recording   (computer-use screenshots, agent screen
+#                         observation)
+#   · Accessibility       (UI inspection, click / type / scroll, AX
+#                         tree reads)
+#   · Input Monitoring    (synthesizing key events the agent fires)
+#   · Full Disk Access    (read/write outside the home directory, plus
+#                         protected dirs like ~/Library, ~/Documents,
+#                         and ~/Desktop on macOS 15+. Skip if you only
+#                         want the agent to touch your project tree.)
+#
+# Subsequent rebuilds will not require re-granting because the signing
+# identity stays the same.
 #
 # Usage
 # ─────
@@ -143,6 +154,12 @@ fi
 echo
 echo "✓ Done."
 echo "  If this is the first rebuild with the \"$IDENTITY\" identity,"
-echo "  you'll need to grant Screen Recording / Accessibility /"
-echo "  Input Monitoring once in System Settings → Privacy & Security."
+echo "  you'll need to grant TCC permissions once in System Settings"
+echo "  → Privacy & Security:"
+echo "    · Screen Recording  (computer-use screenshots)"
+echo "    · Accessibility      (click / type / scroll, AX tree reads)"
+echo "    · Input Monitoring   (synthesized key events)"
+echo "    · Full Disk Access   (reach beyond ~/ — protected dirs,"
+echo "                          ~/Library, ~/Documents on macOS 15+,"
+echo "                          arbitrary paths in bash tools)"
 echo "  After that, subsequent ./scripts/rebuild.sh runs keep all grants."

@@ -320,9 +320,9 @@ npm run rebuild              # builds, signs, installs to /Applications, launche
 `npm run rebuild` runs the full electron-builder pipeline, replaces
 `/Applications/Freyja.app` with the new bundle, and launches it. It
 preserves macOS TCC permissions (Screen Recording, Accessibility, Input
-Monitoring) across rebuilds by signing every build with the same
-self-signed certificate — so you only grant permissions **once**, not
-after every iteration.
+Monitoring, Full Disk Access) across rebuilds by signing every build
+with the same self-signed certificate — so you only grant permissions
+**once**, not after every iteration.
 
 **One-time keychain setup** for permission persistence:
 
@@ -422,7 +422,7 @@ python3 -m py_compile bridge/freyja_bridge.py engine/runner.py
 | App starts in demo mode | Check `.env` and bridge startup logs |
 | Packaged bridge cannot import modules | Re-run `./scripts/bundle-python.sh` |
 | `freyja_native` missing in dev | Run `uv run maturin develop --release` inside `native/freyja_native` |
-| Computer-use permissions fail | Grant Screen Recording, Accessibility, and Input Monitoring to the installed `/Applications/Freyja.app`, then restart. If grants vanish after each rebuild, you skipped the one-time Keychain Access cert in the Setup section — `npm run rebuild` needs the `Freyja Dev` self-signed identity for TCC to persist grants. |
+| Computer-use permissions fail | Grant Screen Recording, Accessibility, Input Monitoring, and (for filesystem access outside `~/`) Full Disk Access to the installed `/Applications/Freyja.app`, then restart. If grants vanish after each rebuild, you skipped the one-time Keychain Access cert in the Setup section — `npm run rebuild` needs the `Freyja Dev` self-signed identity for TCC to persist grants. |
 | Context grows with many screenshots | Use the dashboard image policy view; provider requests should prune old tool-result images automatically |
 | OpenAI image attachments are ignored | Ensure the bridge is restarted after the image attachment fix and confirm `OPENAI_API_KEY` is set |
 
