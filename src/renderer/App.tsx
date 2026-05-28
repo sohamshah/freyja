@@ -166,8 +166,32 @@ export function App() {
         .catch(() => {})
       // Load settings from disk and push the permission policy to the bridge.
       hydrateSettings().catch(() => {})
+
+      // Auto-refresh the session list so gateway-created sessions
+      // (Slack DMs, etc.) appear in the sidebar without requiring an
+      // app restart. The gateway daemon is a separate process — when
+      // it writes a new transcript to ~/.freyja/sessions/, the
+      // renderer has no way to know without re-querying. Two
+      // triggers:
+      //
+      //   · window focus — instant refresh when the operator clicks
+      //     back into Freyja (most likely moment to look at the
+      //     sidebar; refresh cost is one IPC call)
+      //   · 30s background poll — covers the "I'm staring at the
+      //     sidebar live, waiting for a new Slack session to land"
+      //     case. hydrateFromDisk is idempotent + dedupes by id, so
+      //     the cost is mostly the IPC round-trip on a quiet system.
+      const refresh = () => {
+        useHarness.getState().hydrateFromDisk().catch(() => {})
+      }
+      const focusHandler = () => refresh()
+      window.addEventListener('focus', focusHandler)
+      const pollTimer = setInterval(refresh, 30_000)
+
       return () => {
         unsub()
+        window.removeEventListener('focus', focusHandler)
+        clearInterval(pollTimer)
         if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
         flushBridgeEvents()
         bridgeApiRef.current = null

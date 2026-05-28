@@ -2658,7 +2658,16 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
   async switchSession(sessionId) {
     const prev = useHarness.getState()
     if (sessionId === prev.activeSessionId) return
-    let archivedSlice = prev.sessionArchive[sessionId]
+    // Gateway-mirrored sessions (Slack DMs) advance independently on
+    // disk via the daemon process. The renderer's cached slice in
+    // sessionArchive is a snapshot from whenever the user last
+    // opened the session — by the next click it can be many turns
+    // stale (operator kept chatting in Slack while looking at the
+    // desktop). Always re-synthesize from the live transcript so
+    // the conversation pane shows what's actually on-disk now.
+    const targetMeta = prev.sessions.find((s) => s.id === sessionId)
+    const isGateway = targetMeta?.agentType === 'gateway-slack'
+    let archivedSlice = isGateway ? undefined : prev.sessionArchive[sessionId]
     if (!archivedSlice) {
       // Try to load from disk.
       const loaded = await prev.loadPersistedSessionIntoArchive(sessionId)
@@ -3125,8 +3134,40 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         completedAt: s.completedAt,
         success: s.success,
       }))
+      const persistedById = new Map(persistedSnapshots.map((s) => [s.id, s]))
       const existingIds = new Set(prev.sessions.map((s) => s.id))
-      const merged: SessionSnapshot[] = [...prev.sessions]
+      // For desktop-owned sessions the RENDERER is source-of-truth —
+      // overwriting from disk would clobber in-flight state. For
+      // gateway-mirrored sessions the DAEMON is source-of-truth, so
+      // we refresh disk-authoritative fields in place. Without this,
+      // the sidebar permanently shows the messageCount captured at
+      // first observation and never reflects new Slack turns.
+      const isGatewayMirrored = (s: SessionSnapshot | undefined) =>
+        s?.agentType === 'gateway-slack'
+      const mergedExisting: SessionSnapshot[] = prev.sessions.map((existing) => {
+        const fresh = persistedById.get(existing.id)
+        if (!fresh) return existing
+        if (!isGatewayMirrored(fresh) && !isGatewayMirrored(existing)) {
+          return existing
+        }
+        return {
+          ...existing,
+          title: fresh.title || existing.title,
+          updatedAt: fresh.updatedAt || existing.updatedAt,
+          messageCount: fresh.messageCount ?? existing.messageCount,
+          totalInputTokens:
+            fresh.totalInputTokens ?? existing.totalInputTokens,
+          totalOutputTokens:
+            fresh.totalOutputTokens ?? existing.totalOutputTokens,
+          cacheReadTokens:
+            fresh.cacheReadTokens ?? existing.cacheReadTokens,
+          task: fresh.task ?? existing.task,
+          agentType: fresh.agentType || existing.agentType,
+          completed: fresh.completed ?? existing.completed,
+          completedAt: fresh.completedAt ?? existing.completedAt,
+        }
+      })
+      const merged: SessionSnapshot[] = [...mergedExisting]
       for (const s of persistedSnapshots) {
         if (!existingIds.has(s.id)) merged.push(s)
       }
