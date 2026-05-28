@@ -277,8 +277,15 @@ def unregister_session_listener(session_id: str, callback: Any) -> None:
 def emit(event: dict[str, Any]) -> None:
     """Emit a single JSON line to stdout and flush immediately.
 
-    Also fires any per-session in-process listeners so the gateway can
-    intercept events scoped to a session without polling stdout.
+    Also:
+      · fires any per-session in-process listeners so the gateway can
+        intercept events scoped to a session without polling stdout
+      · appends the event to a per-session ``.events.jsonl`` file on
+        disk, so the desktop app's transcript synthesizer can replay
+        log/system/tool/text events for sessions it didn't drive
+        (i.e. gateway-owned Slack sessions). Without this the desktop
+        view of a Slack session shows only the raw user/assistant
+        transcript and none of the engine's activity stream.
     """
     try:
         _write_debug_log(event)
@@ -287,9 +294,14 @@ def emit(event: dict[str, Any]) -> None:
         sys.stdout.flush()
     except Exception:
         traceback.print_exc(file=sys.stderr)
+    # Per-session JSONL persistence — keep the file handle open across
+    # events on the same session to avoid open/close overhead on every
+    # text_delta during a streaming response.
+    sid = event.get("sessionId")
+    if sid:
+        _append_session_event_jsonl(sid, event)
     # Per-session listener fan-out (best-effort; never let a listener
     # take down the bridge).
-    sid = event.get("sessionId")
     if sid and sid in _SESSION_EVENT_LISTENERS:
         for cb in list(_SESSION_EVENT_LISTENERS.get(sid, [])):
             try:
@@ -303,6 +315,48 @@ def emit(event: dict[str, Any]) -> None:
                     )
                 except Exception:
                     pass
+
+
+# Cached per-session JSONL file handles. Keyed by sanitized session
+# id. Held open for the bridge's lifetime — a typical session writes
+# thousands of events (every text_delta + tool_use + tool_result),
+# and re-opening on each emit would be a meaningful overhead.
+_SESSION_EVENT_FILES: dict[str, Any] = {}
+_SESSION_EVENT_DIR: Path | None = None
+
+
+def _session_event_path(session_id: str) -> Path:
+    """Resolve the JSONL path for a session id. Mirrors the sanitizer
+    used by ``src/main/persistence.ts`` so the desktop synthesizer
+    finds the right file from the renderer-side id."""
+    global _SESSION_EVENT_DIR  # noqa: PLW0603
+    if _SESSION_EVENT_DIR is None:
+        home = os.environ.get("FREYJA_HOME") or os.path.expanduser("~/.freyja")
+        _SESSION_EVENT_DIR = Path(home) / "sessions"
+    # Match persistence.ts sanitizeId: replace non-[A-Za-z0-9._-] with _,
+    # then truncate to 160. The TypeScript side uses the same rule, so
+    # filenames match across processes.
+    safe = re.sub(r"[^a-zA-Z0-9._-]", "_", session_id)[:160]
+    return _SESSION_EVENT_DIR / f"{safe}.events.jsonl"
+
+
+def _append_session_event_jsonl(session_id: str, event: dict[str, Any]) -> None:
+    """Best-effort append. Failures (disk full, permission denied) are
+    swallowed — losing the file-side mirror of a single event must
+    never break the live event stream that's driving the agent."""
+    try:
+        fp = _SESSION_EVENT_FILES.get(session_id)
+        if fp is None or fp.closed:
+            path = _session_event_path(session_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fp = open(path, "a", encoding="utf-8")  # noqa: SIM115
+            _SESSION_EVENT_FILES[session_id] = fp
+        fp.write(json.dumps(event, ensure_ascii=False, default=str))
+        fp.write("\n")
+        fp.flush()
+    except Exception:  # noqa: BLE001
+        # Don't even traceback — this is purely a mirroring side effect.
+        pass
 
 
 def log(level: str, message: str) -> None:
@@ -2593,21 +2647,58 @@ class _BridgeSession:
         # model honoring a prompt-level hint.
         gw_source = getattr(self, "gateway_source", None)
         if gw_source is not None:
+            # Register the gateway-only `send_attachment` tool. Closes
+            # over `self` so the tool reads the CURRENT
+            # session.gateway_source at execute time (not a snapshot —
+            # the per-turn hook in the gateway runner advances
+            # source.thread_id between turns).
+            try:
+                from bridge.tools.gateway_tools import SendAttachmentTool
+                registry.register(SendAttachmentTool(
+                    get_gateway_source=lambda: getattr(self, "gateway_source", None),
+                ))
+                log(
+                    "info",
+                    f"gateway session {self.id}: registered send_attachment tool",
+                )
+            except Exception as exc:  # noqa: BLE001
+                import traceback
+                log(
+                    "warn",
+                    f"failed to register send_attachment tool: {exc}\n"
+                    f"{traceback.format_exc()}",
+                )
+
             from bridge.gateway.capabilities import (
+                gateway_filter_enabled,
                 tools_allowed_for_gateway,
             )
-            allowed = tools_allowed_for_gateway(
-                getattr(gw_source, "platform", None)
-            )
-            for name in list(registry._tools.keys()):  # noqa: SLF001
-                if name not in allowed:
-                    registry._tools.pop(name, None)  # noqa: SLF001
-            log(
-                "info",
-                f"gateway session {self.id}: tool surface restricted to "
-                f"{len(registry._tools)} tools "  # noqa: SLF001
-                f"({sorted(registry._tools.keys())})",  # noqa: SLF001
-            )
+            platform = getattr(gw_source, "platform", None)
+            if gateway_filter_enabled(platform):
+                # Restricted surface: keep only the allowlisted tools,
+                # but ALWAYS include send_attachment — the agent needs
+                # it to ship files back regardless of the safety
+                # posture, and it's not destructive.
+                allowed = set(tools_allowed_for_gateway(platform))
+                allowed.add("send_attachment")
+                for name in list(registry._tools.keys()):  # noqa: SLF001
+                    if name not in allowed:
+                        registry._tools.pop(name, None)  # noqa: SLF001
+                log(
+                    "info",
+                    f"gateway session {self.id}: tool surface restricted to "
+                    f"{len(registry._tools)} tools "  # noqa: SLF001
+                    f"({sorted(registry._tools.keys())})",  # noqa: SLF001
+                )
+            else:
+                # Full surface — operator is presumed solo, no filter.
+                log(
+                    "info",
+                    f"gateway session {self.id}: full tool surface "
+                    f"({len(registry._tools)} tools — "  # noqa: SLF001
+                    f"enable slack.enable_tool_filter in ~/.freyja/"
+                    f"gateway.yaml to restrict)",
+                )
 
         tool_names = sorted(registry._tools.keys())  # noqa: SLF001
         self.tool_registry = _new_tracing_registry(

@@ -115,6 +115,15 @@ class _State:
     # Whether we've issued send_typing yet on this turn (sent on
     # first event, cleared at turn_complete).
     typing_set: bool = False
+    # When a progress bubble closes (text resumes after tools), all
+    # anchors authored BEFORE the progress are visually above it in
+    # Slack. New text must land BELOW the progress message — which
+    # means it has to go into a NEW anchor, not extend the last one.
+    # Track how many anchors are frozen (no longer editable); the
+    # flush path operates only on anchors past this index. Initialized
+    # to 0 (no anchors frozen at turn start); advances whenever
+    # _reset_progress_bubble finalizes a real bubble.
+    anchors_frozen_at: int = 0
 
 
 class SlackStreamConsumer:
@@ -295,19 +304,22 @@ class SlackStreamConsumer:
         if not self._state.buffer.strip():
             return
 
-        # If the latest anchor's full content (current anchor's stored
-        # content + new buffer) would exceed max_chars, finalize the
-        # current anchor and start a new one.
-        # We rebuild from "all anchors combined + buffer" so split
-        # boundaries land cleanly.
+        # Chunk only the UNFROZEN content (anchors past
+        # anchors_frozen_at + the live buffer). Frozen anchors are
+        # already-finalized text that sits above a closed progress
+        # bubble — editing them with new text would re-author content
+        # ABOVE the progress chip, breaking chronology. New text
+        # always lands in fresh anchors past the frozen mark.
+        base = self._state.anchors_frozen_at
         full = self._combined_content()
         chunks = truncate_for_platform(full, self.max_chars)
 
-        # Map chunks → anchors. Existing anchors get edited; new
-        # anchors get sent fresh.
+        # Map chunks → anchors AT OR AFTER base. Existing unfrozen
+        # anchors get edited; new chunks get sent as fresh messages.
         for idx, chunk in enumerate(chunks):
-            if idx < len(self._state.anchors):
-                anchor = self._state.anchors[idx]
+            anchor_idx = base + idx
+            if anchor_idx < len(self._state.anchors):
+                anchor = self._state.anchors[anchor_idx]
                 if anchor.content == chunk:
                     continue  # unchanged
                 if anchor.message_id:
@@ -319,13 +331,16 @@ class SlackStreamConsumer:
                     if not result.ok:
                         logger.warning(
                             "slack edit failed for anchor %s: %s; "
-                            "starting a new anchor",
+                            "replacing with a fresh message",
                             anchor.message_id,
                             result.error,
                         )
-                        # Fall back: open a new anchor for this chunk
-                        # by appending one. The old (broken) anchor
-                        # stays in the list with its stale content.
+                        # Replace the broken anchor in-place rather
+                        # than appending — appending would leave the
+                        # broken anchor in the list and each
+                        # subsequent flush would re-target it (still
+                        # broken) and append yet another. List grows
+                        # unbounded. Replace = bounded.
                         new_result = await self.adapter.send(
                             self.source.chat_id,
                             chunk,
@@ -333,18 +348,19 @@ class SlackStreamConsumer:
                             raw_hint=self.raw_hint,
                         )
                         if new_result.ok:
-                            self._state.anchors.append(
-                                _Anchor(message_id=new_result.message_id, content=chunk)
+                            self._state.anchors[anchor_idx] = _Anchor(
+                                message_id=new_result.message_id,
+                                content=chunk,
                             )
                         continue
                 anchor.content = chunk
             else:
-                # New chunk — send as a new Slack message.
+                # New chunk — send as a new Slack message and append.
                 result = await self.adapter.send(
                     self.source.chat_id,
                     chunk,
                     thread_id=self._reply_thread_id,
-                    raw_hint=self.raw_hint if idx == 0 else None,
+                    raw_hint=self.raw_hint if anchor_idx == 0 else None,
                 )
                 if result.ok:
                     self._state.anchors.append(
@@ -363,11 +379,14 @@ class SlackStreamConsumer:
         self._state.last_emit_monotonic = time.monotonic() * 1000
 
     def _combined_content(self) -> str:
-        # Concatenate any text already split across anchors + the
-        # pending buffer. Used to recompute chunk boundaries each
-        # flush, so re-slicing on a different boundary never silently
-        # truncates content.
-        parts = [a.content for a in self._state.anchors] + [self._state.buffer]
+        # Only the UNFROZEN suffix of anchors + the live buffer
+        # participates in flushes. Frozen anchors (text written
+        # before the most recent progress bubble closed) are
+        # excluded so their content can't be re-edited and the
+        # chunk-boundary recompute can't shuffle their text into
+        # the new anchor below the progress bubble.
+        active_anchors = self._state.anchors[self._state.anchors_frozen_at:]
+        parts = [a.content for a in active_anchors] + [self._state.buffer]
         return "".join(parts)
 
     # ── tool-progress bubble ──
@@ -437,20 +456,45 @@ class SlackStreamConsumer:
         self._state.progress.last_edit_monotonic = now_ms
 
     async def _reset_progress_bubble(self) -> None:
-        """Close the open progress bubble (if any). Called when the
-        agent starts emitting user-facing text — subsequent tool
-        calls open a fresh bubble BELOW the text. Equivalent to
-        Hermes's ``__reset__`` token mechanism."""
+        """Close the open progress bubble (if any) and pin the cursor
+        so subsequent text starts a NEW anchor BELOW it.
+
+        Called when the agent starts emitting user-facing text after
+        a series of tool calls. Two correctness moves before we
+        return:
+
+        1. Force-flush any pre-tool text still sitting in
+           ``self._state.buffer`` so it lands in the anchor ABOVE
+           the progress message (its rightful chronological home),
+           not in the new anchor we're about to start BELOW.
+        2. Advance ``anchors_frozen_at`` to the current anchor
+           count. ``_combined_content`` / ``_flush_locked`` ignore
+           frozen anchors, so the next text_delta opens a brand-new
+           Slack message past the progress chip.
+
+        Without #2, the new text would be appended to the last
+        existing anchor (which sits ABOVE the progress bubble),
+        producing the visual "tool calls shown after the final
+        answer that got edited last" bug.
+        """
         async with self._lock:
             if not self._state.progress.message_id and not self._state.progress.lines:
                 return
-            # One last flush to make sure the closed bubble shows
-            # all completed tool lines.
+            # Pre-tool text waiting in the buffer belongs in the OLD
+            # anchor — flush it before we close the progress, bypass
+            # the throttle so it actually lands.
+            if self._state.buffer.strip():
+                self._state.last_emit_monotonic = 0
+                await self._flush_locked()
+            # Final progress flush.
             now_ms = time.monotonic() * 1000
-            self._state.progress.last_edit_monotonic = 0  # bypass throttle
+            self._state.progress.last_edit_monotonic = 0
             await self._flush_progress_locked()
             self._state.progress = _ToolProgress()
             self._state.progress.last_edit_monotonic = now_ms
+            # Freeze the cursor. Next text_delta lands in a new
+            # anchor authored AFTER the closed progress bubble.
+            self._state.anchors_frozen_at = len(self._state.anchors)
 
     # ── tool_result handling: image uploads ──
 
