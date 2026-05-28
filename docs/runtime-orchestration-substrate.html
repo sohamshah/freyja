@@ -1,0 +1,1462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Runtime Orchestration — a Substrate for Agentic Organizations</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap');
+
+  :root {
+    --fg: #1a1a1a;
+    --fg-muted: #555;
+    --fg-faint: #8a8a8a;
+    --bg: #f7f7f5;
+    --bg-card: #fff;
+    --bg-code: #fafaf8;
+    --accent: #2545e8;
+    --accent-light: #eef1fd;
+    --red: #c4301c;
+    --red-light: #fdf0ed;
+    --green: #16803d;
+    --green-light: #f0fdf4;
+    --orange: #c2410c;
+    --orange-light: #fff4ec;
+    --border: #c8c8c8;
+    --border-light: #e4e4e2;
+    --mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+    --geistmono: 'Geist Mono', 'JetBrains Mono', 'SF Mono', monospace;
+    --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --serif: 'Newsreader', 'Georgia', 'Times New Roman', serif;
+    --prose-width: 700px;
+    --outer-width: 1100px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: var(--serif); font-size: 19px; line-height: 1.78;
+    color: var(--fg); background: var(--bg);
+    -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+  }
+
+  .container {
+    max-width: var(--outer-width);
+    margin: 0 auto;
+    padding: 0 48px;
+  }
+  section > p,
+  section > h3,
+  section > .callout,
+  section > .flow,
+  section > ul,
+  section > ol {
+    max-width: var(--prose-width);
+  }
+  section > table,
+  section > .diagram,
+  section > .mock-wrap,
+  section > .specimen {
+    max-width: 100%;
+  }
+
+  header {
+    max-width: var(--prose-width);
+    padding: 100px 0 56px;
+    border-bottom: 1px solid var(--border-light);
+    margin-bottom: 64px;
+  }
+  header .label {
+    font-family: var(--mono);
+    font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 24px; font-weight: 500;
+  }
+  header h1 {
+    font-family: var(--serif);
+    font-size: 48px; font-weight: 700;
+    line-height: 1.12; letter-spacing: -0.025em;
+    margin-bottom: 20px;
+  }
+  header .subtitle {
+    font-size: 21px; color: var(--fg-muted); line-height: 1.6;
+  }
+  header .meta {
+    font-family: var(--mono); font-size: 12px;
+    color: var(--fg-faint); margin-top: 28px;
+    letter-spacing: 0.02em;
+  }
+
+  section { margin-bottom: 80px; padding-top: 8px; }
+  h2 {
+    font-family: var(--serif);
+    font-size: 32px; font-weight: 700;
+    letter-spacing: -0.015em;
+    margin-bottom: 28px; padding-top: 16px;
+    max-width: var(--prose-width);
+  }
+  h2 .num {
+    font-family: var(--mono);
+    font-size: 12px; color: var(--fg-faint);
+    letter-spacing: 0.1em; display: block;
+    margin-bottom: 6px; font-weight: 500;
+  }
+  h3 {
+    font-family: var(--sans);
+    font-size: 17px; font-weight: 600;
+    margin-top: 44px; margin-bottom: 14px;
+  }
+  p { margin-bottom: 20px; hanging-punctuation: first; }
+  ul, ol { margin: 0 0 22px 22px; }
+  li { margin: 6px 0; }
+  a {
+    color: var(--accent); text-decoration: none;
+    border-bottom: 1px solid rgba(37, 69, 232, 0.2);
+    transition: border-color 0.15s;
+  }
+  a:hover { border-bottom-color: var(--accent); }
+  strong { font-weight: 600; }
+  em { font-style: italic; }
+  code {
+    font-family: var(--mono); font-size: 0.82em;
+    background: var(--bg-code);
+    padding: 2px 7px; border-radius: 4px;
+    border: 1px solid var(--border-light);
+  }
+
+  .diagram {
+    margin: 36px 0; padding: 36px 40px;
+    border: 1.5px dashed var(--border); border-radius: 6px;
+    background: var(--bg-card); overflow-x: auto;
+  }
+  .diagram .diagram-title {
+    font-family: var(--mono); font-size: 11px;
+    letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--fg-faint); margin-bottom: 28px; font-weight: 500;
+  }
+  .diagram svg { display: block; margin: 0 auto; max-width: 100%; }
+
+  table {
+    width: 100%; border-collapse: collapse;
+    margin: 28px 0; font-family: var(--sans);
+    font-size: 14px; line-height: 1.6;
+  }
+  thead th {
+    font-family: var(--mono); font-size: 10.5px;
+    font-weight: 600; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--fg-faint);
+    text-align: left; padding: 10px 16px 10px 0;
+    border-bottom: 2px solid var(--fg);
+  }
+  tbody td {
+    padding: 12px 16px 12px 0;
+    border-bottom: 1px solid var(--border-light);
+    vertical-align: top;
+  }
+  tbody tr:hover { background: rgba(0,0,0,0.015); }
+  tbody tr:last-child td { border-bottom: none; }
+  td code { font-size: 12px; }
+  td:first-child { font-weight: 500; }
+
+  .specimen {
+    margin: 32px 0; border: 1px solid var(--border-light);
+    border-radius: 8px; overflow: hidden;
+    background: var(--bg-card);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .specimen-header {
+    font-family: var(--mono); font-size: 11px;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--fg-faint); padding: 12px 20px;
+    border-bottom: 1px solid var(--border-light);
+    background: var(--bg-code); font-weight: 500;
+  }
+  .specimen pre {
+    margin: 0; padding: 20px;
+    font-family: var(--mono); font-size: 13.5px;
+    line-height: 1.65; overflow-x: auto;
+    background: var(--bg-card); color: var(--fg);
+  }
+
+  .callout {
+    margin: 32px 0; padding: 24px 28px;
+    border-radius: 8px;
+    font-family: var(--sans);
+    font-size: 15px; line-height: 1.65;
+  }
+  .callout.insight { background: var(--accent-light); border-left: 3px solid var(--accent); }
+  .callout.warning { background: var(--red-light); border-left: 3px solid var(--red); }
+  .callout.success { background: var(--green-light); border-left: 3px solid var(--green); }
+  .callout .callout-label {
+    font-family: var(--mono); font-size: 11px;
+    font-weight: 600; letter-spacing: 0.12em;
+    text-transform: uppercase; margin-bottom: 8px;
+  }
+  .callout.insight .callout-label { color: var(--accent); }
+  .callout.warning .callout-label { color: var(--red); }
+  .callout.success .callout-label { color: var(--green); }
+
+  .flow {
+    display: flex; align-items: center; gap: 10px;
+    flex-wrap: wrap; margin: 28px 0;
+    font-family: var(--mono); font-size: 12.5px;
+  }
+  .flow-step {
+    padding: 10px 16px;
+    border: 1.5px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-card);
+    white-space: nowrap;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+  }
+  .flow-step.active { border-color: var(--accent); background: var(--accent-light); color: var(--accent); font-weight: 600; }
+  .flow-arrow { color: var(--fg-faint); font-size: 18px; }
+
+  .tag {
+    display: inline-block; font-family: var(--mono);
+    font-size: 10.5px; letter-spacing: 0.06em;
+    padding: 3px 9px; border-radius: 4px;
+    font-weight: 600;
+  }
+  .tag.red { background: var(--red-light); color: var(--red); }
+  .tag.blue { background: var(--accent-light); color: var(--accent); }
+  .tag.gray { background: #eeeeec; color: var(--fg-muted); }
+  .tag.green { background: var(--green-light); color: var(--green); }
+  .tag.orange { background: var(--orange-light); color: var(--orange); }
+
+  /* ─── Operator-console mockup (inline reproductions of the live UI) ─── */
+  .mock-wrap { margin: 36px 0; }
+  .mock-caption {
+    font-family: var(--sans); font-size: 13px;
+    color: var(--fg-muted); margin-top: 10px;
+    max-width: var(--prose-width); line-height: 1.55;
+  }
+  .mock {
+    background: #fbfbf9;
+    border: 1.2px solid #111;
+    font-family: var(--geistmono);
+    font-size: 11px; line-height: 1.45;
+    color: #111;
+    overflow-x: auto;
+  }
+  .mock * { box-sizing: border-box; }
+
+  .mock-topbar {
+    display: flex; align-items: center; gap: 14px;
+    padding: 10px 16px;
+    border-bottom: 1.2px solid #111;
+    background: #fbfbf9;
+    min-width: 940px;
+  }
+  .mock-icon {
+    width: 22px; height: 22px;
+    border: 1.2px solid #111;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 600; letter-spacing: 0.04em;
+    flex-shrink: 0;
+  }
+  .mock-breadcrumb { flex: 1; font-size: 12px; }
+  .mock-breadcrumb .sep { color: #7a7a7a; margin: 0 8px; }
+  .mock-breadcrumb .crumb-mute { color: #3d3d3d; }
+  .mock-scope-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    border: 1px solid #d4d4d4;
+    padding: 3px 10px; font-size: 10.5px;
+    color: #111; background: #fbfbf9;
+  }
+  .mock-scope-pill .lbl { color: #7a7a7a; font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; }
+  .mock-user-pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    border: 1px solid #d4d4d4;
+    padding: 3px 10px;
+    background: #fff;
+  }
+  .mock-user-pill .avatar {
+    width: 20px; height: 20px;
+    border: 1px solid #c2410c;
+    background: #c2410c; color: white;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 600;
+  }
+  .mock-user-pill .as { color: #7a7a7a; }
+
+  .mock-tabs {
+    display: flex; align-items: center; gap: 0;
+    border-bottom: 1.2px solid #111;
+    background: #fbfbf9;
+    padding: 0 16px;
+    min-width: 940px;
+  }
+  .mock-tab {
+    padding: 10px 18px;
+    border-right: 1px solid #ececec;
+    font-size: 11px; color: #3d3d3d;
+    text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  .mock-tab:first-child { border-left: 1px solid #ececec; }
+  .mock-tab.active {
+    color: #c2410c; font-weight: 600;
+    background: rgba(194, 65, 12, 0.06);
+    border-bottom: 2px solid #c2410c;
+    margin-bottom: -1.2px;
+  }
+
+  .mock-workbench {
+    display: grid;
+    grid-template-columns: 200px 1fr 240px;
+    min-height: 360px;
+    min-width: 940px;
+  }
+  .mock-rail-left {
+    border-right: 1.2px solid #111;
+    padding: 14px 12px;
+  }
+  .mock-rail-right {
+    border-left: 1.2px solid #111;
+    padding: 14px 12px;
+  }
+  .mock-main { padding: 14px 16px; }
+  .mock-h {
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: #3d3d3d;
+    margin: 0 0 8px;
+  }
+  .mock-btn {
+    display: block; width: 100%;
+    padding: 4px 10px; margin-bottom: 5px;
+    border: 1px solid #111; background: #fbfbf9;
+    font-family: var(--geistmono); font-size: 10px;
+  }
+  .mock-pill {
+    display: inline-block;
+    padding: 1.5px 6px;
+    border: 1px solid #111;
+    font-size: 9px; letter-spacing: 0.04em;
+  }
+  .mock-pill.accent { border-color: #c2410c; color: #c2410c; }
+  .mock-pill.green { border-color: #16803d; color: #16803d; background: rgba(22, 128, 61, 0.05); }
+  .mock-pill.amber { border-color: #b45309; color: #b45309; }
+  .mock-pill.mute { border-color: #d4d4d4; color: #7a7a7a; }
+  .mock-actor-pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 1px 6px 1px 4px;
+    border: 1px solid #d4d4d4;
+    background: #fff;
+    font-size: 10px;
+    border-radius: 2px;
+    margin-right: 4px;
+  }
+  .mock-actor-pill .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+  }
+  .mock-actor-pill .a-id { color: #3d3d3d; }
+
+  .mock-kpi {
+    display: grid; grid-template-columns: 20px 1fr;
+    gap: 8px; padding: 6px 0;
+    border-top: 1px dashed #ececec;
+  }
+  .mock-kpi:first-child { border-top: 0; }
+  .mock-kpi-icon {
+    width: 20px; height: 20px;
+    border: 1px solid #111;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px;
+  }
+  .mock-kpi-num { font-size: 14px; font-weight: 600; }
+  .mock-kpi-label { font-size: 9.5px; color: #3d3d3d; }
+
+  .mock-event-row {
+    display: grid;
+    grid-template-columns: 14px 1fr auto;
+    gap: 10px; padding: 6px 8px;
+    border-bottom: 1px dashed #ececec;
+    align-items: start;
+  }
+  .mock-event-row .e-dot {
+    width: 8px; height: 8px;
+    margin-top: 4px;
+    background: #111;
+  }
+  .mock-event-row.warn .e-dot { background: #b45309; }
+  .mock-event-row.ok .e-dot { background: #16803d; }
+  .mock-event-row.accent .e-dot { background: #c2410c; }
+  .mock-event-row .type { font-weight: 600; }
+  .mock-event-row .meta { color: #7a7a7a; font-size: 10px; margin-top: 2px; }
+  .mock-event-row .ts { color: #7a7a7a; font-size: 10px; white-space: nowrap; }
+
+  .mock-blk {
+    border-top: 1px dashed #ececec;
+    padding: 10px 0;
+    display: grid;
+    grid-template-columns: 56px 1fr 56px;
+    gap: 10px;
+  }
+  .mock-blk:first-child { border-top: 0; }
+  .mock-blk .lbl {
+    font-size: 9px; color: #7a7a7a;
+    text-transform: uppercase; letter-spacing: 0.1em;
+  }
+  .mock-blk .body { font-size: 11px; line-height: 1.55; white-space: pre-wrap; }
+  .mock-blk .ts { font-size: 9.5px; color: #7a7a7a; text-align: right; }
+  .mock-blk-user .lbl { color: #c2410c; font-weight: 600; }
+  .mock-blk-agent .lbl { color: #111; font-weight: 600; }
+  .mock-blk-tool .body {
+    background: #f4f3ee; border: 1px solid #d4d4d4;
+    padding: 0;
+  }
+  .mock-blk-tool .tool-head {
+    padding: 6px 10px; border-bottom: 1px solid #ececec;
+    background: #fbfbf9;
+    display: flex; gap: 6px; align-items: center;
+  }
+  .mock-blk-tool .tool-head .arrow { color: #c2410c; font-weight: 600; }
+  .mock-blk-tool .tool-head .name { font-weight: 600; }
+  .mock-blk-tool .tool-head .status { margin-left: auto; font-size: 9px; text-transform: uppercase; }
+  .mock-blk-tool .tool-head .status.ok { color: #16803d; }
+  .mock-blk-tool .tool-args { padding: 6px 10px; font-size: 10px; color: #3d3d3d; }
+  .mock-blk-tool .tool-result { padding: 6px 10px; font-size: 10px; }
+  .mock-blk-decision .body {
+    border: 1px solid #16803d; background: rgba(22, 128, 61, 0.04);
+    padding: 10px 12px;
+  }
+  .mock-blk-decision .lbl { color: #16803d; font-weight: 600; }
+  .mock-blk-decision .deci-title { font-weight: 600; font-size: 12px; margin-bottom: 4px; }
+  .mock-blk-decision .deci-meta { font-size: 10px; color: #3d3d3d; margin-bottom: 4px; }
+  .mock-blk-decision .deci-alts { font-size: 10px; color: #3d3d3d; }
+  .mock-blk-briefing .body {
+    border: 1px solid #16803d; background: rgba(22, 128, 61, 0.05);
+    padding: 8px 12px;
+  }
+  .mock-blk-briefing .lbl { color: #16803d; }
+  .mock-blk-hitl .body {
+    border: 1.2px solid #c2410c;
+    background: rgba(194, 65, 12, 0.06);
+    padding: 8px 12px;
+  }
+  .mock-blk-hitl .lbl { color: #c2410c; font-weight: 600; }
+
+  .mock-chip {
+    display: inline-block;
+    padding: 2px 8px; margin: 2px;
+    border: 1px solid #d4d4d4;
+    background: #fff; font-size: 10px;
+  }
+  .mock-chip.suggested { border-color: #c2410c; color: #c2410c; }
+  .mock-chip.suggested::before { content: "→ "; }
+
+  /* Decoration when an event row is highlighted via click-through */
+  .mock-event-row.is-highlight {
+    background: rgba(194, 65, 12, 0.10);
+    border-left: 3px solid #c2410c;
+    padding-left: 5px;
+  }
+
+  /* Progress bar */
+  .progress-bar {
+    position: fixed; top: 0; left: 0; height: 3px;
+    background: var(--accent); width: 0%; z-index: 100;
+    transition: width 0.1s;
+  }
+
+  /* TOC */
+  .toc {
+    margin: 0 0 60px;
+    padding: 24px 28px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-light); border-radius: 8px;
+    max-width: var(--prose-width);
+  }
+  .toc-label {
+    font-family: var(--mono); font-size: 10.5px;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--fg-faint); margin-bottom: 14px;
+    font-weight: 600;
+  }
+  .toc ol {
+    list-style: none; counter-reset: toc-counter;
+    font-family: var(--sans); font-size: 15px;
+    line-height: 1.9; margin: 0;
+  }
+  .toc ol li {
+    counter-increment: toc-counter;
+    padding-left: 36px; position: relative; margin: 0;
+  }
+  .toc ol li::before {
+    content: counter(toc-counter, decimal-leading-zero);
+    position: absolute; left: 0; top: 0;
+    font-family: var(--mono);
+    font-size: 11px; color: var(--fg-faint);
+    letter-spacing: 0.05em;
+  }
+  .toc a { border: none; }
+  .toc a:hover { color: var(--accent); border-bottom: 1px dashed var(--accent); }
+
+  /* SVG inline diagrams */
+  svg text { font-family: var(--mono); }
+  svg .lbl-mono { font-family: var(--mono); font-size: 10px; fill: #3d3d3d; }
+  svg .lbl-faint { font-family: var(--mono); font-size: 9px; fill: #8a8a8a; letter-spacing: 0.04em; }
+  svg .lbl-accent { font-family: var(--mono); font-size: 10px; fill: var(--accent); font-weight: 600; }
+
+</style>
+</head>
+<body>
+
+<div class="progress-bar" id="progress"></div>
+
+<div class="container">
+
+<header>
+  <div class="label">Runtime · Substrate · Phase 1B</div>
+  <h1>Runtime Orchestration: a Substrate for Agentic Organizations</h1>
+  <p class="subtitle">An event-sourced log, projections over it, and a small set of hooks at the right places — turning single-session agents into projects with cross-session memory, audit, and collaboration. The operator console makes every primitive visible and testable.</p>
+  <div class="meta">Updated 2026-05-28 &middot; agent-harness PR #429 &middot; ~5,000 words &middot; Living document</div>
+</header>
+
+<!-- ═══════════════════ HERO DIAGRAM ═══════════════════ -->
+<figure style="margin: 0 0 80px;">
+  <svg viewBox="0 0 1000 540" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Substrate stack — event log to projections to briefing to agent">
+    <defs>
+      <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0,0 L10,5 L0,10 Z" fill="#2545e8"/>
+      </marker>
+      <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0,0 L10,5 L0,10 Z" fill="#c2410c"/>
+      </marker>
+      <marker id="arrow-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0,0 L10,5 L0,10 Z" fill="#8a8a8a"/>
+      </marker>
+    </defs>
+
+    <!-- Corner labels -->
+    <text x="20" y="28" class="lbl-accent" letter-spacing="0.12em">FIG_001</text>
+    <text x="20" y="44" class="lbl-faint">SUBSTRATE · STACK</text>
+    <text x="980" y="28" class="lbl-accent" letter-spacing="0.12em" text-anchor="end">[ PHASE / 1B ]</text>
+    <text x="980" y="44" class="lbl-faint" text-anchor="end">PR · 429</text>
+
+    <!-- Top: actors -->
+    <g>
+      <rect x="60" y="80" width="180" height="64" fill="#fbfbf9" stroke="#111" stroke-width="1.2"/>
+      <text x="150" y="106" font-family="'Newsreader',serif" font-weight="600" font-size="14" fill="#111" text-anchor="middle">Session A · Soham</text>
+      <text x="150" y="126" class="lbl-mono" text-anchor="middle">Router Lead · ema</text>
+
+      <rect x="280" y="80" width="180" height="64" fill="#fbfbf9" stroke="#111" stroke-width="1.2"/>
+      <text x="370" y="106" font-family="'Newsreader',serif" font-weight="600" font-size="14" fill="#111" text-anchor="middle">Session B · Maya</text>
+      <text x="370" y="126" class="lbl-mono" text-anchor="middle">Grader IC · ema</text>
+
+      <rect x="500" y="80" width="180" height="64" fill="#fbfbf9" stroke="#111" stroke-width="1.2"/>
+      <text x="590" y="106" font-family="'Newsreader',serif" font-weight="600" font-size="14" fill="#111" text-anchor="middle">Session C · Alex</text>
+      <text x="590" y="126" class="lbl-mono" text-anchor="middle">ML Eval · ema</text>
+
+      <rect x="720" y="80" width="180" height="64" fill="#fbfbf9" stroke="#111" stroke-width="1.2" stroke-dasharray="4 2"/>
+      <text x="810" y="106" font-family="'Newsreader',serif" font-style="italic" font-weight="600" font-size="13" fill="#3d3d3d" text-anchor="middle">Session D · later</text>
+      <text x="810" y="126" class="lbl-faint" text-anchor="middle" letter-spacing="0.04em">briefing turn</text>
+    </g>
+
+    <!-- Arrows down from actors to event log -->
+    <line x1="150" y1="144" x2="150" y2="200" stroke="#8a8a8a" stroke-width="0.8" marker-end="url(#arrow-gray)"/>
+    <line x1="370" y1="144" x2="370" y2="200" stroke="#8a8a8a" stroke-width="0.8" marker-end="url(#arrow-gray)"/>
+    <line x1="590" y1="144" x2="590" y2="200" stroke="#8a8a8a" stroke-width="0.8" marker-end="url(#arrow-gray)"/>
+    <line x1="810" y1="200" x2="810" y2="144" stroke="#2545e8" stroke-width="0.8" marker-end="url(#arrow-blue)"/>
+
+    <!-- Middle: event log -->
+    <g>
+      <rect x="40" y="200" width="920" height="78" fill="#fff" stroke="#2545e8" stroke-width="1.4"/>
+      <text x="58" y="220" class="lbl-accent" letter-spacing="0.14em">EVENT LOG · append-only · (tenant, project, session, actor, caused_by)</text>
+      <!-- Event tokens -->
+      <g font-family="'JetBrains Mono',monospace" font-size="10.5" fill="#111">
+        <rect x="58" y="232" width="118" height="32" fill="#eef1fd" stroke="#2545e8" stroke-width="0.8"/>
+        <text x="117" y="252" text-anchor="middle">session.opened</text>
+
+        <rect x="186" y="232" width="118" height="32" fill="#eef1fd" stroke="#2545e8" stroke-width="0.8"/>
+        <text x="245" y="252" text-anchor="middle">prompt.built</text>
+
+        <rect x="314" y="232" width="118" height="32" fill="#eef1fd" stroke="#2545e8" stroke-width="0.8"/>
+        <text x="373" y="252" text-anchor="middle">tool.requested</text>
+
+        <rect x="442" y="232" width="118" height="32" fill="#fff4ec" stroke="#c2410c" stroke-width="0.8"/>
+        <text x="501" y="252" text-anchor="middle">in_flight.claimed</text>
+
+        <rect x="570" y="232" width="118" height="32" fill="#f0fdf4" stroke="#16803d" stroke-width="0.8"/>
+        <text x="629" y="252" text-anchor="middle">decision.recorded</text>
+
+        <rect x="698" y="232" width="118" height="32" fill="#fdf0ed" stroke="#c4301c" stroke-width="0.8"/>
+        <text x="757" y="252" text-anchor="middle">intervention.surf</text>
+
+        <rect x="826" y="232" width="118" height="32" fill="#f0fdf4" stroke="#16803d" stroke-width="0.8"/>
+        <text x="885" y="252" text-anchor="middle">briefing.generated</text>
+      </g>
+    </g>
+
+    <!-- Arrows from log to projections -->
+    <line x1="200" y1="278" x2="200" y2="324" stroke="#2545e8" stroke-width="1" marker-end="url(#arrow-blue)"/>
+    <line x1="500" y1="278" x2="500" y2="324" stroke="#2545e8" stroke-width="1" marker-end="url(#arrow-blue)"/>
+
+    <!-- Middle layer: projections -->
+    <g>
+      <rect x="80" y="324" width="240" height="80" fill="#fbfbf9" stroke="#111" stroke-width="1.2"/>
+      <text x="200" y="346" font-family="'Newsreader',serif" font-weight="600" font-size="14" fill="#111" text-anchor="middle">project_state slice</text>
+      <text x="200" y="366" class="lbl-mono" text-anchor="middle">14 derived fields</text>
+      <text x="200" y="384" class="lbl-faint" text-anchor="middle" letter-spacing="0.04em">DETERMINISTIC · CACHEABLE</text>
+
+      <rect x="380" y="324" width="240" height="80" fill="#fbfbf9" stroke="#111" stroke-width="1.2"/>
+      <text x="500" y="346" font-family="'Newsreader',serif" font-weight="600" font-size="14" fill="#111" text-anchor="middle">in_flight registry</text>
+      <text x="500" y="366" class="lbl-mono" text-anchor="middle">claims · ttl · matches</text>
+      <text x="500" y="384" class="lbl-faint" text-anchor="middle" letter-spacing="0.04em">DUPLICATE-CHECK INPUT</text>
+
+      <rect x="680" y="324" width="240" height="80" fill="#fbfbf9" stroke="#111" stroke-width="1.2" stroke-dasharray="3 2"/>
+      <text x="800" y="346" font-family="'Newsreader',serif" font-style="italic" font-weight="600" font-size="13" fill="#3d3d3d" text-anchor="middle">future projectors</text>
+      <text x="800" y="366" class="lbl-mono" text-anchor="middle" fill="#3d3d3d">cost · knowledge gaps</text>
+      <text x="800" y="384" class="lbl-faint" text-anchor="middle" letter-spacing="0.04em">PHASE 2</text>
+    </g>
+
+    <!-- Arrows to consumers -->
+    <line x1="200" y1="404" x2="200" y2="450" stroke="#c2410c" stroke-width="1.2" marker-end="url(#arrow-orange)"/>
+    <line x1="500" y1="404" x2="500" y2="450" stroke="#c2410c" stroke-width="1.2" marker-end="url(#arrow-orange)"/>
+
+    <!-- Bottom: consumers -->
+    <g>
+      <rect x="60" y="450" width="280" height="60" fill="#fff4ec" stroke="#c2410c" stroke-width="1.2"/>
+      <text x="200" y="476" font-family="'Newsreader',serif" font-weight="600" font-size="14" fill="#c2410c" text-anchor="middle">briefing turn</text>
+      <text x="200" y="494" class="lbl-mono" text-anchor="middle" fill="#c2410c">slice → LLM → prose + suggest_next</text>
+
+      <rect x="370" y="450" width="280" height="60" fill="#fff4ec" stroke="#c2410c" stroke-width="1.2"/>
+      <text x="510" y="476" font-family="'Newsreader',serif" font-weight="600" font-size="14" fill="#c2410c" text-anchor="middle">tool-execute hook</text>
+      <text x="510" y="494" class="lbl-mono" text-anchor="middle" fill="#c2410c">duplicate-check · intervene</text>
+
+      <rect x="680" y="450" width="280" height="60" fill="#fff4ec" stroke="#c2410c" stroke-width="1.2"/>
+      <text x="820" y="476" font-family="'Newsreader',serif" font-weight="600" font-size="14" fill="#c2410c" text-anchor="middle">read_project_state</text>
+      <text x="820" y="494" class="lbl-mono" text-anchor="middle" fill="#c2410c">tool · agent introspection</text>
+    </g>
+
+    <!-- Annotation -->
+    <text x="500" y="528" class="lbl-faint" text-anchor="middle" letter-spacing="0.08em">EVERY ACTION LANDS AS AN EVENT · EVERY VIEW IS A PROJECTION · EVERY HOOK CONSUMES THE SAME LOG</text>
+  </svg>
+</figure>
+
+<!-- ═══════════════════ TOC ═══════════════════ -->
+<nav class="toc">
+  <div class="toc-label">In this piece</div>
+  <ol>
+    <li><a href="#problem">The problem with single-session agents</a></li>
+    <li><a href="#substrate">The substrate: an event log + projections</a></li>
+    <li><a href="#profile">Profiles: orchestrator config that outlives any session</a></li>
+    <li><a href="#session-entry">Session entry: bind, snapshot, brief</a></li>
+    <li><a href="#briefing">The briefing turn — deterministic slice, then prose</a></li>
+    <li><a href="#tool-hook">The tool-execute hook + duplicate-check</a></li>
+    <li><a href="#introspect">read_project_state — the agent queries the substrate</a></li>
+    <li><a href="#identity">Multi-actor identity flows through the log</a></li>
+    <li><a href="#console">The runtime console — every primitive made visible</a></li>
+    <li><a href="#evaluation">What we proved &middot; hard tests</a></li>
+    <li><a href="#remains">What remains</a></li>
+  </ol>
+</nav>
+
+<!-- ═══════════════════ 01 — PROBLEM ═══════════════════ -->
+<section id="problem">
+<h2><span class="num">01 / 11</span>The problem with single-session agents</h2>
+
+<p>An LLM session is a closed box. The agent learns nothing between turns that wasn't in its system prompt; it sees nothing about other sessions that didn't get hand-copied into the new prompt; and it cannot tell you that <em>this exact write happened in a peer session twenty seconds ago</em>. Single-session agents are amnesiac and uncoordinated.</p>
+
+<p>Multi-session agent systems built on top of this scaffold work around it three ways, all expensive:</p>
+
+<ul>
+<li><strong>Long context.</strong> Pile everything into a 200K window. Pays the prefill tax on every turn, dilutes attention, breaks past ~70% utilization on most models.</li>
+<li><strong>Shared memory blobs.</strong> A summarized state document that every session prepends. Works until the summary diverges from reality (no audit trail), or two sessions race to update it.</li>
+<li><strong>Manual coordination.</strong> The human operator copies a fact from session A into session B's prompt. The human becomes the substrate.</li>
+</ul>
+
+<p>None of these compose. None of them give the team a single source of truth. None of them tell you, three weeks later, <em>why</em> the agent made a particular call — let alone whether two agents racing on the same artifact happened by design.</p>
+
+<div class="callout insight">
+  <div class="callout-label">The reframe</div>
+  Treat the project itself as the unit of memory, not the session. Every action — every tool call, every decision, every briefing, every question — lands as an event in an append-only log keyed on <code>(tenant, project, session, actor)</code>. Every view a session needs is a <em>projection</em> over that log. Cross-session memory becomes a query, not a copy. Coordination becomes a hook, not an etiquette.
+</div>
+
+</section>
+
+<!-- ═══════════════════ 02 — SUBSTRATE ═══════════════════ -->
+<section id="substrate">
+<h2><span class="num">02 / 11</span>The substrate: an event log + projections</h2>
+
+<p>The Phase 1B substrate is exactly two primitives. An append-only <strong>event log</strong> in Postgres, and a set of <strong>projectors</strong> that compute views over it on demand.</p>
+
+<h3>The event</h3>
+
+<p>Every event is the same shape:</p>
+
+<div class="specimen">
+  <div class="specimen-header">Event · agent_harness/events/event.py</div>
+<pre>@dataclass(frozen=True)
+class Event:
+    event_id:    str             # evt_&lt;hex&gt;
+    type:        str             # "decision.recorded", "tool.requested", ...
+    actor:       Actor           # (kind, id, name) — flows from session.user_*
+    session_id:  str
+    project_id:  str | None      # scope for projections
+    tenant_id:   str | None
+    caused_by:   str | None      # event_id of the parent — forms the causal chain
+    occurred_at: datetime
+    payload:     dict[str, Any]  # type-specific
+    prompt_hash: str | None      # content-hash registry pointer
+    idempotency_key: str | None</pre>
+</div>
+
+<p>Fourteen event types cover Phase 1. Each is emitted at exactly one place in the codebase, and each is consumed by at most one or two projectors. The discipline is what keeps the contract small.</p>
+
+<table>
+<thead>
+  <tr><th>Event type</th><th>Emitted by</th><th>Consumed by</th></tr>
+</thead>
+<tbody>
+  <tr><td><code>session.opened</code></td><td><code>SessionManager._attach_runtime</code></td><td>members_active, briefing input</td></tr>
+  <tr><td><code>prompt.built</code></td><td><code>AsyncAgentRunner</code> · per iteration</td><td>audit · content-hash registry</td></tr>
+  <tr><td><code>llm.completed</code></td><td><code>AsyncAgentRunner</code> · per iteration</td><td>per-turn cost/latency · KPIs</td></tr>
+  <tr><td><code>tool.requested</code></td><td>tool-execute hook · before</td><td>file activity · duplicate-check input</td></tr>
+  <tr><td><code>tool.responded</code></td><td>tool-execute hook · after</td><td>file activity · turn metrics</td></tr>
+  <tr><td><code>in_flight.claimed</code></td><td>tool hook for artifact tools</td><td>duplicate-check registry</td></tr>
+  <tr><td><code>in_flight.released</code></td><td>tool hook · post-execute</td><td>duplicate-check registry</td></tr>
+  <tr><td><code>intervention.surfaced</code></td><td>tool hook · duplicate-check miss</td><td>slice's recent_interventions</td></tr>
+  <tr><td><code>briefing.generated</code></td><td><code>run_briefing_turn</code> · success</td><td>slice's recent_briefings</td></tr>
+  <tr><td><code>briefing.failed</code></td><td><code>run_briefing_turn</code> · any failure</td><td>KPIs · failure surfacing</td></tr>
+  <tr><td><code>decision.recorded</code></td><td><code>RecordDecisionTool</code></td><td>slice's recent_decisions</td></tr>
+  <tr><td><code>question.asked</code></td><td><code>interaction.py</code> · HITL submit</td><td>slice's recent_questions</td></tr>
+  <tr><td><code>artifact.created</code></td><td>(future / external writer)</td><td>slice's canonical_artifacts</td></tr>
+  <tr><td><code>message.appended</code></td><td>(future)</td><td>—</td></tr>
+</tbody>
+</table>
+
+<p>The projector for the project's headline view — <code>project_state</code> — folds these into a single deterministic dataclass that the briefing pass and the operator UI both read from.</p>
+
+<div class="specimen">
+  <div class="specimen-header">Slice · agent_harness/projections/project_state.py</div>
+<pre>@dataclass(frozen=True)
+class ProjectStateSlice:
+    project_id:                  str
+    members_active_this_week:    list[str]
+    recent_decisions:            list[Decision]       # last 14d, sorted desc
+    in_flight_claim_event_ids:   list[str]            # active claims
+    open_questions:              list[OpenQuestion]
+    canonical_artifacts:         list[ArtifactRef]
+    blockers:                    list[Blocker]
+    suggested_next:              list[Suggestion]
+    slice_hash:                  str                  # cache key
+    # Phase 1B extensions — derived signal beyond decisions:
+    recent_file_reads:           list[FileTouch]      # last 15, deduped
+    recent_file_writes:          list[FileTouch]      # last 15
+    recent_briefings:            list[BriefingRef]    # last 3 (prose preview)
+    recent_interventions:        list[InterventionRef] # last 5
+    recent_questions:            list[QuestionRef]    # last 10</pre>
+</div>
+
+<p>The projector is pure: same events in, same slice out. Cached by <code>slice_hash</code>, which only changes when the input event set changes. No materialized table, no background job — the slice is computed on every read in &lt;500ms for projects up to ~10k events.</p>
+
+<div class="callout insight">
+  <div class="callout-label">Why projections, not tables</div>
+  A materialized state table is a second source of truth that <em>can</em> drift. A projection over an append-only log <em>cannot</em>. If the slice ever looks wrong, you re-derive it from the events and the bug is in the projector, not in 800 places where state got updated.
+</div>
+
+</section>
+
+<!-- ═══════════════════ 03 — PROFILES ═══════════════════ -->
+<section id="profile">
+<h2><span class="num">03 / 11</span>Profiles: orchestrator config that outlives any session</h2>
+
+<p>A <strong>profile</strong> is the versioned, project-scoped configuration that any session in the project binds against on entry. It's the persistence layer for orchestrator identity. One <code>(tenant, name)</code> pair has many versions; exactly one is published at a time.</p>
+
+<table>
+<thead><tr><th>Field</th><th>Purpose</th></tr></thead>
+<tbody>
+  <tr><td><code>base_instructions</code></td><td>The system prompt the agent walks in with. Carries the orchestrator's voice + operating model.</td></tr>
+  <tr><td><code>default_model</code> / <code>reviewer_model</code></td><td>Primary inference model and (future) reviewer for the reviewer pattern.</td></tr>
+  <tr><td><code>skill_folders</code></td><td>References to skill folders the runner loads into the prompt by scope (profile, tenant). Wiring lands in Phase 2.</td></tr>
+  <tr><td><code>named_inputs</code></td><td>Inputs the session must supply at create-time. Each has a <code>required</code> flag — missing required inputs return HTTP 400 with the missing keys.</td></tr>
+  <tr><td><code>named_outputs</code></td><td>Structured returns the calling FA expects (text, generated_doc[], etc.).</td></tr>
+  <tr><td><code>tool_roster</code></td><td><code>auto_nominate</code> flag + <code>standard_tools</code> list + allow/deny lists. Defines which tools the agent gets.</td></tr>
+</tbody>
+</table>
+
+<p>The two profiles that ship with the substrate exercise different domains:</p>
+
+<table>
+<thead><tr><th>Profile</th><th>Tenant</th><th>Domain</th><th>Required input</th></tr></thead>
+<tbody>
+  <tr><td><code>Champ</code></td><td>kpmg</td><td>Change-management programs at KPMG</td><td><code>plan</code></td></tr>
+  <tr><td><code>designing-llm-router</code></td><td>ema</td><td>Dev/eng project: data sourcing, taxonomy, cascading, live grading, experiments</td><td><code>design_doc</code></td></tr>
+</tbody>
+</table>
+
+<p>Profiles are <em>themselves</em> event-sourced: <code>profile.created</code>, <code>profile.published</code>, <code>profile.archived</code> events land in the same log. Forking, diffing, rolling back, and replay are all the same substrate primitive used everywhere else.</p>
+
+</section>
+
+<!-- ═══════════════════ 04 — SESSION ENTRY ═══════════════════ -->
+<section id="session-entry">
+<h2><span class="num">04 / 11</span>Session entry: bind, snapshot, brief</h2>
+
+<p>When the FA creates a session against the substrate-enabled harness, three things happen in <code>SessionManager._attach_runtime</code> before the agent ever touches the user's first message.</p>
+
+<div class="flow">
+  <div class="flow-step">POST /api/sessions</div>
+  <span class="flow-arrow">→</span>
+  <div class="flow-step active">bind_profile</div>
+  <span class="flow-arrow">→</span>
+  <div class="flow-step active">validate_named_inputs</div>
+  <span class="flow-arrow">→</span>
+  <div class="flow-step active">snapshot_docs</div>
+  <span class="flow-arrow">→</span>
+  <div class="flow-step">emit session.opened</div>
+  <span class="flow-arrow">→</span>
+  <div class="flow-step">briefing turn (next)</div>
+</div>
+
+<p><strong>Bind.</strong> The session's context carries <code>profile_name</code>. The hook resolves it via the profile store, pins <code>runtime.profile_id</code> / <code>profile_version</code>, and — when the FA didn't override the system prompt — fills <code>session.system_prompt</code> from <code>profile.base_instructions</code>.</p>
+
+<p><strong>Validate.</strong> For every <code>NamedInput</code> with <code>required=True</code>, the operator's session-create body must include a value under <code>context.named_inputs</code>. Missing required inputs raise <code>ProfileInputError</code> which the route maps to HTTP 400 with the missing keys listed. This is the FA's contract bug, not a runtime failure.</p>
+
+<p><strong>Snapshot.</strong> The docs folder is read once: <code>plan</code> + <code>program_memory</code> + the 10 most-recent <code>generated_doc</code>s for this project. The snapshot lands on <code>runtime.docs_snapshot</code> so the prompt assembler can render it without re-querying.</p>
+
+<div class="callout insight">
+  <div class="callout-label">Idempotency by accident</div>
+  None of the three phases mutate state outside the session being created. Re-issuing the same session-create request lands a new session row but produces the same downstream events (with new ids). The event log is what carries continuity, not the session table.
+</div>
+
+</section>
+
+<!-- ═══════════════════ 05 — BRIEFING ═══════════════════ -->
+<section id="briefing">
+<h2><span class="num">05 / 11</span>The briefing turn — deterministic slice, then prose</h2>
+
+<p>This is the substrate's headline feature. The first time a session sends a message, before the agent processes that message, the runtime runs a <em>separate</em> LLM call against a structured slice of the project's history. The output is a ≤200-word briefing plus a ranked <code>suggested_next</code> list. The briefing prose is appended to the session's system prompt before the user's turn runs. The agent walks into the user's first message <em>already oriented</em>.</p>
+
+<div class="diagram">
+<div class="diagram-title">Briefing pipeline — 5 stages, one substrate read, one substrate write</div>
+<svg viewBox="0 0 900 320" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="b-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#2545e8"/>
+    </marker>
+  </defs>
+
+  <!-- Stage 1 — Read slice -->
+  <rect x="20" y="60" width="160" height="100" fill="#fff" stroke="#2545e8" stroke-width="1.2"/>
+  <text x="100" y="86" font-family="'Newsreader',serif" font-weight="600" font-size="13" fill="#2545e8" text-anchor="middle">1. Read slice</text>
+  <text x="100" y="106" class="lbl-mono" text-anchor="middle">project_state</text>
+  <text x="100" y="122" class="lbl-mono" text-anchor="middle">projector</text>
+  <text x="100" y="142" class="lbl-faint" text-anchor="middle" letter-spacing="0.06em">DETERMINISTIC</text>
+
+  <line x1="180" y1="110" x2="220" y2="110" stroke="#2545e8" stroke-width="1.2" marker-end="url(#b-arrow)"/>
+
+  <!-- Stage 2 — Build prompt -->
+  <rect x="220" y="60" width="160" height="100" fill="#fff" stroke="#2545e8" stroke-width="1.2"/>
+  <text x="300" y="86" font-family="'Newsreader',serif" font-weight="600" font-size="13" fill="#2545e8" text-anchor="middle">2. Build prompt</text>
+  <text x="300" y="106" class="lbl-mono" text-anchor="middle">slice JSON</text>
+  <text x="300" y="122" class="lbl-mono" text-anchor="middle">+ system prompt</text>
+  <text x="300" y="142" class="lbl-faint" text-anchor="middle" letter-spacing="0.06em">RECORD_BRIEFING TOOL FORCED</text>
+
+  <line x1="380" y1="110" x2="420" y2="110" stroke="#2545e8" stroke-width="1.2" marker-end="url(#b-arrow)"/>
+
+  <!-- Stage 3 — LLM -->
+  <rect x="420" y="60" width="160" height="100" fill="#fff4ec" stroke="#c2410c" stroke-width="1.2"/>
+  <text x="500" y="86" font-family="'Newsreader',serif" font-weight="600" font-size="13" fill="#c2410c" text-anchor="middle">3. LLM pass</text>
+  <text x="500" y="106" class="lbl-mono" fill="#c2410c" text-anchor="middle">claude-sonnet-4</text>
+  <text x="500" y="122" class="lbl-mono" fill="#c2410c" text-anchor="middle">tool_choice forced</text>
+  <text x="500" y="142" class="lbl-faint" text-anchor="middle" letter-spacing="0.06em">ONLY NON-DETERMINISTIC STEP</text>
+
+  <line x1="580" y1="110" x2="620" y2="110" stroke="#2545e8" stroke-width="1.2" marker-end="url(#b-arrow)"/>
+
+  <!-- Stage 4 — Parse -->
+  <rect x="620" y="60" width="160" height="100" fill="#fff" stroke="#2545e8" stroke-width="1.2"/>
+  <text x="700" y="86" font-family="'Newsreader',serif" font-weight="600" font-size="13" fill="#2545e8" text-anchor="middle">4. Parse</text>
+  <text x="700" y="106" class="lbl-mono" text-anchor="middle">record_briefing</text>
+  <text x="700" y="122" class="lbl-mono" text-anchor="middle">→ BriefingOutput</text>
+  <text x="700" y="142" class="lbl-faint" text-anchor="middle" letter-spacing="0.06em">SCHEMA VALIDATION</text>
+
+  <line x1="700" y1="160" x2="700" y2="200" stroke="#2545e8" stroke-width="1.2" marker-end="url(#b-arrow)"/>
+
+  <!-- Stage 5 — Emit + inject -->
+  <rect x="620" y="200" width="240" height="90" fill="#f0fdf4" stroke="#16803d" stroke-width="1.2"/>
+  <text x="740" y="226" font-family="'Newsreader',serif" font-weight="600" font-size="13" fill="#16803d" text-anchor="middle">5. Emit · inject</text>
+  <text x="740" y="246" class="lbl-mono" fill="#16803d" text-anchor="middle">briefing.generated event</text>
+  <text x="740" y="262" class="lbl-mono" fill="#16803d" text-anchor="middle">+ append to system_prompt</text>
+  <text x="740" y="280" class="lbl-faint" text-anchor="middle" letter-spacing="0.06em">AUDIT + AGENT CONTEXT</text>
+
+  <!-- Failure path -->
+  <rect x="20" y="200" width="180" height="90" fill="#fdf0ed" stroke="#c4301c" stroke-width="1.2" stroke-dasharray="3 3"/>
+  <text x="110" y="226" font-family="'Newsreader',serif" font-style="italic" font-weight="600" font-size="13" fill="#c4301c" text-anchor="middle">failure path</text>
+  <text x="110" y="246" class="lbl-mono" fill="#c4301c" text-anchor="middle">briefing.failed event</text>
+  <text x="110" y="262" class="lbl-mono" fill="#c4301c" text-anchor="middle">reason: provider_error</text>
+  <text x="110" y="280" class="lbl-faint" text-anchor="middle" letter-spacing="0.06em">NEVER 500s THE TURN</text>
+
+  <text x="450" y="320" class="lbl-faint" text-anchor="middle" letter-spacing="0.08em">FIG_002 · BRIEFING TURN · ONE LLM CALL PER SESSION</text>
+</svg>
+</div>
+
+<p>The slice is the deterministic half — same events, same slice, no LLM. The LLM is constrained to call <code>record_briefing(prose, suggested_next[])</code> exactly once, with structured args parsed by <code>parse_briefing_tool_call</code>. The system prompt for the briefing pass requires the model to reference at least one signal from each non-empty slice category, so generated briefings reflect the actual project pulse — not generic "the project is going well" filler.</p>
+
+<div class="specimen">
+  <div class="specimen-header">Sample briefing — what the agent walks in with</div>
+<pre>## Session briefing
+
+Router project sits between cascade v2 landing and v3 design. Taxonomy axis enums
+have been ratified (intent × complexity × domain) per dec_seed_001 and dec_seed_002;
+the (transform × mixed) cell needs a finer label but that's deferred. Cascade v2 is
+implemented in router/cascade_v2.py and passed offline replay against v1
+(dec_seed_003). The next question on the table is the live grader model — opus,
+sonnet, or ensemble — and the sampling rate for cascade-v3 rollout. Router Lead
+has been the only active member this week. No published canonical artifacts yet —
+everything is in working files. No blockers logged. The single open question is
+evt_seed_q1 (grader sampling rate).
+
+### Suggested next moves
+- **iterate** → `dec_seed_003` — land cascade v2
+- **answer_open_question** → `evt_seed_q1` — decide on grader model</pre>
+</div>
+
+<p>The injection is what closes the loop. Before this work, the briefing was an audit event — visible in the log, invisible to the agent. Now <code>format_briefing_for_prompt(BriefingOutput) → str</code> renders the briefing as a markdown block and the runner appends it to both <code>managed.harness_session.system_prompt</code> (the live value the runner reads) and <code>managed.system_prompt</code> (the persistent attr, persisted via <code>db.update_system_prompt</code> so the briefing survives restarts).</p>
+
+</section>
+
+<!-- ═══════════════════ 06 — TOOL HOOK ═══════════════════ -->
+<section id="tool-hook">
+<h2><span class="num">06 / 11</span>The tool-execute hook + duplicate-check</h2>
+
+<p>Every tool call goes through <code>ToolRegistry.execute</code>. The tool-execute hook wraps it with three substrate operations: emit <code>tool.requested</code> before, run the duplicate-check for artifact-creating tools, emit <code>tool.responded</code> after.</p>
+
+<div class="diagram">
+<div class="diagram-title">Tool-execute hook · duplicate-check flow</div>
+<svg viewBox="0 0 900 380" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="h-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#2545e8"/>
+    </marker>
+    <marker id="h-arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#c4301c"/>
+    </marker>
+  </defs>
+
+  <!-- Tool call enters -->
+  <rect x="20" y="20" width="180" height="50" fill="#fbfbf9" stroke="#111" stroke-width="1.2"/>
+  <text x="110" y="42" font-family="'Newsreader',serif" font-weight="600" font-size="13" fill="#111" text-anchor="middle">Agent · tool call</text>
+  <text x="110" y="60" class="lbl-mono" text-anchor="middle">write_file({...})</text>
+
+  <line x1="110" y1="70" x2="110" y2="106" stroke="#2545e8" stroke-width="1" marker-end="url(#h-arrow)"/>
+
+  <!-- emit tool.requested -->
+  <rect x="20" y="106" width="180" height="40" fill="#eef1fd" stroke="#2545e8" stroke-width="0.8"/>
+  <text x="110" y="130" class="lbl-accent" text-anchor="middle">emit tool.requested</text>
+
+  <line x1="110" y1="146" x2="110" y2="180" stroke="#2545e8" stroke-width="1" marker-end="url(#h-arrow)"/>
+
+  <!-- artifact-creating? -->
+  <polygon points="50,180 170,180 200,220 170,260 50,260 20,220" fill="#fff" stroke="#111" stroke-width="1.2"/>
+  <text x="110" y="216" font-family="'Newsreader',serif" font-weight="600" font-size="12" fill="#111" text-anchor="middle">artifact-creating?</text>
+  <text x="110" y="234" class="lbl-mono" text-anchor="middle">write_file ✓</text>
+
+  <!-- yes → check claims -->
+  <line x1="200" y1="220" x2="260" y2="220" stroke="#2545e8" stroke-width="1" marker-end="url(#h-arrow)"/>
+  <text x="225" y="212" class="lbl-mono" fill="#2545e8" text-anchor="middle">yes</text>
+
+  <rect x="260" y="180" width="200" height="80" fill="#fff" stroke="#111" stroke-width="1.2"/>
+  <text x="360" y="206" font-family="'Newsreader',serif" font-weight="600" font-size="13" fill="#111" text-anchor="middle">in_flight projector</text>
+  <text x="360" y="226" class="lbl-mono" text-anchor="middle">snapshot active claims</text>
+  <text x="360" y="246" class="lbl-mono" text-anchor="middle">match_claims(expected_outputs)</text>
+
+  <!-- match? -->
+  <line x1="460" y1="220" x2="500" y2="220" stroke="#2545e8" stroke-width="1" marker-end="url(#h-arrow)"/>
+
+  <polygon points="540,180 660,180 690,220 660,260 540,260 510,220" fill="#fff" stroke="#111" stroke-width="1.2"/>
+  <text x="600" y="216" font-family="'Newsreader',serif" font-weight="600" font-size="12" fill="#111" text-anchor="middle">match found?</text>
+  <text x="600" y="234" class="lbl-faint" text-anchor="middle">(another session)</text>
+
+  <!-- yes → intervene -->
+  <line x1="690" y1="220" x2="720" y2="220" stroke="#c4301c" stroke-width="1.4" marker-end="url(#h-arrow-red)"/>
+  <text x="705" y="212" class="lbl-mono" fill="#c4301c" text-anchor="middle">yes</text>
+
+  <rect x="720" y="180" width="160" height="80" fill="#fdf0ed" stroke="#c4301c" stroke-width="1.2"/>
+  <text x="800" y="206" font-family="'Newsreader',serif" font-weight="600" font-size="13" fill="#c4301c" text-anchor="middle">INTERVENE</text>
+  <text x="800" y="226" class="lbl-mono" fill="#c4301c" text-anchor="middle">emit intervention</text>
+  <text x="800" y="244" class="lbl-mono" fill="#c4301c" text-anchor="middle">return payload</text>
+
+  <!-- no → claim -->
+  <line x1="600" y1="260" x2="600" y2="298" stroke="#2545e8" stroke-width="1" marker-end="url(#h-arrow)"/>
+  <text x="616" y="284" class="lbl-mono" fill="#2545e8">no</text>
+
+  <rect x="500" y="298" width="200" height="40" fill="#eef1fd" stroke="#2545e8" stroke-width="0.8"/>
+  <text x="600" y="322" class="lbl-accent" text-anchor="middle">emit in_flight.claimed</text>
+
+  <!-- continue to tool exec -->
+  <line x1="600" y1="338" x2="600" y2="362" stroke="#2545e8" stroke-width="1" marker-end="url(#h-arrow)"/>
+
+  <!-- no path from "artifact-creating?" -->
+  <line x1="110" y1="260" x2="110" y2="362" stroke="#2545e8" stroke-width="1" marker-end="url(#h-arrow)"/>
+  <text x="124" y="296" class="lbl-mono" fill="#2545e8">no</text>
+
+  <rect x="20" y="362" width="780" height="10" fill="#fbfbf9" stroke="#111" stroke-width="1" stroke-dasharray="0"/>
+  <text x="410" y="372" class="lbl-faint" text-anchor="middle" letter-spacing="0.08em">→ TOOL EXECUTES · tool.responded · in_flight.released (if claimed)</text>
+</svg>
+</div>
+
+<p>The duplicate-check pulls active claims from the in-flight registry projector and runs <code>match_claims(intent, expected_outputs, snapshot, excluding_session_id)</code>. The match is exact on artifact name in <code>expected_outputs</code> — paths for <code>write_file</code>, artifact ids for <code>generate_artifact</code>, etc. A claim from another session whose expected outputs overlap with ours produces an <code>intervention.surfaced</code> event and a structured <code>ToolResult</code> with <code>{"intervention": "duplicate_claim", "recommendation": ..., "matches": [...]}</code> — the tool never runs.</p>
+
+<p>This is the substrate's anti-coordination-bug primitive. Two sessions racing to draft <code>router/cascade_v3.py</code> don't both produce conflicting versions; the second session's agent sees the intervention payload, narrates the conflict, and (a good agent) defers or coordinates.</p>
+
+<div class="callout insight">
+  <div class="callout-label">Why the hook lives in the tool registry, not in each tool</div>
+  Wrapping the registry's <code>execute()</code> means every tool — built-in, MCP, custom — gets the same substrate semantics. The tools themselves don't know they're being audited. New tool? Free observability, free duplicate-check.
+</div>
+
+</section>
+
+<!-- ═══════════════════ 07 — read_project_state ═══════════════════ -->
+<section id="introspect">
+<h2><span class="num">07 / 11</span>read_project_state — the agent queries the substrate</h2>
+
+<p>Up to this point, the substrate flows information into the agent only via the briefing — a one-shot summary appended to the system prompt. The agent has to trust the prose, and can't verify a claim mid-turn ("did we really decide on opus as the grader?"). This is brittle.</p>
+
+<p><code>read_project_state</code> is a built-in tool that returns the live <code>project_state</code> slice JSON for the session's project — same shape the briefing turn consumes, materialized fresh on every call. The agent introspects the substrate during its turn instead of trusting a snapshot.</p>
+
+<div class="specimen">
+  <div class="specimen-header">Tool schema</div>
+<pre>read_project_state(
+  fields:               list[str]  # optional — restrict to a subset
+                                   # (recent_decisions, recent_questions, etc.)
+  max_items_per_list:   int        # cap each list, most-recent kept (default 20)
+)
+→ JSON {
+    project_id, slice_hash,
+    members_active_this_week,    recent_decisions,
+    in_flight_claim_event_ids,   recent_file_reads,
+    recent_file_writes,          recent_briefings,
+    recent_interventions,        recent_questions,
+    canonical_artifacts,         open_questions,
+    blockers,                    suggested_next
+  }</pre>
+</div>
+
+<p>The profile's <code>base_instructions</code> tells the agent to call <code>read_project_state</code> before any non-trivial routing/grading/taxonomy decision — verify what the briefing said, cite the actual <code>decision_id</code> in the response, look up prior conflicting decisions before recording a new one. The substrate becomes <em>alive in the agent's reasoning</em>, not a passive context appendage.</p>
+
+<div class="callout success">
+  <div class="callout-label">Closing the loop</div>
+  Briefing flows the project's history <em>into</em> the agent at session-start. <code>read_project_state</code> lets the agent flow questions <em>back into</em> the substrate during the turn. Together they make cross-session memory bidirectional.
+</div>
+
+</section>
+
+<!-- ═══════════════════ 08 — IDENTITY ═══════════════════ -->
+<section id="identity">
+<h2><span class="num">08 / 11</span>Multi-actor identity flows through the log</h2>
+
+<p>Every event carries an <code>Actor(kind, id, name)</code>. The actor is derived from the session's user identity at session-create time, and propagates through every event the session emits. The project-state slice then rolls per-actor signals up:</p>
+
+<ul>
+<li><strong>members_active_this_week</strong> — distinct <code>actor.id</code> over the last 7 days</li>
+<li><strong>recent_decisions[].decided_by_actor_id</strong> — who recorded each decision</li>
+<li><strong>recent_file_reads[].by_actor_id</strong> / <strong>recent_file_writes[].by_actor_id</strong></li>
+<li><strong>recent_questions[].asked_by_actor_id</strong> — who raised each HITL prompt</li>
+<li><strong>recent_interventions[].matches[].actor</strong> — who's holding the conflicting claim</li>
+</ul>
+
+<p>Identity flows from the session-create request body when auth is disabled (<code>body.user_id</code>, <code>body.user_name</code>, <code>body.user_email</code>) and from JWT claims when it isn't. The substrate doesn't care which path — it just attaches whatever the session presents to every emitted event.</p>
+
+<p>The runtime console exposes this via the <strong>user switcher pill</strong> in the topbar. Click → pick from a curated roster of 8 identities (5 ema, 3 kpmg). Subsequent sessions you create are attributed to that user. Each actor gets a deterministic color (HSL hash on <code>actor.id</code>) so collaboration becomes <em>visible</em> in the slice rendering.</p>
+
+<div class="mock-wrap">
+  <div class="mock">
+    <div class="mock-topbar">
+      <div class="mock-icon">RC</div>
+      <div class="mock-breadcrumb"><span class="crumb-mute">agent-harness</span><span class="sep">/</span>Runtime Console<span class="sep">·</span><span class="crumb-mute">tenant:ema · project:proj_llm_router · as:usr_router_lead</span></div>
+      <div class="mock-scope-pill"><span class="lbl">tenant</span> ema</div>
+      <div class="mock-scope-pill"><span class="lbl">project</span> proj_llm_router</div>
+      <div class="mock-user-pill"><div class="avatar">SS</div><span class="as">as</span> <span>Soham Shah</span> <span style="color:#7a7a7a;">· Router Lead</span> <span style="color:#7a7a7a;">▾</span></div>
+      <span style="margin-left:auto; color:#16803d; font-size:10.5px;">ok · 14:23:01</span>
+    </div>
+    <div style="padding: 18px 22px; background: #fbfbf9; min-width: 940px;">
+      <div class="mock-h">Members active this week</div>
+      <div style="margin-bottom: 16px;">
+        <span class="mock-actor-pill"><span class="dot" style="background:#3b6db3"></span><span>Soham Shah</span><span class="a-id">usr_router_lead</span></span>
+        <span class="mock-actor-pill"><span class="dot" style="background:#b3493b"></span><span>Maya Patel</span><span class="a-id">usr_grader_ic</span></span>
+        <span class="mock-actor-pill"><span class="dot" style="background:#5a8a3b"></span><span>Alex Chen</span><span class="a-id">usr_ml_eval</span></span>
+      </div>
+      <div class="mock-h">Recent decisions (6)</div>
+      <div style="padding: 6px 0; border-top: 1px dashed #ececec;">
+        <strong style="font-size:12px;">Cascade v3 spec: cost-aware escalation — proceed to design</strong>
+        <div style="font-size:10px; margin-top: 3px;">by <span class="mock-actor-pill"><span class="dot" style="background:#3b6db3"></span><span>Soham Shah</span><span class="a-id">usr_router_lead</span></span> <span style="color:#7a7a7a;">2026-05-26 14:08</span></div>
+        <div style="font-size:10px; color:#3d3d3d; margin-top: 2px;">alternatives: Stay on v2 · Skip to v4 RL-trained policy</div>
+      </div>
+      <div style="padding: 6px 0; border-top: 1px dashed #ececec;">
+        <strong style="font-size:12px;">Live grader = claude-opus, sample 5% (initial)</strong>
+        <div style="font-size:10px; margin-top: 3px;">by <span class="mock-actor-pill"><span class="dot" style="background:#b3493b"></span><span>Maya Patel</span><span class="a-id">usr_grader_ic</span></span> <span style="color:#7a7a7a;">2026-05-25 09:42</span></div>
+        <div style="font-size:10px; color:#3d3d3d; margin-top: 2px;">alternatives: Sonnet at 10% · Ensemble</div>
+      </div>
+    </div>
+  </div>
+  <div class="mock-caption">Decisions in the project's slice, attributed by color-keyed actor pills. The substrate doesn't have an opinion about "users" — every event carries an <code>Actor</code>, the projector rolls per-actor signals up by id, and the UI maps id to a deterministic color so scanning "who did what" is a glance, not a string match.</div>
+</div>
+
+</section>
+
+<!-- ═══════════════════ 09 — CONSOLE ═══════════════════ -->
+<section id="console">
+<h2><span class="num">09 / 11</span>The runtime console — every primitive made visible</h2>
+
+<p>The substrate is invisible by design. Hooks, projectors, event logs — none of these surface on their own. The runtime console at <code>/runtime_console</code> is the operator's instrument: a single-page surface that makes profile config, session creation, multi-actor chat, and every projection visible, and makes the qualitative tests of the substrate's value props clickable.</p>
+
+<p>The aesthetic deliberately matches the operator-mock language from earlier work: paper background, warm-orange accent (<code>#c2410c</code>), square borders, Geist Mono throughout. Four top-level tabs over a three-column workbench:</p>
+
+<div class="mock-wrap">
+  <div class="mock">
+    <!-- topbar -->
+    <div class="mock-topbar">
+      <div class="mock-icon">RC</div>
+      <div class="mock-breadcrumb"><span class="crumb-mute">agent-harness</span><span class="sep">/</span>Runtime Console<span class="sep">·</span><span class="crumb-mute">tenant:ema · project:proj_llm_router · as:usr_router_lead</span></div>
+      <div class="mock-scope-pill"><span class="lbl">tenant</span> ema</div>
+      <div class="mock-scope-pill"><span class="lbl">project</span> proj_llm_router ▾</div>
+      <div class="mock-user-pill"><div class="avatar">SS</div><span class="as">as</span> <span>Soham Shah</span> <span style="color:#7a7a7a;">▾</span></div>
+      <span style="margin-left:auto; color:#16803d; font-size:10.5px;">ok</span>
+    </div>
+    <!-- tabs -->
+    <div class="mock-tabs">
+      <div class="mock-tab">Profiles</div>
+      <div class="mock-tab active">Sessions</div>
+      <div class="mock-tab">Project state</div>
+      <div class="mock-tab">Events</div>
+      <div style="margin-left:auto; padding: 4px 8px; font-size:10px; color:#3d3d3d;">Auto-refresh: on (3s)</div>
+    </div>
+    <!-- workbench -->
+    <div class="mock-workbench">
+      <!-- Left rail -->
+      <div class="mock-rail-left">
+        <div class="mock-h">Quick actions</div>
+        <div class="mock-btn">Seed Champ profile (kpmg)</div>
+        <div class="mock-btn">Seed router profile (ema)</div>
+        <div class="mock-btn" style="background: rgba(194, 65, 12, 0.06); border-color: #c2410c; color: #c2410c;">Seed router project</div>
+        <div class="mock-btn">New session</div>
+        <div class="mock-btn">New profile…</div>
+        <div class="mock-h" style="margin-top:14px;">Recent sessions</div>
+        <div style="font-size:10px; padding: 3px 0;">3058b5cc0a <span style="color:#7a7a7a;">completed</span></div>
+        <div style="font-size:10px; padding: 3px 0;">19b93199b2 <span style="color:#7a7a7a;">completed</span></div>
+        <div class="mock-h" style="margin-top:14px;">Recent profiles</div>
+        <div style="font-size:10px; padding: 3px 0;">designing-llm-router <span style="color:#7a7a7a;">v1</span></div>
+        <div style="font-size:10px; padding: 3px 0;">Champ <span style="color:#7a7a7a;">v1</span></div>
+      </div>
+      <!-- Main: chat surface -->
+      <div class="mock-main">
+        <!-- System prompt panel -->
+        <div style="border-bottom: 1.2px solid #111; background: #f4f3ee; padding: 6px 10px; margin: -14px -16px 12px; font-size: 10px; color: #3d3d3d; text-transform: uppercase; letter-spacing: 0.1em;">
+          ▸ System prompt (live) <span style="color:#7a7a7a; margin-left:auto;">chars: 2,847 <span class="mock-pill green">briefing inserted ✓</span></span>
+        </div>
+        <!-- Briefing block -->
+        <div class="mock-blk mock-blk-briefing">
+          <div class="lbl">briefing</div>
+          <div class="body">Router project sits between cascade v2 landing and v3 design. Taxonomy axis enums have been ratified (intent × complexity × domain) per dec_seed_001…
+            <div style="font-size:10px; color:#3d3d3d; margin-top:6px; padding-top:5px; border-top: 1px dashed #ececec;"><strong style="color:#c2410c;">suggested next:</strong> iterate → dec_seed_003 — land cascade v2 &nbsp;·&nbsp; answer_open_question → evt_seed_q1 — decide on grader model</div>
+          </div>
+          <div class="ts">14:23:04</div>
+        </div>
+        <!-- User -->
+        <div class="mock-blk mock-blk-user">
+          <div class="lbl">you</div>
+          <div class="body">Summarize where the project stands. Cite specific recent decisions and any open questions by id.</div>
+          <div class="ts">14:23:08</div>
+        </div>
+        <!-- Tool call: read_project_state -->
+        <div class="mock-blk mock-blk-tool">
+          <div class="lbl">tool</div>
+          <div class="body">
+            <div class="tool-head">
+              <span class="arrow">→</span>
+              <span class="name">read_project_state</span>
+              <span class="status ok">ok</span>
+            </div>
+            <div class="tool-args">fields: ["recent_decisions", "recent_questions"]</div>
+            <div class="tool-result">{"recent_decisions": [...6 entries...], "recent_questions": [{"request_id": "req_seed_q1", "question": "Should the live grader sample at 5% or 10%…"}]}</div>
+          </div>
+          <div class="ts">14:23:10</div>
+        </div>
+        <!-- Decision card -->
+        <div class="mock-blk mock-blk-decision">
+          <div class="lbl">decision</div>
+          <div class="body">
+            <div class="deci-title">Cascade v3 rollout: grader sample at 10% for first week, drop to 5%</div>
+            <div class="deci-meta">by <span class="mock-actor-pill"><span class="dot" style="background:#3b6db3"></span>Soham Shah<span class="a-id">usr_router_lead</span></span> just now</div>
+            <div style="font-size:11px; line-height:1.55; margin-bottom:6px;">10% sampling tightens the CI on the first 1k production traces enough to catch regressions early; cost overhead is ~$1.5k for that week. Drop to standard 5% after.</div>
+            <div class="deci-alts">alternatives considered: 5% throughout (slower CI) · 20% throughout (cost prohibitive)</div>
+          </div>
+          <div class="ts">14:23:14</div>
+        </div>
+        <!-- Agent text -->
+        <div class="mock-blk mock-blk-agent">
+          <div class="lbl">agent</div>
+          <div class="body">The project is mid-stride on cascade v3. Six decisions ratified across taxonomy, cascade lineage, synthetic prompts, and grader choice — most recent is <em>dec_seed_006</em> (cascade v3 design proceed). The single open question (<em>evt_seed_q1</em>) is grader sampling rate; I've just landed a decision on that. Active claim on router/cascade_v3.py is yours.
+
+<span style="font-size:10px; color:#7a7a7a; border: 1px solid #d4d4d4; padding:2px 6px; display:inline-block; margin-top:8px;">3 iter · 12,840 in · 320 out · 1,800 cached · 4.2s</span></div>
+          <div class="ts">14:23:18</div>
+        </div>
+      </div>
+      <!-- Right rail -->
+      <div class="mock-rail-right">
+        <div class="mock-h">Activity (24h)</div>
+        <div style="background: #f4f3ee; border: 1px solid #ececec; padding: 4px; margin-bottom: 10px;">
+          <svg viewBox="0 0 200 32" style="width:100%; height:32px;">
+            <rect x="0" y="22" width="7" height="10" fill="#c2410c"/>
+            <rect x="9" y="26" width="7" height="6" fill="#c2410c"/>
+            <rect x="18" y="20" width="7" height="12" fill="#c2410c"/>
+            <rect x="27" y="29" width="7" height="3" fill="#d4d4d4"/>
+            <rect x="36" y="29" width="7" height="3" fill="#d4d4d4"/>
+            <rect x="45" y="29" width="7" height="3" fill="#d4d4d4"/>
+            <rect x="54" y="29" width="7" height="3" fill="#d4d4d4"/>
+            <rect x="63" y="29" width="7" height="3" fill="#d4d4d4"/>
+            <rect x="72" y="29" width="7" height="3" fill="#d4d4d4"/>
+            <rect x="81" y="29" width="7" height="3" fill="#d4d4d4"/>
+            <rect x="90" y="29" width="7" height="3" fill="#d4d4d4"/>
+            <rect x="99" y="29" width="7" height="3" fill="#d4d4d4"/>
+            <rect x="108" y="29" width="7" height="3" fill="#d4d4d4"/>
+            <rect x="117" y="29" width="7" height="3" fill="#d4d4d4"/>
+            <rect x="126" y="29" width="7" height="3" fill="#d4d4d4"/>
+            <rect x="135" y="29" width="7" height="3" fill="#d4d4d4"/>
+            <rect x="144" y="24" width="7" height="8" fill="#c2410c"/>
+            <rect x="153" y="20" width="7" height="12" fill="#c2410c"/>
+            <rect x="162" y="14" width="7" height="18" fill="#c2410c"/>
+            <rect x="171" y="10" width="7" height="22" fill="#c2410c"/>
+            <rect x="180" y="6" width="7" height="26" fill="#c2410c"/>
+            <rect x="189" y="2" width="7" height="30" fill="#c2410c"/>
+          </svg>
+          <div style="font-size: 9px; color: #7a7a7a; display: flex; justify-content: space-between;"><span>−24h</span><span>now</span></div>
+        </div>
+        <div class="mock-h">This scope</div>
+        <div class="mock-kpi"><div class="mock-kpi-icon">⏵</div><div><div class="mock-kpi-num">27</div><div class="mock-kpi-label">events recorded</div></div></div>
+        <div class="mock-kpi"><div class="mock-kpi-icon">✶</div><div><div class="mock-kpi-num">2</div><div class="mock-kpi-label">briefings landed</div></div></div>
+        <div class="mock-kpi"><div class="mock-kpi-icon">⊙</div><div><div class="mock-kpi-num">1</div><div class="mock-kpi-label">claims active</div></div></div>
+        <div class="mock-kpi"><div class="mock-kpi-icon">✓</div><div><div class="mock-kpi-num">7</div><div class="mock-kpi-label">decisions recorded</div></div></div>
+      </div>
+    </div>
+  </div>
+  <div class="mock-caption">The Sessions tab during a live turn. Top: collapsed system prompt panel showing a green <em>briefing inserted ✓</em> tag (the substrate's headline check). Middle: the chat surface as a typed block model — briefing card (green), user, tool call card (read_project_state with structured args + result), decision card (green-bordered, lands above the tool block), agent reply with per-turn cost/latency footer. Right rail: 24h activity sparkline + live-updating KPIs from SSE events. Auto-refresh of the Project state tab fires on every state-changing tool call (debounced 500ms).</div>
+</div>
+
+<h3>Event log + caused-by chain walker</h3>
+
+<p>The Events tab is the substrate's raw view. Every event in the project's log, color-coded by category, filter pills at the top, and an <em>inspect chain →</em> action on every event with a <code>caused_by</code>. Clicking walks backward through the chain to root, rendering each ancestor with actor + timestamp + collapsible payload.</p>
+
+<div class="mock-wrap">
+  <div class="mock" style="padding: 14px 18px;">
+    <div style="display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px;">
+      <div class="mock-h">Event log (27 events)</div>
+      <div style="font-size: 10px;"><span class="mock-pill mute">scope: project</span> &nbsp; <span style="color:#3d3d3d;">switch to session ⇄</span> &nbsp; <span style="color:#3d3d3d;">refresh ↻</span></div>
+    </div>
+    <div style="display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 0; margin-bottom: 8px;">
+      <span style="font-size:9px; color: #3d3d3d; text-transform: uppercase; letter-spacing:0.1em; margin-right: 6px;">types</span>
+      <span class="mock-pill" style="border-color: #111; color: #111;">session.opened</span>
+      <span class="mock-pill" style="border-color: #111; color: #111;">prompt.built</span>
+      <span class="mock-pill" style="border-color: #111; color: #111;">llm.completed</span>
+      <span class="mock-pill" style="border-color: #111; color: #111;">tool.requested</span>
+      <span class="mock-pill" style="opacity:0.35; text-decoration:line-through;">tool.responded</span>
+      <span class="mock-pill" style="border-color: #111; color: #111;">decision.recorded</span>
+      <span class="mock-pill" style="border-color: #111; color: #111;">briefing.generated</span>
+      <span class="mock-pill" style="border-color: #111; color: #111;">intervention.surfaced</span>
+    </div>
+    <div class="mock-event-row ok">
+      <div class="e-dot"></div>
+      <div>
+        <div><span class="type">decision.recorded</span> <span class="mock-actor-pill"><span class="dot" style="background:#3b6db3"></span>Soham Shah<span class="a-id">usr_router_lead</span></span> <span style="color:#7a7a7a; font-size:10px;">session=3058b5cc0a · caused_by=evt_d180f08</span> <span style="margin-left:8px; color:#c2410c; font-size:10px; cursor:pointer;">inspect chain →</span></div>
+        <div style="color:#7a7a7a; font-size:10px; margin-top:2px;">+ payload</div>
+      </div>
+      <div class="ts">14:23:14</div>
+    </div>
+    <div class="mock-event-row accent is-highlight">
+      <div class="e-dot"></div>
+      <div>
+        <div><span class="type">tool.responded</span> <span class="mock-actor-pill"><span class="dot" style="background:#3b6db3"></span>Soham Shah<span class="a-id">usr_router_lead</span></span> <span style="color:#7a7a7a; font-size:10px;">session=3058b5cc0a · caused_by=evt_d180f08</span></div>
+      </div>
+      <div class="ts">14:23:14</div>
+    </div>
+    <div class="mock-event-row warn">
+      <div class="e-dot"></div>
+      <div>
+        <div><span class="type">intervention.surfaced</span> <span class="mock-actor-pill"><span class="dot" style="background:#b3493b"></span>Maya Patel<span class="a-id">usr_grader_ic</span></span> <span style="color:#7a7a7a; font-size:10px;">session=19b93199b · caused_by=evt_a8fa72a</span></div>
+        <div style="color:#7a7a7a; font-size:10px; margin-top:2px;">"Soham Shah is already producing router/cascade_v3.py. Pause this call, surface the conflict…"</div>
+      </div>
+      <div class="ts">13:48:22</div>
+    </div>
+    <div class="mock-event-row ok">
+      <div class="e-dot"></div>
+      <div>
+        <div><span class="type">briefing.generated</span> <span class="mock-actor-pill"><span class="dot" style="background:#3b6db3"></span>Soham Shah<span class="a-id">usr_router_lead</span></span> <span style="color:#7a7a7a; font-size:10px;">session=3058b5cc0a · caused_by=evt_22c21f7</span></div>
+        <div style="color:#7a7a7a; font-size:10px; margin-top:2px;">"Router project sits between cascade v2 landing and v3 design…" (2 suggestions)</div>
+      </div>
+      <div class="ts">14:23:04</div>
+    </div>
+  </div>
+  <div class="mock-caption">Events tab. Filter pills toggle types and actors (struck-through pills = excluded). Click <em>inspect chain →</em> on any row → a modal walks the cause chain backward to root, showing each step's actor and payload. The highlighted row (orange-bordered) is the deep-link target from clicking a slice reference; the substrate's audit primitive ends up being clickable instead of grep-able.</div>
+</div>
+
+<h3>Scenarios + suggested-next chips</h3>
+
+<p>Above the composer, two strips of chips: the briefing's <strong>suggested_next</strong> (accent-colored, rendered straight from the latest briefing event) and per-profile <strong>scenario templates</strong> (6 for designing-llm-router, 3 for Champ). Click any chip → drops the prompt into the composer. Cross-session memory becomes one-click operator action: the briefing recommended a move, the operator agrees, the agent acts.</p>
+
+<div class="mock-wrap">
+  <div class="mock" style="padding: 10px 14px;">
+    <span style="font-size: 9px; color:#3d3d3d; text-transform: uppercase; letter-spacing:0.1em; margin-right: 6px;">briefing suggests</span>
+    <span class="mock-chip suggested">land cascade v2</span>
+    <span class="mock-chip suggested">decide on grader model</span>
+    <br>
+    <span style="font-size: 9px; color:#3d3d3d; text-transform: uppercase; letter-spacing:0.1em; margin: 6px 6px 0 0; display:inline-block;">scenarios</span>
+    <span class="mock-chip">Status report</span>
+    <span class="mock-chip">Propose cascade v4</span>
+    <span class="mock-chip">Record a grader decision</span>
+    <span class="mock-chip">Audit recent file activity</span>
+    <span class="mock-chip">Test duplicate-check</span>
+    <span class="mock-chip">Identify blockers</span>
+  </div>
+  <div class="mock-caption">The chip strip above the composer. The first row materializes the briefing's <code>suggested_next</code> as operator-actionable chips, each annotated with the slice ref id when clicked. The second row is per-profile pre-canned scenarios — six for the router project covering the headline test cases (cross-session memory, duplicate-check, decision recording, file-activity audit, blocker triage). Click → composer fills → send.</div>
+</div>
+
+</section>
+
+<!-- ═══════════════════ 10 — EVALUATION ═══════════════════ -->
+<section id="evaluation">
+<h2><span class="num">10 / 11</span>What we proved · hard tests</h2>
+
+<p>The substrate's value props are concrete and individually testable. The runtime console + seeded router project (21 events, 2 docs, 3 simulated sessions, 6 decisions across the project's work-streams) makes each of them clickable.</p>
+
+<table>
+<thead><tr><th>Property</th><th>Hard test</th><th>Where to look</th></tr></thead>
+<tbody>
+  <tr>
+    <td><strong>Cross-session memory survives restart</strong></td>
+    <td>Record a decision. Stop server. Restart. Create a new session.</td>
+    <td>The new session's briefing references the decision. Event lands in <code>events</code> table on Postgres; survives by definition.</td>
+  </tr>
+  <tr>
+    <td><strong>The agent actually receives the briefing</strong></td>
+    <td>Open the collapsed <em>System prompt (live)</em> panel above the chat.</td>
+    <td>Green <em>briefing inserted ✓</em> tag in the summary; expand to see the <code>## Session briefing</code> markdown block appended to <code>base_instructions</code>.</td>
+  </tr>
+  <tr>
+    <td><strong>Briefings summarize the slice, not boilerplate</strong></td>
+    <td>Open Project state tab. Note specific decision ids + the unanswered question. Open a new session.</td>
+    <td>The <code>blk-briefing</code> block at the top of the chat must reference at least one decision id and the open question. The <code>BRIEFING_SYSTEM_PROMPT</code> requires this; failures show up as generic "the project is going well" prose.</td>
+  </tr>
+  <tr>
+    <td><strong>Duplicate-check prevents concurrent writes</strong></td>
+    <td>As Router Lead, start a session and ask the agent to write <code>router/cascade_v3.py</code>. While in flight, as Maya in a second window, ask the same.</td>
+    <td>Maya's session's <code>write_file</code> returns an <code>intervention</code> payload. A new <code>intervention.surfaced</code> event lands in the Events tab. The slice's <code>recent_interventions</code> ticks.</td>
+  </tr>
+  <tr>
+    <td><strong>Decisions auditable end-to-end</strong></td>
+    <td>Click a <code>decision.recorded</code> event → <em>inspect chain →</em>.</td>
+    <td>The modal walks backward: decision ← tool.requested (the agent calling record_decision) ← prompt.built (the iteration) ← prior tool.responded or session.opened. Every step has actor + timestamp + payload.</td>
+  </tr>
+  <tr>
+    <td><strong>Agent queries the substrate unprompted</strong></td>
+    <td>Ask an ambiguous project question without telling the agent to use the tool.</td>
+    <td>A good agent calls <code>read_project_state</code> with <code>fields=["recent_decisions"]</code> and quotes the actual rationale from the slice. If it invents an answer, the profile's prompt needs sharpening.</td>
+  </tr>
+  <tr>
+    <td><strong>Identity flows into the log</strong></td>
+    <td>Switch user pill → record a decision → switch user → record another.</td>
+    <td>Project state tab shows both decisions, each with a different color-keyed actor pill. <code>members_active_this_week</code> shows both ids.</td>
+  </tr>
+  <tr>
+    <td><strong>Mid-turn disconnect survives</strong></td>
+    <td>Send a long-running prompt, close the browser tab, reopen, reactivate.</td>
+    <td>Chat surface paints partial history; if mid-HITL, the prompt re-renders via <code>/turn-state</code>; if completed, final state is intact.</td>
+  </tr>
+  <tr>
+    <td><strong>Suggested_next becomes actionable</strong></td>
+    <td>Open a session, wait for the briefing block, click any orange "→" chip.</td>
+    <td>Composer fills with the rationale + ref; send → agent acts. Loop closed: briefing recommends, operator agrees, agent executes.</td>
+  </tr>
+  <tr>
+    <td><strong>Project pulse reacts to activity</strong></td>
+    <td>Project state tab open in a second window. Send a tool-heavy turn in the first.</td>
+    <td>The slice auto-refreshes (debounced 500ms) on every state-affecting SSE event. <code>recent_file_reads</code>, <code>recent_decisions</code>, <code>in_flight_claim_event_ids</code> all tick live.</td>
+  </tr>
+</tbody>
+</table>
+
+<div class="callout success">
+  <div class="callout-label">What this earns</div>
+  Every claim in the Phase 1 spec ("projects compound", "sessions coordinate", "decisions outlive their session", "every action is auditable") moves from being a closing line to being a clickable test. The runtime console is the instrument; the substrate is the moat.
+</div>
+
+</section>
+
+<!-- ═══════════════════ 11 — REMAINS ═══════════════════ -->
+<section id="remains">
+<h2><span class="num">11 / 11</span>What remains</h2>
+
+<p>Phase 1B closed every move on the original plan but left calibrated gaps. Some are out-of-scope Phase 2 features; others are real Phase 1 work that didn't make this branch.</p>
+
+<h3>Still in Phase 1 scope</h3>
+
+<ul>
+<li><strong>Skill loading.</strong> Profiles declare <code>skill_folders</code> but the runner doesn't load them. Scaffolding exists; loader is a half-day of work.</li>
+<li><strong>Reviewer pattern.</strong> Profiles have a <code>reviewer_model</code> field but no review hook fires. The spec wants a per-turn or per-doc reviewer pass.</li>
+<li><strong>Artifact rendering.</strong> When the agent calls <code>generate_artifact</code>, the chat shows a generic tool card. Could be a dedicated artifact card that links to the docs folder entry.</li>
+<li><strong>BYOM exercise.</strong> Secret Manager integration is wired but no end-to-end test against a tenant secret.</li>
+<li><strong><code>blockers</code> projector.</strong> Slice has the field but no emitter — would scan decision titles prefixed <code>blocker:</code>.</li>
+</ul>
+
+<h3>Phase 2 features (deliberately out)</h3>
+
+<ul>
+<li>Knowledge-gap signal collection (low-confidence outputs feed the taxonomy)</li>
+<li>Cost budget enforcement with auto-reroute</li>
+<li>Live grading + reviewer pool</li>
+<li>Deploy-gate replay regression</li>
+<li>Sub-agent delegated identity (chained actor)</li>
+<li>Decision lineage (supersedes, blocked_by)</li>
+</ul>
+
+<h3>UI ergonomics not yet built</h3>
+
+<ul>
+<li>Profile edit (workaround: re-seed with <code>force=true</code> which archives the prior version)</li>
+<li>Profile diff between versions</li>
+<li>Session detail panel — pick any past session and see its full timeline + system prompt + messages in one view</li>
+<li>"Open peer session" button (manual today)</li>
+<li>Tenant analytics — cross-project view of decisions made, sessions run, intervention rate</li>
+<li>Export turn/session as transcript</li>
+</ul>
+
+<h3>The deeper unfinished business</h3>
+
+<p>The two things that, when shipped, will make the substrate feel <em>finished</em> rather than merely working:</p>
+
+<ol>
+<li><strong>Skill evolution.</strong> Right now profiles are hand-edited and seeded. Phase 2's observation pipeline watches low-confidence outputs, proposes skill folders that close knowledge gaps, and a curator-style review queue ratifies the additions. The substrate already records the signal (briefing.failed, low-confidence tool results), so the loop is closeable.</li>
+<li><strong>Replay regression.</strong> The event log is replayable by construction. Phase 2's deploy gate replays last quarter's prod sessions against a candidate profile/orchestrator and surfaces the decision diff. Held-or-pass. This is the Sarbanes-Oxley / EU AI Act primitive — not a static eval suite, but "we replayed prod behavior against the candidate and the diff is bounded."</li>
+</ol>
+
+<p>Both compose with what's already shipped. Both depend on the event log being authoritative, which it is. The runtime console gives the operator the surface to drive them when they arrive.</p>
+
+<hr style="border: none; border-top: 1px solid var(--border-light); margin: 60px 0 40px;">
+
+<p style="font-family: var(--mono); font-size: 12px; color: var(--fg-faint); max-width: var(--prose-width);">
+Reference branch: <code>soham/substrate-orchestrator-profile</code> on <code>agent-harness</code>, 20 commits against <code>main</code>, PR&nbsp;#429.<br>
+Detailed engineering guide + testing scenarios:
+<a href="https://github.com/Ema-Unlimited/agent-harness/blob/soham/substrate-orchestrator-profile/docs/runtime-orchestration/phase-1b-runtime-console-guide.md">phase-1b-runtime-console-guide.md</a>.<br>
+Phase 1 substrate spec: <code>docs/runtime-orchestration/mvp-phase-1.md</code>.<br>
+Targeted test suite: ~110 passing in-memory; Postgres integration tests skip without a live DB.
+</p>
+
+</section>
+
+</div>
+
+<script>
+  // Progress bar tracks reading position.
+  const progress = document.getElementById('progress');
+  window.addEventListener('scroll', () => {
+    const h = document.documentElement;
+    const scrolled = h.scrollTop / (h.scrollHeight - h.clientHeight);
+    progress.style.width = (scrolled * 100) + '%';
+  });
+</script>
+
+</body>
+</html>
