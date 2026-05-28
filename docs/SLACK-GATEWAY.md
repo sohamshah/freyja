@@ -1,13 +1,28 @@
 # Slack Gateway — Implementation Plan
 
-> Status: Draft · Author: Soham + Claude (assistant) · Date: 2026-05-27
+> **Status: Shipped (initial). Architecture superseded.** The runtime
+> shape described here (daemon + desktop's own Python bridge
+> subprocess sharing transcript files) has hit its design limits —
+> every concurrent-write bug we've patched in the last few days
+> traces to it. The architectural path forward is captured in
+> **[BRIDGE-PRODUCTION-ROADMAP.md](./BRIDGE-PRODUCTION-ROADMAP.md)**,
+> which supersedes the runtime sections of this doc. The
+> Slack-specific protocol details (manifest, scopes, slash commands,
+> file handling, threading semantics) remain accurate and are still
+> the source of truth for those.
+>
+> Author: Soham + Claude (assistant) · Initial doc 2026-05-27 ·
+> Status updated 2026-05-28.
 >
 > Focused scope: get Freyja talking on Slack with a `freyja setup`-style
 > provisioning flow that ends with the operator chatting with Freyja in
 > their workspace. Grounded in a primary-source deep-dive of
 > `~/work/services/hermes-agent` and the current Freyja architecture.
-> Companion doc: `docs/ALWAYS-ON-PLATFORM.md` (which this is the
-> narrowest possible first slice of).
+> Companion docs:
+> - [`BRIDGE-PRODUCTION-ROADMAP.md`](./BRIDGE-PRODUCTION-ROADMAP.md) —
+>   production-grade architecture this evolves toward.
+> - [`ALWAYS-ON-PLATFORM.md`](./ALWAYS-ON-PLATFORM.md) — broader
+>   always-on architecture sketch.
 
 ## TL;DR
 
