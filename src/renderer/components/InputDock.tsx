@@ -238,6 +238,7 @@ export function InputDock() {
     if (!items) return
     const images: File[] = []
     const videos: File[] = []
+    let blockedVideoCount = 0
     for (let i = 0; i < items.length; i++) {
       const it = items[i]
       if (it.kind !== 'file') continue
@@ -245,8 +246,12 @@ export function InputDock() {
       if (!file) continue
       if (it.type.startsWith('image/')) {
         images.push(file)
-      } else if (it.type.startsWith('video/') && isGeminiSession) {
-        videos.push(file)
+      } else if (it.type.startsWith('video/')) {
+        if (isGeminiSession) {
+          videos.push(file)
+        } else {
+          blockedVideoCount += 1
+        }
       }
     }
     if (images.length > 0 || videos.length > 0) {
@@ -256,7 +261,19 @@ export function InputDock() {
       const bits: string[] = []
       if (images.length > 0) bits.push(`${images.length} image${images.length > 1 ? 's' : ''}`)
       if (videos.length > 0) bits.push(`${videos.length} video${videos.length > 1 ? 's' : ''}`)
-      showToast(`${bits.join(' + ')} attached`, 'ok')
+      if (blockedVideoCount > 0) {
+        bits.push(`${blockedVideoCount} video${blockedVideoCount > 1 ? 's' : ''} skipped (Gemini-only)`)
+      }
+      showToast(`${bits.join(' + ')} attached`, blockedVideoCount > 0 ? 'warn' : 'ok')
+    } else if (blockedVideoCount > 0) {
+      // Paste on a non-Gemini session matched only video files — surface
+      // the same "switch to Gemini" nudge the drop path already shows so
+      // the operator doesn't think paste is broken.
+      e.preventDefault()
+      showToast(
+        'Switch this session to a Gemini model to attach video.',
+        'warn',
+      )
     }
     // If it's plain text, let the browser insert normally. The textarea
     // onChange will fire and we'll auto-resize.
@@ -266,14 +283,13 @@ export function InputDock() {
     e.preventDefault()
     const files = Array.from(e.dataTransfer?.files ?? [])
     const imgs = files.filter((f) => f.type.startsWith('image/'))
-    const vids = isGeminiSession
-      ? files.filter((f) => f.type.startsWith('video/'))
-      : []
+    const allVideos = files.filter((f) => f.type.startsWith('video/'))
+    const vids = isGeminiSession ? allVideos : []
+    const blockedVideos = isGeminiSession ? 0 : allVideos.length
     if (imgs.length === 0 && vids.length === 0) {
       // Friendly nudge if the operator dropped a video onto a
       // non-Gemini session — otherwise the drop silently does nothing.
-      const droppedVideos = files.filter((f) => f.type.startsWith('video/'))
-      if (droppedVideos.length > 0 && !isGeminiSession) {
+      if (blockedVideos > 0) {
         showToast(
           'Switch this session to a Gemini model to attach video.',
           'warn',
@@ -286,7 +302,13 @@ export function InputDock() {
     const bits: string[] = []
     if (imgs.length > 0) bits.push(`${imgs.length} image${imgs.length > 1 ? 's' : ''}`)
     if (vids.length > 0) bits.push(`${vids.length} video${vids.length > 1 ? 's' : ''}`)
-    showToast(`${bits.join(' + ')} attached`, 'ok')
+    if (blockedVideos > 0) {
+      // Mixed drop on a non-Gemini session: images attached, videos
+      // skipped. Mention the skip so the operator knows the drop was
+      // partial.
+      bits.push(`${blockedVideos} video${blockedVideos > 1 ? 's' : ''} skipped (Gemini-only)`)
+    }
+    showToast(`${bits.join(' + ')} attached`, blockedVideos > 0 ? 'warn' : 'ok')
   }
 
   const onDragOver = (e: React.DragEvent<HTMLDivElement>) => {
@@ -368,15 +390,30 @@ export function InputDock() {
                   className="group relative flex items-center gap-2 rounded-lg bg-white/[0.04] px-2 py-1.5 ring-hairline"
                 >
                   {a.type === 'video' ? (
-                    // Live thumbnail by muting + showing frame 0. We don't
-                    // autoplay — the user controls playback. preload=metadata
-                    // is enough for Chrome to render the poster frame.
-                    <video
-                      src={a.previewUrl}
-                      muted
-                      preload="metadata"
-                      className="h-10 w-10 rounded object-cover ring-hairline"
-                    />
+                    // Glyph tile instead of a tiny <video> — Chromium
+                    // renders an empty `<video>` without an explicit
+                    // poster as a black square, which is uglier than a
+                    // clear glyph. The sent-message panel uses a real
+                    // <video controls> for playback.
+                    <div
+                      className="flex h-10 w-10 items-center justify-center rounded bg-accent/10 ring-hairline"
+                      aria-label="video attachment"
+                    >
+                      <svg
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.6"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="text-accent"
+                      >
+                        <rect x="2" y="6" width="14" height="12" rx="1.5" />
+                        <path d="M16 10l5-2.5v9L16 14z" />
+                      </svg>
+                    </div>
                   ) : (
                     <img
                       src={a.previewUrl}

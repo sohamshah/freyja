@@ -2331,7 +2331,16 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
             ? attachments.map((a) => ({
                 id: a.id,
                 type: a.type,
-                previewUrl: a.previewUrl,
+                // Video composer-tray previews are blob: URLs (cheap,
+                // ephemeral). For the persisted message we swap in a
+                // data: URL built from the same base64 we're about to
+                // send, so the preview survives session reload — blob:
+                // URLs are document-scoped and would 404 after restart.
+                // Images already use data: URLs at attach time.
+                previewUrl:
+                  a.type === 'video'
+                    ? `data:${a.mimeType};base64,${a.dataBase64}`
+                    : a.previewUrl,
                 name: a.filename,
                 mimeType: a.mimeType,
                 sizeBytes: a.sizeBytes,
@@ -2342,6 +2351,15 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       inputDraft: '',
       pendingAttachments: [],
     }))
+    // Free the blob: URLs that backed the composer tray previews —
+    // the sent-message attachment now references a fresh data: URL
+    // and nothing else points at the blob. Without this, every video
+    // attach leaks ~20MB until the page unloads.
+    for (const a of attachments) {
+      if (a.type === 'video' && a.previewUrl.startsWith('blob:')) {
+        try { URL.revokeObjectURL(a.previewUrl) } catch { /* noop */ }
+      }
+    }
     const api = (window as any).harness
     const cmd: any = {
       type: 'send_message',
@@ -2871,14 +2889,24 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     try {
       const mimeType = file.type || 'video/mp4'
       const bytes = new Uint8Array(await file.arrayBuffer())
-      let binary = ''
-      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
-      const dataBase64 = btoa(binary)
-      // Blob URL for the <video> preview thumbnail — much cheaper than a
-      // data URL for large clips. The store hangs onto the same Blob
-      // we just read so the URL stays valid until removeAttachment runs
-      // (browser GCs blob: URLs when no <video> still references them,
-      // but pinning the Blob makes lifecycle predictable).
+      // Byte-by-byte string concat on a 20MB buffer pegs the main
+      // thread for ~1-2s. Convert in 32KB chunks via fromCharCode.apply
+      // — same shape btoa wants, ~10× faster, no UI freeze.
+      const CHUNK = 0x8000
+      const chunks: string[] = []
+      for (let i = 0; i < bytes.length; i += CHUNK) {
+        chunks.push(
+          String.fromCharCode.apply(
+            null,
+            bytes.subarray(i, i + CHUNK) as unknown as number[],
+          ),
+        )
+      }
+      const dataBase64 = btoa(chunks.join(''))
+      // Blob URL for the <video> preview in the composer tray — cheap
+      // for playback. The sent message gets a `data:` URL instead so
+      // it survives session reload (blob: URLs are document-scoped and
+      // would 404 after restart).
       const previewUrl = URL.createObjectURL(file)
       set((prev) => ({
         pendingAttachments: [
