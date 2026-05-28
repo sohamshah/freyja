@@ -868,6 +868,10 @@ type PersistedSessionMetaPayload = {
   completed?: boolean
   completedAt?: number
   success?: boolean
+  /** Top-level preset id (claude-code, codex, etc.). Round-tripped to
+   *  disk so opening this session later re-applies the preset's
+   *  persona + tool surface on the bridge side. */
+  presetId?: string
 }
 
 type PersistedSessionPayload = PersistedSessionMetaPayload & {
@@ -923,6 +927,7 @@ function persistedMetaFromSession(
     completed: session.completed,
     completedAt: session.completedAt,
     success: session.success,
+    presetId: session.presetId,
   }
 }
 
@@ -2744,6 +2749,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
             model: chosenModel,
             reasoningLevel: chosenReasoning,
             coordinationStrategy: chosenStrategy,
+            presetId: preset.id,
             createdAt: Date.now(),
             updatedAt: Date.now(),
             messageCount: 0,
@@ -2874,6 +2880,12 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     const strategyForBridge = normalizeCoordinationStrategy(
       sessionSnapshot?.coordinationStrategy || restoredStrategy,
     )
+    const presetForBridge = sessionSnapshot?.presetId || undefined
+
+    // Sync currentPresetId locally so the title bar shows the preset
+    // name immediately on switch (rather than waiting for the bridge
+    // round-trip).
+    set({ currentPresetId: sessionSnapshot?.presetId ?? null })
 
     const api = (window as any).harness
     if (api) {
@@ -2883,6 +2895,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         model: modelForBridge,
         reasoningLevel: reasoningForBridge,
         coordinationStrategy: strategyForBridge,
+        presetId: presetForBridge,
       })
     }
   },
@@ -3260,6 +3273,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         completed: s.completed,
         completedAt: s.completedAt,
         success: s.success,
+        presetId: s.presetId,
       }))
       const persistedById = new Map(
         persistedSnapshots.map((s) => [s.id, s]),

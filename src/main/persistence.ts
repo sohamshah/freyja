@@ -33,8 +33,38 @@ function sanitizeId(id: string): string {
   return id.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 160)
 }
 
+/** Python-compatible sanitizer. Mirrors
+ *  ``bridge/transcript_persistence.py:_transcript_path`` which STRIPS
+ *  invalid chars rather than replacing them with ``_``. Used when
+ *  looking up files written by the Python daemon (transcripts +
+ *  any legacy slice files written before sanitizeId was changed
+ *  to the underscore-replacement scheme).
+ *
+ *  Keep this in lockstep with the Python version — if either side
+ *  drifts, transcript lookups silently return null and the
+ *  conversation pane shows "Session not found" for valid sessions.
+ */
+function sanitizeIdLegacyStrip(id: string): string {
+  return id.replace(/[^a-zA-Z0-9._-]/g, '').slice(0, 160)
+}
+
+/** Resolve a file path under SESSIONS_DIR with backward-compat: try
+ *  the current sanitizer first, then the legacy strip-style sanitizer.
+ *  Returns the first path that exists, or the modern path if neither
+ *  exists (so callers can use it for error messages). */
+function resolveSessionPath(id: string, suffix: string): string {
+  const modern = path.join(SESSIONS_DIR, `${sanitizeId(id)}${suffix}`)
+  if (fs.existsSync(modern)) return modern
+  const legacy = path.join(SESSIONS_DIR, `${sanitizeIdLegacyStrip(id)}${suffix}`)
+  if (fs.existsSync(legacy)) return legacy
+  return modern
+}
+
 function sessionFile(id: string): string {
-  return path.join(SESSIONS_DIR, `${sanitizeId(id)}.json`)
+  // Backward-compat: slice files written before sanitizeId was changed
+  // to underscore-replace are stored under the legacy strip-style
+  // filename. Use the resolver so loadSession finds them either way.
+  return resolveSessionPath(id, '.json')
 }
 
 function sessionIndexFile(): string {
@@ -64,6 +94,10 @@ export interface PersistedSession {
   completed?: boolean
   completedAt?: number
   success?: boolean
+  /** Top-level preset id this session was started under (e.g.
+   *  "claude-code", "codex"). Persisted so the preset's persona +
+   *  tool surface can be re-applied on resume. */
+  presetId?: string
   /** The full SessionSlice as a JSON-safe object. */
   slice: unknown
 }
@@ -96,15 +130,39 @@ function dedupeSessions(rows: PersistedSessionMeta[]): PersistedSessionMeta[] {
   return out
 }
 
+// Cache the parsed _index.json keyed by file mtime. The index can grow
+// to ~2MB on a userwith many sessions, and listSessions is in the
+// hot path (called from the renderer's 30s sidebar refresh poll +
+// every focus event). Re-reading + JSON-parsing 2MB on every poll
+// for no semantic gain is wasteful.
+let _indexCache: {
+  mtimeMs: number
+  rows: PersistedSessionMeta[]
+} | null = null
+
 function readIndexSync(): PersistedSessionMeta[] | null {
   ensureDir()
+  const indexPath = sessionIndexFile()
+  let stat: fs.Stats
   try {
-    const raw = fs.readFileSync(sessionIndexFile(), 'utf8')
+    stat = fs.statSync(indexPath)
+  } catch {
+    return null
+  }
+  if (_indexCache && _indexCache.mtimeMs === stat.mtimeMs) {
+    // Cheap fast-path: the cached rows array is sorted+deduped already.
+    // Clone the array to avoid callers mutating cache state.
+    return [..._indexCache.rows]
+  }
+  try {
+    const raw = fs.readFileSync(indexPath, 'utf8')
     const parsed = JSON.parse(raw) as PersistedSessionIndex
     if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.sessions)) {
       return null
     }
-    return sortSessions(dedupeSessions(parsed.sessions))
+    const rows = sortSessions(dedupeSessions(parsed.sessions))
+    _indexCache = { mtimeMs: stat.mtimeMs, rows }
+    return [...rows]
   } catch {
     return null
   }
@@ -156,6 +214,91 @@ export function sessionsDirectory(): string {
   return SESSIONS_DIR
 }
 
+/** One-shot migration: rename session files written with the legacy
+ *  strip-style sanitizer (colons / other invalid chars stripped) to
+ *  the modern underscore-replace style. After running once, the
+ *  legacy `resolveSessionPath` fallback becomes a no-op because all
+ *  files are at the modern path.
+ *
+ *  Idempotent + safe to run on every app start — only renames files
+ *  whose modern target path doesn't already exist (so a half-done
+ *  migration can resume cleanly).
+ *
+ *  We need to read each candidate file to extract its session_id
+ *  before we can compute the modern target path. Cheap because we
+ *  only do it for files whose CURRENT name doesn't contain an
+ *  underscore (modern names always do for gateway sessions), giving
+ *  us a fast filter that skips already-migrated files.
+ */
+export function migrateLegacySessionFiles(): { renamed: number; skipped: number } {
+  ensureDir()
+  let renamed = 0
+  let skipped = 0
+  let files: string[] = []
+  try {
+    files = fs.readdirSync(SESSIONS_DIR)
+  } catch {
+    return { renamed, skipped }
+  }
+  for (const f of files) {
+    // Only consider session-shaped files.
+    if (!f.endsWith('.transcript.json') && !f.endsWith('.json')) continue
+    if (f.endsWith('.tmp')) continue
+    if (f === SESSION_INDEX_FILE) continue
+    const fullPath = path.join(SESSIONS_DIR, f)
+    // Read the session_id from inside the file. Both slice files and
+    // transcript files carry their id internally.
+    let sessionId: string | undefined
+    try {
+      const raw = fs.readFileSync(fullPath, 'utf8')
+      const parsed = JSON.parse(raw)
+      sessionId = parsed?.id || parsed?.session_id
+    } catch {
+      skipped += 1
+      continue
+    }
+    if (!sessionId) {
+      skipped += 1
+      continue
+    }
+    // Compute the expected modern + legacy filenames; rename if the
+    // current file is at the legacy path AND the modern path is free.
+    const suffix = f.endsWith('.transcript.json') ? '.transcript.json' : '.json'
+    const modern = path.join(SESSIONS_DIR, `${sanitizeId(sessionId)}${suffix}`)
+    const legacy = path.join(SESSIONS_DIR, `${sanitizeIdLegacyStrip(sessionId)}${suffix}`)
+    if (fullPath !== legacy) {
+      // Current file isn't at the legacy path — already migrated or
+      // some other naming. Skip.
+      skipped += 1
+      continue
+    }
+    if (fullPath === modern) {
+      // Legacy and modern collapse to the same string (no special
+      // chars in the id). Nothing to do.
+      skipped += 1
+      continue
+    }
+    if (fs.existsSync(modern)) {
+      // Modern target already exists. Don't overwrite — leave the
+      // legacy file in place; the resolver will pick one of them.
+      skipped += 1
+      continue
+    }
+    try {
+      fs.renameSync(legacy, modern)
+      renamed += 1
+    } catch {
+      skipped += 1
+    }
+  }
+  if (renamed > 0) {
+    // Cache invalidated by file moves.
+    _gatewayMirrorCache.clear()
+    _indexCache = null
+  }
+  return { renamed, skipped }
+}
+
 export function listSessions(): PersistedSessionMeta[] {
   ensureDir()
   let rows: PersistedSessionMeta[]
@@ -197,6 +340,21 @@ export function listSessions(): PersistedSessionMeta[] {
   return sortSessions(dedupeSessions(rows))
 }
 
+// Cache of parsed gateway-transcript metadata keyed by absolute file
+// path. Each entry remembers the file's mtime at the time of parsing;
+// on the next scan, we skip the file's read+parse if mtime hasn't
+// changed. Without this cache, the renderer's 30s polling scans +
+// JSON-parses every transcript file in ~/.freyja/sessions/ on every
+// poll — including hundreds of unrelated desktop / sub-agent
+// transcripts. On a userwith 300+ transcript files (totaling
+// hundreds of MB), that's ~300ms of disk I/O + parse on every
+// poll. With this cache, repeat polls are O(N stat() calls) +
+// re-parse only the files that actually changed.
+const _gatewayMirrorCache = new Map<
+  string,
+  { mtimeMs: number; meta: PersistedSessionMeta | null }
+>()
+
 /** Scan for bridge-owned transcripts that don't have a renderer-owned
  *  slice, and produce stub meta entries so the gateway-created
  *  sessions show up in the sidebar. */
@@ -208,32 +366,46 @@ function mirrorGatewaySessions(known: Set<string>): PersistedSessionMeta[] {
   } catch {
     return out
   }
+  const seenPaths = new Set<string>()
   for (const f of files) {
     if (!f.endsWith('.transcript.json')) continue
+    // Fast-path filter: gateway session ids look like
+    // ``freyja:slack:T...:dm:D...``, which sanitizes to a filename
+    // starting with ``freyjaslack`` (or future ``freyja<platform>``).
+    // 99% of transcripts on a typical install are desktop / sub-agent
+    // sessions whose filenames don't start with ``freyja``; skipping
+    // them BEFORE we read+parse saves the expensive work.
+    if (!f.startsWith('freyja')) continue
     const fullPath = path.join(SESSIONS_DIR, f)
-    let raw: string
-    try {
-      raw = fs.readFileSync(fullPath, 'utf8')
-    } catch {
-      continue
-    }
-    let parsed: any
-    try {
-      parsed = JSON.parse(raw)
-    } catch {
-      continue
-    }
-    const sessionId: string | undefined = parsed?.session_id
-    if (!sessionId) continue
-    // Only mirror gateway-shaped IDs; don't re-surface every random
-    // transcript in case the user has old files lying around.
-    if (!sessionId.startsWith('freyja:')) continue
-    if (known.has(sessionId)) continue
+    seenPaths.add(fullPath)
     let stat: fs.Stats | null = null
     try {
       stat = fs.statSync(fullPath)
     } catch {
-      // ignore
+      continue
+    }
+    const mtimeMs = stat.mtimeMs
+    const cached = _gatewayMirrorCache.get(fullPath)
+    if (cached && cached.mtimeMs === mtimeMs) {
+      // File unchanged since last scan — reuse the cached metadata.
+      if (cached.meta && !known.has(cached.meta.id)) {
+        out.push(cached.meta)
+      }
+      continue
+    }
+    // Parse path: file is new or modified since last scan.
+    let parsed: any = null
+    try {
+      const raw = fs.readFileSync(fullPath, 'utf8')
+      parsed = JSON.parse(raw)
+    } catch {
+      _gatewayMirrorCache.set(fullPath, { mtimeMs, meta: null })
+      continue
+    }
+    const sessionId: string | undefined = parsed?.session_id
+    if (!sessionId || !sessionId.startsWith('freyja:')) {
+      _gatewayMirrorCache.set(fullPath, { mtimeMs, meta: null })
+      continue
     }
     const messageCount = Array.isArray(parsed?.transcript?.entries)
       ? parsed.transcript.entries.filter((e: any) => e?.message).length
@@ -242,7 +414,7 @@ function mirrorGatewaySessions(known: Set<string>): PersistedSessionMeta[] {
     // already carries the workspace + chat. Strip the freyja: prefix
     // for display.
     const title = sessionId.replace(/^freyja:/, '')
-    out.push({
+    const meta: PersistedSessionMeta = {
       version: 1,
       id: sessionId,
       title,
@@ -262,7 +434,15 @@ function mirrorGatewaySessions(known: Set<string>): PersistedSessionMeta[] {
       // Tag as gateway-mirrored so the renderer's sidebar can detect
       // it. New custom field — see PersistedSession type.
       agentType: 'gateway-slack',
-    })
+    }
+    _gatewayMirrorCache.set(fullPath, { mtimeMs, meta })
+    if (!known.has(sessionId)) out.push(meta)
+  }
+  // Evict cache entries for files that have been deleted off disk so
+  // the cache doesn't grow unbounded (e.g. when the operator manually
+  // cleans ~/.freyja/sessions/).
+  for (const cachedPath of [..._gatewayMirrorCache.keys()]) {
+    if (!seenPaths.has(cachedPath)) _gatewayMirrorCache.delete(cachedPath)
   }
   return out
 }
@@ -275,7 +455,307 @@ export function loadSession(id: string): PersistedSession | null {
     if (!parsed || parsed.version !== 1) return null
     return parsed
   } catch {
+    // Fall back to synthesizing from the bridge-owned transcript file.
+    // Gateway-originated sessions (Slack DMs, channel threads) never get
+    // a renderer-owned slice on disk because they're persisted by the
+    // daemon, not by the desktop runner. Build a read-only slice from
+    // the raw transcript so the desktop can at least show the
+    // conversation when the user clicks a `gateway-slack` row in the
+    // sidebar.
+    return synthesizeSessionFromTranscript(id)
+  }
+}
+
+/** Quick heuristic: did this tool result represent an error? Our tool
+ *  layer's convention is to return text that begins with "Error" when
+ *  things fail (image_generation_tool.py, file tools, etc.). Not 100%
+ *  reliable — some tools return success-prefixed text describing a
+ *  caught error — but good enough for the synthesizer's "show a red
+ *  chip vs. green chip" decision. */
+function _looksLikeToolError(content: string): boolean {
+  if (!content) return false
+  const head = content.trimStart().toLowerCase()
+  return head.startsWith('error') || head.startsWith('exception')
+}
+
+/** Parse "File saved to `<path>`" references out of a tool's result
+ *  text and read each one (if it's an image, exists, and is small
+ *  enough) as a data URL for inline rendering in the conversation
+ *  pane. Same regex pattern the Slack stream consumer uses to detect
+ *  generated-image outputs. */
+const _FILE_SAVED_RE = /File saved to `([^`]+)`/g
+const _IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'])
+const _MAX_INLINE_IMAGE_BYTES = 8 * 1024 * 1024  // 8MB — cap to keep slice JSON manageable
+
+function _extractImagesFromResultText(
+  resultText: string,
+  takenAtMs: number,
+): Array<Record<string, unknown>> {
+  if (!resultText) return []
+  const out: Array<Record<string, unknown>> = []
+  _FILE_SAVED_RE.lastIndex = 0  // reset (global regex shared across calls)
+  let m: RegExpExecArray | null
+  while ((m = _FILE_SAVED_RE.exec(resultText)) !== null) {
+    const filePath = m[1]
+    const ext = path.extname(filePath).toLowerCase()
+    if (!_IMAGE_EXTS.has(ext)) continue
+    try {
+      const st = fs.statSync(filePath)
+      if (!st.isFile()) continue
+      if (st.size > _MAX_INLINE_IMAGE_BYTES) continue
+      const bytes = fs.readFileSync(filePath)
+      const mimeType = _extToMime(ext)
+      const dataUrl = `data:${mimeType};base64,${bytes.toString('base64')}`
+      out.push({
+        pngBase64: dataUrl,
+        mimeType,
+        width: 0,   // unknown without parsing the image header
+        height: 0,
+        takenAt: takenAtMs,
+        byteSize: st.size,
+        label: path.basename(filePath),
+      })
+    } catch {
+      // File missing or unreadable — skip silently.
+    }
+  }
+  return out
+}
+
+function _extToMime(ext: string): string {
+  switch (ext) {
+    case '.png': return 'image/png'
+    case '.jpg':
+    case '.jpeg': return 'image/jpeg'
+    case '.gif': return 'image/gif'
+    case '.webp': return 'image/webp'
+    case '.bmp': return 'image/bmp'
+    default: return 'application/octet-stream'
+  }
+}
+
+/** Build a read-only PersistedSession from a gateway-owned transcript
+ *  file. Used when the renderer asks for a session that only exists
+ *  as `<id>.transcript.json` (no slice file produced by the desktop
+ *  runner). Reconstructs:
+ *
+ *    · user + assistant + thinking turns as messages
+ *    · tool calls as proper ToolCallRecord entries (so the
+ *      conversation pane renders chips, arguments, durations,
+ *      isError states, etc. instead of `[tool_use: name]` text stubs)
+ *    · tool results matched to their tool_call_id from later
+ *      ``role: "tool_result"`` transcript entries
+ *    · generated images extracted from result text (``File saved to
+ *      `<path>` ``) — read from disk and inlined as data URLs into
+ *      ToolCallRecord.resultImages so the viewer shows the actual
+ *      image, not just the prose
+ *    · token totals aggregated across all assistant turns
+ *
+ *  Sub-agents, kanban, bus messages, etc. are left empty — the
+ *  transcript doesn't carry them and they're not meaningful for an
+ *  external chat reflection. */
+function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
+  // Use the legacy-aware resolver — Python writes the transcript with
+  // the STRIP-style sanitizer, while the renderer's current
+  // sanitizeId uses underscore replacement. Without this resolver,
+  // every gateway-mirrored session click would compute the wrong
+  // filename and silently fall through to "session not found".
+  const transcriptPath = resolveSessionPath(id, '.transcript.json')
+  let raw: string
+  try {
+    raw = fs.readFileSync(transcriptPath, 'utf8')
+  } catch {
     return null
+  }
+  let parsed: any
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  const entries: any[] = Array.isArray(parsed?.transcript?.entries)
+    ? parsed.transcript.entries
+    : []
+  let stat: fs.Stats | null = null
+  try {
+    stat = fs.statSync(transcriptPath)
+  } catch { /* ignore */ }
+
+  // Pass 1 — collect all tool_result entries keyed by tool_call_id so
+  // we can stitch them onto the assistant message that fired the call.
+  // tool_result entries come AFTER the assistant message in transcript
+  // order; we need them resolved before we walk the assistant turns
+  // (otherwise we'd emit ToolCallRecord with status=running for tools
+  // that already finished).
+  const toolResultsById = new Map<string, { content: string; timestampMs: number }>()
+  for (const e of entries) {
+    const msg = e?.message
+    if (msg?.role === 'tool_result' && typeof msg.tool_call_id === 'string') {
+      toolResultsById.set(msg.tool_call_id, {
+        content: typeof msg.content === 'string' ? msg.content : '',
+        timestampMs: Math.floor((e.timestamp ?? 0) * 1000),
+      })
+    }
+  }
+
+  // Pass 2 — walk assistant + user entries and synthesize messages +
+  // ToolCallRecord map. tool_result entries are skipped here since
+  // they were absorbed in pass 1.
+  const messages: any[] = []
+  const toolCalls: Record<string, any> = {}
+  const toolCallOrder: string[] = []
+  let totalInput = 0, totalOutput = 0, totalCacheR = 0, totalCacheW = 0
+
+  for (const e of entries) {
+    const msg = e?.message
+    if (!msg) continue
+    if (msg.role === 'tool_result') continue
+    if (msg.role !== 'user' && msg.role !== 'assistant') continue
+
+    const entryTimeMs = Math.floor((e.timestamp ?? 0) * 1000)
+    const parts: any[] = []
+
+    // Thinking blocks render first (above the text + tool calls). The
+    // desktop view shows thinking as a foldable block above the
+    // assistant's response.
+    if (Array.isArray(msg.thinking_blocks)) {
+      for (const tb of msg.thinking_blocks) {
+        if (typeof tb?.thinking === 'string' && tb.thinking.length > 0) {
+          parts.push({ type: 'thinking', text: tb.thinking })
+        }
+      }
+    }
+
+    // Body text. Content is usually a string in the transcript;
+    // handle the legacy array-of-blocks shape defensively in case
+    // older transcripts use it.
+    if (typeof msg.content === 'string' && msg.content.length > 0) {
+      parts.push({ type: 'text', text: msg.content })
+    } else if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (typeof block === 'string') {
+          parts.push({ type: 'text', text: block })
+        } else if (block?.type === 'text' && typeof block?.text === 'string') {
+          parts.push({ type: 'text', text: block.text })
+        }
+        // tool_use / tool_result blocks in content are legacy /
+        // anthropic-shape; we handle the modern tool_calls field
+        // below. Don't double-render here.
+      }
+    }
+
+    // Tool calls — OpenAI-style array on assistant messages.
+    if (msg.role === 'assistant' && Array.isArray(msg.tool_calls)) {
+      for (const tc of msg.tool_calls) {
+        if (!tc?.id || typeof tc.id !== 'string') continue
+        const result = toolResultsById.get(tc.id)
+        const resultContent = result?.content ?? ''
+        const isError = _looksLikeToolError(resultContent)
+        const durationMs = result
+          ? Math.max(0, result.timestampMs - entryTimeMs)
+          : undefined
+        const resultImages = _extractImagesFromResultText(resultContent, entryTimeMs)
+        const record = {
+          id: tc.id,
+          name: typeof tc.name === 'string' ? tc.name : 'unknown',
+          arguments: tc.arguments && typeof tc.arguments === 'object'
+            ? tc.arguments
+            : undefined,
+          status: result
+            ? (isError ? 'error' : 'success')
+            : 'success',  // missing result = optimistic success; transcript was probably truncated
+          result: resultContent || undefined,
+          isError,
+          durationMs,
+          startedAt: entryTimeMs,
+          ...(resultImages.length > 0 ? { resultImages } : {}),
+        }
+        toolCalls[tc.id] = record
+        toolCallOrder.push(tc.id)
+        parts.push({ type: 'tool_call', toolCallId: tc.id })
+      }
+    }
+
+    if (parts.length === 0) continue
+    if (msg.role === 'assistant') {
+      totalInput += msg.input_tokens ?? 0
+      totalOutput += msg.output_tokens ?? 0
+      totalCacheR += msg.cache_read_tokens ?? 0
+      totalCacheW += msg.cache_write_tokens ?? 0
+    }
+    messages.push({
+      id: e.id || String(messages.length),
+      role: msg.role,
+      parts,
+      createdAt: entryTimeMs,
+      inputTokens: msg.input_tokens,
+      outputTokens: msg.output_tokens,
+      cacheReadTokens: msg.cache_read_tokens,
+      cacheWriteTokens: msg.cache_write_tokens,
+    })
+  }
+
+  // Build a slice that contains EVERY required SessionSlice field
+  // (see ``src/renderer/state/store.ts:73``). Missing fields cause
+  // the renderer's `setActive` to crash silently when it spreads
+  // ``archivedSlice`` onto root state — the conversation pane then
+  // shows the LAST active session's content instead of the one the
+  // user clicked, which looks like "the click did nothing".
+  const modelId = parsed?.metadata?.model_id || 'claude-sonnet-4-6'
+  const reasoning = parsed?.metadata?.reasoning_level || 'auto'
+  const strategy = parsed?.metadata?.coordination_strategy || 'bus'
+  const slice = {
+    messages,
+    currentStreamingMessageId: null,
+    currentTurnId: null,
+    thinking: '',
+    isStreaming: false,
+    toolCalls,
+    toolCallOrder,
+    fileChanges: [],
+    subagents: {},
+    subagentOrder: [],
+    usage: {
+      currentContextTokens: totalInput,
+      totalInputTokens: totalInput,
+      totalOutputTokens: totalOutput,
+      totalCacheReadTokens: totalCacheR,
+      totalCacheWriteTokens: totalCacheW,
+      totalCost: 0,
+      lastTurnInputTokens: 0,
+      lastTurnOutputTokens: 0,
+      contextWindow: 200_000,
+    },
+    systemEvents: [],
+    kanbanCards: {},
+    busMessages: [],
+    inboxEvents: [],
+    artifacts: [],
+    widgets: {},
+    // These four were missing — renderer requires them as
+    // non-optional. autoDispatchEnabled gates a kanban-board
+    // toggle; the other three populate the title-bar pill state
+    // and the bridge-side session reconfigure on switch_session.
+    autoDispatchEnabled: false,
+    model: modelId,
+    reasoningLevel: reasoning,
+    coordinationStrategy: strategy,
+  }
+
+  return {
+    version: 1,
+    id,
+    title: id.replace(/^freyja:/, ''),
+    model: parsed?.metadata?.model_id ?? '',
+    workspace: parsed?.metadata?.workspace ?? '',
+    createdAt: (parsed?.created_at ?? 0) * 1000 || stat?.birthtimeMs || Date.now(),
+    updatedAt: (parsed?.last_activity ?? 0) * 1000 || stat?.mtimeMs || Date.now(),
+    messageCount: messages.length,
+    totalInputTokens: totalInput,
+    totalOutputTokens: totalOutput,
+    cacheReadTokens: totalCacheR,
+    agentType: 'gateway-slack',
+    slice,
   }
 }
 

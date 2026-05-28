@@ -2845,8 +2845,22 @@ class _BridgeSession:
         #   9. Session-specific commands — slash command catalog.
         #  10. Installing deps — narrow tactical rule.
         #  11. Available tools / sub-agents / coordination.
+        # Preset overrides the identity block. The default
+        # `_IDENTITY_BLOCK` is "You are an AI agent operating inside
+        # Freyja…" — a strong identity statement that, if appended
+        # AFTER the preset persona, overrode it in practice: the model
+        # would read the Freyja identity as canonical and treat the
+        # preset block as flavor. When a preset is active, we use the
+        # preset's `system_prompt` AS the identity, replacing
+        # `_IDENTITY_BLOCK` entirely. The base sections (foundation,
+        # doing-tasks, output-discipline, etc.) still apply — they're
+        # mode-agnostic operating instructions, not identity.
+        if preset_obj is not None and preset_obj.system_prompt:
+            identity_block = preset_obj.system_prompt.strip()
+        else:
+            identity_block = _IDENTITY_BLOCK
         self._base_system_prompt = (
-            f"{_IDENTITY_BLOCK}\n"
+            f"{identity_block}\n"
             "\n"
             f"{_SYSTEM_FOUNDATION_BLOCK}\n"
             "\n"
@@ -2883,23 +2897,12 @@ class _BridgeSession:
         )
         from bridge.tools.coordination import current_datetime_block
 
-        # Top-level preset persona (Move P): when the operator picked
-        # a preset like "claude-code" or "computer-use", the preset's
-        # system_prompt block goes RIGHT AT THE TOP of the composed
-        # system prompt — after the date, before the foundation +
-        # workspace blocks. This makes the operator-chosen identity
-        # the first thing the model reads on every turn, ahead of
-        # any generic Freyja scaffolding.
-        preset_persona = ""
-        if preset_obj is not None and preset_obj.system_prompt:
-            preset_persona = (
-                f"# Session preset: {preset_obj.nickname or preset_obj.name}\n"
-                f"{preset_obj.system_prompt.strip()}\n\n"
-            )
-
+        # Preset persona is now the identity block at the very top of
+        # `self._base_system_prompt` (see the if/else above). The
+        # composed prompt is just date + base + knowledge; no
+        # additional preset block needed.
         system_prompt = (
             current_datetime_block() + "\n\n"
-            + preset_persona
             + self._base_system_prompt
             + ("\n\n" + knowledge_prompt if knowledge_prompt else "")
         )
@@ -7909,6 +7912,13 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             reasoning_level=cmd.get("reasoningLevel"),
             coordination_strategy=cmd.get("coordinationStrategy"),
         )
+        # Resume the preset binding if the renderer carries one on
+        # the session it's switching to. Without this, opening an
+        # archived session under a preset would re-initialize the
+        # bridge without the preset's persona / tool surface.
+        preset_id = (cmd.get("presetId") or "").strip()
+        if preset_id and _resolve_top_level_preset(preset_id) is not None:
+            sess.preset_id = preset_id  # type: ignore[attr-defined]
         log("info", f"switched to session {sess.id}")
         emit(
             {
@@ -7920,6 +7930,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                     "model": sess.model_id,
                     "reasoningLevel": sess.reasoning_level,
                     "coordinationStrategy": sess.coordination_strategy,
+                    "presetId": sess.preset_id,
                 },
             }
         )
