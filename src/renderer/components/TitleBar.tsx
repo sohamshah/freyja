@@ -37,11 +37,6 @@ export function TitleBar() {
   const model = useHarness((s) => s.model)
   const reasoningLevel = useHarness((s) => s.reasoningLevel)
   const coordinationStrategy = useHarness((s) => s.coordinationStrategy)
-  const currentPresetId = useHarness((s) => s.currentPresetId)
-  const availablePresets = useHarness((s) => s.availablePresets)
-  const activePreset = currentPresetId
-    ? availablePresets.find((p) => p.id === currentPresetId) ?? null
-    : null
   const messages = useHarness((s) => s.messages)
   const usage = useHarness((s) => s.usage)
   const sessionId = useHarness((s) => s.activeSessionId)
@@ -118,19 +113,10 @@ export function TitleBar() {
       <TitleControl
         className="no-drag flex h-[28px] max-w-[min(36vw,380px)] py-0 pl-2.5 pr-2 text-fg-1"
         onClick={() => useHarness.getState().toggleModelPicker(true)}
-        title={activePreset ? `Preset: ${activePreset.name} — switch preset or model` : "Switch preset or model"}
+        title="Switch model"
       >
-        <span className="title-kicker">
-          {activePreset ? 'preset' : 'model'}
-        </span>
-        <span className="ml-2 min-w-0 truncate font-mono text-fg-0">
-          {activePreset ? activePreset.name : model}
-        </span>
-        {activePreset ? (
-          <span className="ml-2 truncate font-mono text-[10px] text-fg-3">
-            {model}
-          </span>
-        ) : null}
+        <span className="title-kicker">model</span>
+        <span className="ml-2 min-w-0 truncate font-mono text-fg-0">{model}</span>
         {reasoningLevel && reasoningLevel !== 'none' && (
           <span className="title-effort ml-2 font-mono text-[10px]">{reasoningLevel}</span>
         )}

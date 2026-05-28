@@ -63,7 +63,6 @@ def build_desktop_registry(
     computer_cancel_event: Any | None = None,
     permission_handler: Any | None = None,
     excluded: frozenset[str] = frozenset(),
-    included: frozenset[str] | None = None,
     subagent_registry: SubAgentRegistry | None = None,
     subagent_provider_factory: Any | None = None,
     subagent_model: str = "claude-sonnet-4-6",
@@ -385,12 +384,6 @@ def build_desktop_registry(
     for tool in tools:
         name = tool.definition.name
         if name in excluded:
-            continue
-        # Allowlist semantics: when `included` is set, only register
-        # tools whose names are in the allowlist. Used by the
-        # top-level preset surface so e.g. the `claude-code` preset
-        # gets the coding tool set and not the computer-use tools.
-        if included is not None and name not in included:
             continue
         try:
             registry.register(tool)

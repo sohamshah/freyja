@@ -345,19 +345,7 @@ export type BridgeCommand =
   | { type: 'list_skills'; sessionId?: string }
   | { type: 'list_subagents'; sessionId?: string }
   | { type: 'list_tools'; sessionId?: string }
-  | {
-      type: 'new_session'
-      sessionId?: string
-      model?: string
-      reasoningLevel?: string
-      coordinationStrategy?: CoordinationStrategy
-      /** Top-level preset id (e.g. "claude-code", "codex"). When set,
-       *  the bridge looks up the preset's model / thinking /
-       *  coordination / tool surface / system-prompt block and applies
-       *  them at session init. Explicit model / reasoningLevel /
-       *  coordinationStrategy in the same command still win. */
-      presetId?: string
-    }
+  | { type: 'new_session'; sessionId?: string; model?: string; reasoningLevel?: string; coordinationStrategy?: CoordinationStrategy }
   | { type: 'switch_session'; sessionId: string; model?: string; reasoningLevel?: string; coordinationStrategy?: CoordinationStrategy }
   | { type: 'usage'; sessionId?: string }
   | { type: 'list_files'; sessionId?: string; query: string; limit?: number }
@@ -781,11 +769,6 @@ export const IPC = {
   slackSaveTokens: 'gateway:slack:save-tokens',
   slackSetAllowlist: 'gateway:slack:set-allowlist',
   slackGetConfig: 'gateway:slack:get-config',
-  /** Returns which LLM provider keys are present vs missing in the
-   *  desktop's process.env. Used by the wizard to warn the operator
-   *  if launching from Finder (or a shell without the relevant API
-   *  keys exported) means the daemon won't be able to reach any LLM. */
-  llmKeysProbe: 'gateway:llm-keys:probe',
 } as const
 
 // ── Gateway IPC result types ────────────────────────────────────
@@ -798,17 +781,12 @@ export interface GatewayStatus {
   logPath: string
   errPath: string
   slackConfigured: boolean   // both tokens present in ~/.freyja/.env
-  // Cheap snapshot of workspaces this install is configured for.
-  // `teamId` is always present (read from gateway.yaml allowlist);
-  // the rest are best-effort and may be missing if the gateway
-  // daemon hasn't published live workspace info yet. The UI should
-  // fall back to teamId when display fields are missing.
   workspaces: Array<{
     teamId: string
-    teamName?: string
-    botUserId?: string
-    botName?: string
-    allowlist?: string[]     // empty = allow any in this workspace
+    teamName: string
+    botUserId: string
+    botName: string
+    allowlist: string[]      // empty = allow any in this workspace
   }>
   error?: string
 }
@@ -833,21 +811,6 @@ export interface SimpleResult {
   ok: boolean
   error?: string
   message?: string
-}
-
-export interface LlmKeysProbeResult {
-  ok: boolean
-  /** Keys that are present in the desktop's process.env AND already
-   *  saved to ~/.freyja/.env where the daemon will read them. */
-  present: string[]
-  /** Keys missing from process.env entirely. The daemon won't have
-   *  these unless the operator adds them to ~/.freyja/.env by hand. */
-  missing: string[]
-  /** Whether at least one frontier-tier key (Anthropic / OpenAI) is
-   *  available somewhere — useful for the wizard to say "you'll need
-   *  this to use Slack" with a stronger warning vs. soft heads-up. */
-  hasFrontierKey: boolean
-  error?: string
 }
 
 export interface CompactionMetricsResult {

@@ -102,20 +102,11 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
   const setModel = useHarness((s) => s.setModel)
   const setReasoningLevel = useHarness((s) => s.setReasoningLevel)
   const toggle = useHarness((s) => s.toggleModelPicker)
-  const presets = useHarness((s) => s.availablePresets)
-  const currentPresetId = useHarness((s) => s.currentPresetId)
-  const newSessionFromPreset = useHarness((s) => s.newSessionFromPreset)
 
   const models = useMemo(
     () => (available.length > 0 ? available : FALLBACK_MODELS),
     [available],
   )
-
-  const onPickPreset = (id: string) => {
-    void newSessionFromPreset(id)
-    onSelect?.(id)
-    if (!inline) toggle(false)
-  }
 
   const onPick = (id: string, reasoningLevel?: string, close = true) => {
     const picked = models.find((m) => m.id === id)
@@ -127,7 +118,7 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
   const content = (
     <div className={inline ? '' : 'p-2'}>
       <div className="px-3 pb-2 pt-1 label flex items-center justify-between">
-        <span>choose preset or model</span>
+        <span>choose model</span>
         {!inline && (
           <button
             onClick={() => toggle(false)}
@@ -137,76 +128,6 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
           </button>
         )}
       </div>
-      {presets.length > 0 ? (
-        <div className="mb-2">
-          <div className="px-3 pb-1.5 pt-0.5 text-[10px] uppercase tracking-[0.18em] text-fg-3">
-            presets
-          </div>
-          <div
-            className={`space-y-1 ${
-              inline ? '' : 'max-h-[min(40vh,360px)] overflow-y-auto pr-1'
-            }`}
-          >
-            {presets.map((p) => {
-              const isActive = p.id === currentPresetId
-              return (
-                <div
-                  key={p.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => onPickPreset(p.id)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault()
-                      onPickPreset(p.id)
-                    }
-                  }}
-                  className={`group flex w-full items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors ${
-                    isActive
-                      ? 'border-accent/25 bg-accent/12 text-fg-0 shadow-[inset_0_0_0_1px_rgba(168,212,252,0.08)]'
-                      : 'border-transparent text-fg-1 hover:border-white/10 hover:bg-white/[0.04]'
-                  }`}
-                  title={p.description}
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-[12.5px] text-fg-0">
-                        {p.name}
-                      </span>
-                      {isActive ? (
-                        <span className="rounded border border-accent/40 bg-accent/10 px-1.5 py-px font-mono text-[9px] uppercase tracking-[0.14em] text-accent">
-                          active
-                        </span>
-                      ) : null}
-                    </div>
-                    <div className="mt-0.5 truncate font-mono text-[11px] text-fg-2">
-                      {p.description}
-                    </div>
-                    <div className="mt-1 flex flex-wrap items-center gap-2 font-mono text-[10px] text-fg-3">
-                      <span>{p.model}</span>
-                      {p.coordinationStrategy ? (
-                        <>
-                          <span>·</span>
-                          <span>{p.coordinationStrategy}</span>
-                        </>
-                      ) : null}
-                      {p.thinkingEffort && p.thinkingEffort !== 'off' ? (
-                        <>
-                          <span>·</span>
-                          <span>{p.thinkingEffort} thinking</span>
-                        </>
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-          <div className="mt-1 px-3 text-[10px] uppercase tracking-[0.18em] text-fg-3">
-            raw models
-          </div>
-        </div>
-      ) : null}
       <div
         className={`space-y-1 ${
           inline ? '' : 'max-h-[min(60vh,520px)] overflow-y-auto pr-1'

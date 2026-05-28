@@ -713,34 +713,6 @@ async def _main() -> None:
         sys.exit(2)
 
     default_model = os.environ.get("FREYJA_MODEL", "claude-sonnet-4-6")
-
-    # Build the top-level presets surface from AGENT_TYPES. The
-    # renderer's unified agent picker uses these as the "preset
-    # cards" section alongside the raw-model section.
-    from bridge.tools.agent_types import AGENT_TYPES
-
-    presets_payload: list[dict[str, Any]] = []
-    for entry in AGENT_TYPES.values():
-        if not getattr(entry, "top_level", False):
-            continue
-        # Primary model exposed to the picker. We resolve the
-        # `model` field literally — fallback chains are runtime
-        # behavior, not part of the picker UI.
-        primary_model = entry.model if isinstance(entry.model, str) else (
-            entry.model[0] if entry.model else default_model
-        )
-        presets_payload.append(
-            {
-                "id": entry.name,
-                "name": entry.nickname or entry.name,
-                "description": entry.description,
-                "model": primary_model,
-                "thinkingEffort": entry.thinking_effort,
-                "coordinationStrategy": entry.coordination_strategy,
-                "modelFallbacks": list(entry.model_fallbacks),
-            }
-        )
-
     emit(
         {
             "type": "ready",
@@ -760,7 +732,6 @@ async def _main() -> None:
                     {"id": "goal", "label": "Goal loop"},
                 ],
                 "models": _annotate_models(AVAILABLE_MODELS),
-                "presets": presets_payload,
             },
         }
     )
@@ -1215,23 +1186,6 @@ def _family_for_model(model_id: str) -> str:
 def _reasoning_default_for_model(model_id: str) -> str:
     default_effort = MODEL_REASONING_META.get(model_id, {}).get("reasoningDefault")
     return default_effort if isinstance(default_effort, str) and default_effort else "none"
-
-
-def _resolve_top_level_preset(preset_id: str) -> "Any":
-    """Look up a top-level AgentType by id, returning None if the id
-    doesn't match a registered top-level preset. Used by command
-    handlers that accept an optional `presetId` field (new_session,
-    set_session_preset) to translate the id into the full bundle."""
-    if not preset_id:
-        return None
-    try:
-        from bridge.tools.agent_types import AGENT_TYPES
-    except Exception:  # noqa: BLE001
-        return None
-    entry = AGENT_TYPES.get(preset_id.strip())
-    if entry is None or not getattr(entry, "top_level", False):
-        return None
-    return entry
 
 
 def _normalize_reasoning_level(model_id: str, reasoning_level: str | None) -> str:
@@ -1898,7 +1852,6 @@ def _new_tracing_registry(
     artifact_store: SessionArtifactStore | None = None,
     label_for_session=None,
     get_cumulative_cost=None,
-    get_gateway_source=None,
 ):
     """Wrap a ToolRegistry so each execute() call streams events to the UI.
 
@@ -1948,74 +1901,6 @@ def _new_tracing_registry(
             )
         except Exception as exc:  # noqa: BLE001
             log("debug", f"tool_input_end emit failed: {exc}")
-
-        # ── destructive-tool approval gate (gateway-only) ─────
-        # For sessions originated by a gateway platform (Slack today),
-        # any tool call whose arguments match a known destructive
-        # pattern (rm -rf, git clean, dd to a device, etc.) must be
-        # approved by the operator via an interactive Block Kit
-        # button before it runs. Desktop sessions bypass this — the
-        # operator is already at the keyboard and uses the
-        # per-tool prompt UI instead.
-        #
-        # Read the CURRENT gateway_source via the resolver callable —
-        # NOT the snapshot captured when this registry was wrapped.
-        # The user may have moved threads since session creation;
-        # snapshotting would post the approval prompt to the wrong
-        # thread (or top-level instead of in-thread).
-        current_gateway_source = (
-            get_gateway_source() if get_gateway_source is not None else None
-        )
-        if current_gateway_source is not None:
-            try:
-                from bridge.gateway.approval import is_destructive, request_approval
-                destructive, reason, cmd_preview = is_destructive(
-                    tool_name, tool_args
-                )
-            except Exception:  # noqa: BLE001
-                destructive, reason, cmd_preview = False, "", ""
-            if destructive:
-                platform_obj = getattr(current_gateway_source, "platform", None)
-                platform_name = (
-                    getattr(platform_obj, "value", None)
-                    or str(platform_obj or "")
-                )
-                approved = await request_approval(
-                    platform_name=platform_name,
-                    chat_id=getattr(current_gateway_source, "chat_id", ""),
-                    thread_id=getattr(current_gateway_source, "thread_id", None),
-                    tool_name=tool_name,
-                    command_preview=cmd_preview,
-                    reason=reason,
-                )
-                if not approved:
-                    # Synthesize a failure-shaped result so the agent
-                    # gets a normal-looking tool error and can adapt
-                    # (e.g. propose a less destructive alternative).
-                    duration_ms = int((time.monotonic() - start) * 1000)
-                    denial_msg = (
-                        f"Tool call denied by operator: {tool_name} "
-                        f"({reason}). The destructive command was "
-                        f"NOT executed. Either ask for confirmation in "
-                        f"plain text first, or propose a less destructive "
-                        f"alternative."
-                    )
-                    emit(
-                        {
-                            "type": "tool_result",
-                            "sessionId": session_id,
-                            "id": tool_id,
-                            "preview": denial_msg,
-                            "isError": True,
-                            "durationMs": duration_ms,
-                        }
-                    )
-                    from engine.types import ToolResult
-                    return ToolResult(
-                        call_id=tool_id,
-                        content=denial_msg,
-                        is_error=True,
-                    )
 
         try:
             result = await original_execute(call, **kwargs)
@@ -2228,12 +2113,6 @@ class _BridgeSession:
         # dashboard renders them under a synthetic "root" profile.
         self.agent_type: str | None = None
         self.parent_session_id: str | None = None
-        # Top-level preset (e.g. "claude-code", "codex"). Set when the
-        # operator picks a preset from the unified agent picker; None
-        # when they picked a raw model directly. Drives the system-
-        # prompt composition (preset's persona block goes in first)
-        # and tool-registry filtering (preset's allowlist applies).
-        self.preset_id: str | None = None
         self.project_session_id = self.id
         self.project_output_dir = project_output_dir(self.project_session_id)
         self.artifact_store = SessionArtifactStore(
@@ -2566,11 +2445,7 @@ class _BridgeSession:
         # Closure: wrap a registry with tracing scoped to a specific
         # session id. Used by the parent session (for itself) and passed
         # through to sub_agent_tool so child sessions get their own
-        # tracing namespace. Inherits the parent's gateway_source so
-        # destructive-tool approvals fire on sub-agent calls too —
-        # otherwise the agent could dodge the gate by spawning a
-        # sub-agent. Pass as a CALLABLE so children always see the
-        # parent's latest gateway_source, not a stale snapshot.
+        # tracing namespace.
         def _wrap_child_registry(reg: Any, session_id: str) -> Any:
             return _new_tracing_registry(
                 reg,
@@ -2578,7 +2453,6 @@ class _BridgeSession:
                 path_resolver=self.path_resolver,
                 artifact_store=self.artifact_store,
                 label_for_session=_label_for_session,
-                get_gateway_source=lambda: getattr(self, "gateway_source", None),
             )
 
         # Stash on self so non-sub_agent code paths (e.g. _judge_goal when
@@ -2599,25 +2473,8 @@ class _BridgeSession:
             ),
         )
 
-        # Preset tool surface (Move P): when the operator picked a
-        # top-level preset (e.g. claude-code, computer-use), apply its
-        # tool_include allowlist + tool_exclude list to the registry
-        # build. Raw-model sessions leave both at None which is the
-        # full surface.
-        preset_obj = (
-            _resolve_top_level_preset(self.preset_id) if self.preset_id else None
-        )
-        preset_include = (
-            frozenset(preset_obj.tool_include) if preset_obj and preset_obj.tool_include else None
-        )
-        preset_exclude = (
-            frozenset(preset_obj.tool_exclude) if preset_obj and preset_obj.tool_exclude else frozenset()
-        )
-
         registry = build_desktop_registry(
             workspace=Path(self.workspace),
-            excluded=preset_exclude,
-            included=preset_include,
             subagent_registry=sub_registry,
             subagent_provider_factory=_provider_factory,
             subagent_model=self.model_id,
@@ -2726,65 +2583,21 @@ class _BridgeSession:
         # model honoring a prompt-level hint.
         gw_source = getattr(self, "gateway_source", None)
         if gw_source is not None:
-            # Register the gateway-only `send_attachment` tool. Closes
-            # over chat_id/thread_id/platform from gateway_source so
-            # the agent can deliberately ship files back to the
-            # originating chat (e.g. "send me that medusa-design.png"
-            # works as a direct tool call rather than the agent
-            # explaining it can't).
-            try:
-                from bridge.tools.gateway_tools import SendAttachmentTool
-                # Pass a callable closure over `self` so the tool
-                # reads the CURRENT gateway_source at execute time.
-                # Snapshotting the value here means the tool would
-                # always send to whatever thread the session was
-                # first opened in — even after the user moves to a
-                # different thread under the same DM/channel.
-                registry.register(SendAttachmentTool(
-                    get_gateway_source=lambda: getattr(self, "gateway_source", None),
-                ))
-                log(
-                    "info",
-                    f"gateway session {self.id}: registered send_attachment tool",
-                )
-            except Exception as exc:  # noqa: BLE001
-                # ``log()`` here is the bridge's emit-style logger
-                # and doesn't accept exc_info — render the exception
-                # ourselves so failures are visible in the daemon log
-                # instead of being silently swallowed.
-                import traceback
-                tb = traceback.format_exc()
-                log(
-                    "warn",
-                    f"failed to register send_attachment tool: {exc}\n{tb}",
-                )
             from bridge.gateway.capabilities import (
-                gateway_filter_enabled,
                 tools_allowed_for_gateway,
             )
-            platform = getattr(gw_source, "platform", None)
-            if gateway_filter_enabled(platform):
-                allowed = set(tools_allowed_for_gateway(platform))
-                # send_attachment is gateway-native — always permit it
-                # even when the filter is on.
-                allowed.add("send_attachment")
-                for name in list(registry._tools.keys()):  # noqa: SLF001
-                    if name not in allowed:
-                        registry._tools.pop(name, None)  # noqa: SLF001
-                log(
-                    "info",
-                    f"gateway session {self.id}: tool surface restricted to "
-                    f"{len(registry._tools)} tools "  # noqa: SLF001
-                    f"({sorted(registry._tools.keys())})",  # noqa: SLF001
-                )
-            else:
-                log(
-                    "info",
-                    f"gateway session {self.id}: full tool surface "
-                    f"({len(registry._tools)} tools — "  # noqa: SLF001
-                    f"enable slack.enable_tool_filter in ~/.freyja/"
-                    f"gateway.yaml to restrict)",
-                )
+            allowed = tools_allowed_for_gateway(
+                getattr(gw_source, "platform", None)
+            )
+            for name in list(registry._tools.keys()):  # noqa: SLF001
+                if name not in allowed:
+                    registry._tools.pop(name, None)  # noqa: SLF001
+            log(
+                "info",
+                f"gateway session {self.id}: tool surface restricted to "
+                f"{len(registry._tools)} tools "  # noqa: SLF001
+                f"({sorted(registry._tools.keys())})",  # noqa: SLF001
+            )
 
         tool_names = sorted(registry._tools.keys())  # noqa: SLF001
         self.tool_registry = _new_tracing_registry(
@@ -2795,12 +2608,6 @@ class _BridgeSession:
             artifact_store=self.artifact_store,
             label_for_session=_label_for_session,
             get_cumulative_cost=lambda: self.cumulative_cost,
-            # Pass a CALLABLE so the destructive-tool approval gate
-            # reads the CURRENT gateway_source at execute time. The
-            # session's gateway_source is overwritten on every inbound
-            # message; the gate needs the latest chat_id/thread_id so
-            # approval prompts land in the right thread.
-            get_gateway_source=lambda: getattr(self, "gateway_source", None),
         )
 
         tool_list = _grouped_tool_list(registry._tools)  # noqa: SLF001
@@ -2882,24 +2689,8 @@ class _BridgeSession:
             skill_store=self.skill_store,
         )
         from bridge.tools.coordination import current_datetime_block
-
-        # Top-level preset persona (Move P): when the operator picked
-        # a preset like "claude-code" or "computer-use", the preset's
-        # system_prompt block goes RIGHT AT THE TOP of the composed
-        # system prompt — after the date, before the foundation +
-        # workspace blocks. This makes the operator-chosen identity
-        # the first thing the model reads on every turn, ahead of
-        # any generic Freyja scaffolding.
-        preset_persona = ""
-        if preset_obj is not None and preset_obj.system_prompt:
-            preset_persona = (
-                f"# Session preset: {preset_obj.nickname or preset_obj.name}\n"
-                f"{preset_obj.system_prompt.strip()}\n\n"
-            )
-
         system_prompt = (
             current_datetime_block() + "\n\n"
-            + preset_persona
             + self._base_system_prompt
             + ("\n\n" + knowledge_prompt if knowledge_prompt else "")
         )
@@ -6796,7 +6587,6 @@ class _BridgeState:
         model_id: str | None = None,
         reasoning_level: str | None = None,
         coordination_strategy: str | None = None,
-        gateway_source: Any = None,
     ) -> _BridgeSession:
         from bridge.tools.coordination import normalize_coordination_strategy
 
@@ -6822,45 +6612,6 @@ class _BridgeState:
                 if next_strategy != existing.coordination_strategy:
                     existing.coordination_strategy = next_strategy
                     changed = True
-            # Refresh gateway_source on existing sessions before any
-            # restore-triggered re-init runs. Without this, an in-flight
-            # session keeps whatever gateway_source it was first created
-            # with (or None) and the gateway-only tools never register.
-            if gateway_source is not None:
-                existing.gateway_source = gateway_source
-                # Retroactive registration: if the existing session was
-                # initialized BEFORE gateway_source was set (i.e. the
-                # initial `initialize()` skipped the gateway-tool block
-                # because gw_source was None), inject send_attachment
-                # now so the next turn has it. Without this, an
-                # existing session permanently loses the tool until
-                # daemon restart.
-                try:
-                    reg = getattr(existing, "tool_registry", None)
-                    if reg is not None:
-                        tools_dict = getattr(reg, "_tools", None)
-                        if isinstance(tools_dict, dict) and "send_attachment" not in tools_dict:
-                            from bridge.tools.gateway_tools import SendAttachmentTool
-                            # Same closure pattern as the primary
-                            # registration path — read live source
-                            # at execute time, not snapshot.
-                            reg.register(SendAttachmentTool(
-                                get_gateway_source=lambda existing=existing: getattr(
-                                    existing, "gateway_source", None
-                                ),
-                            ))
-                            log(
-                                "info",
-                                f"gateway session {existing.id}: retroactively "
-                                f"registered send_attachment",
-                            )
-                except Exception as exc:  # noqa: BLE001
-                    import traceback
-                    log(
-                        "warn",
-                        f"retroactive send_attachment registration failed: "
-                        f"{exc}\n{traceback.format_exc()}",
-                    )
             if changed:
                 existing.reset()
                 # Re-restore from disk — the transcript was just wiped
@@ -6881,17 +6632,6 @@ class _BridgeState:
         )
         self.sessions[session_id] = s
         self.active_session_id = session_id
-
-        # CRITICAL: set gateway_source BEFORE try_restore_transcript()
-        # runs. That function calls self.initialize() internally, and
-        # initialize() reads self.gateway_source to decide whether to
-        # register the gateway-only `send_attachment` tool. If we set
-        # gateway_source after the await (as route_message used to do),
-        # the registration block sees `gw_source=None` every time and
-        # silently no-ops — leaving the agent with a prompt that
-        # references a tool it can't actually call.
-        if gateway_source is not None:
-            s.gateway_source = gateway_source
 
         # Attempt transcript restoration from disk for persisted sessions.
         await s.try_restore_transcript()
@@ -7840,46 +7580,21 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
     if ctype == "new_session":
         if not session_id:
             session_id = f"desktop-{int(time.time() * 1000):x}"
-        # Preset override: when the renderer passes `presetId`, the
-        # bridge looks up the top-level AgentType and uses its
-        # model/thinking/coordination as the defaults. Explicit
-        # model / reasoningLevel / coordinationStrategy in the same
-        # command still win (operator-driven overrides beat preset).
-        preset_id = (cmd.get("presetId") or "").strip()
-        preset = _resolve_top_level_preset(preset_id) if preset_id else None
-        preset_model: str | None = None
-        preset_reasoning: str | None = None
-        preset_strategy: str | None = None
-        if preset is not None:
-            preset_model = (
-                preset.model if isinstance(preset.model, str) else (
-                    preset.model[0] if preset.model else None
-                )
-            )
-            preset_reasoning = preset.thinking_effort
-            preset_strategy = preset.coordination_strategy
-
-        model = cmd.get("model") or preset_model or state.default_model
-        reasoning_level = cmd.get("reasoningLevel") or preset_reasoning
-        coordination_strategy = cmd.get("coordinationStrategy") or preset_strategy
-
+        model = cmd.get("model") or state.default_model
         # Drop any existing session with the same id so it really starts fresh.
         if session_id in state.sessions:
             del state.sessions[session_id]
         sess = await state.ensure_session(
             session_id,
             model_id=model,
-            reasoning_level=reasoning_level,
-            coordination_strategy=coordination_strategy,
+            reasoning_level=cmd.get("reasoningLevel"),
+            coordination_strategy=cmd.get("coordinationStrategy"),
         )
-        if preset is not None:
-            sess.preset_id = preset.name  # type: ignore[attr-defined]
         log(
             "info",
             f"new session {session_id} "
             f"(model={model}, reasoning={sess.reasoning_level}, "
-            f"coordination={sess.coordination_strategy}, "
-            f"preset={preset.name if preset else '-'})",
+            f"coordination={sess.coordination_strategy})",
         )
         emit(
             {
@@ -7891,10 +7606,6 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                     "model": model,
                     "reasoningLevel": sess.reasoning_level,
                     "coordinationStrategy": sess.coordination_strategy,
-                    "presetId": preset.name if preset else None,
-                    "presetName": (
-                        preset.nickname or preset.name if preset else None
-                    ),
                 },
             }
         )
