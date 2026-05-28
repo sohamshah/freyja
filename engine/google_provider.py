@@ -722,7 +722,13 @@ class GoogleProvider:
 
     def _parse_response(self, response: Any) -> ProviderResponse:
         """Convert a non-streaming Gemini response to ProviderResponse."""
-        text = getattr(response, "text", "") or ""
+        # Walk parts directly instead of `response.text`. The SDK's `.text`
+        # accessor warns to stderr on every call when non-text Parts (like
+        # function_call) are present — see the explicit hint in that
+        # warning to use `candidates.content.parts`. Walking ourselves
+        # also makes the thought-filter contract local: we decide what
+        # counts as visible assistant text, not the SDK's internal rules.
+        text = self._extract_response_text(response)
         tool_calls = self._extract_function_calls(response) or None
         usage = self._extract_usage(response)
         finish_reason = self._extract_finish_reason(response) or "end_turn"
@@ -740,8 +746,11 @@ class GoogleProvider:
         self, chunk: Any, seen_tool_call_ids: set[str]
     ) -> list[StreamEvent]:
         events: list[StreamEvent] = []
-        text = getattr(chunk, "text", None)
-        if isinstance(text, str) and text:
+        # Same reason as _parse_response: avoid the SDK's `.text` accessor
+        # so streaming chunks that mix text + function_call don't dump a
+        # warning per chunk into stderr.
+        text = self._extract_response_text(chunk)
+        if text:
             events.append(TextDeltaEvent(text=text))
 
         for fc in self._extract_function_calls(chunk):
@@ -754,6 +763,32 @@ class GoogleProvider:
                 payload = "{}"
             events.append(ToolInputDeltaEvent(partial_json=payload))
         return events
+
+    @staticmethod
+    def _extract_response_text(response: Any) -> str:
+        """Concatenate visible text from ``candidates[0].content.parts``.
+
+        Replaces ``response.text`` / ``chunk.text`` so we don't trip the
+        SDK's "non-text parts present" warning on every tool-using turn.
+        Skips parts flagged as thoughts (``thought=True``) so internal
+        reasoning never leaks into the assistant's visible content,
+        independent of any future SDK-default changes.
+        """
+        candidates = getattr(response, "candidates", None) or []
+        if not candidates:
+            return ""
+        content = getattr(candidates[0], "content", None)
+        if content is None:
+            return ""
+        parts = getattr(content, "parts", None) or []
+        chunks: list[str] = []
+        for part in parts:
+            if getattr(part, "thought", False):
+                continue
+            text = getattr(part, "text", None)
+            if isinstance(text, str) and text:
+                chunks.append(text)
+        return "".join(chunks)
 
     @staticmethod
     def _extract_function_calls(response: Any) -> list[ToolCallResponse]:
