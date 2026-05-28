@@ -569,11 +569,45 @@ class GoogleProvider:
                 if text:
                     parts.append(gtypes.Part.from_text(text=text))
                 if msg.tool_calls:
+                    import base64 as _b64
+
                     for tc in msg.tool_calls:
                         args = tc.arguments if isinstance(tc.arguments, dict) else {}
-                        parts.append(
-                            gtypes.Part.from_function_call(name=tc.name, args=args)
-                        )
+                        sig_bytes: bytes | None = None
+                        provider_data = getattr(tc, "provider_data", None) or {}
+                        sig_b64 = provider_data.get("thought_signature")
+                        if isinstance(sig_b64, str) and sig_b64:
+                            try:
+                                sig_bytes = _b64.b64decode(sig_b64)
+                            except Exception:  # noqa: BLE001
+                                sig_bytes = None
+                        if sig_bytes is not None:
+                            # Construct the Part directly so we can pin
+                            # the signature onto the same Part that
+                            # carries the function_call — Gemini 3.x
+                            # rejects function_call replays whose Part
+                            # lacks the original thought_signature.
+                            parts.append(
+                                gtypes.Part(
+                                    function_call=gtypes.FunctionCall(
+                                        name=tc.name, args=args
+                                    ),
+                                    thought_signature=sig_bytes,
+                                )
+                            )
+                        else:
+                            # No captured signature — either this call
+                            # came from a non-reasoning model, an older
+                            # transcript predating signature capture, or
+                            # a provider switch. Best-effort fallback;
+                            # Gemini 3.x will warn (and eventually
+                            # reject) but we don't have a signature to
+                            # supply.
+                            parts.append(
+                                gtypes.Part.from_function_call(
+                                    name=tc.name, args=args
+                                )
+                            )
                 if parts:
                     contents.append(gtypes.Content(role="model", parts=parts))
                 continue
@@ -723,20 +757,56 @@ class GoogleProvider:
 
     @staticmethod
     def _extract_function_calls(response: Any) -> list[ToolCallResponse]:
-        """Pull function_call parts off a response or streaming chunk."""
+        """Pull function_call parts off a response or streaming chunk.
+
+        Walks ``candidates[].content.parts`` directly rather than using the
+        convenience ``response.function_calls`` accessor — we need each
+        function_call paired with its parent Part's ``thought_signature``
+        so the call can be replayed correctly on the next turn. Gemini 3.x
+        reasoning models reject 400 ``"Function call is missing a
+        thought_signature in functionCall parts"`` if the signature isn't
+        round-tripped exactly where it came from.
+
+        The signature is per-Part. We stash it as base64 in
+        ``ToolCallResponse.provider_data["thought_signature"]`` so it
+        survives JSON round-trip through the persisted transcript; the
+        replay path in ``_convert_messages`` base64-decodes it back to
+        bytes when building the outgoing Part.
+        """
+        import base64 as _b64
+
         calls: list[ToolCallResponse] = []
-        fcs = getattr(response, "function_calls", None) or []
-        for fc in fcs:
+        candidates = getattr(response, "candidates", None) or []
+        if not candidates:
+            return calls
+        # We only ever care about the first candidate (we don't request
+        # ``candidate_count`` > 1 anywhere). Mirrors the SDK's own
+        # ``response.function_calls`` shortcut.
+        content = getattr(candidates[0], "content", None)
+        parts = getattr(content, "parts", None) or [] if content is not None else []
+        for part in parts:
+            fc = getattr(part, "function_call", None)
+            if fc is None:
+                continue
             name = getattr(fc, "name", "") or ""
             args = getattr(fc, "args", None) or {}
             if not isinstance(args, dict):
                 args = {}
-            # Gemini doesn't assign ids to function calls; synthesize a
-            # stable one so the runner can correlate the eventual
-            # tool_result back to this call.
+            # Gemini sometimes echoes back a server-assigned id but
+            # usually doesn't; synthesize a stable one so the runner
+            # can correlate the eventual tool_result back to this call.
             call_id = getattr(fc, "id", None) or f"call_{uuid.uuid4().hex[:8]}"
+            provider_data: dict[str, Any] = {}
+            sig = getattr(part, "thought_signature", None)
+            if isinstance(sig, (bytes, bytearray)) and sig:
+                provider_data["thought_signature"] = _b64.b64encode(bytes(sig)).decode("ascii")
             calls.append(
-                ToolCallResponse(id=call_id, name=name, arguments=args)
+                ToolCallResponse(
+                    id=call_id,
+                    name=name,
+                    arguments=args,
+                    provider_data=provider_data,
+                )
             )
         return calls
 
