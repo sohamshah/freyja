@@ -170,15 +170,85 @@ codesign --display --requirements - "$DST" 2>&1 \
 # ───── restart the gateway daemon (if installed) ────────────────────
 # launchd holds the OLD daemon in memory across rebuilds because the
 # Python code only loads at process start. Without an explicit
-# stop+start, the daemon keeps running pre-rebuild bridge/gateway/*
-# code even though python-bundle/ on disk has the new version.
-# KeepAlive.SuccessfulExit=false means a clean SIGTERM (exit 0) won't
-# auto-restart, so we have to kick it back up.
+# restart the daemon keeps running pre-rebuild bridge/gateway/* code
+# even though python-bundle/ on disk has the new version.
+#
+# IMPORTANT — what was here before silently failed:
+#
+#   launchctl stop co.freyja.gateway      # async: sends SIGTERM, returns
+#   sleep 1                                # daemon needs ~3-5s to drain
+#   launchctl start co.freyja.gateway      # no-op: service still "active"
+#                                          # Then daemon exits 0,
+#                                          # KeepAlive.SuccessfulExit=false
+#                                          # → no auto-restart → stale dead.
+#
+# Two layers of correctness now:
+#   1. Wait for the OLD daemon's PID to actually disappear before
+#      issuing start. Poll the pid file + ``kill -0`` against the pid.
+#   2. After start, poll for a NEW PID to appear with a different
+#      value than the old one. If it doesn't show within 15s, fail
+#      the rebuild loudly with the daemon's stderr so the operator
+#      sees what broke rather than thinking the rebuild succeeded.
 if [ -f ~/Library/LaunchAgents/co.freyja.gateway.plist ]; then
   echo "→ Restarting gateway daemon to pick up new Python code…"
+  PID_FILE="$HOME/.freyja/.gateway.pid"
+  OLD_PID=""
+  if [ -f "$PID_FILE" ]; then
+    OLD_PID=$(cat "$PID_FILE" 2>/dev/null || echo "")
+  fi
+  echo "  · old PID: ${OLD_PID:-<none>}"
+
+  # 1. Send the stop. Don't fail if it errors — service may not
+  #    currently be active.
   launchctl stop co.freyja.gateway 2>/dev/null || true
-  sleep 1
+
+  # 2. Wait up to 15s for the old PID to actually die. Polls ``kill
+  #    -0`` (signal 0 = liveness check, no actual signal sent) which
+  #    works whether or not we own the process.
+  if [ -n "$OLD_PID" ]; then
+    for i in $(seq 1 30); do
+      kill -0 "$OLD_PID" 2>/dev/null || break
+      sleep 0.5
+    done
+    if kill -0 "$OLD_PID" 2>/dev/null; then
+      echo "  · WARN: old daemon (pid $OLD_PID) didn't exit in 15s, sending SIGKILL"
+      kill -KILL "$OLD_PID" 2>/dev/null || true
+      sleep 1
+    fi
+  fi
+
+  # 3. Start the new one + wait for a fresh PID to register.
   launchctl start co.freyja.gateway 2>/dev/null || true
+  NEW_PID=""
+  for i in $(seq 1 30); do
+    if [ -f "$PID_FILE" ]; then
+      CANDIDATE=$(cat "$PID_FILE" 2>/dev/null || echo "")
+      if [ -n "$CANDIDATE" ] && [ "$CANDIDATE" != "$OLD_PID" ]; then
+        if kill -0 "$CANDIDATE" 2>/dev/null; then
+          NEW_PID="$CANDIDATE"
+          break
+        fi
+      fi
+    fi
+    sleep 0.5
+  done
+
+  if [ -n "$NEW_PID" ]; then
+    echo "  · new daemon up: pid $NEW_PID"
+  else
+    echo ""
+    echo "  · ERROR: gateway daemon did not come up within 15s after restart."
+    echo "  · Last 20 lines of ~/.freyja/logs/gateway.err:"
+    tail -20 ~/.freyja/logs/gateway.err 2>/dev/null | sed 's/^/      /'
+    echo ""
+    echo "  · Last 20 lines of ~/.freyja/logs/gateway.log:"
+    tail -20 ~/.freyja/logs/gateway.log 2>/dev/null | sed 's/^/      /'
+    echo ""
+    echo "  · The .app rebuild succeeded but the daemon is dead. Fix the"
+    echo "    error above, then run \`launchctl start co.freyja.gateway\`"
+    echo "    or re-run npm run rebuild after the fix."
+    exit 1
+  fi
 fi
 
 # ───── launch ───────────────────────────────────────────────────────
