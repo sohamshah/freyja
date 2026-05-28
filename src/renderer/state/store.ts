@@ -176,6 +176,20 @@ export interface ModelChoice {
   available?: boolean
 }
 
+/** Top-level session preset — bundled (model + thinking + coordination
+ *  + tool surface + persona) that the operator can pick from the
+ *  unified agent picker. Surfaced by the bridge via `ready.capabilities
+ *  .presets`. */
+export interface SessionPreset {
+  id: string
+  name: string
+  description: string
+  model: string
+  thinkingEffort?: string
+  coordinationStrategy?: 'bus' | 'isolated' | 'kanban' | 'goal' | null
+  modelFallbacks?: string[]
+}
+
 export interface HarnessState extends SessionSlice {
   mode: BridgeMode
   modeDetail: string
@@ -199,6 +213,13 @@ export interface HarnessState extends SessionSlice {
   logs: Array<{ level: string; message: string; at: number }>
   toolCatalog: Record<string, ToolCatalogEntry>
   availableModels: ModelChoice[]
+  /** Top-level presets exposed by the bridge — claude-code, codex,
+   *  computer-use, etc. Populated from `ready.capabilities.presets`
+   *  on bridge connect. */
+  availablePresets: SessionPreset[]
+  /** Currently-selected preset for the active session, or null when
+   *  the session was started with a raw model and no preset bundle. */
+  currentPresetId: string | null
   // File picker matches for the current @query
   fileMatches: Array<{ path: string; name: string }>
   fileQuery: string
@@ -324,6 +345,11 @@ export interface HarnessActions {
   setFocusedPanel(p: HarnessState['focusedPanel']): void
   requestDemoBurst(): Promise<void>
   newSession(model?: string, reasoningLevel?: string): Promise<void>
+  /** Start a fresh session under a top-level preset (claude-code,
+   *  codex, computer-use, etc.). Bridge applies the preset's model,
+   *  thinking, coordination strategy, tool surface, and system-prompt
+   *  block. Operator can still override individual fields after. */
+  newSessionFromPreset(presetId: string): Promise<void>
   switchSession(sessionId: string): Promise<void>
   openSessionPane(sessionId: string, mode?: 'replace' | 'split'): Promise<void>
   closeSessionPane(paneId: string): Promise<void>
@@ -724,6 +750,8 @@ function emptyState(): HarnessState {
     logs: [],
     toolCatalog: {},
     availableModels: [],
+    availablePresets: [],
+    currentPresetId: null,
     fileMatches: [],
     fileQuery: '',
     permissionQueue: [],
@@ -1592,6 +1620,9 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
               : pane,
           ),
           availableModels: models.length > 0 ? models : prev.availableModels,
+          availablePresets:
+            (ev.capabilities?.presets as SessionPreset[] | undefined)
+            ?? prev.availablePresets,
           model: capModel,
           reasoningLevel: nextReasoning,
           coordinationStrategy: nextStrategy,
@@ -2643,6 +2674,9 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       }
     })
 
+    // Plain new_session (no preset) clears any prior preset identity.
+    set({ currentPresetId: null })
+
     const api = (window as any).harness
     if (api)
       await api.sendCommand({
@@ -2655,10 +2689,112 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     else (window as any).__harnessDemo?.stop?.()
   },
 
+  async newSessionFromPreset(presetId) {
+    const state = useHarness.getState()
+    const preset = state.availablePresets.find((p) => p.id === presetId)
+    if (!preset) {
+      state.showToast(`Unknown preset: ${presetId}`, 'warn')
+      return
+    }
+    const newSessionId = `session-${Date.now().toString(36)}`
+    const chosenModel = preset.model
+    const chosenReasoning = normalizeReasoningFor(
+      chosenModel,
+      preset.thinkingEffort,
+      state.availableModels,
+    )
+    const chosenStrategy = normalizeCoordinationStrategy(
+      preset.coordinationStrategy ?? state.coordinationStrategy,
+    )
+
+    set((prev) => {
+      const currentSlice = sliceFromState(prev)
+      const hasContent =
+        currentSlice.messages.length > 0 || currentSlice.isStreaming
+      const archive = hasContent
+        ? { ...prev.sessionArchive, [prev.activeSessionId]: currentSlice }
+        : prev.sessionArchive
+
+      const freshSlice = emptySlice(
+        chosenModel,
+        chosenReasoning,
+        prev.availableModels,
+        chosenStrategy,
+      )
+      const existingPanes = prev.sessionPanes.length > 0
+        ? prev.sessionPanes
+        : [{ id: 'pane-main', sessionId: prev.activeSessionId, createdAt: Date.now() }]
+      const activePaneId = prev.activePaneId || existingPanes[0]?.id || 'pane-main'
+      const sessionPanes = existingPanes.map((pane) =>
+        pane.id === activePaneId ? { ...pane, sessionId: newSessionId } : pane,
+      )
+      return {
+        ...prev,
+        ...freshSlice,
+        activeSessionId: newSessionId,
+        sessionArchive: archive,
+        sessionPanes,
+        activePaneId,
+        currentPresetId: preset.id,
+        sessions: [
+          {
+            id: newSessionId,
+            title: preset.name,
+            workspace: prev.sessions[0]?.workspace ?? '~/',
+            model: chosenModel,
+            reasoningLevel: chosenReasoning,
+            coordinationStrategy: chosenStrategy,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            messageCount: 0,
+            totalInputTokens: 0,
+            totalOutputTokens: 0,
+            cacheReadTokens: 0,
+          },
+          ...prev.sessions.filter(
+            (s) => s.id !== prev.activeSessionId || hasContent,
+          ),
+        ],
+        pendingAttachments: [],
+        toast: {
+          id: nextId('toast'),
+          message: `New session — ${preset.name}`,
+          tone: 'info',
+          at: Date.now(),
+        },
+      }
+    })
+
+    const api = (window as any).harness
+    if (api)
+      await api.sendCommand({
+        type: 'new_session',
+        sessionId: newSessionId,
+        presetId: preset.id,
+        // Pass through the resolved fields too so the bridge has
+        // explicit values regardless of preset-lookup outcome on its
+        // side. The bridge prefers preset → explicit fields, so this
+        // is effectively a backup path.
+        model: chosenModel,
+        reasoningLevel: chosenReasoning,
+        coordinationStrategy: chosenStrategy,
+      })
+    else (window as any).__harnessDemo?.stop?.()
+  },
+
   async switchSession(sessionId) {
     const prev = useHarness.getState()
     if (sessionId === prev.activeSessionId) return
-    let archivedSlice = prev.sessionArchive[sessionId]
+    // Gateway-mirrored sessions (Slack DMs) advance independently on
+    // disk via the daemon. The renderer's cached slice in
+    // sessionArchive is a snapshot from whenever the user last
+    // opened the session — by now it can be many turns stale (the
+    // user keeps chatting with the bot in Slack while the desktop
+    // is showing an old view). Always re-load from disk for these
+    // so the conversation pane shows what's actually on-disk now.
+    const targetMeta = prev.sessions.find((s) => s.id === sessionId)
+    const isGateway = targetMeta?.agentType === 'gateway-slack'
+    let archivedSlice = isGateway ? undefined : prev.sessionArchive[sessionId]
     if (!archivedSlice) {
       // Try to load from disk.
       const loaded = await prev.loadPersistedSessionIntoArchive(sessionId)
@@ -3125,8 +3261,47 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         completedAt: s.completedAt,
         success: s.success,
       }))
+      const persistedById = new Map(
+        persistedSnapshots.map((s) => [s.id, s]),
+      )
       const existingIds = new Set(prev.sessions.map((s) => s.id))
-      const merged: SessionSnapshot[] = [...prev.sessions]
+      // For desktop-owned sessions the RENDERER is source-of-truth —
+      // overwriting from disk would clobber in-flight state (reasoning
+      // toggle, current model pick, etc.). For gateway-mirrored
+      // sessions (Slack DMs, etc.) the DAEMON is source-of-truth —
+      // the on-disk transcript advances independently of the
+      // renderer, so as new Slack messages land we need to update
+      // messageCount / updatedAt / token totals in place. Without
+      // this merge, the sidebar permanently shows the snapshot
+      // captured at first observation.
+      const isGatewayMirrored = (s: SessionSnapshot | undefined) =>
+        s?.agentType === 'gateway-slack'
+      const mergedExisting: SessionSnapshot[] = prev.sessions.map(
+        (existing) => {
+          const fresh = persistedById.get(existing.id)
+          if (!fresh) return existing
+          if (!isGatewayMirrored(fresh) && !isGatewayMirrored(existing)) {
+            return existing
+          }
+          return {
+            ...existing,
+            title: fresh.title || existing.title,
+            updatedAt: fresh.updatedAt || existing.updatedAt,
+            messageCount: fresh.messageCount ?? existing.messageCount,
+            totalInputTokens:
+              fresh.totalInputTokens ?? existing.totalInputTokens,
+            totalOutputTokens:
+              fresh.totalOutputTokens ?? existing.totalOutputTokens,
+            cacheReadTokens:
+              fresh.cacheReadTokens ?? existing.cacheReadTokens,
+            task: fresh.task ?? existing.task,
+            agentType: fresh.agentType || existing.agentType,
+            completed: fresh.completed ?? existing.completed,
+            completedAt: fresh.completedAt ?? existing.completedAt,
+          }
+        },
+      )
+      const merged: SessionSnapshot[] = [...mergedExisting]
       for (const s of persistedSnapshots) {
         if (!existingIds.has(s.id)) merged.push(s)
       }
