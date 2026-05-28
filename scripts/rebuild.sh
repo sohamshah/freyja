@@ -80,14 +80,46 @@ if ! security find-identity -v -p codesigning | grep -F "\"$IDENTITY\"" > /dev/n
 ERROR: code-signing identity "$IDENTITY" not found in keychain.
 
 Either:
-  · Create one via Keychain Access (see the comment at the top of
-    this script for the one-time setup steps), or
-  · Export FREYJA_SIGN_IDENTITY to point at an existing identity:
+  · Run: npm run setup-signing-cert
+  · Or export FREYJA_SIGN_IDENTITY to point at an existing identity:
         security find-identity -v -p codesigning
     will list the candidates.
 EOF
   exit 1
 fi
+
+# ───── pre-flight: node + python deps ────────────────────────────────
+# Single-command guarantee: if a fresh clone runs `npm run rebuild`,
+# everything below should self-heal. We don't try to be clever about
+# skip-if-unchanged — `npm install` and `uv sync` are both near-instant
+# no-ops when nothing's changed, and the cost of getting freshness
+# wrong (silently shipping a stale Python bundle without slack-sdk)
+# is too high.
+
+if [ ! -d node_modules ]; then
+  echo "→ Installing npm deps (first run)…"
+  npm install --no-audit --no-fund
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+  cat >&2 <<EOF
+ERROR: \`uv\` not on PATH. Install with:
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+Then re-run \`npm run rebuild\`.
+EOF
+  exit 1
+fi
+
+echo "→ Syncing Python deps via uv (no-op if .venv is current)…"
+uv sync --quiet
+
+# ───── refresh the python bundle ─────────────────────────────────────
+# electron-builder copies python-bundle/ verbatim into Resources/. If
+# the bundle on disk is stale (e.g., new deps added to pyproject since
+# the last bundle), the packaged app silently ships without them. Always
+# regenerate from the freshly-synced .venv so the bundle matches code.
+echo "→ Refreshing python-bundle/ from .venv…"
+bash scripts/bundle-python.sh
 
 # ───── quit running app so we can replace the bundle ─────────────────
 # `osascript … to quit` is a graceful quit. Falls back to a hard
@@ -99,7 +131,7 @@ pkill -f "Freyja.app/Contents/MacOS/Freyja" >/dev/null 2>&1 || true
 sleep 0.5
 
 # ───── build ────────────────────────────────────────────────────────
-echo "→ Building bundle with identity \"$IDENTITY\"…"
+echo "→ Building Electron bundle with identity \"$IDENTITY\"…"
 FREYJA_SIGN_IDENTITY="$IDENTITY" npm run dist
 
 # ───── install ──────────────────────────────────────────────────────
@@ -134,6 +166,20 @@ echo "→ Designated Requirement (should be identical across rebuilds):"
 codesign --display --requirements - "$DST" 2>&1 \
   | sed -n 's/^designated => //p' \
   | sed 's/^/    /'
+
+# ───── restart the gateway daemon (if installed) ────────────────────
+# launchd holds the OLD daemon in memory across rebuilds because the
+# Python code only loads at process start. Without an explicit
+# stop+start, the daemon keeps running pre-rebuild bridge/gateway/*
+# code even though python-bundle/ on disk has the new version.
+# KeepAlive.SuccessfulExit=false means a clean SIGTERM (exit 0) won't
+# auto-restart, so we have to kick it back up.
+if [ -f ~/Library/LaunchAgents/co.freyja.gateway.plist ]; then
+  echo "→ Restarting gateway daemon to pick up new Python code…"
+  launchctl stop co.freyja.gateway 2>/dev/null || true
+  sleep 1
+  launchctl start co.freyja.gateway 2>/dev/null || true
+fi
 
 # ───── launch ───────────────────────────────────────────────────────
 if [ "$OPEN_APP" -eq 1 ]; then

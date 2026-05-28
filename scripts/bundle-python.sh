@@ -127,6 +127,39 @@ PYEOF
 # Make the interpreter executable
 chmod +x "$BUNDLE_DIR/bin/python3" "$BUNDLE_DIR/bin/python"
 
+# Install a `freyja` wrapper script inside the bundle so launchd /
+# external callers have a stable, env-setup-aware entry point. The
+# bundled Python doesn't have setuptools entry points installed, so
+# pyproject.toml's [project.scripts] freyja=... never produced a
+# binary; we synthesize one here. Lives at python-bundle/bin/freyja
+# alongside python3 so launchd.py's sibling lookup picks it up
+# without needing the full python -m fallback (which would require
+# PYTHONHOME + PYTHONPATH wired into the plist's EnvironmentVariables
+# — a footgun + secret-leak surface).
+echo "Writing freyja wrapper..."
+cat > "$BUNDLE_DIR/bin/freyja" <<'WRAPEOF'
+#!/usr/bin/env bash
+# Stable launcher for freyja CLI when running from the bundled
+# Python. Pins PYTHONHOME to the bundle so the interpreter finds
+# its stdlib regardless of the spawn env (Electron / launchd can
+# inject a stale PYTHONHOME and break Python entirely). Pins
+# PYTHONPATH to the resources dir so `bridge.gateway.cli` is
+# importable.
+set -e
+BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+BUNDLE_DIR="$(dirname "$BIN_DIR")"
+# Resources dir (or harness root in dev) is one level above
+# python-bundle/. That's where `bridge/` and `engine/` live.
+RESOURCES_DIR="$(dirname "$BUNDLE_DIR")"
+unset PYTHONSTARTUP PYTHONEXECUTABLE PYTHONNOUSERSITE VIRTUAL_ENV \
+      PYENV_VERSION PYENV_DIR CONDA_PREFIX CONDA_DEFAULT_ENV
+export PYTHONHOME="$BUNDLE_DIR"
+export PYTHONPATH="$RESOURCES_DIR${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONUNBUFFERED=1
+exec "$BIN_DIR/python3" -m bridge.gateway.cli "$@"
+WRAPEOF
+chmod +x "$BUNDLE_DIR/bin/freyja"
+
 # Re-sign the Python binary. The copy carries Apple's original code
 # signature, which prevents macOS TCC responsibility inheritance from
 # attributing this process to the parent Electron/.app. Stripping and
@@ -149,23 +182,35 @@ for lib in $(find "$BUNDLE_DIR" -name '*.so' -o -name '*.dylib' 2>/dev/null); do
     echo "  signed: $(basename "$lib")"
 done
 
-# Verify the bundle works
+# Verify the bundle works. Every dep imported here is one the
+# packaged app must have at runtime — if it imports cleanly under
+# the bundled Python with PYTHONHOME pinned, the .app will too.
+# Any failure means the venv has the dep but bundle-python.sh
+# either skipped it or stripped it.
 echo "Verifying bundle..."
 PYTHONHOME="$BUNDLE_DIR" "$BUNDLE_DIR/bin/python3" -c "
 import sys
 print(f'Python {sys.version}')
 print(f'Prefix: {sys.prefix}')
 
-# Verify critical imports
+# Engine deps — the main agent runtime.
 import anthropic, openai, httpx, tiktoken, pydantic, yaml
-print('All engine deps: OK')
+print('engine deps: OK')
 
+# Slack gateway deps — needed for the always-on Slack adapter.
+# These are easy to miss in a stale bundle because the desktop app
+# launches without them; only the wizard's verify step trips it.
+import slack_sdk, slack_bolt
+print('slack gateway deps: OK')
+
+# Native extensions
 import freyja_native
 print('freyja_native: OK')
 " 2>&1 || {
     echo ""
     echo "ERROR: Bundle verification failed."
-    echo "  Check that 'uv sync' was run first."
+    echo "  Check that 'uv sync' was run first and that all deps in"
+    echo "  pyproject.toml are present in .venv/lib/.../site-packages/."
     exit 1
 }
 

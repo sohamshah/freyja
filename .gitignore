@@ -8,6 +8,9 @@ dist-renderer/
 dist-preload/
 out/
 python-bundle/
+# Stray copy of the main bundle that occasionally drops at repo root
+# during ad-hoc esbuild runs.
+/main.cjs
 
 # Native extension build artifacts
 native/freyja_native/target/
