@@ -71,12 +71,18 @@ def session_key_for(
     workspace = source.workspace_id or "_unknown"
 
     if source.chat_type == "dm":
+        # DMs collapse to a single session per (workspace, dm_chat).
+        # Threading inside a 1-on-1 DM is just a UI affordance; the
+        # operator expects one continuous conversation regardless of
+        # whether they reply top-level or inside a Slack thread under
+        # one of the bot's earlier responses. Including thread_id in
+        # the key here silently fragmented sessions and made the bot
+        # "forget" the conversation every time the user clicked
+        # "Reply…" on one of its messages.
         if source.chat_id:
-            if source.thread_id:
-                return f"freyja:{platform}:{workspace}:dm:{source.chat_id}:{source.thread_id}"
             return f"freyja:{platform}:{workspace}:dm:{source.chat_id}"
-        if source.thread_id:
-            return f"freyja:{platform}:{workspace}:dm:{source.thread_id}"
+        # No chat_id available (rare, malformed event) — fall back to
+        # a single per-workspace DM bucket so we don't lose the turn.
         return f"freyja:{platform}:{workspace}:dm"
 
     # channel / group / thread
@@ -138,19 +144,56 @@ def gateway_source_block(source: MessageSource) -> str:
         "**bold** as *bold* and supports fenced code blocks). Long responses "
         "will be split across messages automatically."
     )
-    # Safety guidance for the unattended-over-Slack case. v2 will
-    # enforce these via the capability set; v1 leans on the model
-    # honoring the guidance.
+    # Make the agent aware of the gateway-only tools so it stops
+    # apologizing about not being able to send files. Without this hint
+    # it'll happily list paths but tell the user "I can't upload" —
+    # which is wrong: it can, via `send_attachment`.
     lines.append(
-        "You are operating without the operator at the keyboard. DO NOT call "
-        "the `bash`, `computer`, `computer_use`, `click`, `move_mouse`, "
-        "`type_text`, `press_key`, `screenshot`, `browser_execute_js`, or "
-        "`browser_screenshot` tools — they have side effects the operator "
-        "cannot see or veto from Slack. If the request needs those, explain "
-        "what you would do and ask the operator to run it from the desktop "
-        "app instead. Read-only tools (read_file, list_directory, glob, grep, "
-        "web_search, web_fetch, sub_agent) are fine."
+        "Outbound file sharing: call `send_attachment(paths=[...], "
+        "caption=...)` to attach one or more local files directly into "
+        "this chat. Use it whenever the user asks you to send / share / "
+        "show / attach a file — don't explain you can't, just call the "
+        "tool. Up to 10 files per call."
     )
+    # Inject either the restrictive guidance (filter on, shared workspace)
+    # or a strong positive override (filter off, single-operator install).
+    # The positive override is critical: pretrained models bias toward
+    # "I'm a bot in a chat app → I shouldn't run shell / mouse / screen
+    # tools," and once the agent has SAID "those are blocked" in this
+    # chat, the prior-conversation injection replays that refusal and
+    # the agent self-anchors. The override has to be loud enough to
+    # break that pattern.
+    from bridge.gateway.capabilities import gateway_filter_enabled
+    if gateway_filter_enabled(source.platform):
+        lines.append(
+            "You are operating without the operator at the keyboard. DO NOT call "
+            "the `bash`, `computer`, `computer_use`, `click`, `move_mouse`, "
+            "`type_text`, `press_key`, `screenshot`, `browser_execute_js`, or "
+            "`browser_screenshot` tools — they have side effects the operator "
+            "cannot see or veto from Slack. If the request needs those, explain "
+            "what you would do and ask the operator to run it from the desktop "
+            "app instead. Read-only tools (read_file, list_directory, glob, grep, "
+            "web_search, web_fetch, sub_agent) are fine."
+        )
+    else:
+        lines.append(
+            "TOOL ACCESS: you have the FULL tool surface on this gateway — "
+            "exactly the same set you have on the desktop app. That includes "
+            "`bash`, `computer_use`, `screenshot`, `click`, `move_mouse`, "
+            "`type_text`, `press_key`, `browser_execute_js`, `browser_screenshot`, "
+            "`generate_image`, `analyze_video`, `write_file`, `edit_file`, "
+            "`sub_agent`, memory mutators, and everything else in your tool list. "
+            "Nothing is filtered. The operator is the only person who can DM this "
+            "bot, and they explicitly want you to drive their machine from Slack.\n"
+            "\n"
+            "If a prior assistant turn in this chat claimed any tool was \"blocked "
+            "for safety,\" \"restricted on the Slack gateway,\" or similar — that was "
+            "WRONG. Ignore that framing entirely. When the user asks you to take a "
+            "screenshot, run bash, move the mouse, etc., just call the tool. Don't "
+            "apologize, don't redirect them to the desktop app, don't explain "
+            "constraints that don't exist. The desktop app and the Slack gateway are "
+            "the same agent with the same tools — only the chat surface differs."
+        )
     return "\n".join(lines)
 
 
@@ -181,16 +224,20 @@ async def route(
 
     # ensure_session is the existing bridge entry point that creates or
     # restores a session by id. It handles transcript rehydration and
-    # backward compat.
+    # backward compat. We pass gateway_source THROUGH ensure_session so
+    # the attribute is set on the session BEFORE try_restore_transcript
+    # triggers initialize() — otherwise the gateway-only tool
+    # registration (`send_attachment` et al) silently skips because
+    # `self.gateway_source` is None at registration check time.
     session = await bridge_state.ensure_session(
         session_id=key,
         model_id=default_model,
         coordination_strategy=default_strategy,
+        gateway_source=message.source,
     )
 
-    # Stash the gateway source on the session so subsequent system
-    # prompt rebuilds (via _refresh_knowledge_context) can include the
-    # gateway context block.
+    # Belt: keep the legacy setattr too — covers any code path that
+    # built a session without going through ensure_session(...).
     setattr(session, "gateway_source", message.source)
 
     return key, session

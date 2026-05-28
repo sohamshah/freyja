@@ -232,6 +232,14 @@ class SubAgentSpec:
     # talk + list_agent_sessions tools wired with a context bound to
     # the child's session id + parent id.
     talk_router: Any | None = None
+    # Live read of the parent's ``gateway_source`` (Slack MessageSource
+    # or similar). When the parent is gateway-routed, this lets us
+    # (a) tell the sub-agent it's working on the operator's behalf
+    # via Slack — so it knows files it produces can be shared back via
+    # ``send_attachment``, and (b) format the gateway context block in
+    # the child's system prompt. Callable so we always read the
+    # parent's current source, not a stale snapshot.
+    parent_gateway_source_getter: Any | None = None
 
 
 class SubAgentTool:
@@ -919,6 +927,20 @@ Parameters:
         # Always strip recursion escapes
         allowed = allowed - DEFAULT_EXCLUDED_TOOLS
 
+        # Gateway-native tools the child should ALWAYS get if the
+        # parent has them — even if the agent_type's whitelist would
+        # otherwise filter them out. ``send_attachment`` posts files
+        # back to the same Slack thread the parent is in (via the
+        # tool's parent-bound gateway_source resolver), so it's
+        # always appropriate for any sub-agent of a gateway session.
+        # Without this force-include, an explore-fast sub-agent that
+        # finds an interesting image can't share it back to the
+        # operator — the parent has to fetch it manually.
+        _GATEWAY_FORCE_INCLUDE = frozenset({"send_attachment"})
+        for name in _GATEWAY_FORCE_INCLUDE:
+            if name in parent_tools:
+                allowed = allowed | {name}
+
         child_registry = ToolRegistry()
         for name in sorted(allowed):
             tool = parent_tools.get(name)
@@ -1056,6 +1078,42 @@ Parameters:
             f"- max iterations: {agent_type.max_iterations}\n"
             f"- source: {agent_type.source}\n"
         )
+
+        # Gateway context: when the parent is running under a gateway
+        # (Slack today), tell the child agent so it knows files it
+        # produces can be shipped back to the chat via send_attachment,
+        # and that responses ultimately get rendered in a 1:1 chat
+        # surface (different etiquette than the desktop UI). Read
+        # through the getter so we always see the parent's CURRENT
+        # gateway_source — the parent's source updates on every
+        # inbound message via session_router.route().
+        try:
+            gw_getter = self._spec.parent_gateway_source_getter
+            gw_source = gw_getter() if gw_getter is not None else None
+        except Exception:  # noqa: BLE001
+            gw_source = None
+        if gw_source is not None:
+            platform = getattr(
+                getattr(gw_source, "platform", None), "value", "gateway",
+            )
+            chat_type = getattr(gw_source, "chat_type", None) or "chat"
+            partner = (
+                getattr(gw_source, "user_name", None)
+                or getattr(gw_source, "user_id", None)
+                or "the operator"
+            )
+            system_prompt += (
+                f"\nGateway context:\n"
+                f"- You are working on behalf of {partner} via the "
+                f"{platform.title()} {chat_type} gateway. Final output "
+                f"lands in a chat surface, not the desktop UI.\n"
+                f"- If you produce a file the operator should see "
+                f"(image, doc, generated artifact), call "
+                f"`send_attachment(paths=[...], caption=...)` so it "
+                f"posts directly into the chat thread alongside your "
+                f"text. Otherwise the operator sees only your text "
+                f"summary and the file dies on disk.\n"
+            )
 
         # Append sibling context so this agent knows what others are
         # working on and can decide whether to check the bus.

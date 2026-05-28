@@ -21,6 +21,26 @@ from typing import Any
 from bridge.gateway.pid import freyja_home
 
 
+# Placeholder URL for slash commands. Slack's manifest validator
+# requires a URL even when Socket Mode is enabled (the URL is never
+# actually called — the gateway dispatches commands over the
+# WebSocket). Match Hermes's convention: a local-only hostname so
+# anyone curious can immediately tell this URL is decorative.
+_SLASH_URL = "https://freyja.local/slack/commands"
+
+
+def _cmd(command: str, description: str, *, usage_hint: str | None = None) -> dict[str, str]:
+    out = {
+        "command": command,
+        "url": _SLASH_URL,
+        "description": description,
+        "should_escape": False,
+    }
+    if usage_hint:
+        out["usage_hint"] = usage_hint
+    return out
+
+
 # The slash commands Freyja exposes through Slack. Each becomes a
 # native Slack slash command via the manifest. Keep the descriptions
 # short — Slack truncates them in its UI.
@@ -32,43 +52,23 @@ from bridge.gateway.pid import freyja_home
 #   3. Run `freyja slack manifest --write` to regenerate the manifest
 #   4. Re-paste it in Slack's app manifest UI (or run `slack manifest
 #      update` if you have slack-cli installed)
+# NOTE: Slack reserves a fixed set of slash command names for
+# built-ins (see https://api.slack.com/interactivity/slash-commands
+# #reserved_commands). Declaring any of /active, /apps, /archive,
+# /away, /collapse, /dm, /dnd, /expand, /feed, /feedback, /help,
+# /hide, /invite, /join, /kick, /leave, /me, /msg, /mute, /open,
+# /prefs, /remind, /remove, /rename, /search, /shortcuts, /shrug,
+# /status, /topic, /who, /whois will make the manifest editor reject
+# the whole app. If you want one of those behaviors, expose it as a
+# subcommand of /freyja instead (e.g. /freyja status).
 SLASH_COMMANDS: list[dict[str, str]] = [
-    {
-        "command": "/freyja",
-        "description": "Show what Freyja can do",
-        "usage_hint": "[help|status]",
-    },
-    {
-        "command": "/goal",
-        "description": "Arm a goal loop with an autonomous judge",
-        "usage_hint": "<objective>",
-    },
-    {
-        "command": "/mode",
-        "description": "Switch coordination strategy",
-        "usage_hint": "bus|goal|kanban|isolated",
-    },
-    {
-        "command": "/model",
-        "description": "Switch the agent model for this session",
-        "usage_hint": "<model-id>",
-    },
-    {
-        "command": "/stop",
-        "description": "Interrupt the current turn",
-    },
-    {
-        "command": "/reset",
-        "description": "Start a fresh conversation in this thread/DM",
-    },
-    {
-        "command": "/status",
-        "description": "Show session info (model, mode, spend, turns)",
-    },
-    {
-        "command": "/perms",
-        "description": "Show the agent's tool permissions for this session",
-    },
+    _cmd("/freyja",  "Show what Freyja can do",                          usage_hint="[help|status|perms]"),
+    _cmd("/goal",    "Arm a goal loop with an autonomous judge",          usage_hint="<objective>"),
+    _cmd("/mode",    "Switch coordination strategy",                      usage_hint="bus|goal|kanban|isolated"),
+    _cmd("/model",   "Switch the agent model for this session",           usage_hint="<model-id>"),
+    _cmd("/stop",    "Interrupt the current turn"),
+    _cmd("/reset",   "Start a fresh conversation in this thread/DM"),
+    _cmd("/perms",   "Show the agent's tool permissions for this session"),
 ]
 
 
@@ -92,12 +92,62 @@ BOT_SCOPES: list[str] = [
 ]
 
 
+# User OAuth scopes — let the operator browse channels, search, edit
+# canvases, etc. on the agent's behalf. Optional in the install flow:
+# Slack shows them as additional scopes the user can grant if they want
+# the agent to act as them. Mirrors Hermes's user-scope coverage.
+USER_SCOPES: list[str] = [
+    "search:read.public",
+    "search:read.private",
+    "search:read.mpim",
+    "search:read.im",
+    "search:read.files",
+    "search:read.users",
+    "chat:write",
+    "channels:history",
+    "groups:history",
+    "mpim:history",
+    "im:history",
+    "canvases:read",
+    "canvases:write",
+    "users:read",
+    "users:read.email",
+    "reactions:write",
+    "reactions:read",
+    "emoji:read",
+    "files:read",
+    "channels:write",
+    "groups:write",
+    "im:write",
+    "mpim:write",
+    "channels:read",
+    "groups:read",
+    "mpim:read",
+]
+
+
+# A subset of the user scopes that Slack should mark "optional" — the
+# user can opt out of these during install without breaking the app.
+USER_SCOPES_OPTIONAL: list[str] = [
+    "search:read.private",
+    "search:read.mpim",
+    "search:read.im",
+    "search:read.files",
+    "chat:write",
+    "groups:history",
+    "mpim:history",
+    "im:history",
+    "canvases:read",
+    "canvases:write",
+]
+
+
 # Bot events the adapter subscribes to via Socket Mode.
 # See: https://api.slack.com/events
 BOT_EVENTS: list[str] = [
     "app_mention",                          # @bot in any channel
-    "assistant_thread_started",             # Slack AI Assistant lifecycle
-    "assistant_thread_context_changed",
+    "assistant_thread_context_changed",     # Slack AI Assistant lifecycle
+    "assistant_thread_started",
     "message.channels",                     # public channel messages
     "message.groups",                       # private channel messages
     "message.im",                           # DM messages
@@ -109,21 +159,22 @@ def build_manifest(
     app_name: str = "Freyja",
     description: str = "Your Freyja agent on Slack",
     bot_display_name: str = "Freyja",
-    background_color: str = "#0a0a0f",
+    background_color: str = "#2b3d39",
     assistant_description: str = (
-        "Chat with Freyja in DMs or @mention me in channels."
+        "Chat with Freyja in threads and DMs."
     ),
 ) -> dict[str, Any]:
     """Build the full Slack app manifest as a Python dict.
 
     Pass through ``json.dumps(..., indent=2)`` for the operator to
     paste, or ``write_manifest()`` to persist + render together.
+
+    Shape follows Hermes's well-tested manifest: home tab on, slash
+    commands carry placeholder URLs (required by Slack's validator
+    even with Socket Mode), user + user_optional scopes declared,
+    MCP enabled.
     """
     return {
-        "_metadata": {
-            "major_version": 1,
-            "minor_version": 1,
-        },
         "display_information": {
             "name": app_name,
             "description": description,
@@ -131,7 +182,7 @@ def build_manifest(
         },
         "features": {
             "app_home": {
-                "home_tab_enabled": False,
+                "home_tab_enabled": True,
                 "messages_tab_enabled": True,
                 "messages_tab_read_only_enabled": False,
             },
@@ -142,12 +193,16 @@ def build_manifest(
             "slash_commands": list(SLASH_COMMANDS),
             "assistant_view": {
                 "assistant_description": assistant_description,
+                "suggested_prompts": [],
             },
         },
         "oauth_config": {
             "scopes": {
+                "user": list(USER_SCOPES),
+                "user_optional": list(USER_SCOPES_OPTIONAL),
                 "bot": list(BOT_SCOPES),
-            }
+            },
+            "pkce_enabled": False,
         },
         "settings": {
             "event_subscriptions": {
@@ -159,6 +214,7 @@ def build_manifest(
             "org_deploy_enabled": False,
             "socket_mode_enabled": True,
             "token_rotation_enabled": False,
+            "is_mcp_enabled": True,
         },
     }
 

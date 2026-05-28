@@ -97,6 +97,12 @@ def build_desktop_registry(
     # in test fixtures / standalone uses — the reminder simply won't
     # fire in that case.
     task_tool_call_index_getter: Any | None = None,
+    # Live read of the parent's gateway_source (Slack MessageSource).
+    # When set, sub-agents spawned from this registry learn they're
+    # running under a chat surface and can call send_attachment to
+    # ship files back. Callable rather than a snapshot so children
+    # always see the current source as the user moves between threads.
+    subagent_gateway_source_getter: Any | None = None,
     talk_router: TalkRouter | None = None,
     talk_caller_session_id: str = "",
     talk_caller_label: str = "",
@@ -293,6 +299,7 @@ def build_desktop_registry(
             task_tool_call_index_getter=task_tool_call_index_getter,
             artifact_store=artifact_store,
             talk_router=talk_router,
+            parent_gateway_source_getter=subagent_gateway_source_getter,
         )
         tools.append(SubAgentTool(sub_spec))
         tools.append(SubAgentsTool(sub_registry))

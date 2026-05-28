@@ -2482,6 +2482,16 @@ class _BridgeSession:
             subagent_emit=_emit_subagent,
             subagent_parent_session_id=self.id,
             subagent_wrap_registry=_wrap_child_registry,
+            # Pipe the parent's live gateway_source into sub-agents so
+            # they (a) get send_attachment registered + (b) see the
+            # gateway context block in their system prompt. Callable so
+            # the child always reads the parent's CURRENT source —
+            # session.gateway_source is overwritten on every inbound
+            # message and we want children to thread their replies
+            # under the message that actually triggered this turn.
+            subagent_gateway_source_getter=lambda: getattr(
+                self, "gateway_source", None,
+            ),
             permission_handler=self.permission_handler,
             include_computer=self.state.computer_enabled,
             computer_session_id=self.id,

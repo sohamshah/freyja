@@ -6,6 +6,7 @@ import {
   handleGatewayStatus,
   handleGatewayStop,
   handleGatewayUninstall,
+  handleLlmKeysProbe,
   handleSlackCopyManifest,
   handleSlackGetConfig,
   handleSlackManifest,
@@ -25,6 +26,7 @@ import {
   exportSessionToFile as persistExportSession,
   listSessions as persistListSessions,
   loadSession as persistLoadSession,
+  migrateLegacySessionFiles,
   saveSessionIndex as persistSaveSessionIndex,
   saveSession as persistSaveSession,
   type PersistedSession,
@@ -606,6 +608,7 @@ function setupIpc() {
       handleSlackSetAllowlist(teamId, userIds, enforce),
   )
   ipcMain.handle(IPC.slackGetConfig, async () => handleSlackGetConfig())
+  ipcMain.handle(IPC.llmKeysProbe, async () => handleLlmKeysProbe())
 }
 
 // Hidden flag for automated UI screenshot capture:
@@ -617,6 +620,22 @@ const SCREENSHOT_BURST = process.env.FREYJA_SCREENSHOT_BURST === '1'
 
 app.whenReady().then(async () => {
   setupIpc()
+  // One-shot file migration: rename legacy strip-style session files
+  // to the modern underscore-replace style so loads work consistently
+  // after the sanitizeId scheme was changed. Idempotent + non-blocking
+  // — runs once on first launch after the rebuild, no-ops on
+  // subsequent launches. Cheap (one readdir + per-file stat).
+  try {
+    const result = migrateLegacySessionFiles()
+    if (result.renamed > 0) {
+      console.log(
+        `[persistence] migrated ${result.renamed} session files to ` +
+        `the modern sanitizer scheme (${result.skipped} unaffected)`,
+      )
+    }
+  } catch (err) {
+    console.warn('[persistence] migration failed:', err)
+  }
   // Override the dock icon in dev runs (npm run dev) so developers see
   // the new topographic mark instead of Electron's default circle.
   // Packaged builds pick up icon.icns automatically via electron-builder,

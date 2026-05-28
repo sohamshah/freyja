@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import plistlib
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -63,7 +64,14 @@ def build_plist(
     program_args: list[str] | None = None,
     extra_env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Return the plist content as a Python dict (plistlib-compatible)."""
+    """Return the plist content as a Python dict (plistlib-compatible).
+
+    Secrets policy: this plist lives at ~/Library/LaunchAgents/ which
+    has historically been world-readable by default. We DO NOT write
+    API keys or tokens here — the daemon loads them from
+    ~/.freyja/.env (mode 0600) at startup instead. The only env vars
+    in the plist are non-secret pointers: HOME, PATH, FREYJA_HOME.
+    """
     if program_args is None:
         binary = _resolve_freyja_binary()
         # Split in case the binary is a "python -m foo" fallback.
@@ -74,18 +82,6 @@ def build_plist(
         "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
         "FREYJA_HOME": str(freyja_home()),
     }
-    # Carry through any LLM provider keys we know about so the daemon
-    # has the same provider access the desktop bridge has. The .env
-    # file is also re-loaded inside the process for additional keys.
-    for k in (
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "GOOGLE_API_KEY",
-        "FIREWORKS_API_KEY",
-        "CEREBRAS_API_KEY",
-    ):
-        if os.environ.get(k):
-            env[k] = os.environ[k]
     if extra_env:
         env.update(extra_env)
 
@@ -109,14 +105,26 @@ def build_plist(
 
 
 def write_plist() -> Path:
-    """Write the plist to LaunchAgents/. Returns the path."""
+    """Write the plist to LaunchAgents/ atomically + lock to 0600.
+
+    Even though we no longer put secrets in the plist, mode 0600 is
+    defence-in-depth: any future env var we add (e.g. workspace path,
+    debug flag) won't accidentally leak to other local processes.
+    """
     path = plist_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Pre-create the log directory so launchd doesn't fail on first
+    # spawn trying to open StandardOutPath / StandardErrorPath.
+    gateway_log_path().parent.mkdir(parents=True, exist_ok=True)
     data = build_plist()
     tmp = path.with_suffix(".tmp")
     with open(tmp, "wb") as f:
         plistlib.dump(data, f, sort_keys=False)
     tmp.replace(path)
+    try:
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
     return path
 
 

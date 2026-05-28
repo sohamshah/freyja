@@ -177,6 +177,63 @@ class PlatformAdapter(Protocol):
         exist on disk; the adapter handles the multipart upload."""
         ...
 
+    async def upload_files(
+        self,
+        chat_id: str,
+        items: list["UploadItem"],
+        *,
+        thread_id: str | None = None,
+        initial_comment: str | None = None,
+    ) -> SendResult:
+        """Upload one or more files in a single platform call so they
+        share one initial comment / attachment group. Each ``UploadItem``
+        carries either a path or raw bytes (mutually exclusive). Adapters
+        that don't support batch uploads fall back to N serial
+        ``upload_file`` calls; the SendResult.message_id points at the
+        first message in that case."""
+        ...
+
+    async def send_typing(
+        self,
+        chat_id: str,
+        *,
+        thread_id: str | None = None,
+        status: str = "is thinking...",
+    ) -> SendResult:
+        """Render a platform-native typing/status indicator for the
+        next turn. Best-effort: adapters that don't have a native
+        status surface should no-op silently and return ok. Slack:
+        uses ``assistant.threads.setStatus``."""
+        ...
+
+    async def stop_typing(
+        self,
+        chat_id: str,
+        *,
+        thread_id: str | None = None,
+    ) -> SendResult:
+        """Clear any active typing/status indicator. Always called at
+        turn boundaries, including on error paths, to avoid dangling
+        indicators."""
+        ...
+
+
+@dataclass
+class UploadItem:
+    """One file to upload in an ``upload_files`` batch.
+
+    Provide either ``path`` (a filesystem path Python can read) OR
+    ``data`` (raw bytes). If both are set, ``data`` wins. ``filename``
+    is what the recipient sees; defaults to the basename of ``path``.
+    ``title`` is an optional human-readable label.
+    """
+
+    path: str | None = None
+    data: bytes | None = None
+    filename: str | None = None
+    title: str | None = None
+    mime_type: str | None = None
+
 
 # ─── helpers shared across adapters ──────────────────────────────────
 

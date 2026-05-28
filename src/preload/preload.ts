@@ -144,6 +144,9 @@ const api = {
   }> {
     return ipcRenderer.invoke(IPC.slackGetConfig)
   },
+  async llmKeysProbe(): Promise<import('../shared/events').LlmKeysProbeResult> {
+    return ipcRenderer.invoke(IPC.llmKeysProbe)
+  },
 } as const
 
 export type HarnessApi = typeof api

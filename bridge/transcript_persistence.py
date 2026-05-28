@@ -24,16 +24,32 @@ logger = logging.getLogger(__name__)
 SESSIONS_DIR = Path.home() / ".freyja" / "sessions"
 
 
+def _sanitize_session_id(session_id: str) -> str:
+    """Convert a session id to a filename-safe form.
+
+    Mirrors the renderer-side ``src/main/persistence.ts:sanitizeId`` —
+    REPLACES invalid chars with ``_`` (rather than stripping them).
+    Both sides must use the same scheme or the renderer will look for
+    files at a different path than the daemon wrote them. Keep these
+    two functions in lockstep.
+    """
+    out: list[str] = []
+    for c in session_id:
+        if c.isalnum() or c in "_-.":
+            out.append(c)
+        else:
+            out.append("_")
+    return "".join(out)[:160]
+
+
 def _transcript_path(session_id: str) -> Path:
     """Return the path to a session's transcript file."""
-    safe_id = "".join(c for c in session_id if c.isalnum() or c in "_-.")[:160]
-    return SESSIONS_DIR / f"{safe_id}.transcript.json"
+    return SESSIONS_DIR / f"{_sanitize_session_id(session_id)}.transcript.json"
 
 
 def _goal_path(session_id: str) -> Path:
     """Return the path to a session's goal-state sidecar file."""
-    safe_id = "".join(c for c in session_id if c.isalnum() or c in "_-.")[:160]
-    return SESSIONS_DIR / f"{safe_id}.goal.json"
+    return SESSIONS_DIR / f"{_sanitize_session_id(session_id)}.goal.json"
 
 
 def save_goal_state(session_id: str, data: dict[str, Any]) -> None:

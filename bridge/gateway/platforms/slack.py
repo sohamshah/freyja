@@ -58,6 +58,7 @@ from bridge.gateway.platforms.base import (
     Platform,
     PlatformAdapter,
     SendResult,
+    UploadItem,
     truncate_for_platform,
 )
 from bridge.gateway.platforms.slack_manifest import known_slash_command_names
@@ -74,6 +75,97 @@ SLACK_MAX_MESSAGE_LENGTH = 39_000   # Slack hard cap is 40k; leave room
 _MD_TO_SLACK_BOLD = re.compile(r"\*\*([^*\n]+?)\*\*")
 _MD_TO_SLACK_ITAL = re.compile(r"__([^_\n]+?)__")
 _MD_LINK = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
+
+
+def extract_text_from_slack_blocks(blocks: list[dict[str, Any]] | None) -> str:
+    """Walk Slack's Block Kit ``blocks`` JSON and reconstruct markdown.
+
+    Slack's modern composer sends rich text as a nested ``blocks``
+    tree. The raw ``text`` field is lossy — quoted messages, ordered
+    lists, and code blocks degrade to plain paragraphs or vanish.
+    Reading the structured tree preserves them so the agent gets the
+    fidelity the user actually typed.
+
+    Mirrors the Hermes implementation. Outputs:
+      · ``rich_text_section`` → inline text (concat children)
+      · ``rich_text_quote``   → ``> `` prefix per nesting level
+      · ``rich_text_list``    → ``• `` (bullet) or ``1. 2. 3.`` (ordered)
+      · ``rich_text_preformatted`` → fenced ``` code blocks
+      · plain ``section`` blocks with ``text.text`` → as-is
+
+    Returns "" if blocks is empty / None — the caller should fall
+    back to the message's raw ``text`` field in that case.
+    """
+    if not blocks:
+        return ""
+    out_lines: list[str] = []
+
+    def render_elements(els: list[dict[str, Any]] | None) -> str:
+        if not els:
+            return ""
+        parts: list[str] = []
+        for el in els:
+            t = el.get("type")
+            if t == "text":
+                parts.append(str(el.get("text") or ""))
+            elif t == "link":
+                url = str(el.get("url") or "")
+                label = str(el.get("text") or url)
+                parts.append(f"<{url}|{label}>" if label != url else url)
+            elif t == "emoji":
+                name = str(el.get("name") or "")
+                parts.append(f":{name}:" if name else "")
+            elif t == "user":
+                uid = str(el.get("user_id") or "")
+                parts.append(f"<@{uid}>" if uid else "")
+            elif t == "channel":
+                cid = str(el.get("channel_id") or "")
+                parts.append(f"<#{cid}>" if cid else "")
+            elif t == "broadcast":
+                rng = str(el.get("range") or "channel")
+                parts.append(f"<!{rng}>")
+            else:
+                # Unknown element type — try to extract a text field.
+                inner = el.get("text")
+                if isinstance(inner, str):
+                    parts.append(inner)
+        return "".join(parts)
+
+    def walk_rich_text(block: dict[str, Any], quote_depth: int = 0) -> None:
+        for inner in block.get("elements") or []:
+            t = inner.get("type")
+            prefix = ">" * quote_depth + (" " if quote_depth else "")
+            if t == "rich_text_section":
+                line = render_elements(inner.get("elements"))
+                if line:
+                    out_lines.append(prefix + line)
+            elif t == "rich_text_quote":
+                walk_rich_text(inner, quote_depth=quote_depth + 1)
+            elif t == "rich_text_list":
+                style = inner.get("style") or "bullet"
+                ordered = style == "ordered"
+                for idx, item in enumerate(inner.get("elements") or [], start=1):
+                    line = render_elements(item.get("elements"))
+                    bullet = f"{idx}. " if ordered else "• "
+                    if line:
+                        out_lines.append(prefix + bullet + line)
+            elif t == "rich_text_preformatted":
+                code = render_elements(inner.get("elements"))
+                if code:
+                    out_lines.append("```")
+                    for ln in code.splitlines() or [""]:
+                        out_lines.append(ln)
+                    out_lines.append("```")
+
+    for block in blocks:
+        btype = block.get("type")
+        if btype == "rich_text":
+            walk_rich_text(block)
+        elif btype == "section":
+            txt = (block.get("text") or {}).get("text")
+            if isinstance(txt, str) and txt:
+                out_lines.append(txt)
+    return "\n".join(out_lines).strip()
 
 
 def _markdown_to_slack(content: str) -> str:
@@ -114,6 +206,14 @@ class SlackAdapter:
     _BOT_TS_MAX = 5000
     _MENTIONED_THREADS_MAX = 1000
     _DEDUP_MAX = 5000
+    # TTLs in seconds. Past these, entries are considered stale and
+    # safe to drop. Dedup uses the platform's redelivery window —
+    # Slack's Socket Mode replays at most ~1 minute back on
+    # reconnect, so 10 min is generous. Slash contexts use Slack's
+    # response_url expiration (30 min); past that the stash is
+    # useless anyway.
+    _DEDUP_TTL_SEC = 600
+    _SLASH_CTX_TTL_SEC = 1800
 
     def __init__(
         self,
@@ -357,6 +457,65 @@ class SlackAdapter:
             )
             await self._handle_slash_command(command)
 
+        # Interactive Block Kit button handlers for the destructive-
+        # command approval prompt. Both handlers atomically resolve
+        # the pending Future via ``approval.resolve_approval`` (first
+        # call wins — subsequent double-clicks are no-ops).
+        @self._app.action("freyja_approve")
+        async def _on_approve(ack, body, respond):
+            await ack()
+            await self._handle_approval_click(body, respond, approved=True)
+
+        @self._app.action("freyja_deny")
+        async def _on_deny(ack, body, respond):
+            await ack()
+            await self._handle_approval_click(body, respond, approved=False)
+
+    async def _handle_approval_click(
+        self,
+        body: dict[str, Any],
+        respond: Any,
+        *,
+        approved: bool,
+    ) -> None:
+        actions = body.get("actions") or []
+        request_id = ""
+        if actions:
+            request_id = str(actions[0].get("value") or "")
+        user_id = str((body.get("user") or {}).get("id") or "")
+        from bridge.gateway.approval import resolve_approval
+        # Resolve the pending Future. If the request is unknown or
+        # already resolved (operator double-clicked), bail without
+        # touching the message.
+        if not request_id or not resolve_approval(request_id, approved):
+            logger.debug(
+                "approval click for unknown/resolved request %s — ignoring",
+                request_id,
+            )
+            return
+        # Replace the buttons with a static confirmation block so the
+        # operator can't click again and we leave an audit trail.
+        verb = "approved" if approved else "denied"
+        icon = "✅" if approved else "❌"
+        try:
+            await respond(
+                replace_original=True,
+                text=f"{verb} by <@{user_id}>",
+                blocks=[
+                    {
+                        "type": "context",
+                        "elements": [
+                            {
+                                "type": "mrkdwn",
+                                "text": f"{icon} *{verb}* by <@{user_id}>",
+                            }
+                        ],
+                    }
+                ],
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("approval respond failed")
+
     # ── inbound message processing ─────────────────────────────
 
     async def _handle_message(self, event: dict[str, Any]) -> None:
@@ -365,11 +524,23 @@ class SlackAdapter:
         if event_ts and event_ts in self._dedup:
             return
         if event_ts:
-            self._dedup[event_ts] = time.monotonic()
+            now = time.monotonic()
+            self._dedup[event_ts] = now
+            # TTL-evict periodically rather than on every message.
+            # The common case is O(1) insert; the prune sweep runs
+            # only when we cross the size cap, which on a busy
+            # channel happens every few thousand messages.
             if len(self._dedup) > self._DEDUP_MAX:
-                # Evict oldest half.
-                items = sorted(self._dedup.items(), key=lambda kv: kv[1])
-                self._dedup = dict(items[len(items) // 2 :])
+                cutoff = now - self._DEDUP_TTL_SEC
+                self._dedup = {
+                    k: v for k, v in self._dedup.items() if v >= cutoff
+                }
+                if len(self._dedup) > self._DEDUP_MAX:
+                    # Still oversize after TTL drop (extreme volume) —
+                    # fall back to oldest-half eviction so we always
+                    # bound memory.
+                    items = sorted(self._dedup.items(), key=lambda kv: kv[1])
+                    self._dedup = dict(items[len(items) // 2 :])
 
         # Filter bot messages — never respond to ourselves (echo loop).
         subtype = event.get("subtype")
@@ -381,7 +552,18 @@ class SlackAdapter:
         if subtype in {"message_changed", "message_deleted"}:
             return
 
+        # Prefer the structured ``blocks`` tree over the raw ``text``
+        # field when both are present. Slack's modern WYSIWYG composer
+        # writes rich content (quotes, lists, code) into blocks; the
+        # ``text`` field is a lossy fallback that omits or flattens
+        # quoted/forwarded content. If parsing yields something
+        # non-trivial we use it; otherwise we fall back to ``text``.
         text = (event.get("text") or "").strip()
+        blocks_text = extract_text_from_slack_blocks(event.get("blocks"))
+        if blocks_text and len(blocks_text) > len(text):
+            # blocks fully covers what's in text (and then some) —
+            # prefer the richer rendering.
+            text = blocks_text
         channel_id = event.get("channel") or ""
         ts = event_ts
         team_id = event.get("team") or event.get("team_id") or ""
@@ -521,11 +703,22 @@ class SlackAdapter:
         # to this user (matches Hermes pattern, prevents leaking slash
         # responses to the rest of a channel).
         if response_url and user_id:
+            now = time.monotonic()
+            # Sweep stale stashes (>30 min — response_url has expired
+            # by then anyway). Cheap because the dict only holds
+            # in-flight slashes, not the full message history.
+            cutoff = now - self._SLASH_CTX_TTL_SEC
+            stale_keys = [
+                k for k, v in self._slash_contexts.items()
+                if v.get("stashed_at", 0) < cutoff
+            ]
+            for k in stale_keys:
+                self._slash_contexts.pop(k, None)
             self._slash_contexts[(channel_id, user_id)] = {
                 "response_url": response_url,
                 "trigger_id": trigger_id,
                 "command": cmd,
-                "stashed_at": time.monotonic(),
+                "stashed_at": now,
             }
 
         # Resolve user display name.
@@ -680,6 +873,321 @@ class SlackAdapter:
             logger.exception("[slack] file upload failed: %s", exc)
             return SendResult(ok=False, error=str(exc))
 
+    async def upload_files(
+        self,
+        chat_id: str,
+        items: list[UploadItem],
+        *,
+        thread_id: str | None = None,
+        initial_comment: str | None = None,
+    ) -> SendResult:
+        """Batch-upload up to 10 files in one ``files_upload_v2`` call
+        so they share a single ``initial_comment`` and group as one
+        Slack attachment block. Supports either filesystem paths or
+        raw bytes per item (``UploadItem.path`` xor ``UploadItem.data``).
+
+        Splits into multiple calls of 10 if the batch is larger.
+        Returns the message_id of the first batch (Slack returns one
+        message anchor per upload group)."""
+        if not self._app:
+            return SendResult(ok=False, error="not connected")
+        if not items:
+            return SendResult(ok=False, error="no items to upload")
+        client = self._get_client(chat_id)
+        if client is None:
+            return SendResult(ok=False, error=f"no client for chat {chat_id}")
+
+        first_message_id: str | None = None
+        first_error: str | None = None
+        # Slack's files_upload_v2 caps at 10 files per call.
+        CHUNK = 10
+        for offset in range(0, len(items), CHUNK):
+            batch = items[offset:offset + CHUNK]
+            file_uploads: list[dict[str, Any]] = []
+            for it in batch:
+                entry: dict[str, Any] = {
+                    "filename": it.filename or (Path(it.path).name if it.path else "file.bin"),
+                }
+                if it.title:
+                    entry["title"] = it.title
+                if it.data is not None:
+                    entry["content"] = it.data
+                elif it.path:
+                    entry["file"] = it.path
+                else:
+                    continue
+                file_uploads.append(entry)
+            if not file_uploads:
+                continue
+            kwargs: dict[str, Any] = {
+                "channel": chat_id,
+                "file_uploads": file_uploads,
+            }
+            # Only the first batch gets the initial_comment; later
+            # batches post anonymously so the chat isn't cluttered
+            # with a duplicate caption.
+            if initial_comment and offset == 0:
+                kwargs["initial_comment"] = initial_comment
+            if thread_id:
+                kwargs["thread_ts"] = thread_id
+            try:
+                result = await client.files_upload_v2(**kwargs)
+                msg = (result.get("files") or [{}])[0]
+                if first_message_id is None:
+                    first_message_id = msg.get("id")
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("[slack] batch upload failed: %s", exc)
+                if first_error is None:
+                    first_error = str(exc)
+                # Fall back to per-file upload for this batch so we
+                # don't lose everything because of one bad file.
+                for it in batch:
+                    if it.path:
+                        await self.upload_file(
+                            chat_id, it.path,
+                            thread_id=thread_id,
+                            filename=it.filename,
+                            title=it.title,
+                        )
+        return SendResult(
+            ok=first_message_id is not None,
+            message_id=first_message_id,
+            error=first_error if first_message_id is None else None,
+        )
+
+    async def send_typing(
+        self,
+        chat_id: str,
+        *,
+        thread_id: str | None = None,
+        status: str = "is thinking...",
+    ) -> SendResult:
+        """Slack-native typing indicator via ``assistant.threads.setStatus``.
+
+        Renders next to the bot's name as ``Bot is thinking…``.
+        Works in DM threads and Assistant-context threads; in regular
+        channels Slack silently ignores it. Requires the
+        ``assistant:write`` scope (which our manifest already requests).
+        We swallow API errors here — a missing or expired status is a
+        cosmetic loss, never a correctness issue.
+        """
+        if not self._app or not thread_id:
+            # No thread_ts → no surface to render status on.
+            return SendResult(ok=True)
+        client = self._get_client(chat_id)
+        if client is None:
+            return SendResult(ok=True)
+        try:
+            await client.assistant_threads_setStatus(
+                channel_id=chat_id,
+                thread_ts=thread_id,
+                status=status,
+            )
+            return SendResult(ok=True)
+        except Exception as exc:  # noqa: BLE001
+            # Common cause: not in an Assistant thread context. Log
+            # once at debug — these aren't user-actionable.
+            logger.debug("[slack] setStatus skipped: %s", exc)
+            return SendResult(ok=True)
+
+    async def stop_typing(
+        self,
+        chat_id: str,
+        *,
+        thread_id: str | None = None,
+    ) -> SendResult:
+        """Clear the typing/status indicator. Sending an empty status
+        is Slack's documented way to dismiss it."""
+        return await self.send_typing(chat_id, thread_id=thread_id, status="")
+
+    async def fetch_thread_context(
+        self,
+        chat_id: str,
+        thread_ts: str,
+        *,
+        limit: int = 50,
+        exclude_ts: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Pull prior messages from a Slack thread or top-level DM.
+
+        Returns a chronological list of ``{role, user_id, user_name,
+        text, ts}`` dicts. Used by the gateway router to prepend
+        thread context to the framed prompt so the agent sees what was
+        said before it was triggered (esp. important when the bot is
+        @mentioned mid-conversation and the user expects it to read
+        the thread first, or when the user replies in a thread the
+        bot wasn't actively listening to).
+
+        ``exclude_ts`` filters out a specific message (typically the
+        one that triggered the current turn — no point feeding it
+        back twice).
+
+        Best-effort: any API failure returns []. Caller should fall
+        back to "no prior context" rather than failing the turn.
+        """
+        if not self._app or not chat_id or not thread_ts:
+            return []
+        client = self._get_client(chat_id)
+        if client is None:
+            return []
+        try:
+            res = await client.conversations_replies(
+                channel=chat_id,
+                ts=thread_ts,
+                limit=max(1, min(limit, 200)),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[slack] conversations.replies failed: %s", exc)
+            return []
+        out: list[dict[str, Any]] = []
+        for m in res.get("messages") or []:
+            ts = str(m.get("ts") or "")
+            if exclude_ts and ts == str(exclude_ts):
+                continue
+            text = str(m.get("text") or "")
+            # Prefer rich-text blocks when present (preserves quotes/lists).
+            blocks_text = extract_text_from_slack_blocks(m.get("blocks"))
+            if blocks_text and len(blocks_text) > len(text):
+                text = blocks_text
+            if not text:
+                continue
+            user_id = str(m.get("user") or "")
+            is_bot = bool(m.get("bot_id")) or user_id == (self._bot_user_id or "")
+            out.append({
+                "role": "assistant" if is_bot else "user",
+                "user_id": user_id,
+                "text": text,
+                "ts": ts,
+            })
+        return out
+
+    async def fetch_dm_history(
+        self,
+        chat_id: str,
+        *,
+        limit: int = 20,
+        exclude_ts: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Pull recent messages from a DM channel (no threading).
+        Used when a DM message arrives top-level (no thread_ts) so
+        the agent still sees recent prior turns even when its own
+        transcript was wiped or reset."""
+        if not self._app or not chat_id:
+            return []
+        client = self._get_client(chat_id)
+        if client is None:
+            return []
+        try:
+            res = await client.conversations_history(
+                channel=chat_id,
+                limit=max(1, min(limit, 100)),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[slack] conversations.history failed: %s", exc)
+            return []
+        out: list[dict[str, Any]] = []
+        # conversations.history returns NEWEST first; reverse for chronology.
+        for m in reversed(res.get("messages") or []):
+            ts = str(m.get("ts") or "")
+            if exclude_ts and ts == str(exclude_ts):
+                continue
+            text = str(m.get("text") or "")
+            blocks_text = extract_text_from_slack_blocks(m.get("blocks"))
+            if blocks_text and len(blocks_text) > len(text):
+                text = blocks_text
+            if not text:
+                continue
+            user_id = str(m.get("user") or "")
+            is_bot = bool(m.get("bot_id")) or user_id == (self._bot_user_id or "")
+            out.append({
+                "role": "assistant" if is_bot else "user",
+                "user_id": user_id,
+                "text": text,
+                "ts": ts,
+            })
+        return out
+
+    async def send_approval_request(
+        self,
+        chat_id: str,
+        request_id: str,
+        *,
+        tool_name: str,
+        command_preview: str,
+        reason: str,
+        thread_id: str | None = None,
+    ) -> SendResult:
+        """Post a Block Kit message with Approve / Deny buttons for a
+        destructive tool call. ``request_id`` is the key that the
+        action handler uses to resolve the pending Future."""
+        if not self._app:
+            return SendResult(ok=False, error="not connected")
+        client = self._get_client(chat_id)
+        if client is None:
+            return SendResult(ok=False, error=f"no client for chat {chat_id}")
+        # Slack section text max ~3000 chars. Trim the preview if huge
+        # — the operator is mainly looking at the leading verb and
+        # path, not the entire piped chain.
+        preview = command_preview if len(command_preview) <= 2500 else command_preview[:2500] + "…"
+        blocks: list[dict[str, Any]] = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"⚠️ *Approve `{tool_name}`?*  "
+                        f"_{reason}_"
+                    ),
+                },
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"```\n{preview}\n```",
+                },
+            },
+            {
+                "type": "actions",
+                "block_id": f"freyja_approval_{request_id[:16]}",
+                "elements": [
+                    {
+                        "type": "button",
+                        "action_id": "freyja_approve",
+                        "text": {"type": "plain_text", "text": "Approve"},
+                        "style": "primary",
+                        "value": request_id,
+                    },
+                    {
+                        "type": "button",
+                        "action_id": "freyja_deny",
+                        "text": {"type": "plain_text", "text": "Deny"},
+                        "style": "danger",
+                        "value": request_id,
+                    },
+                ],
+            },
+        ]
+        kwargs: dict[str, Any] = {
+            "channel": chat_id,
+            # Fallback text for notification surfaces that don't render
+            # blocks (mobile lock-screen previews, etc.).
+            "text": f"Approval needed for {tool_name}: {reason}",
+            "blocks": blocks,
+        }
+        if thread_id:
+            kwargs["thread_ts"] = thread_id
+        try:
+            result = await client.chat_postMessage(**kwargs)
+            return SendResult(
+                ok=True,
+                message_id=result.get("ts"),
+                raw=result,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[slack] send_approval_request failed: %s", exc)
+            return SendResult(ok=False, error=str(exc))
+
     # ── helpers ────────────────────────────────────────────────
 
     def _get_client(
@@ -783,8 +1291,25 @@ class SlackAdapter:
         file_obj: dict[str, Any],
         bot_token: str,
     ) -> dict[str, Any] | None:
+        """Download a Slack file to disk and shape it into an
+        attachment dict the bridge's user-content builder
+        (``_build_user_content_blocks`` in ``freyja_bridge.py``)
+        understands.
+
+        Critical: the bridge only routes attachments whose ``type``
+        is ``"image"`` or ``"video"``, and image attachments need a
+        ``dataBase64`` field with the actual encoded bytes. Slack
+        gives us a download URL; we fetch it, base64-encode the
+        bytes for images, and emit the right shape. Everything else
+        (PDFs, text docs, binaries) goes through with a stub shape
+        + ``path`` so the agent can ``read_file`` it on demand and
+        knows where it lives in the cache.
+        """
+        import base64 as _b64
+
         file_id = file_obj.get("id") or ""
         file_name = file_obj.get("name") or f"slack-{file_id}"
+        mime_type = str(file_obj.get("mimetype") or "")
         url_private = (
             file_obj.get("url_private_download")
             or file_obj.get("url_private")
@@ -810,15 +1335,85 @@ class SlackAdapter:
                             return None
                         content = await resp.read()
                 cache_path.write_bytes(content)
+
+            # Decide attachment shape based on mime type. The bridge
+            # only natively understands image/* and video/* — anything
+            # else still surfaces (so the agent can read_file it) but
+            # doesn't get a ``dataBase64`` payload.
+            is_image = mime_type.startswith("image/") or _looks_like_image(file_name)
+            is_video = mime_type.startswith("video/")
+            if is_image:
+                try:
+                    raw_bytes = cache_path.read_bytes()
+                except OSError as exc:
+                    logger.warning(
+                        "[slack] re-read of cached image %s failed: %s",
+                        cache_path, exc,
+                    )
+                    return None
+                data_b64 = _b64.b64encode(raw_bytes).decode("ascii")
+                inferred_mime = mime_type or _mime_from_filename(file_name) or "image/png"
+                return {
+                    "type": "image",
+                    "dataBase64": data_b64,
+                    "mimeType": inferred_mime,
+                    "filename": file_name,
+                    "name": file_name,
+                    "path": str(cache_path),
+                    "slack_file_id": file_id,
+                }
+            if is_video:
+                try:
+                    raw_bytes = cache_path.read_bytes()
+                except OSError:
+                    return None
+                data_b64 = _b64.b64encode(raw_bytes).decode("ascii")
+                return {
+                    "type": "video",
+                    "dataBase64": data_b64,
+                    "mimeType": mime_type or "video/mp4",
+                    "filename": file_name,
+                    "name": file_name,
+                    "path": str(cache_path),
+                    "sizeBytes": len(raw_bytes),
+                    "slack_file_id": file_id,
+                }
+            # Non-image, non-video (PDF, text, archive, etc.) — return
+            # with type=file so the daemon's framed-text builder can
+            # annotate the message ("user attached a PDF at ...") and
+            # the agent can read_file it directly from the cache path.
             return {
                 "type": "file",
                 "path": str(cache_path),
                 "name": file_name,
-                "mime_type": file_obj.get("mimetype") or "",
+                "filename": file_name,
+                "mime_type": mime_type,
+                "mimeType": mime_type,
                 "slack_file_id": file_id,
             }
         except Exception as exc:  # noqa: BLE001
             logger.warning("[slack] file download error %s: %s", file_id, exc)
             return None
+
+
+_IMAGE_NAME_EXTS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".heif",
+}
+
+_MIME_BY_EXT = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+    ".heic": "image/heic", ".heif": "image/heif",
+}
+
+
+def _looks_like_image(name: str) -> bool:
+    ext = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    return ext in _IMAGE_NAME_EXTS
+
+
+def _mime_from_filename(name: str) -> str:
+    ext = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    return _MIME_BY_EXT.get(ext, "")
 
 

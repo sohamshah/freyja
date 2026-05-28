@@ -293,7 +293,7 @@ def run_slack_setup() -> int:
         "yourself + a small handful of trusted users."
     )
     _info(
-        f"Your user_id in workspace {info['team_name']}: " + _bold(info["bot_user_id"][:0] or "?")
+        f"Bot user_id in workspace {info['team_name']}: " + _bold(info["bot_user_id"] or "?")
     )
     _info(_dim("(That's the bot — find your own user_id in Slack: profile → ⋮ → 'Copy member ID')"))
     print()
@@ -304,11 +304,15 @@ def run_slack_setup() -> int:
     from bridge.gateway.config import GatewayConfig, SlackConfig, write_config
     cfg = GatewayConfig.load()
     if allowlist_raw.strip().lower() == "any":
+        # Flip off the global enforce toggle. We DO NOT clear
+        # ``allowed_user_ids`` — those per-team allowlists are
+        # preserved so the user can flip enforcement back on later
+        # without redoing the per-workspace setup.
         cfg.slack.enforce_workspace_allowlist = False
-        cfg.slack.allowed_user_ids = {}
         _warn(
-            "Allowlist disabled — every user in every workspace can talk "
-            "to the bot. NOT recommended outside dev."
+            "Allowlist disabled — every user in every workspace where the "
+            "app is installed can talk to the bot. Existing per-team "
+            "allowlists preserved for if you re-enable enforcement later."
         )
     elif allowlist_raw.strip():
         ids = [u.strip() for u in allowlist_raw.split(",") if u.strip()]
@@ -328,16 +332,21 @@ def run_slack_setup() -> int:
 
     # ── Step 6b: Capability defaults (informational) ──
     print()
-    _info("Tool surface for Slack-routed sessions:")
-    _info(_green("  ✓ read_file, list_directory, glob, grep   ") + _dim("(read-only filesystem)"))
-    _info(_green("  ✓ web_search, web_fetch                   ") + _dim("(internet access)"))
-    _info(_green("  ✓ sub_agent                               ") + _dim("(spawn specialized helpers)"))
-    _info(_red("  ✗ bash                                    ") + _dim("(no shell over Slack)"))
-    _info(_red("  ✗ computer / browser / typing tools       ") + _dim("(no UI automation)"))
-    _info(_red("  ✗ write_file (outside project dir)        ") + _dim("(no destructive writes)"))
-    print()
-    _info(_dim("You can change these per-session from the Freyja desktop app,"))
-    _info(_dim("or globally via ~/.freyja/gateway.yaml (v2)."))
+    if cfg.slack.enable_tool_filter:
+        _info("Tool surface for Slack-routed sessions (filter ON):")
+        _info(_green("  ✓ read_file, list_directory, glob, grep   ") + _dim("(read-only filesystem)"))
+        _info(_green("  ✓ web_search, web_fetch                   ") + _dim("(internet access)"))
+        _info(_green("  ✓ sub_agent                               ") + _dim("(spawn specialized helpers)"))
+        _info(_red("  ✗ bash, computer, browser, typing tools   ") + _dim("(restricted by filter)"))
+        print()
+        _info(_dim("Flip slack.enable_tool_filter to false in ~/.freyja/gateway.yaml"))
+        _info(_dim("to give the agent the full toolset over Slack."))
+    else:
+        _info("Tool surface for Slack-routed sessions (filter OFF — full access):")
+        _info(_green("  ✓ All tools available  ") + _dim("(same as desktop: bash, computer-use, browser, write, memory, sub-agents)"))
+        print()
+        _info(_dim("Flip slack.enable_tool_filter to true in ~/.freyja/gateway.yaml"))
+        _info(_dim("for a restricted read-mostly surface (e.g. shared workspaces)."))
 
     # ── Step 7: launchd install ──
     _step(7, TOTAL, "Install the gateway as a background service")

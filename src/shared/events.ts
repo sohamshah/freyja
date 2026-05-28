@@ -813,6 +813,21 @@ export interface SimpleResult {
   message?: string
 }
 
+export interface LlmKeysProbeResult {
+  ok: boolean
+  /** Keys that are present in the desktop's process.env AND already
+   *  saved to ~/.freyja/.env where the daemon will read them. */
+  present: string[]
+  /** Keys missing from process.env entirely. The daemon won't have
+   *  these unless the operator adds them to ~/.freyja/.env by hand. */
+  missing: string[]
+  /** Whether at least one frontier-tier key (Anthropic / OpenAI) is
+   *  available somewhere — useful for the wizard to say "you'll need
+   *  this to use Slack" with a stronger warning vs. soft heads-up. */
+  hasFrontierKey: boolean
+  error?: string
+}
+
 export interface CompactionMetricsResult {
   ok: boolean
   rows: CompactionTelemetryRow[]

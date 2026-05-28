@@ -65,13 +65,15 @@ def _help_card_text() -> str:
         "• I have persistent *memory + skills* that compound across sessions.\n"
         "\n"
         "*Slash commands*\n"
-        "• `/freyja help`  — this card\n"
-        "• `/status`       — show session info (model, mode, in-flight)\n"
-        "• `/goal <obj>`   — arm a goal loop\n"
-        "• `/mode <s>`     — switch coordination (bus / goal / kanban / isolated)\n"
-        "• `/model <id>`   — switch the agent model\n"
-        "• `/stop`         — interrupt the current turn\n"
-        "• `/reset`        — start a fresh conversation\n"
+        "• `/freyja help`   — this card\n"
+        "• `/freyja status` — show session info (model, mode, in-flight)\n"
+        "• `/freyja perms`  — show tool permissions for this session\n"
+        "• `/goal <obj>`    — arm a goal loop\n"
+        "• `/mode <s>`      — switch coordination (bus / goal / kanban / isolated)\n"
+        "• `/model <id>`    — switch the agent model\n"
+        "• `/stop`          — interrupt the current turn\n"
+        "• `/reset`         — start a fresh conversation\n"
+        "• `/perms`         — show tool permissions\n"
         "\n"
         "*Channels*: @mention me to start a thread, then keep replying in "
         "the thread without re-mentioning.\n"
@@ -114,6 +116,30 @@ def _load_env_into_os_environ() -> None:
     for k, v in env.items():
         if k not in os.environ:
             os.environ[k] = v
+
+
+def _render_non_media_attachments(
+    attachments: list[dict[str, Any]],
+) -> str:
+    """Format non-image/-video attachments as a plain-text breadcrumb
+    block. The agent doesn't see binary content in its context, so
+    we hand it a path it can ``read_file`` on demand + the mime type
+    so it knows what kind of file to expect."""
+    if not attachments:
+        return ""
+    lines: list[str] = []
+    for a in attachments:
+        path = str(a.get("path") or "")
+        name = str(a.get("name") or a.get("filename") or "")
+        mime = str(a.get("mimeType") or a.get("mime_type") or "")
+        if not path or not name:
+            continue
+        descr = f"`{name}`"
+        if mime:
+            descr += f" ({mime})"
+        descr += f" — cached at `{path}`. Use read_file to read its contents."
+        lines.append("- " + descr)
+    return "\n".join(lines)
 
 
 class GatewayDaemon:
@@ -194,22 +220,62 @@ class GatewayDaemon:
         consumer_holder["on_event"] = consumer.on_event
         register_session_listener(key, consumer.on_event)
 
+        # Pull prior thread / DM context from the platform so the
+        # agent sees what was said before it was triggered. Critical
+        # when the bot is @mentioned mid-conversation, OR when the
+        # user replies in a Slack thread the bot didn't initially
+        # join — without this, the agent only sees the one message
+        # that pinged it and has to guess at the rest.
+        prior_block = await self._fetch_prior_context(message, adapter)
+
+        # Annotate non-image attachments (PDFs, text docs, binaries)
+        # so the agent knows they exist + where to read them from.
+        # Image/video attachments flow through as native ImageBlock /
+        # VideoBlock via the bridge's user-content builder; non-media
+        # files only land on disk and need a textual breadcrumb.
+        non_media_attachments: list[dict[str, Any]] = [
+            a for a in (message.attachments or [])
+            if a.get("type") not in {"image", "video"}
+        ]
+        attach_block = _render_non_media_attachments(non_media_attachments)
+
         # Build the framed user text: a small context preamble (one
-        # paragraph naming the platform + chat + sender) followed by a
-        # divider + the operator's actual message. Lets the agent know
-        # it's on Slack without needing system-prompt surgery.
-        framed_text = (
-            "[gateway context]\n"
-            + gateway_source_block(message.source)
-            + "\n\n[message]\n"
-            + message.text
-        )
+        # paragraph naming the platform + chat + sender), then any
+        # prior thread/channel context, then the operator's actual
+        # message. Lets the agent know it's on Slack without needing
+        # system-prompt surgery.
+        framed_parts: list[str] = [
+            "[gateway context]",
+            gateway_source_block(message.source),
+        ]
+        if prior_block:
+            framed_parts.append("")
+            framed_parts.append("[prior conversation in this chat/thread]")
+            framed_parts.append(prior_block)
+        if attach_block:
+            framed_parts.append("")
+            framed_parts.append("[user attached files]")
+            framed_parts.append(attach_block)
+        framed_parts.append("")
+        framed_parts.append("[message]")
+        framed_parts.append(message.text)
+        framed_text = "\n".join(framed_parts)
 
         # Enqueue the user turn via the existing machinery (handles
-        # the busy/queue case transparently).
+        # the busy/queue case transparently). Strip non-media
+        # attachments from the downstream payload — they were
+        # already announced in the [user attached files] block above
+        # as text, and the engine's image/video processor would drop
+        # them anyway (they have no ``dataBase64`` payload). Passing
+        # them through pollutes the content-block list with empty
+        # entries and confuses cross-provider transcript persistence.
+        downstream_attachments = [
+            a for a in (message.attachments or [])
+            if a.get("type") in {"image", "video"}
+        ] or None
         try:
             _schedule_or_queue_turn(
-                session, framed_text, message.attachments or None
+                session, framed_text, downstream_attachments
             )
         except Exception:
             logger.exception("schedule_or_queue_turn failed")
@@ -220,6 +286,60 @@ class GatewayDaemon:
             if getattr(a, "name", None) == platform.value:
                 return a
         return None
+
+    async def _fetch_prior_context(
+        self,
+        message: IncomingMessage,
+        adapter: object,
+    ) -> str:
+        """Render prior conversation in this thread / DM as a plain-
+        text block for injection into the agent's prompt.
+
+        Adapter-aware: uses ``fetch_thread_context`` when the message
+        has a thread_id (and the adapter supports it), or
+        ``fetch_dm_history`` when it's a DM with no thread. Both
+        methods return [] on failure so we degrade to "no prior
+        context" rather than failing the turn.
+        """
+        source = message.source
+        # Don't bother fetching for our own outbound messages.
+        if getattr(source, "is_bot", False):
+            return ""
+        # Identify the trigger message ts so we exclude it from the
+        # fetched block (the agent gets it as `[message]` already).
+        trigger_ts = getattr(source, "message_id", None)
+        msgs: list[dict[str, Any]] = []
+        try:
+            if source.thread_id and hasattr(adapter, "fetch_thread_context"):
+                msgs = await adapter.fetch_thread_context(  # type: ignore[attr-defined]
+                    source.chat_id,
+                    source.thread_id,
+                    limit=50,
+                    exclude_ts=trigger_ts,
+                )
+            elif source.chat_type == "dm" and hasattr(adapter, "fetch_dm_history"):
+                msgs = await adapter.fetch_dm_history(  # type: ignore[attr-defined]
+                    source.chat_id,
+                    limit=15,
+                    exclude_ts=trigger_ts,
+                )
+        except Exception:
+            logger.exception("prior-context fetch raised")
+            return ""
+        if not msgs:
+            return ""
+        lines: list[str] = []
+        for m in msgs:
+            role = "you (assistant)" if m["role"] == "assistant" else (
+                f"<@{m['user_id']}>" if m.get("user_id") else "user"
+            )
+            # Compress to one paragraph per message so the agent
+            # doesn't drown in formatting overhead.
+            text = (m.get("text") or "").strip().replace("\n", " ")
+            if len(text) > 1500:
+                text = text[:1500] + "…"
+            lines.append(f"{role}: {text}")
+        return "\n".join(lines)
 
     async def _handle_slash_in_gateway(
         self,
@@ -236,9 +356,12 @@ class GatewayDaemon:
                 text = _help_card_text()
             elif sub == "status":
                 text = await self._render_status(message)
+            elif sub in {"perms", "permissions"}:
+                text = await self._render_perms(message)
             else:
                 text = (
-                    "Unknown subcommand. Try `/freyja help` or `/freyja status`."
+                    "Unknown subcommand. Try `/freyja help`, "
+                    "`/freyja status`, or `/freyja perms`."
                 )
             await adapter.send(  # type: ignore[attr-defined]
                 message.source.chat_id,
@@ -451,27 +574,47 @@ class GatewayDaemon:
         adapter: object,
     ) -> bool:
         """`/perms` — show the capability set this gateway session has."""
-        from bridge.gateway.capabilities import tools_allowed_for_gateway
-        allowed = sorted(tools_allowed_for_gateway(message.source.platform))
-        # Format as a clean list.
-        lines = ["*Slack agent permissions*"]
-        lines.append("Allowed tools (read-mostly):")
+        await adapter.send(  # type: ignore[attr-defined]
+            message.source.chat_id,
+            await self._render_perms(message),
+            thread_id=message.source.thread_id,
+            ephemeral_user_id=message.source.user_id,
+            raw_hint=message.raw,
+        )
+        return True
+
+    async def _render_perms(self, message: IncomingMessage) -> str:
+        from bridge.gateway.capabilities import (
+            gateway_filter_enabled,
+            tools_allowed_for_gateway,
+        )
+        platform = message.source.platform
+        if not gateway_filter_enabled(platform):
+            return (
+                "*Slack agent permissions*\n"
+                "Full tool surface — same as the desktop app. "
+                "Bash, computer-use, browser, file write, memory mutations, "
+                "image generation, sub-agents are all available.\n"
+                "\n"
+                "_To restrict_, set `slack.enable_tool_filter: true` in "
+                "`~/.freyja/gateway.yaml` and restart the gateway "
+                "(`launchctl stop co.freyja.gateway && launchctl start "
+                "co.freyja.gateway`). Default allowlist is read-mostly."
+            )
+        allowed = sorted(tools_allowed_for_gateway(platform))
+        lines = [
+            "*Slack agent permissions* (restricted)",
+            "Allowed tools (read-mostly):",
+        ]
         for t in allowed:
             lines.append(f"  • `{t}`")
         lines.append("")
         lines.append(
             "_Not allowed over Slack:_ bash, computer, browser, mouse/keyboard, "
             "screenshot, memory mutations. To grant any of those, switch to "
-            "the Freyja desktop app for this session."
+            "the Freyja desktop app or flip `slack.enable_tool_filter: false`."
         )
-        await adapter.send(  # type: ignore[attr-defined]
-            message.source.chat_id,
-            "\n".join(lines),
-            thread_id=message.source.thread_id,
-            ephemeral_user_id=message.source.user_id,
-            raw_hint=message.raw,
-        )
-        return True
+        return "\n".join(lines)
 
     def _cancel_session(self, session_key: str) -> bool:
         if self.state is None:
@@ -536,6 +679,15 @@ class GatewayDaemon:
         ok = await adapter.connect(self._on_inbound)
         if ok:
             self.adapters.append(adapter)
+            # Register with the destructive-command approval module
+            # so the bridge's tool wrapper can route approval prompts
+            # to this adapter. Done after connect succeeds — no point
+            # registering a dead adapter.
+            try:
+                from bridge.gateway.approval import register_approval_adapter
+                register_approval_adapter(Platform.SLACK.value, adapter)
+            except Exception:  # noqa: BLE001
+                logger.exception("approval adapter registration failed")
             logger.info("slack adapter connected")
         else:
             logger.warning(
@@ -551,6 +703,11 @@ class GatewayDaemon:
 
     async def shutdown(self) -> None:
         logger.info("gateway shutdown beginning")
+        try:
+            from bridge.gateway.approval import unregister_approval_adapter
+            unregister_approval_adapter(Platform.SLACK.value)
+        except Exception:  # noqa: BLE001
+            pass
         for adapter in self.adapters:
             try:
                 await adapter.disconnect()  # type: ignore[attr-defined]

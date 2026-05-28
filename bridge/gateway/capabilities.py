@@ -103,3 +103,36 @@ def tools_denied_for_gateway(platform: Any, all_tools: set[str]) -> set[str]:
     ``all_tools`` if we ran them through ``tools_allowed_for_gateway``."""
     allowed = tools_allowed_for_gateway(platform)
     return {t for t in all_tools if t not in allowed}
+
+
+def gateway_filter_enabled(platform: Any) -> bool:
+    """Return True if the gateway should restrict the tool surface for
+    sessions on this platform.
+
+    Defaults to False — the operator is presumed to be the only user
+    of their own install, so the agent gets the same tool surface
+    over Slack that it has on the desktop (bash, computer-use,
+    browser, image generation, memory mutations, etc.). Flip on per
+    workspace via ``slack.enable_tool_filter: true`` in
+    ``~/.freyja/gateway.yaml`` when a shared workspace has other
+    users who can DM the bot.
+
+    Read once per session init (no long-running cache). If the
+    operator edits gateway.yaml, the change takes effect at the
+    next session creation.
+    """
+    if platform is None:
+        return False
+    try:
+        from bridge.gateway.config import GatewayConfig
+        cfg = GatewayConfig.load()
+    except Exception:  # noqa: BLE001
+        # Config malformed / missing — fail open (no filter) rather
+        # than silently strip the agent's tools.
+        return False
+    platform_name = getattr(platform, "value", None) or str(platform)
+    if platform_name == "slack":
+        return cfg.slack.enable_tool_filter
+    # Unknown platform: no filter by default. Add per-platform
+    # toggles to GatewayConfig as new platforms ship.
+    return False

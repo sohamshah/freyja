@@ -57,6 +57,13 @@ class SlackConfig:
     enforce_workspace_allowlist: bool = True
     mention_required_in_channels: bool = True
     reply_in_thread: bool = True
+    # When true: gateway sessions get a restricted tool surface
+    # (read-mostly — no bash, computer-use, browser, etc.). Default
+    # False: the operator is presumed to be the only user of their
+    # own install, so the agent gets the full toolset over Slack
+    # too. Flip to True in shared workspaces where other people DM
+    # the bot.
+    enable_tool_filter: bool = False
 
     def user_allowed(self, team_id: str, user_id: str) -> bool:
         """Decide whether a user from a workspace should be heard."""
@@ -108,6 +115,9 @@ class GatewayConfig:
                 slack_raw.get("mention_required_in_channels", True)
             ),
             reply_in_thread=bool(slack_raw.get("reply_in_thread", True)),
+            enable_tool_filter=bool(
+                slack_raw.get("enable_tool_filter", False)
+            ),
         )
         return cls(
             default_model=str(
@@ -134,6 +144,7 @@ class GatewayConfig:
                 "enforce_workspace_allowlist": self.slack.enforce_workspace_allowlist,
                 "mention_required_in_channels": self.slack.mention_required_in_channels,
                 "reply_in_thread": self.slack.reply_in_thread,
+                "enable_tool_filter": self.slack.enable_tool_filter,
             },
         }
         return yaml.safe_dump(payload, sort_keys=False)

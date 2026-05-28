@@ -14,9 +14,10 @@
  * Each step calls into IPC handlers in src/main/gatewayBridge.ts.
  */
 
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import type {
   GatewayStatus,
+  LlmKeysProbeResult,
   SlackVerifyResult,
 } from '../../shared/events'
 
@@ -51,6 +52,10 @@ export function SlackSetupWizard({ open, onClose }: Props) {
   const [manifestJson, setManifestJson] = useState<string>('')
   const [manifestPath, setManifestPath] = useState<string>('')
   const [manifestCopied, setManifestCopied] = useState(false)
+  const [manifestLoading, setManifestLoading] = useState(false)
+  const [manifestError, setManifestError] = useState<string>('')
+  const [manifestGeneratedAt, setManifestGeneratedAt] = useState<number | null>(null)
+  const [manifestCmdCount, setManifestCmdCount] = useState<number>(0)
   const [appToken, setAppToken] = useState('')
   const [botToken, setBotToken] = useState('')
   const [verifying, setVerifying] = useState(false)
@@ -62,20 +67,66 @@ export function SlackSetupWizard({ open, onClose }: Props) {
   const [installResult, setInstallResult] = useState<string>('')
   const [installError, setInstallError] = useState<string>('')
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus | null>(null)
+  const [llmKeys, setLlmKeys] = useState<LlmKeysProbeResult | null>(null)
+
+  // Tracks whether the wizard is currently open. async IPC calls (especially
+  // verify + save) that resolve after the user closed the modal must NOT
+  // silently mutate disk state — pressing ESC mid-verify shouldn't quietly
+  // write tokens to ~/.freyja/.env behind the user's back.
+  const liveRef = useRef(open)
+  useEffect(() => {
+    liveRef.current = open
+  }, [open])
+
+  // Re-entrancy guard for verifyTokens. React state (`verifying`) doesn't
+  // commit synchronously, so a user mashing the "verify" or "retry"
+  // button can fire multiple in-flight slackVerifyTokens IPC calls
+  // before the button visually disables. Each spawns a Python subprocess
+  // that calls Slack's auth.test — burst-rate-limit + waste. The ref
+  // makes the guard synchronous.
+  const verifyInFlightRef = useRef(false)
 
   // Reset state when the modal opens.
   useEffect(() => {
     if (open) {
       setStep('welcome')
       setManifestJson('')
+      setManifestPath('')
       setManifestCopied(false)
+      setManifestError('')
+      setManifestLoading(false)
       setVerifyResult(null)
       setVerifyError('')
       setInstallResult('')
       setInstallError('')
+      setLlmKeys(null)
       void refreshStatus()
+      // Probe LLM keys at open time so the verify step has the result
+      // ready by the time the user lands on it (no extra spinner).
+      void probeLlmKeys()
     }
   }, [open])
+
+  async function probeLlmKeys() {
+    try {
+      const res = await window.harness.llmKeysProbe()
+      if (liveRef.current) setLlmKeys(res)
+    } catch {
+      // Best-effort — if the probe IPC fails, just skip the warning.
+    }
+  }
+
+  // Force a fresh regenerate every time the user lands on the manifest
+  // step. The Python module is the source of truth; we always re-shell
+  // out so the on-disk file + the wizard pane match whatever the
+  // operator's current code says. Otherwise edits to slack_manifest.py
+  // can sit in cached state and the operator pastes stale JSON.
+  useEffect(() => {
+    if (!open) return
+    if (step !== 'manifest') return
+    void generateManifest()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, step])
 
   // ESC closes
   useEffect(() => {
@@ -100,34 +151,68 @@ export function SlackSetupWizard({ open, onClose }: Props) {
   }
 
   async function generateManifest() {
-    const res = await window.harness.slackManifest()
-    if (res.ok) {
-      setManifestJson(res.manifestJson || '')
-      setManifestPath(res.manifestPath || '')
-    } else {
-      setVerifyError(res.error || 'manifest generation failed')
+    setManifestLoading(true)
+    setManifestError('')
+    try {
+      const res = await window.harness.slackManifest()
+      if (res?.ok) {
+        setManifestJson(res.manifestJson || '')
+        setManifestPath(res.manifestPath || '')
+        setManifestGeneratedAt(Date.now())
+        // Count slash commands so we can warn the operator if the
+        // count looks stale vs what the source code declares.
+        let count = 0
+        try {
+          const parsed = JSON.parse(res.manifestJson || '{}')
+          count = parsed?.features?.slash_commands?.length ?? 0
+        } catch {
+          // ignore parse errors — the pre block will show the raw text
+        }
+        setManifestCmdCount(count)
+        if (!res.manifestJson) {
+          setManifestError('manifest returned empty — try regenerating')
+        }
+      } else {
+        setManifestError(res?.error || 'manifest generation failed (no error returned)')
+      }
+    } catch (err) {
+      setManifestError(`IPC error: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setManifestLoading(false)
     }
   }
 
   async function copyManifest() {
     if (!manifestJson) await generateManifest()
     const res = await window.harness.slackCopyManifest()
-    if (res.ok) {
+    if (res?.ok) {
       setManifestCopied(true)
       setTimeout(() => setManifestCopied(false), 2400)
+    } else {
+      setManifestError(res?.error || 'copy failed')
     }
   }
 
   async function verifyTokens() {
+    // Synchronous re-entrancy guard. setVerifying(true) below schedules
+    // a re-render but doesn't commit until React's next cycle; rapid
+    // clicks within that window would otherwise stack subprocess calls.
+    if (verifyInFlightRef.current) return
+    verifyInFlightRef.current = true
     setVerifying(true)
     setVerifyError('')
     try {
       const res: SlackVerifyResult = await window.harness.slackVerifyTokens(
         botToken, appToken,
       )
+      // If the user closed the modal while verify was in flight, bail
+      // out before writing anything. They thought they cancelled —
+      // don't silently persist tokens or advance step state.
+      if (!liveRef.current) return
       if (res.ok) {
         // Save tokens immediately so future runs see them.
         const save = await window.harness.slackSaveTokens(botToken, appToken)
+        if (!liveRef.current) return
         if (!save.ok) {
           setVerifyError(save.error || 'tokens valid but save failed')
           setVerifyResult(null)
@@ -140,9 +225,11 @@ export function SlackSetupWizard({ open, onClose }: Props) {
         setVerifyResult(null)
       }
     } catch (err) {
+      if (!liveRef.current) return
       setVerifyError(String(err))
     } finally {
-      setVerifying(false)
+      verifyInFlightRef.current = false
+      if (liveRef.current) setVerifying(false)
     }
   }
 
@@ -222,10 +309,7 @@ export function SlackSetupWizard({ open, onClose }: Props) {
           {step === 'welcome' && (
             <WelcomeStep
               status={gatewayStatus}
-              onContinue={() => {
-                void generateManifest()
-                setStep('manifest')
-              }}
+              onContinue={() => setStep('manifest')}
             />
           )}
 
@@ -234,7 +318,12 @@ export function SlackSetupWizard({ open, onClose }: Props) {
               json={manifestJson}
               path={manifestPath}
               copied={manifestCopied}
+              loading={manifestLoading}
+              error={manifestError}
+              generatedAt={manifestGeneratedAt}
+              cmdCount={manifestCmdCount}
               onCopy={copyManifest}
+              onRegenerate={generateManifest}
               onContinue={() => setStep('app-token')}
               onBack={() => setStep('welcome')}
             />
@@ -266,6 +355,7 @@ export function SlackSetupWizard({ open, onClose }: Props) {
               verifying={verifying}
               result={verifyResult}
               error={verifyError}
+              llmKeys={llmKeys}
               onRetry={verifyTokens}
               onBack={() => {
                 setVerifyError('')
@@ -365,15 +455,24 @@ function WelcomeStep({
 }
 
 function ManifestStep({
-  json, path, copied, onCopy, onContinue, onBack,
+  json, path, copied, loading, error, generatedAt, cmdCount,
+  onCopy, onRegenerate, onContinue, onBack,
 }: {
   json: string
   path: string
   copied: boolean
+  loading: boolean
+  error: string
+  generatedAt: number | null
+  cmdCount: number
   onCopy: () => void
+  onRegenerate: () => void
   onContinue: () => void
   onBack: () => void
 }) {
+  const freshness = generatedAt
+    ? `regenerated ${Math.max(0, Math.round((Date.now() - generatedAt) / 1000))}s ago · ${cmdCount} slash commands`
+    : null
   return (
     <div className="flex flex-col gap-6">
       <SectionHeading
@@ -405,7 +504,7 @@ function ManifestStep({
       </ol>
 
       <div className="rounded-md border border-white/[0.06] bg-bg-2/30">
-        <div className="flex items-center gap-3 border-b border-white/[0.06] px-3 py-2">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-white/[0.06] px-3 py-2">
           <span className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-fg-3">
             manifest
           </span>
@@ -414,16 +513,52 @@ function ManifestStep({
               {path}
             </span>
           )}
-          <button
-            type="button"
-            onClick={onCopy}
-            className="ml-auto rounded border border-accent/[0.22] bg-accent/[0.06] px-2.5 py-1 font-mono text-[10.5px] uppercase tracking-[0.14em] text-accent transition hover:border-accent/[0.32] hover:bg-accent/[0.12]"
-          >
-            {copied ? '✓ copied' : 'copy to clipboard'}
-          </button>
+          {freshness && !loading && (
+            <span className="font-mono text-[10.5px] text-ok">
+              ✓ {freshness}
+            </span>
+          )}
+          {loading && (
+            <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] text-fg-3">
+              <span className="relative inline-flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-50" />
+                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-accent" />
+              </span>
+              generating…
+            </span>
+          )}
+          <div className="ml-auto flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={onRegenerate}
+              disabled={loading}
+              title="Regenerate the manifest from the current code"
+              className="rounded border border-white/[0.08] bg-white/[0.02] px-2.5 py-1 font-mono text-[10.5px] uppercase tracking-[0.14em] text-fg-2 transition hover:border-white/[0.18] hover:bg-white/[0.06] hover:text-fg-0 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              regenerate
+            </button>
+            <button
+              type="button"
+              onClick={onCopy}
+              disabled={!json && !loading}
+              className="rounded border border-accent/[0.22] bg-accent/[0.06] px-2.5 py-1 font-mono text-[10.5px] uppercase tracking-[0.14em] text-accent transition hover:border-accent/[0.32] hover:bg-accent/[0.12] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {copied ? '✓ copied' : 'copy to clipboard'}
+            </button>
+          </div>
         </div>
+        {error && (
+          <div className="border-b border-warn/[0.18] bg-warn/[0.05] px-3 py-2 font-mono text-[11px] leading-[1.55] text-warn">
+            <div className="mb-0.5 font-mono text-[10px] uppercase tracking-[0.14em]">
+              generation issue
+            </div>
+            <span className="select-text text-fg-1">{error}</span>
+          </div>
+        )}
         <pre className="m-0 max-h-[360px] select-text overflow-auto px-3 py-3 font-mono text-[11px] leading-[1.55] text-fg-1">
-          {json || '(generating...)'}
+          {json || (loading
+            ? 'generating manifest from bridge.gateway.platforms.slack_manifest…'
+            : 'no manifest yet — click "regenerate" above')}
         </pre>
       </div>
 
@@ -549,11 +684,12 @@ function BotTokenStep({
 }
 
 function VerifyStep({
-  verifying, result, error, onRetry, onBack,
+  verifying, result, error, llmKeys, onRetry, onBack,
 }: {
   verifying: boolean
   result: SlackVerifyResult | null
   error: string
+  llmKeys: LlmKeysProbeResult | null
   onRetry: () => void
   onBack: () => void
 }) {
@@ -573,17 +709,46 @@ function VerifyStep({
         </div>
       )}
       {!verifying && result?.ok && (
-        <div className="rounded-md border border-ok/[0.22] bg-ok/[0.04] p-4">
-          <div className="mb-1 font-mono text-[10.5px] uppercase tracking-[0.14em] text-ok">
-            ✓ authenticated
+        <>
+          <div className="rounded-md border border-ok/[0.22] bg-ok/[0.04] p-4">
+            <div className="mb-1 font-mono text-[10.5px] uppercase tracking-[0.14em] text-ok">
+              ✓ authenticated
+            </div>
+            <p className="m-0 font-mono text-[13px] leading-[1.7] text-fg-1">
+              Connected as <span className="font-bold text-fg-0">@{result.botName}</span>{' '}
+              in workspace{' '}
+              <span className="font-bold text-fg-0">{result.teamName}</span>{' '}
+              (team <code>{result.teamId}</code>).
+            </p>
           </div>
-          <p className="m-0 font-mono text-[13px] leading-[1.7] text-fg-1">
-            Connected as <span className="font-bold text-fg-0">@{result.botName}</span>{' '}
-            in workspace{' '}
-            <span className="font-bold text-fg-0">{result.teamName}</span>{' '}
-            (team <code>{result.teamId}</code>).
-          </p>
-        </div>
+          {llmKeys && !llmKeys.hasFrontierKey && (
+            <div className="rounded-md border border-warn/[0.32] bg-warn/[0.06] p-4 font-mono text-[12.5px] leading-[1.7] text-fg-1">
+              <div className="mb-1 font-mono text-[10.5px] uppercase tracking-[0.14em] text-warn">
+                ⚠ no LLM API keys found
+              </div>
+              <p className="m-0 mb-2">
+                The gateway daemon couldn't find <code>ANTHROPIC_API_KEY</code>{' '}
+                or <code>OPENAI_API_KEY</code> in either your shell environment
+                or <code>~/.freyja/.env</code>. Without one of these, Freyja
+                won't be able to reply to Slack messages.
+              </p>
+              <p className="m-0 text-fg-2">
+                Fix: export the key in your shell{' '}
+                <em>before</em> launching Freyja, or add it to{' '}
+                <code>~/.freyja/.env</code> directly and{' '}
+                <code>launchctl stop co.freyja.gateway && launchctl start co.freyja.gateway</code>.
+              </p>
+            </div>
+          )}
+          {llmKeys?.hasFrontierKey && llmKeys.missing.length > 0 && (
+            <div className="rounded-md border border-white/[0.08] bg-white/[0.018] p-3 font-mono text-[11.5px] leading-[1.6] text-fg-2">
+              <span className="text-fg-3">heads-up: </span>
+              {llmKeys.present.length} LLM key{llmKeys.present.length === 1 ? '' : 's'} found
+              ({llmKeys.present.map((k) => k.replace('_API_KEY', '')).join(', ').toLowerCase()}).
+              Daemon will work fine; this is just informational.
+            </div>
+          )}
+        </>
       )}
       {!verifying && error && (
         <div className="rounded-md border border-warn/[0.22] bg-warn/[0.05] p-4 font-mono text-[12.5px] text-fg-1">
@@ -825,7 +990,7 @@ function DoneStep({
         </div>
         <div className="grid grid-cols-2 gap-1.5 font-mono text-[11.5px] leading-[1.55] text-fg-1">
           <div><code>/freyja</code> <span className="text-fg-3">help card</span></div>
-          <div><code>/status</code> <span className="text-fg-3">session info</span></div>
+          <div><code>/freyja status</code> <span className="text-fg-3">session info</span></div>
           <div><code>/goal &lt;obj&gt;</code> <span className="text-fg-3">arm goal loop</span></div>
           <div><code>/mode bus|goal|kanban</code> <span className="text-fg-3">change strategy</span></div>
           <div><code>/model &lt;id&gt;</code> <span className="text-fg-3">switch model</span></div>
