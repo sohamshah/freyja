@@ -211,8 +211,18 @@ export interface HarnessState extends SessionSlice {
     reason?: string
     details?: string
   }>
-  // Attachments queued for the next send
-  pendingAttachments: Array<{ id: string; type: 'image'; mimeType: string; dataBase64: string; previewUrl: string }>
+  // Attachments queued for the next send. Videos are Gemini-only —
+  // attachVideo refuses to enqueue when the active session isn't on a
+  // google-family model. The bridge re-checks at message-build time.
+  pendingAttachments: Array<{
+    id: string
+    type: 'image' | 'video'
+    mimeType: string
+    dataBase64: string
+    previewUrl: string
+    filename?: string
+    sizeBytes?: number
+  }>
   // Derived / UI
   inputDraft: string
   commandPaletteOpen: boolean
@@ -358,6 +368,11 @@ export interface HarnessActions {
   /** Dismiss the pending proposal without adopting it. */
   dismissCalibratorProposal(): void
   attachImage(file: File | Blob): Promise<void>
+  /** Queue a video attachment for the next send. Gemini-only — refuses
+   *  with a toast when the active model isn't a google-family one, or
+   *  when the file exceeds the inline cap (~20MB; Gemini's hard limit
+   *  for non-Files-API content). */
+  attachVideo(file: File): Promise<void>
   removeAttachment(id: string): void
   /** Edit a user message in place — local state truncates to before the
    *  message and reinserts a new user message; bridge truncates the
@@ -2313,7 +2328,14 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           parts,
           createdAt: Date.now(),
           attachments: attachments.length > 0
-            ? attachments.map((a) => ({ id: a.id, type: a.type, previewUrl: a.previewUrl }))
+            ? attachments.map((a) => ({
+                id: a.id,
+                type: a.type,
+                previewUrl: a.previewUrl,
+                name: a.filename,
+                mimeType: a.mimeType,
+                sizeBytes: a.sizeBytes,
+              }))
             : undefined,
         } as Message,
       ],
@@ -2345,6 +2367,8 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         type: a.type,
         mimeType: a.mimeType,
         dataBase64: a.dataBase64,
+        ...(a.filename ? { filename: a.filename } : {}),
+        ...(a.sizeBytes ? { sizeBytes: a.sizeBytes } : {}),
       }))
     }
     if (api) {
@@ -2816,10 +2840,77 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     }
   },
 
+  async attachVideo(file) {
+    // Gemini inline-content cap. Bigger files would need the Files API
+    // upload path (client.files.upload + poll until ACTIVE) which the
+    // bridge doesn't expose yet; keep the limit at 20MB and surface a
+    // clear toast for anything larger.
+    const INLINE_VIDEO_LIMIT = 20 * 1024 * 1024
+    const state = useHarness.getState()
+    const activeSession = state.sessions.find((s) => s.id === state.activeSessionId)
+    const modelId = activeSession?.model || state.model
+    const modelMeta = state.availableModels.find((m) => m.id === modelId)
+    const family = modelMeta?.family ?? (
+      modelId.startsWith('gemini-') ? 'google' : ''
+    )
+    if (family !== 'google') {
+      state.showToast(
+        'Video attachments require a Gemini model. Switch the active session\'s model to attach video.',
+        'warn',
+      )
+      return
+    }
+    if (file.size > INLINE_VIDEO_LIMIT) {
+      const mb = (file.size / (1024 * 1024)).toFixed(1)
+      state.showToast(
+        `Video is ${mb}MB; Gemini's inline cap is 20MB. Clip it or upload via the analyze_video tool for now.`,
+        'warn',
+      )
+      return
+    }
+    try {
+      const mimeType = file.type || 'video/mp4'
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      let binary = ''
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+      const dataBase64 = btoa(binary)
+      // Blob URL for the <video> preview thumbnail — much cheaper than a
+      // data URL for large clips. The store hangs onto the same Blob
+      // we just read so the URL stays valid until removeAttachment runs
+      // (browser GCs blob: URLs when no <video> still references them,
+      // but pinning the Blob makes lifecycle predictable).
+      const previewUrl = URL.createObjectURL(file)
+      set((prev) => ({
+        pendingAttachments: [
+          ...prev.pendingAttachments,
+          {
+            id: nextId('att'),
+            type: 'video',
+            mimeType,
+            dataBase64,
+            previewUrl,
+            filename: file.name || '',
+            sizeBytes: file.size,
+          },
+        ],
+      }))
+    } catch (_err) {
+      useHarness.getState().showToast('Failed to read video', 'warn')
+    }
+  },
+
   removeAttachment(id) {
-    set((prev) => ({
-      pendingAttachments: prev.pendingAttachments.filter((a) => a.id !== id),
-    }))
+    set((prev) => {
+      // Revoke any blob: URL we minted (currently only video previews).
+      // Data: URLs don't need revoking.
+      const dropped = prev.pendingAttachments.find((a) => a.id === id)
+      if (dropped && dropped.previewUrl.startsWith('blob:')) {
+        try { URL.revokeObjectURL(dropped.previewUrl) } catch { /* noop */ }
+      }
+      return {
+        pendingAttachments: prev.pendingAttachments.filter((a) => a.id !== id),
+      }
+    })
   },
 
   async editUserMessage(messageId, content) {

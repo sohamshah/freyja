@@ -596,43 +596,96 @@ def _build_user_message_with_attachments(
     user_content: str,
     attachments: list[dict[str, Any]] | None,
     image_refs_note: str = "",
+    *,
+    model_id: str = "",
 ) -> Any:
-    """Convert renderer attachments into engine content blocks."""
+    """Convert renderer attachments into engine content blocks.
+
+    Images flow into every provider — they get downscaled to fit
+    Anthropic's 5MiB base64 cap and routed as ImageBlocks. Video
+    attachments are Gemini-only: when the active session's model isn't
+    in the google family, video attachments are dropped with a text
+    annotation so the operator sees the silent skip in the transcript.
+    """
     if not attachments:
         return user_content
 
-    from engine.types import ImageBlock, TextBlock
+    from engine.types import ImageBlock, TextBlock, VideoBlock
+
+    is_gemini = _family_for_model(model_id) == "google" if model_id else False
 
     image_blocks: list[ImageBlock] = []
+    video_blocks: list[VideoBlock] = []
+    dropped_video_names: list[str] = []
     for attachment in attachments:
-        if attachment.get("type") != "image":
+        att_type = attachment.get("type")
+
+        if att_type == "image":
+            data = str(attachment.get("dataBase64") or "").strip()
+            if data.startswith("data:"):
+                _, separator, payload = data.partition(",")
+                if separator:
+                    data = payload.strip()
+
+            if not data:
+                continue
+
+            media_type = str(attachment.get("mimeType") or "image/png")
+            # Defensive downscale at the boundary: if the renderer somehow
+            # sent an oversize image, fix it here before it enters the
+            # transcript.
+            data, media_type, _ = _downscale_b64_image(data, media_type)
+            image_blocks.append(ImageBlock.from_base64(data, media_type))
             continue
 
-        data = str(attachment.get("dataBase64") or "").strip()
-        if data.startswith("data:"):
-            _, separator, payload = data.partition(",")
-            if separator:
-                data = payload.strip()
+        if att_type == "video":
+            data = str(attachment.get("dataBase64") or "").strip()
+            if data.startswith("data:"):
+                _, separator, payload = data.partition(",")
+                if separator:
+                    data = payload.strip()
+            media_type = str(attachment.get("mimeType") or "video/mp4")
+            filename = str(attachment.get("filename") or "")
+            try:
+                size_bytes = int(attachment.get("sizeBytes") or 0)
+            except (TypeError, ValueError):
+                size_bytes = 0
 
-        if not data:
+            if not data:
+                continue
+            if not is_gemini:
+                # Defense-in-depth: the renderer should already gate by
+                # model family, but if a video does land on a non-Gemini
+                # session we drop it (no provider would understand it)
+                # and emit a transcript annotation so the operator sees
+                # what happened.
+                dropped_video_names.append(filename or "video")
+                continue
+            video_blocks.append(
+                VideoBlock.from_base64(
+                    data,
+                    media_type=media_type,
+                    filename=filename,
+                    size_bytes=size_bytes,
+                )
+            )
             continue
 
-        media_type = str(attachment.get("mimeType") or "image/png")
-        # Defensive downscale at the boundary: if the renderer somehow
-        # sent an oversize image, fix it here before it enters the
-        # transcript.
-        data, media_type, _ = _downscale_b64_image(data, media_type)
-        image_blocks.append(ImageBlock.from_base64(data, media_type))
-
-    if not image_blocks:
+    if not image_blocks and not video_blocks and not dropped_video_names:
         return user_content
 
     note = image_refs_note.strip()
     text = user_content
     if note:
         text = f"{text}\n\n[{note}]" if text else f"[{note}]"
+    if dropped_video_names:
+        dropped_text = (
+            f"[note: {len(dropped_video_names)} video attachment(s) "
+            "dropped — video input is only supported on Gemini models]"
+        )
+        text = f"{text}\n\n{dropped_text}" if text else dropped_text
 
-    blocks: list[Any] = [*image_blocks]
+    blocks: list[Any] = [*image_blocks, *video_blocks]
     if text:
         blocks.append(TextBlock(text=text))
     return blocks
@@ -5611,6 +5664,7 @@ class _BridgeSession:
                 user_content,
                 attachments,
                 image_refs_note,
+                model_id=self.model_id,
             )
 
         try:
@@ -6698,7 +6752,7 @@ def _engine_user_message_to_renderer_attachments(
     appended on the original send — we let the new turn re-append it.
     """
     try:
-        from engine.types import ImageBlock, TextBlock
+        from engine.types import ImageBlock, TextBlock, VideoBlock
     except Exception:  # noqa: BLE001
         return "", []
     if message is None:
@@ -6719,6 +6773,16 @@ def _engine_user_message_to_renderer_attachments(
                     "type": "image",
                     "mimeType": block.media_type,
                     "dataBase64": block.data,
+                }
+            )
+        elif isinstance(block, VideoBlock) and getattr(block, "source_type", "") == "base64":
+            attachments.append(
+                {
+                    "type": "video",
+                    "mimeType": block.media_type,
+                    "dataBase64": block.data,
+                    "filename": block.filename,
+                    "sizeBytes": block.size_bytes,
                 }
             )
     text = "\n\n".join(p for p in text_parts if p).strip()

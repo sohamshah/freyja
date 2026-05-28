@@ -221,9 +221,17 @@ export interface MessagePart {
 
 export interface MessageAttachmentRef {
   id: string
-  type: 'image'
+  /** `video` is currently Gemini-only; the bridge drops it with a
+   *  transcript annotation if the active session isn't on a google
+   *  family model. */
+  type: 'image' | 'video'
+  /** For images: a data: URL that <img> can render directly. For
+   *  videos: a blob: URL that <video> can play, or empty if the
+   *  renderer chose to show a glyph card instead of a real preview. */
   previewUrl: string
   name?: string
+  mimeType?: string
+  sizeBytes?: number
 }
 
 export interface Message {
@@ -285,9 +293,18 @@ export interface SessionSnapshot {
 }
 
 export interface CommandAttachment {
-  type: 'image'
+  /** Both flow as base64. `video` is Gemini-only — the bridge silently
+   *  drops it (with a transcript note) when the active session model
+   *  isn't on the google family, so the renderer is expected to gate
+   *  before sending. */
+  type: 'image' | 'video'
   mimeType: string
   dataBase64: string
+  /** Optional display metadata. Filename is used by the bridge for
+   *  VideoBlock.filename so reruns can show the original name; size
+   *  is for the renderer's pill UI only. */
+  filename?: string
+  sizeBytes?: number
 }
 
 // --- Commands sent from renderer to main (and by main to the bridge) ---

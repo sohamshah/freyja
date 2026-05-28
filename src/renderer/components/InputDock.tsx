@@ -40,6 +40,7 @@ export function InputDock() {
   const runSlashCommand = useHarness((s) => s.runSlashCommand)
   const showToast = useHarness((s) => s.showToast)
   const attachImage = useHarness((s) => s.attachImage)
+  const attachVideo = useHarness((s) => s.attachVideo)
   const removeAttachment = useHarness((s) => s.removeAttachment)
   const pendingAttachments = useHarness((s) => s.pendingAttachments)
   const fileMatches = useHarness((s) => s.fileMatches)
@@ -47,6 +48,7 @@ export function InputDock() {
   const activeSessionId = useHarness((s) => s.activeSessionId)
   const sessions = useHarness((s) => s.sessions)
   const model = useHarness((s) => s.model)
+  const availableModels = useHarness((s) => s.availableModels)
 
   const [focused, setFocused] = useState(false)
   const [selectedSuggestion, setSelectedSuggestion] = useState(0)
@@ -62,6 +64,16 @@ export function InputDock() {
   const activeSession = sessions.find((session) => session.id === activeSessionId)
   const workspaceLabel = compactPath(activeSession?.workspace || '~/')
   const modelLabel = activeSession?.model || model
+  // Gemini-only feature gate for video drag/drop/paste. We look up the
+  // active session's model in availableModels (preferred — carries
+  // server-side family metadata) and fall back to the `gemini-` prefix
+  // heuristic so the gate still works during the brief window before
+  // availableModels has loaded.
+  const activeModelId = activeSession?.model || model
+  const activeModelMeta = availableModels.find((m) => m.id === activeModelId)
+  const isGeminiSession =
+    (activeModelMeta?.family ?? '') === 'google' ||
+    (!activeModelMeta && activeModelId.startsWith('gemini-'))
 
   // Detect the active @ token at the current caret position.
   const atToken = useMemo(() => detectAtToken(draft, caret), [draft, caret])
@@ -225,19 +237,26 @@ export function InputDock() {
     const items = e.clipboardData?.items
     if (!items) return
     const images: File[] = []
+    const videos: File[] = []
     for (let i = 0; i < items.length; i++) {
       const it = items[i]
-      if (it.kind === 'file' && it.type.startsWith('image/')) {
-        const file = it.getAsFile()
-        if (file) images.push(file)
+      if (it.kind !== 'file') continue
+      const file = it.getAsFile()
+      if (!file) continue
+      if (it.type.startsWith('image/')) {
+        images.push(file)
+      } else if (it.type.startsWith('video/') && isGeminiSession) {
+        videos.push(file)
       }
     }
-    if (images.length > 0) {
+    if (images.length > 0 || videos.length > 0) {
       e.preventDefault()
-      for (const img of images) {
-        await attachImage(img)
-      }
-      showToast(`${images.length} image${images.length > 1 ? 's' : ''} attached`, 'ok')
+      for (const img of images) await attachImage(img)
+      for (const vid of videos) await attachVideo(vid)
+      const bits: string[] = []
+      if (images.length > 0) bits.push(`${images.length} image${images.length > 1 ? 's' : ''}`)
+      if (videos.length > 0) bits.push(`${videos.length} video${videos.length > 1 ? 's' : ''}`)
+      showToast(`${bits.join(' + ')} attached`, 'ok')
     }
     // If it's plain text, let the browser insert normally. The textarea
     // onChange will fire and we'll auto-resize.
@@ -247,9 +266,27 @@ export function InputDock() {
     e.preventDefault()
     const files = Array.from(e.dataTransfer?.files ?? [])
     const imgs = files.filter((f) => f.type.startsWith('image/'))
-    if (imgs.length === 0) return
+    const vids = isGeminiSession
+      ? files.filter((f) => f.type.startsWith('video/'))
+      : []
+    if (imgs.length === 0 && vids.length === 0) {
+      // Friendly nudge if the operator dropped a video onto a
+      // non-Gemini session — otherwise the drop silently does nothing.
+      const droppedVideos = files.filter((f) => f.type.startsWith('video/'))
+      if (droppedVideos.length > 0 && !isGeminiSession) {
+        showToast(
+          'Switch this session to a Gemini model to attach video.',
+          'warn',
+        )
+      }
+      return
+    }
     for (const img of imgs) await attachImage(img)
-    showToast(`${imgs.length} image${imgs.length > 1 ? 's' : ''} attached`, 'ok')
+    for (const vid of vids) await attachVideo(vid)
+    const bits: string[] = []
+    if (imgs.length > 0) bits.push(`${imgs.length} image${imgs.length > 1 ? 's' : ''}`)
+    if (vids.length > 0) bits.push(`${vids.length} video${vids.length > 1 ? 's' : ''}`)
+    showToast(`${bits.join(' + ')} attached`, 'ok')
   }
 
   const onDragOver = (e: React.DragEvent<HTMLDivElement>) => {
@@ -330,14 +367,36 @@ export function InputDock() {
                   key={a.id}
                   className="group relative flex items-center gap-2 rounded-lg bg-white/[0.04] px-2 py-1.5 ring-hairline"
                 >
-                  <img
-                    src={a.previewUrl}
-                    alt="attachment"
-                    className="h-10 w-10 rounded object-cover ring-hairline"
-                  />
-                  <div className="flex flex-col">
-                    <span className="text-[10.5px] text-fg-0">image</span>
-                    <span className="text-[9.5px] text-fg-2">{a.mimeType}</span>
+                  {a.type === 'video' ? (
+                    // Live thumbnail by muting + showing frame 0. We don't
+                    // autoplay — the user controls playback. preload=metadata
+                    // is enough for Chrome to render the poster frame.
+                    <video
+                      src={a.previewUrl}
+                      muted
+                      preload="metadata"
+                      className="h-10 w-10 rounded object-cover ring-hairline"
+                    />
+                  ) : (
+                    <img
+                      src={a.previewUrl}
+                      alt="attachment"
+                      className="h-10 w-10 rounded object-cover ring-hairline"
+                    />
+                  )}
+                  <div className="flex min-w-0 flex-col">
+                    <span className="text-[10.5px] text-fg-0">
+                      {a.type === 'video' ? 'video' : 'image'}
+                    </span>
+                    <span className="max-w-[180px] truncate text-[9.5px] text-fg-2">
+                      {a.type === 'video' && a.filename
+                        ? `${a.filename}${
+                            a.sizeBytes
+                              ? ` · ${(a.sizeBytes / (1024 * 1024)).toFixed(1)}MB`
+                              : ''
+                          }`
+                        : a.mimeType}
+                    </span>
                   </div>
                   <button
                     onClick={() => removeAttachment(a.id)}
@@ -377,7 +436,9 @@ export function InputDock() {
                 placeholder={
                   pendingAttachments.length > 0
                     ? 'Add a caption or send as-is'
-                    : 'Type @ to mention files, / for commands, paste images to attach'
+                    : isGeminiSession
+                      ? 'Type @ to mention files, / for commands, paste images or videos to attach'
+                      : 'Type @ to mention files, / for commands, paste images to attach'
                 }
                 className="min-h-[22px] flex-1 resize-none bg-transparent text-[12.5px] text-fg-0 placeholder:text-fg-3 focus:outline-none"
                 style={{ lineHeight: 1.55, maxHeight: `${MAX_PX}px` }}

@@ -205,6 +205,96 @@ class DocumentBlock:
 
 
 @dataclass
+class VideoBlock:
+    """Video content block.
+
+    Native video input is currently only consumed by Google Gemini. Other
+    providers' `_content_blocks_to_parts` paths ignore VideoBlock, so the
+    bridge gates by model family before building one — if a video lands in
+    an Anthropic / OpenAI / Cerebras transcript, the model just won't see
+    it. The renderer enforces the same gate before allowing drag/drop or
+    paste.
+
+    Three source types:
+      · `base64`   — inline bytes (Gemini caps inline content at ~20 MB).
+      · `url`      — public HTTP(S) URL (Gemini fetches it).
+      · `file_uri` — Files API URI returned by `client.files.upload`,
+                     used for videos that exceed the inline cap.
+    """
+
+    type: Literal["video"] = "video"
+    source_type: Literal["base64", "url", "file_uri"] = "base64"
+
+    data: str = ""
+    """Base64-encoded video bytes when source_type='base64'."""
+
+    url: str = ""
+    """Public URL when source_type='url'."""
+
+    file_uri: str = ""
+    """Gemini Files API URI when source_type='file_uri'."""
+
+    media_type: str = "video/mp4"
+    """MIME type; mp4/quicktime/webm/etc."""
+
+    filename: str = ""
+    """Original filename (display only)."""
+
+    size_bytes: int = 0
+    """Raw byte count (display only)."""
+
+    @classmethod
+    def from_base64(
+        cls,
+        data: str,
+        *,
+        media_type: str = "video/mp4",
+        filename: str = "",
+        size_bytes: int = 0,
+    ) -> "VideoBlock":
+        return cls(
+            source_type="base64",
+            data=data,
+            media_type=media_type,
+            filename=filename,
+            size_bytes=size_bytes,
+        )
+
+    @classmethod
+    def from_file_uri(
+        cls,
+        file_uri: str,
+        *,
+        media_type: str = "video/mp4",
+        filename: str = "",
+        size_bytes: int = 0,
+    ) -> "VideoBlock":
+        return cls(
+            source_type="file_uri",
+            file_uri=file_uri,
+            media_type=media_type,
+            filename=filename,
+            size_bytes=size_bytes,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "type": "video",
+            "source_type": self.source_type,
+            "media_type": self.media_type,
+            "filename": self.filename,
+            "size_bytes": self.size_bytes,
+        }
+        if self.source_type == "base64":
+            d["data"] = self.data
+        elif self.source_type == "url":
+            d["url"] = self.url
+        else:
+            d["file_uri"] = self.file_uri
+        return d
+
+
+@dataclass
 class ToolUseBlock:
     """Tool use request block."""
     type: Literal["tool_use"] = "tool_use"
@@ -258,7 +348,7 @@ class RedactedThinkingBlock:
         return {"type": "redacted_thinking", "data": self.data}
 
 
-ContentBlock = TextBlock | ImageBlock | DocumentBlock | ToolUseBlock | ToolResultBlock | ThinkingBlock | RedactedThinkingBlock
+ContentBlock = TextBlock | ImageBlock | DocumentBlock | VideoBlock | ToolUseBlock | ToolResultBlock | ThinkingBlock | RedactedThinkingBlock
 
 
 # ============================================================================

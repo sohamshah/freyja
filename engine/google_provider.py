@@ -56,6 +56,7 @@ from engine.types import (
     ToolInputDeltaEvent,
     ToolUseBlock,
     ToolUseStartEvent,
+    VideoBlock,
 )
 
 logger = logging.getLogger(__name__)
@@ -635,6 +636,33 @@ class GoogleProvider:
                     )
             elif isinstance(block, DocumentBlock):
                 if block.source_type == "url" and block.url:
+                    parts.append(
+                        gtypes.Part.from_uri(
+                            file_uri=block.url, mime_type=block.media_type
+                        )
+                    )
+                elif block.data:
+                    import base64
+
+                    try:
+                        raw = base64.b64decode(block.data)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    parts.append(
+                        gtypes.Part.from_bytes(data=raw, mime_type=block.media_type)
+                    )
+            elif isinstance(block, VideoBlock):
+                # Gemini accepts video via Part.from_bytes (inline, capped
+                # around 20 MB by the API) or Part.from_uri (Files API
+                # URI, or public URL). The bridge picks the right source
+                # type based on payload size; this branch just routes.
+                if block.source_type == "file_uri" and block.file_uri:
+                    parts.append(
+                        gtypes.Part.from_uri(
+                            file_uri=block.file_uri, mime_type=block.media_type
+                        )
+                    )
+                elif block.source_type == "url" and block.url:
                     parts.append(
                         gtypes.Part.from_uri(
                             file_uri=block.url, mime_type=block.media_type

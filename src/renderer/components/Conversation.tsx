@@ -948,16 +948,26 @@ const MessageView = memo(function MessageView({ message }: { message: Message })
       >
         {message.attachments && message.attachments.length > 0 && (
           <div className="flex max-w-[76%] flex-wrap justify-end gap-1.5">
-            {message.attachments.map((att) => (
-              <img
-                key={att.id}
-                src={att.previewUrl}
-                alt="attached"
-                className="max-h-[180px] rounded-lg ring-1 ring-accent/20"
-                loading="lazy"
-                decoding="async"
-              />
-            ))}
+            {message.attachments.map((att) =>
+              att.type === 'video' ? (
+                <video
+                  key={att.id}
+                  src={att.previewUrl}
+                  controls
+                  preload="metadata"
+                  className="max-h-[260px] max-w-full rounded-lg ring-1 ring-accent/20"
+                />
+              ) : (
+                <img
+                  key={att.id}
+                  src={att.previewUrl}
+                  alt="attached"
+                  className="max-h-[180px] rounded-lg ring-1 ring-accent/20"
+                  loading="lazy"
+                  decoding="async"
+                />
+              ),
+            )}
           </div>
         )}
         {textContent && (
