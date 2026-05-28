@@ -257,12 +257,6 @@ export interface SessionSnapshot {
   model: string
   reasoningLevel?: string
   coordinationStrategy?: CoordinationStrategy
-  /** Top-level preset id this session was started under (e.g.
-   *  "claude-code", "codex"). Persisted in the session sidecar so the
-   *  preset's persona block + tool surface re-apply when the operator
-   *  opens this session after a restart. Empty when the session was
-   *  started with a raw model and no preset bundle. */
-  presetId?: string
   createdAt: number
   updatedAt: number
   messageCount: number
@@ -364,17 +358,7 @@ export type BridgeCommand =
        *  coordinationStrategy in the same command still win. */
       presetId?: string
     }
-  | {
-      type: 'switch_session'
-      sessionId: string
-      model?: string
-      reasoningLevel?: string
-      coordinationStrategy?: CoordinationStrategy
-      /** Resume the preset binding from a persisted session. The
-       *  bridge re-applies the preset's persona block + tool surface
-       *  on the resumed session id. */
-      presetId?: string
-    }
+  | { type: 'switch_session'; sessionId: string; model?: string; reasoningLevel?: string; coordinationStrategy?: CoordinationStrategy }
   | { type: 'usage'; sessionId?: string }
   | { type: 'list_files'; sessionId?: string; query: string; limit?: number }
   | {
