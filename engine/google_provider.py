@@ -53,6 +53,8 @@ from engine.types import (
     StreamEvent,
     TextBlock,
     TextDeltaEvent,
+    ThinkingBlock,
+    ThinkingDeltaEvent,
     ToolInputDeltaEvent,
     ToolUseBlock,
     ToolUseStartEvent,
@@ -246,20 +248,16 @@ class GoogleProvider:
         }
         if effective_system_prompt:
             kwargs["system_instruction"] = effective_system_prompt
-        thinking_config = self._build_thinking_config(thinking)
-        if thinking_config is None:
-            # Gemini 3.x reasoning models default to a thinking level that
-            # interferes with strict JSON-mode constrained decoding (same
-            # failure mode Cerebras documents for GLM-4.7 — they hard-disable
-            # reasoning on structured output). Pin to MINIMAL whenever the
-            # caller didn't pass an explicit thinking config so the
-            # schema-constrained path stays reliable. Callers that DO want
-            # thinking on a structured call (rare) can still pass an
-            # explicit enabled config.
-            thinking_config = gtypes.ThinkingConfig(
-                thinking_level="MINIMAL", include_thoughts=False
-            )
-        kwargs["thinking_config"] = thinking_config
+        # Structured output: always force include_thoughts=False so thought
+        # parts can never leak into the JSON-mode response stream. Gemini
+        # 3.x reasoning models also default to a thinking level that
+        # interferes with strict JSON-mode constrained decoding (same
+        # failure mode Cerebras documents for GLM-4.7 — they hard-disable
+        # reasoning on structured output). MINIMAL pinning is handled
+        # inside _build_thinking_config when thinking is None.
+        kwargs["thinking_config"] = self._build_thinking_config(
+            thinking, force_include_thoughts=False
+        )
 
         config = gtypes.GenerateContentConfig(**kwargs)
         self._log_request(
@@ -395,6 +393,11 @@ class GoogleProvider:
 
         text_parts: list[str] = []
         tool_calls: list[ToolCallResponse] = []
+        # Each chunk can carry a thought Part; accumulate them in arrival
+        # order so the resulting assistant Message has the full reasoning
+        # trace, signatures preserved per-block.
+        thinking_blocks: list[Any] = []
+        seen_thought_keys: set[tuple[str, str]] = set()
         usage = APIUsage()
         finish_reason: str | None = None
         seen_tool_call_ids: set[str] = set()
@@ -423,6 +426,17 @@ class GoogleProvider:
                     seen_tool_call_ids.add(fc.id)
                     tool_calls.append(fc)
 
+                # Same for thought parts. Dedupe by (text, signature) so
+                # a thought block delivered across multiple chunks isn't
+                # appended twice — Gemini streams complete thought parts
+                # but defensively guard against retries / overlap.
+                for tb in self._extract_thinking_blocks(chunk):
+                    key = (tb.thinking, tb.signature)
+                    if key in seen_thought_keys:
+                        continue
+                    seen_thought_keys.add(key)
+                    thinking_blocks.append(tb)
+
                 # Usage + finish_reason arrive in the final chunk; keep the
                 # last non-empty values we see.
                 chunk_usage = self._extract_usage(chunk)
@@ -442,6 +456,7 @@ class GoogleProvider:
             usage=usage,
             stop_reason=stop_reason,
             model=self._model,
+            thinking_blocks=thinking_blocks or None,
         )
 
     async def close(self) -> None:
@@ -488,14 +503,33 @@ class GoogleProvider:
 
         return gtypes.GenerateContentConfig(**kwargs)
 
-    def _build_thinking_config(self, thinking: Any) -> gtypes.ThinkingConfig | None:
+    def _build_thinking_config(
+        self,
+        thinking: Any,
+        *,
+        force_include_thoughts: bool | None = None,
+    ) -> gtypes.ThinkingConfig | None:
         """Map our internal ThinkingConfig onto Gemini's ThinkingConfig.
 
-        - ``enabled=False`` → MINIMAL (Gemini doesn't allow disabling thinking
-          on 3.x reasoning models; MINIMAL is the lowest effort tier).
-        - ``enabled=True`` → ``effort`` maps onto ThinkingLevel.
+        - ``enabled=False`` → MINIMAL + include_thoughts=False (Gemini
+          doesn't allow disabling thinking on 3.x reasoning models;
+          MINIMAL is the lowest effort tier).
+        - ``enabled=True`` → ``effort`` maps onto ThinkingLevel and
+          ``include_thoughts=True`` so the renderer can show the
+          reasoning chain and the cost panel can split reasoning
+          tokens out from visible-output tokens. Without this flag the
+          model still thinks (and Gemini still bills for thoughts), the
+          thoughts just never reach us.
+
+        ``force_include_thoughts`` overrides the include_thoughts derived
+        from ``enabled`` — set False for ``complete_structured`` where
+        thinking content interferes with strict JSON decoding.
         """
         if thinking is None:
+            if force_include_thoughts is False:
+                return gtypes.ThinkingConfig(
+                    thinking_level="MINIMAL", include_thoughts=False
+                )
             return None
 
         enabled = bool(getattr(thinking, "enabled", False))
@@ -504,7 +538,10 @@ class GoogleProvider:
 
         effort = str(getattr(thinking, "effort", "high")).lower()
         level = _EFFORT_TO_THINKING_LEVEL.get(effort, "HIGH")
-        return gtypes.ThinkingConfig(thinking_level=level, include_thoughts=False)
+        include_thoughts = True if force_include_thoughts is None else bool(force_include_thoughts)
+        return gtypes.ThinkingConfig(
+            thinking_level=level, include_thoughts=include_thoughts
+        )
 
     @staticmethod
     def _resolve_tool_mode(tool_choice: dict | None) -> str | None:
@@ -557,6 +594,32 @@ class GoogleProvider:
 
             if msg.role == "assistant":
                 parts: list[gtypes.Part] = []
+                # Round-trip thought parts BEFORE visible content so the
+                # model's reasoning chain is presented in the same order
+                # it was emitted. Gemini 3.x docs recommend feeding thought
+                # parts back with their `thought_signature` intact so the
+                # next turn keeps the same reasoning context. Without
+                # round-trip the model still gets the visible answers but
+                # loses the internal chain that led to them.
+                import base64 as _b64
+
+                for tb in (msg.thinking_blocks or []):
+                    if not isinstance(tb, ThinkingBlock) or not tb.thinking:
+                        continue
+                    sig_bytes: bytes | None = None
+                    if tb.signature:
+                        try:
+                            sig_bytes = _b64.b64decode(tb.signature)
+                        except Exception:  # noqa: BLE001
+                            sig_bytes = None
+                    parts.append(
+                        gtypes.Part(
+                            text=tb.thinking,
+                            thought=True,
+                            thought_signature=sig_bytes,
+                        )
+                    )
+
                 text = ""
                 if isinstance(msg.content, str):
                     text = msg.content
@@ -716,8 +779,10 @@ class GoogleProvider:
                 # Should only appear in assistant messages; routed via
                 # msg.tool_calls above. Skip if it leaked into raw content.
                 continue
-            # Anything else (thinking blocks, etc.) is intentionally dropped —
-            # Gemini doesn't accept them on input.
+            # ThinkingBlock / RedactedThinkingBlock are handled in
+            # _convert_messages's assistant branch (they need to be
+            # emitted as Parts with thought=True and the right
+            # thought_signature). Anything else falls through.
         return parts
 
     def _parse_response(self, response: Any) -> ProviderResponse:
@@ -730,6 +795,7 @@ class GoogleProvider:
         # counts as visible assistant text, not the SDK's internal rules.
         text = self._extract_response_text(response)
         tool_calls = self._extract_function_calls(response) or None
+        thinking_blocks = self._extract_thinking_blocks(response) or None
         usage = self._extract_usage(response)
         finish_reason = self._extract_finish_reason(response) or "end_turn"
         stop_reason = "tool_use" if tool_calls else finish_reason
@@ -740,12 +806,19 @@ class GoogleProvider:
             usage=usage,
             stop_reason=stop_reason,
             model=getattr(response, "model_version", None) or self._model,
+            thinking_blocks=thinking_blocks,
         )
 
     def _chunk_to_events(
         self, chunk: Any, seen_tool_call_ids: set[str]
     ) -> list[StreamEvent]:
         events: list[StreamEvent] = []
+        # Stream thoughts before visible text so the renderer can show
+        # the reasoning trace expanding above the eventual answer chunk
+        # — same order Anthropic streams thinking_delta before text_delta.
+        for tb in self._extract_thinking_blocks(chunk):
+            if tb.thinking:
+                events.append(ThinkingDeltaEvent(thinking=tb.thinking))
         # Same reason as _parse_response: avoid the SDK's `.text` accessor
         # so streaming chunks that mix text + function_call don't dump a
         # warning per chunk into stderr.
@@ -763,6 +836,42 @@ class GoogleProvider:
                 payload = "{}"
             events.append(ToolInputDeltaEvent(partial_json=payload))
         return events
+
+    @staticmethod
+    def _extract_thinking_blocks(response: Any) -> list["ThinkingBlock"]:
+        """Pull thought Parts off the response as ThinkingBlocks.
+
+        Gemini returns reasoning content as text Parts flagged with
+        ``thought=True`` when ``include_thoughts=True`` is set on the
+        request. Each such Part can carry a ``thought_signature``;
+        base64-encode it onto ``ThinkingBlock.signature`` so the same
+        signature can be replayed on the next turn for proper reasoning-
+        chain continuity (Gemini 3.x docs recommend round-tripping
+        thought parts when present).
+        """
+        import base64 as _b64
+        from engine.types import ThinkingBlock
+
+        candidates = getattr(response, "candidates", None) or []
+        if not candidates:
+            return []
+        content = getattr(candidates[0], "content", None)
+        if content is None:
+            return []
+        parts = getattr(content, "parts", None) or []
+        blocks: list[ThinkingBlock] = []
+        for part in parts:
+            if not getattr(part, "thought", False):
+                continue
+            text = getattr(part, "text", "") or ""
+            if not text:
+                continue
+            sig_bytes = getattr(part, "thought_signature", None)
+            sig_b64 = ""
+            if isinstance(sig_bytes, (bytes, bytearray)) and sig_bytes:
+                sig_b64 = _b64.b64encode(bytes(sig_bytes)).decode("ascii")
+            blocks.append(ThinkingBlock(thinking=text, signature=sig_b64))
+        return blocks
 
     @staticmethod
     def _extract_response_text(response: Any) -> str:
@@ -847,13 +956,45 @@ class GoogleProvider:
 
     @staticmethod
     def _extract_usage(response: Any) -> APIUsage:
+        """Pull token counts off Gemini's usage_metadata.
+
+        Gemini reports four separate buckets:
+          · prompt_token_count           — fresh input
+          · candidates_token_count       — visible response output
+          · thoughts_token_count         — thinking tokens (billed at the
+                                            output rate)
+          · cached_content_token_count   — context-cache hits
+          · tool_use_prompt_token_count  — synthesized tool prompt tokens,
+                                            billed at input rate
+
+        To match the rest of the codebase (and OpenAI's convention where
+        ``output_tokens`` is the full billable output including reasoning),
+        we fold ``thoughts_token_count`` into ``output_tokens`` and keep
+        the same number visible separately in ``reasoning_tokens`` for
+        the dashboard's reasoning-spend breakdown. Without this fold a
+        thinking-heavy turn under-bills by 10×+ (the user's session log
+        showed 232 visible output tokens against $0.62 in actual spend —
+        all the missing spend was thoughts).
+        """
         meta = getattr(response, "usage_metadata", None)
         if not meta:
             return APIUsage()
+        prompt = int(getattr(meta, "prompt_token_count", 0) or 0)
+        candidates = int(getattr(meta, "candidates_token_count", 0) or 0)
+        thoughts = int(getattr(meta, "thoughts_token_count", 0) or 0)
+        cached = int(getattr(meta, "cached_content_token_count", 0) or 0)
+        tool_use_prompt = int(getattr(meta, "tool_use_prompt_token_count", 0) or 0)
+        # Gemini lists cached + tool_use_prompt separately from prompt,
+        # but `prompt_token_count` already INCLUDES cached content. Don't
+        # double-count: input_tokens is the fresh slice (prompt minus
+        # cached), cache_read_tokens carries the cached slice, and the
+        # tool_use_prompt slice is added on top of input.
+        fresh_input = max(0, prompt - cached) + tool_use_prompt
         return APIUsage(
-            input_tokens=int(getattr(meta, "prompt_token_count", 0) or 0),
-            output_tokens=int(getattr(meta, "candidates_token_count", 0) or 0),
-            cache_read_tokens=int(getattr(meta, "cached_content_token_count", 0) or 0),
+            input_tokens=fresh_input,
+            output_tokens=candidates + thoughts,
+            cache_read_tokens=cached,
+            reasoning_tokens=thoughts,
         )
 
     @staticmethod
