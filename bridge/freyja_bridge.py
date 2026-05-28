@@ -6597,11 +6597,20 @@ class _BridgeState:
         model_id: str | None = None,
         reasoning_level: str | None = None,
         coordination_strategy: str | None = None,
+        gateway_source: Any = None,
     ) -> _BridgeSession:
         from bridge.tools.coordination import normalize_coordination_strategy
 
         existing = self.sessions.get(session_id)
         if existing is not None:
+            # CRITICAL: do NOT overwrite existing.gateway_source here.
+            # An in-flight turn for an EARLIER message would suddenly
+            # see the NEW message's source mid-execution, and its
+            # send_attachment / approval-prompt calls would route to
+            # the wrong thread. The per-turn ``on_turn_start`` hook
+            # (set up by the gateway runner before scheduling each
+            # turn) is the right place to mutate gateway_source — it
+            # fires only when this turn is actually the active one.
             changed = False
             if model_id and model_id != existing.model_id:
                 existing.model_id = model_id
@@ -6641,6 +6650,14 @@ class _BridgeState:
             state=self,
         )
         self.sessions[session_id] = s
+        # New session: set gateway_source BEFORE try_restore_transcript
+        # runs (it calls self.initialize internally, which reads
+        # gateway_source to decide whether to register send_attachment
+        # + apply the capability filter). If we set it after, the
+        # initial registration block sees None and silently no-ops,
+        # leaving the session permanently without send_attachment.
+        if gateway_source is not None:
+            s.gateway_source = gateway_source
         self.active_session_id = session_id
 
         # Attempt transcript restoration from disk for persisted sessions.
@@ -6947,6 +6964,23 @@ def _force_cancel_session(sess: "_BridgeSession") -> int:
     return fired
 
 
+def _run_pre_turn_hook(hook: Any, sess: "_BridgeSession") -> None:
+    """Run a turn's setup hook safely. The hook is the caller's chance
+    to install per-turn state (gateway_source, stream consumer
+    registration) IMMEDIATELY before the turn's run_turn starts.
+
+    Splitting this out of the scheduler-vs-queue paths so both code
+    paths invoke the hook with identical semantics — and so a
+    badly-behaved hook can't kill the turn dispatch loop.
+    """
+    if hook is None:
+        return
+    try:
+        hook()
+    except Exception as exc:  # noqa: BLE001
+        log("warn", f"pre-turn hook raised on session={sess.id}: {exc}")
+
+
 async def _run_turn_queue(
     sess: "_BridgeSession",
     content: str,
@@ -6963,12 +6997,27 @@ async def _run_turn_queue(
     # turn was running. Goal-loop continuation checks the same queue
     # before auto-continuing, so real user input preempts automation.
     while sess.queued_messages:
-        q_content, q_attachments = sess.queued_messages.pop(0)
+        entry = sess.queued_messages.pop(0)
+        # Queue entries are (content, attachments[, on_turn_start]).
+        # The hook is what installs per-turn state right before
+        # run_turn — see _on_inbound in gateway/run.py for the
+        # use case (set session.gateway_source for the QUEUED
+        # message's source + register that message's stream
+        # consumer). Without this deferral, a consumer / source set
+        # at message-arrival time would have already overwritten
+        # the in-flight turn's state and routed its output to the
+        # wrong thread.
+        if len(entry) == 3:
+            q_content, q_attachments, q_hook = entry
+        else:
+            q_content, q_attachments = entry
+            q_hook = None
         log(
             "info",
             f"processing queued message on session={sess.id} "
             f"({len(sess.queued_messages)} remaining)",
         )
+        _run_pre_turn_hook(q_hook, sess)
         try:
             await sess.run_turn(q_content, q_attachments)
         except asyncio.CancelledError:
@@ -6982,9 +7031,19 @@ def _schedule_or_queue_turn(
     sess: "_BridgeSession",
     content: str,
     attachments: list[dict[str, Any]] | None = None,
+    on_turn_start: Any = None,
 ) -> bool:
+    """Schedule a turn, or queue it if one is already in flight.
+
+    ``on_turn_start`` is a zero-arg callable that's invoked
+    SYNCHRONOUSLY immediately before the turn's first await — at the
+    earliest possible moment when "this turn is the active turn" is
+    true. Use it to mutate session-level state (gateway_source) and
+    register per-turn event listeners (Slack stream consumer)
+    without racing the previous turn's tail-end events.
+    """
     if sess.pending_task and not sess.pending_task.done():
-        sess.queued_messages.append((content, attachments))
+        sess.queued_messages.append((content, attachments, on_turn_start))
         log(
             "info",
             f"queued message on session={sess.id} "
@@ -7001,6 +7060,9 @@ def _schedule_or_queue_turn(
         )
         return False
 
+    # Immediate dispatch — run the hook BEFORE spawning the task so the
+    # per-turn state is in place when run_turn begins emitting events.
+    _run_pre_turn_hook(on_turn_start, sess)
     sess.pending_task = asyncio.create_task(
         _run_turn_queue(sess, content, attachments),
         name=f"turn-{sess.id}",

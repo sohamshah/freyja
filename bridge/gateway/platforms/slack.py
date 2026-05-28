@@ -543,11 +543,21 @@ class SlackAdapter:
                     self._dedup = dict(items[len(items) // 2 :])
 
         # Filter bot messages — never respond to ourselves (echo loop).
+        # MUST check against the bot's user_id in EVERY workspace, not
+        # just the primary one. In a multi-workspace install the
+        # secondary workspace's bot has a different user_id, and a
+        # naive ``user_id == self._bot_user_id`` check lets the bot's
+        # own messages from that workspace flow through inbound
+        # processing, triggering a response → echo loop.
         subtype = event.get("subtype")
         bot_id = event.get("bot_id")
         user_id = event.get("user", "")
-        if (bot_id or subtype == "bot_message") and user_id == self._bot_user_id:
-            return
+        if bot_id or subtype == "bot_message":
+            known_bot_ids = set(self._team_bot_user_ids.values())
+            if self._bot_user_id:
+                known_bot_ids.add(self._bot_user_id)
+            if user_id in known_bot_ids:
+                return
         # Skip non-content messages (edits, deletes).
         if subtype in {"message_changed", "message_deleted"}:
             return

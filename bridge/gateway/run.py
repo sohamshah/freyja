@@ -200,9 +200,25 @@ class GatewayDaemon:
         # user message. Future: shortcut some slashes to in-gateway
         # handlers without involving the agent.
 
-        # Build a per-turn stream consumer and wire it as a listener.
-        # We unregister inside on_complete so each turn gets a fresh
-        # consumer + fresh Slack message anchor.
+        # Build a per-turn stream consumer. CRITICALLY we do NOT
+        # register the consumer as a session listener here. Doing so
+        # eagerly (back when this code did `register_session_listener`
+        # right after construction) created a race when a second
+        # message arrived while the first message's turn was still
+        # running: the second consumer started receiving the first
+        # turn's events and routed the bot's response into the WRONG
+        # thread (second message's), and also wrongly finalized on
+        # the first turn's turn_complete — leaving the second message
+        # with no response at all.
+        #
+        # Instead, we hand the registration to the bridge's
+        # ``_schedule_or_queue_turn`` as an ``on_turn_start`` hook. The
+        # hook fires SYNCHRONOUSLY immediately before this turn's
+        # ``run_turn`` begins emitting events — whether immediately
+        # (no prior turn in flight) or later when the queue drains.
+        # Same hook also stamps ``session.gateway_source`` so this
+        # turn's tool calls (send_attachment, destructive approval
+        # prompts) target the right Slack thread.
         consumer_holder: dict[str, object] = {}
 
         def _unregister() -> None:
@@ -218,7 +234,19 @@ class GatewayDaemon:
             on_complete=_unregister,
         )
         consumer_holder["on_event"] = consumer.on_event
-        register_session_listener(key, consumer.on_event)
+
+        # Captured into closure: this turn's source + the consumer
+        # to attach. Closes over locals so the hook is self-contained.
+        _turn_source = message.source
+        _turn_session = session
+        _turn_consumer = consumer
+
+        def _on_turn_start() -> None:
+            # Mutate session.gateway_source for the duration of THIS
+            # turn — the per-turn tool resolvers (SendAttachmentTool,
+            # destructive gate) read this attribute at call time.
+            _turn_session.gateway_source = _turn_source
+            register_session_listener(key, _turn_consumer.on_event)
 
         # Pull prior thread / DM context from the platform so the
         # agent sees what was said before it was triggered. Critical
@@ -275,10 +303,16 @@ class GatewayDaemon:
         ] or None
         try:
             _schedule_or_queue_turn(
-                session, framed_text, downstream_attachments
+                session,
+                framed_text,
+                downstream_attachments,
+                on_turn_start=_on_turn_start,
             )
         except Exception:
             logger.exception("schedule_or_queue_turn failed")
+            # Defensive: if scheduling fails, the hook may or may not
+            # have fired. Best-effort unregister so a half-registered
+            # consumer doesn't leak.
             unregister_session_listener(key, consumer.on_event)
 
     def _adapter_for_platform(self, platform: Platform) -> object | None:

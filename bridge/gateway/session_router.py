@@ -222,13 +222,17 @@ async def route(
         (message.text or "")[:80],
     )
 
-    # ensure_session is the existing bridge entry point that creates or
-    # restores a session by id. It handles transcript rehydration and
-    # backward compat. We pass gateway_source THROUGH ensure_session so
-    # the attribute is set on the session BEFORE try_restore_transcript
-    # triggers initialize() — otherwise the gateway-only tool
-    # registration (`send_attachment` et al) silently skips because
-    # `self.gateway_source` is None at registration check time.
+    # ensure_session is the existing bridge entry point that creates
+    # or restores a session by id. ``gateway_source`` is only used for
+    # the NEW-session path (so the session's first ``initialize()``
+    # call, triggered inside ``try_restore_transcript``, can register
+    # send_attachment + apply capability filter). For EXISTING
+    # sessions, ensure_session deliberately does NOT mutate
+    # ``existing.gateway_source`` — an in-flight earlier turn might
+    # still be running, and overwriting its source mid-turn would
+    # route its tool calls to the wrong Slack thread. The per-turn
+    # ``on_turn_start`` hook (installed by ``_on_inbound`` below) is
+    # what advances ``session.gateway_source`` at turn boundaries.
     session = await bridge_state.ensure_session(
         session_id=key,
         model_id=default_model,
@@ -236,8 +240,12 @@ async def route(
         gateway_source=message.source,
     )
 
-    # Belt: keep the legacy setattr too — covers any code path that
-    # built a session without going through ensure_session(...).
-    setattr(session, "gateway_source", message.source)
+    # NOTE: do NOT setattr(session, "gateway_source", message.source)
+    # here. That used to be a "belt-and-suspenders" line but it
+    # silently re-introduced the concurrent-turn race we just designed
+    # ensure_session to avoid — same bug, two-step. The caller
+    # (_on_inbound) wires session.gateway_source via the per-turn
+    # ``on_turn_start`` hook on ``_schedule_or_queue_turn`` so the
+    # mutation happens at the right moment.
 
     return key, session
