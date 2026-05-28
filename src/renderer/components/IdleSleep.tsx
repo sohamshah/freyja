@@ -19,7 +19,7 @@ import sleepVideoUrl from '../assets/dogs_sleep.mp4'
  * Mount this once at the top level. It manages its own listeners + timer.
  */
 
-const IDLE_MS = 60_000 // 60s of full quiet before we sleep
+const IDLE_MS = 5 * 60_000 // 5min of full quiet before we sleep
 const POLL_MS = 750 // how often the sleep/wake check runs
 const WAKE_GRACE_MS = 1000 // any activity within this window counts as "recent"
 
