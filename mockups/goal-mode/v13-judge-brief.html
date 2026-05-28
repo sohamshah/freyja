@@ -1,0 +1,680 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Goal · v13 Judge Brief (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a;
+    --fg-0:#ececec; --fg-1:#a8a8a8; --fg-2:#7a7a7a; --fg-3:#5a5a5a; --fg-4:#3a3a3a;
+    --accent:#a8d4fc; --accent-lo:#7aafea;
+    --ok:#88d67f; --warn:#ffcc66; --danger:#ff6b6b;
+    --judge:#c4b5fd;
+    --hairline:rgba(255,255,255,0.06);
+    --hairline-strong:rgba(255,255,255,0.10);
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.65;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(700px 500px at 18% -10%, rgba(196,181,253,0.05), transparent 60%),
+      radial-gradient(700px 500px at 82% 110%, rgba(168,212,252,0.04), transparent 60%);
+  }
+
+  .app { position:relative; z-index:1; min-height:100vh; }
+
+  /* sticky head */
+  .strip {
+    position:sticky; top:0; z-index:30;
+    background:linear-gradient(180deg, rgba(10,10,10,0.95), rgba(10,10,10,0.85));
+    backdrop-filter:blur(10px);
+    padding:14px 32px;
+    display:flex; align-items:center; justify-content:space-between;
+    border-bottom:1px solid var(--hairline);
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+  }
+  .strip .left { display:flex; align-items:center; gap:14px; }
+  .strip .live { color:var(--fg-2); display:inline-flex; align-items:center; gap:7px; }
+  .strip .live::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--judge);
+    box-shadow:0 0 8px var(--judge); animation:pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .strip .right { color:var(--fg-3); display:flex; gap:18px; align-items:center; }
+  .strip .actions { display:flex; gap:6px; }
+  .strip .actions button {
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline);
+    color:var(--fg-2); font:inherit; font-size:10.5px; letter-spacing:0.16em; text-transform:uppercase;
+    padding:5px 10px; border-radius:6px; cursor:pointer;
+  }
+  .strip .actions button:hover { color:var(--fg-0); background:rgba(255,255,255,0.06); }
+  .strip .actions button.preset { color:var(--judge); border-color:rgba(196,181,253,0.22); background:rgba(196,181,253,0.06); }
+
+  /* main grid */
+  .main {
+    display:grid; grid-template-columns:minmax(0, 1fr) 380px;
+    min-height:0;
+  }
+
+  /* brief side */
+  .brief-pane {
+    padding:48px 56px 200px;
+    border-right:1px solid var(--hairline);
+    overflow-y:auto;
+    max-height:calc(100vh - 50px);
+  }
+
+  .memo {
+    max-width:680px;
+  }
+
+  /* memo header (To/From/Re) */
+  .memo-head {
+    display:grid; grid-template-columns:60px 1fr; row-gap:6px; column-gap:18px;
+    padding-bottom:18px; border-bottom:1px solid var(--hairline); margin-bottom:36px;
+    color:var(--fg-2); font-size:11.5px; letter-spacing:0.04em;
+  }
+  .memo-head .l { color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase; padding-top:2px; }
+  .memo-head .v { color:var(--fg-1); }
+  .memo-head .v .em { color:var(--fg-0); }
+  .memo-head .v .judge-tag {
+    color:var(--judge);
+    font-family:var(--serif); font-style:italic; font-weight:300; font-size:13px;
+  }
+  .memo-head .v .pill {
+    display:inline-block; padding:1px 8px; border-radius:4px;
+    background:rgba(196,181,253,0.07); border:1px solid rgba(196,181,253,0.18);
+    color:var(--judge); font-size:10.5px; margin-left:6px;
+  }
+
+  .memo-eyebrow {
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.32em; text-transform:uppercase;
+    margin-bottom:10px;
+  }
+  .memo-title {
+    font-family:var(--serif); font-weight:300; font-size:30px; line-height:1.35;
+    letter-spacing:-0.005em; color:var(--fg-0); margin:0 0 12px;
+  }
+  .memo-prelude {
+    color:var(--fg-1); font-family:var(--serif); font-weight:300; font-size:15px; line-height:1.75;
+    margin:0 0 32px; max-width:600px;
+  }
+  .memo-prelude .em { color:var(--fg-0); }
+
+  /* sections */
+  .sec { margin:36px 0; }
+  .sec-head {
+    display:flex; align-items:baseline; justify-content:space-between;
+    border-bottom:1px solid var(--hairline);
+    padding-bottom:8px; margin-bottom:14px;
+  }
+  .sec-head .ti {
+    font-family:var(--serif); font-weight:400; font-size:15px; color:var(--fg-0);
+    letter-spacing:-0.005em;
+  }
+  .sec-head .ti .marker { color:var(--fg-3); font-family:var(--mono); font-size:11px; margin-right:10px; letter-spacing:0; }
+  .sec-head .ctrl { display:flex; gap:8px; align-items:center;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase; }
+  .sec-head .ctrl .add {
+    background:rgba(255,255,255,0.04); border:1px solid var(--hairline);
+    color:var(--fg-2); font:inherit; font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    padding:3px 8px; border-radius:4px; cursor:pointer;
+  }
+  .sec-head .ctrl .add:hover { color:var(--fg-0); background:rgba(255,255,255,0.06); }
+  .sec-head .ctrl .updated { color:var(--judge); display:inline-flex; align-items:center; gap:6px; }
+  .sec-head .ctrl .updated::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--judge); box-shadow:0 0 6px var(--judge); }
+
+  .sec-body { color:var(--fg-1); font-size:14px; line-height:1.75; }
+  .sec-body p { margin:0 0 12px; font-family:var(--serif); font-weight:300; font-size:14.5px; }
+  .sec-body p:last-child { margin-bottom:0; }
+  .sec-body code { color:var(--fg-0); }
+  .sec-body .em { color:var(--fg-0); }
+
+  .editable {
+    cursor:text; padding:4px 8px; margin:0 -8px; border-radius:4px; transition:background 200ms;
+  }
+  .editable:hover { background:rgba(255,255,255,0.018); }
+
+  /* criteria list */
+  .crit-list { display:flex; flex-direction:column; gap:6px; }
+  .crit {
+    display:grid; grid-template-columns:80px 1fr auto; gap:14px;
+    align-items:center;
+    padding:8px 10px; border-radius:8px;
+    background:rgba(255,255,255,0.012);
+    border:1px solid var(--hairline);
+  }
+  .crit:hover { background:rgba(255,255,255,0.025); }
+  .crit .pill {
+    text-align:center; padding:2px 0; border-radius:4px;
+    font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    font-family:var(--mono); cursor:pointer;
+  }
+  .crit .pill.must     { background:rgba(255,107,107,0.06); color:#ff8a8a; border:1px solid rgba(255,107,107,0.18); }
+  .crit .pill.should   { background:rgba(255,204,102,0.06); color:var(--warn); border:1px solid rgba(255,204,102,0.18); }
+  .crit .pill.may      { background:rgba(168,212,252,0.06); color:var(--accent); border:1px solid rgba(168,212,252,0.18); }
+  .crit .pill.provisional { background:rgba(196,181,253,0.07); color:var(--judge); border:1px dashed rgba(196,181,253,0.32); }
+  .crit .text { color:var(--fg-0); font-size:13.5px; line-height:1.5; cursor:text; }
+  .crit .text .note { color:var(--fg-3); font-size:11.5px; margin-left:6px; }
+  .crit .status {
+    display:inline-flex; align-items:center; gap:6px;
+    color:var(--fg-2); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+  .crit.met .status { color:var(--ok); }
+  .crit.partial .status { color:var(--accent); }
+  .crit.miss .status { color:var(--fg-3); }
+  .crit .status .g {
+    width:14px; text-align:center;
+    font-family:var(--mono);
+  }
+
+  .crit.provisional {
+    background:rgba(196,181,253,0.04);
+    border-color:rgba(196,181,253,0.18);
+  }
+  .crit.provisional .actions {
+    display:flex; gap:6px;
+  }
+  .crit.provisional .actions button {
+    background:rgba(255,255,255,0.04); border:1px solid var(--hairline);
+    color:var(--fg-1); font:inherit; font-size:10.5px; letter-spacing:0.06em;
+    padding:3px 9px; border-radius:5px; cursor:pointer;
+  }
+  .crit.provisional .actions button.approve { color:var(--ok); border-color:rgba(136,214,127,0.22); background:rgba(136,214,127,0.06); }
+  .crit.provisional .actions button.approve:hover { background:rgba(136,214,127,0.12); }
+  .crit.provisional .actions button.drop { color:var(--fg-2); }
+  .crit.provisional .actions button.drop:hover { color:var(--warn); }
+
+  /* voice tags */
+  .voice-tags { display:flex; gap:6px; flex-wrap:wrap; margin-top:14px; }
+  .voice-tag {
+    padding:4px 10px; border-radius:14px;
+    background:rgba(255,255,255,0.04); border:1px solid var(--hairline);
+    color:var(--fg-2); font-size:11px; cursor:pointer; transition:all 120ms;
+  }
+  .voice-tag:hover { color:var(--fg-0); background:rgba(255,255,255,0.06); }
+  .voice-tag.active {
+    color:var(--judge); border-color:rgba(196,181,253,0.32); background:rgba(196,181,253,0.08);
+  }
+
+  /* see-list (visibility toggles) */
+  .see-list { display:flex; flex-direction:column; gap:6px; }
+  .see-row {
+    display:grid; grid-template-columns:1fr auto; gap:14px;
+    align-items:center;
+    padding:8px 10px; border-radius:6px;
+    background:rgba(255,255,255,0.012); border:1px solid var(--hairline);
+    color:var(--fg-1); font-size:12.5px;
+  }
+  .see-row .toggle {
+    width:36px; height:18px; border-radius:9px; background:rgba(255,255,255,0.08);
+    position:relative; cursor:pointer; transition:background 120ms;
+  }
+  .see-row .toggle::after {
+    content:""; position:absolute; left:2px; top:2px; width:14px; height:14px; border-radius:50%;
+    background:var(--fg-2); transition:left 160ms ease, background 120ms;
+  }
+  .see-row.on .toggle { background:rgba(196,181,253,0.32); }
+  .see-row.on .toggle::after { left:18px; background:var(--judge); box-shadow:0 0 6px var(--judge); }
+  .see-row .what { display:flex; flex-direction:column; gap:2px; }
+  .see-row .what .ti { color:var(--fg-0); }
+  .see-row .what .sub { color:var(--fg-3); font-size:11px; }
+  .see-row.on .what .ti { color:var(--fg-0); }
+
+  /* radio choice */
+  .radio-list { display:flex; flex-direction:column; gap:4px; }
+  .radio-row {
+    display:grid; grid-template-columns:18px 1fr; gap:12px;
+    align-items:center;
+    padding:6px 10px 6px 0; border-radius:6px; cursor:pointer;
+    color:var(--fg-1); font-size:13px;
+  }
+  .radio-row:hover { background:rgba(255,255,255,0.018); }
+  .radio-row .r {
+    width:14px; height:14px; border-radius:50%;
+    border:1.5px solid var(--fg-3);
+    display:flex; align-items:center; justify-content:center;
+  }
+  .radio-row.checked .r { border-color:var(--judge); }
+  .radio-row.checked .r::after { content:""; width:6px; height:6px; border-radius:50%; background:var(--judge); box-shadow:0 0 6px var(--judge); }
+  .radio-row .label { font-family:var(--serif); font-style:italic; font-weight:300; font-size:14px; }
+  .radio-row.checked .label { color:var(--fg-0); }
+
+  /* never-do list */
+  .never-list { display:flex; flex-direction:column; gap:8px; }
+  .never-list li {
+    display:grid; grid-template-columns:18px 1fr; gap:10px;
+    color:var(--fg-1); font-size:13.5px; line-height:1.65;
+  }
+  .never-list li .g { color:var(--danger); padding-top:1px; }
+  .never-list li .em { color:var(--fg-0); }
+
+  /* signoff */
+  .signoff {
+    margin-top:48px; padding-top:18px;
+    border-top:2px solid var(--hairline);
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    display:flex; justify-content:space-between; align-items:flex-end;
+  }
+  .signoff .from {
+    font-family:var(--serif); font-style:italic; font-weight:300; font-size:14px;
+    color:var(--fg-2); letter-spacing:0; text-transform:none;
+  }
+  .signoff .from .name { color:var(--fg-0); }
+
+  /* preview pane */
+  .preview-pane {
+    background:rgba(0,0,0,0.25);
+    overflow-y:auto;
+    max-height:calc(100vh - 50px);
+    display:flex; flex-direction:column;
+  }
+  .preview-pane .ph-strip {
+    padding:18px 22px 14px;
+    border-bottom:1px solid var(--hairline);
+    display:flex; align-items:center; justify-content:space-between;
+  }
+  .preview-pane .ph-strip .ti {
+    color:var(--judge); font-family:var(--serif); font-style:italic; font-weight:300; font-size:14px;
+    display:inline-flex; align-items:center; gap:8px;
+  }
+  .preview-pane .ph-strip .ti::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--judge); box-shadow:0 0 8px var(--judge); }
+  .preview-pane .ph-strip .lbl { color:var(--fg-3); font-size:10px; letter-spacing:0.22em; text-transform:uppercase; }
+
+  .pv-section { padding:18px 22px; border-bottom:1px solid var(--hairline); }
+  .pv-section .lbl {
+    color:var(--fg-3); font-size:10px; letter-spacing:0.22em; text-transform:uppercase;
+    margin-bottom:8px;
+  }
+
+  .verdict-card {
+    border:1px solid rgba(196,181,253,0.2);
+    background:linear-gradient(180deg, rgba(196,181,253,0.04), rgba(196,181,253,0.01));
+    border-radius:10px;
+    padding:14px 16px;
+  }
+  .verdict-card .verdict-tag {
+    display:inline-block;
+    padding:2px 10px; border-radius:4px;
+    background:rgba(196,181,253,0.08); border:1px solid rgba(196,181,253,0.22);
+    color:var(--judge); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    margin-bottom:8px;
+  }
+  .verdict-card .reason {
+    color:var(--fg-1); font-size:13px; line-height:1.7;
+    font-family:var(--serif); font-style:italic; font-weight:300;
+  }
+  .verdict-card .reason::before { content:"\201C"; color:var(--judge); }
+  .verdict-card .reason::after  { content:"\201D"; color:var(--judge); }
+  .verdict-card .reason code { color:var(--fg-0); font-family:var(--mono); font-style:normal; font-size:12px; }
+
+  /* counterfactuals */
+  .cf-list { display:flex; flex-direction:column; gap:8px; margin-top:10px; }
+  .cf {
+    padding:10px 12px; border-radius:8px;
+    background:rgba(255,255,255,0.02); border:1px solid var(--hairline);
+    color:var(--fg-1); font-size:12px; line-height:1.6;
+    display:grid; grid-template-columns:14px 1fr; gap:8px;
+  }
+  .cf .g { color:var(--fg-3); }
+  .cf .em { color:var(--fg-0); }
+  .cf .verdict { color:var(--judge); font-family:var(--mono); font-size:11px; letter-spacing:0.18em; text-transform:uppercase; }
+  .cf .verdict.done { color:var(--ok); }
+
+  .pv-section.track {
+    color:var(--fg-2); font-size:11.5px;
+    display:flex; flex-direction:column; gap:6px;
+  }
+  .pv-section.track .row { display:flex; justify-content:space-between; }
+  .pv-section.track .row .num { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+
+  .pv-section.history { color:var(--fg-3); font-size:11.5px; }
+  .pv-section.history .row {
+    display:grid; grid-template-columns:50px 1fr;
+    gap:10px; padding:4px 0;
+  }
+  .pv-section.history .ts { color:var(--fg-3); }
+  .pv-section.history .ev { color:var(--fg-1); font-style:italic; font-family:var(--serif); font-weight:300; font-size:13px; line-height:1.5; }
+  .pv-section.history .ev .em { color:var(--fg-0); }
+
+  /* cradle */
+  .cradle-wrap {
+    position:fixed; left:0; right:380px; bottom:0;
+    padding:18px 24px 16px;
+    background:linear-gradient(0deg, var(--bg-0) 70%, transparent);
+    pointer-events:none; z-index:30;
+  }
+  .cradle {
+    pointer-events:auto;
+    max-width:680px; margin:0 auto;
+    background:rgba(20,20,20,0.6);
+    backdrop-filter:blur(36px) saturate(140%);
+    -webkit-backdrop-filter:blur(36px) saturate(140%);
+    border-radius:14px;
+    border:1px solid var(--hairline);
+    box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.07), 0 12px 40px -8px rgba(0,0,0,0.5);
+    padding:14px 18px 12px;
+    display:flex; flex-direction:column; gap:8px;
+  }
+  .cradle textarea {
+    background:transparent; border:0; outline:0; color:var(--fg-0);
+    font:inherit; resize:none; width:100%; min-height:22px;
+  }
+  .cradle textarea::placeholder { color:var(--fg-3); }
+  .cradle-hint { display:flex; justify-content:space-between; color:var(--fg-3); font-size:11px; }
+  .cradle-hint kbd { color:var(--fg-2); background:rgba(255,255,255,0.04);
+    padding:1px 6px; border-radius:4px; font-family:inherit; font-size:10.5px; }
+
+  ::-webkit-scrollbar { width:8px; }
+  ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.05); border-radius:6px; }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="app">
+
+  <div class="strip">
+    <div class="left">
+      <span>freyja · judge brief</span>
+      <span class="live">judge online</span>
+    </div>
+    <div class="right">
+      <span>v3 · 3 edits this session · <a href="#" style="color:var(--fg-2)">diff</a></span>
+      <span class="actions">
+        <button class="preset">load preset…</button>
+        <button>save as preset</button>
+      </span>
+    </div>
+  </div>
+
+  <div class="main">
+
+    <!-- BRIEF SIDE -->
+    <div class="brief-pane">
+      <div class="memo">
+
+        <div class="memo-head">
+          <div class="l">to</div>      <div class="v"><span class="judge-tag">haiku 4.5</span> <span class="pill">acting as judge</span></div>
+          <div class="l">re</div>      <div class="v"><span class="em">grounded covered-call recommendation for $250k retirement portfolio</span> · turn 5 of 15</div>
+          <div class="l">from</div>    <div class="v">the operator (you)</div>
+          <div class="l">date</div>    <div class="v">may 11 · 11:18</div>
+        </div>
+
+        <div class="memo-eyebrow">brief</div>
+        <h1 class="memo-title">You are the judge for this goal.</h1>
+        <p class="memo-prelude">Read each turn the agent produces and decide whether the work is complete enough to deliver. Continue the loop until you're satisfied. Until then, return prose explaining what's still missing — name the gaps as concretely as you can.</p>
+
+        <!-- WHAT DONE LOOKS LIKE -->
+        <section class="sec">
+          <div class="sec-head">
+            <span class="ti"><span class="marker">§ 1</span>What "done" looks like</span>
+            <span class="ctrl"><button class="add">+ add criterion</button></span>
+          </div>
+          <div class="crit-list">
+
+            <div class="crit met">
+              <span class="pill must">must</span>
+              <span class="text">Explain the strategy in plain English, with a clear payoff diagram.</span>
+              <span class="status"><span class="g">✓</span>met</span>
+            </div>
+
+            <div class="crit met">
+              <span class="pill must">must</span>
+              <span class="text">Source every quantitative claim. <span class="note">— at least one citation per number</span></span>
+              <span class="status"><span class="g">✓</span>met</span>
+            </div>
+
+            <div class="crit partial">
+              <span class="pill must">must</span>
+              <span class="text">Address tax treatment in IRA, Roth IRA, and taxable accounts.</span>
+              <span class="status"><span class="g">◐</span>partial</span>
+            </div>
+
+            <div class="crit miss">
+              <span class="pill must">must</span>
+              <span class="text">Give a concrete strike-selection framework, not a vibe.</span>
+              <span class="status"><span class="g">○</span>missing</span>
+            </div>
+
+            <div class="crit miss">
+              <span class="pill should">should</span>
+              <span class="text">Cover at least one alternative income strategy for comparison.</span>
+              <span class="status"><span class="g">○</span>missing</span>
+            </div>
+
+            <div class="crit miss">
+              <span class="pill should">should</span>
+              <span class="text">Acknowledge scenarios where the recommendation is "don't do this."</span>
+              <span class="status"><span class="g">○</span>missing</span>
+            </div>
+
+            <div class="crit met">
+              <span class="pill may">may</span>
+              <span class="text">Include a one-line risk caveat at the end.</span>
+              <span class="status"><span class="g">✓</span>met</span>
+            </div>
+
+            <div class="crit provisional">
+              <span class="pill provisional">provisional</span>
+              <span class="text" style="display:flex; flex-direction:column; gap:4px">
+                <span>Address the 2025 IRS Section 1256 clarification.</span>
+                <span class="note" style="margin:0; color:var(--judge); font-style:italic; font-family:var(--serif); font-weight:300">surfaced by the judge during turn 5 while researching tax timing</span>
+              </span>
+              <span class="actions">
+                <button class="approve">+ should</button>
+                <button class="approve">+ must</button>
+                <button class="drop">drop</button>
+              </span>
+            </div>
+
+          </div>
+        </section>
+
+        <!-- VOICE -->
+        <section class="sec">
+          <div class="sec-head">
+            <span class="ti"><span class="marker">§ 2</span>Your voice</span>
+            <span class="ctrl"><span class="updated">edited 12s ago</span></span>
+          </div>
+          <div class="sec-body editable">
+            <p>Skeptical but not adversarial. Demanding when it comes to evidence; flexible when it comes to format. <span class="em">If you don't have a citation, say "needs citation" — never guess one.</span> When you call something a blind spot, name what's blind. Avoid jargon for jargon's sake; you're addressing the operator, not other judges.</p>
+          </div>
+          <div class="voice-tags">
+            <span class="voice-tag active">skeptical</span>
+            <span class="voice-tag active">demanding on evidence</span>
+            <span class="voice-tag">encouraging</span>
+            <span class="voice-tag">patient</span>
+            <span class="voice-tag">pedantic</span>
+            <span class="voice-tag">brisk</span>
+          </div>
+        </section>
+
+        <!-- WHAT YOU CAN SEE -->
+        <section class="sec">
+          <div class="sec-head">
+            <span class="ti"><span class="marker">§ 3</span>What you can see</span>
+          </div>
+          <div class="see-list">
+            <div class="see-row on">
+              <div class="what">
+                <span class="ti">The agent's latest turn</span>
+                <span class="sub">always — this is the minimum context for any verdict</span>
+              </div>
+              <div class="toggle"></div>
+            </div>
+            <div class="see-row on">
+              <div class="what">
+                <span class="ti">The previous 3 turns</span>
+                <span class="sub">for trajectory context · adjustable</span>
+              </div>
+              <div class="toggle"></div>
+            </div>
+            <div class="see-row on">
+              <div class="what">
+                <span class="ti">The agent's tool outputs (web fetches, files read)</span>
+                <span class="sub">lets you check sources directly</span>
+              </div>
+              <div class="toggle"></div>
+            </div>
+            <div class="see-row">
+              <div class="what">
+                <span class="ti">Invoke your own searches if needed</span>
+                <span class="sub">independently verify · adds latency and cost</span>
+              </div>
+              <div class="toggle"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- WHEN YOU MAY ADD CRITERIA -->
+        <section class="sec">
+          <div class="sec-head">
+            <span class="ti"><span class="marker">§ 4</span>When you may add new criteria</span>
+          </div>
+          <div class="sec-body" style="margin-bottom:14px">
+            <p style="font-size:13.5px">As you read the agent's work, you may notice considerations the operator didn't think of. Choose how to handle that.</p>
+          </div>
+          <div class="radio-list">
+            <div class="radio-row">
+              <div class="r"></div>
+              <div><span class="label">auto-add</span><br/><span style="color:var(--fg-3); font-size:11px">add new criteria silently · faster but less control</span></div>
+            </div>
+            <div class="radio-row checked">
+              <div class="r"></div>
+              <div><span class="label">flag for my approval</span><br/><span style="color:var(--judge); font-size:11px">— current setting · provisional criteria appear in §1 awaiting approve / drop</span></div>
+            </div>
+            <div class="radio-row">
+              <div class="r"></div>
+              <div><span class="label">never add</span><br/><span style="color:var(--fg-3); font-size:11px">stick rigidly to the criteria above · best for narrow goals</span></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- NEVER DO -->
+        <section class="sec">
+          <div class="sec-head">
+            <span class="ti"><span class="marker">§ 5</span>What you should never do</span>
+            <span class="ctrl"><button class="add">+ add</button></span>
+          </div>
+          <div class="sec-body">
+            <ul class="never-list">
+              <li><span class="g">·</span><span><span class="em">Accept "we'd need more research" as resolution.</span> If the agent punts, the judge's job is to push back, not let it slide.</span></li>
+              <li><span class="g">·</span><span><span class="em">Approve when key quantitative claims are unsourced.</span> A confident-sounding number with no citation is a worse outcome than no number at all.</span></li>
+              <li><span class="g">·</span><span><span class="em">Let the recommendation be more confident than the evidence.</span> If §1 says "should acknowledge when not to do this," don't approve drafts that omit that.</span></li>
+              <li><span class="g">·</span><span><span class="em">Fabricate sources, even plausibly.</span> Better to surface a missing citation than to invent one that doesn't exist.</span></li>
+            </ul>
+          </div>
+        </section>
+
+        <!-- WHEN TO STOP -->
+        <section class="sec">
+          <div class="sec-head">
+            <span class="ti"><span class="marker">§ 6</span>When to stop the loop</span>
+          </div>
+          <div class="sec-body">
+            <p>Continue until <em>any</em> of the following is true:</p>
+            <ul class="never-list" style="margin-top:8px">
+              <li><span class="g" style="color:var(--ok)">·</span><span>All <code>must</code> criteria are addressed <span class="em">and</span> at least 80% of <code>should</code> criteria are addressed.</span></li>
+              <li><span class="g" style="color:var(--ok)">·</span><span>The operator types <code>ship it</code> in the cradle — your verdict is overridden.</span></li>
+              <li><span class="g" style="color:var(--warn)">·</span><span>The turn budget runs out (currently <span class="em">15 turns</span>, 10 remaining). Verdict at that point: <code>paused</code> — not done.</span></li>
+            </ul>
+          </div>
+        </section>
+
+        <div class="signoff">
+          <span>brief ends here · §6 of §6</span>
+          <span class="from">Take care, <span class="name">— soham</span></span>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- LIVE PREVIEW SIDE -->
+    <aside class="preview-pane">
+
+      <div class="ph-strip">
+        <span class="ti">live preview</span>
+        <span class="lbl">updates as you edit</span>
+      </div>
+
+      <div class="pv-section">
+        <div class="lbl">given this brief and the agent's turn 5, you would rule:</div>
+        <div class="verdict-card">
+          <span class="verdict-tag">continue</span>
+          <p class="reason">Two <code>must</code> criteria still missing — strike-selection framework and tax treatment for IRA and Roth accounts (only taxable is partially covered). The draft is well-sourced where it makes claims but isn't yet a recommendation; it's an explainer. Continue.</p>
+        </div>
+      </div>
+
+      <div class="pv-section">
+        <div class="lbl">counterfactual · how would the verdict change?</div>
+        <div class="cf-list">
+          <div class="cf">
+            <span class="g">↪</span>
+            <span>If you remove <span class="em">"strike-selection framework"</span> from <code>must</code>, this becomes <span class="verdict done">done</span> — all remaining <code>must</code> criteria already met, <code>should</code> coverage at 0/2 (below 80%, but operator approval would override).</span>
+          </div>
+          <div class="cf">
+            <span class="g">↪</span>
+            <span>If you mark <span class="em">"alternatives"</span> as <code>must</code> instead of <code>should</code>, this stays <span class="verdict">continue</span> with two more turns of expected work.</span>
+          </div>
+          <div class="cf">
+            <span class="g">↪</span>
+            <span>If you approve the provisional <span class="em">2025 IRS §1256</span> as <code>must</code>, this stays <span class="verdict">continue</span> and one more open question lands on the agent.</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="pv-section track">
+        <div class="lbl">judge track record · this loop</div>
+        <div class="row"><span>verdicts issued</span><span class="num">5</span></div>
+        <div class="row"><span>continue</span><span class="num">5</span></div>
+        <div class="row"><span>done</span><span class="num">0</span></div>
+        <div class="row"><span>avg latency</span><span class="num">1.8s</span></div>
+        <div class="row"><span>avg tokens</span><span class="num">740</span></div>
+        <div class="row"><span>cost so far</span><span class="num">$0.04</span></div>
+        <div class="row"><span>operator agreement</span><span class="num">5 / 5</span></div>
+      </div>
+
+      <div class="pv-section history">
+        <div class="lbl">recent edits to this brief</div>
+        <div class="row">
+          <span class="ts">12s</span>
+          <span class="ev">added §1 · <span class="em">"address tax treatment in IRA, Roth IRA, and taxable accounts"</span> as must</span>
+        </div>
+        <div class="row">
+          <span class="ts">2m</span>
+          <span class="ev">tightened §2 voice · added <span class="em">"never guess at citations"</span></span>
+        </div>
+        <div class="row">
+          <span class="ts">5m</span>
+          <span class="ev">moved §1 · <span class="em">"strike-selection framework"</span> from <code>should</code> to <code>must</code></span>
+        </div>
+      </div>
+
+    </aside>
+
+  </div>
+
+  <div class="cradle-wrap">
+    <div class="cradle">
+      <textarea rows="1" placeholder="address the judge directly · try `judge: be stricter on the strike framework`"></textarea>
+      <div class="cradle-hint">
+        <span><kbd>⏎</kbd> send · the judge will reply with proposed brief edits</span>
+        <span>goal · judge brief</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

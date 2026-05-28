@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Goal · v5 Approach (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#080808;
+    --fg-0:#ececec; --fg-1:#a8a8a8; --fg-2:#6e6e6e; --fg-3:#4a4a4a; --fg-4:#303030;
+    --accent:#a8d4fc; --accent-lo:#7aafea;
+    --ok:#88d67f; --warn:#ffcc66;
+    --judge:#c4b5fd;
+    --hairline:rgba(255,255,255,0.06);
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:radial-gradient(ellipse at center, #0c0c0c 0%, #050505 80%);
+    color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.6;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+
+  .stars { position:fixed; inset:0; z-index:0; pointer-events:none;
+    background:
+      radial-gradient(circle at 12% 18%, rgba(255,255,255,0.05) 0.5px, transparent 1px),
+      radial-gradient(circle at 88% 14%, rgba(255,255,255,0.04) 0.5px, transparent 1px),
+      radial-gradient(circle at 22% 82%, rgba(255,255,255,0.04) 0.5px, transparent 1px),
+      radial-gradient(circle at 76% 78%, rgba(255,255,255,0.05) 0.5px, transparent 1px),
+      radial-gradient(circle at 50% 6%, rgba(255,255,255,0.03) 0.4px, transparent 1px);
+  }
+
+  .app { position:relative; z-index:1; height:100vh; display:grid; grid-template-rows:36px auto 1fr auto; }
+
+  .strip {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 28px;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+  }
+  .strip .l { display:flex; align-items:center; gap:14px; }
+  .strip .live { color:var(--fg-2); display:inline-flex; align-items:center; gap:7px; }
+  .strip .live::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 8px var(--accent); animation:pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  .head {
+    text-align:center; padding:20px 24px 0;
+  }
+  .head .eyebrow { color:var(--fg-3); font-size:10.5px; letter-spacing:0.32em; text-transform:uppercase; margin-bottom:10px; }
+  .head h1 {
+    font-family:var(--serif); font-weight:300; font-size:18px; line-height:1.5;
+    color:var(--fg-1); margin:0 auto; letter-spacing:-0.005em; max-width:640px;
+  }
+  .head h1 .em { color:var(--fg-0); }
+
+  /* canvas: the bullseye */
+  .canvas {
+    position:relative;
+    display:flex; align-items:center; justify-content:center;
+    overflow:hidden;
+    min-height:0;
+  }
+  .canvas svg {
+    width:min(78vmin, 720px); height:min(78vmin, 720px);
+    overflow:visible;
+  }
+
+  /* reading panel — sits in a corner */
+  .reading {
+    position:absolute;
+    top:24px; right:32px;
+    width:280px;
+    background:rgba(20,20,20,0.6);
+    backdrop-filter:blur(20px) saturate(140%);
+    border:1px solid var(--hairline);
+    border-radius:12px;
+    padding:14px 16px;
+    color:var(--fg-1); font-size:11.5px;
+    z-index:5;
+  }
+  .reading .lbl { color:var(--fg-3); font-size:10px; letter-spacing:0.22em; text-transform:uppercase; margin-bottom:6px; }
+  .reading .conf-num {
+    font-family:var(--serif); font-size:36px; font-weight:300; color:var(--fg-0); line-height:1;
+    font-variant-numeric:tabular-nums; letter-spacing:-0.01em;
+  }
+  .reading .conf-num .small { font-family:var(--mono); font-size:14px; color:var(--fg-2); margin-left:4px; vertical-align:0.4em; }
+  .reading .delta { color:var(--ok); font-size:11.5px; margin-top:4px; }
+  .reading .delta.down { color:var(--warn); }
+  .reading hr { border:0; border-top:1px solid var(--hairline); margin:12px 0; }
+  .reading .quote {
+    color:var(--fg-1); font-family:var(--serif); font-style:italic; font-size:12.5px;
+    line-height:1.6; font-weight:300;
+  }
+  .reading .quote::before { content:"\201C"; color:var(--judge); }
+  .reading .quote::after  { content:"\201D"; color:var(--judge); }
+  .reading .from { color:var(--judge); font-size:9.5px; letter-spacing:0.18em; text-transform:uppercase; margin-top:8px; display:block; }
+
+  /* legend */
+  .legend {
+    position:absolute;
+    top:24px; left:32px;
+    color:var(--fg-3); font-size:11px;
+    display:flex; flex-direction:column; gap:8px;
+    z-index:5;
+  }
+  .legend .row { display:flex; align-items:center; gap:8px; }
+  .legend .dot { width:8px; height:8px; border-radius:50%; }
+  .legend .dot.now { background:var(--accent); box-shadow:0 0 8px var(--accent); }
+  .legend .dot.past { background:rgba(168,212,252,0.4); }
+  .legend .dot.regress { background:var(--warn); }
+  .legend .dot.target { background:var(--ok); box-shadow:0 0 10px rgba(136,214,127,0.5); }
+  .legend .lbl { color:var(--fg-2); }
+
+  /* turn budget at bottom */
+  .budget {
+    position:absolute; left:50%; bottom:14px; transform:translateX(-50%);
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    display:flex; align-items:center; gap:10px;
+    z-index:5;
+  }
+  .budget .num { color:var(--fg-1); font-family:var(--mono); letter-spacing:0; text-transform:none; font-variant-numeric:tabular-nums; }
+
+  /* svg styles */
+  .ring        { fill:none; stroke:rgba(255,255,255,0.045); stroke-width:1; }
+  .ring-label  { fill:var(--fg-4); font-family:var(--mono); font-size:10px; letter-spacing:0.06em; }
+  .target-ctr  { fill:var(--ok); filter:drop-shadow(0 0 18px rgba(136,214,127,0.5)); }
+  .target-aura { fill:none; stroke:rgba(136,214,127,0.18); stroke-width:1; }
+  .trail       { fill:none; stroke:url(#trail); stroke-width:1.4; stroke-linejoin:round; }
+  .pt          { fill:#0a0a0a; stroke:rgba(168,212,252,0.4); stroke-width:1.2; }
+  .pt-now      { fill:var(--accent); stroke:#0a0a0a; stroke-width:2;
+                 filter:drop-shadow(0 0 12px var(--accent)); }
+  .pt-regress  { fill:#0a0a0a; stroke:var(--warn); stroke-width:1.5;
+                 filter:drop-shadow(0 0 6px rgba(255,204,102,0.5)); }
+  .pt-label    { fill:var(--fg-3); font-family:var(--mono); font-size:9px; }
+  .pt-label-now { fill:var(--accent); font-family:var(--mono); font-size:11px; font-weight:500; }
+
+  /* cradle */
+  .cradle-wrap { display:flex; justify-content:center; padding:0 16px 18px; pointer-events:none; }
+  .cradle {
+    pointer-events:auto;
+    width:100%; max-width:560px;
+    background:rgba(20,20,20,0.55);
+    backdrop-filter:blur(36px) saturate(140%);
+    border-radius:14px;
+    border:1px solid var(--hairline);
+    box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.07), 0 12px 40px -8px rgba(0,0,0,0.5);
+    padding:14px 18px;
+    display:flex; align-items:center; gap:14px;
+  }
+  .cradle textarea {
+    flex:1; background:transparent; border:0; outline:0; color:var(--fg-0);
+    font:inherit; resize:none; min-height:22px; line-height:1.5;
+  }
+  .cradle textarea::placeholder { color:var(--fg-3); }
+  .cradle .hint { color:var(--fg-3); font-size:11px; }
+  .cradle .hint kbd { color:var(--fg-2); background:rgba(255,255,255,0.04);
+    padding:1px 6px; border-radius:4px; font-family:inherit; font-size:10.5px; }
+</style>
+</head>
+<body>
+<div class="stars"></div>
+
+<div class="app">
+
+  <div class="strip">
+    <div class="l">
+      <span>freyja</span>
+      <span class="live">approaching</span>
+    </div>
+    <div>goal · approach view · 9m elapsed</div>
+  </div>
+
+  <div class="head">
+    <div class="eyebrow">goal · the bullseye</div>
+    <h1>Refactor the authentication module to <span class="em">pass all 47 unit tests</span> without breaking the login flow.</h1>
+  </div>
+
+  <div class="canvas">
+
+    <div class="legend">
+      <div class="row"><span class="dot target"></span><span class="lbl">goal · 1.0 confidence</span></div>
+      <div class="row"><span class="dot now"></span><span class="lbl">where we are now</span></div>
+      <div class="row"><span class="dot past"></span><span class="lbl">past attempt</span></div>
+      <div class="row"><span class="dot regress"></span><span class="lbl">regression</span></div>
+    </div>
+
+    <div class="reading">
+      <div class="lbl">distance to goal</div>
+      <div class="conf-num">0.74<span class="small">conf</span></div>
+      <div class="delta">▲ closing — gained 0.04 last turn</div>
+      <hr/>
+      <div class="lbl">latest verdict</div>
+      <p class="quote">44 of 47 tests pass. Three SessionTokenExpiry failures remain — refresh path is racing the new token store.</p>
+      <span class="from">— judge · 12s ago</span>
+    </div>
+
+    <!-- the bullseye -->
+    <svg viewBox="-200 -200 400 400">
+      <defs>
+        <linearGradient id="trail" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="rgba(168,212,252,0.10)"/>
+          <stop offset="1" stop-color="rgba(168,212,252,0.55)"/>
+        </linearGradient>
+        <radialGradient id="bullseye-glow">
+          <stop offset="0" stop-color="rgba(136,214,127,0.4)"/>
+          <stop offset="0.6" stop-color="rgba(136,214,127,0.05)"/>
+          <stop offset="1" stop-color="rgba(136,214,127,0)"/>
+        </radialGradient>
+      </defs>
+
+      <!-- bullseye glow -->
+      <circle cx="0" cy="0" r="60" fill="url(#bullseye-glow)" />
+
+      <!-- rings: confidence 0.2 .. 1.0 (radius decreases as conf increases) -->
+      <!-- map: r = 180 * (1 - conf). So conf 1.0 → r 0; conf 0 → r 180. -->
+      <circle class="ring" cx="0" cy="0" r="180" />  <!-- 0.0 -->
+      <circle class="ring" cx="0" cy="0" r="144" />  <!-- 0.2 -->
+      <circle class="ring" cx="0" cy="0" r="108" />  <!-- 0.4 -->
+      <circle class="ring" cx="0" cy="0" r="72"  />  <!-- 0.6 -->
+      <circle class="ring" cx="0" cy="0" r="36"  />  <!-- 0.8 -->
+
+      <!-- ring labels -->
+      <text class="ring-label" x="2" y="-178">.0</text>
+      <text class="ring-label" x="2" y="-142">.2</text>
+      <text class="ring-label" x="2" y="-106">.4</text>
+      <text class="ring-label" x="2" y="-70">.6</text>
+      <text class="ring-label" x="2" y="-34">.8</text>
+
+      <!-- "done threshold" ring at 0.85 (r = 27) -->
+      <circle class="target-aura" cx="0" cy="0" r="27" stroke-dasharray="3 4" />
+      <text class="ring-label" x="30" y="-4" fill="rgba(136,214,127,0.6)">done</text>
+
+      <!-- the bullseye center -->
+      <circle class="target-ctr" cx="0" cy="0" r="5" />
+
+      <!--
+        Trail of attempts (turn 1 .. turn 8).
+        Place each at angle = -120° + (turn-1) * 30° (going clockwise around the target),
+        radius = 180 * (1 - conf).
+        confidences:  0.30, 0.42, 0.55, 0.61, 0.50, 0.65, 0.70, 0.74
+        So radii:     126,  104.4, 81,   70.2, 90,   63,   54,   46.8
+        Angles (in deg, math convention with 0 = right, ccw positive — but we'll use sin/cos directly):
+          We'll go visually around the target. Let theta(deg) = -150 + (turn-1)*36, range -150..+102 (over 8 attempts).
+          For svg, x = r*cos(theta), y = r*sin(theta).
+      -->
+
+      <!-- paths between consecutive attempts, drawn as a single polyline -->
+      <polyline class="trail"
+        points="
+          -109.13,-63.0
+          -94.83,-36.94
+          -70.69,-39.27
+          -56.74,-41.48
+          -82.88,-35.20
+          -54.86,-30.73
+          -46.41,-27.41
+          -45.16,-12.18
+        " />
+
+      <!-- attempts: turn 1 .. turn 8 -->
+      <!-- helper: position rounded above; same coords here -->
+
+      <!-- turn 1 -->
+      <circle class="pt" cx="-109.13" cy="-63.0"  r="3.5"/>
+      <text class="pt-label" x="-115" y="-69">1</text>
+
+      <!-- turn 2 -->
+      <circle class="pt" cx="-94.83" cy="-36.94" r="3.5"/>
+      <text class="pt-label" x="-99" y="-42">2</text>
+
+      <!-- turn 3 -->
+      <circle class="pt" cx="-70.69" cy="-39.27" r="3.5"/>
+      <text class="pt-label" x="-75" y="-45">3</text>
+
+      <!-- turn 4 -->
+      <circle class="pt" cx="-56.74" cy="-41.48" r="3.5"/>
+      <text class="pt-label" x="-61" y="-46">4</text>
+
+      <!-- turn 5 — REGRESSION (further out) -->
+      <circle class="pt-regress" cx="-82.88" cy="-35.20" r="4"/>
+      <text class="pt-label" x="-94" y="-22" fill="rgba(255,204,102,0.7)">5  ← regress</text>
+
+      <!-- turn 6 -->
+      <circle class="pt" cx="-54.86" cy="-30.73" r="3.5"/>
+      <text class="pt-label" x="-58" y="-37">6</text>
+
+      <!-- turn 7 -->
+      <circle class="pt" cx="-46.41" cy="-27.41" r="3.5"/>
+      <text class="pt-label" x="-50" y="-32">7</text>
+
+      <!-- turn 8 — NOW -->
+      <circle class="pt-now" cx="-45.16" cy="-12.18" r="6"/>
+      <text class="pt-label-now" x="-30" y="-8">turn 8 · now</text>
+
+      <!-- subtle line from now-point pointing at the target -->
+      <line x1="-45.16" y1="-12.18" x2="-3" y2="-1"
+            stroke="rgba(168,212,252,0.25)" stroke-width="1" stroke-dasharray="2 4" />
+
+    </svg>
+
+    <div class="budget">
+      turn budget · <span class="num">8</span>/20 · <span class="num">12</span> turns left
+    </div>
+  </div>
+
+  <div class="cradle-wrap">
+    <div class="cradle">
+      <textarea rows="1" placeholder="redirect, pause, or extend budget…"></textarea>
+      <span class="hint"><kbd>⏎</kbd> send</span>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

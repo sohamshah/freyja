@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Goal · v4 Living Brief (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a;
+    --fg-0:#ececec; --fg-1:#a8a8a8; --fg-2:#7a7a7a; --fg-3:#5a5a5a; --fg-4:#3a3a3a;
+    --accent:#a8d4fc; --accent-lo:#7aafea;
+    --ok:#88d67f; --warn:#ffcc66;
+    --judge:#c4b5fd;
+    --hairline:rgba(255,255,255,0.06);
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.65;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background: radial-gradient(900px 700px at 50% -10%, rgba(168,212,252,0.04), transparent 60%);
+  }
+
+  .app { position:relative; z-index:1; min-height:100vh; }
+
+  /* tiny meta strip */
+  .strip {
+    position:sticky; top:0; z-index:20;
+    background:linear-gradient(180deg, rgba(10,10,10,0.95), transparent);
+    backdrop-filter:blur(10px);
+    padding:14px 24px;
+    display:flex; align-items:center; justify-content:space-between;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+  }
+  .strip .left { display:flex; align-items:center; gap:14px; }
+  .strip .live { color:var(--fg-2); display:inline-flex; align-items:center; gap:7px; }
+  .strip .live::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 8px var(--accent); animation:pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .strip .right { color:var(--fg-3); display:flex; gap:18px; }
+  .strip .right .num { color:var(--fg-1); font-variant-numeric:tabular-nums; }
+  .strip .right .actions { display:flex; gap:6px; margin-left:18px; }
+  .strip .right .actions button {
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline);
+    color:var(--fg-2); font:inherit; font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    padding:5px 10px; border-radius:6px; cursor:pointer;
+  }
+  .strip .right .actions button:hover { color:var(--fg-0); background:rgba(255,255,255,0.06); }
+
+  /* the document */
+  .doc {
+    max-width:760px; margin:0 auto; padding:60px 24px 200px;
+  }
+
+  .doc-head {
+    border-bottom:1px solid var(--hairline);
+    padding-bottom:32px;
+    margin-bottom:36px;
+  }
+  .doc-eyebrow {
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.32em; text-transform:uppercase;
+    margin-bottom:16px;
+  }
+  .doc-title {
+    font-family:var(--serif); font-weight:300; font-size:32px; line-height:1.4;
+    letter-spacing:-0.005em; color:var(--fg-0); margin:0;
+    cursor:text; outline:none;
+  }
+  .doc-title:hover { background:rgba(168,212,252,0.04); border-radius:6px; padding:0 6px; margin:0 -6px; }
+  .doc-status {
+    margin-top:18px;
+    display:flex; gap:24px; align-items:center; flex-wrap:wrap;
+    color:var(--fg-2); font-size:11.5px; letter-spacing:0.06em;
+  }
+  .doc-status .stat .num { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+  .doc-status .conf-bar {
+    flex:1; min-width:120px; height:2px; background:rgba(255,255,255,0.06); border-radius:2px; overflow:hidden;
+  }
+  .doc-status .conf-bar > div {
+    height:100%; width:74%;
+    background:linear-gradient(90deg, var(--accent-lo), var(--accent));
+    box-shadow:0 0 10px rgba(168,212,252,0.4);
+  }
+
+  /* sections */
+  .sec { margin:36px 0; }
+  .sec-head {
+    display:flex; align-items:baseline; justify-content:space-between;
+    margin-bottom:14px; padding-bottom:8px;
+    border-bottom:1px solid var(--hairline);
+  }
+  .sec-head .title {
+    font-family:var(--serif); font-weight:400; font-size:16px; color:var(--fg-0);
+    letter-spacing:-0.005em;
+  }
+  .sec-head .title .marker {
+    color:var(--fg-3); font-family:var(--mono); font-size:11px; margin-right:10px; letter-spacing:0;
+  }
+  .sec-head .updated {
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    display:inline-flex; align-items:center; gap:8px;
+  }
+  .sec-head .updated.fresh { color:var(--accent); }
+  .sec-head .updated.fresh::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--accent); box-shadow:0 0 6px var(--accent); }
+
+  .sec-body { color:var(--fg-1); font-size:14px; line-height:1.75; padding:4px 6px; border-radius:6px; cursor:text; }
+  .sec-body:hover { background:rgba(255,255,255,0.012); }
+  .sec-body p { margin:0 0 12px; }
+  .sec-body p:last-child { margin-bottom:0; }
+  .sec-body .em { color:var(--fg-0); }
+  .sec-body code { color:var(--fg-0); }
+
+  /* recently-changed highlight */
+  .sec-body .new {
+    background:linear-gradient(180deg, rgba(168,212,252,0.10), rgba(168,212,252,0.04));
+    border-radius:3px;
+    padding:2px 4px;
+    margin:0 -4px;
+    transition:background 600ms;
+  }
+
+  .ul {
+    list-style:none; padding:0; margin:0;
+    display:flex; flex-direction:column; gap:10px;
+  }
+  .ul li {
+    display:grid; grid-template-columns:18px 1fr; gap:12px;
+    color:var(--fg-1); font-size:13.5px; line-height:1.6;
+  }
+  .ul li .g { color:var(--fg-3); padding-top:1px; }
+  .ul li.done .g { color:var(--ok); }
+  .ul li.now  .g { color:var(--accent); }
+  .ul li.warn .g { color:var(--warn); }
+  .ul li .when { color:var(--fg-3); font-size:11px; margin-left:6px; letter-spacing:0.06em; }
+
+  /* attempts log: more compact */
+  .attempts { font-family:var(--mono); font-size:12.5px; }
+  .attempts .row {
+    display:grid; grid-template-columns:60px 60px 1fr; gap:14px;
+    padding:6px 6px;
+    border-bottom:1px solid rgba(255,255,255,0.025);
+    color:var(--fg-1);
+  }
+  .attempts .row .turn { color:var(--fg-3); }
+  .attempts .row .conf { color:var(--accent); font-variant-numeric:tabular-nums; }
+  .attempts .row .conf.down { color:var(--warn); }
+  .attempts .row.now { background:rgba(168,212,252,0.05); border-radius:4px; border-bottom-color:transparent; }
+  .attempts .row.now .turn { color:var(--accent); }
+
+  /* judge quote */
+  .judge-quote {
+    border-left:2px solid rgba(196,181,253,0.32);
+    padding:6px 0 6px 16px; margin-left:-16px;
+    font-family:var(--serif); font-style:italic; font-weight:300;
+    color:var(--fg-1); font-size:14.5px; line-height:1.7;
+  }
+  .judge-quote .from {
+    display:block; margin-top:10px;
+    font-family:var(--mono); font-style:normal; font-size:10.5px;
+    color:var(--judge); letter-spacing:0.18em; text-transform:uppercase;
+  }
+
+  /* cradle */
+  .cradle-wrap {
+    position:fixed; left:0; right:0; bottom:0;
+    padding:24px 24px 18px;
+    background:linear-gradient(0deg, var(--bg-0) 60%, transparent);
+    pointer-events:none; z-index:30;
+  }
+  .cradle {
+    pointer-events:auto;
+    max-width:760px; margin:0 auto;
+    background:rgba(20,20,20,0.6);
+    backdrop-filter:blur(36px) saturate(140%);
+    -webkit-backdrop-filter:blur(36px) saturate(140%);
+    border-radius:14px;
+    border:1px solid var(--hairline);
+    box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.07), 0 12px 40px -8px rgba(0,0,0,0.5);
+    padding:14px 18px 12px;
+    display:flex; flex-direction:column; gap:8px;
+  }
+  .cradle textarea {
+    background:transparent; border:0; outline:0; color:var(--fg-0);
+    font:inherit; resize:none; width:100%; min-height:22px;
+  }
+  .cradle textarea::placeholder { color:var(--fg-3); }
+  .cradle-hint { display:flex; justify-content:space-between; color:var(--fg-3); font-size:11px; }
+  .cradle-hint kbd { color:var(--fg-2); background:rgba(255,255,255,0.04);
+    padding:1px 6px; border-radius:4px; font-family:inherit; font-size:10.5px; }
+
+  ::-webkit-scrollbar { width:8px; }
+  ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.05); border-radius:6px; }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="app">
+
+  <div class="strip">
+    <div class="left">
+      <span>freyja · goal brief</span>
+      <span class="live">judging</span>
+    </div>
+    <div class="right">
+      <span><span class="num">8</span>/20 turns</span>
+      <span><span class="num">0.74</span> conf</span>
+      <span class="actions">
+        <button>pause</button>
+        <button>extend +5</button>
+        <button>stop</button>
+      </span>
+    </div>
+  </div>
+
+  <main class="doc">
+
+    <header class="doc-head">
+      <div class="doc-eyebrow">working brief · v8 · the agent rewrites this each turn</div>
+      <h1 class="doc-title" contenteditable="true" spellcheck="false">Refactor the authentication module to pass all 47 unit tests, without breaking the login flow.</h1>
+      <div class="doc-status">
+        <div class="stat"><span style="color:var(--fg-3)">status</span> <span class="num" style="color:var(--accent)">in progress</span></div>
+        <div class="stat"><span style="color:var(--fg-3)">turn</span> <span class="num">8</span> of 20</div>
+        <div class="stat"><span style="color:var(--fg-3)">elapsed</span> <span class="num">9m</span></div>
+        <div class="stat" style="display:flex; align-items:center; gap:10px; min-width:240px">
+          <span style="color:var(--fg-3)">confidence</span>
+          <div class="conf-bar"><div></div></div>
+          <span class="num">0.74</span>
+        </div>
+      </div>
+    </header>
+
+    <section class="sec">
+      <div class="sec-head">
+        <span class="title"><span class="marker">§ 1</span>where we are</span>
+        <span class="updated fresh">just rewritten · turn 8</span>
+      </div>
+      <div class="sec-body">
+        <p><span class="em">Close.</span> 44 of 47 tests now pass. The login flow is intact in manual smoke. Three failures remain, all in <code>SessionTokenExpiry</code>, and they appear to share a root cause: <span class="new">the new immutable token store is racing the refresh worker on the first call after expiry.</span> One focused turn should be enough to resolve them.</p>
+      </div>
+    </section>
+
+    <section class="sec">
+      <div class="sec-head">
+        <span class="title"><span class="marker">§ 2</span>what we've learned</span>
+        <span class="updated">updated turn 7 · 7m ago</span>
+      </div>
+      <div class="sec-body">
+        <ul class="ul">
+          <li class="done"><span class="g">✓</span><span><span class="em">Test failures cluster around two flows:</span> session refresh (now fixed) and session-token expiry (in progress). The other 41 tests passed after the initial refactor.</span></li>
+          <li class="done"><span class="g">✓</span><span><span class="em">The long-lived token case must stay distinct</span> from the short-lived refresh path. Conflating them caused the regression at turn 5.</span></li>
+          <li class="done"><span class="g">✓</span><span><span class="em">The login integration test is the hardest one</span> and now passes — strongest evidence yet that the refactor is sound at the public surface.</span></li>
+          <li class="now"><span class="g">◐</span><span><span class="em">Suspect race condition:</span> the immutable container's first read happens before the refresh worker can hydrate it. Need to wire a <code>ready()</code> signal or pre-warm.</span></li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="sec">
+      <div class="sec-head">
+        <span class="title"><span class="marker">§ 3</span>what we've tried</span>
+        <span class="updated">updated turn 8 · just now</span>
+      </div>
+      <div class="sec-body">
+        <div class="attempts">
+          <div class="row"><span class="turn">turn 1</span><span class="conf">0.30</span><span>read tests + auth/ source · gathered failure traces</span></div>
+          <div class="row"><span class="turn">turn 2</span><span class="conf">0.42</span><span>refactored TokenStore to immutable container · tests not yet re-run</span></div>
+          <div class="row"><span class="turn">turn 3</span><span class="conf">0.55</span><span>ran tests · 30/47 passing · 17 session-refresh failures</span></div>
+          <div class="row"><span class="turn">turn 4</span><span class="conf">0.61</span><span>fixed 12 of 17 refresh failures · LoginFlow still red</span></div>
+          <div class="row"><span class="turn">turn 5</span><span class="conf down">0.50</span><span>regression — backoff broke long-lived tokens · reverted next</span></div>
+          <div class="row"><span class="turn">turn 6</span><span class="conf">0.65</span><span>restored long-lived path on a separate branch · 42/47</span></div>
+          <div class="row"><span class="turn">turn 7</span><span class="conf">0.70</span><span>fixed LoginFlow integration test · 44/47 · 3 expiry failures left</span></div>
+          <div class="row now"><span class="turn">turn 8</span><span class="conf">0.74</span><span>investigating expiry race · located refresh-worker timing gap</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec">
+      <div class="sec-head">
+        <span class="title"><span class="marker">§ 4</span>what's left</span>
+        <span class="updated">updated turn 8 · just now</span>
+      </div>
+      <div class="sec-body">
+        <ul class="ul">
+          <li class="now"><span class="g">→</span><span><span class="em">Resolve the SessionTokenExpiry race</span> — pre-warm the token store, or add a <code>ready()</code> handshake before the refresh worker touches it.</span></li>
+          <li><span class="g">·</span><span>Re-run the full suite to confirm 47/47.</span></li>
+          <li><span class="g">·</span><span>Manual smoke of the login flow once more, then close out.</span></li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="sec">
+      <div class="sec-head">
+        <span class="title"><span class="marker">§ 5</span>latest verdict</span>
+        <span class="updated fresh">12s ago</span>
+      </div>
+      <div class="sec-body">
+        <div class="judge-quote">
+          44 of 47 tests pass. Login flow appears intact in manual smoke. Three SessionTokenExpiry tests still failing — refresh path is racing the new token store on first call. Confidence is rising. Continue.
+          <span class="from">— judge · 0.74 confidence · keep going</span>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <div class="cradle-wrap">
+    <div class="cradle">
+      <textarea rows="1" placeholder="edit any section, redirect, or ask a question…"></textarea>
+      <div class="cradle-hint">
+        <span><kbd>⏎</kbd> send · click any section to edit</span>
+        <span>goal · living brief</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

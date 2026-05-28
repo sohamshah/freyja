@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Goal · v1 Compass (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,200;9..144,300;9..144,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a;
+    --fg-0:#ececec; --fg-1:#a8a8a8; --fg-2:#6e6e6e; --fg-3:#4a4a4a; --fg-4:#303030;
+    --accent:#a8d4fc; --accent-lo:#7aafea;
+    --ok:#88d67f; --warn:#ffcc66;
+    --hairline:rgba(255,255,255,0.06);
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.6;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(900px 700px at 50% 50%, rgba(168,212,252,0.06), transparent 70%),
+      radial-gradient(500px 400px at 22% 90%, rgba(136,214,127,0.025), transparent 70%);
+    animation:breathe 14s ease-in-out infinite;
+  }
+  @keyframes breathe { 0%,100%{transform:scale(1); opacity:1} 50%{transform:scale(1.04); opacity:0.7} }
+
+  .app { position:relative; z-index:1; height:100vh; display:grid; grid-template-rows:36px 1fr auto; }
+
+  /* whisper top bar */
+  .strip {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 28px;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+  }
+  .strip .l { display:flex; align-items:center; gap:14px; }
+  .strip .live { color:var(--fg-2); display:inline-flex; align-items:center; gap:7px; }
+  .strip .live::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 8px var(--accent); animation:pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  .stage {
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    padding:32px 32px;
+    min-height:0;
+  }
+
+  .goal-eyebrow {
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.32em; text-transform:uppercase;
+    margin-bottom:14px;
+  }
+  .goal {
+    font-family:var(--serif); font-weight:300;
+    font-size:24px; line-height:1.4; color:var(--fg-1);
+    text-align:center; max-width:720px;
+    margin:0 0 56px;
+    letter-spacing:-0.005em;
+  }
+  .goal .em { color:var(--fg-0); }
+
+  /* the ring */
+  .ring-wrap {
+    position:relative;
+    width:340px; height:340px;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .ring-wrap svg { position:absolute; inset:0; transform:rotate(-90deg); }
+  .ring-wrap .track  { fill:none; stroke:rgba(255,255,255,0.05); stroke-width:2; }
+  .ring-wrap .fill   { fill:none; stroke:url(#g); stroke-width:2.5; stroke-linecap:round;
+                       filter:drop-shadow(0 0 12px rgba(168,212,252,0.4)); }
+  .ring-wrap .ticks  { stroke:rgba(255,255,255,0.06); stroke-width:1; }
+  .ring-wrap .needle { fill:var(--accent); }
+
+  .ring-center {
+    text-align:center; position:relative; z-index:2;
+  }
+  .ring-center .conf {
+    font-family:var(--serif); font-weight:200; font-size:84px; line-height:1; color:var(--fg-0);
+    letter-spacing:-0.02em; font-variant-numeric:tabular-nums;
+  }
+  .ring-center .conf .pct { font-family:var(--mono); font-size:24px; color:var(--fg-2); margin-left:4px; vertical-align:0.6em; }
+  .ring-center .lbl {
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.32em; text-transform:uppercase;
+    margin-top:6px;
+  }
+  .ring-center .turns {
+    color:var(--fg-2); font-size:11.5px; margin-top:18px; letter-spacing:0.06em;
+  }
+
+  /* verdict line */
+  .verdict {
+    margin-top:54px;
+    text-align:center; max-width:600px;
+    color:var(--fg-1); font-size:14.5px; line-height:1.65;
+    font-family:var(--serif); font-weight:300;
+    font-style:italic;
+  }
+  .verdict::before { content:"\201C"; font-size:22px; color:var(--fg-3); margin-right:4px; vertical-align:-0.1em; }
+  .verdict::after  { content:"\201D"; font-size:22px; color:var(--fg-3); margin-left:4px; vertical-align:-0.1em; }
+  .verdict .from {
+    display:block; margin-top:12px;
+    font-family:var(--mono); font-style:normal; font-size:10.5px;
+    color:var(--fg-3); letter-spacing:0.18em; text-transform:uppercase;
+  }
+
+  /* turn budget — tiny dots row */
+  .budget-dots {
+    margin-top:36px;
+    display:flex; gap:7px; align-items:center; justify-content:center;
+  }
+  .budget-dots .d {
+    width:6px; height:6px; border-radius:50%;
+    background:rgba(255,255,255,0.08);
+  }
+  .budget-dots .d.used { background:var(--accent); box-shadow:0 0 6px rgba(168,212,252,0.5); }
+  .budget-dots .d.now  { background:var(--accent); box-shadow:0 0 10px var(--accent);
+                          animation:dotpulse 2.2s ease-in-out infinite; }
+  .budget-dots .lbl {
+    margin-left:14px; color:var(--fg-3); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+  @keyframes dotpulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.3)} }
+
+  /* cradle */
+  .cradle-wrap { display:flex; justify-content:center; padding:0 16px 22px; pointer-events:none; }
+  .cradle {
+    pointer-events:auto;
+    width:100%; max-width:560px;
+    background:rgba(20,20,20,0.55);
+    backdrop-filter:blur(36px) saturate(140%);
+    -webkit-backdrop-filter:blur(36px) saturate(140%);
+    border-radius:14px;
+    border:1px solid var(--hairline);
+    box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.07), 0 12px 40px -8px rgba(0,0,0,0.5);
+    padding:14px 18px;
+    display:flex; align-items:center; gap:14px;
+  }
+  .cradle textarea {
+    flex:1; background:transparent; border:0; outline:0; color:var(--fg-0);
+    font:inherit; resize:none; min-height:22px; line-height:1.5;
+  }
+  .cradle textarea::placeholder { color:var(--fg-3); }
+  .cradle .hint { color:var(--fg-3); font-size:11px; }
+  .cradle .hint kbd { color:var(--fg-2); background:rgba(255,255,255,0.04);
+    padding:1px 6px; border-radius:4px; font-family:inherit; font-size:10.5px; }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="app">
+
+  <div class="strip">
+    <div class="l">
+      <span>freyja</span>
+      <span class="live">judging</span>
+    </div>
+    <div>goal · 9m elapsed</div>
+  </div>
+
+  <div class="stage">
+    <div class="goal-eyebrow">goal</div>
+    <p class="goal">
+      Refactor the authentication module to <span class="em">pass all 47 unit tests</span>
+      without breaking the login flow.
+    </p>
+
+    <div class="ring-wrap">
+      <svg viewBox="0 0 340 340">
+        <defs>
+          <linearGradient id="g" x1="0" x2="1">
+            <stop offset="0" stop-color="#7aafea"/>
+            <stop offset="1" stop-color="#a8d4fc"/>
+          </linearGradient>
+        </defs>
+        <!-- track -->
+        <circle class="track" cx="170" cy="170" r="156" />
+        <!-- fill: 0.74 of full circle, circumference = 2*pi*r ≈ 980, fill 740 -->
+        <circle class="fill" cx="170" cy="170" r="156"
+                stroke-dasharray="980" stroke-dashoffset="255" />
+        <!-- subtle tick marks at 25/50/75 -->
+        <g class="ticks">
+          <line x1="170" y1="2"   x2="170" y2="14" />
+          <line x1="338" y1="170" x2="326" y2="170" />
+          <line x1="170" y1="338" x2="170" y2="326" />
+          <line x1="2"   y1="170" x2="14"  y2="170" />
+        </g>
+      </svg>
+      <div class="ring-center">
+        <div class="conf">0.74<span class="pct">conf</span></div>
+        <div class="lbl">judge says: keep going</div>
+        <div class="turns">turn <span style="color:var(--fg-0)">8</span> of 20 · 12 turns left</div>
+      </div>
+    </div>
+
+    <p class="verdict">
+      44 of 47 tests pass. Login flow appears intact in manual smoke. Three SessionTokenExpiry tests still failing — refresh path is racing the new token store on first call.
+      <span class="from">— judge · 12s ago</span>
+    </p>
+
+    <div class="budget-dots">
+      <span class="d used"></span><span class="d used"></span><span class="d used"></span>
+      <span class="d used"></span><span class="d used"></span><span class="d used"></span>
+      <span class="d used"></span><span class="d now"></span>
+      <span class="d"></span><span class="d"></span><span class="d"></span><span class="d"></span>
+      <span class="d"></span><span class="d"></span><span class="d"></span><span class="d"></span>
+      <span class="d"></span><span class="d"></span><span class="d"></span><span class="d"></span>
+      <span class="lbl">turn budget</span>
+    </div>
+
+  </div>
+
+  <div class="cradle-wrap">
+    <div class="cradle">
+      <textarea rows="1" placeholder="redirect, pause, or extend budget…"></textarea>
+      <span class="hint"><kbd>⏎</kbd> send</span>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

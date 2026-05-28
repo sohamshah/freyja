@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Goal · v10 Draft + Critique (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a;
+    --fg-0:#ececec; --fg-1:#a8a8a8; --fg-2:#7a7a7a; --fg-3:#5a5a5a; --fg-4:#3a3a3a;
+    --accent:#a8d4fc; --accent-lo:#7aafea;
+    --ok:#88d67f; --warn:#ffcc66; --danger:#ff6b6b;
+    --judge:#c4b5fd;
+    --hairline:rgba(255,255,255,0.06);
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.65;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(700px 500px at 18% -10%, rgba(168,212,252,0.04), transparent 60%),
+      radial-gradient(700px 500px at 82% 110%, rgba(196,181,253,0.04), transparent 60%);
+  }
+
+  .app { position:relative; z-index:1; height:100vh; display:grid; grid-template-rows:36px auto 1fr auto; }
+
+  .strip {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 28px;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    border-bottom:1px solid var(--hairline);
+  }
+  .strip .l { display:flex; align-items:center; gap:14px; }
+  .strip .live { color:var(--fg-2); display:inline-flex; align-items:center; gap:7px; }
+  .strip .live::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 8px var(--accent); animation:pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  /* head */
+  .head {
+    padding:24px 36px 18px;
+    border-bottom:1px solid var(--hairline);
+    display:grid; grid-template-columns:1fr auto; gap:48px; align-items:end;
+  }
+  .head .eyebrow { color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase; margin-bottom:8px; }
+  .head h1 {
+    font-family:var(--serif); font-weight:300; font-size:18px; line-height:1.45;
+    color:var(--fg-1); margin:0; letter-spacing:-0.005em; max-width:780px;
+  }
+  .head h1 .em { color:var(--fg-0); }
+  .head .meta {
+    color:var(--fg-2); font-size:11px; letter-spacing:0.06em; text-align:right; line-height:1.7;
+  }
+  .head .meta .num { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+  .head .meta .review {
+    display:inline-flex; align-items:baseline; gap:8px; padding:4px 10px; border-radius:6px;
+    background:rgba(196,181,253,0.07); border:1px solid rgba(196,181,253,0.18);
+    color:var(--judge); font-size:11px; letter-spacing:0.06em;
+  }
+
+  /* the editor */
+  .editor { display:grid; grid-template-columns:1fr 360px; min-height:0; overflow:hidden; }
+
+  .doc-pane { overflow-y:auto; padding:36px 56px 40px; }
+
+  .doc-status-bar {
+    display:flex; gap:10px; flex-wrap:wrap; align-items:center;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    margin-bottom:24px; padding-bottom:14px; border-bottom:1px solid var(--hairline);
+  }
+  .doc-status-bar .pill {
+    padding:3px 10px; border-radius:10px;
+    background:rgba(255,255,255,0.04); border:1px solid var(--hairline);
+    color:var(--fg-2);
+  }
+  .doc-status-bar .pill.live {
+    background:rgba(168,212,252,0.08); border-color:rgba(168,212,252,0.22); color:var(--accent);
+    display:inline-flex; align-items:center; gap:6px;
+  }
+  .doc-status-bar .pill.live::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 6px var(--accent); animation:pulse 2.2s ease-in-out infinite; }
+
+  /* draft typography */
+  .draft {
+    max-width:680px;
+    color:var(--fg-1); font-size:14.5px; line-height:1.8;
+  }
+  .draft .doc-title {
+    font-family:var(--serif); font-weight:300; font-size:30px; line-height:1.3;
+    color:var(--fg-0); letter-spacing:-0.01em; margin:0 0 6px;
+  }
+  .draft .doc-meta {
+    color:var(--fg-3); font-size:11px; letter-spacing:0.06em; margin-bottom:32px;
+  }
+  .draft h2 {
+    font-family:var(--serif); font-weight:400; font-size:18px; color:var(--fg-0);
+    letter-spacing:-0.005em; margin:32px 0 10px;
+    display:flex; align-items:baseline; gap:12px;
+  }
+  .draft h2 .marker {
+    color:var(--fg-3); font-family:var(--mono); font-size:11px; letter-spacing:0; font-weight:400;
+  }
+  .draft h2 .badge {
+    font-family:var(--mono); font-size:10px; letter-spacing:0.18em; text-transform:uppercase;
+    padding:2px 8px; border-radius:4px;
+    background:rgba(255,255,255,0.04); border:1px solid var(--hairline);
+    color:var(--fg-2); font-weight:400;
+  }
+  .draft h2 .badge.solid { background:rgba(136,214,127,0.08); border-color:rgba(136,214,127,0.22); color:var(--ok); }
+  .draft h2 .badge.partial { background:rgba(168,212,252,0.08); border-color:rgba(168,212,252,0.22); color:var(--accent); }
+  .draft h2 .badge.gap { background:rgba(255,204,102,0.06); border-color:rgba(255,204,102,0.22); color:var(--warn); }
+  .draft h2 .anchor {
+    color:var(--fg-4); font-family:var(--mono); font-size:10px; cursor:pointer; margin-left:auto;
+  }
+  .draft h2 .anchor:hover { color:var(--fg-2); }
+  .draft p { margin:0 0 14px; font-family:var(--serif); font-weight:400; font-size:15px; line-height:1.75; color:var(--fg-1); }
+  .draft p:last-child { margin-bottom:0; }
+  .draft p .em { color:var(--fg-0); }
+  .draft code { color:var(--fg-0); font-family:var(--mono); font-size:13px; background:rgba(255,255,255,0.04);
+    padding:0 4px; border-radius:3px; }
+
+  /* anchors a critique to a paragraph: subtle background tint and gutter dot */
+  .draft .anchored {
+    position:relative;
+    padding:0 8px; margin:0 -8px 14px;
+    border-radius:4px;
+    transition:background 200ms;
+  }
+  .draft .anchored::before {
+    content:""; position:absolute; left:-22px; top:9px;
+    width:8px; height:8px; border-radius:50%;
+  }
+  .draft .anchored.critique-good::before { background:var(--ok); box-shadow:0 0 8px rgba(136,214,127,0.5); }
+  .draft .anchored.critique-warn::before { background:var(--warn); box-shadow:0 0 8px rgba(255,204,102,0.5); }
+  .draft .anchored.critique-gap::before  { background:var(--judge); box-shadow:0 0 8px rgba(196,181,253,0.5); }
+  .draft .anchored:hover { background:rgba(196,181,253,0.04); }
+
+  /* placeholder for missing section */
+  .draft .placeholder {
+    margin:14px 0; padding:20px 22px;
+    border:1px dashed rgba(255,204,102,0.24);
+    border-radius:10px;
+    background:rgba(255,204,102,0.03);
+    color:var(--warn); font-style:italic; font-family:var(--serif); font-weight:300; font-size:14px;
+  }
+  .draft .placeholder strong { color:var(--warn); font-weight:500; font-style:normal;
+    font-family:var(--mono); font-size:11px; letter-spacing:0.18em; text-transform:uppercase; display:block; margin-bottom:6px; }
+
+  /* critique pane */
+  .critique-pane {
+    border-left:1px solid var(--hairline);
+    background:rgba(0,0,0,0.2);
+    overflow-y:auto;
+    padding:24px 22px;
+    display:flex; flex-direction:column; gap:14px;
+  }
+  .critique-head {
+    display:flex; align-items:center; justify-content:space-between;
+    color:var(--judge);
+    font-family:var(--serif); font-style:italic; font-weight:300; font-size:14px;
+    border-bottom:1px solid var(--hairline);
+    padding-bottom:14px; margin-bottom:6px;
+  }
+  .critique-head .ti { display:inline-flex; align-items:center; gap:8px; }
+  .critique-head .ti::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--judge);
+    box-shadow:0 0 8px var(--judge); }
+  .critique-head .count {
+    font-family:var(--mono); font-size:11px; letter-spacing:0.06em; font-style:normal;
+    color:var(--fg-2);
+  }
+
+  .crit {
+    border-radius:10px;
+    background:rgba(20,20,20,0.5);
+    border:1px solid var(--hairline);
+    padding:12px 14px;
+    display:flex; flex-direction:column; gap:8px;
+  }
+  .crit .hdr {
+    display:flex; align-items:center; justify-content:space-between;
+    color:var(--fg-3); font-size:10px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+  .crit .hdr .anchor {
+    color:var(--fg-2); cursor:pointer;
+  }
+  .crit .hdr .anchor:hover { color:var(--fg-0); }
+  .crit .hdr .tag {
+    padding:1px 7px; border-radius:4px;
+    background:rgba(255,255,255,0.04); border:1px solid var(--hairline);
+    color:var(--fg-2);
+  }
+  .crit.good .hdr .tag { color:var(--ok); background:rgba(136,214,127,0.06); border-color:rgba(136,214,127,0.22); }
+  .crit.warn .hdr .tag { color:var(--warn); background:rgba(255,204,102,0.06); border-color:rgba(255,204,102,0.22); }
+  .crit.gap  .hdr .tag { color:var(--judge); background:rgba(196,181,253,0.07); border-color:rgba(196,181,253,0.22); }
+  .crit .body {
+    color:var(--fg-1); font-size:12.5px; line-height:1.7;
+    font-family:var(--serif); font-style:italic; font-weight:300;
+  }
+  .crit.good .body::before { content:"\201C"; color:var(--ok); }
+  .crit.good .body::after  { content:"\201D"; color:var(--ok); }
+  .crit.warn .body::before { content:"\201C"; color:var(--warn); }
+  .crit.warn .body::after  { content:"\201D"; color:var(--warn); }
+  .crit.gap  .body::before { content:"\201C"; color:var(--judge); }
+  .crit.gap  .body::after  { content:"\201D"; color:var(--judge); }
+
+  .crit.fresh { box-shadow:0 0 18px rgba(196,181,253,0.1); border-color:rgba(196,181,253,0.32); }
+
+  .convergence-strip {
+    margin-top:auto; padding-top:14px; border-top:1px solid var(--hairline);
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    display:flex; flex-direction:column; gap:6px;
+  }
+  .convergence-strip .row { display:flex; justify-content:space-between; align-items:center; }
+  .convergence-strip .row .num { color:var(--fg-0); font-family:var(--mono); letter-spacing:0; text-transform:none; font-variant-numeric:tabular-nums; }
+  .convergence-strip .verdict-tag {
+    padding:2px 8px; border-radius:4px; background:rgba(196,181,253,0.08);
+    border:1px solid rgba(196,181,253,0.22); color:var(--judge);
+    font-family:var(--mono); font-size:10px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+
+  /* cradle */
+  .cradle-wrap { display:flex; justify-content:center; padding:14px 16px 16px; }
+  .cradle { width:100%; max-width:760px;
+    background:rgba(14,14,14,0.55);
+    backdrop-filter:blur(36px) saturate(140%);
+    border-radius:16px;
+    box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.07),
+                inset 0 0 0 1px rgba(255,255,255,0.04),
+                0 12px 40px -8px rgba(0,0,0,0.5);
+    padding:12px 16px 10px; display:flex; flex-direction:column; gap:8px;
+  }
+  .cradle textarea { background:transparent; border:0; outline:0; color:var(--fg-0);
+    font:inherit; resize:none; width:100%; min-height:22px; }
+  .cradle textarea::placeholder { color:var(--fg-3); }
+  .cradle-row { display:flex; align-items:center; justify-content:space-between;
+    color:var(--fg-3); font-size:11px; }
+  .cradle-row kbd { color:var(--fg-2); background:rgba(255,255,255,0.04);
+    padding:1px 6px; border-radius:4px; font-family:inherit; font-size:10.5px; }
+
+  ::-webkit-scrollbar { width:8px; }
+  ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.05); border-radius:6px; }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="app">
+
+  <div class="strip">
+    <div class="l">
+      <span>freyja</span>
+      <span class="live">drafting</span>
+    </div>
+    <div>goal · draft + critique · 6m elapsed</div>
+  </div>
+
+  <div class="head">
+    <div>
+      <div class="eyebrow">goal · qualitative · the draft is the deliverable</div>
+      <h1>Research covered call options thoroughly enough to give a <span class="em">grounded recommendation</span> for a $250k retirement portfolio.</h1>
+    </div>
+    <div class="meta">
+      turn <span class="num">5</span> of 15 · 6m elapsed<br/>
+      <span class="review">judge · 8 comments · 3 unresolved</span>
+    </div>
+  </div>
+
+  <div class="editor">
+
+    <!-- DRAFT side -->
+    <div class="doc-pane">
+
+      <div class="doc-status-bar">
+        <span class="pill live">draft updating · turn 5</span>
+        <span class="pill">5 sections solid</span>
+        <span class="pill">2 sections partial</span>
+        <span class="pill">1 section missing</span>
+      </div>
+
+      <div class="draft">
+        <h1 class="doc-title">Covered calls in a $250k retirement portfolio — a recommendation</h1>
+        <div class="doc-meta">draft · v5 · written by the agent · reviewed by the judge each turn</div>
+
+        <h2><span class="marker">§ 1</span>What a covered call is, and what it isn't <span class="badge solid">solid</span></h2>
+        <div class="anchored critique-good">
+          <p>A <span class="em">covered call</span> is a long stock position with a short out-of-the-money call written against it. The writer collects an upfront premium and accepts a cap on upside in exchange. The trade has positive expected value when implied volatility exceeds realized volatility — a condition that has historically held for major equity indices, though the magnitude of the premium has shrunk in low-vol regimes.</p>
+        </div>
+
+        <h2><span class="marker">§ 2</span>The income-vs-upside tradeoff <span class="badge solid">solid</span></h2>
+        <div class="anchored critique-good">
+          <p>For SPY, monthly 1-σ OTM calls have historically produced gross premium of roughly <code>0.4–0.6%</code> per month, against a dividend yield of about <code>1.5%</code> per year. Premium captures the volatility risk premium; dividends do not. The cap on upside has historically cost the BXM index 2–4 percentage points in the strongest deciles of monthly returns.</p>
+        </div>
+
+        <h2><span class="marker">§ 3</span>Assignment risk <span class="badge partial">partial</span></h2>
+        <div class="anchored critique-warn">
+          <p>Assignment is most likely just before ex-dividend dates and at in-the-money strikes; on assignment the writer delivers the underlying at the strike. This is straightforward in a tax-advantaged account.</p>
+        </div>
+
+        <h2><span class="marker">§ 4</span>Tax treatment <span class="badge partial">partial</span></h2>
+        <div class="anchored critique-warn">
+          <p>Premium received on expiry is treated as short-term capital gain. If the call is assigned, the resulting stock sale uses the strike price plus premium as the proceeds. <span class="em">The wash-sale interaction is non-trivial in a taxable account</span> and is not yet covered here.</p>
+        </div>
+
+        <h2><span class="marker">§ 5</span>Strike-selection framework <span class="badge gap">missing</span></h2>
+        <div class="placeholder">
+          <strong>not yet written</strong>
+          A grounded recommendation has to specify <em>how</em> the user picks strikes — delta-based (e.g. ~0.30Δ), premium-yield-target, or volatility-conditioned. Without this, the rest of the draft is an explainer, not a recommendation.
+        </div>
+
+        <h2><span class="marker">§ 6</span>The recommendation itself <span class="badge gap">missing</span></h2>
+        <div class="placeholder">
+          <strong>blocked on §5 and on knowing the user's profile</strong>
+          A grounded recommendation needs the user's age, income needs, risk tolerance, and any single-stock concentration. The judge has flagged "user's profile" as the biggest open question.
+        </div>
+
+      </div>
+
+    </div>
+
+    <!-- CRITIQUE side -->
+    <div class="critique-pane">
+
+      <div class="critique-head">
+        <span class="ti">judge's marginalia</span>
+        <span class="count">8 total · 3 unresolved</span>
+      </div>
+
+      <div class="crit good">
+        <div class="hdr"><span><span class="tag">looks good</span></span><span class="anchor">→ §1</span></div>
+        <div class="body">Clean opening; the volatility-risk-premium framing is correct and well-scoped. Don't overwrite this.</div>
+      </div>
+
+      <div class="crit good">
+        <div class="hdr"><span><span class="tag">looks good</span></span><span class="anchor">→ §2</span></div>
+        <div class="body">Numbers are sourced and the BXM comparison is the right benchmark. Consider adding QYLD as a more aggressive comparison if space allows.</div>
+      </div>
+
+      <div class="crit warn fresh">
+        <div class="hdr"><span><span class="tag">needs evidence</span></span><span class="anchor">→ §3</span></div>
+        <div class="body">"Most likely just before ex-dividend dates" is correct but currently has no citation. The OCC investor brief or CBOE assignment FAQ would do.</div>
+      </div>
+
+      <div class="crit gap fresh">
+        <div class="hdr"><span><span class="tag">blind spot</span></span><span class="anchor">→ §3</span></div>
+        <div class="body">Does the writer want to be assigned? In a tax-deferred account, often yes — it's a forced rebalance with extra income. The current draft treats assignment as something to avoid. Worth complicating.</div>
+      </div>
+
+      <div class="crit warn">
+        <div class="hdr"><span><span class="tag">underspecified</span></span><span class="anchor">→ §4</span></div>
+        <div class="body">"The wash-sale interaction is non-trivial" is true but the draft owes the user a paragraph on what actually happens in (a) a Roth IRA, (b) a traditional IRA, (c) a taxable brokerage. Don't punt.</div>
+      </div>
+
+      <div class="crit gap fresh">
+        <div class="hdr"><span><span class="tag">blind spot</span></span><span class="anchor">→ §4</span></div>
+        <div class="body">2025 IRS Section 1256 clarification — flagged for follow-up. May or may not apply here; either way the draft should mention it before the recommendation lands.</div>
+      </div>
+
+      <div class="crit gap">
+        <div class="hdr"><span><span class="tag">required</span></span><span class="anchor">→ §5</span></div>
+        <div class="body">The user is paying for a recommendation, not a primer. A strike-selection rule of thumb is non-negotiable — without it §6 cannot be written.</div>
+      </div>
+
+      <div class="crit gap">
+        <div class="hdr"><span><span class="tag">required</span></span><span class="anchor">→ §6</span></div>
+        <div class="body">The recommendation must be conditional on the user's profile. Missing inputs: age, income needs, risk tolerance, single-stock concentration. Ask before you write.</div>
+      </div>
+
+      <div class="convergence-strip">
+        <div class="row"><span>turn</span><span class="num">5</span></div>
+        <div class="row"><span>verdict</span><span class="verdict-tag">continue</span></div>
+        <div class="row"><span>convergence</span><span class="num">5 / 8 comments resolved</span></div>
+      </div>
+
+    </div>
+
+  </div>
+
+  <div class="cradle-wrap">
+    <div class="cradle">
+      <textarea rows="1" placeholder="edit the draft directly · address a comment · or instruct the judge…"></textarea>
+      <div class="cradle-row">
+        <div><kbd>⏎</kbd> send · click any draft section to edit</div>
+        <div>goal · draft + critique</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

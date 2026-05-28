@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · v5 Narrative Stream (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a;
+    --fg-0:#ececec; --fg-1:#a8a8a8; --fg-2:#6e6e6e; --fg-3:#4a4a4a; --fg-4:#303030;
+    --accent:#a8d4fc; --accent-lo:#7aafea;
+    --ok:#88d67f; --warn:#ffcc66; --danger:#ff6b6b;
+    --hairline:rgba(255,255,255,0.06);
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(900px 700px at 50% -10%, rgba(168,212,252,0.05), transparent 60%),
+      radial-gradient(700px 600px at 50% 110%, rgba(255,204,102,0.022), transparent 60%);
+  }
+
+  .app { position:relative; z-index:1; min-height:100vh; }
+
+  /* sticky mini-header */
+  .head {
+    position:sticky; top:0; z-index:20;
+    background:linear-gradient(180deg, rgba(10,10,10,0.95), rgba(10,10,10,0.85) 80%, transparent);
+    backdrop-filter:blur(10px);
+    padding:18px 24px 14px;
+    border-bottom:1px solid var(--hairline);
+  }
+  .head-inner { max-width:680px; margin:0 auto; display:flex; align-items:center; gap:18px; font-size:11.5px; }
+  .head .live { display:inline-flex; align-items:center; gap:7px; color:var(--fg-1); }
+  .head .live::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 8px var(--accent); animation:pulse 2.2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .head .mission-line { color:var(--fg-2); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .head .mission-line .strong { color:var(--fg-1); }
+  .head .num { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+  .head .quiet { color:var(--fg-3); }
+
+  /* the stream */
+  .stream { max-width:680px; margin:0 auto; padding:36px 24px 240px; }
+
+  .opening { padding:18px 0 28px; border-bottom:1px solid var(--hairline); margin-bottom:18px; }
+  .opening .label { color:var(--fg-2); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase; margin-bottom:14px; }
+  .opening h1 { font-family:var(--serif); font-weight:300; font-size:24px; line-height:1.45; color:var(--fg-0); margin:0; letter-spacing:-0.005em; }
+  .opening h1 .soft { color:var(--fg-1); }
+
+  .entry {
+    display:grid; grid-template-columns:54px 1fr; column-gap:18px;
+    padding:10px 0;
+  }
+  .entry .ts {
+    color:var(--fg-3); font-size:11px;
+    padding-top:3px; font-variant-numeric:tabular-nums;
+  }
+  .entry .body {
+    color:var(--fg-1); font-size:13.5px; line-height:1.7;
+  }
+  .entry .body .who { color:var(--fg-0); font-weight:500; }
+  .entry .body .pill {
+    display:inline; padding:1px 7px; border-radius:6px;
+    background:rgba(255,255,255,0.04); color:var(--fg-1);
+    font-size:12.5px; border:1px solid var(--hairline);
+    white-space:nowrap;
+  }
+  .entry .body .pill.now { background:rgba(168,212,252,0.07); color:var(--accent); border-color:rgba(168,212,252,0.22); }
+  .entry .body .pill.done { color:var(--fg-2); border-color:rgba(255,255,255,0.04); }
+  .entry .body .pill.blocked { background:rgba(255,204,102,0.07); color:var(--warn); border-color:rgba(255,204,102,0.2); }
+  .entry .body code { color:var(--fg-0); }
+  .entry .body .meta { color:var(--fg-3); font-size:11.5px; }
+  .entry .body .check { color:var(--ok); font-weight:500; }
+  .entry .body .warn  { color:var(--warn); font-weight:500; }
+
+  .entry.system .body { color:var(--fg-2); font-style:italic; font-family:var(--serif); font-size:14px; letter-spacing:0; }
+
+  /* collapsed group */
+  .fold {
+    display:grid; grid-template-columns:54px 1fr; column-gap:18px;
+    padding:8px 0; cursor:pointer;
+    color:var(--fg-3); font-size:11.5px;
+  }
+  .fold:hover .body { color:var(--fg-1); }
+  .fold .body { transition:color 120ms; }
+  .fold .body::before { content:"▾  "; color:var(--fg-3); }
+
+  /* now-card: the live state at the bottom of the stream */
+  .now-card {
+    margin:24px 0 0;
+    padding:18px 20px;
+    background:linear-gradient(180deg, rgba(168,212,252,0.05), rgba(168,212,252,0.02));
+    border:1px solid rgba(168,212,252,0.18);
+    border-radius:14px;
+    display:flex; flex-direction:column; gap:10px;
+  }
+  .now-card .lbl {
+    color:var(--accent);
+    font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    display:flex; align-items:center; gap:8px;
+  }
+  .now-card .lbl::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 8px var(--accent); animation:pulse 2.2s ease-in-out infinite; }
+  .now-card .row {
+    display:grid; grid-template-columns:60px 1fr; gap:10px;
+    color:var(--fg-1); font-size:13px;
+  }
+  .now-card .row .who { color:var(--fg-0); }
+  .now-card .row .what { color:var(--fg-1); }
+  .now-card .row .what .em { color:var(--accent); }
+  .now-card .row.idle .who, .now-card .row.idle .what { color:var(--fg-2); }
+  .now-card .suggestion {
+    margin-top:6px; padding-top:10px; border-top:1px solid rgba(255,255,255,0.04);
+    color:var(--fg-2); font-size:12px;
+  }
+  .now-card .suggestion .em { color:var(--accent); cursor:pointer; }
+  .now-card .suggestion .em:hover { text-decoration:underline; }
+
+  /* cradle pinned at bottom */
+  .cradle-wrap {
+    position:fixed; left:0; right:0; bottom:0;
+    padding:24px 24px 18px;
+    background:linear-gradient(0deg, var(--bg-0) 60%, transparent);
+    pointer-events:none;
+    z-index:30;
+  }
+  .cradle {
+    pointer-events:auto;
+    max-width:680px; margin:0 auto;
+    background:rgba(20,20,20,0.6);
+    backdrop-filter:blur(36px) saturate(140%);
+    -webkit-backdrop-filter:blur(36px) saturate(140%);
+    border-radius:14px;
+    border:1px solid var(--hairline);
+    box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.07), 0 12px 40px -8px rgba(0,0,0,0.5);
+    padding:14px 18px 12px;
+    display:flex; flex-direction:column; gap:8px;
+  }
+  .cradle textarea {
+    background:transparent; border:0; outline:0; color:var(--fg-0);
+    font:inherit; resize:none; width:100%; min-height:22px;
+  }
+  .cradle textarea::placeholder { color:var(--fg-3); }
+  .cradle-hint { display:flex; justify-content:space-between; color:var(--fg-3); font-size:11px; }
+  .cradle-hint kbd { color:var(--fg-2); background:rgba(255,255,255,0.04);
+    padding:1px 6px; border-radius:4px; font-family:inherit; font-size:10.5px; }
+
+  ::-webkit-scrollbar { width:8px; }
+  ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.05); border-radius:6px; }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="app">
+
+  <div class="head">
+    <div class="head-inner">
+      <span class="live">live</span>
+      <span class="mission-line"><span class="strong">Restructure the ingestion pipeline</span> · streaming uploads from S3 + Azure Blob</span>
+      <span class="quiet"><span class="num">4</span>/12 · 38m</span>
+    </div>
+  </div>
+
+  <main class="stream">
+
+    <section class="opening">
+      <div class="label">mission</div>
+      <h1>Restructure the ingestion pipeline to support
+        <span class="soft">streaming uploads from S3 and Azure Blob,</span>
+        and migrate the existing batch test suite.</h1>
+    </section>
+
+    <div class="entry system">
+      <div class="ts">10:24</div>
+      <div class="body">We started.</div>
+    </div>
+
+    <div class="entry">
+      <div class="ts">10:24</div>
+      <div class="body">
+        <span class="who">scout</span> claimed <span class="pill done">bench memory floor</span> and <span class="pill done">map S3 surface area</span>.
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="ts">10:28</div>
+      <div class="body">
+        <span class="who">forge</span> claimed <span class="pill done">spec the buffered cursor</span>.
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="ts">10:32</div>
+      <div class="body">
+        <span class="check">✓</span> <span class="who">scout</span> finished bench memory floor in <span class="meta">12m</span>.
+        Peak memory hit 1.8 GB on 8 GB inputs — suggests we cap chunks at <code>64 MB</code>.
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="ts">10:36</div>
+      <div class="body">
+        <span class="who">sentinel</span> claimed <span class="pill done">set up local minio</span>.
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="ts">10:38</div>
+      <div class="body">
+        <span class="check">✓</span> <span class="who">forge</span> finished spec'ing the buffered cursor (<span class="meta">8m</span>) and queued <span class="pill">refactor ingest worker</span>.
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="ts">10:40</div>
+      <div class="body">
+        <span class="check">✓</span> <span class="who">sentinel</span> set up local minio (<span class="meta">4m</span>).
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="ts">10:44</div>
+      <div class="body">
+        <span class="check">✓</span> <span class="who">scout</span> mapped S3 surface (<span class="meta">6m</span>). 4 callers in <code>ingest_worker.py</code>, none in tests.
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="ts">10:50</div>
+      <div class="body">
+        <span class="who">forge</span> picked up <span class="pill now">refactor ingest worker</span> →.
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="ts">10:55</div>
+      <div class="body">
+        <span class="who">scout</span> opened <span class="pill now">streaming reader for S3</span> — wiring multipart range requests.
+      </div>
+    </div>
+
+    <div class="fold"><div class="ts">11:02</div><div class="body">3 quieter events: forge ran tests · scout edited stream_reader.py · sentinel idled</div></div>
+
+    <div class="entry">
+      <div class="ts">11:08</div>
+      <div class="body">
+        <span class="who">sentinel</span> tried to claim <span class="pill blocked">update API contracts</span> — <span class="warn">blocked</span>, schema PR is awaiting review from <span style="color:var(--fg-0)">@backend-team</span>.
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="ts">11:12</div>
+      <div class="body">
+        <span class="check">✓</span> <span class="who">sentinel</span> verified fixture parity against the legacy reader. All 41 tests still green.
+      </div>
+    </div>
+
+    <div class="fold"><div class="ts">11:14</div><div class="body">2 quieter events: scout read s3_multipart.py · forge edited ingest_worker.py</div></div>
+
+    <div class="entry system">
+      <div class="ts">11:18</div>
+      <div class="body">It's been 38 minutes.</div>
+    </div>
+
+    <!-- the now-card -->
+    <div class="now-card">
+      <div class="lbl">currently</div>
+      <div class="row">
+        <span class="who">scout</span>
+        <span class="what">reading <span class="em">s3_multipart.py</span> · 2m on streaming reader</span>
+      </div>
+      <div class="row">
+        <span class="who">forge</span>
+        <span class="what">editing <span class="em">ingest_worker.py</span> · 5m on the refactor</span>
+      </div>
+      <div class="row idle">
+        <span class="who">sentinel</span>
+        <span class="what">idle 3m</span>
+      </div>
+      <div class="suggestion">
+        sentinel could pick up <span class="em">migrate test fixtures</span> — it's the only ready task that doesn't depend on the streaming reader landing first.
+      </div>
+    </div>
+
+  </main>
+
+  <div class="cradle-wrap">
+    <div class="cradle">
+      <textarea rows="1" placeholder="redirect, add a task, or ask…"></textarea>
+      <div class="cradle-hint">
+        <span><kbd>⏎</kbd> send · <kbd>⌘K</kbd> command</span>
+        <span>tasks · narrative</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

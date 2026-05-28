@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · v8 Keyboard (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0b0b0b;
+    --fg-0:#ececec; --fg-1:#a8a8a8; --fg-2:#7a7a7a; --fg-3:#5a5a5a; --fg-4:#3a3a3a;
+    --accent:#a8d4fc; --accent-lo:#7aafea;
+    --ok:#88d67f; --warn:#ffcc66; --danger:#ff6b6b;
+    --kbd-bg:#161616;
+    --hairline:rgba(255,255,255,0.06);
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.5;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:radial-gradient(900px 700px at 12% -10%, rgba(168,212,252,0.04), transparent 60%);
+  }
+  .ambient::after { content:""; position:absolute; inset:0;
+    background-image: repeating-linear-gradient(0deg, rgba(255,255,255,0.012) 0 1px, transparent 1px 4px);
+    mask-image: radial-gradient(80% 100% at 50% 50%, black, transparent 100%);
+    opacity:0.5;
+  }
+
+  kbd {
+    font-family:var(--mono); font-size:10.5px;
+    color:var(--fg-1); background:var(--kbd-bg);
+    border:1px solid var(--fg-4);
+    border-bottom-width:2px;
+    padding:0px 5px; border-radius:4px;
+    line-height:1.4;
+    min-width:14px; text-align:center;
+    display:inline-block;
+  }
+  kbd.dim { color:var(--fg-3); border-color:#202020; }
+
+  .app {
+    position:relative; z-index:1; height:100vh;
+    display:grid; grid-template-rows:auto 1fr auto auto;
+    max-width:980px; margin:0 auto;
+    padding:0 28px;
+  }
+
+  /* ---- header ---- */
+  .head {
+    padding:18px 0 14px;
+    display:flex; align-items:center; justify-content:space-between;
+    border-bottom:1px solid var(--hairline);
+  }
+  .head .left { display:flex; align-items:center; gap:14px; }
+  .head .left .name { color:var(--fg-0); }
+  .head .left .sep { color:var(--fg-4); }
+  .head .left .crumb { color:var(--fg-1); }
+  .head .left .live { display:inline-flex; align-items:center; gap:6px; color:var(--fg-2); font-size:11px; }
+  .head .left .live::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 8px var(--accent); animation:pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .head .right { color:var(--fg-2); font-size:11.5px; display:flex; gap:14px; align-items:center; }
+  .head .right .item { display:flex; gap:6px; align-items:center; }
+
+  /* ---- mission line ---- */
+  .mission {
+    padding:18px 0 14px;
+    border-bottom:1px dashed rgba(255,255,255,0.06);
+    display:grid; grid-template-columns:120px 1fr auto; gap:16px;
+    align-items:baseline;
+  }
+  .mission .lbl { color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase; }
+  .mission .text { color:var(--fg-0); font-size:14px; line-height:1.55; }
+  .mission .text .soft { color:var(--fg-1); }
+  .mission .meta { color:var(--fg-2); font-size:11px; text-align:right; line-height:1.6; white-space:nowrap; }
+  .mission .meta .num { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+  .mission .meta .bar {
+    display:inline-block; width:120px; height:2px; background:rgba(255,255,255,0.08);
+    margin-left:8px; vertical-align:middle; border-radius:2px; overflow:hidden;
+  }
+  .mission .meta .bar > div { width:33%; height:100%; background:linear-gradient(90deg, var(--accent-lo), var(--accent));
+    box-shadow:0 0 8px rgba(168,212,252,0.4); }
+
+  /* ---- list ---- */
+  .list {
+    overflow-y:auto;
+    padding:14px 0;
+    font-size:13px;
+  }
+
+  .group { margin:0 0 16px; }
+  .group .ghdr {
+    display:grid; grid-template-columns:120px 1fr auto; gap:16px;
+    padding:6px 0;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    border-bottom:1px solid rgba(255,255,255,0.04);
+  }
+  .group .ghdr .count { color:var(--fg-3); font-size:10.5px; }
+
+  .row {
+    display:grid;
+    grid-template-columns:18px 84px 1fr 80px 60px;
+    gap:16px;
+    align-items:center;
+    padding:6px 0;
+    border-left:2px solid transparent;
+    padding-left:8px; margin-left:-10px;
+    cursor:default;
+  }
+  .row:hover { background:rgba(255,255,255,0.02); }
+  .row.cursor { background:rgba(168,212,252,0.06); border-left-color:var(--accent); }
+  .row .g { color:var(--fg-3); text-align:center; }
+  .row .id { color:var(--fg-2); font-size:11.5px; }
+  .row .title { color:var(--fg-0); }
+  .row .who { color:var(--fg-1); font-size:11.5px; text-align:right; }
+  .row .age { color:var(--fg-3); font-size:11.5px; text-align:right; font-variant-numeric:tabular-nums; }
+
+  .row.now .g { color:var(--accent); }
+  .row.now .who { color:var(--accent); }
+  .row.blocked .g { color:var(--warn); }
+  .row.blocked .who { color:var(--warn); }
+  .row.done .g { color:var(--ok); }
+  .row.done .title { color:var(--fg-2); text-decoration:line-through; text-decoration-color:var(--fg-4); }
+
+  .spin {
+    display:inline-block; width:9px; height:9px; border-radius:50%;
+    border:1.4px solid rgba(168,212,252,0.25); border-top-color:var(--accent);
+    animation:spin 1.6s linear infinite;
+  }
+  @keyframes spin { to { transform:rotate(360deg); } }
+
+  .group .collapsed {
+    display:grid; grid-template-columns:18px 84px 1fr 80px 60px; gap:16px;
+    padding:6px 8px 6px 8px; margin-left:-10px;
+    color:var(--fg-3); font-size:11.5px; cursor:pointer;
+  }
+  .group .collapsed:hover { color:var(--fg-1); }
+
+  /* ---- command bar ---- */
+  .cmdbar {
+    border-top:1px solid var(--hairline);
+    padding:10px 0;
+    display:flex; flex-wrap:wrap; gap:18px;
+    color:var(--fg-2); font-size:11px;
+  }
+  .cmdbar .grp { display:flex; gap:6px; align-items:center; }
+  .cmdbar .grp .label { color:var(--fg-3); }
+
+  /* ---- prompt ---- */
+  .prompt {
+    border-top:1px solid var(--hairline);
+    padding:14px 0 16px;
+    display:grid; grid-template-columns:auto 1fr auto; gap:12px; align-items:center;
+  }
+  .prompt .sigil { color:var(--accent); font-weight:500; }
+  .prompt .input {
+    background:transparent; border:0; outline:0;
+    color:var(--fg-0); font:inherit; width:100%;
+    caret-color:var(--accent);
+  }
+  .prompt .input::placeholder { color:var(--fg-3); }
+  .prompt .modeline { color:var(--fg-3); font-size:11px; }
+  .prompt .modeline .pill {
+    background:rgba(255,255,255,0.04); padding:2px 8px; border-radius:4px;
+    color:var(--fg-2); border:1px solid var(--hairline);
+  }
+
+  /* hint floats */
+  .hint-float {
+    position:fixed; right:32px; top:18px;
+    color:var(--fg-3); font-size:11px;
+    display:flex; gap:6px; align-items:center;
+  }
+
+  ::-webkit-scrollbar { width:8px; }
+  ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.05); border-radius:6px; }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="app">
+
+  <div class="head">
+    <div class="left">
+      <span class="name">freyja</span>
+      <span class="sep">/</span>
+      <span class="crumb">tasks</span>
+      <span class="sep">/</span>
+      <span class="crumb">ingestion-pipeline</span>
+      <span class="sep">·</span>
+      <span class="live">live</span>
+    </div>
+    <div class="right">
+      <span class="item"><kbd>?</kbd> help</span>
+      <span class="item"><kbd>:</kbd> command</span>
+      <span class="item"><kbd>q</kbd> quit</span>
+    </div>
+  </div>
+
+  <!-- mission row, terminal-style -->
+  <div class="mission">
+    <div class="lbl">mission</div>
+    <div class="text">Restructure the ingestion pipeline to support
+      <span class="soft">streaming uploads from S3 and Azure Blob,</span>
+      and migrate the existing batch test suite.</div>
+    <div class="meta">
+      <span class="num">4</span>/12 <span class="bar"><div></div></span><br/>
+      38m elapsed · 2 active · 1 blocked
+    </div>
+  </div>
+
+  <!-- list -->
+  <div class="list">
+
+    <div class="group">
+      <div class="ghdr"><div></div><div>now</div><div class="count">2</div><div></div><div></div></div>
+
+      <div class="row now cursor">
+        <span class="g"><span class="spin"></span></span>
+        <span class="id">s3-stream</span>
+        <span class="title">Add streaming reader for S3 multipart objects</span>
+        <span class="who">scout</span>
+        <span class="age">2m</span>
+      </div>
+      <div class="row now">
+        <span class="g"><span class="spin"></span></span>
+        <span class="id">ingest-r</span>
+        <span class="title">Refactor ingest worker around buffered cursor</span>
+        <span class="who">forge</span>
+        <span class="age">5m</span>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="ghdr"><div></div><div>up next</div><div class="count">4</div><div></div><div></div></div>
+
+      <div class="row">
+        <span class="g">○</span>
+        <span class="id">azure</span>
+        <span class="title">Add Azure blob adapter mirroring the S3 surface</span>
+        <span class="who">—</span>
+        <span class="age"></span>
+      </div>
+      <div class="row">
+        <span class="g">○</span>
+        <span class="id">fixtures</span>
+        <span class="title">Migrate batch test fixtures to streaming form</span>
+        <span class="who">—</span>
+        <span class="age"></span>
+      </div>
+      <div class="row">
+        <span class="g">○</span>
+        <span class="id">cli-flag</span>
+        <span class="title">Wire <code style="color:var(--fg-1)">--stream</code> CLI flag through worker config</span>
+        <span class="who">—</span>
+        <span class="age"></span>
+      </div>
+      <div class="row">
+        <span class="g">○</span>
+        <span class="id">cutover</span>
+        <span class="title">Document the cutover plan for staging</span>
+        <span class="who">—</span>
+        <span class="age"></span>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="ghdr"><div></div><div>blocked</div><div class="count">1</div><div></div><div></div></div>
+
+      <div class="row blocked">
+        <span class="g">⊘</span>
+        <span class="id">contracts</span>
+        <span class="title">Update API contracts in shared schema repo</span>
+        <span class="who">@backend-team</span>
+        <span class="age">12m</span>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="ghdr"><div></div><div>done</div><div class="count">4</div><div></div><div></div></div>
+
+      <div class="collapsed">
+        <span></span>
+        <span></span>
+        <span>▾  4 done · press <kbd class="dim">d</kbd> to expand</span>
+        <span></span>
+        <span></span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- command bar -->
+  <div class="cmdbar">
+    <span class="grp"><span class="label">nav</span><kbd>j</kbd><kbd>k</kbd></span>
+    <span class="grp"><span class="label">open</span><kbd>↵</kbd></span>
+    <span class="grp"><span class="label">claim</span><kbd>c</kbd></span>
+    <span class="grp"><span class="label">add</span><kbd>a</kbd></span>
+    <span class="grp"><span class="label">reassign</span><kbd>r</kbd></span>
+    <span class="grp"><span class="label">block</span><kbd>b</kbd></span>
+    <span class="grp"><span class="label">complete</span><kbd>x</kbd></span>
+    <span class="grp"><span class="label">search</span><kbd>/</kbd></span>
+    <span class="grp"><span class="label">filter</span><kbd>f</kbd></span>
+  </div>
+
+  <!-- prompt -->
+  <div class="prompt">
+    <span class="sigil">›</span>
+    <input class="input" placeholder="ask, redirect, or :command (try `:claim azure forge`)" />
+    <span class="modeline"><span class="pill">tasks · k-mode</span></span>
+  </div>
+
+</div>
+</body>
+</html>

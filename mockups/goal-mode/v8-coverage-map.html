@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Goal · v8 Coverage Map (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#080808;
+    --fg-0:#ececec; --fg-1:#a8a8a8; --fg-2:#7a7a7a; --fg-3:#5a5a5a; --fg-4:#3a3a3a;
+    --accent:#a8d4fc; --accent-lo:#7aafea;
+    --ok:#88d67f; --warn:#ffcc66;
+    --judge:#c4b5fd;
+    --hairline:rgba(255,255,255,0.06);
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:radial-gradient(ellipse at center, #0c0c0c 0%, #050505 80%);
+    color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.6;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+
+  .stars { position:fixed; inset:0; z-index:0; pointer-events:none;
+    background:
+      radial-gradient(circle at 12% 18%, rgba(255,255,255,0.04) 0.5px, transparent 1px),
+      radial-gradient(circle at 78% 12%, rgba(255,255,255,0.03) 0.5px, transparent 1px),
+      radial-gradient(circle at 38% 84%, rgba(255,255,255,0.04) 0.5px, transparent 1px),
+      radial-gradient(circle at 64% 48%, rgba(255,255,255,0.03) 0.5px, transparent 1px);
+  }
+
+  .app { position:relative; z-index:1; height:100vh; display:grid; grid-template-rows:36px auto 1fr auto; }
+
+  .strip {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 28px;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+  }
+  .strip .l { display:flex; align-items:center; gap:14px; }
+  .strip .live { color:var(--fg-2); display:inline-flex; align-items:center; gap:7px; }
+  .strip .live::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 8px var(--accent); animation:pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  /* head */
+  .head {
+    text-align:center; padding:24px 24px 18px;
+    border-bottom:1px solid var(--hairline);
+  }
+  .head .eyebrow { color:var(--fg-3); font-size:10.5px; letter-spacing:0.32em; text-transform:uppercase; margin-bottom:10px; }
+  .head h1 {
+    font-family:var(--serif); font-weight:300; font-size:20px; line-height:1.45;
+    color:var(--fg-1); margin:0 auto; letter-spacing:-0.005em; max-width:760px;
+  }
+  .head h1 .em { color:var(--fg-0); }
+  .head .meta {
+    margin-top:14px;
+    color:var(--fg-2); font-size:11.5px; letter-spacing:0.06em;
+    display:flex; justify-content:center; gap:24px; flex-wrap:wrap;
+  }
+  .head .meta .num { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+  .head .meta .em { color:var(--accent); }
+
+  /* main: canvas + side */
+  .main { display:grid; grid-template-columns:1fr 360px; min-height:0; overflow:hidden; }
+
+  /* canvas */
+  .canvas {
+    position:relative; min-height:0; overflow:hidden;
+    background-image:
+      radial-gradient(800px 600px at 50% 50%, rgba(168,212,252,0.04), transparent 70%);
+  }
+  .canvas svg.lines { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:1; }
+
+  /* nodes */
+  .node {
+    position:absolute; z-index:3;
+    background:rgba(20,20,20,0.7);
+    backdrop-filter:blur(20px) saturate(140%);
+    -webkit-backdrop-filter:blur(20px) saturate(140%);
+    border:1px solid var(--hairline);
+    border-radius:12px;
+    padding:12px 14px;
+    color:var(--fg-1); font-size:12.5px;
+    cursor:pointer;
+    transition:all 160ms ease;
+    box-shadow:0 4px 14px rgba(0,0,0,0.4);
+    width:200px;
+  }
+  .node:hover { border-color:rgba(255,255,255,0.16); transform:translateY(-1px); }
+  .node .ti { color:var(--fg-0); font-size:12.5px; line-height:1.45; margin-bottom:6px; }
+  .node .ev {
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.06em;
+    display:flex; align-items:center; gap:6px;
+  }
+  .node .ev .glyph { font-size:11px; }
+  .node .ev .count { color:var(--fg-2); font-variant-numeric:tabular-nums; }
+
+  /* coverage indicator: a row of pips */
+  .pips { display:inline-flex; gap:3px; margin-left:6px; }
+  .pips .pip { width:6px; height:6px; border-radius:50%; background:rgba(255,255,255,0.08); }
+  .pips .pip.f { background:currentColor; }
+
+  /* status variants */
+  .node.solid {
+    background:rgba(136,214,127,0.06);
+    border-color:rgba(136,214,127,0.22);
+    color:var(--ok);
+  }
+  .node.solid .ev { color:var(--ok); }
+  .node.solid .ti { color:var(--fg-0); }
+  .node.solid::before { content:"✓"; position:absolute; top:-8px; left:-8px;
+    width:18px; height:18px; border-radius:50%;
+    background:var(--ok); color:#08220a; font-size:10px;
+    display:flex; align-items:center; justify-content:center;
+    box-shadow:0 0 10px rgba(136,214,127,0.4);
+  }
+
+  .node.partial {
+    background:rgba(168,212,252,0.05);
+    border-color:rgba(168,212,252,0.2);
+  }
+  .node.partial .ev { color:var(--accent); }
+  .node.partial .ti { color:var(--fg-0); }
+
+  .node.missing {
+    background:rgba(20,20,20,0.5);
+    border-style:dashed;
+    border-color:rgba(255,255,255,0.10);
+  }
+  .node.missing .ti { color:var(--fg-2); }
+  .node.missing .ev { color:var(--fg-3); }
+
+  .node.new {
+    background:rgba(196,181,253,0.06);
+    border-color:rgba(196,181,253,0.28);
+  }
+  .node.new .ti { color:var(--fg-0); }
+  .node.new .ev { color:var(--judge); }
+  .node.new::after { content:"new · added by judge"; position:absolute; top:-9px; right:8px;
+    background:rgba(196,181,253,0.12); border:1px solid rgba(196,181,253,0.3);
+    color:var(--judge); font-size:9px; letter-spacing:0.18em; text-transform:uppercase;
+    padding:1px 6px; border-radius:4px;
+  }
+
+  .node.now {
+    box-shadow: 0 0 0 1px rgba(168,212,252,0.32),
+                0 0 24px rgba(168,212,252,0.18),
+                0 4px 14px rgba(0,0,0,0.4);
+  }
+
+  /* the goal label hovering at the canvas center */
+  .center-mark {
+    position:absolute; left:50%; top:50%; transform:translate(-50%, -50%);
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.32em; text-transform:uppercase;
+    text-align:center; pointer-events:none; z-index:2;
+  }
+  .center-mark .progress {
+    margin-top:8px; font-family:var(--serif); font-size:18px; color:var(--fg-1);
+    letter-spacing:0.04em; text-transform:none; font-weight:300;
+  }
+  .center-mark .progress .fr { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+
+  /* side panel: judge says */
+  .side {
+    border-left:1px solid var(--hairline);
+    background:rgba(0,0,0,0.2);
+    padding:24px 24px 24px;
+    overflow-y:auto;
+  }
+  .side h3 {
+    color:var(--judge); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    margin:0 0 16px; font-weight:400;
+  }
+  .side h3::before { content:""; display:inline-block; width:6px; height:6px; border-radius:50%;
+    background:var(--judge); box-shadow:0 0 8px var(--judge); margin-right:8px; vertical-align:middle; }
+
+  .judge-prose {
+    font-family:var(--serif); font-style:italic; font-weight:300;
+    color:var(--fg-1); font-size:13.5px; line-height:1.7;
+    border-left:2px solid rgba(196,181,253,0.32);
+    padding:6px 0 6px 14px; margin:0 0 22px -14px;
+  }
+  .judge-prose::before { content:"\201C"; color:var(--judge); }
+  .judge-prose::after  { content:"\201D"; color:var(--judge); }
+  .judge-prose .em { color:var(--fg-0); }
+
+  .open-list { display:flex; flex-direction:column; gap:10px; margin-bottom:24px; }
+  .open-list .item {
+    display:grid; grid-template-columns:14px 1fr; gap:10px;
+    color:var(--fg-1); font-size:12px; line-height:1.6;
+  }
+  .open-list .item .g { color:var(--fg-3); padding-top:1px; }
+  .open-list .item.partial .g { color:var(--accent); }
+  .open-list .item.missing .g { color:var(--fg-3); }
+  .open-list .item .em { color:var(--fg-0); }
+
+  .verdict-strip {
+    margin-top:auto; padding-top:14px; border-top:1px solid var(--hairline);
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+  .verdict-strip .row { display:flex; justify-content:space-between; align-items:center; padding:4px 0; }
+  .verdict-strip .row .num { color:var(--fg-1); font-variant-numeric:tabular-nums; letter-spacing:0; text-transform:none; }
+  .verdict-strip .row .ts { color:var(--fg-3); font-variant-numeric:tabular-nums; letter-spacing:0; text-transform:none; }
+  .verdict-strip .verdict-tag { background:rgba(196,181,253,0.08); border:1px solid rgba(196,181,253,0.18);
+    color:var(--judge); padding:2px 8px; border-radius:4px; }
+
+  /* legend */
+  .legend {
+    position:absolute; left:24px; bottom:18px; z-index:5;
+    color:var(--fg-3); font-size:11px;
+    display:flex; gap:18px; align-items:center;
+    background:rgba(20,20,20,0.5);
+    backdrop-filter:blur(10px);
+    padding:8px 14px; border-radius:8px;
+    border:1px solid var(--hairline);
+  }
+  .legend .row { display:flex; align-items:center; gap:6px; }
+  .legend .row .swatch { width:10px; height:10px; border-radius:50%; }
+  .legend .row .swatch.solid { background:var(--ok); }
+  .legend .row .swatch.partial { background:var(--accent); }
+  .legend .row .swatch.missing { background:transparent; border:1px dashed var(--fg-3); }
+  .legend .row .swatch.new { background:var(--judge); }
+
+  /* cradle */
+  .cradle-wrap { display:flex; justify-content:center; padding:12px 16px 14px; pointer-events:none; }
+  .cradle {
+    pointer-events:auto;
+    width:100%; max-width:760px;
+    background:rgba(14,14,14,0.55);
+    backdrop-filter:blur(36px) saturate(140%);
+    border-radius:16px;
+    box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.07),
+                inset 0 0 0 1px rgba(255,255,255,0.04),
+                0 12px 40px -8px rgba(0,0,0,0.5);
+    padding:12px 16px 10px; display:flex; flex-direction:column; gap:8px;
+  }
+  .cradle textarea { background:transparent; border:0; outline:0; color:var(--fg-0);
+    font:inherit; resize:none; width:100%; min-height:22px; }
+  .cradle textarea::placeholder { color:var(--fg-3); }
+  .cradle-row { display:flex; align-items:center; justify-content:space-between;
+    color:var(--fg-3); font-size:11px; }
+  .cradle-row kbd { color:var(--fg-2); background:rgba(255,255,255,0.04);
+    padding:1px 6px; border-radius:4px; font-family:inherit; font-size:10.5px; }
+</style>
+</head>
+<body>
+<div class="stars"></div>
+
+<div class="app">
+
+  <div class="strip">
+    <div class="l">
+      <span>freyja</span>
+      <span class="live">researching</span>
+    </div>
+    <div>goal · coverage map · 6m elapsed</div>
+  </div>
+
+  <div class="head">
+    <div class="eyebrow">goal · qualitative</div>
+    <h1>Research covered call options thoroughly enough to give a <span class="em">grounded recommendation</span> for a $250k retirement portfolio.</h1>
+    <div class="meta">
+      <span><span style="color:var(--fg-3)">turn</span> <span class="num">5</span> of 15</span>
+      <span><span style="color:var(--fg-3)">judge says</span> <span class="em">keep going · 4 considerations open</span></span>
+      <span><span style="color:var(--fg-3)">last verdict</span> <span class="num">22s ago</span></span>
+    </div>
+  </div>
+
+  <div class="main">
+
+    <div class="canvas">
+
+      <!-- center label -->
+      <div class="center-mark">
+        coverage
+        <div class="progress"><span class="fr">5</span> of 9 covered</div>
+      </div>
+
+      <!-- soft connecting lines between related topics -->
+      <svg class="lines" viewBox="0 0 1000 600" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="line">
+            <stop offset="0" stop-color="rgba(255,255,255,0)"/>
+            <stop offset="0.5" stop-color="rgba(255,255,255,0.10)"/>
+            <stop offset="1" stop-color="rgba(255,255,255,0)"/>
+          </linearGradient>
+        </defs>
+        <!-- mechanics → income tradeoff → assignment risk -->
+        <path d="M 220 140 C 320 160, 380 200, 420 240" stroke="url(#line)" stroke-width="1" fill="none"/>
+        <path d="M 480 280 C 540 280, 580 280, 640 280" stroke="url(#line)" stroke-width="1" fill="none"/>
+        <!-- mechanics → strike selection -->
+        <path d="M 220 180 C 320 240, 380 320, 440 380" stroke="url(#line)" stroke-width="1" fill="none"/>
+        <!-- assignment risk → tax timing -->
+        <path d="M 700 320 C 720 360, 720 400, 720 440" stroke="url(#line)" stroke-width="1" fill="none"/>
+        <!-- portfolio context → sequence-of-returns -->
+        <path d="M 280 460 C 320 480, 380 480, 420 480" stroke="url(#line)" stroke-width="1" fill="none" stroke-dasharray="2 4"/>
+      </svg>
+
+      <!-- 9 subtopic nodes, hand-positioned -->
+
+      <!-- SOLID: mechanics -->
+      <div class="node solid" style="left:5%; top:18%;">
+        <div class="ti">Mechanics of covered calls</div>
+        <div class="ev">
+          <span class="glyph">✓</span><span>solid</span>
+          <span class="pips" style="color:var(--ok)"><span class="pip f"></span><span class="pip f"></span><span class="pip f"></span></span>
+          <span class="count">· 4 sources</span>
+        </div>
+      </div>
+
+      <!-- SOLID: income vs upside -->
+      <div class="node solid" style="left:30%; top:35%;">
+        <div class="ti">Premium income vs upside cap</div>
+        <div class="ev">
+          <span class="glyph">✓</span><span>solid</span>
+          <span class="pips" style="color:var(--ok)"><span class="pip f"></span><span class="pip f"></span><span class="pip f"></span></span>
+          <span class="count">· 3 sources</span>
+        </div>
+      </div>
+
+      <!-- SOLID: tax basics -->
+      <div class="node solid" style="left:65%; top:60%;">
+        <div class="ti">Short-term vs long-term capital gains treatment</div>
+        <div class="ev">
+          <span class="glyph">✓</span><span>solid</span>
+          <span class="pips" style="color:var(--ok)"><span class="pip f"></span><span class="pip f"></span><span class="pip f"></span></span>
+          <span class="count">· IRS Pub 550</span>
+        </div>
+      </div>
+
+      <!-- PARTIAL: assignment risk (currently working) -->
+      <div class="node partial now" style="left:55%; top:36%;">
+        <div class="ti">Assignment risk &amp; early call</div>
+        <div class="ev">
+          <span class="glyph">◐</span><span>partial · researching now</span>
+          <span class="pips" style="color:var(--accent)"><span class="pip f"></span><span class="pip f"></span><span class="pip"></span></span>
+          <span class="count">· 2 sources</span>
+        </div>
+      </div>
+
+      <!-- PARTIAL: implied vol / strike selection -->
+      <div class="node partial" style="left:30%; top:55%;">
+        <div class="ti">Implied volatility &amp; strike selection</div>
+        <div class="ev">
+          <span class="glyph">◐</span><span>partial · needs framework</span>
+          <span class="pips" style="color:var(--accent)"><span class="pip f"></span><span class="pip"></span><span class="pip"></span></span>
+          <span class="count">· 1 source</span>
+        </div>
+      </div>
+
+      <!-- MISSING: user risk profile -->
+      <div class="node missing" style="left:5%; top:62%;">
+        <div class="ti">User's risk tolerance &amp; time horizon</div>
+        <div class="ev">
+          <span class="glyph">○</span><span>not yet addressed</span>
+        </div>
+      </div>
+
+      <!-- MISSING: sequence-of-returns -->
+      <div class="node missing" style="left:30%; top:75%;">
+        <div class="ti">Sequence-of-returns risk in retirement</div>
+        <div class="ev">
+          <span class="glyph">○</span><span>not yet addressed</span>
+        </div>
+      </div>
+
+      <!-- MISSING: alternatives -->
+      <div class="node missing" style="left:60%; top:14%;">
+        <div class="ti">Alternatives: cash-secured puts, dividends</div>
+        <div class="ev">
+          <span class="glyph">○</span><span>not yet addressed</span>
+        </div>
+      </div>
+
+      <!-- NEW (judge added this turn) -->
+      <div class="node new" style="left:78%; top:78%;">
+        <div class="ti">Recent IRS treatment changes (2025)</div>
+        <div class="ev">
+          <span class="glyph">○</span><span>added by judge · turn 5</span>
+        </div>
+      </div>
+
+      <!-- legend -->
+      <div class="legend">
+        <div class="row"><span class="swatch solid"></span><span>solid</span></div>
+        <div class="row"><span class="swatch partial"></span><span>partial</span></div>
+        <div class="row"><span class="swatch missing"></span><span>not yet</span></div>
+        <div class="row"><span class="swatch new"></span><span>judge added</span></div>
+      </div>
+    </div>
+
+    <!-- side panel -->
+    <aside class="side">
+      <h3>the judge says</h3>
+
+      <p class="judge-prose">
+        Mechanics and the income/upside tradeoff are well-covered. Assignment-risk understanding is partial — the wash-sale interaction in a retirement account isn't yet sourced. <span class="em">Risk tolerance and the recent IRS treatment changes are not addressed at all.</span> Don't write the recommendation yet.
+      </p>
+
+      <h3 style="margin-top:32px">what's still missing</h3>
+      <div class="open-list">
+        <div class="item partial">
+          <span class="g">◐</span>
+          <span><span class="em">Assignment risk</span> — needs the wash-sale interaction inside an IRA / Roth, plus how early call risk ramps near ex-dividend dates.</span>
+        </div>
+        <div class="item partial">
+          <span class="g">◐</span>
+          <span><span class="em">Strike selection framework</span> — currently only one source (Investopedia). Need a quantitative framework, e.g. delta-based or premium-yield-target.</span>
+        </div>
+        <div class="item missing">
+          <span class="g">○</span>
+          <span><span class="em">User's profile</span> — age, income needs, risk tolerance. Without this, "grounded recommendation" is just a generic explainer.</span>
+        </div>
+        <div class="item missing">
+          <span class="g">○</span>
+          <span><span class="em">Sequence-of-returns risk</span> — selling calls trades upside for income; in early retirement years this can be a feature or a bug. Worth surfacing.</span>
+        </div>
+        <div class="item missing">
+          <span class="g">○</span>
+          <span><span class="em">Alternatives</span> — cash-secured puts, dividend ladder, BXM-style index funds. Recommendation needs context.</span>
+        </div>
+        <div class="item missing">
+          <span class="g">○</span>
+          <span><span class="em">Recent regulation</span> — flag added this turn. The 2025 Section 1256 clarification might affect how net premiums are reported.</span>
+        </div>
+      </div>
+
+      <div class="verdict-strip">
+        <div class="row"><span>turn</span><span class="num">5</span></div>
+        <div class="row"><span>verdict</span><span class="verdict-tag">continue</span></div>
+        <div class="row"><span>last update</span><span class="ts">22s ago</span></div>
+      </div>
+    </aside>
+
+  </div>
+
+  <div class="cradle-wrap">
+    <div class="cradle">
+      <textarea rows="1" placeholder="redirect, add a consideration, or ask the judge to relax a criterion…"></textarea>
+      <div class="cradle-row">
+        <div><kbd>⏎</kbd> send · <kbd>⌘K</kbd> command</div>
+        <div>goal · coverage map</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

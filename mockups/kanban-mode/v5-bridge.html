@@ -1,0 +1,804 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Kanban · v5 The Bridge (recommended) (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a;
+    --fg-0:#ececec; --fg-1:#a8a8a8; --fg-2:#7a7a7a; --fg-3:#5a5a5a; --fg-4:#3a3a3a;
+    --accent:#a8d4fc; --accent-lo:#7aafea;
+    --ok:#88d67f; --warn:#ffcc66; --danger:#ff6b6b;
+    --dispatcher:#fcd1a8;
+    --hairline:rgba(255,255,255,0.06);
+
+    --scout:    #a8d4fc;
+    --forge:    #c8a8fc;
+    --sentinel: #88d67f;
+    --archivist:#fcd1a8;
+
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.65;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(700px 500px at 8% -10%, rgba(168,212,252,0.05), transparent 60%),
+      radial-gradient(700px 500px at 92% 110%, rgba(252,209,168,0.04), transparent 60%);
+  }
+
+  .app { position:relative; z-index:1; height:100vh; display:grid; grid-template-rows:36px auto 1fr auto; }
+
+  /* top strip */
+  .strip {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 28px;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    border-bottom:1px solid var(--hairline);
+  }
+  .strip .l { display:flex; align-items:center; gap:14px; }
+  .strip .live { color:var(--fg-2); display:inline-flex; align-items:center; gap:7px; }
+  .strip .live::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 8px var(--accent); animation:pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  /* header */
+  .head {
+    padding:24px 32px 18px;
+    border-bottom:1px solid var(--hairline);
+    display:grid; grid-template-columns:1fr auto;
+    gap:32px; align-items:end;
+  }
+  .head .eyebrow { color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase; margin-bottom:10px; }
+  .head h1 {
+    font-family:var(--serif); font-weight:300; font-size:20px; line-height:1.45;
+    color:var(--fg-1); margin:0; letter-spacing:-0.005em; max-width:880px;
+  }
+  .head h1 .em { color:var(--fg-0); }
+  .head .stats {
+    margin-top:14px;
+    display:flex; gap:22px; flex-wrap:wrap;
+    color:var(--fg-2); font-size:11.5px; letter-spacing:0.06em;
+  }
+  .head .stats .stat { display:inline-flex; align-items:baseline; gap:6px; }
+  .head .stats .num { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+  .head .stats .ok   { color:var(--ok); }
+  .head .stats .warn { color:var(--warn); }
+  .head .stats .danger { color:#ff8a8a; }
+  .head .stats .auto {
+    color:var(--accent); display:inline-flex; align-items:center; gap:7px;
+  }
+  .head .stats .auto::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 6px var(--accent); animation:pulse 2.2s ease-in-out infinite; }
+  .head .actions { display:flex; gap:8px; }
+  .head .actions button {
+    background:rgba(255,255,255,0.04); border:1px solid var(--hairline);
+    color:var(--fg-1); font:inherit; font-size:11px; letter-spacing:0.04em;
+    padding:7px 12px; border-radius:6px; cursor:pointer; transition:all 120ms;
+  }
+  .head .actions button:hover { color:var(--fg-0); background:rgba(255,255,255,0.07); }
+  .head .actions button.dispatcher { color:var(--dispatcher); border-color:rgba(252,209,168,0.22); background:rgba(252,209,168,0.06); }
+
+  /* main: 3 columns */
+  .main {
+    display:grid;
+    grid-template-columns:1fr 320px 320px;
+    min-height:0; overflow:hidden;
+  }
+
+  .col { overflow-y:auto; min-height:0; }
+
+  .col-eyebrow {
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    padding:18px 22px 10px;
+    display:flex; align-items:baseline; justify-content:space-between;
+    position:sticky; top:0; z-index:5;
+    background:linear-gradient(180deg, var(--bg-0) 70%, transparent);
+  }
+  .col-eyebrow .count { color:var(--fg-3); font-family:var(--mono); letter-spacing:0; font-variant-numeric:tabular-nums; }
+
+  /* ========= LEFT: agents (the focal point) ========= */
+  .col.crew {
+    padding:0 22px 200px;
+  }
+
+  .station {
+    display:grid; grid-template-columns:auto 1fr;
+    gap:14px;
+    padding:14px;
+    background:rgba(255,255,255,0.018);
+    border:1px solid var(--hairline);
+    border-radius:12px;
+    margin-bottom:12px;
+    transition:border-color 160ms;
+  }
+  .station:hover { border-color:rgba(255,255,255,0.14); }
+
+  .station .who {
+    display:flex; flex-direction:column; gap:3px;
+    min-width:96px;
+  }
+  .station .who .name {
+    font-family:var(--serif); font-weight:400; font-size:16px;
+    color:var(--fg-0); letter-spacing:-0.005em;
+    display:inline-flex; align-items:baseline; gap:7px;
+  }
+  .station .who .name::before { content:""; width:7px; height:7px; border-radius:50%; align-self:center; }
+  .station.scout     .who .name::before { background:var(--scout);     box-shadow:0 0 7px var(--scout); }
+  .station.forge     .who .name::before { background:var(--forge);     box-shadow:0 0 7px var(--forge); }
+  .station.sentinel  .who .name::before { background:var(--sentinel);  box-shadow:0 0 7px var(--sentinel); }
+  .station.archivist .who .name::before { background:var(--archivist); box-shadow:0 0 7px var(--archivist); }
+  .station .who .role {
+    color:var(--fg-3); font-size:9.5px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+  .station .who .age {
+    color:var(--fg-3); font-size:11px; margin-top:6px; font-variant-numeric:tabular-nums;
+  }
+  .station .who .age .em { color:var(--fg-0); }
+
+  .station .work { display:flex; flex-direction:column; gap:6px; min-width:0; }
+  .station .work .ti {
+    color:var(--fg-0); font-size:13px; line-height:1.45;
+  }
+  .station .work .sub {
+    color:var(--fg-2); font-size:11px;
+    display:flex; gap:10px; align-items:center;
+  }
+  .station .work .sub .em { color:var(--fg-1); }
+  .station .work .sub .check { color:var(--ok); }
+  .station .work .sub .live {
+    color:var(--accent); display:inline-flex; align-items:center; gap:5px;
+  }
+  .station .work .sub .live::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 5px var(--accent); animation:pulse 2.2s ease-in-out infinite; }
+  .station .work .last {
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.06em; margin-top:2px;
+  }
+  .station .work .last .check { color:var(--ok); }
+  .station .work .last .em { color:var(--fg-1); }
+
+  .station.idle { background:rgba(255,255,255,0.008); }
+  .station.idle .who .name { color:var(--fg-2); }
+  .station.idle .who .name::before { box-shadow:none; opacity:0.4; }
+  .station.idle .work .ti {
+    color:var(--fg-2); font-style:italic; font-family:var(--serif); font-weight:300; font-size:13px;
+  }
+
+  .station.stale {
+    background:rgba(255,107,107,0.025);
+    border-color:rgba(255,107,107,0.18);
+  }
+  .station.stale .work .sub .stale-tag {
+    color:#ff8a8a;
+    font-size:9.5px; letter-spacing:0.18em; text-transform:uppercase;
+    padding:1px 6px; border-radius:3px;
+    background:rgba(255,107,107,0.08); border:1px solid rgba(255,107,107,0.22);
+  }
+  .station.stale .work .reclaim {
+    margin-top:8px;
+    display:inline-block;
+    background:rgba(255,107,107,0.08); border:1px solid rgba(255,107,107,0.22);
+    color:#ff8a8a; font:inherit; font-size:10.5px; letter-spacing:0.04em;
+    padding:5px 10px; border-radius:5px; cursor:pointer;
+  }
+  .station.stale .work .reclaim:hover { background:rgba(255,107,107,0.16); }
+
+  /* tiny next-up hint at bottom of crew column */
+  .crew-foot {
+    margin-top:14px; padding:14px;
+    border:1px dashed rgba(252,209,168,0.22);
+    border-radius:10px;
+    background:rgba(252,209,168,0.03);
+    color:var(--fg-1); font-size:12px; line-height:1.55;
+  }
+  .crew-foot .lbl {
+    color:var(--dispatcher); font-size:9.5px; letter-spacing:0.22em; text-transform:uppercase;
+    display:inline-flex; align-items:center; gap:7px; margin-bottom:6px;
+  }
+  .crew-foot .lbl::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--dispatcher);
+    box-shadow:0 0 5px var(--dispatcher); animation:pulse 2.4s ease-in-out infinite; }
+  .crew-foot .em { color:var(--fg-0); }
+  .crew-foot .countdown { color:var(--accent); font-family:var(--mono); font-variant-numeric:tabular-nums; }
+
+  /* ========= MIDDLE: queue + blocked ========= */
+  .col.queue {
+    border-left:1px solid var(--hairline);
+    background:rgba(0,0,0,0.12);
+    padding:0 18px 200px;
+  }
+  .q-section { display:flex; flex-direction:column; gap:7px; padding-bottom:18px; }
+  .q-section + .q-section { border-top:1px solid var(--hairline); padding-top:14px; }
+  .q-section .head {
+    color:var(--fg-3); font-size:10px; letter-spacing:0.22em; text-transform:uppercase;
+    margin-bottom:8px;
+    display:flex; align-items:baseline; justify-content:space-between;
+  }
+  .q-section .head .lbl { display:inline-flex; align-items:center; gap:7px; color:var(--fg-1); }
+  .q-section.ready    .head .lbl::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--accent); box-shadow:0 0 5px var(--accent); }
+  .q-section.blocked  .head .lbl::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--warn); }
+  .q-section.done     .head .lbl::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--ok); }
+  .q-section .head .count { color:var(--fg-3); font-family:var(--mono); letter-spacing:0; font-variant-numeric:tabular-nums; }
+
+  .q-card {
+    padding:8px 10px; border-radius:6px;
+    background:rgba(255,255,255,0.022);
+    border:1px solid var(--hairline);
+    color:var(--fg-1); font-size:12px; line-height:1.45;
+    cursor:pointer;
+    display:flex; flex-direction:column; gap:4px;
+  }
+  .q-card:hover { background:rgba(255,255,255,0.04); }
+  .q-card .ti { color:var(--fg-0); }
+  .q-card .meta { color:var(--fg-3); font-size:10px; letter-spacing:0.06em; display:flex; gap:8px; align-items:center; }
+  .q-card .meta .next-tag {
+    color:var(--dispatcher); padding:1px 6px; border-radius:3px;
+    background:rgba(252,209,168,0.08); border:1px solid rgba(252,209,168,0.22);
+    font-size:9.5px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+  .q-card .meta .pref-tag {
+    color:var(--accent);
+    display:inline-flex; align-items:center; gap:4px;
+  }
+  .q-card .meta .pref-tag .dot { width:5px; height:5px; border-radius:50%; }
+  .q-card .meta .pref-tag.scout .dot { background:var(--scout); box-shadow:0 0 4px var(--scout); }
+  .q-card .meta .pref-tag.forge .dot { background:var(--forge); box-shadow:0 0 4px var(--forge); }
+  .q-card .meta .pref-tag.sentinel .dot { background:var(--sentinel); box-shadow:0 0 4px var(--sentinel); }
+  .q-card .meta .pref-tag.archivist .dot { background:var(--archivist); box-shadow:0 0 4px var(--archivist); }
+
+  .q-card.next {
+    background:rgba(252,209,168,0.04);
+    border-color:rgba(252,209,168,0.22);
+  }
+  .q-card.blocked {
+    background:rgba(255,204,102,0.04); border-color:rgba(255,204,102,0.18);
+  }
+  .q-card.blocked .meta { color:var(--warn); }
+
+  .q-card.done {
+    background:transparent; border-color:transparent; padding:5px 8px;
+  }
+  .q-card.done .ti { color:var(--fg-2); text-decoration:line-through; text-decoration-color:var(--fg-4); font-size:11.5px; }
+  .q-card.done .meta { color:var(--fg-3); }
+
+  /* ========= RIGHT: dispatch log ========= */
+  .col.log {
+    border-left:1px solid var(--hairline);
+    background:rgba(0,0,0,0.18);
+    padding:0 22px 200px;
+  }
+  .log-row {
+    display:grid; grid-template-columns:42px 1fr;
+    gap:10px; padding:5px 0;
+    color:var(--fg-1); font-size:11.5px;
+    border-top:1px solid transparent;
+  }
+  .log-row + .log-row { border-top-color:rgba(255,255,255,0.03); }
+  .log-row .ts { color:var(--fg-3); font-variant-numeric:tabular-nums; }
+  .log-row .ev .agent { font-weight:500; }
+  .log-row .ev .agent.scout    { color:var(--scout); }
+  .log-row .ev .agent.forge    { color:var(--forge); }
+  .log-row .ev .agent.sentinel { color:var(--sentinel); }
+  .log-row .ev .agent.archivist { color:var(--archivist); }
+  .log-row .ev .auto {
+    color:var(--dispatcher); font-style:italic; font-family:var(--serif); font-weight:300; font-size:12px;
+  }
+  .log-row .ev .check { color:var(--ok); }
+  .log-row .ev .warn { color:var(--warn); }
+  .log-row .ev em { color:var(--fg-1); font-style:normal; }
+  .log-row .ev em.inline-em { color:var(--fg-0); }
+
+  .log-divider {
+    margin:10px 0 6px;
+    color:var(--fg-3); font-size:10px; letter-spacing:0.22em; text-transform:uppercase;
+    display:flex; align-items:center; gap:10px;
+  }
+  .log-divider::before, .log-divider::after {
+    content:""; flex:1; height:1px; background:rgba(255,255,255,0.04);
+  }
+
+  /* dispatcher mini card at bottom of log */
+  .dispatcher-card {
+    margin-top:18px; padding:12px 14px;
+    background:rgba(252,209,168,0.04);
+    border:1px solid rgba(252,209,168,0.18);
+    border-radius:10px;
+    color:var(--fg-1); font-size:12px; line-height:1.55;
+  }
+  .dispatcher-card .lbl {
+    color:var(--dispatcher); font-size:10px; letter-spacing:0.22em; text-transform:uppercase;
+    margin-bottom:6px;
+    display:inline-flex; align-items:center; gap:7px;
+  }
+  .dispatcher-card .lbl::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--dispatcher);
+    box-shadow:0 0 5px var(--dispatcher); animation:pulse 2.4s ease-in-out infinite; }
+  .dispatcher-card .em { color:var(--fg-0); }
+  .dispatcher-card .reason {
+    margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.05);
+    font-family:var(--serif); font-style:italic; font-weight:300; font-size:12px;
+    color:var(--fg-1);
+  }
+  .dispatcher-card .reason::before { content:"\201C"; color:var(--dispatcher); }
+  .dispatcher-card .reason::after  { content:"\201D"; color:var(--dispatcher); }
+  .dispatcher-card .open-brief {
+    display:block; margin-top:8px;
+    color:var(--dispatcher); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    text-decoration:none;
+  }
+  .dispatcher-card .open-brief:hover { text-decoration:underline; }
+
+  /* cradle */
+  .cradle-wrap { display:flex; justify-content:center; padding:14px 16px 16px;
+    background:linear-gradient(0deg, var(--bg-0) 70%, transparent); }
+  .cradle { width:100%; max-width:760px;
+    background:rgba(14,14,14,0.55);
+    backdrop-filter:blur(36px) saturate(140%);
+    border-radius:16px;
+    box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.07),
+                inset 0 0 0 1px rgba(255,255,255,0.04),
+                0 12px 40px -8px rgba(0,0,0,0.5);
+    padding:12px 16px 10px; display:flex; flex-direction:column; gap:8px;
+  }
+  .cradle textarea { background:transparent; border:0; outline:0; color:var(--fg-0);
+    font:inherit; resize:none; width:100%; min-height:22px; }
+  .cradle textarea::placeholder { color:var(--fg-3); }
+  .cradle-row { display:flex; align-items:center; justify-content:space-between;
+    color:var(--fg-3); font-size:11px; }
+  .cradle-row kbd { color:var(--fg-2); background:rgba(255,255,255,0.04);
+    padding:1px 6px; border-radius:4px; font-family:inherit; font-size:10.5px; }
+
+  ::-webkit-scrollbar { width:8px; }
+  ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.05); border-radius:6px; }
+
+  /* ===== card drawer ===== */
+  .card-drawer {
+    position:fixed; top:36px; right:0; bottom:0;
+    width:480px; z-index:60;
+    background:rgba(10,10,10,0.96);
+    backdrop-filter:blur(28px) saturate(140%);
+    -webkit-backdrop-filter:blur(28px) saturate(140%);
+    border-left:1px solid var(--hairline);
+    box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.06),
+                -24px 0 60px -10px rgba(0,0,0,0.6);
+    display:flex; flex-direction:column; overflow:hidden;
+    transform:translateX(0); transition:transform 220ms ease;
+  }
+  .card-drawer.hidden { transform:translateX(110%); }
+  body:has(.card-drawer:not(.hidden)) .cradle-wrap { padding-right:496px; }
+
+  .cd-head {
+    padding:18px 22px 14px;
+    display:flex; align-items:center; justify-content:space-between;
+    border-bottom:1px solid var(--hairline);
+  }
+  .cd-head .cd-status {
+    display:inline-flex; align-items:center; gap:7px;
+    color:var(--accent); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+  }
+  .cd-head .cd-status::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 8px var(--accent); animation:pulse 2.4s ease-in-out infinite; }
+  .cd-head .cd-close {
+    background:transparent; border:0; color:var(--fg-3); font:inherit;
+    font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    cursor:pointer; padding:4px 8px; border-radius:4px;
+  }
+  .cd-head .cd-close:hover { color:var(--fg-0); background:rgba(255,255,255,0.04); }
+
+  .cd-body {
+    overflow-y:auto; flex:1; min-height:0;
+    padding:20px 24px 28px;
+    display:flex; flex-direction:column; gap:22px;
+  }
+  .cd-title {
+    font-family:var(--serif); font-weight:300; font-size:24px;
+    line-height:1.35; letter-spacing:-0.005em;
+    color:var(--fg-0); margin:0;
+  }
+
+  .cd-assignment {
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    padding:10px 14px;
+    background:rgba(252,209,168,0.04);
+    border:1px solid rgba(252,209,168,0.18);
+    border-radius:10px;
+    color:var(--fg-1); font-size:12px;
+  }
+  .cd-assignment .agent {
+    display:inline-flex; align-items:center; gap:7px;
+    font-weight:500; color:var(--fg-0);
+  }
+  .cd-assignment .agent .dot { width:6px; height:6px; border-radius:50%; }
+  .cd-assignment .agent.archivist .dot { background:var(--archivist); box-shadow:0 0 7px var(--archivist); }
+  .cd-assignment .age { color:var(--fg-2); font-variant-numeric:tabular-nums; }
+  .cd-assignment .now {
+    margin-left:auto; color:var(--fg-2); font-style:italic;
+    font-family:var(--serif); font-weight:300; font-size:12px;
+  }
+
+  .cd-section { display:flex; flex-direction:column; gap:10px; }
+  .cd-section h3 {
+    color:var(--fg-3); font-size:10px; letter-spacing:0.22em; text-transform:uppercase;
+    margin:0; font-weight:400;
+  }
+  .cd-section p {
+    color:var(--fg-1); font-family:var(--serif); font-weight:300; font-size:14px;
+    line-height:1.7; margin:0;
+  }
+  .cd-section p .em { color:var(--fg-0); }
+
+  .cd-deps { display:flex; flex-direction:column; gap:14px; }
+  .cd-dep .dep-lbl {
+    color:var(--fg-3); font-size:10px; letter-spacing:0.18em; text-transform:uppercase;
+    margin-bottom:6px; display:block;
+  }
+  .cd-dep ul { list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:3px; }
+  .cd-dep li {
+    color:var(--fg-1); font-size:12.5px; line-height:1.5;
+    padding:5px 8px; border-radius:5px; cursor:pointer;
+    transition:background 120ms;
+  }
+  .cd-dep li:hover { background:rgba(255,255,255,0.025); }
+  .cd-dep li.done { color:var(--fg-2); }
+  .cd-dep li.done::before { content:"✓ "; color:var(--ok); }
+  .cd-dep li.queued::before { content:"○ "; color:var(--fg-3); }
+
+  .cd-timeline { display:flex; flex-direction:column; }
+  .cd-timeline .event {
+    display:grid; grid-template-columns:42px 70px 1fr;
+    gap:10px; padding:5px 0;
+    color:var(--fg-1); font-size:11.5px; line-height:1.55;
+    border-top:1px solid transparent;
+  }
+  .cd-timeline .event + .event { border-top-color:rgba(255,255,255,0.03); }
+  .cd-timeline .event .ts { color:var(--fg-3); font-variant-numeric:tabular-nums; }
+  .cd-timeline .event .who.archivist { color:var(--archivist); }
+  .cd-timeline .event .who.scout    { color:var(--scout); }
+  .cd-timeline .event .who.forge    { color:var(--forge); }
+  .cd-timeline .event .who.sentinel { color:var(--sentinel); }
+  .cd-timeline .event .who.auto {
+    color:var(--dispatcher); font-style:italic; font-family:var(--serif); font-weight:300; font-size:12px;
+  }
+  .cd-timeline .event .ev code {
+    color:var(--fg-0); font-family:var(--mono); font-size:11px;
+    background:rgba(255,255,255,0.04); padding:0 4px; border-radius:3px;
+  }
+  .cd-timeline .event .ev .num { color:var(--ok); font-variant-numeric:tabular-nums; }
+  .cd-timeline .event.claim .ev { color:var(--accent); }
+
+  .cd-files { display:flex; flex-direction:column; gap:4px; }
+  .cd-files .file {
+    display:flex; justify-content:space-between; align-items:center;
+    padding:6px 10px; border-radius:5px;
+    background:rgba(255,255,255,0.018);
+    border:1px solid var(--hairline);
+    color:var(--fg-1); font-size:12px;
+    cursor:pointer; transition:background 120ms;
+  }
+  .cd-files .file:hover { background:rgba(255,255,255,0.03); }
+  .cd-files .file .path { color:var(--fg-0); font-family:var(--mono); }
+  .cd-files .file .counts { color:var(--fg-3); font-size:11px; }
+
+  .cd-actions {
+    padding:14px 22px;
+    border-top:1px solid var(--hairline);
+    display:flex; gap:6px; flex-wrap:wrap;
+    background:rgba(0,0,0,0.3);
+  }
+  .cd-actions button {
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline);
+    color:var(--fg-1); font:inherit; font-size:11px; letter-spacing:0.04em;
+    padding:7px 12px; border-radius:6px; cursor:pointer;
+    transition:all 120ms;
+  }
+  .cd-actions button:hover { color:var(--fg-0); background:rgba(255,255,255,0.06); }
+  .cd-actions button.ok { color:var(--ok); border-color:rgba(136,214,127,0.22); background:rgba(136,214,127,0.06); }
+  .cd-actions button.ok:hover { background:rgba(136,214,127,0.12); }
+  .cd-actions button.warn { color:var(--warn); border-color:rgba(255,204,102,0.18); background:rgba(255,204,102,0.04); }
+  .cd-actions button.warn:hover { background:rgba(255,204,102,0.10); }
+
+  .card.selected, .station.selected, .q-card.selected {
+    outline:1px solid rgba(168,212,252,0.45); outline-offset:2px;
+  }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="app">
+
+  <div class="strip">
+    <div class="l">
+      <span>freyja</span>
+      <span class="live">autopilot on</span>
+    </div>
+    <div>kanban · bridge · 38m elapsed</div>
+  </div>
+
+  <div class="head">
+    <div>
+      <div class="eyebrow">mission · started 10:24</div>
+      <h1>Migrate the analytics service from <span class="em">Postgres to Snowflake.</span></h1>
+      <div class="stats">
+        <span class="stat"><span class="num">4</span> of 14 done</span>
+        <span class="stat"><span class="num">3</span> in flight</span>
+        <span class="stat"><span class="num">5</span> ready</span>
+        <span class="stat warn"><span class="num">1</span> blocked</span>
+        <span class="stat danger"><span class="num">1</span> stale</span>
+        <span class="stat auto">autopilot on · next dispatch in <span class="num" style="color:var(--accent)">15s</span></span>
+      </div>
+    </div>
+    <div class="actions">
+      <button>add card</button>
+      <button class="dispatcher">edit dispatcher brief</button>
+    </div>
+  </div>
+
+  <div class="main">
+
+    <!-- LEFT: CREW (focal point) -->
+    <aside class="col crew">
+      <div class="col-eyebrow">
+        <span>the crew · who's doing what</span>
+        <span class="count">4 agents</span>
+      </div>
+
+      <!-- forge -->
+      <div class="station forge">
+        <div class="who">
+          <div class="name">forge</div>
+          <div class="role">builder</div>
+          <div class="age">on this for <span class="em">14m</span></div>
+        </div>
+        <div class="work">
+          <div class="ti">Write column-level migration scripts</div>
+          <div class="sub"><span class="live">live</span><span>·</span><span>14 tools · 7 edits</span></div>
+          <div class="last"><span class="check">✓</span> earlier: <span class="em">provisioned Snowflake</span> · 5m</div>
+        </div>
+      </div>
+
+      <!-- archivist -->
+      <div class="station archivist">
+        <div class="who">
+          <div class="name">archivist</div>
+          <div class="role">docs · adapters</div>
+          <div class="age">on this for <span class="em">9m</span></div>
+        </div>
+        <div class="work">
+          <div class="ti">Build dual-write adapter</div>
+          <div class="sub"><span class="live">live</span><span>·</span><span>11 tools · 3 edits</span></div>
+          <div class="last">just read <span class="em">analytics_writer.py</span></div>
+        </div>
+      </div>
+
+      <!-- sentinel -->
+      <div class="station sentinel">
+        <div class="who">
+          <div class="name">sentinel</div>
+          <div class="role">verifier</div>
+          <div class="age">on this for <span class="em">4m</span></div>
+        </div>
+        <div class="work">
+          <div class="ti">Verify schema parity (Postgres ↔ Snowflake)</div>
+          <div class="sub"><span class="live">live</span><span>·</span><span>6 tools · 0 edits</span></div>
+          <div class="last"><span class="check">✓</span> earlier: <span class="em">CI for migration</span> · 6m</div>
+        </div>
+      </div>
+
+      <!-- scout (stale) -->
+      <div class="station scout stale">
+        <div class="who">
+          <div class="name">scout</div>
+          <div class="role">researcher</div>
+          <div class="age">on this for <span class="em" style="color:#ff8a8a">24m</span></div>
+        </div>
+        <div class="work">
+          <div class="ti">Audit BI tool integrations</div>
+          <div class="sub"><span class="stale-tag">stale</span><span>·</span><span>no tool calls in 12m</span></div>
+          <div class="last"><span class="check">✓</span> earlier: 2 wins · <span class="em">map read paths</span> + <span class="em">schema audit</span></div>
+          <button class="reclaim">reclaim &amp; ask what happened</button>
+        </div>
+      </div>
+
+      <div class="crew-foot">
+        <div class="lbl">dispatcher · next move</div>
+        Reclaim scout, then dispatch <span class="em">Run shadow reads against Snowflake</span> to scout (preferred for research). Otherwise fall back to archivist when dual-write lands. <span class="countdown">15s</span> until decision.
+      </div>
+    </aside>
+
+    <!-- MIDDLE: queue / blocked / done -->
+    <aside class="col queue">
+      <div class="col-eyebrow">
+        <span>the board</span>
+        <span class="count">10 not done</span>
+      </div>
+
+      <div class="q-section ready">
+        <div class="head"><span class="lbl">ready</span><span class="count">5</span></div>
+        <div class="q-card next">
+          <div class="ti">Run shadow reads against Snowflake</div>
+          <div class="meta"><span class="next-tag">next</span><span class="pref-tag scout"><span class="dot"></span>prefers scout</span></div>
+        </div>
+        <div class="q-card">
+          <div class="ti">Update query layer to read from Snowflake</div>
+          <div class="meta"><span>depends on dual-write</span></div>
+        </div>
+        <div class="q-card">
+          <div class="ti">Backfill historical data into Snowflake</div>
+          <div class="meta"><span class="pref-tag forge"><span class="dot"></span>prefers forge</span></div>
+        </div>
+        <div class="q-card">
+          <div class="ti">Add monitoring for dual-write drift</div>
+          <div class="meta"><span class="pref-tag sentinel"><span class="dot"></span>prefers sentinel</span></div>
+        </div>
+        <div class="q-card">
+          <div class="ti">Document the cutover plan</div>
+          <div class="meta"><span class="pref-tag archivist"><span class="dot"></span>prefers archivist</span></div>
+        </div>
+      </div>
+
+      <div class="q-section blocked">
+        <div class="head"><span class="lbl">blocked</span><span class="count">1</span></div>
+        <div class="q-card blocked">
+          <div class="ti">Update analytics PII handling</div>
+          <div class="meta">waiting on legal · 18m</div>
+        </div>
+      </div>
+
+      <div class="q-section done">
+        <div class="head"><span class="lbl">done</span><span class="count">4</span></div>
+        <div class="q-card done"><div class="ti">Map all read paths</div><div class="meta">scout · 12m</div></div>
+        <div class="q-card done"><div class="ti">Audit Postgres schema</div><div class="meta">scout · 8m</div></div>
+        <div class="q-card done"><div class="ti">Set up CI for migration</div><div class="meta">sentinel · 6m</div></div>
+        <div class="q-card done"><div class="ti">Provision Snowflake</div><div class="meta">forge · 5m</div></div>
+      </div>
+    </aside>
+
+    <!-- RIGHT: dispatch log -->
+    <aside class="col log">
+      <div class="col-eyebrow">
+        <span>dispatches · live feed</span>
+        <span class="count">12 today</span>
+      </div>
+
+      <div class="log-divider">last 30 minutes</div>
+
+      <div class="log-row"><span class="ts">11:18</span><span class="ev"><span class="agent sentinel">sentinel</span> claimed <em class="inline-em">verify schema parity</em></span></div>
+      <div class="log-row"><span class="ts">11:14</span><span class="ev"><span class="agent scout">scout</span> <span class="check">✓</span> finished <em class="inline-em">map read paths</em></span></div>
+      <div class="log-row"><span class="ts">11:09</span><span class="ev"><span class="agent archivist">archivist</span> claimed <em class="inline-em">dual-write adapter</em></span></div>
+      <div class="log-row"><span class="ts">11:02</span><span class="ev"><span class="agent forge">forge</span> claimed <em class="inline-em">column migration scripts</em></span></div>
+      <div class="log-row"><span class="ts">10:58</span><span class="ev"><span class="agent scout">scout</span> <span class="check">✓</span> finished <em class="inline-em">schema audit</em></span></div>
+      <div class="log-row"><span class="ts">10:54</span><span class="ev"><span class="auto">autopilot</span> tried <em class="inline-em">BI audit</em> · already on scout</span></div>
+      <div class="log-row"><span class="ts">10:42</span><span class="ev"><span class="agent sentinel">sentinel</span> <span class="check">✓</span> finished <em class="inline-em">CI setup</em></span></div>
+      <div class="log-row"><span class="ts">10:36</span><span class="ev"><span class="agent forge">forge</span> <span class="check">✓</span> finished <em class="inline-em">provision snowflake</em></span></div>
+
+      <div class="log-divider">earlier</div>
+
+      <div class="log-row"><span class="ts">10:30</span><span class="ev"><span class="agent forge">forge</span> claimed <em class="inline-em">provision snowflake</em></span></div>
+      <div class="log-row"><span class="ts">10:26</span><span class="ev"><span class="agent sentinel">sentinel</span> claimed <em class="inline-em">CI setup</em></span></div>
+      <div class="log-row"><span class="ts">10:24</span><span class="ev"><span class="agent scout">scout</span> claimed <em class="inline-em">schema audit</em></span></div>
+      <div class="log-row"><span class="ts">10:24</span><span class="ev"><span class="auto">mission opened</span> · 14 cards seeded</span></div>
+
+      <div class="dispatcher-card">
+        <div class="lbl">dispatcher</div>
+        Will dispatch <span class="em">Run shadow reads</span> in <span style="color:var(--accent)">~15s</span>.
+        <div class="reason">scout was preferred but is stale; will fall back to archivist when free, unless you reclaim scout first.</div>
+        <a href="v4-dispatcher-brief.html" class="open-brief">open dispatcher brief →</a>
+      </div>
+    </aside>
+
+  </div>
+
+  <div class="cradle-wrap">
+    <div class="cradle">
+      <textarea rows="1" placeholder="add a card · reclaim scout · pause autopilot · address the dispatcher…"></textarea>
+      <div class="cradle-row">
+        <div><kbd>⏎</kbd> send · <kbd>⌘B</kbd> brief · <kbd>⌘P</kbd> pause autopilot · <kbd>⌘K</kbd> command</div>
+        <div>kanban · bridge</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ===== CARD VIEWER ===== -->
+<aside class="card-drawer" id="card-drawer">
+  <div class="cd-head">
+    <span class="cd-status">in flight · 9m</span>
+    <button class="cd-close" id="cd-close" title="close">close ✕</button>
+  </div>
+
+  <div class="cd-body">
+    <h2 class="cd-title">Build dual-write adapter</h2>
+
+    <div class="cd-assignment">
+      <span class="agent archivist"><span class="dot"></span><span class="name">archivist</span></span>
+      <span class="age">claimed 11:09 · 9m</span>
+      <span class="now">editing snowflake_client.py</span>
+    </div>
+
+    <section class="cd-section">
+      <h3>brief</h3>
+      <p>Build an adapter that writes every analytics event to <span class="em">both Postgres (current) and Snowflake (new)</span> so we can verify parity before cutover. Must preserve write ordering and surface a metric for drift.</p>
+    </section>
+
+    <section class="cd-section">
+      <h3>dependencies</h3>
+      <div class="cd-deps">
+        <div class="cd-dep">
+          <span class="dep-lbl">depends on</span>
+          <ul>
+            <li class="done">Provision Snowflake account · forge · 5m</li>
+            <li class="done">Audit current Postgres schema · scout · 8m</li>
+          </ul>
+        </div>
+        <div class="cd-dep">
+          <span class="dep-lbl">blocks · 3 cards waiting on this</span>
+          <ul>
+            <li class="queued">Update query layer to read from Snowflake</li>
+            <li class="queued">Add monitoring for dual-write drift</li>
+            <li class="queued">Backfill historical data into Snowflake</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="cd-section">
+      <h3>activity · 9 events</h3>
+      <div class="cd-timeline">
+        <div class="event"><span class="ts">11:18</span><span class="who archivist">archivist</span><span class="ev">edited <code>snowflake_client.py</code> · <span class="num">+24</span></span></div>
+        <div class="event"><span class="ts">11:16</span><span class="who archivist">archivist</span><span class="ev">read <code>analytics_writer.py</code></span></div>
+        <div class="event"><span class="ts">11:14</span><span class="who archivist">archivist</span><span class="ev">grep <code>'write_event'</code> · 4 hits</span></div>
+        <div class="event"><span class="ts">11:13</span><span class="who archivist">archivist</span><span class="ev">read <code>postgres_writer.py</code></span></div>
+        <div class="event"><span class="ts">11:11</span><span class="who archivist">archivist</span><span class="ev">read <code>snowflake_client.py</code></span></div>
+        <div class="event claim"><span class="ts">11:09</span><span class="who archivist">archivist</span><span class="ev">claimed the card</span></div>
+        <div class="event"><span class="ts">11:09</span><span class="who auto">autopilot</span><span class="ev">dispatched to archivist · preferred for adapters</span></div>
+        <div class="event"><span class="ts">11:09</span><span class="who auto">autopilot</span><span class="ev">card became ready · upstream completed</span></div>
+        <div class="event"><span class="ts">10:36</span><span class="who auto">autopilot</span><span class="ev">card created from mission plan</span></div>
+      </div>
+    </section>
+
+    <section class="cd-section">
+      <h3>files touched</h3>
+      <div class="cd-files">
+        <div class="file"><span class="path">snowflake_client.py</span><span class="counts">1 edit · 2 reads</span></div>
+        <div class="file"><span class="path">analytics_writer.py</span><span class="counts">0 edits · 1 read</span></div>
+        <div class="file"><span class="path">postgres_writer.py</span><span class="counts">0 edits · 1 read</span></div>
+      </div>
+    </section>
+  </div>
+
+  <footer class="cd-actions">
+    <button>Reassign</button>
+    <button>Reclaim</button>
+    <button class="warn">Mark blocked</button>
+    <button class="ok">Mark done</button>
+  </footer>
+</aside>
+
+<script>
+  (() => {
+    const drawer = document.getElementById('card-drawer');
+    document.getElementById('cd-close').addEventListener('click', () => drawer.classList.add('hidden'));
+    const sel = '.card, .station, .q-card';
+    document.querySelectorAll(sel).forEach(el => {
+      el.addEventListener('click', () => {
+        document.querySelectorAll(sel).forEach(x => x.classList.remove('selected'));
+        el.classList.add('selected');
+        drawer.classList.remove('hidden');
+      });
+    });
+  })();
+</script>
+
+</body>
+</html>

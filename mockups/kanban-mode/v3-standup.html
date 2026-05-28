@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Kanban · v3 The Standup (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a;
+    --fg-0:#ececec; --fg-1:#a8a8a8; --fg-2:#7a7a7a; --fg-3:#5a5a5a; --fg-4:#3a3a3a;
+    --accent:#a8d4fc; --accent-lo:#7aafea;
+    --ok:#88d67f; --warn:#ffcc66; --danger:#ff6b6b;
+    --hairline:rgba(255,255,255,0.05);
+
+    --scout:    #a8d4fc;
+    --forge:    #c8a8fc;
+    --sentinel: #88d67f;
+    --archivist:#fcd1a8;
+
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.7;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(900px 700px at 50% -10%, rgba(168,212,252,0.05), transparent 60%),
+      radial-gradient(700px 500px at 50% 110%, rgba(255,204,102,0.022), transparent 60%);
+  }
+
+  .app { position:relative; z-index:1; min-height:100vh; }
+
+  /* sticky head */
+  .head {
+    position:sticky; top:0; z-index:20;
+    background:linear-gradient(180deg, rgba(10,10,10,0.95), rgba(10,10,10,0.85) 80%, transparent);
+    backdrop-filter:blur(10px);
+    padding:18px 24px 14px;
+    border-bottom:1px solid var(--hairline);
+  }
+  .head-inner {
+    max-width:780px; margin:0 auto;
+    display:flex; align-items:center; gap:16px; font-size:11px;
+  }
+  .head .live { display:inline-flex; align-items:center; gap:7px; color:var(--fg-1); }
+  .head .live::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 8px var(--accent); animation:pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .head .meta { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--fg-3); }
+  .head .meta .em { color:var(--fg-1); }
+  .head .num { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+
+  /* document */
+  .doc { max-width:780px; margin:0 auto; padding:48px 24px 220px; }
+
+  .doc-eyebrow { color:var(--fg-3); font-size:10.5px; letter-spacing:0.32em; text-transform:uppercase; margin-bottom:14px; }
+
+  .mission-h {
+    font-family:var(--serif); font-weight:300; font-size:30px; line-height:1.35;
+    letter-spacing:-0.005em; color:var(--fg-0); margin:0 0 24px;
+  }
+  .mission-h .em { color:var(--fg-0); }
+  .mission-h .soft { color:var(--fg-1); }
+
+  .progress-row {
+    display:flex; align-items:center; gap:14px;
+    color:var(--fg-2); font-size:11.5px; letter-spacing:0.06em;
+    padding:14px 0;
+    border-top:1px solid var(--hairline);
+    border-bottom:1px solid var(--hairline);
+    margin-bottom:48px;
+  }
+  .progress-row .num { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+  .progress-row .em { color:var(--accent); }
+  .progress-row .bar { flex:1; height:1px; background:rgba(255,255,255,0.06); position:relative; }
+  .progress-row .bar::after { content:""; position:absolute; left:0; top:-0.5px; height:2px; width:28%;
+    background:linear-gradient(90deg, var(--accent-lo), var(--accent));
+    box-shadow:0 0 10px rgba(168,212,252,0.4);
+  }
+
+  /* section eyebrow */
+  .sec-h {
+    color:var(--fg-2);
+    font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    margin:42px 0 18px;
+    display:flex; align-items:baseline; gap:12px;
+  }
+  .sec-h .count { color:var(--fg-3); }
+
+  /* agent paragraph */
+  .agent-block {
+    display:grid; grid-template-columns:120px 1fr;
+    gap:24px;
+    padding:18px 0;
+    border-top:1px solid var(--hairline);
+  }
+  .agent-block:last-of-type { border-bottom:1px solid var(--hairline); }
+
+  .agent-block .who {
+    padding-top:4px;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+  .agent-block .who .name {
+    font-family:var(--serif); font-weight:400; font-size:18px;
+    color:var(--fg-0); letter-spacing:-0.005em;
+    text-transform:none;
+    display:inline-flex; align-items:baseline; gap:8px;
+  }
+  .agent-block .who .name::before {
+    content:""; width:7px; height:7px; border-radius:50%; align-self:center;
+  }
+  .agent-block.scout     .who .name::before { background:var(--scout);     box-shadow:0 0 8px var(--scout); }
+  .agent-block.forge     .who .name::before { background:var(--forge);     box-shadow:0 0 8px var(--forge); }
+  .agent-block.sentinel  .who .name::before { background:var(--sentinel);  box-shadow:0 0 8px var(--sentinel); }
+  .agent-block.archivist .who .name::before { background:var(--archivist); box-shadow:0 0 8px var(--archivist); }
+  .agent-block.idle .who .name::before { box-shadow:none; opacity:0.4; }
+  .agent-block .who .role {
+    margin-top:4px;
+  }
+
+  .agent-block .body {
+    color:var(--fg-1); font-size:14.5px; line-height:1.85;
+    font-family:var(--serif); font-weight:300;
+  }
+  .agent-block .body p { margin:0 0 10px; }
+  .agent-block .body p:last-child { margin-bottom:0; }
+  .agent-block .body .em { color:var(--fg-0); }
+  .agent-block .body code { color:var(--fg-0); font-family:var(--mono); font-size:12.5px;
+    background:rgba(255,255,255,0.04); padding:0 4px; border-radius:3px; }
+  .agent-block .body .check { color:var(--ok); font-style:normal; font-family:var(--mono); }
+  .agent-block .body .warn  { color:var(--warn); font-style:normal; font-family:var(--mono); }
+  .agent-block .body .stale { color:#ff8a8a; font-style:normal; font-family:var(--mono); font-size:11px; letter-spacing:0.18em; text-transform:uppercase; padding:1px 6px; background:rgba(255,107,107,0.08); border:1px solid rgba(255,107,107,0.22); border-radius:3px; margin-left:6px; vertical-align:1px; }
+  .agent-block .body .now-tag { color:var(--accent); font-style:normal; font-family:var(--mono); font-size:11px; letter-spacing:0.18em; text-transform:uppercase; padding:1px 6px; background:rgba(168,212,252,0.08); border:1px solid rgba(168,212,252,0.22); border-radius:3px; margin-right:6px; vertical-align:1px; }
+
+  /* the queue paragraph (last block) */
+  .queue-block {
+    padding:18px 0; border-top:1px solid var(--hairline);
+  }
+  .queue-block .who { color:var(--fg-3); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase; padding-top:4px; }
+  .queue-block .who .name {
+    font-family:var(--serif); font-weight:400; font-size:18px;
+    color:var(--fg-0); letter-spacing:-0.005em;
+    text-transform:none;
+  }
+  .queue-block .body {
+    color:var(--fg-1); font-size:14.5px; line-height:1.85;
+    font-family:var(--serif); font-weight:300;
+  }
+  .queue-block .body p { margin:0 0 10px; }
+  .queue-block .body .em { color:var(--fg-0); }
+
+  /* a small "next dispatch" interstitial */
+  .auto-line {
+    margin-top:18px; padding:10px 14px;
+    background:rgba(168,212,252,0.04);
+    border-left:2px solid rgba(168,212,252,0.32);
+    border-radius:0 8px 8px 0;
+    color:var(--fg-1); font-size:12.5px; line-height:1.6;
+    font-family:var(--serif); font-style:italic; font-weight:300;
+  }
+  .auto-line::before { content:"autopilot · "; font-family:var(--mono); font-style:normal; font-size:10.5px;
+    letter-spacing:0.18em; text-transform:uppercase; color:var(--accent); margin-right:6px; }
+  .auto-line .em { color:var(--fg-0); }
+
+  /* cradle pinned */
+  .cradle-wrap {
+    position:fixed; left:0; right:0; bottom:0;
+    padding:24px 24px 18px;
+    background:linear-gradient(0deg, var(--bg-0) 60%, transparent);
+    pointer-events:none; z-index:30;
+  }
+  .cradle {
+    pointer-events:auto;
+    max-width:780px; margin:0 auto;
+    background:rgba(20,20,20,0.6);
+    backdrop-filter:blur(36px) saturate(140%);
+    border-radius:14px;
+    border:1px solid var(--hairline);
+    box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.07), 0 12px 40px -8px rgba(0,0,0,0.5);
+    padding:14px 18px 12px;
+    display:flex; flex-direction:column; gap:8px;
+  }
+  .cradle textarea {
+    background:transparent; border:0; outline:0; color:var(--fg-0);
+    font:inherit; resize:none; width:100%; min-height:22px;
+  }
+  .cradle textarea::placeholder { color:var(--fg-3); }
+  .cradle-hint { display:flex; justify-content:space-between; color:var(--fg-3); font-size:11px; }
+  .cradle-hint kbd { color:var(--fg-2); background:rgba(255,255,255,0.04);
+    padding:1px 6px; border-radius:4px; font-family:inherit; font-size:10.5px; }
+
+  ::-webkit-scrollbar { width:8px; }
+  ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.05); border-radius:6px; }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="app">
+
+  <div class="head">
+    <div class="head-inner">
+      <span class="live">live · 38m elapsed</span>
+      <span class="meta"><span class="em">Migrate analytics</span> · postgres → snowflake</span>
+      <span><span class="num">4</span>/14 · <span class="num">3</span> in flight</span>
+    </div>
+  </div>
+
+  <main class="doc">
+
+    <div class="doc-eyebrow">mission</div>
+    <h1 class="mission-h">Migrate the analytics service from <span class="em">Postgres to Snowflake.</span></h1>
+
+    <div class="progress-row">
+      <span class="num">4</span><span>of 14 cards done</span>
+      <div class="bar"></div>
+      <span><span class="num em">3</span> in flight · <span class="num">5</span> ready · <span class="num">1</span> blocked · <span style="color:#ff8a8a">1 stale</span></span>
+    </div>
+
+    <div class="sec-h"><span>now</span><span class="count">— who's working on what</span></div>
+
+    <div class="agent-block forge">
+      <div class="who">
+        <div class="name">forge</div>
+        <div class="role">builder</div>
+      </div>
+      <div class="body">
+        <p><span class="now-tag">now</span>Writing the <em>column-level migration scripts</em> — fourteen minutes in, nine tool calls, three edits to <code>migrations/columns.py</code>.</p>
+        <p>Earlier today: provisioned the Snowflake account in five minutes, then picked up the migration scripts immediately.</p>
+      </div>
+    </div>
+
+    <div class="agent-block archivist">
+      <div class="who">
+        <div class="name">archivist</div>
+        <div class="role">docs &amp; adapters</div>
+      </div>
+      <div class="body">
+        <p><span class="now-tag">now</span>Building the <em>dual-write adapter</em> — nine minutes in, mostly reading. Has opened <code>analytics_writer.py</code> and <code>snowflake_client.py</code> in the last two minutes.</p>
+        <p>This is archivist's first card today; previous turns were all reads.</p>
+      </div>
+    </div>
+
+    <div class="agent-block sentinel">
+      <div class="who">
+        <div class="name">sentinel</div>
+        <div class="role">verifier</div>
+      </div>
+      <div class="body">
+        <p><span class="now-tag">now</span>Verifying <em>schema parity between Postgres and Snowflake</em> — just claimed it four minutes ago, so still ramping. Six tool calls, no edits yet.</p>
+        <p>Earlier: <span class="check">✓</span> set up CI for the migration scripts (six minutes).</p>
+      </div>
+    </div>
+
+    <div class="agent-block scout">
+      <div class="who">
+        <div class="name">scout</div>
+        <div class="role">researcher</div>
+      </div>
+      <div class="body">
+        <p><span class="stale">stale</span>Claimed <em>Audit BI tool integrations</em> at 10:54 — twenty-four minutes ago. No tool calls in the last twelve minutes; the autopilot wanted to redispatch this card and was held back. <strong style="color:var(--fg-0)">Worth reclaiming and asking what happened.</strong></p>
+        <p>Earlier: <span class="check">✓</span> mapped all read paths in analytics (twelve minutes), and <span class="check">✓</span> audited the current Postgres schema (eight minutes). Two solid wins before the stall.</p>
+      </div>
+    </div>
+
+    <div class="sec-h"><span>blocked</span><span class="count">— what we can't move on yet</span></div>
+
+    <div class="agent-block idle">
+      <div class="who">
+        <div class="name">held</div>
+        <div class="role">waiting on humans</div>
+      </div>
+      <div class="body">
+        <p><em>Update analytics PII handling</em> has been waiting on legal review for eighteen minutes. No agent assigned. Three downstream cards will unblock when this clears.</p>
+      </div>
+    </div>
+
+    <div class="sec-h"><span>up next</span><span class="count">— what autopilot will dispatch</span></div>
+
+    <div class="queue-block">
+      <div class="body">
+        <p>Five cards are ready to go: <em>shadow reads</em>, <em>update query layer</em>, <em>backfill historical data</em>, <em>monitor dual-write drift</em>, and <em>document the cutover plan</em>. Three of them depend on the dual-write adapter landing first.</p>
+
+        <div class="auto-line">
+          Will dispatch <span class="em">Run shadow reads against Snowflake</span> to <span class="em">scout</span> in about <span style="color:var(--accent)">15 seconds</span> if scout is reclaimed. Otherwise it'll wait for the next idle agent.
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <div class="cradle-wrap">
+    <div class="cradle">
+      <textarea rows="1" placeholder="reclaim scout · pause autopilot · add a card · ask anything…"></textarea>
+      <div class="cradle-hint">
+        <span><kbd>⏎</kbd> send · <kbd>⌘K</kbd> command</span>
+        <span>kanban · standup</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

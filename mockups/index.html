@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Tasks Dashboard mockups</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a; --bg-1:#121212; --bg-2:#181818;
+    --fg-0:#ececec; --fg-1:#a8a8a8; --fg-2:#6e6e6e; --fg-3:#4a4a4a; --fg-4:#303030;
+    --accent:#a8d4fc;
+    --hairline:rgba(255,255,255,0.06);
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { margin:0; min-height:100%; background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(900px 700px at 12% -10%, rgba(168,212,252,0.06), transparent 60%),
+      radial-gradient(700px 500px at 92% 8%, rgba(136,214,127,0.035), transparent 60%);
+  }
+  .wrap { position:relative; z-index:1; max-width:1240px; margin:0 auto; padding:80px 32px 80px; }
+
+  header { margin-bottom:64px; }
+  header .eyebrow { color:var(--fg-2); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase; margin-bottom:14px; }
+  header h1 { font-family:var(--serif); font-weight:300; font-size:36px; line-height:1.3; color:var(--fg-0); margin:0 0 14px; max-width:780px; letter-spacing:-0.005em; }
+  header p { color:var(--fg-1); font-size:13.5px; line-height:1.7; max-width:680px; margin:0; }
+
+  .principles { display:grid; grid-template-columns:repeat(3, 1fr); gap:18px; margin:32px 0 0; }
+  .principle { padding:18px 18px 16px; background:rgba(255,255,255,0.02); border:1px solid var(--hairline); border-radius:12px; }
+  .principle .num { color:var(--fg-3); font-size:10.5px; letter-spacing:0.18em; }
+  .principle .ti { color:var(--fg-0); font-size:14px; margin:6px 0 6px; }
+  .principle .bd { color:var(--fg-2); font-size:12px; line-height:1.6; }
+
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-top:48px; }
+
+  .card {
+    display:flex; flex-direction:column; gap:14px;
+    background:rgba(255,255,255,0.018);
+    border:1px solid var(--hairline);
+    border-radius:14px;
+    padding:18px;
+    transition:border-color 160ms ease, transform 160ms ease;
+  }
+  .card:hover { border-color:rgba(255,255,255,0.16); }
+
+  .card .frame {
+    position:relative;
+    aspect-ratio: 16/10;
+    border-radius:10px; overflow:hidden;
+    border:1px solid var(--hairline);
+    background:#000;
+  }
+  .card .frame iframe {
+    position:absolute; top:0; left:0;
+    width:1440px; height:900px;
+    transform:scale(0.385);
+    transform-origin:0 0;
+    border:0;
+    pointer-events:none;
+  }
+  .card .meta { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; }
+  .card .meta .l .tag { color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase; }
+  .card .meta .l .name { font-size:18px; color:var(--fg-0); margin:4px 0 0; }
+  .card .meta .open {
+    background:rgba(168,212,252,0.08); border:1px solid rgba(168,212,252,0.2);
+    color:var(--accent); font:inherit; font-size:11px; letter-spacing:0.06em;
+    padding:7px 12px; border-radius:8px; cursor:pointer;
+    text-decoration:none;
+    transition:background 120ms ease;
+    white-space:nowrap;
+  }
+  .card .meta .open:hover { background:rgba(168,212,252,0.14); }
+  .card .body { color:var(--fg-1); font-size:12.5px; line-height:1.6; }
+  .card .when { color:var(--fg-2); font-size:11.5px; padding-top:10px; border-top:1px solid var(--hairline); }
+  .card .when strong { color:var(--fg-0); font-weight:400; }
+
+  .footer { margin-top:64px; padding-top:24px; border-top:1px solid var(--hairline);
+    color:var(--fg-3); font-size:11px; letter-spacing:0.04em; }
+
+  .pass-divider {
+    grid-column:1 / -1;
+    display:flex; align-items:center; gap:18px;
+    margin:32px 0 8px;
+    color:var(--fg-2); font-size:11px; letter-spacing:0.22em; text-transform:uppercase;
+  }
+  .pass-divider::before, .pass-divider::after {
+    content:""; flex:1; height:1px;
+    background:linear-gradient(90deg, transparent, var(--hairline), transparent);
+  }
+  .pass-divider .ti { color:var(--fg-1); }
+  .pass-divider .bd { color:var(--fg-3); font-size:11px; letter-spacing:0.04em; text-transform:none; max-width:520px; }
+
+  @media (max-width:880px) {
+    .grid { grid-template-columns:1fr; }
+    .principles { grid-template-columns:1fr; }
+    .card .frame iframe { transform:scale(0.5); }
+  }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">tasks dashboard · design exploration</div>
+    <h1>Eight ways to make the tasks dashboard calmer.</h1>
+    <p>The current dashboard packs eight metric cards, a five-column kanban, an agent allocation panel, a watch list, an autopilot strip, and a message bus into a single screen. These mocks each take a different position on what to keep, what to demote, and what to delete. The first four were the practical exploration; the second four push harder on minimalism and humane interface principles.</p>
+
+    <div class="principles">
+      <div class="principle">
+        <div class="num">01</div>
+        <div class="ti">One number, not eight.</div>
+        <div class="bd">Replace the metric carpet with a single header line. Counts return inline only where they're load-bearing.</div>
+      </div>
+      <div class="principle">
+        <div class="num">02</div>
+        <div class="ti">Color is information.</div>
+        <div class="bd">Accent for active. Warn for blocked. Ok for done. Everything else greyscale. No surface tinting.</div>
+      </div>
+      <div class="principle">
+        <div class="num">03</div>
+        <div class="ti">Don't demand attention; offer it.</div>
+        <div class="bd">The dashboard should reward a glance, not require one. Live elements earn their motion; static elements earn their stillness.</div>
+      </div>
+    </div>
+  </header>
+
+  <section class="grid">
+
+    <article class="card">
+      <div class="frame"><iframe src="tasks-dashboard.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v1 · status-first</div>
+          <div class="name">List + Rail</div>
+        </div>
+        <a class="open" href="tasks-dashboard.html">open →</a>
+      </div>
+      <div class="body">A single grouped list — Now / Up Next / Blocked / Done — with a side rail for crew and a recent-events pulse. Click any task to open a detail drawer with subtasks and per-task activity. Includes empty and completed states (cycle them via the switcher in the top right).</div>
+      <div class="when"><strong>Best when</strong> users want to scan task state at a glance and triage. Most familiar; least new metaphor. Fewest pixels for the mission itself.</div>
+    </article>
+
+    <article class="card">
+      <div class="frame"><iframe src="v2-reading-room.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v2 · mission-first</div>
+          <div class="name">Reading Room</div>
+        </div>
+        <a class="open" href="v2-reading-room.html">open →</a>
+      </div>
+      <div class="body">A single 640px column. The mission gets serif display type and the largest pixels. Tasks read as paragraphs with status as marginalia. Crew and recent activity demoted to a quiet footer strip with a glass cradle. No rail, no panels, no chrome.</div>
+      <div class="when"><strong>Best when</strong> the mission deserves contemplation, the task list is short-to-medium (≤20), and you want the platform to feel like a writing tool rather than a control room.</div>
+    </article>
+
+    <article class="card">
+      <div class="frame"><iframe src="v3-timeline.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v3 · time-first</div>
+          <div class="name">Timeline</div>
+        </div>
+        <a class="open" href="v3-timeline.html">open →</a>
+      </div>
+      <div class="body">Time across the X axis, agents as horizontal lanes. Past tasks as solid bars, current as glowing pulse, queued as dashed ghosts. A "now" line marches right across the canvas. Queue and blocked tasks land in a card row underneath.</div>
+      <div class="when"><strong>Best when</strong> cadence and crew utilization matter more than backlog shape. Makes idle agents and pile-ups visible at a glance — and lets you tell at a glance whether the mission is keeping pace.</div>
+    </article>
+
+    <article class="card">
+      <div class="frame"><iframe src="v4-constellation.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v4 · shape-first</div>
+          <div class="name">Constellation</div>
+        </div>
+        <a class="open" href="v4-constellation.html">open →</a>
+      </div>
+      <div class="body">Tasks float as soft cards in status zones — done dimming away, now glowing in the center, next waiting to the right, blocked amber and isolated. Faint connecting lines hint at dependency. Agents shown as labeled orbs near what they're touching.</div>
+      <div class="when"><strong>Best when</strong> you want the mission's <em>shape</em> to become legible — dependency clusters, abandoned branches, central bottlenecks. The most spatial / least scannable; best as an alternate view rather than the default.</div>
+    </article>
+
+    <div class="pass-divider">
+      <div>
+        <div class="ti">pass two · humane + minimal</div>
+        <div class="bd" style="margin-top:6px">Calmer takes that follow Raskin-style principles — modeless, monotonous, attention-respecting.</div>
+      </div>
+    </div>
+
+    <article class="card">
+      <div class="frame"><iframe src="v5-narrative.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v5 · prose-first</div>
+          <div class="name">Narrative Stream</div>
+        </div>
+        <a class="open" href="v5-narrative.html">open →</a>
+      </div>
+      <div class="body">The dashboard <em>is</em> a curated log written by the agents themselves. Tasks emerge as inline pills inside chronological prose. A "currently" card at the foot of the stream is the only live element — everything above is past tense. Quiet stretches collapse into a single fold-line.</div>
+      <div class="when"><strong>Best when</strong> the work is mostly autonomous and you check in periodically. Eliminates the modal split between "chat" and "dashboard" — they become one continuous reading surface.</div>
+    </article>
+
+    <article class="card">
+      <div class="frame"><iframe src="v6-spotlight.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v6 · attention-first</div>
+          <div class="name">Spotlight</div>
+        </div>
+        <a class="open" href="v6-spotlight.html">open →</a>
+      </div>
+      <div class="body">Just <em>one</em> task. In display serif, centered, with a breathing cursor. A row of progress dots above. Everything else demoted to whisper-text below: who's working alongside, what's queued, who's idle. Use ←/→ to step through.</div>
+      <div class="when"><strong>Best when</strong> the mission has a clear critical path. Maximally attention-respecting — answers "what is the next right thing?" in a single glance and refuses to show you anything else.</div>
+    </article>
+
+    <article class="card">
+      <div class="frame"><iframe src="v7-briefing.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v7 · static-first</div>
+          <div class="name">Daily Brief</div>
+        </div>
+        <a class="open" href="v7-briefing.html">open →</a>
+      </div>
+      <div class="body">Calm typewritten memo on cream paper. No live elements, no animation. Mission, status table, crew, highlights since you last looked, what needs you, what's queued, sign-off. Refresh when you want to. Open the live view at any time.</div>
+      <div class="when"><strong>Best when</strong> you've stepped away and want to scan the state without entering a live monitoring mode. Could ship as the "tab back in" view, an emailed daily, or a calmer alternative for async-minded users.</div>
+    </article>
+
+    <article class="card">
+      <div class="frame"><iframe src="v8-keyboard.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v8 · keyboard-first</div>
+          <div class="name">Keyboard</div>
+        </div>
+        <a class="open" href="v8-keyboard.html">open →</a>
+      </div>
+      <div class="body">A polished TUI in the browser. Every task has a short slug (<code>s3-stream</code>, <code>azure</code>) and every action has a single-key shortcut shown in the bottom command bar. <kbd>j</kbd>/<kbd>k</kbd> nav, <kbd>c</kbd>laim, <kbd>b</kbd>lock, <kbd>x</kbd>complete, <kbd>/</kbd> search. The prompt accepts both natural language and structured commands like <code>:claim azure forge</code>.</div>
+      <div class="when"><strong>Best when</strong> the user is power-user-shaped. Modeless, monotonous, predictable — Raskin's humane principles literally applied. The only variant where speed and minimalism reinforce each other instead of trading off.</div>
+    </article>
+
+  </section>
+
+  <div class="footer">freyja · uncommitted mockups · /mockups</div>
+
+</div>
+</body>
+</html>

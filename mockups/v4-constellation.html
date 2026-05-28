@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · v4 Constellation (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a;
+    --fg-0:#e8e8e8; --fg-1:#a8a8a8; --fg-2:#6e6e6e; --fg-3:#4a4a4a; --fg-4:#303030;
+    --accent:#a8d4fc; --accent-lo:#7aafea;
+    --ok:#88d67f; --warn:#ffcc66; --danger:#ff6b6b;
+    --hairline:rgba(255,255,255,0.06);
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:radial-gradient(ellipse at center, #0c0c0c 0%, #060606 80%);
+    color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.5;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(900px 700px at 50% 50%, rgba(168,212,252,0.07), transparent 65%),
+      radial-gradient(500px 400px at 22% 35%, rgba(136,214,127,0.04), transparent 70%),
+      radial-gradient(500px 400px at 80% 70%, rgba(255,204,102,0.025), transparent 70%);
+  }
+  .ambient::after { content:""; position:absolute; inset:0;
+    background-image:
+      radial-gradient(circle at 14% 22%, rgba(255,255,255,0.04) 0.6px, transparent 1px),
+      radial-gradient(circle at 78% 12%, rgba(255,255,255,0.03) 0.6px, transparent 1px),
+      radial-gradient(circle at 38% 84%, rgba(255,255,255,0.04) 0.6px, transparent 1px),
+      radial-gradient(circle at 64% 48%, rgba(255,255,255,0.03) 0.5px, transparent 1px),
+      radial-gradient(circle at 8% 70%, rgba(255,255,255,0.025) 0.5px, transparent 1px),
+      radial-gradient(circle at 92% 38%, rgba(255,255,255,0.03) 0.5px, transparent 1px),
+      radial-gradient(circle at 50% 8%, rgba(255,255,255,0.02) 0.5px, transparent 1px),
+      radial-gradient(circle at 28% 50%, rgba(255,255,255,0.025) 0.5px, transparent 1px);
+    background-size: 100% 100%;
+  }
+
+  .app { position:relative; z-index:1; height:100vh; display:grid; grid-template-rows:36px auto 1fr auto; }
+
+  .titlebar {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 14px; border-bottom:1px solid var(--hairline);
+    color:var(--fg-1); font-size:11px; letter-spacing:0.06em;
+  }
+  .title-meta { color:var(--fg-2); }
+  .dot { width:6px; height:6px; border-radius:50%; display:inline-block; }
+  .dot.ok { background:var(--ok); box-shadow:0 0 8px rgba(136,214,127,0.5); }
+  .seg-btn { background:transparent; border:0; color:var(--fg-2); font:inherit;
+    padding:6px 10px; border-radius:6px; cursor:pointer; }
+  .seg-btn.active { color:#f3f3f3;
+    background:linear-gradient(180deg, rgba(0,0,0,0.32), rgba(0,0,0,0.18));
+    box-shadow:inset 0 2px 3px rgba(0,0,0,0.55), inset 0 1px 0 rgba(0,0,0,0.4);
+    transform:translateY(0.5px); }
+  .title-segment { display:flex; gap:2px; }
+  .title-left, .title-right { display:flex; align-items:center; gap:14px; }
+
+  /* mission caption — small, top-center */
+  .caption {
+    text-align:center; padding:28px 24px 8px;
+  }
+  .caption .eyebrow {
+    color:var(--fg-2); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    margin-bottom:10px;
+  }
+  .caption h1 {
+    font-size:16px; font-weight:400; color:var(--fg-1); line-height:1.5;
+    max-width:680px; margin:0 auto;
+  }
+  .caption h1 .strong { color:var(--fg-0); }
+  .caption .meta {
+    color:var(--fg-3); font-size:11px; margin-top:10px; letter-spacing:0.06em;
+  }
+  .caption .meta .num { color:var(--fg-1); font-variant-numeric:tabular-nums; }
+
+  /* canvas */
+  .canvas { position:relative; overflow:hidden; min-height:0; }
+  .canvas svg.lines {
+    position:absolute; inset:0; width:100%; height:100%;
+    pointer-events:none; z-index:1;
+  }
+  /* zone glows */
+  .zone {
+    position:absolute; pointer-events:none; z-index:0;
+    border-radius:50%;
+    filter:blur(40px);
+    opacity:0.6;
+  }
+  .zone.done    { left:6%;  top:18%; width:280px; height:200px; background:rgba(136,214,127,0.08); }
+  .zone.now     { left:42%; top:22%; width:340px; height:280px; background:radial-gradient(circle, rgba(168,212,252,0.18), rgba(168,212,252,0.04) 60%, transparent 80%); opacity:0.9; }
+  .zone.next    { left:75%; top:30%; width:260px; height:240px; background:rgba(168,168,168,0.05); }
+  .zone.blocked { left:18%; top:62%; width:180px; height:160px; background:rgba(255,204,102,0.08); }
+
+  .zone-label {
+    position:absolute; z-index:2; pointer-events:none;
+    color:var(--fg-3); font-size:10px; letter-spacing:0.22em; text-transform:uppercase;
+  }
+  .zone-label.now     { left:54%;   top:14%; color:var(--accent); }
+  .zone-label.done    { left:9%;    top:14%; color:var(--ok); }
+  .zone-label.next    { left:78%;   top:24%; color:var(--fg-2); }
+  .zone-label.blocked { left:20%;   top:58%; color:var(--warn); }
+
+  /* nodes */
+  .node {
+    position:absolute; z-index:3;
+    background:rgba(20,20,20,0.65);
+    backdrop-filter:blur(20px) saturate(140%);
+    -webkit-backdrop-filter:blur(20px) saturate(140%);
+    border:1px solid var(--hairline);
+    border-radius:12px;
+    padding:10px 14px;
+    color:var(--fg-1); font-size:12px;
+    cursor:pointer;
+    transition:all 160ms ease;
+    box-shadow:0 4px 14px rgba(0,0,0,0.4);
+    max-width:200px;
+  }
+  .node:hover { transform:translateY(-1px); border-color:rgba(255,255,255,0.14); }
+
+  .node .glyph { color:var(--fg-2); margin-right:8px; }
+  .node .title { color:var(--fg-0); font-size:12px; line-height:1.4; }
+  .node .agent { color:var(--fg-3); font-size:10.5px; letter-spacing:0.06em; margin-top:4px; }
+
+  .node.now {
+    background:rgba(168,212,252,0.10);
+    border-color:rgba(168,212,252,0.32);
+    box-shadow: 0 0 0 1px rgba(168,212,252,0.18),
+                0 0 30px rgba(168,212,252,0.18),
+                0 8px 24px rgba(0,0,0,0.5);
+  }
+  .node.now .glyph { color:var(--accent); }
+  .node.now .agent { color:var(--accent); }
+
+  .node.done {
+    background:rgba(20,20,20,0.5);
+    color:var(--fg-2);
+  }
+  .node.done .title { color:var(--fg-2); text-decoration:line-through; text-decoration-color:var(--fg-4); }
+  .node.done .glyph { color:var(--ok); }
+
+  .node.blocked {
+    background:rgba(255,204,102,0.06);
+    border-color:rgba(255,204,102,0.22);
+  }
+  .node.blocked .glyph { color:var(--warn); }
+  .node.blocked .agent { color:var(--warn); }
+
+  /* agent orbs near active nodes */
+  .agent-orb {
+    position:absolute; z-index:4;
+    color:var(--fg-1); font-size:10.5px; letter-spacing:0.04em;
+    background:rgba(20,20,20,0.85);
+    backdrop-filter:blur(10px);
+    padding:3px 8px 3px 16px;
+    border-radius:10px;
+    border:1px solid var(--hairline);
+    pointer-events:none;
+  }
+  .agent-orb::before {
+    content:""; position:absolute; left:5px; top:50%; transform:translateY(-50%);
+    width:6px; height:6px; border-radius:50%;
+    background:var(--accent);
+    box-shadow:0 0 8px var(--accent);
+    animation:pulse 2.2s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  /* spinner */
+  .spin { display:inline-block; width:9px; height:9px; border-radius:50%;
+    border:1.4px solid rgba(168,212,252,0.25); border-top-color:var(--accent);
+    animation:spin 1.6s linear infinite; vertical-align:-1px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+
+  /* footer pulse strip */
+  .pulse-strip {
+    border-top:1px solid var(--hairline);
+    padding:10px 24px;
+    display:flex; gap:24px;
+    color:var(--fg-2); font-size:11px;
+    overflow:hidden; white-space:nowrap;
+    background:linear-gradient(180deg, transparent, rgba(0,0,0,0.3));
+  }
+  .pulse-item .ts { color:var(--fg-3); margin-right:6px; }
+  .pulse-item .who { color:var(--fg-1); margin-right:4px; }
+  .pulse-item .ev .ok { color:var(--ok); }
+  .pulse-item .ev .warn { color:var(--warn); }
+
+  /* cradle */
+  .cradle-wrap { display:flex; justify-content:center; padding:14px 16px 16px; }
+  .cradle { width:100%; max-width:640px;
+    background:rgba(14,14,14,0.65);
+    backdrop-filter:blur(36px) saturate(140%);
+    border-radius:16px;
+    box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.07),
+                inset 0 0 0 1px rgba(255,255,255,0.04),
+                0 12px 40px -8px rgba(0,0,0,0.5);
+    padding:12px 16px 10px; display:flex; flex-direction:column; gap:8px;
+  }
+  .cradle textarea { background:transparent; border:0; outline:0; color:var(--fg-0);
+    font:inherit; resize:none; width:100%; min-height:22px; }
+  .cradle textarea::placeholder { color:var(--fg-3); }
+  .cradle-row { display:flex; align-items:center; justify-content:space-between;
+    color:var(--fg-3); font-size:11px; letter-spacing:0.04em; }
+  .cradle-row kbd { color:var(--fg-2); background:rgba(255,255,255,0.04);
+    padding:1px 6px; border-radius:4px; font-family:inherit; font-size:10.5px; }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="app">
+
+  <div class="titlebar">
+    <div class="title-left">
+      <span class="title-meta">freyja</span>
+      <span class="dot ok"></span>
+      <div class="title-segment">
+        <button class="seg-btn">workspace</button>
+        <button class="seg-btn active">dashboard</button>
+        <button class="seg-btn">focus</button>
+      </div>
+    </div>
+    <div class="title-right">
+      <span class="title-meta">tasks · constellation view</span>
+      <span class="title-meta">opus 4.7</span>
+    </div>
+  </div>
+
+  <div class="caption">
+    <div class="eyebrow">mission</div>
+    <h1><span class="strong">Restructure the ingestion pipeline</span> to support streaming uploads from S3 and Azure Blob, and migrate the existing batch test suite.</h1>
+    <div class="meta"><span class="num">4</span> of 12 complete · 2 active · 1 blocked · 38m elapsed</div>
+  </div>
+
+  <div class="canvas" id="canvas">
+
+    <!-- soft zone glows -->
+    <div class="zone done"></div>
+    <div class="zone now"></div>
+    <div class="zone next"></div>
+    <div class="zone blocked"></div>
+
+    <div class="zone-label done">done</div>
+    <div class="zone-label now">now</div>
+    <div class="zone-label next">up next</div>
+    <div class="zone-label blocked">blocked</div>
+
+    <!-- connections (faint, hand-positioned) -->
+    <svg class="lines" viewBox="0 0 1000 600" preserveAspectRatio="none">
+      <defs>
+        <linearGradient id="line" x1="0" x2="1">
+          <stop offset="0" stop-color="rgba(255,255,255,0.0)"/>
+          <stop offset="0.5" stop-color="rgba(255,255,255,0.10)"/>
+          <stop offset="1" stop-color="rgba(255,255,255,0.0)"/>
+        </linearGradient>
+        <linearGradient id="lineActive" x1="0" x2="1">
+          <stop offset="0" stop-color="rgba(168,212,252,0.05)"/>
+          <stop offset="0.5" stop-color="rgba(168,212,252,0.35)"/>
+          <stop offset="1" stop-color="rgba(168,212,252,0.05)"/>
+        </linearGradient>
+      </defs>
+      <!-- done -> now (already-shipped feeds active) -->
+      <path d="M 180 230 C 320 230, 360 220, 500 230" stroke="url(#line)" stroke-width="1" fill="none" stroke-dasharray="2 4"/>
+      <path d="M 180 290 C 320 290, 380 270, 500 270" stroke="url(#line)" stroke-width="1" fill="none" stroke-dasharray="2 4"/>
+      <path d="M 200 360 C 340 340, 400 290, 500 280" stroke="url(#line)" stroke-width="1" fill="none" stroke-dasharray="2 4"/>
+      <!-- now -> next (active enables future) -->
+      <path d="M 620 230 C 720 220, 760 230, 800 240" stroke="url(#lineActive)" stroke-width="1.2" fill="none"/>
+      <path d="M 620 270 C 720 280, 760 300, 800 320" stroke="url(#lineActive)" stroke-width="1.2" fill="none"/>
+      <path d="M 620 300 C 720 350, 770 380, 800 400" stroke="url(#lineActive)" stroke-width="1.2" fill="none"/>
+    </svg>
+
+    <!-- DONE nodes (cluster top-left) -->
+    <div class="node done" style="left:5%;  top:24%;">
+      <div><span class="glyph">✓</span><span class="title">Bench memory floor</span></div>
+    </div>
+    <div class="node done" style="left:14%; top:32%;">
+      <div><span class="glyph">✓</span><span class="title">Spec buffered cursor</span></div>
+    </div>
+    <div class="node done" style="left:6%;  top:42%;">
+      <div><span class="glyph">✓</span><span class="title">Map S3 surface area</span></div>
+    </div>
+    <div class="node done" style="left:16%; top:52%;">
+      <div><span class="glyph">✓</span><span class="title">Set up local minio</span></div>
+    </div>
+
+    <!-- NOW nodes (center, glowing) -->
+    <div class="node now" style="left:42%; top:30%;">
+      <div><span class="glyph"><span class="spin"></span></span><span class="title">Streaming reader for S3 multipart</span></div>
+      <div class="agent">scout · 2m</div>
+    </div>
+    <div class="node now" style="left:46%; top:46%;">
+      <div><span class="glyph"><span class="spin"></span></span><span class="title">Refactor ingest worker</span></div>
+      <div class="agent">forge · 5m</div>
+    </div>
+
+    <!-- agent orbs near active nodes -->
+    <div class="agent-orb" style="left:39%; top:26%;">scout</div>
+    <div class="agent-orb" style="left:43%; top:42%;">forge</div>
+
+    <!-- NEXT nodes (right) -->
+    <div class="node" style="left:74%; top:28%;">
+      <div><span class="glyph">○</span><span class="title">Azure blob adapter</span></div>
+    </div>
+    <div class="node" style="left:80%; top:42%;">
+      <div><span class="glyph">○</span><span class="title">Migrate test fixtures</span></div>
+    </div>
+    <div class="node" style="left:74%; top:56%;">
+      <div><span class="glyph">○</span><span class="title">Wire <code style="color:var(--fg-1)">--stream</code> CLI flag</span></div>
+    </div>
+    <div class="node" style="left:82%; top:68%;">
+      <div><span class="glyph">○</span><span class="title">Document cutover plan</span></div>
+    </div>
+
+    <!-- BLOCKED node (bottom-left) -->
+    <div class="node blocked" style="left:20%; top:75%;">
+      <div><span class="glyph">⊘</span><span class="title">Update API contracts</span></div>
+      <div class="agent">waiting on review</div>
+    </div>
+
+  </div>
+
+  <!-- footer: pulse + cradle -->
+  <div>
+    <div class="pulse-strip">
+      <span class="pulse-item"><span class="ts">10:42</span><span class="who">sentinel</span><span class="ev"><span class="ok">✓</span> verified fixture parity</span></span>
+      <span class="pulse-item"><span class="ts">10:38</span><span class="who">forge</span><span class="ev">wrote ingest_worker.py</span></span>
+      <span class="pulse-item"><span class="ts">10:31</span><span class="who">scout</span><span class="ev">found 4 callers of legacy reader</span></span>
+      <span class="pulse-item"><span class="ts">10:24</span><span class="who">forge</span><span class="ev">ran test suite · 41 passed</span></span>
+      <span class="pulse-item"><span class="ts">10:12</span><span class="who">sentinel</span><span class="ev"><span class="warn">!</span> flagged contract drift</span></span>
+    </div>
+
+    <div class="cradle-wrap">
+      <div class="cradle">
+        <textarea rows="1" placeholder="redirect crew, drop a node, or ask…"></textarea>
+        <div class="cradle-row">
+          <div><kbd>⏎</kbd> send · <kbd>⌘K</kbd> command</div>
+          <div>tasks · constellation</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

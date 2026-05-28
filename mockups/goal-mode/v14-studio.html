@@ -1,0 +1,839 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Goal · v14 Studio (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a;
+    --fg-0:#ececec; --fg-1:#a8a8a8; --fg-2:#7a7a7a; --fg-3:#5a5a5a; --fg-4:#3a3a3a;
+    --accent:#a8d4fc; --accent-lo:#7aafea;
+    --ok:#88d67f; --warn:#ffcc66; --danger:#ff6b6b;
+    --judge:#c4b5fd;
+    --hairline:rgba(255,255,255,0.06);
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.65;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(700px 500px at 8% -10%, rgba(168,212,252,0.04), transparent 60%),
+      radial-gradient(700px 500px at 92% 110%, rgba(196,181,253,0.04), transparent 60%);
+  }
+
+  .app { position:relative; z-index:1; height:100vh; display:grid; grid-template-rows:36px auto 1fr auto; }
+
+  /* ---- top strip ---- */
+  .strip {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 28px;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    border-bottom:1px solid var(--hairline);
+  }
+  .strip .l { display:flex; align-items:center; gap:14px; }
+  .strip .live { color:var(--fg-2); display:inline-flex; align-items:center; gap:7px; }
+  .strip .live::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 8px var(--accent); animation:pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  /* ---- header band ---- */
+  .header {
+    padding:24px 32px 18px;
+    border-bottom:1px solid var(--hairline);
+    display:grid; grid-template-columns:1fr auto;
+    gap:32px; align-items:end;
+  }
+  .header .eyebrow {
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    margin-bottom:10px;
+  }
+  .header h1 {
+    font-family:var(--serif); font-weight:300; font-size:20px; line-height:1.45;
+    color:var(--fg-1); margin:0; letter-spacing:-0.005em; max-width:880px;
+  }
+  .header h1 .em { color:var(--fg-0); }
+  .header .stats {
+    margin-top:14px;
+    display:flex; gap:22px; flex-wrap:wrap;
+    color:var(--fg-2); font-size:11.5px; letter-spacing:0.06em;
+  }
+  .header .stats .stat { display:inline-flex; align-items:baseline; gap:6px; }
+  .header .stats .num { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+  .header .stats .em { color:var(--accent); }
+  .header .stats .ok { color:var(--ok); }
+  .header .stats .warn { color:var(--warn); }
+  .header .stats .judge { color:var(--judge); }
+  .header .actions { display:flex; gap:8px; }
+  .header .actions button {
+    background:rgba(255,255,255,0.04); border:1px solid var(--hairline);
+    color:var(--fg-1); font:inherit; font-size:11px; letter-spacing:0.04em;
+    padding:7px 12px; border-radius:6px; cursor:pointer;
+    transition:all 120ms;
+  }
+  .header .actions button:hover { color:var(--fg-0); background:rgba(255,255,255,0.07); }
+  .header .actions button.ship {
+    color:var(--ok); border-color:rgba(136,214,127,0.22); background:rgba(136,214,127,0.06);
+  }
+  .header .actions button.ship:hover { background:rgba(136,214,127,0.12); }
+  .header .actions button.ship:disabled { opacity:0.45; cursor:not-allowed; }
+
+  /* ---- main grid: three columns ---- */
+  .main {
+    display:grid;
+    grid-template-columns:280px minmax(0, 1fr) 340px;
+    min-height:0; overflow:hidden;
+  }
+
+  /* column shared base */
+  .col { overflow-y:auto; min-height:0; }
+
+  .col-eyebrow {
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    padding:18px 20px 10px;
+    display:flex; align-items:baseline; justify-content:space-between;
+    position:sticky; top:0; z-index:5;
+    background:linear-gradient(180deg, var(--bg-0) 70%, transparent);
+  }
+  .col-eyebrow .count {
+    color:var(--fg-3); font-variant-numeric:tabular-nums; letter-spacing:0;
+    font-family:var(--mono);
+  }
+
+  /* ---- LEFT: open questions rail ---- */
+  .col.questions { border-right:1px solid var(--hairline); }
+
+  .q-section { padding:0 20px 18px; }
+  .q-section + .q-section { border-top:1px solid var(--hairline); padding-top:14px; }
+  .q-section .head {
+    color:var(--fg-3); font-size:10px; letter-spacing:0.22em; text-transform:uppercase;
+    margin-bottom:10px; display:flex; align-items:baseline; justify-content:space-between;
+  }
+  .q-section .head .label { display:inline-flex; align-items:center; gap:7px; }
+  .q-section .head .label::before { content:""; width:5px; height:5px; border-radius:50%; }
+  .q-section.asking  .head .label::before { background:var(--judge); box-shadow:0 0 6px var(--judge); }
+  .q-section.settled .head .label::before { background:var(--ok); }
+  .q-section .head .label .lbl { color:var(--fg-1); }
+  .q-section.asking  .head .label .lbl { color:var(--judge); }
+  .q-section.settled .head .label .lbl { color:var(--ok); }
+  .q-section .head .count { color:var(--fg-3); }
+
+  .q-list { display:flex; flex-direction:column; gap:6px; }
+  .q-item {
+    padding:8px 10px;
+    border-radius:6px; cursor:pointer;
+    transition:background 120ms;
+    border-left:2px solid transparent;
+  }
+  .q-item:hover { background:rgba(255,255,255,0.025); }
+  .q-item .ti {
+    color:var(--fg-0); font-size:12.5px; line-height:1.45;
+    display:flex; align-items:baseline; gap:8px;
+  }
+  .q-item .pri {
+    font-size:9.5px; letter-spacing:0.18em; text-transform:uppercase;
+    padding:1px 6px; border-radius:3px; flex-shrink:0;
+  }
+  .q-item .pri.must     { background:rgba(255,107,107,0.07); color:#ff8a8a; border:1px solid rgba(255,107,107,0.2); }
+  .q-item .pri.should   { background:rgba(255,204,102,0.06); color:var(--warn); border:1px solid rgba(255,204,102,0.18); }
+  .q-item .pri.may      { background:rgba(168,212,252,0.06); color:var(--accent); border:1px solid rgba(168,212,252,0.18); }
+  .q-item .pri.provisional { background:rgba(196,181,253,0.07); color:var(--judge); border:1px dashed rgba(196,181,253,0.32); }
+  .q-item .meta {
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.06em; margin-top:4px; padding-left:0;
+    display:flex; align-items:center; gap:8px;
+  }
+  .q-item .meta .working {
+    color:var(--accent); display:inline-flex; align-items:center; gap:5px;
+  }
+  .q-item .meta .working::before {
+    content:""; width:4px; height:4px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 5px var(--accent); animation:pulse 2.2s ease-in-out infinite;
+  }
+
+  .q-item.fresh-add { border-left-color:var(--judge); background:rgba(196,181,253,0.04); }
+  .q-item.fresh-settled { border-left-color:var(--ok); background:rgba(136,214,127,0.04); }
+
+  .q-list.settled .q-item { padding:6px 10px; }
+  .q-list.settled .q-item .ti { font-size:12px; color:var(--fg-1); }
+  .q-list.settled .q-item .ti::before {
+    content:"✓"; color:var(--ok); margin-right:6px; font-size:11px;
+  }
+  .q-list.settled .q-item .meta { display:none; }
+
+  /* ---- CENTER: draft pane ---- */
+  .col.draft-col { background:rgba(255,255,255,0.005); }
+
+  .draft {
+    max-width:640px; margin:0 auto; padding:36px 36px 200px;
+  }
+
+  .draft-status-bar {
+    display:flex; gap:10px; flex-wrap:wrap; align-items:center;
+    color:var(--fg-3); font-size:10px; letter-spacing:0.18em; text-transform:uppercase;
+    margin-bottom:24px; padding-bottom:14px; border-bottom:1px solid var(--hairline);
+  }
+  .draft-status-bar .pill {
+    padding:3px 10px; border-radius:10px;
+    background:rgba(255,255,255,0.04); border:1px solid var(--hairline);
+    color:var(--fg-2);
+  }
+  .draft-status-bar .pill.live {
+    background:rgba(168,212,252,0.08); border-color:rgba(168,212,252,0.22); color:var(--accent);
+    display:inline-flex; align-items:center; gap:6px;
+  }
+  .draft-status-bar .pill.live::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 6px var(--accent); animation:pulse 2.2s ease-in-out infinite; }
+
+  .draft .doc-title {
+    font-family:var(--serif); font-weight:300; font-size:28px; line-height:1.3;
+    color:var(--fg-0); letter-spacing:-0.01em; margin:0 0 4px;
+  }
+  .draft .doc-meta {
+    color:var(--fg-3); font-size:11px; letter-spacing:0.06em; margin-bottom:32px;
+  }
+
+  .draft h2 {
+    font-family:var(--serif); font-weight:400; font-size:17px; color:var(--fg-0);
+    letter-spacing:-0.005em; margin:32px 0 10px;
+    display:flex; align-items:baseline; gap:12px;
+  }
+  .draft h2 .marker {
+    color:var(--fg-3); font-family:var(--mono); font-size:11px; letter-spacing:0; font-weight:400;
+  }
+  .draft h2 .badge {
+    font-family:var(--mono); font-size:9.5px; letter-spacing:0.18em; text-transform:uppercase;
+    padding:2px 8px; border-radius:4px;
+    background:rgba(255,255,255,0.04); border:1px solid var(--hairline);
+    color:var(--fg-2); font-weight:400;
+  }
+  .draft h2 .badge.solid { background:rgba(136,214,127,0.08); border-color:rgba(136,214,127,0.22); color:var(--ok); }
+  .draft h2 .badge.partial { background:rgba(168,212,252,0.08); border-color:rgba(168,212,252,0.22); color:var(--accent); }
+  .draft h2 .badge.gap { background:rgba(255,204,102,0.06); border-color:rgba(255,204,102,0.22); color:var(--warn); }
+  .draft h2 .anchor {
+    color:var(--fg-4); font-family:var(--mono); font-size:10px; cursor:pointer; margin-left:auto;
+  }
+
+  .draft p {
+    margin:0 0 12px;
+    font-family:var(--serif); font-weight:400; font-size:14.5px; line-height:1.78;
+    color:var(--fg-1);
+  }
+  .draft p .em { color:var(--fg-0); }
+  .draft p code { color:var(--fg-0); font-family:var(--mono); font-size:12.5px;
+    background:rgba(255,255,255,0.04); padding:0 4px; border-radius:3px; }
+
+  /* anchored paragraphs: subtle dot in gutter, hover tint */
+  .draft .anchored {
+    position:relative;
+    padding:0 8px; margin:0 -8px 12px;
+    border-radius:4px;
+    transition:background 200ms;
+    cursor:pointer;
+  }
+  .draft .anchored::before {
+    content:""; position:absolute; left:-22px; top:11px;
+    width:7px; height:7px; border-radius:50%;
+  }
+  .draft .anchored.c-good::before { background:var(--ok); box-shadow:0 0 6px rgba(136,214,127,0.5); }
+  .draft .anchored.c-warn::before { background:var(--warn); box-shadow:0 0 6px rgba(255,204,102,0.5); }
+  .draft .anchored.c-gap::before  { background:var(--judge); box-shadow:0 0 6px rgba(196,181,253,0.5); }
+  .draft .anchored:hover { background:rgba(196,181,253,0.04); }
+  .draft .anchored.active { background:rgba(196,181,253,0.06); box-shadow:inset 0 0 0 1px rgba(196,181,253,0.18); }
+
+  .draft .placeholder {
+    margin:14px 0; padding:18px 22px;
+    border:1px dashed rgba(255,204,102,0.24);
+    border-radius:10px;
+    background:rgba(255,204,102,0.025);
+    color:var(--warn); font-style:italic; font-family:var(--serif); font-weight:300; font-size:14px;
+    line-height:1.6;
+  }
+  .draft .placeholder strong {
+    color:var(--warn); font-weight:500; font-style:normal;
+    font-family:var(--mono); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    display:block; margin-bottom:6px;
+  }
+
+  /* ---- RIGHT: judge rail (with tabs) ---- */
+  .col.judge-col {
+    border-left:1px solid var(--hairline);
+    background:rgba(0,0,0,0.18);
+    display:flex; flex-direction:column;
+    overflow:hidden;
+  }
+  .judge-tabs {
+    display:flex; gap:0;
+    padding:14px 16px 0;
+    border-bottom:1px solid var(--hairline);
+  }
+  .judge-tabs .tab {
+    background:transparent; border:0; color:var(--fg-3);
+    font:inherit; font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    padding:8px 12px 12px; cursor:pointer;
+    border-bottom:1.5px solid transparent;
+    transition:all 120ms;
+    display:inline-flex; align-items:center; gap:8px;
+  }
+  .judge-tabs .tab:hover { color:var(--fg-1); }
+  .judge-tabs .tab.active {
+    color:var(--judge); border-bottom-color:var(--judge);
+  }
+  .judge-tabs .tab .count {
+    color:var(--fg-3); font-family:var(--mono); letter-spacing:0; text-transform:none;
+    font-size:11px; font-variant-numeric:tabular-nums;
+  }
+  .judge-tabs .tab.active .count { color:var(--judge); }
+  .judge-tabs .spacer { flex:1; }
+  .judge-tabs .meta {
+    color:var(--fg-3); font-size:10px; letter-spacing:0.18em; text-transform:uppercase;
+    padding:8px 0 12px; align-self:flex-end;
+  }
+
+  .judge-content { overflow-y:auto; flex:1; min-height:0; padding:18px 18px 22px; }
+
+  /* COMMENTS view */
+  .comments { display:flex; flex-direction:column; gap:12px; }
+  .crit {
+    border-radius:9px;
+    background:rgba(20,20,20,0.45);
+    border:1px solid var(--hairline);
+    padding:11px 13px;
+    display:flex; flex-direction:column; gap:7px;
+    cursor:pointer;
+    transition:all 160ms;
+  }
+  .crit:hover { background:rgba(20,20,20,0.7); border-color:var(--hairline); }
+  .crit.active { box-shadow:0 0 0 1px rgba(196,181,253,0.32); background:rgba(196,181,253,0.05); }
+  .crit .hdr {
+    display:flex; align-items:center; justify-content:space-between;
+    color:var(--fg-3); font-size:10px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+  .crit .hdr .anchor { color:var(--fg-2); }
+  .crit .hdr .anchor:hover { color:var(--fg-0); }
+  .crit .hdr .tag {
+    padding:1px 7px; border-radius:4px;
+    background:rgba(255,255,255,0.04); border:1px solid var(--hairline);
+    color:var(--fg-2);
+  }
+  .crit.good .hdr .tag { color:var(--ok); background:rgba(136,214,127,0.06); border-color:rgba(136,214,127,0.22); }
+  .crit.warn .hdr .tag { color:var(--warn); background:rgba(255,204,102,0.06); border-color:rgba(255,204,102,0.22); }
+  .crit.gap  .hdr .tag { color:var(--judge); background:rgba(196,181,253,0.07); border-color:rgba(196,181,253,0.22); }
+  .crit .body {
+    color:var(--fg-1); font-size:12.5px; line-height:1.6;
+    font-family:var(--serif); font-style:italic; font-weight:300;
+  }
+  .crit.good .body::before { content:"\201C"; color:var(--ok); }
+  .crit.good .body::after  { content:"\201D"; color:var(--ok); }
+  .crit.warn .body::before { content:"\201C"; color:var(--warn); }
+  .crit.warn .body::after  { content:"\201D"; color:var(--warn); }
+  .crit.gap  .body::before { content:"\201C"; color:var(--judge); }
+  .crit.gap  .body::after  { content:"\201D"; color:var(--judge); }
+
+  .verdict-banner {
+    margin-bottom:14px; padding:11px 13px;
+    border-radius:9px;
+    background:linear-gradient(180deg, rgba(196,181,253,0.05), rgba(196,181,253,0.02));
+    border:1px solid rgba(196,181,253,0.2);
+    color:var(--fg-1); font-size:12.5px; line-height:1.6;
+    font-family:var(--serif); font-style:italic; font-weight:300;
+  }
+  .verdict-banner .verdict-tag {
+    display:inline-block;
+    padding:2px 8px; border-radius:4px;
+    background:rgba(196,181,253,0.08); border:1px solid rgba(196,181,253,0.22);
+    color:var(--judge); font-family:var(--mono); font-size:10px; letter-spacing:0.18em; text-transform:uppercase;
+    margin-right:8px; font-style:normal;
+  }
+  .verdict-banner .from {
+    display:block; margin-top:8px;
+    color:var(--judge); font-family:var(--mono); font-size:10px; letter-spacing:0.18em; text-transform:uppercase; font-style:normal;
+  }
+
+  /* BRIEF view */
+  .brief { display:flex; flex-direction:column; gap:18px; }
+  .brief .sec { display:flex; flex-direction:column; gap:8px; }
+  .brief .sec .head {
+    color:var(--fg-3); font-size:10px; letter-spacing:0.22em; text-transform:uppercase;
+    display:flex; align-items:baseline; justify-content:space-between;
+  }
+  .brief .sec .head .add {
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline);
+    color:var(--fg-2); font:inherit; font-size:9.5px; letter-spacing:0.18em; text-transform:uppercase;
+    padding:2px 7px; border-radius:4px; cursor:pointer;
+  }
+  .brief .sec .head .add:hover { color:var(--fg-0); background:rgba(255,255,255,0.06); }
+
+  .brief-crit {
+    display:grid; grid-template-columns:64px 1fr;
+    gap:10px; align-items:start;
+    padding:6px 8px; border-radius:5px;
+    cursor:pointer;
+  }
+  .brief-crit:hover { background:rgba(255,255,255,0.018); }
+  .brief-crit .pri {
+    font-size:9px; letter-spacing:0.18em; text-transform:uppercase;
+    padding:2px 0; border-radius:3px; text-align:center;
+  }
+  .brief-crit .pri.must     { background:rgba(255,107,107,0.07); color:#ff8a8a; border:1px solid rgba(255,107,107,0.18); }
+  .brief-crit .pri.should   { background:rgba(255,204,102,0.06); color:var(--warn); border:1px solid rgba(255,204,102,0.18); }
+  .brief-crit .pri.may      { background:rgba(168,212,252,0.06); color:var(--accent); border:1px solid rgba(168,212,252,0.18); }
+  .brief-crit .pri.prov     { background:rgba(196,181,253,0.07); color:var(--judge); border:1px dashed rgba(196,181,253,0.32); }
+  .brief-crit .text {
+    color:var(--fg-0); font-size:12.5px; line-height:1.5;
+  }
+  .brief-crit .text .met {
+    color:var(--ok); font-size:10px; letter-spacing:0.18em; text-transform:uppercase;
+    margin-left:6px;
+  }
+  .brief-crit .text .partial {
+    color:var(--accent); font-size:10px; letter-spacing:0.18em; text-transform:uppercase;
+    margin-left:6px;
+  }
+  .brief-crit .text .miss {
+    color:var(--fg-3); font-size:10px; letter-spacing:0.18em; text-transform:uppercase;
+    margin-left:6px;
+  }
+
+  .brief-prov {
+    margin-top:6px; padding:8px 10px;
+    border-radius:6px;
+    background:rgba(196,181,253,0.05);
+    border:1px solid rgba(196,181,253,0.2);
+  }
+  .brief-prov .lbl { color:var(--judge); font-size:10px; letter-spacing:0.18em; text-transform:uppercase; margin-bottom:4px; }
+  .brief-prov .body { color:var(--fg-1); font-size:12px; line-height:1.55;
+    font-family:var(--serif); font-style:italic; font-weight:300; margin-bottom:8px; }
+  .brief-prov .acts { display:flex; gap:5px; }
+  .brief-prov .acts button {
+    background:rgba(255,255,255,0.04); border:1px solid var(--hairline);
+    color:var(--fg-1); font:inherit; font-size:10px; letter-spacing:0.06em;
+    padding:3px 8px; border-radius:4px; cursor:pointer;
+  }
+  .brief-prov .acts button.approve { color:var(--ok); border-color:rgba(136,214,127,0.22); background:rgba(136,214,127,0.06); }
+  .brief-prov .acts button.drop:hover { color:var(--warn); }
+
+  .brief .voice {
+    color:var(--fg-1); font-family:var(--serif); font-style:italic; font-weight:300;
+    font-size:13px; line-height:1.65;
+    padding:6px 8px; border-radius:5px;
+    cursor:text;
+  }
+  .brief .voice:hover { background:rgba(255,255,255,0.018); }
+  .brief .voice .em { color:var(--fg-0); font-style:normal; font-family:var(--mono); font-size:12px; }
+
+  .brief .never li {
+    color:var(--fg-1); font-size:12px; line-height:1.55;
+    padding:4px 0;
+    display:grid; grid-template-columns:14px 1fr; gap:8px;
+  }
+  .brief .never li .g { color:var(--danger); }
+
+  .brief .preview-mini {
+    margin-top:6px;
+    padding:11px 13px;
+    border-radius:8px;
+    background:rgba(196,181,253,0.04);
+    border:1px solid rgba(196,181,253,0.18);
+    color:var(--fg-1); font-size:12px; line-height:1.6;
+  }
+  .brief .preview-mini .lbl {
+    color:var(--judge); font-size:10px; letter-spacing:0.18em; text-transform:uppercase;
+    display:inline-flex; align-items:center; gap:7px; margin-bottom:6px;
+  }
+  .brief .preview-mini .lbl::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--judge);
+    box-shadow:0 0 6px var(--judge); animation:pulse 2.2s ease-in-out infinite; }
+  .brief .preview-mini .reason {
+    font-family:var(--serif); font-style:italic; font-weight:300;
+  }
+  .brief .preview-mini .reason::before { content:"\201C"; color:var(--judge); }
+  .brief .preview-mini .reason::after  { content:"\201D"; color:var(--judge); }
+  .brief .preview-mini .cf {
+    margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.05);
+    color:var(--fg-2); font-size:11.5px; line-height:1.6;
+  }
+  .brief .preview-mini .cf .em { color:var(--fg-0); }
+  .brief .preview-mini .cf .verdict { color:var(--ok); font-family:var(--mono); font-size:10px; letter-spacing:0.18em; text-transform:uppercase; }
+
+  /* ---- cradle ---- */
+  .cradle-wrap { display:flex; justify-content:center; padding:14px 16px 16px;
+    background:linear-gradient(0deg, var(--bg-0) 70%, transparent); }
+  .cradle { width:100%; max-width:760px;
+    background:rgba(14,14,14,0.55);
+    backdrop-filter:blur(36px) saturate(140%);
+    border-radius:16px;
+    box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.07),
+                inset 0 0 0 1px rgba(255,255,255,0.04),
+                0 12px 40px -8px rgba(0,0,0,0.5);
+    padding:12px 16px 10px; display:flex; flex-direction:column; gap:8px;
+  }
+  .cradle textarea { background:transparent; border:0; outline:0; color:var(--fg-0);
+    font:inherit; resize:none; width:100%; min-height:22px; }
+  .cradle textarea::placeholder { color:var(--fg-3); }
+  .cradle-row { display:flex; align-items:center; justify-content:space-between;
+    color:var(--fg-3); font-size:11px; }
+  .cradle-row kbd { color:var(--fg-2); background:rgba(255,255,255,0.04);
+    padding:1px 6px; border-radius:4px; font-family:inherit; font-size:10.5px; }
+
+  ::-webkit-scrollbar { width:8px; }
+  ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.05); border-radius:6px; }
+
+  /* tab swap visibility */
+  .judge-content .view { display:none; }
+  .judge-col[data-mode="comments"] .view.comments-view { display:flex; flex-direction:column; }
+  .judge-col[data-mode="brief"]    .view.brief-view    { display:flex; flex-direction:column; }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="app">
+
+  <div class="strip">
+    <div class="l">
+      <span>freyja</span>
+      <span class="live">drafting</span>
+    </div>
+    <div>goal · qualitative studio · 6m elapsed</div>
+  </div>
+
+  <div class="header">
+    <div>
+      <div class="eyebrow">goal · qualitative · turn 5 of 15</div>
+      <h1>Research covered call options thoroughly enough to give a <span class="em">grounded recommendation</span> for a $250k retirement portfolio.</h1>
+      <div class="stats">
+        <span class="stat"><span class="num">5</span> of 11 considerations <span class="ok">settled</span></span>
+        <span class="stat"><span class="num">5</span> still <span class="judge">asking</span></span>
+        <span class="stat"><span class="num">1</span> provisional · awaiting you</span>
+        <span class="stat" style="color:var(--judge)">judge says: continue</span>
+      </div>
+    </div>
+    <div class="actions">
+      <button>extend +5</button>
+      <button>pause</button>
+      <button class="ship" disabled title="2 must criteria still missing">ship it</button>
+    </div>
+  </div>
+
+  <div class="main">
+
+    <!-- ============ LEFT: open questions rail ============ -->
+    <aside class="col questions">
+      <div class="col-eyebrow">
+        <span>asking · settled</span>
+        <span class="count">11</span>
+      </div>
+
+      <div class="q-section asking">
+        <div class="head">
+          <span class="label"><span class="lbl">still asking</span></span>
+          <span class="count">5 + 1 new</span>
+        </div>
+        <div class="q-list">
+          <div class="q-item">
+            <div class="ti"><span class="pri must">must</span><span>Wash-sale rules in IRA &amp; Roth</span></div>
+            <div class="meta"><span>open since turn 2</span><span>·</span><span class="working">scout researching</span></div>
+          </div>
+          <div class="q-item">
+            <div class="ti"><span class="pri must">must</span><span>Strike-selection framework</span></div>
+            <div class="meta">open since turn 1</div>
+          </div>
+          <div class="q-item">
+            <div class="ti"><span class="pri should">should</span><span>Compare to alternatives (CSP, dividend ladder, BXM)</span></div>
+            <div class="meta">open since turn 3</div>
+          </div>
+          <div class="q-item">
+            <div class="ti"><span class="pri should">should</span><span>Sequence-of-returns risk in retirement</span></div>
+            <div class="meta">open since turn 4</div>
+          </div>
+          <div class="q-item">
+            <div class="ti"><span class="pri should">should</span><span>When the recommendation is "don't do this"</span></div>
+            <div class="meta">open since turn 4</div>
+          </div>
+          <div class="q-item fresh-add">
+            <div class="ti"><span class="pri provisional">prov</span><span>2025 IRS §1256 clarification</span></div>
+            <div class="meta">added by judge · turn 5</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="q-section settled">
+        <div class="head">
+          <span class="label"><span class="lbl">settled</span></span>
+          <span class="count">5</span>
+        </div>
+        <div class="q-list settled">
+          <div class="q-item fresh-settled"><div class="ti">When &amp; how does assignment happen</div></div>
+          <div class="q-item"><div class="ti">What is a covered call</div></div>
+          <div class="q-item"><div class="ti">Premium income vs dividend yield</div></div>
+          <div class="q-item"><div class="ti">When the upside cap hurts most</div></div>
+          <div class="q-item"><div class="ti">Capital-gains treatment basics</div></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ============ CENTER: draft ============ -->
+    <main class="col draft-col">
+      <div class="draft">
+
+        <div class="draft-status-bar">
+          <span class="pill live">draft updating · turn 5</span>
+          <span class="pill">3 of 6 sections solid</span>
+          <span class="pill">2 partial</span>
+          <span class="pill">2 missing</span>
+        </div>
+
+        <h1 class="doc-title">Covered calls in a $250k retirement portfolio — a recommendation</h1>
+        <div class="doc-meta">draft · v5 · maintained by the agent · reviewed by the judge each turn</div>
+
+        <h2><span class="marker">§ 1</span>What a covered call is, and what it isn't <span class="badge solid">solid</span><span class="anchor">¶</span></h2>
+        <div class="anchored c-good" data-comment="c1">
+          <p>A <span class="em">covered call</span> is a long stock position with a short out-of-the-money call written against it. The writer collects an upfront premium and accepts a cap on upside in exchange. The trade has positive expected value when implied volatility exceeds realized volatility — a condition that has historically held for major equity indices, though the magnitude of the premium has shrunk in low-vol regimes.</p>
+        </div>
+
+        <h2><span class="marker">§ 2</span>The income-vs-upside tradeoff <span class="badge solid">solid</span><span class="anchor">¶</span></h2>
+        <div class="anchored c-good" data-comment="c2">
+          <p>For SPY, monthly 1-σ OTM calls have historically produced gross premium of roughly <code>0.4–0.6%</code> per month, against a dividend yield of about <code>1.5%</code> per year. Premium captures the volatility risk premium; dividends do not. The cap on upside has historically cost the BXM index 2–4 percentage points in the strongest deciles of monthly returns.</p>
+        </div>
+
+        <h2><span class="marker">§ 3</span>Assignment risk <span class="badge partial">partial</span><span class="anchor">¶</span></h2>
+        <div class="anchored c-warn" data-comment="c3a">
+          <p>Assignment is most likely just before ex-dividend dates and at in-the-money strikes; on assignment the writer delivers the underlying at the strike. This is straightforward in a tax-advantaged account.</p>
+        </div>
+        <div class="anchored c-gap" data-comment="c3b">
+          <p>(<em>Open question:</em> in a tax-deferred account the writer often <em>wants</em> to be assigned — it's a forced rebalance with extra income. The current draft frames assignment as something to avoid; the judge has flagged this as a blind spot.)</p>
+        </div>
+
+        <h2><span class="marker">§ 4</span>Tax treatment <span class="badge partial">partial</span><span class="anchor">¶</span></h2>
+        <div class="anchored c-warn" data-comment="c4a">
+          <p>Premium received on expiry is treated as short-term capital gain. If the call is assigned, the resulting stock sale uses the strike price plus premium as the proceeds. <span class="em">The wash-sale interaction is non-trivial in a taxable account</span> and is not yet covered here.</p>
+        </div>
+        <div class="anchored c-gap" data-comment="c4b">
+          <p>(<em>Open question:</em> 2025 IRS Section 1256 clarification — flagged for follow-up. May or may not apply to equity options; needs a definitive read before the recommendation lands.)</p>
+        </div>
+
+        <h2><span class="marker">§ 5</span>Strike-selection framework <span class="badge gap">missing</span><span class="anchor">¶</span></h2>
+        <div class="placeholder" data-comment="c5">
+          <strong>not yet written</strong>
+          A grounded recommendation has to specify <em>how</em> the user picks strikes — delta-based (e.g. ~0.30Δ), premium-yield-target, or volatility-conditioned. Without this, the rest of the draft is an explainer, not a recommendation.
+        </div>
+
+        <h2><span class="marker">§ 6</span>The recommendation itself <span class="badge gap">missing</span><span class="anchor">¶</span></h2>
+        <div class="placeholder" data-comment="c6">
+          <strong>blocked on §5 + the user's profile</strong>
+          A grounded recommendation needs the user's age, income needs, risk tolerance, and any single-stock concentration. The judge has flagged "user's profile" as the biggest open question.
+        </div>
+
+      </div>
+    </main>
+
+    <!-- ============ RIGHT: judge rail with tabs ============ -->
+    <aside class="col judge-col" id="judge-rail" data-mode="comments">
+
+      <div class="judge-tabs">
+        <button class="tab active" data-tab="comments">Marginalia <span class="count">8</span></button>
+        <button class="tab" data-tab="brief">Brief <span class="count">7</span></button>
+        <span class="spacer"></span>
+        <span class="meta">turn 5 · 22s ago</span>
+      </div>
+
+      <div class="judge-content">
+
+        <!-- =========== COMMENTS view (default) =========== -->
+        <div class="view comments-view">
+
+          <div class="verdict-banner">
+            <span class="verdict-tag">continue</span>
+            Two <code style="color:var(--fg-0)">must</code> criteria still missing — strike-selection framework and tax treatment for IRA accounts. The draft is well-sourced where it makes claims but isn't yet a recommendation; it's an explainer.
+            <span class="from">— judge · turn 5 · 22s ago</span>
+          </div>
+
+          <div class="comments">
+
+            <div class="crit good" data-anchor="c1">
+              <div class="hdr"><span class="tag">looks good</span><span class="anchor">→ §1</span></div>
+              <div class="body">Clean opening; the volatility-risk-premium framing is correct and well-scoped. Don't overwrite this.</div>
+            </div>
+
+            <div class="crit good" data-anchor="c2">
+              <div class="hdr"><span class="tag">looks good</span><span class="anchor">→ §2</span></div>
+              <div class="body">Numbers are sourced and the BXM comparison is the right benchmark. Consider adding QYLD as a more aggressive comparison if space allows.</div>
+            </div>
+
+            <div class="crit warn" data-anchor="c3a">
+              <div class="hdr"><span class="tag">needs evidence</span><span class="anchor">→ §3</span></div>
+              <div class="body">"Most likely just before ex-dividend dates" is correct but currently has no citation. The OCC investor brief or CBOE assignment FAQ would do.</div>
+            </div>
+
+            <div class="crit gap" data-anchor="c3b">
+              <div class="hdr"><span class="tag">blind spot</span><span class="anchor">→ §3</span></div>
+              <div class="body">Does the writer want to be assigned? In a tax-deferred account, often yes. The current draft treats assignment as something to avoid. Worth complicating.</div>
+            </div>
+
+            <div class="crit warn" data-anchor="c4a">
+              <div class="hdr"><span class="tag">underspecified</span><span class="anchor">→ §4</span></div>
+              <div class="body">"The wash-sale interaction is non-trivial" is true but the draft owes the user a paragraph on what actually happens in (a) Roth IRA, (b) traditional IRA, (c) taxable brokerage. Don't punt.</div>
+            </div>
+
+            <div class="crit gap" data-anchor="c4b">
+              <div class="hdr"><span class="tag">blind spot</span><span class="anchor">→ §4</span></div>
+              <div class="body">2025 IRS §1256 clarification — flagged for follow-up. Either way the draft should mention it before the recommendation lands.</div>
+            </div>
+
+            <div class="crit gap" data-anchor="c5">
+              <div class="hdr"><span class="tag">required</span><span class="anchor">→ §5</span></div>
+              <div class="body">The user is paying for a recommendation, not a primer. A strike-selection rule of thumb is non-negotiable — without it §6 cannot be written.</div>
+            </div>
+
+            <div class="crit gap" data-anchor="c6">
+              <div class="hdr"><span class="tag">required</span><span class="anchor">→ §6</span></div>
+              <div class="body">The recommendation must be conditional on the user's profile. Missing inputs: age, income needs, risk tolerance, single-stock concentration. Ask before you write.</div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- =========== BRIEF view (toggled) =========== -->
+        <div class="view brief-view">
+          <div class="brief">
+
+            <div class="sec">
+              <div class="head"><span>what "done" looks like</span><span class="add">+ add</span></div>
+              <div>
+                <div class="brief-crit">
+                  <span class="pri must">must</span>
+                  <span class="text">Plain-English explanation with payoff diagram <span class="met">met</span></span>
+                </div>
+                <div class="brief-crit">
+                  <span class="pri must">must</span>
+                  <span class="text">Source every quantitative claim <span class="met">met</span></span>
+                </div>
+                <div class="brief-crit">
+                  <span class="pri must">must</span>
+                  <span class="text">Tax treatment in IRA, Roth, and taxable <span class="partial">partial</span></span>
+                </div>
+                <div class="brief-crit">
+                  <span class="pri must">must</span>
+                  <span class="text">Concrete strike-selection framework <span class="miss">missing</span></span>
+                </div>
+                <div class="brief-crit">
+                  <span class="pri should">should</span>
+                  <span class="text">At least one alternative income strategy <span class="miss">missing</span></span>
+                </div>
+                <div class="brief-crit">
+                  <span class="pri should">should</span>
+                  <span class="text">When the recommendation is "don't do it" <span class="miss">missing</span></span>
+                </div>
+                <div class="brief-crit">
+                  <span class="pri may">may</span>
+                  <span class="text">One-line risk caveat at the end <span class="met">met</span></span>
+                </div>
+              </div>
+
+              <div class="brief-prov">
+                <div class="lbl">provisional · awaiting your approval</div>
+                <div class="body">2025 IRS Section 1256 clarification — surfaced by the judge during turn 5 while researching tax timing.</div>
+                <div class="acts">
+                  <button class="approve">+ should</button>
+                  <button class="approve">+ must</button>
+                  <button class="drop">drop</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="sec">
+              <div class="head"><span>your voice</span></div>
+              <div class="voice">
+                Skeptical but not adversarial. Demanding when it comes to evidence; flexible when it comes to format. <span class="em">If you don't have a citation, say "needs citation" — never guess one.</span>
+              </div>
+            </div>
+
+            <div class="sec">
+              <div class="head"><span>what you should never do</span></div>
+              <ul class="never" style="margin:0; padding:0; list-style:none;">
+                <li><span class="g">·</span><span>Accept "we'd need more research" as resolution.</span></li>
+                <li><span class="g">·</span><span>Approve when key numbers are unsourced.</span></li>
+                <li><span class="g">·</span><span>Fabricate sources, even plausibly.</span></li>
+              </ul>
+            </div>
+
+            <div class="sec">
+              <div class="head"><span>live preview</span></div>
+              <div class="preview-mini">
+                <div class="lbl">verdict given current brief</div>
+                <p class="reason">2 must still missing — strike framework and tax/IRA. Continue.</p>
+                <div class="cf">
+                  <span class="em">→ if you remove "strike framework" from must:</span> <span class="verdict">done</span>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+      </div>
+    </aside>
+
+  </div>
+
+  <div class="cradle-wrap">
+    <div class="cradle">
+      <textarea rows="1" placeholder="address the agent · address the judge · edit the brief · drop a question…"></textarea>
+      <div class="cradle-row">
+        <div><kbd>⏎</kbd> send · <kbd>⌘B</kbd> brief · <kbd>⌘K</kbd> command</div>
+        <div>goal · studio</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // tab toggle for the right rail
+  const rail = document.getElementById('judge-rail');
+  rail.querySelectorAll('.tab').forEach(t => {
+    t.addEventListener('click', () => {
+      rail.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x === t));
+      rail.dataset.mode = t.dataset.tab;
+    });
+  });
+
+  // hovering a draft anchored paragraph highlights its comment, and vice versa
+  const draft = document.querySelectorAll('.anchored, .placeholder');
+  const crits = document.querySelectorAll('.crit');
+
+  function highlightById(id) {
+    document.querySelectorAll(`[data-comment="${id}"]`).forEach(el => el.classList.add('active'));
+    document.querySelectorAll(`[data-anchor="${id}"]`).forEach(el => el.classList.add('active'));
+  }
+  function clearHighlights() {
+    document.querySelectorAll('.anchored.active, .placeholder.active, .crit.active').forEach(el => el.classList.remove('active'));
+  }
+  draft.forEach(el => {
+    const id = el.dataset.comment;
+    if (!id) return;
+    el.addEventListener('mouseenter', () => highlightById(id));
+    el.addEventListener('mouseleave', clearHighlights);
+  });
+  crits.forEach(el => {
+    const id = el.dataset.anchor;
+    el.addEventListener('mouseenter', () => highlightById(id));
+    el.addEventListener('mouseleave', clearHighlights);
+    el.addEventListener('click', () => {
+      // jump to the draft anchor
+      const target = document.querySelector(`[data-comment="${id}"]`);
+      if (target) target.scrollIntoView({ behavior:'smooth', block:'center' });
+    });
+  });
+</script>
+</body>
+</html>

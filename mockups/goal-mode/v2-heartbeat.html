@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Goal · v2 Heartbeat (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a;
+    --fg-0:#ececec; --fg-1:#a8a8a8; --fg-2:#6e6e6e; --fg-3:#4a4a4a; --fg-4:#303030;
+    --accent:#a8d4fc; --accent-lo:#7aafea;
+    --ok:#88d67f; --warn:#ffcc66; --danger:#ff6b6b;
+    --hairline:rgba(255,255,255,0.06);
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.6;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(900px 600px at 12% -10%, rgba(168,212,252,0.05), transparent 60%),
+      radial-gradient(700px 500px at 92% 8%, rgba(136,214,127,0.025), transparent 60%);
+  }
+  .ambient::after { content:""; position:absolute; inset:0;
+    background-image: repeating-linear-gradient(0deg, rgba(255,255,255,0.012) 0 1px, transparent 1px 4px);
+    mask-image: radial-gradient(80% 100% at 50% 50%, black, transparent 100%);
+    opacity:0.4;
+  }
+
+  .app { position:relative; z-index:1; height:100vh; display:grid; grid-template-rows:36px auto 1fr auto auto; }
+
+  .strip {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 28px;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    border-bottom:1px solid var(--hairline);
+  }
+  .strip .l { display:flex; align-items:center; gap:14px; }
+  .strip .live { color:var(--fg-2); display:inline-flex; align-items:center; gap:7px; }
+  .strip .live::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 8px var(--accent); animation:pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  /* goal header */
+  .head {
+    padding:36px 56px 22px;
+    display:grid; grid-template-columns:1fr auto; gap:48px; align-items:end;
+    border-bottom:1px solid var(--hairline);
+  }
+  .head .eyebrow { color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase; margin-bottom:10px; }
+  .head h1 {
+    font-family:var(--serif); font-weight:300; font-size:22px; line-height:1.45;
+    color:var(--fg-1); margin:0; letter-spacing:-0.005em; max-width:780px;
+  }
+  .head h1 .em { color:var(--fg-0); }
+  .head .meta { color:var(--fg-2); font-size:11.5px; text-align:right; line-height:1.7; }
+  .head .meta .num { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+  .head .meta .now {
+    font-family:var(--serif); font-size:32px; color:var(--accent);
+    font-weight:300; line-height:1; display:block;
+  }
+
+  /* chart area */
+  .chart-wrap {
+    position:relative;
+    padding:36px 56px 24px;
+    min-height:0;
+    display:flex; flex-direction:column;
+  }
+  .chart-axis {
+    display:flex; align-items:center; justify-content:space-between;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    margin-bottom:10px;
+  }
+  .chart-axis .y-lbl { color:var(--fg-3); }
+  .chart {
+    flex:1; min-height:240px;
+    position:relative;
+  }
+  .chart svg { width:100%; height:100%; display:block; }
+
+  .grid-line { stroke:rgba(255,255,255,0.04); stroke-width:1; }
+  .grid-label { fill:var(--fg-3); font-family:var(--mono); font-size:10px; }
+
+  .area    { fill:url(#area-grad); }
+  .line    { fill:none; stroke:url(#line-grad); stroke-width:1.6; stroke-linejoin:round; }
+  .pt      { fill:#0a0a0a; stroke:var(--accent); stroke-width:1.5; }
+  .pt-now  { fill:var(--accent); stroke:#0a0a0a; stroke-width:1.5;
+             filter:drop-shadow(0 0 8px var(--accent)); }
+  .pt-down { fill:#0a0a0a; stroke:var(--warn); stroke-width:1.5; }
+  .annot   { fill:var(--fg-2); font-family:var(--mono); font-size:10px; }
+  .annot-em { fill:var(--fg-1); }
+  .annot-warn { fill:var(--warn); }
+  .now-line { stroke:rgba(168,212,252,0.4); stroke-width:1; stroke-dasharray:3 3; }
+
+  /* x-axis labels */
+  .x-axis {
+    display:grid;
+    grid-template-columns:repeat(20, 1fr);
+    color:var(--fg-3); font-size:10px; letter-spacing:0.06em;
+    margin-top:8px;
+  }
+  .x-axis div { text-align:center; }
+  .x-axis div.cur { color:var(--accent); }
+
+  /* verdict line */
+  .verdict {
+    padding:16px 56px 18px;
+    border-top:1px solid var(--hairline);
+    color:var(--fg-1); font-size:13.5px; line-height:1.7;
+    font-family:var(--serif); font-style:italic; font-weight:300;
+    max-width:980px;
+  }
+  .verdict .label { color:var(--fg-3); font-family:var(--mono); font-size:10.5px;
+    letter-spacing:0.18em; text-transform:uppercase; font-style:normal; margin-right:12px; }
+
+  /* cradle */
+  .cradle-wrap { display:flex; justify-content:center; padding:0 16px 14px; }
+  .cradle { width:100%; max-width:760px;
+    background:rgba(14,14,14,0.55);
+    backdrop-filter:blur(36px) saturate(140%);
+    border-radius:16px;
+    box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.07),
+                inset 0 0 0 1px rgba(255,255,255,0.04),
+                0 12px 40px -8px rgba(0,0,0,0.5);
+    padding:12px 16px 10px; display:flex; flex-direction:column; gap:8px;
+  }
+  .cradle textarea { background:transparent; border:0; outline:0; color:var(--fg-0);
+    font:inherit; resize:none; width:100%; min-height:22px; }
+  .cradle textarea::placeholder { color:var(--fg-3); }
+  .cradle-row { display:flex; align-items:center; justify-content:space-between;
+    color:var(--fg-3); font-size:11px; }
+  .cradle-row kbd { color:var(--fg-2); background:rgba(255,255,255,0.04);
+    padding:1px 6px; border-radius:4px; font-family:inherit; font-size:10.5px; }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="app">
+
+  <div class="strip">
+    <div class="l">
+      <span>freyja</span>
+      <span class="live">judging</span>
+    </div>
+    <div>goal · heartbeat view · 9m elapsed</div>
+  </div>
+
+  <div class="head">
+    <div>
+      <div class="eyebrow">goal</div>
+      <h1>Refactor the authentication module to <span class="em">pass all 47 unit tests</span> without breaking the login flow.</h1>
+    </div>
+    <div class="meta">
+      <span class="now">0.74</span>
+      confidence · turn <span class="num">8</span>/20<br/>
+      judge: keep going · 12s ago
+    </div>
+  </div>
+
+  <div class="chart-wrap">
+    <div class="chart-axis">
+      <div class="y-lbl">confidence · 0 → 1</div>
+      <div class="y-lbl">trend · climbing after a regression at turn 5</div>
+    </div>
+    <div class="chart">
+      <!-- viewBox: 0 0 1000 320 — turn 1..20 across, confidence 0..1 vertical (inverted) -->
+      <svg viewBox="0 0 1000 320" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="line-grad" x1="0" x2="1">
+            <stop offset="0" stop-color="#7aafea"/>
+            <stop offset="1" stop-color="#a8d4fc"/>
+          </linearGradient>
+          <linearGradient id="area-grad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="rgba(168,212,252,0.18)"/>
+            <stop offset="1" stop-color="rgba(168,212,252,0.0)"/>
+          </linearGradient>
+        </defs>
+
+        <!-- horizontal grid: 0.0, 0.25, 0.5, 0.75, 1.0 -->
+        <g class="grid">
+          <line class="grid-line" x1="40" y1="20"  x2="990" y2="20"/>
+          <line class="grid-line" x1="40" y1="95"  x2="990" y2="95"/>
+          <line class="grid-line" x1="40" y1="170" x2="990" y2="170"/>
+          <line class="grid-line" x1="40" y1="245" x2="990" y2="245"/>
+          <line class="grid-line" x1="40" y1="300" x2="990" y2="300"/>
+          <text class="grid-label" x="6" y="24">1.0</text>
+          <text class="grid-label" x="6" y="99">.75</text>
+          <text class="grid-label" x="6" y="174">.50</text>
+          <text class="grid-label" x="6" y="249">.25</text>
+          <text class="grid-label" x="6" y="304">0.0</text>
+        </g>
+
+        <!-- "done threshold" line at confidence 0.85 -->
+        <line class="grid-line" x1="40" y1="65" x2="990" y2="65" stroke-dasharray="3 5" stroke="rgba(136,214,127,0.25)"/>
+        <text class="grid-label" x="940" y="60" fill="rgba(136,214,127,0.6)">done ≥ .85</text>
+
+        <!-- 20 turn slots, x = 40 + (i-1)*50 -->
+
+        <!-- area under line (8 points so far) -->
+        <path class="area"
+              d="M 40 230   L 90 194  L 140 165  L 190 147  L 240 200  L 290 125  L 340 110  L 390 92   L 390 300 L 40 300 Z" />
+
+        <!-- the trajectory line through 8 points -->
+        <path class="line"
+              d="M 40 230   L 90 194  L 140 165  L 190 147  L 240 200  L 290 125  L 340 110  L 390 92" />
+
+        <!-- points (turn 1..7 small, turn 8 = now) -->
+        <circle class="pt"     cx="40"  cy="230" r="3"/>
+        <circle class="pt"     cx="90"  cy="194" r="3"/>
+        <circle class="pt"     cx="140" cy="165" r="3"/>
+        <circle class="pt"     cx="190" cy="147" r="3"/>
+        <circle class="pt-down" cx="240" cy="200" r="3.5"/>
+        <circle class="pt"     cx="290" cy="125" r="3"/>
+        <circle class="pt"     cx="340" cy="110" r="3"/>
+        <circle class="pt-now" cx="390" cy="92"  r="5"/>
+
+        <!-- "now" indicator vertical line -->
+        <line class="now-line" x1="390" y1="20" x2="390" y2="300"/>
+        <text class="annot annot-em" x="394" y="32">now · 0.74</text>
+
+        <!-- annotations on key turns -->
+        <text class="annot" x="-2" y="248">tests read</text>
+        <text class="annot annot-warn" x="200" y="220">regression — broke session refresh</text>
+        <text class="annot" x="260" y="118">recovered</text>
+        <text class="annot" x="310" y="103">login flow now passing</text>
+
+        <!-- ghost projection of remaining turn budget -->
+        <line class="grid-line" x1="390" y1="92" x2="990" y2="50" stroke-dasharray="2 5" stroke="rgba(168,212,252,0.18)"/>
+        <text class="annot" x="900" y="48" fill="rgba(168,212,252,0.5)">projected</text>
+
+      </svg>
+    </div>
+    <div class="x-axis">
+      <div>1</div><div>2</div><div>3</div><div>4</div><div>5</div><div>6</div><div>7</div>
+      <div class="cur">8</div>
+      <div>9</div><div>10</div><div>11</div><div>12</div><div>13</div><div>14</div>
+      <div>15</div><div>16</div><div>17</div><div>18</div><div>19</div><div>20</div>
+    </div>
+  </div>
+
+  <div class="verdict">
+    <span class="label">latest verdict</span>
+    44 of 47 tests pass. Login flow appears intact in manual smoke. Three SessionTokenExpiry tests still failing — refresh path is racing the new token store on first call.
+  </div>
+
+  <div class="cradle-wrap">
+    <div class="cradle">
+      <textarea rows="1" placeholder="redirect, pause, or extend budget…"></textarea>
+      <div class="cradle-row">
+        <div><kbd>⏎</kbd> send · <kbd>⌘K</kbd> command</div>
+        <div>goal · heartbeat</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

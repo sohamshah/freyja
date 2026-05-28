@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Goal · v11 Tapestry (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a;
+    --fg-0:#ececec; --fg-1:#a8a8a8; --fg-2:#7a7a7a; --fg-3:#5a5a5a; --fg-4:#3a3a3a;
+    --accent:#a8d4fc; --accent-lo:#7aafea;
+    --ok:#88d67f; --warn:#ffcc66; --danger:#ff6b6b;
+    --judge:#c4b5fd;
+    --hairline:rgba(255,255,255,0.06);
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:radial-gradient(ellipse at top, #0d0d0d 0%, #060606 80%);
+    color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.65;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(700px 600px at 50% 30%, rgba(168,212,252,0.04), transparent 70%),
+      radial-gradient(500px 500px at 50% 90%, rgba(196,181,253,0.03), transparent 70%);
+  }
+  .ambient::after { content:""; position:absolute; inset:0;
+    background-image: repeating-linear-gradient(0deg, rgba(255,255,255,0.012) 0 1px, transparent 1px 4px);
+    mask-image: radial-gradient(80% 100% at 50% 50%, black, transparent 100%);
+    opacity:0.4;
+  }
+
+  .app { position:relative; z-index:1; height:100vh; display:grid; grid-template-rows:36px auto 1fr auto; }
+
+  .strip {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 28px;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    border-bottom:1px solid var(--hairline);
+  }
+  .strip .l { display:flex; align-items:center; gap:14px; }
+  .strip .live { color:var(--fg-2); display:inline-flex; align-items:center; gap:7px; }
+  .strip .live::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 8px var(--accent); animation:pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  /* head */
+  .head {
+    text-align:center; padding:28px 24px 18px;
+    border-bottom:1px solid var(--hairline);
+  }
+  .head .eyebrow { color:var(--fg-3); font-size:10.5px; letter-spacing:0.32em; text-transform:uppercase; margin-bottom:10px; }
+  .head h1 {
+    font-family:var(--serif); font-weight:300; font-size:18px; line-height:1.5;
+    color:var(--fg-1); margin:0 auto; letter-spacing:-0.005em; max-width:680px;
+  }
+  .head h1 .em { color:var(--fg-0); }
+
+  /* main: fabric + side */
+  .main { display:grid; grid-template-columns:1fr 320px; min-height:0; overflow:hidden; }
+
+  /* the loom */
+  .loom-area {
+    display:flex; align-items:flex-start; justify-content:center;
+    padding:28px 32px 16px;
+    overflow:hidden;
+    position:relative;
+  }
+
+  .loom {
+    display:grid; grid-template-columns:60px 1fr 90px;
+    column-gap:18px;
+    align-items:start;
+    width:100%; max-width:680px;
+  }
+
+  /* turn labels (left gutter) */
+  .turn-axis { display:flex; flex-direction:column; align-items:flex-end; padding-top:0; }
+  .tlabel { height:48px; display:flex; flex-direction:column; justify-content:center; align-items:flex-end;
+    color:var(--fg-3); font-size:10px; letter-spacing:0.18em; text-transform:uppercase; }
+  .tlabel .n { color:var(--fg-2); font-family:var(--mono); font-size:13px; letter-spacing:0; line-height:1; text-transform:none; }
+  .tlabel .ts { color:var(--fg-4); font-size:10px; margin-top:2px; letter-spacing:0; text-transform:none; font-variant-numeric:tabular-nums; }
+  .tlabel.regress .n { color:var(--warn); }
+  .tlabel.now .n { color:var(--accent); font-weight:500; }
+
+  /* the woven fabric — central column */
+  .fabric {
+    background:linear-gradient(180deg, rgba(0,0,0,0.25), rgba(0,0,0,0.5));
+    border-radius:6px;
+    padding:0 6px;
+    box-shadow:
+      inset 0 0 0 1px rgba(255,255,255,0.025),
+      inset 0 0 30px rgba(0,0,0,0.4),
+      0 16px 40px -10px rgba(0,0,0,0.5);
+  }
+  .fabric svg { display:block; width:100%; height:auto; }
+
+  /* delta column on the right of each row */
+  .deltas { display:flex; flex-direction:column; align-items:flex-start; }
+  .delta { height:48px; display:flex; align-items:center; gap:8px;
+    color:var(--fg-3); font-size:11px; letter-spacing:0.04em; }
+  .delta .arr { font-family:var(--mono); font-size:11px; }
+  .delta.up   { color:var(--ok); }
+  .delta.down { color:var(--warn); }
+  .delta.flat { color:var(--fg-3); }
+  .delta .conf { color:inherit; font-variant-numeric:tabular-nums; }
+
+  /* loom edge: the active edge with shuttle */
+  .loom-edge {
+    grid-column:1 / -1;
+    height:24px;
+    background:linear-gradient(180deg, rgba(168,212,252,0.05), transparent);
+    border-top:1px solid rgba(168,212,252,0.18);
+    margin-top:6px; border-radius:0 0 6px 6px;
+    display:flex; align-items:center; justify-content:center;
+    color:var(--accent); font-size:10px; letter-spacing:0.22em; text-transform:uppercase;
+    position:relative;
+  }
+  .loom-edge::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 8px var(--accent); animation:pulse 2.4s ease-in-out infinite; margin-right:10px; }
+  .loom-edge .shuttle {
+    margin-left:14px;
+    color:var(--judge); font-style:italic; font-family:var(--serif); font-weight:300; font-size:13px;
+    letter-spacing:0; text-transform:none;
+  }
+
+  /* side panel */
+  .side {
+    border-left:1px solid var(--hairline);
+    background:rgba(0,0,0,0.2);
+    padding:28px 24px 24px;
+    overflow-y:auto;
+    display:flex; flex-direction:column; gap:24px;
+  }
+
+  .legend {
+    display:flex; flex-direction:column; gap:10px;
+    padding-bottom:18px; border-bottom:1px solid var(--hairline);
+  }
+  .legend .ti { color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase; }
+  .legend .row { display:flex; align-items:center; gap:10px; color:var(--fg-1); font-size:12px; }
+  .legend .row .swatch { width:20px; height:8px; border-radius:1px; }
+  .legend .row .swatch.warp { background:var(--accent); box-shadow:0 0 6px rgba(168,212,252,0.4); }
+  .legend .row .swatch.weft { background:var(--judge); box-shadow:0 0 6px rgba(196,181,253,0.4); }
+  .legend .row .swatch.regress { background:var(--warn); }
+  .legend .row .swatch.done { background:var(--ok); }
+
+  .now-card { display:flex; flex-direction:column; gap:14px; }
+  .now-card .lbl { color:var(--accent); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    display:inline-flex; align-items:center; gap:8px; }
+  .now-card .lbl::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 8px var(--accent); animation:pulse 2.2s ease-in-out infinite; }
+  .now-card .row { display:flex; gap:10px; align-items:baseline;
+    color:var(--fg-2); font-size:11px; letter-spacing:0.06em; }
+  .now-card .row .n { color:var(--fg-0); font-family:var(--mono); font-variant-numeric:tabular-nums; }
+  .now-card .agent-line {
+    color:var(--fg-1); font-size:13px; line-height:1.6;
+    padding-left:10px; border-left:2px solid rgba(168,212,252,0.32);
+  }
+  .now-card .agent-line .em { color:var(--fg-0); }
+  .now-card .agent-line code { color:var(--fg-0); }
+  .now-card .judge-line {
+    color:var(--fg-1); font-size:13px; line-height:1.6;
+    padding:6px 0 6px 10px; border-left:2px solid rgba(196,181,253,0.32);
+    font-family:var(--serif); font-style:italic; font-weight:300;
+  }
+  .now-card .judge-line::before { content:"\201C"; color:var(--judge); }
+  .now-card .judge-line::after  { content:"\201D"; color:var(--judge); }
+  .now-card .vlabel { color:var(--fg-3); font-size:10px; letter-spacing:0.22em; text-transform:uppercase; }
+
+  .progress-strip {
+    margin-top:auto; padding-top:14px; border-top:1px solid var(--hairline);
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    display:flex; flex-direction:column; gap:6px;
+  }
+  .progress-strip .row { display:flex; justify-content:space-between; }
+  .progress-strip .num { color:var(--fg-1); font-family:var(--mono); letter-spacing:0; text-transform:none; font-variant-numeric:tabular-nums; }
+
+  /* cradle */
+  .cradle-wrap { display:flex; justify-content:center; padding:14px 16px 16px; }
+  .cradle { width:100%; max-width:760px;
+    background:rgba(14,14,14,0.55);
+    backdrop-filter:blur(36px) saturate(140%);
+    border-radius:16px;
+    box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.07),
+                inset 0 0 0 1px rgba(255,255,255,0.04),
+                0 12px 40px -8px rgba(0,0,0,0.5);
+    padding:12px 16px 10px; display:flex; flex-direction:column; gap:8px;
+  }
+  .cradle textarea { background:transparent; border:0; outline:0; color:var(--fg-0);
+    font:inherit; resize:none; width:100%; min-height:22px; }
+  .cradle textarea::placeholder { color:var(--fg-3); }
+  .cradle-row { display:flex; align-items:center; justify-content:space-between;
+    color:var(--fg-3); font-size:11px; }
+  .cradle-row kbd { color:var(--fg-2); background:rgba(255,255,255,0.04);
+    padding:1px 6px; border-radius:4px; font-family:inherit; font-size:10.5px; }
+
+  ::-webkit-scrollbar { width:8px; }
+  ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.05); border-radius:6px; }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="app">
+
+  <div class="strip">
+    <div class="l">
+      <span>freyja</span>
+      <span class="live">weaving</span>
+    </div>
+    <div>goal · tapestry · 9m elapsed</div>
+  </div>
+
+  <div class="head">
+    <div class="eyebrow">goal · iteration as form</div>
+    <h1>Refactor the authentication module to <span class="em">pass all 47 unit tests</span> without breaking the login flow.</h1>
+  </div>
+
+  <div class="main">
+
+    <div class="loom-area">
+      <div class="loom">
+
+        <!-- left: turn labels -->
+        <div class="turn-axis" id="turn-axis">
+          <!-- generated below -->
+        </div>
+
+        <!-- center: the woven fabric -->
+        <div class="fabric">
+          <svg id="fabric-svg" viewBox="0 0 480 408" preserveAspectRatio="none"></svg>
+          <div class="loom-edge">
+            shuttle in flight
+            <span class="shuttle">— turn 8 weaving · the judge's reply pending</span>
+          </div>
+        </div>
+
+        <!-- right: per-turn delta -->
+        <div class="deltas" id="deltas"></div>
+
+      </div>
+    </div>
+
+    <aside class="side">
+
+      <div class="legend">
+        <div class="ti">threads</div>
+        <div class="row"><span class="swatch warp"></span><span>warp · the agent · what was tried</span></div>
+        <div class="row"><span class="swatch weft"></span><span>weft · the judge · what was ruled</span></div>
+        <div class="row"><span class="swatch regress"></span><span>broken row · regression at turn 5</span></div>
+        <div class="row"><span class="swatch done"></span><span>finishing thread · appears at done</span></div>
+      </div>
+
+      <div class="now-card">
+        <span class="lbl">currently weaving · turn 8</span>
+        <div class="row"><span>conf</span><span class="n">0.74</span><span>·</span><span>verdict</span><span class="n" style="color:var(--judge)">continue</span></div>
+
+        <div class="vlabel" style="margin-top:6px">agent</div>
+        <div class="agent-line">Investigating three remaining <code>SessionTokenExpiry</code> failures. Hypothesis: the immutable container is racing the refresh worker on the first call.</div>
+
+        <div class="vlabel" style="margin-top:6px">judge</div>
+        <div class="judge-line">44 of 47 pass. Login flow intact. Three SessionTokenExpiry tests still failing. Confidence is rising. Continue.</div>
+      </div>
+
+      <div class="progress-strip">
+        <div class="row"><span>woven so far</span><span class="num">8 rows</span></div>
+        <div class="row"><span>budget</span><span class="num">20 rows</span></div>
+        <div class="row"><span>regressions</span><span class="num">1 (turn 5)</span></div>
+        <div class="row"><span>elapsed</span><span class="num">9m</span></div>
+      </div>
+
+    </aside>
+
+  </div>
+
+  <div class="cradle-wrap">
+    <div class="cradle">
+      <textarea rows="1" placeholder="redirect, pause, or change the weave…"></textarea>
+      <div class="cradle-row">
+        <div><kbd>⏎</kbd> send · <kbd>⌘K</kbd> command</div>
+        <div>goal · tapestry</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // 8 turns, each row 48px tall (so we use 8*48=384, +24 padding = 408 viewBox)
+  // Each row: 14 vertical warp threads, 1 sinusoidal weft thread weaving over/under
+  // Visual rhythm varies per turn to tell the story
+
+  const TURNS = [
+    { n:1, ts:'10:24', conf:0.30, delta:null,    desc:'opening · agent reads tests + auth/ source',
+      density:'sparse',  state:'normal' },
+    { n:2, ts:'10:28', conf:0.42, delta:0.12,    desc:'refactor TokenStore · tests not yet re-run',
+      density:'medium',  state:'normal' },
+    { n:3, ts:'10:31', conf:0.55, delta:0.13,    desc:'30 of 47 passing · 17 refresh failures',
+      density:'medium',  state:'normal' },
+    { n:4, ts:'10:35', conf:0.61, delta:0.06,    desc:'38 of 47 · LoginFlow still red',
+      density:'tight',   state:'normal' },
+    { n:5, ts:'10:42', conf:0.50, delta:-0.11,   desc:'REGRESSION · backoff broke long-lived path',
+      density:'broken',  state:'regress' },
+    { n:6, ts:'10:48', conf:0.65, delta:0.15,    desc:'recovered · 42 of 47',
+      density:'tight',   state:'normal' },
+    { n:7, ts:'10:54', conf:0.70, delta:0.05,    desc:'44 of 47 · LoginFlow passing',
+      density:'tight',   state:'normal' },
+    { n:8, ts:'11:01', conf:0.74, delta:0.04,    desc:'investigating expiry race',
+      density:'tight',   state:'now' },
+  ];
+
+  const ROW_H = 48;
+  const ROWS  = TURNS.length;
+  const W     = 480;
+  const PAD_T = 12;
+
+  const svg = document.getElementById('fabric-svg');
+  const xmlns = 'http://www.w3.org/2000/svg';
+
+  // defs
+  const defs = document.createElementNS(xmlns, 'defs');
+  defs.innerHTML = `
+    <linearGradient id="warp-grad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="rgba(168,212,252,0.85)"/>
+      <stop offset="1" stop-color="rgba(122,175,234,0.55)"/>
+    </linearGradient>
+    <linearGradient id="weft-grad" x1="0" x2="1">
+      <stop offset="0" stop-color="rgba(196,181,253,0.4)"/>
+      <stop offset="0.5" stop-color="rgba(196,181,253,0.95)"/>
+      <stop offset="1" stop-color="rgba(196,181,253,0.4)"/>
+    </linearGradient>
+    <linearGradient id="weft-grad-warn" x1="0" x2="1">
+      <stop offset="0" stop-color="rgba(255,204,102,0.4)"/>
+      <stop offset="0.5" stop-color="rgba(255,204,102,0.9)"/>
+      <stop offset="1" stop-color="rgba(255,204,102,0.4)"/>
+    </linearGradient>
+    <linearGradient id="weft-grad-now" x1="0" x2="1">
+      <stop offset="0"   stop-color="rgba(196,181,253,0.4)"/>
+      <stop offset="0.45" stop-color="rgba(196,181,253,0.95)"/>
+      <stop offset="0.55" stop-color="rgba(196,181,253,0.5)"/>
+      <stop offset="1"   stop-color="rgba(196,181,253,0)"/>
+    </linearGradient>
+    <filter id="weft-glow"><feGaussianBlur stdDeviation="0.6" /></filter>
+  `;
+  svg.appendChild(defs);
+
+  // helper: number of warp threads
+  const N_WARP = 14;
+  const warpXs = Array.from({length:N_WARP}, (_,i) => 16 + i * ((W - 32) / (N_WARP - 1)));
+
+  // build rows
+  TURNS.forEach((t, idx) => {
+    const yTop = PAD_T + idx * ROW_H;
+    const yMid = yTop + ROW_H / 2;
+    const g = document.createElementNS(xmlns, 'g');
+    g.setAttribute('data-turn', t.n);
+
+    // subtle row background
+    const bg = document.createElementNS(xmlns, 'rect');
+    bg.setAttribute('x', 0); bg.setAttribute('y', yTop);
+    bg.setAttribute('width', W); bg.setAttribute('height', ROW_H);
+    bg.setAttribute('fill', t.state === 'now' ? 'rgba(168,212,252,0.04)'
+                          : t.state === 'regress' ? 'rgba(255,204,102,0.025)'
+                          : 'transparent');
+    g.appendChild(bg);
+
+    // density modulates warp opacity and weft amplitude
+    const densityMap = {
+      sparse: { warpOp:0.45, wAmp:6,  wFreq:3.2, wWidth:2.4 },
+      medium: { warpOp:0.65, wAmp:10, wFreq:4.5, wWidth:2.8 },
+      tight:  { warpOp:0.85, wAmp:14, wFreq:6,   wWidth:3.0 },
+      broken: { warpOp:0.45, wAmp:11, wFreq:5,   wWidth:2.8 },
+    }[t.density];
+
+    // 1) warp threads (drawn first; weft will go on top, with over-under illusion)
+    warpXs.forEach((wx, i) => {
+      const line = document.createElementNS(xmlns, 'line');
+      line.setAttribute('x1', wx); line.setAttribute('x2', wx);
+      line.setAttribute('y1', yTop + 4); line.setAttribute('y2', yTop + ROW_H - 4);
+      line.setAttribute('stroke', 'url(#warp-grad)');
+      line.setAttribute('stroke-width', 1.6);
+      line.setAttribute('opacity', densityMap.warpOp);
+      g.appendChild(line);
+    });
+
+    // 2) weft path: sinusoidal across the row
+    const buildWeftPath = (xStart, xEnd, broken) => {
+      const samples = 80;
+      const span = xEnd - xStart;
+      let d = '';
+      for (let s = 0; s <= samples; s++) {
+        const x = xStart + (span * s / samples);
+        const phase = ((x - xStart) / span) * Math.PI * 2 * densityMap.wFreq;
+        const y = yMid + densityMap.wAmp * Math.sin(phase);
+        // for "broken" rows, introduce a gap in the middle 25-50% range
+        if (broken && (s/samples) > 0.40 && (s/samples) < 0.55) {
+          d += ` M ${x.toFixed(2)} ${y.toFixed(2)}`;  // jump (broken)
+        } else {
+          d += `${s === 0 ? 'M' : ' L'} ${x.toFixed(2)} ${y.toFixed(2)}`;
+        }
+      }
+      return d;
+    };
+
+    const isNow = t.state === 'now';
+    const xEnd = isNow ? W * 0.62 : W;  // current row only weft halfway across
+    const weftPath = buildWeftPath(0, xEnd, t.state === 'regress');
+
+    const weft = document.createElementNS(xmlns, 'path');
+    weft.setAttribute('d', weftPath);
+    weft.setAttribute('fill', 'none');
+    weft.setAttribute('stroke', t.state === 'regress' ? 'url(#weft-grad-warn)'
+                              : isNow ? 'url(#weft-grad-now)' : 'url(#weft-grad)');
+    weft.setAttribute('stroke-width', densityMap.wWidth);
+    weft.setAttribute('stroke-linecap', 'round');
+    weft.setAttribute('filter', 'url(#weft-glow)');
+    g.appendChild(weft);
+
+    // 3) over-under illusion: redraw alternating warps ON TOP of the weft
+    // (only the warps where the weft would be "above" them in a real loom)
+    warpXs.forEach((wx, i) => {
+      if (i % 2 !== 0) return; // only redraw even-indexed warps on top
+      // draw a short vertical segment over the weft midline
+      const line = document.createElementNS(xmlns, 'line');
+      line.setAttribute('x1', wx); line.setAttribute('x2', wx);
+      line.setAttribute('y1', yMid - densityMap.wAmp - 2);
+      line.setAttribute('y2', yMid + densityMap.wAmp + 2);
+      line.setAttribute('stroke', 'url(#warp-grad)');
+      line.setAttribute('stroke-width', 1.6);
+      line.setAttribute('opacity', densityMap.warpOp + 0.05);
+      g.appendChild(line);
+    });
+
+    // 4) finishing thread for done turns (stub — currently nothing is "done", but visually we hint)
+    // ... omitted for now; the row would gain a green knotted thread at the right edge
+
+    // 5) for the current row: a "shuttle" indicator at xEnd
+    if (isNow) {
+      const shuttle = document.createElementNS(xmlns, 'circle');
+      shuttle.setAttribute('cx', xEnd); shuttle.setAttribute('cy', yMid);
+      shuttle.setAttribute('r', 4);
+      shuttle.setAttribute('fill', 'rgba(196,181,253,0.95)');
+      shuttle.setAttribute('filter', 'url(#weft-glow)');
+      g.appendChild(shuttle);
+      const halo = document.createElementNS(xmlns, 'circle');
+      halo.setAttribute('cx', xEnd); halo.setAttribute('cy', yMid);
+      halo.setAttribute('r', 9);
+      halo.setAttribute('fill', 'rgba(196,181,253,0.15)');
+      g.appendChild(halo);
+    }
+
+    // 6) for the regression row, add a small "knot" / "snag" marker
+    if (t.state === 'regress') {
+      const knot = document.createElementNS(xmlns, 'circle');
+      knot.setAttribute('cx', W * 0.475); knot.setAttribute('cy', yMid);
+      knot.setAttribute('r', 3);
+      knot.setAttribute('fill', 'rgba(255,204,102,0.95)');
+      knot.setAttribute('stroke', 'rgba(255,204,102,0.4)');
+      knot.setAttribute('stroke-width', 4);
+      g.appendChild(knot);
+    }
+
+    svg.appendChild(g);
+  });
+
+  // populate left turn-axis
+  const axis = document.getElementById('turn-axis');
+  TURNS.forEach((t) => {
+    const div = document.createElement('div');
+    div.className = 'tlabel' + (t.state === 'regress' ? ' regress' : '') + (t.state === 'now' ? ' now' : '');
+    div.innerHTML = `<span class="n">turn ${t.n}</span><span class="ts">${t.ts}</span>`;
+    axis.appendChild(div);
+  });
+
+  // populate right deltas
+  const deltas = document.getElementById('deltas');
+  TURNS.forEach((t) => {
+    const div = document.createElement('div');
+    let cls = 'flat', arr = '·';
+    if (t.delta == null) { cls = 'flat'; arr = '—'; }
+    else if (t.delta > 0) { cls = 'up'; arr = '▲'; }
+    else if (t.delta < 0) { cls = 'down'; arr = '▼'; }
+    div.className = `delta ${cls}`;
+    const sign = t.delta == null ? '' : (t.delta > 0 ? '+' : '');
+    const dtext = t.delta == null ? 'open' : `${sign}${t.delta.toFixed(2)}`;
+    div.innerHTML = `<span class="arr">${arr}</span><span class="conf">${t.conf.toFixed(2)}</span> <span style="color:var(--fg-4); margin-left:auto">${dtext}</span>`;
+    deltas.appendChild(div);
+  });
+</script>
+</body>
+</html>

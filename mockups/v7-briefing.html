@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · v7 Briefing (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,400;9..144,500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a;
+    --paper:#f0ece4;
+    --ink:#1a1a1a;
+    --ink-mid:#5a5650;
+    --ink-light:#8a857c;
+    --rule:#c9c2b2;
+    --rule-fade:rgba(26,26,26,0.10);
+
+    --accent:#3a6fb8;
+    --ok:#3d8a3a;
+    --warn:#a8741e;
+    --danger:#a23a3a;
+
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { margin:0; min-height:100%; background:var(--bg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* dark workshop ambient — the briefing sheet sits in the dark */
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(900px 700px at 12% -10%, rgba(168,212,252,0.04), transparent 60%),
+      radial-gradient(700px 600px at 92% 110%, rgba(255,204,102,0.025), transparent 60%);
+  }
+
+  .app { position:relative; z-index:1; min-height:100vh; padding:48px 32px 80px;
+    display:flex; flex-direction:column; align-items:center; gap:24px; }
+
+  /* tiny chrome bar above the sheet */
+  .topbar {
+    width:100%; max-width:780px;
+    display:flex; align-items:center; justify-content:space-between;
+    color:#a8a8a8; font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+  .topbar .actions { display:flex; gap:6px; }
+  .topbar .actions button {
+    background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06);
+    color:#a8a8a8; font:inherit; font-size:10.5px; letter-spacing:0.12em; text-transform:uppercase;
+    padding:6px 12px; border-radius:6px; cursor:pointer;
+  }
+  .topbar .actions button:hover { color:#ececec; background:rgba(255,255,255,0.06); }
+  .topbar .actions button.primary { color:#a8d4fc; border-color:rgba(168,212,252,0.22); background:rgba(168,212,252,0.08); }
+
+  /* the sheet */
+  .sheet {
+    width:100%; max-width:780px;
+    background:var(--paper);
+    color:var(--ink);
+    padding:56px 64px 64px;
+    border-radius:6px;
+    box-shadow:
+      0 24px 60px -10px rgba(0,0,0,0.6),
+      0 4px 12px rgba(0,0,0,0.3),
+      inset 0 0 60px rgba(0,0,0,0.025);
+    /* faint paper texture */
+    background-image:
+      repeating-linear-gradient(0deg, rgba(0,0,0,0.018) 0 1px, transparent 1px 2px),
+      radial-gradient(circle at 20% 10%, rgba(0,0,0,0.04), transparent 60%);
+    position:relative;
+  }
+  .sheet::before {
+    content:""; position:absolute; left:0; top:0; bottom:0; width:64px;
+    background:linear-gradient(90deg, rgba(0,0,0,0.03), transparent);
+    pointer-events:none;
+  }
+
+  .sheet .masthead {
+    display:flex; justify-content:space-between; align-items:flex-end;
+    border-bottom:1px solid var(--ink);
+    padding-bottom:14px;
+    margin-bottom:32px;
+  }
+  .sheet .masthead .title {
+    font-family:var(--serif); font-size:28px; font-weight:500; letter-spacing:-0.005em; color:var(--ink);
+  }
+  .sheet .masthead .title .sub {
+    font-family:var(--mono); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    color:var(--ink-mid); display:block; margin-top:6px;
+  }
+  .sheet .masthead .when {
+    font-family:var(--mono); font-size:11px; letter-spacing:0.06em;
+    color:var(--ink-mid); text-align:right; line-height:1.6;
+  }
+  .sheet .masthead .when .num { color:var(--ink); font-variant-numeric:tabular-nums; }
+
+  .section { margin:30px 0 0; }
+  .section .lbl {
+    font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    color:var(--ink-mid); margin-bottom:10px;
+    border-bottom:1px solid var(--rule-fade);
+    padding-bottom:6px;
+  }
+
+  .mission-prose {
+    font-family:var(--serif); font-size:18px; line-height:1.55; color:var(--ink); margin:0;
+    font-weight:400;
+  }
+  .mission-prose .em { color:var(--ink); font-weight:500; }
+
+  /* status grid */
+  .status-grid {
+    display:grid; grid-template-columns:1.4fr 1fr 1fr; gap:24px; align-items:end;
+  }
+  .stat .label { font-size:10px; letter-spacing:0.22em; text-transform:uppercase; color:var(--ink-light); margin-bottom:6px; }
+  .stat .num { font-family:var(--serif); font-size:34px; font-weight:400; line-height:1; color:var(--ink); font-variant-numeric:tabular-nums; }
+  .stat .of { color:var(--ink-light); font-family:var(--mono); font-size:13px; letter-spacing:0; margin-left:6px; }
+  .stat .sub { color:var(--ink-mid); font-size:11.5px; margin-top:6px; }
+  .stat .bar { width:100%; height:3px; background:rgba(0,0,0,0.08); margin-top:10px; border-radius:2px; overflow:hidden; }
+  .stat .bar > div { height:100%; background:var(--accent); border-radius:2px; }
+
+  /* crew table */
+  .crew-table {
+    width:100%; border-collapse:collapse;
+    font-family:var(--mono); font-size:12px;
+  }
+  .crew-table th {
+    text-align:left; font-weight:400;
+    color:var(--ink-light); font-size:10px; letter-spacing:0.18em; text-transform:uppercase;
+    border-bottom:1px solid var(--rule); padding:6px 0;
+  }
+  .crew-table td { padding:9px 0; border-bottom:1px solid var(--rule-fade); color:var(--ink-mid); }
+  .crew-table td.who { color:var(--ink); font-family:var(--serif); font-size:14px; font-weight:500; }
+  .crew-table td.task { color:var(--ink); }
+  .crew-table tr.idle td { color:var(--ink-light); }
+  .crew-table .status .live { color:var(--accent); }
+  .crew-table .status .live::before { content:"● "; color:var(--accent); margin-right:2px; }
+
+  /* highlights list */
+  .highlights { list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:8px; }
+  .highlights li { display:grid; grid-template-columns:50px 14px 1fr; gap:10px; font-size:13px; color:var(--ink); align-items:baseline; }
+  .highlights li .ts { color:var(--ink-light); font-variant-numeric:tabular-nums; font-size:11px; }
+  .highlights li .glyph { color:var(--ok); font-weight:500; }
+  .highlights li .glyph.warn { color:var(--warn); }
+  .highlights li .glyph.dot { color:var(--ink-light); }
+
+  /* needs-you */
+  .needs {
+    background:rgba(168,116,30,0.08);
+    border-left:3px solid var(--warn);
+    padding:14px 16px;
+    border-radius:0 4px 4px 0;
+    color:var(--ink);
+    font-size:13px;
+    line-height:1.6;
+  }
+  .needs .title { color:var(--warn); font-weight:500; font-family:var(--serif); }
+
+  /* up next pile */
+  .pile { display:flex; flex-wrap:wrap; gap:6px 14px; font-size:12.5px; color:var(--ink); }
+  .pile .item { display:inline-flex; align-items:baseline; gap:6px; }
+  .pile .item .g { color:var(--ink-light); }
+  .pile .item + .item::before { content:"·"; color:var(--ink-light); margin-right:8px; align-self:center; }
+
+  /* sign-off */
+  .signoff {
+    margin-top:40px; padding-top:18px;
+    border-top:2px solid var(--ink);
+    display:flex; justify-content:space-between; align-items:flex-end;
+    font-family:var(--mono); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    color:var(--ink-light);
+  }
+  .signoff .from {
+    font-family:var(--serif); font-size:13px; color:var(--ink-mid); letter-spacing:0; text-transform:none;
+    font-style:italic;
+  }
+  .signoff .from .dash::before { content:"— "; color:var(--ink-light); }
+
+  /* dot-leader rule between rows in fenced sections (used in status) */
+  .leader { color:var(--rule); letter-spacing:0.4em; flex:1; padding:0 8px; overflow:hidden;
+    white-space:nowrap; }
+
+  /* dark theme override of action buttons (already at top) */
+
+  /* footer hint at bottom */
+  .footer-hint { color:#6e6e6e; font-size:11px; letter-spacing:0.06em; }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="app">
+
+  <div class="topbar">
+    <div>freyja · daily brief</div>
+    <div class="actions">
+      <button>Refresh · <span style="opacity:0.6">⌘R</span></button>
+      <button class="primary">Open live →</button>
+    </div>
+  </div>
+
+  <div class="sheet">
+
+    <div class="masthead">
+      <div class="title">
+        Daily brief
+        <span class="sub">freyja · tasks mode</span>
+      </div>
+      <div class="when">
+        <div><span class="num">11:18</span> · monday, may 11</div>
+        <div>last opened 18m ago</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="lbl">mission</div>
+      <p class="mission-prose">
+        <span class="em">Restructure the ingestion pipeline</span> to support streaming uploads from S3 and Azure Blob, and migrate the existing batch test suite.
+      </p>
+    </div>
+
+    <div class="section">
+      <div class="lbl">status</div>
+      <div class="status-grid">
+        <div class="stat">
+          <div class="label">progress</div>
+          <div><span class="num">4</span><span class="of">of 12 tasks</span></div>
+          <div class="bar"><div style="width:33%"></div></div>
+          <div class="sub">on pace · 1 blocked · 2 in flight</div>
+        </div>
+        <div class="stat">
+          <div class="label">elapsed</div>
+          <div><span class="num">38</span><span class="of">min</span></div>
+          <div class="sub">started 10:24</div>
+        </div>
+        <div class="stat">
+          <div class="label">spend</div>
+          <div><span class="num">$2.41</span></div>
+          <div class="sub">opus 4.7 · 3 agents</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="lbl">crew</div>
+      <table class="crew-table">
+        <thead>
+          <tr><th style="width:120px">agent</th><th>working on</th><th class="status" style="width:130px">status</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="who">scout</td>
+            <td class="task">Streaming reader for S3 multipart</td>
+            <td class="status"><span class="live">live · 2m</span></td>
+          </tr>
+          <tr>
+            <td class="who">forge</td>
+            <td class="task">Refactor ingest worker around buffered cursor</td>
+            <td class="status"><span class="live">live · 5m</span></td>
+          </tr>
+          <tr class="idle">
+            <td class="who">sentinel</td>
+            <td>—</td>
+            <td>idle · 3m</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section">
+      <div class="lbl">highlights · since you last looked</div>
+      <ul class="highlights">
+        <li><span class="ts">11:12</span><span class="glyph">✓</span><span>sentinel verified fixture parity. All 41 tests still green.</span></li>
+        <li><span class="ts">11:08</span><span class="glyph warn">!</span><span>API contracts task <strong>blocked</strong> — schema PR awaiting review from <em>@backend-team</em>.</span></li>
+        <li><span class="ts">10:55</span><span class="glyph dot">·</span><span>scout opened streaming reader; wiring multipart range requests.</span></li>
+        <li><span class="ts">10:50</span><span class="glyph dot">·</span><span>forge picked up the worker refactor.</span></li>
+        <li><span class="ts">10:44</span><span class="glyph">✓</span><span>scout mapped S3 surface — 4 callers in <code>ingest_worker.py</code>, none in tests.</span></li>
+      </ul>
+    </div>
+
+    <div class="section">
+      <div class="lbl">needs you</div>
+      <div class="needs">
+        <div class="title">One review request open.</div>
+        <div style="margin-top:4px">The <em>Update API contracts</em> task can't proceed until the schema PR (#412) lands. Sentinel is waiting; the rest of the crew is unblocked. <a href="#" style="color:var(--accent); text-decoration:none">Open PR →</a></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="lbl">up next · 4</div>
+      <div class="pile">
+        <span class="item"><span class="g">○</span>Add Azure blob adapter</span>
+        <span class="item"><span class="g">○</span>Migrate batch test fixtures</span>
+        <span class="item"><span class="g">○</span>Wire <code>--stream</code> CLI flag</span>
+        <span class="item"><span class="g">○</span>Document cutover plan</span>
+      </div>
+    </div>
+
+    <div class="signoff">
+      <span>brief ends here</span>
+      <span class="from"><span class="dash">freyja, on behalf of scout, forge, and sentinel</span></span>
+    </div>
+
+  </div>
+
+  <div class="footer-hint">read once · refresh when you want · or <span style="color:#a8d4fc">open the live view</span> at any time</div>
+
+</div>
+</body>
+</html>

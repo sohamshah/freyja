@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · v3 Timeline (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a; --bg-1:#121212; --bg-2:#181818;
+    --fg-0:#e8e8e8; --fg-1:#a8a8a8; --fg-2:#6e6e6e; --fg-3:#4a4a4a; --fg-4:#303030;
+    --accent:#a8d4fc; --accent-lo:#7aafea;
+    --ok:#88d67f; --warn:#ffcc66; --danger:#ff6b6b;
+    --hairline:rgba(255,255,255,0.06);
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+    --scout: #a8d4fc;
+    --forge: #c8a8fc;
+    --sentinel: #88d67f;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.5;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(900px 600px at 12% -10%, rgba(168,212,252,0.06), transparent 60%),
+      radial-gradient(700px 500px at 92% 8%, rgba(136,214,127,0.035), transparent 60%);
+  }
+  .ambient::after { content:""; position:absolute; inset:0;
+    background-image:
+      repeating-linear-gradient(115deg, rgba(255,255,255,0.012) 0 1px, transparent 1px 90px);
+    mask-image: radial-gradient(80% 70% at 50% 40%, black, transparent 90%);
+  }
+
+  .app { position:relative; z-index:1; height:100vh; display:grid; grid-template-rows:36px auto 1fr auto; }
+
+  .titlebar {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 14px; border-bottom:1px solid var(--hairline);
+    color:var(--fg-1); font-size:11px; letter-spacing:0.06em;
+  }
+  .title-meta { color:var(--fg-2); }
+  .dot { width:6px; height:6px; border-radius:50%; display:inline-block; }
+  .dot.ok { background:var(--ok); box-shadow:0 0 8px rgba(136,214,127,0.5); }
+  .seg-btn { background:transparent; border:0; color:var(--fg-2); font:inherit;
+    padding:6px 10px; border-radius:6px; cursor:pointer; }
+  .seg-btn.active { color:#f3f3f3;
+    background:linear-gradient(180deg, rgba(0,0,0,0.32), rgba(0,0,0,0.18));
+    box-shadow:inset 0 2px 3px rgba(0,0,0,0.55), inset 0 1px 0 rgba(0,0,0,0.4);
+    transform:translateY(0.5px); }
+  .title-segment { display:flex; gap:2px; }
+  .title-left, .title-right { display:flex; align-items:center; gap:14px; }
+
+  /* ===== mission strip ===== */
+  .mission-strip {
+    padding:32px 56px 24px;
+    display:grid; grid-template-columns:1fr auto;
+    column-gap:48px; align-items:end;
+    border-bottom:1px solid var(--hairline);
+  }
+  .mission-strip .eyebrow {
+    color:var(--fg-2); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    margin-bottom:10px;
+  }
+  .mission-strip h1 {
+    font-size:18px; font-weight:400; color:var(--fg-0); line-height:1.45; margin:0;
+    max-width:780px;
+  }
+  .mission-strip h1 .soft { color:var(--fg-1); }
+  .mission-strip .meta {
+    color:var(--fg-2); font-size:11px; letter-spacing:0.06em;
+    text-align:right; display:flex; flex-direction:column; gap:6px;
+  }
+  .mission-strip .meta .num { color:var(--fg-0); font-size:14px; font-variant-numeric:tabular-nums; }
+  .mission-strip .progress-mini { width:200px; height:2px; background:rgba(255,255,255,0.06);
+    border-radius:2px; overflow:hidden; margin-left:auto; }
+  .mission-strip .progress-mini > div { height:100%; width:33%;
+    background:linear-gradient(90deg, var(--accent-lo), var(--accent));
+    box-shadow:0 0 12px rgba(168,212,252,0.35); border-radius:2px; }
+
+  /* ===== timeline ===== */
+  .timeline-wrap {
+    display:grid; grid-template-columns:120px 1fr; min-height:0;
+    border-bottom:1px solid var(--hairline);
+  }
+  .lanes-labels {
+    padding:64px 0 24px; display:flex; flex-direction:column; gap:0;
+    border-right:1px solid var(--hairline);
+  }
+  .lane-label {
+    height:64px; display:flex; flex-direction:column; justify-content:center;
+    padding:0 20px; gap:4px;
+  }
+  .lane-label .name { color:var(--fg-0); font-size:12px; letter-spacing:0.04em; }
+  .lane-label .role { color:var(--fg-2); font-size:10px; letter-spacing:0.16em; text-transform:uppercase; }
+  .lane-label .name::before { content:""; width:6px; height:6px; border-radius:50%;
+    display:inline-block; margin-right:8px; vertical-align:middle; }
+  .lane-label.scout .name::before    { background:var(--scout); box-shadow:0 0 8px var(--scout); }
+  .lane-label.forge .name::before    { background:var(--forge); box-shadow:0 0 8px var(--forge); }
+  .lane-label.sentinel .name::before { background:var(--sentinel); box-shadow:0 0 8px var(--sentinel); }
+  .lane-label.idle .name::before { box-shadow:none; opacity:0.4; }
+
+  .lanes {
+    position:relative;
+    padding:32px 32px 24px; overflow-x:auto; overflow-y:hidden;
+    min-width:0;
+  }
+
+  .axis {
+    display:grid; grid-template-columns:repeat(8, 1fr);
+    height:24px; align-items:center;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.06em;
+    border-bottom:1px dashed rgba(255,255,255,0.06);
+    margin-bottom:16px;
+  }
+  .axis div { position:relative; padding-left:0; }
+  .axis div::before { content:""; position:absolute; left:0; bottom:-1px;
+    width:1px; height:8px; background:rgba(255,255,255,0.08); }
+
+  .grid {
+    position:relative;
+    background-image:
+      linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+    background-size: calc(100%/8) 100%;
+    height:192px;
+  }
+  .lane {
+    position:relative; height:64px;
+    border-bottom:1px solid rgba(255,255,255,0.025);
+  }
+  .lane:last-child { border-bottom:0; }
+
+  .bar {
+    position:absolute; top:50%; transform:translateY(-50%);
+    height:24px; border-radius:6px;
+    padding:0 12px;
+    display:flex; align-items:center;
+    font-size:11px; color:var(--fg-0);
+    cursor:pointer; transition:transform 120ms ease, box-shadow 120ms ease;
+    overflow:hidden; white-space:nowrap; text-overflow:ellipsis;
+  }
+  .bar:hover { transform:translateY(-50%) translateY(-1px);
+    box-shadow:0 4px 14px rgba(0,0,0,0.4); }
+
+  .bar.scout    { background:linear-gradient(180deg, rgba(168,212,252,0.22), rgba(168,212,252,0.10));
+                  border:1px solid rgba(168,212,252,0.30); color:#e8f1fc; }
+  .bar.forge    { background:linear-gradient(180deg, rgba(200,168,252,0.22), rgba(200,168,252,0.10));
+                  border:1px solid rgba(200,168,252,0.30); color:#efe8fc; }
+  .bar.sentinel { background:linear-gradient(180deg, rgba(136,214,127,0.22), rgba(136,214,127,0.10));
+                  border:1px solid rgba(136,214,127,0.30); color:#e8f5e6; }
+
+  .bar.now { box-shadow:0 0 0 1px rgba(168,212,252,0.25), 0 0 18px rgba(168,212,252,0.18);
+             animation:barpulse 2.4s ease-in-out infinite; }
+  .bar.future { background:transparent; color:var(--fg-2); border:1px dashed rgba(255,255,255,0.10); }
+  .bar.future.scout    { border-color:rgba(168,212,252,0.18); color:rgba(168,212,252,0.55); }
+  .bar.future.forge    { border-color:rgba(200,168,252,0.18); color:rgba(200,168,252,0.55); }
+  .bar.future.sentinel { border-color:rgba(136,214,127,0.18); color:rgba(136,214,127,0.55); }
+  @keyframes barpulse {
+    0%, 100% { box-shadow:0 0 0 1px rgba(168,212,252,0.25), 0 0 14px rgba(168,212,252,0.16); }
+    50%      { box-shadow:0 0 0 1px rgba(168,212,252,0.35), 0 0 22px rgba(168,212,252,0.24); }
+  }
+
+  /* now line */
+  .now-line {
+    position:absolute; top:0; bottom:0; width:1px;
+    background:linear-gradient(180deg, transparent, rgba(168,212,252,0.5), transparent);
+    box-shadow:0 0 12px rgba(168,212,252,0.3);
+    pointer-events:none;
+  }
+  .now-line::after {
+    content:"now"; position:absolute; top:-26px;
+    left:50%; transform:translateX(-50%);
+    color:var(--accent); font-size:10px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+
+  /* ===== queue ===== */
+  .queue {
+    display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:14px;
+    padding:18px 56px 24px;
+  }
+  .queue-card {
+    background:rgba(255,255,255,0.025);
+    border:1px solid var(--hairline);
+    border-radius:10px;
+    padding:12px 14px;
+    display:flex; flex-direction:column; gap:8px;
+    transition:background 120ms ease, transform 120ms ease;
+    cursor:pointer;
+  }
+  .queue-card:hover { background:rgba(255,255,255,0.045); }
+  .queue-card .hd { display:flex; justify-content:space-between; align-items:center;
+    color:var(--fg-2); font-size:10px; letter-spacing:0.18em; text-transform:uppercase; }
+  .queue-card .ti { color:var(--fg-0); font-size:12.5px; line-height:1.5; }
+  .queue-card .ft { color:var(--fg-3); font-size:10.5px; }
+  .queue-card.blocked { background:rgba(255,204,102,0.04); border-color:rgba(255,204,102,0.18); }
+  .queue-card.blocked .hd { color:var(--warn); }
+
+  /* ===== cradle ===== */
+  .cradle-wrap { display:flex; justify-content:center; padding:0 16px 14px; }
+  .cradle { width:100%; max-width:760px;
+    background:rgba(14,14,14,0.55);
+    backdrop-filter:blur(36px) saturate(140%);
+    border-radius:16px;
+    box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.07),
+                inset 0 0 0 1px rgba(255,255,255,0.04),
+                0 12px 40px -8px rgba(0,0,0,0.5);
+    padding:12px 16px 10px; display:flex; flex-direction:column; gap:8px;
+  }
+  .cradle textarea { background:transparent; border:0; outline:0; color:var(--fg-0);
+    font:inherit; resize:none; width:100%; min-height:22px; }
+  .cradle textarea::placeholder { color:var(--fg-3); }
+  .cradle-row { display:flex; align-items:center; justify-content:space-between;
+    color:var(--fg-3); font-size:11px; letter-spacing:0.04em; }
+  .cradle-row kbd { color:var(--fg-2); background:rgba(255,255,255,0.04);
+    padding:1px 6px; border-radius:4px; font-family:inherit; font-size:10.5px; }
+
+  ::-webkit-scrollbar { height:8px; width:10px; }
+  ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.05); border-radius:6px; }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="app">
+
+  <div class="titlebar">
+    <div class="title-left">
+      <span class="title-meta">freyja</span>
+      <span class="dot ok"></span>
+      <div class="title-segment">
+        <button class="seg-btn">workspace</button>
+        <button class="seg-btn active">dashboard</button>
+        <button class="seg-btn">focus</button>
+      </div>
+    </div>
+    <div class="title-right">
+      <span class="title-meta">tasks · timeline view</span>
+      <span class="title-meta">opus 4.7</span>
+    </div>
+  </div>
+
+  <!-- mission strip -->
+  <div class="mission-strip">
+    <div>
+      <div class="eyebrow">mission · started 10:24</div>
+      <h1>Restructure the ingestion pipeline to support
+        <span class="soft">streaming uploads from S3 and Azure Blob,</span>
+        and migrate the existing batch test suite.</h1>
+    </div>
+    <div class="meta">
+      <span class="num">4 / 12</span>
+      <span>2 active · 1 blocked</span>
+      <div class="progress-mini"><div></div></div>
+    </div>
+  </div>
+
+  <!-- timeline -->
+  <div class="timeline-wrap">
+
+    <div class="lanes-labels">
+      <div class="lane-label scout">
+        <span class="role">role · researcher</span>
+        <span class="name">scout</span>
+      </div>
+      <div class="lane-label forge">
+        <span class="role">role · builder</span>
+        <span class="name">forge</span>
+      </div>
+      <div class="lane-label sentinel idle">
+        <span class="role">role · verifier · idle 3m</span>
+        <span class="name">sentinel</span>
+      </div>
+    </div>
+
+    <div class="lanes">
+
+      <!-- time axis: 10:00 to 12:00 in 15-min steps -->
+      <div class="axis">
+        <div>10:00</div><div>10:15</div><div>10:30</div><div>10:45</div>
+        <div>11:00</div><div>11:15</div><div>11:30</div><div>11:45</div>
+      </div>
+
+      <div class="grid">
+
+        <!-- lane: scout -->
+        <div class="lane">
+          <!-- bench memory floor: 10:24 - 10:36 -->
+          <div class="bar scout" style="left:13.3%; width:10%;">bench memory floor</div>
+          <!-- map S3 surface: 10:38 - 10:44 -->
+          <div class="bar scout" style="left:25.3%; width:5%;">map S3 surface</div>
+          <!-- now: streaming reader for S3 (started 10:55, current=11:18) -->
+          <div class="bar scout now" style="left:36.7%; width:18%;">streaming reader for S3</div>
+        </div>
+
+        <!-- lane: forge -->
+        <div class="lane">
+          <!-- spec buffered cursor: 10:30 - 10:38 -->
+          <div class="bar forge" style="left:20%; width:6.7%;">spec buffered cursor</div>
+          <!-- now: refactor ingest worker (10:50 - 11:18) -->
+          <div class="bar forge now" style="left:33.3%; width:23%;">refactor ingest worker</div>
+          <!-- queued azure adapter -->
+          <div class="bar forge future" style="left:62%; width:18%;">azure blob adapter</div>
+          <div class="bar forge future" style="left:82%; width:14%;">cli flag wiring</div>
+        </div>
+
+        <!-- lane: sentinel -->
+        <div class="lane">
+          <!-- setup minio: 10:24 - 10:32 -->
+          <div class="bar sentinel" style="left:13.3%; width:6.7%;">setup minio</div>
+          <!-- verify fixture parity: 10:38 - 10:46 -->
+          <div class="bar sentinel" style="left:25.3%; width:6.7%;">verify fixture parity</div>
+          <!-- queued: -->
+          <div class="bar sentinel future" style="left:55%; width:14%;">migrate test fixtures</div>
+        </div>
+
+        <!-- now line at 11:18 -->
+        <div class="now-line" style="left:54.7%"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- queue + cradle -->
+  <div>
+    <div class="queue">
+      <div class="queue-card">
+        <div class="hd"><span>queued</span><span>forge</span></div>
+        <div class="ti">Add Azure blob adapter mirroring the S3 surface</div>
+        <div class="ft">est. 18m · ready when streaming reader lands</div>
+      </div>
+      <div class="queue-card">
+        <div class="hd"><span>queued</span><span>sentinel</span></div>
+        <div class="ti">Migrate batch test fixtures to streaming form</div>
+        <div class="ft">est. 14m</div>
+      </div>
+      <div class="queue-card">
+        <div class="hd"><span>queued</span><span>forge</span></div>
+        <div class="ti">Wire <code style="color:var(--fg-1)">--stream</code> CLI flag through worker config</div>
+        <div class="ft">est. 14m</div>
+      </div>
+      <div class="queue-card blocked">
+        <div class="hd"><span>blocked</span><span>—</span></div>
+        <div class="ti">Update API contracts in shared schema repo</div>
+        <div class="ft">waiting on review · @backend-team</div>
+      </div>
+    </div>
+
+    <div class="cradle-wrap">
+      <div class="cradle">
+        <textarea rows="1" placeholder="redirect crew, add a task, or ask…"></textarea>
+        <div class="cradle-row">
+          <div><kbd>⏎</kbd> send · <kbd>⌘K</kbd> command</div>
+          <div>tasks · timeline view</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

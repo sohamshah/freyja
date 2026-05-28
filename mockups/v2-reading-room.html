@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · v2 Reading Room (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a;
+    --fg-0:#ececec; --fg-1:#a8a8a8; --fg-2:#6e6e6e; --fg-3:#4a4a4a; --fg-4:#303030;
+    --accent:#a8d4fc; --accent-lo:#7aafea;
+    --ok:#88d67f; --warn:#ffcc66; --danger:#ff6b6b;
+    --hairline:rgba(255,255,255,0.05);
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.7;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(900px 700px at 50% -10%, rgba(168,212,252,0.05), transparent 60%),
+      radial-gradient(700px 600px at 50% 110%, rgba(255,204,102,0.025), transparent 60%);
+  }
+  .ambient::after { content:""; position:absolute; inset:0;
+    background-image: repeating-linear-gradient(0deg, rgba(255,255,255,0.012) 0 1px, transparent 1px 6px);
+    mask-image: radial-gradient(70% 100% at 50% 50%, black, transparent 90%);
+    opacity:0.6;
+  }
+
+  .app { position:relative; z-index:1; min-height:100vh; }
+
+  /* minimal top strip — name + connection only, no tabs */
+  .strip {
+    position:fixed; top:0; left:0; right:0; height:40px;
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 28px;
+    color:var(--fg-2); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    z-index:10;
+    background:linear-gradient(180deg, rgba(10,10,10,0.85), transparent);
+    backdrop-filter:blur(6px);
+  }
+  .strip .left { display:flex; align-items:center; gap:14px; }
+  .strip .crew-line { color:var(--fg-3); }
+  .strip .crew-line .live { color:var(--fg-1); }
+  .strip .crew-line .live::before {
+    content:""; width:4px; height:4px; background:var(--accent);
+    border-radius:50%; display:inline-block; margin-right:6px; vertical-align:middle;
+    box-shadow:0 0 6px var(--accent);
+  }
+
+  /* document column */
+  .doc {
+    max-width:640px; margin:0 auto; padding:120px 24px 220px;
+  }
+
+  .eyebrow {
+    color:var(--fg-2); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    margin-bottom:24px;
+  }
+  .mission-h {
+    font-family:var(--serif); font-weight:300; font-size:32px; line-height:1.35;
+    letter-spacing:-0.005em; color:var(--fg-0); margin:0 0 28px;
+  }
+  .mission-h .soft { color:var(--fg-1); }
+
+  .progress-row {
+    display:flex; align-items:center; gap:14px;
+    color:var(--fg-2); font-size:11px; letter-spacing:0.06em;
+    padding:12px 0 4px;
+    border-top:1px solid var(--hairline);
+    border-bottom:1px solid var(--hairline);
+    margin-bottom:64px;
+  }
+  .progress-row .num { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+  .progress-row .bar { flex:1; height:1px; background:rgba(255,255,255,0.06); position:relative; overflow:visible; }
+  .progress-row .bar::after { content:""; position:absolute; left:0; top:-0.5px; height:2px; width:33%;
+    background:linear-gradient(90deg, var(--accent-lo), var(--accent));
+    box-shadow:0 0 10px rgba(168,212,252,0.4);
+  }
+
+  .section-label {
+    color:var(--fg-2);
+    font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    margin:48px 0 18px;
+    display:flex; align-items:baseline; gap:12px;
+  }
+  .section-label .count { color:var(--fg-3); font-variant-numeric:tabular-nums; }
+
+  .item {
+    display:grid; grid-template-columns:24px 1fr; column-gap:18px;
+    padding:14px 0; cursor:default;
+  }
+  .item + .item { border-top:1px solid var(--hairline); }
+  .item .gutter { color:var(--fg-2); padding-top:2px; text-align:center; }
+  .item .body .title {
+    color:var(--fg-0); font-size:14px; line-height:1.5;
+  }
+  .item .body .sub {
+    color:var(--fg-2); font-size:11.5px; margin-top:4px;
+    letter-spacing:0.04em;
+  }
+
+  .item.now .gutter { color:var(--accent); }
+  .item.now .body .sub { color:var(--accent); }
+  .item.blocked .gutter, .item.blocked .body .sub { color:var(--warn); }
+  .item.done .gutter { color:var(--ok); }
+  .item.done .body .title { color:var(--fg-1); }
+  .item.done .body .title .strike {
+    text-decoration:line-through; text-decoration-color:var(--fg-4);
+  }
+
+  .spin { display:inline-block; width:11px; height:11px; border-radius:50%;
+    border:1.5px solid rgba(168,212,252,0.25); border-top-color:var(--accent);
+    animation:spin 1.6s linear infinite; vertical-align:-1px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+
+  /* footer crew strip — soft, summonable feel */
+  .footer-crew {
+    position:fixed; left:0; right:0; bottom:0;
+    background:linear-gradient(0deg, rgba(10,10,10,0.92), transparent);
+    padding:24px 28px 20px;
+    pointer-events:none; z-index:5;
+    backdrop-filter:blur(20px) saturate(120%);
+    border-top:1px solid var(--hairline);
+  }
+  .footer-inner {
+    max-width:640px; margin:0 auto;
+    display:flex; flex-direction:column; gap:14px;
+    pointer-events:auto;
+  }
+  .crew-line2 {
+    display:flex; align-items:center; justify-content:space-between;
+    color:var(--fg-2); font-size:11px; letter-spacing:0.06em;
+  }
+  .crew-line2 .agents { display:flex; gap:18px; }
+  .crew-line2 .agent { display:inline-flex; align-items:center; gap:7px; color:var(--fg-1); }
+  .crew-line2 .agent .d { width:5px; height:5px; border-radius:50%; background:var(--fg-3); }
+  .crew-line2 .agent.active { color:var(--fg-0); }
+  .crew-line2 .agent.active .d { background:var(--accent); box-shadow:0 0 8px var(--accent); animation:pulse 2.2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  .quiet-cradle {
+    background:rgba(20,20,20,0.5);
+    backdrop-filter:blur(36px) saturate(140%);
+    -webkit-backdrop-filter:blur(36px) saturate(140%);
+    border-radius:14px;
+    border:1px solid var(--hairline);
+    box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.06), 0 12px 40px -8px rgba(0,0,0,0.5);
+    padding:14px 18px;
+    display:flex; align-items:center; gap:14px;
+  }
+  .quiet-cradle textarea {
+    flex:1; background:transparent; border:0; outline:0; color:var(--fg-0);
+    font:inherit; resize:none; min-height:22px; line-height:1.5;
+  }
+  .quiet-cradle textarea::placeholder { color:var(--fg-3); }
+  .quiet-cradle .send-hint { color:var(--fg-3); font-size:11px; }
+  .quiet-cradle .send-hint kbd {
+    color:var(--fg-2); background:rgba(255,255,255,0.04);
+    padding:2px 6px; border-radius:4px; font-family:inherit; font-size:10.5px;
+  }
+
+  /* pulse strip — barely visible activity ticker between mission and tasks */
+  .latest {
+    margin:0 0 8px; padding-bottom:10px;
+    color:var(--fg-3); font-size:11px;
+    border-bottom:1px solid var(--hairline);
+    display:flex; align-items:center; gap:10px;
+    overflow:hidden; white-space:nowrap;
+  }
+  .latest .ts { color:var(--fg-3); font-variant-numeric:tabular-nums; }
+  .latest .who { color:var(--fg-2); }
+  .latest .ev { color:var(--fg-1); }
+  .latest::before { content:"latest"; color:var(--fg-3); letter-spacing:0.18em; text-transform:uppercase; font-size:10px; margin-right:6px; }
+
+  ::-webkit-scrollbar { width:8px; }
+  ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.05); border-radius:6px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="app">
+
+  <div class="strip">
+    <div class="left">
+      <span>freyja</span>
+      <span class="crew-line"><span class="live">scout, forge live</span> · sentinel idle</span>
+    </div>
+    <div>tasks mode · 38m elapsed</div>
+  </div>
+
+  <main class="doc">
+
+    <div class="eyebrow">mission</div>
+    <h1 class="mission-h">
+      Restructure the ingestion pipeline to support
+      <span class="soft">streaming uploads from S3 and Azure Blob,</span>
+      and migrate the existing batch test suite.
+    </h1>
+
+    <div class="progress-row">
+      <span class="num">4</span>
+      <span>of 12 complete</span>
+      <div class="bar"></div>
+      <span>2 active · 1 blocked</span>
+    </div>
+
+    <div class="latest">
+      <span class="ts">10:42</span>
+      <span class="who">sentinel</span>
+      <span class="ev">verified fixture parity against legacy reader</span>
+    </div>
+
+    <div class="section-label"><span>now</span><span class="count">2</span></div>
+
+    <div class="item now">
+      <div class="gutter"><span class="spin"></span></div>
+      <div class="body">
+        <div class="title">Add streaming reader for S3 multipart objects.</div>
+        <div class="sub">scout · 2 minutes in · reading <span style="color:var(--fg-1)">s3_multipart.py</span></div>
+      </div>
+    </div>
+
+    <div class="item now">
+      <div class="gutter"><span class="spin"></span></div>
+      <div class="body">
+        <div class="title">Refactor the ingest worker around the buffered cursor.</div>
+        <div class="sub">forge · 5 minutes in · editing <span style="color:var(--fg-1)">ingest_worker.py</span></div>
+      </div>
+    </div>
+
+    <div class="section-label"><span>up next</span><span class="count">4</span></div>
+
+    <div class="item">
+      <div class="gutter">○</div>
+      <div class="body"><div class="title">Add an Azure blob adapter that mirrors the new S3 surface.</div></div>
+    </div>
+    <div class="item">
+      <div class="gutter">○</div>
+      <div class="body"><div class="title">Migrate the batch test fixtures to the streaming form.</div></div>
+    </div>
+    <div class="item">
+      <div class="gutter">○</div>
+      <div class="body"><div class="title">Wire the <code style="color:var(--fg-1)">--stream</code> CLI flag through the worker config.</div></div>
+    </div>
+    <div class="item">
+      <div class="gutter">○</div>
+      <div class="body"><div class="title">Document the cutover plan for staging.</div></div>
+    </div>
+
+    <div class="section-label"><span>blocked</span><span class="count">1</span></div>
+
+    <div class="item blocked">
+      <div class="gutter">⊘</div>
+      <div class="body">
+        <div class="title">Update API contracts in the shared schema repo.</div>
+        <div class="sub">waiting on review from @backend-team</div>
+      </div>
+    </div>
+
+    <div class="section-label"><span>done</span><span class="count">4</span></div>
+
+    <div class="item done">
+      <div class="gutter">✓</div>
+      <div class="body"><div class="title"><span class="strike">Benchmarked the current memory floor for the batch reader.</span></div>
+      <div class="sub">12m</div></div>
+    </div>
+    <div class="item done">
+      <div class="gutter">✓</div>
+      <div class="body"><div class="title"><span class="strike">Specified the buffered-cursor abstraction.</span></div>
+      <div class="sub">8m</div></div>
+    </div>
+    <div class="item done">
+      <div class="gutter">✓</div>
+      <div class="body"><div class="title"><span class="strike">Mapped the current S3 surface area used by ingest.</span></div>
+      <div class="sub">6m</div></div>
+    </div>
+    <div class="item done">
+      <div class="gutter">✓</div>
+      <div class="body"><div class="title"><span class="strike">Set up local minio for fixture replay.</span></div>
+      <div class="sub">4m</div></div>
+    </div>
+
+  </main>
+
+  <div class="footer-crew">
+    <div class="footer-inner">
+      <div class="crew-line2">
+        <div class="agents">
+          <span class="agent active"><span class="d"></span>scout</span>
+          <span class="agent active"><span class="d"></span>forge</span>
+          <span class="agent"><span class="d"></span>sentinel · idle</span>
+        </div>
+        <div>4 / 12</div>
+      </div>
+      <div class="quiet-cradle">
+        <textarea rows="1" placeholder="write a note, redirect, or add a task…"></textarea>
+        <div class="send-hint"><kbd>⏎</kbd> send</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

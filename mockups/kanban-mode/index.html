@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Kanban Mode mockups</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a; --bg-1:#121212; --bg-2:#181818;
+    --fg-0:#ececec; --fg-1:#a8a8a8; --fg-2:#6e6e6e; --fg-3:#4a4a4a; --fg-4:#303030;
+    --accent:#a8d4fc; --dispatcher:#fcd1a8;
+    --hairline:rgba(255,255,255,0.06);
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { margin:0; min-height:100%; background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(900px 700px at 12% -10%, rgba(168,212,252,0.05), transparent 60%),
+      radial-gradient(700px 500px at 92% 8%, rgba(252,209,168,0.035), transparent 60%);
+  }
+  .wrap { position:relative; z-index:1; max-width:1240px; margin:0 auto; padding:64px 32px 80px; }
+
+  .crumbs { display:flex; align-items:center; gap:10px; color:var(--fg-3); font-size:11px; letter-spacing:0.18em; text-transform:uppercase; margin-bottom:24px; }
+  .crumbs a { color:var(--fg-2); text-decoration:none; transition:color 120ms; }
+  .crumbs a:hover { color:var(--fg-0); }
+  .crumbs .sep { color:var(--fg-4); }
+  .crumbs .here { color:var(--fg-1); }
+
+  header { margin-bottom:48px; }
+  header .eyebrow { color:var(--fg-2); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase; margin-bottom:14px; }
+  header h1 { font-family:var(--serif); font-weight:300; font-size:36px; line-height:1.3; color:var(--fg-0); margin:0 0 14px; max-width:780px; letter-spacing:-0.005em; }
+  header p { color:var(--fg-1); font-size:13.5px; line-height:1.7; max-width:720px; margin:0 0 14px; }
+  header p .em { color:var(--fg-0); }
+  header p code { color:var(--fg-0); }
+
+  .example {
+    margin-top:28px;
+    padding:16px 20px;
+    border-left:2px solid rgba(168,212,252,0.32);
+    background:linear-gradient(90deg, rgba(168,212,252,0.04), transparent);
+    border-radius:0 10px 10px 0;
+    font-family:var(--serif); font-style:italic; font-weight:300;
+    color:var(--fg-1); font-size:14px; line-height:1.7;
+    max-width:720px;
+  }
+  .example .lbl {
+    display:block; font-family:var(--mono); font-style:normal;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    margin-bottom:6px;
+  }
+  .example .em { color:var(--fg-0); }
+
+  .principles { display:grid; grid-template-columns:repeat(3, 1fr); gap:18px; margin:36px 0 0; }
+  .principle { padding:18px; background:rgba(255,255,255,0.02); border:1px solid var(--hairline); border-radius:12px; }
+  .principle .num { color:var(--fg-3); font-size:10.5px; letter-spacing:0.18em; }
+  .principle .ti { color:var(--fg-0); font-size:14px; margin:6px 0 6px; }
+  .principle .bd { color:var(--fg-2); font-size:12px; line-height:1.6; }
+
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-top:48px; }
+
+  .card {
+    display:flex; flex-direction:column; gap:14px;
+    background:rgba(255,255,255,0.018);
+    border:1px solid var(--hairline);
+    border-radius:14px;
+    padding:18px;
+    transition:border-color 160ms;
+  }
+  .card:hover { border-color:rgba(255,255,255,0.16); }
+  .card .frame {
+    position:relative;
+    aspect-ratio: 16/10;
+    border-radius:10px; overflow:hidden;
+    border:1px solid var(--hairline);
+    background:#000;
+  }
+  .card .frame iframe {
+    position:absolute; top:0; left:0;
+    width:1440px; height:900px;
+    transform:scale(0.385); transform-origin:0 0;
+    border:0; pointer-events:none;
+  }
+  .card .meta { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; }
+  .card .meta .l .tag { color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase; }
+  .card .meta .l .name { font-size:18px; color:var(--fg-0); margin:4px 0 0; }
+  .card .meta .open {
+    background:rgba(168,212,252,0.08); border:1px solid rgba(168,212,252,0.2);
+    color:var(--accent); font:inherit; font-size:11px; letter-spacing:0.06em;
+    padding:7px 12px; border-radius:8px; cursor:pointer;
+    text-decoration:none;
+    transition:background 120ms ease;
+    white-space:nowrap;
+  }
+  .card .meta .open:hover { background:rgba(168,212,252,0.14); }
+  .card .body { color:var(--fg-1); font-size:12.5px; line-height:1.6; }
+  .card .when { color:var(--fg-2); font-size:11.5px; padding-top:10px; border-top:1px solid var(--hairline); }
+  .card .when strong { color:var(--fg-0); font-weight:400; }
+  .card code { color:var(--fg-0); }
+
+  .footer { margin-top:64px; padding-top:24px; border-top:1px solid var(--hairline);
+    color:var(--fg-3); font-size:11px; letter-spacing:0.04em;
+    display:flex; justify-content:space-between; align-items:center; }
+  .footer a { color:var(--fg-2); text-decoration:none; }
+  .footer a:hover { color:var(--fg-0); }
+
+  .pass-divider {
+    grid-column:1 / -1;
+    display:flex; align-items:center; gap:18px;
+    margin:32px 0 8px;
+    color:var(--fg-2); font-size:11px; letter-spacing:0.22em; text-transform:uppercase;
+  }
+  .pass-divider::before, .pass-divider::after {
+    content:""; flex:1; height:1px;
+    background:linear-gradient(90deg, transparent, var(--hairline), transparent);
+  }
+  .pass-divider .ti { color:var(--fg-1); }
+  .pass-divider .bd { color:var(--fg-3); font-size:11px; letter-spacing:0.04em; text-transform:none; max-width:560px; }
+
+  @media (max-width:880px) {
+    .grid { grid-template-columns:1fr; }
+    .principles { grid-template-columns:1fr; }
+    .card .frame iframe { transform:scale(0.5); }
+  }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="wrap">
+
+  <div class="crumbs">
+    <a href="../index.html">all mockups</a>
+    <span class="sep">/</span>
+    <span class="here">kanban mode</span>
+  </div>
+
+  <header>
+    <div class="eyebrow">kanban-based execution · design exploration</div>
+    <h1>Five ways to make multi-agent dispatch calmer.</h1>
+    <p>Today's kanban dashboard packs eight metric cards, a board-pulse carousel, an agent roster, an autopilot strip, a dispatch ticker, a watch list, a judge verdict panel, and a message bus into a single screen. It tries to show <em>everything at once</em> — and as a result fails to clarify the three things that actually matter in kanban: <span class="em">dispatches</span> (who got what, when), <span class="em">progress</span> (how the board is moving), and <span class="em">assignments</span> (which agent is on which card).</p>
+    <p>Each mock below picks a different position on what to keep and what to delete. The first three are direct displays; the fourth is a control surface; the fifth is the recommended synthesis.</p>
+
+    <div class="example">
+      <span class="lbl">working example used throughout</span>
+      <span class="em">Migrate the analytics service from Postgres to Snowflake.</span> 14 cards, four agents (scout, forge, sentinel, archivist), autopilot on. 4 done · 3 in flight · 5 ready · 1 blocked on legal · 1 stale (scout claimed an audit 24m ago and went quiet). The dispatcher wants to send <em>Run shadow reads against Snowflake</em> next, prefers scout (preferred for research), but scout is stale — so the fallback is archivist after dual-write lands.
+    </div>
+
+    <div class="principles">
+      <div class="principle">
+        <div class="num">01</div>
+        <div class="ti">People before columns.</div>
+        <div class="bd">Kanban's distinguishing feature isn't its columns — it's that multiple agents are in motion at once. Dashboards organized around <em>who's doing what</em> are calmer than dashboards organized around <em>which column things are in</em>.</div>
+      </div>
+      <div class="principle">
+        <div class="num">02</div>
+        <div class="ti">Make the dispatcher visible.</div>
+        <div class="bd">Autopilot quietly makes the most consequential decisions in the loop. Its next move, and its reasoning, deserve the same surface area as a human operator's would.</div>
+      </div>
+      <div class="principle">
+        <div class="num">03</div>
+        <div class="ti">One number, not eight.</div>
+        <div class="bd">A single header line — <code>4 done · 3 in flight · 1 stale · next dispatch in 15s</code> — replaces the metric carpet. Counts return inline only where they're load-bearing.</div>
+      </div>
+    </div>
+  </header>
+
+  <section class="grid">
+
+    <article class="card">
+      <div class="frame"><iframe src="v1-plate.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v1 · board-first</div>
+          <div class="name">The Plate</div>
+        </div>
+        <a class="open" href="v1-plate.html">open →</a>
+      </div>
+      <div class="body">The simplest possible kanban: four columns (<em>ready · in flight · blocked · done</em>), each card carrying a small agent chip + duration. In-flight cards have a soft accent tint and a spinner; the stale card surfaces a warn-red badge in the in-flight column. <strong style="color:var(--fg-0)">Click any card to open the viewer</strong> — a slide-in drawer with the full ticket: assignment, brief, dependencies (✓ done upstream + ○ queued downstream), chronological activity timeline (tool calls, edits, claims, autopilot decisions), files touched, and operator actions.</div>
+      <div class="when"><strong>Best when</strong> the user already knows kanban deeply and wants the most familiar possible view. Most direct mapping from the data model. Closest to Linear's current sprint view in spirit.</div>
+    </article>
+
+    <article class="card">
+      <div class="frame"><iframe src="v2-crew.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v2 · agents-first</div>
+          <div class="name">The Crew</div>
+        </div>
+        <a class="open" href="v2-crew.html">open →</a>
+      </div>
+      <div class="body">Each agent gets a <em>station</em>: name, role, current card front-and-center, recent activity below. Stale claims surface as a red-tinted station with a "reclaim &amp; ask what happened" button. A right rail carries the small queue + blocked list + dispatch log. The dashboard now answers <em>"who's doing what?"</em> as its first question — kanban's actual differentiator. <strong style="color:var(--fg-0)">Click any station or queue card to open the viewer</strong> — same six-section drawer as v1.</div>
+      <div class="when"><strong>Best when</strong> the user thinks of the loop as <em>a small team at work</em> rather than <em>a board with cards</em>. Most humane interpretation; surfaces stalls and idle agents naturally.</div>
+    </article>
+
+    <article class="card">
+      <div class="frame"><iframe src="v3-standup.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v3 · narrative-first</div>
+          <div class="name">The Standup</div>
+        </div>
+        <a class="open" href="v3-standup.html">open →</a>
+      </div>
+      <div class="body">Reads like a daily standup writeup. One paragraph per agent ("forge is writing the column-level migration scripts — fourteen minutes in…"). The stale agent gets called out in italics: "worth reclaiming and asking what happened." Blocked work and the queue live in their own short paragraphs at the bottom, with autopilot's next move highlighted as an inline aside.</div>
+      <div class="when"><strong>Best when</strong> the user steps in periodically rather than continuously monitoring. Most readable. The variant most likely to make the loop feel like a colleague rather than a process.</div>
+    </article>
+
+    <article class="card">
+      <div class="frame"><iframe src="v4-dispatcher-brief.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v4 · meta-control</div>
+          <div class="name">Dispatcher's Desk</div>
+        </div>
+        <a class="open" href="v4-dispatcher-brief.html">open →</a>
+      </div>
+      <div class="body">The autopilot's configuration written as a memo TO the dispatcher (parallel to the Judge Brief in goal mode). Four sections: <em>who can claim what</em> (a 4×5 yes/prefer matrix), <em>policies</em> (stale threshold, retry policy, circuit breaker, max in flight, spend cap — each as a sentence with the value as a chip), <em>when to ask the operator</em> (three radios, default <em>"on stalls, regressions, and risky cards"</em>), and <em>what you should never do</em>. A live preview shows the next dispatch decision under the current rules and three counterfactuals.</div>
+      <div class="when"><strong>Best when</strong> the autopilot is misbehaving or the loop is producing awkward dispatches. Every other variant assumes the dispatcher is well-tuned; this one is how you get there. Direct address from the cradle: <code>dispatcher: prefer sentinel for verify · loosen stale to 15m</code>.</div>
+    </article>
+
+    <div class="pass-divider">
+      <div>
+        <div class="ti">pass two · the recommendation</div>
+        <div class="bd" style="margin-top:6px">A synthesis that combines the strongest moves from above — agents-first focal point (v2), narrative dispatcher reasoning (v3), and one-click access to the dispatcher's brief (v4) — without losing the at-a-glance board.</div>
+      </div>
+    </div>
+
+    <article class="card" style="border-color:rgba(168,212,252,0.25); background:linear-gradient(180deg, rgba(168,212,252,0.04), rgba(255,255,255,0.018));">
+      <div class="frame"><iframe src="v5-bridge.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag" style="color:var(--accent)">v5 · recommended for kanban</div>
+          <div class="name">The Bridge</div>
+        </div>
+        <a class="open" href="v5-bridge.html">open →</a>
+      </div>
+      <div class="body">Three columns, one workspace. <em>Left:</em> the crew — each agent's station with current card, last finished, and (for the stale claim) a reclaim button. A <em>"dispatcher's next move"</em> footer card explains what autopilot will do in 15 seconds, in plain prose. <em>Middle:</em> the board itself — ready / blocked / done, each ready card showing its preferred agent as a colored chip; the next-up card carries an amber "next" tag matching the dispatcher's intent. <em>Right:</em> the live dispatch feed, with autopilot events in italic dispatcher-color so they're distinguishable from agent claims and completions. A small dispatcher card at the bottom of the feed restates the next decision and links straight to the editable brief (v4). <strong style="color:var(--fg-0)">Clicking any station or board card opens the same six-section viewer</strong>; the cradle shifts left so it doesn't overlap.</div>
+      <div class="when"><strong>Use this as the default for kanban.</strong> The left column answers <em>who's doing what</em>, the middle answers <em>what's queued and where we are</em>, the right answers <em>what just happened</em>. The dispatcher's intent is visible in three places at once (the crew footer, the next-tag on the queue card, the bottom-of-feed card) without being repetitive — each surfacing serves a different glance. The brief is one click away rather than a separate page.</div>
+    </article>
+
+  </section>
+
+  <div class="footer">
+    <span>freyja · uncommitted mockups · /mockups/kanban-mode</span>
+    <span><a href="../index.html">← all mockups</a></span>
+  </div>
+
+</div>
+</body>
+</html>

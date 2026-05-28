@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Goal · v7 Reflection (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,200;9..144,300;9..144,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#080808;
+    --fg-0:#ececec; --fg-1:#a8a8a8; --fg-2:#7a7a7a; --fg-3:#5a5a5a; --fg-4:#3a3a3a;
+    --accent:#a8d4fc; --accent-lo:#7aafea;
+    --ok:#88d67f; --warn:#ffcc66;
+    --judge:#c4b5fd;
+    --hairline:rgba(255,255,255,0.05);
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.7;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+
+  /* very slow ambient breath */
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(800px 800px at 50% 50%, rgba(168,212,252,0.05), transparent 70%),
+      radial-gradient(500px 500px at 22% 90%, rgba(196,181,253,0.025), transparent 70%);
+    animation:breathe 22s ease-in-out infinite;
+  }
+  @keyframes breathe { 0%,100%{transform:scale(1); opacity:1} 50%{transform:scale(1.05); opacity:0.7} }
+
+  .stars { position:fixed; inset:0; z-index:0; pointer-events:none;
+    background:
+      radial-gradient(circle at 12% 18%, rgba(255,255,255,0.04) 0.5px, transparent 1px),
+      radial-gradient(circle at 88% 14%, rgba(255,255,255,0.03) 0.5px, transparent 1px),
+      radial-gradient(circle at 22% 82%, rgba(255,255,255,0.04) 0.5px, transparent 1px);
+  }
+
+  .app { position:relative; z-index:1; min-height:100vh;
+    display:grid; grid-template-rows:36px 1fr auto; }
+
+  .strip {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 28px;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+  }
+  .strip .live { color:var(--fg-2); display:inline-flex; align-items:center; gap:7px; }
+  .strip .live::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--fg-2); }
+
+  /* the reflection card */
+  .stage { display:flex; align-items:center; justify-content:center; padding:36px 24px; }
+  .pause-card {
+    width:100%; max-width:680px;
+    padding:42px 48px 40px;
+    background:linear-gradient(180deg, rgba(20,20,20,0.5), rgba(14,14,14,0.4));
+    backdrop-filter:blur(24px) saturate(140%);
+    -webkit-backdrop-filter:blur(24px) saturate(140%);
+    border:1px solid rgba(168,212,252,0.16);
+    border-radius:18px;
+    box-shadow:
+      inset 0 0.5px 0 rgba(255,255,255,0.07),
+      0 24px 60px -10px rgba(0,0,0,0.6),
+      0 0 60px rgba(168,212,252,0.06);
+  }
+
+  .pause-eyebrow {
+    color:var(--accent);
+    font-size:10.5px; letter-spacing:0.32em; text-transform:uppercase;
+    text-align:center; margin-bottom:18px;
+    display:flex; align-items:center; justify-content:center; gap:14px;
+  }
+  .pause-eyebrow::before, .pause-eyebrow::after {
+    content:""; height:1px; width:40px;
+    background:linear-gradient(90deg, transparent, rgba(168,212,252,0.4), transparent);
+  }
+
+  .pause-title {
+    font-family:var(--serif); font-weight:300; font-size:28px; line-height:1.4;
+    color:var(--fg-0); text-align:center; margin:0 0 8px;
+    letter-spacing:-0.005em;
+  }
+  .pause-sub {
+    text-align:center; color:var(--fg-2); font-size:12px; letter-spacing:0.06em;
+    margin-bottom:36px;
+  }
+  .pause-sub .num { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+  .pause-sub .em  { color:var(--accent); }
+
+  /* the goal restated */
+  .goal-line {
+    margin:0 0 32px;
+    padding:14px 18px;
+    border-left:2px solid rgba(168,212,252,0.32);
+    color:var(--fg-1); font-size:13.5px; line-height:1.7;
+    font-family:var(--serif); font-style:italic; font-weight:300;
+  }
+  .goal-line::before { content:"the goal:  "; font-family:var(--mono); font-style:normal; font-size:10px;
+    letter-spacing:0.18em; text-transform:uppercase; color:var(--fg-3); margin-right:6px; }
+  .goal-line .em { color:var(--fg-0); }
+
+  /* sections */
+  .sect { margin:24px 0; }
+  .sect .lbl {
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    margin-bottom:10px;
+  }
+  .sect .body { color:var(--fg-1); font-size:13.5px; line-height:1.75; }
+  .sect .body code { color:var(--fg-0); }
+  .sect .body .em { color:var(--fg-0); }
+  .sect .body .ok   { color:var(--ok); }
+  .sect .body .warn { color:var(--warn); }
+
+  .sect ul { list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:8px; }
+  .sect ul li {
+    display:grid; grid-template-columns:14px 1fr; gap:12px;
+    color:var(--fg-1); font-size:13.5px; line-height:1.65;
+  }
+  .sect ul li .g { color:var(--fg-3); padding-top:1px; }
+
+  /* a small confidence quote at top right of card */
+  .conf-tag {
+    float:right;
+    font-family:var(--serif); font-size:14px; font-weight:300;
+    color:var(--accent); letter-spacing:0;
+    padding:6px 10px; border-radius:8px;
+    background:rgba(168,212,252,0.06);
+    border:1px solid rgba(168,212,252,0.18);
+  }
+
+  /* actions */
+  .actions {
+    margin-top:36px; padding-top:24px;
+    border-top:1px solid var(--hairline);
+    display:flex; gap:8px; flex-wrap:wrap; justify-content:center;
+  }
+  .actions button {
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline);
+    color:var(--fg-1); font:inherit; font-size:12px;
+    padding:9px 16px; border-radius:8px; cursor:pointer;
+    transition:all 120ms ease;
+  }
+  .actions button:hover { background:rgba(255,255,255,0.06); color:var(--fg-0); }
+  .actions button.primary {
+    background:rgba(168,212,252,0.10); border-color:rgba(168,212,252,0.28); color:var(--accent);
+  }
+  .actions button.primary:hover { background:rgba(168,212,252,0.18); }
+  .actions button.warn { color:var(--warn); border-color:rgba(255,204,102,0.18); }
+  .actions button .k { color:var(--fg-3); margin-left:8px; font-size:10.5px; }
+
+  /* auto-resume countdown */
+  .countdown {
+    margin-top:20px; text-align:center;
+    color:var(--fg-3); font-size:11px; letter-spacing:0.06em;
+  }
+  .countdown .num { color:var(--fg-1); font-variant-numeric:tabular-nums; }
+  .countdown .bar {
+    margin:8px auto 0; width:200px; height:1px; background:rgba(255,255,255,0.06); border-radius:1px; overflow:hidden;
+  }
+  .countdown .bar > div {
+    height:100%; width:60%;
+    background:linear-gradient(90deg, var(--accent-lo), var(--accent));
+    box-shadow:0 0 6px rgba(168,212,252,0.4);
+    animation:countdown 30s linear forwards;
+  }
+  @keyframes countdown { from { width:100%; } to { width:0; } }
+
+  /* ambient: tiny activity log down at the bottom of the card */
+  .background-life {
+    margin-top:32px; padding-top:18px;
+    border-top:1px dashed rgba(255,255,255,0.05);
+    display:flex; justify-content:space-between; align-items:center;
+    color:var(--fg-3); font-size:11px;
+  }
+  .background-life .left { display:flex; gap:12px; align-items:center; }
+  .background-life .left::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 8px var(--accent); animation:pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .background-life .right { color:var(--fg-3); font-size:11px; }
+  .background-life .right .num { color:var(--fg-1); font-variant-numeric:tabular-nums; }
+
+  /* footer cradle (always available, even during reflection) */
+  .cradle-wrap { display:flex; justify-content:center; padding:0 16px 18px; pointer-events:none; }
+  .cradle {
+    pointer-events:auto;
+    width:100%; max-width:680px;
+    background:rgba(20,20,20,0.55);
+    backdrop-filter:blur(36px) saturate(140%);
+    border-radius:14px;
+    border:1px solid var(--hairline);
+    box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.07), 0 12px 40px -8px rgba(0,0,0,0.5);
+    padding:14px 18px;
+    display:flex; align-items:center; gap:14px;
+  }
+  .cradle textarea {
+    flex:1; background:transparent; border:0; outline:0; color:var(--fg-0);
+    font:inherit; resize:none; min-height:22px; line-height:1.5;
+  }
+  .cradle textarea::placeholder { color:var(--fg-3); }
+  .cradle .hint { color:var(--fg-3); font-size:11px; }
+  .cradle .hint kbd { color:var(--fg-2); background:rgba(255,255,255,0.04);
+    padding:1px 6px; border-radius:4px; font-family:inherit; font-size:10.5px; }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+<div class="stars"></div>
+
+<div class="app">
+
+  <div class="strip">
+    <span>freyja · paused for reflection</span>
+    <span>goal · turn 8 of 20 · 9m elapsed</span>
+  </div>
+
+  <div class="stage">
+    <div class="pause-card">
+
+      <div class="conf-tag">0.74</div>
+
+      <div class="pause-eyebrow">pause point</div>
+      <h1 class="pause-title">Stepping back, briefly.</h1>
+      <p class="pause-sub">
+        After turn <span class="num">8</span> the agent is pausing to make sense of what's happened.
+        It will continue automatically — or you can redirect first.
+      </p>
+
+      <div class="goal-line">
+        Refactor the authentication module to <span class="em">pass all 47 unit tests</span> without breaking the login flow.
+      </div>
+
+      <div class="sect">
+        <div class="lbl">what i just learned</div>
+        <ul>
+          <li><span class="g">·</span><span>The hardest test (<code>LoginFlow</code>) now passes — the refactor is sound at the public surface.</span></li>
+          <li><span class="g">·</span><span>The remaining three failures are all in <code>SessionTokenExpiry</code>, and they appear to share one root cause: the immutable token store races the refresh worker on the first call after expiry.</span></li>
+          <li><span class="g">·</span><span>Earlier the backoff attempt (<span class="warn">turn 5</span>) caused a regression by conflating short and long-lived token flows. That distinction has to stay clean going forward.</span></li>
+        </ul>
+      </div>
+
+      <div class="sect">
+        <div class="lbl">what i'd try next</div>
+        <ul>
+          <li><span class="g">→</span><span>Add a <code>ready()</code> handshake on the immutable container so the refresh worker waits until first hydration is complete.</span></li>
+          <li><span class="g">→</span><span>Pre-warm the token store on app boot as a backup, in case the handshake misses an edge.</span></li>
+          <li><span class="g">→</span><span>Re-run the suite, then a manual smoke of the login flow once more.</span></li>
+        </ul>
+      </div>
+
+      <div class="sect">
+        <div class="lbl">where i'm stuck (if anywhere)</div>
+        <div class="body">Not stuck. The path forward feels clear, and confidence is climbing (0.55 → 0.70 → 0.74 across the last three turns). Estimating one or two more turns to completion.</div>
+      </div>
+
+      <div class="actions">
+        <button class="primary">Continue<span class="k">⏎</span></button>
+        <button>Redirect…<span class="k">R</span></button>
+        <button>Edit goal<span class="k">G</span></button>
+        <button>Extend budget +5<span class="k">+</span></button>
+        <button class="warn">Stop<span class="k">⎋</span></button>
+      </div>
+
+      <div class="countdown">
+        auto-resume in <span class="num">18s</span> if you don't intervene
+        <div class="bar"><div></div></div>
+      </div>
+
+      <div class="background-life">
+        <div class="left">
+          agent is queued · waiting on you
+        </div>
+        <div class="right">
+          <span class="num">12</span> turns left in budget · projected completion in 1–2 turns
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="cradle-wrap">
+    <div class="cradle">
+      <textarea rows="1" placeholder="speak now or let the agent continue…"></textarea>
+      <span class="hint"><kbd>⏎</kbd> send</span>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

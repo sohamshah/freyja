@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Goal · v9 Open Questions (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a;
+    --fg-0:#ececec; --fg-1:#a8a8a8; --fg-2:#7a7a7a; --fg-3:#5a5a5a; --fg-4:#3a3a3a;
+    --accent:#a8d4fc; --accent-lo:#7aafea;
+    --ok:#88d67f; --warn:#ffcc66;
+    --judge:#c4b5fd;
+    --hairline:rgba(255,255,255,0.06);
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.65;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(700px 500px at 18% -10%, rgba(136,214,127,0.04), transparent 60%),
+      radial-gradient(700px 500px at 82% 110%, rgba(196,181,253,0.04), transparent 60%);
+  }
+
+  .app { position:relative; z-index:1; height:100vh; display:grid; grid-template-rows:36px auto 1fr auto; }
+
+  .strip {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 28px;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    border-bottom:1px solid var(--hairline);
+  }
+  .strip .l { display:flex; align-items:center; gap:14px; }
+  .strip .live { color:var(--fg-2); display:inline-flex; align-items:center; gap:7px; }
+  .strip .live::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 8px var(--accent); animation:pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  /* head: goal + progress as a question count */
+  .head {
+    padding:28px 56px 22px;
+    border-bottom:1px solid var(--hairline);
+    display:grid; grid-template-columns:1fr auto; gap:48px; align-items:end;
+  }
+  .head .eyebrow { color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase; margin-bottom:10px; }
+  .head h1 {
+    font-family:var(--serif); font-weight:300; font-size:20px; line-height:1.45;
+    color:var(--fg-1); margin:0; letter-spacing:-0.005em; max-width:780px;
+  }
+  .head h1 .em { color:var(--fg-0); }
+
+  .head .progress {
+    text-align:right;
+    color:var(--fg-2); font-size:11.5px; letter-spacing:0.06em; line-height:1.7;
+    min-width:240px;
+  }
+  .head .progress .big {
+    font-family:var(--serif); font-weight:300; font-size:32px;
+    color:var(--fg-0); line-height:1; letter-spacing:-0.01em;
+    display:block;
+  }
+  .head .progress .big .of { color:var(--fg-3); font-family:var(--mono); font-size:14px; margin-left:4px; }
+  .head .progress .row { display:flex; gap:12px; justify-content:flex-end; }
+  .head .progress .row .num { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+
+  /* the columns */
+  .columns {
+    display:grid; grid-template-columns:1fr 1fr; gap:0;
+    min-height:0; overflow:hidden;
+  }
+  .col { display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+  .col.left { border-right:1px solid var(--hairline); }
+  .col-head {
+    padding:22px 32px 14px;
+    display:flex; align-items:center; justify-content:space-between;
+    border-bottom:1px solid var(--hairline);
+  }
+  .col-head .ti {
+    display:inline-flex; align-items:baseline; gap:12px;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+  }
+  .col-head .ti .lbl {
+    font-family:var(--serif); font-style:italic; text-transform:none; font-size:14px;
+    letter-spacing:0; font-weight:400;
+  }
+  .col.left .col-head .ti .lbl { color:var(--ok); }
+  .col.right .col-head .ti .lbl { color:var(--judge); }
+  .col-head .count {
+    color:var(--fg-2); font-variant-numeric:tabular-nums; font-size:13px;
+    background:rgba(255,255,255,0.04); padding:2px 8px; border-radius:10px;
+    border:1px solid var(--hairline);
+  }
+  .col.left .col-head .count { color:var(--ok); border-color:rgba(136,214,127,0.18); background:rgba(136,214,127,0.06); }
+  .col.right .col-head .count { color:var(--judge); border-color:rgba(196,181,253,0.18); background:rgba(196,181,253,0.06); }
+
+  .col-body { flex:1; overflow-y:auto; padding:18px 32px 24px;
+    display:flex; flex-direction:column; gap:14px; }
+
+  /* settled item */
+  .settled {
+    padding:14px 16px 12px;
+    border-radius:10px;
+    background:rgba(255,255,255,0.018);
+    border:1px solid var(--hairline);
+    border-left:2px solid rgba(136,214,127,0.4);
+    display:flex; flex-direction:column; gap:6px;
+  }
+  .settled .q {
+    color:var(--fg-0); font-size:13.5px; line-height:1.5;
+    display:flex; gap:10px; align-items:baseline;
+  }
+  .settled .q::before { content:"✓"; color:var(--ok); font-size:12px; flex-shrink:0; padding-top:1px; }
+  .settled .a {
+    color:var(--fg-2); font-size:12px; line-height:1.6;
+    padding-left:22px;
+  }
+  .settled .a .source { color:var(--fg-1); }
+  .settled .meta {
+    display:flex; gap:14px;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    padding-left:22px; padding-top:4px;
+  }
+  .settled.fresh {
+    background:linear-gradient(180deg, rgba(136,214,127,0.07), rgba(136,214,127,0.02));
+    border-color:rgba(136,214,127,0.32);
+    box-shadow:0 0 18px rgba(136,214,127,0.08);
+  }
+  .settled.fresh .meta::after { content:"just settled"; color:var(--ok); margin-left:auto; }
+
+  /* open question */
+  .question {
+    padding:14px 16px 12px;
+    border-radius:10px;
+    background:rgba(196,181,253,0.04);
+    border:1px solid rgba(196,181,253,0.18);
+    border-left:2px solid var(--judge);
+    display:flex; flex-direction:column; gap:8px;
+  }
+  .question .q {
+    color:var(--fg-0); font-size:13.5px; line-height:1.55;
+    display:flex; gap:10px; align-items:baseline;
+  }
+  .question .q::before { content:"?"; color:var(--judge); font-family:var(--serif); font-style:italic;
+    font-size:16px; flex-shrink:0; padding-top:0; line-height:1; }
+  .question .why {
+    color:var(--fg-1); font-size:12.5px; line-height:1.7;
+    padding-left:24px;
+    font-family:var(--serif); font-style:italic; font-weight:300;
+    border-left:1px solid rgba(196,181,253,0.2);
+    padding-left:10px; margin-left:14px;
+  }
+  .question .why::before { content:"\201C"; color:var(--judge); }
+  .question .why::after  { content:"\201D"; color:var(--judge); }
+  .question .meta {
+    display:flex; gap:14px; align-items:center;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    padding-left:24px;
+  }
+  .question .meta .since { color:var(--fg-3); }
+  .question .meta .priority {
+    padding:1px 7px; border-radius:4px;
+    background:rgba(196,181,253,0.10); border:1px solid rgba(196,181,253,0.22);
+    color:var(--judge);
+  }
+  .question .meta .priority.must { color:var(--warn); background:rgba(255,204,102,0.08); border-color:rgba(255,204,102,0.22); }
+  .question .meta .working {
+    margin-left:auto; color:var(--accent);
+    display:inline-flex; align-items:center; gap:6px;
+  }
+  .question .meta .working::before {
+    content:""; width:6px; height:6px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 6px var(--accent);
+    animation:pulse 2.2s ease-in-out infinite;
+  }
+  .question.added-this-turn {
+    background:rgba(196,181,253,0.08);
+    box-shadow:0 0 18px rgba(196,181,253,0.1);
+  }
+  .question.added-this-turn .meta::after {
+    content:"new this turn"; color:var(--judge); margin-left:auto;
+  }
+
+  /* settled section eyebrow at top */
+  .col-eyebrow {
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    padding:0 0 10px;
+    border-bottom:1px dashed rgba(255,255,255,0.05); margin-bottom:6px;
+  }
+
+  /* cradle */
+  .cradle-wrap { display:flex; justify-content:center; padding:14px 16px 16px; }
+  .cradle { width:100%; max-width:760px;
+    background:rgba(14,14,14,0.55);
+    backdrop-filter:blur(36px) saturate(140%);
+    border-radius:16px;
+    box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.07),
+                inset 0 0 0 1px rgba(255,255,255,0.04),
+                0 12px 40px -8px rgba(0,0,0,0.5);
+    padding:12px 16px 10px; display:flex; flex-direction:column; gap:8px;
+  }
+  .cradle textarea { background:transparent; border:0; outline:0; color:var(--fg-0);
+    font:inherit; resize:none; width:100%; min-height:22px; }
+  .cradle textarea::placeholder { color:var(--fg-3); }
+  .cradle-row { display:flex; align-items:center; justify-content:space-between;
+    color:var(--fg-3); font-size:11px; }
+  .cradle-row kbd { color:var(--fg-2); background:rgba(255,255,255,0.04);
+    padding:1px 6px; border-radius:4px; font-family:inherit; font-size:10.5px; }
+
+  ::-webkit-scrollbar { width:8px; }
+  ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.05); border-radius:6px; }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="app">
+
+  <div class="strip">
+    <div class="l">
+      <span>freyja</span>
+      <span class="live">researching</span>
+    </div>
+    <div>goal · open questions · 6m elapsed</div>
+  </div>
+
+  <div class="head">
+    <div>
+      <div class="eyebrow">goal · qualitative</div>
+      <h1>Research covered call options thoroughly enough to give a <span class="em">grounded recommendation</span> for a $250k retirement portfolio.</h1>
+    </div>
+    <div class="progress">
+      <span class="big">5<span class="of">of 11</span></span>
+      questions settled
+      <div class="row">
+        <span><span class="num">5</span> open</span>
+        <span>·</span>
+        <span><span class="num">1</span> just added</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="columns">
+
+    <!-- LEFT: settled -->
+    <div class="col left">
+      <div class="col-head">
+        <span class="ti">
+          <span>settled</span>
+          <span class="lbl">— the judge accepts these</span>
+        </span>
+        <span class="count">5</span>
+      </div>
+      <div class="col-body">
+
+        <div class="settled fresh">
+          <div class="q">When and how does a covered-call writer get assigned, and what does that mean for the underlying position?</div>
+          <div class="a">Sourced from the OCC investor brief and CBOE assignment FAQ. Assignment is most likely just before ex-dividend dates and at ITM strikes; the writer delivers shares at the strike.</div>
+          <div class="meta"><span>turn 5</span><span>2 sources</span></div>
+        </div>
+
+        <div class="settled">
+          <div class="q">What is a covered call and what's its payoff diagram?</div>
+          <div class="a">Long stock + short OTM call. Capped upside at strike + premium; downside cushioned by premium but otherwise the stock's. <span class="source">— Investopedia, OptionsPlaybook</span></div>
+          <div class="meta"><span>turn 1</span><span>3 sources</span></div>
+        </div>
+
+        <div class="settled">
+          <div class="q">How does covered-call premium income compare to dividend yield on similar names?</div>
+          <div class="a">For SPY, monthly 1-σ OTM calls historically produced ~0.4–0.6%/mo gross premium vs ~1.5%/yr dividend. Premium captures vol premium; dividends do not. <span class="source">— BXM index data, 2015–2024</span></div>
+          <div class="meta"><span>turn 2</span><span>4 sources</span></div>
+        </div>
+
+        <div class="settled">
+          <div class="q">When is the upside cap most painful for a long-term holder?</div>
+          <div class="a">During strong trending months — historically the BXM has lagged SPX by 2–4 percentage points in the strongest deciles of monthly returns.</div>
+          <div class="meta"><span>turn 3</span><span>2 sources</span></div>
+        </div>
+
+        <div class="settled">
+          <div class="q">How are short-term vs long-term capital gains treated for covered-call writes?</div>
+          <div class="a">Premium is short-term capital gain on expiry; assignment can convert long-term holdings to a short-term sale if the call is held into the qualified period. <span class="source">— IRS Pub 550</span></div>
+          <div class="meta"><span>turn 4</span><span>1 source</span></div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- RIGHT: still asking -->
+    <div class="col right">
+      <div class="col-head">
+        <span class="ti">
+          <span>still asking</span>
+          <span class="lbl">— the judge needs these answered</span>
+        </span>
+        <span class="count">5 + 1 new</span>
+      </div>
+      <div class="col-body">
+
+        <div class="question">
+          <div class="q">How does assignment interact with wash-sale rules inside a Roth IRA / traditional IRA?</div>
+          <div class="why">If the user is writing calls in a tax-advantaged account, wash-sale interactions don't matter — but the answer needs to actually say so. If they're writing in a taxable account, the interaction is subtle.</div>
+          <div class="meta"><span class="priority must">must</span><span class="since">open since turn 2</span><span class="working">scout researching now</span></div>
+        </div>
+
+        <div class="question">
+          <div class="q">What's a defensible framework for picking strikes given a 60-year-old, 10-year horizon, modest income need?</div>
+          <div class="why">Recommendation needs a procedure, not a vibe. Delta-based (e.g. ~0.30Δ), premium-yield-target, or volatility-conditioned approaches are all valid; pick one and justify.</div>
+          <div class="meta"><span class="priority must">must</span><span class="since">open since turn 1</span></div>
+        </div>
+
+        <div class="question">
+          <div class="q">How does covered-call income compare to alternatives in a retirement context?</div>
+          <div class="why">Cash-secured puts, dividend ladder, BXM-style ETF (e.g. QYLD, JEPI). Without this, the recommendation is a sales pitch.</div>
+          <div class="meta"><span class="priority">should</span><span class="since">open since turn 3</span></div>
+        </div>
+
+        <div class="question">
+          <div class="q">What sequence-of-returns scenarios should be explicitly considered?</div>
+          <div class="why">Selling calls in the first decade of retirement smooths income but caps recovery from drawdowns. The user is 60; this is load-bearing.</div>
+          <div class="meta"><span class="priority">should</span><span class="since">open since turn 4</span></div>
+        </div>
+
+        <div class="question">
+          <div class="q">Are there scenarios where the recommendation should be "don't write covered calls"?</div>
+          <div class="why">A grounded recommendation needs to know when not to recommend. E.g. high-conviction long-term holdings, very low IV environments, single-stock concentration.</div>
+          <div class="meta"><span class="priority">should</span><span class="since">open since turn 4</span></div>
+        </div>
+
+        <div class="question added-this-turn">
+          <div class="q">How does the 2025 IRS Section 1256 clarification affect net premium reporting?</div>
+          <div class="why">Came up while researching tax timing. May or may not apply to equity options; needs a definitive read before the recommendation lands.</div>
+          <div class="meta"><span class="priority">may</span><span class="since">added turn 5</span></div>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+  <div class="cradle-wrap">
+    <div class="cradle">
+      <textarea rows="1" placeholder="add a question, dismiss one (`drop the 1256 question — out of scope`), or redirect…"></textarea>
+      <div class="cradle-row">
+        <div><kbd>⏎</kbd> send · <kbd>⌘K</kbd> command</div>
+        <div>goal · open questions</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

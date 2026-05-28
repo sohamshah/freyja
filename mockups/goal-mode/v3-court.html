@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Goal · v3 Court (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a;
+    --fg-0:#ececec; --fg-1:#a8a8a8; --fg-2:#6e6e6e; --fg-3:#4a4a4a; --fg-4:#303030;
+    --accent:#a8d4fc; --accent-lo:#7aafea;
+    --ok:#88d67f; --warn:#ffcc66; --danger:#ff6b6b;
+    --judge:#c4b5fd; /* soft violet — used only for judge voice */
+    --hairline:rgba(255,255,255,0.06);
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.65;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(900px 700px at 50% -10%, rgba(168,212,252,0.04), transparent 60%),
+      radial-gradient(700px 500px at 50% 110%, rgba(196,181,253,0.03), transparent 60%);
+  }
+
+  .app { position:relative; z-index:1; min-height:100vh; }
+
+  /* sticky head */
+  .head {
+    position:sticky; top:0; z-index:20;
+    background:linear-gradient(180deg, rgba(10,10,10,0.95), rgba(10,10,10,0.85) 80%, transparent);
+    backdrop-filter:blur(10px);
+    padding:18px 24px 14px;
+    border-bottom:1px solid var(--hairline);
+  }
+  .head-inner {
+    max-width:760px; margin:0 auto;
+    display:flex; align-items:center; gap:18px;
+    color:var(--fg-2); font-size:11px; letter-spacing:0.06em;
+  }
+  .head .live { display:inline-flex; align-items:center; gap:7px; color:var(--fg-1); }
+  .head .live::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 8px var(--accent); animation:pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .head .meta { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--fg-3); }
+  .head .num { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+
+  /* the courtroom */
+  .court { max-width:760px; margin:0 auto; padding:48px 24px 220px; }
+
+  .case {
+    padding:18px 0 28px;
+    border-bottom:1px solid var(--hairline);
+    margin-bottom:32px;
+  }
+  .case .lbl {
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.32em; text-transform:uppercase;
+    margin-bottom:14px;
+  }
+  .case h1 {
+    font-family:var(--serif); font-weight:300; font-size:28px; line-height:1.4;
+    color:var(--fg-0); letter-spacing:-0.005em; margin:0 0 16px;
+  }
+  .case .sub {
+    color:var(--fg-2); font-size:11.5px; letter-spacing:0.06em; display:flex; gap:18px; flex-wrap:wrap;
+  }
+  .case .sub .item { display:inline-flex; align-items:baseline; gap:6px; }
+  .case .sub .item .n { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+
+  /* a turn / "hearing" */
+  .hearing { margin:0 0 36px; }
+  .hearing .turn-bar {
+    display:flex; align-items:baseline; gap:14px;
+    margin-bottom:14px;
+    color:var(--fg-3);
+    font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+  }
+  .hearing .turn-bar .turn { color:var(--fg-1); font-weight:500; }
+  .hearing .turn-bar .ts { color:var(--fg-3); }
+  .hearing .turn-bar .conf { color:var(--accent); font-family:var(--mono); letter-spacing:0; text-transform:none; }
+  .hearing .turn-bar .conf.down { color:var(--warn); }
+  .hearing .turn-bar .delta { color:var(--fg-3); }
+  .hearing .turn-bar .delta.up   { color:var(--ok); }
+  .hearing .turn-bar .delta.down { color:var(--warn); }
+  .hearing .turn-bar .rule { flex:1; height:1px; background:var(--hairline); }
+
+  .speech {
+    display:grid; grid-template-columns:90px 1fr; gap:18px;
+    padding:8px 0;
+  }
+  .speech .who {
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    padding-top:4px;
+  }
+  .speech.agent .who { color:var(--fg-2); }
+  .speech.judge .who { color:var(--judge); }
+  .speech .body { color:var(--fg-1); font-size:13.5px; line-height:1.7; }
+  .speech.agent .body { color:var(--fg-1); }
+  .speech.judge .body {
+    font-family:var(--serif); font-style:italic; color:var(--fg-1); font-weight:300;
+    border-left:2px solid rgba(196,181,253,0.32);
+    padding:6px 0 6px 16px; margin-left:-16px;
+  }
+  .speech.judge .body::before { content:"\201C"; color:var(--judge); margin-right:2px; }
+  .speech.judge .body::after  { content:"\201D"; color:var(--judge); margin-left:2px; }
+  .speech .body code { color:var(--fg-0); }
+  .speech .body .em { color:var(--fg-0); }
+  .speech .body .ok { color:var(--ok); }
+  .speech .body .warn { color:var(--warn); }
+
+  /* current hearing — special treatment */
+  .hearing.now {
+    background:linear-gradient(180deg, rgba(168,212,252,0.04), rgba(168,212,252,0.01));
+    border:1px solid rgba(168,212,252,0.15);
+    border-radius:14px;
+    padding:18px 22px;
+    margin-left:-22px; margin-right:-22px;
+  }
+  .hearing.now .turn-bar .turn { color:var(--accent); }
+  .hearing.now .turn-bar .conf { color:var(--accent); }
+
+  /* awaiting verdict */
+  .awaiting {
+    margin-top:10px;
+    color:var(--judge); font-size:11.5px; letter-spacing:0.08em; font-style:italic;
+    display:flex; align-items:center; gap:10px;
+    font-family:var(--serif); font-weight:300;
+  }
+  .awaiting::before {
+    content:""; width:8px; height:8px; border-radius:50%;
+    border:1.5px solid var(--judge); border-right-color:transparent;
+    animation:spin 1.4s linear infinite;
+  }
+  @keyframes spin { to { transform:rotate(360deg); } }
+
+  /* cradle */
+  .cradle-wrap {
+    position:fixed; left:0; right:0; bottom:0;
+    padding:24px 24px 18px;
+    background:linear-gradient(0deg, var(--bg-0) 60%, transparent);
+    pointer-events:none; z-index:30;
+  }
+  .cradle {
+    pointer-events:auto;
+    max-width:760px; margin:0 auto;
+    background:rgba(20,20,20,0.6);
+    backdrop-filter:blur(36px) saturate(140%);
+    -webkit-backdrop-filter:blur(36px) saturate(140%);
+    border-radius:14px;
+    border:1px solid var(--hairline);
+    box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.07), 0 12px 40px -8px rgba(0,0,0,0.5);
+    padding:14px 18px 12px;
+    display:flex; flex-direction:column; gap:8px;
+  }
+  .cradle textarea {
+    background:transparent; border:0; outline:0; color:var(--fg-0);
+    font:inherit; resize:none; width:100%; min-height:22px;
+  }
+  .cradle textarea::placeholder { color:var(--fg-3); }
+  .cradle-hint { display:flex; justify-content:space-between; color:var(--fg-3); font-size:11px; }
+  .cradle-hint kbd { color:var(--fg-2); background:rgba(255,255,255,0.04);
+    padding:1px 6px; border-radius:4px; font-family:inherit; font-size:10.5px; }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="app">
+
+  <div class="head">
+    <div class="head-inner">
+      <span class="live">in session</span>
+      <span class="meta">Refactor the authentication module to pass all 47 unit tests.</span>
+      <span><span class="num">8</span>/20 turns · <span class="num">0.74</span> conf</span>
+    </div>
+  </div>
+
+  <main class="court">
+
+    <section class="case">
+      <div class="lbl">the matter at hand</div>
+      <h1>Refactor the authentication module to pass all 47 unit tests, without breaking the login flow.</h1>
+      <div class="sub">
+        <span class="item"><span style="color:var(--fg-3)">opened</span> <span class="n">10:23</span></span>
+        <span class="item"><span style="color:var(--fg-3)">budget</span> <span class="n">20</span> turns</span>
+        <span class="item"><span style="color:var(--fg-3)">presiding</span> <span class="n" style="color:var(--judge)">claude haiku 4.5</span> as judge</span>
+        <span class="item"><span style="color:var(--fg-3)">acting</span> <span class="n" style="color:var(--accent)">claude opus 4.7</span> as agent</span>
+      </div>
+    </section>
+
+    <!-- TURN 1 -->
+    <div class="hearing">
+      <div class="turn-bar">
+        <span class="turn">turn 1</span><span class="ts">10:24</span>
+        <span class="rule"></span>
+        <span class="conf">0.30</span><span class="delta">opening</span>
+      </div>
+      <div class="speech agent">
+        <div class="who">agent</div>
+        <div class="body">Read the test suite (<code>tests/auth/*.py</code>) and the current <code>auth/</code> module. 47 tests total; 12 currently failing on the existing implementation. Asked for the most recent failure traces.</div>
+      </div>
+      <div class="speech judge">
+        <div class="who">judge</div>
+        <div class="body">No code changes yet — only reconnaissance. Cannot rule the goal complete. Continue.</div>
+      </div>
+    </div>
+
+    <!-- TURN 3 (compressed) -->
+    <div class="hearing">
+      <div class="turn-bar">
+        <span class="turn">turn 3</span><span class="ts">10:31</span>
+        <span class="rule"></span>
+        <span class="conf">0.55</span><span class="delta up">▲ +0.13</span>
+      </div>
+      <div class="speech agent">
+        <div class="who">agent</div>
+        <div class="body">Refactored <code>TokenStore</code> to use the new immutable container. Re-ran the suite: <span class="ok">30 of 47 passing</span>, 17 failures clustered around session refresh.</div>
+      </div>
+      <div class="speech judge">
+        <div class="who">judge</div>
+        <div class="body">Material progress, but more than a third of tests still fail. The refactor touched the right surface — keep going.</div>
+      </div>
+    </div>
+
+    <!-- TURN 5 — the regression -->
+    <div class="hearing">
+      <div class="turn-bar">
+        <span class="turn">turn 5</span><span class="ts">10:42</span>
+        <span class="rule"></span>
+        <span class="conf down">0.50</span><span class="delta down">▼ −0.11</span>
+      </div>
+      <div class="speech agent">
+        <div class="who">agent</div>
+        <div class="body">Attempted to fix session refresh by introducing a backoff. Tests dropped to <span class="warn">35 of 47</span> — broke <code>SessionRefreshOnExpire</code> for the long-lived token case.</div>
+      </div>
+      <div class="speech judge">
+        <div class="who">judge</div>
+        <div class="body">A regression. The backoff is conflating two flows that the test suite treats as distinct. Recommend reverting and addressing the long-lived case separately.</div>
+      </div>
+    </div>
+
+    <!-- TURN 7 -->
+    <div class="hearing">
+      <div class="turn-bar">
+        <span class="turn">turn 7</span><span class="ts">10:54</span>
+        <span class="rule"></span>
+        <span class="conf">0.70</span><span class="delta up">▲ +0.05</span>
+      </div>
+      <div class="speech agent">
+        <div class="who">agent</div>
+        <div class="body">Reverted the backoff; addressed long-lived tokens via a separate refresh path. <span class="ok">44 of 47 passing</span>. <code>LoginFlow</code> integration test now green.</div>
+      </div>
+      <div class="speech judge">
+        <div class="who">judge</div>
+        <div class="body">The hardest test is now passing. Three failures remain, all in <code>SessionTokenExpiry</code>. Likely the same root cause; one more focused turn should resolve them.</div>
+      </div>
+    </div>
+
+    <!-- TURN 8 — current -->
+    <div class="hearing now">
+      <div class="turn-bar">
+        <span class="turn">turn 8 · current</span><span class="ts">11:01</span>
+        <span class="rule"></span>
+        <span class="conf">0.74</span><span class="delta up">▲ +0.04</span>
+      </div>
+      <div class="speech agent">
+        <div class="who">agent</div>
+        <div class="body">Investigating the three remaining <code>SessionTokenExpiry</code> failures. Hypothesis: the new immutable container is racing the refresh worker on the first call.</div>
+      </div>
+      <div class="speech judge">
+        <div class="who">judge</div>
+        <div class="body">44 of 47 tests pass. Login flow appears intact in manual smoke. Three <code>SessionTokenExpiry</code> tests still failing — refresh path is racing the new token store on first call. Confidence is rising. Continue.</div>
+      </div>
+      <div class="awaiting">agent is preparing the next turn…</div>
+    </div>
+
+  </main>
+
+  <div class="cradle-wrap">
+    <div class="cradle">
+      <textarea rows="1" placeholder="instruct the court · redirect the agent · adjust the budget…"></textarea>
+      <div class="cradle-hint">
+        <span><kbd>⏎</kbd> send · <kbd>⌘K</kbd> command</span>
+        <span>goal · court</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Goal Mode mockups</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a; --bg-1:#121212; --bg-2:#181818;
+    --fg-0:#ececec; --fg-1:#a8a8a8; --fg-2:#6e6e6e; --fg-3:#4a4a4a; --fg-4:#303030;
+    --accent:#a8d4fc; --judge:#c4b5fd;
+    --hairline:rgba(255,255,255,0.06);
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { margin:0; min-height:100%; background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(900px 700px at 12% -10%, rgba(168,212,252,0.05), transparent 60%),
+      radial-gradient(700px 500px at 92% 8%, rgba(196,181,253,0.035), transparent 60%);
+  }
+  .wrap { position:relative; z-index:1; max-width:1240px; margin:0 auto; padding:64px 32px 80px; }
+
+  /* breadcrumb */
+  .crumbs { display:flex; align-items:center; gap:10px; color:var(--fg-3); font-size:11px; letter-spacing:0.18em; text-transform:uppercase; margin-bottom:24px; }
+  .crumbs a { color:var(--fg-2); text-decoration:none; transition:color 120ms; }
+  .crumbs a:hover { color:var(--fg-0); }
+  .crumbs .sep { color:var(--fg-4); }
+  .crumbs .here { color:var(--fg-1); }
+
+  header { margin-bottom:48px; }
+  header .eyebrow { color:var(--fg-2); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase; margin-bottom:14px; }
+  header h1 { font-family:var(--serif); font-weight:300; font-size:36px; line-height:1.3; color:var(--fg-0); margin:0 0 14px; max-width:780px; letter-spacing:-0.005em; }
+  header p { color:var(--fg-1); font-size:13.5px; line-height:1.7; max-width:720px; margin:0 0 14px; }
+  header p .em { color:var(--fg-0); }
+  header p code { color:var(--fg-0); }
+
+  /* the example callout */
+  .example {
+    margin-top:28px;
+    padding:16px 20px;
+    border-left:2px solid rgba(168,212,252,0.32);
+    background:linear-gradient(90deg, rgba(168,212,252,0.04), transparent);
+    border-radius:0 10px 10px 0;
+    font-family:var(--serif); font-style:italic; font-weight:300;
+    color:var(--fg-1); font-size:14px; line-height:1.7;
+    max-width:720px;
+  }
+  .example .lbl {
+    display:block; font-family:var(--mono); font-style:normal;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    margin-bottom:6px;
+  }
+  .example .em { color:var(--fg-0); }
+
+  /* shape principles */
+  .principles { display:grid; grid-template-columns:repeat(3, 1fr); gap:18px; margin:36px 0 0; }
+  .principle { padding:18px; background:rgba(255,255,255,0.02); border:1px solid var(--hairline); border-radius:12px; }
+  .principle .num { color:var(--fg-3); font-size:10.5px; letter-spacing:0.18em; }
+  .principle .ti { color:var(--fg-0); font-size:14px; margin:6px 0 6px; }
+  .principle .bd { color:var(--fg-2); font-size:12px; line-height:1.6; }
+
+  /* the gallery */
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-top:48px; }
+
+  .card {
+    display:flex; flex-direction:column; gap:14px;
+    background:rgba(255,255,255,0.018);
+    border:1px solid var(--hairline);
+    border-radius:14px;
+    padding:18px;
+    transition:border-color 160ms ease;
+  }
+  .card:hover { border-color:rgba(255,255,255,0.16); }
+
+  .card .frame {
+    position:relative;
+    aspect-ratio: 16/10;
+    border-radius:10px; overflow:hidden;
+    border:1px solid var(--hairline);
+    background:#000;
+  }
+  .card .frame iframe {
+    position:absolute; top:0; left:0;
+    width:1440px; height:900px;
+    transform:scale(0.385); transform-origin:0 0;
+    border:0; pointer-events:none;
+  }
+  .card .meta { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; }
+  .card .meta .l .tag { color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase; }
+  .card .meta .l .name { font-size:18px; color:var(--fg-0); margin:4px 0 0; }
+  .card .meta .open {
+    background:rgba(168,212,252,0.08); border:1px solid rgba(168,212,252,0.2);
+    color:var(--accent); font:inherit; font-size:11px; letter-spacing:0.06em;
+    padding:7px 12px; border-radius:8px; cursor:pointer;
+    text-decoration:none;
+    transition:background 120ms ease;
+    white-space:nowrap;
+  }
+  .card .meta .open:hover { background:rgba(168,212,252,0.14); }
+  .card .body { color:var(--fg-1); font-size:12.5px; line-height:1.6; }
+  .card .when { color:var(--fg-2); font-size:11.5px; padding-top:10px; border-top:1px solid var(--hairline); }
+  .card .when strong { color:var(--fg-0); font-weight:400; }
+  .card code { color:var(--fg-0); }
+
+  .footer { margin-top:64px; padding-top:24px; border-top:1px solid var(--hairline);
+    color:var(--fg-3); font-size:11px; letter-spacing:0.04em;
+    display:flex; justify-content:space-between; align-items:center; }
+  .footer a { color:var(--fg-2); text-decoration:none; }
+  .footer a:hover { color:var(--fg-0); }
+
+  .pass-divider {
+    grid-column:1 / -1;
+    display:flex; align-items:center; gap:18px;
+    margin:32px 0 8px;
+    color:var(--fg-2); font-size:11px; letter-spacing:0.22em; text-transform:uppercase;
+  }
+  .pass-divider::before, .pass-divider::after {
+    content:""; flex:1; height:1px;
+    background:linear-gradient(90deg, transparent, var(--hairline), transparent);
+  }
+  .pass-divider .ti { color:var(--fg-1); }
+  .pass-divider .bd { color:var(--fg-3); font-size:11px; letter-spacing:0.04em; text-transform:none; max-width:560px; }
+
+  @media (max-width:880px) {
+    .grid { grid-template-columns:1fr; }
+    .principles { grid-template-columns:1fr; }
+    .card .frame iframe { transform:scale(0.5); }
+  }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="wrap">
+
+  <div class="crumbs">
+    <a href="../index.html">all mockups</a>
+    <span class="sep">/</span>
+    <span class="here">goal mode</span>
+  </div>
+
+  <header>
+    <div class="eyebrow">goal-based execution · design exploration</div>
+    <h1>Fourteen ways to make convergence legible.</h1>
+    <p>Goal mode is fundamentally different from tasks. The user gives the system <span class="em">one objective</span> and a turn budget; the agent runs a try-judge-retry loop until a small judge model rules the goal complete or the budget runs out. The dashboard's job isn't to enumerate work — it's to show <span class="em">whether we're getting closer</span>.</p>
+    <p>The first seven mocks (pass one) explored convergence assuming the judge produces a meaningful numeric — confidence percentages, distance to a target, a sparkline that climbs. That works for verifiable goals like "47 tests pass." It breaks down for the more common case where the judge's signal is qualitative — <em>"have you researched this thoroughly enough?"</em> The last three mocks (pass two) drop the number entirely and design around lists of considerations, open questions, and marked-up drafts.</p>
+
+    <div class="example">
+      <span class="lbl">pass one example · verifiable</span>
+      <span class="em">Refactor the authentication module to pass all 47 unit tests without breaking the login flow.</span> Currently turn 8 of 20, confidence 0.74, judge says continue. There was a regression at turn 5 (a backoff attempt broke long-lived tokens). The login flow integration test now passes; three <code>SessionTokenExpiry</code> failures remain.
+    </div>
+
+    <div class="example" style="border-left-color:rgba(196,181,253,0.32); background:linear-gradient(90deg, rgba(196,181,253,0.04), transparent); margin-top:14px;">
+      <span class="lbl">pass two example · qualitative</span>
+      <span class="em">Research covered call options thoroughly enough to give a grounded recommendation for a $250k retirement portfolio.</span> Currently turn 5 of 15. The judge has settled five subtopics (mechanics, the income/upside tradeoff, capital-gains treatment, etc.) and is still asking five more (wash-sale interaction inside an IRA, strike-selection framework, alternatives, sequence-of-returns risk, recent regulation). There's no number to climb — the judge accepts the answer when it runs out of objections.
+    </div>
+
+    <div class="principles">
+      <div class="principle">
+        <div class="num">01</div>
+        <div class="ti">Convergence over enumeration.</div>
+        <div class="bd">There's only one thing being worked on. Don't make the user count tasks. Show direction, distance, and pace.</div>
+      </div>
+      <div class="principle">
+        <div class="num">02</div>
+        <div class="ti">Two voices, one loop.</div>
+        <div class="bd">The judge is a distinct actor from the agent. Most variants give the judge its own visual treatment — soft violet, italic serif — so its reasoning reads as an outside opinion.</div>
+      </div>
+      <div class="principle">
+        <div class="num">03</div>
+        <div class="ti">Show the trajectory, not the snapshot.</div>
+        <div class="bd">A regression at turn 5 is more important than the current 0.74. Most mocks treat the <em>shape</em> of the past 8 verdicts as the primary signal.</div>
+      </div>
+    </div>
+  </header>
+
+  <section class="grid">
+
+    <article class="card">
+      <div class="frame"><iframe src="v1-compass.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v1 · glance-first</div>
+          <div class="name">Compass</div>
+        </div>
+        <a class="open" href="v1-compass.html">open →</a>
+      </div>
+      <div class="body">A calm watch-face. One large confidence ring, the goal above it, the latest verdict reason in italic serif below. Turn budget shown as a row of small dots. Designed for the case where you want to know "where are we?" in a single glance and nothing more.</div>
+      <div class="when"><strong>Best when</strong> the user is checking in periodically and trusts the loop. Most peripheral-vision-friendly variant — could even live as a small floating window or menu-bar dropdown.</div>
+    </article>
+
+    <article class="card">
+      <div class="frame"><iframe src="v2-heartbeat.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v2 · trajectory-first</div>
+          <div class="name">Heartbeat</div>
+        </div>
+        <a class="open" href="v2-heartbeat.html">open →</a>
+      </div>
+      <div class="body">Confidence as a sparkline plotted across the turn budget. Each judge verdict is a dot; the regression at turn 5 reads instantly as a dip. A "now" line marks the latest, dashed projection extends to the budget ceiling. Annotations call out inflections.</div>
+      <div class="when"><strong>Best when</strong> trend is what matters — converging, plateauing, oscillating, or decaying. The most data-instrument-like variant, with the calm of a heart monitor rather than the noise of a stock chart.</div>
+    </article>
+
+    <article class="card">
+      <div class="frame"><iframe src="v3-court.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v3 · narrative-first</div>
+          <div class="name">Court</div>
+        </div>
+        <a class="open" href="v3-court.html">open →</a>
+      </div>
+      <div class="body">Each turn is a "hearing" — the agent reports what it did, the judge issues a ruling in italic serif with a confidence delta. Reads like a court transcript. Older turns above, current turn highlighted at the bottom. Closest to language; furthest from charts.</div>
+      <div class="when"><strong>Best when</strong> the value of goal mode is the agent's <em>reasoning</em>, not just the outcome. Most readable; most humane; calmly pairs with the v5 narrative variant from tasks mode.</div>
+    </article>
+
+    <article class="card">
+      <div class="frame"><iframe src="v4-living-brief.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v4 · document-first</div>
+          <div class="name">Living Brief</div>
+        </div>
+        <a class="open" href="v4-living-brief.html">open →</a>
+      </div>
+      <div class="body">A working document the agent rewrites every turn. Sections: <em>where we are</em>, <em>what we've learned</em>, <em>what we've tried</em>, <em>what's left</em>, <em>latest verdict</em>. New text glows briefly when written. The user can click any section to edit and redirect the loop.</div>
+      <div class="when"><strong>Best when</strong> the user wants to <em>collaborate</em> with the agent rather than just observe it. Most editable; most likely to make goal mode feel like a writing tool. Naturally produces a postmortem when the goal completes.</div>
+    </article>
+
+    <article class="card">
+      <div class="frame"><iframe src="v5-approach.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v5 · spatial-first</div>
+          <div class="name">Approach</div>
+        </div>
+        <a class="open" href="v5-approach.html">open →</a>
+      </div>
+      <div class="body">The goal as a literal bullseye. Each attempt is plotted around the target — closer to center as confidence rises, further out on regressions. A faint trail connects the eight attempts so far; the current position glows. The dotted "done" ring at 0.85 is the threshold to pass through.</div>
+      <div class="when"><strong>Best when</strong> the user wants <em>visceral</em> feedback. Makes oscillation and approach legible at a glance. Most distinctive aesthetic — best as a "feature view" rather than the always-on default.</div>
+    </article>
+
+    <article class="card">
+      <div class="frame"><iframe src="v6-two-voices.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v6 · transparency-first</div>
+          <div class="name">Two Voices</div>
+        </div>
+        <a class="open" href="v6-two-voices.html">open →</a>
+      </div>
+      <div class="body">A split screen — agent on the left, judge on the right, with a center column of turn markers tying them together. Each agent action sits horizontally aligned with the judge ruling that followed it. Lets the user address either party from the cradle: <code>judge: relax the threshold</code>.</div>
+      <div class="when"><strong>Best when</strong> trust in the judge is uncertain. Makes the agent–judge interplay fully transparent and lets the user nudge either one without ending the loop. The most "lift the hood" variant.</div>
+    </article>
+
+    <article class="card">
+      <div class="frame"><iframe src="v7-reflection.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v7 · attention-first</div>
+          <div class="name">Reflection</div>
+        </div>
+        <a class="open" href="v7-reflection.html">open →</a>
+      </div>
+      <div class="body">Inverts the always-on dashboard. The system runs quietly in the background and only summons your attention at deliberate <em>pause points</em> — a centered card with what the agent learned, what it'd try next, where it's stuck (if anywhere), and a five-button row to continue / redirect / extend / change / stop. Auto-resumes if you don't intervene.</div>
+      <div class="when"><strong>Best when</strong> you don't want to babysit the loop. Most respectful of the user's attention; closest to Raskin's principle that the interface should offer information rather than demand it. Could ship as a setting layered on top of any other variant.</div>
+    </article>
+
+    <div class="pass-divider">
+      <div>
+        <div class="ti">pass two · qualitative goals</div>
+        <div class="bd" style="margin-top:6px">For goals where the judge's signal is prose, not a percentage. No fake numbers, no thresholds to cross — just considerations to address until there are no more objections.</div>
+      </div>
+    </div>
+
+    <article class="card">
+      <div class="frame"><iframe src="v8-coverage-map.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v8 · breadth-first</div>
+          <div class="name">Coverage Map</div>
+        </div>
+        <a class="open" href="v8-coverage-map.html">open →</a>
+      </div>
+      <div class="body">A constellation of subtopics the judge thinks need to be addressed. Solid green nodes are settled, accent-tinted nodes are partially covered, dashed outlines are not yet touched. New nodes appear in violet when the judge realizes <em>"actually, you also need to think about…"</em> A side panel reads what's still missing in plain prose.</div>
+      <div class="when"><strong>Best when</strong> the goal has a discoverable surface area — the agent doesn't know upfront what counts as "thorough" and the judge expands the territory as the work proceeds. Makes the unknown unknowns visible.</div>
+    </article>
+
+    <article class="card">
+      <div class="frame"><iframe src="v9-open-questions.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v9 · ledger-first</div>
+          <div class="name">Open Questions</div>
+        </div>
+        <a class="open" href="v9-open-questions.html">open →</a>
+      </div>
+      <div class="body">A two-column register: <em>settled</em> (left, green) vs <em>still asking</em> (right, violet). Each open question is the judge's specific concern, in italic prose, with a priority tag (<code>must</code> / <code>should</code> / <code>may</code>). Items migrate left as the agent answers them; new ones can appear on the right when the agent's work raises follow-ups. The number of open questions <em>is</em> the progress signal.</div>
+      <div class="when"><strong>Best when</strong> the goal is research-shaped. Most directly answers "what would the judge say is missing right now" — and the user can drop questions they consider out of scope (<code>"drop the 1256 question"</code>) right from the cradle.</div>
+    </article>
+
+    <article class="card">
+      <div class="frame"><iframe src="v10-draft-critique.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v10 · artifact-first</div>
+          <div class="name">Draft + Critique</div>
+        </div>
+        <a class="open" href="v10-draft-critique.html">open →</a>
+      </div>
+      <div class="body">The agent assembles an actual draft answer; the judge marks it up like an editor with anchored comments — <em>looks good</em>, <em>needs evidence</em>, <em>blind spot</em>, <em>required</em>. Each draft section has a status badge (solid / partial / missing); placeholder boxes flag what's not yet written. The draft is the deliverable; "done" means no more outstanding objections.</div>
+      <div class="when"><strong>Best when</strong> the goal produces a written artifact the user will actually read — a recommendation, a memo, a research summary. Naturally produces a postmortem because the final draft <em>is</em> the result. Most concrete; closest to how a human editor and writer would converge on a piece.</div>
+    </article>
+
+    <div class="pass-divider">
+      <div>
+        <div class="ti">pass three · the iteration as form</div>
+        <div class="bd" style="margin-top:6px">Visualizations that take the back-and-forth itself as the subject. Drawn from natural forms — woven fabric, winding spirals — to make the iterative loop legible at a glance. Both work for either numeric or qualitative goals.</div>
+      </div>
+    </div>
+
+    <article class="card">
+      <div class="frame"><iframe src="v11-tapestry.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v11 · weave-first</div>
+          <div class="name">Tapestry</div>
+        </div>
+        <a class="open" href="v11-tapestry.html">open →</a>
+      </div>
+      <div class="body">Each turn weaves a row of fabric. Vertical warp threads in agent-accent run top to bottom; a horizontal weft thread in judge-violet undulates over and under across them. Tight regular rows = strong agreement; the regression at turn 5 shows up as a broken yellow row with a snag. The current row is being woven now — the shuttle is mid-flight, weft halfway across, judge's reply pending.</div>
+      <div class="when"><strong>Best when</strong> the texture of the back-and-forth matters as much as the destination. The full iteration history is encoded in a single textile sample — you can read it like tree rings. Most novel of the iteration-form variants.</div>
+    </article>
+
+    <article class="card">
+      <div class="frame"><iframe src="v12-spiral.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v12 · approach-first</div>
+          <div class="name">Spiral</div>
+        </div>
+        <a class="open" href="v12-spiral.html">open →</a>
+      </div>
+      <div class="body">Turns wind inward toward the goal. One continuous curve, eight arcs so far, with the regression visible as a small outward kink before the spiral closes back in. Future turns shown as a faint dashed continuation. The goal glows softly at the center, drawing the spiral toward it. Like a nautilus shell or a fingerprint.</div>
+      <div class="when"><strong>Best when</strong> you want a single image that captures the whole iterative journey at once. The most cinematic variant — a quietly powerful demo for showing what goal mode actually does. Pairs well with v2 Heartbeat as data + form.</div>
+    </article>
+
+    <div class="pass-divider">
+      <div>
+        <div class="ti">pass four · briefing the judge</div>
+        <div class="bd" style="margin-top:6px">A control surface for the judge that treats it as a colleague rather than a hidden component. The deepest move available in goal mode — most everything else is reading the loop; this lets you actually shape it.</div>
+      </div>
+    </div>
+
+    <article class="card">
+      <div class="frame"><iframe src="v13-judge-brief.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag">v13 · meta-control</div>
+          <div class="name">Judge Brief</div>
+        </div>
+        <a class="open" href="v13-judge-brief.html">open →</a>
+      </div>
+      <div class="body">The judge's configuration written as a memo TO the judge, not a settings page. Six editable sections: criteria (with a three-tier <code>must / should / may</code> taxonomy plus a <em>provisional</em> tier the judge surfaces but you must approve), voice (prose, not toggles), what evidence the judge can see, when it may add new criteria, what it must never do, and termination conditions. A live preview pane shows the verdict the judge would issue under the current brief, plus counterfactuals: <em>"if you remove this criterion, this becomes done."</em></div>
+      <div class="when"><strong>Best when</strong> the judge is the bottleneck. Every other variant assumes the judge is well-tuned; this one is how you get there. The cradle accepts direct address — <code>judge: be stricter on the strike framework</code> — and the judge replies with proposed edits to its own brief. Closest to how a working editor and writer actually negotiate scope.</div>
+    </article>
+
+    <div class="pass-divider">
+      <div>
+        <div class="ti">pass five · the recommendation</div>
+        <div class="bd" style="margin-top:6px">A synthesis variant that combines the three strongest moves for qualitative goals — Open Questions (v9), Draft + Critique (v10), and Judge Brief (v13) — into one workspace. Built strictly on data shapes that fall out of any qualitative goal session: a structured judge response, a draft the agent maintains, and anchored comments. Nothing bespoke.</div>
+      </div>
+    </div>
+
+    <article class="card" style="border-color:rgba(168,212,252,0.25); background:linear-gradient(180deg, rgba(168,212,252,0.04), rgba(255,255,255,0.018));">
+      <div class="frame"><iframe src="v14-studio.html" loading="lazy"></iframe></div>
+      <div class="meta">
+        <div class="l">
+          <div class="tag" style="color:var(--accent)">v14 · recommended for qualitative goals</div>
+          <div class="name">Qualitative Studio</div>
+        </div>
+        <a class="open" href="v14-studio.html">open →</a>
+      </div>
+      <div class="body">Three columns, one workspace. <em>Left:</em> the open-questions ledger (asking + settled), with priority pills and the just-added provisional question highlighted. <em>Center:</em> the draft as an actual evolving document, with status badges per section and gutter-dot indicators where the judge has anchored a comment. <em>Right:</em> a tabbed rail that swaps between <strong>Marginalia</strong> (the eight anchored judge comments — looks-good, needs-evidence, blind-spot, required) and <strong>Brief</strong> (compact editable criteria + voice + live preview with counterfactuals). Hover a draft paragraph to highlight its comment and vice versa.</div>
+      <div class="when"><strong>Use this as the default for qualitative goals.</strong> Every element here corresponds to data the agent and judge already produce on every turn — structured criteria with status, a markdown draft, and section-anchored comments. No bespoke visualizations, no per-goal tuning. The brief stays one click away in the right rail rather than a separate page, so the user can tighten a criterion mid-loop without losing sight of the draft. Ship hint at top is gated on <code>must</code> coverage.</div>
+    </article>
+
+  </section>
+
+  <div class="footer">
+    <span>freyja · uncommitted mockups · /mockups/goal-mode</span>
+    <span><a href="../index.html">← tasks mode mockups</a></span>
+  </div>
+
+</div>
+</body>
+</html>

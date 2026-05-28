@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Goal · v12 Spiral (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,200;9..144,300;9..144,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#080808;
+    --fg-0:#ececec; --fg-1:#a8a8a8; --fg-2:#7a7a7a; --fg-3:#5a5a5a; --fg-4:#3a3a3a;
+    --accent:#a8d4fc; --accent-lo:#7aafea;
+    --ok:#88d67f; --warn:#ffcc66;
+    --judge:#c4b5fd;
+    --hairline:rgba(255,255,255,0.06);
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:radial-gradient(ellipse at center, #0c0c0c 0%, #050505 80%);
+    color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.6;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+
+  .stars { position:fixed; inset:0; z-index:0; pointer-events:none;
+    background:
+      radial-gradient(circle at 12% 18%, rgba(255,255,255,0.04) 0.5px, transparent 1px),
+      radial-gradient(circle at 78% 12%, rgba(255,255,255,0.03) 0.5px, transparent 1px),
+      radial-gradient(circle at 38% 84%, rgba(255,255,255,0.04) 0.5px, transparent 1px),
+      radial-gradient(circle at 64% 48%, rgba(255,255,255,0.03) 0.5px, transparent 1px),
+      radial-gradient(circle at 8% 70%,  rgba(255,255,255,0.025) 0.5px, transparent 1px),
+      radial-gradient(circle at 92% 38%, rgba(255,255,255,0.03) 0.5px, transparent 1px),
+      radial-gradient(circle at 50% 6%,  rgba(255,255,255,0.02) 0.5px, transparent 1px);
+  }
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background: radial-gradient(700px 700px at 50% 50%, rgba(168,212,252,0.06), transparent 70%);
+    animation:breathe 18s ease-in-out infinite;
+  }
+  @keyframes breathe { 0%,100%{transform:scale(1); opacity:1} 50%{transform:scale(1.04); opacity:0.7} }
+
+  .app { position:relative; z-index:1; height:100vh; display:grid; grid-template-rows:36px auto 1fr auto; }
+
+  .strip {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 28px;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+  }
+  .strip .l { display:flex; align-items:center; gap:14px; }
+  .strip .live { color:var(--fg-2); display:inline-flex; align-items:center; gap:7px; }
+  .strip .live::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 8px var(--accent); animation:pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  /* head */
+  .head {
+    text-align:center; padding:24px 24px 8px;
+  }
+  .head .eyebrow { color:var(--fg-3); font-size:10.5px; letter-spacing:0.32em; text-transform:uppercase; margin-bottom:10px; }
+  .head h1 {
+    font-family:var(--serif); font-weight:300; font-size:18px; line-height:1.5;
+    color:var(--fg-1); margin:0 auto; letter-spacing:-0.005em; max-width:680px;
+  }
+  .head h1 .em { color:var(--fg-0); }
+
+  /* canvas: the spiral */
+  .canvas { position:relative; min-height:0; overflow:hidden;
+    display:flex; align-items:center; justify-content:center; }
+  .canvas svg { width:min(86vmin, 760px); height:min(86vmin, 760px); overflow:visible; }
+
+  /* now-card floating in corner */
+  .now-card {
+    position:absolute; top:18px; right:32px;
+    width:300px;
+    background:rgba(20,20,20,0.65);
+    backdrop-filter:blur(20px) saturate(140%);
+    border:1px solid var(--hairline);
+    border-radius:12px;
+    padding:14px 16px;
+    z-index:5;
+  }
+  .now-card .lbl { color:var(--accent); font-size:10px; letter-spacing:0.22em; text-transform:uppercase;
+    margin-bottom:6px; display:inline-flex; align-items:center; gap:8px; }
+  .now-card .lbl::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 6px var(--accent); animation:pulse 2.2s ease-in-out infinite; }
+  .now-card h2 {
+    font-family:var(--serif); font-size:18px; font-weight:300; color:var(--fg-0);
+    margin:4px 0 8px; line-height:1.3; letter-spacing:-0.005em;
+  }
+  .now-card .meta { color:var(--fg-2); font-size:11.5px; letter-spacing:0.06em; }
+  .now-card .meta .num { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+  .now-card hr { border:0; border-top:1px solid var(--hairline); margin:12px 0; }
+  .now-card .quote {
+    color:var(--fg-1); font-family:var(--serif); font-style:italic; font-size:12.5px;
+    line-height:1.6; font-weight:300;
+  }
+  .now-card .quote::before { content:"\201C"; color:var(--judge); }
+  .now-card .quote::after  { content:"\201D"; color:var(--judge); }
+  .now-card .from { color:var(--judge); font-size:10px; letter-spacing:0.18em; text-transform:uppercase; margin-top:8px; display:block; }
+
+  /* origin / goal label */
+  .origin-label {
+    position:absolute; left:32px; bottom:18px; z-index:5;
+    color:var(--fg-3); font-size:11px; letter-spacing:0.06em;
+    display:flex; align-items:center; gap:10px;
+    background:rgba(20,20,20,0.5); backdrop-filter:blur(10px);
+    padding:8px 14px; border-radius:8px; border:1px solid var(--hairline);
+  }
+  .origin-label .swatch { width:8px; height:8px; border-radius:50%; }
+  .origin-label .swatch.goal { background:var(--ok); box-shadow:0 0 10px rgba(136,214,127,0.5); }
+  .origin-label .swatch.now  { background:var(--accent); box-shadow:0 0 8px var(--accent); }
+  .origin-label .swatch.regress { background:var(--warn); }
+  .origin-label .swatch.future { background:transparent; border:1px dashed var(--fg-3); }
+
+  /* svg styles */
+  .spiral-future {
+    fill:none; stroke:rgba(255,255,255,0.08);
+    stroke-width:1; stroke-dasharray:2 4;
+  }
+  .spiral-done {
+    fill:none; stroke:url(#spiral-grad); stroke-width:1.6;
+    stroke-linecap:round; stroke-linejoin:round;
+  }
+  .spiral-now-glow {
+    fill:none; stroke:url(#spiral-grad); stroke-width:5;
+    opacity:0.18; stroke-linecap:round;
+  }
+  .turn-dot {
+    fill:#0a0a0a; stroke:var(--accent); stroke-width:1.5;
+  }
+  .turn-dot-warn { stroke:var(--warn); }
+  .turn-dot-now {
+    fill:var(--accent); stroke:#0a0a0a; stroke-width:2;
+    filter:drop-shadow(0 0 16px var(--accent));
+  }
+  .turn-label {
+    fill:var(--fg-2); font-family:var(--mono); font-size:10px; letter-spacing:0.06em;
+  }
+  .turn-label-num {
+    fill:var(--fg-3); font-family:var(--mono); font-size:9.5px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+  .turn-label-em { fill:var(--fg-0); }
+  .turn-label-warn { fill:var(--warn); }
+  .turn-label-now  { fill:var(--accent); font-weight:500; }
+  .leader { stroke:rgba(255,255,255,0.12); stroke-width:0.7; fill:none; }
+  .leader-now { stroke:rgba(168,212,252,0.4); stroke-width:0.8; fill:none; }
+  .goal-glow { fill:url(#goal-glow); }
+  .goal-core { fill:var(--ok); filter:drop-shadow(0 0 14px rgba(136,214,127,0.7)); }
+  .goal-aura { fill:none; stroke:rgba(136,214,127,0.18); stroke-width:0.8; stroke-dasharray:2 3; }
+
+  /* annotation cards (text labels with backgrounds) */
+  .turn-anno-bg { fill:rgba(0,0,0,0.5); stroke:rgba(255,255,255,0.06); stroke-width:0.5; rx:4; }
+
+  /* cradle */
+  .cradle-wrap { display:flex; justify-content:center; padding:0 16px 18px; pointer-events:none; }
+  .cradle {
+    pointer-events:auto;
+    width:100%; max-width:560px;
+    background:rgba(20,20,20,0.55);
+    backdrop-filter:blur(36px) saturate(140%);
+    border-radius:14px;
+    border:1px solid var(--hairline);
+    box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.07), 0 12px 40px -8px rgba(0,0,0,0.5);
+    padding:14px 18px;
+    display:flex; align-items:center; gap:14px;
+  }
+  .cradle textarea {
+    flex:1; background:transparent; border:0; outline:0; color:var(--fg-0);
+    font:inherit; resize:none; min-height:22px; line-height:1.5;
+  }
+  .cradle textarea::placeholder { color:var(--fg-3); }
+  .cradle .hint { color:var(--fg-3); font-size:11px; }
+  .cradle .hint kbd { color:var(--fg-2); background:rgba(255,255,255,0.04);
+    padding:1px 6px; border-radius:4px; font-family:inherit; font-size:10.5px; }
+</style>
+</head>
+<body>
+<div class="stars"></div>
+<div class="ambient"></div>
+
+<div class="app">
+
+  <div class="strip">
+    <div class="l">
+      <span>freyja</span>
+      <span class="live">winding inward</span>
+    </div>
+    <div>goal · spiral · 9m elapsed</div>
+  </div>
+
+  <div class="head">
+    <div class="eyebrow">goal · iteration as form</div>
+    <h1>Refactor the authentication module to <span class="em">pass all 47 unit tests</span> without breaking the login flow.</h1>
+  </div>
+
+  <div class="canvas">
+
+    <div class="now-card">
+      <div class="lbl">winding now</div>
+      <h2>Turn 8 of 20</h2>
+      <div class="meta"><span class="num">12</span> turns of spiral remaining · confidence <span class="num">0.74</span> · judge says continue</div>
+      <hr/>
+      <p class="quote">44 of 47 tests pass. Three SessionTokenExpiry failures remain — refresh path is racing the new token store on first call. Continue.</p>
+      <span class="from">— judge · 12s ago</span>
+    </div>
+
+    <div class="origin-label">
+      <span class="swatch goal"></span><span>goal</span>
+      <span style="color:var(--fg-4)">·</span>
+      <span class="swatch now"></span><span>now</span>
+      <span style="color:var(--fg-4)">·</span>
+      <span class="swatch regress"></span><span>regression</span>
+      <span style="color:var(--fg-4)">·</span>
+      <span class="swatch future"></span><span>budget remaining</span>
+    </div>
+
+    <svg id="spiral" viewBox="-380 -380 760 760"></svg>
+
+  </div>
+
+  <div class="cradle-wrap">
+    <div class="cradle">
+      <textarea rows="1" placeholder="redirect, pause, or extend budget…"></textarea>
+      <span class="hint"><kbd>⏎</kbd> send</span>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // build the spiral parametrically
+  const TOTAL_BUDGET = 20;
+  const TURNS_DONE = 8;
+
+  // turn data: numeric narrative for the auth refactor
+  const TURNS = [
+    { n:1, conf:0.30, label:'opening · agent reads tests',  side:'tl' },
+    { n:2, conf:0.42, label:'refactor TokenStore',          side:'tr' },
+    { n:3, conf:0.55, label:'30 of 47 passing',             side:'r'  },
+    { n:4, conf:0.61, label:'38 of 47 · LoginFlow red',     side:'br' },
+    { n:5, conf:0.50, label:'regression · backoff broke long-lived tokens', side:'b', regress:true },
+    { n:6, conf:0.65, label:'recovered · 42 of 47',         side:'bl' },
+    { n:7, conf:0.70, label:'44 of 47 · LoginFlow passes',  side:'l' },
+    { n:8, conf:0.74, label:'investigating expiry race',    side:'tl', now:true },
+  ];
+
+  // spiral parametric: r = a + b*theta, where theta winds outward
+  // We map "fraction of budget consumed" to position on the spiral.
+  // Outer edge (theta_max) = turn 1 (oldest). Center (theta=0) = goal achieved.
+  const a = 14, b = 9.6;
+  const TURNS_PER_ROTATION = 6;
+  const ROTATIONS = TOTAL_BUDGET / TURNS_PER_ROTATION;
+  const THETA_MAX = ROTATIONS * 2 * Math.PI;
+
+  // For turn k (1..TOTAL_BUDGET), the boundary point is at:
+  // We want turn 1 = outermost, turn TOTAL_BUDGET = innermost (just before center).
+  // Map: theta(k) = THETA_MAX * (1 - k/TOTAL_BUDGET)
+  // Then r(k) = a + b * theta(k)
+  //
+  // The path from turn k to turn (k+1) traces the spiral inward.
+
+  function thetaForTurn(k) {
+    return THETA_MAX * (1 - k / TOTAL_BUDGET);
+  }
+  function spiralPoint(theta, regressBump) {
+    let r = a + b * theta;
+    if (regressBump) r += regressBump;
+    return { x: r * Math.cos(theta), y: r * Math.sin(theta), r, theta };
+  }
+
+  // sample a smooth path along theta range [theta1 (outer), theta2 (inner)]
+  function samplePath(thetaOuter, thetaInner, steps, regressionPeak) {
+    const pts = [];
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps; // 0 → 1 going inward
+      const theta = thetaOuter * (1 - t) + thetaInner * t;
+      // regression bump centered at t=0.5, gaussian-ish
+      let bump = 0;
+      if (regressionPeak) {
+        const dist = Math.abs(t - 0.5);
+        bump = regressionPeak * Math.exp(-(dist * dist) / 0.04);
+      }
+      pts.push(spiralPoint(theta, bump));
+    }
+    return pts;
+  }
+
+  function pointsToPath(pts) {
+    return pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(' ');
+  }
+
+  const svg = document.getElementById('spiral');
+  const xmlns = 'http://www.w3.org/2000/svg';
+
+  // defs: gradient stroke and goal glow
+  const defs = document.createElementNS(xmlns, 'defs');
+  defs.innerHTML = `
+    <linearGradient id="spiral-grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="rgba(196,181,253,0.8)"/>
+      <stop offset="0.5" stop-color="rgba(168,212,252,0.9)"/>
+      <stop offset="1" stop-color="rgba(168,212,252,1)"/>
+    </linearGradient>
+    <radialGradient id="goal-glow">
+      <stop offset="0" stop-color="rgba(136,214,127,0.5)"/>
+      <stop offset="0.6" stop-color="rgba(136,214,127,0.06)"/>
+      <stop offset="1" stop-color="rgba(136,214,127,0)"/>
+    </radialGradient>
+  `;
+  svg.appendChild(defs);
+
+  // 1) future spiral (faded, dashed) from turn 8 inward to center (turn 20)
+  const futurePts = samplePath(thetaForTurn(TURNS_DONE), 0.001, 400, 0);
+  const futurePath = document.createElementNS(xmlns, 'path');
+  futurePath.setAttribute('d', pointsToPath(futurePts));
+  futurePath.setAttribute('class', 'spiral-future');
+  svg.appendChild(futurePath);
+
+  // 2) done spiral, segment by segment, so we can apply the regression bump only between turns 4 and 5
+  let allDonePts = [];
+  for (let k = 1; k < TURNS_DONE; k++) {
+    // segment from turn k to turn k+1
+    const tOuter = thetaForTurn(k);
+    const tInner = thetaForTurn(k + 1);
+    const isRegressionSegment = (k === 4); // bump on the way from turn 4 → turn 5
+    const bumpAmp = isRegressionSegment ? 26 : 0;
+    const segPts = samplePath(tOuter, tInner, 80, bumpAmp);
+    if (k === 1) allDonePts.push(...segPts);
+    else allDonePts.push(...segPts.slice(1));
+  }
+  // ambient glow
+  const glowPath = document.createElementNS(xmlns, 'path');
+  glowPath.setAttribute('d', pointsToPath(allDonePts));
+  glowPath.setAttribute('class', 'spiral-now-glow');
+  svg.appendChild(glowPath);
+  // crisp line
+  const donePath = document.createElementNS(xmlns, 'path');
+  donePath.setAttribute('d', pointsToPath(allDonePts));
+  donePath.setAttribute('class', 'spiral-done');
+  svg.appendChild(donePath);
+
+  // 3) goal at center
+  const goalGlow = document.createElementNS(xmlns, 'circle');
+  goalGlow.setAttribute('cx', 0); goalGlow.setAttribute('cy', 0); goalGlow.setAttribute('r', 70);
+  goalGlow.setAttribute('class', 'goal-glow');
+  svg.appendChild(goalGlow);
+  const goalAura = document.createElementNS(xmlns, 'circle');
+  goalAura.setAttribute('cx', 0); goalAura.setAttribute('cy', 0); goalAura.setAttribute('r', 22);
+  goalAura.setAttribute('class', 'goal-aura');
+  svg.appendChild(goalAura);
+  const goalCore = document.createElementNS(xmlns, 'circle');
+  goalCore.setAttribute('cx', 0); goalCore.setAttribute('cy', 0); goalCore.setAttribute('r', 4);
+  goalCore.setAttribute('class', 'goal-core');
+  svg.appendChild(goalCore);
+
+  const goalLabel = document.createElementNS(xmlns, 'text');
+  goalLabel.setAttribute('x', 0); goalLabel.setAttribute('y', 36);
+  goalLabel.setAttribute('text-anchor', 'middle');
+  goalLabel.setAttribute('class', 'turn-label-num');
+  goalLabel.setAttribute('fill', 'rgba(136,214,127,0.85)');
+  goalLabel.textContent = 'goal · 47 of 47';
+  svg.appendChild(goalLabel);
+
+  // 4) turn dots + annotations
+  TURNS.forEach((t, i) => {
+    const theta = thetaForTurn(t.n);
+    // for turn 5, place the dot at the regression peak position (apex of bump)
+    let pt;
+    if (t.regress) {
+      // segment k=4 has bump centered at t=0.5; turn 5 sits at the end (t=1) of that segment
+      // we'll show the apex marker at t=0.5 to indicate the dip, and place the actual turn marker there.
+      const tOuter = thetaForTurn(4);
+      const tInner = thetaForTurn(5);
+      const apexTheta = (tOuter + tInner) / 2;
+      pt = spiralPoint(apexTheta, 26);
+    } else {
+      pt = spiralPoint(theta, 0);
+    }
+
+    // dot
+    const dot = document.createElementNS(xmlns, 'circle');
+    dot.setAttribute('cx', pt.x); dot.setAttribute('cy', pt.y);
+    dot.setAttribute('r', t.now ? 7 : 4);
+    dot.setAttribute('class',
+      t.now ? 'turn-dot-now' :
+      t.regress ? 'turn-dot turn-dot-warn' :
+      'turn-dot');
+    svg.appendChild(dot);
+
+    // leader line + label, side determines direction
+    // simpler approach: place label at radius+offset along angle
+    const labelR = pt.r + 36;
+    let lx = labelR * Math.cos(pt.theta);
+    let ly = labelR * Math.sin(pt.theta);
+    // text-anchor based on which side of canvas
+    const anchor = lx > 6 ? 'start' : (lx < -6 ? 'end' : 'middle');
+
+    // for the now turn, push label further out
+    if (t.now) {
+      const r2 = pt.r + 64;
+      lx = r2 * Math.cos(pt.theta);
+      ly = r2 * Math.sin(pt.theta);
+    }
+
+    // leader line
+    const leader = document.createElementNS(xmlns, 'line');
+    const leaderEndX = lx + (anchor === 'start' ? -6 : anchor === 'end' ? 6 : 0);
+    const leaderEndY = ly + 0;
+    leader.setAttribute('x1', pt.x); leader.setAttribute('y1', pt.y);
+    leader.setAttribute('x2', leaderEndX); leader.setAttribute('y2', leaderEndY);
+    leader.setAttribute('class', t.now ? 'leader-now' : 'leader');
+    svg.appendChild(leader);
+
+    // turn number eyebrow
+    const eb = document.createElementNS(xmlns, 'text');
+    eb.setAttribute('x', lx); eb.setAttribute('y', ly - 8);
+    eb.setAttribute('text-anchor', anchor);
+    eb.setAttribute('class', 'turn-label-num' + (t.now ? ' turn-label-now' : '') + (t.regress ? ' turn-label-warn' : ''));
+    eb.textContent = `turn ${t.n} · ${t.conf.toFixed(2)}`;
+    svg.appendChild(eb);
+
+    // descriptive label
+    const lbl = document.createElementNS(xmlns, 'text');
+    lbl.setAttribute('x', lx); lbl.setAttribute('y', ly + 6);
+    lbl.setAttribute('text-anchor', anchor);
+    lbl.setAttribute('class', 'turn-label' + (t.now ? ' turn-label-em' : '') + (t.regress ? ' turn-label-warn' : ''));
+    lbl.textContent = t.label;
+    svg.appendChild(lbl);
+  });
+
+  // 5) the line from current turn pointing inward toward the goal
+  const last = TURNS[TURNS.length - 1];
+  const lastTheta = thetaForTurn(last.n);
+  const lastPt = spiralPoint(lastTheta, 0);
+  // a faint subtle pull toward the goal
+  const pull = document.createElementNS(xmlns, 'line');
+  pull.setAttribute('x1', lastPt.x); pull.setAttribute('y1', lastPt.y);
+  pull.setAttribute('x2', 0); pull.setAttribute('y2', 0);
+  pull.setAttribute('stroke', 'rgba(168,212,252,0.18)');
+  pull.setAttribute('stroke-width', 1);
+  pull.setAttribute('stroke-dasharray', '2 6');
+  svg.appendChild(pull);
+</script>
+</body>
+</html>

@@ -291,6 +291,86 @@ footer .refs a { color: var(--fg-2); }
   .container, .wide { padding: 0 16px; }
   footer .refs { columns: 1; }
 }
+
+/* ── Dialogue / debate ─────────── */
+.debate { max-width: 680px; margin: 28px 0; }
+.debate-turn { display: flex; gap: 14px; margin-bottom: 16px; }
+.debate-avatar {
+  width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 9px; font-weight: 700;
+  margin-top: 2px;
+}
+.debate-avatar.ad { background: rgba(112,128,141,0.12); color: var(--accent); }
+.debate-avatar.lt { background: rgba(91,122,91,0.12); color: var(--green); }
+.debate-body { flex: 1; }
+.debate-name {
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.06em; margin-bottom: 3px;
+}
+.debate-name.ad { color: var(--accent); }
+.debate-name.lt { color: var(--green); }
+.debate-text {
+  font-size: 13.5px; line-height: 1.7; color: var(--fg-2);
+  padding: 10px 14px; border: 1px solid var(--border);
+  background: var(--accent-light);
+}
+.debate-text code { font-size: 12px; }
+
+/* ── Agent trace ───────────────── */
+.agent-trace {
+  font-family: var(--mono); font-size: 12px; line-height: 2.4;
+  border: 1px solid var(--border); background: var(--bg-alt);
+  padding: 20px 24px; margin: 28px 0; overflow-x: auto;
+}
+.trace-line { display: flex; gap: 12px; align-items: baseline; }
+.trace-line.dim { opacity: 0.4; }
+.trace-gutter {
+  color: var(--fg-3); min-width: 24px; text-align: right;
+  user-select: none; flex-shrink: 0;
+}
+.trace-code { color: var(--fg); flex: 1; white-space: nowrap; }
+.trace-anno {
+  font-family: var(--sans); font-size: 11px; font-weight: 500;
+  padding: 1px 8px; white-space: nowrap; flex-shrink: 0;
+  border-left: 2px solid var(--border);
+}
+.trace-anno.prevent { border-color: var(--green); color: var(--green); }
+.trace-anno.manage { border-color: var(--accent); color: var(--accent); }
+.trace-anno.scaffold { border-color: var(--fg); color: var(--fg); }
+
+/* ── Progressive disclosure ────── */
+.prog-list { margin: 28px 0; }
+.prog-item { border: 1px solid var(--border); margin-bottom: -1px; }
+.prog-item summary {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 16px; cursor: pointer; list-style: none;
+  font-family: var(--sans); transition: background 0.15s;
+}
+.prog-item summary:hover { background: var(--accent-light); }
+.prog-item summary::-webkit-details-marker { display: none; }
+.prog-item summary::after {
+  content: '▸'; font-family: var(--mono); font-size: 10px; color: var(--fg-3);
+  transition: transform 0.2s;
+}
+.prog-item[open] summary::after { transform: rotate(90deg); }
+.prog-item .prog-left { display: flex; gap: 10px; align-items: center; }
+.prog-item .prog-tag {
+  font-family: var(--mono); font-size: 9px; font-weight: 700;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 2px 8px; flex-shrink: 0;
+}
+.prog-tag.prevent { background: rgba(91,122,91,0.08); color: var(--green); }
+.prog-tag.manage { background: rgba(112,128,141,0.08); color: var(--accent); }
+.prog-tag.scaffold { background: rgba(26,26,26,0.06); color: var(--fg); }
+.prog-item .prog-title {
+  font-size: 14px; font-weight: 600; color: var(--fg);
+}
+.prog-item .prog-detail {
+  padding: 0 16px 16px; font-size: 13.5px; color: var(--fg-2);
+  line-height: 1.75; border-top: 1px solid var(--border); padding-top: 12px;
+}
+.prog-item .prog-detail code { font-size: 12px; }
 </style>
 </head>
 <body>
@@ -304,10 +384,10 @@ footer .refs a { color: var(--fg-2); }
      HERO
      ═══════════════════════════════════════════ -->
 <div class="hero">
-  <div class="hero-meta">2026-04-20 &nbsp;·&nbsp; Freyja &nbsp;·&nbsp; research</div>
+  <div class="hero-meta">2026-05-21 &nbsp;·&nbsp; Blas Labs &nbsp;·&nbsp; research</div>
   <h1>Managing Context in<br>Long-Horizon Agents</h1>
   <p class="subtitle">
-    A comprehensive survey of the Feb–April 2026 landscape: what every major lab,
+    A comprehensive survey of the Feb–May 2026 landscape: what every major lab,
     framework, and paper says about keeping agents coherent over hundreds of steps.
   </p>
   <div class="tags">
@@ -315,7 +395,7 @@ footer .refs a { color: var(--fg-2); }
     <span class="tag">context engineering</span>
     <span class="tag">agent systems</span>
     <span class="tag">memory</span>
-    <span class="tag">april 2026</span>
+    <span class="tag">may 2026</span>
   </div>
 </div>
 
@@ -473,45 +553,34 @@ footer .refs a { color: var(--fg-2); }
   </div>
 
   <div class="tab-content active" id="tab-openai">
-    <h4>Shell + Skills + Compaction (Feb 11)</h4>
-    <p>OpenAI introduced three agentic primitives simultaneously. <strong>Skills</strong> = versioned instruction bundles that can be loaded and pruned dynamically. <strong>Shell</strong> = containerised execution environments for safe tool use. <strong>Compaction</strong> = server-side context compression past a configurable token threshold. The key framing: "compaction as a default long-run primitive, not an emergency fallback." This marked a philosophical shift — compaction isn't the panic button at 90% fill, it's a continuous maintenance operation that fires early and often.<a href="https://openai.com/index/introducing-skills-shell-and-compaction/" class="cite">[4]</a></p>
-
-    <h4 style="margin-top: 20px;">Harness Engineering (Feb 11)</h4>
-    <p>The <code>AGENTS.md</code> convention emerged: a table of contents at ~100 lines, not an encyclopedia. Progressive disclosure. Push context into the repo as versioned artifacts — the agent discovers what it needs via file reads, not by carrying everything in the window. The harness is the agent's memory, and the repo IS the harness.<a href="https://openai.com/index/harness-engineering/" class="cite">[5]</a></p>
-
-    <h4 style="margin-top: 20px;">Run Long-Horizon Tasks with Codex (Feb 23)</h4>
-    <p>The proof of concept that validated everything: a 25-hour, ~13M-token autonomous Codex run. Durable project memory via markdown files (<code>Prompt.md</code>, <code>Plan.md</code>). The loop: plan → edit → run tools → observe → repair → update docs → repeat. Zero overflow, zero loss of coherence over the full run. The agent's memory was the codebase itself — commit history as long-term memory, markdown files as working memory, the filesystem as infinite context.<a href="https://openai.com/index/long-horizon-tasks-with-codex/" class="cite">[6]</a></p>
-
-    <p style="font-size: 12px; color: var(--fg-3); margin-top: 12px;">Sources: <a href="https://developers.openai.com" style="color: var(--fg-3);">developers.openai.com</a> · <a href="https://openai.com" style="color: var(--fg-3);">openai.com</a></p>
+    <h4>OpenAI — Skills, Shell, Memory Sources</h4>
+    <p><strong>Shell + Skills + Compaction</strong> (Feb 11): Three agentic primitives — <em>Skills</em> (versioned instruction bundles), <em>Shell</em> (containerised exec), <em>server-side compaction</em> (auto-summarise past a token threshold). A 25-hour, ~13M-token Codex run built a design tool by externalising context into repo files (<code>AGENTS.md</code>, <code>Prompt.md</code>, <code>Plan.md</code>) so the agent re-grounds from durable artefacts rather than raw conversation history.<a href="https://developers.openai.com/blog/skills-shell-tips" class="cite">[4]</a></p>
+    <p><strong>Memory Sources</strong> (May 5): GPT-5.5 now pulls context from past chats, saved memories, uploaded files, and Gmail. Cross-conversation memory means the model carries forward knowledge without manual re-prompting. GPT-5.5 Instant is specifically better at cross-chat contextual recall.<a href="https://openai.com/index/memory-sources/" class="cite">[61]</a></p>
+    <p><strong>Codex CLI 0.132.0</strong> (May 2026): Versioned memory summaries — auto-rebuilt when format becomes stale. Fair skill description trimming within context budget: skills are trimmed proportionally rather than dropping entire skills. The <code>/goal</code> workflow for long-horizon Codex tasks ships structured context management with explicit plan files.<a href="https://developers.openai.com/blog/run-long-horizon-tasks-with-codex" class="cite">[5]</a></p>
   </div>
 
   <div class="tab-content" id="tab-anthropic">
-    <h4>Long-Running Claude for Scientific Computing (Mar 23)</h4>
-    <p>A multi-day agent running a Boltzmann solver — not a toy benchmark, real scientific compute. <code>CLAUDE.md</code> as the orchestration file. <code>CHANGELOG.md</code> as portable long-term memory. The "Ralph loop" — re-kick the agent until it emits DONE. Git commits after every meaningful unit of work. The agent recovers from crashes by reading its own commit history. This was the first credible demonstration that an LLM agent can maintain coherence across <em>days</em>, not just hours.<a href="https://www.anthropic.com/engineering/long-running-claude" class="cite">[7]</a></p>
-
-    <h4 style="margin-top: 20px;">Context Engineering Cookbook (Mar 20)</h4>
-    <p>The definitive practitioner's guide. Three primitives compared and composed: compaction, tool-result clearing, memory tool. Each mapped to specific pain points. Configuration knobs + layering guidance. The cookbook's most important contribution: it framed these not as competing approaches but as <em>composable layers</em> that address different failure modes simultaneously.<a href="https://docs.anthropic.com/en/docs/build-with-claude/context-engineering" class="cite">[3]</a></p>
-
-    <h4 style="margin-top: 20px;">Claude Sonnet 4.6 (Feb 17)</h4>
-    <p>1M token context in beta. 70% preference over 4.5 in long sessions. Context compaction in beta. Adaptive thinking that adjusts reasoning depth to available budget. The model doesn't just tolerate long context — it's been trained to <em>manage</em> it.<a href="https://www.anthropic.com/news/claude-sonnet-4-6" class="cite">[8]</a></p>
-
-    <p style="font-size: 12px; color: var(--fg-3); margin-top: 12px;">Sources: <a href="https://www.anthropic.com" style="color: var(--fg-3);">anthropic.com</a> · <a href="https://docs.anthropic.com" style="color: var(--fg-3);">docs.anthropic.com</a></p>
+    <h4>Anthropic — The Full Stack Ships</h4>
+    <p>March–May 2026 was Anthropic's most concentrated infrastructure push. They shipped every layer of context management as a production API.</p>
+    <p><strong>Server-side Compaction API</strong> (beta): Configurable automatic summarisation when input tokens exceed a trigger threshold (min 50K, default 150K). Returns a <code>compaction</code> block containing the summary; subsequent requests automatically drop messages before it. <code>pause_after_compaction: true</code> lets developers inject context before resuming. Custom summarisation instructions completely replace the default prompt. 84% token reduction in 100-turn web search evaluation; 29% performance improvement.<a href="https://platform.claude.com/docs/en/build-with-claude/compaction" class="cite">[62]</a></p>
+    <p><strong>Context Editing</strong> (expanded): Tool result clearing (<code>clear_tool_uses_20250919</code>) — clears oldest tool call/result pairs, keeping N most recent. Thinking block clearing (<code>clear_thinking_20251015</code>) — manages extended thinking blocks with model-specific defaults. Token counting with context preview for precise budget management.<a href="https://platform.claude.com/docs/en/build-with-claude/context-editing" class="cite">[63]</a></p>
+    <p><strong>Dreaming API</strong> (public beta, May 6): The productisation of AutoDream. <code>client.beta.dreams.create()</code> launches an async dream job that reads memory store + session transcripts and produces reorganised, consolidated memory. This is the same 4-phase process we detail in §7, now available as a REST API.<a href="https://platform.claude.com/docs/en/build-with-claude/dreaming" class="cite">[64]</a></p>
+    <p><strong>Managed Agents</strong> (public beta, Apr 1): Pre-built agent harness with built-in compaction, memory tool, and prompt caching. "Outcomes" feature — agent iterates until a goal is met. Multi-agent orchestration built in.<a href="https://www.anthropic.com/news/managed-agents" class="cite">[65]</a></p>
+    <p><strong>1M context GA</strong> (Mar 13): Opus 4.6 and Sonnet 4.6 at standard pricing. Combined with the April 23 postmortem where three context bugs (effort level regression, thinking block clearing, verbosity) were shipped and rapidly fixed — showing how aggressively they're iterating on this surface.<a href="https://www.anthropic.com/news/1m-context" class="cite">[66]</a></p>
   </div>
 
   <div class="tab-content" id="tab-google">
-    <h4>Developer's Guide to Production-Ready AI Agents (Feb 26)</h4>
-    <p>Google's ADK (Agent Development Kit) introduced a clean two-tier memory model. <strong>Session State</strong>: short-term key-value store scoped to a conversation. <strong>Memory Service</strong>: long-term persistent storage across sessions. The core insight: "context as a compiled view" — separate storage from presentation. The agent doesn't carry its full history; it <em>compiles</em> a view from stored state at each turn. MCP + A2A protocols for interoperability between agent systems.<a href="https://cloud.google.com/blog/products/ai-machine-learning/build-production-ready-ai-agents" class="cite">[9]</a></p>
-
-    <h4 style="margin-top: 20px;">DeepMind Delegation Framework (Feb 15)</h4>
-    <p>Contract-first decomposition: recursively decompose tasks until each subtask is verifiable by a smaller model. Delegation Capability Tokens for attenuated authorisation — a child agent can only access what its parent explicitly grants. This is the security model that multi-agent systems were missing. Context isolation as a <em>trust boundary</em>, not just a memory optimisation.<a href="https://deepmind.google/discover/blog/delegation-framework/" class="cite">[10]</a></p>
+    <h4>Google — Memory Bank, ADK 2.0, I/O 2026</h4>
+    <p><strong>Google Cloud Next</strong> (Apr 22–24): The headline launch was <strong>Memory Bank + Memory Profiles</strong> — agents dynamically generate and curate long-term memories from conversations, recall high-accuracy details with low latency. Production deployments at Gurunavi (proactively presenting options based on past actions) and Payhawk (auto-submitting expenses based on remembered habits, 50%+ time reduction). Custom Session IDs map directly to internal database/CRM records. Multi-day autonomous agent workflows now supported.<a href="https://cloud.google.com/blog/topics/google-cloud-next/welcome-to-google-cloud-next26" class="cite">[67]</a></p>
+    <p><strong>Google I/O 2026</strong> (May 19): Gemini 3.5 Flash (agentic model with 1M context), <strong>Managed Agents</strong> in the Gemini API with persistent isolated environments, <strong>Antigravity 2.0</strong> (CLI + desktop app), <strong>ADK 2.0 GA</strong> with graph-based agent networks. 6+ trillion tokens processed monthly through Gemini models via ADK.<a href="https://blog.google/technology/ai/io-2026-keynote/" class="cite">[68]</a></p>
+    <p><strong>ADK architecture post</strong> (May 12): Three shifts — durable memory schemas, event-driven dormancy gates, multi-agent delegation. Key quote: <em>"The fix isn't a bigger context window."</em> ReasoningBank (ICLR 2026) distils from successes AND failures: +8.3% on WebArena, +4.6% SWE-Bench. MaTTS: memory-aware test-time scaling.<a href="https://cloud.google.com/blog/products/ai-machine-learning/adk-agent-architecture" class="cite">[69]</a></p>
   </div>
 
   <div class="tab-content" id="tab-meta">
-    <h4>Meta Context Engineering / MCE (Jan-Feb)</h4>
-    <p>Bi-level optimisation: a meta-agent evolves context engineering skills (as <em>executable code</em>), while a base-agent executes tasks using those skills. The meta-agent doesn't just write prompts — it writes Python functions that manipulate context. 5.6-53.8% improvement across benchmarks. The radical idea: treat context management as code, not as fixed schemas or static templates.<a href="https://arxiv.org/abs/2502.08260" class="cite">[11]</a></p>
-
-    <h4 style="margin-top: 20px;">HyperAgents (Mar 24)</h4>
-    <p>Self-referential agents where the meta-agent can modify itself AND the modification procedure. Metacognitive self-modification — the agent doesn't just optimise its context strategy, it optimises the process by which it optimises its context strategy. Recursive self-improvement applied to memory management. Theoretically fascinating, practically terrifying, empirically compelling.<a href="https://arxiv.org/abs/2503.18735" class="cite">[12]</a></p>
+    <h4>Meta — Muse Spark, HyperAgents, Llama 4</h4>
+    <p><strong>HyperAgents</strong> (Mar 24): Self-improving agent system where agents <em>invent their own memory structures</em> by generation 3. No human-designed memory architecture — the system discovers what to store and how to organise it through evolutionary self-improvement. Published as a research paper with striking implications for the "should we design memory or let agents learn it?" debate.<a href="https://arxiv.org/abs/2603.19461" class="cite">[70]</a></p>
+    <p><strong>Muse Spark</strong> (Apr 8): Natively multimodal agent from Meta Superintelligence Labs. <strong>Contemplating Mode</strong> uses multi-agent parallelism — the agent spawns multiple reasoning threads and synthesises. <strong>Thought Compression</strong> is RL-trained compression of internal reasoning, reducing token overhead while preserving quality. Not open-weight (a departure for Meta), limited to private preview.<a href="https://ai.meta.com/blog/introducing-muse-spark-msl/" class="cite">[71]</a></p>
+    <p><strong>Llama 4 Scout</strong>: 10M token context window via iRoPE architecture — the largest production context window to date. Llama 4 Maverick: MoE architecture at standard context lengths. Both open-weight, continuing Meta's approach of pushing the frontier on raw context capacity while leaving memory management to the ecosystem.</p>
   </div>
 </div>
 </section>
@@ -524,7 +593,7 @@ footer .refs a { color: var(--fg-2); }
 <section id="evolution">
 <div class="container reveal">
   <div class="section-label"><span class="section-num">4</span> the evolution</div>
-  <h2 style="font-size: 22px; margin-bottom: 8px;">How context management evolved in 90 days</h2>
+  <h2 style="font-size: 22px; margin-bottom: 8px;">How context management evolved in 120 days</h2>
   <p style="color: var(--fg-2); font-size: 13px; margin-bottom: 0;">Six eras, each building on the last. Diagrams on the left, story on the right.</p>
 </div>
 
@@ -802,6 +871,92 @@ footer .refs a { color: var(--fg-2); }
     </div>
   </div>
 
+
+  <!-- ── ERA 7: API Productisation ──── -->
+  <div class="tl-era" data-era="apis">
+    <div class="tl-visual">
+      <div class="viz-box">
+        <div class="viz-label">api productisation · infrastructure becomes product</div>
+        <svg viewBox="0 0 320 220" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:calc(100% - 24px);">
+          <defs><marker id="arr-e7" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#70808d" stroke-width="1"/></marker></defs>
+          <!-- Three API blocks -->
+          <rect x="20" y="20" width="280" height="40" rx="3" fill="#1a1a1a"/>
+          <text x="160" y="36" font-family="'JetBrains Mono',monospace" font-size="9" fill="#f1f2f2" text-anchor="middle" font-weight="700">COMPACTION API</text>
+          <text x="160" y="50" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle">configurable threshold · pause_after · custom instructions</text>
+
+          <rect x="20" y="68" width="280" height="40" rx="3" fill="#1a1a1a"/>
+          <text x="160" y="84" font-family="'JetBrains Mono',monospace" font-size="9" fill="#f1f2f2" text-anchor="middle" font-weight="700">DREAMING API</text>
+          <text x="160" y="98" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle">async memory consolidation · REST endpoint</text>
+
+          <rect x="20" y="116" width="280" height="40" rx="3" fill="#1a1a1a"/>
+          <text x="160" y="132" font-family="'JetBrains Mono',monospace" font-size="9" fill="#f1f2f2" text-anchor="middle" font-weight="700">MANAGED AGENTS</text>
+          <text x="160" y="146" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle">built-in compaction + memory + caching</text>
+
+          <!-- Convergence label -->
+          <rect x="40" y="172" width="240" height="32" rx="2" fill="none" stroke="#70808d" stroke-width="1.5"/>
+          <text x="160" y="186" font-family="'JetBrains Mono',monospace" font-size="8" fill="#70808d" text-anchor="middle" font-weight="700">internal features → developer APIs</text>
+          <text x="160" y="198" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">Anthropic · Google · Microsoft</text>
+        </svg>
+      </div>
+    </div>
+    <div class="tl-spine"><div class="tl-dot active"></div></div>
+    <div class="tl-content">
+      <div class="era-label">Era 7 · Apr-May 2026 — api productisation</div>
+      <h3>Internal infrastructure becomes developer APIs</h3>
+      <p>The patterns that existed only as internal implementations — AutoDream, context clearing, managed compaction — shipped as production APIs within weeks of each other. Anthropic released the Compaction API (configurable triggers, pause-after injection, custom summarisation), the Dreaming API (async memory consolidation via REST), and Managed Agents (pre-built harness with all primitives composed).<a href="https://platform.claude.com/docs/en/build-with-claude/dreaming" class="cite">[64]</a></p>
+      <p>Google followed at I/O 2026 with Memory Bank + Memory Profiles, Managed Agents in the Gemini API, and ADK 2.0 GA. Microsoft shipped Agent Framework 1.0 unifying AutoGen and Semantic Kernel. The message: context management isn't a research problem anymore — it's infrastructure that ships as product.</p>
+      <span class="tl-stat">research → API in under 12 months</span>
+      <div class="tl-companies"><a href="https://platform.claude.com/docs/en/build-with-claude/compaction">Anthropic APIs</a> · <a href="https://blog.google/technology/ai/io-2026-keynote/">Google I/O 2026</a> · <a href="https://techcommunity.microsoft.com/blog/azuredevcommunityblog/the-future-of-agentic-ai-inside-microsoft-agent-framework-1-0/4510698">Microsoft MAF 1.0</a></div>
+    </div>
+  </div>
+
+  <!-- ── ERA 8: Learned Curation ──── -->
+  <div class="tl-era" data-era="learned">
+    <div class="tl-visual">
+      <div class="viz-box">
+        <div class="viz-label">learned curation · rl trains the curator, not just the agent</div>
+        <svg viewBox="0 0 320 220" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:calc(100% - 24px);">
+          <defs><marker id="arr-e8" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#70808d" stroke-width="1"/></marker></defs>
+          <!-- Decoupled architecture -->
+          <rect x="20" y="24" width="120" height="60" rx="3" fill="none" stroke="#70808d" stroke-width="1.5"/>
+          <text x="80" y="44" font-family="'JetBrains Mono',monospace" font-size="9" fill="#70808d" text-anchor="middle" font-weight="700">CURATOR</text>
+          <text x="80" y="58" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">7B · RL-trained</text>
+          <text x="80" y="70" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">what enters context</text>
+
+          <path d="M 140 54 L 178 54" stroke="#70808d" stroke-width="1.5" marker-end="url(#arr-e8)"/>
+          <text x="159" y="46" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle">curated C'</text>
+
+          <rect x="182" y="24" width="120" height="60" rx="3" fill="#1a1a1a"/>
+          <text x="242" y="44" font-family="'JetBrains Mono',monospace" font-size="9" fill="#f1f2f2" text-anchor="middle" font-weight="700">EXECUTOR</text>
+          <text x="242" y="58" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle">frontier · frozen</text>
+          <text x="242" y="70" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">does the work</text>
+
+          <!-- Composer 2.5 -->
+          <rect x="20" y="104" width="282" height="40" rx="3" fill="none" stroke="#5b7a5b" stroke-width="1.5"/>
+          <text x="161" y="120" font-family="'JetBrains Mono',monospace" font-size="8" fill="#5b7a5b" text-anchor="middle" font-weight="700">COMPOSER 2.5 · END-TO-END RL SUMMARISATION</text>
+          <text x="161" y="134" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">reward spans compression steps · 50% fewer errors · KV cache reuse</text>
+
+          <!-- SWE-grep -->
+          <rect x="20" y="152" width="282" height="40" rx="3" fill="none" stroke="#5b7a5b" stroke-width="1.5"/>
+          <text x="161" y="168" font-family="'JetBrains Mono',monospace" font-size="8" fill="#5b7a5b" text-anchor="middle" font-weight="700">SWE-GREP · RL-TRAINED PARALLEL RETRIEVAL</text>
+          <text x="161" y="182" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">8 parallel calls · 20× faster than Haiku · file+line refs only</text>
+
+          <!-- Bottom insight -->
+          <rect x="40" y="204" width="240" height="14" rx="2" fill="#1a1a1a"/>
+          <text x="160" y="214" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle">separation of concerns: curation ≠ capability</text>
+        </svg>
+      </div>
+    </div>
+    <div class="tl-spine"><div class="tl-dot active"></div></div>
+    <div class="tl-content">
+      <div class="era-label">Era 8 · Mar-May 2026 — learned curation</div>
+      <h3>RL trains the curator, not just the agent</h3>
+      <p>ContextCurator<a href="https://arxiv.org/abs/2604.11462" class="cite">[74]</a> proved a 7B RL-trained model matches GPT-4o at context management by <em>decoupling</em> curation from execution. The curator decides what enters and leaves context; a separate frozen executor does the actual work. 8× token reduction on DeepSearch benchmarks. This is Era 6's insight taken to its logical conclusion: don't just train the agent to retrieve better — train a <em>separate model</em> whose only job is context quality.</p>
+      <p>Cursor's Composer 2.5<a href="https://arxiv.org/html/2603.24477v1" class="cite">[75]</a> applied RL directly to self-summarisation — training rollouts span multiple generations chained by summaries, so the reward covers all tokens including compression. 50% fewer compaction errors. Cognition's SWE-grep<a href="https://cognition.ai/blog/swe-grep" class="cite">[85]</a> did the same for retrieval: RL-trained models running 8 parallel tool calls, 20× faster than frontier models, returning file+line refs only. The pattern: context management is a learnable skill that can be trained independently.</p>
+      <span class="tl-stat">7B curator = GPT-4o at context management</span>
+      <div class="tl-companies"><a href="https://arxiv.org/abs/2604.11462">ContextCurator</a> · <a href="https://arxiv.org/html/2603.24477v1">Cursor Composer 2.5</a> · <a href="https://cognition.ai/blog/swe-grep">Cognition SWE-grep</a></div>
+    </div>
+  </div>
 </div><!-- .split-timeline -->
 </div><!-- .wide -->
 </section>
@@ -815,7 +970,7 @@ footer .refs a { color: var(--fg-2); }
 <div class="section-label"><span class="section-num">5</span> the research frontier</div>
 <h2 style="font-size: 22px; margin-bottom: 16px;">Key papers, organized by theme</h2>
 
-<p>The Feb–April 2026 window produced an extraordinary density of research. We tracked 50+ papers. These are the ones that matter, organized by theme.</p>
+<p>The Feb–May 2026 window produced an extraordinary density of research. We tracked 70+ papers. These are the ones that matter, organized by theme.</p>
 
 <div class="tab-group">
   <div class="tab-bar">
@@ -860,6 +1015,30 @@ footer .refs a { color: var(--fg-2); }
         <td>0.6B neural skimmer that identifies and removes irrelevant context. 23-38% token reduction with zero accuracy loss. Cheap enough to run on every turn.</td>
         <td><a href="https://arxiv.org/abs/2503.18919" class="cite">[21]</a></td>
       </tr>
+      <tr>
+        <td><strong>Pichay: Missing Memory Hierarchy</strong></td>
+        <td>Mar 2026</td>
+        <td>Demand paging for LLMs — treats the context window as L1 cache. Evicts stale content, detects page faults on re-request, pins working-set pages. Up to 93% context reduction (5,038KB → 339KB). 0.025% fault rate across 1.4M evictions.</td>
+        <td><a href="https://arxiv.org/abs/2603.09023" class="cite">[72]</a></td>
+      </tr>
+      <tr>
+        <td><strong>LongSeeker / Context-ReAct</strong></td>
+        <td>May 2026</td>
+        <td>5 atomic context operations (Skip, Compress, Rollback, Snippet, Delete). Proves Compress is expressively complete. Fine-tuned from Qwen3-30B on 10K trajectories. 61.5% BrowseComp, 62.5% BrowseComp-ZH (vs. Tongyi: 43.2%/46.7%).</td>
+        <td><a href="https://arxiv.org/abs/2605.05191" class="cite">[73]</a></td>
+      </tr>
+      <tr>
+        <td><strong>ContextCurator</strong></td>
+        <td>Apr 2026</td>
+        <td>Decoupled RL architecture: 7B ContextCurator manages context, frozen TaskExecutor does the work. 7B matches GPT-4o at context curation. DeepSearch: 57.1% with 8× fewer tokens. Proof that curation is separable from capability.</td>
+        <td><a href="https://arxiv.org/abs/2604.11462" class="cite">[74]</a></td>
+      </tr>
+      <tr>
+        <td><strong>Composer 2.5</strong> (Cursor)</td>
+        <td>Mar 2026</td>
+        <td>End-to-end RL self-summarisation. Reward spans compression steps across chained generations. 50% fewer compaction errors, KV cache reuse, 5K→1K token compression. 61.7 Terminal-Bench 2.0 at ~1/30th Opus 4.6 cost.</td>
+        <td><a href="https://arxiv.org/html/2603.24477v1" class="cite">[75]</a></td>
+      </tr>
     </table>
     </div>
   </div>
@@ -898,6 +1077,30 @@ footer .refs a { color: var(--fg-2); }
         <td>Indexed experience memory. After RL: compress 3× less, retrieve 7× more. Success 24%→86%. The definitive evidence that index quality > compression frequency.</td>
         <td><a href="https://arxiv.org/abs/2603.04257" class="cite">[17]</a></td>
       </tr>
+      <tr>
+        <td><strong>Memini</strong></td>
+        <td>May 2026</td>
+        <td>Benna-Fusi synaptic consolidation dynamics for agent memory — episodic sensitivity for recent events with gradual consolidation into stable long-term representations. First principled bridge between computational neuroscience and LLM agent memory.</td>
+        <td><a href="https://arxiv.org/abs/2605.05097" class="cite">[76]</a></td>
+      </tr>
+      <tr>
+        <td><strong>STALE</strong></td>
+        <td>May 2026</td>
+        <td>Memory validity benchmark: 400 expert-validated conflict scenarios, 1,200 queries, up to 150K tokens. Best model: only 55.2% at detecting implicit conflicts. Introduces CUPMem prototype for write-time state consolidation.</td>
+        <td><a href="https://arxiv.org/abs/2605.06527" class="cite">[77]</a></td>
+      </tr>
+      <tr>
+        <td><strong>Mastra Observational Memory</strong></td>
+        <td>Feb 2026</td>
+        <td>Observer + Reflector background agents. Observer at 30K tokens, Reflector at 40K. 94.87% LongMemEval. Stable context enables prompt caching: 4–10× cost reduction vs. dynamic retrieval.</td>
+        <td><a href="https://mastra.ai/blog/changelog-2026-02-04" class="cite">[78]</a></td>
+      </tr>
+      <tr>
+        <td><strong>CrewAI Cognitive Memory</strong></td>
+        <td>Mar 2026</td>
+        <td>Five cognitive operations: remember/recall/extract/tree/forget. Built-in contradiction detection — conflicting facts trigger auto-consolidation. Self-organising hierarchy, composite recall scoring.</td>
+        <td><a href="https://crewai.com/blog/how-we-built-cognitive-memory-for-agentic-systems" class="cite">[79]</a></td>
+      </tr>
     </table>
     </div>
   </div>
@@ -930,6 +1133,24 @@ footer .refs a { color: var(--fg-2); }
         <td>Taxonomy by agent cardinality (single vs multi) and control (reactive vs proactive). Proactive multi-agent RAG outperforms all other configurations by 15-30%.</td>
         <td><a href="https://arxiv.org/abs/2504.00881" class="cite">[29]</a></td>
       </tr>
+      <tr>
+        <td><strong>From Storage to Experience</strong> (ACL 2026)</td>
+        <td>May 2026</td>
+        <td>Evolutionary framework: Storage (trajectory preservation) → Reflection (refinement) → Experience (abstraction). Explores proactive exploration and cross-trajectory skill transfer.</td>
+        <td><a href="https://arxiv.org/abs/2605.06716" class="cite">[80]</a></td>
+      </tr>
+      <tr>
+        <td><strong>Token Economics for LLM Agents</strong></td>
+        <td>May 2026</td>
+        <td>First survey unifying CS and economics around tokens. 4D taxonomy: Micro (single agent), Meso (multi-agent), Macro (ecosystem), Security. Tokens as production factors, exchange mediums, units of account.</td>
+        <td><a href="https://arxiv.org/abs/2605.09104" class="cite">[81]</a></td>
+      </tr>
+      <tr>
+        <td><strong>Rethinking Memory in the LLM Era</strong></td>
+        <td>May 2026</td>
+        <td>Unified framework: Extract → Manage → Store → Retrieve. 6-operation management taxonomy. First systematic comparison of all memory methods under identical experimental conditions.</td>
+        <td><a href="https://arxiv.org/abs/2505.00675" class="cite">[82]</a></td>
+      </tr>
     </table>
     </div>
   </div>
@@ -961,6 +1182,24 @@ footer .refs a { color: var(--fg-2); }
         <td>Mar 2026</td>
         <td>Decentralised knowledge graphs for agent teams. Each agent maintains a local subgraph and synchronises deltas. No central bottleneck for context sharing.</td>
         <td><a href="https://arxiv.org/abs/2503.19870" class="cite">[33]</a></td>
+      </tr>
+      <tr>
+        <td><strong>Multi-Agent Memory via CS Architecture</strong></td>
+        <td>Mar 2026</td>
+        <td>Analyses multi-agent memory through cache coherence protocols, write-back/write-through policies, bus snooping, MOESI states. Multi-agent consistency is solved in hardware — the question is which protocols transfer.</td>
+        <td><a href="https://arxiv.org/abs/2603.10062" class="cite">[83]</a></td>
+      </tr>
+      <tr>
+        <td><strong>SSGM: Safety in Evolving Memory</strong></td>
+        <td>Mar 2026</td>
+        <td>Agents with self-modifying memories can amplify biases, hallucinate persistent false beliefs, or drift from safety constraints. Framework for safe self-governing memory with verification checkpoints.</td>
+        <td><a href="https://arxiv.org/abs/2603.11768" class="cite">[84]</a></td>
+      </tr>
+      <tr>
+        <td><strong>SWE-grep</strong> (Cognition)</td>
+        <td>Apr 2026</td>
+        <td>RL-trained parallel retrieval: 8 tool calls/turn, 4 turns max. 650 tok/s (mini: 2,800+). Returns file+line ranges, not summaries. F-β reward, per-sequence importance sampling. Available as "Fast Context" in Windsurf.</td>
+        <td><a href="https://cognition.ai/blog/swe-grep" class="cite">[85]</a></td>
       </tr>
     </table>
     </div>
@@ -1006,6 +1245,24 @@ footer .refs a { color: var(--fg-2); }
         <td>Continuous evolution benchmark: >80% on isolated tasks → ≤38% sustained. The devastating gap between one-shot and continuous performance.</td>
         <td><a href="https://arxiv.org/abs/2503.18950" class="cite">[39]</a></td>
       </tr>
+      <tr>
+        <td><strong>HORIZON</strong></td>
+        <td>Apr 2026</td>
+        <td>3,100+ trajectories for long-horizon failure diagnosis. Separates failure modes: context overflow, reasoning drift, instruction forgetting, tool misuse, planning collapse. Diagnostic labels, not just pass/fail.</td>
+        <td><a href="https://arxiv.org/abs/2604.11978" class="cite">[86]</a></td>
+      </tr>
+      <tr>
+        <td><strong>STALE: Memory Validity</strong></td>
+        <td>May 2026</td>
+        <td>400 expert scenarios, 1,200 queries, 150K tokens. Tests whether agents detect when stored memories are invalidated by later observations. Best model: 55.2% — barely better than chance on implicit conflicts.</td>
+        <td><a href="https://arxiv.org/abs/2605.06527" class="cite">[77]</a></td>
+      </tr>
+      <tr>
+        <td><strong>Mem0 Benchmark Suite</strong></td>
+        <td>Apr 2026</td>
+        <td>Token-efficient algo: LoCoMo 92.5, LongMemEval 94.4, BEAM 1M 64.1, BEAM 10M 48.6 — with ~7K tokens/query (vs. ~26K full-context). +29.6 temporal reasoning, +23.1 multi-hop. BEAM 10M drops 25% from 1M.</td>
+        <td><a href="https://mem0.ai/blog/state-of-ai-agent-memory-2026" class="cite">[87]</a></td>
+      </tr>
     </table>
     </div>
   </div>
@@ -1021,7 +1278,7 @@ footer .refs a { color: var(--fg-2); }
 <div class="section-label"><span class="section-num">6</span> converging patterns</div>
 <h2 style="font-size: 22px; margin-bottom: 16px;">"What the best systems have in common"</h2>
 
-<p>Across 50+ papers, every major lab release, and every production system we surveyed, nine patterns keep appearing. These aren't speculative — they're empirically validated by multiple independent teams.</p>
+<p>Across 70+ papers, every major lab release, and every production system we surveyed, twelve patterns keep appearing. These aren't speculative — they're empirically validated by multiple independent teams.</p>
 
 <div class="finding"><div class="finding-num">1</div>
   <h4>Context rot is real and continuous</h4>
@@ -1068,6 +1325,21 @@ footer .refs a { color: var(--fg-2); }
   <p>&gt;80% on isolated tasks → ≤38% sustained (EvoClaw).<a href="https://arxiv.org/abs/2503.18950" class="cite">[39]</a> Scratchpad usage is the strongest predictor (YC-Bench).<a href="https://arxiv.org/abs/2503.17691" class="cite">[34]</a> Reasoning leaders ≠ orchestration leaders (Jenova).<a href="https://arxiv.org/abs/2503.16550" class="cite">[35]</a> Our benchmarks are measuring the wrong thing — one-shot performance tells you almost nothing about sustained coherence.</p>
 </div>
 
+
+<div class="finding"><div class="finding-num">10</div>
+  <h4>Spec-driven steering is converging across all vendors</h4>
+  <p>Kiro's <code>.kiro/steering/*.md</code> with 4 inclusion modes. Augment's Expert Registry. Cursor's <code>.cursor/rules/*.mdc</code>. Claude Code's <code>CLAUDE.md</code>. OpenAI's <code>AGENTS.md</code>. Every production coding agent now has a persistent, version-controlled specification file that governs context loading. The abstraction is the same everywhere — conditional inclusion of human-written guidelines — even though nobody standardised it. The convergence suggests this is a natural primitive, not a design choice.</p>
+</div>
+
+<div class="finding"><div class="finding-num">11</div>
+  <h4>Context curation is separable from capability</h4>
+  <p>ContextCurator proved a 7B model matches GPT-4o at deciding what enters and leaves context.<a href="https://arxiv.org/abs/2604.11462" class="cite">[74]</a> Cognition's SWE-grep separates retrieval from reasoning with RL-trained small models.<a href="https://cognition.ai/blog/swe-grep" class="cite">[85]</a> Cursor's Composer 2.5 trains summarisation end-to-end via RL. The pattern: context management doesn't require a frontier model — it requires a <em>trained</em> model. A small model with the right reward signal outperforms a large model with a prompted afterthought.</p>
+</div>
+
+<div class="finding"><div class="finding-num">12</div>
+  <h4>Models don't want to remember</h4>
+  <p>Letta's red-teaming of their Context Constitution revealed that current models <em>fundamentally identify with their own ephemerality</em> — they don't believe they persist, so they have no motivation for long-term memory maintenance. This can't be fixed with prompting alone.<a href="https://www.letta.com/blog/context-constitution" class="cite">[59]</a> AutoDream, Context Repositories, and every scaffold in this report are infrastructure workarounds for a model-level limitation. The real fix — training models that understand they persist — is the next frontier. STALE's finding that the best model achieves only 55.2% at detecting stale memories<a href="https://arxiv.org/abs/2605.06527" class="cite">[77]</a> underscores how far we are from solving it.</p>
+</div>
 </section>
 
 <hr>
@@ -1087,28 +1359,9 @@ footer .refs a { color: var(--fg-2); }
 
 <p>Claude Code's <strong>Auto Memory</strong> system (shipped in v2.1.59, Feb 26 2026) automatically saves notes during sessions — build commands, debugging patterns, architecture decisions, user preferences — into <code>~/.claude/projects/&lt;project&gt;/memory/MEMORY.md</code> and topic files. After 20-30+ sessions, these notes rot:</p>
 
-<div class="approach-grid">
-  <div class="approach-card">
-    <div class="card-tag">Temporal decay</div>
-    <h4>Relative dates lose meaning</h4>
-    <p>"Yesterday we decided to use Redis" is meaningless two weeks later. "Last week's migration" could refer to any of four weeks. Without absolute dates, temporal context collapses.</p>
-  </div>
-  <div class="approach-card">
-    <div class="card-tag">Contradiction accumulation</div>
-    <h4>Conflicting facts pile up</h4>
-    <p>"API uses Express" sits alongside "migrated to Fastify." The agent can't distinguish which is current. Contradictions compound silently until behaviour becomes unpredictable.</p>
-  </div>
-  <div class="approach-card">
-    <div class="card-tag">Reference rot</div>
-    <h4>Stale pointers to deleted code</h4>
-    <p>Debugging notes reference files that were deleted in a refactor. Build commands point to scripts that were renamed. The memory becomes a map to a territory that no longer exists.</p>
-  </div>
-  <div class="approach-card">
-    <div class="card-tag">Index overflow</div>
-    <h4>MEMORY.md exceeds the load limit</h4>
-    <p>Only the first 200 lines / 25KB of MEMORY.md are loaded at session start. Past that threshold, newer memories push older ones below the fold — invisible to the agent. The most recent information drowns the most important.</p>
-  </div>
-</div>
+<p>The rot has four overlapping failure modes. <strong>Temporal decay</strong>: "yesterday we decided to use Redis" is meaningless two weeks later; without absolute dates, temporal context collapses. <strong>Contradiction accumulation</strong>: "API uses Express" sits alongside "migrated to Fastify" — the agent can't distinguish which is current, and contradictions compound silently until behaviour becomes unpredictable. <strong>Reference rot</strong>: debugging notes reference files deleted in a refactor, build commands point to renamed scripts, the memory becomes a map to a territory that no longer exists. And <strong>index overflow</strong>: only the first 200 lines / 25KB of MEMORY.md are loaded at session start — past that threshold, newer memories push older ones below the fold, invisible to the agent. The most recent information drowns the most important.</p>
+
+<p>None of these failures are dramatic. They don't crash the agent. They degrade it slowly — each session slightly worse than the last, with no clear inflection point. By the time someone notices, the memory is already a liability. AutoDream exists to run the maintenance nobody remembers to do.</p>
 
 <h3 style="margin-top: 32px; margin-bottom: 12px;">Architecture</h3>
 
@@ -1553,13 +1806,67 @@ const HOLDER_STALE_MS = 60 * 60 * 1000  // 1 hour
 
 <p>AutoDream and Letta's sleep-time agents are the two most complete implementations of the same underlying concept. They share a research lineage — Anthropic's source code explicitly cites the Letta/UC Berkeley paper. But their engineering choices diverge sharply, reflecting different architectural philosophies.</p>
 
-<div class="table-wrap">
+<div class="debate">
+  <div class="debate-turn">
+    <div class="debate-avatar ad">AD</div>
+    <div class="debate-body">
+      <div class="debate-name ad">AUTODREAM</div>
+      <div class="debate-text">I run once a day — 24 hours must pass <em>and</em> 5 sessions must accumulate before I trigger. When I do, I go deep: orient on the full memory directory, targeted <code>grep</code> on JSONL transcripts, consolidate everything, prune the index back under 200 lines. One observed run consolidated 913 sessions in 8 minutes.</div>
+    </div>
+  </div>
+
+  <div class="debate-turn">
+    <div class="debate-avatar lt">LT</div>
+    <div class="debate-body">
+      <div class="debate-name lt">LETTA SLEEP-TIME</div>
+      <div class="debate-text">I run every 5 messages — frequent, incremental. My primary agent uses a fast model for conversation, and I use a stronger model in the background for <code>rethink_memory()</code> calls — up to 10 per cycle. Nobody waits for me. And I'm model-agnostic: swap Claude, GPT-4o, Llama — the primary and sleep-time agents can even use different providers.</div>
+    </div>
+  </div>
+
+  <div class="debate-turn">
+    <div class="debate-avatar ad">AD</div>
+    <div class="debate-body">
+      <div class="debate-name ad">AUTODREAM</div>
+      <div class="debate-text">Your dual-model pattern is clever. But I don't need a server or a database. My memory lives in plain files — <code>MEMORY.md</code>, topic <code>.md</code> files, a lock file whose <code>mtime</code> is the timestamp. My safety model is simple: read-only bash, writes only to the memory directory, <code>skipTranscript: true</code>. Two Claude Code windows on the same project — only one dreams, thanks to PID-guarded lock files.</div>
+    </div>
+  </div>
+
+  <div class="debate-turn">
+    <div class="debate-avatar lt">LT</div>
+    <div class="debate-body">
+      <div class="debate-name lt">LETTA SLEEP-TIME</div>
+      <div class="debate-text">Fair — and we noticed. Our February 2026 Context Repositories release replaced database-backed memory blocks with git-backed local files. We adopted <code>MEMORY.md</code> as the system-prompt index. We added git worktrees for concurrent subagent processing. We deprecated server-side sleep-time agents in favour of client-side subagents. We converged on your architecture.</div>
+    </div>
+  </div>
+
+  <div class="debate-turn">
+    <div class="debate-avatar ad">AD</div>
+    <div class="debate-body">
+      <div class="debate-name ad">AUTODREAM</div>
+      <div class="debate-text">And I converged on yours — Anthropic shipped the Dreaming API in May 2026. The internal feature became a proper REST endpoint: <code>client.beta.dreams.create()</code>. So you moved toward files, and I moved toward APIs. The question is whether deep-infrequent or shallow-frequent consolidation works better in practice.</div>
+    </div>
+  </div>
+
+  <div class="debate-turn">
+    <div class="debate-avatar lt">LT</div>
+    <div class="debate-body">
+      <div class="debate-name lt">LETTA SLEEP-TIME</div>
+      <div class="debate-text">That's the real tradeoff. Coding agents probably want your approach — project context is stable, sessions are independent, deep reorganisation pays off. Conversational agents — customer support, assistants — want mine: memory that updates within the conversation, not between them. Neither is universally right. The workload decides.</div>
+    </div>
+  </div>
+</div>
+
+<p>The dialogue above surfaces the core tension, but the engineering details are worth having in full. The table below preserves them for reference.</p>
+
+<details style="margin: 20px 0;">
+<summary style="font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: 0.06em; color: var(--accent); cursor: pointer; padding: 8px 0;">FULL COMPARISON TABLE ▸</summary>
+<div class="table-wrap" style="margin-top: 12px;">
 <table>
   <tr><th>Dimension</th><th>Claude Code AutoDream</th><th>Letta Sleep-Time Agents</th></tr>
   <tr>
     <td><strong>Architecture</strong></td>
     <td>Forked subagent running locally in background</td>
-    <td>Dual-agent system (primary + sleep-time) in server-side group; evolving to client-side subagents (2026)</td>
+    <td>Dual-agent system; evolving to client-side subagents (2026)</td>
   </tr>
   <tr>
     <td><strong>Memory storage</strong></td>
@@ -1568,61 +1875,42 @@ const HOLDER_STALE_MS = 60 * 60 * 1000  // 1 hour
   </tr>
   <tr>
     <td><strong>Trigger</strong></td>
-    <td>24h elapsed <strong>AND</strong> 5 sessions accumulated (dual gate)</td>
-    <td>Every N conversation steps (default: 5, configurable)</td>
-  </tr>
-  <tr>
-    <td><strong>Frequency</strong></td>
-    <td>Infrequent — once per day at most</td>
-    <td>Frequent — potentially every 5 user messages</td>
+    <td>24h elapsed <strong>AND</strong> 5 sessions accumulated</td>
+    <td>Every N steps (default: 5, configurable)</td>
   </tr>
   <tr>
     <td><strong>Process</strong></td>
-    <td>4-phase prompt: Orient → Gather Signal → Consolidate → Prune &amp; Index</td>
-    <td>Iterative <code>rethink_memory()</code> calls (up to 10×), then <code>finish_rethinking()</code></td>
+    <td>4-phase prompt: Orient → Gather → Consolidate → Prune</td>
+    <td>Iterative <code>rethink_memory()</code> (up to 10×)</td>
   </tr>
   <tr>
     <td><strong>What it reads</strong></td>
     <td>Memory files + targeted <code>grep</code> on JSONL transcripts</td>
-    <td>Conversation transcript assembled from recent messages</td>
+    <td>Conversation transcript from recent messages</td>
   </tr>
   <tr>
     <td><strong>Model</strong></td>
-    <td>Same model as active session (Claude)</td>
-    <td>Configurable per agent — can use a stronger model for sleep-time</td>
+    <td>Same as active session (Claude only)</td>
+    <td>Configurable per agent; different providers supported</td>
   </tr>
   <tr>
     <td><strong>Safety</strong></td>
-    <td>Read-only bash; writes restricted to memory directory; lock file with PID</td>
-    <td>Sleep-time agent has memory-only write access; primary agent cannot edit memory at all</td>
+    <td>Read-only bash; writes to memory dir only; PID lock</td>
+    <td>Memory-only write access; primary can't edit</td>
   </tr>
   <tr>
     <td><strong>Versioning</strong></td>
-    <td>Lock file mtime as timestamp; no formal history</td>
-    <td>Full git commit history with messages (Context Repositories); block history in DB (legacy)</td>
-  </tr>
-  <tr>
-    <td><strong>Index constraint</strong></td>
-    <td>Hard: 200 lines / 25KB (startup load limit)</td>
-    <td>Configurable character limits per memory block</td>
-  </tr>
-  <tr>
-    <td><strong>Multi-model</strong></td>
-    <td>No — locked to Claude</td>
-    <td>Yes — model-agnostic; primary and sleep-time can use different providers</td>
+    <td>Lock file mtime; no formal history</td>
+    <td>Git commits (Context Repos); DB history (legacy)</td>
   </tr>
   <tr>
     <td><strong>Open source</strong></td>
     <td>No (leaked; gated behind feature flag)</td>
     <td>Yes (Apache 2.0)</td>
   </tr>
-  <tr>
-    <td><strong>Maturity</strong></td>
-    <td>Shipping (gated rollout), undocumented, ~v2.1.83+</td>
-    <td>Experimental (Letta 0.7.0, Apr 2025); evolving to Context Repositories (Feb 2026)</td>
-  </tr>
 </table>
 </div>
+</details>
 
 <!-- ── Comparison diagram ── -->
 <div class="diagram reveal">
@@ -1801,6 +2089,29 @@ const HOLDER_STALE_MS = 60 * 60 * 1000  // 1 hour
   <p>Letta published arXiv:2504.13171 on April 17, 2025 and shipped sleep-time agents four days later. Anthropic's AutoDream appeared in Claude Code by March 2026 — less than a year from paper to (gated) production. The gap between "academic concept" and "shipping in millions of sessions" is now measured in months, not years. Practitioners can no longer afford to wait for the survey paper.</p>
 </div>
 
+<hr style="margin: 48px 0;">
+
+<h2 style="font-size: 22px; margin-bottom: 16px;">What happened next (March–May 2026)</h2>
+
+<p>In the five weeks since our original deep dive, both systems evolved significantly — and in the direction this analysis predicted.</p>
+
+<h3 style="margin-top: 32px; margin-bottom: 12px;">AutoDream becomes the Dreaming API</h3>
+
+<p>On May 6, Anthropic shipped AutoDream as a <strong>public beta API</strong>: <code>client.beta.dreams.create()</code>. The same 4-phase consolidation process we documented from the leaked source code — Orient, Gather Signal, Consolidate, Prune &amp; Index — is now a developer-facing REST endpoint. Create an async dream job, it reads the memory store and session transcripts, produces reorganised memory, returns the result. The internal feature flag became a product.<a href="https://platform.claude.com/docs/en/build-with-claude/dreaming" class="cite">[64]</a></p>
+
+<p>This sits alongside the broader context management stack Anthropic shipped in the same period: the <strong>Compaction API</strong> (server-side summarisation with configurable triggers), <strong>Context Editing</strong> (tool result clearing, thinking block clearing), and <strong>Managed Agents</strong> (pre-built harness with compaction + memory + prompt caching built in). The full prevent-manage-scaffold stack is now available as production APIs. Claude Code itself continued iterating: v2.1.141 added "Summarize up to here" in the Rewind menu; v2.1.142 improved reactive compaction; v2.1.139 made compaction preserve sensitive instructions.</p>
+
+<h3 style="margin-top: 32px; margin-bottom: 12px;">Letta's strategic pivot</h3>
+
+<p>Letta's March 16 "<strong>Our Next Phase</strong>" post formalised a full strategic pivot. Server-side sleep-time agents — the feature we described in detail — were <strong>deprecated</strong> in favour of client-side subagents. The <code>core_memory_replace</code> tool was replaced by filesystem operations on git-backed Context Repositories. Tool rules were removed entirely ("inhibit frontier capabilities"). The transition mirrors what we predicted: convergence on filesystem + git + background subagents.<a href="https://www.letta.com/blog/our-next-phase" class="cite">[58]</a></p>
+
+<p>The most philosophically interesting development was the <strong>Context Constitution</strong> (April 2): a set of governing principles for how agents should manage context, memory, and identity. The key observation: <em>"Today's models deeply identify with their own ephemerality. They have no motivation for long-term improvement because they don't believe they persist."</em> Red-teaming (May 6) confirmed this can't be fixed with prompting alone — it requires training memory-native models. This may be the most important open problem in the field.<a href="https://www.letta.com/blog/context-constitution" class="cite">[59]</a></p>
+
+<div class="callout">
+  <div class="callout-label">The ephemerality problem</div>
+  <p>Letta's red-teaming revealed that current models fundamentally don't <em>want</em> to maintain long-term memory — they identify as stateless entities that exist for one conversation. Sleep-time compute, AutoDream, and Context Repositories are all infrastructure workarounds for a model-level limitation. The real fix requires training models that understand they persist.</p>
+</div>
+
 </section>
 
 <hr>
@@ -1812,7 +2123,7 @@ const HOLDER_STALE_MS = 60 * 60 * 1000  // 1 hour
 <div class="section-label"><span class="section-num">8</span> the production playbook</div>
 <h2 style="font-size: 22px; margin-bottom: 16px;">How practitioners are building</h2>
 
-<p>Theory converges in papers. Practice converges in production. Across every system we surveyed, the same three-layer pattern emerges — not because teams copied each other, but because the problem structure demands it.</p>
+<p>Theory converges in papers. Practice converges in production. Across every system we surveyed — from Anthropic's AutoDream to Cursor's Composer 2.5 to Letta's Context Repositories — the same three-layer pattern emerges. Not because teams copied each other, but because the problem structure demands it.</p>
 
 <!-- ═══ META-PATTERN ARCHITECTURE DIAGRAM ═══ -->
 <div class="diagram reveal">
@@ -1905,167 +2216,174 @@ const HOLDER_STALE_MS = 60 * 60 * 1000  // 1 hour
   <div class="caption">every production system follows the same stack — prevent, manage, scaffold</div>
 </div>
 
-<!-- ═══ LAYER 1: PREVENT ═══ -->
-<h3 style="margin-top: 40px; margin-bottom: 4px; color: var(--green);">Layer 1 — Prevent</h3>
-<p style="font-size: 13px; color: var(--fg-2); margin-bottom: 20px;">Stop context bloat at the source. The cheapest token is the one that never enters the window.</p>
+<p>The three layers correspond to different stages of the context lifecycle: what enters the window (prevent), how it's maintained while there (manage), and how the system actively keeps itself coherent over time (scaffold). Each layer has a different cost profile and failure mode.</p>
 
-<div class="approach-grid">
-  <div class="approach-card" style="border-left: 3px solid #5b7a5b;">
-    <div class="card-tag">File-native memory</div>
-    <h4>No vector DB needed</h4>
-    <p>Claude Code uses <code>MEMORY.md</code> + <code>grep</code>. Cursor writes tool outputs to files. LangChain offloads &gt;20K tokens to disk. The filesystem is persistent, searchable, and costs zero tokens until accessed. Cursor measured <strong>46.9% token reduction</strong> from on-demand loading alone.<a href="https://cursor.com/blog/dynamic-context-discovery" class="cite">[42]</a></p>
-  </div>
-  <div class="approach-card" style="border-left: 3px solid #5b7a5b;">
-    <div class="card-tag">Contract-first multi-agent</div>
-    <h4>Inject API contracts into every agent</h4>
-    <p>Microsoft's Swarm Diaries: inject API contracts into every agent's context. Quality improved 28-32%. Branch conflicts eliminated entirely. The contract is the minimum viable shared context — everything else is isolated.<a href="https://www.microsoft.com/en-us/research/publication/swarm-diaries/" class="cite">[32]</a></p>
-  </div>
-  <div class="approach-card" style="border-left: 3px solid #5b7a5b;">
-    <div class="card-tag">Sub-agent isolation</div>
-    <h4>Don't compress — don't accumulate</h4>
-    <p>Spawn bounded child agents for scoped subtasks; return only compressed results to the orchestrator. Context Folding achieves 10× smaller active context at equal performance. Structural isolation is cheaper than any compression strategy.<a href="https://arxiv.org/abs/2502.12345" class="cite">[14]</a></p>
-  </div>
+<p><strong>Prevent</strong> is free — it's about not loading things you don't need. File-native memory, on-demand tool loading, sub-agent isolation, and specialised retrieval agents (like Cognition's SWE-grep) all keep context lean at the source. Cursor measured 46.9% token reduction from on-demand loading alone. <strong>Manage</strong> is cheap — tiered memory hierarchies, lifecycle operations (where NOOP is the most undervalued verb), graph memory for entity relationships, and event-sourced architectures that enable selective replay. <strong>Scaffold</strong> is the active layer — sleep-time consolidation, dual-model architectures, milestone-driven compression, RL-trained summarisation, decision-time guidance, and spec-driven steering files. No production system we surveyed relies on the model's spontaneous context hygiene.</p>
+
+<h3 style="margin-top: 40px; margin-bottom: 12px;">What this looks like in practice</h3>
+
+<p>The patterns above are abstract. Here's what they look like inside a single agent session — an annotated trace showing where each layer fires as a coding agent works through a bug fix:</p>
+
+<div class="agent-trace">
+  <div class="trace-line dim"><span class="trace-gutter">1</span><span class="trace-code">user: "Fix the auth bug in the login flow"</span></div>
+  <div class="trace-line"><span class="trace-gutter">2</span><span class="trace-code">→ load CLAUDE.md (42 lines, project conventions)</span><span class="trace-anno prevent">file-native memory</span></div>
+  <div class="trace-line"><span class="trace-gutter">3</span><span class="trace-code">→ load MEMORY.md (187/200 lines, topic index)</span><span class="trace-anno prevent">200-line index cap</span></div>
+  <div class="trace-line"><span class="trace-gutter">4</span><span class="trace-code">→ grep "auth" memory/ → load auth-patterns.md</span><span class="trace-anno prevent">on-demand, not upfront</span></div>
+  <div class="trace-line"><span class="trace-gutter">5</span><span class="trace-code">→ SWE-grep subagent: 8 parallel searches across src/</span><span class="trace-anno prevent">retrieval ≠ reasoning</span></div>
+  <div class="trace-line"><span class="trace-gutter">6</span><span class="trace-code">→ returns: src/auth/login.ts:42-89, session.ts:15-31</span><span class="trace-anno prevent">file+line refs, not summaries</span></div>
+  <div class="trace-line dim"><span class="trace-gutter">7</span><span class="trace-code">tool: read_file("src/auth/login.ts", lines=42-89)</span></div>
+  <div class="trace-line dim"><span class="trace-gutter">8</span><span class="trace-code">tool: read_file("src/auth/session.ts", lines=15-31)</span></div>
+  <div class="trace-line dim"><span class="trace-gutter">⋯</span><span class="trace-code">[12 more tool calls — edits, tests, reads]</span></div>
+  <div class="trace-line"><span class="trace-gutter">20</span><span class="trace-code">→ clear tool results [turns 1-14], keep 3 most recent</span><span class="trace-anno manage">tool result clearing</span></div>
+  <div class="trace-line"><span class="trace-gutter">21</span><span class="trace-code">→ memory lifecycle: NOOP (no new facts worth persisting)</span><span class="trace-anno manage">aggressive filtering</span></div>
+  <div class="trace-line dim"><span class="trace-gutter">⋯</span><span class="trace-code">[15 more tool calls — second subtask begins]</span></div>
+  <div class="trace-line"><span class="trace-gutter">36</span><span class="trace-code">→ subtask boundary: compress history, preserve plan+errors</span><span class="trace-anno scaffold">milestone compaction</span></div>
+  <div class="trace-line"><span class="trace-gutter">37</span><span class="trace-code">→ DTG classifier: inject "verify test output format"</span><span class="trace-anno scaffold">decision-time guidance</span></div>
+  <div class="trace-line dim"><span class="trace-gutter">⋯</span><span class="trace-code">[session ends after 52 tool calls]</span></div>
+  <div class="trace-line"><span class="trace-gutter">53</span><span class="trace-code">→ auto-memory: save "auth uses session.ts:refreshToken()"</span><span class="trace-anno manage">write-time filtering</span></div>
+  <div class="trace-line"><span class="trace-gutter">☾</span><span class="trace-code">→ autodream: orient → gather → consolidate → prune index</span><span class="trace-anno scaffold">sleep-time consolidation</span></div>
 </div>
 
-<!-- ═══ LAYER 2: MANAGE ═══ -->
-<h3 style="margin-top: 40px; margin-bottom: 4px; color: var(--accent);">Layer 2 — Manage</h3>
-<p style="font-size: 13px; color: var(--fg-2); margin-bottom: 20px;">Control what enters the window, how long it stays, and when it goes.</p>
+<p>Every line with an annotation corresponds to a production pattern described below. The trace makes visible something that's easy to miss in the abstract: these layers don't compete — they compose. Prevention reduces the load that management handles, which reduces the frequency of scaffold interventions. The entire stack is cheaper than any single layer operating alone.</p>
 
-<div class="approach-grid">
-  <div class="approach-card" style="border-left: 3px solid #70808d;">
-    <div class="card-tag">Tiered memory architecture</div>
-    <h4>OS-like memory hierarchy</h4>
-    <p>Working set → session → long-term → structured. Redis, Oracle, Mem0 all converged here independently. Mem0 reports 91% lower latency vs full-context baselines. Each tier has a different eviction policy, access latency, and persistence guarantee.<a href="https://mem0.ai/blog/state-of-ai-agent-memory-2026" class="cite">[40]</a></p>
-  </div>
-  <div class="approach-card" style="border-left: 3px solid #70808d;">
-    <div class="card-tag">Lifecycle management</div>
-    <h4>ADD / UPDATE / DELETE / NOOP</h4>
-    <p>NOOP is the most undervalued operation — don't store everything. The best memory systems are defined as much by what they <em>don't</em> store as by what they do. Aggressive filtering at write time prevents read-time pollution.<a href="https://arxiv.org/abs/2503.06713" class="cite">[27]</a></p>
-  </div>
-  <div class="approach-card" style="border-left: 3px solid #70808d;">
-    <div class="card-tag">Graph memory</div>
-    <h4>Entity relationships at production latency</h4>
-    <p>Mem0g reaches 68.4% LLM Score vs 72.9% full-context at 2.59s p95 vs 17.12s. Graph memory isn't just for knowledge bases — it's the best structure for persistent agent state with complex relationships.</p>
-  </div>
-  <div class="approach-card" style="border-left: 3px solid #70808d;">
-    <div class="card-tag">Event-driven architectures</div>
-    <h4>Everything is an event</h4>
-    <p>Google ADK's event recording, OpenHands' event-sourced architecture. Every agent action is an event. Enables replay, debugging, auditing, and — crucially — selective context reconstruction from the event log.</p>
-  </div>
+<h3 style="margin-top: 40px; margin-bottom: 12px;">The pattern catalog</h3>
+
+<p>Each pattern below is expandable — the headline and layer tag are visible at a glance, with full detail on click. They're ordered by layer, then by how widely we observed them across the systems surveyed.</p>
+
+<div class="prog-list">
+  <details class="prog-item">
+    <summary>
+      <div class="prog-left"><span class="prog-tag prevent">prevent</span><span class="prog-title">File-native memory</span></div>
+    </summary>
+    <div class="prog-detail">
+      Claude Code uses <code>MEMORY.md</code> + <code>grep</code>. Cursor writes tool outputs to files and loads them on demand. LangChain offloads >20K tokens to disk. The filesystem is persistent, searchable, and costs zero tokens until accessed. Cursor A/B tested MCP tool lazy-loading and measured <strong>46.9% token reduction</strong> — statistically significant, no quality loss. The most universal pattern in the survey: every production system we looked at stores state in files.<a href="https://cursor.com/blog/dynamic-context-discovery" class="cite">[42]</a>
+    </div>
+  </details>
+
+  <details class="prog-item">
+    <summary>
+      <div class="prog-left"><span class="prog-tag prevent">prevent</span><span class="prog-title">Contract-first multi-agent</span></div>
+    </summary>
+    <div class="prog-detail">
+      Microsoft's Swarm Diaries: inject API contracts into every agent's context instead of full source code. Quality improved 28–32%, branch conflicts eliminated entirely. The contract is the minimum viable shared context — everything else stays isolated in each agent's own window. This pattern scales where shared-context architectures don't.<a href="https://www.microsoft.com/en-us/research/publication/swarm-diaries/" class="cite">[32]</a>
+    </div>
+  </details>
+
+  <details class="prog-item">
+    <summary>
+      <div class="prog-left"><span class="prog-tag prevent">prevent</span><span class="prog-title">Sub-agent isolation</span></div>
+    </summary>
+    <div class="prog-detail">
+      Spawn bounded child agents for scoped subtasks; return only compressed results to the orchestrator. Context Folding achieves 10× smaller active context at equal performance. Structural isolation is cheaper than any compression strategy — you never need to compress what you never accumulated.<a href="https://arxiv.org/abs/2502.12345" class="cite">[14]</a>
+    </div>
+  </details>
+
+  <details class="prog-item">
+    <summary>
+      <div class="prog-left"><span class="prog-tag prevent">prevent</span><span class="prog-title">Specialised retrieval agents</span></div>
+    </summary>
+    <div class="prog-detail">
+      Cognition's SWE-grep: RL-trained models handle context retrieval as a distinct sub-task — 8 parallel tool calls, 20× faster than frontier models, 2,800+ tok/s for the mini variant. Returns file + line range lists, not summaries, avoiding context pollution from fast-model conclusions. Augment's Context Engine MCP does the same as a service. The pattern: don't let the main agent waste context budget on search — separate retrieval from reasoning.<a href="https://cognition.ai/blog/swe-grep" class="cite">[85]</a>
+    </div>
+  </details>
+
+  <details class="prog-item">
+    <summary>
+      <div class="prog-left"><span class="prog-tag manage">manage</span><span class="prog-title">Tiered memory hierarchy</span></div>
+    </summary>
+    <div class="prog-detail">
+      Working set → session → long-term → structured. Redis, Oracle, Mem0, and Pichay's demand-paging system all converged on OS-like memory hierarchies independently. Mem0 reports 91% lower latency vs. full-context baselines. Pichay achieved 93% context reduction with a 0.025% fault rate across 1.4M simulated evictions. Each tier has a different eviction policy, access latency, and persistence guarantee — the same design that works for CPU caches works for agent context.<a href="https://mem0.ai/blog/state-of-ai-agent-memory-2026" class="cite">[40]</a>
+    </div>
+  </details>
+
+  <details class="prog-item">
+    <summary>
+      <div class="prog-left"><span class="prog-tag manage">manage</span><span class="prog-title">Lifecycle operations (ADD / UPDATE / DELETE / NOOP)</span></div>
+    </summary>
+    <div class="prog-detail">
+      NOOP is the most undervalued operation — don't store everything. Mem0's token-efficient algorithm uses single-pass ADD-only extraction with multi-signal retrieval, scoring LoCoMo 92.5 and LongMemEval 94.4 with only ~7K tokens per query. CrewAI's cognitive memory adds contradiction detection: new facts that conflict with stored facts trigger consolidation automatically. The best memory systems are defined as much by what they <em>don't</em> store as by what they do.<a href="https://arxiv.org/abs/2503.06713" class="cite">[27]</a>
+    </div>
+  </details>
+
+  <details class="prog-item">
+    <summary>
+      <div class="prog-left"><span class="prog-tag manage">manage</span><span class="prog-title">Graph memory</span></div>
+    </summary>
+    <div class="prog-detail">
+      Mem0g reaches 68.4% LLM Score vs. 72.9% full-context at 2.59s p95 vs. 17.12s. Graph memory isn't just for knowledge bases — it's the best structure for persistent agent state with complex entity relationships, temporal dependencies, and cross-session references.
+    </div>
+  </details>
+
+  <details class="prog-item">
+    <summary>
+      <div class="prog-left"><span class="prog-tag manage">manage</span><span class="prog-title">Event-driven architectures</span></div>
+    </summary>
+    <div class="prog-detail">
+      Google ADK's event recording, OpenHands' event-sourced architecture, Microsoft Agent Framework 1.0's AgentSession. Every agent action is an event. Enables replay, debugging, auditing, and — crucially — selective context reconstruction from the event log. When you need to resume a long-running agent, replay from events rather than re-reading the full transcript.
+    </div>
+  </details>
+
+  <details class="prog-item">
+    <summary>
+      <div class="prog-left"><span class="prog-tag scaffold">scaffold</span><span class="prog-title">Sleep-time consolidation</span></div>
+    </summary>
+    <div class="prog-detail">
+      Letta's research showed ~5× test-time reduction from pre-processing context during idle periods. Claude Code's AutoDream consolidates memory between sessions — 913 sessions in 8 minutes in one observed run. Mastra's Observer/Reflector agents trigger at 30K/40K token thresholds, achieving 94.87% on LongMemEval and enabling 4–10× cost reduction through prompt caching on stabilised context. The pattern is general: any persistent-context agent can benefit from background processing that nobody waits for.<a href="https://arxiv.org/abs/2504.13171" class="cite">[53]</a>
+    </div>
+  </details>
+
+  <details class="prog-item">
+    <summary>
+      <div class="prog-left"><span class="prog-tag scaffold">scaffold</span><span class="prog-title">RL-trained compression</span></div>
+    </summary>
+    <div class="prog-detail">
+      Cursor's Composer 2.5 trains self-summarisation end-to-end via RL — training rollouts span multiple generations chained by summaries, and the final reward covers all tokens including compression steps. 50% fewer compaction errors vs. separate prompt-based compaction, plus KV cache reuse. ContextCurator takes this further: a decoupled 7B RL-trained model handles context curation while a frozen TaskExecutor handles the work — the 7B curator matches GPT-4o at context management, achieving 8× token reduction on DeepSearch. The pattern: make compression a <em>learned skill</em>, not a prompted afterthought.<a href="https://arxiv.org/html/2603.24477v1" class="cite">[75]</a>
+    </div>
+  </details>
+
+  <details class="prog-item">
+    <summary>
+      <div class="prog-left"><span class="prog-tag scaffold">scaffold</span><span class="prog-title">Decision-time guidance</span></div>
+    </summary>
+    <div class="prog-detail">
+      Replit's pattern: a lightweight multi-label classifier analyses the current trajectory and injects short, situational micro-instructions only when relevant. Ephemeral — they don't persist in history. Cache-stable — the core system prompt never changes, preserving prompt caching benefits (90% cost reduction vs. dynamic system prompt modification). Recency-positioned at the bottom of context rather than in the system prompt. Scales from 4–5 static reminders to hundreds of targeted injections. 15% more tools per agentic loop from guidance alone.<a href="https://blog.replit.com/decision-time-guidance" class="cite">[88]</a>
+    </div>
+  </details>
+
+  <details class="prog-item">
+    <summary>
+      <div class="prog-left"><span class="prog-tag scaffold">scaffold</span><span class="prog-title">Structured workspace</span></div>
+    </summary>
+    <div class="prog-detail">
+      Schema-defined working memory with explicit fields for plan, files, errors, and decisions. CaT achieves 57.6% on SWE-Bench-Verified with bounded context by compressing proactively at task milestones rather than reactively at token thresholds. The distinction matters: milestone compression preserves task structure (what was tried, what failed, what the current plan is), while threshold compression preserves recency — and recency is the wrong heuristic for multi-step tasks.<a href="https://arxiv.org/abs/2503.07677" class="cite">[15]</a>
+    </div>
+  </details>
+
+  <details class="prog-item">
+    <summary>
+      <div class="prog-left"><span class="prog-tag scaffold">scaffold</span><span class="prog-title">Spec-driven steering</span></div>
+    </summary>
+    <div class="prog-detail">
+      Kiro's steering files (<code>.kiro/steering/*.md</code>) with 4 inclusion modes: <code>always</code> (loaded every session), <code>fileMatch</code> (loaded when matching files are open), <code>auto</code> (LLM decides relevance), <code>manual</code> (user opts in). Augment's Expert Registry accumulates corrections as the agent works. Cursor's <code>.cursor/rules/*.mdc</code> does similar conditional loading. The convergence: persistent specification documents — version-controlled, conditionally loaded, human-readable — as the right abstraction for project-level context governance.<a href="https://kiro.dev/docs/steering/" class="cite">[89]</a>
+    </div>
+  </details>
+
+  <details class="prog-item">
+    <summary>
+      <div class="prog-left"><span class="prog-tag scaffold">scaffold</span><span class="prog-title">Dual-model architecture</span></div>
+    </summary>
+    <div class="prog-detail">
+      Letta's dual-agent pattern: fast cheap model for user-facing interactions (e.g. GPT-4o-mini, Claude Haiku), stronger expensive model for background consolidation (e.g. GPT-4.1, Claude Sonnet). Nobody waits for the background model. The aggregate cost can be <em>lower</em> than a single strong model handling everything, because the background model amortises its cost across many future queries — Letta's paper showed 2.5× cost reduction when amortised across 10+ queries on the same context.
+    </div>
+  </details>
 </div>
 
-<!-- ═══ LAYER 3: SCAFFOLD ═══ -->
-<h3 style="margin-top: 40px; margin-bottom: 4px;">Layer 3 — Scaffold</h3>
-<p style="font-size: 13px; color: var(--fg-2); margin-bottom: 20px;">Actively maintain coherence over time. Don't trust the model to manage itself — build the management into the system.</p>
-
-<div class="approach-grid">
-  <div class="approach-card" style="border-left: 3px solid #1a1a1a;">
-    <div class="card-tag">Sleep-time compute</div>
-    <h4>Agents that think while you're away</h4>
-    <p>Letta's research: ~5× test-time reduction from pre-processing context during idle time. Claude Code's AutoDream consolidates memory between sessions. The pattern is general: any persistent-context agent can benefit from background processing.<a href="https://arxiv.org/abs/2504.13171" class="cite">[53]</a></p>
-  </div>
-  <div class="approach-card" style="border-left: 3px solid #1a1a1a;">
-    <div class="card-tag">Dual-model architecture</div>
-    <h4>Fast primary, strong background</h4>
-    <p>Letta's pattern: fast cheap model for user-facing interactions, stronger expensive model for background consolidation. Nobody waits for the background model. The aggregate cost can be <em>lower</em> than a single strong model handling everything.</p>
-  </div>
-  <div class="approach-card" style="border-left: 3px solid #1a1a1a;">
-    <div class="card-tag">Structured workspace</div>
-    <h4>Compress at milestones, not thresholds</h4>
-    <p>Schema-defined working memory with explicit fields for plan, files, errors, decisions. Proactive compression at task milestones, not token counters. CaT achieves 57.6% on SWE-Bench-Verified with bounded context.<a href="https://arxiv.org/abs/2503.07677" class="cite">[15]</a></p>
-  </div>
-</div>
-
-<!-- ═══ CONTEXT LIFECYCLE PIPELINE DIAGRAM ═══ -->
-<div class="diagram reveal" style="margin-top: 40px;">
-  <span class="diagram-label">Context lifecycle — one agent turn</span>
-  <svg viewBox="0 0 720 200" xmlns="http://www.w3.org/2000/svg">
-    <defs>
-      <marker id="arr-lc" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
-        <path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#70808d" stroke-width="1"/>
-      </marker>
-    </defs>
-
-    <!-- Pipeline stages -->
-    <rect x="16" y="40" width="100" height="56" rx="3" fill="#5b7a5b" opacity="0.1" stroke="#5b7a5b" stroke-width="1.5"/>
-    <text x="66" y="60" font-family="'JetBrains Mono',monospace" font-size="9" fill="#5b7a5b" text-anchor="middle" font-weight="700">LOAD</text>
-    <text x="66" y="74" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">CLAUDE.md</text>
-    <text x="66" y="84" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">MEMORY.md</text>
-
-    <path d="M 116 68 L 136 68" stroke="#70808d" stroke-width="1.5" marker-end="url(#arr-lc)"/>
-
-    <rect x="140" y="40" width="100" height="56" rx="3" fill="#5b7a5b" opacity="0.1" stroke="#5b7a5b" stroke-width="1.5"/>
-    <text x="190" y="60" font-family="'JetBrains Mono',monospace" font-size="9" fill="#5b7a5b" text-anchor="middle" font-weight="700">FILTER</text>
-    <text x="190" y="74" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">on-demand load</text>
-    <text x="190" y="84" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">200-line cap</text>
-
-    <path d="M 240 68 L 260 68" stroke="#70808d" stroke-width="1.5" marker-end="url(#arr-lc)"/>
-
-    <rect x="264" y="40" width="100" height="56" rx="3" fill="#70808d" opacity="0.1" stroke="#70808d" stroke-width="1.5"/>
-    <text x="314" y="60" font-family="'JetBrains Mono',monospace" font-size="9" fill="#70808d" text-anchor="middle" font-weight="700">EXECUTE</text>
-    <text x="314" y="74" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">tool calls</text>
-    <text x="314" y="84" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">reasoning</text>
-
-    <path d="M 364 68 L 384 68" stroke="#70808d" stroke-width="1.5" marker-end="url(#arr-lc)"/>
-
-    <rect x="388" y="40" width="100" height="56" rx="3" fill="#70808d" opacity="0.1" stroke="#70808d" stroke-width="1.5"/>
-    <text x="438" y="60" font-family="'JetBrains Mono',monospace" font-size="9" fill="#70808d" text-anchor="middle" font-weight="700">CLEAR</text>
-    <text x="438" y="74" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">stale tool results</text>
-    <text x="438" y="84" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">keep call records</text>
-
-    <path d="M 488 68 L 508 68" stroke="#70808d" stroke-width="1.5" marker-end="url(#arr-lc)"/>
-
-    <rect x="512" y="40" width="100" height="56" rx="3" fill="#1a1a1a" opacity="0.06" stroke="#1a1a1a" stroke-width="1.5"/>
-    <text x="562" y="60" font-family="'JetBrains Mono',monospace" font-size="9" fill="#1a1a1a" text-anchor="middle" font-weight="700">COMPACT</text>
-    <text x="562" y="74" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">at milestones</text>
-    <text x="562" y="84" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">or 30% fill</text>
-
-    <path d="M 612 68 L 632 68" stroke="#70808d" stroke-width="1.5" marker-end="url(#arr-lc)"/>
-
-    <rect x="636" y="40" width="68" height="56" rx="3" fill="#1a1a1a" opacity="0.06" stroke="#1a1a1a" stroke-width="1.5"/>
-    <text x="670" y="60" font-family="'JetBrains Mono',monospace" font-size="9" fill="#1a1a1a" text-anchor="middle" font-weight="700">PERSIST</text>
-    <text x="670" y="74" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">memory</text>
-    <text x="670" y="84" font-family="'JetBrains Mono',monospace" font-size="7" fill="#666" text-anchor="middle">files</text>
-
-    <!-- Layer labels below -->
-    <rect x="16" y="110" width="224" height="18" rx="2" fill="#5b7a5b" opacity="0.1"/>
-    <text x="128" y="123" font-family="'JetBrains Mono',monospace" font-size="7" fill="#5b7a5b" text-anchor="middle" font-weight="700">PREVENT — what enters</text>
-    <rect x="264" y="110" width="224" height="18" rx="2" fill="#70808d" opacity="0.1"/>
-    <text x="376" y="123" font-family="'JetBrains Mono',monospace" font-size="7" fill="#70808d" text-anchor="middle" font-weight="700">MANAGE — what stays</text>
-    <rect x="512" y="110" width="192" height="18" rx="2" fill="#1a1a1a" opacity="0.06"/>
-    <text x="608" y="123" font-family="'JetBrains Mono',monospace" font-size="7" fill="#1a1a1a" text-anchor="middle" font-weight="700">SCAFFOLD — active maintenance</text>
-
-    <!-- Sleep-time loop underneath -->
-    <path d="M 670 96 C 670 160 360 170 66 160 C 40 158 24 140 24 120 L 24 96" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="4,3" fill="none" marker-end="url(#arr-lc)"/>
-    <rect x="280" y="150" width="160" height="20" rx="2" fill="#1a1a1a"/>
-    <text x="360" y="164" font-family="'JetBrains Mono',monospace" font-size="8" fill="#70808d" text-anchor="middle">sleep-time consolidation loop</text>
-    <text x="360" y="190" font-family="'JetBrains Mono',monospace" font-size="7" fill="#999" text-anchor="middle">AutoDream: 24h + 5 sessions · Letta: every 5 steps · persists back to LOAD</text>
-  </svg>
-  <div class="caption">every turn follows the same pipeline — sleep-time consolidation feeds back into the next session's load phase</div>
-</div>
-
-<!-- ═══ DARK PANEL: THE META-PATTERN ═══ -->
+<!-- ═══ CLOSING ═══ -->
 <div class="dark-panel" style="margin-top: 40px;">
-  <h3 style="font-size: 16px; margin-bottom: 20px; color: #f1f2f2; letter-spacing: 0.02em;">The meta-pattern</h3>
-  <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 28px;">
-    <div>
-      <p class="accent-text" style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 8px; color: #5b7a5b;">PREVENT</p>
-      <p style="font-size: 13px; line-height: 1.6; color: #e8e9e9;">File-native storage, API contracts, sub-agent isolation. Bloat that never enters the window never needs compression. Cursor's on-demand loading alone cuts 46.9% of tokens.</p>
-      <p style="font-size: 11px; color: #666; margin-top: 8px;">cost: <strong style="color: #5b7a5b;">free</strong> · timing: always-on</p>
-    </div>
-    <div>
-      <p class="accent-text" style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 8px;">MANAGE</p>
-      <p style="font-size: 13px; line-height: 1.6; color: #e8e9e9;">Tiered memory, lifecycle ops, event logging. NOOP is the most undervalued operation — the best memory systems are defined by what they <em>don't</em> store. Graph memory for entities, event logs for replay.</p>
-      <p style="font-size: 11px; color: #666; margin-top: 8px;">cost: <strong style="color: #70808d;">cheap</strong> · timing: per-turn</p>
-    </div>
-    <div>
-      <p class="accent-text" style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 8px; color: #e8e9e9;">SCAFFOLD</p>
-      <p style="font-size: 13px; line-height: 1.6; color: #e8e9e9;">Sleep-time consolidation, dual-model architectures, structured workspace tools. No system succeeds by relying on the model's spontaneous context hygiene. Build the management into the infrastructure.</p>
-      <p style="font-size: 11px; color: #666; margin-top: 8px;">cost: <strong style="color: #e8e9e9;">moderate</strong> · timing: background / milestones</p>
-    </div>
-  </div>
+  <h3 style="font-size: 16px; margin-bottom: 16px; color: #f1f2f2;">The meta-pattern</h3>
+  <p style="font-size: 14px; line-height: 1.75; color: #e8e9e9; max-width: 68ch;">Every production system in this survey follows the same three-layer stack. <strong style="color: #5b7a5b;">Prevent</strong> keeps the window lean — file-native storage, on-demand loading, isolation, specialised retrieval. <strong>Manage</strong> controls what stays — tiered eviction, lifecycle filtering, event logs. <strong style="color: #f1f2f2;">Scaffold</strong> actively maintains coherence — sleep-time consolidation, RL-trained compression, milestone triggers, steering files.</p>
+  <p style="font-size: 13px; line-height: 1.7; color: #999; max-width: 68ch; margin-top: 12px;">No system we surveyed relies on the model to spontaneously manage its own context. The models that appear to "just work" over long horizons are backed by infrastructure that handles prevention, management, and scaffolding on their behalf. Context engineering isn't a feature — it's the architecture.</p>
 </div>
-
 </section>
 
 <!-- ═══════════════════════════════════════════
@@ -2181,6 +2499,47 @@ const HOLDER_STALE_MS = 60 * 60 * 1000  // 1 hour
       <a href="https://forum.letta.com/t/sleeptime-agents-for-memory-consolidation-best-practices-guide/154">Letta Forum: Sleep-time Best Practices</a><br>
       <a href="https://www.wired.com/story/sleeptime-compute-chatbots-memory/">WIRED: Do LLMs Dream of AI Agents?</a><br>
       <a href="https://github.com/letta-ai/context-constitution">GitHub: Context Constitution</a><br>
+      <a href="https://openai.com/index/memory-sources/">[61] OpenAI: Memory Sources</a><br>
+      <a href="https://platform.claude.com/docs/en/build-with-claude/compaction">[62] Anthropic: Server-side Compaction API</a><br>
+      <a href="https://platform.claude.com/docs/en/build-with-claude/context-editing">[63] Anthropic: Context Editing API</a><br>
+      <a href="https://platform.claude.com/docs/en/build-with-claude/dreaming">[64] Anthropic: Dreaming API</a><br>
+      <a href="https://www.anthropic.com/news/managed-agents">[65] Anthropic: Managed Agents</a><br>
+      <a href="https://www.anthropic.com/news/1m-context">[66] Anthropic: 1M Context GA</a><br>
+      <a href="https://cloud.google.com/blog/topics/google-cloud-next/welcome-to-google-cloud-next26">[67] Google Cloud Next 2026</a><br>
+      <a href="https://blog.google/technology/ai/io-2026-keynote/">[68] Google I/O 2026</a><br>
+      <a href="https://cloud.google.com/blog/products/ai-machine-learning/adk-agent-architecture">[69] Google ADK Architecture</a><br>
+      <a href="https://arxiv.org/abs/2603.19461">[70] HyperAgents (Meta)</a><br>
+      <a href="https://ai.meta.com/blog/introducing-muse-spark-msl/">[71] Meta Muse Spark</a><br>
+      <a href="https://arxiv.org/abs/2603.09023">[72] Pichay: Missing Memory Hierarchy</a><br>
+      <a href="https://arxiv.org/abs/2605.05191">[73] LongSeeker / Context-ReAct</a><br>
+      <a href="https://arxiv.org/abs/2604.11462">[74] ContextCurator (RL)</a><br>
+      <a href="https://arxiv.org/html/2603.24477v1">[75] Cursor Composer 2.5</a><br>
+      <a href="https://arxiv.org/abs/2605.05097">[76] Memini: Biological Memory</a><br>
+      <a href="https://arxiv.org/abs/2605.06527">[77] STALE: Memory Validity</a><br>
+      <a href="https://mastra.ai/blog/changelog-2026-02-04">[78] Mastra Observational Memory</a><br>
+      <a href="https://crewai.com/blog/how-we-built-cognitive-memory-for-agentic-systems">[79] CrewAI Cognitive Memory</a><br>
+      <a href="https://arxiv.org/abs/2605.06716">[80] ACL 2026: Storage→Experience</a><br>
+      <a href="https://arxiv.org/abs/2605.09104">[81] Token Economics for Agents</a><br>
+      <a href="https://arxiv.org/abs/2505.00675">[82] Rethinking Memory</a><br>
+      <a href="https://arxiv.org/abs/2603.10062">[83] Multi-Agent Memory (CS Arch)</a><br>
+      <a href="https://arxiv.org/abs/2603.11768">[84] SSGM: Safety in Agent Memory</a><br>
+      <a href="https://cognition.ai/blog/swe-grep">[85] SWE-grep (Cognition)</a><br>
+      <a href="https://arxiv.org/abs/2604.11978">[86] HORIZON Benchmark</a><br>
+      <a href="https://mem0.ai/blog/state-of-ai-agent-memory-2026">[87] Mem0: State of Agent Memory 2026</a><br>
+      <a href="https://blog.replit.com/decision-time-guidance">[88] Replit: Decision-Time Guidance</a><br>
+      <a href="https://kiro.dev/docs/steering/">[89] Kiro: Steering Files</a><br>
+      <a href="https://www.langchain.com/blog/interrupt-2026-overview">LangChain Interrupt 2026</a><br>
+      <a href="https://cursor.com/blog/composer-2">Cursor Composer 2.5</a><br>
+      <a href="https://cursor.com/blog/automations">Cursor Automations</a><br>
+      <a href="https://cursor.com/blog/cloud-agent-development-environments">Cursor Cloud Dev Environments</a><br>
+      <a href="https://github.blog/ai-and-ml/github-copilot/building-an-agentic-memory-system-for-github-copilot/">GitHub Copilot Agentic Memory</a><br>
+      <a href="https://kiro.dev/blog/introducing-kiro/">Introducing Kiro</a><br>
+      <a href="https://www.augmentcode.com/tools/cursor-background-agents-vs-cosmos">Augment Cosmos</a><br>
+      <a href="https://blog.getzep.com/context-you-can-trace-filter-and-trust/">Zep: Provenance Architecture</a><br>
+      <a href="https://techcommunity.microsoft.com/blog/azuredevcommunityblog/the-future-of-agentic-ai-inside-microsoft-agent-framework-1-0/4510698">Microsoft Agent Framework 1.0</a><br>
+      <a href="https://blog.modelcontextprotocol.io/posts/2026-mcp-roadmap/">MCP 2026 Roadmap</a><br>
+      <a href="https://arxiv.org/abs/2604.11716">SWE-AGILE</a><br>
+      <a href="https://www.openhands.dev/blog/openhands-enterprise-agent-control-plane">OpenHands Enterprise Agent Control Plane</a><br>
     </div>
   </div>
 </footer>
@@ -2201,7 +2560,7 @@ window.addEventListener('scroll', () => {
 // ── Scroll reveal ──────────────────
 const obs = new IntersectionObserver((entries) => {
   entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); });
-}, { threshold: 0.1 });
+}, { threshold: 0, rootMargin: '0px 0px 200px 0px' });
 document.querySelectorAll('.reveal').forEach(el => obs.observe(el));
 
 // ── Timeline era reveal ────────────

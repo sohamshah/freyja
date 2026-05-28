@@ -1,0 +1,744 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Kanban · v2 The Crew (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a;
+    --fg-0:#ececec; --fg-1:#a8a8a8; --fg-2:#7a7a7a; --fg-3:#5a5a5a; --fg-4:#3a3a3a;
+    --accent:#a8d4fc; --accent-lo:#7aafea;
+    --ok:#88d67f; --warn:#ffcc66; --danger:#ff6b6b;
+    --hairline:rgba(255,255,255,0.06);
+
+    --scout:    #a8d4fc;
+    --forge:    #c8a8fc;
+    --sentinel: #88d67f;
+    --archivist:#fcd1a8;
+
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.65;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(900px 700px at 50% -10%, rgba(168,212,252,0.05), transparent 60%),
+      radial-gradient(700px 500px at 8% 90%, rgba(200,168,252,0.03), transparent 70%),
+      radial-gradient(500px 400px at 92% 90%, rgba(252,209,168,0.025), transparent 70%);
+  }
+
+  .app { position:relative; z-index:1; height:100vh; display:grid; grid-template-rows:36px auto 1fr auto; }
+
+  /* top strip */
+  .strip {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 28px;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    border-bottom:1px solid var(--hairline);
+  }
+  .strip .l { display:flex; align-items:center; gap:14px; }
+  .strip .live { color:var(--fg-2); display:inline-flex; align-items:center; gap:7px; }
+  .strip .live::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 8px var(--accent); animation:pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  /* header */
+  .head {
+    padding:24px 32px 18px;
+    border-bottom:1px solid var(--hairline);
+    display:grid; grid-template-columns:1fr auto;
+    gap:32px; align-items:end;
+  }
+  .head .eyebrow { color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase; margin-bottom:10px; }
+  .head h1 {
+    font-family:var(--serif); font-weight:300; font-size:20px; line-height:1.45;
+    color:var(--fg-1); margin:0; letter-spacing:-0.005em; max-width:880px;
+  }
+  .head h1 .em { color:var(--fg-0); }
+  .head .meta {
+    color:var(--fg-2); font-size:11.5px; letter-spacing:0.06em;
+    text-align:right; line-height:1.7;
+  }
+  .head .meta .num { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+  .head .meta .auto { color:var(--accent); }
+
+  /* main */
+  .main {
+    display:grid; grid-template-columns:1fr 320px;
+    min-height:0; overflow:hidden;
+  }
+
+  /* CREW area */
+  .crew {
+    overflow-y:auto; padding:32px 36px 220px;
+    display:flex; flex-direction:column; gap:20px;
+  }
+  .crew-head {
+    display:flex; align-items:baseline; justify-content:space-between;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+    margin-bottom:6px;
+  }
+  .crew-head .count { color:var(--fg-3); font-family:var(--mono); letter-spacing:0; font-variant-numeric:tabular-nums; }
+
+  /* an agent station */
+  .station {
+    display:grid; grid-template-columns:140px 1fr auto;
+    gap:24px;
+    padding:18px 22px;
+    background:rgba(255,255,255,0.018);
+    border:1px solid var(--hairline);
+    border-radius:14px;
+    align-items:start;
+    transition:border-color 160ms;
+  }
+  .station:hover { border-color:rgba(255,255,255,0.14); }
+
+  .station .who {
+    display:flex; flex-direction:column; gap:4px;
+    padding-top:2px;
+  }
+  .station .who .name {
+    font-family:var(--serif); font-weight:400; font-size:18px;
+    color:var(--fg-0); letter-spacing:-0.005em;
+    display:inline-flex; align-items:baseline; gap:8px;
+  }
+  .station .who .name::before {
+    content:""; width:8px; height:8px; border-radius:50%; align-self:center;
+  }
+  .station.scout     .who .name::before { background:var(--scout);     box-shadow:0 0 8px var(--scout); }
+  .station.forge     .who .name::before { background:var(--forge);     box-shadow:0 0 8px var(--forge); }
+  .station.sentinel  .who .name::before { background:var(--sentinel);  box-shadow:0 0 8px var(--sentinel); }
+  .station.archivist .who .name::before { background:var(--archivist); box-shadow:0 0 8px var(--archivist); }
+  .station .who .role {
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+  .station .who .stats {
+    color:var(--fg-2); font-size:11px; margin-top:8px;
+    display:flex; flex-direction:column; gap:2px;
+  }
+  .station .who .stats .num { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+
+  .station .work {
+    display:flex; flex-direction:column; gap:14px;
+  }
+  .station .work .now {
+    padding:14px 16px;
+    background:rgba(168,212,252,0.05);
+    border:1px solid rgba(168,212,252,0.18);
+    border-radius:10px;
+  }
+  .station .work .now .lbl {
+    color:var(--accent); font-size:10px; letter-spacing:0.22em; text-transform:uppercase;
+    display:inline-flex; align-items:center; gap:7px; margin-bottom:7px;
+  }
+  .station .work .now .lbl::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 6px var(--accent); animation:pulse 2.2s ease-in-out infinite; }
+  .station .work .now .ti {
+    color:var(--fg-0); font-size:14px; line-height:1.4;
+  }
+  .station .work .now .sub {
+    color:var(--fg-2); font-size:11.5px; margin-top:6px;
+    display:flex; gap:12px;
+  }
+  .station .work .now .sub .num { color:var(--fg-1); font-variant-numeric:tabular-nums; }
+
+  .station .work .recent {
+    color:var(--fg-2); font-size:11.5px; line-height:1.7;
+    display:flex; flex-direction:column; gap:2px;
+  }
+  .station .work .recent .lbl {
+    color:var(--fg-3); font-size:10px; letter-spacing:0.18em; text-transform:uppercase; margin-bottom:4px;
+  }
+  .station .work .recent .row { display:flex; gap:10px; align-items:baseline; }
+  .station .work .recent .row .ts { color:var(--fg-3); width:46px; flex-shrink:0; font-variant-numeric:tabular-nums; }
+  .station .work .recent .row .ev { color:var(--fg-1); }
+  .station .work .recent .row .ev .em { color:var(--fg-0); }
+  .station .work .recent .row .check { color:var(--ok); }
+
+  .station .actions {
+    display:flex; flex-direction:column; gap:6px;
+  }
+  .station .actions button {
+    background:rgba(255,255,255,0.04); border:1px solid var(--hairline);
+    color:var(--fg-2); font:inherit; font-size:10.5px; letter-spacing:0.06em;
+    padding:6px 10px; border-radius:6px; cursor:pointer;
+    transition:all 120ms;
+  }
+  .station .actions button:hover { color:var(--fg-0); background:rgba(255,255,255,0.07); }
+  .station .actions button.assign { color:var(--accent); border-color:rgba(168,212,252,0.2); background:rgba(168,212,252,0.06); }
+
+  /* idle station: dimmed, with idle indicator and one-click assign */
+  .station.idle {
+    background:rgba(255,255,255,0.008);
+  }
+  .station.idle .who .name::before { box-shadow:none; opacity:0.4; }
+  .station.idle .who .name { color:var(--fg-2); }
+  .station.idle .work .now {
+    background:transparent;
+    border:1px dashed rgba(255,255,255,0.08);
+  }
+  .station.idle .work .now .lbl { color:var(--fg-3); }
+  .station.idle .work .now .lbl::before { background:var(--fg-3); box-shadow:none; animation:none; }
+  .station.idle .work .now .ti { color:var(--fg-2); font-style:italic; font-family:var(--serif); font-weight:300; }
+
+  .station.stale {
+    background:rgba(255,107,107,0.025);
+    border-color:rgba(255,107,107,0.18);
+  }
+  .station.stale .work .now {
+    background:rgba(255,107,107,0.06);
+    border-color:rgba(255,107,107,0.22);
+  }
+  .station.stale .work .now .lbl { color:#ff8a8a; }
+  .station.stale .work .now .lbl::before { background:#ff8a8a; box-shadow:0 0 6px #ff8a8a; animation:none; }
+  .station.stale .work .now .stale-tag {
+    margin-left:8px; padding:1px 6px; border-radius:3px;
+    background:rgba(255,107,107,0.12); border:1px solid rgba(255,107,107,0.28);
+    color:#ff8a8a; font-size:9.5px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+
+  /* RIGHT RAIL */
+  .rail {
+    border-left:1px solid var(--hairline);
+    background:rgba(0,0,0,0.18);
+    overflow-y:auto;
+    padding:24px 22px 24px;
+    display:flex; flex-direction:column; gap:24px;
+  }
+  .rail-section { display:flex; flex-direction:column; gap:10px; }
+  .rail-section .head {
+    display:flex; align-items:baseline; justify-content:space-between;
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+  }
+  .rail-section .head .count { color:var(--fg-3); font-family:var(--mono); letter-spacing:0; font-variant-numeric:tabular-nums; }
+
+  /* ready queue (compact cards) */
+  .q-list { display:flex; flex-direction:column; gap:6px; }
+  .q-card {
+    padding:8px 10px; border-radius:6px;
+    background:rgba(255,255,255,0.022);
+    border:1px solid var(--hairline);
+    color:var(--fg-1); font-size:12px; line-height:1.45;
+    cursor:pointer;
+    display:flex; flex-direction:column; gap:4px;
+  }
+  .q-card:hover { background:rgba(255,255,255,0.04); }
+  .q-card .ti { color:var(--fg-0); }
+  .q-card .meta { color:var(--fg-3); font-size:10px; letter-spacing:0.06em; }
+
+  .q-card.blocked { background:rgba(255,204,102,0.04); border-color:rgba(255,204,102,0.18); }
+  .q-card.blocked .meta { color:var(--warn); }
+
+  /* dispatch log */
+  .log { display:flex; flex-direction:column; }
+  .log-row {
+    display:grid; grid-template-columns:42px 1fr;
+    gap:10px; padding:5px 0;
+    color:var(--fg-1); font-size:11.5px;
+    border-top:1px solid transparent;
+  }
+  .log-row + .log-row { border-top-color:rgba(255,255,255,0.03); }
+  .log-row .ts { color:var(--fg-3); font-variant-numeric:tabular-nums; }
+  .log-row .ev .agent { font-weight:500; }
+  .log-row .ev .agent.scout    { color:var(--scout); }
+  .log-row .ev .agent.forge    { color:var(--forge); }
+  .log-row .ev .agent.sentinel { color:var(--sentinel); }
+  .log-row .ev .agent.archivist { color:var(--archivist); }
+  .log-row .ev .auto { color:var(--fg-3); font-style:italic; font-family:var(--serif); font-weight:300; font-size:12px; }
+  .log-row .ev .check { color:var(--ok); }
+  .log-row .ev .warn { color:var(--warn); }
+
+  /* cradle */
+  .cradle-wrap { display:flex; justify-content:center; padding:14px 16px 16px;
+    background:linear-gradient(0deg, var(--bg-0) 70%, transparent); }
+  .cradle { width:100%; max-width:760px;
+    background:rgba(14,14,14,0.55);
+    backdrop-filter:blur(36px) saturate(140%);
+    border-radius:16px;
+    box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.07),
+                inset 0 0 0 1px rgba(255,255,255,0.04),
+                0 12px 40px -8px rgba(0,0,0,0.5);
+    padding:12px 16px 10px; display:flex; flex-direction:column; gap:8px;
+  }
+  .cradle textarea { background:transparent; border:0; outline:0; color:var(--fg-0);
+    font:inherit; resize:none; width:100%; min-height:22px; }
+  .cradle textarea::placeholder { color:var(--fg-3); }
+  .cradle-row { display:flex; align-items:center; justify-content:space-between;
+    color:var(--fg-3); font-size:11px; }
+  .cradle-row kbd { color:var(--fg-2); background:rgba(255,255,255,0.04);
+    padding:1px 6px; border-radius:4px; font-family:inherit; font-size:10.5px; }
+
+  ::-webkit-scrollbar { width:8px; }
+  ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.05); border-radius:6px; }
+
+  /* ===== card drawer ===== */
+  .card-drawer {
+    position:fixed; top:36px; right:0; bottom:0;
+    width:460px; z-index:60;
+    background:rgba(10,10,10,0.96);
+    backdrop-filter:blur(28px) saturate(140%);
+    -webkit-backdrop-filter:blur(28px) saturate(140%);
+    border-left:1px solid var(--hairline);
+    box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.06),
+                -24px 0 60px -10px rgba(0,0,0,0.6);
+    display:flex; flex-direction:column; overflow:hidden;
+    transform:translateX(0); transition:transform 220ms ease;
+  }
+  .card-drawer.hidden { transform:translateX(110%); }
+  body:has(.card-drawer:not(.hidden)) .cradle-wrap { padding-right:476px; }
+
+  .cd-head {
+    padding:18px 22px 14px;
+    display:flex; align-items:center; justify-content:space-between;
+    border-bottom:1px solid var(--hairline);
+  }
+  .cd-head .cd-status {
+    display:inline-flex; align-items:center; gap:7px;
+    color:var(--accent); font-size:10.5px; letter-spacing:0.22em; text-transform:uppercase;
+  }
+  .cd-head .cd-status::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 8px var(--accent); animation:pulse 2.4s ease-in-out infinite; }
+  .cd-head .cd-close {
+    background:transparent; border:0; color:var(--fg-3); font:inherit;
+    font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+    cursor:pointer; padding:4px 8px; border-radius:4px;
+  }
+  .cd-head .cd-close:hover { color:var(--fg-0); background:rgba(255,255,255,0.04); }
+
+  .cd-body {
+    overflow-y:auto; flex:1; min-height:0;
+    padding:20px 24px 28px;
+    display:flex; flex-direction:column; gap:22px;
+  }
+  .cd-title {
+    font-family:var(--serif); font-weight:300; font-size:24px;
+    line-height:1.35; letter-spacing:-0.005em;
+    color:var(--fg-0); margin:0;
+  }
+
+  .cd-assignment {
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    padding:10px 14px;
+    background:rgba(252,209,168,0.04);
+    border:1px solid rgba(252,209,168,0.18);
+    border-radius:10px;
+    color:var(--fg-1); font-size:12px;
+  }
+  .cd-assignment .agent {
+    display:inline-flex; align-items:center; gap:7px;
+    font-weight:500; color:var(--fg-0);
+  }
+  .cd-assignment .agent .dot { width:6px; height:6px; border-radius:50%; }
+  .cd-assignment .agent.archivist .dot { background:var(--archivist); box-shadow:0 0 7px var(--archivist); }
+  .cd-assignment .age { color:var(--fg-2); font-variant-numeric:tabular-nums; }
+  .cd-assignment .now {
+    margin-left:auto; color:var(--fg-2); font-style:italic;
+    font-family:var(--serif); font-weight:300; font-size:12px;
+  }
+
+  .cd-section { display:flex; flex-direction:column; gap:10px; }
+  .cd-section h3 {
+    color:var(--fg-3); font-size:10px; letter-spacing:0.22em; text-transform:uppercase;
+    margin:0; font-weight:400;
+  }
+  .cd-section p {
+    color:var(--fg-1); font-family:var(--serif); font-weight:300; font-size:14px;
+    line-height:1.7; margin:0;
+  }
+  .cd-section p .em { color:var(--fg-0); }
+
+  .cd-deps { display:flex; flex-direction:column; gap:14px; }
+  .cd-dep .dep-lbl {
+    color:var(--fg-3); font-size:10px; letter-spacing:0.18em; text-transform:uppercase;
+    margin-bottom:6px; display:block;
+  }
+  .cd-dep ul { list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:3px; }
+  .cd-dep li {
+    color:var(--fg-1); font-size:12.5px; line-height:1.5;
+    padding:5px 8px; border-radius:5px; cursor:pointer;
+    transition:background 120ms;
+  }
+  .cd-dep li:hover { background:rgba(255,255,255,0.025); }
+  .cd-dep li.done { color:var(--fg-2); }
+  .cd-dep li.done::before { content:"✓ "; color:var(--ok); }
+  .cd-dep li.queued::before { content:"○ "; color:var(--fg-3); }
+
+  .cd-timeline { display:flex; flex-direction:column; }
+  .cd-timeline .event {
+    display:grid; grid-template-columns:42px 70px 1fr;
+    gap:10px; padding:5px 0;
+    color:var(--fg-1); font-size:11.5px; line-height:1.55;
+    border-top:1px solid transparent;
+  }
+  .cd-timeline .event + .event { border-top-color:rgba(255,255,255,0.03); }
+  .cd-timeline .event .ts { color:var(--fg-3); font-variant-numeric:tabular-nums; }
+  .cd-timeline .event .who.archivist { color:var(--archivist); }
+  .cd-timeline .event .who.scout    { color:var(--scout); }
+  .cd-timeline .event .who.forge    { color:var(--forge); }
+  .cd-timeline .event .who.sentinel { color:var(--sentinel); }
+  .cd-timeline .event .who.auto {
+    color:var(--archivist); font-style:italic; font-family:var(--serif); font-weight:300; font-size:12px;
+  }
+  .cd-timeline .event .ev code {
+    color:var(--fg-0); font-family:var(--mono); font-size:11px;
+    background:rgba(255,255,255,0.04); padding:0 4px; border-radius:3px;
+  }
+  .cd-timeline .event .ev .num { color:var(--ok); font-variant-numeric:tabular-nums; }
+  .cd-timeline .event.claim .ev { color:var(--accent); }
+
+  .cd-files { display:flex; flex-direction:column; gap:4px; }
+  .cd-files .file {
+    display:flex; justify-content:space-between; align-items:center;
+    padding:6px 10px; border-radius:5px;
+    background:rgba(255,255,255,0.018);
+    border:1px solid var(--hairline);
+    color:var(--fg-1); font-size:12px;
+    cursor:pointer; transition:background 120ms;
+  }
+  .cd-files .file:hover { background:rgba(255,255,255,0.03); }
+  .cd-files .file .path { color:var(--fg-0); font-family:var(--mono); }
+  .cd-files .file .counts { color:var(--fg-3); font-size:11px; }
+
+  .cd-actions {
+    padding:14px 22px;
+    border-top:1px solid var(--hairline);
+    display:flex; gap:6px; flex-wrap:wrap;
+    background:rgba(0,0,0,0.3);
+  }
+  .cd-actions button {
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline);
+    color:var(--fg-1); font:inherit; font-size:11px; letter-spacing:0.04em;
+    padding:7px 12px; border-radius:6px; cursor:pointer;
+    transition:all 120ms;
+  }
+  .cd-actions button:hover { color:var(--fg-0); background:rgba(255,255,255,0.06); }
+  .cd-actions button.ok { color:var(--ok); border-color:rgba(136,214,127,0.22); background:rgba(136,214,127,0.06); }
+  .cd-actions button.ok:hover { background:rgba(136,214,127,0.12); }
+  .cd-actions button.warn { color:var(--warn); border-color:rgba(255,204,102,0.18); background:rgba(255,204,102,0.04); }
+  .cd-actions button.warn:hover { background:rgba(255,204,102,0.10); }
+
+  .card.selected, .station.selected, .q-card.selected {
+    outline:1px solid rgba(168,212,252,0.45); outline-offset:2px;
+  }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="app">
+
+  <div class="strip">
+    <div class="l">
+      <span>freyja</span>
+      <span class="live">autopilot on</span>
+    </div>
+    <div>kanban · crew · 38m elapsed</div>
+  </div>
+
+  <div class="head">
+    <div>
+      <div class="eyebrow">mission · started 10:24</div>
+      <h1>Migrate the analytics service from <span class="em">Postgres to Snowflake.</span></h1>
+    </div>
+    <div class="meta">
+      <span class="num">4</span> of 14 done · <span class="num">3</span> in flight · <span class="num">1</span> blocked · <span class="num">5</span> ready<br/>
+      <span class="auto">autopilot on · next dispatch in 15s</span>
+    </div>
+  </div>
+
+  <div class="main">
+
+    <!-- CREW -->
+    <div class="crew">
+
+      <div class="crew-head">
+        <span>the crew · who's doing what right now</span>
+        <span class="count">4 agents · 3 working · 1 stale · 0 idle</span>
+      </div>
+
+      <!-- forge — working -->
+      <div class="station forge">
+        <div class="who">
+          <div class="name">forge</div>
+          <div class="role">builder</div>
+          <div class="stats">
+            <span><span class="num">2</span> done today</span>
+            <span><span class="num">14m</span> on current</span>
+          </div>
+        </div>
+        <div class="work">
+          <div class="now">
+            <div class="lbl">working on</div>
+            <div class="ti">Write column-level migration scripts</div>
+            <div class="sub"><span>started <span class="num">11:02</span></span><span>·</span><span>tools · <span class="num">14</span></span><span>·</span><span>edits · <span class="num">7</span></span></div>
+          </div>
+          <div class="recent">
+            <div class="lbl">recently</div>
+            <div class="row"><span class="ts">10:36</span><span class="ev"><span class="check">✓</span> finished <span class="em">Provision Snowflake account</span> · 5m</span></div>
+            <div class="row"><span class="ts">10:30</span><span class="ev">claimed <span class="em">Provision Snowflake account</span></span></div>
+          </div>
+        </div>
+        <div class="actions">
+          <button>reassign</button>
+          <button>reclaim</button>
+        </div>
+      </div>
+
+      <!-- archivist — working -->
+      <div class="station archivist">
+        <div class="who">
+          <div class="name">archivist</div>
+          <div class="role">docs · adapter</div>
+          <div class="stats">
+            <span><span class="num">0</span> done today</span>
+            <span><span class="num">9m</span> on current</span>
+          </div>
+        </div>
+        <div class="work">
+          <div class="now">
+            <div class="lbl">working on</div>
+            <div class="ti">Build dual-write adapter</div>
+            <div class="sub"><span>started <span class="num">11:09</span></span><span>·</span><span>tools · <span class="num">11</span></span><span>·</span><span>edits · <span class="num">3</span></span></div>
+          </div>
+          <div class="recent">
+            <div class="lbl">recently</div>
+            <div class="row"><span class="ts">11:14</span><span class="ev">read <span class="em">analytics_writer.py</span></span></div>
+            <div class="row"><span class="ts">11:11</span><span class="ev">read <span class="em">snowflake_client.py</span></span></div>
+          </div>
+        </div>
+        <div class="actions">
+          <button>reassign</button>
+          <button>reclaim</button>
+        </div>
+      </div>
+
+      <!-- sentinel — working -->
+      <div class="station sentinel">
+        <div class="who">
+          <div class="name">sentinel</div>
+          <div class="role">verifier</div>
+          <div class="stats">
+            <span><span class="num">1</span> done today</span>
+            <span><span class="num">4m</span> on current</span>
+          </div>
+        </div>
+        <div class="work">
+          <div class="now">
+            <div class="lbl">working on</div>
+            <div class="ti">Verify schema parity (Postgres ↔ Snowflake)</div>
+            <div class="sub"><span>started <span class="num">11:18</span></span><span>·</span><span>tools · <span class="num">6</span></span><span>·</span><span>edits · <span class="num">0</span></span></div>
+          </div>
+          <div class="recent">
+            <div class="lbl">recently</div>
+            <div class="row"><span class="ts">10:42</span><span class="ev"><span class="check">✓</span> finished <span class="em">Set up CI for migration scripts</span> · 6m</span></div>
+            <div class="row"><span class="ts">10:36</span><span class="ev">claimed <span class="em">Set up CI for migration scripts</span></span></div>
+          </div>
+        </div>
+        <div class="actions">
+          <button>reassign</button>
+          <button>reclaim</button>
+        </div>
+      </div>
+
+      <!-- scout — STALE -->
+      <div class="station scout stale">
+        <div class="who">
+          <div class="name">scout</div>
+          <div class="role">researcher</div>
+          <div class="stats">
+            <span><span class="num">2</span> done today</span>
+            <span style="color:#ff8a8a"><span class="num" style="color:#ff8a8a">24m</span> on current</span>
+          </div>
+        </div>
+        <div class="work">
+          <div class="now">
+            <div class="lbl">working on <span class="stale-tag">stale</span></div>
+            <div class="ti">Audit BI tool integrations</div>
+            <div class="sub" style="color:#ff8a8a"><span>claimed <span class="num" style="color:#ff8a8a">10:54</span></span><span>·</span><span>no tool calls in <span class="num" style="color:#ff8a8a">12m</span></span></div>
+          </div>
+          <div class="recent">
+            <div class="lbl">recently</div>
+            <div class="row"><span class="ts">11:14</span><span class="ev"><span class="check">✓</span> finished <span class="em">Map all read paths in analytics</span> · 12m</span></div>
+            <div class="row"><span class="ts">10:58</span><span class="ev"><span class="check">✓</span> finished <span class="em">Audit current Postgres schema</span> · 8m</span></div>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="assign">reclaim &amp; ask</button>
+          <button>reassign</button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- RIGHT RAIL -->
+    <aside class="rail">
+
+      <div class="rail-section">
+        <div class="head"><span>ready · waiting for an agent</span><span class="count">5</span></div>
+        <div class="q-list">
+          <div class="q-card">
+            <div class="ti">Run shadow reads against Snowflake</div>
+            <div class="meta">queued 4m</div>
+          </div>
+          <div class="q-card">
+            <div class="ti">Update query layer to read from Snowflake</div>
+            <div class="meta">queued 4m · depends on dual-write</div>
+          </div>
+          <div class="q-card">
+            <div class="ti">Backfill historical data into Snowflake</div>
+            <div class="meta">queued 4m</div>
+          </div>
+          <div class="q-card">
+            <div class="ti">Add monitoring for dual-write drift</div>
+            <div class="meta">queued 2m</div>
+          </div>
+          <div class="q-card">
+            <div class="ti">Document the cutover plan</div>
+            <div class="meta">queued 2m</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="rail-section">
+        <div class="head"><span>blocked</span><span class="count">1</span></div>
+        <div class="q-list">
+          <div class="q-card blocked">
+            <div class="ti">Update analytics PII handling</div>
+            <div class="meta">waiting on legal · 18m</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="rail-section">
+        <div class="head"><span>recent dispatches</span><span class="count">8</span></div>
+        <div class="log">
+          <div class="log-row"><span class="ts">11:18</span><span class="ev"><span class="agent sentinel">sentinel</span> claimed <em>verify schema parity</em></span></div>
+          <div class="log-row"><span class="ts">11:14</span><span class="ev"><span class="agent scout">scout</span> <span class="check">✓</span> finished <em>map read paths</em></span></div>
+          <div class="log-row"><span class="ts">11:09</span><span class="ev"><span class="agent archivist">archivist</span> claimed <em>dual-write adapter</em></span></div>
+          <div class="log-row"><span class="ts">11:02</span><span class="ev"><span class="agent forge">forge</span> claimed <em>column migration scripts</em></span></div>
+          <div class="log-row"><span class="ts">10:58</span><span class="ev"><span class="agent scout">scout</span> <span class="check">✓</span> finished <em>schema audit</em></span></div>
+          <div class="log-row"><span class="ts">10:54</span><span class="ev"><span class="auto">autopilot</span> tried to dispatch <em>BI audit</em> · already on scout</span></div>
+          <div class="log-row"><span class="ts">10:42</span><span class="ev"><span class="agent sentinel">sentinel</span> <span class="check">✓</span> finished <em>CI setup</em></span></div>
+          <div class="log-row"><span class="ts">10:36</span><span class="ev"><span class="agent forge">forge</span> <span class="check">✓</span> finished <em>provision snowflake</em></span></div>
+        </div>
+      </div>
+
+    </aside>
+
+  </div>
+
+  <div class="cradle-wrap">
+    <div class="cradle">
+      <textarea rows="1" placeholder="add a card · redirect an agent · pause autopilot…"></textarea>
+      <div class="cradle-row">
+        <div><kbd>⏎</kbd> send · <kbd>⌘K</kbd> command</div>
+        <div>kanban · crew</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ===== CARD VIEWER ===== -->
+<aside class="card-drawer" id="card-drawer">
+  <div class="cd-head">
+    <span class="cd-status">in flight · 9m</span>
+    <button class="cd-close" id="cd-close" title="close">close ✕</button>
+  </div>
+
+  <div class="cd-body">
+    <h2 class="cd-title">Build dual-write adapter</h2>
+
+    <div class="cd-assignment">
+      <span class="agent archivist"><span class="dot"></span><span class="name">archivist</span></span>
+      <span class="age">claimed 11:09 · 9m</span>
+      <span class="now">editing snowflake_client.py</span>
+    </div>
+
+    <section class="cd-section">
+      <h3>brief</h3>
+      <p>Build an adapter that writes every analytics event to <span class="em">both Postgres (current) and Snowflake (new)</span> so we can verify parity before cutover. Must preserve write ordering and surface a metric for drift.</p>
+    </section>
+
+    <section class="cd-section">
+      <h3>dependencies</h3>
+      <div class="cd-deps">
+        <div class="cd-dep">
+          <span class="dep-lbl">depends on</span>
+          <ul>
+            <li class="done">Provision Snowflake account · forge · 5m</li>
+            <li class="done">Audit current Postgres schema · scout · 8m</li>
+          </ul>
+        </div>
+        <div class="cd-dep">
+          <span class="dep-lbl">blocks · 3 cards waiting on this</span>
+          <ul>
+            <li class="queued">Update query layer to read from Snowflake</li>
+            <li class="queued">Add monitoring for dual-write drift</li>
+            <li class="queued">Backfill historical data into Snowflake</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="cd-section">
+      <h3>activity · 9 events</h3>
+      <div class="cd-timeline">
+        <div class="event"><span class="ts">11:18</span><span class="who archivist">archivist</span><span class="ev">edited <code>snowflake_client.py</code> · <span class="num">+24</span></span></div>
+        <div class="event"><span class="ts">11:16</span><span class="who archivist">archivist</span><span class="ev">read <code>analytics_writer.py</code></span></div>
+        <div class="event"><span class="ts">11:14</span><span class="who archivist">archivist</span><span class="ev">grep <code>'write_event'</code> · 4 hits</span></div>
+        <div class="event"><span class="ts">11:13</span><span class="who archivist">archivist</span><span class="ev">read <code>postgres_writer.py</code></span></div>
+        <div class="event"><span class="ts">11:11</span><span class="who archivist">archivist</span><span class="ev">read <code>snowflake_client.py</code></span></div>
+        <div class="event claim"><span class="ts">11:09</span><span class="who archivist">archivist</span><span class="ev">claimed the card</span></div>
+        <div class="event"><span class="ts">11:09</span><span class="who auto">autopilot</span><span class="ev">dispatched to archivist · preferred for adapters</span></div>
+        <div class="event"><span class="ts">11:09</span><span class="who auto">autopilot</span><span class="ev">card became ready · upstream completed</span></div>
+        <div class="event"><span class="ts">10:36</span><span class="who auto">autopilot</span><span class="ev">card created from mission plan</span></div>
+      </div>
+    </section>
+
+    <section class="cd-section">
+      <h3>files touched</h3>
+      <div class="cd-files">
+        <div class="file"><span class="path">snowflake_client.py</span><span class="counts">1 edit · 2 reads</span></div>
+        <div class="file"><span class="path">analytics_writer.py</span><span class="counts">0 edits · 1 read</span></div>
+        <div class="file"><span class="path">postgres_writer.py</span><span class="counts">0 edits · 1 read</span></div>
+      </div>
+    </section>
+  </div>
+
+  <footer class="cd-actions">
+    <button>Reassign</button>
+    <button>Reclaim</button>
+    <button class="warn">Mark blocked</button>
+    <button class="ok">Mark done</button>
+  </footer>
+</aside>
+
+<script>
+  (() => {
+    const drawer = document.getElementById('card-drawer');
+    document.getElementById('cd-close').addEventListener('click', () => drawer.classList.add('hidden'));
+    const sel = '.card, .station, .q-card';
+    document.querySelectorAll(sel).forEach(el => {
+      el.addEventListener('click', () => {
+        document.querySelectorAll(sel).forEach(x => x.classList.remove('selected'));
+        el.classList.add('selected');
+        drawer.classList.remove('hidden');
+      });
+    });
+  })();
+</script>
+
+</body>
+</html>

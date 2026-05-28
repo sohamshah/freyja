@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · v1 List + Rail (mock)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a; --bg-1:#121212; --bg-2:#181818; --bg-3:#1e1e1e; --bg-4:#262626;
+    --fg-0:#e8e8e8; --fg-1:#a8a8a8; --fg-2:#6e6e6e; --fg-3:#4a4a4a; --fg-4:#303030;
+    --accent:#a8d4fc; --accent-lo:#7aafea;
+    --ok:#88d67f; --warn:#ffcc66; --danger:#ff6b6b;
+    --hairline:rgba(255,255,255,0.06);
+    --mono:'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-weight:400; font-size:13px; line-height:1.5;
+    letter-spacing:0.01em;
+    -webkit-font-smoothing:antialiased;
+    overflow:hidden;
+  }
+
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(900px 600px at 12% -10%, rgba(168,212,252,0.06), transparent 60%),
+      radial-gradient(700px 500px at 92% 8%, rgba(136,214,127,0.035), transparent 60%),
+      radial-gradient(800px 600px at 50% 110%, rgba(255,204,102,0.025), transparent 60%);
+  }
+  .ambient::after { content:""; position:absolute; inset:0;
+    background-image:
+      repeating-linear-gradient(115deg, rgba(255,255,255,0.012) 0 1px, transparent 1px 90px),
+      repeating-linear-gradient(25deg,  rgba(255,255,255,0.010) 0 1px, transparent 1px 130px);
+    mask-image: radial-gradient(80% 70% at 50% 40%, black, transparent 90%);
+  }
+
+  .app { position:relative; z-index:1; height:100vh; display:grid; grid-template-rows:36px 1fr; }
+
+  /* ---- title bar ---- */
+  .titlebar {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 14px; border-bottom:1px solid var(--hairline);
+    color:var(--fg-1); font-size:11px; letter-spacing:0.06em;
+  }
+  .title-left, .title-right { display:flex; align-items:center; gap:14px; }
+  .title-segment { display:flex; gap:2px; }
+  .seg-btn { background:transparent; border:0; color:var(--fg-2); font:inherit;
+    padding:6px 10px; border-radius:6px; cursor:pointer;
+    transition:color 120ms ease, background 120ms ease, transform 80ms ease; }
+  .seg-btn:hover { color:var(--fg-0); background:rgba(255,255,255,0.04); }
+  .seg-btn.active { color:#f3f3f3;
+    background:linear-gradient(180deg, rgba(0,0,0,0.32), rgba(0,0,0,0.18));
+    box-shadow: inset 0 2px 3px rgba(0,0,0,0.55), inset 0 1px 0 rgba(0,0,0,0.4),
+                inset 0 -0.5px 0 rgba(255,255,255,0.07);
+    transform:translateY(0.5px);
+  }
+  .title-meta { color:var(--fg-2); }
+  .dot { width:6px; height:6px; border-radius:50%; display:inline-block; }
+  .dot.ok { background:var(--ok); box-shadow:0 0 8px rgba(136,214,127,0.5); }
+
+  /* ---- state switcher (mock-only chrome) ---- */
+  .mock-switch {
+    position:fixed; top:46px; right:16px; z-index:50;
+    display:flex; gap:2px; padding:3px;
+    background:rgba(14,14,14,0.7); backdrop-filter:blur(20px);
+    border-radius:8px; border:1px solid var(--hairline);
+    font-size:10.5px; letter-spacing:0.12em; text-transform:uppercase;
+  }
+  .mock-switch button {
+    background:transparent; border:0; color:var(--fg-2); font:inherit;
+    padding:5px 9px; border-radius:5px; cursor:pointer;
+    transition:color 120ms ease, background 120ms ease;
+  }
+  .mock-switch button:hover { color:var(--fg-0); }
+  .mock-switch button.on {
+    color:#f3f3f3;
+    background:linear-gradient(180deg, rgba(0,0,0,0.32), rgba(0,0,0,0.18));
+    box-shadow:inset 0 1px 2px rgba(0,0,0,0.45);
+  }
+
+  /* ---- main grid ---- */
+  .main { display:grid; grid-template-columns:1fr 320px; min-height:0; }
+  .main.with-drawer { grid-template-columns:1fr 320px 360px; }
+  .stage { overflow-y:auto; padding:56px 64px 24px; display:flex; flex-direction:column; gap:40px; }
+  .rail { border-left:1px solid var(--hairline); padding:56px 24px 24px; overflow-y:auto;
+    display:flex; flex-direction:column; gap:36px; }
+  .drawer { border-left:1px solid var(--hairline); padding:56px 24px 24px;
+    overflow-y:auto; display:flex; flex-direction:column; gap:24px;
+    background:linear-gradient(180deg, rgba(168,212,252,0.025), transparent 40%);
+  }
+
+  /* ---- mission ---- */
+  .mission { max-width:760px; margin:0 auto; width:100%; }
+  .mission-eyebrow { color:var(--fg-2); font-size:10.5px; letter-spacing:0.18em;
+    text-transform:uppercase; margin-bottom:18px; display:flex; align-items:center; gap:10px; }
+  .mission-statement { font-size:22px; line-height:1.45; font-weight:400; color:var(--fg-0); margin:0; }
+  .mission-statement .soft { color:var(--fg-1); }
+  .progress { margin-top:28px; display:flex; align-items:center; gap:14px;
+    color:var(--fg-1); font-size:11px; letter-spacing:0.06em; }
+  .progress-bar { flex:1; height:2px; background:rgba(255,255,255,0.06); border-radius:2px; overflow:hidden; }
+  .progress-fill { height:100%; background:linear-gradient(90deg, var(--accent-lo), var(--accent));
+    box-shadow:0 0 12px rgba(168,212,252,0.35); border-radius:2px; }
+  .progress-num { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+  .progress-secondary { color:var(--fg-2); }
+
+  /* ---- tasks ---- */
+  .tasks { max-width:760px; margin:0 auto; width:100%; display:flex; flex-direction:column; gap:28px; }
+  .group { display:flex; flex-direction:column; gap:8px; }
+  .group-header { display:flex; align-items:baseline; gap:12px; color:var(--fg-2);
+    font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase; padding-bottom:6px; }
+  .group-count { color:var(--fg-3); }
+  .task { display:grid; grid-template-columns:18px 1fr auto; align-items:center;
+    column-gap:14px; padding:10px 12px; border-radius:8px; cursor:pointer;
+    transition:background 120ms ease; }
+  .task:hover { background:rgba(255,255,255,0.025); }
+  .task .glyph { color:var(--fg-2); font-size:13px; text-align:center; }
+  .task .title { color:var(--fg-0); }
+  .task .meta { color:var(--fg-2); font-size:11px; display:flex; align-items:center; gap:8px; }
+  .task .meta .dotline { color:var(--fg-4); }
+  .task.now { background:rgba(168,212,252,0.045); }
+  .task.now:hover { background:rgba(168,212,252,0.07); }
+  .task.now .glyph { color:var(--accent); }
+  .task.now .meta  { color:var(--accent); }
+  .task.blocked .glyph, .task.blocked .meta { color:var(--warn); }
+  .task.done .glyph { color:var(--ok); }
+  .task.done .title { color:var(--fg-1); text-decoration:line-through; text-decoration-color:var(--fg-4); }
+  .task.selected { background:rgba(168,212,252,0.085);
+    box-shadow:inset 0 0 0 1px rgba(168,212,252,0.18); }
+
+  .spin { display:inline-block; width:10px; height:10px; border-radius:50%;
+    border:1.4px solid rgba(168,212,252,0.25); border-top-color:var(--accent);
+    animation:spin 1.6s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+
+  /* ---- rail: crew + pulse ---- */
+  .rail-section { display:flex; flex-direction:column; gap:14px; }
+  .rail-title { color:var(--fg-2); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase; }
+  .crew { display:flex; flex-direction:column; gap:10px; }
+  .crew-row { display:grid; grid-template-columns:12px 70px 1fr; gap:10px; align-items:center; font-size:12px; }
+  .crew-row .name { color:var(--fg-0); }
+  .crew-row .what { color:var(--fg-2); font-size:11px; }
+  .crew-dot { width:6px; height:6px; border-radius:50%; background:var(--fg-3); }
+  .crew-row.active .crew-dot { background:var(--accent); box-shadow:0 0 8px rgba(168,212,252,0.55);
+    animation:pulse 2.2s ease-in-out infinite; }
+  .crew-row.idle .name, .crew-row.idle .what { color:var(--fg-2); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  .pulse-list { display:flex; flex-direction:column; }
+  .pulse-row { display:grid; grid-template-columns:44px 60px 1fr; column-gap:10px;
+    padding:6px 0; font-size:11.5px; color:var(--fg-1); border-top:1px solid transparent; }
+  .pulse-row + .pulse-row { border-top-color:rgba(255,255,255,0.03); }
+  .pulse-row .ts { color:var(--fg-3); font-variant-numeric:tabular-nums; }
+  .pulse-row .who { color:var(--fg-2); }
+  .pulse-row .what .ok { color:var(--ok); }
+  .pulse-row .what .warn { color:var(--warn); }
+
+  /* ---- detail drawer ---- */
+  .drawer-close { display:flex; justify-content:space-between; align-items:center;
+    color:var(--fg-2); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase; }
+  .drawer-close button { background:transparent; border:0; color:var(--fg-2); cursor:pointer;
+    font:inherit; padding:4px; border-radius:4px; }
+  .drawer-close button:hover { color:var(--fg-0); }
+  .drawer-title { font-size:16px; line-height:1.4; color:var(--fg-0); }
+  .drawer-meta { color:var(--fg-2); font-size:11px; display:flex; gap:8px; flex-wrap:wrap; }
+  .meta-pill { padding:2px 8px; border-radius:10px; background:rgba(255,255,255,0.04);
+    border:1px solid var(--hairline); }
+  .meta-pill.accent { background:rgba(168,212,252,0.08); border-color:rgba(168,212,252,0.18); color:var(--accent); }
+  .drawer-body { color:var(--fg-1); font-size:12px; line-height:1.6; }
+  .drawer-section-title { color:var(--fg-2); font-size:10.5px; letter-spacing:0.18em;
+    text-transform:uppercase; margin-bottom:8px; }
+  .drawer-actions { display:flex; gap:8px; flex-wrap:wrap; }
+  .drawer-actions .a {
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline);
+    color:var(--fg-1); font:inherit; font-size:11px; padding:6px 10px; border-radius:6px;
+    cursor:pointer; transition:all 120ms ease;
+  }
+  .drawer-actions .a:hover { color:var(--fg-0); background:rgba(255,255,255,0.06); }
+  .subtask { display:grid; grid-template-columns:14px 1fr; gap:10px; padding:4px 0; font-size:12px; color:var(--fg-1); }
+  .subtask.done { color:var(--fg-2); }
+  .subtask .g { color:var(--fg-3); }
+  .subtask.done .g { color:var(--ok); }
+  .subtask.now .g { color:var(--accent); }
+  .timeline-mini { display:flex; flex-direction:column; gap:6px; }
+  .tline { display:grid; grid-template-columns:48px 1fr; gap:10px; font-size:11px; color:var(--fg-2); }
+  .tline .ts { color:var(--fg-3); font-variant-numeric:tabular-nums; }
+  .tline .ev .accent { color:var(--accent); }
+
+  /* ---- empty state ---- */
+  .empty { max-width:560px; margin:0 auto; padding-top:80px; text-align:center; color:var(--fg-1); }
+  .empty .glyph-big {
+    width:56px; height:56px; border-radius:50%; margin:0 auto 24px;
+    border:1px dashed rgba(168,212,252,0.3);
+    display:flex; align-items:center; justify-content:center;
+    color:var(--accent); font-size:20px;
+    background:radial-gradient(circle at center, rgba(168,212,252,0.08), transparent 70%);
+  }
+  .empty h2 { font-size:18px; font-weight:400; color:var(--fg-0); margin:0 0 12px; line-height:1.4; }
+  .empty p { color:var(--fg-2); font-size:13px; line-height:1.6; margin:0 0 28px; }
+  .empty .suggestions { display:flex; flex-direction:column; gap:6px; text-align:left; }
+  .empty .suggest {
+    padding:10px 14px; border-radius:10px;
+    background:rgba(255,255,255,0.02); border:1px solid var(--hairline);
+    color:var(--fg-1); font-size:12px; cursor:pointer; transition:all 120ms ease;
+  }
+  .empty .suggest:hover { background:rgba(255,255,255,0.04); color:var(--fg-0); }
+  .empty .suggest .arrow { color:var(--fg-3); float:right; }
+
+  /* ---- complete state ---- */
+  .complete-banner {
+    max-width:760px; margin:0 auto 0; padding:24px 28px;
+    background:linear-gradient(180deg, rgba(136,214,127,0.06), rgba(136,214,127,0.02));
+    border:1px solid rgba(136,214,127,0.18);
+    border-radius:14px;
+    display:flex; align-items:center; justify-content:space-between; gap:24px;
+  }
+  .complete-banner .left { display:flex; align-items:center; gap:14px; }
+  .complete-icon { width:36px; height:36px; border-radius:50%;
+    background:radial-gradient(circle, rgba(136,214,127,0.25), rgba(136,214,127,0.08));
+    border:1px solid rgba(136,214,127,0.4);
+    display:flex; align-items:center; justify-content:center; color:var(--ok); font-size:14px;
+    box-shadow:0 0 20px rgba(136,214,127,0.15);
+  }
+  .complete-banner h3 { font-size:13px; font-weight:400; color:var(--fg-0); margin:0; }
+  .complete-banner .stats { color:var(--fg-2); font-size:11px; margin-top:4px; }
+  .complete-banner .actions { display:flex; gap:8px; }
+  .complete-banner .actions .a { background:rgba(255,255,255,0.04); border:1px solid var(--hairline);
+    color:var(--fg-1); font:inherit; font-size:11px; padding:6px 12px; border-radius:6px; cursor:pointer; }
+  .complete-banner .actions .a:hover { color:var(--fg-0); background:rgba(255,255,255,0.07); }
+
+  /* ---- cradle ---- */
+  .cradle-wrap { position:fixed; left:0; right:320px; bottom:0; display:flex;
+    justify-content:center; pointer-events:none; padding:0 16px 12px; }
+  .main.with-drawer ~ .cradle-wrap { right:680px; }
+  .cradle { pointer-events:auto; width:100%; max-width:760px;
+    background:rgba(14,14,14,0.55);
+    backdrop-filter:blur(36px) saturate(140%);
+    -webkit-backdrop-filter:blur(36px) saturate(140%);
+    border-radius:16px;
+    box-shadow: inset 0 0.5px 0 0 rgba(255,255,255,0.07),
+                inset 0 0 0 1px rgba(255,255,255,0.04),
+                0 12px 40px -8px rgba(0,0,0,0.5);
+    padding:12px 16px 10px; display:flex; flex-direction:column; gap:8px;
+  }
+  .cradle textarea { background:transparent; border:0; outline:0; color:var(--fg-0);
+    font:inherit; resize:none; width:100%; min-height:22px; }
+  .cradle textarea::placeholder { color:var(--fg-3); }
+  .cradle-row { display:flex; align-items:center; justify-content:space-between;
+    color:var(--fg-3); font-size:11px; letter-spacing:0.04em; }
+  .cradle-row .left { display:flex; gap:14px; }
+  .cradle-row kbd { font-family:inherit; color:var(--fg-2); background:rgba(255,255,255,0.04);
+    padding:1px 6px; border-radius:4px; font-size:10.5px; }
+
+  ::-webkit-scrollbar { width:10px; height:10px; }
+  ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.05); border-radius:6px;
+    border:2px solid transparent; background-clip:padding-box; }
+  ::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,0.10); background-clip:padding-box; }
+  ::-webkit-scrollbar-track { background:transparent; }
+
+  /* hide elements per state */
+  .state-empty .stage > .mission,
+  .state-empty .stage > .tasks,
+  .state-empty .stage > .complete-banner { display:none; }
+  .state-complete .stage > .empty { display:none; }
+  .state-active .stage > .empty,
+  .state-active .stage > .complete-banner { display:none; }
+  .state-drawer .stage > .empty,
+  .state-drawer .stage > .complete-banner { display:none; }
+</style>
+</head>
+<body class="state-active">
+<div class="ambient"></div>
+
+<!-- mock-only state switcher -->
+<div class="mock-switch" id="switch">
+  <button data-state="active" class="on">live</button>
+  <button data-state="drawer">drawer</button>
+  <button data-state="empty">empty</button>
+  <button data-state="complete">complete</button>
+</div>
+
+<div class="app">
+
+  <div class="titlebar">
+    <div class="title-left">
+      <span class="title-meta">freyja</span>
+      <span class="dot ok" title="connected"></span>
+      <div class="title-segment">
+        <button class="seg-btn">workspace</button>
+        <button class="seg-btn active">dashboard</button>
+        <button class="seg-btn">focus</button>
+      </div>
+    </div>
+    <div class="title-right">
+      <span class="title-meta">tasks · 3 agents</span>
+      <span class="title-meta">opus 4.7</span>
+    </div>
+  </div>
+
+  <div class="main" id="main">
+
+    <div class="stage">
+
+      <!-- ===== empty state ===== -->
+      <div class="empty">
+        <div class="glyph-big">+</div>
+        <h2>What should we work on?</h2>
+        <p>Describe a mission and Freyja will draft a task plan you can edit before kicking off the crew.</p>
+        <div class="suggestions">
+          <button class="suggest">Start from a goal in plain English<span class="arrow">→</span></button>
+          <button class="suggest">Import tasks from a Linear project<span class="arrow">→</span></button>
+          <button class="suggest">Resume yesterday's pipeline migration<span class="arrow">→</span></button>
+        </div>
+      </div>
+
+      <!-- ===== complete banner (only shown in complete state) ===== -->
+      <div class="complete-banner">
+        <div class="left">
+          <div class="complete-icon">✓</div>
+          <div>
+            <h3>Mission complete</h3>
+            <div class="stats">12 of 12 tasks · 1h 14m elapsed · 3 agents · $2.41 spend</div>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="a">View summary</button>
+          <button class="a">Branch new mission</button>
+          <button class="a">Archive</button>
+        </div>
+      </div>
+
+      <!-- ===== mission ===== -->
+      <section class="mission">
+        <div class="mission-eyebrow">
+          <span>mission</span>
+          <span style="color:var(--fg-3)">·</span>
+          <span style="color:var(--fg-2)" id="mission-time">started 11:04 · 38m elapsed</span>
+        </div>
+        <h1 class="mission-statement">
+          Restructure the ingestion pipeline to support
+          <span class="soft">streaming uploads from S3 and Azure Blob,</span>
+          and migrate the existing batch test suite.
+        </h1>
+        <div class="progress">
+          <span class="progress-num" id="prog-num">4 of 12</span>
+          <span class="progress-secondary">complete</span>
+          <div class="progress-bar"><div class="progress-fill" id="prog-fill" style="width:33%"></div></div>
+          <span class="progress-secondary" id="prog-extra">2 active · 1 blocked</span>
+        </div>
+      </section>
+
+      <!-- ===== tasks ===== -->
+      <section class="tasks" id="tasks">
+
+        <div class="group" data-group="now">
+          <div class="group-header"><span>now</span><span class="group-count">2</span></div>
+          <div class="task now selected" data-task="s3">
+            <span class="glyph"><span class="spin"></span></span>
+            <span class="title">Add streaming reader for S3 multipart objects</span>
+            <span class="meta">scout <span class="dotline">·</span> 2m</span>
+          </div>
+          <div class="task now" data-task="ingest">
+            <span class="glyph"><span class="spin"></span></span>
+            <span class="title">Refactor ingest worker around buffered cursor</span>
+            <span class="meta">forge <span class="dotline">·</span> 5m</span>
+          </div>
+        </div>
+
+        <div class="group" data-group="next">
+          <div class="group-header"><span>up next</span><span class="group-count">4</span></div>
+          <div class="task"><span class="glyph">○</span><span class="title">Add Azure blob adapter mirroring the S3 surface</span><span class="meta"></span></div>
+          <div class="task"><span class="glyph">○</span><span class="title">Migrate batch test fixtures to streaming form</span><span class="meta"></span></div>
+          <div class="task"><span class="glyph">○</span><span class="title">Wire <code style="color:var(--fg-1)">--stream</code> CLI flag through worker config</span><span class="meta"></span></div>
+          <div class="task"><span class="glyph">○</span><span class="title">Document the cutover plan for staging</span><span class="meta"></span></div>
+        </div>
+
+        <div class="group" data-group="blocked">
+          <div class="group-header"><span>blocked</span><span class="group-count">1</span></div>
+          <div class="task blocked"><span class="glyph">⊘</span><span class="title">Update API contracts in shared schema repo</span><span class="meta">waiting on review</span></div>
+        </div>
+
+        <div class="group" data-group="done">
+          <div class="group-header"><span>done</span><span class="group-count">4</span></div>
+          <div class="task done"><span class="glyph">✓</span><span class="title">Benchmark current memory floor for batch reader</span><span class="meta">12m</span></div>
+          <div class="task done"><span class="glyph">✓</span><span class="title">Spec the buffered-cursor abstraction</span><span class="meta">8m</span></div>
+          <div class="task done"><span class="glyph">✓</span><span class="title">Map current S3 surface area used by ingest</span><span class="meta">6m</span></div>
+          <div class="task done"><span class="glyph">✓</span><span class="title">Set up local minio for fixture replay</span><span class="meta">4m</span></div>
+        </div>
+
+      </section>
+
+      <div style="height:110px"></div>
+    </div>
+
+    <!-- ===== rail ===== -->
+    <aside class="rail">
+      <div class="rail-section">
+        <div class="rail-title">crew</div>
+        <div class="crew">
+          <div class="crew-row active"><span class="crew-dot"></span><span class="name">scout</span><span class="what">reading S3 client source</span></div>
+          <div class="crew-row active"><span class="crew-dot"></span><span class="name">forge</span><span class="what">editing ingest_worker.py</span></div>
+          <div class="crew-row idle"><span class="crew-dot"></span><span class="name">sentinel</span><span class="what">idle · 3m</span></div>
+        </div>
+      </div>
+
+      <div class="rail-section">
+        <div class="rail-title">pulse</div>
+        <div class="pulse-list">
+          <div class="pulse-row"><span class="ts">10:42</span><span class="who">sentinel</span><span class="what"><span class="ok">✓</span> verified fixture parity</span></div>
+          <div class="pulse-row"><span class="ts">10:38</span><span class="who">forge</span><span class="what">wrote ingest_worker.py</span></div>
+          <div class="pulse-row"><span class="ts">10:31</span><span class="who">scout</span><span class="what">found 4 callers of legacy reader</span></div>
+          <div class="pulse-row"><span class="ts">10:24</span><span class="who">forge</span><span class="what">ran test suite · 41 passed</span></div>
+          <div class="pulse-row"><span class="ts">10:19</span><span class="who">scout</span><span class="what">read s3_client.py</span></div>
+          <div class="pulse-row"><span class="ts">10:12</span><span class="who">sentinel</span><span class="what"><span class="warn">!</span> flagged contract drift</span></div>
+          <div class="pulse-row"><span class="ts">10:04</span><span class="who">forge</span><span class="what">opened ingest_worker.py</span></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ===== detail drawer ===== -->
+    <aside class="drawer" id="drawer" style="display:none">
+      <div class="drawer-close">
+        <span>task detail</span>
+        <button id="drawer-close" title="close">close ✕</button>
+      </div>
+
+      <div>
+        <div class="drawer-title">Add streaming reader for S3 multipart objects</div>
+        <div class="drawer-meta" style="margin-top:10px">
+          <span class="meta-pill accent">now · 2m</span>
+          <span class="meta-pill">scout</span>
+          <span class="meta-pill">depends on: bench memory floor</span>
+        </div>
+      </div>
+
+      <div>
+        <div class="drawer-section-title">brief</div>
+        <div class="drawer-body">
+          Replace <span style="color:var(--fg-0)">batch_reader.read_object()</span> with a
+          streaming variant that yields a chunk-iterator. Must keep memory floor under
+          200 MB for files up to 8 GB and tolerate partial-failure resumes.
+        </div>
+      </div>
+
+      <div>
+        <div class="drawer-section-title">subtasks</div>
+        <div class="subtask done"><span class="g">✓</span><span>Sketch chunk-iterator interface</span></div>
+        <div class="subtask done"><span class="g">✓</span><span>Wire S3 multipart range requests</span></div>
+        <div class="subtask now"><span class="g">◐</span><span>Add backoff/retry on partial chunk failure</span></div>
+        <div class="subtask"><span class="g">○</span><span>Cover with property-based fuzz test</span></div>
+        <div class="subtask"><span class="g">○</span><span>Bench against batch reader</span></div>
+      </div>
+
+      <div>
+        <div class="drawer-section-title">activity</div>
+        <div class="timeline-mini">
+          <div class="tline"><span class="ts">10:43</span><span class="ev">scout <span class="accent">read</span> s3_multipart.py</span></div>
+          <div class="tline"><span class="ts">10:41</span><span class="ev">scout <span class="accent">edited</span> stream_reader.py · +84</span></div>
+          <div class="tline"><span class="ts">10:38</span><span class="ev">scout <span class="accent">opened</span> stream_reader.py</span></div>
+          <div class="tline"><span class="ts">10:35</span><span class="ev">claimed by scout</span></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="drawer-section-title">actions</div>
+        <div class="drawer-actions">
+          <button class="a">Reassign</button>
+          <button class="a">Mark blocked</button>
+          <button class="a">Add note</button>
+          <button class="a">Mark done</button>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+
+  <div class="cradle-wrap" id="cradle-wrap">
+    <div class="cradle">
+      <textarea rows="1" placeholder="ask, redirect, or add a task…"></textarea>
+      <div class="cradle-row">
+        <div class="left">
+          <span><kbd>⏎</kbd> send</span>
+          <span><kbd>⌘K</kbd> command</span>
+        </div>
+        <div>tasks mode</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const main = document.getElementById('main');
+  const drawer = document.getElementById('drawer');
+  const cradleWrap = document.getElementById('cradle-wrap');
+  const sw = document.getElementById('switch');
+  const body = document.body;
+
+  function setState(state) {
+    body.classList.remove('state-active', 'state-drawer', 'state-empty', 'state-complete');
+    body.classList.add('state-' + state);
+    sw.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.state === state));
+
+    if (state === 'drawer') {
+      drawer.style.display = 'flex';
+      main.classList.add('with-drawer');
+      cradleWrap.style.right = '680px';
+    } else {
+      drawer.style.display = 'none';
+      main.classList.remove('with-drawer');
+      cradleWrap.style.right = '320px';
+    }
+
+    if (state === 'complete') {
+      document.getElementById('prog-num').textContent = '12 of 12';
+      document.getElementById('prog-fill').style.width = '100%';
+      document.getElementById('prog-extra').textContent = 'all done';
+      document.querySelectorAll('#tasks .task').forEach(t => {
+        t.classList.remove('now', 'blocked', 'selected');
+        t.classList.add('done');
+        const g = t.querySelector('.glyph');
+        if (g) g.innerHTML = '✓';
+        const m = t.querySelector('.meta');
+        if (m && !m.textContent.trim().match(/m$/)) m.textContent = '';
+      });
+    }
+  }
+
+  sw.addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    setState(b.dataset.state);
+  });
+
+  document.getElementById('drawer-close').addEventListener('click', () => setState('active'));
+
+  // clicking a task opens drawer
+  document.getElementById('tasks').addEventListener('click', e => {
+    const t = e.target.closest('.task');
+    if (!t) return;
+    document.querySelectorAll('#tasks .task').forEach(x => x.classList.remove('selected'));
+    t.classList.add('selected');
+    setState('drawer');
+  });
+</script>
+</body>
+</html>
