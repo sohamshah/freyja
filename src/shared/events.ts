@@ -253,13 +253,14 @@ export interface Message {
 /** Which execution runtime drives the session.
  *
  *   - 'native'            : Freyja's own loop calls the model provider directly.
- *   - 'claude_code_acp'   : `claude --acp --stdio` subprocess is the agent loop;
- *                           Freyja is the harness frame around it.
- *   - 'codex_app_server'  : reserved for future Codex subprocess integration.
+ *   - 'claude_code'       : real `claude` CLI is the agent loop, driven via
+ *                           its stream-json protocol; Freyja is the frame.
+ *   - 'codex_app_server'  : real `codex` CLI is the agent loop, driven via
+ *                           its app-server JSON-RPC protocol.
  *
  * Default is 'native' — only sessions created from the Harnesses picker
  * carry a non-native runtime. */
-export type SessionRuntime = 'native' | 'claude_code_acp' | 'codex_app_server'
+export type SessionRuntime = 'native' | 'claude_code' | 'codex_app_server'
 
 /** UI/serializable spec for a harness runtime advertised by the bridge in
  *  the ready event's capabilities so the renderer can render the

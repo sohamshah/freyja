@@ -126,11 +126,19 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
     if (fromBridge.length > 0) return fromBridge
     return [
       {
-        id: 'claude_code_acp',
+        id: 'claude_code',
         label: 'Claude Code',
         command: 'claude',
         description:
-          "Anthropic's terminal coding agent, driven via the ACP protocol over stdio.",
+          "Anthropic's terminal coding agent (`claude` CLI) driven via its native stream-json protocol.",
+        available: true,
+      },
+      {
+        id: 'codex_app_server',
+        label: 'Codex',
+        command: 'codex',
+        description:
+          "OpenAI's terminal coding agent (`codex` CLI) driven via its app-server JSON-RPC protocol. Requires Codex 0.125+.",
         available: true,
       },
     ]

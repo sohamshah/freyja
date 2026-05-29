@@ -2678,7 +2678,13 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           id: nextId('toast'),
           message:
             chosenRuntime !== 'native'
-              ? `New ${chosenRuntime === 'claude_code_acp' ? 'Claude Code' : chosenRuntime} session`
+              ? `New ${
+                  chosenRuntime === 'claude_code'
+                    ? 'Claude Code'
+                    : chosenRuntime === 'codex_app_server'
+                      ? 'Codex'
+                      : chosenRuntime
+                } session`
               : `New session (${chosenStrategy} · ${chosenModel.replace('claude-', '')})`,
           tone: 'info',
           at: Date.now(),

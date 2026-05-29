@@ -1661,11 +1661,19 @@ class DesktopPermissionHandler:
     the session.
     """
 
+    # Default deadline for any single permission prompt. 10 minutes is
+    # long enough for an operator to step away and come back without losing
+    # the in-flight tool call; short enough that a forgotten/orphaned
+    # request can't leave the agent wedged for days. Overridable per-process
+    # via FREYJA_PERMISSION_TIMEOUT_SEC.
+    DEFAULT_TIMEOUT_SEC: float = 600.0
+
     def __init__(self, session_id: str, initial_tier: str | None = None) -> None:
         self.session_id = session_id
         self._pending: dict[str, asyncio.Future] = {}
         tier = initial_tier or os.environ.get("FREYJA_PERMISSION_AUTO", "low")
         self._auto_approve = _parse_auto_approve(tier)
+        self._timeout_sec: float = self.DEFAULT_TIMEOUT_SEC
 
     def set_policy(self, tier: str) -> None:
         self._auto_approve = _parse_auto_approve(tier)
@@ -1696,6 +1704,9 @@ class DesktopPermissionHandler:
             loop = asyncio.get_running_loop()
             fut: asyncio.Future = loop.create_future()
             self._pending[request_id] = fut
+            timeout_sec = float(
+                os.environ.get("FREYJA_PERMISSION_TIMEOUT_SEC") or self._timeout_sec
+            )
             emit(
                 {
                     "type": "permission_request",
@@ -1705,15 +1716,47 @@ class DesktopPermissionHandler:
                     "prompt": action,
                     "reason": reason or "",
                     "details": details or "",
+                    "timeoutSec": timeout_sec,
                 }
             )
+            # Hard timeout: a permission_request that no consumer answers must
+            # not wedge the agent forever. Treat timeout as deny + emit a
+            # synthetic resolution so any listener (Slack Block Kit, future
+            # IPC consumers) can update its UI rather than showing a stale
+            # pending prompt. Was the root cause of slack sessions hanging
+            # indefinitely when the daemon emitted to a desktop renderer
+            # that lives in a different process.
             try:
-                response = await fut
+                response = await asyncio.wait_for(fut, timeout=timeout_sec)
+            except asyncio.TimeoutError:
+                emit(
+                    {
+                        "type": "permission_resolved",
+                        "sessionId": self.session_id,
+                        "requestId": request_id,
+                        "approved": False,
+                        "response": f"timeout after {int(timeout_sec)}s",
+                        "reason": "timeout",
+                    }
+                )
+                return HumanResponse(
+                    approved=False,
+                    response=f"permission request timed out after {int(timeout_sec)}s",
+                )
             except asyncio.CancelledError:
                 raise
             finally:
                 self._pending.pop(request_id, None)
             approved = bool(response.get("approved"))
+            emit(
+                {
+                    "type": "permission_resolved",
+                    "sessionId": self.session_id,
+                    "requestId": request_id,
+                    "approved": approved,
+                    "response": response.get("response") or ("allow" if approved else "deny"),
+                }
+            )
             return HumanResponse(
                 approved=approved,
                 response=response.get("response") or ("allow" if approved else "deny"),
@@ -1734,6 +1777,19 @@ class DesktopPermissionHandler:
         from engine.permissions import HumanResponse
 
         return HumanResponse(approved=True, response="")
+
+
+def _is_gateway_session_id(session_id: str) -> bool:
+    """True when ``session_id`` was minted by a chat-gateway platform
+    (Slack, Telegram, Discord, ...). The canonical id shape for those is
+    ``freyja:<platform>:<chat_id>...`` — anything matching that template is
+    routed through the daemon's gateway loop, not the desktop renderer."""
+    if not session_id.startswith("freyja:"):
+        return False
+    # Need at least two more ':' after `freyja:` (platform + chat-id) to
+    # avoid matching ids like ``freyja:foo`` that aren't gateway-shaped.
+    rest = session_id[len("freyja:") :]
+    return ":" in rest and len(rest.split(":", 1)[0]) > 0
 
 
 def _parse_auto_approve(value: str) -> set:
@@ -2205,7 +2261,21 @@ class _BridgeSession:
         # Track the effective permission tier for this session independently
         # of the handler, so a `set_permission_policy` that arrives before
         # initialize() still takes effect when the handler is finally built.
-        self.permission_tier: str = state.permission_tier
+        #
+        # Gateway-routed sessions (id starts with ``freyja:<platform>:``)
+        # default to high autonomy. The daemon's permission_request events
+        # are emitted in-process, and platforms like Slack don't yet have
+        # an interactive approval surface wired all the way through. Until
+        # the Slack Block Kit dispatch + the desktop log-tailer + the
+        # control-channel round trip are all live, the only safe choice is
+        # to not prompt for routine calls; otherwise the agent stalls
+        # forever on the first network-egress bash command.
+        if _is_gateway_session_id(session_id):
+            self.permission_tier: str = os.environ.get(
+                "FREYJA_GATEWAY_PERMISSION_AUTO", "high"
+            )
+        else:
+            self.permission_tier = state.permission_tier
         self.current_tool_id: str | None = None
         self.current_turn_id: str | None = None
         self.turn_counter = 0
@@ -5948,20 +6018,25 @@ class _BridgeSession:
     async def _ensure_harness_adapter(self) -> Any:
         """Lazy-build the per-session harness adapter on first turn.
 
-        Resume id from a prior incarnation (if any) is threaded through
-        so the adapter's first ensure_started can try session/load
-        before falling back to a fresh session/new + history replay.
-        """
+        Routes to the right adapter (Claude Code stream-json, Codex
+        app-server, etc.) based on self.runtime. Resume id from a prior
+        incarnation is threaded through so the adapter's first
+        ensure_started can attempt thread/session resume before falling
+        back to a fresh session."""
         if self.harness_adapter is not None:
             return self.harness_adapter
-        from bridge.runtimes.acp_adapter import ACPHarnessAdapter
-        self.harness_adapter = ACPHarnessAdapter(
-            runtime_id=self.runtime,
-            session_id=self.id,
-            workspace=self.workspace,
-            emit=emit,
-            resume_harness_session_id=self.harness_session_id,
-        )
+        from bridge.runtimes import build_adapter
+        try:
+            self.harness_adapter = build_adapter(
+                runtime_id=self.runtime,
+                session_id=self.id,
+                workspace=self.workspace,
+                emit=emit,
+                resume_harness_session_id=self.harness_session_id,
+            )
+        except ValueError as exc:
+            log("error", f"failed to build harness adapter: {exc}")
+            return None
         return self.harness_adapter
 
     async def _run_harness_turn(

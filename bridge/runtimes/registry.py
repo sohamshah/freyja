@@ -56,23 +56,54 @@ _NATIVE = RuntimeSpec(
     description="Freyja's own agent loop — direct provider calls.",
 )
 
-_CLAUDE_CODE_ACP = RuntimeSpec(
-    id="claude_code_acp",
+_CLAUDE_CODE = RuntimeSpec(
+    id="claude_code",
     label="Claude Code",
     description=(
-        "Anthropic's official terminal coding agent, driven via the ACP "
-        "protocol over stdio. Real `claude` CLI is the execution engine; "
-        "Freyja is the frame around it."
+        "Anthropic's official terminal coding agent (`claude` CLI) driven via "
+        "its native stream-json protocol. The real `claude` binary owns the "
+        "agent loop; Freyja projects its events into the dashboard."
     ),
     command="claude",
-    args=("--acp", "--stdio"),
+    # `--print` + stream-json for both input and output is Claude Code's
+    # documented automation surface. `--verbose` is required when --print
+    # is combined with --output-format=stream-json (else only the result
+    # line is emitted). `--include-partial-messages` gives us live text
+    # deltas. `--dangerously-skip-permissions` is the only permission
+    # mode that lets it run non-interactively without deny-by-default —
+    # acceptable here because the operator explicitly picked Claude Code
+    # as their session driver.
+    args=(
+        "--print",
+        "--input-format=stream-json",
+        "--output-format=stream-json",
+        "--verbose",
+        "--include-partial-messages",
+        "--dangerously-skip-permissions",
+    ),
     command_env_var="FREYJA_CLAUDE_CODE_COMMAND",
     args_env_var="FREYJA_CLAUDE_CODE_ARGS",
 )
 
+_CODEX_APP_SERVER = RuntimeSpec(
+    id="codex_app_server",
+    label="Codex",
+    description=(
+        "OpenAI's terminal coding agent (`codex` CLI) driven via its "
+        "app-server JSON-RPC protocol. Requires codex 0.125+. The real "
+        "codex binary owns the agent loop; Freyja projects its events "
+        "and bridges approvals."
+    ),
+    command="codex",
+    args=("app-server",),
+    command_env_var="FREYJA_CODEX_COMMAND",
+    args_env_var="FREYJA_CODEX_ARGS",
+)
+
 _RUNTIMES: dict[str, RuntimeSpec] = {
     _NATIVE.id: _NATIVE,
-    _CLAUDE_CODE_ACP.id: _CLAUDE_CODE_ACP,
+    _CLAUDE_CODE.id: _CLAUDE_CODE,
+    _CODEX_APP_SERVER.id: _CODEX_APP_SERVER,
 }
 
 
