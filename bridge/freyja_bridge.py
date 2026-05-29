@@ -6768,6 +6768,7 @@ class _BridgeSession:
             r_tok = int(payload.get("reasoning_tokens", 0) or 0)
             tool_calls = int(payload.get("tool_calls", 0) or 0)
             stop_reason = payload.get("stop_reason")
+            stop_details = payload.get("stop_details") if isinstance(payload.get("stop_details"), dict) else None
             err = payload.get("error")
 
             if err:
@@ -6776,6 +6777,35 @@ class _BridgeSession:
                     f"llm {provider}/{model} FAILED in {duration_ms}ms · {err}",
                 )
                 return
+
+            # Refusal categorization (Anthropic Opus 4.7+ stop_details).
+            # Surface the category inline in the conversation so the
+            # operator sees "Refused: <category>" instead of a turn that
+            # just ends silently with a generic stop_reason. The system
+            # prompt's existing inline-chip path renders subtype
+            # `refusal_detected` with a danger-styled chip.
+            if stop_reason == "refusal" and stop_details:
+                category = (
+                    stop_details.get("type")
+                    or stop_details.get("category")
+                    or stop_details.get("reason")
+                    or "unspecified"
+                )
+                emit(
+                    {
+                        "type": "system_event",
+                        "sessionId": self.id,
+                        "subtype": "refusal_detected",
+                        "message": f"Refused by safeguards: {category}",
+                        "details": {
+                            "stopDetails": stop_details,
+                            "category": str(category),
+                            "model": model,
+                            "provider": provider,
+                            "chatVisible": True,
+                        },
+                    }
+                )
 
             cost = compute_cost(
                 model,

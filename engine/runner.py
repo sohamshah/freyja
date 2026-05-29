@@ -1659,6 +1659,12 @@ class AsyncAgentRunner:
             "cache_write_tokens": usage.cache_write_tokens if usage else 0,
             "reasoning_tokens": usage.reasoning_tokens if usage else 0,
             "stop_reason": response.stop_reason if response else None,
+            # `stop_details` is the structured refusal categorization
+            # Anthropic Opus 4.7+ returns alongside stop_reason="refusal".
+            # Surfaced here so a consumer (the bridge) can route a refusal
+            # differently from a normal end_turn — currently the bridge
+            # emits a `refusal_detected` system_event for the UI.
+            "stop_details": response.stop_details if response else None,
             "tool_calls": len(response.tool_calls or []) if response else 0,
             "thinking_blocks": len(response.thinking_blocks or []) if response else 0,
             "error": None if error is None else f"{type(error).__name__}: {error}",

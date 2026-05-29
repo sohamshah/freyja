@@ -1430,6 +1430,12 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         'tool_truncation',
         'context_pruning',
         'media_pruning',
+        // Anthropic Opus 4.7+ refusal categorization — emitted by the
+        // bridge with stop_details from the provider response. Renders
+        // as a danger-styled inline card in Conversation.tsx so the
+        // operator sees the refusal category instead of a turn that
+        // just ends silently on a generic stop_reason.
+        'refusal_detected',
       ]
       // The runner's automatic "halved N old tool results" pruning
       // (engine/runner.py:2078,2141) fires on most turns once context

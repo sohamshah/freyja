@@ -1184,6 +1184,13 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
     if (part.systemSubtype === 'goal_judge' && part.eventId) {
       return <InlineGoalVerdict eventId={part.eventId} />
     }
+    // Refusal categorization gets a danger-styled chip distinct from
+    // the warn chip used for compaction / context_pruning, because a
+    // refusal is a hard stop on the turn and the operator usually
+    // needs to act on it (rephrase, switch model, or escalate).
+    if (part.systemSubtype === 'refusal_detected' && part.eventId) {
+      return <InlineRefusal eventId={part.eventId} text={part.text ?? ''} />
+    }
     return (
       <div className="flex items-center gap-2 rounded-md bg-white/[0.025] px-2.5 py-1.5 text-[11px] text-fg-2 ring-hairline">
         <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="shrink-0">
@@ -1197,6 +1204,48 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
     )
   }
   return null
+}
+
+// ============ INLINE REFUSAL ============
+//
+// Renders a compact danger-styled card when the model refuses a turn.
+// Reads the structured stop_details payload from systemEvents via
+// SystemEventLookupContext so we can show the category prominently;
+// falls back to the bare text from the part when the lookup hasn't
+// arrived yet. The shape mirrors InlineGoalVerdict's "rich card via
+// eventId" pattern instead of duplicating data into MessagePart.
+function InlineRefusal({ eventId, text }: { eventId: string; text: string }) {
+  const lookup = useContext(SystemEventLookupContext)
+  const event = lookup.get(eventId)
+  const details = (event?.details ?? {}) as {
+    category?: string
+    model?: string
+    provider?: string
+    stopDetails?: Record<string, unknown>
+  }
+  const category = details.category ?? 'unspecified'
+  const modelLabel =
+    details.model && details.provider
+      ? `${details.provider}/${details.model}`
+      : details.model || details.provider || ''
+  return (
+    <div className="flex items-start gap-2.5 rounded-md bg-danger/[0.06] px-3 py-2 text-[11px] text-fg-1 ring-1 ring-danger/30">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="mt-[1.5px] shrink-0">
+        <circle cx="6" cy="6" r="5.25" fill="none" stroke="currentColor" strokeWidth="1" className="text-danger" />
+        <path d="M4 4l4 4M8 4l-4 4" stroke="currentColor" strokeWidth="1" strokeLinecap="round" className="text-danger" />
+      </svg>
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-danger">refused</span>
+          <span className="font-mono text-[10.5px] uppercase text-fg-0">{category}</span>
+          {modelLabel && (
+            <span className="font-mono text-[9.5px] text-fg-3">{modelLabel}</span>
+          )}
+        </div>
+        <span className="text-fg-1">{text || 'Model declined to respond.'}</span>
+      </div>
+    </div>
+  )
 }
 
 // ============ INLINE GOAL VERDICT ============
