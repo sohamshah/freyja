@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import os
 import re
 import sys
@@ -361,6 +362,43 @@ def _append_session_event_jsonl(session_id: str, event: dict[str, Any]) -> None:
 
 def log(level: str, message: str) -> None:
     emit({"type": "log", "level": level, "message": message})
+
+
+class _BridgeLogHandler(logging.Handler):
+    """Forward Python `logging` calls through the bridge's log() helper
+    so messages from `import logging` users (e.g. bridge.runtimes.*) show
+    up in the renderer's log stream alongside our own log() calls.
+
+    Without this, every `logger.info()` is silently dropped because the
+    bridge process has no logging handlers configured by default."""
+
+    def emit(self, record: logging.LogRecord) -> None:  # noqa: A003 - stdlib name
+        try:
+            level = record.levelname.lower()
+            if level not in {"debug", "info", "warn", "warning", "error"}:
+                level = "info"
+            # Normalize warning → warn (matches log() helper's convention).
+            if level == "warning":
+                level = "warn"
+            message = f"{record.name}: {record.getMessage()}"
+            log(level, message)
+        except Exception:
+            # Never let logging crash the bridge.
+            pass
+
+
+def _install_python_logging_bridge() -> None:
+    """Wire stdlib logging through the bridge's log() helper. Idempotent."""
+    root = logging.getLogger()
+    # Only install once (multiple imports during tests would otherwise stack).
+    for h in root.handlers:
+        if isinstance(h, _BridgeLogHandler):
+            return
+    handler = _BridgeLogHandler()
+    handler.setLevel(logging.INFO)
+    root.addHandler(handler)
+    if root.level > logging.INFO or root.level == logging.NOTSET:
+        root.setLevel(logging.INFO)
 
 
 def emit_error(message: str, recoverable: bool = False) -> None:
@@ -757,6 +795,11 @@ async def _main() -> None:
     # up. Pairs with the implicit "process died = no more events"
     # signal at the other end.
     log("info", f"bridge process started (pid={os.getpid()}, workspace={workspace})")
+
+    # Forward Python `logging` module output (used by bridge/runtimes/*
+    # for harness diagnostics) into the renderer's log stream so we can
+    # actually see what happens when a turn stalls.
+    _install_python_logging_bridge()
 
     try:
         from engine.runner import AsyncAgentRunner  # noqa: F401
@@ -6258,6 +6301,11 @@ class _BridgeSession:
         except Exception as exc:  # noqa: BLE001
             log("warn", f"failed to add user message in harness turn: {exc}")
 
+        log(
+            "info",
+            f"harness turn starting session={self.id} runtime={self.runtime} "
+            f"turn={self.current_turn_id}",
+        )
         adapter = await self._ensure_harness_adapter()
         if adapter is None:
             emit_error(f"failed to start {self.runtime} harness", recoverable=True)
@@ -6271,6 +6319,7 @@ class _BridgeSession:
             )
             return
 
+        log("info", f"harness adapter ready, dispatching turn to {adapter.label}")
         try:
             result = await adapter.run_turn(
                 user_content,
@@ -6314,8 +6363,23 @@ class _BridgeSession:
 
         # Materialize the final assistant message in our transcript.
         # text_delta was already streamed to the renderer during the
-        # turn; this is the durable copy.
+        # turn; this is the durable copy. For error turns we synthesize
+        # a visible assistant message from the harness error so the
+        # operator sees the cause inline instead of just a silent gap.
         final_text = result.text or ""
+        result_error = getattr(result, "error", None) or ""
+        result_is_error = bool(getattr(result, "is_error", False) or result_error)
+        if not final_text and result_is_error:
+            final_text = f"[{adapter.label} error] {result_error or 'unknown'}"
+            # Also emit as a text_delta so the streaming assistant card
+            # shows the error in real time, not only after persistence.
+            emit(
+                {
+                    "type": "text_delta",
+                    "sessionId": self.id,
+                    "text": final_text,
+                }
+            )
         if final_text:
             try:
                 self.session.add_assistant_message(  # type: ignore[union-attr]

@@ -136,12 +136,35 @@ class CodexClient:
     async def start(self) -> None:
         if self._initialized:
             return
-        if shutil.which(self._command) is None:
+        # PATH defense: macOS GUI-launched apps inherit a minimal PATH
+        # (/usr/bin:/bin:/usr/sbin:/sbin) that doesn't include brew/nvm
+        # install dirs. Try shutil.which first, then walk common install
+        # locations before declaring the binary missing.
+        resolved = shutil.which(self._command)
+        if resolved is None and "/" not in self._command:
+            for prefix in (
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+                os.path.expanduser("~/.cargo/bin"),
+                os.path.expanduser("~/bin"),
+            ):
+                candidate = os.path.join(prefix, self._command)
+                if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                    resolved = candidate
+                    logger.info(
+                        "codex found at %s via fallback PATH walk", candidate
+                    )
+                    break
+        if resolved is None:
             raise CodexClientError(
-                f"`{self._command}` not found on PATH. Install Codex CLI "
-                f"(brew install codex; needs version 0.125+) or set "
-                f"FREYJA_CODEX_COMMAND to override."
+                f"`{self._command}` not found on PATH or in standard install "
+                f"locations. Install Codex (brew install codex; needs 0.125+) "
+                f"or set FREYJA_CODEX_COMMAND to override."
             )
+        # Pin the resolved absolute path so subprocess spawn doesn't
+        # depend on PATH at all.
+        self._command = resolved
+        logger.info("codex spawn: %s %s", self._command, " ".join(self._args))
 
         env = os.environ.copy()
         env.update(self._env_overrides)
@@ -172,6 +195,7 @@ class CodexClient:
             self._read_stderr(), name="codex-stderr"
         )
 
+        logger.info("Codex subprocess spawned (pid=%s), sending initialize", self._proc.pid)
         try:
             await asyncio.wait_for(
                 self._request(
@@ -183,6 +207,7 @@ class CodexClient:
                 ),
                 timeout=_DEFAULT_INIT_TIMEOUT_S,
             )
+            logger.info("Codex initialize handshake complete")
         except asyncio.TimeoutError as e:
             tail = "\n".join(self.stderr_tail(40))
             await self._terminate()
@@ -273,6 +298,11 @@ class CodexClient:
 
         result = CodexTurnResult(thread_id=self._thread_id)
 
+        logger.info(
+            "Codex turn/start thread=%s text=%r",
+            (self._thread_id or "?")[:8],
+            text[:60],
+        )
         try:
             ts = await asyncio.wait_for(
                 self._request(
@@ -292,6 +322,11 @@ class CodexClient:
             return result
 
         result.turn_id = (ts.get("turn") or {}).get("id")
+        logger.info(
+            "Codex turn started: id=%s, waiting for completion (timeout=%.0fs)",
+            (result.turn_id or "?")[:8],
+            timeout_s,
+        )
 
         # Wait for turn/completed or watchdog.
         deadline = asyncio.get_event_loop().time() + timeout_s
@@ -576,8 +611,16 @@ class CodexClient:
                     self._turn_error = "Codex thread entered systemError"
             return
 
-        # MCP startup status — log only.
+        # MCP startup status: log so the operator sees the freyja MCP
+        # bridge come online (or hear about it failing).
         if method == "mcpServer/startupStatus/updated":
+            name = params.get("name") or "?"
+            status = params.get("status") or "?"
+            err = params.get("error")
+            if err:
+                logger.warning("Codex MCP %s: %s — %s", name, status, err)
+            else:
+                logger.info("Codex MCP %s: %s", name, status)
             return
 
         # `thread/started` and `turn/started` are informational acks of

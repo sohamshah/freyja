@@ -1561,7 +1561,11 @@ function SessionRow({
               <StrategyChip strategy={s.coordinationStrategy} />
             ) : null}
             <span className="font-mono">
-              {s.model.replace('claude-', '')}
+              {s.runtime === 'claude_code'
+                ? 'Claude Code'
+                : s.runtime === 'codex_app_server'
+                  ? 'Codex'
+                  : s.model.replace('claude-', '')}
             </span>
             <span>·</span>
             <span>{label}</span>

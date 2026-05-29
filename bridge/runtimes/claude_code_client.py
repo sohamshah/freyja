@@ -152,12 +152,57 @@ class ClaudeCodeClient:
         turn future picks up the error from the stdout reader."""
         if self._proc is not None:
             return
-        if shutil.which(self._command) is None:
+        # PATH defense (mirrors codex_client) — macOS GUI-launched apps
+        # have a minimal PATH; walk standard install locations as a
+        # fallback before giving up.
+        resolved = shutil.which(self._command)
+        if resolved is None and "/" not in self._command:
+            home = os.path.expanduser("~")
+            for prefix in (
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+                f"{home}/.nvm/versions/node",  # nvm — special-cased below
+                f"{home}/.bun/bin",
+                f"{home}/.local/bin",
+                f"{home}/bin",
+            ):
+                if prefix.endswith("/versions/node"):
+                    # Pick the highest installed node version that has
+                    # the binary — nvm doesn't symlink "current" to
+                    # /usr/local for global installs.
+                    if not os.path.isdir(prefix):
+                        continue
+                    try:
+                        versions = sorted(os.listdir(prefix), reverse=True)
+                    except OSError:
+                        continue
+                    for v in versions:
+                        candidate = os.path.join(prefix, v, "bin", self._command)
+                        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                            resolved = candidate
+                            logger.info(
+                                "claude found at %s via nvm fallback", candidate
+                            )
+                            break
+                    if resolved:
+                        break
+                else:
+                    candidate = os.path.join(prefix, self._command)
+                    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                        resolved = candidate
+                        logger.info(
+                            "claude found at %s via fallback PATH walk", candidate
+                        )
+                        break
+        if resolved is None:
             raise ClaudeCodeClientError(
-                f"`{self._command}` not found on PATH. Install Claude Code "
-                f"(see https://docs.claude.com/en/docs/claude-code) or set "
-                f"FREYJA_CLAUDE_CODE_COMMAND to override."
+                f"`{self._command}` not found on PATH or in standard install "
+                f"locations. Install Claude Code (see https://docs.claude.com/"
+                f"en/docs/claude-code) or set FREYJA_CLAUDE_CODE_COMMAND to "
+                f"override."
             )
+        self._command = resolved
+        logger.info("claude spawn: %s %s", self._command, " ".join(self._args))
 
         env = os.environ.copy()
         env.update(self._env_overrides)
@@ -181,6 +226,11 @@ class ClaudeCodeClient:
                 f"failed to spawn `{self._command}`: {e}"
             ) from e
 
+        logger.info(
+            "Claude Code subprocess spawned (pid=%s session=%s)",
+            self._proc.pid,
+            (self._session_id or "new")[:8],
+        )
         self._stdout_task = asyncio.create_task(
             self._read_stdout(), name=f"claude-stdout-{(self._session_id or 'new')[:8]}"
         )
