@@ -508,6 +508,8 @@ function sliceForSessionView(
       model: state.model,
       reasoningLevel: state.reasoningLevel,
       coordinationStrategy: state.coordinationStrategy,
+      runtime: state.runtime,
+      harnessSessionId: state.harnessSessionId,
       systemPrompt: state.systemPrompt,
     }
   }

@@ -767,6 +767,7 @@ async def _main() -> None:
         sys.exit(2)
 
     default_model = os.environ.get("FREYJA_MODEL", "claude-sonnet-4-6")
+    from bridge.runtimes.registry import capabilities_payload as _harness_capabilities
     emit(
         {
             "type": "ready",
@@ -786,6 +787,7 @@ async def _main() -> None:
                     {"id": "goal", "label": "Goal loop"},
                 ],
                 "models": _annotate_models(AVAILABLE_MODELS),
+                "harnesses": _harness_capabilities(),
             },
         }
     )
@@ -2142,8 +2144,11 @@ class _BridgeSession:
         reasoning_level: str | None,
         coordination_strategy: str | None,
         state: "_BridgeState",
+        runtime: str | None = None,
+        harness_session_id: str | None = None,
     ) -> None:
         from bridge.tools.coordination import normalize_coordination_strategy
+        from bridge.runtimes.registry import normalize_runtime
 
         self.id = session_id
         self.workspace = workspace
@@ -2151,6 +2156,21 @@ class _BridgeSession:
         self.reasoning_level_explicit = reasoning_level is not None
         self.reasoning_level = _normalize_reasoning_level(model_id, reasoning_level)
         self.coordination_strategy = normalize_coordination_strategy(coordination_strategy)
+        # Execution runtime: "native" runs Freyja's own loop; non-native
+        # runtimes (claude_code_acp, codex_app_server) delegate the agent
+        # loop to an external CLI subprocess. The harness adapter is
+        # lazy-attached on the first turn (mirrors Hermes — lets binary
+        # upgrades / re-auth between Freyja sessions kick in cleanly).
+        self.runtime: str = normalize_runtime(runtime)
+        # Opaque session id assigned by the harness on its session/new.
+        # Stored so we can attempt session/load on resume, falling back
+        # to fresh session/new + history replay if the harness can't
+        # rehydrate. The harness sessionId IS NOT authoritative; the
+        # Freyja transcript is. See bridge/runtimes/acp_runtime.py.
+        self.harness_session_id: str | None = harness_session_id
+        # Per-session harness adapter (None for runtime == "native").
+        # Built on first turn by _ensure_harness_adapter.
+        self.harness_adapter: Any | None = None
         self.state = state
         self.session: Any | None = None
         self.runner: Any | None = None
@@ -2323,10 +2343,36 @@ class _BridgeSession:
 
     async def initialize(self) -> None:
         """Lazily build the runner + tool registry for this session."""
-        if self.runner is not None:
+        if self.runner is not None or (
+            self.runtime != "native" and self.session is not None
+        ):
             return
-        from engine.runner import AsyncAgentRunner
         from engine.session import Session
+
+        # Harness-driven runtimes (claude_code_acp, etc.) skip the
+        # provider/runner/tool-registry build entirely — the agent loop
+        # lives inside the spawned CLI, not Freyja. We still create a
+        # Session so transcript persistence + sidebar metadata work.
+        # The harness adapter itself is built lazily on the first
+        # run_turn so a brand-new harness session doesn't spawn the
+        # subprocess until the operator actually sends something.
+        if self.runtime != "native":
+            self.session = Session.create(
+                system_prompt="",
+                tools=[],
+                session_id=self.id,
+                on_message_appended=self._append_raw_message_log,
+            )
+            self._base_system_prompt = ""
+            self._system_prompt = ""
+            log(
+                "info",
+                f"session {self.id} initialized in {self.runtime} runtime "
+                f"(harness drives the loop)",
+            )
+            return
+
+        from engine.runner import AsyncAgentRunner
         from bridge.tools import build_desktop_registry
         from bridge.tools.coordination import (
             coordination_prompt,
@@ -5679,7 +5725,13 @@ class _BridgeSession:
         is_goal_continuation: bool = False,
     ) -> None:
         await self.initialize()
-        if self.runner is None or self.session is None:
+        if self.session is None:
+            emit_error("session not initialized")
+            return
+        if self.runtime != "native":
+            await self._run_harness_turn(user_content, attachments)
+            return
+        if self.runner is None:
             emit_error("runner not initialized")
             return
 
@@ -5888,6 +5940,155 @@ class _BridgeSession:
                 }
             )
             self._save_transcript()
+
+    # ──────────────────────────────────────────────────────────────────
+    # Harness runtime fork
+    # ──────────────────────────────────────────────────────────────────
+
+    async def _ensure_harness_adapter(self) -> Any:
+        """Lazy-build the per-session harness adapter on first turn.
+
+        Resume id from a prior incarnation (if any) is threaded through
+        so the adapter's first ensure_started can try session/load
+        before falling back to a fresh session/new + history replay.
+        """
+        if self.harness_adapter is not None:
+            return self.harness_adapter
+        from bridge.runtimes.acp_adapter import ACPHarnessAdapter
+        self.harness_adapter = ACPHarnessAdapter(
+            runtime_id=self.runtime,
+            session_id=self.id,
+            workspace=self.workspace,
+            emit=emit,
+            resume_harness_session_id=self.harness_session_id,
+        )
+        return self.harness_adapter
+
+    async def _run_harness_turn(
+        self,
+        user_content: str,
+        attachments: list[dict[str, Any]] | None,
+    ) -> None:
+        """Drive one turn through the external harness CLI.
+
+        Mirrors run_turn's native path on the event-bus side (turn_start,
+        text_delta, message_stop, turn_complete, usage) so the renderer
+        renders harness sessions identically. The agent loop itself
+        lives inside the harness — we just project its session/update
+        notifications back into Freyja's stream + persist the resulting
+        messages."""
+        self.turn_counter += 1
+        self.current_turn_id = f"turn-{self.turn_counter}"
+        self._turn_text_parts = []
+        emit(
+            {
+                "type": "turn_start",
+                "sessionId": self.id,
+                "turnId": self.current_turn_id,
+            }
+        )
+
+        # Add the user message to the durable transcript ourselves —
+        # the harness owns the loop, so the runner.run() side-effect
+        # that normally does this is bypassed. We keep the message
+        # as plain text for V1; multimodal projection lands when we
+        # extend the ACP prompt payload beyond `{type:text}`.
+        try:
+            self.session.add_user_message(user_content)  # type: ignore[union-attr]
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"failed to add user message in harness turn: {exc}")
+
+        adapter = await self._ensure_harness_adapter()
+        if adapter is None:
+            emit_error(f"failed to start {self.runtime} harness", recoverable=True)
+            emit(
+                {
+                    "type": "turn_complete",
+                    "sessionId": self.id,
+                    "turnId": self.current_turn_id,
+                    "success": False,
+                }
+            )
+            return
+
+        try:
+            result = await adapter.run_turn(
+                user_content,
+                mcp_servers=None,  # MCP bridge lands in Stage 2
+                turn_id=self.current_turn_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"harness run_turn raised: {exc}")
+            traceback.print_exc(file=sys.stderr)
+            emit_error(f"harness turn failed: {exc}", recoverable=True)
+            emit(
+                {
+                    "type": "turn_complete",
+                    "sessionId": self.id,
+                    "turnId": self.current_turn_id,
+                    "success": False,
+                }
+            )
+            return
+
+        # Persist the harness sessionId on the bridge session so the
+        # renderer round-trips it through the sidecar and we can attempt
+        # session/load on the next Freyja restart. We emit it as a
+        # system_event so the renderer slice stamps `harnessSessionId`
+        # without needing a dedicated channel — persistence picks it up
+        # from the slice on the next save.
+        if adapter.harness_session_id and adapter.harness_session_id != self.harness_session_id:
+            self.harness_session_id = adapter.harness_session_id
+            emit(
+                {
+                    "type": "system_event",
+                    "sessionId": self.id,
+                    "subtype": "harness_session_ready",
+                    "message": f"{adapter.label} session started",
+                    "details": {
+                        "runtime": self.runtime,
+                        "harnessSessionId": adapter.harness_session_id,
+                    },
+                }
+            )
+
+        # Materialize the final assistant message in our transcript.
+        # text_delta was already streamed to the renderer during the
+        # turn; this is the durable copy.
+        final_text = result.text or ""
+        if final_text:
+            try:
+                self.session.add_assistant_message(  # type: ignore[union-attr]
+                    final_text,
+                    tool_calls=None,
+                    thinking_blocks=None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log("warn", f"failed to add assistant message in harness turn: {exc}")
+
+        emit(
+            {
+                "type": "message_stop",
+                "sessionId": self.id,
+                "stopReason": result.stop_reason or "end_turn",
+            }
+        )
+        emit(
+            {
+                "type": "turn_complete",
+                "sessionId": self.id,
+                "turnId": self.current_turn_id,
+                "success": result.error is None,
+            }
+        )
+
+        try:
+            self._save_transcript()
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"save_transcript after harness turn failed: {exc}")
+
+        if not self._auto_rename_attempted:
+            self._maybe_auto_rename_session()
 
     async def _on_stream(self, event: Any) -> None:
         try:
@@ -6689,8 +6890,11 @@ class _BridgeState:
         reasoning_level: str | None = None,
         coordination_strategy: str | None = None,
         gateway_source: Any = None,
+        runtime: str | None = None,
+        harness_session_id: str | None = None,
     ) -> _BridgeSession:
         from bridge.tools.coordination import normalize_coordination_strategy
+        from bridge.runtimes.registry import normalize_runtime
 
         existing = self.sessions.get(session_id)
         if existing is not None:
@@ -6722,6 +6926,29 @@ class _BridgeState:
                 if next_strategy != existing.coordination_strategy:
                     existing.coordination_strategy = next_strategy
                     changed = True
+            if runtime is not None:
+                next_runtime = normalize_runtime(runtime)
+                if next_runtime != existing.runtime:
+                    # Runtime swap mid-session retires the harness adapter
+                    # so the next turn re-spawns the right one. Mirror the
+                    # native model-swap path that reset()s the runner.
+                    existing.runtime = next_runtime
+                    if existing.harness_adapter is not None:
+                        try:
+                            await existing.harness_adapter.close()
+                        except Exception:
+                            logger.debug(
+                                "harness adapter close on runtime swap failed",
+                                exc_info=True,
+                            )
+                        existing.harness_adapter = None
+                    existing.harness_session_id = None
+                    changed = True
+            if harness_session_id is not None and not existing.harness_session_id:
+                # Renderer-provided resume id from a prior incarnation —
+                # only adopt when we don't already have one (otherwise an
+                # in-flight switch could clobber a freshly-allocated id).
+                existing.harness_session_id = harness_session_id
             if changed:
                 existing.reset()
                 # Re-restore from disk — the transcript was just wiped
@@ -6739,6 +6966,8 @@ class _BridgeState:
             reasoning_level=reasoning_level,
             coordination_strategy=coordination_strategy,
             state=self,
+            runtime=runtime,
+            harness_session_id=harness_session_id,
         )
         self.sessions[session_id] = s
         # New session: set gateway_source BEFORE try_restore_transcript
@@ -7036,6 +7265,17 @@ def _force_cancel_session(sess: "_BridgeSession") -> int:
     if sess.pending_task and not sess.pending_task.done():
         sess.pending_task.cancel()
         fired += 1
+
+    # Harness adapter: tell the child to drop its in-flight turn so
+    # the model stops generating. The adapter swallows errors on
+    # best-effort cancel, so this never raises.
+    if sess.harness_adapter is not None:
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(sess.harness_adapter.cancel(), name="harness-cancel")
+            fired += 1
+        except Exception:  # noqa: BLE001
+            pass
 
     # Direct-cancel any lingering runner / watchdog tasks by name.
     # This is the last-resort path — if everything above worked
@@ -7752,12 +7992,13 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             model_id=model,
             reasoning_level=cmd.get("reasoningLevel"),
             coordination_strategy=cmd.get("coordinationStrategy"),
+            runtime=cmd.get("runtime"),
         )
         log(
             "info",
             f"new session {session_id} "
             f"(model={model}, reasoning={sess.reasoning_level}, "
-            f"coordination={sess.coordination_strategy})",
+            f"coordination={sess.coordination_strategy}, runtime={sess.runtime})",
         )
         emit(
             {
@@ -7769,6 +8010,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                     "model": model,
                     "reasoningLevel": sess.reasoning_level,
                     "coordinationStrategy": sess.coordination_strategy,
+                    "runtime": sess.runtime,
                 },
             }
         )
@@ -7782,8 +8024,10 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             model_id=cmd.get("model"),
             reasoning_level=cmd.get("reasoningLevel"),
             coordination_strategy=cmd.get("coordinationStrategy"),
+            runtime=cmd.get("runtime"),
+            harness_session_id=cmd.get("harnessSessionId"),
         )
-        log("info", f"switched to session {sess.id}")
+        log("info", f"switched to session {sess.id} (runtime={sess.runtime})")
         emit(
             {
                 "type": "system_event",
@@ -7794,6 +8038,8 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                     "model": sess.model_id,
                     "reasoningLevel": sess.reasoning_level,
                     "coordinationStrategy": sess.coordination_strategy,
+                    "runtime": sess.runtime,
+                    "harnessSessionId": sess.harness_session_id,
                 },
             }
         )

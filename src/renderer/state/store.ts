@@ -149,6 +149,13 @@ export interface SessionSlice {
   model: string
   reasoningLevel: string
   coordinationStrategy: CoordinationStrategy
+  /** Execution runtime — see SessionRuntime in shared/events. 'native'
+   *  by default; non-native means the session is delegated to an external
+   *  CLI harness. Stamped at creation time + round-tripped through disk. */
+  runtime: import('@shared/events').SessionRuntime
+  /** Opaque harness sessionId echoed back from session/new. Persisted
+   *  so resume can attempt session/load on the next bridge incarnation. */
+  harnessSessionId?: string
   /** System prompt sent to the model. Captured from the bridge's
    *  `system_prompt_set` event for session export / training data. */
   systemPrompt?: string
@@ -199,6 +206,10 @@ export interface HarnessState extends SessionSlice {
   logs: Array<{ level: string; message: string; at: number }>
   toolCatalog: Record<string, ToolCatalogEntry>
   availableModels: ModelChoice[]
+  /** Harness CLIs the bridge can drive as a sub-runtime (Claude Code,
+   *  Codex, etc.). Populated from the ready event; empty until the
+   *  bridge advertises them. */
+  availableHarnesses: import('@shared/events').HarnessChoice[]
   // File picker matches for the current @query
   fileMatches: Array<{ path: string; name: string }>
   fileQuery: string
@@ -323,7 +334,11 @@ export interface HarnessActions {
   toggleSlackSetup(open?: boolean): void
   setFocusedPanel(p: HarnessState['focusedPanel']): void
   requestDemoBurst(): Promise<void>
-  newSession(model?: string, reasoningLevel?: string): Promise<void>
+  newSession(
+    model?: string,
+    reasoningLevel?: string,
+    runtime?: import('@shared/events').SessionRuntime,
+  ): Promise<void>
   switchSession(sessionId: string): Promise<void>
   openSessionPane(sessionId: string, mode?: 'replace' | 'split'): Promise<void>
   closeSessionPane(paneId: string): Promise<void>
@@ -654,6 +669,7 @@ function emptySlice(
   reasoningLevel?: string,
   models: ModelChoice[] = [],
   coordinationStrategy: CoordinationStrategy = 'bus',
+  runtime: import('@shared/events').SessionRuntime = 'native',
 ): SessionSlice {
   const normalizedReasoning = normalizeReasoningFor(model, reasoningLevel, models)
   return {
@@ -688,6 +704,7 @@ function emptySlice(
     model,
     reasoningLevel: normalizedReasoning,
     coordinationStrategy: normalizeCoordinationStrategy(coordinationStrategy),
+    runtime,
   }
 }
 
@@ -724,6 +741,7 @@ function emptyState(): HarnessState {
     logs: [],
     toolCatalog: {},
     availableModels: [],
+    availableHarnesses: [],
     fileMatches: [],
     fileQuery: '',
     permissionQueue: [],
@@ -815,6 +833,8 @@ function sliceFromState(s: HarnessState): SessionSlice {
     model: s.model,
     reasoningLevel: s.reasoningLevel,
     coordinationStrategy: s.coordinationStrategy,
+    runtime: s.runtime,
+    harnessSessionId: s.harnessSessionId,
     systemPrompt: s.systemPrompt,
   }
 }
@@ -840,6 +860,8 @@ type PersistedSessionMetaPayload = {
   completed?: boolean
   completedAt?: number
   success?: boolean
+  runtime?: import('@shared/events').SessionRuntime
+  harnessSessionId?: string
 }
 
 type PersistedSessionPayload = PersistedSessionMetaPayload & {
@@ -895,6 +917,8 @@ function persistedMetaFromSession(
     completed: session.completed,
     completedAt: session.completedAt,
     success: session.success,
+    runtime: slice?.runtime ?? session.runtime,
+    harnessSessionId: slice?.harnessSessionId ?? session.harnessSessionId,
   }
 }
 
@@ -1376,6 +1400,16 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
       if (ev.subtype === 'system_prompt_set' && ev.details?.systemPrompt) {
         next.systemPrompt = ev.details.systemPrompt as string
       }
+      // Harness sessions: stamp the harness-allocated sessionId onto
+      // the slice so the next save round-trips it through the sidecar
+      // (renderer-side resume relies on the persisted id being there
+      // before we re-issue switch_session on app restart).
+      if (
+        ev.subtype === 'harness_session_ready' &&
+        typeof ev.details?.harnessSessionId === 'string'
+      ) {
+        next.harnessSessionId = ev.details.harnessSessionId as string
+      }
       // Track autopilot state per session so the dashboard toggle can
       // reflect the bridge's actual `auto_dispatch_enabled` flag. The
       // bridge fires `kanban_autopilot_enabled` / `_disabled` whenever
@@ -1592,6 +1626,9 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
               : pane,
           ),
           availableModels: models.length > 0 ? models : prev.availableModels,
+          availableHarnesses: ((ev.capabilities?.harnesses as
+            import('@shared/events').HarnessChoice[] | undefined)
+            ?? prev.availableHarnesses),
           model: capModel,
           reasoningLevel: nextReasoning,
           coordinationStrategy: nextStrategy,
@@ -2576,7 +2613,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     if (api) await api.requestDemoBurst()
   },
 
-  async newSession(model, reasoningLevel) {
+  async newSession(model, reasoningLevel, runtime) {
     const newSessionId = `session-${Date.now().toString(36)}`
     const state = useHarness.getState()
     const chosenModel = model || state.model
@@ -2586,6 +2623,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       state.availableModels,
     )
     const chosenStrategy = normalizeCoordinationStrategy(state.coordinationStrategy)
+    const chosenRuntime: import('@shared/events').SessionRuntime = runtime ?? 'native'
 
     set((prev) => {
       // Archive the current slice unless it's empty (nothing to save).
@@ -2601,6 +2639,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         chosenReasoning,
         prev.availableModels,
         chosenStrategy,
+        chosenRuntime,
       )
       const existingPanes = prev.sessionPanes.length > 0
         ? prev.sessionPanes
@@ -2624,6 +2663,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
             model: chosenModel,
             reasoningLevel: chosenReasoning,
             coordinationStrategy: chosenStrategy,
+            runtime: chosenRuntime,
             createdAt: Date.now(),
             updatedAt: Date.now(),
             messageCount: 0,
@@ -2636,7 +2676,10 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         pendingAttachments: [],
         toast: {
           id: nextId('toast'),
-          message: `New session (${chosenStrategy} · ${chosenModel.replace('claude-', '')})`,
+          message:
+            chosenRuntime !== 'native'
+              ? `New ${chosenRuntime === 'claude_code_acp' ? 'Claude Code' : chosenRuntime} session`
+              : `New session (${chosenStrategy} · ${chosenModel.replace('claude-', '')})`,
           tone: 'info',
           at: Date.now(),
         },
@@ -2651,6 +2694,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         model: chosenModel,
         reasoningLevel: chosenReasoning,
         coordinationStrategy: chosenStrategy,
+        runtime: chosenRuntime,
       })
     else (window as any).__harnessDemo?.stop?.()
   },
@@ -2747,6 +2791,10 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     const strategyForBridge = normalizeCoordinationStrategy(
       sessionSnapshot?.coordinationStrategy || restoredStrategy,
     )
+    const runtimeForBridge: import('@shared/events').SessionRuntime =
+      sessionSnapshot?.runtime ?? archivedSlice?.runtime ?? 'native'
+    const harnessSessionIdForBridge =
+      sessionSnapshot?.harnessSessionId ?? archivedSlice?.harnessSessionId
 
     const api = (window as any).harness
     if (api) {
@@ -2756,6 +2804,8 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         model: modelForBridge,
         reasoningLevel: reasoningForBridge,
         coordinationStrategy: strategyForBridge,
+        runtime: runtimeForBridge,
+        harnessSessionId: harnessSessionIdForBridge,
       })
     }
   },
@@ -3133,6 +3183,8 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         completed: s.completed,
         completedAt: s.completedAt,
         success: s.success,
+        runtime: s.runtime,
+        harnessSessionId: s.harnessSessionId,
       }))
       const persistedById = new Map(persistedSnapshots.map((s) => [s.id, s]))
       const existingIds = new Set(prev.sessions.map((s) => s.id))

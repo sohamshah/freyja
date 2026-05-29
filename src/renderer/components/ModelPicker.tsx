@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useHarness } from '../state/store'
 import type { ModelChoice } from '../state/store'
+import type { HarnessChoice, SessionRuntime } from '@shared/events'
 import { formatTokens } from '../lib/format'
 
 const FALLBACK_MODELS: ModelChoice[] = [
@@ -97,10 +98,13 @@ interface ModelPickerProps {
  */
 export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPickerProps) {
   const available = useHarness((s) => s.availableModels)
+  const harnesses = useHarness((s) => s.availableHarnesses)
   const activeModel = useHarness((s) => s.model)
+  const activeRuntime = useHarness((s) => s.runtime)
   const activeReasoningLevel = useHarness((s) => s.reasoningLevel)
   const setModel = useHarness((s) => s.setModel)
   const setReasoningLevel = useHarness((s) => s.setReasoningLevel)
+  const newSession = useHarness((s) => s.newSession)
   const toggle = useHarness((s) => s.toggleModelPicker)
 
   const models = useMemo(
@@ -108,11 +112,34 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
     [available],
   )
 
+  // Harnesses surface the non-native runtimes. Native isn't shown here —
+  // picking a raw model in the list below already lands you in native.
+  const harnessChoices = useMemo<HarnessChoice[]>(
+    () => harnesses.filter((h) => h.id !== 'native'),
+    [harnesses],
+  )
+
   const onPick = (id: string, reasoningLevel?: string, close = true) => {
     const picked = models.find((m) => m.id === id)
     setModel(id, picked ? normalizeLevel(picked, reasoningLevel) : reasoningLevel)
     onSelect?.(id)
     if (close && !inline) toggle(false)
+  }
+
+  const onPickHarness = (harness: HarnessChoice) => {
+    if (!harness.available) {
+      useHarness
+        .getState()
+        .showToast(harness.unavailableReason || `${harness.label} not available`, 'warn')
+      return
+    }
+    // Harness sessions don't carry a Freyja-side model — the harness CLI
+    // owns model selection. We still pass an undefined model/reasoning so
+    // newSession defaults to the bridge's, but the runtime arg is what
+    // matters: the bridge will spawn `claude --acp --stdio` etc.
+    void newSession(undefined, undefined, harness.id as SessionRuntime)
+    onSelect?.(harness.id)
+    if (!inline) toggle(false)
   }
 
   const content = (
@@ -133,6 +160,72 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
           inline ? '' : 'max-h-[min(60vh,520px)] overflow-y-auto pr-1'
         }`}
       >
+        {harnessChoices.length > 0 && (
+          <>
+            <div className="px-3 pb-1 pt-2 label text-fg-3">harnesses</div>
+            {harnessChoices.map((h) => {
+              const isActive = activeRuntime === h.id
+              const unavailable = !h.available
+              return (
+                <div
+                  key={h.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => onPickHarness(h)}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Enter' && e.key !== ' ') return
+                    e.preventDefault()
+                    onPickHarness(h)
+                  }}
+                  className={`group flex w-full items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors ${
+                    isActive
+                      ? 'border-accent/25 bg-accent/12 text-fg-0 shadow-[inset_0_0_0_1px_rgba(168,212,252,0.08)]'
+                      : unavailable
+                        ? 'border-transparent text-fg-3 hover:bg-white/[0.02]'
+                        : 'border-transparent text-fg-1 hover:border-white/10 hover:bg-white/[0.04]'
+                  }`}
+                  title={unavailable ? h.unavailableReason : undefined}
+                >
+                  <div className="mt-[3px] flex h-4 w-4 shrink-0 items-center justify-center">
+                    {isActive ? (
+                      <span className="text-accent">▸</span>
+                    ) : unavailable ? (
+                      <span className="text-danger">✕</span>
+                    ) : (
+                      <span className="text-fg-3">·</span>
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-baseline gap-2">
+                      <span
+                        className={`font-mono text-[12px] ${unavailable ? 'text-fg-3' : 'text-fg-0'}`}
+                      >
+                        {h.label}
+                      </span>
+                      <span className="font-mono text-[9px] uppercase tracking-[0.08em] text-accent/70">
+                        HARNESS
+                      </span>
+                      <span className="font-mono text-[9px] text-fg-3">
+                        {h.command}
+                      </span>
+                    </div>
+                    {!dense && (
+                      <div className="mt-1.5 text-[11px] leading-[1.5] text-fg-2">
+                        {h.description}
+                      </div>
+                    )}
+                    {unavailable && h.unavailableReason && (
+                      <div className="mt-1 font-mono text-[10px] text-danger/80">
+                        {h.unavailableReason}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+            <div className="px-3 pb-1 pt-3 label text-fg-3">models</div>
+          </>
+        )}
         {models.map((m) => {
           const isActive = m.id === activeModel
           const tierColor = TIER_COLOR[m.tier] ?? 'text-fg-2'

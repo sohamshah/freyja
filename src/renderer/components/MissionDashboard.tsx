@@ -370,6 +370,8 @@ export function MissionDashboard() {
   const model = useHarness((s) => s.model)
   const reasoningLevel = useHarness((s) => s.reasoningLevel)
   const coordinationStrategy = useHarness((s) => s.coordinationStrategy)
+  const runtime = useHarness((s) => s.runtime)
+  const harnessSessionId = useHarness((s) => s.harnessSessionId)
   const isStreaming = useHarness((s) => s.isStreaming)
   const computerSessions = useHarness((s) => s.computerSessions)
   const skills = useHarness((s) => s.skills)
@@ -421,6 +423,8 @@ export function MissionDashboard() {
       model,
       reasoningLevel,
       coordinationStrategy,
+      runtime,
+      harnessSessionId,
     }
 
     const sliceFor = (sessionId?: string): SessionSlice | undefined => {

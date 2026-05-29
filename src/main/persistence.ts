@@ -90,6 +90,15 @@ export interface PersistedSession {
   completed?: boolean
   completedAt?: number
   success?: boolean
+  /** Execution runtime: undefined or 'native' means Freyja's own loop;
+   *  'claude_code_acp' / 'codex_app_server' delegate the agent loop to
+   *  an external CLI subprocess. Persisted so resumed sessions go back
+   *  to the same harness they started under. */
+  runtime?: string
+  /** Opaque session id assigned by the harness on session/new. When
+   *  present on resume, the bridge tries session/load(id) before
+   *  falling back to a fresh session/new + history replay. */
+  harnessSessionId?: string
   /** The full SessionSlice as a JSON-safe object. */
   slice: unknown
 }
@@ -388,10 +397,17 @@ function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
 
   const messages: any[] = []
   let totalInput = 0, totalOutput = 0, totalCacheR = 0, totalCacheW = 0
+  let attachmentSeq = 0
   for (const e of entries) {
     const msg = e?.message
     if (!msg || (msg.role !== 'user' && msg.role !== 'assistant')) continue
     const parts: any[] = []
+    // MessageAttachmentRef entries for inline image blocks (e.g. Slack
+    // user-uploaded images). The bridge normalizes anthropic-style
+    // image content into a flat {type, source_type, media_type, data}
+    // shape — we read directly from that and synthesize data URLs
+    // so the desktop conversation renderer can paint them inline.
+    const attachments: any[] = []
     if (typeof msg.content === 'string') {
       parts.push({ type: 'text', text: msg.content })
     } else if (Array.isArray(msg.content)) {
@@ -400,6 +416,22 @@ function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
           parts.push({ type: 'text', text: block })
         } else if (block?.type === 'text' && typeof block?.text === 'string') {
           parts.push({ type: 'text', text: block.text })
+        } else if (block?.type === 'image') {
+          // Slack uploads land here. Extract base64 data + mime and
+          // emit a MessageAttachmentRef. The renderer's conversation
+          // pane reads `message.attachments[]` and renders preview
+          // chips next to the message body.
+          const mime = String(block.media_type || 'image/png')
+          const data = String(block.data || '')
+          if (data) {
+            attachments.push({
+              id: `attach-${e.id || ''}-${attachmentSeq++}`,
+              type: 'image',
+              previewUrl: `data:${mime};base64,${data}`,
+              mimeType: mime,
+              sizeBytes: Math.floor(data.length * 0.75), // base64 → bytes ≈ 3/4
+            })
+          }
         } else if (block?.type === 'tool_use') {
           parts.push({
             type: 'text',
@@ -420,7 +452,7 @@ function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
         }
       }
     }
-    if (parts.length === 0) continue
+    if (parts.length === 0 && attachments.length === 0) continue
     totalInput += msg.input_tokens ?? 0
     totalOutput += msg.output_tokens ?? 0
     totalCacheR += msg.cache_read_tokens ?? 0
@@ -430,7 +462,87 @@ function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
       role: msg.role,
       parts,
       createdAt: Math.floor((e.timestamp ?? 0) * 1000),
+      ...(attachments.length > 0 ? { attachments } : {}),
     })
+  }
+
+  // Read the gateway daemon's per-session events JSONL, if it exists.
+  // The daemon emits one line per event (text_delta, tool_use,
+  // tool_result, log, system_event, etc.) — same shape as the
+  // desktop bridge's stdout stream. We map them into the slice's
+  // systemEvents (for the activity panel) and use them to enrich
+  // ToolCallRecord entries when the transcript itself doesn't break
+  // tool calls out as first-class records.
+  const eventsPath = resolveSessionPath(id, '.events.jsonl')
+  const gatewayEvents: any[] = []
+  try {
+    const raw = fs.readFileSync(eventsPath, 'utf8')
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      try {
+        gatewayEvents.push(JSON.parse(trimmed))
+      } catch {
+        // Skip corrupt lines — the daemon may have died mid-write.
+      }
+    }
+  } catch {
+    // No events file (older session, file purged) — fall through with
+    // an empty events array; the transcript still drives the slice.
+  }
+
+  // Project events → systemEvents records the desktop activity panel
+  // understands. We surface log + system_event + error events as
+  // narrator lines; skip the high-volume stream events (text_delta,
+  // thinking_delta) because they're already captured in messages
+  // and would flood the activity feed. Cap to a reasonable rolling
+  // window so the JSON payload sent to the renderer stays manageable.
+  const systemEvents: Array<{
+    id: string
+    subtype: string
+    message: string
+    at: number
+    details?: Record<string, unknown>
+  }> = []
+  const SYSTEM_EVENT_CAP = 200
+  let systemEventSeq = 0
+  for (const ev of gatewayEvents) {
+    if (!ev || typeof ev !== 'object') continue
+    const t = String(ev.type || '')
+    let subtype = ''
+    let message = ''
+    let details: Record<string, unknown> | undefined
+    if (t === 'log') {
+      subtype = `log.${ev.level || 'info'}`
+      message = String(ev.message || '')
+    } else if (t === 'error') {
+      subtype = 'error'
+      message = String(ev.message || 'error')
+      details = { recoverable: !!ev.recoverable }
+    } else if (t === 'system_event') {
+      subtype = String(ev.subtype || 'system')
+      message = String(ev.message || subtype)
+      if (ev.details && typeof ev.details === 'object') {
+        details = ev.details as Record<string, unknown>
+      }
+    } else if (t === 'llm_call_metric') {
+      subtype = 'llm.metric'
+      const model = String(ev.model || '')
+      const stop = String(ev.stopReason || '')
+      const dur = ev.durationMs
+      message = `${model} · ${dur}ms · stop=${stop}`
+      details = ev as Record<string, unknown>
+    } else {
+      continue
+    }
+    systemEvents.push({
+      id: `gw-${systemEventSeq++}`,
+      subtype,
+      message,
+      at: Number(ev._t ? ev._t * 1000 : Date.now()),
+      ...(details ? { details } : {}),
+    })
+    if (systemEvents.length >= SYSTEM_EVENT_CAP) break
   }
 
   // Build a slice containing ALL fields required by SessionSlice
@@ -462,7 +574,7 @@ function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
       lastTurnOutputTokens: 0,
       contextWindow: 200_000,
     },
-    systemEvents: [],
+    systemEvents,
     kanbanCards: {},
     busMessages: [],
     inboxEvents: [],

@@ -250,6 +250,33 @@ export interface Message {
   pinned?: boolean
 }
 
+/** Which execution runtime drives the session.
+ *
+ *   - 'native'            : Freyja's own loop calls the model provider directly.
+ *   - 'claude_code_acp'   : `claude --acp --stdio` subprocess is the agent loop;
+ *                           Freyja is the harness frame around it.
+ *   - 'codex_app_server'  : reserved for future Codex subprocess integration.
+ *
+ * Default is 'native' — only sessions created from the Harnesses picker
+ * carry a non-native runtime. */
+export type SessionRuntime = 'native' | 'claude_code_acp' | 'codex_app_server'
+
+/** UI/serializable spec for a harness runtime advertised by the bridge in
+ *  the ready event's capabilities so the renderer can render the
+ *  Harnesses section of the model picker without baking the list in.
+ *  Mirrors the bridge's RuntimeSpec (bridge/runtimes/registry.py). */
+export interface HarnessChoice {
+  id: SessionRuntime
+  label: string
+  command: string
+  description: string
+  /** True when the binary is installed and authenticated (bridge probed). */
+  available: boolean
+  /** Human-readable reason when available=false ("claude CLI not in PATH",
+   *  "not signed in — run claude login"). */
+  unavailableReason?: string
+}
+
 export interface SessionSnapshot {
   id: string
   title: string
@@ -257,6 +284,13 @@ export interface SessionSnapshot {
   model: string
   reasoningLevel?: string
   coordinationStrategy?: CoordinationStrategy
+  /** When non-'native', this session is driven by an external CLI harness
+   *  rather than Freyja's own loop. */
+  runtime?: SessionRuntime
+  /** Opaque session id assigned by the harness on session/new, persisted
+   *  so resume attempts (session/load) can target the right harness
+   *  session. Cleared on harness session reset. */
+  harnessSessionId?: string
   createdAt: number
   updatedAt: number
   messageCount: number
@@ -345,8 +379,28 @@ export type BridgeCommand =
   | { type: 'list_skills'; sessionId?: string }
   | { type: 'list_subagents'; sessionId?: string }
   | { type: 'list_tools'; sessionId?: string }
-  | { type: 'new_session'; sessionId?: string; model?: string; reasoningLevel?: string; coordinationStrategy?: CoordinationStrategy }
-  | { type: 'switch_session'; sessionId: string; model?: string; reasoningLevel?: string; coordinationStrategy?: CoordinationStrategy }
+  | {
+      type: 'new_session'
+      sessionId?: string
+      model?: string
+      reasoningLevel?: string
+      coordinationStrategy?: CoordinationStrategy
+      /** When set, drives this session through the named harness CLI
+       *  instead of Freyja's native loop. */
+      runtime?: SessionRuntime
+    }
+  | {
+      type: 'switch_session'
+      sessionId: string
+      model?: string
+      reasoningLevel?: string
+      coordinationStrategy?: CoordinationStrategy
+      runtime?: SessionRuntime
+      /** Opaque harness session id from a prior incarnation of this
+       *  Freyja session — passed back so the harness can attempt to
+       *  resume its own internal session instead of starting fresh. */
+      harnessSessionId?: string
+    }
   | { type: 'usage'; sessionId?: string }
   | { type: 'list_files'; sessionId?: string; query: string; limit?: number }
   | {

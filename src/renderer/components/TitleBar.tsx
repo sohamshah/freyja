@@ -37,6 +37,12 @@ export function TitleBar() {
   const model = useHarness((s) => s.model)
   const reasoningLevel = useHarness((s) => s.reasoningLevel)
   const coordinationStrategy = useHarness((s) => s.coordinationStrategy)
+  const runtime = useHarness((s) => s.runtime)
+  const availableHarnesses = useHarness((s) => s.availableHarnesses)
+  const activeHarness =
+    runtime !== 'native'
+      ? availableHarnesses.find((h) => h.id === runtime)
+      : undefined
   const messages = useHarness((s) => s.messages)
   const usage = useHarness((s) => s.usage)
   const sessionId = useHarness((s) => s.activeSessionId)
@@ -113,17 +119,26 @@ export function TitleBar() {
       <TitleControl
         className="no-drag flex h-[28px] max-w-[min(36vw,380px)] py-0 pl-2.5 pr-2 text-fg-1"
         onClick={() => useHarness.getState().toggleModelPicker(true)}
-        title="Switch model"
+        title={
+          activeHarness
+            ? `Driven by ${activeHarness.label} (${activeHarness.command})`
+            : 'Switch model'
+        }
       >
-        <span className="title-kicker">model</span>
-        <span className="ml-2 min-w-0 truncate font-mono text-fg-0">{model}</span>
-        {reasoningLevel && reasoningLevel !== 'none' && (
+        <span className="title-kicker">{activeHarness ? 'harness' : 'model'}</span>
+        <span className="ml-2 min-w-0 truncate font-mono text-fg-0">
+          {activeHarness ? activeHarness.label : model}
+        </span>
+        {!activeHarness && reasoningLevel && reasoningLevel !== 'none' && (
           <span className="title-effort ml-2 font-mono text-[10px]">{reasoningLevel}</span>
         )}
-        {reasoningLevel === 'none' && (
+        {!activeHarness && reasoningLevel === 'none' && (
           <span className="title-effort title-effort-muted ml-2 font-mono text-[10px]">
             no-reasoning
           </span>
+        )}
+        {activeHarness && (
+          <span className="title-effort ml-2 font-mono text-[10px]">acp</span>
         )}
         <span className="ml-2 text-fg-3">▾</span>
       </TitleControl>
