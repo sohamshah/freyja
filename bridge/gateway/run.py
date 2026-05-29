@@ -28,6 +28,7 @@ import logging
 import os
 import signal
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -38,6 +39,7 @@ from bridge.gateway.pid import (
     gateway_log_path,
     release_lock,
 )
+from bridge.gateway.control_channel import ControlChannelReader
 from bridge.gateway.platforms.base import IncomingMessage, Platform
 from bridge.gateway.platforms.slack import SlackAdapter
 from bridge.gateway.session_router import (
@@ -82,17 +84,49 @@ def _help_card_text() -> str:
     )
 
 
+_IMAGE_EXT_PATTERNS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".heif")
+
+
+def _looks_like_image_name(name: str) -> bool:
+    """Conservative ext check used as a fallback when Slack's
+    ``mimetype`` field is missing or wrong (it occasionally is).
+    Avoids hardcoding behavior to MIME strings that vary by upload
+    path."""
+    if not name:
+        return False
+    lower = name.lower()
+    return any(lower.endswith(ext) for ext in _IMAGE_EXT_PATTERNS)
+
+
 def _setup_logging() -> None:
-    """Configure root logger to write to ~/.freyja/logs/gateway.log and
-    stdout. launchd captures stdout to the same file we configure in
-    the plist, but in foreground mode (`freyja gateway run`) we still
-    want the operator to see live output."""
+    """Configure root logger to write to ~/.freyja/logs/gateway.log.
+
+    Two run contexts to support:
+      · launchd daemon: stdout + stderr are redirected to
+        ~/.freyja/logs/gateway.{log,err} via the plist's
+        Standard{Out,Error}Path fields. Adding our own FileHandler
+        targeting the same file would write every line TWICE — once
+        directly, once via stdout capture. So under launchd we ONLY
+        use a StreamHandler on stdout and let launchd own the file.
+      · Foreground (`freyja gateway run` in a terminal): stdout is a
+        TTY for live operator feedback. We add a FileHandler in
+        addition so the operator gets a persistent record alongside
+        live terminal output.
+
+    Detection: stdout.isatty() is True in foreground, False under
+    launchd (since launchd connects stdout to a regular file).
+    """
     handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
-    try:
-        file_handler = logging.FileHandler(gateway_log_path(), encoding="utf-8")
-        handlers.append(file_handler)
-    except OSError:
-        pass
+    # Only attach the file handler in foreground mode. Under launchd
+    # stdout is already piped to gateway.log; a second handler
+    # writing to the same path produces the duplicate-line behavior
+    # operators see in `tail -f`.
+    if sys.stdout.isatty():
+        try:
+            file_handler = logging.FileHandler(gateway_log_path(), encoding="utf-8")
+            handlers.append(file_handler)
+        except OSError:
+            pass
     fmt = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
@@ -150,6 +184,9 @@ class GatewayDaemon:
         self.adapters: list[object] = []
         self.shutdown_event: asyncio.Event = asyncio.Event()
         self._planned_exit = False  # True on graceful SIGTERM or takeover
+        # Reads desktop → daemon commands (permission_response, etc.)
+        # from ~/.freyja/control/commands.jsonl. Started in ``start``.
+        self.control_channel: ControlChannelReader | None = None
 
     async def _on_inbound(self, message: IncomingMessage) -> None:
         """Single callback every adapter feeds inbound messages into."""
@@ -226,12 +263,30 @@ class GatewayDaemon:
             if cb is not None:
                 unregister_session_listener(key, cb)
 
+        # Bind the session's permission handler to a stable callable so
+        # Block Kit approval clicks can resolve the daemon's pending
+        # ``DesktopPermissionHandler`` future. Closing over ``session``
+        # is safe — the handler outlives any single turn.
+        def _resolve_permission(request_id: str, approved: bool) -> bool:
+            handler = getattr(session, "permission_handler", None)
+            if handler is None:
+                return False
+            try:
+                return bool(handler.resolve(
+                    request_id, approved,
+                    "slack-approve" if approved else "slack-deny",
+                ))
+            except Exception:  # noqa: BLE001
+                logger.exception("permission_handler.resolve raised")
+                return False
+
         consumer = SlackStreamConsumer(
             adapter,  # type: ignore[arg-type]
             message.source,
             session_key=key,
             raw_hint=message.raw,
             on_complete=_unregister,
+            permission_resolver=_resolve_permission,
         )
         consumer_holder["on_event"] = consumer.on_event
 
@@ -254,13 +309,19 @@ class GatewayDaemon:
         # user replies in a Slack thread the bot didn't initially
         # join — without this, the agent only sees the one message
         # that pinged it and has to guess at the rest.
-        prior_block = await self._fetch_prior_context(message, adapter)
+        prior_block, prior_attachments = await self._fetch_prior_context(
+            message, adapter,
+        )
 
         # Annotate non-image attachments (PDFs, text docs, binaries)
         # so the agent knows they exist + where to read them from.
         # Image/video attachments flow through as native ImageBlock /
         # VideoBlock via the bridge's user-content builder; non-media
-        # files only land on disk and need a textual breadcrumb.
+        # files only land on disk and need a textual breadcrumb. Prior
+        # thread non-media files are NOT downloaded — only their text
+        # refs survive (see _fetch_prior_context's file_refs_by_ts),
+        # which is good enough for the agent to know they exist and
+        # offer to read them on demand.
         non_media_attachments: list[dict[str, Any]] = [
             a for a in (message.attachments or [])
             if a.get("type") not in {"image", "video"}
@@ -297,10 +358,21 @@ class GatewayDaemon:
         # them anyway (they have no ``dataBase64`` payload). Passing
         # them through pollutes the content-block list with empty
         # entries and confuses cross-provider transcript persistence.
+        # Merge the trigger message's own image/video attachments with
+        # any images fetched from prior thread messages. The agent now
+        # sees BOTH "what the user just attached" AND "what's been
+        # floating around earlier in the thread" as proper image
+        # content blocks (not text descriptions).
         downstream_attachments = [
             a for a in (message.attachments or [])
             if a.get("type") in {"image", "video"}
-        ] or None
+        ]
+        downstream_attachments.extend(
+            a for a in prior_attachments
+            if a.get("type") in {"image", "video"}
+        )
+        if not downstream_attachments:
+            downstream_attachments = None
         try:
             _schedule_or_queue_turn(
                 session,
@@ -325,20 +397,37 @@ class GatewayDaemon:
         self,
         message: IncomingMessage,
         adapter: object,
-    ) -> str:
-        """Render prior conversation in this thread / DM as a plain-
-        text block for injection into the agent's prompt.
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Render prior conversation in this thread / DM, with images.
 
-        Adapter-aware: uses ``fetch_thread_context`` when the message
-        has a thread_id (and the adapter supports it), or
-        ``fetch_dm_history`` when it's a DM with no thread. Both
-        methods return [] on failure so we degrade to "no prior
-        context" rather than failing the turn.
+        Returns ``(text_block, prior_attachments)``:
+
+          · ``text_block`` is a plain-text rendering of the thread so
+            the agent has narrative context. Each message becomes one
+            line: ``Alice: looks great [image: design.png]``. Image
+            and file refs are annotated inline so the agent can map
+            the binary attachments back to their authors.
+
+          · ``prior_attachments`` is a list of attachment dicts
+            (same shape as live inbound files — see
+            ``slack._download_file``) ready to be merged with the
+            current message's attachments and handed to the model.
+
+        Adapter-aware: uses ``fetch_thread_context`` for threads
+        and ``fetch_dm_history`` for DMs. Both gracefully return []
+        on Slack API failure; the caller treats that as "no prior
+        context".
+
+        Image budget: capped at MAX_PRIOR_IMAGES total, each must be
+        under MAX_PER_IMAGE_BYTES. Most recent images win when the
+        thread has more than the budget — older ones get text refs
+        only. This keeps a meme-laden thread from blowing the
+        context window or driving a 30-second download cliff.
         """
         source = message.source
         # Don't bother fetching for our own outbound messages.
         if getattr(source, "is_bot", False):
-            return ""
+            return "", []
         # Identify the trigger message ts so we exclude it from the
         # fetched block (the agent gets it as `[message]` already).
         trigger_ts = getattr(source, "message_id", None)
@@ -359,21 +448,116 @@ class GatewayDaemon:
                 )
         except Exception:
             logger.exception("prior-context fetch raised")
-            return ""
+            return "", []
         if not msgs:
-            return ""
+            return "", []
+
+        # ── Download images from prior messages ──
+        # Most-recent wins: walk msgs in reverse so if we hit the cap,
+        # we keep the freshest visual references. Result list is
+        # reversed back to chronological order at the end so the agent
+        # sees images in the same order as the text.
+        prior_attachments: list[dict[str, Any]] = []
+        MAX_PRIOR_IMAGES = 8
+        MAX_PER_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB
+        # ts → list of file-name refs we'll splice into the text block.
+        # Built alongside the download pass so a file that exceeded the
+        # size cap is still mentioned by name (just without inline data).
+        file_refs_by_ts: dict[str, list[str]] = {}
+
+        # Pull the per-channel client + token once, used for each
+        # _download_file call. Bail out early if the adapter doesn't
+        # expose the hooks (e.g. some future non-Slack adapter).
+        client = None
+        token = None
+        if hasattr(adapter, "_get_client") and hasattr(adapter, "_token_for_client"):
+            try:
+                client = adapter._get_client(source.chat_id)  # type: ignore[attr-defined]
+                if client is not None:
+                    token = adapter._token_for_client(client)  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                client = None
+                token = None
+
+        seen_file_ids: set[str] = set()
+        for m in reversed(msgs):
+            files = m.get("files") or []
+            if not files:
+                continue
+            ts = str(m.get("ts") or "")
+            refs = file_refs_by_ts.setdefault(ts, [])
+            for f in files:
+                name = str(f.get("name") or "(unnamed)")
+                mime = str(f.get("mimetype") or "")
+                is_image = mime.startswith("image/") or _looks_like_image_name(name)
+                # Always annotate the text block with the file reference.
+                if is_image:
+                    refs.append(f"[image: {name}]")
+                else:
+                    refs.append(f"[file: {name}]")
+                # Stop downloading once we hit the image budget; just
+                # annotate the rest by name.
+                if len(prior_attachments) >= MAX_PRIOR_IMAGES:
+                    continue
+                if not is_image:
+                    continue
+                if token is None or not hasattr(adapter, "_download_file"):
+                    continue
+                size = f.get("size") or 0
+                try:
+                    size_int = int(size)
+                except (TypeError, ValueError):
+                    size_int = 0
+                if 0 < MAX_PER_IMAGE_BYTES < size_int:
+                    continue
+                fid = str(f.get("id") or "")
+                if fid and fid in seen_file_ids:
+                    continue
+                if fid:
+                    seen_file_ids.add(fid)
+                try:
+                    saved = await adapter._download_file(f, token)  # type: ignore[attr-defined]
+                except Exception:  # noqa: BLE001
+                    logger.exception("prior-context image download failed")
+                    saved = None
+                if saved and saved.get("type") == "image":
+                    prior_attachments.append(saved)
+        # Restore chronological order.
+        prior_attachments.reverse()
+
+        # ── Render the text block ──
+        # Best-effort user-name resolution. If the adapter exposes
+        # ``_resolve_user_name``, we use it to swap raw <@U123> ids for
+        # display names in the line label. Falls back to <@U123>.
+        async def _label(role: str, user_id: str) -> str:
+            if role == "assistant":
+                return "you (assistant)"
+            if not user_id:
+                return "user"
+            if hasattr(adapter, "_resolve_user_name"):
+                try:
+                    name = await adapter._resolve_user_name(user_id, None)  # type: ignore[attr-defined]
+                    if name:
+                        return name
+                except Exception:  # noqa: BLE001
+                    pass
+            return f"<@{user_id}>"
+
         lines: list[str] = []
         for m in msgs:
-            role = "you (assistant)" if m["role"] == "assistant" else (
-                f"<@{m['user_id']}>" if m.get("user_id") else "user"
+            role_label = await _label(
+                m.get("role", "user"),
+                str(m.get("user_id") or ""),
             )
-            # Compress to one paragraph per message so the agent
-            # doesn't drown in formatting overhead.
             text = (m.get("text") or "").strip().replace("\n", " ")
             if len(text) > 1500:
                 text = text[:1500] + "…"
-            lines.append(f"{role}: {text}")
-        return "\n".join(lines)
+            refs = file_refs_by_ts.get(str(m.get("ts") or ""), [])
+            if refs:
+                refs_str = " ".join(refs)
+                text = f"{text} {refs_str}" if text else refs_str
+            lines.append(f"{role_label}: {text}")
+        return "\n".join(lines), prior_attachments
 
     async def _handle_slash_in_gateway(
         self,
@@ -735,8 +919,187 @@ class GatewayDaemon:
                 "Configure at least one adapter to receive messages."
             )
 
+        # Bring up the desktop → daemon control channel last so it's
+        # only servicing commands once the bridge state and adapters are
+        # ready to act on them. Without this the daemon could receive a
+        # permission_response before it had a session map to look up.
+        await self._start_control_channel()
+
+        # Sweep any sessions whose last logged event was a permission_request
+        # without a matching permission_resolved — those are abandoned
+        # prompts left over from a previous daemon crash / forced restart.
+        # We emit a synthetic permission_resolved with reason="daemon_restart"
+        # so the desktop UI's pending-permission queue clears the stale
+        # entry instead of carrying it across restarts forever.
+        try:
+            self._sweep_orphaned_permission_requests()
+        except Exception:  # noqa: BLE001
+            logger.exception("startup permission sweep raised")
+
+    def _sweep_orphaned_permission_requests(self) -> None:
+        """Find permission_requests that were never resolved and close them."""
+        import json as _json
+        sessions_dir = Path(
+            os.environ.get("FREYJA_HOME") or os.path.expanduser("~/.freyja")
+        ) / "sessions"
+        if not sessions_dir.exists():
+            return
+        # Only scan recently-touched event logs — old sessions don't
+        # benefit from cleanup and walking the full directory on each
+        # restart would scale badly.
+        cutoff = time.time() - 7 * 24 * 3600
+        from bridge.freyja_bridge import emit as _emit
+        orphans_cleared = 0
+        for path in sessions_dir.glob("*.events.jsonl"):
+            try:
+                if path.stat().st_mtime < cutoff:
+                    continue
+            except OSError:
+                continue
+            pending: dict[str, dict[str, Any]] = {}
+            try:
+                with path.open("r", encoding="utf-8", errors="replace") as fp:
+                    for line in fp:
+                        line = line.strip()
+                        if not line or line[0] != "{":
+                            continue
+                        try:
+                            ev = _json.loads(line)
+                        except _json.JSONDecodeError:
+                            continue
+                        t = ev.get("type")
+                        rid = ev.get("requestId")
+                        if not rid:
+                            continue
+                        if t == "permission_request":
+                            pending[rid] = ev
+                        elif t == "permission_resolved":
+                            pending.pop(rid, None)
+            except OSError:
+                continue
+            for rid, ev in pending.items():
+                _emit(
+                    {
+                        "type": "permission_resolved",
+                        "sessionId": ev.get("sessionId"),
+                        "requestId": rid,
+                        "approved": False,
+                        "response": "interrupted by daemon restart",
+                        "reason": "daemon_restart",
+                    }
+                )
+                orphans_cleared += 1
+        if orphans_cleared:
+            logger.info(
+                "startup sweep cleared %d orphaned permission_request(s)",
+                orphans_cleared,
+            )
+
+    async def _start_control_channel(self) -> None:
+        reader = ControlChannelReader()
+        reader.register("permission_response", self._on_permission_response)
+        reader.register("set_permission_policy", self._on_set_permission_policy)
+        await reader.start()
+        self.control_channel = reader
+
+    def _on_set_permission_policy(self, cmd: dict[str, Any]) -> None:
+        """Adjust a per-session autonomy tier from the desktop.
+
+        Schema:
+          { "type": "set_permission_policy",
+            "sessionId": "freyja:slack:...",
+            "autoApprove": "low" | "medium" | "high" | "yolo" | "none" }
+        """
+        session_id = str(cmd.get("sessionId") or "")
+        tier = str(cmd.get("autoApprove") or "").strip().lower()
+        if not session_id or not tier or self.state is None:
+            return
+        sessions = getattr(self.state, "sessions", {}) or {}
+        sess = sessions.get(session_id)
+        if sess is None:
+            logger.info(
+                "control: set_permission_policy for unknown session %s — ignoring",
+                session_id,
+            )
+            return
+        try:
+            sess.permission_tier = tier
+            if getattr(sess, "permission_handler", None) is not None:
+                sess.permission_handler.set_policy(tier)
+            logger.info(
+                "control: session %s permission tier set to %s",
+                session_id, tier,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("control: set_permission_policy raised")
+
+    def _on_permission_response(self, cmd: dict[str, Any]) -> None:
+        """Resolve a per-session ``DesktopPermissionHandler`` future.
+
+        Sent by the desktop renderer when the operator clicks
+        approve/deny on the permission modal that appears for a
+        gateway-routed session.
+
+        Schema:
+          { "type": "permission_response",
+            "sessionId": "freyja:slack:...",
+            "requestId": "<uuid hex>",
+            "approved": bool,
+            "response": "optional human note" }
+
+        We look up the session by id (any platform — not Slack-specific)
+        and resolve via the handler's ``.resolve`` method. Falls back to
+        ``approval.resolve_approval`` so the same desktop click can also
+        settle a Slack-originated destructive-tool prompt. Idempotent —
+        a re-issued response on an already-resolved request is a no-op.
+        """
+        session_id = str(cmd.get("sessionId") or "")
+        request_id = str(cmd.get("requestId") or "")
+        approved = bool(cmd.get("approved"))
+        response_text = str(cmd.get("response") or "")
+        if not request_id:
+            logger.warning("control: permission_response missing requestId")
+            return
+        resolved = False
+        if session_id and self.state is not None:
+            sessions = getattr(self.state, "sessions", {}) or {}
+            sess = sessions.get(session_id)
+            if sess is not None:
+                handler = getattr(sess, "permission_handler", None)
+                if handler is not None:
+                    try:
+                        resolved = bool(handler.resolve(
+                            request_id, approved, response_text,
+                        ))
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "control: permission_handler.resolve raised",
+                        )
+        if not resolved:
+            # Fall through to the gateway-wide approval registry — the
+            # request_id might belong to a tool-level destructive prompt,
+            # or to an external resolver registered by a stream consumer.
+            try:
+                from bridge.gateway.approval import resolve_approval
+                resolved = bool(resolve_approval(request_id, approved))
+            except Exception:  # noqa: BLE001
+                logger.exception("control: resolve_approval raised")
+        if not resolved:
+            logger.info(
+                "control: permission_response %s ignored (unknown/already resolved)",
+                request_id,
+            )
+
     async def shutdown(self) -> None:
         logger.info("gateway shutdown beginning")
+        # Stop the control channel first so a late command can't fire
+        # against half-shut-down state.
+        if self.control_channel is not None:
+            try:
+                await self.control_channel.stop()
+            except Exception:  # noqa: BLE001
+                logger.exception("control channel stop raised")
+            self.control_channel = None
         try:
             from bridge.gateway.approval import unregister_approval_adapter
             unregister_approval_adapter(Platform.SLACK.value)

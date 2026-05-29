@@ -82,10 +82,17 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 @dataclass
 class _Anchor:
     """A single Slack message we're either growing in place or have
-    finalized. A long response becomes a chain of anchors."""
+    finalized. A long response becomes a chain of anchors.
+
+    ``last_formatted`` is the FORMATTED string (post ``format_content``)
+    that Slack currently displays for this anchor. We compare against
+    it on the next flush to skip no-op edits, and we send it verbatim
+    to ``adapter.edit``/``adapter.send`` — the adapter does not
+    re-chunk, so what we record here is exactly what Slack shows.
+    """
 
     message_id: str | None = None
-    content: str = ""
+    last_formatted: str = ""
 
 
 @dataclass
@@ -104,7 +111,27 @@ class _ToolProgress:
 @dataclass
 class _State:
     """Mutable consumer state. Held inside an asyncio.Lock for safe
-    concurrent flush/append."""
+    concurrent flush/append.
+
+    ``buffer`` holds ALL raw (pre-format) text emitted since the last
+    progress-bubble reset. It is **not** cleared on flush — every
+    flush re-formats the entire buffer and re-chunks it, comparing
+    each formatted chunk to ``anchors[i].last_formatted`` to decide
+    edit vs. skip. This is the source-of-truth representation of
+    unfrozen content; anchors store only what Slack currently shows,
+    not what they "should" contain.
+
+    Why not clear buffer per flush? Anchors store the FORMATTED chunk
+    (because that's what we compare against to dedupe edits), and
+    ``format_content`` is lossy (``[t](u)`` → ``<u|t>`` can't be
+    inverted). Keeping the raw stream in ``buffer`` lets us re-format
+    + re-chunk deterministically each flush.
+
+    The buffer is cleared only when ``_reset_progress_bubble`` freezes
+    the current anchors — at that point everything in the buffer has
+    been committed to anchors above the progress bubble, and any new
+    text will start a fresh anchor below.
+    """
 
     buffer: str = ""
     anchors: list[_Anchor] = field(default_factory=list)
@@ -144,17 +171,34 @@ class SlackStreamConsumer:
         *,
         session_key: str,
         edit_interval_ms: int = 500,
-        max_chars: int = DEFAULT_MAX_CHARS,
+        max_chars: int | None = None,
         raw_hint: dict[str, Any] | None = None,
         on_complete: Any = None,
+        permission_resolver: Any = None,
     ) -> None:
         self.adapter = adapter
         self.source = source
         self.session_key = session_key
         self.edit_interval_ms = edit_interval_ms
-        self.max_chars = max_chars
+        # Default to the adapter's hard per-message cap. Allowing an
+        # override is useful for tests; production always uses what the
+        # adapter says is safe, since the adapter's send/edit will
+        # reject anything larger.
+        adapter_cap = int(getattr(adapter, "max_message_chars", DEFAULT_MAX_CHARS))
+        self.max_chars = max_chars if max_chars is not None else adapter_cap
         self.raw_hint = raw_hint
         self.on_complete = on_complete  # called when finalize() runs
+        # Callback ``(request_id, approved) -> bool`` used by the Slack
+        # Block Kit approval click handler to resolve the daemon's
+        # DesktopPermissionHandler future. Wired through ``run.py`` from
+        # the session's permission_handler. None when the session has no
+        # in-process handler (shouldn't happen for live Slack sessions
+        # but we fail open rather than hang).
+        self.permission_resolver = permission_resolver
+        # Pending in-flight permission ids minted in this consumer's
+        # lifetime — used to clean up external resolvers on finalize()
+        # so we don't leak resolver entries across turns.
+        self._pending_permission_ids: set[str] = set()
 
         self._state = _State()
         self._lock = asyncio.Lock()
@@ -226,6 +270,8 @@ class SlackStreamConsumer:
             "tool_use_start",
             "tool_input_end",
             "tool_result",
+            "permission_request",
+            "permission_resolved",
         }:
             return
         try:
@@ -285,6 +331,10 @@ class SlackStreamConsumer:
             await self._replace_last_progress(line)
         elif etype == "tool_result":
             await self._handle_tool_result(event)
+        elif etype == "permission_request":
+            await self._handle_permission_request(event)
+        elif etype == "permission_resolved":
+            await self._handle_permission_resolved(event)
         elif etype == "turn_complete":
             await self.finalize()
 
@@ -300,28 +350,46 @@ class SlackStreamConsumer:
 
     async def _flush_locked(self) -> None:
         """Push the current buffer to Slack. Must be called with the
-        lock held."""
+        lock held.
+
+        Pipeline (in order):
+
+          1. Format the entire unfrozen raw buffer via
+             ``adapter.format_content`` once. Lossy transforms (markdown
+             link → ``<u|t>``) happen here, not inside ``send`` / ``edit``.
+          2. Chunk the FORMATTED string with ``truncate_for_platform``
+             using the adapter's strict ``max_message_chars`` cap. Each
+             chunk is by construction within Slack's per-message limit,
+             so the adapter accepts it without splitting.
+          3. Map chunks to anchors at or after ``anchors_frozen_at``.
+             If ``anchor.last_formatted == chunk``, skip — no edit
+             needed. Otherwise edit (existing anchor) or send (new
+             anchor, append).
+
+        The contract change vs. the old code: anchors store the
+        FORMATTED text that Slack currently shows, not the raw
+        markdown. The chunk boundary the consumer picks is the chunk
+        boundary Slack actually receives — eliminating the orphan
+        path where ``send`` used to internally split and only return
+        the last ts (leaving leading messages untracked).
+        """
         if not self._state.buffer.strip():
             return
 
-        # Chunk only the UNFROZEN content (anchors past
-        # anchors_frozen_at + the live buffer). Frozen anchors are
-        # already-finalized text that sits above a closed progress
-        # bubble — editing them with new text would re-author content
-        # ABOVE the progress chip, breaking chronology. New text
-        # always lands in fresh anchors past the frozen mark.
+        # Format → chunk → diff against currently-deployed formatted
+        # anchors. Frozen anchors are NOT touched: they sit above a
+        # closed progress bubble and editing them would shuffle text
+        # above the chip, breaking chronology.
+        formatted = self.adapter.format_content(self._state.buffer)
+        chunks = truncate_for_platform(formatted, self.max_chars)
         base = self._state.anchors_frozen_at
-        full = self._combined_content()
-        chunks = truncate_for_platform(full, self.max_chars)
 
-        # Map chunks → anchors AT OR AFTER base. Existing unfrozen
-        # anchors get edited; new chunks get sent as fresh messages.
         for idx, chunk in enumerate(chunks):
             anchor_idx = base + idx
             if anchor_idx < len(self._state.anchors):
                 anchor = self._state.anchors[anchor_idx]
-                if anchor.content == chunk:
-                    continue  # unchanged
+                if anchor.last_formatted == chunk:
+                    continue  # no-op edit — Slack already shows this
                 if anchor.message_id:
                     result = await self.adapter.edit(
                         self.source.chat_id,
@@ -339,8 +407,8 @@ class SlackStreamConsumer:
                         # than appending — appending would leave the
                         # broken anchor in the list and each
                         # subsequent flush would re-target it (still
-                        # broken) and append yet another. List grows
-                        # unbounded. Replace = bounded.
+                        # broken) and append yet another. Bounded by
+                        # in-place replace.
                         new_result = await self.adapter.send(
                             self.source.chat_id,
                             chunk,
@@ -350,10 +418,28 @@ class SlackStreamConsumer:
                         if new_result.ok:
                             self._state.anchors[anchor_idx] = _Anchor(
                                 message_id=new_result.message_id,
-                                content=chunk,
+                                last_formatted=chunk,
+                            )
+                        else:
+                            logger.warning(
+                                "slack replace-after-edit-failure also failed: %s",
+                                new_result.error,
                             )
                         continue
-                anchor.content = chunk
+                    anchor.last_formatted = chunk
+                else:
+                    # Anchor exists but lost its message_id (post failure
+                    # earlier in the turn). Try to send it now so
+                    # subsequent flushes can edit it.
+                    new_result = await self.adapter.send(
+                        self.source.chat_id,
+                        chunk,
+                        thread_id=self._reply_thread_id,
+                        raw_hint=self.raw_hint,
+                    )
+                    if new_result.ok:
+                        anchor.message_id = new_result.message_id
+                        anchor.last_formatted = chunk
             else:
                 # New chunk — send as a new Slack message and append.
                 result = await self.adapter.send(
@@ -364,30 +450,34 @@ class SlackStreamConsumer:
                 )
                 if result.ok:
                     self._state.anchors.append(
-                        _Anchor(message_id=result.message_id, content=chunk)
+                        _Anchor(message_id=result.message_id, last_formatted=chunk)
                     )
                 else:
+                    # Record the anchor anyway with no message_id so the
+                    # next flush retries the send rather than perma-
+                    # losing the chunk. Failure mode otherwise: dropped
+                    # send leaves a hole in the visible response.
                     logger.warning("slack send failed: %s", result.error)
+                    self._state.anchors.append(
+                        _Anchor(message_id=None, last_formatted="")
+                    )
 
-        # Buffer is now fully reflected in anchors; consolidate.
-        self._state.buffer = ""
-        # Rebuild buffer to "what's not yet in an anchor" — which is
-        # nothing after a successful flush. The implementation above
-        # works on full-text reslicing each time which is O(N) per
-        # flush; for a 39k cap and ~500ms cadence that's ~80
-        # operations per second worst case, well within budget.
+        # NOTE: buffer is NOT cleared here. Anchors track formatted text;
+        # the raw stream stays in buffer so next flush re-formats from
+        # the canonical source. Cleared only on _reset_progress_bubble
+        # (when frozen anchors above the new progress chip take over).
         self._state.last_emit_monotonic = time.monotonic() * 1000
 
     def _combined_content(self) -> str:
-        # Only the UNFROZEN suffix of anchors + the live buffer
-        # participates in flushes. Frozen anchors (text written
-        # before the most recent progress bubble closed) are
-        # excluded so their content can't be re-edited and the
-        # chunk-boundary recompute can't shuffle their text into
-        # the new anchor below the progress bubble.
-        active_anchors = self._state.anchors[self._state.anchors_frozen_at:]
-        parts = [a.content for a in active_anchors] + [self._state.buffer]
-        return "".join(parts)
+        """Raw text awaiting flush.
+
+        Just the buffer — unfrozen anchors no longer carry raw
+        content (they carry the FORMATTED chunk that Slack
+        currently shows). The raw stream is the single source of
+        truth for "what should be visible past the frozen
+        frontier"; formatting + chunking happens fresh each flush.
+        """
+        return self._state.buffer
 
     # ── tool-progress bubble ──
 
@@ -495,6 +585,12 @@ class SlackStreamConsumer:
             # Freeze the cursor. Next text_delta lands in a new
             # anchor authored AFTER the closed progress bubble.
             self._state.anchors_frozen_at = len(self._state.anchors)
+            # Clear the raw buffer — every character it held has been
+            # absorbed into one of the now-frozen anchors. Without this
+            # the next flush would re-format the same content and try
+            # to land it past the freeze, duplicating it below the
+            # progress chip.
+            self._state.buffer = ""
 
     # ── tool_result handling: image uploads ──
 
@@ -585,6 +681,79 @@ class SlackStreamConsumer:
         except Exception:  # noqa: BLE001
             logger.debug("failed to send upload-failure notice", exc_info=True)
 
+    # ── permission flow ──
+
+    async def _handle_permission_request(self, event: dict[str, Any]) -> None:
+        """Forward an in-process ``permission_request`` to Slack.
+
+        We bridge the daemon's per-session ``DesktopPermissionHandler``
+        prompt (which would otherwise emit an event nobody listens to
+        on this side of the process boundary) to a Block Kit message in
+        the originating Slack thread. The button click then resolves
+        the daemon's pending Future via ``permission_resolver``.
+
+        Doing this here means the same code path serves *every* permission
+        prompt the engine emits — bash network egress, write-into-protected-
+        path, image-write, etc. — not just the ``approval.py`` destructive-
+        command list. If the consumer can't post (no resolver wired, no
+        Slack chat id), we log and let the awaiter's hard timeout settle
+        the request — failing closed rather than hanging.
+        """
+        request_id = str(event.get("requestId") or "")
+        if not request_id:
+            return
+        prompt = str(event.get("prompt") or "permission required")
+        reason = str(event.get("reason") or "") or str(event.get("details") or "")
+        level = str(event.get("level") or "medium")
+        if self.permission_resolver is None:
+            logger.warning(
+                "permission_request %s arrived without a resolver — "
+                "will hard-timeout in the daemon (session=%s)",
+                request_id, self.session_key,
+            )
+            return
+        from bridge.gateway.approval import register_external_resolver
+        # Tie the Slack button -> daemon future glue together.
+        register_external_resolver(
+            request_id,
+            lambda approved: bool(self.permission_resolver(request_id, approved)),
+        )
+        self._pending_permission_ids.add(request_id)
+        # Post the Block Kit message — reuses the exact same adapter
+        # affordance used by destructive-tool approvals, so the operator
+        # UI is identical.
+        try:
+            result = await self.adapter.send_approval_request(
+                chat_id=self.source.chat_id,
+                request_id=request_id,
+                tool_name=f"permission · {level}",
+                command_preview=prompt,
+                reason=reason,
+                thread_id=self._reply_thread_id,
+            )
+            if not getattr(result, "ok", False):
+                logger.warning(
+                    "Block Kit approval post failed for %s: %s",
+                    request_id, getattr(result, "error", "?"),
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("send_approval_request raised for %s", request_id)
+
+    async def _handle_permission_resolved(self, event: dict[str, Any]) -> None:
+        """Drop the external resolver entry once the prompt is settled.
+
+        The button-click path already replaces the message Block Kit with
+        a "✅ approved by @X" / "❌ denied by @X" footer (see
+        ``slack.py:_handle_approval_click``). We only have to free the
+        process-wide resolver table entry so it doesn't leak.
+        """
+        request_id = str(event.get("requestId") or "")
+        if not request_id:
+            return
+        from bridge.gateway.approval import unregister_external_resolver
+        unregister_external_resolver(request_id)
+        self._pending_permission_ids.discard(request_id)
+
     # ── finalize ──
 
     async def finalize(self) -> None:
@@ -598,6 +767,15 @@ class SlackStreamConsumer:
             self._state.progress.last_edit_monotonic = 0
             await self._flush_progress_locked()
             self._state.finalized = True
+        # Drop any external approval resolvers minted during the turn
+        # that weren't already cleaned up by ``permission_resolved`` —
+        # protects against a turn that completes while a prompt is still
+        # in flight (e.g. operator never clicked, daemon timed out).
+        if self._pending_permission_ids:
+            from bridge.gateway.approval import unregister_external_resolver
+            for rid in list(self._pending_permission_ids):
+                unregister_external_resolver(rid)
+            self._pending_permission_ids.clear()
         # Clear the typing indicator (best-effort).
         try:
             await self.adapter.stop_typing(
@@ -621,34 +799,124 @@ class SlackStreamConsumer:
 
 
 def _summarize_tool_args(name: str, args: dict[str, Any]) -> str:
-    """Render a short, chat-friendly preview of tool arguments.
+    """Render a chat-friendly preview of tool arguments.
 
-    Per-tool special cases for the noisy / verbose tools; generic
-    repr for the rest. Kept terse — the progress bubble lives next
-    to the agent's text, not in a debugger.
+    Returns a string that may span multiple lines for richer tools (the
+    progress bubble joins entries with ``\n``, so embedded newlines in
+    a single entry just render as a multi-line block for that tool
+    call). Per-tool special cases pull the most useful fields and label
+    them; generic fallback returns the first scalar arg.
+
+    Wider previews for tools where the structure matters (``sub_agent``,
+    ``tasks``) — the operator wants to see ``what`` the agent is doing,
+    not just ``which tool``. Headline + indented detail on a second
+    line keeps it scannable.
     """
     if not isinstance(args, dict) or not args:
         return ""
-    if name in {"web_search", "web_fetch", "web_research"}:
-        q = str(args.get("query") or args.get("url") or "")
-        return _short(q, 80)
+    if name in {"web_search", "web_research"}:
+        q = str(args.get("query") or "")
+        return _short(q, 160)
+    if name == "web_fetch":
+        url = str(args.get("url") or "")
+        obj = str(args.get("objective") or "")
+        if obj:
+            return f"{_short(url, 100)}\n     ↳ _{_short(obj, 160)}_"
+        return _short(url, 160)
     if name in {"read_file", "write_file", "edit_file"}:
-        return _short(str(args.get("path") or ""), 80)
+        return _short(str(args.get("path") or ""), 140)
     if name in {"bash", "shell"}:
-        return _short(str(args.get("command") or args.get("cmd") or ""), 80)
+        cmd = str(args.get("command") or args.get("cmd") or "")
+        summary = str(args.get("summary") or "")
+        if summary:
+            return f"{summary}\n     ↳ `{_short(cmd, 160)}`"
+        return _short(cmd, 200)
     if name == "glob":
-        return _short(str(args.get("pattern") or ""), 80)
+        return _short(str(args.get("pattern") or ""), 140)
     if name == "grep":
-        return _short(str(args.get("pattern") or args.get("query") or ""), 80)
+        pattern = str(args.get("pattern") or args.get("query") or "")
+        path = str(args.get("path") or "")
+        if path:
+            return f"`{_short(pattern, 100)}`  in  `{_short(path, 80)}`"
+        return _short(pattern, 180)
     if name == "sub_agent":
-        return _short(str(args.get("task") or args.get("prompt") or ""), 80)
+        agent_type = str(args.get("agent_type") or args.get("type") or "")
+        mode = str(args.get("mode") or "")
+        label = str(args.get("label") or args.get("name") or "")
+        model = str(args.get("model") or "")
+        task = str(args.get("task") or args.get("prompt") or "")
+        # Build a structured 2-line preview: headline (config) + task quote
+        config_bits: list[str] = []
+        if agent_type:
+            mode_suffix = f" · {mode}" if mode else ""
+            config_bits.append(f"[{agent_type}{mode_suffix}]")
+        if model:
+            config_bits.append(f"({model})")
+        if label:
+            config_bits.append(label)
+        header = " ".join(config_bits)
+        if task:
+            task_line = _short(task.replace("\n", " "), 240)
+            if header:
+                return f"{header}\n     ↳ _{task_line}_"
+            return f"_{task_line}_"
+        return header or "(no task)"
+    if name == "tasks":
+        action = str(args.get("action") or "")
+        title = str(args.get("title") or "")
+        task_id = str(args.get("task_id") or args.get("id") or "")
+        body = str(args.get("body") or args.get("description") or "")
+        bits: list[str] = []
+        if action:
+            bits.append(f"action=`{action}`")
+        if title:
+            bits.append(_short(title, 140))
+        elif task_id:
+            bits.append(f"id=`{task_id}`")
+        head = " · ".join(bits) if bits else ""
+        if body:
+            return f"{head}\n     ↳ _{_short(body, 200)}_" if head else _short(body, 240)
+        return head
+    if name == "kanban":
+        action = str(args.get("action") or "")
+        title = str(args.get("title") or args.get("card_title") or "")
+        card_id = str(args.get("card_id") or args.get("id") or "")
+        head = f"action=`{action}`" if action else ""
+        if title:
+            head = f"{head} · {_short(title, 140)}" if head else _short(title, 180)
+        elif card_id:
+            head = f"{head} · id=`{card_id}`" if head else f"id=`{card_id}`"
+        return head
     if name == "generate_image":
-        return _short(str(args.get("prompt") or ""), 80)
-    # Generic fallback — first scalar arg, truncated.
+        return _short(str(args.get("prompt") or ""), 220)
+    if name == "memory_update":
+        return _short(
+            str(args.get("text") or args.get("name") or args.get("title") or ""),
+            180,
+        )
+    if name == "send_attachment":
+        paths = args.get("paths") or []
+        caption = str(args.get("caption") or "")
+        if isinstance(paths, list) and paths:
+            files = ", ".join(Path(str(p)).name for p in paths[:4])
+            more = "" if len(paths) <= 4 else f" (+{len(paths) - 4})"
+            head = f"files: {files}{more}"
+            if caption:
+                return f"{head}\n     ↳ _{_short(caption, 180)}_"
+            return head
+        return _short(caption, 200)
+    # Generic fallback — show the FIRST 2 scalar args so a tool like
+    # ``tasks(action=create, title=...)`` still shows the title even
+    # if we forgot to add a per-tool branch above. The previous code
+    # only showed the first arg, which is why ``tasks`` looked like
+    # ``action=create`` with no context.
+    pairs: list[str] = []
     for k, v in args.items():
-        if isinstance(v, (str, int, float, bool)) and v:
-            return _short(f"{k}={v}", 80)
-    return ""
+        if isinstance(v, (str, int, float, bool)) and (v or v == 0):
+            pairs.append(f"{k}={_short(str(v), 100)}")
+            if len(pairs) >= 2:
+                break
+    return " · ".join(pairs)
 
 
 def _short(s: str, n: int) -> str:

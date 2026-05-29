@@ -130,19 +130,54 @@ def get_approval_adapter(platform_name: str) -> Any | None:
 _PENDING: dict[str, asyncio.Future] = {}
 
 
+# External resolvers: when a request_id was minted somewhere other than
+# ``request_approval`` (e.g. by ``DesktopPermissionHandler.awaiter``
+# inside the freyja bridge), register a resolver here so the Slack
+# click handler can still drive the resolution. The resolver takes
+# ``(approved: bool) -> bool`` and returns whether the resolution
+# succeeded (False = unknown/already-resolved request).
+_EXTERNAL_RESOLVERS: dict[str, Any] = {}
+
+
+def register_external_resolver(request_id: str, resolver: Any) -> None:
+    """Register a resolver callback for an externally-minted approval id.
+
+    Pair with ``unregister_external_resolver`` in the same code path
+    that owns the request lifetime — we never auto-evict so callers
+    must clean up themselves. (sweep_stale only runs against
+    ``_PENDING`` Futures.)
+    """
+    _EXTERNAL_RESOLVERS[request_id] = resolver
+
+
+def unregister_external_resolver(request_id: str) -> None:
+    """Drop the resolver. Idempotent."""
+    _EXTERNAL_RESOLVERS.pop(request_id, None)
+
+
 def resolve_approval(request_id: str, approved: bool) -> bool:
     """Set the Future for a pending approval request. Returns True if
     the request was found + resolved, False if it was already
     resolved or expired (idempotent — safe to call twice from a
     double-clicked button)."""
     fut = _PENDING.get(request_id)
-    if fut is None or fut.done():
-        return False
-    try:
-        fut.set_result(approved)
-        return True
-    except asyncio.InvalidStateError:
-        return False
+    if fut is not None and not fut.done():
+        try:
+            fut.set_result(approved)
+            return True
+        except asyncio.InvalidStateError:
+            pass
+    # Fall through to externally-registered resolvers (e.g.
+    # DesktopPermissionHandler-minted requests dispatched to Slack via
+    # the stream consumer).
+    resolver = _EXTERNAL_RESOLVERS.get(request_id)
+    if resolver is not None:
+        try:
+            return bool(resolver(approved))
+        except Exception:  # noqa: BLE001
+            logger.exception("external approval resolver raised")
+            return False
+    return False
 
 
 async def request_approval(

@@ -415,7 +415,7 @@ export interface HarnessActions {
   toggleSettings(open?: boolean): void
   hydrateSettings(): Promise<void>
   setPermissionTier(tier: PermissionTier): Promise<void>
-  escalateSessionPolicy(tier: PermissionTier): Promise<void>
+  escalateSessionPolicy(tier: PermissionTier, sessionId?: string): Promise<void>
   switchToParent(): Promise<void>
   // ─── Session management ──────────────────────────────────────
   renameSession(sessionId: string, title: string): void
@@ -3351,13 +3351,22 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     }
   },
 
-  async escalateSessionPolicy(tier) {
-    // Scoped to just the current session — does NOT touch global settings.
+  async escalateSessionPolicy(tier, sessionId) {
+    // Scoped to a specific session — does NOT touch global settings.
+    // We accept an explicit sessionId so the permission prompt can
+    // escalate the session that *triggered* the prompt, which may
+    // differ from the desktop's active session (e.g. a Slack thread
+    // emitting a permission_request while the user is looking at a
+    // local session). Without this the escalation hit the wrong
+    // session and the next tool call in the Slack thread still
+    // prompted.
     const api = (window as any).harness
     if (!api) return
+    const targetSession =
+      sessionId || useHarness.getState().activeSessionId
     await api.sendCommand({
       type: 'set_permission_policy',
-      sessionId: useHarness.getState().activeSessionId,
+      sessionId: targetSession,
       autoApprove: tier,
     })
   },

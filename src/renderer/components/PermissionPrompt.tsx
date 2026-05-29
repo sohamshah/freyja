@@ -52,7 +52,12 @@ export function PermissionPrompt() {
   const approve = () => {
     if (!current) return
     if (rememberForSession) {
-      escalate(tierForLevel(current.level))
+      // Escalate the session that triggered the prompt — important
+      // because a Slack-routed session can fire a permission_request
+      // while the desktop is focused on a different (local) session.
+      // Without an explicit sessionId the escalation hit the active
+      // session and the Slack thread kept prompting on every tool call.
+      escalate(tierForLevel(current.level), current.sessionId)
     }
     answer(current.requestId, true)
   }

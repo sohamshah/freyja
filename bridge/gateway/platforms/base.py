@@ -121,6 +121,42 @@ class PlatformAdapter(Protocol):
         """Stable adapter name, matches Platform enum value."""
         ...
 
+    @property
+    def max_message_chars(self) -> int:
+        """Hard cap (in characters of the FORMATTED string) for a single
+        outbound message on this platform.
+
+        ``send`` and ``edit`` reject content over this cap with an error;
+        the caller (typically the stream consumer) is responsible for
+        chunking before calling. Adapters compute this from the
+        platform's documented limit and any per-message overhead they
+        reserve.
+        """
+        ...
+
+    def format_content(self, content: str) -> str:
+        """Apply any platform-specific transformation that affects size.
+
+        For Slack: CommonMark → Slack mrkdwn (``**bold**`` → ``*bold*``,
+        ``[text](url)`` → ``<url|text>``). For Discord/Telegram: their
+        respective markdown variants.
+
+        Must be **idempotent** — ``format_content(format_content(x)) ==
+        format_content(x)`` — so safety-net calls inside ``send``/``edit``
+        on already-formatted content don't corrupt it. Must not change
+        meaning, only representation.
+
+        The stream consumer calls this BEFORE chunking so the chunk
+        boundaries align with what the platform actually receives. If
+        the consumer chunked the raw markdown instead, format-time
+        expansion (link rewrites, etc.) could push a chunk over
+        ``max_message_chars`` and force the adapter to split internally
+        — which is exactly the bug this contract closes (the old path
+        posted multiple Slack messages from one ``send`` call but only
+        tracked the last ts, orphaning the rest as visible duplicates).
+        """
+        ...
+
     async def connect(self, on_event: EventCallback) -> bool:
         """Establish platform connection. Call on_event for inbound
         messages. Return True on success, False if connection failed

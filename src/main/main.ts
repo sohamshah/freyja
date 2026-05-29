@@ -37,6 +37,8 @@ import {
   saveSettings,
   type DesktopSettings,
 } from './settings.js'
+import { GatewayLogTailer, isGatewaySessionId } from './gatewayLogTail.js'
+import { sendControlCommand, commandTargetsDaemon } from './controlChannel.js'
 
 // Persistent crash sink for the Electron main process. Mirrors the
 // bridge-side log so a hard crash of either the Python subprocess OR
@@ -143,6 +145,7 @@ let mainWindow: BrowserWindow | null = null
 let bridge: HarnessBridge | null = null
 let captureProxy: CaptureProxy | null = null
 let inputProxy: InputProxy | null = null
+let gatewayLogTailer: GatewayLogTailer | null = null
 // Buffer bridge events that fire before the renderer is ready.
 // The `ready` event (with the full model list) typically arrives in
 // ~1-2 seconds, but the Electron window + React app takes 2-3s to
@@ -212,21 +215,33 @@ function createWindow() {
   })
 }
 
+function forwardBridgeEvent(event: any): void {
+  if (rendererReady) {
+    mainWindow?.webContents.send(IPC.bridgeEvent, event)
+  } else {
+    earlyEvents.push(event)
+  }
+}
+
 function initBridge() {
   bridge = new HarnessBridge({
     harnessRoot: HARNESS_ROOT,
     workspace: USER_WORKSPACE,
     captureProxyUrl: captureProxy?.url,
     inputProxyUrl: inputProxy?.url,
-    onEvent: (event) => {
-      if (rendererReady) {
-        mainWindow?.webContents.send(IPC.bridgeEvent, event)
-      } else {
-        // Buffer until the renderer calls rendererReady IPC
-        earlyEvents.push(event)
-      }
-    },
+    onEvent: forwardBridgeEvent,
   })
+
+  // Start the gateway log tailer in parallel with the bridge subprocess
+  // so the desktop sees live activity from Slack-routed sessions as well
+  // as locally-driven ones. Events from the daemon flow into the SAME
+  // bridgeEvent channel the renderer's store already routes by sessionId
+  // — the store doesn't know (or need to know) which Python process
+  // emitted any given event.
+  if (!gatewayLogTailer) {
+    gatewayLogTailer = new GatewayLogTailer(forwardBridgeEvent)
+    gatewayLogTailer.start()
+  }
   bridge
     .start()
     .then(async () => {
@@ -280,6 +295,36 @@ function setupIpc() {
   })
 
   ipcMain.handle(IPC.sendCommand, async (_event, cmd: BridgeCommand) => {
+    // Gateway-routed sessions (Slack, etc.) live inside the daemon, not
+    // the local bridge subprocess. Route the command to the daemon's
+    // control-channel file so its loop dispatches it.
+    //   · permission_response — operator clicks Approve in the desktop
+    //     modal for a Slack session; daemon's handler resolves its
+    //     pending future and the blocked tool call proceeds.
+    //   · set_permission_policy — "remember for this session" toggle
+    //     escalates the daemon session's autonomy tier.
+    if (commandTargetsDaemon(cmd as any)) {
+      const c = cmd as any
+      if (cmd.type === 'permission_response') {
+        return sendControlCommand({
+          type: 'permission_response',
+          sessionId: String(c.sessionId || ''),
+          requestId: String(c.requestId || ''),
+          approved: !!c.approved,
+          response: c.response,
+        })
+      }
+      if (cmd.type === 'set_permission_policy') {
+        return sendControlCommand({
+          type: 'set_permission_policy',
+          sessionId: String(c.sessionId || ''),
+          autoApprove: String(c.autoApprove || ''),
+        })
+      }
+      // Fall through for other command types — they may not be supported
+      // on the daemon today, but the local bridge will give a clear error
+      // if they're misrouted, which is better than silently dropping.
+    }
     if (!bridge) return { ok: false, error: 'bridge not ready' }
     try {
       await bridge.sendCommand(cmd)
@@ -794,6 +839,7 @@ app.on('before-quit', () => {
   try {
     globalShortcut.unregisterAll()
   } catch {}
+  gatewayLogTailer?.stop()
   bridge?.stop().catch(() => {})
   captureProxy?.close()
   inputProxy?.close()

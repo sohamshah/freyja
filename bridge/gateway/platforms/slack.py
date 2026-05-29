@@ -201,6 +201,18 @@ class SlackAdapter:
 
     name = Platform.SLACK.value
 
+    # Per the PlatformAdapter contract: hard cap on a single
+    # outbound message in formatted form. The consumer must chunk
+    # below this before calling send/edit.
+    max_message_chars = SLACK_MAX_MESSAGE_LENGTH
+
+    def format_content(self, content: str) -> str:
+        """CommonMark → Slack mrkdwn. Idempotent (re-running on
+        already-converted text leaves it unchanged), so it's safe
+        for ``send``/``edit`` to call as a defensive last pass on
+        whatever the caller hands them."""
+        return _markdown_to_slack(content)
+
     # Cap to prevent unbounded growth of tracking sets — old entries
     # get evicted when we hit these limits.
     _BOT_TS_MAX = 5000
@@ -214,6 +226,14 @@ class SlackAdapter:
     # useless anyway.
     _DEDUP_TTL_SEC = 600
     _SLASH_CTX_TTL_SEC = 1800
+    # How long we wait after an app_mention event before processing it,
+    # to give a possibly-richer message.channels twin (with file
+    # attachments) a chance to arrive. Slack delivers the pair within
+    # a few tens of ms; 300ms is comfortable headroom. The cost of
+    # waiting is a small latency on bare @mentions (no twin arrives,
+    # we process after the timeout) — barely noticeable next to the
+    # multi-second LLM response time that follows.
+    _APP_MENTION_DEFER_MS = 300
 
     def __init__(
         self,
@@ -245,6 +265,14 @@ class SlackAdapter:
         self._bot_message_ts: set[str] = set()        # ts values we sent
         self._mentioned_threads: set[str] = set()     # thread_ts the bot joined
         self._dedup: dict[str, float] = {}            # event_ts → seen-at monotonic
+        # Deferred app_mention tasks awaiting a possible message.channels
+        # twin. When a user @mentions the bot in a channel WITH a file
+        # attachment, Slack delivers two events: app_mention (no files)
+        # and message.channels (with files). We defer app_mention by
+        # DEDUP_DEFER_MS so message.channels can cancel it and provide
+        # the rich payload. Keyed by event_ts so we can find the right
+        # task to cancel when the twin arrives.
+        self._pending_app_mention: dict[str, asyncio.Task[Any]] = {}
 
         # Slash command response_url stash. Multiple users can run a
         # slash concurrently in the same channel; we key by
@@ -403,15 +431,40 @@ class SlackAdapter:
 
         @self._app.event("message")
         async def _handle_message_event(event, say):  # noqa: ARG001
+            # If an app_mention task is pending for this same event_ts,
+            # cancel it — the message.channels event we just got is
+            # strictly richer (carries the files array, full subtype
+            # info, etc.) and is the authoritative delivery to use.
+            event_ts = str(event.get("ts") or "")
+            pending = self._pending_app_mention.pop(event_ts, None)
+            if pending is not None and not pending.done():
+                pending.cancel()
             await self._handle_message(event)
 
         @self._app.event("app_mention")
         async def _handle_app_mention(event, say):  # noqa: ARG001
-            # Some Slack app configurations deliver @mentions ONLY as
-            # app_mention (not as message events). Forward through the
-            # same pipeline. Dedup on event_ts prevents double-fire when
-            # both events arrive.
-            await self._handle_message(event)
+            # Defer processing by a short window so any twin
+            # message.channels event (which carries files) can
+            # cancel us and handle the inbound itself. The
+            # message-event handler above does the cancellation.
+            #
+            # If no twin arrives (some workspace configurations
+            # deliver mentions ONLY as app_mention, or a thread
+            # broadcast might fire just one of the two), the
+            # deferred task processes the app_mention normally
+            # after the window expires.
+            event_ts = str(event.get("ts") or "")
+            if not event_ts:
+                await self._handle_message(event)
+                return
+            # If a deferred task is already in flight for this ts
+            # (duplicate Socket Mode delivery during a reconnect
+            # window), drop the redundant defer.
+            if event_ts in self._pending_app_mention:
+                return
+            self._pending_app_mention[event_ts] = asyncio.create_task(
+                self._handle_app_mention_after_defer(event_ts, event)
+            )
 
         # Ack file lifecycle events so Slack doesn't log unhandled-event
         # warnings. The actual files we care about arrive as part of a
@@ -518,14 +571,62 @@ class SlackAdapter:
 
     # ── inbound message processing ─────────────────────────────
 
-    async def _handle_message(self, event: dict[str, Any]) -> None:
-        # Dedup: Socket Mode can redeliver after reconnect.
-        event_ts = str(event.get("ts") or "")
-        if event_ts and event_ts in self._dedup:
+    async def _handle_app_mention_after_defer(
+        self,
+        event_ts: str,
+        event: dict[str, Any],
+    ) -> None:
+        """Process an app_mention after a brief delay.
+
+        The delay window gives a possible message.channels twin
+        (carrying file attachments Slack strips from app_mention
+        events) a chance to arrive and cancel us. If we get past
+        the sleep, no twin showed up — process normally.
+
+        Cleanup of the ``_pending_app_mention`` slot happens here too
+        so a follow-up cancellation can't race against a stale entry.
+        """
+        try:
+            await asyncio.sleep(self._APP_MENTION_DEFER_MS / 1000.0)
+        except asyncio.CancelledError:
+            # message.channels arrived and cancelled us; the message
+            # handler is processing the rich version, nothing to do.
+            self._pending_app_mention.pop(event_ts, None)
             return
-        if event_ts:
+        # Clear our slot BEFORE handing off, so a later cancel during
+        # the (possibly slow) handle_message call can't accidentally
+        # cancel an unrelated future task that reused this ts.
+        self._pending_app_mention.pop(event_ts, None)
+        try:
+            await self._handle_message(event)
+        except Exception:  # noqa: BLE001
+            logger.exception("deferred app_mention handler raised")
+
+    async def _handle_message(self, event: dict[str, Any]) -> None:
+        # Dedup: Socket Mode can redeliver after reconnect, AND Slack
+        # double-fires @mentions in channels as both ``app_mention`` and
+        # ``message.channels`` with the same ts. We can't just drop the
+        # second event in the latter case: ``app_mention`` payloads omit
+        # the ``files`` array, while ``message.channels`` includes it.
+        # Naive dedup → text-only ``app_mention`` wins, attached images
+        # never make it to the agent ("No image came through" responses).
+        #
+        # Strategy: the dedup key bakes in a coarse "richness" tag
+        # (whether the event carries files). Two events with the same
+        # ts but different richness pass through as separate
+        # invocations, and the agent gets the richer one's content.
+        # The downside is we may call the agent twice for a mention
+        # with files — but the second call sees the prior call as
+        # in-flight via the session's queueing mechanism, so it
+        # queues behind it rather than racing.
+        event_ts = str(event.get("ts") or "")
+        has_files = bool(event.get("files"))
+        dedup_key = f"{event_ts}|f" if has_files else event_ts
+        if dedup_key and dedup_key in self._dedup:
+            return
+        if dedup_key:
             now = time.monotonic()
-            self._dedup[event_ts] = now
+            self._dedup[dedup_key] = now
             # TTL-evict periodically rather than on every message.
             # The common case is O(1) insert; the prune sweep runs
             # only when we cross the size cap, which on a busy
@@ -581,6 +682,29 @@ class SlackAdapter:
         if not channel_id:
             return
 
+        # Resolve missing team_id. Slack omits it on some Socket Mode
+        # payloads (thread broadcasts, edits, file_share subtypes).
+        # Three fallback tiers:
+        #   1. channel→team cache populated from prior events on the
+        #      same channel that DID include team
+        #   2. for single-workspace installs (the common case), default
+        #      to the only authenticated team — there's no ambiguity
+        #      about where the message came from
+        #   3. give up, allowlist will deny
+        # Without (2), the FIRST message in a channel after a daemon
+        # restart silently fails because the channel cache is empty
+        # AND the event payload doesn't carry team. The user-visible
+        # symptom is "the bot won't respond in this thread, but if I
+        # start a fresh @mention thread it works" — because the new
+        # top-level mention's event happens to carry team_id, which
+        # populates the cache for subsequent thread replies.
+        if not team_id:
+            cached = self._channel_team.get(channel_id, "")
+            if cached:
+                team_id = cached
+            elif len(self._team_clients) == 1:
+                team_id = next(iter(self._team_clients.keys()))
+
         if team_id and channel_id:
             self._channel_team[channel_id] = team_id
 
@@ -596,6 +720,28 @@ class SlackAdapter:
                 team_id, user_id,
             )
             return
+
+        # Diagnostic: if Slack delivered a message with no files but it
+        # was a file-share-style event (subtype hints at it OR an upload
+        # is in flight), log so we can tell whether the issue is "Slack
+        # didn't send us files" vs "we mishandled files we received."
+        # Helps debug the "user sends an image, bot says no image came
+        # through" failure mode.
+        files_in_event = event.get("files") or []
+        if not files_in_event and subtype in {"file_share", "file_comment"}:
+            logger.warning(
+                "[slack] event ts=%s has subtype=%s but no files array — "
+                "likely missing files:read scope OR file upload still in "
+                "progress. Reinstall the app in the workspace if scope is "
+                "absent.",
+                event_ts, subtype,
+            )
+        elif files_in_event:
+            logger.info(
+                "[slack] event ts=%s carries %d file(s): %s",
+                event_ts, len(files_in_event),
+                [f.get("mimetype") or f.get("name") for f in files_in_event[:3]],
+            )
 
         # DM vs channel detection.
         channel_type = event.get("channel_type") or ""
@@ -790,20 +936,42 @@ class SlackAdapter:
         if slash_ctx:
             return await self._send_slash_ephemeral(slash_ctx, content)
 
-        formatted = _markdown_to_slack(content)
-        chunks = truncate_for_platform(formatted, SLACK_MAX_MESSAGE_LENGTH)
-        last_result: Any = None
+        # Format defensively — idempotent, so callers that already
+        # formatted (the stream consumer's chunking path) pass through
+        # unchanged. Callers that hand us raw markdown (slash replies,
+        # short status posts in run.py) get correct conversion.
+        formatted = self.format_content(content)
+        # Strict single-message contract: a successful send maps to
+        # EXACTLY ONE Slack message. If the formatted content is too
+        # large, we return an error instead of silently splitting; the
+        # old split-loop only recorded the last chunk's ts as the
+        # SendResult.message_id, which made the stream consumer's
+        # anchor list track only the trailing message — every leading
+        # message it posted became an orphan that the consumer
+        # couldn't edit on later flushes, producing the visible
+        # duplication on long responses. Callers that need to send
+        # more than one message worth of content must chunk first
+        # (use ``format_content`` + ``truncate_for_platform`` with
+        # ``max_message_chars``).
+        if len(formatted) > self.max_message_chars:
+            return SendResult(
+                ok=False,
+                error=(
+                    f"content exceeds max_message_chars "
+                    f"({len(formatted)} > {self.max_message_chars}); "
+                    f"caller must chunk before calling send"
+                ),
+            )
+        kwargs: dict[str, Any] = {
+            "channel": chat_id,
+            "text": formatted,
+            "mrkdwn": True,
+        }
+        if thread_id:
+            kwargs["thread_ts"] = thread_id
         try:
-            for i, chunk in enumerate(chunks):
-                kwargs: dict[str, Any] = {
-                    "channel": chat_id,
-                    "text": chunk,
-                    "mrkdwn": True,
-                }
-                if thread_id:
-                    kwargs["thread_ts"] = thread_id
-                last_result = await client.chat_postMessage(**kwargs)
-            sent_ts = (last_result or {}).get("ts") if last_result else None
+            result = await client.chat_postMessage(**kwargs)
+            sent_ts = (result or {}).get("ts") if result else None
             if sent_ts:
                 self._bot_message_ts.add(str(sent_ts))
                 if thread_id:
@@ -815,7 +983,7 @@ class SlackAdapter:
             return SendResult(
                 ok=True,
                 message_id=str(sent_ts) if sent_ts else None,
-                raw=last_result,
+                raw=result,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("[slack] send failed: %s", exc)
@@ -832,12 +1000,22 @@ class SlackAdapter:
         client = self._get_client(chat_id)
         if client is None:
             return SendResult(ok=False, error=f"no client for chat {chat_id}")
-        formatted = _markdown_to_slack(content)
-        # If the formatted content exceeds the Slack cap, we can't fit
-        # it into one edit. Truncate the edit and let the caller send a
-        # follow-up message for the overflow.
-        if len(formatted) > SLACK_MAX_MESSAGE_LENGTH:
-            formatted = formatted[: SLACK_MAX_MESSAGE_LENGTH - 50] + "\n…(continued)"
+        # Idempotent format pass — see ``send`` for rationale.
+        formatted = self.format_content(content)
+        # Strict size contract. The old code silently truncated to
+        # ``[: max - 50] + "\n…(continued)"`` and never delivered the
+        # tail, which produced visibly truncated responses on long
+        # turns. Failing the edit gives the caller (the stream
+        # consumer) a clear signal to split into a new anchor instead.
+        if len(formatted) > self.max_message_chars:
+            return SendResult(
+                ok=False,
+                error=(
+                    f"content exceeds max_message_chars "
+                    f"({len(formatted)} > {self.max_message_chars}); "
+                    f"caller must chunk before calling edit"
+                ),
+            )
         try:
             result = await client.chat_update(
                 channel=chat_id,
@@ -1017,20 +1195,32 @@ class SlackAdapter:
         *,
         limit: int = 50,
         exclude_ts: str | None = None,
+        oldest_ts: str | None = None,
     ) -> list[dict[str, Any]]:
         """Pull prior messages from a Slack thread or top-level DM.
 
         Returns a chronological list of ``{role, user_id, user_name,
-        text, ts}`` dicts. Used by the gateway router to prepend
+        text, ts, files}`` dicts. Used by the gateway router to prepend
         thread context to the framed prompt so the agent sees what was
-        said before it was triggered (esp. important when the bot is
-        @mentioned mid-conversation and the user expects it to read
-        the thread first, or when the user replies in a thread the
-        bot wasn't actively listening to).
+        said before it was triggered — including any image / file
+        attachments that participants posted earlier in the thread.
+
+        Image/file context matters: a typical Slack thread is "here's
+        the design [.png], thoughts? — looks good — let's iterate —
+        @Freyja can you propose changes". Without the .png, Freyja
+        replies blind. The ``files`` array surfaces the raw Slack
+        file metadata so the gateway can selectively download images
+        and include them as model attachments.
 
         ``exclude_ts`` filters out a specific message (typically the
         one that triggered the current turn — no point feeding it
         back twice).
+
+        ``oldest_ts`` is an optional lower bound — only return
+        messages with ts > oldest_ts. Lets a caller fetch only the
+        delta since the bot's last known response in this thread,
+        avoiding redundant context when the bot was already in the
+        conversation. Pass None to get everything.
 
         Best-effort: any API failure returns []. Caller should fall
         back to "no prior context" rather than failing the turn.
@@ -1054,12 +1244,19 @@ class SlackAdapter:
             ts = str(m.get("ts") or "")
             if exclude_ts and ts == str(exclude_ts):
                 continue
+            if oldest_ts and ts <= str(oldest_ts):
+                continue
             text = str(m.get("text") or "")
             # Prefer rich-text blocks when present (preserves quotes/lists).
             blocks_text = extract_text_from_slack_blocks(m.get("blocks"))
             if blocks_text and len(blocks_text) > len(text):
                 text = blocks_text
-            if not text:
+            files = m.get("files") or []
+            # Keep file-only messages (someone dropped an image without
+            # commentary — still meaningful context). The old skip-if-
+            # empty-text path silently dropped these, leaving the agent
+            # blind to any image-driven thread.
+            if not text and not files:
                 continue
             user_id = str(m.get("user") or "")
             is_bot = bool(m.get("bot_id")) or user_id == (self._bot_user_id or "")
@@ -1068,6 +1265,7 @@ class SlackAdapter:
                 "user_id": user_id,
                 "text": text,
                 "ts": ts,
+                "files": files,
             })
         return out
 
@@ -1105,7 +1303,8 @@ class SlackAdapter:
             blocks_text = extract_text_from_slack_blocks(m.get("blocks"))
             if blocks_text and len(blocks_text) > len(text):
                 text = blocks_text
-            if not text:
+            files = m.get("files") or []
+            if not text and not files:
                 continue
             user_id = str(m.get("user") or "")
             is_bot = bool(m.get("bot_id")) or user_id == (self._bot_user_id or "")
@@ -1114,6 +1313,7 @@ class SlackAdapter:
                 "user_id": user_id,
                 "text": text,
                 "ts": ts,
+                "files": files,
             })
         return out
 
