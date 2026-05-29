@@ -136,23 +136,38 @@ _PENDING: dict[str, asyncio.Future] = {}
 # click handler can still drive the resolution. The resolver takes
 # ``(approved: bool) -> bool`` and returns whether the resolution
 # succeeded (False = unknown/already-resolved request).
+#
+# Each resolver is paired with the monotonic time it was registered so
+# ``sweep_stale`` can evict orphans. The expected lifecycle is that
+# the listener which registered the resolver also unregisters it on
+# ``permission_resolved`` — but a cancelled awaiter (CancelledError
+# path in ``DesktopPermissionHandler.awaiter``) doesn't emit
+# ``permission_resolved``, so the resolver would leak indefinitely
+# without this safety net.
 _EXTERNAL_RESOLVERS: dict[str, Any] = {}
+_EXTERNAL_RESOLVER_REGISTERED_AT: dict[str, float] = {}
+_EXTERNAL_RESOLVER_TTL_SEC = 1800.0  # 30 min
 
 
 def register_external_resolver(request_id: str, resolver: Any) -> None:
     """Register a resolver callback for an externally-minted approval id.
 
     Pair with ``unregister_external_resolver`` in the same code path
-    that owns the request lifetime — we never auto-evict so callers
-    must clean up themselves. (sweep_stale only runs against
-    ``_PENDING`` Futures.)
+    that owns the request lifetime — the TTL sweep is a safety net for
+    listener crashes / cancelled awaiters, not the primary cleanup.
     """
     _EXTERNAL_RESOLVERS[request_id] = resolver
+    _EXTERNAL_RESOLVER_REGISTERED_AT[request_id] = time.monotonic()
+    # Piggy-back the GC: every new registration is a chance to clear
+    # stale entries. ``sweep_stale`` self-throttles via _LAST_SWEEP_AT
+    # so the actual work runs at most once per _SWEEP_INTERVAL_SEC.
+    sweep_stale()
 
 
 def unregister_external_resolver(request_id: str) -> None:
     """Drop the resolver. Idempotent."""
     _EXTERNAL_RESOLVERS.pop(request_id, None)
+    _EXTERNAL_RESOLVER_REGISTERED_AT.pop(request_id, None)
 
 
 def resolve_approval(request_id: str, approved: bool) -> bool:
@@ -244,9 +259,10 @@ _SWEEP_INTERVAL_SEC = 300.0  # every 5 min
 
 
 def sweep_stale() -> int:
-    """Cancel any Future older than the timeout window. Safety net in
-    case ``request_approval``'s ``finally`` didn't run (e.g. event-loop
-    cancellation). Returns number swept."""
+    """Drop any completed Future and any external resolver older than
+    its TTL. Safety net for ``finally`` blocks that didn't run (loop
+    cancellation, listener crashes, cancelled-awaiter paths that
+    bypass ``permission_resolved``). Returns total entries swept."""
     global _LAST_SWEEP_AT
     now = time.monotonic()
     if now - _LAST_SWEEP_AT < _SWEEP_INTERVAL_SEC:
@@ -256,5 +272,10 @@ def sweep_stale() -> int:
     for rid, fut in list(_PENDING.items()):
         if fut.done():
             _PENDING.pop(rid, None)
+            cleared += 1
+    for rid, registered_at in list(_EXTERNAL_RESOLVER_REGISTERED_AT.items()):
+        if now - registered_at > _EXTERNAL_RESOLVER_TTL_SEC:
+            _EXTERNAL_RESOLVERS.pop(rid, None)
+            _EXTERNAL_RESOLVER_REGISTERED_AT.pop(rid, None)
             cleared += 1
     return cleared

@@ -37,8 +37,8 @@ import {
   saveSettings,
   type DesktopSettings,
 } from './settings.js'
-import { GatewayLogTailer, isGatewaySessionId } from './gatewayLogTail.js'
-import { sendControlCommand, commandTargetsDaemon } from './controlChannel.js'
+import { GatewayLogTailer } from './gatewayLogTail.js'
+import { sendControlCommand } from './controlChannel.js'
 
 // Persistent crash sink for the Electron main process. Mirrors the
 // bridge-side log so a hard crash of either the Python subprocess OR
@@ -295,20 +295,26 @@ function setupIpc() {
   })
 
   ipcMain.handle(IPC.sendCommand, async (_event, cmd: BridgeCommand) => {
-    // Gateway-routed sessions (Slack, etc.) live inside the daemon, not
-    // the local bridge subprocess. Route the command to the daemon's
-    // control-channel file so its loop dispatches it.
-    //   · permission_response — operator clicks Approve in the desktop
-    //     modal for a Slack session; daemon's handler resolves its
-    //     pending future and the blocked tool call proceeds.
-    //   · set_permission_policy — "remember for this session" toggle
-    //     escalates the daemon session's autonomy tier.
-    if (commandTargetsDaemon(cmd as any)) {
+    // Gateway-routed sessions live inside the daemon (Slack today,
+    // plus any sub-agents the daemon spawned beneath them). We route
+    // the command to the daemon's control-channel file so its loop
+    // dispatches it instead of sending to the local bridge subprocess
+    // (which has no idea those sessions exist).
+    //
+    // Ownership comes from the log tailer's daemonOwned map: any
+    // sessionId we've seen emit on the gateway log, plus a bootstrap
+    // for ids shaped like ``freyja:<platform>:...`` for the first
+    // command that fires before we've observed any events. This is
+    // how sub-agent permission approvals reach the right process —
+    // their ids look like ``sub_<hex>_<n>`` and don't carry a prefix
+    // we could grep on, so we have to learn them from event traffic.
+    const cmdSessionId = String((cmd as any)?.sessionId || '')
+    if (cmdSessionId && (gatewayLogTailer?.isDaemonOwned(cmdSessionId) ?? false)) {
       const c = cmd as any
       if (cmd.type === 'permission_response') {
         return sendControlCommand({
           type: 'permission_response',
-          sessionId: String(c.sessionId || ''),
+          sessionId: cmdSessionId,
           requestId: String(c.requestId || ''),
           approved: !!c.approved,
           response: c.response,
@@ -317,7 +323,7 @@ function setupIpc() {
       if (cmd.type === 'set_permission_policy') {
         return sendControlCommand({
           type: 'set_permission_policy',
-          sessionId: String(c.sessionId || ''),
+          sessionId: cmdSessionId,
           autoApprove: String(c.autoApprove || ''),
         })
       }

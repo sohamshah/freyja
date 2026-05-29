@@ -281,13 +281,20 @@ function mirrorGatewaySessions(known: Set<string>): PersistedSessionMeta[] {
   const seenPaths = new Set<string>()
   for (const f of files) {
     if (!f.endsWith('.transcript.json')) continue
-    // Fast-path filter: gateway session ids sanitize to filenames
-    // starting with ``freyja`` (covers both the modern
-    // ``freyja_slack_T...`` and legacy ``freyjaslackT...`` styles).
-    // Skipping non-matching files BEFORE the read+parse cuts I/O by
-    // ~99% on a typical install (most transcripts are desktop or
-    // sub-agent sessions whose names don't start with freyja).
-    if (!f.startsWith('freyja')) continue
+    // Two file-name patterns surface gateway-owned sessions:
+    //   · ``freyja_*.transcript.json`` — gateway ROOT sessions (Slack DMs,
+    //     channel threads, etc.). The session id sanitizes to a leading
+    //     ``freyja`` prefix.
+    //   · ``sub_*.transcript.json`` — SUB-AGENTS. Their id is opaque
+    //     (``sub_<hex>_<n>``) so we can't filter by name alone — we
+    //     have to parse the transcript and check whether the parent
+    //     session is gateway-owned (parent id starts with ``freyja:``).
+    //
+    // Desktop sub-agents share the ``sub_*`` filename pattern, so the
+    // parent-id check is what distinguishes the two. Caching by mtime
+    // means we only pay the parse cost on first sight + on transcript
+    // updates — repeat polls stay O(stat).
+    if (!f.startsWith('freyja') && !f.startsWith('sub_')) continue
     const fullPath = path.join(SESSIONS_DIR, f)
     seenPaths.add(fullPath)
     let stat: fs.Stats | null = null
@@ -313,14 +320,30 @@ function mirrorGatewaySessions(known: Set<string>): PersistedSessionMeta[] {
       continue
     }
     const sessionId: string | undefined = parsed?.session_id
-    if (!sessionId || !sessionId.startsWith('freyja:')) {
+    if (!sessionId) {
+      _gatewayMirrorCache.set(fullPath, { mtimeMs, meta: null })
+      continue
+    }
+    const isGatewayRoot = sessionId.startsWith('freyja:')
+    const parentSessionId: string | undefined =
+      parsed?.metadata?.parent_session_id ?? parsed?.parent_session_id
+    const isGatewaySubAgent =
+      sessionId.startsWith('sub_') &&
+      typeof parentSessionId === 'string' &&
+      parentSessionId.startsWith('freyja:')
+    if (!isGatewayRoot && !isGatewaySubAgent) {
+      // Not a gateway-owned session — cache the negative so we don't
+      // re-parse this transcript on every poll. Desktop sub-agents
+      // dominate the ``sub_*`` population, so this matters.
       _gatewayMirrorCache.set(fullPath, { mtimeMs, meta: null })
       continue
     }
     const messageCount = Array.isArray(parsed?.transcript?.entries)
       ? parsed.transcript.entries.filter((e: any) => e?.message).length
       : 0
-    const title = sessionId.replace(/^freyja:/, '')
+    const title = isGatewayRoot
+      ? sessionId.replace(/^freyja:/, '')
+      : (parsed?.metadata?.subagent_label || 'Sub-agent')
     const meta: PersistedSessionMeta = {
       version: 1,
       id: sessionId,
@@ -333,8 +356,16 @@ function mirrorGatewaySessions(known: Set<string>): PersistedSessionMeta[] {
       totalInputTokens: 0,
       totalOutputTokens: 0,
       cacheReadTokens: 0,
-      task: '(gateway-mirrored — read-only mirror of an external chat)',
-      agentType: 'gateway-slack',
+      task: isGatewayRoot
+        ? '(gateway-mirrored — read-only mirror of an external chat)'
+        : (parsed?.metadata?.subagent_label || ''),
+      agentType: isGatewayRoot
+        ? 'gateway-slack'
+        : (parsed?.metadata?.agent_type || 'gateway-subagent'),
+      // Parent linkage — drives sidebar nesting under the originating
+      // Slack thread. Only set for sub-agents; root sessions have no
+      // parent by construction.
+      ...(isGatewaySubAgent ? { parentSessionId } : {}),
     }
     _gatewayMirrorCache.set(fullPath, { mtimeMs, meta })
     if (!known.has(sessionId)) out.push(meta)

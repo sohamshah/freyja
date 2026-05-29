@@ -174,7 +174,7 @@ class SlackStreamConsumer:
         max_chars: int | None = None,
         raw_hint: dict[str, Any] | None = None,
         on_complete: Any = None,
-        permission_resolver: Any = None,
+        verbosity: str = "new",
     ) -> None:
         self.adapter = adapter
         self.source = source
@@ -188,17 +188,26 @@ class SlackStreamConsumer:
         self.max_chars = max_chars if max_chars is not None else adapter_cap
         self.raw_hint = raw_hint
         self.on_complete = on_complete  # called when finalize() runs
-        # Callback ``(request_id, approved) -> bool`` used by the Slack
-        # Block Kit approval click handler to resolve the daemon's
-        # DesktopPermissionHandler future. Wired through ``run.py`` from
-        # the session's permission_handler. None when the session has no
-        # in-process handler (shouldn't happen for live Slack sessions
-        # but we fail open rather than hang).
-        self.permission_resolver = permission_resolver
-        # Pending in-flight permission ids minted in this consumer's
-        # lifetime — used to clean up external resolvers on finalize()
-        # so we don't leak resolver entries across turns.
-        self._pending_permission_ids: set[str] = set()
+        # NOTE: permission_request / permission_resolved events are NOT
+        # handled here — they're routed to ``SlackPermissionListener``
+        # which is registered once per session (not per turn) so
+        # background-mode sub-agents can still get Block Kit prompts
+        # after their parent's turn completes.
+
+        # Tool-progress verbosity — one of off|new|all|verbose. Drives
+        # what (if anything) lands in the progress bubble below. See
+        # bridge.gateway.session_router for the level semantics:
+        #   off:     no bubble at all (final response only)
+        #   new:     show only when tool name changes; consecutive
+        #            same-tool calls coalesce into "⚙️ tool ×N"
+        #   all:     line per call, short args (prior default)
+        #   verbose: line per call, full args, includes heartbeats
+        self.verbosity = verbosity if verbosity in {"off", "new", "all", "verbose"} else "new"
+        # Tracking for "new" mode coalescing — remembers the last tool
+        # name we emitted a line for so we can either replace its
+        # counter or open a fresh line.
+        self._coalesce_last_tool: str | None = None
+        self._coalesce_count: int = 0
 
         self._state = _State()
         self._lock = asyncio.Lock()
@@ -270,8 +279,6 @@ class SlackStreamConsumer:
             "tool_use_start",
             "tool_input_end",
             "tool_result",
-            "permission_request",
-            "permission_resolved",
         }:
             return
         try:
@@ -308,33 +315,56 @@ class SlackStreamConsumer:
                 await self._reset_progress_bubble()
                 await self._append(text)
         elif etype == "tool_use_start":
+            # Defer rendering until tool_input_end. We need the args
+            # to (a) heartbeat-filter and (b) emit a meaningful
+            # preview in all/verbose modes. The "⚙️ tool…" provisional
+            # pattern that used to fire here was nice for slow tools
+            # but introduced orphan lines for filtered heartbeats. The
+            # typing indicator (set on the first event of the turn)
+            # covers the "something is happening" feedback gap during
+            # the tens-of-ms between use_start and input_end.
             tool_id = str(event.get("id") or "")
             tool_name = str(event.get("name") or "?")
             if tool_id:
-                # Stash the name keyed by id so tool_input_end can
-                # render the full "name(args)" preview when args land.
                 self._state.progress.pending_tool_names[tool_id] = tool_name
-            # Emit a provisional "running" line; refined by
-            # tool_input_end once args arrive.
-            await self._append_progress(f"⚙️ {tool_name}…")
         elif etype == "tool_input_end":
+            if self.verbosity == "off":
+                return
             tool_id = str(event.get("id") or "")
             args = event.get("arguments") or {}
             tool_name = self._state.progress.pending_tool_names.pop(
                 tool_id,
                 "?",
             )
+            # Heartbeat filter — agent's self-poll mechanism, pure
+            # noise in chat. Suppress in all levels except verbose.
+            if (
+                self.verbosity != "verbose"
+                and tool_name == "tasks"
+                and isinstance(args, dict)
+                and str(args.get("action") or "").lower() == "heartbeat"
+            ):
+                return
+            if self.verbosity == "new":
+                # Coalesce: same tool as last → bump count + update
+                # the existing line. Different tool → fresh line.
+                if tool_name == self._coalesce_last_tool:
+                    self._coalesce_count += 1
+                    line = f"⚙️ `{tool_name}` ×{self._coalesce_count}"
+                    await self._replace_last_progress(line)
+                else:
+                    self._coalesce_last_tool = tool_name
+                    self._coalesce_count = 1
+                    await self._append_progress(f"⚙️ `{tool_name}`")
+                return
+            # all / verbose: line per call with short args preview.
             preview = _summarize_tool_args(tool_name, args)
             line = f"⚙️ `{tool_name}`"
             if preview:
                 line += f": {preview}"
-            await self._replace_last_progress(line)
+            await self._append_progress(line)
         elif etype == "tool_result":
             await self._handle_tool_result(event)
-        elif etype == "permission_request":
-            await self._handle_permission_request(event)
-        elif etype == "permission_resolved":
-            await self._handle_permission_resolved(event)
         elif etype == "turn_complete":
             await self.finalize()
 
@@ -568,6 +598,11 @@ class SlackStreamConsumer:
         answer that got edited last" bug.
         """
         async with self._lock:
+            # Reset coalesce state so a new tool batch after this text
+            # starts fresh and doesn't accidentally bump a counter on a
+            # stale prior tool name.
+            self._coalesce_last_tool = None
+            self._coalesce_count = 0
             if not self._state.progress.message_id and not self._state.progress.lines:
                 return
             # Pre-tool text waiting in the buffer belongs in the OLD
@@ -681,79 +716,6 @@ class SlackStreamConsumer:
         except Exception:  # noqa: BLE001
             logger.debug("failed to send upload-failure notice", exc_info=True)
 
-    # ── permission flow ──
-
-    async def _handle_permission_request(self, event: dict[str, Any]) -> None:
-        """Forward an in-process ``permission_request`` to Slack.
-
-        We bridge the daemon's per-session ``DesktopPermissionHandler``
-        prompt (which would otherwise emit an event nobody listens to
-        on this side of the process boundary) to a Block Kit message in
-        the originating Slack thread. The button click then resolves
-        the daemon's pending Future via ``permission_resolver``.
-
-        Doing this here means the same code path serves *every* permission
-        prompt the engine emits — bash network egress, write-into-protected-
-        path, image-write, etc. — not just the ``approval.py`` destructive-
-        command list. If the consumer can't post (no resolver wired, no
-        Slack chat id), we log and let the awaiter's hard timeout settle
-        the request — failing closed rather than hanging.
-        """
-        request_id = str(event.get("requestId") or "")
-        if not request_id:
-            return
-        prompt = str(event.get("prompt") or "permission required")
-        reason = str(event.get("reason") or "") or str(event.get("details") or "")
-        level = str(event.get("level") or "medium")
-        if self.permission_resolver is None:
-            logger.warning(
-                "permission_request %s arrived without a resolver — "
-                "will hard-timeout in the daemon (session=%s)",
-                request_id, self.session_key,
-            )
-            return
-        from bridge.gateway.approval import register_external_resolver
-        # Tie the Slack button -> daemon future glue together.
-        register_external_resolver(
-            request_id,
-            lambda approved: bool(self.permission_resolver(request_id, approved)),
-        )
-        self._pending_permission_ids.add(request_id)
-        # Post the Block Kit message — reuses the exact same adapter
-        # affordance used by destructive-tool approvals, so the operator
-        # UI is identical.
-        try:
-            result = await self.adapter.send_approval_request(
-                chat_id=self.source.chat_id,
-                request_id=request_id,
-                tool_name=f"permission · {level}",
-                command_preview=prompt,
-                reason=reason,
-                thread_id=self._reply_thread_id,
-            )
-            if not getattr(result, "ok", False):
-                logger.warning(
-                    "Block Kit approval post failed for %s: %s",
-                    request_id, getattr(result, "error", "?"),
-                )
-        except Exception:  # noqa: BLE001
-            logger.exception("send_approval_request raised for %s", request_id)
-
-    async def _handle_permission_resolved(self, event: dict[str, Any]) -> None:
-        """Drop the external resolver entry once the prompt is settled.
-
-        The button-click path already replaces the message Block Kit with
-        a "✅ approved by @X" / "❌ denied by @X" footer (see
-        ``slack.py:_handle_approval_click``). We only have to free the
-        process-wide resolver table entry so it doesn't leak.
-        """
-        request_id = str(event.get("requestId") or "")
-        if not request_id:
-            return
-        from bridge.gateway.approval import unregister_external_resolver
-        unregister_external_resolver(request_id)
-        self._pending_permission_ids.discard(request_id)
-
     # ── finalize ──
 
     async def finalize(self) -> None:
@@ -767,15 +729,6 @@ class SlackStreamConsumer:
             self._state.progress.last_edit_monotonic = 0
             await self._flush_progress_locked()
             self._state.finalized = True
-        # Drop any external approval resolvers minted during the turn
-        # that weren't already cleaned up by ``permission_resolved`` —
-        # protects against a turn that completes while a prompt is still
-        # in flight (e.g. operator never clicked, daemon timed out).
-        if self._pending_permission_ids:
-            from bridge.gateway.approval import unregister_external_resolver
-            for rid in list(self._pending_permission_ids):
-                unregister_external_resolver(rid)
-            self._pending_permission_ids.clear()
         # Clear the typing indicator (best-effort).
         try:
             await self.adapter.stop_typing(

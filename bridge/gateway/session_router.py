@@ -22,11 +22,121 @@ Two responsibilities:
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from bridge.gateway.platforms.base import IncomingMessage, MessageSource
 
 logger = logging.getLogger(__name__)
+
+
+# ─── verbosity inline-flag parsing ────────────────────────────────────
+#
+# Slack slash commands don't fire inside threads, so users need a way
+# to control verbosity in a thread-friendly form. We accept CLI-style
+# `--flag` tokens at the start or end of a message, strip them out,
+# and apply the corresponding level. Mirrors Hermes's 4-level model
+# (off/new/all/verbose) — see ~/work/services/hermes-agent for prior
+# art — but adds the inline-token surface so threads work too.
+
+VERBOSITY_LEVELS: tuple[str, ...] = ("off", "new", "all", "verbose")
+DEFAULT_VERBOSITY = "new"
+
+_VERBOSITY_FLAG_MAP = {
+    "--off": "off",
+    "--silent": "off",
+    "--quiet": "off",
+    "-q": "off",
+    "--new": "new",
+    "--brief": "new",
+    "--all": "all",
+    "--verbose": "verbose",
+    "-v": "verbose",
+}
+
+_FLAG_TOKEN_RE = re.compile(
+    r"(?:^|\s)(" + "|".join(
+        re.escape(f) for f in sorted(_VERBOSITY_FLAG_MAP.keys(), key=len, reverse=True)
+    ) + r")(?=\s|$)",
+    re.IGNORECASE,
+)
+
+
+def parse_verbosity_flags(text: str) -> tuple[str | None, str]:
+    """Strip verbosity flags from ``text``; return (level, cleaned_text).
+
+    Only tokens at the start or end of the message are considered, so
+    natural-language uses of "verbose" or pasted shell commands
+    containing ``--verbose`` mid-string don't accidentally trigger a
+    mode change. Case-insensitive. Multiple flags: last (rightmost in
+    original text) wins.
+
+    Examples:
+        ``"--verbose what does this do?"`` → ``("verbose", "what does this do?")``
+        ``"fix the build --silent"``       → ``("off", "fix the build")``
+        ``"explain bash --verbose --new"`` → ``("new", "explain bash")``
+        ``"normal question"``              → ``(None, "normal question")``
+        ``"paste: cmd --verbose --foo"``   → ``(None, "paste: cmd --verbose --foo")``
+    """
+    if not text:
+        return None, ""
+    raw = text
+
+    # Peel matching flag tokens off the END of the message until we
+    # hit a non-flag token. ``raw`` is mutated so subsequent peels see
+    # the trimmed string.
+    while True:
+        m = re.search(r"(?:\s+|^)(\S+)\s*$", raw)
+        if not m:
+            break
+        candidate = m.group(1)
+        if candidate.lower() in _VERBOSITY_FLAG_MAP:
+            raw = raw[: m.start(1)].rstrip()
+        else:
+            break
+
+    # Same idea from the START.
+    while True:
+        m = re.match(r"^\s*(\S+)(?:\s+|$)", raw)
+        if not m:
+            break
+        candidate = m.group(1)
+        if candidate.lower() in _VERBOSITY_FLAG_MAP:
+            raw = raw[m.end():].lstrip()
+        else:
+            break
+
+    if raw == text:
+        return None, text  # no flags consumed
+    # Last-flag-wins. Scan the original message left-to-right for any
+    # recognized flag tokens; the rightmost one's level is the result.
+    found: list[str] = []
+    for m in _FLAG_TOKEN_RE.finditer(text):
+        found.append(m.group(1).lower())
+    if not found:
+        return None, text
+    level = _VERBOSITY_FLAG_MAP[found[-1]]
+    cleaned = re.sub(r"\s+", " ", raw).strip()
+    return level, cleaned
+
+
+def normalize_verbosity(value: str | None) -> str:
+    """Coerce a possibly-missing or invalid verbosity string to a valid
+    level. Used when reading the sticky value off a session attribute —
+    older sessions might have ``None`` or stray casing."""
+    if not value:
+        return DEFAULT_VERBOSITY
+    low = value.strip().lower()
+    if low in VERBOSITY_LEVELS:
+        return low
+    return DEFAULT_VERBOSITY
+
+
+def cycle_verbosity(current: str | None) -> str:
+    """Hermes-style cycle: off → new → all → verbose → off."""
+    cur = normalize_verbosity(current)
+    idx = VERBOSITY_LEVELS.index(cur)
+    return VERBOSITY_LEVELS[(idx + 1) % len(VERBOSITY_LEVELS)]
 
 
 def session_key_for(

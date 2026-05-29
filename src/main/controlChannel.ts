@@ -63,16 +63,3 @@ export function sendControlCommand(cmd: ControlCommand): { ok: boolean; error?: 
     return { ok: false, error: String((err as Error)?.message ?? err) }
   }
 }
-
-/**
- * True iff this command should be routed to the daemon rather than to
- * the local bridge subprocess. Mirrors ``isGatewaySessionId`` semantics
- * but on a BridgeCommand instead of a sessionId.
- */
-export function commandTargetsDaemon(cmd: { sessionId?: string }): boolean {
-  const sid = cmd?.sessionId
-  if (typeof sid !== 'string' || !sid.startsWith('freyja:')) return false
-  const rest = sid.slice('freyja:'.length)
-  const colonIdx = rest.indexOf(':')
-  return colonIdx > 0 && rest.length > colonIdx + 1
-}

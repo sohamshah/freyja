@@ -52,8 +52,43 @@ export class GatewayLogTailer {
   private timer: NodeJS.Timeout | null = null
   private stopped = false
   private partial = '' // Accumulator for the trailing partial line.
+  // Every sessionId we've seen emit a daemon-side event. Includes both
+  // gateway root sessions (``freyja:<platform>:...``) and sub-agents
+  // spawned beneath them (``sub_<hex>_<n>``). Used by the desktop main
+  // process to decide whether a renderer-issued command should be
+  // written to the daemon's control channel or sent to the local
+  // bridge subprocess. Without this, sub-agent permission approvals
+  // were getting misrouted to the local bridge — which has no idea
+  // the session exists — and silently dropped.
+  //
+  // Bounded LRU via Map insertion order: a long-running desktop sees
+  // many sub-agents come and go and we'd otherwise leak entries for
+  // every one. Eviction is FIFO (oldest sid drops first). Evicted
+  // entries still resolve correctly for root sessions via the
+  // ``freyja:`` prefix bootstrap in isDaemonOwned.
+  private static readonly OWNED_CAP = 10_000
+  private daemonOwned = new Map<string, number>()
 
   constructor(private readonly forward: BridgeEventForwarder) {}
+
+  /** True iff ``sid`` belongs to the gateway daemon (and therefore
+   *  commands for it must go through the control channel, not the
+   *  local bridge subprocess). Two acceptance paths:
+   *
+   *    1. We've seen at least one event with that sessionId on the
+   *       gateway log — covers sub-agents whose ids are opaque
+   *       hashes (``sub_19d8b53e6f0_1``) with no prefix to grep on.
+   *    2. The sessionId is shaped like a gateway root session
+   *       (``freyja:<platform>:...``) — bootstrap path for commands
+   *       that fire before we've observed any events for that session
+   *       (e.g. the operator opens a Slack session in the desktop and
+   *       immediately approves something).
+   */
+  isDaemonOwned(sid: string): boolean {
+    if (!sid) return false
+    if (this.daemonOwned.has(sid)) return true
+    return isGatewaySessionId(sid)
+  }
 
   start(): void {
     this.stopped = false
@@ -173,7 +208,23 @@ export class GatewayLogTailer {
       }
       if (!event || typeof event !== 'object') continue
       const sid = typeof event.sessionId === 'string' ? event.sessionId : ''
-      if (!isGatewaySessionId(sid)) continue
+      // Skip events with no sessionId (daemon boot/shutdown messages,
+      // adapter status logs, etc.) — the renderer's store routes by
+      // sessionId so an undirected event has nowhere meaningful to
+      // land.
+      if (!sid) continue
+      // Record ownership so future commands for this session route to
+      // the daemon. ``session_spawned`` events for sub-agents carry
+      // the child's id here and the parent's id in ``parentSessionId``;
+      // tracking the child unblocks the swarm panel + permission flow.
+      // ``delete``-then-``set`` moves an existing sid to the end of
+      // the iteration order, giving us LRU semantics on a Map.
+      this.daemonOwned.delete(sid)
+      this.daemonOwned.set(sid, Date.now())
+      if (this.daemonOwned.size > GatewayLogTailer.OWNED_CAP) {
+        const oldest = this.daemonOwned.keys().next().value
+        if (oldest !== undefined) this.daemonOwned.delete(oldest)
+      }
       this.forward(event)
     }
     this.persistOffset()

@@ -322,8 +322,32 @@ def emit(event: dict[str, Any]) -> None:
 # id. Held open for the bridge's lifetime — a typical session writes
 # thousands of events (every text_delta + tool_use + tool_result),
 # and re-opening on each emit would be a meaningful overhead.
-_SESSION_EVENT_FILES: dict[str, Any] = {}
+#
+# Bounded LRU: on macOS the default ``ulimit -n`` is 256–1024. A
+# long-running gateway daemon can blow past that as sub-agents spawn
+# and accumulate, and once we exhaust descriptors the daemon starts
+# silently failing to write event logs. ``OrderedDict`` gives us
+# move-to-end-on-access + pop-LRU semantics in a few lines without
+# pulling in functools / dependencies.
+from collections import OrderedDict as _OrderedDict
+
+_SESSION_EVENT_FILE_CAP = 64
+_SESSION_EVENT_FILES: "_OrderedDict[str, Any]" = _OrderedDict()
 _SESSION_EVENT_DIR: Path | None = None
+
+
+def _close_session_event_file(session_id: str) -> None:
+    """Close + drop the cached handle for ``session_id``. Idempotent.
+    Called when a session is removed from ``_BridgeState.sessions`` so
+    descriptors don't leak across explicit resets / deletes."""
+    fp = _SESSION_EVENT_FILES.pop(session_id, None)
+    if fp is None:
+        return
+    try:
+        if not fp.closed:
+            fp.close()
+    except OSError:
+        pass
 
 
 def _session_event_path(session_id: str) -> Path:
@@ -352,6 +376,26 @@ def _append_session_event_jsonl(session_id: str, event: dict[str, Any]) -> None:
             path.parent.mkdir(parents=True, exist_ok=True)
             fp = open(path, "a", encoding="utf-8")  # noqa: SIM115
             _SESSION_EVENT_FILES[session_id] = fp
+            # Enforce the LRU cap. Eviction happens only on new opens,
+            # which is when an unbounded cache would otherwise grow.
+            while len(_SESSION_EVENT_FILES) > _SESSION_EVENT_FILE_CAP:
+                evict_sid, evict_fp = _SESSION_EVENT_FILES.popitem(last=False)
+                if evict_sid == session_id:
+                    # Defensive: the OrderedDict insertion above pushed
+                    # our brand-new handle to the right, but if the cap
+                    # is 0 / 1 we could still pop it. Re-insert to keep
+                    # the writer going.
+                    _SESSION_EVENT_FILES[session_id] = fp
+                    continue
+                try:
+                    if not evict_fp.closed:
+                        evict_fp.close()
+                except OSError:
+                    pass
+        else:
+            # Touch-on-access so the LRU eviction order reflects
+            # actual usage, not just open order. Cheap (O(1)).
+            _SESSION_EVENT_FILES.move_to_end(session_id)
         fp.write(json.dumps(event, ensure_ascii=False, default=str))
         fp.write("\n")
         fp.flush()
@@ -8441,6 +8485,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         # Drop any existing session with the same id so it really starts fresh.
         if session_id in state.sessions:
             del state.sessions[session_id]
+            _close_session_event_file(session_id)
         sess = await state.ensure_session(
             session_id,
             model_id=model,
@@ -8727,6 +8772,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                     del state.sessions[sid]
                 except KeyError:
                     pass
+                _close_session_event_file(sid)
             try:
                 delete_transcript(sid)
                 deleted_count += 1

@@ -67,15 +67,21 @@ def _help_card_text() -> str:
         "• I have persistent *memory + skills* that compound across sessions.\n"
         "\n"
         "*Slash commands*\n"
-        "• `/freyja help`   — this card\n"
-        "• `/freyja status` — show session info (model, mode, in-flight)\n"
-        "• `/freyja perms`  — show tool permissions for this session\n"
-        "• `/goal <obj>`    — arm a goal loop\n"
-        "• `/mode <s>`      — switch coordination (bus / goal / kanban / isolated)\n"
-        "• `/model <id>`    — switch the agent model\n"
-        "• `/stop`          — interrupt the current turn\n"
-        "• `/reset`         — start a fresh conversation\n"
-        "• `/perms`         — show tool permissions\n"
+        "• `/freyja help`    — this card\n"
+        "• `/freyja status`  — show session info (model, mode, in-flight)\n"
+        "• `/freyja perms`   — show tool permissions for this session\n"
+        "• `/freyja models`  — list all models, harnesses, and modes\n"
+        "• `/freyja verbose` — cycle tool-progress detail (off/new/all/verbose)\n"
+        "• `/goal <obj>`     — arm a goal loop\n"
+        "• `/mode <s>`       — switch coordination (bus / goal / kanban / isolated)\n"
+        "• `/model <id>`     — switch the agent model\n"
+        "• `/stop`           — interrupt the current turn\n"
+        "• `/reset`          — start a fresh conversation\n"
+        "• `/perms`          — show tool permissions\n"
+        "\n"
+        "*Inline flags* (work inside threads where slash commands don't):\n"
+        "  Append `--verbose`, `--all`, `--new`, or `--silent` to any "
+        "message to set tool-progress detail. Sticky on the session.\n"
         "\n"
         "*Channels*: @mention me to start a thread, then keep replying in "
         "the thread without re-mentioning.\n"
@@ -85,6 +91,37 @@ def _help_card_text() -> str:
 
 
 _IMAGE_EXT_PATTERNS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".heif")
+
+
+def _format_ctx_window(n: int) -> str:
+    """Compact context-window label.
+
+    Avoids "1.0M" when the value is just a tweak above a round number
+    (e.g. 1_048_576 → "1M", 1_050_000 → "1M"). Falls back to one
+    decimal place only when the value is meaningfully off-round
+    (1_500_000 → "1.5M", 1_100_000 → "1.1M")."""
+    if n >= 1_000_000:
+        val = n / 1_000_000
+        return f"{round(val)}M" if abs(val - round(val)) < 0.08 else f"{val:.1f}M"
+    if n >= 1_000:
+        val = n / 1_000
+        return f"{round(val)}k" if abs(val - round(val)) < 0.5 else f"{val:.1f}k"
+    return str(n)
+
+
+# Display-name overrides where ``provider.title()`` produces something
+# wrong (e.g. "Openai" instead of "OpenAI"). Anything not in this map
+# falls through to ``.title()``.
+_PROVIDER_DISPLAY = {
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
+    "google": "Google",
+    "cerebras": "Cerebras",
+    "fireworks": "Fireworks",
+    "groq": "Groq",
+    "xai": "xAI",
+    "parallel": "Parallel",
+}
 
 
 def _looks_like_image_name(name: str) -> bool:
@@ -237,6 +274,23 @@ class GatewayDaemon:
         # user message. Future: shortcut some slashes to in-gateway
         # handlers without involving the agent.
 
+        # Parse any inline verbosity flags (--verbose, --silent, --new
+        # etc.) out of the user text. This is the only way to control
+        # tool-progress verbosity inside a Slack thread, since slash
+        # commands don't fire in threads. The flag is sticky on the
+        # session — set once, lasts until changed.
+        from bridge.gateway.session_router import (
+            parse_verbosity_flags,
+            normalize_verbosity,
+        )
+        flag_level, cleaned_text = parse_verbosity_flags(message.text or "")
+        if flag_level is not None:
+            session.verbosity = flag_level  # type: ignore[attr-defined]
+            # Strip the flag tokens from the text so the agent's prompt
+            # doesn't carry them. IncomingMessage is a mutable dataclass.
+            message.text = cleaned_text
+        verbosity = normalize_verbosity(getattr(session, "verbosity", None))
+
         # Build a per-turn stream consumer. CRITICALLY we do NOT
         # register the consumer as a session listener here. Doing so
         # eagerly (back when this code did `register_session_listener`
@@ -263,22 +317,36 @@ class GatewayDaemon:
             if cb is not None:
                 unregister_session_listener(key, cb)
 
-        # Bind the session's permission handler to a stable callable so
-        # Block Kit approval clicks can resolve the daemon's pending
-        # ``DesktopPermissionHandler`` future. Closing over ``session``
-        # is safe — the handler outlives any single turn.
-        def _resolve_permission(request_id: str, approved: bool) -> bool:
-            handler = getattr(session, "permission_handler", None)
-            if handler is None:
-                return False
+        # Permission-prompt dispatcher: registered once per session and
+        # left in place for the daemon's lifetime so background-mode
+        # sub-agents that fire permission_requests AFTER their parent's
+        # turn completes still get a Block Kit message in the originating
+        # thread. The per-turn consumer no longer handles permission
+        # events — single dispatch path, no risk of duplicate posts.
+        if not getattr(session, "_slack_perm_listener", None):
+            from bridge.gateway.permission_listener import SlackPermissionListener
+
+            reply_thread_id = (
+                message.source.thread_id
+                or (
+                    message.source.message_id
+                    if message.source.chat_type == "dm"
+                    else None
+                )
+            )
             try:
-                return bool(handler.resolve(
-                    request_id, approved,
-                    "slack-approve" if approved else "slack-deny",
-                ))
-            except Exception:  # noqa: BLE001
-                logger.exception("permission_handler.resolve raised")
-                return False
+                _loop = asyncio.get_running_loop()
+            except RuntimeError:
+                _loop = asyncio.get_event_loop()
+            perm_listener = SlackPermissionListener(
+                adapter=adapter,
+                session_ref=session,
+                source=message.source,
+                reply_thread_id=reply_thread_id,
+                loop=_loop,
+            )
+            register_session_listener(key, perm_listener.on_event)
+            setattr(session, "_slack_perm_listener", perm_listener)
 
         consumer = SlackStreamConsumer(
             adapter,  # type: ignore[arg-type]
@@ -286,7 +354,7 @@ class GatewayDaemon:
             session_key=key,
             raw_hint=message.raw,
             on_complete=_unregister,
-            permission_resolver=_resolve_permission,
+            verbosity=verbosity,
         )
         consumer_holder["on_event"] = consumer.on_event
 
@@ -595,10 +663,24 @@ class GatewayDaemon:
                 text = await self._render_status(message)
             elif sub in {"perms", "permissions"}:
                 text = await self._render_perms(message)
+            elif sub in {"models", "model", "list", "harnesses", "harness"}:
+                text = await self._render_models(message)
+            elif sub.startswith("verbose") or sub.startswith("verbosity") or sub.startswith("quiet"):
+                # `verbose`           → cycle
+                # `verbose status`    → show current
+                # `verbose off|new|all|verbose` → set explicitly
+                # `quiet`             → shortcut for verbose off
+                arg = sub.split(maxsplit=1)
+                action = arg[1].strip().lower() if len(arg) > 1 else ""
+                text = await self._handle_verbose_subcommand(
+                    message,
+                    action if action else ("off" if sub.startswith("quiet") else ""),
+                )
             else:
                 text = (
                     "Unknown subcommand. Try `/freyja help`, "
-                    "`/freyja status`, or `/freyja perms`."
+                    "`/freyja status`, `/freyja perms`, `/freyja models`, "
+                    "or `/freyja verbose`."
                 )
             await adapter.send(  # type: ignore[attr-defined]
                 message.source.chat_id,
@@ -874,6 +956,174 @@ class GatewayDaemon:
             # Best-effort cancel before drop.
             self._cancel_session(session_key)
             sessions.pop(session_key, None)
+
+    async def _handle_verbose_subcommand(
+        self,
+        message: IncomingMessage,
+        action: str,
+    ) -> str:
+        """`/freyja verbose [off|new|all|verbose|status]`.
+
+        Without an arg: cycles off → new → all → verbose → off (Hermes
+        convention — operator can rotate to the right level without
+        remembering names). With ``status``: shows current level + how
+        to override per-message. With an explicit level name: sets it.
+
+        Sticky on the session. The setting also applies to subsequent
+        messages in the same Slack chat/thread (since session_key is
+        per chat+thread).
+        """
+        from bridge.gateway.session_router import (
+            VERBOSITY_LEVELS,
+            cycle_verbosity,
+            normalize_verbosity,
+            session_key_for,
+        )
+        sessions = getattr(self.state, "sessions", {}) if self.state else {}
+        session = sessions.get(session_key_for(message.source))
+        current = normalize_verbosity(
+            getattr(session, "verbosity", None) if session is not None else None
+        )
+
+        descriptions = {
+            "off": "no tool progress at all — only the final response",
+            "new": "show only when the tool *changes* (consecutive same-tool calls coalesce)",
+            "all": "every tool call with a short argument preview",
+            "verbose": "every tool call with full args + heartbeat noise",
+        }
+
+        if action == "status" or action == "show":
+            inline_hint = (
+                "_To override for one message:_ append `--verbose`, "
+                "`--all`, `--new`, or `--silent` (alias for off) to any "
+                "Slack message — works in threads where slash commands "
+                "don't fire."
+            )
+            return (
+                f"*Verbosity:* `{current}` — {descriptions[current]}\n\n"
+                f"Cycle with `/freyja verbose` (no arg) or set explicitly: "
+                f"{', '.join(f'`{lv}`' for lv in VERBOSITY_LEVELS)}.\n"
+                f"{inline_hint}"
+            )
+
+        if action in VERBOSITY_LEVELS:
+            new_level = action
+        elif action == "" or action == "cycle":
+            new_level = cycle_verbosity(current)
+        else:
+            return (
+                f"Unknown verbosity level `{action}`. Try one of: "
+                + ", ".join(f"`{lv}`" for lv in VERBOSITY_LEVELS)
+                + " — or just `/freyja verbose` to cycle."
+            )
+
+        if session is not None:
+            session.verbosity = new_level
+            return (
+                f"Verbosity set to *`{new_level}`*: {descriptions[new_level]}.\n"
+                f"Override per message by appending `--{new_level}` or another "
+                f"flag — flags at message start/end stick to this session."
+            )
+        # No session yet — store as a pending preference. Next message
+        # in this chat will pick it up via the session_router's first
+        # ensure_session and we'll apply it then. v1: just acknowledge.
+        return (
+            f"Verbosity set to *`{new_level}`*: {descriptions[new_level]}. "
+            f"(Will apply on your next message in this chat.)"
+        )
+
+    async def _render_models(self, message: IncomingMessage) -> str:
+        """List all models + harnesses + coordination modes available for
+        this session. Marks the currently-selected one with ✓ so the
+        operator can see exactly what they're using vs. what they could
+        switch to. Lazy-imports the registries so daemon startup isn't
+        pinned to engine.providers' import cost."""
+        from bridge.gateway.session_router import session_key_for
+
+        try:
+            from engine.providers import MODEL_REGISTRY  # type: ignore
+        except Exception as exc:  # noqa: BLE001
+            return f"Couldn't load model registry: {exc}"
+        try:
+            from bridge.runtimes.registry import capabilities_payload
+            harnesses = capabilities_payload()
+        except Exception:  # noqa: BLE001
+            harnesses = []
+
+        sessions = getattr(self.state, "sessions", {}) if self.state else {}
+        session = sessions.get(session_key_for(message.source))
+        current_model = getattr(session, "model_id", None) if session else None
+        current_strategy = getattr(session, "coordination_strategy", None) if session else None
+
+        # ── Models grouped by provider ──
+        # Sort entries within each provider by id for stable rendering.
+        by_provider: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+        for model_id, entry in MODEL_REGISTRY.items():
+            provider = str(entry.get("provider") or "other")
+            by_provider.setdefault(provider, []).append((model_id, entry))
+        for entries in by_provider.values():
+            entries.sort(key=lambda kv: kv[0])
+
+        # Provider display order: Anthropic + OpenAI first (frontier),
+        # then everything else alphabetically.
+        provider_order = sorted(
+            by_provider.keys(),
+            key=lambda p: (
+                0 if p == "anthropic" else 1 if p == "openai" else 2,
+                p,
+            ),
+        )
+
+        lines: list[str] = ["*Models* — switch with `/model <id>`"]
+        for provider in provider_order:
+            lines.append("")
+            display = _PROVIDER_DISPLAY.get(provider, provider.title())
+            lines.append(f"_{display}_")
+            for model_id, entry in by_provider[provider]:
+                ctx = entry.get("context_window")
+                ctx_str = _format_ctx_window(ctx) if isinstance(ctx, int) else "?"
+                tags: list[str] = [f"{ctx_str} ctx"]
+                if entry.get("thinking"):
+                    rmode = entry.get("reasoning_mode")
+                    if rmode == "effort":
+                        tags.append("thinking (effort)")
+                    else:
+                        tags.append("thinking")
+                marker = "✓ " if model_id == current_model else "  "
+                lines.append(f"{marker}`{model_id}` · {' · '.join(tags)}")
+
+        # ── Harnesses ──
+        if harnesses:
+            lines.append("")
+            lines.append(
+                "*Harnesses* — the runtime that drives the agent loop. "
+                "Switching requires `FREYJA_HARNESS=<id>` + daemon restart."
+            )
+            for h in harnesses:
+                marker = "  "  # no per-session current-harness yet on gateway sessions
+                hid = h.get("id") or "?"
+                label = h.get("label") or hid
+                desc = h.get("description") or ""
+                if not h.get("available", True):
+                    reason = h.get("unavailableReason") or "unavailable"
+                    lines.append(f"{marker}`{hid}` ({label}) — _unavailable: {reason}_")
+                else:
+                    lines.append(f"{marker}`{hid}` — {desc or label}")
+
+        # ── Coordination modes ──
+        lines.append("")
+        lines.append("*Coordination modes* — switch with `/mode <name>`")
+        modes: list[tuple[str, str]] = [
+            ("bus", "default · shared event bus across sub-agents"),
+            ("goal", "autonomous judge loop until objective met"),
+            ("kanban", "multi-agent board with assigned cards"),
+            ("isolated", "no sub-agent fanout, single-agent run"),
+        ]
+        for mid, blurb in modes:
+            marker = "✓ " if mid == current_strategy else "  "
+            lines.append(f"{marker}`{mid}` · {blurb}")
+
+        return "\n".join(lines)
 
     async def _render_status(self, message: IncomingMessage) -> str:
         from bridge.gateway.session_router import session_key_for
