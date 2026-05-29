@@ -3108,6 +3108,15 @@ class _BridgeSession:
             provider_family,
         )
 
+        # Harness-driven sessions own their transcript inside the harness
+        # CLI (~/.claude/projects/.../<id>.jsonl for Claude Code,
+        # ~/.codex/sessions/... for Codex). The renderer's "send context
+        # summary" recovery prompt doesn't apply — skip the missing-
+        # transcript noise so the diagnostics pane stays clean.
+        if self.runtime != "native":
+            await self.initialize()
+            return False
+
         data = load_transcript(self.id)
         if data is None:
             emit(

@@ -220,6 +220,12 @@ class ClaudeCodeClient:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=self._cwd,
                 env=env,
+                # Default StreamReader limit is 64KB; Claude Code's
+                # stream-json result events carry the full assistant
+                # message + tool input/output and can easily exceed
+                # that on a turn with large file contents. Match the
+                # codex client's bump so readline() doesn't crash.
+                limit=32 * 1024 * 1024,
             )
         except FileNotFoundError as e:
             raise ClaudeCodeClientError(

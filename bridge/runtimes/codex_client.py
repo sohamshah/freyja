@@ -182,6 +182,13 @@ class CodexClient:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=self._cwd,
                 env=env,
+                # Default StreamReader limit is 64KB. Codex tool results
+                # (large diffs, base64 screenshots through the freyja
+                # MCP bridge, big aggregatedOutput from a `find /` style
+                # exec) blow past that and crash readline() with
+                # LimitOverrunError. Bump to 32MB to comfortably hold
+                # the biggest payloads we'd ever see in a single line.
+                limit=32 * 1024 * 1024,
             )
         except FileNotFoundError as e:
             raise CodexClientError(

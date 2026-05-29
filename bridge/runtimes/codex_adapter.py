@@ -163,14 +163,76 @@ class CodexAdapter:
                                 "thinking": delta_text,
                             }
                         )
-                # Completion events: codex emits these as a single
-                # `item/completed` per item with the final payload,
-                # and (sometimes) no streaming deltas for short
-                # responses. Without projecting here, the streaming UI
-                # would stay blank for the entire turn even though
-                # codex_client successfully captured the text into
-                # _turn_text_parts. Emit a text_delta carrying the full
-                # text so the assistant card materializes.
+                # Tool starts: emit on item/started for tool-shaped items
+                elif method == "item/started":
+                    t = str(item.get("type") or "")
+                    if t in {
+                        "commandExecution",
+                        "fileChange",
+                        "mcpToolCall",
+                        "dynamicToolCall",
+                    }:
+                        tool_name = {
+                            "commandExecution": "exec_command",
+                            "fileChange": "apply_patch",
+                            "mcpToolCall": (
+                                f"mcp.{item.get('server') or 'mcp'}."
+                                f"{item.get('tool') or 'unknown'}"
+                            ),
+                            "dynamicToolCall": str(item.get("tool") or "tool"),
+                        }[t]
+                        tid = str(item.get("id") or "")
+                        # Build the arguments the renderer renders inside
+                        # the tool-call card so the operator sees the
+                        # actual command instead of just "exec_command".
+                        args: dict = {}
+                        if t == "commandExecution":
+                            args = {
+                                "command": item.get("command") or "",
+                                "cwd": item.get("cwd") or "",
+                            }
+                        elif t == "fileChange":
+                            args = {
+                                "changes": [
+                                    {
+                                        "kind": (c.get("kind") or {}).get("type") or "update",
+                                        "path": c.get("path") or "",
+                                    }
+                                    for c in (item.get("changes") or [])
+                                ],
+                            }
+                        elif t == "mcpToolCall":
+                            args = {
+                                "server": item.get("server") or "",
+                                "tool": item.get("tool") or "",
+                                "arguments": item.get("arguments") or {},
+                            }
+                        elif t == "dynamicToolCall":
+                            args = item.get("arguments") or {}
+                        self._emit(
+                            {
+                                "type": "tool_use_start",
+                                "sessionId": self._session_id,
+                                "id": tid,
+                                "name": tool_name,
+                            }
+                        )
+                        if args:
+                            self._emit(
+                                {
+                                    "type": "tool_input_end",
+                                    "sessionId": self._session_id,
+                                    "id": tid,
+                                    "arguments": args,
+                                }
+                            )
+                    return
+                # Item completions: codex sends one terminal item/completed
+                # per item carrying the final payload. We project four
+                # shapes — agentMessage / reasoning are text events for
+                # the streaming card; commandExecution / fileChange /
+                # mcpToolCall / dynamicToolCall close out the tool cards
+                # with the actual output (preview + exit status).
                 elif method == "item/completed":
                     t = str(item.get("type") or "")
                     if t == "agentMessage":
@@ -184,7 +246,6 @@ class CodexAdapter:
                                 }
                             )
                     elif t == "reasoning":
-                        # reasoning payloads are arrays of summary/content
                         bits: list[str] = []
                         for k in ("summary", "content"):
                             arr = item.get(k) or []
@@ -204,30 +265,47 @@ class CodexAdapter:
                                     "thinking": "\n".join(bits),
                                 }
                             )
-                # Tool starts: emit on item/started for tool-shaped items
-                elif method == "item/started":
-                    t = str(item.get("type") or "")
-                    if t in {
+                    elif t in {
                         "commandExecution",
                         "fileChange",
                         "mcpToolCall",
                         "dynamicToolCall",
                     }:
-                        tool_name = {
-                            "commandExecution": "exec_command",
-                            "fileChange": "apply_patch",
-                            "mcpToolCall": (
-                                f"mcp.{item.get('server') or 'mcp'}."
-                                f"{item.get('tool') or 'unknown'}"
-                            ),
-                            "dynamicToolCall": str(item.get("tool") or "tool"),
-                        }[t]
+                        tid = str(item.get("id") or "")
+                        preview = ""
+                        is_error = False
+                        if t == "commandExecution":
+                            preview = str(item.get("aggregatedOutput") or "")
+                            exit_code = item.get("exitCode")
+                            if exit_code is not None and exit_code != 0:
+                                preview = f"[exit {exit_code}]\n{preview}"
+                                is_error = True
+                        elif t == "fileChange":
+                            status = item.get("status") or "unknown"
+                            n_changes = len(item.get("changes") or [])
+                            preview = f"apply_patch status={status}, {n_changes} change(s)"
+                            is_error = status not in {"applied", "completed", "success"}
+                        elif t in {"mcpToolCall", "dynamicToolCall"}:
+                            result = item.get("result")
+                            err = item.get("error")
+                            if err:
+                                preview = f"[error] {err}"
+                                is_error = True
+                            elif result is not None:
+                                try:
+                                    import json as _json
+                                    preview = _json.dumps(result, ensure_ascii=False)[:4000]
+                                except Exception:
+                                    preview = str(result)[:4000]
+                            else:
+                                preview = ""
                         self._emit(
                             {
-                                "type": "tool_use_start",
+                                "type": "tool_result",
                                 "sessionId": self._session_id,
-                                "id": str(item.get("id") or ""),
-                                "name": tool_name,
+                                "id": tid,
+                                "preview": preview[:4000],
+                                "isError": is_error,
                             }
                         )
             except Exception:
