@@ -5,8 +5,9 @@ Implements the ModelProvider protocol for Claude models via the
 Anthropic Python SDK, with full support for:
 - Async/await operations
 - Streaming responses
-- Extended thinking (claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5)
-- Adaptive thinking (claude-opus-4-7) — no budget_tokens constraint
+- Extended thinking (claude-sonnet-4-5, claude-opus-4-5) — budget_tokens
+- Adaptive thinking (claude-sonnet-4-6, claude-haiku-4-5, claude-opus-4-6,
+  claude-opus-4-7, claude-opus-4-8) — type="adaptive" + output_config.effort
 - Tool use with thinking block preservation
 """
 
@@ -70,20 +71,51 @@ logger = logging.getLogger(__name__)
 # Re-export for backward compatibility (some tests/callers import from here)
 # Canonical definitions live in engine.constants
 
-# Models that support extended thinking
-THINKING_MODELS = {
+# Models that support any form of extended thinking (budget OR adaptive).
+# Adaptive-thinking models live in ADAPTIVE_THINKING_MODELS below; the union
+# of the two sets gates the `supports_thinking` property. Pre-4.6 Opus/Sonnet
+# use the legacy `{type: "enabled", budget_tokens: N}` shape; 4.6+ uses
+# `{type: "adaptive"}` and is rejected with 400 if budget_tokens is set.
+ADAPTIVE_THINKING_MODELS = {
     "claude-sonnet-4-6",
     "claude-opus-4-6",
     "claude-haiku-4-5",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+}
+LEGACY_THINKING_MODELS = {
     "claude-sonnet-4-5",
     "claude-opus-4-5",
+}
+THINKING_MODELS = ADAPTIVE_THINKING_MODELS | LEGACY_THINKING_MODELS
+
+# Models that accept fast mode (speed: "fast" + fast-mode-2026-02-01 beta).
+# Per Anthropic docs: 4.6 fast mode is deprecated as of 4.8 launch and falls
+# back to standard speed at standard pricing; we still list it so existing
+# requests don't silently break, but 4.8 is the only one we register a
+# distinct fast-tier model id for in AVAILABLE_MODELS.
+FAST_MODE_MODELS = {
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+}
+FAST_MODE_BETA = "fast-mode-2026-02-01"
+
+# Models that accept `role: "system"` mid-conversation in the messages
+# array (after a user turn). Per Anthropic docs only Opus 4.8 supports
+# this at the moment; everything else 400s. The provider's
+# _convert_messages path falls back to a `[System context]:` user-prefix
+# squash on unsupported models so post-compaction summaries still reach
+# the model.
+INLINE_SYSTEM_MESSAGE_MODELS = {
+    "claude-opus-4-8",
 }
 
 # Model speed tiers for user selection
 MODEL_SPEED_TIERS = {
     "fast": "claude-haiku-4-5",       # Fastest, most cost-effective
     "medium": "claude-sonnet-4-6",    # Balanced speed/capability
-    "slow": "claude-opus-4-7",        # Most capable (adaptive thinking, 128k out)
+    "slow": "claude-opus-4-8",        # Most capable (adaptive thinking, 128k out)
 }
 
 
@@ -174,7 +206,26 @@ class AnthropicProvider:
             timeout=self._config.timeout,
         )
 
-        self._model = self._config.model
+        # The `-fast` suffix is a Freyja-side tier marker, not a real
+        # Anthropic model id. Strip it before sending to the API and
+        # remember to attach `speed: "fast"` + the fast-mode beta header
+        # on every request. Per Anthropic docs, fast mode runs the same
+        # weights at higher OTPS, so for context-window lookup and
+        # capability gating we treat the base id as authoritative.
+        configured_model = self._config.model
+        if configured_model.endswith("-fast"):
+            self._fast_mode = True
+            self._model = configured_model[: -len("-fast")]
+            self._public_model_id = configured_model
+        else:
+            self._fast_mode = False
+            self._model = configured_model
+            self._public_model_id = configured_model
+        if self._fast_mode and self._model not in FAST_MODE_MODELS:
+            raise ValueError(
+                f"Fast mode requested for {self._model}, but only "
+                f"{sorted(FAST_MODE_MODELS)} support it."
+            )
         self._context_window = MODEL_CONTEXT_WINDOWS.get(
             self._model, DEFAULT_CONTEXT_WINDOW
         )
@@ -694,10 +745,24 @@ class AnthropicProvider:
         if think_config.enabled and self.supports_thinking:
             request_kwargs["thinking"] = think_config.to_api_param(self._model)
 
-            # Add output_config with effort level for Claude 4.6 models
+            # Add output_config with effort level for adaptive models (4.6+)
             output_config = think_config.get_output_config(self._model)
             if output_config:
                 request_kwargs["output_config"] = output_config
+
+        # Fast mode (research preview). The SDK doesn't know `speed` yet,
+        # so we inject it via `extra_body`, and the beta header via
+        # `extra_headers`. Per Anthropic docs, fast-mode requests don't
+        # share cached prefixes with standard-mode requests, so swapping
+        # mode mid-session burns the cache once at the switch — operator-
+        # visible as a one-time spike in input_tokens.
+        if self._fast_mode:
+            extra_body = request_kwargs.get("extra_body") or {}
+            extra_body["speed"] = "fast"
+            request_kwargs["extra_body"] = extra_body
+            extra_headers = request_kwargs.get("extra_headers") or {}
+            extra_headers["anthropic-beta"] = FAST_MODE_BETA
+            request_kwargs["extra_headers"] = extra_headers
 
         return request_kwargs
 
@@ -712,16 +777,68 @@ class AnthropicProvider:
         return re.sub(r"[^a-zA-Z0-9_-]", "_", tool_id)
 
     def _convert_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
-        """Convert internal messages to Anthropic format."""
+        """Convert internal messages to Anthropic format.
+
+        For most Anthropic models, an inline ``role: "system"`` entry in
+        the messages array returns a 400. We squash those into a
+        ``role: "user"`` message prefixed with ``[System context]:`` —
+        works on every model, even though it weakens the instruction's
+        priority. On Opus 4.8+ (per `INLINE_SYSTEM_MESSAGE_MODELS`) we
+        pass it through verbatim IF the placement rule is satisfied
+        (immediately after a user turn). The 4.8 path preserves prompt-
+        cache hits across compaction summaries — every other turn after
+        a compaction used to invalidate cache because the user-prefix
+        squash changed the prefix hash.
+        """
         result = []
+
+        supports_inline_system = self._model in INLINE_SYSTEM_MESSAGE_MODELS
+
+        def _last_is_user_turn() -> bool:
+            """Whether the previously-appended message is a real user
+            turn — the docs require system messages to immediately
+            follow a user turn (or an assistant turn ending in server
+            tool use, which Freyja doesn't currently emit). A
+            ``tool_result`` is wrapped here as ``role: "user"`` with a
+            single tool_result content block; that's not a real user
+            turn for placement purposes, so we exclude it explicitly to
+            avoid the API returning a 400 on a borderline-legal shape."""
+            if not result or result[-1].get("role") != "user":
+                return False
+            content = result[-1].get("content")
+            if isinstance(content, list):
+                # Pure tool_result wrapper → not a real user turn.
+                if all(
+                    isinstance(b, dict) and b.get("type") == "tool_result"
+                    for b in content
+                ):
+                    return False
+            return True
 
         for msg in messages:
             if msg.role == "system":
-                # System messages handled separately in Anthropic API
-                result.append({
-                    "role": "user",
-                    "content": f"[System context]: {msg.content}",
-                })
+                content_text = (
+                    msg.content if isinstance(msg.content, str)
+                    else "".join(
+                        getattr(b, "text", "") for b in msg.content
+                        if isinstance(b, TextBlock)
+                    )
+                )
+                if supports_inline_system and _last_is_user_turn():
+                    # 4.8 path. Cache-friendly because it doesn't change
+                    # the byte-identical prefix of earlier turns.
+                    result.append({
+                        "role": "system",
+                        "content": content_text,
+                    })
+                else:
+                    # Fallback for every other model OR when placement
+                    # doesn't satisfy the 4.8 rule (e.g. a compaction
+                    # summary inserted right after a tool_result).
+                    result.append({
+                        "role": "user",
+                        "content": f"[System context]: {content_text}",
+                    })
             elif msg.role == "user":
                 # Handle user messages with potential image content
                 if isinstance(msg.content, str):
@@ -910,11 +1027,47 @@ class AnthropicProvider:
             cache_write_tokens=getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
         )
 
+        # When the request asked for fast mode, the response's
+        # `usage.speed` field tells us which speed was actually used.
+        # Per the Opus 4.8 launch notes, 4.6 with `speed: "fast"` will
+        # eventually fall back to standard at standard pricing — log the
+        # actual mode so a silent fallback is visible in the bridge log
+        # instead of hiding under the cost panel.
+        actual_speed = getattr(response.usage, "speed", None)
+        if self._fast_mode and actual_speed and actual_speed != "fast":
+            logger.warning(
+                "fast mode requested but response usage.speed=%s | model=%s",
+                actual_speed, self._model,
+            )
+
+        # Capture `stop_details` (Opus 4.7+ refusal categorization)
+        # straight through. Pydantic models may expose this as either an
+        # object with attrs or a raw dict, so normalize to a dict for
+        # downstream consumers.
+        stop_details_raw = getattr(response, "stop_details", None)
+        stop_details: dict[str, Any] | None = None
+        if stop_details_raw is not None:
+            if isinstance(stop_details_raw, dict):
+                stop_details = stop_details_raw
+            elif hasattr(stop_details_raw, "model_dump"):
+                stop_details = stop_details_raw.model_dump()
+            elif hasattr(stop_details_raw, "__dict__"):
+                stop_details = {
+                    k: v for k, v in stop_details_raw.__dict__.items()
+                    if not k.startswith("_")
+                }
+        if stop_details and response.stop_reason == "refusal":
+            logger.warning(
+                "refusal stop_details | model=%s | details=%s",
+                self._model, stop_details,
+            )
+
         return ProviderResponse(
             content="\n".join(text_parts),
             tool_calls=tool_calls if tool_calls else None,
             usage=usage,
             stop_reason=response.stop_reason,
+            stop_details=stop_details,
             model=response.model,
             thinking_blocks=thinking_blocks if thinking_blocks else None,
         )

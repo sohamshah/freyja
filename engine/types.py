@@ -481,17 +481,25 @@ class ThinkingConfig:
         """Convert to Anthropic API parameter format.
 
         Args:
-            model: Model ID to determine format (4.6 vs 4.5)
+            model: Model ID to determine format. Claude 4.6+ uses
+                `{type: "adaptive", display: "summarized"}`; Claude 4.5
+                and earlier use `{type: "enabled", budget_tokens: N}`.
 
         Returns:
-            API parameter dict or None if disabled
+            API parameter dict or None if disabled.
         """
         if not self.enabled:
             return None
 
-        # Claude 4.6 models use adaptive thinking (no budget_tokens)
-        if "4-6" in model or "4.6" in model:
-            return {"type": "adaptive"}
+        # Claude 4.6+ adaptive thinking. On 4.7 the docs silently changed
+        # the default `display` to "omitted", which means thinking_delta
+        # events arrive with thinking="" and the renderer shows nothing.
+        # Pin display="summarized" explicitly so the UI keeps surfacing
+        # the reasoning chain on every adaptive model (4.6 default was
+        # already summarized; setting it explicitly is a no-op there but
+        # protects against future server-default drift).
+        if _is_adaptive_thinking_model(model):
+            return {"type": "adaptive", "display": "summarized"}
 
         # Claude 4.5 and earlier use enabled + budget_tokens
         return {
@@ -500,22 +508,48 @@ class ThinkingConfig:
         }
 
     def get_output_config(self, model: str = "") -> dict[str, Any] | None:
-        """Get output_config for effort level (Claude 4.6+ only).
+        """Get output_config for effort level (Claude 4.6+).
 
         Args:
-            model: Model ID to determine if effort is supported
+            model: Model ID to determine if effort is supported.
 
         Returns:
-            output_config dict or None if not applicable
+            output_config dict or None if not applicable.
         """
         if not self.enabled:
             return None
 
-        # Only Claude 4.6 models support effort in output_config
-        if "4-6" in model or "4.6" in model:
+        # Adaptive-thinking models accept output_config.effort. Pre-4.6
+        # models use budget_tokens for the same purpose, so effort is
+        # silently ignored there.
+        if _is_adaptive_thinking_model(model):
             return {"effort": self.effort}
 
         return None
+
+
+# Anthropic models that take the adaptive thinking shape (type="adaptive")
+# instead of the legacy budget_tokens shape. Defined here rather than in
+# anthropic_provider so engine.types can be imported without pulling the
+# Anthropic SDK. Keep in sync with anthropic_provider.ADAPTIVE_THINKING_MODELS.
+_ADAPTIVE_THINKING_MODEL_IDS: set[str] = {
+    "claude-sonnet-4-6",
+    "claude-opus-4-6",
+    "claude-haiku-4-5",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+}
+
+
+def _is_adaptive_thinking_model(model: str) -> bool:
+    """Whether the given model id takes the `{type: "adaptive"}` shape."""
+    if not model:
+        return False
+    # Strip the optional `-fast` variant suffix so fast-mode tiers route
+    # the same way as their base model (fast mode is a request flag, not
+    # a different family).
+    base = model[:-5] if model.endswith("-fast") else model
+    return base in _ADAPTIVE_THINKING_MODEL_IDS
 
 
 # ============================================================================

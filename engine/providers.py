@@ -55,6 +55,15 @@ class ProviderResponse:
     stop_reason: str | None = None
     """Why the model stopped generating (e.g., 'end_turn', 'tool_use')."""
 
+    stop_details: dict[str, Any] | None = None
+    """Provider-native structured stop details when present.
+
+    Anthropic Opus 4.7+ returns a ``stop_details`` object on refusal
+    responses describing the category of refusal (e.g. ``safety``,
+    ``policy``, ``capability``). Surfaced here so the bridge / UI can
+    route differently than a bare ``stop_reason="refusal"``.
+    """
+
     model: str | None = None
     """The model that generated this response."""
 
@@ -500,7 +509,9 @@ class ModelFallbackChain:
 
 MODEL_REGISTRY: dict[str, dict[str, object]] = {
     # Anthropic models
-    "claude-opus-4-7": {"provider": "anthropic", "context_window": 1_000_000, "thinking": False},
+    "claude-opus-4-8": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
+    "claude-opus-4-8-fast": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
+    "claude-opus-4-7": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-sonnet-4-6": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-opus-4-6": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-haiku-4-5": {"provider": "anthropic", "context_window": 200_000, "thinking": True},
@@ -638,10 +649,14 @@ ALL_MODEL_CHOICES = list(MODEL_REGISTRY.keys())
 # Numbers are best-effort; missing entries make compute_cost() return None
 # rather than mislead the diagnostics panel with a wrong figure.
 MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, float, float]] = {
-    # Anthropic
-    "claude-opus-4-7": (15.0, 75.0, 1.5),
-    "claude-opus-4-6": (15.0, 75.0, 1.5),
-    "claude-opus-4-5": (15.0, 75.0, 1.5),
+    # Anthropic — 4.6/4.7/4.8 Opus are $5/$25 per Anthropic's models overview
+    # (the migration guide for 4.7 says "at the same $5/$25 per MTok pricing"
+    # as 4.6; 4.5 keeps the legacy $15/$75 tier). Cache_read = 10% of input.
+    "claude-opus-4-8": (5.0, 25.0, 0.50),
+    "claude-opus-4-8-fast": (10.0, 50.0, 1.0),  # fast-mode multiplier on 4.8
+    "claude-opus-4-7": (5.0, 25.0, 0.50),
+    "claude-opus-4-6": (5.0, 25.0, 0.50),
+    "claude-opus-4-5": (15.0, 75.0, 1.50),
     "claude-sonnet-4-6": (3.0, 15.0, 0.30),
     "claude-sonnet-4-5": (3.0, 15.0, 0.30),
     "claude-haiku-4-5": (0.80, 4.0, 0.08),
@@ -696,7 +711,9 @@ def compute_cost(
     ) / 1_000_000
 
 FALLBACK_CHAINS: dict[str, list[str]] = {
-    "claude-opus-4-7": ["claude-opus-4-6", "kimi-k2.6", "deepseek-v4-pro"],
+    "claude-opus-4-8": ["claude-opus-4-7", "kimi-k2.6", "deepseek-v4-pro"],
+    "claude-opus-4-8-fast": ["claude-opus-4-8", "claude-opus-4-7"],
+    "claude-opus-4-7": ["claude-opus-4-8", "claude-opus-4-6", "kimi-k2.6", "deepseek-v4-pro"],
     "claude-sonnet-4-6": ["kimi-k2.6", "deepseek-v4-pro"],
     "claude-opus-4-6": ["kimi-k2.6", "deepseek-v4-pro"],
     "claude-haiku-4-5": ["kimi-k2.6", "kimi-k2.5"],

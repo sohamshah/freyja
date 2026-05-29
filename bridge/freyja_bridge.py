@@ -851,14 +851,34 @@ async def _main() -> None:
 AVAILABLE_MODELS: list[dict[str, Any]] = [
     # ─── Anthropic (ANTHROPIC_API_KEY) ─────────────────────────────────
     {
+        "id": "claude-opus-4-8",
+        "family": "anthropic",
+        "label": "Claude Opus 4.8",
+        "tier": "max",
+        "contextWindow": 1_000_000,
+        "thinking": True,
+        "envVar": "ANTHROPIC_API_KEY",
+        "description": "Latest Opus. Long-horizon coding, mid-conversation system messages, ~4x fewer code flaws than 4.7. Adaptive thinking, 128k output.",
+    },
+    {
+        "id": "claude-opus-4-8-fast",
+        "family": "anthropic",
+        "label": "Claude Opus 4.8 (Fast)",
+        "tier": "max",
+        "contextWindow": 1_000_000,
+        "thinking": True,
+        "envVar": "ANTHROPIC_API_KEY",
+        "description": "Opus 4.8 with fast mode enabled (research preview): same weights, ~2.5x output tokens/sec at premium pricing ($10/$50 per MTok input/output). Requires fast-mode allowlist; may 429 if your org hasn't been granted access.",
+    },
+    {
         "id": "claude-opus-4-7",
         "family": "anthropic",
         "label": "Claude Opus 4.7",
         "tier": "max",
         "contextWindow": 1_000_000,
-        "thinking": False,
+        "thinking": True,
         "envVar": "ANTHROPIC_API_KEY",
-        "description": "Latest Opus. Best for hard coding and agentic tasks. Adaptive thinking, 128k output.",
+        "description": "Previous-gen frontier Opus. Adaptive thinking, 128k output.",
     },
     {
         "id": "claude-opus-4-6",
@@ -1117,10 +1137,20 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
 
 
 MODEL_REASONING_META: dict[str, dict[str, Any]] = {
+    "claude-opus-4-8": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "high",
+    },
+    "claude-opus-4-8-fast": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "high",
+    },
     "claude-opus-4-7": {
-        "reasoningMode": "adaptive",
-        "reasoningLevels": ["auto"],
-        "reasoningDefault": "auto",
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "high",
     },
     "claude-opus-4-6": {
         "reasoningMode": "effort",
