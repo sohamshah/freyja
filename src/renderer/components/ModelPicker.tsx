@@ -114,10 +114,27 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
 
   // Harnesses surface the non-native runtimes. Native isn't shown here —
   // picking a raw model in the list below already lands you in native.
-  const harnessChoices = useMemo<HarnessChoice[]>(
-    () => harnesses.filter((h) => h.id !== 'native'),
-    [harnesses],
-  )
+  //
+  // Bridge advertises real availability + reason in capabilities.harnesses
+  // on the ready event. We fall back to a hardcoded list when the bridge
+  // hasn't connected yet (or is running an older build that doesn't know
+  // about harnesses) so the operator sees the option exists — picking it
+  // before the bridge is ready will fail at session-spawn, but the
+  // visibility itself is the right call. Same pattern as FALLBACK_MODELS.
+  const harnessChoices = useMemo<HarnessChoice[]>(() => {
+    const fromBridge = harnesses.filter((h) => h.id !== 'native')
+    if (fromBridge.length > 0) return fromBridge
+    return [
+      {
+        id: 'claude_code_acp',
+        label: 'Claude Code',
+        command: 'claude',
+        description:
+          "Anthropic's terminal coding agent, driven via the ACP protocol over stdio.",
+        available: true,
+      },
+    ]
+  }, [harnesses])
 
   const onPick = (id: string, reasoningLevel?: string, close = true) => {
     const picked = models.find((m) => m.id === id)
