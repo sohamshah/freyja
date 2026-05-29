@@ -46,7 +46,15 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_INIT_TIMEOUT_S = 15.0
 _DEFAULT_TURN_TIMEOUT_S = 600.0
-_POST_TOOL_QUIET_TIMEOUT_S = 90.0
+# Maximum silence allowed mid-turn. The watchdog measures
+# wall-clock since the last notification of ANY kind from Codex
+# (deltas, item starts/completions, server requests). If the
+# subprocess emits nothing for this long, we treat the turn as
+# stuck and retire the client. The old constant
+# `_POST_TOOL_QUIET_TIMEOUT_S` measured silence since the last
+# *tool completion* — which silently killed turns where the
+# agent was actively streaming text or reasoning after a tool.
+_SILENT_TIMEOUT_S = 90.0
 
 
 @dataclass
@@ -118,7 +126,13 @@ class CodexClient:
         self._turn_items: list[dict] = []
         self._turn_tool_count = 0
         self._turn_on_event: EventHandler | None = None
-        self._turn_last_tool_at: Optional[float] = None
+        # Wall-clock of the most recent notification from Codex during
+        # the current turn. None means the watchdog is disarmed —
+        # either we haven't started yet or we've seen no events at all.
+        # First event from Codex arms it; every subsequent event resets
+        # the deadline. The wait loop uses this to detect a hung
+        # subprocess (see `_SILENT_TIMEOUT_S`).
+        self._turn_last_activity_at: Optional[float] = None
         self._turn_error: Optional[str] = None
 
     # ────────────────────────────────────────────────────────────────────
@@ -254,37 +268,13 @@ class CodexClient:
         logger.info("Codex thread/start: id=%s cwd=%s", self._thread_id[:8], self._cwd)
         return self._thread_id
 
-    async def resume_thread(self, thread_id: str) -> bool:
-        """Best-effort thread resume. Codex doesn't currently expose a
-        documented thread/resume — we just adopt the id and let it
-        succeed/fail on the first turn. Returns False if the server
-        rejected it."""
-        if not self._initialized:
-            await self.start()
-        # Some Codex versions accept a "threadId" param to thread/start.
-        try:
-            result = await asyncio.wait_for(
-                self._request(
-                    "thread/start",
-                    {"cwd": self._cwd, "threadId": thread_id},
-                ),
-                timeout=10.0,
-            )
-        except Exception as e:
-            logger.info("Codex thread resume rejected: %s", e)
-            return False
-        thread_obj = result.get("thread") or {}
-        tid = thread_obj.get("id") or result.get("sessionId")
-        self._thread_id = str(tid or thread_id)
-        return True
-
     async def prompt(
         self,
         text: str,
         *,
         on_event: EventHandler | None = None,
         timeout_s: float = _DEFAULT_TURN_TIMEOUT_S,
-        post_tool_quiet_timeout_s: float = _POST_TOOL_QUIET_TIMEOUT_S,
+        silent_timeout_s: float = _SILENT_TIMEOUT_S,
     ) -> CodexTurnResult:
         if not self._initialized:
             await self.start()
@@ -300,7 +290,12 @@ class CodexClient:
         self._turn_items = []
         self._turn_tool_count = 0
         self._turn_on_event = on_event
-        self._turn_last_tool_at = None
+        # Disarm the silent-timeout watchdog at the start of the turn —
+        # `_handle_notification` arms it on the first event from Codex
+        # and resets it on every subsequent event. This means slow
+        # first-token (legitimate for reasoning models) doesn't trip
+        # the watchdog, but a hung subprocess mid-turn does.
+        self._turn_last_activity_at = None
         self._turn_error = None
 
         result = CodexTurnResult(thread_id=self._thread_id)
@@ -335,37 +330,39 @@ class CodexClient:
             timeout_s,
         )
 
-        # Wait for turn/completed or watchdog.
+        # Wait for turn/completed or the silent-timeout watchdog. The
+        # watchdog only fires once we've seen at least one event from
+        # Codex (`_turn_last_activity_at is not None`); the overall
+        # `timeout_s` deadline catches a subprocess that never speaks.
         deadline = asyncio.get_event_loop().time() + timeout_s
         try:
             while True:
                 remaining = deadline - asyncio.get_event_loop().time()
                 if remaining <= 0:
                     raise asyncio.TimeoutError()
-                # Post-tool watchdog: if we saw a tool completion and
-                # nothing else for `post_tool_quiet_timeout_s`, abort.
-                if self._turn_last_tool_at is not None:
-                    quiet = (
+                if self._turn_last_activity_at is not None:
+                    silent = (
                         asyncio.get_event_loop().time()
-                        - self._turn_last_tool_at
+                        - self._turn_last_activity_at
                     )
-                    if quiet > post_tool_quiet_timeout_s:
+                    if silent > silent_timeout_s:
                         await self._issue_interrupt(result.turn_id)
                         result.interrupted = True
                         result.should_retire = True
                         result.error = (
-                            f"Codex went silent for {post_tool_quiet_timeout_s:.0f}s "
-                            f"after a tool result; retiring session"
+                            f"Codex emitted no events for {silent_timeout_s:.0f}s "
+                            f"mid-turn; retiring session"
                         )
                         break
                 try:
                     await asyncio.wait_for(
                         self._turn_completed.wait(),
-                        timeout=min(remaining, post_tool_quiet_timeout_s),
+                        timeout=min(remaining, silent_timeout_s),
                     )
                     break
                 except asyncio.TimeoutError:
-                    # Either deadline or watchdog window — loop to recheck.
+                    # Either the overall deadline or the watchdog
+                    # re-check window — loop to recheck both.
                     continue
         except asyncio.TimeoutError:
             await self._issue_interrupt(result.turn_id)
@@ -549,6 +546,11 @@ class CodexClient:
     async def _handle_server_request(
         self, req_id: Any, method: str, params: dict
     ) -> None:
+        # Server-initiated requests (approvals, MCP elicitations) are
+        # also evidence Codex is alive and making progress — bump the
+        # watchdog so a turn that pauses on approvals doesn't get
+        # retired while waiting on the operator.
+        self._bump_activity()
         handler = self._server_request_handler
         if handler is None:
             # No handler installed — decline cleanly so codex doesn't hang.
@@ -561,7 +563,24 @@ class CodexClient:
             logger.exception("Codex server-request handler raised")
             await self._respond_error(req_id, -32603, str(e))
 
+    def _bump_activity(self) -> None:
+        """Record that Codex just emitted SOMETHING (any RPC call,
+        notification, or delta). Resets the silent-timeout watchdog.
+        Only meaningful during an active turn; outside a turn the
+        watchdog isn't running so this is a cheap no-op."""
+        if self._turn_active:
+            self._turn_last_activity_at = asyncio.get_event_loop().time()
+
     async def _handle_notification(self, method: str, params: dict) -> None:
+        # Any notification arriving from Codex is proof of life; reset
+        # the silent-timeout watchdog before doing anything else with
+        # the payload. Critically, this means text/reasoning deltas and
+        # item/started events keep the watchdog from firing during long
+        # streamed responses or in-flight tool execution — both of
+        # which used to leave the old `_turn_last_tool_at`-keyed
+        # watchdog ticking down to a premature retire.
+        self._bump_activity()
+
         # Forward raw to live handler for streaming UI
         if self._turn_on_event is not None and self._turn_active:
             try:
@@ -662,7 +681,6 @@ class CodexClient:
                 "dynamicToolCall",
             }:
                 self._turn_tool_count += 1
-                self._turn_last_tool_at = asyncio.get_event_loop().time()
             return
 
         # Delta items — display only; forwarded above to on_event.

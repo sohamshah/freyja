@@ -34,7 +34,6 @@ class CodexAdapter:
         session_id: str,
         workspace: str,
         emit: EmitFn,
-        resume_harness_session_id: Optional[str] = None,
         mcp_config: Optional[dict] = None,
     ) -> None:
         self._runtime_id = runtime_id
@@ -43,8 +42,16 @@ class CodexAdapter:
         self._workspace = workspace
         self._emit = emit
         self._client: Optional[CodexClient] = None
-        self._resume_harness_session_id = resume_harness_session_id
         self._mcp_config = mcp_config
+        # Note: Codex doesn't expose a documented thread-resume RPC.
+        # The previous incarnation kept a `_resume_harness_session_id`
+        # field but it was a best-effort guess at re-using a prior
+        # thread — and silently dropped to a fresh thread when the
+        # guess failed. The bridge now treats every Codex spawn as a
+        # fresh thread (with no memory of prior turns) and emits a
+        # visible `harness_session_recreated` event so the operator
+        # knows continuity broke. See the bridge-side comment near
+        # the harness_session_ready emit.
 
     @property
     def runtime_id(self) -> str:
@@ -104,15 +111,10 @@ class CodexAdapter:
         )
         try:
             await self._client.start()
-            # Try to resume the prior thread; fall back to new.
-            if self._resume_harness_session_id:
-                resumed = await self._client.resume_thread(
-                    self._resume_harness_session_id
-                )
-                if not resumed:
-                    await self._client.ensure_thread()
-            else:
-                await self._client.ensure_thread()
+            # Always start a fresh thread. Codex has no reliable resume
+            # RPC — the bridge surfaces the discontinuity via
+            # harness_session_recreated when this happens mid-session.
+            await self._client.ensure_thread()
         except CodexClientError as exc:
             self._emit(
                 {

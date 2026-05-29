@@ -6424,25 +6424,58 @@ class _BridgeSession:
             return
 
         # Persist the harness sessionId on the bridge session so the
-        # renderer round-trips it through the sidecar and we can attempt
-        # session/load on the next Freyja restart. We emit it as a
-        # system_event so the renderer slice stamps `harnessSessionId`
-        # without needing a dedicated channel — persistence picks it up
-        # from the slice on the next save.
-        if adapter.harness_session_id and adapter.harness_session_id != self.harness_session_id:
-            self.harness_session_id = adapter.harness_session_id
-            emit(
-                {
-                    "type": "system_event",
-                    "sessionId": self.id,
-                    "subtype": "harness_session_ready",
-                    "message": f"{adapter.label} session started",
-                    "details": {
-                        "runtime": self.runtime,
-                        "harnessSessionId": adapter.harness_session_id,
-                    },
-                }
-            )
+        # renderer round-trips it through the sidecar. Distinguish
+        # first-time-ready from a mid-session restart — Codex's
+        # subprocess can die (silent-timeout retire, crash, OS kill)
+        # and a fresh thread doesn't remember the prior turns.
+        # Surface that to the operator as a visible chip instead of
+        # silently letting them think nothing happened. The same logic
+        # applies on Freyja restart: the prior thread is gone, the new
+        # adapter spawn opens a fresh thread, and we want the chat to
+        # reflect that.
+        new_harness_id = adapter.harness_session_id
+        if new_harness_id and new_harness_id != self.harness_session_id:
+            prior_harness_id = self.harness_session_id
+            self.harness_session_id = new_harness_id
+            if prior_harness_id is None:
+                # First-ever harness thread on this Freyja session.
+                # Informational only — no prior context to lose.
+                emit(
+                    {
+                        "type": "system_event",
+                        "sessionId": self.id,
+                        "subtype": "harness_session_ready",
+                        "message": f"{adapter.label} session started",
+                        "details": {
+                            "runtime": self.runtime,
+                            "harnessSessionId": new_harness_id,
+                        },
+                    }
+                )
+            else:
+                # Harness thread was recreated mid-Freyja-session.
+                # Prior conversation context is gone from the agent's
+                # memory — make this loud so the operator knows to
+                # re-state anything that matters.
+                emit(
+                    {
+                        "type": "system_event",
+                        "sessionId": self.id,
+                        "subtype": "harness_session_recreated",
+                        "message": (
+                            f"{adapter.label} was restarted — the new "
+                            "agent thread has no memory of earlier "
+                            "turns. Re-state any context you need "
+                            "carried forward."
+                        ),
+                        "details": {
+                            "runtime": self.runtime,
+                            "harnessSessionId": new_harness_id,
+                            "priorHarnessSessionId": prior_harness_id,
+                            "chatVisible": True,
+                        },
+                    }
+                )
 
         # Materialize the final assistant message in our transcript.
         # text_delta was already streamed to the renderer during the

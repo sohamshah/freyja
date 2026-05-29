@@ -1436,6 +1436,12 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         // operator sees the refusal category instead of a turn that
         // just ends silently on a generic stop_reason.
         'refusal_detected',
+        // External-harness thread (Codex / Claude Code) was recreated
+        // mid-Freyja-session — the agent has no memory of earlier
+        // turns. Inline chip so the operator sees the discontinuity
+        // instead of getting a generic-greeting reply from a fresh
+        // thread and wondering why.
+        'harness_session_recreated',
       ]
       // The runner's automatic "halved N old tool results" pruning
       // (engine/runner.py:2078,2141) fires on most turns once context
