@@ -1188,85 +1188,197 @@ class SlackAdapter:
         is Slack's documented way to dismiss it."""
         return await self.send_typing(chat_id, thread_id=thread_id, status="")
 
+    # conversations.replies returns messages chronologically (oldest
+    # first) and pages forward via response_metadata.next_cursor. To
+    # surface the most-recent ``limit`` replies we walk pages forward
+    # while keeping a rolling tail; the parent stays pinned from page
+    # 1. Cap total work at MAX_PAGES * PAGE_SIZE to bound latency on
+    # pathological threads.
+    _THREAD_PAGE_SIZE = 1000          # Slack's max for conversations.replies
+    _THREAD_MAX_PAGES = 5             # ⇒ scans up to ~5000 messages
+    _THREAD_DEFAULT_LIMIT = 100       # how many recent replies the agent sees
+
+    def _normalize_thread_message(self, m: dict[str, Any]) -> dict[str, Any] | None:
+        """Convert a raw Slack message into the canonical dict the
+        gateway renderer consumes. Returns ``None`` for messages with
+        no text and no files (Slack joins/leaves, ephemeral system
+        notices, etc.) so callers can drop them upstream."""
+        text = str(m.get("text") or "")
+        blocks_text = extract_text_from_slack_blocks(m.get("blocks"))
+        if blocks_text and len(blocks_text) > len(text):
+            text = blocks_text
+        files = m.get("files") or []
+        if not text and not files:
+            return None
+        user_id = str(m.get("user") or "")
+        is_bot = bool(m.get("bot_id")) or user_id == (self._bot_user_id or "")
+        return {
+            "role": "assistant" if is_bot else "user",
+            "user_id": user_id,
+            "text": text,
+            "ts": str(m.get("ts") or ""),
+            "files": files,
+        }
+
     async def fetch_thread_context(
         self,
         chat_id: str,
         thread_ts: str,
         *,
-        limit: int = 50,
+        limit: int | None = None,
         exclude_ts: str | None = None,
         oldest_ts: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Pull prior messages from a Slack thread or top-level DM.
+        """Pull recent messages from a Slack thread, anchored on the
+        parent.
 
-        Returns a chronological list of ``{role, user_id, user_name,
-        text, ts, files}`` dicts. Used by the gateway router to prepend
-        thread context to the framed prompt so the agent sees what was
-        said before it was triggered — including any image / file
-        attachments that participants posted earlier in the thread.
+        Slack's ``conversations.replies`` returns messages oldest-first
+        with cursor-based pagination. A single page on a long thread
+        only shows the original framing, so we walk pages forward and
+        keep a rolling buffer of the last ``limit`` messages. The
+        parent (page 1, index 0) is always pinned so the agent sees the
+        thread's opening as well as the recent state. When the gap is
+        non-empty, a synthetic ``role: "system_note"`` marker is
+        inserted between the parent and the tail so the renderer can
+        show "… N earlier replies omitted …" — keeps the agent honest
+        about what it can and can't see.
 
-        Image/file context matters: a typical Slack thread is "here's
-        the design [.png], thoughts? — looks good — let's iterate —
-        @Freyja can you propose changes". Without the .png, Freyja
-        replies blind. The ``files`` array surfaces the raw Slack
-        file metadata so the gateway can selectively download images
-        and include them as model attachments.
+        Returns a chronological list of ``{role, user_id, text, ts,
+        files}`` dicts. Image/file refs survive on the ``files`` key so
+        the caller can decide which to download (capped via the
+        ``MAX_PRIOR_IMAGES`` budget upstream).
 
         ``exclude_ts`` filters out a specific message (typically the
-        one that triggered the current turn — no point feeding it
-        back twice).
+        @mention that triggered this turn — no point feeding it back
+        twice). ``oldest_ts`` is a lower bound for incremental fetches.
 
-        ``oldest_ts`` is an optional lower bound — only return
-        messages with ts > oldest_ts. Lets a caller fetch only the
-        delta since the bot's last known response in this thread,
-        avoiding redundant context when the bot was already in the
-        conversation. Pass None to get everything.
+        Bounds: ``MAX_PAGES * PAGE_SIZE = 5 * 1000 = 5000`` messages
+        scanned worst-case. Threads longer than that get the last 100
+        of the first 5000 — still a major correctness improvement over
+        the old "first 50" behavior; pathologically long threads are
+        rare and we'd rather cap latency than chase tail messages
+        across dozens of API calls.
 
-        Best-effort: any API failure returns []. Caller should fall
-        back to "no prior context" rather than failing the turn.
+        Best-effort: any API failure mid-pagination returns whatever
+        we've collected so far so a transient hiccup degrades to "less
+        context" rather than "no context".
         """
         if not self._app or not chat_id or not thread_ts:
             return []
         client = self._get_client(chat_id)
         if client is None:
             return []
-        try:
-            res = await client.conversations_replies(
-                channel=chat_id,
-                ts=thread_ts,
-                limit=max(1, min(limit, 200)),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[slack] conversations.replies failed: %s", exc)
+
+        limit = limit or self._THREAD_DEFAULT_LIMIT
+        if limit < 1:
             return []
-        out: list[dict[str, Any]] = []
-        for m in res.get("messages") or []:
+
+        parent: dict[str, Any] | None = None
+        tail: list[dict[str, Any]] = []  # rolling buffer, size ≤ limit
+        total_observed = 0                # all raw messages seen across pages
+        cursor: str | None = None
+        truncated = False                 # True if we hit MAX_PAGES before EOF
+
+        for page_idx in range(self._THREAD_MAX_PAGES):
+            kwargs: dict[str, Any] = {
+                "channel": chat_id,
+                "ts": thread_ts,
+                "limit": self._THREAD_PAGE_SIZE,
+            }
+            if cursor:
+                kwargs["cursor"] = cursor
+            try:
+                res = await client.conversations_replies(**kwargs)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "[slack] conversations.replies failed on page %d: %s",
+                    page_idx, exc,
+                )
+                # Use whatever we already collected — better than empty.
+                break
+            page_msgs = res.get("messages") or []
+            if page_idx == 0 and page_msgs:
+                # Parent is always the first message of the first page
+                # in Slack's chronological ordering.
+                parent = page_msgs[0]
+            total_observed += len(page_msgs)
+            tail.extend(page_msgs)
+            if len(tail) > limit:
+                # Discard older entries — we only need the trailing
+                # window. Cheap O(N) on a small N-per-page batch; the
+                # alternative (deque(maxlen=limit)) hides the trim and
+                # makes the count math less obvious.
+                tail = tail[-limit:]
+            cursor = (res.get("response_metadata") or {}).get("next_cursor")
+            if not cursor:
+                break
+        else:
+            # ``for ... else`` runs when the loop exhausts without break.
+            # Reaching here means we hit MAX_PAGES with a cursor still
+            # outstanding — there are more messages we didn't fetch.
+            if cursor:
+                truncated = True
+
+        if not tail:
+            return []
+
+        # Apply caller-side filters AFTER the pagination buffer so the
+        # rolling window stays accurate. exclude_ts/oldest_ts are
+        # usually single-message drops, so the count math below stays
+        # close enough.
+        def _passes(m: dict[str, Any]) -> bool:
             ts = str(m.get("ts") or "")
             if exclude_ts and ts == str(exclude_ts):
-                continue
+                return False
             if oldest_ts and ts <= str(oldest_ts):
+                return False
+            return True
+
+        # Normalize + filter the tail. We deliberately do this AFTER
+        # the rolling-buffer trim above so the buffer stays bounded
+        # even if upstream calls us with a giant `limit`.
+        tail_normalized: list[dict[str, Any]] = []
+        for m in tail:
+            if not _passes(m):
                 continue
-            text = str(m.get("text") or "")
-            # Prefer rich-text blocks when present (preserves quotes/lists).
-            blocks_text = extract_text_from_slack_blocks(m.get("blocks"))
-            if blocks_text and len(blocks_text) > len(text):
-                text = blocks_text
-            files = m.get("files") or []
-            # Keep file-only messages (someone dropped an image without
-            # commentary — still meaningful context). The old skip-if-
-            # empty-text path silently dropped these, leaving the agent
-            # blind to any image-driven thread.
-            if not text and not files:
-                continue
-            user_id = str(m.get("user") or "")
-            is_bot = bool(m.get("bot_id")) or user_id == (self._bot_user_id or "")
+            normalized = self._normalize_thread_message(m)
+            if normalized is not None:
+                tail_normalized.append(normalized)
+
+        # Decide whether the parent needs a separate entry. It's already
+        # in the tail when the thread is shorter than `limit` (we never
+        # discarded it), in which case there's no gap — just return the
+        # normalized tail as-is.
+        parent_ts = str(parent.get("ts") or "") if parent else ""
+        parent_in_tail = any(m["ts"] == parent_ts for m in tail_normalized)
+
+        if parent_in_tail or parent is None:
+            return tail_normalized
+
+        # Long-thread path: parent + gap marker + tail.
+        out: list[dict[str, Any]] = []
+        parent_normalized = self._normalize_thread_message(parent)
+        if parent_normalized is not None and _passes(parent):
+            out.append(parent_normalized)
+
+        # Approximate the gap count. We don't know exactly how many
+        # messages were skipped because the rolling buffer threw older
+        # ones away, but `total_observed - len(tail) - 1` is a
+        # reasonable floor (the "-1" accounts for the parent itself).
+        # When we hit MAX_PAGES, signal "and counting" rather than
+        # claiming a precise number we don't actually have.
+        skipped = max(0, total_observed - len(tail_normalized) - 1)
+        if skipped > 0 or truncated:
+            label = f"{skipped}+" if truncated else str(skipped)
             out.append({
-                "role": "assistant" if is_bot else "user",
-                "user_id": user_id,
-                "text": text,
-                "ts": ts,
-                "files": files,
+                "role": "system_note",
+                "user_id": "",
+                "text": f"({label} earlier replies in this thread omitted)",
+                "ts": "",
+                "files": [],
             })
+
+        out.extend(tail_normalized)
         return out
 
     async def fetch_dm_history(

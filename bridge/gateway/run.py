@@ -434,10 +434,18 @@ class GatewayDaemon:
         msgs: list[dict[str, Any]] = []
         try:
             if source.thread_id and hasattr(adapter, "fetch_thread_context"):
+                # Bumped to 100 with parent+tail pagination. The old
+                # ``limit=50`` translated 1:1 into a single Slack page,
+                # which on long threads returned the *first* 50 messages
+                # (the original framing) and missed every recent reply.
+                # The adapter now walks pages forward, keeps the rolling
+                # last 100 replies, and pins the parent — so the agent
+                # sees both "what this thread is about" and "what just
+                # got said" instead of just the stale opening.
                 msgs = await adapter.fetch_thread_context(  # type: ignore[attr-defined]
                     source.chat_id,
                     source.thread_id,
-                    limit=50,
+                    limit=100,
                     exclude_ts=trigger_ts,
                 )
             elif source.chat_type == "dm" and hasattr(adapter, "fetch_dm_history"):
@@ -545,8 +553,19 @@ class GatewayDaemon:
 
         lines: list[str] = []
         for m in msgs:
+            role = m.get("role", "user")
+            # Synthetic gap-marker injected by fetch_thread_context when
+            # the thread is longer than the per-turn window. Render as a
+            # centered ellipsis rather than routing through _label
+            # (which would prefix it with "user:" and make it look like
+            # someone in the thread literally said "N replies omitted").
+            if role == "system_note":
+                marker = (m.get("text") or "").strip()
+                if marker:
+                    lines.append(f"  … {marker} …")
+                continue
             role_label = await _label(
-                m.get("role", "user"),
+                role,
                 str(m.get("user_id") or ""),
             )
             text = (m.get("text") or "").strip().replace("\n", " ")
