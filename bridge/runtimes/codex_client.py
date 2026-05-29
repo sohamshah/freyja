@@ -423,10 +423,15 @@ class CodexClient:
             pass
 
     async def _read_stdout(self) -> None:
-        assert self._proc is not None and self._proc.stdout is not None
+        # Snapshot the stream so close() flipping self._proc to None
+        # mid-iteration doesn't crash this task on the next readline.
+        proc = self._proc
+        if proc is None or proc.stdout is None:
+            return
+        stdout = proc.stdout
         try:
             while True:
-                line = await self._proc.stdout.readline()
+                line = await stdout.readline()
                 if not line:
                     break
                 try:
@@ -450,10 +455,13 @@ class CodexClient:
                 self._turn_completed.set()
 
     async def _read_stderr(self) -> None:
-        assert self._proc is not None and self._proc.stderr is not None
+        proc = self._proc
+        if proc is None or proc.stderr is None:
+            return
+        stderr = proc.stderr
         try:
             while True:
-                line = await self._proc.stderr.readline()
+                line = await stderr.readline()
                 if not line:
                     break
                 text = line.decode("utf-8", errors="replace").rstrip("\n")
@@ -520,7 +528,61 @@ class CodexClient:
                 logger.exception("Codex on_event handler raised")
 
         if method == "turn/completed":
+            # turn payload carries failure info when status != "completed".
+            # Always prefer a turn.error.message over earlier generic
+            # markers (systemError, etc.) — it's the most specific.
+            turn = params.get("turn") or {}
+            status = (turn.get("status") or "").strip()
+            err = turn.get("error") or {}
+            if err:
+                self._turn_error = str(err.get("message") or err)
+            elif status and status not in {"completed", "interrupted"}:
+                self._turn_error = self._turn_error or f"turn ended status={status}"
             self._turn_completed.set()
+            return
+
+        # Codex emits top-level `error` notifications for auth refresh
+        # failures, network errors, etc. Surface immediately AND prefer
+        # this over an earlier generic systemError marker.
+        if method == "error":
+            err = params.get("error") or {}
+            msg = (
+                err.get("message")
+                or err.get("codexErrorInfo")
+                or "Codex error"
+            )
+            # Common case: stale OAuth — tell the user to re-login.
+            info = str(err.get("codexErrorInfo") or "").lower()
+            lowered = str(msg).lower()
+            if "unauthorized" in info or "refresh" in lowered or "token" in lowered:
+                self._turn_error = (
+                    f"Codex auth needs refresh — run `codex logout && codex login`. "
+                    f"Original: {msg}"
+                )
+            else:
+                self._turn_error = str(msg)
+            self._turn_completed.set()
+            return
+
+        # Thread-level system error: record as a fallback marker but
+        # don't signal turn completion yet — the more specific `error`
+        # notification + `turn/completed` payload follow within ms and
+        # carry the actual cause (auth refresh, network, etc.). If
+        # those never arrive, the outer prompt timeout still catches us.
+        if method == "thread/status/changed":
+            status_obj = params.get("status") or {}
+            if str(status_obj.get("type") or "") == "systemError":
+                if self._turn_error is None:
+                    self._turn_error = "Codex thread entered systemError"
+            return
+
+        # MCP startup status — log only.
+        if method == "mcpServer/startupStatus/updated":
+            return
+
+        # `thread/started` and `turn/started` are informational acks of
+        # our own RPCs; the result payload already gave us the ids.
+        if method in {"thread/started", "turn/started", "remoteControl/status/changed"}:
             return
 
         if method == "item/completed":
