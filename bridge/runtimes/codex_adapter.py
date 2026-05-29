@@ -7,6 +7,7 @@ so the activity dashboard renders Codex turns identically to native.
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -34,6 +35,7 @@ class CodexAdapter:
         workspace: str,
         emit: EmitFn,
         resume_harness_session_id: Optional[str] = None,
+        mcp_config: Optional[dict] = None,
     ) -> None:
         self._runtime_id = runtime_id
         self._spec: RuntimeSpec = get_runtime(runtime_id)
@@ -42,6 +44,7 @@ class CodexAdapter:
         self._emit = emit
         self._client: Optional[CodexClient] = None
         self._resume_harness_session_id = resume_harness_session_id
+        self._mcp_config = mcp_config
 
     @property
     def runtime_id(self) -> str:
@@ -65,9 +68,37 @@ class CodexAdapter:
         if self._client is not None:
             await self._client.close()
             self._client = None
+        # Codex's `app-server` subcommand accepts `-c key=value` overrides
+        # for ~/.codex/config.toml. We use this to register the Freyja
+        # MCP server at spawn-time so the global config file stays
+        # untouched (no cross-session clobbering, idempotent across runs).
+        extra_args: list[str] = []
+        if self._mcp_config is not None:
+            cmd = self._mcp_config.get("command") or ""
+            args_list = list(self._mcp_config.get("args") or [])
+            env_dict = dict(self._mcp_config.get("env") or {})
+            extra_args.extend(
+                [
+                    "-c",
+                    f'mcp_servers.freyja.command="{cmd}"',
+                    "-c",
+                    f"mcp_servers.freyja.args={json.dumps(args_list)}",
+                ]
+            )
+            if env_dict:
+                env_pairs = [
+                    f'"{k}"="{v}"'
+                    for k, v in env_dict.items()
+                ]
+                extra_args.extend(
+                    [
+                        "-c",
+                        f"mcp_servers.freyja.env={{ {', '.join(env_pairs)} }}",
+                    ]
+                )
         self._client = CodexClient(
             command=self._spec.resolved_command(),
-            args=tuple(self._spec.args),
+            args=tuple(self._spec.args) + tuple(extra_args),
             cwd=self._workspace,
             server_request_handler=self._handle_server_request,
         )

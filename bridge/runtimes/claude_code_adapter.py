@@ -8,6 +8,7 @@ identically to native turns.
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -36,6 +37,7 @@ class ClaudeCodeAdapter:
         workspace: str,
         emit: EmitFn,
         resume_harness_session_id: Optional[str] = None,
+        mcp_config: Optional[dict] = None,
     ) -> None:
         self._runtime_id = runtime_id
         self._spec: RuntimeSpec = get_runtime(runtime_id)
@@ -44,6 +46,7 @@ class ClaudeCodeAdapter:
         self._emit = emit
         self._client: Optional[ClaudeCodeClient] = None
         self._resume_harness_session_id = resume_harness_session_id
+        self._mcp_config = mcp_config
 
     @property
     def runtime_id(self) -> str:
@@ -68,9 +71,17 @@ class ClaudeCodeAdapter:
         if self._client is not None:
             await self._client.close()
             self._client = None
+        # Compose extra args for the Freyja MCP server. Claude Code
+        # supports `--mcp-config <json>` (per --help). We embed the
+        # spawn config the bridge built so the harness's MCP client
+        # spawns our stdio MCP server alongside it.
+        extra_args: list[str] = []
+        if self._mcp_config is not None:
+            mcp_payload = {"mcpServers": {"freyja": self._mcp_config}}
+            extra_args.extend(["--mcp-config", json.dumps(mcp_payload)])
         self._client = ClaudeCodeClient(
             command=self._spec.resolved_command(),
-            args=tuple(self._spec.args),
+            args=tuple(self._spec.args) + tuple(extra_args),
             cwd=self._workspace,
             resume_session_id=self._resume_harness_session_id,
         )

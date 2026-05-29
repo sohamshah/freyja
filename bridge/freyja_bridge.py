@@ -2227,6 +2227,17 @@ class _BridgeSession:
         # Per-session harness adapter (None for runtime == "native").
         # Built on first turn by _ensure_harness_adapter.
         self.harness_adapter: Any | None = None
+        # Per-session Unix-socket server that the harness's MCP
+        # subprocess connects to for Freyja tool dispatch. None for
+        # native sessions and started lazily in initialize() for
+        # harness sessions. See bridge/runtimes/harness_tool_socket.py.
+        self.harness_tool_socket: Any | None = None
+        # Cached harness-exposed tool instances (computer screenshot,
+        # click, type_text, etc.). Built once on the first MCP call
+        # from the harness subprocess and reused across calls so the
+        # ComputerToolSpec (with its cancel_event + emit callback)
+        # stays consistent across the session.
+        self._harness_tools_cache: dict[str, Any] = {}
         self.state = state
         self.session: Any | None = None
         self.runner: Any | None = None
@@ -2435,10 +2446,14 @@ class _BridgeSession:
             )
             self._base_system_prompt = ""
             self._system_prompt = ""
+            # Start the per-session Unix-socket server so the harness's
+            # MCP subprocess (claude --mcp-config / codex -c mcp_servers)
+            # can call Freyja's tools back into the bridge.
+            await self._start_harness_tool_socket()
             log(
                 "info",
                 f"session {self.id} initialized in {self.runtime} runtime "
-                f"(harness drives the loop)",
+                f"(harness drives the loop; MCP socket={self._harness_socket_path()})",
             )
             return
 
@@ -2982,6 +2997,27 @@ class _BridgeSession:
 
     def reset(self) -> None:
         """Drop the runner so the next turn starts a fresh transcript."""
+        # Harness adapter + MCP socket are async-shutdown only — schedule
+        # close on the running loop instead of blocking the sync reset.
+        if self.harness_adapter is not None:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(
+                    self.harness_adapter.close(), name="harness-close-on-reset"
+                )
+            except RuntimeError:
+                pass
+            self.harness_adapter = None
+        if self.harness_tool_socket is not None:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(
+                    self._stop_harness_tool_socket(),
+                    name="harness-socket-stop-on-reset",
+                )
+            except RuntimeError:
+                pass
+        self._harness_tools_cache = {}
         self.session = None
         self.runner = None
         self.provider = None
@@ -6033,11 +6069,160 @@ class _BridgeSession:
                 workspace=self.workspace,
                 emit=emit,
                 resume_harness_session_id=self.harness_session_id,
+                mcp_config=self._build_freyja_mcp_config(),
             )
         except ValueError as exc:
             log("error", f"failed to build harness adapter: {exc}")
             return None
         return self.harness_adapter
+
+    # ──────────────────────────────────────────────────────────────────
+    # Harness tool socket (Stage 2 — Freyja capabilities exposed via MCP)
+    # ──────────────────────────────────────────────────────────────────
+
+    def _harness_socket_path(self) -> str | None:
+        if self.harness_tool_socket is None:
+            return None
+        return self.harness_tool_socket.socket_path
+
+    async def _start_harness_tool_socket(self) -> None:
+        """Start the per-session Unix socket server. Idempotent."""
+        if self.harness_tool_socket is not None:
+            return
+        from bridge.runtimes.harness_tool_socket import HarnessToolSocketServer
+        self.harness_tool_socket = HarnessToolSocketServer(
+            session_id=self.id,
+            dispatcher=self._dispatch_harness_tool_call,
+        )
+        try:
+            await self.harness_tool_socket.start()
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"harness tool socket failed to start: {exc}")
+            self.harness_tool_socket = None
+
+    async def _stop_harness_tool_socket(self) -> None:
+        if self.harness_tool_socket is None:
+            return
+        try:
+            await self.harness_tool_socket.stop()
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"harness tool socket stop failed: {exc}")
+        self.harness_tool_socket = None
+        self._harness_tools_cache = {}
+
+    def _build_freyja_mcp_config(self) -> dict[str, Any] | None:
+        """The mcpServers config to hand to the harness so it spawns
+        Freyja's MCP server subprocess. Returns None for native
+        sessions or when the socket failed to start (harness will run
+        without Freyja tool access, which is fine — it still has its
+        own native surface)."""
+        if self.harness_tool_socket is None:
+            return None
+        # Point at the absolute path of our standalone MCP server
+        # script so PYTHONPATH issues in the harness's subprocess
+        # environment don't break the spawn.
+        mcp_server_script = (
+            Path(__file__).resolve().parent / "runtimes" / "freyja_mcp_server.py"
+        )
+        return {
+            "command": sys.executable,
+            "args": [str(mcp_server_script)],
+            "env": {
+                "FREYJA_BRIDGE_SOCKET": self.harness_tool_socket.socket_path,
+                "FREYJA_SESSION_ID": self.id,
+            },
+        }
+
+    async def _dispatch_harness_tool_call(
+        self, tool_name: str, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Tool dispatcher invoked by the harness MCP subprocess over
+        the Unix socket. Maps freyja_* tool names to native Freyja
+        tools, executes them with a session-scoped ComputerToolSpec,
+        and returns an MCP-shaped content array."""
+        # Stable map of MCP-exposed names → native Freyja tool names.
+        # Keep in sync with bridge/runtimes/freyja_mcp_server.py.
+        NAME_MAP = {
+            "freyja_screenshot": "screenshot",
+            "freyja_click": "click",
+            "freyja_type_text": "type_text",
+            "freyja_press_key": "press_key",
+            "freyja_scroll": "scroll",
+            "freyja_list_windows": "list_windows",
+            "freyja_focus_window": "focus_window",
+        }
+        native_name = NAME_MAP.get(tool_name)
+        if native_name is None:
+            return {
+                "content": [
+                    {"type": "text", "text": f"unknown tool: {tool_name}"}
+                ],
+                "isError": True,
+            }
+
+        # Build the computer tools on first call. The cache holds the
+        # tool instances + their shared ComputerToolSpec so the cancel
+        # event and event-emit callback stay consistent across calls
+        # (matches the native path's lifetime).
+        if native_name not in self._harness_tools_cache:
+            try:
+                self._build_harness_computer_tools()
+            except ImportError as exc:
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"computer tools unavailable: {exc}",
+                        }
+                    ],
+                    "isError": True,
+                }
+
+        tool = self._harness_tools_cache.get(native_name)
+        if tool is None:
+            return {
+                "content": [
+                    {"type": "text", "text": f"tool not available: {native_name}"}
+                ],
+                "isError": True,
+            }
+
+        call_id = f"harness-{int(time.time() * 1000):x}"
+        try:
+            result = await tool.execute(call_id, arguments)
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "content": [
+                    {"type": "text", "text": f"tool execution failed: {exc}"}
+                ],
+                "isError": True,
+            }
+        return _tool_result_to_mcp_content(result)
+
+    def _build_harness_computer_tools(self) -> None:
+        """Construct the computer tool instances for this session.
+        Idempotent — the cache check above prevents re-entry."""
+        if self._harness_tools_cache:
+            return
+        from bridge.tools.computer_tools import (
+            ComputerToolSpec,
+            build_computer_tools,
+        )
+
+        async def _emit_event(evt: dict[str, Any]) -> None:
+            evt.setdefault("sessionId", self.id)
+            emit(evt)
+
+        spec = ComputerToolSpec(
+            session_id=self.id,
+            emit_event=_emit_event,
+            cancel_event=self.computer_cancel,
+            enabled=True,
+            require_approval=False,
+            owner=f"harness:{self.runtime}",
+        )
+        for tool in build_computer_tools(spec):
+            self._harness_tools_cache[tool.definition.name] = tool
 
     async def _run_harness_turn(
         self,
@@ -7011,12 +7196,18 @@ class _BridgeState:
                     if existing.harness_adapter is not None:
                         try:
                             await existing.harness_adapter.close()
-                        except Exception:
-                            logger.debug(
-                                "harness adapter close on runtime swap failed",
-                                exc_info=True,
+                        except Exception as exc:  # noqa: BLE001
+                            log(
+                                "warn",
+                                f"harness adapter close on runtime swap failed: {exc}",
                             )
                         existing.harness_adapter = None
+                    # Also stop the harness MCP socket — the next
+                    # runtime's adapter will start a fresh one.
+                    try:
+                        await existing._stop_harness_tool_socket()  # noqa: SLF001
+                    except Exception as exc:  # noqa: BLE001
+                        log("warn", f"harness socket stop on runtime swap failed: {exc}")
                     existing.harness_session_id = None
                     changed = True
             if harness_session_id is not None and not existing.harness_session_id:
@@ -7287,6 +7478,61 @@ def _backfill_orphan_tool_results(session: Any) -> int:
             f"backfilled {fired} synthetic tool_result(s) for orphaned tool_use ids",
         )
     return fired
+
+
+def _tool_result_to_mcp_content(result: Any) -> dict[str, Any]:
+    """Translate a Freyja ToolResult into the MCP `tools/call` response
+    shape ({content: [...], isError: bool}). Used by the harness tool
+    dispatcher to relay Freyja tools back to the harness CLI."""
+    content_parts: list[dict[str, Any]] = []
+    raw = getattr(result, "content", "")
+    if isinstance(raw, str):
+        content_parts.append({"type": "text", "text": raw})
+    elif isinstance(raw, list):
+        for block in raw:
+            btype = getattr(block, "type", None) or (
+                block.get("type") if isinstance(block, dict) else None
+            )
+            if btype == "text":
+                content_parts.append(
+                    {
+                        "type": "text",
+                        "text": str(
+                            getattr(block, "text", None)
+                            or (block.get("text") if isinstance(block, dict) else "")
+                            or ""
+                        ),
+                    }
+                )
+            elif btype == "image":
+                data = getattr(block, "data", None) or (
+                    block.get("data") if isinstance(block, dict) else ""
+                )
+                media = (
+                    getattr(block, "media_type", None)
+                    or (block.get("media_type") if isinstance(block, dict) else None)
+                    or (block.get("mimeType") if isinstance(block, dict) else None)
+                    or "image/png"
+                )
+                content_parts.append(
+                    {"type": "image", "data": str(data or ""), "mimeType": str(media)}
+                )
+            else:
+                # Unknown block type — render as JSON text so the harness
+                # still has something to chew on.
+                try:
+                    content_parts.append(
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                block if isinstance(block, dict) else vars(block),
+                                ensure_ascii=False,
+                            ),
+                        }
+                    )
+                except Exception:
+                    content_parts.append({"type": "text", "text": str(block)})
+    return {"content": content_parts, "isError": bool(getattr(result, "is_error", False))}
 
 
 def _force_cancel_session(sess: "_BridgeSession") -> int:

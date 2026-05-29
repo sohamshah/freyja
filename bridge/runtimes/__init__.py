@@ -21,8 +21,13 @@ def build_adapter(
     workspace: str,
     emit: Callable[[dict], None],
     resume_harness_session_id: Optional[str] = None,
+    mcp_config: Optional[dict] = None,
 ) -> Any:
     """Construct a harness adapter for the given runtime id.
+
+    `mcp_config` (when set) tells the adapter to register a Freyja MCP
+    server alongside the harness so the harness can call Freyja's tools.
+    Shape: {command, args, env}.
 
     Imports are local so a missing optional dep doesn't break the whole
     bridge module on startup."""
@@ -35,6 +40,7 @@ def build_adapter(
             workspace=workspace,
             emit=emit,
             resume_harness_session_id=resume_harness_session_id,
+            mcp_config=mcp_config,
         )
     if runtime_id == "codex_app_server":
         from bridge.runtimes.codex_adapter import CodexAdapter
@@ -45,5 +51,6 @@ def build_adapter(
             workspace=workspace,
             emit=emit,
             resume_harness_session_id=resume_harness_session_id,
+            mcp_config=mcp_config,
         )
     raise ValueError(f"unknown harness runtime: {runtime_id!r}")
