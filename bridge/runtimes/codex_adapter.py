@@ -163,6 +163,47 @@ class CodexAdapter:
                                 "thinking": delta_text,
                             }
                         )
+                # Completion events: codex emits these as a single
+                # `item/completed` per item with the final payload,
+                # and (sometimes) no streaming deltas for short
+                # responses. Without projecting here, the streaming UI
+                # would stay blank for the entire turn even though
+                # codex_client successfully captured the text into
+                # _turn_text_parts. Emit a text_delta carrying the full
+                # text so the assistant card materializes.
+                elif method == "item/completed":
+                    t = str(item.get("type") or "")
+                    if t == "agentMessage":
+                        text = str(item.get("text") or "")
+                        if text:
+                            self._emit(
+                                {
+                                    "type": "text_delta",
+                                    "sessionId": self._session_id,
+                                    "text": text,
+                                }
+                            )
+                    elif t == "reasoning":
+                        # reasoning payloads are arrays of summary/content
+                        bits: list[str] = []
+                        for k in ("summary", "content"):
+                            arr = item.get(k) or []
+                            if isinstance(arr, list):
+                                for entry in arr:
+                                    if isinstance(entry, str):
+                                        bits.append(entry)
+                                    elif isinstance(entry, dict):
+                                        tt = entry.get("text") or entry.get("content")
+                                        if isinstance(tt, str):
+                                            bits.append(tt)
+                        if bits:
+                            self._emit(
+                                {
+                                    "type": "thinking_delta",
+                                    "sessionId": self._session_id,
+                                    "thinking": "\n".join(bits),
+                                }
+                            )
                 # Tool starts: emit on item/started for tool-shaped items
                 elif method == "item/started":
                     t = str(item.get("type") or "")
