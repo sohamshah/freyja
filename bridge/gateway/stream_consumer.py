@@ -119,8 +119,16 @@ class _StreamState:
 
     # Thinking-card accumulator. Same pattern as text but routes to a
     # TaskUpdateChunk(title="Thinking") instead of markdown_text.
+    # `thinking_buffer` is the FULL cumulative reasoning text; we
+    # track `thinking_sent` separately so each TaskUpdateChunk we
+    # emit carries only the unsent delta. Slack APPENDS the `output`
+    # field on consecutive task updates with the same id (the same
+    # semantics as markdown_text on appendStream), so sending the
+    # cumulative buffer on every flush concatenates the entire
+    # reasoning text repeatedly into the card.
     thinking_card_id: str | None = None
     thinking_buffer: str = ""
+    thinking_sent: str = ""
     last_thinking_flush_ms: float = 0.0
 
     # Lifecycle gates.
@@ -480,8 +488,18 @@ class SlackStreamConsumer:
             await self._flush_thinking_locked(status="in_progress")
 
     async def _flush_thinking_locked(self, *, status: str) -> None:
-        """Push the current thinking buffer into the Thinking card.
-        Caller holds the lock."""
+        """Push the unsent delta of the thinking buffer into the
+        Thinking card. Caller holds the lock.
+
+        Slack's TaskUpdateChunk.output is APPEND-semantics across
+        consecutive updates with the same card id — same as how
+        markdown_text appends to the streaming body. To avoid
+        duplicating the cumulative reasoning text on every flush
+        we send only what hasn't been sent yet (delta), tracked
+        via ``thinking_sent``. The final ``status="complete"``
+        flush still fires even if no new content has arrived since
+        the last in_progress flush, so the card resolves visually.
+        """
         if self._state.stream_failed or not self._state.stream_ts:
             return
         if not self._state.thinking_card_id:
@@ -490,18 +508,24 @@ class SlackStreamConsumer:
             from slack_sdk.models.messages.chunk import TaskUpdateChunk
         except ImportError:
             return
+        delta = self._state.thinking_buffer[len(self._state.thinking_sent):]
+        # Skip pure status-mutations only when there's no content AND
+        # we're still in_progress — they'd be no-op churn. Always
+        # send the final "complete" status so the card resolves.
+        if not delta and status == "in_progress":
+            return
         chunk = TaskUpdateChunk(
             id=self._state.thinking_card_id,
             title="Thinking",
             status=status,
-            output=self._state.thinking_buffer or None,
-            others={},
+            output=delta or None,
         )
         result = await self.adapter.append_stream(
             self.source.chat_id,
             self._state.stream_ts,
             chunks=[chunk],
         )
+        self._state.thinking_sent = self._state.thinking_buffer
         self._state.last_thinking_flush_ms = time.monotonic() * 1000
         if not result.ok:
             logger.debug("[slack] thinking appendStream failed: %s", result.error)
@@ -515,6 +539,7 @@ class SlackStreamConsumer:
             await self._flush_thinking_locked(status="complete")
             self._state.thinking_card_id = None
             self._state.thinking_buffer = ""
+            self._state.thinking_sent = ""
 
     # ── tool cards ──
 
