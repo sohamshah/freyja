@@ -40,7 +40,12 @@ logger = logging.getLogger(__name__)
 # art — but adds the inline-token surface so threads work too.
 
 VERBOSITY_LEVELS: tuple[str, ...] = ("off", "new", "all", "verbose")
-DEFAULT_VERBOSITY = "new"
+# Default bumped from "new" → "all" once tool progress moved to native
+# Slack Thinking Steps (collapsible Task Cards). Native rendering
+# collapses by default, so showing every call adds no visual cost.
+# Set per-session via `/freyja verbose` or inline `--off / --new /
+# --all / --verbose` flags.
+DEFAULT_VERBOSITY = "all"
 
 _VERBOSITY_FLAG_MAP = {
     "--off": "off",

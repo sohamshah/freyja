@@ -200,6 +200,61 @@ class PlatformAdapter(Protocol):
         response grow live."""
         ...
 
+    # ── Streaming surface (Thinking Steps on Slack) ───────────────────
+    # The streaming methods open ONE message that grows progressively
+    # with both prose body (markdown_text) and structured "task card"
+    # chunks. Slack renders the task cards as collapsible widgets with
+    # a per-card status (in_progress / completed / error) — the new
+    # native equivalent of our prior emoji-laden progress bubble.
+    #
+    # On Slack: thin wrappers over chat.startStream / chat.appendStream
+    # / chat.stopStream from slack-sdk 3.40+. On adapters that don't
+    # support streaming, the consumer detects None message_id from
+    # start_stream and falls back to send/edit.
+
+    async def start_stream(
+        self,
+        chat_id: str,
+        *,
+        thread_id: str | None = None,
+        markdown_text: str | None = None,
+        chunks: list[Any] | None = None,
+        task_display_mode: str | None = "plan",
+        raw_hint: dict[str, Any] | None = None,
+    ) -> SendResult:
+        """Open a streaming message. Returns SendResult.message_id =
+        the stream's ts, which the caller passes to subsequent
+        append_stream / stop_stream calls. On Slack, thread_id is
+        REQUIRED (chat.startStream rejects thread_ts=None)."""
+        ...
+
+    async def append_stream(
+        self,
+        chat_id: str,
+        stream_id: str,
+        *,
+        markdown_text: str | None = None,
+        chunks: list[Any] | None = None,
+    ) -> SendResult:
+        """Push more text and/or task-card chunks into an in-flight
+        stream. Should be called only after a successful
+        ``start_stream``."""
+        ...
+
+    async def stop_stream(
+        self,
+        chat_id: str,
+        stream_id: str,
+        *,
+        markdown_text: str | None = None,
+        chunks: list[Any] | None = None,
+        blocks: list[Any] | None = None,
+    ) -> SendResult:
+        """Finalize the stream. ``blocks`` (Block Kit) may only appear
+        here — Slack rejects them on start/append per the docs. Used
+        for inline image attachments on the final message."""
+        ...
+
     async def upload_file(
         self,
         chat_id: str,

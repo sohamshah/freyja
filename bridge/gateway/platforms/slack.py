@@ -1027,6 +1027,122 @@ class SlackAdapter:
         except Exception as exc:  # noqa: BLE001
             return SendResult(ok=False, error=str(exc))
 
+    # ── Streaming surface — Slack Thinking Steps (chat.startStream et al)
+
+    async def start_stream(
+        self,
+        chat_id: str,
+        *,
+        thread_id: str | None = None,
+        markdown_text: str | None = None,
+        chunks: list[Any] | None = None,
+        task_display_mode: str | None = "plan",
+        raw_hint: dict[str, Any] | None = None,
+    ) -> SendResult:
+        """Wrap ``chat.startStream``. thread_id is required by the API
+        — Slack's streaming methods don't support top-level messages.
+        For DM top-level inbound where reply_in_thread is off, the
+        caller should pass the inbound message's ts as thread_id;
+        that anchors the stream as a thread reply on the user's
+        message rather than failing."""
+        if not self._app:
+            return SendResult(ok=False, error="not connected")
+        if not thread_id:
+            return SendResult(
+                ok=False,
+                error="thread_id required for chat.startStream",
+            )
+        client = self._get_client(chat_id)
+        if client is None:
+            return SendResult(ok=False, error=f"no client for chat {chat_id}")
+        kwargs: dict[str, Any] = {
+            "channel": chat_id,
+            "thread_ts": thread_id,
+        }
+        if markdown_text is not None:
+            kwargs["markdown_text"] = markdown_text
+        if chunks:
+            kwargs["chunks"] = chunks
+        if task_display_mode:
+            kwargs["task_display_mode"] = task_display_mode
+        try:
+            res = await client.chat_startStream(**kwargs)
+            ts = res.get("ts") if hasattr(res, "get") else None
+            if ts:
+                self._bot_message_ts.add(str(ts))
+            return SendResult(ok=bool(res.get("ok")), message_id=ts, raw=dict(res))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[slack] chat.startStream failed: %s", exc)
+            return SendResult(ok=False, error=str(exc))
+
+    async def append_stream(
+        self,
+        chat_id: str,
+        stream_id: str,
+        *,
+        markdown_text: str | None = None,
+        chunks: list[Any] | None = None,
+    ) -> SendResult:
+        """Wrap ``chat.appendStream``. Either markdown_text or chunks
+        (or both) should be non-empty — calling with neither is a no-op
+        and we'd burn a rate-limit slot for nothing, so we short-circuit."""
+        if not self._app:
+            return SendResult(ok=False, error="not connected")
+        if not markdown_text and not chunks:
+            return SendResult(ok=True, message_id=stream_id)
+        client = self._get_client(chat_id)
+        if client is None:
+            return SendResult(ok=False, error=f"no client for chat {chat_id}")
+        kwargs: dict[str, Any] = {
+            "channel": chat_id,
+            "ts": stream_id,
+        }
+        if markdown_text is not None:
+            kwargs["markdown_text"] = markdown_text
+        if chunks:
+            kwargs["chunks"] = chunks
+        try:
+            res = await client.chat_appendStream(**kwargs)
+            return SendResult(ok=bool(res.get("ok")), message_id=stream_id, raw=dict(res))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[slack] chat.appendStream failed: %s", exc)
+            return SendResult(ok=False, error=str(exc))
+
+    async def stop_stream(
+        self,
+        chat_id: str,
+        stream_id: str,
+        *,
+        markdown_text: str | None = None,
+        chunks: list[Any] | None = None,
+        blocks: list[Any] | None = None,
+    ) -> SendResult:
+        """Wrap ``chat.stopStream``. ``blocks`` is the only place
+        Slack accepts Block Kit in the streaming envelope (per docs:
+        'Blocks may be used in chat.stopStream only'). Used to attach
+        final-state Block Kit content like image previews."""
+        if not self._app:
+            return SendResult(ok=False, error="not connected")
+        client = self._get_client(chat_id)
+        if client is None:
+            return SendResult(ok=False, error=f"no client for chat {chat_id}")
+        kwargs: dict[str, Any] = {
+            "channel": chat_id,
+            "ts": stream_id,
+        }
+        if markdown_text is not None:
+            kwargs["markdown_text"] = markdown_text
+        if chunks:
+            kwargs["chunks"] = chunks
+        if blocks:
+            kwargs["blocks"] = blocks
+        try:
+            res = await client.chat_stopStream(**kwargs)
+            return SendResult(ok=bool(res.get("ok")), message_id=stream_id, raw=dict(res))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[slack] chat.stopStream failed: %s", exc)
+            return SendResult(ok=False, error=str(exc))
+
     async def upload_file(
         self,
         chat_id: str,

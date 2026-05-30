@@ -1,38 +1,54 @@
-"""Bridge event → Slack progressive edits.
+"""Bridge event → Slack streaming message (Thinking Steps).
 
 Subscribes to events for a specific session id via the bridge's
 ``register_session_listener``. Each new turn instantiates a fresh
-consumer that:
+consumer that opens ONE streaming message via Slack's chat.startStream
++ chat.appendStream + chat.stopStream API trio (slack-sdk 3.40+),
+delivering both the agent's prose response AND its tool calls /
+thinking through native Slack Block Kit primitives:
 
-  · accumulates ``text_delta`` events into a buffer
-  · sends a first message (``adapter.send``) the first time the buffer
-    has visible content
-  · throttles subsequent edits to ``adapter.edit`` at most every
-    ``edit_interval_ms`` (default 500ms)
-  · splits long responses across multiple messages when the buffer
-    exceeds the platform's max-chars cap
-  · finalizes on ``turn_complete`` by emitting one final edit with the
-    full text so the operator sees the complete response
-  · unregisters itself on finalize so the next turn gets a fresh
-    consumer + fresh Slack message anchor
+  · ``markdown_text`` chunks for the agent's user-facing prose body
+  · ``TaskUpdateChunk`` per tool call — renders as a collapsible card
+    with a status indicator (``in_progress`` → ``completed`` / ``error``)
+    that the user can expand to see args + output
+  · ``TaskUpdateChunk`` per thinking phase — surfaces the model's
+    reasoning as another collapsible card titled "Thinking"
+  · ``PlanUpdateChunk`` once near the start to give the task-card
+    group a header
+  · ``chat.stopStream(blocks=…)`` for inline image attachments
+    rendered at the end of the message
 
-Additionally — borrowed from Hermes:
+Replaces the prior dual-message pattern (a primary text message edited
+via chat.update + a separate "tool progress" bubble with emoji lines).
+Slack's native collapsing means we no longer need our own emoji-based
+progress visual — the chevron + timeline is rendered by Slack.
 
-  · **Tool-progress bubbles.** On ``tool_use_start`` / ``tool_input_end``
-    we maintain a separate Slack message anchor that grows as tools
-    run. When the agent starts emitting user-facing text, the progress
-    bubble is "closed" (finalized in place) and any further tool
-    progress opens a fresh bubble BELOW the text, preserving chronology.
-  · **Image uploads.** On ``tool_result`` events that carry inline
-    image data (e.g. from ``generate_image``) or that mention a
-    ``File saved to`` path, we ship the image(s) back to Slack via
-    ``upload_files`` — batched up to 10 per call.
-  · **"Is thinking…" status.** On turn start we set the Slack
-    Assistant Threads status; on turn complete we clear it.
+Verbosity (off/new/all/verbose) controls how much detail lands in the
+task cards. Default is ``all`` (every tool call gets a card) since
+native collapse means the visual cost is near-zero. ``off`` skips
+task cards entirely (markdown_text only). Heartbeat tool calls are
+suppressed in all levels except ``verbose``.
 
-Slack doesn't have a generic typing indicator for bots, so the
-streaming-edit-in-place pattern + the Assistant status combine to
-give live feedback while reasoning is in flight.
+Lifecycle:
+  · First event of the turn → set Slack Assistant Threads typing status
+  · First substantive event (text/tool/thinking) → start_stream opens
+    the message; capture the ts for subsequent calls
+  · text_delta → buffer locally; throttled flush to append_stream
+  · thinking_delta → open/extend the "Thinking" task card
+  · tool_use_start → record name; (rendering deferred until tool_input_end
+    so we can heartbeat-filter)
+  · tool_input_end → emit TaskUpdateChunk(status="in_progress")
+  · tool_result → emit TaskUpdateChunk(status="completed", output=…);
+    handle inline image data
+  · turn_complete → flush remaining text; close any open thinking card;
+    call stop_stream (with image blocks if any pending)
+  · stop_typing + on_complete callback → unregisters this consumer
+
+Backwards compat note: this code REPLACES the prior chat.postMessage +
+chat.update flow entirely. If start_stream fails (rate limit, API
+change, workspace tier limitation), the fallback path posts a
+minimal error message via send() — see T20 for the planned graceful
+chat.postMessage fallback.
 """
 
 from __future__ import annotations
@@ -43,6 +59,7 @@ import binascii
 import logging
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -51,106 +68,95 @@ from bridge.gateway.platforms.base import (
     MessageSource,
     PlatformAdapter,
     UploadItem,
-    truncate_for_platform,
 )
 
 logger = logging.getLogger(__name__)
 
 
-# Slack hard limit per message is 40k chars; leave some headroom for
-# our own framing (a finalize marker, etc.).
-DEFAULT_MAX_CHARS = 39_000
+# ── Streaming throttle ────────────────────────────────────────────────
+# Slack's chat.update rate limit is documented as ~1/sec/thread. The
+# stream methods are newer and not documented as tightly, but we
+# defensively throttle text + thinking-card appends to the same
+# cadence so we don't burst-rate-limit on a fast-streaming model.
+# Tool-card chunks (one per tool transition) fire infrequently enough
+# that we send them immediately.
+DEFAULT_TEXT_FLUSH_INTERVAL_MS = 500
+DEFAULT_THINKING_FLUSH_INTERVAL_MS = 800
 
-# Throttle for tool-progress bubble edits — Hermes uses 1.5s. Tools
-# can fire in tight loops; throttling protects Slack's chat.update
-# rate limit (≈1 update/sec/thread).
-DEFAULT_PROGRESS_INTERVAL_MS = 1500
-
-# Cap progress lines per bubble so we don't blow past the per-message
-# char limit. A reasonable run = 10-20 tool calls; older lines fold
-# into a "+ N more" summary.
-PROGRESS_LINE_CAP = 12
-
-# Path-extraction regex for tools that report "File saved to `/path`"
-# in their text preview (generate_image being the canonical example).
+# Image extension allowlist for the "File saved to `/path`" → upload
+# path extraction. Used by _handle_tool_result.
 _FILE_SAVED_RE = re.compile(r"File saved to `([^`]+)`")
-
-# Image file extensions we consider worth sending back to Slack.
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 
+# Plan title that wraps the per-turn task cards. Slack renders this
+# above the cards when task_display_mode="plan" is set on startStream.
+# Deliberately bland — the cards themselves carry the actual content.
+PLAN_TITLE = "Working"
+
 
 @dataclass
-class _Anchor:
-    """A single Slack message we're either growing in place or have
-    finalized. A long response becomes a chain of anchors.
+class _StreamState:
+    """Per-turn mutable state.
 
-    ``last_formatted`` is the FORMATTED string (post ``format_content``)
-    that Slack currently displays for this anchor. We compare against
-    it on the next flush to skip no-op edits, and we send it verbatim
-    to ``adapter.edit``/``adapter.send`` — the adapter does not
-    re-chunk, so what we record here is exactly what Slack shows.
+    Replaces the old _State / _Anchor / _ToolProgress trio. The new
+    model is much simpler: one stream ts, two text buffers (body +
+    thinking), and dicts tracking which tools are in flight.
     """
 
-    message_id: str | None = None
-    last_formatted: str = ""
+    # Set after start_stream succeeds. Subsequent append_stream /
+    # stop_stream calls use this as their handle.
+    stream_ts: str | None = None
+    # We have attempted start_stream (success or failure). Idempotent
+    # gating for _ensure_stream_opened.
+    stream_opened: bool = False
+    # start_stream failed; downstream calls degrade to a fallback send.
+    stream_failed: bool = False
 
+    # Body text accumulator. Deltas land here; the flush loop drains
+    # them to append_stream(markdown_text=…) every throttle window.
+    text_buffer: str = ""
+    last_text_flush_ms: float = 0.0
 
-@dataclass
-class _ToolProgress:
-    """The current open tool-progress bubble — one Slack message that
-    grows as tools fire. Closed (and reset to None) the moment the
-    agent emits user-facing text, so subsequent tool calls open a
-    fresh bubble BELOW the text."""
+    # Thinking-card accumulator. Same pattern as text but routes to a
+    # TaskUpdateChunk(title="Thinking") instead of markdown_text.
+    thinking_card_id: str | None = None
+    thinking_buffer: str = ""
+    last_thinking_flush_ms: float = 0.0
 
-    message_id: str | None = None
-    lines: list[str] = field(default_factory=list)
-    pending_tool_names: dict[str, str] = field(default_factory=dict)
-    last_edit_monotonic: float = 0.0
-
-
-@dataclass
-class _State:
-    """Mutable consumer state. Held inside an asyncio.Lock for safe
-    concurrent flush/append.
-
-    ``buffer`` holds ALL raw (pre-format) text emitted since the last
-    progress-bubble reset. It is **not** cleared on flush — every
-    flush re-formats the entire buffer and re-chunks it, comparing
-    each formatted chunk to ``anchors[i].last_formatted`` to decide
-    edit vs. skip. This is the source-of-truth representation of
-    unfrozen content; anchors store only what Slack currently shows,
-    not what they "should" contain.
-
-    Why not clear buffer per flush? Anchors store the FORMATTED chunk
-    (because that's what we compare against to dedupe edits), and
-    ``format_content`` is lossy (``[t](u)`` → ``<u|t>`` can't be
-    inverted). Keeping the raw stream in ``buffer`` lets us re-format
-    + re-chunk deterministically each flush.
-
-    The buffer is cleared only when ``_reset_progress_bubble`` freezes
-    the current anchors — at that point everything in the buffer has
-    been committed to anchors above the progress bubble, and any new
-    text will start a fresh anchor below.
-    """
-
-    buffer: str = ""
-    anchors: list[_Anchor] = field(default_factory=list)
-    last_emit_monotonic: float = 0.0
+    # Lifecycle gates.
     finalized: bool = False
-    # Tool-progress bubble lifecycle.
-    progress: _ToolProgress = field(default_factory=_ToolProgress)
-    # Whether we've issued send_typing yet on this turn (sent on
-    # first event, cleared at turn_complete).
     typing_set: bool = False
-    # When a progress bubble closes (text resumes after tools), all
-    # anchors authored BEFORE the progress are visually above it in
-    # Slack. New text must land BELOW the progress message — which
-    # means it has to go into a NEW anchor, not extend the last one.
-    # Track how many anchors are frozen (no longer editable); the
-    # flush path operates only on anchors past this index. Initialized
-    # to 0 (no anchors frozen at turn start); advances whenever
-    # _reset_progress_bubble finalizes a real bubble.
-    anchors_frozen_at: int = 0
+    plan_chunk_sent: bool = False
+
+    # Tool-call tracking. tool_use_start stashes name → cached for
+    # tool_result's completion chunk so it can render the same title.
+    # tool_input_end caches args for the same reason (and for the
+    # heartbeat filter).
+    pending_tool_names: dict[str, str] = field(default_factory=dict)
+    pending_tool_args: dict[str, dict] = field(default_factory=dict)
+
+    # Inline image attachments accumulated during the turn for final
+    # delivery via stop_stream(blocks=…). Each entry is a dict with
+    # keys: data (bytes), mime, filename. Limited to a small budget so
+    # one chat.stopStream call doesn't blow past Slack's payload cap.
+    pending_image_blocks: list[dict[str, Any]] = field(default_factory=list)
+
+    # Graceful fallback when chat.startStream fails (rate limit, API
+    # change, workspace tier). The fallback path uses chat.postMessage
+    # for the first delta and chat.update for subsequent deltas — the
+    # old streaming pattern. Tool calls are NOT rendered as cards in
+    # fallback mode (Slack post/update doesn't support task cards);
+    # they're either dropped or appended as a text suffix. The user
+    # still gets the prose response.
+    fallback_message_id: str | None = None
+    fallback_buffer: str = ""
+    fallback_committed: str = ""
+
+    # Same-tool coalescing under verbosity="new". Records the last
+    # tool-name + repeat count so we can decorate the card title with
+    # ×N instead of emitting N separate cards.
+    coalesce_last_tool: str | None = None
+    coalesce_count: int = 0
 
 
 class SlackStreamConsumer:
@@ -158,7 +164,7 @@ class SlackStreamConsumer:
 
     Usage::
 
-        consumer = SlackStreamConsumer(adapter, source)
+        consumer = SlackStreamConsumer(adapter, source, session_key=…)
         register_session_listener(session_key, consumer.on_event)
         # ... gateway routes inbound message, agent runs ...
         # consumer auto-finalizes on turn_complete and unregisters
@@ -170,90 +176,74 @@ class SlackStreamConsumer:
         source: MessageSource,
         *,
         session_key: str,
-        edit_interval_ms: int = 500,
+        edit_interval_ms: int = DEFAULT_TEXT_FLUSH_INTERVAL_MS,
         max_chars: int | None = None,
         raw_hint: dict[str, Any] | None = None,
         on_complete: Any = None,
-        verbosity: str = "new",
+        permission_resolver: Any = None,
+        verbosity: str = "all",
     ) -> None:
         self.adapter = adapter
         self.source = source
         self.session_key = session_key
         self.edit_interval_ms = edit_interval_ms
-        # Default to the adapter's hard per-message cap. Allowing an
-        # override is useful for tests; production always uses what the
-        # adapter says is safe, since the adapter's send/edit will
-        # reject anything larger.
-        adapter_cap = int(getattr(adapter, "max_message_chars", DEFAULT_MAX_CHARS))
+        # Retained for potential future use (oversized response splitting
+        # via multiple streams), but Thinking Steps lets one message
+        # carry far more than the old 39k cap because cards collapse.
+        adapter_cap = int(getattr(adapter, "max_message_chars", 39_000))
         self.max_chars = max_chars if max_chars is not None else adapter_cap
         self.raw_hint = raw_hint
-        self.on_complete = on_complete  # called when finalize() runs
-        # NOTE: permission_request / permission_resolved events are NOT
-        # handled here — they're routed to ``SlackPermissionListener``
-        # which is registered once per session (not per turn) so
-        # background-mode sub-agents can still get Block Kit prompts
-        # after their parent's turn completes.
+        self.on_complete = on_complete
+        self.permission_resolver = permission_resolver
+        # Tracking for the destructive-command approval flow — preserved
+        # for parity even though chat.startStream / appendStream paths
+        # don't themselves issue approval prompts.
+        self._pending_permission_ids: set[str] = set()
 
-        # Tool-progress verbosity — one of off|new|all|verbose. Drives
-        # what (if anything) lands in the progress bubble below. See
-        # bridge.gateway.session_router for the level semantics:
-        #   off:     no bubble at all (final response only)
-        #   new:     show only when tool name changes; consecutive
-        #            same-tool calls coalesce into "⚙️ tool ×N"
-        #   all:     line per call, short args (prior default)
-        #   verbose: line per call, full args, includes heartbeats
-        self.verbosity = verbosity if verbosity in {"off", "new", "all", "verbose"} else "new"
-        # Tracking for "new" mode coalescing — remembers the last tool
-        # name we emitted a line for so we can either replace its
-        # counter or open a fresh line.
-        self._coalesce_last_tool: str | None = None
-        self._coalesce_count: int = 0
+        # Verbosity ladder. New default is "all" since native task
+        # cards collapse — visual noise no longer scales with detail.
+        if verbosity not in {"off", "new", "all", "verbose"}:
+            verbosity = "all"
+        self.verbosity = verbosity
 
-        self._state = _State()
+        self._state = _StreamState()
         self._lock = asyncio.Lock()
-        # Capture the loop the consumer was constructed on. emit() is
-        # called synchronously from inside the runner's stream callbacks
-        # (which run on this same loop), and we use run_coroutine_threadsafe
-        # to schedule the async flush — works from inside or outside the
-        # loop's call stack.
         try:
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
             self._loop = asyncio.get_event_loop()
 
-        # Resolve where the bot's outbound messages should be threaded.
-        # Computed once at consumer creation (per turn), since the
-        # source's thread state doesn't change mid-turn.
-        #
-        # · If the inbound message is already a thread reply
-        #   (source.thread_id is set), reply in the SAME thread —
-        #   matches user expectation: "I asked in this thread, the
-        #   answer should be here too."
-        # · Else, for DMs, if the platform config says
-        #   ``reply_in_thread: true`` (default), reply in a NEW
-        #   thread anchored to the user's top-level message
-        #   (source.message_id). Without this, every top-level DM
-        #   spawns a separate top-level bot reply, producing an
-        #   ugly flat history of disconnected interactions instead
-        #   of cleanly threaded turns.
-        # · Else (channels, non-DM with thread_in_reply off), no
-        #   thread — reply top-level.
-        self._reply_thread_id: str | None = self._compute_reply_thread_id()
+        # Resolve thread anchor for start_stream. Slack rejects
+        # thread_ts=None on chat.startStream, so we ALWAYS need a
+        # thread anchor — for top-level messages we use the inbound
+        # message's own ts so the streaming reply becomes the first
+        # message in a new thread rooted on the user's message.
+        self._reply_thread_id: str = self._resolve_thread_anchor()
 
-    def _compute_reply_thread_id(self) -> str | None:
+    def _resolve_thread_anchor(self) -> str:
+        """Pick the thread_ts to pass to chat.startStream.
+
+        Order of preference:
+          1. ``source.thread_id`` — the inbound was already in a thread
+          2. For DMs with reply_in_thread enabled: ``source.message_id``
+             — anchor a fresh thread on the user's message
+          3. ``source.message_id`` — same as 2 but unconditional;
+             chat.startStream requires SOME thread_ts and rooting on
+             the user's message is the least-surprising default for
+             any platform that doesn't natively support threadless
+             streaming replies.
+        """
         src = self.source
         if src.thread_id:
-            return src.thread_id
-        if src.chat_type == "dm":
-            # Read slack_config off the adapter if present (slack
-            # adapter exposes it). Other adapters may not — default
-            # to True so the behavior matches the gateway.yaml
-            # default of reply_in_thread: true.
-            cfg = getattr(self.adapter, "slack_config", None)
-            reply_in_thread = getattr(cfg, "reply_in_thread", True)
-            if reply_in_thread and src.message_id:
-                return src.message_id
-        return None
+            return str(src.thread_id)
+        # Read the adapter's slack_config if exposed.
+        cfg = getattr(self.adapter, "slack_config", None)
+        reply_in_thread = bool(getattr(cfg, "reply_in_thread", True))
+        if reply_in_thread and src.chat_type == "dm" and src.message_id:
+            return str(src.message_id)
+        # Fall through — anchor on the message anyway. Better than
+        # failing the start_stream entirely.
+        return str(src.message_id or "")
 
     # ── public event ingress (sync callback fired by emit()) ──
 
@@ -263,17 +253,15 @@ class SlackStreamConsumer:
         Called synchronously by ``emit()`` so it must NOT block. We
         forward to an async task to do the actual Slack API work.
         """
-        # If the consumer is already finalized, drop further events
-        # (a sibling consumer is already active for the next turn).
         if self._state.finalized:
             return
         etype = event.get("type")
-        # Event types we care about. text_delta drives the chat
-        # surface; tool_use_start + tool_input_end + tool_result drive
-        # the progress bubble + image upload; turn_start/turn_complete
-        # gate the typing indicator + finalize lifecycle.
+        # Event types we care about. thinking_delta is new in this
+        # consumer — we route it into a Task Card so reasoning shows
+        # up alongside tool calls in the collapsible widget.
         if etype not in {
             "text_delta",
+            "thinking_delta",
             "turn_start",
             "turn_complete",
             "tool_use_start",
@@ -291,10 +279,10 @@ class SlackStreamConsumer:
 
     async def _handle_event_async(self, event: dict[str, Any]) -> None:
         etype = event.get("type")
-        # Set Slack's "is thinking..." status on the FIRST event of
-        # the turn (whichever event type happens to arrive first —
-        # usually tool_use_start or turn_start). Best-effort; if it
-        # fails (e.g. not in an Assistant thread) we silently move on.
+
+        # Set the Slack Assistant Threads typing status on the first
+        # event of the turn (best-effort; harmless if it fails on
+        # non-Assistant threads).
         if not self._state.typing_set:
             self._state.typing_set = True
             try:
@@ -307,347 +295,378 @@ class SlackStreamConsumer:
 
         if etype == "text_delta":
             text = str(event.get("text") or "")
-            if text:
-                # First user-facing text means: close the in-flight
-                # tool-progress bubble (if any) so the next tool call
-                # opens a fresh bubble BELOW the text. Preserves
-                # chronological reading order in the chat.
-                await self._reset_progress_bubble()
-                await self._append(text)
+            if not text:
+                return
+            await self._ensure_stream_opened()
+            # Body text arriving means any in-flight thinking phase
+            # is over — close that card before we start emitting prose.
+            await self._close_thinking_card()
+            await self._append_text(text)
+        elif etype == "thinking_delta":
+            if self.verbosity == "off":
+                return
+            text = str(event.get("thinking") or event.get("text") or "")
+            if not text:
+                return
+            await self._ensure_stream_opened()
+            await self._append_thinking(text)
         elif etype == "tool_use_start":
-            # Defer rendering until tool_input_end. We need the args
-            # to (a) heartbeat-filter and (b) emit a meaningful
-            # preview in all/verbose modes. The "⚙️ tool…" provisional
-            # pattern that used to fire here was nice for slow tools
-            # but introduced orphan lines for filtered heartbeats. The
-            # typing indicator (set on the first event of the turn)
-            # covers the "something is happening" feedback gap during
-            # the tens-of-ms between use_start and input_end.
-            tool_id = str(event.get("id") or "")
-            tool_name = str(event.get("name") or "?")
-            if tool_id:
-                self._state.progress.pending_tool_names[tool_id] = tool_name
-        elif etype == "tool_input_end":
             if self.verbosity == "off":
                 return
             tool_id = str(event.get("id") or "")
-            args = event.get("arguments") or {}
-            tool_name = self._state.progress.pending_tool_names.pop(
-                tool_id,
-                "?",
-            )
-            # Heartbeat filter — agent's self-poll mechanism, pure
-            # noise in chat. Suppress in all levels except verbose.
-            if (
-                self.verbosity != "verbose"
-                and tool_name == "tasks"
-                and isinstance(args, dict)
-                and str(args.get("action") or "").lower() == "heartbeat"
-            ):
+            tool_name = str(event.get("name") or "?")
+            if tool_id:
+                self._state.pending_tool_names[tool_id] = tool_name
+            # Defer the in_progress card until tool_input_end fires —
+            # we need the args to (a) heartbeat-filter and (b) render
+            # a meaningful title. The brief gap (tens of ms typically)
+            # is covered by the typing indicator we set above.
+        elif etype == "tool_input_end":
+            if self.verbosity == "off":
                 return
-            if self.verbosity == "new":
-                # Coalesce: same tool as last → bump count + update
-                # the existing line. Different tool → fresh line.
-                if tool_name == self._coalesce_last_tool:
-                    self._coalesce_count += 1
-                    line = f"⚙️ `{tool_name}` ×{self._coalesce_count}"
-                    await self._replace_last_progress(line)
-                else:
-                    self._coalesce_last_tool = tool_name
-                    self._coalesce_count = 1
-                    await self._append_progress(f"⚙️ `{tool_name}`")
-                return
-            # all / verbose: line per call with short args preview.
-            preview = _summarize_tool_args(tool_name, args)
-            line = f"⚙️ `{tool_name}`"
-            if preview:
-                line += f": {preview}"
-            await self._append_progress(line)
+            await self._handle_tool_input_end(event)
         elif etype == "tool_result":
             await self._handle_tool_result(event)
         elif etype == "turn_complete":
             await self.finalize()
 
-    # ── core flush loop ──
+    # ── stream lifecycle ──
 
-    async def _append(self, text: str) -> None:
+    async def _ensure_stream_opened(self) -> None:
+        """Idempotent: open the stream on first call, no-op after."""
         async with self._lock:
-            self._state.buffer += text
-            now = time.monotonic() * 1000
-            since_last = now - self._state.last_emit_monotonic
-            if since_last >= self.edit_interval_ms:
-                await self._flush_locked()
-
-    async def _flush_locked(self) -> None:
-        """Push the current buffer to Slack. Must be called with the
-        lock held.
-
-        Pipeline (in order):
-
-          1. Format the entire unfrozen raw buffer via
-             ``adapter.format_content`` once. Lossy transforms (markdown
-             link → ``<u|t>``) happen here, not inside ``send`` / ``edit``.
-          2. Chunk the FORMATTED string with ``truncate_for_platform``
-             using the adapter's strict ``max_message_chars`` cap. Each
-             chunk is by construction within Slack's per-message limit,
-             so the adapter accepts it without splitting.
-          3. Map chunks to anchors at or after ``anchors_frozen_at``.
-             If ``anchor.last_formatted == chunk``, skip — no edit
-             needed. Otherwise edit (existing anchor) or send (new
-             anchor, append).
-
-        The contract change vs. the old code: anchors store the
-        FORMATTED text that Slack currently shows, not the raw
-        markdown. The chunk boundary the consumer picks is the chunk
-        boundary Slack actually receives — eliminating the orphan
-        path where ``send`` used to internally split and only return
-        the last ts (leaving leading messages untracked).
-        """
-        if not self._state.buffer.strip():
-            return
-
-        # Format → chunk → diff against currently-deployed formatted
-        # anchors. Frozen anchors are NOT touched: they sit above a
-        # closed progress bubble and editing them would shuffle text
-        # above the chip, breaking chronology.
-        formatted = self.adapter.format_content(self._state.buffer)
-        chunks = truncate_for_platform(formatted, self.max_chars)
-        base = self._state.anchors_frozen_at
-
-        for idx, chunk in enumerate(chunks):
-            anchor_idx = base + idx
-            if anchor_idx < len(self._state.anchors):
-                anchor = self._state.anchors[anchor_idx]
-                if anchor.last_formatted == chunk:
-                    continue  # no-op edit — Slack already shows this
-                if anchor.message_id:
-                    result = await self.adapter.edit(
-                        self.source.chat_id,
-                        anchor.message_id,
-                        chunk,
-                    )
-                    if not result.ok:
-                        logger.warning(
-                            "slack edit failed for anchor %s: %s; "
-                            "replacing with a fresh message",
-                            anchor.message_id,
-                            result.error,
-                        )
-                        # Replace the broken anchor in-place rather
-                        # than appending — appending would leave the
-                        # broken anchor in the list and each
-                        # subsequent flush would re-target it (still
-                        # broken) and append yet another. Bounded by
-                        # in-place replace.
-                        new_result = await self.adapter.send(
-                            self.source.chat_id,
-                            chunk,
-                            thread_id=self._reply_thread_id,
-                            raw_hint=self.raw_hint,
-                        )
-                        if new_result.ok:
-                            self._state.anchors[anchor_idx] = _Anchor(
-                                message_id=new_result.message_id,
-                                last_formatted=chunk,
-                            )
-                        else:
-                            logger.warning(
-                                "slack replace-after-edit-failure also failed: %s",
-                                new_result.error,
-                            )
-                        continue
-                    anchor.last_formatted = chunk
-                else:
-                    # Anchor exists but lost its message_id (post failure
-                    # earlier in the turn). Try to send it now so
-                    # subsequent flushes can edit it.
-                    new_result = await self.adapter.send(
-                        self.source.chat_id,
-                        chunk,
-                        thread_id=self._reply_thread_id,
-                        raw_hint=self.raw_hint,
-                    )
-                    if new_result.ok:
-                        anchor.message_id = new_result.message_id
-                        anchor.last_formatted = chunk
+            if self._state.stream_opened or self._state.stream_failed:
+                return
+            self._state.stream_opened = True
+            if not self._reply_thread_id:
+                logger.warning("[slack] no thread anchor — start_stream skipped")
+                self._state.stream_failed = True
+                return
+            result = await self.adapter.start_stream(
+                self.source.chat_id,
+                thread_id=self._reply_thread_id,
+                task_display_mode="plan",
+            )
+            if result.ok and result.message_id:
+                self._state.stream_ts = result.message_id
             else:
-                # New chunk — send as a new Slack message and append.
+                self._state.stream_failed = True
+                logger.warning(
+                    "[slack] chat.startStream failed: %s — falling back to "
+                    "chat.postMessage / chat.update path. Task cards will "
+                    "NOT render (Slack non-streaming pathway doesn't support "
+                    "them); the agent's prose response still posts.",
+                    result.error,
+                )
+                return
+            # First chunk after startStream: emit the Plan header so
+            # the task cards render under a stable group.
+            await self._send_plan_chunk_locked()
+
+    async def _send_plan_chunk_locked(self) -> None:
+        """Emit one PlanUpdateChunk to title the task-card group.
+        Caller holds the lock."""
+        if self._state.plan_chunk_sent or self._state.stream_failed:
+            return
+        if not self._state.stream_ts:
+            return
+        try:
+            from slack_sdk.models.messages.chunk import PlanUpdateChunk
+        except ImportError:
+            logger.warning("[slack] PlanUpdateChunk not available; skipping plan header")
+            self._state.plan_chunk_sent = True
+            return
+        chunk = PlanUpdateChunk(title=PLAN_TITLE, others={})
+        result = await self.adapter.append_stream(
+            self.source.chat_id,
+            self._state.stream_ts,
+            chunks=[chunk],
+        )
+        self._state.plan_chunk_sent = True
+        if not result.ok:
+            logger.debug("[slack] plan chunk append failed: %s", result.error)
+
+    # ── text body (markdown_text deltas) ──
+
+    async def _append_text(self, text: str) -> None:
+        """Accumulate body text and throttle-flush.
+
+        Two paths:
+          · streaming OK → buffer + append_stream(markdown_text=…)
+          · streaming failed → buffer + post/update via send/edit.
+            The user still gets the prose response; only the
+            collapsible task cards are missing.
+        """
+        async with self._lock:
+            self._state.text_buffer += text
+            now_ms = time.monotonic() * 1000
+            if now_ms - self._state.last_text_flush_ms < self.edit_interval_ms:
+                return
+            if self._state.stream_failed:
+                await self._flush_fallback_locked()
+            else:
+                await self._flush_text_locked()
+
+    async def _flush_fallback_locked(self) -> None:
+        """Send the accumulated text via the legacy post/update path.
+
+        First flush: chat.postMessage and capture the ts.
+        Subsequent flushes: chat.update with the cumulative content.
+        Caller holds the lock.
+        """
+        if not self._state.text_buffer:
+            return
+        self._state.fallback_committed += self._state.text_buffer
+        self._state.text_buffer = ""
+        content = self._state.fallback_committed
+        try:
+            if self._state.fallback_message_id is None:
                 result = await self.adapter.send(
                     self.source.chat_id,
-                    chunk,
-                    thread_id=self._reply_thread_id,
-                    raw_hint=self.raw_hint if anchor_idx == 0 else None,
-                )
-                if result.ok:
-                    self._state.anchors.append(
-                        _Anchor(message_id=result.message_id, last_formatted=chunk)
-                    )
-                else:
-                    # Record the anchor anyway with no message_id so the
-                    # next flush retries the send rather than perma-
-                    # losing the chunk. Failure mode otherwise: dropped
-                    # send leaves a hole in the visible response.
-                    logger.warning("slack send failed: %s", result.error)
-                    self._state.anchors.append(
-                        _Anchor(message_id=None, last_formatted="")
-                    )
-
-        # NOTE: buffer is NOT cleared here. Anchors track formatted text;
-        # the raw stream stays in buffer so next flush re-formats from
-        # the canonical source. Cleared only on _reset_progress_bubble
-        # (when frozen anchors above the new progress chip take over).
-        self._state.last_emit_monotonic = time.monotonic() * 1000
-
-    def _combined_content(self) -> str:
-        """Raw text awaiting flush.
-
-        Just the buffer — unfrozen anchors no longer carry raw
-        content (they carry the FORMATTED chunk that Slack
-        currently shows). The raw stream is the single source of
-        truth for "what should be visible past the frozen
-        frontier"; formatting + chunking happens fresh each flush.
-        """
-        return self._state.buffer
-
-    # ── tool-progress bubble ──
-
-    async def _append_progress(self, line: str) -> None:
-        """Add a new line to the open progress bubble (creating it
-        if needed). Throttled to DEFAULT_PROGRESS_INTERVAL_MS."""
-        async with self._lock:
-            if self._state.finalized:
-                return
-            self._state.progress.lines.append(line)
-            await self._flush_progress_locked()
-
-    async def _replace_last_progress(self, line: str) -> None:
-        """Replace the last progress line (used when tool_input_end
-        arrives with full args, refining a provisional 'running' line)."""
-        async with self._lock:
-            if self._state.finalized:
-                return
-            if self._state.progress.lines:
-                self._state.progress.lines[-1] = line
-            else:
-                self._state.progress.lines.append(line)
-            await self._flush_progress_locked()
-
-    async def _flush_progress_locked(self) -> None:
-        """Send / edit the progress bubble. Caller holds the lock."""
-        now_ms = time.monotonic() * 1000
-        last = self._state.progress.last_edit_monotonic
-        if last and (now_ms - last) < DEFAULT_PROGRESS_INTERVAL_MS:
-            # Within throttle window — skip; the next event or the
-            # finalize sweep will flush.
-            return
-        lines = self._state.progress.lines
-        if not lines:
-            return
-        # Cap visible lines so a runaway tool loop doesn't blow past
-        # the chat.update char limit. Older lines fold into a summary.
-        if len(lines) > PROGRESS_LINE_CAP:
-            hidden = len(lines) - PROGRESS_LINE_CAP
-            visible = ["_…+ {n} earlier tool call(s)_".format(n=hidden)]
-            visible.extend(lines[-PROGRESS_LINE_CAP:])
-        else:
-            visible = list(lines)
-        body = "\n".join(visible)
-        if self._state.progress.message_id:
-            try:
-                await self.adapter.edit(
-                    self.source.chat_id,
-                    self._state.progress.message_id,
-                    body,
-                )
-            except Exception:  # noqa: BLE001
-                logger.debug("progress edit failed", exc_info=True)
-        else:
-            try:
-                res = await self.adapter.send(
-                    self.source.chat_id,
-                    body,
+                    content,
                     thread_id=self._reply_thread_id,
                     raw_hint=self.raw_hint,
                 )
-                if res.ok and res.message_id:
-                    self._state.progress.message_id = res.message_id
-            except Exception:  # noqa: BLE001
-                logger.debug("progress send failed", exc_info=True)
-        self._state.progress.last_edit_monotonic = now_ms
+                if result.ok and result.message_id:
+                    self._state.fallback_message_id = result.message_id
+                else:
+                    logger.warning(
+                        "[slack] fallback send failed: %s", result.error,
+                    )
+            else:
+                result = await self.adapter.edit(
+                    self.source.chat_id,
+                    self._state.fallback_message_id,
+                    content,
+                )
+                if not result.ok:
+                    logger.warning(
+                        "[slack] fallback edit failed: %s", result.error,
+                    )
+        finally:
+            self._state.last_text_flush_ms = time.monotonic() * 1000
 
-    async def _reset_progress_bubble(self) -> None:
-        """Close the open progress bubble (if any) and pin the cursor
-        so subsequent text starts a NEW anchor BELOW it.
+    async def _flush_text_locked(self) -> None:
+        """Send any buffered body text. Caller holds the lock."""
+        if self._state.stream_failed or not self._state.stream_ts:
+            return
+        if not self._state.text_buffer:
+            return
+        delta = self._state.text_buffer
+        self._state.text_buffer = ""
+        result = await self.adapter.append_stream(
+            self.source.chat_id,
+            self._state.stream_ts,
+            markdown_text=delta,
+        )
+        self._state.last_text_flush_ms = time.monotonic() * 1000
+        if not result.ok:
+            logger.warning("[slack] text appendStream failed: %s", result.error)
 
-        Called when the agent starts emitting user-facing text after
-        a series of tool calls. Two correctness moves before we
-        return:
+    # ── thinking card (TaskUpdateChunk) ──
 
-        1. Force-flush any pre-tool text still sitting in
-           ``self._state.buffer`` so it lands in the anchor ABOVE
-           the progress message (its rightful chronological home),
-           not in the new anchor we're about to start BELOW.
-        2. Advance ``anchors_frozen_at`` to the current anchor
-           count. ``_combined_content`` / ``_flush_locked`` ignore
-           frozen anchors, so the next text_delta opens a brand-new
-           Slack message past the progress chip.
-
-        Without #2, the new text would be appended to the last
-        existing anchor (which sits ABOVE the progress bubble),
-        producing the visual "tool calls shown after the final
-        answer that got edited last" bug.
-        """
+    async def _append_thinking(self, text: str) -> None:
+        """Open or extend the current Thinking task card."""
         async with self._lock:
-            # Reset coalesce state so a new tool batch after this text
-            # starts fresh and doesn't accidentally bump a counter on a
-            # stale prior tool name.
-            self._coalesce_last_tool = None
-            self._coalesce_count = 0
-            if not self._state.progress.message_id and not self._state.progress.lines:
+            if self._state.stream_failed:
                 return
-            # Pre-tool text waiting in the buffer belongs in the OLD
-            # anchor — flush it before we close the progress, bypass
-            # the throttle so it actually lands.
-            if self._state.buffer.strip():
-                self._state.last_emit_monotonic = 0
-                await self._flush_locked()
-            # Final progress flush.
+            if not self._state.thinking_card_id:
+                self._state.thinking_card_id = f"thinking-{uuid.uuid4().hex[:8]}"
+                self._state.thinking_buffer = ""
+            self._state.thinking_buffer += text
             now_ms = time.monotonic() * 1000
-            self._state.progress.last_edit_monotonic = 0
-            await self._flush_progress_locked()
-            self._state.progress = _ToolProgress()
-            self._state.progress.last_edit_monotonic = now_ms
-            # Freeze the cursor. Next text_delta lands in a new
-            # anchor authored AFTER the closed progress bubble.
-            self._state.anchors_frozen_at = len(self._state.anchors)
-            # Clear the raw buffer — every character it held has been
-            # absorbed into one of the now-frozen anchors. Without this
-            # the next flush would re-format the same content and try
-            # to land it past the freeze, duplicating it below the
-            # progress chip.
-            self._state.buffer = ""
+            if now_ms - self._state.last_thinking_flush_ms < DEFAULT_THINKING_FLUSH_INTERVAL_MS:
+                return
+            await self._flush_thinking_locked(status="in_progress")
 
-    # ── tool_result handling: image uploads ──
+    async def _flush_thinking_locked(self, *, status: str) -> None:
+        """Push the current thinking buffer into the Thinking card.
+        Caller holds the lock."""
+        if self._state.stream_failed or not self._state.stream_ts:
+            return
+        if not self._state.thinking_card_id:
+            return
+        try:
+            from slack_sdk.models.messages.chunk import TaskUpdateChunk
+        except ImportError:
+            return
+        chunk = TaskUpdateChunk(
+            id=self._state.thinking_card_id,
+            title="Thinking",
+            status=status,
+            output=self._state.thinking_buffer or None,
+            others={},
+        )
+        result = await self.adapter.append_stream(
+            self.source.chat_id,
+            self._state.stream_ts,
+            chunks=[chunk],
+        )
+        self._state.last_thinking_flush_ms = time.monotonic() * 1000
+        if not result.ok:
+            logger.debug("[slack] thinking appendStream failed: %s", result.error)
+
+    async def _close_thinking_card(self) -> None:
+        """Finalize the open Thinking card (status=completed) so the
+        next thinking phase starts a new card."""
+        async with self._lock:
+            if not self._state.thinking_card_id:
+                return
+            await self._flush_thinking_locked(status="completed")
+            self._state.thinking_card_id = None
+            self._state.thinking_buffer = ""
+
+    # ── tool cards ──
+
+    async def _handle_tool_input_end(self, event: dict[str, Any]) -> None:
+        """Emit a TaskUpdateChunk(status=in_progress) for the tool whose
+        args just landed. The completion chunk fires later on
+        tool_result."""
+        tool_id = str(event.get("id") or "")
+        args = event.get("arguments") or {}
+        if not isinstance(args, dict):
+            args = {}
+        tool_name = self._state.pending_tool_names.get(tool_id, "?")
+
+        # Heartbeat suppression — pure noise in chat.
+        if self._is_heartbeat(tool_name, args):
+            # Drop the entry from pending tracking so tool_result
+            # doesn't render a completion card for it either.
+            self._state.pending_tool_names.pop(tool_id, None)
+            return
+
+        # Cache args for the later tool_result chunk.
+        self._state.pending_tool_args[tool_id] = args
+
+        await self._ensure_stream_opened()
+        await self._close_thinking_card()
+
+        # Same-tool coalescing under "new". The card uses a stable id
+        # — when we emit a second TaskUpdateChunk with the same id,
+        # Slack updates the existing card rather than adding a new one.
+        if self.verbosity == "new" and tool_name == self._state.coalesce_last_tool:
+            self._state.coalesce_count += 1
+            card_id = f"{tool_name}-coalesce"
+            title = f"{tool_name} ×{self._state.coalesce_count}"
+            await self._emit_task_chunk(card_id, title, "in_progress")
+            return
+        if self.verbosity == "new":
+            self._state.coalesce_last_tool = tool_name
+            self._state.coalesce_count = 1
+
+        # Build the card title with an argument preview.
+        title = self._format_tool_title(tool_name, args)
+        await self._emit_task_chunk(tool_id, title, "in_progress")
 
     async def _handle_tool_result(self, event: dict[str, Any]) -> None:
-        """If the tool result includes image data (inline base64 or
-        a saved file path), upload it back to Slack so the operator
-        actually sees what the agent produced.
+        """Mark the tool's card complete and harvest any inline images
+        for inclusion in the final stop_stream(blocks=…) call."""
+        tool_id = str(event.get("id") or "")
+        if not tool_id:
+            return
+        tool_name = self._state.pending_tool_names.pop(tool_id, None)
+        if tool_name is None:
+            # The tool was filtered (heartbeat) — its in_progress card
+            # was never emitted, so nothing to complete here. Still
+            # process images though (a heartbeat shouldn't generate
+            # images, but be defensive).
+            self._collect_images_for_finalize(event)
+            return
+        args = self._state.pending_tool_args.pop(tool_id, {})
 
-        Inline + path are TWO surfaces for the same data — ``generate_image``
-        returns both an ``image`` content block AND a "File saved to
-        \\`...\\`" line in its text preview. We prefer inline (base64) since
-        it works even when the on-disk file isn't readable by the daemon,
-        and only fall back to path extraction when no inline images were
-        emitted (e.g. tools that wrote a file but didn't return an image
-        block, like a hypothetical ``screenshot`` adapter).
+        if self.verbosity == "off":
+            self._collect_images_for_finalize(event)
+            return
+
+        preview = str(event.get("preview") or "")
+        is_error = bool(event.get("isError"))
+        # Pick a status the Slack widget recognises.
+        status = "error" if is_error else "completed"
+        # Tool output displayed inside the expanded card. Trim to a
+        # reasonable size — Slack truncates long task outputs anyway.
+        output_text = _short(preview, 2000) if preview else None
+        title = self._format_tool_title(tool_name, args)
+
+        # Same-tool coalescing under "new" — keep the same coalesced
+        # card and update its status to in_progress so it stays a
+        # single visual line until the LAST result lands.
+        if (
+            self.verbosity == "new"
+            and tool_name == self._state.coalesce_last_tool
+            and self._state.coalesce_count > 1
+        ):
+            card_id = f"{tool_name}-coalesce"
+            await self._emit_task_chunk(
+                card_id,
+                f"{tool_name} ×{self._state.coalesce_count}",
+                "completed" if not is_error else "error",
+                output=output_text,
+            )
+        else:
+            await self._emit_task_chunk(tool_id, title, status, output=output_text)
+
+        self._collect_images_for_finalize(event)
+
+    async def _emit_task_chunk(
+        self,
+        card_id: str,
+        title: str,
+        status: str,
+        *,
+        output: str | None = None,
+    ) -> None:
+        """Append a TaskUpdateChunk to the stream. Status transitions
+        on the same card_id mutate the existing card."""
+        async with self._lock:
+            if self._state.stream_failed or not self._state.stream_ts:
+                return
+            try:
+                from slack_sdk.models.messages.chunk import TaskUpdateChunk
+            except ImportError:
+                return
+            chunk = TaskUpdateChunk(
+                id=card_id,
+                title=title,
+                status=status,
+                output=output,
+                others={},
+            )
+            result = await self.adapter.append_stream(
+                self.source.chat_id,
+                self._state.stream_ts,
+                chunks=[chunk],
+            )
+            if not result.ok:
+                logger.debug("[slack] task chunk append failed: %s", result.error)
+
+    def _format_tool_title(self, name: str, args: dict[str, Any]) -> str:
+        """Build a Task Card title: ``name`` plus a short arg preview
+        when one fits. No emoji — the card has its own status indicator.
         """
-        items: list[UploadItem] = []
-        # Inline image blocks (e.g. anthropic ``image`` content blocks).
-        # Freyja's bridge extracted these into ``event["images"]`` with
-        # base64 data + mime type via _tool_content_preview_and_images.
-        inline_images = event.get("images") or []
-        for img in inline_images:
+        if not args:
+            return name
+        preview = _summarize_tool_args(name, args)
+        if not preview:
+            return name
+        # The card already shows status (spinner/check), so don't pad
+        # with extra glyphs. A simple "name: preview" reads cleanly.
+        return f"{name}: {preview}"
+
+    def _is_heartbeat(self, tool_name: str, args: dict[str, Any]) -> bool:
+        if tool_name != "tasks" or self.verbosity == "verbose":
+            return False
+        action = str(args.get("action") or "").lower()
+        return action == "heartbeat"
+
+    # ── images → stop_stream(blocks=…) ──
+
+    def _collect_images_for_finalize(self, event: dict[str, Any]) -> None:
+        """Stash any image content from a tool_result event so we can
+        attach it to the message's final state via stop_stream's
+        ``blocks`` param. Slack supports Block Kit only on stopStream
+        (per the docs)."""
+        # Inline base64 images (generate_image et al).
+        for img in event.get("images") or []:
             data_b64 = img.get("dataBase64")
             if not data_b64:
                 continue
@@ -656,80 +675,77 @@ class SlackStreamConsumer:
             except (binascii.Error, ValueError):
                 continue
             mime = str(img.get("mimeType") or "image/png")
-            ext = _mime_to_ext(mime)
             label = str(img.get("label") or "image")
-            items.append(UploadItem(
-                data=raw,
-                filename=f"{label.replace(' ', '_')}{ext}",
-                mime_type=mime,
-            ))
-        # Path references in the preview text — ONLY if no inline images.
-        # Otherwise we'd double-upload (same image as inline + as path).
-        preview = str(event.get("preview") or "")
-        if not items:
+            self._state.pending_image_blocks.append({
+                "data": raw,
+                "mime": mime,
+                "filename": f"{label.replace(' ', '_')}{_mime_to_ext(mime)}",
+            })
+        # "File saved to `<path>`" references — only if no inline data
+        # for this event (avoids double-attach for generate_image).
+        if not (event.get("images") or []):
+            preview = str(event.get("preview") or "")
             for match in _FILE_SAVED_RE.finditer(preview):
                 p = Path(match.group(1))
-                if not p.exists() or not p.is_file():
+                try:
+                    if not p.exists() or not p.is_file():
+                        continue
+                except OSError:
                     continue
                 if p.suffix.lower() not in _IMAGE_EXTS:
                     continue
-                items.append(UploadItem(path=str(p), filename=p.name))
-        if not items:
-            return
-        # Caption: use the preview's first non-empty line as a context
-        # blurb on the upload so the image isn't a bare attachment.
-        # Falls back to a generic line if the preview is empty.
-        caption = _first_meaningful_line(preview) or "Generated image"
-        try:
-            result = await self.adapter.upload_files(
-                self.source.chat_id,
-                items,
-                thread_id=self._reply_thread_id,
-                initial_comment=caption,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("upload_files failed")
-            await self._notify_upload_failure(str(exc))
-            return
-        if not result.ok:
-            logger.warning("upload_files returned error: %s", result.error)
-            await self._notify_upload_failure(result.error or "unknown error")
-
-    async def _notify_upload_failure(self, reason: str) -> None:
-        """Send a fallback text message when an image upload fails so
-        the user knows the agent's output didn't actually land. Slack
-        rejects oversize files, unauthorized scopes, and rate-limited
-        uploads — without this the agent appears to have responded but
-        the user sees nothing."""
-        # Trim the reason to keep the chat clean — Slack errors can be
-        # multi-line API dumps. Keep just the first line, capped.
-        short = reason.split("\n", 1)[0].strip()
-        if len(short) > 200:
-            short = short[:197] + "…"
-        try:
-            await self.adapter.send(
-                self.source.chat_id,
-                f"_couldn't upload the image: {short}_",
-                thread_id=self._reply_thread_id,
-                raw_hint=self.raw_hint,
-            )
-        except Exception:  # noqa: BLE001
-            logger.debug("failed to send upload-failure notice", exc_info=True)
+                try:
+                    raw = p.read_bytes()
+                except OSError:
+                    continue
+                self._state.pending_image_blocks.append({
+                    "data": raw,
+                    "mime": _ext_to_mime(p.suffix.lower()),
+                    "filename": p.name,
+                })
 
     # ── finalize ──
 
     async def finalize(self) -> None:
-        """Final flush + listener unregister. Idempotent."""
+        """Flush remaining text, close cards, call stop_stream."""
         async with self._lock:
             if self._state.finalized:
                 return
-            await self._flush_locked()
-            # Force a final unthrottled flush of progress so the
-            # closed bubble matches reality.
-            self._state.progress.last_edit_monotonic = 0
-            await self._flush_progress_locked()
             self._state.finalized = True
-        # Clear the typing indicator (best-effort).
+
+        # Flush whatever's still in the text buffer. Don't honour the
+        # throttle — this is the last chance. Routes to the streaming
+        # or fallback path based on which one we ended up on.
+        async with self._lock:
+            self._state.last_text_flush_ms = 0.0
+            if self._state.stream_failed:
+                await self._flush_fallback_locked()
+            else:
+                await self._flush_text_locked()
+
+        # Close any open thinking card.
+        await self._close_thinking_card()
+
+        # Upload any pending images via files_upload (separate from
+        # stopStream blocks). Slack's Block Kit image block only
+        # accepts public URLs, but our images live in-process as
+        # base64 — uploading via files_upload_v2 with thread_ts
+        # places them in the same thread as the streaming response,
+        # which is the closest equivalent to "inline at the end".
+        await self._upload_pending_images()
+
+        # Stop the stream. No more content; this finalizes the
+        # message visually (Slack removes the streaming indicator).
+        # Skipped on the fallback path — there's no stream to stop.
+        if self._state.stream_ts and not self._state.stream_failed:
+            stop_result = await self.adapter.stop_stream(
+                self.source.chat_id,
+                self._state.stream_ts,
+            )
+            if not stop_result.ok:
+                logger.warning("[slack] chat.stopStream failed: %s", stop_result.error)
+
+        # Stop the typing indicator.
         try:
             await self.adapter.stop_typing(
                 self.source.chat_id,
@@ -737,8 +753,8 @@ class SlackStreamConsumer:
             )
         except Exception:  # noqa: BLE001
             logger.debug("stop_typing failed (non-fatal)", exc_info=True)
-        # Notify the gateway that this turn is done (so the per-turn
-        # listener registration can be cleared).
+
+        # Notify the gateway that this turn is done.
         if self.on_complete:
             try:
                 result = self.on_complete()
@@ -747,105 +763,113 @@ class SlackStreamConsumer:
             except Exception:  # noqa: BLE001
                 logger.exception("on_complete callback raised")
 
+    async def _upload_pending_images(self) -> None:
+        """Ship any images collected during the turn to the same thread
+        the streaming response lives in. Uses upload_files for batch +
+        one initial_comment.
 
-# ─── module-level helpers ────────────────────────────────────────────
+        We deliberately upload AFTER stopStream rather than via the
+        blocks param because Block Kit image blocks require a publicly
+        accessible URL; our generated images are in-memory bytes.
+        files_upload_v2 with thread_ts puts them directly under the
+        streaming message — close enough to inline."""
+        items = [
+            UploadItem(
+                data=img["data"],
+                filename=img["filename"],
+                mime_type=img["mime"],
+            )
+            for img in self._state.pending_image_blocks
+            if img.get("data")
+        ]
+        if not items:
+            return
+        try:
+            result = await self.adapter.upload_files(
+                self.source.chat_id,
+                items,
+                thread_id=self._reply_thread_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("upload_files failed: %s", exc)
+            return
+        if not result.ok:
+            logger.warning("[slack] upload_files failed: %s", result.error)
+
+
+# ─── module-level helpers (preserved from prior implementation) ────────
 
 
 def _summarize_tool_args(name: str, args: dict[str, Any]) -> str:
     """Render a chat-friendly preview of tool arguments.
 
-    Returns a string that may span multiple lines for richer tools (the
-    progress bubble joins entries with ``\n``, so embedded newlines in
-    a single entry just render as a multi-line block for that tool
-    call). Per-tool special cases pull the most useful fields and label
-    them; generic fallback returns the first scalar arg.
-
-    Wider previews for tools where the structure matters (``sub_agent``,
-    ``tasks``) — the operator wants to see ``what`` the agent is doing,
-    not just ``which tool``. Headline + indented detail on a second
-    line keeps it scannable.
+    Returns a string suitable as a Task Card title suffix. Per-tool
+    special cases pull the most useful fields and label them; generic
+    fallback returns the first scalar arg. Output is kept short since
+    Task Card titles render in a single line.
     """
     if not isinstance(args, dict) or not args:
         return ""
     if name in {"web_search", "web_research"}:
-        q = str(args.get("query") or "")
-        return _short(q, 160)
+        return _short(str(args.get("query") or ""), 120)
     if name == "web_fetch":
         url = str(args.get("url") or "")
         obj = str(args.get("objective") or "")
         if obj:
-            return f"{_short(url, 100)}\n     ↳ _{_short(obj, 160)}_"
-        return _short(url, 160)
+            return f"{_short(url, 80)} — {_short(obj, 100)}"
+        return _short(url, 140)
     if name in {"read_file", "write_file", "edit_file"}:
-        return _short(str(args.get("path") or ""), 140)
+        return _short(str(args.get("path") or ""), 120)
     if name in {"bash", "shell"}:
         cmd = str(args.get("command") or args.get("cmd") or "")
         summary = str(args.get("summary") or "")
         if summary:
-            return f"{summary}\n     ↳ `{_short(cmd, 160)}`"
-        return _short(cmd, 200)
+            return f"{_short(summary, 80)} — `{_short(cmd, 120)}`"
+        return _short(cmd, 180)
     if name == "glob":
-        return _short(str(args.get("pattern") or ""), 140)
+        return _short(str(args.get("pattern") or ""), 120)
     if name == "grep":
         pattern = str(args.get("pattern") or args.get("query") or "")
         path = str(args.get("path") or "")
         if path:
-            return f"`{_short(pattern, 100)}`  in  `{_short(path, 80)}`"
-        return _short(pattern, 180)
+            return f"`{_short(pattern, 80)}` in `{_short(path, 60)}`"
+        return _short(pattern, 160)
     if name == "sub_agent":
         agent_type = str(args.get("agent_type") or args.get("type") or "")
-        mode = str(args.get("mode") or "")
         label = str(args.get("label") or args.get("name") or "")
-        model = str(args.get("model") or "")
         task = str(args.get("task") or args.get("prompt") or "")
-        # Build a structured 2-line preview: headline (config) + task quote
-        config_bits: list[str] = []
+        parts: list[str] = []
         if agent_type:
-            mode_suffix = f" · {mode}" if mode else ""
-            config_bits.append(f"[{agent_type}{mode_suffix}]")
-        if model:
-            config_bits.append(f"({model})")
+            parts.append(f"[{agent_type}]")
         if label:
-            config_bits.append(label)
-        header = " ".join(config_bits)
+            parts.append(label)
         if task:
-            task_line = _short(task.replace("\n", " "), 240)
-            if header:
-                return f"{header}\n     ↳ _{task_line}_"
-            return f"_{task_line}_"
-        return header or "(no task)"
+            parts.append(_short(task, 160))
+        return " — ".join(parts) if parts else "(no task)"
     if name == "tasks":
         action = str(args.get("action") or "")
         title = str(args.get("title") or "")
-        task_id = str(args.get("task_id") or args.get("id") or "")
-        body = str(args.get("body") or args.get("description") or "")
         bits: list[str] = []
         if action:
-            bits.append(f"action=`{action}`")
+            bits.append(f"action={action}")
         if title:
-            bits.append(_short(title, 140))
-        elif task_id:
-            bits.append(f"id=`{task_id}`")
-        head = " · ".join(bits) if bits else ""
-        if body:
-            return f"{head}\n     ↳ _{_short(body, 200)}_" if head else _short(body, 240)
-        return head
+            bits.append(_short(title, 100))
+        return " · ".join(bits)
     if name == "kanban":
         action = str(args.get("action") or "")
         title = str(args.get("title") or args.get("card_title") or "")
-        card_id = str(args.get("card_id") or args.get("id") or "")
-        head = f"action=`{action}`" if action else ""
+        bits: list[str] = []
+        if action:
+            bits.append(f"action={action}")
         if title:
-            head = f"{head} · {_short(title, 140)}" if head else _short(title, 180)
-        elif card_id:
-            head = f"{head} · id=`{card_id}`" if head else f"id=`{card_id}`"
-        return head
+            bits.append(_short(title, 120))
+        return " · ".join(bits)
     if name == "generate_image":
-        return _short(str(args.get("prompt") or ""), 220)
+        return _short(str(args.get("prompt") or ""), 180)
     if name == "memory_update":
         return _short(
             str(args.get("text") or args.get("name") or args.get("title") or ""),
-            180,
+            140,
         )
     if name == "send_attachment":
         paths = args.get("paths") or []
@@ -853,20 +877,13 @@ def _summarize_tool_args(name: str, args: dict[str, Any]) -> str:
         if isinstance(paths, list) and paths:
             files = ", ".join(Path(str(p)).name for p in paths[:4])
             more = "" if len(paths) <= 4 else f" (+{len(paths) - 4})"
-            head = f"files: {files}{more}"
-            if caption:
-                return f"{head}\n     ↳ _{_short(caption, 180)}_"
-            return head
-        return _short(caption, 200)
-    # Generic fallback — show the FIRST 2 scalar args so a tool like
-    # ``tasks(action=create, title=...)`` still shows the title even
-    # if we forgot to add a per-tool branch above. The previous code
-    # only showed the first arg, which is why ``tasks`` looked like
-    # ``action=create`` with no context.
+            return f"{files}{more}" + (f" — {_short(caption, 120)}" if caption else "")
+        return _short(caption, 160)
+    # Generic fallback — show the FIRST 2 scalar args.
     pairs: list[str] = []
     for k, v in args.items():
         if isinstance(v, (str, int, float, bool)) and (v or v == 0):
-            pairs.append(f"{k}={_short(str(v), 100)}")
+            pairs.append(f"{k}={_short(str(v), 80)}")
             if len(pairs) >= 2:
                 break
     return " · ".join(pairs)
@@ -887,17 +904,25 @@ def _mime_to_ext(mime: str) -> str:
     }.get(mime.lower(), ".png")
 
 
+def _ext_to_mime(ext: str) -> str:
+    return {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+    }.get(ext.lower(), "image/png")
+
+
 def _first_meaningful_line(text: str, max_chars: int = 180) -> str:
     """Return the first non-empty line of ``text``, capped at
-    ``max_chars``. Used to derive an image-upload caption from a tool's
-    preview string. Skips lines that are pure metadata bracket markers
-    like ``[Image: image/png, 1024x1024]`` since those duplicate the
-    visible attachment thumbnail."""
+    ``max_chars``. Preserved from the prior implementation for any
+    caller still using it."""
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
             continue
-        # Skip the bridge's synthetic image-placeholder lines.
         if line.startswith("[Image:") or line.startswith("[Image URL:"):
             continue
         if len(line) > max_chars:

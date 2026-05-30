@@ -986,10 +986,10 @@ class GatewayDaemon:
         )
 
         descriptions = {
-            "off": "no tool progress at all — only the final response",
-            "new": "show only when the tool *changes* (consecutive same-tool calls coalesce)",
-            "all": "every tool call with a short argument preview",
-            "verbose": "every tool call with full args + heartbeat noise",
+            "off": "no Task Cards — only the agent's prose response",
+            "new": "one Task Card per unique tool — consecutive same-tool calls coalesce into one card with ×N count",
+            "all": "one Task Card per call (default — Slack auto-collapses; no visual cost)",
+            "verbose": "every call + thinking + heartbeat noise in cards",
         }
 
         if action == "status" or action == "show":
