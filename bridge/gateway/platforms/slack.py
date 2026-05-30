@@ -1038,6 +1038,8 @@ class SlackAdapter:
         chunks: list[Any] | None = None,
         task_display_mode: str | None = "plan",
         raw_hint: dict[str, Any] | None = None,
+        recipient_team_id: str | None = None,
+        recipient_user_id: str | None = None,
     ) -> SendResult:
         """Wrap ``chat.startStream``. thread_id is required by the API
         — Slack's streaming methods don't support top-level messages.
@@ -1065,6 +1067,14 @@ class SlackAdapter:
             kwargs["chunks"] = chunks
         if task_display_mode:
             kwargs["task_display_mode"] = task_display_mode
+        # Required to put the message into actual streaming state.
+        # Without these, chat.startStream returns 200/ts but the
+        # message stays non-streaming and every subsequent
+        # appendStream rejects with "message_not_in_streaming_state".
+        if recipient_team_id:
+            kwargs["recipient_team_id"] = recipient_team_id
+        if recipient_user_id:
+            kwargs["recipient_user_id"] = recipient_user_id
         try:
             res = await client.chat_startStream(**kwargs)
             ts = res.get("ts") if hasattr(res, "get") else None

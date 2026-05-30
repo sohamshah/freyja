@@ -221,6 +221,8 @@ class PlatformAdapter(Protocol):
         chunks: list[Any] | None = None,
         task_display_mode: str | None = "plan",
         raw_hint: dict[str, Any] | None = None,
+        recipient_team_id: str | None = None,
+        recipient_user_id: str | None = None,
     ) -> SendResult:
         """Open a streaming message. Returns SendResult.message_id =
         the stream's ts, which the caller passes to subsequent

@@ -522,10 +522,19 @@ class SlackStreamConsumer:
                 logger.warning("[slack] no thread anchor — start_stream skipped")
                 self._state.stream_failed = True
                 return
+            # recipient_team_id + recipient_user_id are what Slack uses
+            # to actually put the message into streaming state — without
+            # them, chat.startStream returns 200/ts but the message stays
+            # in non-streaming state and every subsequent appendStream
+            # rejects with "message_not_in_streaming_state". The SDK's
+            # ChatStream wrapper docs say "Required when streaming to
+            # channels"; empirically required for DMs too.
             result = await self.adapter.start_stream(
                 self.source.chat_id,
                 thread_id=self._reply_thread_id,
                 task_display_mode="plan",
+                recipient_team_id=self.source.workspace_id or None,
+                recipient_user_id=self.source.user_id or None,
             )
             if result.ok and result.message_id:
                 self._state.stream_ts = result.message_id
