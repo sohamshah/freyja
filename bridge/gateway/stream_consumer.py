@@ -9,7 +9,7 @@ thinking through native Slack Block Kit primitives:
 
   · ``markdown_text`` chunks for the agent's user-facing prose body
   · ``TaskUpdateChunk`` per tool call — renders as a collapsible card
-    with a status indicator (``in_progress`` → ``completed`` / ``error``)
+    with a status indicator (``in_progress`` → ``complete`` / ``error``)
     that the user can expand to see args + output
   · ``TaskUpdateChunk`` per thinking phase — surfaces the model's
     reasoning as another collapsible card titled "Thinking"
@@ -38,7 +38,7 @@ Lifecycle:
   · tool_use_start → record name; (rendering deferred until tool_input_end
     so we can heartbeat-filter)
   · tool_input_end → emit TaskUpdateChunk(status="in_progress")
-  · tool_result → emit TaskUpdateChunk(status="completed", output=…);
+  · tool_result → emit TaskUpdateChunk(status="complete", output=…);
     handle inline image data
   · turn_complete → flush remaining text; close any open thinking card;
     call stop_stream (with image blocks if any pending)
@@ -507,12 +507,12 @@ class SlackStreamConsumer:
             logger.debug("[slack] thinking appendStream failed: %s", result.error)
 
     async def _close_thinking_card(self) -> None:
-        """Finalize the open Thinking card (status=completed) so the
+        """Finalize the open Thinking card (status=complete) so the
         next thinking phase starts a new card."""
         async with self._lock:
             if not self._state.thinking_card_id:
                 return
-            await self._flush_thinking_locked(status="completed")
+            await self._flush_thinking_locked(status="complete")
             self._state.thinking_card_id = None
             self._state.thinking_buffer = ""
 
@@ -580,8 +580,10 @@ class SlackStreamConsumer:
 
         preview = str(event.get("preview") or "")
         is_error = bool(event.get("isError"))
-        # Pick a status the Slack widget recognises.
-        status = "error" if is_error else "completed"
+        # Slack's task widget status enum is {pending, in_progress,
+        # complete, error}. NOT "completed" — that string is silently
+        # ignored and the card never resolves to a finished state.
+        status = "error" if is_error else "complete"
         # Tool output displayed inside the expanded card. Trim to a
         # reasonable size — Slack truncates long task outputs anyway.
         output_text = _short(preview, 2000) if preview else None
@@ -599,7 +601,7 @@ class SlackStreamConsumer:
             await self._emit_task_chunk(
                 card_id,
                 f"{tool_name} ×{self._state.coalesce_count}",
-                "completed" if not is_error else "error",
+                "complete" if not is_error else "error",
                 output=output_text,
             )
         else:

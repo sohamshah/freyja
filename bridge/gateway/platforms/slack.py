@@ -1070,7 +1070,7 @@ class SlackAdapter:
             ts = res.get("ts") if hasattr(res, "get") else None
             if ts:
                 self._bot_message_ts.add(str(ts))
-            return SendResult(ok=bool(res.get("ok")), message_id=ts, raw=dict(res))
+            return SendResult(ok=bool(res.get("ok")), message_id=ts, raw=getattr(res, "data", None) or {})
         except Exception as exc:  # noqa: BLE001
             logger.exception("[slack] chat.startStream failed: %s", exc)
             return SendResult(ok=False, error=str(exc))
@@ -1103,7 +1103,7 @@ class SlackAdapter:
             kwargs["chunks"] = chunks
         try:
             res = await client.chat_appendStream(**kwargs)
-            return SendResult(ok=bool(res.get("ok")), message_id=stream_id, raw=dict(res))
+            return SendResult(ok=bool(res.get("ok")), message_id=stream_id, raw=getattr(res, "data", None) or {})
         except Exception as exc:  # noqa: BLE001
             logger.exception("[slack] chat.appendStream failed: %s", exc)
             return SendResult(ok=False, error=str(exc))
@@ -1138,7 +1138,7 @@ class SlackAdapter:
             kwargs["blocks"] = blocks
         try:
             res = await client.chat_stopStream(**kwargs)
-            return SendResult(ok=bool(res.get("ok")), message_id=stream_id, raw=dict(res))
+            return SendResult(ok=bool(res.get("ok")), message_id=stream_id, raw=getattr(res, "data", None) or {})
         except Exception as exc:  # noqa: BLE001
             logger.exception("[slack] chat.stopStream failed: %s", exc)
             return SendResult(ok=False, error=str(exc))
