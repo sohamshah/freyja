@@ -296,6 +296,12 @@ class _StreamState:
     #     "Saved to /tmp/draft.md"
     phase_open: bool = False
     cards_emitted_this_phase: int = 0
+    # Title of the currently open Plan. Used to detect when the next
+    # tool belongs to a different semantic category ("Researching" →
+    # "Planning" → "Delegating") so we can close the current Plan and
+    # open a fresh one. Without this every tool in a turn collapses
+    # into one giant card regardless of what the agent is doing.
+    phase_title: str | None = None
 
     # Tool-call tracking. tool_use_start stashes name → cached for
     # tool_result's completion chunk so it can render the same title.
@@ -582,9 +588,12 @@ class SlackStreamConsumer:
                 chunks=[chunk],
             )
             self._state.phase_open = True
+            self._state.phase_title = title
             self._state.cards_emitted_this_phase = 0
             if not result.ok:
                 logger.debug("[slack] plan chunk append failed: %s", result.error)
+                if "message_not_in_streaming_state" in (result.error or "").lower():
+                    self._state.stream_failed = True
 
     def _close_phase_if_after_cards(self) -> None:
         """End the current phase if at least one card has been emitted
@@ -593,12 +602,29 @@ class SlackStreamConsumer:
         between tool batches naturally splits the cards into groups."""
         if self._state.phase_open and self._state.cards_emitted_this_phase > 0:
             self._state.phase_open = False
+            self._state.phase_title = None
             self._state.cards_emitted_this_phase = 0
             # Also reset the same-tool coalesce tracking — a new phase
             # is a fresh batch, the prior tool shouldn't coalesce into
             # the next phase's cards.
             self._state.coalesce_last_tool = None
             self._state.coalesce_count = 0
+
+    def _rotate_phase_on_title_change(self, new_title: str) -> None:
+        """Close the current Plan if the new card belongs to a
+        different semantic category, so multi-stage turns produce
+        multiple labelled cards instead of one giant "Delegating"
+        block. Only rotates after at least one card has actually
+        been emitted in the current phase — we never close an empty
+        phase, and we never close because of the very first card.
+        """
+        if (
+            self._state.phase_open
+            and self._state.phase_title is not None
+            and self._state.phase_title != new_title
+            and self._state.cards_emitted_this_phase > 0
+        ):
+            self._close_phase_if_after_cards()
 
     # ── text body (markdown_text deltas) ──
 
@@ -661,21 +687,72 @@ class SlackStreamConsumer:
             self._state.last_text_flush_ms = time.monotonic() * 1000
 
     async def _flush_text_locked(self) -> None:
-        """Send any buffered body text. Caller holds the lock."""
+        """Send any buffered body text. Caller holds the lock.
+
+        We open the stream with ``task_display_mode="plan"`` so the
+        message lives in "task" streaming mode — once that's set the
+        server rejects subsequent ``markdown_text`` top-level appends
+        with ``streaming_mode_mismatch``. Body text in this mode has
+        to ride as a ``MarkdownTextChunk`` inside the chunks array
+        instead, which renders the same prose between/after the
+        plan + task cards.
+        """
         if self._state.stream_failed or not self._state.stream_ts:
             return
         if not self._state.text_buffer:
             return
         delta = self._state.text_buffer
         self._state.text_buffer = ""
-        result = await self.adapter.append_stream(
-            self.source.chat_id,
-            self._state.stream_ts,
-            markdown_text=delta,
-        )
+        try:
+            from slack_sdk.models.messages.chunk import MarkdownTextChunk
+        except ImportError:
+            # Old SDK without the chunk type — fall back to top-level
+            # markdown_text (works on text-mode streams; will error on
+            # task-mode streams, but we have no better option).
+            result = await self.adapter.append_stream(
+                self.source.chat_id,
+                self._state.stream_ts,
+                markdown_text=delta,
+            )
+        else:
+            chunk = MarkdownTextChunk(text=delta)
+            result = await self.adapter.append_stream(
+                self.source.chat_id,
+                self._state.stream_ts,
+                chunks=[chunk],
+            )
         self._state.last_text_flush_ms = time.monotonic() * 1000
         if not result.ok:
-            logger.warning("[slack] text appendStream failed: %s", result.error)
+            # Slack closes a streaming message after an idle window
+            # (~empirically ~minutes; we hit this every time a long
+            # ``subagents`` wait sits between LLM iterations). Once
+            # that happens every future appendStream rejects with
+            # "message_not_in_streaming_state" and nothing the model
+            # produces afterwards reaches the user. Detect the
+            # closed-stream case AND any other appendStream failure
+            # and switch to the chat.postMessage / chat.update
+            # fallback path that ``_append_text`` and
+            # ``_flush_fallback_locked`` already implement — at least
+            # the prose body lands in Slack, even if task cards stop
+            # updating. Restore the delta we already drained from
+            # text_buffer into fallback_buffer so nothing is lost.
+            error_str = (result.error or "").lower()
+            is_closed = "message_not_in_streaming_state" in error_str
+            logger.warning(
+                "[slack] text appendStream failed (%s) — %s",
+                result.error,
+                "stream closed, switching to postMessage fallback"
+                if is_closed
+                else "marking stream failed and falling back",
+            )
+            # Restore the drained delta to text_buffer — the fallback
+            # flush reads from there. Without this, every byte we
+            # drained on the failing call is silently dropped.
+            self._state.text_buffer = delta + self._state.text_buffer
+            self._state.stream_failed = True
+            # Kick the fallback flush immediately so the user sees
+            # the in-flight text now rather than waiting for finalize.
+            await self._flush_fallback_locked()
 
     # ── thinking card (TaskUpdateChunk) ──
 
@@ -735,6 +812,8 @@ class SlackStreamConsumer:
         self._state.last_thinking_flush_ms = time.monotonic() * 1000
         if not result.ok:
             logger.debug("[slack] thinking appendStream failed: %s", result.error)
+            if "message_not_in_streaming_state" in (result.error or "").lower():
+                self._state.stream_failed = True
 
     async def _close_thinking_card(self) -> None:
         """Finalize the open Thinking card (status=complete) so the
@@ -778,7 +857,16 @@ class SlackStreamConsumer:
         # mutate an existing Plan's title — and subsequent tools in
         # the same phase land under it. Trade-off: the title reflects
         # the phase's OPENING activity, not the dominant one.
-        await self._ensure_phase_open(title=_phase_title_for_tool(tool_name))
+        # Close + reopen the phase when the tool's semantic category
+        # shifts (e.g. Researching → Planning → Delegating). Without
+        # this, every tool in a multi-stage turn lands in whichever
+        # title the FIRST tool set — three sub_agents plus a tasks
+        # call plus a subagents call all collapse into one "Delegating"
+        # card. Splitting on category gives the operator a sense of
+        # the turn's structure at a glance.
+        new_title = _phase_title_for_tool(tool_name)
+        self._rotate_phase_on_title_change(new_title)
+        await self._ensure_phase_open(title=new_title)
 
         # Same-tool coalescing under "new". The card uses a stable id
         # — when we emit a second TaskUpdateChunk with the same id,
@@ -900,6 +988,13 @@ class SlackStreamConsumer:
                 self._state.cards_emitted_this_phase += 1
             if not result.ok:
                 logger.debug("[slack] task chunk append failed: %s", result.error)
+                # If the stream went out of streaming state (idle
+                # timeout during a long tool wait), mark it failed so
+                # subsequent body-text flushes route through the
+                # chat.postMessage fallback path and the user still
+                # sees the agent's prose response.
+                if "message_not_in_streaming_state" in (result.error or "").lower():
+                    self._state.stream_failed = True
 
     def _format_tool_title(self, name: str, args: dict[str, Any]) -> str:
         """Build a Task Card title: ``name`` plus a short arg preview

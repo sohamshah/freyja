@@ -269,6 +269,18 @@ class GatewayDaemon:
             logger.exception("failed to route inbound message")
             return
 
+        # If the session's transcript is large, surface a quick
+        # "catching up" notice in Slack so the operator doesn't stare
+        # at an empty typing indicator while the bridge sanitizes the
+        # history + the LLM warms up on a fat context. The threshold
+        # is intentionally chatty — even ~30 messages is enough that
+        # a multi-second startup gap is worth explaining. The pre-turn
+        # sanitizer (freyja_bridge._sanitize_session_oversize_images)
+        # will follow this notice, dim-aware after the most recent
+        # patch — so any oversized screenshots from earlier in this
+        # DM get rewritten in place before the LLM call.
+        await self._maybe_send_catching_up_notice(session, adapter, message)
+
         # Slash commands without text body (just /status, /freyja help)
         # still get routed as agent turns — the slash text becomes the
         # user message. Future: shortcut some slashes to in-gateway
@@ -377,9 +389,44 @@ class GatewayDaemon:
         # user replies in a Slack thread the bot didn't initially
         # join — without this, the agent only sees the one message
         # that pinged it and has to guess at the rest.
+        #
+        # Pass the most recent platform ts we've already ingested for
+        # this session so the fetch is INCREMENTAL: only messages
+        # newer than our persisted transcript get pulled. Without
+        # this, the same 100 thread replies / 15 DM messages get
+        # re-injected on every turn alongside the persisted
+        # transcript — doubling context and letting stale prior-turn
+        # topics bleed into the new turn.
+        last_seen_ts = None
+        try:
+            inner = getattr(session, "session", None)
+            meta = getattr(inner, "metadata", None) if inner else None
+            if isinstance(meta, dict):
+                last_seen_ts = meta.get("last_inbound_platform_ts")
+        except Exception:  # noqa: BLE001
+            last_seen_ts = None
         prior_block, prior_attachments = await self._fetch_prior_context(
-            message, adapter,
+            message, adapter, oldest_platform_ts=last_seen_ts,
         )
+
+        # Now that we've read the old ts, advance the high-water mark
+        # to the message we just ingested. Persisted alongside session
+        # metadata so the next daemon restart still gets incremental
+        # fetches for this thread/DM. Only write if we have a usable
+        # ts — empty / None means we'd silently disable the optimisation
+        # on the next turn.
+        try:
+            current_ts = getattr(message.source, "message_id", None)
+            inner = getattr(session, "session", None)
+            meta = getattr(inner, "metadata", None) if inner else None
+            if (
+                isinstance(meta, dict)
+                and current_ts
+                and (last_seen_ts is None or str(current_ts) > str(last_seen_ts))
+            ):
+                meta["last_inbound_platform_ts"] = str(current_ts)
+        except Exception:  # noqa: BLE001
+            logger.debug("failed to advance last_inbound_platform_ts", exc_info=True)
 
         # Annotate non-image attachments (PDFs, text docs, binaries)
         # so the agent knows they exist + where to read them from.
@@ -461,10 +508,120 @@ class GatewayDaemon:
                 return a
         return None
 
+    # Thresholds for the "catching up" notice. Tuned so we stay quiet
+    # on routine threads (no notice when the LLM call will be quick)
+    # but speak up before chewing through a large transcript. Below
+    # 100k tokens / 50 messages the startup gap is short enough that
+    # a notice would just add noise; above 500k tokens we explicitly
+    # mention compaction since the runner is likely to summarize.
+    _CATCHING_UP_TOKEN_THRESHOLD = 100_000
+    _CATCHING_UP_BIG_TOKEN_THRESHOLD = 500_000
+    _CATCHING_UP_MSG_THRESHOLD = 50
+
+    async def _maybe_send_catching_up_notice(
+        self,
+        session: Any,
+        adapter: Any,
+        message: IncomingMessage,
+    ) -> None:
+        """Emit a brief Slack message before the LLM call when the
+        session's persisted transcript is large enough that the user
+        would otherwise stare at a typing indicator for several
+        seconds wondering if anything's happening.
+
+        Counts come straight off the in-memory session — no extra
+        traversal needed beyond a len(). Best-effort: any failure
+        here must not block the actual turn from running.
+        """
+        try:
+            # `session` here is `_BridgeSession`, which wraps the engine
+            # `Session`. The transcript lives one level deeper — and
+            # accessing the wrong attribute silently returned None,
+            # making the notice a no-op for every session.
+            inner = getattr(session, "session", None)
+            transcript = (
+                getattr(inner, "transcript", None)
+                if inner is not None
+                else getattr(session, "transcript", None)
+            )
+            if transcript is None:
+                return
+            entries = list(getattr(transcript, "entries", []) or [])
+            n_msgs = sum(1 for e in entries if getattr(e, "message", None) is not None)
+            # Token estimate — peak input_tokens across all assistant
+            # turns. Each turn's input already includes its full prior
+            # history, so the MAX across turns is the best lower bound
+            # on how big the *next* prompt will be. The last turn alone
+            # can be misleading right after a compaction (the kept tail
+            # is tiny so input_tokens drops) even though the conversation
+            # itself is still long.
+            est_tokens = 0
+            for e in entries:
+                msg = getattr(e, "message", None)
+                if msg is None:
+                    continue
+                in_tok = int(getattr(msg, "input_tokens", 0) or 0)
+                if in_tok > est_tokens:
+                    est_tokens = in_tok
+
+            if (
+                n_msgs < self._CATCHING_UP_MSG_THRESHOLD
+                and est_tokens < self._CATCHING_UP_TOKEN_THRESHOLD
+            ):
+                return
+
+            # Format the count compactly.
+            if est_tokens >= 1_000_000:
+                tok_str = f"~{est_tokens / 1_000_000:.1f}M tokens"
+            elif est_tokens >= 1_000:
+                tok_str = f"~{est_tokens // 1_000}k tokens"
+            else:
+                tok_str = f"~{est_tokens} tokens"
+
+            big = est_tokens >= self._CATCHING_UP_BIG_TOKEN_THRESHOLD
+            tail = (
+                "Compacting history before responding — back to you "
+                "in a moment."
+            ) if big else (
+                "Catching up — back to you shortly."
+            )
+            text = (
+                f"_Looking at {n_msgs} prior messages ({tok_str}) in "
+                f"this conversation. {tail}_"
+            )
+
+            src = message.source
+            logger.info(
+                "catching-up notice firing: chat=%s thread=%s msgs=%d tokens=%d",
+                src.chat_id,
+                src.thread_id,
+                n_msgs,
+                est_tokens,
+            )
+            try:
+                result = await adapter.send(
+                    src.chat_id,
+                    text,
+                    thread_id=src.thread_id,
+                    raw_hint=message.raw,
+                )
+                if not getattr(result, "ok", True):
+                    logger.warning(
+                        "catching-up notice send returned not-ok: %s",
+                        getattr(result, "error", "?"),
+                    )
+            except Exception:  # noqa: BLE001
+                logger.warning("catching-up notice send raised", exc_info=True)
+        except Exception:  # noqa: BLE001
+            # Never block the turn on a UI notice failure.
+            logger.warning("catching-up notice raised", exc_info=True)
+
     async def _fetch_prior_context(
         self,
         message: IncomingMessage,
         adapter: object,
+        *,
+        oldest_platform_ts: str | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
         """Render prior conversation in this thread / DM, with images.
 
@@ -515,12 +672,14 @@ class GatewayDaemon:
                     source.thread_id,
                     limit=100,
                     exclude_ts=trigger_ts,
+                    oldest_ts=oldest_platform_ts,
                 )
             elif source.chat_type == "dm" and hasattr(adapter, "fetch_dm_history"):
                 msgs = await adapter.fetch_dm_history(  # type: ignore[attr-defined]
                     source.chat_id,
                     limit=15,
                     exclude_ts=trigger_ts,
+                    oldest_ts=oldest_platform_ts,
                 )
         except Exception:
             logger.exception("prior-context fetch raised")

@@ -670,38 +670,62 @@ def _sanitize_session_oversize_images(session: Any) -> int:
     """Walk the existing transcript and downscale any oversize image
     blocks in place so the next provider call doesn't get rejected. Only
     rewrites images above the safe target — small images are skipped.
+
+    Walks two levels deep:
+      · ``TranscriptEntry.message.content`` for direct image blocks
+        (user-uploaded screenshots, assistant-attached images)
+      · Inside any ``ToolResultBlock.content`` for nested image blocks
+        (computer-use / browser tools that return screenshots)
+
     Returns the count of images that were rewritten.
     """
     if session is None:
         return 0
     try:
-        from engine.types import ImageBlock
+        from engine.types import ImageBlock, ToolResultBlock
     except Exception:  # noqa: BLE001
         return 0
     try:
         entries = session.transcript.entries  # type: ignore[attr-defined]
     except Exception:  # noqa: BLE001
         return 0
+
+    def _rewrite_block(block: Any) -> bool:
+        if not isinstance(block, ImageBlock):
+            return False
+        if getattr(block, "source_type", "") != "base64" or not block.data:
+            return False
+        new_data, new_media, changed = _downscale_b64_image(block.data, block.media_type)
+        if changed:
+            block.data = new_data
+            block.media_type = new_media
+        return changed
+
     rewritten = 0
     for entry in entries:
-        content = getattr(entry, "content", None)
+        msg = getattr(entry, "message", None)
+        if msg is None:
+            continue
+        content = getattr(msg, "content", None)
         if not isinstance(content, list):
             continue
         for block in content:
-            if not isinstance(block, ImageBlock):
-                continue
-            if getattr(block, "source_type", "") != "base64" or not block.data:
-                continue
-            new_data, new_media, changed = _downscale_b64_image(block.data, block.media_type)
-            if changed:
-                block.data = new_data
-                block.media_type = new_media
+            if _rewrite_block(block):
                 rewritten += 1
+                continue
+            # Tool results nest their image payloads one level deeper.
+            # Computer-use screenshots arrive here, and these are exactly
+            # the long browser captures that blow past the 8000px cap.
+            if isinstance(block, ToolResultBlock) and isinstance(block.content, list):
+                for sub in block.content:
+                    if _rewrite_block(sub):
+                        rewritten += 1
     if rewritten > 0:
         log(
             "info",
             f"downscaled {rewritten} oversize image(s) in transcript "
-            f"(>{_IMAGE_BASE64_TARGET // 1024} KiB base64)",
+            f"(>{_IMAGE_BASE64_TARGET // 1024} KiB base64 or "
+            f">{_IMAGE_DIM_TARGET}px per axis)",
         )
     return rewritten
 
@@ -711,8 +735,8 @@ def _sanitize_session_oversize_images(session: Any) -> int:
 # build pressure tags without importing engine internals in the hot path.
 _PRESSURE_TAG_AWARENESS = 0.25
 _PRESSURE_TAG_SOFT = 0.40
-_PRESSURE_TAG_STRONG = 0.60
-_PRESSURE_TAG_FALLBACK = 0.80
+_PRESSURE_TAG_STRONG = 0.55
+_PRESSURE_TAG_FALLBACK = 0.70
 
 
 def _build_pressure_tag(runner: Any) -> str:
@@ -1573,10 +1597,24 @@ side-channel notifications, do not respond to them conversationally:
 
 Call `summarize_context` cooperatively at natural task breakpoints —
 between sub-tasks, after a verification pass, before starting fresh
-work. At 40–60% pressure aim to compact at the next clean seam; above
-60% compact before issuing more tool calls; above 80% the runtime
-forces a fallback compaction, and runtime-forced summaries are
-lower-quality than ones you time yourself.
+work. Treat the bands as commitments, not suggestions:
+- **40–55% (soft band).** Compact at the next clean seam — i.e. once
+  the current sub-task lands. Don't start another tool chain past
+  this point without compacting first if it'll take more than ~5
+  calls. Free, cheap to defer slightly, but defer only ONCE.
+- **55–70% (strong band).** Compact BEFORE the next tool call. Do
+  not begin a new exploration, research pass, or write batch. The
+  cooperative window is closing — every additional turn here makes
+  the eventual forced compaction worse.
+- **>70% (forced band).** The runtime preempts you. Forced summaries
+  drop more context than self-timed ones — if you see this band, you
+  already missed the cue.
+Also: **when the user pivots to an unmistakably new topic** (different
+project, different question, different deliverable), call
+`summarize_context` before responding regardless of current pressure
+— prior task context bleeds into the new one and confuses your output
+otherwise. The cooperative call is FREE in tokens (the prior summary
+is iterative) and prevents stale task interpretation.
 
 Scope shortcuts:
 - `since_last_compaction` (default) — iterative, cheapest. Extends
@@ -3337,18 +3375,85 @@ class _BridgeSession:
                 self.model_id, DEFAULT_CONTEXT_WINDOW
             )
             estimated = self.session.estimate_tokens()
-            if estimated > ctx_window * CONTEXT_COMPACTION_THRESHOLD:
+
+            # Trigger 1 — token pressure (model-agnostic).
+            pressure_trigger = (
+                estimated > ctx_window * CONTEXT_COMPACTION_THRESHOLD
+            )
+
+            # Trigger 2 — Slack idle-revisit. Slack sessions don't have
+            # explicit lifecycle boundaries (no /clear, no new-tab to
+            # signal "fresh topic"). After a long gap, the next message
+            # is overwhelmingly a NEW intent — but the persisted
+            # transcript still carries every prior turn's task state and
+            # tool clutter, which leaks into the new turn. Force a
+            # compaction pass before the next turn so the stale context
+            # is folded into a summary rather than re-presented verbatim.
+            # 6 h + >50 message entries is conservative: it skips DMs
+            # that are still actively rolling and only fires on real
+            # "next day" revisits.
+            idle_trigger = False
+            try:
+                import time as _time
+
+                gw_source = getattr(self, "gateway_source", None)
+                platform_name = ""
+                if gw_source is not None:
+                    plat = getattr(gw_source, "platform", None)
+                    platform_name = (
+                        getattr(plat, "value", None)
+                        or (plat if isinstance(plat, str) else "")
+                        or ""
+                    )
+                if platform_name == "slack":
+                    n_msgs = sum(
+                        1
+                        for e in self.session.transcript.entries
+                        if getattr(e, "message", None) is not None
+                    )
+                    age_s = _time.time() - getattr(
+                        self.session, "last_activity", _time.time()
+                    )
+                    if age_s >= 6 * 3600 and n_msgs > 50:
+                        idle_trigger = True
+                        log(
+                            "info",
+                            f"Slack session idle for {age_s/3600:.1f}h with "
+                            f"{n_msgs} messages — forcing compaction",
+                        )
+            except Exception as exc:  # noqa: BLE001
+                log("debug", f"slack idle-trigger check failed: {exc}")
+
+            if pressure_trigger or idle_trigger:
+                reason = (
+                    "pressure" if pressure_trigger else "slack_idle_revisit"
+                )
                 log(
                     "info",
-                    f"restored transcript ({estimated} tokens) exceeds "
-                    f"compaction threshold for {self.model_id} "
-                    f"({ctx_window}), compacting",
+                    f"restored transcript ({estimated} tokens) → "
+                    f"compacting (reason={reason}, "
+                    f"window={ctx_window}, model={self.model_id})",
                 )
                 from engine.compaction import SummaryCompaction
 
                 compactor = SummaryCompaction()
                 compactor.compact(self.session.transcript, self.provider)
                 self.session.compaction_count += 1
+                emit(
+                    {
+                        "type": "system_event",
+                        "sessionId": self.id,
+                        "subtype": "compaction_complete",
+                        "message": (
+                            f"Compacted on restore (reason={reason})"
+                        ),
+                        "details": {
+                            "trigger": reason,
+                            "tokens_before": estimated,
+                            "tokens_after": self.session.estimate_tokens(),
+                        },
+                    }
+                )
         except Exception as exc:
             log("warn", f"post-restore compaction failed: {exc}")
 

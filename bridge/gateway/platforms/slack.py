@@ -1577,21 +1577,34 @@ class SlackAdapter:
         *,
         limit: int = 20,
         exclude_ts: str | None = None,
+        oldest_ts: str | None = None,
     ) -> list[dict[str, Any]]:
         """Pull recent messages from a DM channel (no threading).
         Used when a DM message arrives top-level (no thread_ts) so
         the agent still sees recent prior turns even when its own
-        transcript was wiped or reset."""
+        transcript was wiped or reset.
+
+        ``oldest_ts`` is a strict lower bound — pass the ts of the
+        most recent message already in our persisted transcript to
+        avoid re-injecting turns the agent has already seen. Slack's
+        ``conversations.history`` ``oldest`` param is inclusive, so
+        we still filter ts == oldest_ts on the client side.
+        """
         if not self._app or not chat_id:
             return []
         client = self._get_client(chat_id)
         if client is None:
             return []
         try:
-            res = await client.conversations_history(
-                channel=chat_id,
-                limit=max(1, min(limit, 100)),
-            )
+            kwargs: dict[str, Any] = {
+                "channel": chat_id,
+                "limit": max(1, min(limit, 100)),
+            }
+            if oldest_ts:
+                # Slack treats `oldest` as inclusive — pass through and
+                # let the per-message filter below drop the boundary.
+                kwargs["oldest"] = str(oldest_ts)
+            res = await client.conversations_history(**kwargs)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[slack] conversations.history failed: %s", exc)
             return []
@@ -1600,6 +1613,8 @@ class SlackAdapter:
         for m in reversed(res.get("messages") or []):
             ts = str(m.get("ts") or "")
             if exclude_ts and ts == str(exclude_ts):
+                continue
+            if oldest_ts and ts <= str(oldest_ts):
                 continue
             text = str(m.get("text") or "")
             blocks_text = extract_text_from_slack_blocks(m.get("blocks"))

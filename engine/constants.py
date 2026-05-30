@@ -80,7 +80,7 @@ to the agent. Lowered from 0.80 to 0.25 as part of the cooperative
 early-trigger compaction architecture (see docs/COMPACTION-DECISION-DRAFT.md).
 """
 
-CONTEXT_COMPACTION_THRESHOLD = 0.80
+CONTEXT_COMPACTION_THRESHOLD = 0.70
 """Fraction of EFFECTIVE context window that triggers *runtime-driven*
 LLM compaction. This is the cooperative protocol's safety net — not its
 primary mechanism.
@@ -89,13 +89,15 @@ History: this constant was lowered to 0.40 in the original Phase-1
 ship, but that put the runtime on top of the soft-band pressure note
 (Channel 2 also activates at 0.40). The runtime preempted the agent
 every time → Channels 2 and 3 were inert. Restored to 0.80 for Phase 2
-so the agent has a real 40–80% cooperation window: pressure notes
-arrive at 40%, the strong-band advisory at 60%, and only at 80% does
-the runtime stop trusting the agent to drive compaction itself.
+so the agent had a real 40–80% cooperation window: pressure notes at
+40%, strong-band advisory at 60%, and runtime fallback at 80%.
 
-Phase 3 will drop this back to ~0.50 once we've measured how often the
-agent actually heeds the cooperative cues. See
-docs/COMPACTION-DECISION-DRAFT.md."""
+Dropped to 0.70 for Phase 2.5 (May 2026) after Slack-session observation
+showed the agent almost never self-calls summarize_context — strong-band
+notes get ignored and long DMs cruise from ~60% up past 80% without
+compacting. 0.70 narrows the cooperation window enough that the runtime
+takes over before the model has time to drift into another long tool
+chain in a near-full context. See docs/COMPACTION-DECISION-DRAFT.md."""
 
 CONTEXT_AWARENESS_THRESHOLD = 0.25
 """Fraction at which we start appending per-observation token-usage
@@ -107,14 +109,17 @@ CONTEXT_SOFT_SUGGEST_THRESHOLD = 0.40
 """Fraction at which the observation tag escalates from informational
 to 'consider summarize_context() at next break'."""
 
-CONTEXT_STRONG_SUGGEST_THRESHOLD = 0.60
+CONTEXT_STRONG_SUGGEST_THRESHOLD = 0.55
 """Fraction at which we recommend compaction before the agent issues
-more tool calls."""
+more tool calls. Lowered from 0.60 alongside the 0.80 → 0.70 forced-band
+shift so the strong cue stays meaningfully ahead of the runtime
+fallback (was 20 pts of daylight; now 15 pts)."""
 
-CONTEXT_FALLBACK_THRESHOLD = 0.80
+CONTEXT_FALLBACK_THRESHOLD = 0.70
 """Fraction at which the runtime stops trusting the agent to drive
 compaction and forces it. Logged as 'fallback fired' for the training
-corpus — every fallback is a label for 'the agent missed the cue'."""
+corpus — every fallback is a label for 'the agent missed the cue'.
+Kept in sync with CONTEXT_COMPACTION_THRESHOLD."""
 
 KEEP_RECENT_TOOL_RESULTS = 3
 """Number of recent tool results preserved during pruning."""

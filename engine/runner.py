@@ -1446,14 +1446,16 @@ class AsyncAgentRunner:
         decile_low = int(ratio * 10) * 10
         decile_high = min(99, decile_low + 9)
         band_label = f"{decile_low}-{decile_high}%"
-        if ratio >= 0.80:
+        if ratio >= 0.70:
             recommendation = (
                 "call summarize_context() NOW — runtime fallback is imminent "
-                "and further tool calls may be rejected"
+                "(forced compaction at 70%) and forced summaries lose more "
+                "context than self-timed ones"
             )
-        elif ratio >= 0.60:
+        elif ratio >= 0.55:
             recommendation = (
-                "call summarize_context() before issuing more tool calls; "
+                "call summarize_context() before issuing more tool calls — "
+                "the cooperative window is closing. "
                 "scope='since_last_compaction' is the cheapest option"
             )
         else:
@@ -1472,10 +1474,16 @@ class AsyncAgentRunner:
 
     @staticmethod
     def _classify_pressure_band(ratio: float) -> int:
-        """Coarse band: 0 clean, 1 awareness, 2 soft, 3 strong, 4 fallback."""
-        if ratio >= 0.80:
+        """Coarse band: 0 clean, 1 awareness, 2 soft, 3 strong, 4 fallback.
+
+        Bands align with the constants in engine/constants.py — pulling
+        the forced band from 0.80 down to 0.70 (Phase 2.5) shifts the
+        strong band down to 0.55 so there's still meaningful daylight
+        between strong-suggest and forced.
+        """
+        if ratio >= 0.70:
             return 4
-        if ratio >= 0.60:
+        if ratio >= 0.55:
             return 3
         if ratio >= 0.40:
             return 2
