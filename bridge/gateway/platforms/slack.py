@@ -1177,6 +1177,70 @@ class SlackAdapter:
             logger.exception("[slack] file upload failed: %s", exc)
             return SendResult(ok=False, error=str(exc))
 
+    async def upload_file_unshared(
+        self,
+        item: UploadItem,
+    ) -> SendResult:
+        """Upload a single file to Slack WITHOUT sharing it to any
+        channel. The returned ``message_id`` is the Slack file id
+        (``F...``), suitable for use in a Block Kit image block's
+        ``slack_file`` field. Used by the Thinking-Steps stream
+        consumer to attach generated images inside the streaming
+        message envelope (chat.stopStream's ``blocks`` param) instead
+        of as a separate thread message.
+
+        Slack's files.completeUploadExternal accepts channel_id as
+        optional; omitting it creates the file but leaves it
+        unattached. When the file_id is referenced from a Block Kit
+        block on a chat.* call, Slack grants visibility automatically
+        to anyone who can see the parent message.
+        """
+        if not self._app:
+            return SendResult(ok=False, error="not connected")
+        # Pick any authenticated workspace's client — file uploads
+        # aren't channel-scoped, so any token works. Prefer the first
+        # one.
+        client = next(iter(self._team_clients.values()), None)
+        if client is None:
+            return SendResult(ok=False, error="no authenticated client")
+        try:
+            kwargs: dict[str, Any] = {
+                "filename": item.filename or (
+                    Path(item.path).name if item.path else "file.bin"
+                ),
+            }
+            if item.title:
+                kwargs["title"] = item.title
+            if item.data is not None:
+                kwargs["content"] = item.data
+            elif item.path:
+                kwargs["file"] = item.path
+            else:
+                return SendResult(ok=False, error="UploadItem has neither data nor path")
+            res = await client.files_upload_v2(**kwargs)
+            # files_upload_v2 returns a `files` list (one entry per
+            # uploaded file). For a single upload, take [0]. Falls back
+            # to ``file`` shape used by some SDK versions.
+            files = res.get("files") or []
+            file_id: str | None = None
+            if files:
+                file_id = (files[0] or {}).get("id")
+            if not file_id:
+                file_id = (res.get("file") or {}).get("id")
+            if not file_id:
+                return SendResult(
+                    ok=False,
+                    error=f"upload succeeded but no file_id in response: {dict(res.data) if hasattr(res, 'data') else 'unknown'}",
+                )
+            return SendResult(
+                ok=True,
+                message_id=file_id,
+                raw=getattr(res, "data", None) or {},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[slack] unshared file upload failed: %s", exc)
+            return SendResult(ok=False, error=str(exc))
+
     async def upload_files(
         self,
         chat_id: str,

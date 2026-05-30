@@ -88,10 +88,157 @@ DEFAULT_THINKING_FLUSH_INTERVAL_MS = 800
 _FILE_SAVED_RE = re.compile(r"File saved to `([^`]+)`")
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 
-# Plan title that wraps the per-turn task cards. Slack renders this
-# above the cards when task_display_mode="plan" is set on startStream.
-# Deliberately bland — the cards themselves carry the actual content.
-PLAN_TITLE = "Working"
+# Fallback Plan title when we can't derive one from the upcoming tool
+# (the phase opens with thinking before any tool name is known, or the
+# tool category isn't mapped). Slack renders the plan as a collapsible
+# header above its task cards.
+PLAN_TITLE_DEFAULT = "Working"
+PLAN_TITLE_THINKING = "Thinking"
+
+# Tool → phase title map. The plan that wraps a tool batch takes its
+# title from the FIRST tool in the batch — gives the operator a
+# semantic header ("Researching") instead of a generic "Working" on
+# every group. Tools not listed here fall through to the default.
+_PHASE_TITLE_BY_TOOL = {
+    # Research / external data
+    "web_search":   "Researching",
+    "web_fetch":    "Researching",
+    "web_research": "Researching",
+    # Local filesystem reads
+    "read_file":      "Reading",
+    "list_directory": "Reading",
+    "glob":           "Searching",
+    "grep":           "Searching",
+    "artifacts":      "Reading",
+    # Local filesystem writes
+    "write_file": "Writing",
+    "edit_file":  "Editing",
+    "edit_json":  "Editing",
+    # Shell
+    "bash":  "Running",
+    "shell": "Running",
+    # Browser + computer-use
+    "browser_execute_js":  "Browsing",
+    "browser_screenshot":  "Browsing",
+    "computer_use":        "Driving the screen",
+    "click":               "Driving the screen",
+    "move_mouse":          "Driving the screen",
+    "type_text":           "Driving the screen",
+    "press_key":           "Driving the screen",
+    "screenshot":          "Taking screenshots",
+    # Generative / analysis
+    "generate_image": "Generating",
+    "analyze_video":  "Analyzing video",
+    # Sub-agent fan-out
+    "sub_agent":  "Delegating",
+    "subagents":  "Delegating",
+    # Knowledge / config
+    "tasks":             "Planning",
+    "kanban":            "Planning",
+    "memory":            "Recalling",
+    "load_skill":        "Loading a skill",
+    "search_skills":     "Searching skills",
+    "list_skills":       "Searching skills",
+    "tool_search":       "Searching tools",
+    "summarize_context": "Compacting context",
+    # Outbound
+    "send_attachment": "Sharing",
+}
+
+
+def _phase_title_for_tool(tool_name: str) -> str:
+    """Derive a Plan section title from the first tool of a phase."""
+    return _PHASE_TITLE_BY_TOOL.get(tool_name, PLAN_TITLE_DEFAULT)
+
+
+# Cap citations per card. More than this is visual noise — Slack
+# renders sources as a single row of pills, and >4 wraps unevenly
+# on mobile.
+_MAX_SOURCES_PER_CARD = 4
+# URL extraction regex used to pull citation refs out of free-form
+# tool result text (web_search, web_research). Slack-formatted URLs
+# like <https://x|label> get caught too — group 1 is the bare URL,
+# group 2 is the optional label.
+_URL_RE = re.compile(r"<(https?://[^|>\s]+)(?:\|([^>]+))?>|(?<!<)(https?://[^\s)\]]+)")
+
+
+def _build_sources_for_tool(
+    tool_name: str,
+    args: dict[str, Any],
+    preview: str,
+) -> list[Any] | None:
+    """Build a UrlSourceElement list for tool cards that benefit from
+    citation refs.
+
+    Per-tool extraction:
+      · web_fetch / web_research: args.url → one source
+      · web_search / web_research with multiple results: parse top
+        URLs from the preview text
+      · browser_screenshot: parse "Tab: <url>" from preview
+
+    Returns None when no sources apply (most tools). Capped at
+    ``_MAX_SOURCES_PER_CARD``. Returns instances of
+    ``slack_sdk.models.blocks.block_elements.UrlSourceElement``.
+    """
+    try:
+        from slack_sdk.models.blocks.block_elements import UrlSourceElement
+    except ImportError:
+        return None
+
+    sources: list[Any] = []
+    seen_urls: set[str] = set()
+
+    def _add(url: str, label: str | None = None) -> None:
+        if not url or url in seen_urls:
+            return
+        seen_urls.add(url)
+        text = label or _domain_of(url) or url
+        sources.append(UrlSourceElement(url=url, text=_short(text, 60)))
+
+    if tool_name in {"web_fetch", "web_research"}:
+        url = str(args.get("url") or "").strip()
+        if url.startswith("http"):
+            _add(url, str(args.get("objective") or "").strip() or None)
+        # web_research often pulls multiple URLs into the preview; harvest them too.
+        if tool_name == "web_research":
+            for m in _URL_RE.finditer(preview):
+                u = (m.group(1) or m.group(3) or "").strip()
+                lbl = (m.group(2) or "").strip() or None
+                if u:
+                    _add(u, lbl)
+                if len(sources) >= _MAX_SOURCES_PER_CARD:
+                    break
+    elif tool_name == "web_search":
+        # Pull the top URLs from the result preview. Slack renders the
+        # citation pills underneath the card title.
+        for m in _URL_RE.finditer(preview):
+            u = (m.group(1) or m.group(3) or "").strip()
+            lbl = (m.group(2) or "").strip() or None
+            if u:
+                _add(u, lbl)
+            if len(sources) >= _MAX_SOURCES_PER_CARD:
+                break
+    elif tool_name in {"browser_screenshot", "browser_execute_js"}:
+        # Look for "Tab: <url>" first, fall back to args.url.
+        m = re.search(r"Tab:\s+<?(https?://[^\s>|]+)", preview)
+        if m:
+            _add(m.group(1))
+        else:
+            url = str(args.get("url") or args.get("tab_url") or "").strip()
+            if url.startswith("http"):
+                _add(url)
+
+    return sources or None
+
+
+def _domain_of(url: str) -> str:
+    """Strip URL down to its hostname for compact citation labels."""
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url).netloc
+        return host[4:] if host.startswith("www.") else host
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 @dataclass
@@ -134,7 +281,21 @@ class _StreamState:
     # Lifecycle gates.
     finalized: bool = False
     typing_set: bool = False
-    plan_chunk_sent: bool = False
+
+    # Multi-Plan phasing. Each "phase" is a contiguous batch of
+    # thinking + tool calls between prose emissions. When the agent
+    # transitions from "doing things" → "reporting what it did" by
+    # emitting user-facing text, the current phase ends; the next
+    # tool/thinking after that opens a fresh PlanUpdateChunk with a
+    # title derived from the upcoming tool's category. Net result:
+    # one streaming message with multiple titled card groups stitched
+    # by interstitial prose, e.g.:
+    #     Researching: web_fetch ✓, web_fetch ✓
+    #     "I found two relevant sources..."
+    #     Writing: write_file ✓
+    #     "Saved to /tmp/draft.md"
+    phase_open: bool = False
+    cards_emitted_this_phase: int = 0
 
     # Tool-call tracking. tool_use_start stashes name → cached for
     # tool_result's completion chunk so it can render the same title.
@@ -306,9 +467,15 @@ class SlackStreamConsumer:
             if not text:
                 return
             await self._ensure_stream_opened()
-            # Body text arriving means any in-flight thinking phase
-            # is over — close that card before we start emitting prose.
+            # Body text arriving means any in-flight thinking phase is
+            # over — close that card before we start emitting prose.
             await self._close_thinking_card()
+            # Prose AFTER tool cards marks the end of a phase. The next
+            # tool / thinking will open a fresh PlanUpdateChunk with a
+            # new title. If no cards have been emitted yet (text-only
+            # response), this is a no-op.
+            async with self._lock:
+                self._close_phase_if_after_cards()
             await self._append_text(text)
         elif etype == "thinking_delta":
             if self.verbosity == "off":
@@ -317,6 +484,11 @@ class SlackStreamConsumer:
             if not text:
                 return
             await self._ensure_stream_opened()
+            # If this is the first card-worthy event of a phase, open
+            # a Plan. Thinking-led phases get the generic "Thinking"
+            # title — the tool-derived title (if any) takes over when
+            # the first tool_input_end fires within the same phase.
+            await self._ensure_phase_open(title=PLAN_TITLE_THINKING)
             await self._append_thinking(text)
         elif etype == "tool_use_start":
             if self.verbosity == "off":
@@ -367,32 +539,57 @@ class SlackStreamConsumer:
                     result.error,
                 )
                 return
-            # First chunk after startStream: emit the Plan header so
-            # the task cards render under a stable group.
-            await self._send_plan_chunk_locked()
+            # NOTE: Plan emission deferred until the first card-worthy
+            # event arrives — see _ensure_phase_open. If the turn
+            # produces ONLY prose (no tools, no thinking), we never
+            # emit a plan at all and the message reads as a clean
+            # text response.
 
-    async def _send_plan_chunk_locked(self) -> None:
-        """Emit one PlanUpdateChunk to title the task-card group.
-        Caller holds the lock."""
-        if self._state.plan_chunk_sent or self._state.stream_failed:
-            return
-        if not self._state.stream_ts:
-            return
-        try:
-            from slack_sdk.models.messages.chunk import PlanUpdateChunk
-        except ImportError:
-            logger.warning("[slack] PlanUpdateChunk not available; skipping plan header")
-            self._state.plan_chunk_sent = True
-            return
-        chunk = PlanUpdateChunk(title=PLAN_TITLE, others={})
-        result = await self.adapter.append_stream(
-            self.source.chat_id,
-            self._state.stream_ts,
-            chunks=[chunk],
-        )
-        self._state.plan_chunk_sent = True
-        if not result.ok:
-            logger.debug("[slack] plan chunk append failed: %s", result.error)
+    async def _ensure_phase_open(self, *, title: str) -> None:
+        """Open a new Plan section with the given title if none is
+        currently open. Idempotent within a phase.
+
+        Called at the first card-worthy event of each phase (first
+        tool_use_start or first thinking_delta after stream is open).
+        The phase closes when prose lands between tool batches (see
+        _close_phase_if_after_cards), so the next card-worthy event
+        opens a fresh Plan with its own title.
+        """
+        async with self._lock:
+            if self._state.stream_failed or not self._state.stream_ts:
+                return
+            if self._state.phase_open:
+                return
+            try:
+                from slack_sdk.models.messages.chunk import PlanUpdateChunk
+            except ImportError:
+                logger.warning("[slack] PlanUpdateChunk not available")
+                self._state.phase_open = True  # avoid retrying forever
+                return
+            chunk = PlanUpdateChunk(title=title)
+            result = await self.adapter.append_stream(
+                self.source.chat_id,
+                self._state.stream_ts,
+                chunks=[chunk],
+            )
+            self._state.phase_open = True
+            self._state.cards_emitted_this_phase = 0
+            if not result.ok:
+                logger.debug("[slack] plan chunk append failed: %s", result.error)
+
+    def _close_phase_if_after_cards(self) -> None:
+        """End the current phase if at least one card has been emitted
+        in it. The NEXT card-worthy event will open a fresh phase with
+        its own title. Called from the text-emission path so prose
+        between tool batches naturally splits the cards into groups."""
+        if self._state.phase_open and self._state.cards_emitted_this_phase > 0:
+            self._state.phase_open = False
+            self._state.cards_emitted_this_phase = 0
+            # Also reset the same-tool coalesce tracking — a new phase
+            # is a fresh batch, the prior tool shouldn't coalesce into
+            # the next phase's cards.
+            self._state.coalesce_last_tool = None
+            self._state.coalesce_count = 0
 
     # ── text body (markdown_text deltas) ──
 
@@ -565,6 +762,14 @@ class SlackStreamConsumer:
 
         await self._ensure_stream_opened()
         await self._close_thinking_card()
+        # First card-worthy event of the phase opens a Plan titled
+        # after the upcoming tool's category. If the phase was already
+        # opened by a thinking_delta (with "Thinking" title), the
+        # already-emitted Plan keeps that title — Slack doesn't let us
+        # mutate an existing Plan's title — and subsequent tools in
+        # the same phase land under it. Trade-off: the title reflects
+        # the phase's OPENING activity, not the dominant one.
+        await self._ensure_phase_open(title=_phase_title_for_tool(tool_name))
 
         # Same-tool coalescing under "new". The card uses a stable id
         # — when we emit a second TaskUpdateChunk with the same id,
@@ -595,12 +800,12 @@ class SlackStreamConsumer:
             # was never emitted, so nothing to complete here. Still
             # process images though (a heartbeat shouldn't generate
             # images, but be defensive).
-            self._collect_images_for_finalize(event)
+            await self._collect_images_for_finalize(event)
             return
         args = self._state.pending_tool_args.pop(tool_id, {})
 
         if self.verbosity == "off":
-            self._collect_images_for_finalize(event)
+            await self._collect_images_for_finalize(event)
             return
 
         preview = str(event.get("preview") or "")
@@ -613,6 +818,8 @@ class SlackStreamConsumer:
         # reasonable size — Slack truncates long task outputs anyway.
         output_text = _short(preview, 2000) if preview else None
         title = self._format_tool_title(tool_name, args)
+        # URL citations for web / browser tools.
+        sources = _build_sources_for_tool(tool_name, args, preview)
 
         # Same-tool coalescing under "new" — keep the same coalesced
         # card and update its status to in_progress so it stays a
@@ -628,11 +835,15 @@ class SlackStreamConsumer:
                 f"{tool_name} ×{self._state.coalesce_count}",
                 "complete" if not is_error else "error",
                 output=output_text,
+                sources=sources,
             )
         else:
-            await self._emit_task_chunk(tool_id, title, status, output=output_text)
+            await self._emit_task_chunk(
+                tool_id, title, status,
+                output=output_text, sources=sources,
+            )
 
-        self._collect_images_for_finalize(event)
+        await self._collect_images_for_finalize(event)
 
     async def _emit_task_chunk(
         self,
@@ -641,9 +852,15 @@ class SlackStreamConsumer:
         status: str,
         *,
         output: str | None = None,
+        sources: list[Any] | None = None,
     ) -> None:
         """Append a TaskUpdateChunk to the stream. Status transitions
-        on the same card_id mutate the existing card."""
+        on the same card_id mutate the existing card.
+
+        ``sources`` attaches one or more clickable references
+        (UrlSourceElement) to the card — used to surface where the
+        agent looked when running web_fetch / web_search / browser
+        tools."""
         async with self._lock:
             if self._state.stream_failed or not self._state.stream_ts:
                 return
@@ -651,18 +868,27 @@ class SlackStreamConsumer:
                 from slack_sdk.models.messages.chunk import TaskUpdateChunk
             except ImportError:
                 return
-            chunk = TaskUpdateChunk(
-                id=card_id,
-                title=title,
-                status=status,
-                output=output,
-                others={},
-            )
+            kwargs: dict[str, Any] = {
+                "id": card_id,
+                "title": title,
+                "status": status,
+            }
+            if output is not None:
+                kwargs["output"] = output
+            if sources:
+                kwargs["sources"] = sources
+            chunk = TaskUpdateChunk(**kwargs)
             result = await self.adapter.append_stream(
                 self.source.chat_id,
                 self._state.stream_ts,
                 chunks=[chunk],
             )
+            # Count only the FIRST time a card opens (in_progress) so
+            # the in_progress → complete transition on the same card
+            # doesn't double-count. The counter drives phase-close
+            # detection on the next text_delta.
+            if status == "in_progress":
+                self._state.cards_emitted_this_phase += 1
             if not result.ok:
                 logger.debug("[slack] task chunk append failed: %s", result.error)
 
@@ -687,12 +913,26 @@ class SlackStreamConsumer:
 
     # ── images → stop_stream(blocks=…) ──
 
-    def _collect_images_for_finalize(self, event: dict[str, Any]) -> None:
-        """Stash any image content from a tool_result event so we can
-        attach it to the message's final state via stop_stream's
-        ``blocks`` param. Slack supports Block Kit only on stopStream
-        (per the docs)."""
-        # Inline base64 images (generate_image et al).
+    async def _collect_images_for_finalize(self, event: dict[str, Any]) -> None:
+        """Eagerly upload any image content from a tool_result via the
+        unshared-upload path, capturing the file_id for later inline
+        rendering in stop_stream's blocks.
+
+        Uploading immediately (rather than batched at finalize) keeps
+        the API surface small (one upload per image, no batch) and
+        means each image's file_id is ready by the time the agent
+        emits the final response. The upload is unshared so the file
+        only appears inside the streaming message's Block Kit blocks,
+        not as a separate thread message.
+
+        Falls back to the legacy "stash bytes, batch-upload at
+        finalize via files_upload" path if the unshared upload fails
+        for any reason — the image still lands, just as an adjacent
+        thread message instead of inline.
+        """
+        # Collect raw image bytes from both surfaces — inline anthropic
+        # image blocks AND "File saved to" path refs.
+        candidates: list[dict[str, Any]] = []
         for img in event.get("images") or []:
             data_b64 = img.get("dataBase64")
             if not data_b64:
@@ -703,14 +943,12 @@ class SlackStreamConsumer:
                 continue
             mime = str(img.get("mimeType") or "image/png")
             label = str(img.get("label") or "image")
-            self._state.pending_image_blocks.append({
+            candidates.append({
                 "data": raw,
                 "mime": mime,
                 "filename": f"{label.replace(' ', '_')}{_mime_to_ext(mime)}",
             })
-        # "File saved to `<path>`" references — only if no inline data
-        # for this event (avoids double-attach for generate_image).
-        if not (event.get("images") or []):
+        if not candidates:
             preview = str(event.get("preview") or "")
             for match in _FILE_SAVED_RE.finditer(preview):
                 p = Path(match.group(1))
@@ -725,11 +963,49 @@ class SlackStreamConsumer:
                     raw = p.read_bytes()
                 except OSError:
                     continue
-                self._state.pending_image_blocks.append({
+                candidates.append({
                     "data": raw,
                     "mime": _ext_to_mime(p.suffix.lower()),
                     "filename": p.name,
                 })
+
+        if not candidates:
+            return
+
+        for img in candidates:
+            file_id = await self._upload_image_unshared(img)
+            if file_id:
+                # Recorded for stop_stream(blocks=…) construction.
+                img["file_id"] = file_id
+            # Either way (file_id present or not), keep the entry so
+            # the finalize fallback can re-try via post-stop
+            # files_upload if the inline path didn't land.
+            self._state.pending_image_blocks.append(img)
+
+    async def _upload_image_unshared(self, img: dict[str, Any]) -> str | None:
+        """Push one image via the adapter's unshared upload path.
+        Returns the Slack file_id (``F...``) on success, None on
+        failure or if the adapter doesn't implement the method."""
+        if not hasattr(self.adapter, "upload_file_unshared"):
+            return None
+        item = UploadItem(
+            data=img["data"],
+            filename=img["filename"],
+            mime_type=img["mime"],
+        )
+        try:
+            result = await self.adapter.upload_file_unshared(item)
+        except Exception:  # noqa: BLE001
+            logger.exception("unshared image upload failed")
+            return None
+        if not result.ok or not result.message_id:
+            logger.debug(
+                "[slack] unshared upload returned %s — falling back to "
+                "post-stream files_upload for this image",
+                result.error,
+            )
+            return None
+        return result.message_id
 
     # ── finalize ──
 
@@ -753,13 +1029,13 @@ class SlackStreamConsumer:
         # Close any open thinking card.
         await self._close_thinking_card()
 
-        # Upload any pending images via files_upload (separate from
-        # stopStream blocks). Slack's Block Kit image block only
-        # accepts public URLs, but our images live in-process as
-        # base64 — uploading via files_upload_v2 with thread_ts
-        # places them in the same thread as the streaming response,
-        # which is the closest equivalent to "inline at the end".
-        await self._upload_pending_images()
+        # Build Block Kit image blocks for images whose unshared
+        # upload succeeded during the turn — these render INLINE at
+        # the bottom of the streaming message via stop_stream(blocks=).
+        # Images whose unshared upload failed get re-uploaded the
+        # legacy way (post-stream files_upload to the thread) so the
+        # user still sees them, just in an adjacent message.
+        inline_blocks = self._build_inline_image_blocks()
 
         # Stop the stream. No more content; this finalizes the
         # message visually (Slack removes the streaming indicator).
@@ -768,9 +1044,27 @@ class SlackStreamConsumer:
             stop_result = await self.adapter.stop_stream(
                 self.source.chat_id,
                 self._state.stream_ts,
+                blocks=inline_blocks or None,
             )
             if not stop_result.ok:
                 logger.warning("[slack] chat.stopStream failed: %s", stop_result.error)
+                # The inline blocks may have been the cause (e.g. a
+                # malformed image block). Retry without them so the
+                # stream at least finalizes — the image will then land
+                # via the fallback files_upload below.
+                if inline_blocks:
+                    await self.adapter.stop_stream(
+                        self.source.chat_id,
+                        self._state.stream_ts,
+                    )
+                    inline_blocks = None  # signal fallback to upload all
+
+        # Fallback files_upload: covers images whose inline path
+        # didn't reach Slack (unshared upload failed OR stop_stream
+        # rejected the blocks). When inline_blocks is non-empty the
+        # successfully-uploaded images already rendered, so we skip
+        # those entries and only push the rest.
+        await self._upload_pending_images(skip_with_file_id=bool(inline_blocks))
 
         # Stop the typing indicator.
         try:
@@ -790,25 +1084,43 @@ class SlackStreamConsumer:
             except Exception:  # noqa: BLE001
                 logger.exception("on_complete callback raised")
 
-    async def _upload_pending_images(self) -> None:
-        """Ship any images collected during the turn to the same thread
-        the streaming response lives in. Uses upload_files for batch +
-        one initial_comment.
+    def _build_inline_image_blocks(self) -> list[dict[str, Any]]:
+        """Construct Block Kit image blocks for images already uploaded
+        via the unshared path. Used by stop_stream's blocks param so
+        the images render INSIDE the streaming message envelope, not
+        as a separate adjacent thread message."""
+        blocks: list[dict[str, Any]] = []
+        for img in self._state.pending_image_blocks:
+            file_id = img.get("file_id")
+            if not file_id:
+                continue
+            blocks.append({
+                "type": "image",
+                "slack_file": {"id": file_id},
+                "alt_text": img.get("filename") or "image",
+            })
+        return blocks
 
-        We deliberately upload AFTER stopStream rather than via the
-        blocks param because Block Kit image blocks require a publicly
-        accessible URL; our generated images are in-memory bytes.
-        files_upload_v2 with thread_ts puts them directly under the
-        streaming message — close enough to inline."""
-        items = [
-            UploadItem(
+    async def _upload_pending_images(self, *, skip_with_file_id: bool = False) -> None:
+        """Fallback uploader for images whose inline-block path
+        didn't reach Slack (unshared upload failed earlier, or
+        stop_stream rejected the blocks payload). Places them in the
+        thread as an adjacent message — uglier than the inline
+        rendering but at least the user sees the image.
+
+        When ``skip_with_file_id`` is True, images that DID land
+        inline are skipped here to avoid duplicate rendering."""
+        items: list[UploadItem] = []
+        for img in self._state.pending_image_blocks:
+            if not img.get("data"):
+                continue
+            if skip_with_file_id and img.get("file_id"):
+                continue
+            items.append(UploadItem(
                 data=img["data"],
                 filename=img["filename"],
                 mime_type=img["mime"],
-            )
-            for img in self._state.pending_image_blocks
-            if img.get("data")
-        ]
+            ))
         if not items:
             return
         try:
