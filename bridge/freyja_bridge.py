@@ -853,7 +853,13 @@ async def _main() -> None:
         traceback.print_exc(file=sys.stderr)
         sys.exit(2)
 
-    default_model = os.environ.get("FREYJA_MODEL", "claude-sonnet-4-6")
+    # Default to opus-4-8 across all sessions (desktop AND gateway daemon).
+    # `claude-opus-4-8`'s reasoning_default in MODEL_REASONING_META is
+    # already "high", so newly-created sessions automatically run at high
+    # thinking — no extra plumbing needed. Sub-agent defaults stay on
+    # sonnet (see bridge/tools/registry.py) for cost control on fan-out.
+    # Override per-launch with FREYJA_MODEL env.
+    default_model = os.environ.get("FREYJA_MODEL", "claude-opus-4-8")
     from bridge.runtimes.registry import capabilities_payload as _harness_capabilities
     emit(
         {

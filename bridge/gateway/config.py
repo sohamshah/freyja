@@ -7,7 +7,7 @@ v1 reads once at daemon start.
 Schema (all keys optional; missing → default):
 
   defaults:
-    model: claude-sonnet-4-6           # default model for new sessions
+    model: claude-opus-4-8             # default model for new sessions (high thinking)
     coordination_strategy: bus         # default strategy
   slack:
     allowed_user_ids:                  # per-workspace allowlist of
@@ -85,7 +85,7 @@ class SlackConfig:
 class GatewayConfig:
     """Top-level gateway config."""
 
-    default_model: str = "claude-sonnet-4-6"
+    default_model: str = "claude-opus-4-8"
     default_strategy: str = "bus"
     slack: SlackConfig = field(default_factory=SlackConfig)
 
@@ -121,7 +121,7 @@ class GatewayConfig:
         )
         return cls(
             default_model=str(
-                defaults.get("model") or "claude-sonnet-4-6"
+                defaults.get("model") or "claude-opus-4-8"
             ),
             default_strategy=str(
                 defaults.get("coordination_strategy") or "bus"
