@@ -580,6 +580,15 @@ async def _wake_archived_subagent(state: Any, session_id: str, msg: Any) -> None
 # transcript it's replayed every turn until the API rejects the call.
 _ANTHROPIC_IMAGE_BASE64_LIMIT = 5 * 1024 * 1024  # 5_242_880 bytes
 _IMAGE_BASE64_TARGET = 4_700_000  # ~10% headroom
+# Anthropic also enforces a per-axis pixel cap independent of byte size.
+# A long-page browser screenshot can be small in bytes (PNG compresses
+# uniform regions well) but exceed 8000px in height — and Anthropic
+# rejects the whole request with
+# "image dimensions exceed max allowed size: 8000 pixels". Keep ~10%
+# headroom and downscale anything taller/wider than 7200px even if its
+# byte size is under the byte target.
+_ANTHROPIC_IMAGE_DIM_LIMIT = 8000
+_IMAGE_DIM_TARGET = 7200
 _IMAGE_DOWNSCALE_ATTEMPTS: tuple[tuple[int, int], ...] = (
     (2400, 88),
     (1800, 85),
@@ -590,14 +599,36 @@ _IMAGE_DOWNSCALE_ATTEMPTS: tuple[tuple[int, int], ...] = (
 )
 
 
+def _b64_exceeds_dim_limit(data: str) -> bool:
+    """Quick check whether a base64-encoded image is over the per-axis
+    pixel cap. Decodes only the dimensions (PIL parses the header lazily
+    in ``Image.open`` — we don't need to materialise full pixel data).
+    Returns False on parse failure (safer to send than to drop)."""
+    try:
+        from io import BytesIO
+        from PIL import Image  # type: ignore[import-not-found]
+
+        raw = base64.b64decode(data, validate=False)
+        with Image.open(BytesIO(raw)) as img:
+            w, h = img.size
+        return max(w, h) > _IMAGE_DIM_TARGET
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _downscale_b64_image(data: str, media_type: str) -> tuple[str, str, bool]:
     """Re-encode an oversize base64 image so it fits under Anthropic's
-    5 MiB cap. Tries progressively smaller (max_dim, quality) settings
-    until the result is under the safe target. Returns
+    5 MiB byte cap AND 8000px per-axis cap. Tries progressively smaller
+    (max_dim, quality) settings until BOTH limits are satisfied. Returns
     ``(new_b64, new_media_type, was_changed)``. On failure returns the
     original payload unchanged.
     """
-    if len(data) <= _IMAGE_BASE64_TARGET:
+    # Two trigger conditions — bytes OR dimensions. Either one is
+    # enough to require re-encoding; checking dimensions catches the
+    # case of small-bytes-but-tall-pixels that the old code missed.
+    over_bytes = len(data) > _IMAGE_BASE64_TARGET
+    over_dims = (not over_bytes) and _b64_exceeds_dim_limit(data)
+    if not over_bytes and not over_dims:
         return data, media_type, False
     try:
         from io import BytesIO
