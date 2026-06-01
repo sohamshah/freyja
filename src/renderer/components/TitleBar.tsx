@@ -74,7 +74,7 @@ export function TitleBar() {
   const ctxPct = Math.min(100, Math.round((contextTokens / usage.contextWindow) * 100))
 
   return (
-    <div className="drag hairline-b flex h-[46px] shrink-0 items-center gap-3 pl-[82px] pr-4 text-[12px] text-fg-1">
+    <div className="app-header drag hairline-b flex h-[46px] shrink-0 items-center gap-2 pl-[82px] pr-4 text-[12px] text-fg-1">
       <div className="flex items-center gap-2 text-fg-0">
         <TopographicMark />
         <span
@@ -93,7 +93,7 @@ export function TitleBar() {
       <div className="h-[14px] w-px bg-white/10" />
       <BridgeStatus mode={mode} modeDetail={modeDetail} />
       <TitleControl
-        className="no-drag hidden h-[28px] px-2.5 text-[10px] sm:inline-flex"
+        className="no-drag hidden h-[28px] px-2.5 text-[10px] lg:inline-flex"
         onClick={() => toggleSidebar()}
         title="Toggle workspace sidebar (⌘[)"
         active={!sidebarCollapsed}
@@ -109,7 +109,7 @@ export function TitleBar() {
         <span className="font-mono uppercase">dashboard</span>
       </TitleControl>
       <TitleControl
-        className="no-drag h-[28px] px-2.5 text-[10px]"
+        className="no-drag hidden h-[28px] px-2.5 text-[10px] xl:inline-flex"
         onClick={() => toggleMetricsDashboard(true)}
         title="Open compaction metrics (cross-session aggregation of pressure signals, compaction events, spend)"
         active={metricsDashboardOpen}
@@ -117,7 +117,8 @@ export function TitleBar() {
         <span className="font-mono uppercase">metrics</span>
       </TitleControl>
       <TitleControl
-        className="no-drag flex h-[28px] max-w-[min(36vw,380px)] py-0 pl-2.5 pr-2 text-fg-1"
+        className="no-drag flex h-[28px] min-w-0 max-w-[min(36vw,380px)] shrink py-0 pl-2.5 pr-2 text-fg-1"
+        style={{ flexShrink: 1 }}
         onClick={() => useHarness.getState().toggleModelPicker(true)}
         title={
           activeHarness
@@ -140,10 +141,10 @@ export function TitleBar() {
         {activeHarness && (
           <span className="title-effort ml-2 font-mono text-[10px]">acp</span>
         )}
-        <span className="ml-2 text-fg-3">▾</span>
+        <span className="ml-2 text-fg-1">▾</span>
       </TitleControl>
       <div
-        className={`no-drag title-strategy hidden h-[28px] items-center gap-0.5 px-1 lg:flex ${
+        className={`no-drag title-strategy hidden h-[28px] shrink-0 items-center gap-0.5 px-1 2xl:flex ${
           strategyLocked ? 'title-strategy-locked' : ''
         }`}
         title={
@@ -168,7 +169,7 @@ export function TitleBar() {
         ))}
       </div>
       <TitleControl
-        className="no-drag hidden h-[28px] px-2.5 text-[10px] lg:inline-flex"
+        className="no-drag hidden h-[28px] px-2.5 text-[10px] 2xl:inline-flex"
         onClick={() => toggleFocusMode()}
         title="Focus mode (⌘\\)"
         active={focusMode}
@@ -176,18 +177,18 @@ export function TitleBar() {
         <span className="font-mono uppercase">{focusMode ? 'restore' : 'focus'}</span>
       </TitleControl>
       <TitleControl className="flex h-[30px] px-3">
-        <span className="text-fg-2">ctx</span>
+        <span className="text-fg-1">ctx</span>
         <span className="ml-1.5 font-mono text-fg-0">
           {contextKnown ? formatTokens(contextTokens) : 'n/a'}
-          <span className="text-fg-2">/{formatTokens(usage.contextWindow)}</span>
+          <span className="text-fg-1">/{formatTokens(usage.contextWindow)}</span>
         </span>
         <ProgressBar pct={ctxPct} className="ml-2 w-[56px]" />
       </TitleControl>
       <TitleControl className="flex h-[30px] px-3">
-        <span className="text-fg-2">spend</span>
+        <span className="text-fg-1">spend</span>
         <span className="ml-1.5 font-mono text-fg-0">{formatCost(aggregateCost)}</span>
       </TitleControl>
-      <div className="ml-auto flex items-center gap-3 text-fg-2">
+      <div className="ml-auto flex shrink-0 items-center gap-2 text-fg-1">
         <GatewayStatusPill />
         <TitleControl
           className="no-drag hidden h-[28px] px-2.5 text-[10px] xl:inline-flex"
@@ -198,12 +199,14 @@ export function TitleBar() {
           <span className="font-mono uppercase">activity</span>
         </TitleControl>
         {isStreaming && (
-          <span className="flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.12em]">
+          <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.12em]">
             <Spinner name="braillewave" className="text-accent" />
             streaming
           </span>
         )}
-        <span className="font-mono text-[10.5px] text-fg-2">{sessionId.slice(0, 14)}</span>
+        <span className="hidden shrink-0 font-mono text-[10.5px] text-fg-1 xl:inline">
+          {sessionId.slice(0, 14)}
+        </span>
       </div>
     </div>
   )
@@ -232,6 +235,7 @@ function BridgeStatus({ mode, modeDetail }: { mode: string; modeDetail: string }
 function TitleControl({
   children,
   className = '',
+  style,
   onClick,
   title,
   accent = false,
@@ -239,6 +243,7 @@ function TitleControl({
 }: {
   children: React.ReactNode
   className?: string
+  style?: React.CSSProperties
   onClick?: () => void
   title?: string
   accent?: boolean
@@ -253,14 +258,14 @@ function TitleControl({
 
   if (onClick) {
     return (
-      <button className={controlClass} onClick={onClick} title={title} type="button">
+      <button className={controlClass} style={style} onClick={onClick} title={title} type="button">
         {children}
       </button>
     )
   }
 
   return (
-    <div className={controlClass} title={title}>
+    <div className={controlClass} style={style} title={title}>
       {children}
     </div>
   )
@@ -380,7 +385,7 @@ function GatewayStatusPill() {
   const configured = status.slackConfigured
   const running = status.pid !== null
 
-  let dotClass = 'bg-fg-4'
+  let dotClass = 'bg-fg-2'
   let label = 'slack setup'
   let title = 'Connect Freyja to Slack'
 
@@ -399,7 +404,7 @@ function GatewayStatusPill() {
       type="button"
       onClick={() => toggleSlackSetup(true)}
       title={title}
-      className="no-drag hidden h-[28px] items-center gap-1.5 rounded border border-white/[0.06] bg-white/[0.025] px-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-2 transition hover:border-white/[0.18] hover:bg-white/[0.06] hover:text-fg-0 xl:inline-flex"
+      className="no-drag hidden h-[28px] shrink-0 items-center gap-1.5 rounded border border-white/[0.12] bg-white/[0.05] px-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-1 transition hover:border-white/[0.22] hover:bg-white/[0.08] hover:text-fg-0 2xl:inline-flex"
     >
       <span className={`h-1.5 w-1.5 rounded-full ${dotClass}`} />
       {label}

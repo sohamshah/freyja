@@ -93,12 +93,12 @@ export function ToolCallChip({ id, record }: { id: string; record?: ToolCallReco
         onClick={() => setUserOpen((prev) => !(prev ?? open))}
         className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-white/[0.025]"
       >
-        <span className="flex w-[18px] justify-center">{statusIndicator}</span>
-        <span className="font-mono text-[11.5px] text-accent">{call.name}</span>
+        <span className="flex w-[18px] shrink-0 justify-center">{statusIndicator}</span>
+        <span className="shrink-0 font-mono text-[11.5px] text-accent">{call.name}</span>
         {summary && (
-          <span className="truncate font-mono text-[11px] text-fg-1">{summary}</span>
+          <span className="min-w-0 truncate font-mono text-[11px] text-fg-1">{summary}</span>
         )}
-        <span className="ml-auto flex items-center gap-2 text-[10px] text-fg-2">
+        <span className="ml-auto flex shrink-0 items-center gap-2 text-[10px] text-fg-2">
           {hasFrame && (
             <span className="font-mono text-[9.5px] uppercase tracking-[0.08em] text-warn">
               ◱ frame
