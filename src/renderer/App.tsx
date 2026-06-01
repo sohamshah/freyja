@@ -180,11 +180,20 @@ export function App() {
       hydrateSettings().catch(() => {})
 
       // Bind the scheduler IPC client to the bridge so the dashboard
-      // can call listJobs / createJob / etc. Then do a one-time
-      // hydration of jobs, recent runs, metrics, and daemon status so
-      // the dashboard opens with content already populated.
+      // can call listJobs / createJob / etc. The preload exposes
+      // `sendCommand` (not `send`), and we await it so failures
+      // propagate cleanly. Then do a one-time hydration of jobs,
+      // recent runs, metrics, and daemon status so the dashboard
+      // opens with content already populated.
       import('./state/scheduler-store').then(({ bindSchedulerBridge, schedulerApi }) => {
-        bindSchedulerBridge({ send: (cmd: any) => api.send(cmd) })
+        bindSchedulerBridge({
+          send: (cmd: any) => {
+            // Best-effort fire-and-forget — sendCommand returns a
+            // promise we don't await here; the bridge's response
+            // arrives via onEvent as scheduler_response.
+            try { api.sendCommand?.(cmd) } catch { /* ignore */ }
+          },
+        })
         schedulerApi.listJobs().catch(() => {})
         schedulerApi.recentRuns(50).catch(() => {})
         schedulerApi.metrics().catch(() => {})

@@ -406,17 +406,25 @@ Execution context (where the agent runs):
   · "existing_session" / "here" — fire into the current session
   · or a typed dict: {"kind":"persistent_job_session"}
 
-Sinks (where the output goes — pass as a list; multi-sink is allowed):
-  · "here" / "current"    — deliver wherever this job was created
-  · "slack" / "slack:current" — Slack channel/DM/thread of the creator
-  · "desktop"             — desktop session of the creator
-  · "session"             — keep output in the execution session, no
-                            external delivery
-  · "laptop:<path>"       — filesystem path (supports {date}, {time},
-                            {run_id}, {job_name} tokens)
-  · "webhook:<url>" or any http(s) URL — POST the output
-  · "noop"                — track-only, no delivery
-  · or a typed sink dict.
+Sinks (where the output goes):
+  Omit to deliver wherever the job was created — the right default
+  for most jobs. To override, pass an array of items. Each item is
+  one of these strings:
+
+    "here", "slack", "desktop", "session", "noop",
+    "laptop:<path>"  (tokens: {date} {time} {run_id} {job_name}),
+    "https://<url>"
+
+  Or a typed dict — use only when a shortcut won't do (e.g. a
+  specific Slack channel that isn't the creator's):
+    {"kind":"slack",      "workspace_id":"T...", "chat_id":"C...",
+                          "thread_ts": null}
+    {"kind":"filesystem", "path_template":"/tmp/{date}.md",
+                          "format":"markdown"|"json"|"text",
+                          "append":false}
+    {"kind":"webhook",    "url":"https://...", "method":"POST"}
+
+  Must be a real JSON array — not a JSON-encoded string.
 
 Self-paced loops:
   When the schedule is `self_paced`, two extra tools are auto-registered
@@ -478,7 +486,13 @@ _PARAMETERS = {
         "sinks": {
             "type": "array",
             "items": {},
-            "description": "List of delivery sinks (strings or typed objects).",
+            "description": (
+                "Delivery destinations. Omit to deliver wherever the "
+                "job was created. Each item is a shortcut string "
+                "(\"here\", \"slack\", \"desktop\", \"session\", \"noop\", "
+                "\"laptop:<path>\", \"https://<url>\") or a typed sink "
+                "dict. Must be a real array — not a JSON-encoded string."
+            ),
         },
         "model_id": {"type": "string"},
         "coordination_strategy": {"type": "string"},

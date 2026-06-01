@@ -668,7 +668,7 @@ def build_schedule(
 
 
 def build_sinks(
-    sink_list: list[Any] | None,
+    sink_list: Any,
     *,
     creator: CreatorRef,
     state: Any,
@@ -676,7 +676,46 @@ def build_sinks(
     """Convert a list of mixed sink specs (strings like ``"here"``,
     ``"slack:current"``, ``"laptop:/path/to/file"``, or full dicts) into
     typed SinkSpecs. Resolves ``current``/``here`` shortcuts using the
-    creator context."""
+    creator context.
+
+    Robust to several model-friendly input shapes:
+      · None / [] / ""           → default sink for creator
+      · ["here"]                  → typed list (the canonical form)
+      · "here"                    → single sink as a string
+      · "[\"here\", \"slack\"]"   → JSON-encoded array (some providers
+                                    coerce lists to strings)
+      · "here,slack:current"      → comma-separated string
+      · {"kind": "slack", ...}    → single sink dict
+    """
+    # Normalize whatever the caller passed into a Python list of items.
+    if sink_list is None:
+        return [_default_sink_for_creator(creator)]
+    if isinstance(sink_list, str):
+        s = sink_list.strip()
+        if not s:
+            return [_default_sink_for_creator(creator)]
+        # JSON array → real list
+        if s.startswith("[") and s.endswith("]"):
+            import json as _json
+            try:
+                parsed = _json.loads(s)
+                if isinstance(parsed, list):
+                    sink_list = parsed
+                else:
+                    sink_list = [parsed]
+            except _json.JSONDecodeError:
+                sink_list = [s]
+        elif "," in s:
+            sink_list = [p.strip() for p in s.split(",") if p.strip()]
+        else:
+            sink_list = [s]
+    elif isinstance(sink_list, dict):
+        sink_list = [sink_list]
+    elif not isinstance(sink_list, list):
+        raise ValueError(
+            f"'sinks' must be a list or a string (got {type(sink_list).__name__})"
+        )
+
     if not sink_list:
         # Default: deliver wherever the job was created.
         return [_default_sink_for_creator(creator)]

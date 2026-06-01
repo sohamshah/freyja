@@ -39,24 +39,35 @@ async def deliver_desktop(
     sessions = getattr(ctx.state, "sessions", {}) or {}
     sess = sessions.get(target_id)
 
-    if spec.render_mode == "assistant_message" and sess is not None:
-        # Append to the transcript as if Freyja posted in the session.
-        # The renderer will pick this up via the normal save path.
+    formatted = _format_with_meta(output.text or "", job, run)
+
+    # Persist into the target session's transcript so the message
+    # survives daemon restarts. Only valid when the target session
+    # actually exists in memory (it must — otherwise sending an
+    # assistant message into a session the bridge doesn't know
+    # about would race transcript persistence).
+    if sess is not None:
         try:
             inner = getattr(sess, "session", None)
             if inner is not None:
-                inner.add_assistant_message(_format_with_meta(output.text, job, run))
+                inner.add_assistant_message(formatted)
                 if hasattr(sess, "_save_transcript"):
                     sess._save_transcript()  # noqa: SLF001
         except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"assistant_message inject failed: {exc}")
+            # Persistence failure is non-fatal — we still emit the
+            # in-memory append below so the user sees the message in
+            # the current renderer state.
+            import logging
+            logging.getLogger("freyja.scheduler.sinks.desktop").warning(
+                "desktop transcript persist failed: %s", exc,
+            )
 
-    # Always emit a system_event so the activity stream reflects the run.
     try:
         from bridge.freyja_bridge import emit
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(f"bridge.emit unavailable: {exc}")
 
+    # The activity-feed system_event — small banner with metadata.
     emit({
         "type": "system_event",
         "sessionId": target_id,
@@ -70,6 +81,21 @@ async def deliver_desktop(
             "preview": (output.text or "")[:500],
             "ts": time.time(),
         },
+    })
+
+    # The in-chat assistant message — this is what users actually
+    # expect when they ask Freyja to "deliver the result here." The
+    # renderer's `message_appended` handler hard-appends to the
+    # target session's transcript view; combined with the bridge-side
+    # add_assistant_message above, both the in-memory view and the
+    # persisted transcript stay in sync.
+    emit({
+        "type": "message_appended",
+        "sessionId": target_id,
+        "role": "assistant",
+        "content": formatted,
+        "messageId": f"sched-{run.run_id}",
+        "createdAt": int(time.time() * 1000),
     })
     return target_id
 
