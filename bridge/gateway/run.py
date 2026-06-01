@@ -52,6 +52,179 @@ from bridge.gateway.stream_consumer import SlackStreamConsumer
 logger = logging.getLogger("freyja.gateway")
 
 
+def _scheduler_help_card() -> str:
+    return (
+        "*Scheduler — `/freyja schedule|remind|loop|daemon`*\n\n"
+        "*Create*\n"
+        "• `/freyja remind <when> <prompt>` — one-shot reminder\n"
+        "• `/freyja schedule add <when> <prompt> [--to <sinks>] [--in <execution>] [--name <label>]`\n"
+        "• `/freyja loop <interval> <prompt>` — fixed-cadence loop\n"
+        "• `/freyja loop until <cond> <prompt>` — runs until cond satisfied\n"
+        "• `/freyja loop <prompt>` — self-paced; agent picks its own delays\n\n"
+        "*Manage*\n"
+        "• `/freyja schedule list [--mine] [--tag <tag>]`\n"
+        "• `/freyja schedule get|pause|resume|remove|run|runs <id_or_prefix>`\n"
+        "• `/freyja schedule metrics`\n\n"
+        "*Daemon*\n"
+        "• `/freyja daemon install|uninstall|status`\n"
+        "  (auto-installs on first scheduled job — so jobs fire even with Freyja closed)\n\n"
+        "*Sinks (`--to ...`, comma-separated)*\n"
+        "`here`, `slack`, `desktop`, `session`, `laptop:/path/{date}.md`, "
+        "`https://hook.url`, `noop`\n\n"
+        "*Examples*\n"
+        "• `/freyja remind in 30 minutes ping me about the deploy`\n"
+        "• `/freyja schedule add every weekday at 9am summarize new PRs in repo X --to slack`\n"
+        "• `/freyja schedule add every 5 minutes check uptime --to webhook:https://hook.example/uptime`\n"
+        "• `/freyja loop 5m clean stale tabs`\n"
+    )
+
+
+def _arg_value(body: str, flag: str) -> str | None:
+    """Pluck the value of a `--flag <val>` pair out of free-form text.
+    Handles `--flag val`, `--flag=val`. Returns None if absent."""
+    import re as _re
+    m = _re.search(rf"{_re.escape(flag)}(?:[=\s]+)([^\s][^\-]*?)(?=\s+--|\s*$)", body)
+    if not m:
+        return None
+    return m.group(1).strip().rstrip(",")
+
+
+def _strip_args(body: str, flags: list[str]) -> str:
+    """Remove `--flag value` pairs from body so the remainder is just
+    the schedule + prompt text. Naive but covers our slash-command
+    grammar."""
+    import re as _re
+    for flag in flags:
+        body = _re.sub(
+            rf"{_re.escape(flag)}(?:[=\s]+)[^\s][^\-]*?(?=\s+--|\s*$)",
+            "",
+            body,
+        )
+    return _re.sub(r"\s+", " ", body).strip()
+
+
+def _split_when_prompt(body: str) -> tuple[str, str, str]:
+    """Split a body like ``every weekday at 9am summarize my PRs`` into
+    (when, separator, prompt). The boundary is hard — we try several
+    heuristics in order of specificity.
+
+    Returns (when, '', prompt) where prompt is everything after the
+    matched when-phrase. Both can be empty if parsing fails."""
+    import re as _re
+    body = body.strip()
+    if not body:
+        return "", "", ""
+    # Patterns: explicit colon ("every weekday at 9am: do X")
+    if ":" in body:
+        when, _, prompt = body.partition(":")
+        return when.strip(), ":", prompt.strip()
+    # "every <pattern> at <time> <prompt>"
+    m = _re.match(
+        r"(every\s+(?:weekday|weekdays|day|"
+        r"(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*(?:s)?"
+        r"(?:\s+(?:and|,)\s+(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*(?:s)?)*"
+        r")\s+at\s+\S+)\s+(.+)$",
+        body, _re.IGNORECASE,
+    )
+    if m:
+        return m.group(1).strip(), " ", m.group(2).strip()
+    # "every N <unit> <prompt>"
+    m = _re.match(r"(every\s+\d+\s*[a-z]+)\s+(.+)$", body, _re.IGNORECASE)
+    if m:
+        return m.group(1).strip(), " ", m.group(2).strip()
+    # "in N <unit> <prompt>"
+    m = _re.match(r"(in\s+\d+\s*[a-z]+)\s+(.+)$", body, _re.IGNORECASE)
+    if m:
+        return m.group(1).strip(), " ", m.group(2).strip()
+    # "tomorrow at X <prompt>" / "today at X <prompt>"
+    m = _re.match(
+        r"((?:tomorrow|today)\s+at\s+\S+)\s+(.+)$",
+        body, _re.IGNORECASE,
+    )
+    if m:
+        return m.group(1).strip(), " ", m.group(2).strip()
+    # "at X <prompt>"
+    m = _re.match(r"(at\s+\S+)\s+(.+)$", body, _re.IGNORECASE)
+    if m:
+        return m.group(1).strip(), " ", m.group(2).strip()
+    # Fall through: assume the whole thing is the prompt, no schedule.
+    return "", "", body
+
+
+def _find_job_by_token(jobs: list[Any], token: str) -> Any | None:
+    """Lookup by full id, id prefix (>=4 chars), or exact name."""
+    token = (token or "").strip()
+    if not token:
+        return None
+    for j in jobs:
+        if j.id == token or j.name == token:
+            return j
+    if len(token) >= 4:
+        for j in jobs:
+            if j.id.startswith(token):
+                return j
+    return None
+
+
+def _format_jobs_table(jobs: list[Any]) -> str:
+    if not jobs:
+        return "_No scheduled jobs yet. Try `/freyja schedule add …` or `/freyja remind …`._"
+    lines = [f"*Scheduled jobs ({len(jobs)})*"]
+    for j in jobs:
+        next_at = _format_ts(j.next_fire_at)
+        from bridge.scheduler.scheduling import cadence_label
+        lines.append(
+            f"• `{j.id}` *{j.name}* — {cadence_label(j.schedule)}\n"
+            f"  status: {j.status} · next: {next_at} · sinks: "
+            f"{','.join(s.kind for s in j.sinks) or 'none'}"
+        )
+    return "\n".join(lines)
+
+
+def _format_job_detail(j: Any) -> str:
+    from bridge.scheduler.scheduling import cadence_label
+    return (
+        f"*{j.name}* (`{j.id}`)\n"
+        f"• Status: {j.status} · enabled: {j.enabled}\n"
+        f"• Cadence: {cadence_label(j.schedule)}\n"
+        f"• Next fire: {_format_ts(j.next_fire_at)}\n"
+        f"• Last fire: {_format_ts(j.last_fire_at)} · fires: {j.fire_count}\n"
+        f"• Execution: {j.execution.kind}\n"
+        f"• Sinks: {', '.join(s.kind for s in j.sinks) or 'none'}\n"
+        f"• Tags: {', '.join(j.tags) or '—'}\n"
+        f"• Prompt: ```{j.prompt[:1000]}```"
+    )
+
+
+def _format_runs(job: Any, runs: list[Any]) -> str:
+    if not runs:
+        return f"_No runs yet for {job.name} ({job.id})._"
+    lines = [f"*Recent runs for {job.name} (`{job.id}`)*"]
+    for r in runs:
+        lines.append(
+            f"• `{r.run_id}` {r.status} · "
+            f"started {_format_ts(r.started_at)} · "
+            f"{r.duration_seconds:.1f}s · "
+            f"sinks ok={sum(1 for d in r.delivery_reports if d.success)}/"
+            f"{len(r.delivery_reports)}"
+        )
+    return "\n".join(lines)
+
+
+def _format_ts(ts: float | None) -> str:
+    if ts is None:
+        return "—"
+    import datetime as _dt
+    dt = _dt.datetime.fromtimestamp(ts)
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _autoname(prompt: str) -> str:
+    words = (prompt or "").split()[:8]
+    name = " ".join(words)
+    return (name[:60] + "…") if len(name) > 60 else (name or "scheduled job")
+
+
 def _help_card_text() -> str:
     """The text returned for `/freyja` and `/freyja help`."""
     return (
@@ -72,6 +245,11 @@ def _help_card_text() -> str:
         "• `/freyja perms`   — show tool permissions for this session\n"
         "• `/freyja models`  — list all models, harnesses, and modes\n"
         "• `/freyja verbose` — cycle tool-progress detail (off/new/all/verbose)\n"
+        "• `/freyja remind <when> <prompt>` — one-shot reminder\n"
+        "• `/freyja schedule add <when> <prompt>` — recurring scheduled job\n"
+        "• `/freyja schedule list|pause|resume|remove|runs` — manage jobs\n"
+        "• `/freyja loop <prompt>` — self-paced loop\n"
+        "• `/freyja daemon install|status` — background scheduler daemon\n"
         "• `/goal <obj>`     — arm a goal loop\n"
         "• `/mode <s>`       — switch coordination (bus / goal / kanban / isolated)\n"
         "• `/model <id>`     — switch the agent model\n"
@@ -835,11 +1013,14 @@ class GatewayDaemon:
                     message,
                     action if action else ("off" if sub.startswith("quiet") else ""),
                 )
+            elif sub.startswith("schedule") or sub.startswith("remind") or sub.startswith("loop") or sub.startswith("daemon"):
+                text = await self._handle_scheduler_subcommand(message)
             else:
                 text = (
                     "Unknown subcommand. Try `/freyja help`, "
                     "`/freyja status`, `/freyja perms`, `/freyja models`, "
-                    "or `/freyja verbose`."
+                    "`/freyja verbose`, `/freyja schedule`, "
+                    "`/freyja remind`, `/freyja loop`, or `/freyja daemon`."
                 )
             await adapter.send(  # type: ignore[attr-defined]
                 message.source.chat_id,
@@ -1190,6 +1371,376 @@ class GatewayDaemon:
             f"Verbosity set to *`{new_level}`*: {descriptions[new_level]}. "
             f"(Will apply on your next message in this chat.)"
         )
+
+    async def _handle_scheduler_subcommand(
+        self,
+        message: IncomingMessage,
+    ) -> str:
+        """``/freyja schedule|remind|loop|daemon`` — wrap the
+        SchedulerService API as Slack slash commands.
+
+        Grammar (subset of the model-callable schedule tool; same
+        verbs, simpler args parsed from chat text):
+
+          /freyja schedule add <when> <prompt> [--to <sinks>] [--in <execution>]
+          /freyja schedule list [--mine] [--tag <tag>]
+          /freyja schedule get <id>
+          /freyja schedule pause|resume|remove <id>
+          /freyja schedule run <id>
+          /freyja remind <when> <prompt>            # one-shot alias
+          /freyja loop [interval | until <cond>] [prompt]
+          /freyja daemon install|uninstall|status
+
+        Anything ambiguous falls through to a help blurb. Heavy lifting
+        is done by the SchedulerService — this is purely a translator
+        from chat text to typed API calls.
+        """
+        from bridge.scheduler.models import (
+            BudgetSpec,
+            JobFilter,
+            JobRecord,
+            SelfPacedSchedule,
+        )
+        from bridge.scheduler.scheduling import cadence_label, parse_when
+        from bridge.scheduler.service import (
+            build_creator_ref,
+            build_execution,
+            build_sinks,
+        )
+
+        state = self.state  # type: ignore[union-attr]
+        service = getattr(state, "scheduler", None)
+        if service is None:
+            return "_Scheduler not available (bridge state not ready)._"
+
+        raw = (message.slash_command_args or "").strip()
+        # Already-routed via /freyja so the first word of raw is the
+        # subcommand (schedule/remind/loop/daemon).
+        if not raw:
+            return _scheduler_help_card()
+        head, _, rest = raw.partition(" ")
+        head = head.lower()
+        rest = rest.strip()
+
+        # Build a creator ref from the inbound message.
+        src = message.source
+        creator = build_creator_ref(
+            surface=src.platform.value,
+            session_id="",  # filled below from session_router
+            user_id=src.user_id,
+            workspace_id=src.workspace_id,
+            chat_id=src.chat_id,
+            thread_id=src.thread_id or src.message_id,
+            user_name=src.user_name,
+        )
+        # Best-effort session resolution so creator.session_id is set.
+        try:
+            from bridge.gateway.session_router import session_key_for
+            creator.session_id = session_key_for(src)
+        except Exception:  # noqa: BLE001
+            pass
+
+        try:
+            if head == "daemon":
+                return await self._scheduler_daemon_subcommand(rest)
+            if head == "remind":
+                return await self._scheduler_create_oneshot(
+                    rest, service=service, creator=creator,
+                )
+            if head == "loop":
+                return await self._scheduler_create_loop(
+                    rest, service=service, creator=creator,
+                )
+            # ``schedule …`` head
+            return await self._scheduler_schedule_subcommand(
+                rest, service=service, creator=creator,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("scheduler slash handler crashed")
+            return f"_Scheduler error: {exc}_"
+
+    async def _scheduler_schedule_subcommand(
+        self,
+        rest: str,
+        *,
+        service: Any,
+        creator: Any,
+    ) -> str:
+        """Dispatch the second word of ``/freyja schedule X …``."""
+        from bridge.scheduler.models import JobFilter
+        from bridge.scheduler.scheduling import cadence_label
+        from bridge.scheduler.service import build_execution, build_sinks
+
+        if not rest:
+            return _scheduler_help_card()
+        verb, _, body = rest.partition(" ")
+        verb = verb.lower()
+        body = body.strip()
+
+        if verb in ("add", "create", "new"):
+            return await self._scheduler_create_recurring(
+                body, service=service, creator=creator,
+            )
+        if verb == "list":
+            mine = "--mine" in body
+            tag = _arg_value(body, "--tag")
+            filt = JobFilter(
+                user_id=creator.user_id if mine else None,
+                tag=tag,
+            )
+            jobs = await service.list_jobs(filt)
+            return _format_jobs_table(jobs)
+        if verb in ("get", "show"):
+            jobs = await service.list_jobs(None)
+            job = _find_job_by_token(jobs, body)
+            if job is None:
+                return f"_No job matched `{body}`._"
+            return _format_job_detail(job)
+        if verb in ("pause", "stop"):
+            jobs = await service.list_jobs(None)
+            job = _find_job_by_token(jobs, body)
+            if job is None:
+                return f"_No job matched `{body}`._"
+            await service.pause_job(job.id)
+            return f"Paused *{job.name}* (`{job.id}`)."
+        if verb in ("resume", "start"):
+            jobs = await service.list_jobs(None)
+            job = _find_job_by_token(jobs, body)
+            if job is None:
+                return f"_No job matched `{body}`._"
+            await service.resume_job(job.id)
+            return f"Resumed *{job.name}* (`{job.id}`). Next fire: {_format_ts(job.next_fire_at)}"
+        if verb in ("remove", "delete", "rm"):
+            jobs = await service.list_jobs(None)
+            job = _find_job_by_token(jobs, body)
+            if job is None:
+                return f"_No job matched `{body}`._"
+            await service.remove_job(job.id)
+            return f"Removed *{job.name}* (`{job.id}`)."
+        if verb in ("run", "run_now"):
+            jobs = await service.list_jobs(None)
+            job = _find_job_by_token(jobs, body)
+            if job is None:
+                return f"_No job matched `{body}`._"
+            run = await service.run_job_now(job.id)
+            return (
+                f"Ran *{job.name}* (`{job.id}`): {run.status}.\n"
+                f"```{(run.output_text or '')[:1500]}```"
+            )
+        if verb == "runs":
+            jobs = await service.list_jobs(None)
+            job = _find_job_by_token(jobs, body)
+            if job is None:
+                return f"_No job matched `{body}`._"
+            runs = await service.get_runs(job.id, limit=10)
+            return _format_runs(job, runs)
+        if verb == "metrics":
+            m = await service.metrics()
+            return (
+                f"*Scheduler metrics*\n"
+                f"Total jobs: {m.total_jobs} ({m.enabled_jobs} active, "
+                f"{m.paused_jobs} paused, {m.disabled_jobs} disabled)\n"
+                f"Last 24h: {m.runs_24h} runs ({m.succeeded_24h} ok, "
+                f"{m.failed_24h} failed)\n"
+                f"Avg run duration: {m.avg_run_duration_seconds:.1f}s\n"
+                f"Cost (24h): ${m.total_cost_usd_24h:.4f}\n"
+                f"Next fire: {_format_ts(m.next_fire_at)}"
+                f"{' — ' + (m.next_fire_job_name or '') if m.next_fire_job_name else ''}"
+            )
+        return _scheduler_help_card()
+
+    async def _scheduler_create_oneshot(
+        self,
+        body: str,
+        *,
+        service: Any,
+        creator: Any,
+    ) -> str:
+        """``/freyja remind <when> <prompt>`` — one-shot reminder."""
+        when, _, prompt = _split_when_prompt(body)
+        if not when or not prompt:
+            return (
+                "Usage: `/freyja remind <when> <prompt>`\n"
+                "Example: `/freyja remind in 30 minutes check the deploy status`"
+            )
+        return await self._create_via_service(
+            service, creator,
+            when=when, prompt=prompt,
+            name=None, sinks=None, execution=None,
+        )
+
+    async def _scheduler_create_recurring(
+        self,
+        body: str,
+        *,
+        service: Any,
+        creator: Any,
+    ) -> str:
+        """``/freyja schedule add <when> <prompt> [--to …] [--in …]``"""
+        # Strip --to / --in pieces out of body first.
+        to_arg = _arg_value(body, "--to")
+        in_arg = _arg_value(body, "--in")
+        name_arg = _arg_value(body, "--name")
+        tag_arg = _arg_value(body, "--tag")
+        stripped = _strip_args(body, ["--to", "--in", "--name", "--tag"])
+        when, _, prompt = _split_when_prompt(stripped)
+        if not when or not prompt:
+            return (
+                "Usage: `/freyja schedule add <when> <prompt> "
+                "[--to <sinks>] [--in <execution>] [--name <label>]`\n"
+                "Examples:\n"
+                "• `/freyja schedule add every weekday at 9am summarize new PRs`\n"
+                "• `/freyja schedule add in 1h check the deploy --to slack,laptop:/tmp/out/{date}.md`"
+            )
+        sinks_list = [s.strip() for s in to_arg.split(",")] if to_arg else None
+        tags = [tag_arg] if tag_arg else []
+        return await self._create_via_service(
+            service, creator,
+            when=when, prompt=prompt,
+            name=name_arg, sinks=sinks_list,
+            execution=in_arg, tags=tags,
+        )
+
+    async def _scheduler_create_loop(
+        self,
+        body: str,
+        *,
+        service: Any,
+        creator: Any,
+    ) -> str:
+        """``/freyja loop [interval | until <cond>] [prompt]``.
+
+        Lowers to either an IntervalSchedule (fixed cadence) or
+        SelfPacedSchedule (agent-driven). 'until' clauses become the
+        loop's stopping condition."""
+        import re as _re
+        body = body.strip()
+        until = None
+        m = _re.match(r"until\s+(.+?)(?:\s+(.*))?$", body, _re.IGNORECASE)
+        if m:
+            until = m.group(1).strip()
+            prompt = (m.group(2) or "").strip() or until
+            when = f"self-paced between 60s and 30m"
+            return await self._create_via_service(
+                service, creator,
+                when=when, prompt=prompt,
+                name=f"loop: {prompt[:40]}",
+                sinks=["here"],
+                execution="persistent_job_session",
+                tags=["loop"],
+                extra_kwargs={"until_condition": until},
+            )
+        # Fixed interval form: "/freyja loop 5m clean stale tabs"
+        m = _re.match(r"(\d+\s*[a-z]+)\s+(.+)$", body, _re.IGNORECASE)
+        if m:
+            interval = m.group(1)
+            prompt = m.group(2).strip()
+            return await self._create_via_service(
+                service, creator,
+                when=f"every {interval}", prompt=prompt,
+                name=f"loop: {prompt[:40]}",
+                sinks=["here"],
+                execution="persistent_job_session",
+                tags=["loop"],
+            )
+        if body:
+            # No cadence, just a prompt — default to self-paced.
+            return await self._create_via_service(
+                service, creator,
+                when="self-paced between 60s and 30m",
+                prompt=body,
+                name=f"loop: {body[:40]}",
+                sinks=["here"],
+                execution="persistent_job_session",
+                tags=["loop"],
+            )
+        return (
+            "Usage: `/freyja loop <interval> <prompt>` or "
+            "`/freyja loop until <condition> <prompt>` or "
+            "`/freyja loop <prompt>` (self-paced)."
+        )
+
+    async def _create_via_service(
+        self,
+        service: Any,
+        creator: Any,
+        *,
+        when: str,
+        prompt: str,
+        name: str | None = None,
+        sinks: list[Any] | None = None,
+        execution: Any = None,
+        tags: list[str] | None = None,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> str:
+        """Shared create path used by ``schedule add``, ``remind``,
+        and ``loop`` slash subcommands."""
+        from bridge.scheduler.models import (
+            JobRecord,
+            SelfPacedSchedule,
+        )
+        from bridge.scheduler.scheduling import cadence_label, parse_when
+        from bridge.scheduler.service import build_execution, build_sinks
+
+        schedule = parse_when(when, timezone="UTC")
+        if isinstance(schedule, SelfPacedSchedule) and extra_kwargs:
+            if "until_condition" in extra_kwargs:
+                schedule.until_condition = extra_kwargs["until_condition"]
+        execution_spec = build_execution(execution, creator=creator)
+        sink_specs = build_sinks(sinks, creator=creator, state=self.state)
+        spec = JobRecord(
+            id="",
+            name=name or _autoname(prompt),
+            description="",
+            creator=creator,
+            schedule=schedule,
+            prompt=prompt,
+            execution=execution_spec,
+            permission_snapshot=getattr(self.state, "permission_tier", "low"),
+            sinks=sink_specs,
+            tags=tags or [],
+        )
+        job = await service.create_job(spec)
+        return (
+            f":calendar: Scheduled *{job.name}* (`{job.id}`)\n"
+            f"• Cadence: {cadence_label(job.schedule)}\n"
+            f"• Next fire: {_format_ts(job.next_fire_at)}\n"
+            f"• Sinks: {', '.join(s.kind for s in job.sinks) or 'none'}\n"
+            f"• Execution: {job.execution.kind}\n"
+            f"_Use `/freyja schedule list` to see all, or "
+            f"`/freyja schedule pause {job.id}` to disable._"
+        )
+
+    async def _scheduler_daemon_subcommand(self, body: str) -> str:
+        verb = body.strip().lower()
+        try:
+            from bridge.scheduler.daemon import (
+                daemon_status,
+                ensure_daemon_installed,
+                uninstall_daemon,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return f"_Daemon module unavailable: {exc}_"
+        if verb in ("", "status"):
+            st = daemon_status()
+            return (
+                "*Background scheduler daemon*\n"
+                f"• Supported: {st.get('supported')}\n"
+                f"• Installed: {st.get('installed')}\n"
+                f"• Running: {st.get('running')}\n"
+                f"• PID: {st.get('pid')}\n"
+                f"• Log: `{st.get('log')}`"
+            )
+        if verb in ("install", "reinstall"):
+            result = ensure_daemon_installed(reason="slash_install")
+            return (
+                f"Install result: `{result.get('reason')}` — "
+                f"plist `{result.get('plist')}`."
+            )
+        if verb in ("uninstall", "remove"):
+            result = uninstall_daemon()
+            return f"Uninstall result: removed {result.get('removed')}"
+        return "Usage: `/freyja daemon install | uninstall | status`"
 
     async def _render_models(self, message: IncomingMessage) -> str:
         """List all models + harnesses + coordination modes available for

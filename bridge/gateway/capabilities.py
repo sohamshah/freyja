@@ -65,6 +65,8 @@ SLACK_TOOL_ALLOWLIST: frozenset[str] = frozenset({
     "subagents",
     "summarize_context",
     "tool_search",
+    # SCHEDULING — durable jobs created from Slack are core UX.
+    "schedule",
     # KNOWLEDGE (read-only)
     "list_skills",
     "search_skills",

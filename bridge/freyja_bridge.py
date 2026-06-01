@@ -947,6 +947,23 @@ async def _main() -> None:
 
     state = _BridgeState(workspace=workspace, default_model=default_model)
     await state.ensure_session(boot_session_id)
+    # Boot the scheduler service. Loads persisted jobs from disk,
+    # recomputes next_fire_at for everyone, starts the run loop.
+    try:
+        await state.scheduler.start()
+        # Wire the durable-job hook so the first time a job is created
+        # we install the macOS LaunchAgent (background daemon). Auto-
+        # install matches the user's "very easy install" mandate.
+        try:
+            from bridge.scheduler.daemon import ensure_daemon_installed
+
+            state.scheduler.on_durable_job_created = (
+                lambda _job: ensure_daemon_installed(reason="first_durable_job")
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("debug", f"daemon auto-install hook not wired: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        log("warn", f"scheduler failed to start: {exc}")
     await _command_loop(state)
 
 
@@ -2960,6 +2977,21 @@ class _BridgeSession:
                 })
             ),
         )
+        # Register the model-callable schedule tool. Both desktop and
+        # Slack sessions get this — the creator surface is derived at
+        # call time from session.gateway_source.
+        try:
+            from bridge.tools.schedule_tool import ScheduleTool
+            sched_service = getattr(self.state, "scheduler", None) if self.state else None
+            if sched_service is not None:
+                registry.register(ScheduleTool(
+                    service=sched_service,
+                    current_session_id=self.id,
+                    gateway_source_getter=lambda: getattr(self, "gateway_source", None),
+                ))
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"failed to register schedule tool: {exc}")
+
         # Gateway-scoped tool filter. When this session was created
         # by the messaging gateway (Slack today), it carries a
         # `gateway_source` attribute that names the inbound platform.
@@ -7494,6 +7526,18 @@ class _BridgeState:
             os.environ.get("FREYJA_COMPUTER_ENABLED", "").lower()
             in ("1", "true", "yes")
         )
+        # Process-level scheduler service. Lazily started by start_scheduler()
+        # so unit-test code paths that construct _BridgeState in a non-async
+        # context don't spawn a stray run loop.
+        from bridge.scheduler import SchedulerService
+        self.scheduler: SchedulerService = SchedulerService(self)
+        # Platform adapters registered by the gateway. Slack sink looks
+        # these up at fire time. List, not dict, so multiple workspaces
+        # can coexist.
+        self.platform_adapters: list[Any] = []
+        # Gateway runner reference (set by the gateway boot). Slack sink
+        # falls back here when adapters list isn't populated yet.
+        self.gateway_runner: Any = None
 
     async def ensure_session(
         self,
@@ -9248,6 +9292,217 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         )
         return
 
+    # ─── Scheduler IPC ────────────────────────────────────────────────
+    # These commands let the renderer drive + observe the scheduler
+    # without going through the agent. The renderer uses them to
+    # populate the Scheduled Jobs dashboard. Each returns an event
+    # of type ``scheduler_response`` keyed by the original ``cmd.id``
+    # so React can correlate responses.
+
+    if ctype == "scheduler.list_jobs":
+        try:
+            from bridge.scheduler.models import JobFilter
+            filt = JobFilter(
+                user_id=cmd.get("user_id"),
+                surface=cmd.get("surface"),
+                status=cmd.get("status"),
+                tag=cmd.get("tag"),
+                enabled=cmd.get("enabled"),
+            )
+            jobs = await state.scheduler.list_jobs(filt)
+            emit({
+                "type": "scheduler_response",
+                "requestId": cmd.get("id"),
+                "subtype": "list_jobs",
+                "jobs": [j.to_dict() for j in jobs],
+            })
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "list_jobs", "error": str(exc)})
+        return
+
+    if ctype == "scheduler.get_job":
+        try:
+            job = await state.scheduler.get_job(cmd.get("jobId", ""))
+            emit({
+                "type": "scheduler_response",
+                "requestId": cmd.get("id"),
+                "subtype": "get_job",
+                "job": job.to_dict() if job else None,
+            })
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "get_job", "error": str(exc)})
+        return
+
+    if ctype == "scheduler.get_runs":
+        try:
+            runs = await state.scheduler.get_runs(
+                cmd.get("jobId", ""),
+                limit=int(cmd.get("limit", 50)),
+            )
+            emit({
+                "type": "scheduler_response",
+                "requestId": cmd.get("id"),
+                "subtype": "get_runs",
+                "jobId": cmd.get("jobId", ""),
+                "runs": [r.to_dict() for r in runs],
+            })
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "get_runs", "error": str(exc)})
+        return
+
+    if ctype == "scheduler.recent_runs":
+        try:
+            from bridge.scheduler.persistence import load_recent_runs_global
+            runs = load_recent_runs_global(limit=int(cmd.get("limit", 100)))
+            emit({
+                "type": "scheduler_response",
+                "requestId": cmd.get("id"),
+                "subtype": "recent_runs",
+                "runs": [r.to_dict() for r in runs],
+            })
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "recent_runs", "error": str(exc)})
+        return
+
+    if ctype == "scheduler.metrics":
+        try:
+            from dataclasses import asdict as _asdict
+            m = await state.scheduler.metrics()
+            emit({
+                "type": "scheduler_response",
+                "requestId": cmd.get("id"),
+                "subtype": "metrics",
+                "metrics": _asdict(m),
+            })
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "metrics", "error": str(exc)})
+        return
+
+    if ctype == "scheduler.create_job":
+        try:
+            from bridge.scheduler.models import JobRecord
+            from bridge.scheduler.service import (
+                build_creator_ref, build_execution, build_schedule, build_sinks,
+            )
+            payload = cmd.get("payload") or {}
+            creator = build_creator_ref(
+                surface="desktop",
+                session_id=payload.get("session_id") or state.active_session_id or "",
+                user_id=payload.get("user_id"),
+            )
+            schedule = build_schedule(
+                payload.get("when"), payload.get("schedule"),
+                timezone=payload.get("timezone", "UTC"),
+            )
+            execution = build_execution(payload.get("execution"), creator=creator)
+            sinks = build_sinks(payload.get("sinks"), creator=creator, state=state)
+            spec = JobRecord(
+                id="",
+                name=payload.get("name") or (payload.get("prompt", "")[:60]),
+                description=payload.get("description", ""),
+                creator=creator,
+                schedule=schedule,
+                prompt=payload.get("prompt", ""),
+                execution=execution,
+                permission_snapshot=getattr(state, "permission_tier", "low"),
+                sinks=sinks,
+                tags=list(payload.get("tags") or []),
+            )
+            job = await state.scheduler.create_job(spec)
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "create_job", "job": job.to_dict()})
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "create_job", "error": str(exc)})
+        return
+
+    if ctype == "scheduler.pause_job":
+        try:
+            await state.scheduler.pause_job(cmd.get("jobId", ""))
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "pause_job", "ok": True})
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "pause_job", "error": str(exc)})
+        return
+
+    if ctype == "scheduler.resume_job":
+        try:
+            await state.scheduler.resume_job(cmd.get("jobId", ""))
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "resume_job", "ok": True})
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "resume_job", "error": str(exc)})
+        return
+
+    if ctype == "scheduler.remove_job":
+        try:
+            ok = await state.scheduler.remove_job(cmd.get("jobId", ""))
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "remove_job", "ok": ok})
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "remove_job", "error": str(exc)})
+        return
+
+    if ctype == "scheduler.run_job_now":
+        try:
+            run = await state.scheduler.run_job_now(cmd.get("jobId", ""))
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "run_job_now", "run": run.to_dict()})
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "run_job_now", "error": str(exc)})
+        return
+
+    if ctype == "scheduler.cancel_run":
+        try:
+            ok = await state.scheduler.cancel_run(cmd.get("runId", ""))
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "cancel_run", "ok": ok})
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "cancel_run", "error": str(exc)})
+        return
+
+    if ctype == "scheduler.daemon_status":
+        try:
+            from bridge.scheduler.daemon import daemon_status
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "daemon_status", "status": daemon_status()})
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "daemon_status", "error": str(exc)})
+        return
+
+    if ctype == "scheduler.daemon_install":
+        try:
+            from bridge.scheduler.daemon import ensure_daemon_installed
+            result = ensure_daemon_installed(reason=cmd.get("reason", "renderer"))
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "daemon_install", "result": result})
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "daemon_install", "error": str(exc)})
+        return
+
+    if ctype == "scheduler.daemon_uninstall":
+        try:
+            from bridge.scheduler.daemon import uninstall_daemon
+            result = uninstall_daemon()
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "daemon_uninstall", "result": result})
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "daemon_uninstall", "error": str(exc)})
+        return
+
     if ctype == "computer.emergency_stop":
         # Global scope force-cancel: same mechanism as per-session
         # cancel, applied to every session at once.
@@ -9371,14 +9626,79 @@ def _search_workspace_files(
 
 
 def main() -> None:
+    # Headless / scheduler-only mode (LaunchAgent daemon entry).
+    # No stdin command loop, no renderer IPC — just bring up the
+    # scheduler and the gateway, then run until killed. The flag also
+    # propagates via FREYJA_HEADLESS so child processes know.
+    headless = (
+        "--headless" in sys.argv
+        or os.environ.get("FREYJA_HEADLESS", "").lower() in ("1", "true", "yes")
+    )
+    scheduler_only = "--scheduler-only" in sys.argv or headless
     try:
-        asyncio.run(_main())
+        if scheduler_only:
+            os.environ["FREYJA_HEADLESS"] = "1"
+            asyncio.run(_main_headless())
+        else:
+            asyncio.run(_main())
     except KeyboardInterrupt:
         sys.exit(0)
     except Exception as exc:
         emit_error(f"bridge crashed: {exc}", recoverable=False)
         traceback.print_exc(file=sys.stderr)
         sys.exit(1)
+
+
+async def _main_headless() -> None:
+    """Daemon mode — boot _BridgeState + scheduler + gateway, then idle.
+
+    No stdin command loop. No renderer IPC. We DO start the gateway so
+    Slack-delivered scheduled jobs can post their output. We don't
+    auto-create any sessions; jobs allocate sessions as they fire.
+    """
+    workspace = os.environ.get("FREYJA_WORKSPACE") or os.getcwd()
+    default_model = os.environ.get("FREYJA_MODEL") or "claude-sonnet-4-6"
+    log("info", f"freyja headless daemon starting (workspace={workspace})")
+    # The gateway daemon owns _BridgeState construction so we use it
+    # here too — that way Slack-delivered scheduled jobs work
+    # identically to interactive Slack turns. start() also brings up
+    # the slack adapter + control channel.
+    try:
+        from bridge.gateway.run import GatewayDaemon
+
+        gateway = GatewayDaemon()
+        await gateway.start()
+        state = gateway.state  # type: ignore[assignment]
+        if state is None:
+            log("error", "headless: gateway start produced no state")
+            return
+        state.gateway_runner = gateway  # type: ignore[attr-defined]
+        await state.scheduler.start()  # type: ignore[attr-defined]
+    except Exception as exc:  # noqa: BLE001
+        log("error", f"headless boot failed: {exc}")
+        return
+    # Idle forever — scheduler runs its own loop, gateway runs its own
+    # accept loop. Wake-up only on shutdown signal.
+    stop_event = asyncio.Event()
+
+    def _signal_stop(*_a: Any) -> None:
+        stop_event.set()
+
+    try:
+        import signal
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                asyncio.get_event_loop().add_signal_handler(sig, _signal_stop)
+            except (NotImplementedError, RuntimeError):
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+    await stop_event.wait()
+    log("info", "freyja headless daemon shutting down")
+    try:
+        await state.scheduler.stop()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 if __name__ == "__main__":

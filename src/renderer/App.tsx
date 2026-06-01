@@ -17,6 +17,7 @@ import { EmergencyPanic } from './components/EmergencyPanic'
 import { ComputerPermissionWizard } from './components/ComputerPermissionWizard'
 import { ComputerHotkeyOverlay } from './components/ComputerHotkeyOverlay'
 import { MissionDashboard } from './components/MissionDashboard'
+import { ScheduledJobsDashboard } from './components/ScheduledJobsDashboard'
 import { SlackSetupWizard } from './components/SlackSetupWizard'
 import { MetricsDashboard } from './components/MetricsDashboard'
 import { SplashScreen } from './components/SplashScreen'
@@ -117,6 +118,17 @@ export function App() {
     unstable_batchedUpdates(() => {
       for (const event of events) {
         useHarness.getState().handleEvent(event)
+        // Mirror scheduler-targeted events into the scheduler store
+        // so the dashboard updates without going through the main
+        // harness store (which has no scheduler awareness).
+        if (event?.type === 'scheduler_response') {
+          // Lazy import — scheduler-store is small but the App.tsx
+          // import graph already has a lot of weight; this defers
+          // the cost to the first scheduler event.
+          import('./state/scheduler-store').then(({ useSchedulerStore }) => {
+            useSchedulerStore.getState().handleEvent(event)
+          }).catch(() => {})
+        }
       }
     })
     for (const event of events) {
@@ -166,6 +178,18 @@ export function App() {
         .catch(() => {})
       // Load settings from disk and push the permission policy to the bridge.
       hydrateSettings().catch(() => {})
+
+      // Bind the scheduler IPC client to the bridge so the dashboard
+      // can call listJobs / createJob / etc. Then do a one-time
+      // hydration of jobs, recent runs, metrics, and daemon status so
+      // the dashboard opens with content already populated.
+      import('./state/scheduler-store').then(({ bindSchedulerBridge, schedulerApi }) => {
+        bindSchedulerBridge({ send: (cmd: any) => api.send(cmd) })
+        schedulerApi.listJobs().catch(() => {})
+        schedulerApi.recentRuns(50).catch(() => {})
+        schedulerApi.metrics().catch(() => {})
+        schedulerApi.daemonStatus().catch(() => {})
+      }).catch(() => {})
 
       // Auto-refresh the session list so gateway-created sessions
       // (Slack DMs, etc.) appear in the sidebar without requiring an

@@ -248,6 +248,7 @@ export interface HarnessState extends SessionSlice {
     | 'swarm'
     | 'findings'
     | 'telemetry'
+    | 'scheduler'
   /** Cross-session compaction metrics dashboard (header button toggle). */
   metricsDashboardOpen: boolean
   activeSubagentId: string | null

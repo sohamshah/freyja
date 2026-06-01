@@ -530,6 +530,37 @@ export type BridgeCommand =
       children?: string[]
     }
   | { type: 'shutdown' }
+  // ── Scheduler IPC ─────────────────────────────────────────────────
+  | { type: 'scheduler.list_jobs'; id?: string; user_id?: string; surface?: string; status?: string; tag?: string; enabled?: boolean }
+  | { type: 'scheduler.get_job'; id?: string; jobId: string }
+  | { type: 'scheduler.get_runs'; id?: string; jobId: string; limit?: number }
+  | { type: 'scheduler.recent_runs'; id?: string; limit?: number }
+  | { type: 'scheduler.metrics'; id?: string }
+  | {
+      type: 'scheduler.create_job'
+      id?: string
+      payload: {
+        name?: string
+        prompt: string
+        when?: string
+        schedule?: Record<string, unknown>
+        timezone?: string
+        execution?: unknown
+        sinks?: unknown[]
+        tags?: string[]
+        description?: string
+        user_id?: string
+        session_id?: string
+      }
+    }
+  | { type: 'scheduler.pause_job'; id?: string; jobId: string }
+  | { type: 'scheduler.resume_job'; id?: string; jobId: string }
+  | { type: 'scheduler.remove_job'; id?: string; jobId: string }
+  | { type: 'scheduler.run_job_now'; id?: string; jobId: string }
+  | { type: 'scheduler.cancel_run'; id?: string; runId: string }
+  | { type: 'scheduler.daemon_status'; id?: string }
+  | { type: 'scheduler.daemon_install'; id?: string; reason?: string }
+  | { type: 'scheduler.daemon_uninstall'; id?: string }
 
 // --- Events produced by the bridge and forwarded to the renderer ---
 
@@ -658,6 +689,21 @@ export type BridgeEvent =
     } & SessionId)
   | ({ type: 'message_stop'; stopReason: string } & SessionId)
   | ({ type: 'turn_complete'; turnId: string; success: boolean } & SessionId)
+  | {
+      type: 'scheduler_response'
+      requestId?: string
+      subtype: string
+      jobs?: Record<string, unknown>[]
+      job?: Record<string, unknown> | null
+      runs?: Record<string, unknown>[]
+      run?: Record<string, unknown>
+      metrics?: Record<string, unknown>
+      status?: Record<string, unknown>
+      result?: Record<string, unknown>
+      ok?: boolean
+      error?: string
+      jobId?: string
+    }
   | ({
       type: 'file_matches'
       query: string

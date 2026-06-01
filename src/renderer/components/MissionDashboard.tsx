@@ -19,10 +19,19 @@ import { BusFlowView } from './views/BusFlowView'
 import { JudgeBrief } from './views/JudgeBrief'
 import { DispatcherBrief } from './views/DispatcherBrief'
 import { ActivityView } from './views/ActivityView'
+import { ScheduledJobsDashboard } from './ScheduledJobsDashboard'
 
 // 'swarm' / 'findings' / 'telemetry' kept for legacy callers; they all
 // redirect to the corresponding live tab below.
-type DashboardTab = 'overview' | 'tasks' | 'activity' | 'profiles' | 'swarm' | 'findings' | 'telemetry'
+type DashboardTab =
+  | 'overview'
+  | 'tasks'
+  | 'activity'
+  | 'profiles'
+  | 'swarm'
+  | 'findings'
+  | 'telemetry'
+  | 'scheduler'
 
 interface AgentView {
   session: SessionSnapshot
@@ -195,6 +204,7 @@ const TABS: Array<{ id: DashboardTab; label: string; hint: string }> = [
   { id: 'tasks', label: 'tasks', hint: 'planning ledger' },
   { id: 'activity', label: 'activity', hint: 'session timeline' },
   { id: 'profiles', label: 'profiles', hint: 'subagents' },
+  { id: 'scheduler', label: 'scheduler', hint: 'jobs & loops' },
 ]
 
 function visibleDashboardTabs(
@@ -829,6 +839,7 @@ export function MissionDashboard() {
           />
         )}
         {tab === 'profiles' && <ProfilesTab />}
+        {tab === 'scheduler' && <ScheduledJobsDashboard />}
       </div>
     </div>
   )
