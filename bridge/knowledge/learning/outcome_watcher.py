@@ -37,10 +37,7 @@ What this is NOT:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
-import os
-import sys
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -101,16 +98,33 @@ class SkillOutcomeWatcher:
     ) -> None:
         """Called when a skill is loaded into this session.
 
-        Idempotent within a session — a skill loaded twice produces one
-        outcome record. The first load wins as the anchor turn.
+        Every load is logged to the event stream (so the V rollup load
+        count reflects reality, including same-session reloads).
+        Classification is scheduled at most once per skill per session:
+        a second load while the first is still pending — or after the
+        first was already classified — does NOT enqueue a new
+        ``_LoadRecord``. M11: previously the early-return on
+        ``_classified`` also skipped the load log; reloads silently
+        vanished from the rollup. Now load logging and pending tracking
+        are split.
         """
         if not skill_name:
             return
+        load_ts = int(time.time() * 1000)
+        # Always log the load — it's our only signal that the skill
+        # entered context this session, and the rollup's load_count
+        # depends on it being honest about repeats.
+        events.append_loaded(
+            skill_name,
+            self.session_id,
+            extra={"turn_index": turn_index, "load_context": load_context},
+        )
+        # Schedule classification only when neither already-classified
+        # nor currently-pending.
         if skill_name in self._classified:
             return
         if any(p.skill_name == skill_name for p in self._pending):
             return
-        load_ts = int(time.time() * 1000)
         self._pending.append(
             _LoadRecord(
                 skill_name=skill_name,
@@ -119,11 +133,6 @@ class SkillOutcomeWatcher:
                 turn_index=turn_index,
                 load_context=load_context,
             )
-        )
-        events.append_loaded(
-            skill_name,
-            self.session_id,
-            extra={"turn_index": turn_index, "load_context": load_context},
         )
 
     # ── turn-boundary trigger ──
@@ -179,9 +188,13 @@ class SkillOutcomeWatcher:
     # ── internal ──
 
     def _schedule_classification(self, rec: _LoadRecord, window_builder: "TurnWindowBuilder") -> None:
+        # M12: do NOT mark _classified here. Marking before the
+        # classifier finishes means a provider failure permanently skips
+        # the skill — the next reload won't re-enqueue (record_load
+        # checks _classified), and the next on_turn_complete won't
+        # re-dispatch either. Mark only on success inside _classify_one.
         if rec.skill_name in self._classified:
             return
-        self._classified.add(rec.skill_name)
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -193,49 +206,55 @@ class SkillOutcomeWatcher:
         task.add_done_callback(self._tasks.discard)
 
     async def _classify_one(self, rec: _LoadRecord, window_builder: "TurnWindowBuilder") -> None:
-        # Wrap the whole call in a stdout/stderr redirect so any chatter
-        # from the provider client doesn't leak into the user's chat
-        # surface — same pattern Hermes uses for background_review (see
-        # docs/skill-learning-reference/artifacts/fork_construction.txt).
+        # No process-wide stdout/stderr redirect — see review_worker.py
+        # M3. The classifier's provider call yields control across an
+        # ``await``; redirecting sys.stdout for the duration would
+        # mute every other coroutine's output for the LLM round trip.
         window = window_builder.build_window(
             anchor_turn=rec.turn_index,
             max_turns=DEFAULT_POST_LOAD_TURNS + 1,
             max_chars=DEFAULT_MAX_WINDOW_CHARS,
         )
         if not window.strip():
-            # Nothing to classify against. Log a synthetic clean so the
-            # rollup still picks up the load → outcome pairing, then
-            # bail.
-            events.append_outcome(
+            # M10: empty window — drop the event entirely rather than
+            # synthesizing a "clean" outcome. A synthetic clean inflates
+            # the rollup with positive-looking neutral signal for skills
+            # we never actually observed in action (e.g. an early
+            # session reset, an outcome-watcher scheduled against a
+            # window the bridge cursor didn't capture). Leaving the
+            # record unclassified means the rollup honestly shows the
+            # load with no outcome, which is the truth.
+            logger.debug(
+                "outcome_watcher: empty post-load window for %s — skipping classification",
                 rec.skill_name,
-                self.session_id,
-                category="clean",
-                load_ts=rec.load_ts,
-                evidence="no post-load conversation captured",
             )
             return
         try:
-            with open(os.devnull, "w", encoding="utf-8") as devnull, \
-                 contextlib.redirect_stdout(devnull), \
-                 contextlib.redirect_stderr(devnull):
-                outcome = await classify(
-                    skill_name=rec.skill_name,
-                    skill_body=rec.skill_body,
-                    post_load_window=window,
-                    load_context=rec.load_context,
-                )
+            outcome = await classify(
+                skill_name=rec.skill_name,
+                skill_body=rec.skill_body,
+                post_load_window=window,
+                load_context=rec.load_context,
+            )
         except Exception:
             logger.exception("outcome_watcher: classifier raised for %s", rec.skill_name)
             outcome = None
         if outcome is None:
-            return  # provider error path — caller logs nothing, don't pollute the rollup
+            # M12: provider error path — leave skill OUT of _classified
+            # so a later turn can retry. Caller logs nothing, don't
+            # pollute the rollup.
+            return
+        # Successful classification — record the success-bit and append
+        # the event. M13: secondary is intentionally NOT forwarded to
+        # the event log; the rollup never consumed it and emitting it
+        # spends tokens for a field nothing reads.
+        self._classified.add(rec.skill_name)
         events.append_outcome(
             rec.skill_name,
             self.session_id,
             category=outcome.category,
             load_ts=rec.load_ts,
             evidence=outcome.evidence,
-            secondary=outcome.secondary,
         )
 
 

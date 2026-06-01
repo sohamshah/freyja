@@ -47,11 +47,19 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+# Strict skill-name shape. Match what the drafter prompt asks for so the
+# operator-edit and drafter paths use the same constraints. Allowed:
+# lowercase letters, digits, hyphens, underscores, dots. Must start with
+# [a-z0-9]. Length 3-60.
+_SAFE_NAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]{2,59}")
 
 from bridge.knowledge.learning import candidates, events
 from bridge.knowledge.learning.paths import (
@@ -132,8 +140,41 @@ def promote(
             reason="empty_name",
         )
 
-    target_dir = skills_root() / name
+    # Strict name validation: lowercase + digits + hyphen/underscore +
+    # dot, 3-60 chars, must start with [a-z0-9]. Blocks path traversal
+    # (../foo), absolute paths (/etc/...), and CR/LF injection. The
+    # drafter prompt + schema also constrain names but the operator
+    # may override via edits, so we re-validate at the write boundary.
+    if not _SAFE_NAME_RE.fullmatch(name):
+        logger.warning(
+            "confirmation.promote invalid_name name=%r id=%s",
+            name, candidate_id,
+        )
+        return PromotionResult(
+            ok=False,
+            candidate_id=candidate_id,
+            skill_path=None,
+            reason="invalid_name",
+        )
+
+    root = skills_root().resolve()
+    target_dir = (skills_root() / name).resolve()
     skill_path = target_dir / "SKILL.md"
+    # Defense in depth — even if _SAFE_NAME_RE someday admits a
+    # boundary case, the resolved target must stay inside skills_root.
+    try:
+        target_dir.relative_to(root)
+    except ValueError:
+        logger.warning(
+            "confirmation.promote escape attempt name=%r resolved=%s",
+            name, target_dir,
+        )
+        return PromotionResult(
+            ok=False,
+            candidate_id=candidate_id,
+            skill_path=None,
+            reason="invalid_name",
+        )
 
     # Collision check. Bare existence of the directory is enough —
     # there might be a SKILL.md, references/, scripts/, anything we
@@ -149,6 +190,43 @@ def promote(
             skill_path=None,
             reason="name_collision",
         )
+
+    # If the operator edited any guarded field (name, description, body)
+    # re-run Skills Guard on the edited content. The drafter scanned the
+    # original, but edits could introduce malicious patterns the original
+    # didn't have — bypassing the guard is exactly the kind of failure
+    # the guard exists to prevent.
+    edits_dict = edits or {}
+    if any(k in edits_dict for k in ("name", "description", "body")):
+        from bridge.knowledge.learning import skills_guard
+        scan_content = f"{edited.name}\n{edited.description}\n{edited.body}"
+        scan = skills_guard.scan_text(scan_content)
+        if scan.verdict == skills_guard.VERDICT_DANGEROUS:
+            logger.warning(
+                "confirmation.promote rescanned dangerous after edits "
+                "id=%s findings=%d",
+                candidate_id, len(scan.findings),
+            )
+            # Also log to the events log so the audit trail captures
+            # the attempt.
+            try:
+                events.append({
+                    "event": events.EVENT_GUARD_VERDICT,
+                    "skill": edited.name,
+                    "candidate_id": candidate_id,
+                    "verdict": scan.verdict,
+                    "summary": scan.summary,
+                    "finding_count": len(scan.findings),
+                    "trigger": "post_edit_rescan",
+                })
+            except Exception:  # noqa: BLE001
+                pass
+            return PromotionResult(
+                ok=False,
+                candidate_id=candidate_id,
+                skill_path=None,
+                reason="guard_dangerous_after_edit",
+            )
 
     body_text = _render_skill_md(edited)
 
@@ -169,9 +247,20 @@ def promote(
             pass
         raise
 
-    # Telemetry: appended after the write succeeded so a failed write
-    # doesn't lie in the event log. Best-effort — events.append swallows
-    # its own errors.
+    # M21: delete the pending candidate FIRST, then append the
+    # EVENT_PROMOTED telemetry. Previously we appended-then-deleted,
+    # which left a window where a crash between the two would leave
+    # the candidate file lying around AND log the promote — next
+    # list_pending would re-surface the phantom and the UI would offer
+    # to promote-again into a now-occupied directory (name_collision).
+    #
+    # Reorder tradeoff: a crash between delete and event.append loses
+    # the EVENT_PROMOTED line. But the SKILL.md is on disk and that's
+    # the source of truth — the candidate file is gone, and the next
+    # list_pending correctly omits it. We've lost a log row, not a
+    # piece of user-visible state.
+    candidates.delete_pending(candidate_id)
+
     events.append({
         "event": events.EVENT_PROMOTED,
         "skill": name,
@@ -182,12 +271,6 @@ def promote(
         "skill_type": edited.skill_type,
         "skill_path": str(skill_path),
     })
-
-    # Remove the pending file last — if we crashed between the write
-    # and the delete, a re-run would hit name_collision and the
-    # operator can manually clean up the orphaned candidate, which is
-    # safer than losing the freshly-promoted skill on disk.
-    candidates.delete_pending(candidate_id)
 
     _refresh_skill_store_singleton()
 
@@ -411,6 +494,17 @@ def _render_skill_md(c: candidates.Candidate) -> str:
     parser checks ``type`` first; this matches the convention in
     operator-authored skills already on disk.
 
+    Provenance / confidence fields
+    ──────────────────────────────
+    Drafter-promoted skills land with ``confidence: experimental``
+    rather than the parser's default ``unvalidated``. Three extra flat
+    frontmatter keys —``created_by``, ``created_from``,
+    ``created_at`` — give the operator audit-trail visibility into
+    skills that came out of the learning loop vs. hand-authored ones.
+    The keys are flat (no nesting) because ``skill_store`` parses one
+    ``key: value`` per line; anything nested is invisible to the
+    runtime.
+
     The body is appended verbatim, separated from the frontmatter by
     the ``---`` delimiter the parser uses. A trailing newline keeps the
     file POSIX-clean.
@@ -435,6 +529,17 @@ def _render_skill_md(c: candidates.Candidate) -> str:
     # session X" rather than from a hand-authored library.
     source = f"freyja-drafter:{c.source_session_id}" if c.source_session_id else "freyja-drafter"
     lines.append(f"source: {_yaml_scalar(source)}")
+
+    # Confidence + extended provenance (flat keys so the line-oriented
+    # parser sees them). ``experimental`` is the right starting bucket
+    # for a freshly drafted skill — operator review is implied by the
+    # promote action, but real-world outcome signal (clean / cited /
+    # correction events from the watcher) is what eventually moves the
+    # skill to ``validated`` in a future phase.
+    lines.append("confidence: experimental")
+    lines.append("created_by: agent")
+    lines.append("created_from: freyja-drafter")
+    lines.append(f"created_at: {int(time.time() * 1000)}")
 
     lines.append("---")
 

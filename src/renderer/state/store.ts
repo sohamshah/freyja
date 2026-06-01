@@ -239,6 +239,26 @@ export interface HarnessState extends SessionSlice {
     draftedAt: number
     sourceTurnId?: string
   }>
+  /** Drafter + cadence telemetry surfaced in DrafterActivityStrip.
+   *  Populated from bridge events: ``skill_drafter_pass`` (post-run
+   *  decision + rationale) and ``cadence_state`` (per-turn counter
+   *  snapshot). Both fields are optional so the strip degrades to "no
+   *  data yet" when the bridge hasn't fired anything. */
+  drafterActivity: {
+    lastDecision?: 'save' | 'skip' | 'discard'
+    lastRationale?: string
+    lastModel?: string
+    lastRanAt?: number
+    turnsSinceLastReview?: number
+    turnsUntilTrip?: number
+    lastTrippedAt?: number
+  }
+  /** Operator-visible cache of per-skill value rollups. Filled on
+   *  demand by getSkillRollup; the renderer reuses entries while a
+   *  drawer / inspector is open instead of re-IPC'ing on every paint. */
+  skillRollups: Record<string, NonNullable<import('@shared/events').SkillRollupResult['rollup']>>
+  skillCandidatesCache: import('@shared/events').SkillCandidateRecord[] | null
+  skillRejectedCache: import('@shared/events').SkillRejectedRecord[] | null
   // Attachments queued for the next send. Videos are Gemini-only —
   // attachVideo refuses to enqueue when the active session isn't on a
   // google-family model. The bridge re-checks at message-build time.
@@ -433,6 +453,27 @@ export interface HarnessActions {
     action: 'promote' | 'discard',
     edits?: { name?: string; description?: string; body?: string },
   ): Promise<void>
+  /** Fetch the per-skill value rollup (V score + outcome timeline)
+   *  via IPC and cache it under skillRollups[name]. Inspector + Sidebar
+   *  call this when they want to display V data. */
+  getSkillRollup(
+    skillName: string,
+  ): Promise<NonNullable<import('@shared/events').SkillRollupResult['rollup']> | null>
+  /** Refresh the pending-candidates queue from disk (out-of-band — the
+   *  bridge already pushes live candidates via skill_candidate). Used by
+   *  the SkillCandidatesPanel on mount to surface candidates produced
+   *  while the desktop was closed. */
+  refreshSkillCandidates(): Promise<void>
+  /** Load the negative library (rejected candidates). */
+  refreshRejectedSkills(limit?: number): Promise<void>
+  /** Read the raw SKILL.md body so the inspector can show the full
+   *  document. Caller handles caching. */
+  readSkillFile(skillName: string): Promise<string | null>
+  /** Persist an operator-edited body to ~/.freyja/skills/<name>/SKILL.md.
+   *  Returns true on success. */
+  saveSkillFile(skillName: string, body: string): Promise<boolean>
+  /** Reveal the SKILL.md file in the host OS file viewer / editor. */
+  openSkillFile(skillName: string): Promise<void>
   hydrateFromDisk(): Promise<void>
   persistSession(sessionId: string): Promise<void>
   persistSessionIndex(): Promise<void>
@@ -773,6 +814,10 @@ function emptyState(): HarnessState {
     fileQuery: '',
     permissionQueue: [],
     skillCandidateQueue: [],
+    drafterActivity: {},
+    skillRollups: {},
+    skillCandidatesCache: null,
+    skillRejectedCache: null,
     pendingAttachments: [],
     inputDraft: '',
     commandPaletteOpen: false,
@@ -2310,15 +2355,15 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
             {
               candidateId: ev.candidateId,
               sessionId: ev.sessionId,
-              name: ev.name,
-              description: ev.description,
-              skillType: ev.skillType,
-              bodyPreview: ev.bodyPreview,
-              triggers: ev.triggers,
-              tags: ev.tags,
-              guardVerdict: ev.guardVerdict,
-              guardSummary: ev.guardSummary,
-              draftedAt: ev.draftedAt,
+              name: ev.name ?? '(unnamed)',
+              description: ev.description ?? '',
+              skillType: ev.skillType ?? 'build',
+              bodyPreview: ev.bodyPreview ?? '',
+              triggers: ev.triggers ?? [],
+              tags: ev.tags ?? [],
+              guardVerdict: ev.guardVerdict ?? 'safe',
+              guardSummary: ev.guardSummary ?? '',
+              draftedAt: ev.draftedAt ?? Date.now(),
               sourceTurnId: ev.sourceTurnId,
             },
             ...prev.skillCandidateQueue.filter(
@@ -2327,7 +2372,53 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           ],
         }
       }
+      if (ev.type === 'skill_drafter_pass') {
+        return {
+          ...prev,
+          drafterActivity: {
+            ...prev.drafterActivity,
+            lastDecision: ev.decision,
+            lastRationale: ev.rationale,
+            lastModel: ev.model,
+            lastRanAt: ev.ranAt ?? Date.now(),
+          },
+        }
+      }
+      if (ev.type === 'cadence_state') {
+        return {
+          ...prev,
+          drafterActivity: {
+            ...prev.drafterActivity,
+            turnsSinceLastReview: ev.turnsSinceLastReview,
+            turnsUntilTrip: ev.turnsUntilTrip,
+            lastTrippedAt: ev.lastTrippedAt ?? prev.drafterActivity.lastTrippedAt,
+          },
+        }
+      }
       if (ev.type === 'skill_candidate_resolved') {
+        // H1: bridge emits ok=false when promote/discard refused
+        // (name collision, invalid name, guard-dangerous after edit,
+        // candidate not_found, …). Show a warn toast and leave the
+        // candidate in the queue so the operator can edit + retry.
+        const succeeded = ev.ok !== false
+        if (!succeeded) {
+          const reason = ev.reason || 'unknown reason'
+          return {
+            ...prev,
+            toast: {
+              id: nextId('toast'),
+              message:
+                ev.action === 'promote'
+                  ? `Promote failed: ${reason}`
+                  : `Discard failed: ${reason}`,
+              tone: 'warn',
+              at: Date.now(),
+            },
+          }
+        }
+        const pathFrag = ev.skillPath
+          ? ` → ${ev.skillPath.split('/').slice(-2).join('/')}`
+          : ''
         return {
           ...prev,
           skillCandidateQueue: prev.skillCandidateQueue.filter(
@@ -2337,7 +2428,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
             id: nextId('toast'),
             message:
               ev.action === 'promote'
-                ? `Promoted skill ${ev.skillPath ? `→ ${ev.skillPath.split('/').slice(-2).join('/')}` : ''}`
+                ? `Promoted skill${pathFrag}`
                 : `Discarded skill candidate`,
             tone: ev.action === 'promote' ? 'ok' : 'info',
             at: Date.now(),
@@ -3791,6 +3882,97 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     set((prev) => ({ computerWizardOpen: open ?? !prev.computerWizardOpen }))
   },
 
+  async getSkillRollup(skillName) {
+    const api = (window as any).harness
+    if (!api?.skillRollup) return null
+    try {
+      const res = await api.skillRollup(skillName)
+      if (!res?.ok || !res.rollup) return null
+      set((prev) => ({
+        skillRollups: { ...prev.skillRollups, [skillName]: res.rollup },
+      }))
+      return res.rollup
+    } catch {
+      return null
+    }
+  },
+
+  async refreshSkillCandidates() {
+    const api = (window as any).harness
+    if (!api?.skillListCandidates) return
+    try {
+      const res = await api.skillListCandidates()
+      if (res?.ok) {
+        set({ skillCandidatesCache: res.candidates ?? [] })
+      }
+    } catch {
+      // best-effort; the live event stream is authoritative.
+    }
+  },
+
+  async refreshRejectedSkills(limit) {
+    const api = (window as any).harness
+    if (!api?.skillListRejected) return
+    try {
+      const res = await api.skillListRejected(limit)
+      if (res?.ok) {
+        set({ skillRejectedCache: res.rejected ?? [] })
+      }
+    } catch {
+      // best-effort
+    }
+  },
+
+  async readSkillFile(skillName) {
+    const api = (window as any).harness
+    if (!api?.skillReadFile) return null
+    try {
+      const res = await api.skillReadFile(skillName)
+      if (!res?.ok) return null
+      return res.body ?? null
+    } catch {
+      return null
+    }
+  },
+
+  async saveSkillFile(skillName, body) {
+    const api = (window as any).harness
+    if (!api?.skillSave) return false
+    try {
+      const res = await api.skillSave(skillName, body)
+      if (!res?.ok) {
+        useHarness
+          .getState()
+          .showToast(`Save failed: ${res?.error ?? 'unknown'}`, 'warn')
+        return false
+      }
+      useHarness.getState().showToast(`Saved ${skillName}/SKILL.md`, 'ok')
+      return true
+    } catch (err: any) {
+      useHarness
+        .getState()
+        .showToast(`Save failed: ${err?.message ?? err}`, 'warn')
+      return false
+    }
+  },
+
+  async openSkillFile(skillName) {
+    const api = (window as any).harness
+    if (!api?.skillOpen) return
+    try {
+      const res = await api.skillOpen(skillName)
+      if (!res?.ok) {
+        useHarness
+          .getState()
+          .showToast(`Open failed: ${res?.error ?? 'unknown'}`, 'warn')
+      }
+    } catch (err: any) {
+      useHarness
+        .getState()
+        .showToast(`Open failed: ${err?.message ?? err}`, 'warn')
+    }
+  },
+
   async emergencyStopComputer(reason) {
     const api = (window as any).harness
     if (!api) return
@@ -3821,18 +4003,22 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
   },
 
   async resolveSkillCandidate(candidateId, action, edits) {
+    // H1 / M16: do NOT optimistically remove. The bridge does sync fs
+    // I/O on a thread (see freyja_bridge.py + gateway/run.py) and
+    // responds with `skill_candidate_resolved { ok }`. If we removed
+    // the candidate before the round-trip, a failed promote
+    // (name collision, invalid name, guard-dangerous-after-edit)
+    // would silently lose the candidate and surface a fake
+    // "Promoted" toast. Keep the card visible until the resolved
+    // event lands; the reducer removes it on success and shows a
+    // warn toast on failure.
     const state = useHarness.getState()
-    const cand = state.skillCandidateQueue.find((c) => c.candidateId === candidateId)
-    // Optimistic remove: the bridge's confirmation will echo a
-    // `skill_candidate_resolved` event but we don't make the operator
-    // wait for the round-trip before the toast disappears.
-    set((prev) => ({
-      skillCandidateQueue: prev.skillCandidateQueue.filter(
-        (c) => c.candidateId !== candidateId,
-      ),
-    }))
+    const cand = state.skillCandidateQueue.find(
+      (c) => c.candidateId === candidateId,
+    )
     const api = (window as any).harness
-    if (api) {
+    if (!api) return
+    try {
       await api.sendCommand({
         type: 'skill_candidate_resolve',
         sessionId: cand?.sessionId,
@@ -3840,6 +4026,19 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         action,
         edits,
       })
+    } catch (err) {
+      // Send itself failed (IPC dead). Toast a warn so the operator
+      // doesn't think the button silently no-op'd. Candidate stays
+      // queued; another click after IPC recovers will succeed.
+      set((prev) => ({
+        toast: {
+          id: nextId('toast'),
+          message: `Failed to send ${action} for skill candidate`,
+          tone: 'warn',
+          at: Date.now(),
+        },
+      }))
+      throw err
     }
   },
 

@@ -554,19 +554,28 @@ class SlackAdapter:
             return
         try:
             from bridge.knowledge.learning import confirmation
+            # H11: confirmation.{promote,discard} do sync fs I/O. Hop to
+            # a thread so we don't stall the Slack event loop while a
+            # promote flushes SKILL.md.
             if action == "promote":
-                result = confirmation.promote(
-                    candidate_id, actor=f"slack:{user_id}",
+                result = await asyncio.to_thread(
+                    confirmation.promote,
+                    candidate_id,
+                    actor=f"slack:{user_id}",
                 )
             else:
-                result = confirmation.discard(
-                    candidate_id, actor=f"slack:{user_id}", reason="operator-rejected",
+                result = await asyncio.to_thread(
+                    confirmation.discard,
+                    candidate_id,
+                    actor=f"slack:{user_id}",
+                    reason="operator-rejected",
                 )
         except Exception:  # noqa: BLE001
             logger.exception("[slack] skill candidate click handler raised")
             return
         # Echo so the desktop tailer forwards the resolution to any
-        # connected renderers.
+        # connected renderers. H1: include ok so renderers can show a
+        # failure toast instead of a fake "Promoted" message.
         try:
             from bridge.freyja_bridge import emit as _emit
             _emit(
@@ -575,6 +584,7 @@ class SlackAdapter:
                     "candidateId": candidate_id,
                     "action": action,
                     "actor": f"slack:{user_id}",
+                    "ok": bool(result.ok),
                     "skillPath": str(result.skill_path) if result.skill_path else None,
                     "reason": result.reason or "",
                 }

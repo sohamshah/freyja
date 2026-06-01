@@ -25,6 +25,52 @@ identical across drafter invocations; only the user message changes.
 
 from __future__ import annotations
 
+# ── Freyja-port preamble ──
+#
+# The Hermes block below was written for Hermes' agent runtime, which
+# has skill_manage / skill_patch / skill_view tool calls and a CLI
+# (`hermes skills install`, `hermes curator pin`). Freyja's MVP has
+# none of those. We do NOT rewrite the Hermes block (every paragraph
+# defends a specific regression the Hermes team caught in production
+# and paraphrasing has historically broken things). Instead, we prefix
+# a short port note that explains the contract the drafter actually
+# runs under.
+
+
+FREYJA_PORT_PREAMBLE = (
+    "─── Read this first (Freyja port note) ───\n\n"
+    "The instructions below were originally written for Hermes' agent "
+    "runtime. Freyja's drafter does NOT have the skill_manage / "
+    "skill_patch / skill_view tool calls referenced in the preference "
+    "order, and does NOT have a CLI (`hermes skills install`, `hermes "
+    "curator pin`). Read the Hermes block for the SIGNALS to look for "
+    "and the WRITING RULES (class-level names, declarative voice, "
+    "what NOT to capture). Then map the four-step preference order to "
+    "Freyja's single available action:\n\n"
+    "  · Preference 1 (PATCH currently-loaded skill) → emit a new "
+    "candidate whose name MATCHES the loaded skill's name. The operator "
+    "promotes by overwriting the on-disk SKILL.md, or — if they want a "
+    "true patch — they edit the file directly after promote. Either "
+    "way, the drafter's job is to surface the candidate with the right "
+    "name; do NOT skip.\n"
+    "  · Preference 2 (UPDATE existing umbrella) → same as above: emit "
+    "a candidate whose name matches the umbrella, with the new "
+    "guidance folded into the body. Operator promotes by overwriting.\n"
+    "  · Preference 3 (ADD support file under umbrella) → not in MVP. "
+    "Emit a candidate at the umbrella's level with the support content "
+    "embedded inline, and note in the rationale that this would ideally "
+    "live as a `references/` file.\n"
+    "  · Preference 4 (CREATE new class-level umbrella) → emit a "
+    "candidate with a fresh class-level name.\n\n"
+    "All four collapse to: 'emit a new candidate with the right "
+    "class-level name; the operator can overwrite via edits or promote "
+    "then patch on disk.' Do NOT respond with 'skip + would patch X' "
+    "when a signal warrants action — that loses the signal entirely. "
+    "The `decision='skip'` path is reserved for the Hermes 'Nothing to "
+    "save' / 'Do NOT capture' rules.\n\n"
+)
+
+
 # ── Hermes SKILL_REVIEW_PROMPT (verbatim) ──
 #
 # Source: ~/work/services/hermes-agent/agent/background_review.py:45-148
@@ -166,11 +212,14 @@ FREYJA_FORMAT_BLOCK = (
     "unclear.\n\n"
     "Currently-loaded skills this session: see the [CURRENT SKILLS] "
     "block in the user message. PATCH semantics aren't in MVP — every "
-    "decision='save' creates a new candidate. If a currently-loaded "
-    "skill should be patched per the preference order, set "
-    "decision='skip' with rationale='would patch <skill-name>' and the "
-    "operator will be surfaced that. Do NOT create a new candidate that "
-    "duplicates an existing skill's territory.\n\n"
+    "decision='save' creates a new candidate. If a currently-loaded or "
+    "existing skill should be PATCHED per Hermes' preference order, "
+    "emit a candidate whose `name` MATCHES the existing skill's name. "
+    "The operator promotes by overwriting the on-disk SKILL.md (see "
+    "the Freyja port note at the top of this prompt). Do NOT skip just "
+    "because a candidate would shadow an existing skill — that loses "
+    "the signal. Only skip per the Hermes 'Nothing to save' / 'Do NOT "
+    "capture' rules.\n\n"
     "Voice rules:\n"
     "  · Declarative: 'Reviews use single-line comments' ✓\n"
     "  · NOT imperative: 'Always use single-line comments' ✗\n"
@@ -206,8 +255,15 @@ FREYJA_FORMAT_BLOCK = (
 def build_drafter_system_prompt() -> str:
     """Assemble the full system prompt.
 
-    Called once per drafter invocation; the result is stable across calls
-    so prompt-cache hits cleanly when the same drafter agent is used
-    across multiple sessions in a row.
+    Order is intentional:
+      1. ``FREYJA_PORT_PREAMBLE`` — sets the runtime contract before the
+         Hermes block references tools/CLIs that don't exist here.
+      2. ``HERMES_SKILL_REVIEW_PROMPT`` — verbatim Hermes review fork.
+      3. ``FREYJA_FORMAT_BLOCK`` — schema-level constraints + name/voice
+         rules.
+
+    The whole string is stable across drafter invocations, so the
+    provider's prompt cache reuses it cleanly across back-to-back
+    cadence trips.
     """
-    return HERMES_SKILL_REVIEW_PROMPT + FREYJA_FORMAT_BLOCK
+    return FREYJA_PORT_PREAMBLE + HERMES_SKILL_REVIEW_PROMPT + FREYJA_FORMAT_BLOCK

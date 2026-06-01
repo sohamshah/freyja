@@ -2499,6 +2499,13 @@ class _BridgeSession:
         self.current_tool_id: str | None = None
         self.current_turn_id: str | None = None
         self.turn_counter = 0
+        # Maps turn_index → message-list length at the START of that
+        # turn (before the user message of that turn was added). Used by
+        # ``_render_post_turn_window`` to slice transcript ranges per
+        # turn for the outcome classifier and drafter. ``cursors[0] = 0``
+        # is an anchor for sessions that load skills before turn 1
+        # (e.g. an operator forcing a /skill before the first message).
+        self._turn_message_cursors: dict[int, int] = {0: 0}
         self.pending_task: asyncio.Task | None = None
         self.tool_start_at: dict[str, float] = {}
         # Skill-learning loop: per-session cadence counter (Hermes-style)
@@ -3235,6 +3242,38 @@ class _BridgeSession:
 
     def reset(self) -> None:
         """Drop the runner so the next turn starts a fresh transcript."""
+        # H3 / L1: drain the outcome watcher BEFORE we touch anything
+        # else. Otherwise any in-flight classifier task captures the
+        # stale watcher + session via the BridgeWindowBuilder closure,
+        # fires against a torn-down transcript, sees an empty post-
+        # load window, and writes a synthetic ``clean`` outcome. The
+        # shutdown helper flushes pending records and cancels in-
+        # flight tasks; safe to call even if the watcher is None.
+        try:
+            self.shutdown_skill_learning()
+        except Exception:  # noqa: BLE001
+            pass
+        # Rebuild the cadence counter + outcome watcher for the next
+        # incarnation. We do this here (rather than in __init__) so a
+        # reset always lands the session in a known-good state, even
+        # if the watcher import failed at first-init.
+        try:
+            from bridge.knowledge.learning.review_scheduler import (
+                make_counter,
+            )
+            from bridge.knowledge.learning.outcome_watcher import (
+                SkillOutcomeWatcher,
+            )
+            self.skill_cadence_counter = make_counter(self.id)
+            self.skill_outcome_watcher = SkillOutcomeWatcher(
+                session_id=self.id,
+            )
+        except Exception:  # noqa: BLE001
+            self.skill_cadence_counter = None
+            self.skill_outcome_watcher = None
+        # Forget any skills the previous session had loaded — the new
+        # incarnation starts with no resident skills.
+        self.loaded_skills = {}
         # Harness adapter + MCP socket are async-shutdown only — schedule
         # close on the running loop instead of blocking the sync reset.
         if self.harness_adapter is not None:
@@ -3267,6 +3306,9 @@ class _BridgeSession:
         self.turn_counter = 0
         self.current_tool_id = None
         self.current_turn_id = None
+        # Clear per-turn message cursors so the next session's outcome
+        # watcher doesn't index into a stale transcript.
+        self._turn_message_cursors = {0: 0}
         self.tool_start_at.clear()
         self.computer_cancel = asyncio.Event()
         self._tool_list = ""
@@ -4183,7 +4225,87 @@ class _BridgeSession:
             except Exception:  # noqa: BLE001
                 pass
 
-    def _tick_skill_learning_hooks(self, *, success: bool) -> None:
+    def _build_skill_window_builder(self) -> Any:
+        """Construct a TurnWindowBuilder bound to this session's
+        transcript. Factored out so reset/delete-session shutdown can
+        reuse the same builder when draining the outcome watcher.
+
+        Returns ``None`` if the watcher module can't be imported (the
+        skill-learning loop is best-effort everywhere).
+        """
+        try:
+            from bridge.knowledge.learning.outcome_watcher import (
+                TurnWindowBuilder,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        session_ref = self
+
+        class _BridgeWindowBuilder(TurnWindowBuilder):
+            def build_window(
+                self, *, anchor_turn: int, max_turns: int, max_chars: int,
+            ) -> str:
+                return session_ref._render_post_turn_window(
+                    anchor_turn=anchor_turn,
+                    max_turns=max_turns,
+                    max_chars=max_chars,
+                )
+
+        return _BridgeWindowBuilder()
+
+    def shutdown_skill_learning(self) -> None:
+        """H3: drain the outcome watcher before this session is dropped.
+
+        Two failure modes the unconditional `del state.sessions[sid]`
+        used to expose:
+
+          1. The watcher's `_pending` record holds a ``session_ref =
+             self`` capture in the BridgeWindowBuilder it last received.
+             If a classifier task is in flight when we drop the
+             session, the captured reference keeps the dead session
+             alive long enough for the classifier to render a phantom
+             window (which `_render_post_turn_window` returns "" for
+             on a torn-down session) → outcome_watcher's empty-window
+             branch writes a synthetic ``clean`` outcome event → V
+             telemetry gets poisoned with fake positive signal on
+             every reset.
+
+          2. Pending records never see `on_session_end`, so any skill
+             loaded in the last few turns of the session vanishes
+             without ever being classified.
+
+        Calling `on_session_end` here forces the watcher to flush its
+        pending queue against the current transcript (still readable —
+        we haven't reset yet) and then cancel any in-flight tasks it's
+        tracking. After this returns the watcher is safe to discard.
+        """
+        watcher = getattr(self, "skill_outcome_watcher", None)
+        if watcher is None:
+            return
+        try:
+            builder = self._build_skill_window_builder()
+            if builder is not None:
+                watcher.on_session_end(window_builder=builder)
+        except Exception:  # noqa: BLE001
+            pass
+        # Belt-and-suspenders: explicitly cancel anything still in the
+        # watcher's task set. on_session_end already awaits-then-clears
+        # internally, but if it raised partway through, residual tasks
+        # would otherwise live until process exit.
+        try:
+            tasks = list(getattr(watcher, "_tasks", []) or [])
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _tick_skill_learning_hooks(
+        self,
+        *,
+        success: bool,
+        had_user_message: bool = True,
+    ) -> None:
         """Called at turn_complete. Drives the skill-learning loop:
 
           1. Tick the outcome watcher so any classifier-eligible skills
@@ -4191,46 +4313,61 @@ class _BridgeSession:
           2. Tick the cadence counter. If it trips, spawn a drafter
              review for this session's conversation.
 
+        Parameters
+        ──────────
+          · ``success`` — whether the turn ended cleanly. Cadence
+            counter doesn't tick on failure (a failed turn isn't a
+            unit of operator work; counting it would inflate the
+            cadence).
+          · ``had_user_message`` — M4: counts user turns, not
+            iterations. Goal-loop continuations (the runner spins
+            agent-only iterations between user nudges) MUST pass
+            ``False`` here. The cadence counter is documented in
+            review_scheduler.py to count "user turns only"; without
+            this flag we were firing the drafter mid-goal-loop on
+            agent-only iterations.
+
+        H5 (sub-agent attribution): if this session is a sub-agent
+        (``parent_session_id`` set), do not tick either hook. The
+        load + outcome would otherwise attribute to the parent's
+        watcher (via the inherited LoadSkillTool closure), polluting
+        the parent's V telemetry with sub-agent activity. MVP:
+        sub-agents simply don't learn; long-term we'll wire a
+        per-child watcher.
+
         All wrapped in best-effort. The skill-learning loop must never
         break the turn loop.
         """
+        if self.parent_session_id is not None:
+            # H5: sub-agent — skip the entire loop for this session.
+            return
         watcher = getattr(self, "skill_outcome_watcher", None)
         counter = getattr(self, "skill_cadence_counter", None)
-        if not success and watcher is None and counter is None:
+        if watcher is None and counter is None:
             return
-        # 1. Outcome watcher.
+        # 1. Outcome watcher — tick on success AND on failure (an
+        # agent that loaded a skill then crashed is real signal: the
+        # skill didn't avert the failure). Cadence (step 2) gates on
+        # success because that's about counting completed operator
+        # turns; outcome classification is about post-load behavior
+        # regardless of how the turn ended.
         if watcher is not None:
             try:
-                from bridge.knowledge.learning.outcome_watcher import (
-                    TurnWindowBuilder,
-                )
-
-                # Adapter that exposes the session's transcript as a
-                # rendered turn window. The watcher dispatches against
-                # this when a skill's post-load window has closed.
-                session_ref = self
-
-                class _BridgeWindowBuilder(TurnWindowBuilder):
-                    def build_window(
-                        self, *, anchor_turn: int, max_turns: int, max_chars: int,
-                    ) -> str:
-                        return session_ref._render_post_turn_window(
-                            anchor_turn=anchor_turn,
-                            max_turns=max_turns,
-                            max_chars=max_chars,
-                        )
-
-                watcher.on_turn_complete(
-                    current_turn_index=self.turn_counter,
-                    window_builder=_BridgeWindowBuilder(),
-                )
+                builder = self._build_skill_window_builder()
+                if builder is not None:
+                    watcher.on_turn_complete(
+                        current_turn_index=self.turn_counter,
+                        window_builder=builder,
+                    )
             except Exception:  # noqa: BLE001
                 pass
         # 2. Cadence counter + drafter spawn.
         if counter is None or not success:
             return
         try:
-            tripped = counter.on_turn_complete(had_user_message=True)
+            tripped = counter.on_turn_complete(
+                had_user_message=had_user_message,
+            )
         except Exception:  # noqa: BLE001
             return
         if not tripped:
@@ -4241,7 +4378,28 @@ class _BridgeSession:
             pass
 
     def _spawn_drafter_review(self) -> None:
-        """Build the drafter context + spawn the review task."""
+        """Build the drafter context + spawn the review task.
+
+        Window contract
+        ───────────────
+        The drafter only sees the conversation slice *since the previous
+        cadence trip* — anchored at ``max(0, turn_counter - 20)`` with a
+        20-turn cap. This is deliberate:
+
+          · Each cadence trip costs an Opus call. Re-reading the full
+            session every trip violates the design's "$0.05-$0.15 per
+            qualifying turn" envelope as the session grows.
+          · The shared system prompt (Hermes block + Freyja contract)
+            stays stable across trips, so prompt-cache hits cleanly when
+            only the user message tail changes.
+          · 20 turns covers the typical cadence interval (every ~10
+            turns) plus a safety margin so the prior trip's window
+            overlaps and a long technique that spans two trips still
+            surfaces.
+
+        On the *first* trip in a fresh session, ``turn_counter - 20``
+        clamps to 0 so the drafter sees the whole short conversation.
+        """
         from bridge.knowledge.learning.review_worker import spawn_drafter_review
 
         loaded = list(self.loaded_skills.keys()) if hasattr(self, "loaded_skills") else []
@@ -4250,8 +4408,8 @@ class _BridgeSession:
         except Exception:  # noqa: BLE001
             all_skills = []
         conversation = self._render_post_turn_window(
-            anchor_turn=0,
-            max_turns=10_000,  # full conversation; cap by chars
+            anchor_turn=max(0, self.turn_counter - 20),
+            max_turns=20,
             max_chars=120_000,
         )
 
@@ -4276,19 +4434,46 @@ class _BridgeSession:
     ) -> str:
         """Render a rough text view of recent conversation for the
         drafter / outcome classifier. Best-effort; if the session
-        machinery can't produce it, return an empty string."""
+        machinery can't produce it, return an empty string.
+
+        ``anchor_turn`` is the turn index the watcher cares about
+        (where a skill loaded). We map turns to message ranges via the
+        per-turn cursors recorded in :attr:`_turn_message_cursors` and
+        return the slice ``[cursor[anchor], cursor[anchor + max_turns]]``.
+        On cursor miss (sub-agent, harness path that doesn't track
+        per-turn boundaries) falls back to a tail window so the
+        classifier still has something to work with.
+        """
+        if self.session is None:
+            return ""
         try:
-            messages = list(getattr(self.session, "messages", []) or [])
+            messages = list(self.session.get_messages() or [])
         except Exception:  # noqa: BLE001
             return ""
         if not messages:
             return ""
+        # Resolve the slice. ``cursors[N]`` is the message-list length
+        # captured at the start of turn N (before turn N's user message
+        # was added). ``cursors[0] = 0`` is seeded at session init so an
+        # anchor_turn=0 (skill load before turn 1) still yields the full
+        # transcript rather than falling through to the tail heuristic.
+        cursors = getattr(self, "_turn_message_cursors", None)
+        if not isinstance(cursors, dict):
+            cursors = {}
+        start_idx: int | None = cursors.get(anchor_turn) if cursors else None
+        end_idx: int | None = cursors.get(anchor_turn + max_turns) if cursors else None
+        if start_idx is None:
+            # Tail fallback — last ~max_turns × 4 messages (a turn is
+            # typically 1 user + 1 assistant + 0-N tool messages).
+            start_idx = max(0, len(messages) - (max_turns * 4 + 1))
+        if end_idx is None:
+            end_idx = len(messages)
         # Crude rendering: role + first 1000 chars of each message.
         # Hermes uses a similar coarse rendering inside their review fork
         # because the classifier doesn't need perfect fidelity, just
         # enough surface signal to distinguish outcome categories.
         lines: list[str] = []
-        for msg in messages[-(max_turns + 1):]:
+        for msg in messages[start_idx:end_idx]:
             try:
                 role = str(getattr(msg, "role", "") or "")
                 content = getattr(msg, "content", "") or ""
@@ -4310,6 +4495,34 @@ class _BridgeSession:
             except Exception:  # noqa: BLE001
                 continue
         return "\n".join(lines)[:max_chars]
+
+    def _record_turn_message_cursor(self) -> None:
+        """Stash the message-list length at the start of the current
+        turn so :meth:`_render_post_turn_window` can build per-turn
+        slices. Called from turn-start sites that already incremented
+        ``turn_counter``; idempotent if called twice for the same turn.
+
+        The cursor is recorded BEFORE the user message of this turn is
+        added to the transcript — so ``cursors[N]`` points at the
+        position where turn N's first message will land. Slicing
+        ``messages[cursors[N]:cursors[N+1]]`` then yields exactly the
+        messages produced during turn N (user message + assistant
+        response + any tool calls).
+        """
+        if self.session is None:
+            return
+        # Defensive lazy init for sessions that pre-date the attribute
+        # (older pickled sessions, hot-reload paths). We also seed
+        # cursors[0] = 0 so a load that happens before the first turn
+        # still resolves to a valid start index.
+        cursors = getattr(self, "_turn_message_cursors", None)
+        if not isinstance(cursors, dict):
+            cursors = {0: 0}
+            self._turn_message_cursors = cursors  # type: ignore[attr-defined]
+        try:
+            cursors[self.turn_counter] = len(self.session.get_messages())
+        except Exception:  # noqa: BLE001
+            pass
 
     def _loaded_skill_tokens(self) -> int:
         return sum(int(info.get("tokens") or 0) for info in self.loaded_skills.values())
@@ -6363,6 +6576,7 @@ class _BridgeSession:
 
         self.turn_counter += 1
         self.current_turn_id = f"turn-{self.turn_counter}"
+        self._record_turn_message_cursor()
         self._turn_text_parts = []
         emit({"type": "turn_start", "sessionId": self.id, "turnId": self.current_turn_id})
 
@@ -6443,8 +6657,14 @@ class _BridgeSession:
             # be resumed after app restart.
             self._save_transcript()
             # Skill-learning hooks: tick cadence + outcome watcher.
-            # Best-effort; never breaks the turn loop.
-            self._tick_skill_learning_hooks(success=True)
+            # Best-effort; never breaks the turn loop. M4: goal-loop
+            # continuations are agent-only iterations between user
+            # nudges — flag them so the cadence counter doesn't tick
+            # the user-turn count off the actual user activity.
+            self._tick_skill_learning_hooks(
+                success=True,
+                had_user_message=not is_goal_continuation,
+            )
             latest_response = (getattr(result, "response", None) or "").strip()
             if not latest_response:
                 latest_response = "".join(self._turn_text_parts).strip()
@@ -6482,6 +6702,16 @@ class _BridgeSession:
                 }
             )
             self._save_transcript()
+            # H2: tick the outcome watcher even on cancel. A skill the
+            # agent loaded earlier in this turn may already have its
+            # post-load window closed; without this hook, classifier
+            # dispatch deferred to "next turn" never fires for the
+            # cancelled session. ``success=False`` skips the cadence
+            # bump (cancel isn't a unit of operator work).
+            self._tick_skill_learning_hooks(
+                success=False,
+                had_user_message=not is_goal_continuation,
+            )
             raise
         except Exception as exc:  # noqa: BLE001
             # Same cleanup on any non-cancel exception — the runner
@@ -6504,6 +6734,11 @@ class _BridgeSession:
                 }
             )
             self._save_transcript()
+            # H2: same rationale as the cancel branch.
+            self._tick_skill_learning_hooks(
+                success=False,
+                had_user_message=not is_goal_continuation,
+            )
 
     # ──────────────────────────────────────────────────────────────────
     # Harness runtime fork
@@ -6697,6 +6932,7 @@ class _BridgeSession:
         messages."""
         self.turn_counter += 1
         self.current_turn_id = f"turn-{self.turn_counter}"
+        self._record_turn_message_cursor()
         self._turn_text_parts = []
         emit(
             {
@@ -6858,6 +7094,19 @@ class _BridgeSession:
             self._save_transcript()
         except Exception as exc:  # noqa: BLE001
             log("warn", f"save_transcript after harness turn failed: {exc}")
+
+        # H2: harness sessions (Claude Code, Codex, …) were silently
+        # skipping the entire skill-learning loop because this code
+        # path never called _tick_skill_learning_hooks. Meanwhile
+        # turn_counter was still being incremented above, so the
+        # outcome watcher's "current_turn - rec.turn >= 3" math
+        # diverged from the actual transcript and pending loads
+        # accumulated without ever being classified. Tick here so the
+        # cadence + outcome watcher both see harness turns.
+        self._tick_skill_learning_hooks(
+            success=result.error is None,
+            had_user_message=True,
+        )
 
         if not self._auto_rename_attempted:
             self._maybe_auto_rename_session()
@@ -8861,6 +9110,16 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         model = cmd.get("model") or state.default_model
         # Drop any existing session with the same id so it really starts fresh.
         if session_id in state.sessions:
+            # H3: drain the outcome watcher before the session is GC'd.
+            # Without this any in-flight classifier task tracks a dead
+            # session via the captured BridgeWindowBuilder, fires
+            # against an empty transcript, and writes synthetic clean
+            # outcomes — poisoning V telemetry on every new_session
+            # restart.
+            try:
+                state.sessions[session_id].shutdown_skill_learning()
+            except Exception:  # noqa: BLE001
+                pass
             del state.sessions[session_id]
             _close_session_event_file(session_id)
         sess = await state.ensure_session(
@@ -9145,6 +9404,14 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                         pending.cancel()
                     except Exception:  # noqa: BLE001
                         pass
+                # H3: drain the outcome watcher before dropping the
+                # session so in-flight classifier tasks don't fire
+                # against a torn-down transcript (see new_session
+                # branch for the full failure mode).
+                try:
+                    existing.shutdown_skill_learning()
+                except Exception:  # noqa: BLE001
+                    pass
                 try:
                     del state.sessions[sid]
                 except KeyError:
@@ -9414,14 +9681,21 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         if not candidate_id:
             log("warn", "skill_candidate_resolve missing candidateId")
             return
+        # H11: confirmation.promote/discard do sync fs I/O (read_text,
+        # yaml.safe_load, mkstemp, write, fsync, os.replace, events.append,
+        # delete_pending). On a slow disk this would block the asyncio loop
+        # and stall every other coroutine (Slack streaming, next user
+        # message, scheduler ticks). Hop to a thread.
         if action == "promote":
-            result = confirmation.promote(
+            result = await asyncio.to_thread(
+                confirmation.promote,
                 candidate_id,
                 actor="operator",
                 edits=edits if isinstance(edits, dict) else None,
             )
         elif action == "discard":
-            result = confirmation.discard(
+            result = await asyncio.to_thread(
+                confirmation.discard,
                 candidate_id,
                 actor="operator",
                 reason="operator-rejected",
@@ -9429,6 +9703,11 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         else:
             log("warn", f"skill_candidate_resolve unknown action {action!r}")
             return
+        # H1: include ok/reason so the renderer can distinguish a real
+        # promotion from a no-op failure (name collision, invalid name,
+        # guard-dangerous-after-edit, etc.). Without ok, the renderer
+        # showed a fake "Promoted" toast and silently dropped the
+        # candidate from the queue.
         emit(
             {
                 "type": "skill_candidate_resolved",
@@ -9436,6 +9715,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 "candidateId": candidate_id,
                 "action": "promote" if action == "promote" else "discard",
                 "actor": "operator",
+                "ok": bool(result.ok),
                 "skillPath": str(result.skill_path) if result.skill_path else None,
                 "reason": result.reason or "",
             }

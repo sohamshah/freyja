@@ -8,6 +8,8 @@ import { ToolTimeline } from './ToolTimeline'
 import { ChangesSection } from './ChangesSection'
 import { TopoBackdrop } from './TopoBackdrop'
 import { StickyHeader } from './StickyHeader'
+import { DrafterActivityStrip } from './DrafterActivityStrip'
+import { SkillCandidatesPanel } from './SkillCandidatesPanel'
 
 export function ActivityPanel() {
   const systemEvents = useHarness((s) => s.systemEvents)
@@ -142,6 +144,10 @@ export function ActivityPanel() {
       </div>
 
       <div className="flex-1 overflow-y-auto">
+        {/* ── Drafter / cadence telemetry strip ──────────────── */}
+        <DrafterActivityStrip />
+        {/* ── Drafter candidates + negative library ──────────── */}
+        <SkillCandidatesPanelContainer />
         {/* ── Computer live view (only when a session is active) ── */}
         <ComputerLiveView />
         {/* ── Context meter ─────────────────────────────────── */}
@@ -510,4 +516,48 @@ function detailNumber(
     if (Number.isFinite(parsed)) return parsed
   }
   return 0
+}
+
+/**
+ * Collapsible container that hosts the SkillCandidatesPanel inside the
+ * ActivityPanel. Collapsed by default to keep the activity panel
+ * unchanged for operators not using the skill-learning loop; the
+ * header shows the pending candidate count + a caret to expand.
+ */
+function SkillCandidatesPanelContainer() {
+  const pendingCount = useHarness((s) => s.skillCandidateQueue.length)
+  const cachedCount = useHarness((s) => s.skillCandidatesCache?.length ?? 0)
+  const [open, setOpen] = useState(pendingCount > 0)
+  // Auto-expand the section when a fresh candidate arrives — the
+  // operator usually wants to see it without hunting for the section.
+  useEffect(() => {
+    if (pendingCount > 0) setOpen(true)
+  }, [pendingCount])
+  const total = Math.max(pendingCount, cachedCount)
+  return (
+    <div className="hairline-b">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between px-4 py-2 text-left hover:bg-white/[0.025]"
+      >
+        <div className="flex items-center gap-2">
+          <span className="label">skill candidates</span>
+          {total > 0 && (
+            <span className="rounded bg-accent/15 px-1.5 py-[1px] font-mono text-[10px] text-accent ring-1 ring-accent/25">
+              {total}
+            </span>
+          )}
+        </div>
+        <span className="font-mono text-[10px] text-fg-3">
+          {open ? 'hide' : 'show'}
+        </span>
+      </button>
+      {open && (
+        <div className="max-h-[460px] overflow-hidden hairline-t">
+          <SkillCandidatesPanel />
+        </div>
+      )}
+    </div>
+  )
 }

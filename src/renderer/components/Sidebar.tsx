@@ -703,12 +703,68 @@ function SessionSearch({
   )
 }
 
+/** Compute the V-badge color tier for a numeric V score. Mirrors the
+ *  rubric in the design doc: green ≥ +1.0, neutral within ±1.0, warn
+ *  for clearly negative skills. */
+function vScoreTier(v: number | undefined): {
+  label: string
+  tone: 'good' | 'neutral' | 'warn'
+} | null {
+  if (v == null || Number.isNaN(v)) return null
+  const sign = v >= 0 ? '+' : ''
+  const label = `V=${sign}${v.toFixed(2)}`
+  if (v >= 1.0) return { label, tone: 'good' }
+  if (v <= -0.5) return { label, tone: 'warn' }
+  return { label, tone: 'neutral' }
+}
+
+function VBadge({ score, headline }: { score?: number; headline?: string }) {
+  const tier = vScoreTier(score)
+  if (!tier) return null
+  const cls =
+    tier.tone === 'good'
+      ? 'bg-ok/15 text-ok ring-ok/25'
+      : tier.tone === 'warn'
+        ? 'bg-warn/15 text-warn ring-warn/25'
+        : 'bg-white/[0.04] text-fg-2 ring-white/10'
+  return (
+    <span
+      className={`shrink-0 rounded px-1 py-[1px] font-mono text-[8.5px] uppercase tracking-[0.08em] ring-1 ${cls}`}
+      title={headline || tier.label}
+    >
+      {tier.label}
+    </span>
+  )
+}
+
 function SkillRow({ skill, onSelect }: { skill: Skill; onSelect?: () => void }) {
+  const getSkillRollup = useHarness((s) => s.getSkillRollup)
+  const cachedRollup = useHarness((s) => s.skillRollups[skill.name])
   const totalSignals = skill.successSignals + skill.failureSignals
   const successRate = totalSignals > 0
     ? Math.round((skill.successSignals / totalSignals) * 100)
     : null
   const status = skill.status ?? 'available'
+
+  // Pull the rollup on mount / when the skill becomes loaded. Cheap —
+  // the IPC handler caches results behind value_path_for() so multiple
+  // sidebar rerenders during a session reuse the same compute.
+  useEffect(() => {
+    if (status === 'loaded' || (skill.loadCount ?? 0) > 0) {
+      if (!cachedRollup) {
+        void getSkillRollup(skill.name)
+      }
+    }
+  }, [skill.name, status, skill.loadCount, cachedRollup, getSkillRollup])
+
+  const liveScore = cachedRollup?.score ?? skill.vScore
+  const liveHeadline = cachedRollup?.headline ?? skill.vHeadline
+  const loadCountFrag =
+    cachedRollup?.windowedLoadCount && cachedRollup.windowedLoadCount > 0
+      ? `${cachedRollup.windowedLoadCount} loaded`
+      : skill.loadCount
+        ? `${skill.loadCount} load`
+        : `${skill.retrievalCount} seen`
 
   return (
     <button
@@ -717,7 +773,7 @@ function SkillRow({ skill, onSelect }: { skill: Skill; onSelect?: () => void }) 
       className={`group flex w-full items-start gap-2 rounded-md px-2 py-[6px] text-left hover:bg-white/[0.04] ${
         status === 'loaded' ? 'bg-accent/[0.06]' : ''
       }`}
-      title={`Open ${skill.name}`}
+      title={liveHeadline || `Open ${skill.name}`}
     >
       <span
         className={`mt-[7px] inline-block h-1.5 w-1.5 rounded-full ${CONFIDENCE_COLOR[skill.confidence]}`}
@@ -725,6 +781,7 @@ function SkillRow({ skill, onSelect }: { skill: Skill; onSelect?: () => void }) 
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-1.5">
           <div className="truncate text-[12.5px] text-fg-0">{skill.name}</div>
+          <VBadge score={liveScore} headline={liveHeadline} />
           {status !== 'available' && (
             <span
               className={`shrink-0 rounded px-1 py-[1px] font-mono text-[8.5px] uppercase tracking-[0.08em] ring-1 ${
@@ -744,7 +801,7 @@ function SkillRow({ skill, onSelect }: { skill: Skill; onSelect?: () => void }) 
           <span>·</span>
           <span>{skill.scope ?? 'project'}</span>
           <span>·</span>
-          <span>{skill.loadCount ? `${skill.loadCount} load` : `${skill.retrievalCount} seen`}</span>
+          <span>{loadCountFrag}</span>
           {successRate !== null && (
             <>
               <span>·</span>
@@ -802,6 +859,13 @@ function InspectorPopup({
   const deleteMemory = useHarness((s) => s.deleteMemory)
   const restoreMemory = useHarness((s) => s.restoreMemory)
   const showToast = useHarness((s) => s.showToast)
+  const getSkillRollup = useHarness((s) => s.getSkillRollup)
+  const readSkillFile = useHarness((s) => s.readSkillFile)
+  const saveSkillFile = useHarness((s) => s.saveSkillFile)
+  const openSkillFile = useHarness((s) => s.openSkillFile)
+  const skillRollup = useHarness((s) =>
+    item.kind === 'skill' ? s.skillRollups[item.item.name] : undefined,
+  )
   // The live record — re-derived from the store on every render so an
   // edit fired off through the IPC pipeline reflects back here without
   // the parent component having to re-pass the item.
@@ -815,6 +879,27 @@ function InspectorPopup({
   const [editKind, setEditKind] = useState(item.kind === 'memory' ? item.item.kind : '')
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [saving, setSaving] = useState(false)
+
+  // Edit + file state for skills.
+  const [skillBody, setSkillBody] = useState<string | null>(null)
+  const [skillBodyLoading, setSkillBodyLoading] = useState(false)
+  const [skillEditing, setSkillEditing] = useState(false)
+  const [skillBodyDraft, setSkillBodyDraft] = useState('')
+
+  // Pull the rollup + SKILL.md body when the inspector opens for a
+  // skill. Both calls are cheap (cached) — value rollup is keyed by
+  // event-log mtime + the file read is plain Node fs.
+  useEffect(() => {
+    if (item.kind !== 'skill') return
+    if (!skillRollup) {
+      void getSkillRollup(item.item.name)
+    }
+    setSkillBodyLoading(true)
+    void readSkillFile(item.item.name).then((body) => {
+      setSkillBody(body)
+      setSkillBodyLoading(false)
+    })
+  }, [item, skillRollup, getSkillRollup, readSkillFile])
 
   // Reset edit fields when the live memory changes (e.g. another
   // session updated it mid-edit). If the user has unsaved edits, leave
@@ -842,6 +927,7 @@ function InspectorPopup({
   }, [onClose, editing, confirmDelete])
 
   const isSkill = item.kind === 'skill'
+  const skillItem = item.kind === 'skill' ? item.item : null
   const memoryRecord = !isSkill && liveMemory ? liveMemory : null
   const title = isSkill ? item.item.name : `${memoryRecord?.kind ?? item.item.kind} memory`
   const kindTag = isSkill ? item.item.skillType : memoryRecord?.kind ?? item.item.kind
@@ -1063,6 +1149,169 @@ function InspectorPopup({
                   </span>
                 ))}
               </div>
+            </section>
+          )}
+          {isSkill && skillRollup && (
+            <section>
+              <div className="label mb-2 text-[9px] text-fg-3">
+                v score · {skillRollup.headline}
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-[11.5px]">
+                <Stat
+                  label="V"
+                  value={
+                    (skillRollup.score >= 0 ? '+' : '') +
+                    skillRollup.score.toFixed(2)
+                  }
+                  tone={
+                    skillRollup.score >= 1.0
+                      ? 'ok'
+                      : skillRollup.score <= -0.5
+                        ? 'warn'
+                        : undefined
+                  }
+                />
+                <Stat
+                  label="last 30 of"
+                  value={`${skillRollup.windowedLoadCount} / ${skillRollup.loadCount} loads`}
+                />
+                {Object.entries(skillRollup.counts)
+                  .sort((a, b) => b[1] - a[1])
+                  .slice(0, 4)
+                  .map(([name, count]) => (
+                    <Stat
+                      key={name}
+                      label={name}
+                      value={String(count)}
+                    />
+                  ))}
+              </div>
+              {skillRollup.recentOutcomes.length > 0 && (
+                <div className="mt-3">
+                  <div className="label mb-1 text-[9px] text-fg-3">
+                    recent outcomes · last {skillRollup.recentOutcomes.length}
+                  </div>
+                  <ol className="space-y-1.5">
+                    {skillRollup.recentOutcomes.slice(0, 5).map((o, idx) => (
+                      <li
+                        key={`${o.ts}-${idx}`}
+                        className="rounded-md bg-white/[0.025] px-3 py-2 ring-hairline"
+                      >
+                        <div className="flex items-center justify-between gap-2 text-[10px] font-mono">
+                          <span
+                            className={`uppercase tracking-[0.08em] ${
+                              ['cited', 'corroborated', 'clean'].includes(
+                                o.category,
+                              )
+                                ? 'text-ok'
+                                : ['correction', 'contradicted'].includes(
+                                      o.category,
+                                    )
+                                  ? 'text-warn'
+                                  : 'text-fg-2'
+                            }`}
+                          >
+                            {o.category}
+                          </span>
+                          <span className="text-fg-3">
+                            {o.ts ? relativeTime(o.ts) : '—'}
+                          </span>
+                        </div>
+                        {o.evidence && (
+                          <div className="mt-1 text-[11px] italic text-fg-2 line-clamp-3">
+                            {o.evidence}
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+            </section>
+          )}
+          {isSkill && skillItem && (
+            <section>
+              <div className="mb-1 flex items-center justify-between">
+                <div className="label text-[9px] text-fg-3">SKILL.md body</div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => openSkillFile(skillItem.name)}
+                    className="font-mono text-[10px] uppercase tracking-[0.08em] text-fg-2 hover:text-fg-0"
+                    title="Open in OS default editor"
+                  >
+                    open file
+                  </button>
+                  {!skillEditing && skillBody !== null && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSkillBodyDraft(skillBody ?? '')
+                        setSkillEditing(true)
+                      }}
+                      className="font-mono text-[10px] uppercase tracking-[0.08em] text-accent hover:text-accent"
+                    >
+                      edit
+                    </button>
+                  )}
+                </div>
+              </div>
+              {skillBodyLoading ? (
+                <div className="rounded-md bg-black/30 px-3 py-2 font-mono text-[11px] text-fg-3 ring-hairline">
+                  loading…
+                </div>
+              ) : skillEditing ? (
+                <textarea
+                  value={skillBodyDraft}
+                  onChange={(e) => setSkillBodyDraft(e.target.value)}
+                  spellCheck={false}
+                  className="max-h-[420px] min-h-[200px] w-full overflow-auto rounded-md bg-black/40 px-3 py-2 font-mono text-[11px] leading-[1.6] text-fg-0 ring-1 ring-white/[0.08] focus:outline-none focus:ring-accent/40"
+                />
+              ) : skillBody !== null ? (
+                <div className="selectable max-h-[280px] overflow-y-auto rounded-md bg-black/30 p-2.5 font-mono text-[11px] leading-[1.55] text-fg-1 ring-hairline whitespace-pre-wrap">
+                  {skillBody.length > 4000
+                    ? skillBody.slice(0, 4000) +
+                      `\n\n…[truncated · ${skillBody.length - 4000} more chars · open file to see all]`
+                    : skillBody}
+                </div>
+              ) : (
+                <div className="rounded-md bg-warn/[0.08] px-3 py-2 text-[11px] text-warn ring-1 ring-warn/25">
+                  SKILL.md not on disk yet. (Path: {path || `~/.freyja/skills/${skillItem.name}/SKILL.md`})
+                </div>
+              )}
+              {skillEditing && (
+                <div className="mt-2 flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSkillEditing(false)
+                      setSkillBodyDraft('')
+                    }}
+                    className="rounded-md bg-white/[0.04] px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
+                  >
+                    cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setSaving(true)
+                      const ok = await saveSkillFile(
+                        skillItem.name,
+                        skillBodyDraft,
+                      )
+                      setSaving(false)
+                      if (ok) {
+                        setSkillBody(skillBodyDraft)
+                        setSkillEditing(false)
+                      }
+                    }}
+                    disabled={saving}
+                    className="rounded-md bg-accent/15 px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-accent ring-1 ring-accent/30 hover:bg-accent/25 disabled:opacity-50"
+                  >
+                    {saving ? 'saving…' : 'save'}
+                  </button>
+                </div>
+              )}
             </section>
           )}
           {isSkill && (

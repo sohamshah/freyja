@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useHarness } from '../state/store'
 
 /**
@@ -11,31 +11,59 @@ import { useHarness } from '../state/store'
  * notice it. Esc collapses the expanded body but keeps the candidate
  * in the queue (no destructive default).
  *
- * Three actions:
+ * Four actions:
  *   - Promote → writes ~/.freyja/skills/<name>/SKILL.md, removes from queue
+ *   - Edit    → reveals inline name + description editor; promote with
+ *               edits flows through `resolveSkillCandidate(..., edits)`
  *   - Discard → moves to .rejected/ negative library, removes from queue
  *   - View   → expands the toast to show the full body + guard report
+ *
+ * Caution-verdict candidates get a yellow border and a "REVIEW" badge
+ * next to the name; the guard summary is shown un-collapsed above the
+ * body so the operator can't miss the reason the guard flagged it.
  */
 export function SkillToast() {
   const queue = useHarness((s) => s.skillCandidateQueue)
   const resolve = useHarness((s) => s.resolveSkillCandidate)
   const [expanded, setExpanded] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [editName, setEditName] = useState('')
+  const [editDesc, setEditDesc] = useState('')
   const current = queue[0]
+
+  // M15 — reset local expansion / edit state when the head of the
+  // queue changes so a fresh candidate doesn't inherit the previous
+  // one's "expanded" or stale edit-draft text.
+  useEffect(() => {
+    setExpanded(false)
+    setEditing(false)
+    setEditName(current?.name ?? '')
+    setEditDesc(current?.description ?? '')
+  }, [current?.candidateId, current?.name, current?.description])
 
   if (!current) return null
 
+  const triggers = current.triggers ?? []
+  const isCaution = current.guardVerdict === 'caution'
+
   const promote = () => {
     setExpanded(false)
-    resolve(current.candidateId, 'promote')
+    setEditing(false)
+    const edits =
+      editing && (editName.trim() !== current.name || editDesc.trim() !== current.description)
+        ? {
+            name: editName.trim() || undefined,
+            description: editDesc.trim() || undefined,
+          }
+        : undefined
+    resolve(current.candidateId, 'promote', edits)
   }
   const discard = () => {
     setExpanded(false)
+    setEditing(false)
     resolve(current.candidateId, 'discard')
   }
-  const cautionToneClasses =
-    current.guardVerdict === 'caution'
-      ? 'border-warn/40'
-      : 'border-accent/30'
+  const cautionToneClasses = isCaution ? 'border-warn/40' : 'border-accent/30'
 
   return (
     <div className="fixed bottom-4 right-4 z-40 w-[440px] max-w-[calc(100vw-2rem)]">
@@ -46,8 +74,8 @@ export function SkillToast() {
         <div className="flex items-center gap-2 px-4 py-3 hairline-b">
           <span className="font-mono text-[14px] text-accent">💡</span>
           <span className="label text-accent">learned a skill</span>
-          {current.guardVerdict === 'caution' && (
-            <span className="label text-warn">⚠ caution</span>
+          {isCaution && (
+            <span className="label text-warn">⚠ review</span>
           )}
           {queue.length > 1 && (
             <span className="label ml-auto text-fg-3">
@@ -56,30 +84,65 @@ export function SkillToast() {
           )}
         </div>
 
-        {/* Summary */}
-        <div className="px-4 py-3">
-          <div className="font-mono text-[12px] text-fg-0">{current.name}</div>
-          <div className="mt-1 text-[11.5px] leading-[1.5] text-fg-1">
-            {current.description}
+        {/* Caution summary — shown above the body, not behind a toggle */}
+        {isCaution && current.guardSummary && (
+          <div className="border-l-2 border-warn/40 bg-warn/[0.05] px-4 py-2 text-[11px] leading-[1.5] text-warn">
+            {current.guardSummary}
           </div>
-          {current.triggers.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {current.triggers.slice(0, 4).map((t) => (
-                <span
-                  key={t}
-                  className="rounded-sm bg-white/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-fg-2 ring-hairline"
-                >
-                  {t}
-                </span>
-              ))}
+        )}
+
+        {/* Summary or inline editor */}
+        {editing ? (
+          <div className="space-y-2 px-4 py-3">
+            <div>
+              <div className="label mb-1 text-[9px] text-fg-3">skill name</div>
+              <input
+                type="text"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                spellCheck={false}
+                className="w-full rounded-md bg-black/40 px-2 py-1 font-mono text-[12px] text-fg-0 ring-1 ring-white/[0.08] focus:outline-none focus:ring-accent/40"
+              />
             </div>
-          )}
-        </div>
+            <div>
+              <div className="label mb-1 text-[9px] text-fg-3">description</div>
+              <textarea
+                value={editDesc}
+                onChange={(e) => setEditDesc(e.target.value)}
+                spellCheck={false}
+                rows={3}
+                className="w-full rounded-md bg-black/40 px-2 py-1 text-[12px] leading-[1.45] text-fg-0 ring-1 ring-white/[0.08] focus:outline-none focus:ring-accent/40"
+              />
+            </div>
+            <div className="text-[10.5px] text-fg-3">
+              Body stays unchanged. Click "view detail" to inspect before promoting.
+            </div>
+          </div>
+        ) : (
+          <div className="px-4 py-3">
+            <div className="font-mono text-[12px] text-fg-0">{current.name}</div>
+            <div className="mt-1 text-[11.5px] leading-[1.5] text-fg-1">
+              {current.description}
+            </div>
+            {triggers.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {triggers.slice(0, 4).map((t) => (
+                  <span
+                    key={t}
+                    className="rounded-sm bg-white/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-fg-2 ring-hairline"
+                  >
+                    {t}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Expanded detail */}
         {expanded && (
           <div className="hairline-t px-4 py-3">
-            {current.guardSummary && (
+            {current.guardSummary && !isCaution && (
               <div className="mb-3">
                 <div className="mb-1 label">guard report</div>
                 <div className="selectable rounded-md bg-black/35 p-2 font-mono text-[10.5px] leading-[1.5] text-fg-1 ring-hairline whitespace-pre-wrap">
@@ -110,10 +173,25 @@ export function SkillToast() {
               discard
             </button>
             <button
+              onClick={() => {
+                if (editing) {
+                  // cancel — restore originals
+                  setEditName(current.name)
+                  setEditDesc(current.description)
+                }
+                setEditing((v) => !v)
+              }}
+              className="rounded-md bg-white/[0.04] px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.08em] text-fg-1 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
+            >
+              {editing ? 'cancel' : 'edit'}
+            </button>
+            <button
               onClick={promote}
               className="rounded-md bg-accent/15 px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.08em] text-accent ring-1 ring-accent/40 hover:bg-accent/25"
             >
-              promote
+              {editing && (editName.trim() !== current.name || editDesc.trim() !== current.description)
+                ? 'promote with edits'
+                : 'promote'}
             </button>
           </div>
         </div>

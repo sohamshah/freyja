@@ -15,22 +15,28 @@ Design constraints
     it as an :class:`asyncio.Task` on the running loop and return
     immediately.
 
-  · **Silent.** Hermes' drafter prints reasoning to stdout during the
-    review (intentional, for terminal debugging). In Freyja that chatter
-    would leak through the bridge's stdout into the renderer chat
-    surface. We wrap the spawned task in
-    :func:`contextlib.redirect_stdout` / ``redirect_stderr`` to ``/dev/null``
-    for the duration of the LLM call — same pattern
-    ``outcome_watcher._classify_one`` uses.
+  · **Silent.** The Anthropic SDK used here is already quiet in normal
+    operation. M3: a previous version wrapped the ``await run_drafter(...)``
+    in ``contextlib.redirect_stdout`` / ``redirect_stderr`` to
+    ``/dev/null``. ``contextlib.redirect_stdout`` mutates
+    ``sys.stdout`` PROCESS-WIDE, and an ``await`` inside it yields
+    control to other coroutines that THEN write to the redirected
+    stdout — so the drafter's stdout sink silently captured Slack
+    streams, scheduler logging, and every other awaitable producing
+    output for 20-60 s. The redirect is removed; if a future provider
+    regression starts printing, fix it at the provider.
 
   · **Best-effort.** A drafter failure (provider 500, guard reject,
     schema mismatch) must never bubble back into the turn loop. The
     done-callback logs the exception class and swallows it.
 
-  · **Diagnosable.** A module-level :class:`weakref.WeakSet` of in-flight
-    tasks lets ``/diag drafter`` (and tests via :func:`wait_for_drain`)
-    inspect what's running without keeping tasks alive past their normal
-    GC point.
+  · **Diagnosable.** A module-level :class:`set` of in-flight tasks
+    lets ``/diag drafter`` (and tests via :func:`wait_for_drain`)
+    inspect what's running. The set holds a strong reference so the
+    asyncio task isn't GC-eligible mid-await (H4 — previously a
+    ``weakref.WeakSet``, which let CPython collect orphan tasks mid-
+    LLM-call). A done-callback discards entries when the task settles
+    so the set never grows unboundedly.
 
 What this is NOT
 ────────────────
@@ -48,21 +54,26 @@ What this is NOT
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
-import os
-import weakref
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
 
-# Module-level registry of in-flight drafter tasks. Weak so a task that
-# completes and is otherwise unreferenced gets collected immediately —
-# this set is for diagnostics, not lifetime extension. ``wait_for_drain``
-# snapshots it under a strong list at call time so concurrent removals
-# during iteration are safe.
-_INFLIGHT: "weakref.WeakSet[asyncio.Task[Any]]" = weakref.WeakSet()
+# Module-level registry of in-flight drafter tasks.
+#
+# H4: previously a ``weakref.WeakSet``. The caller discards the task
+# handle, and CPython 3.11+ asyncio.create_task does NOT retain a
+# strong reference of its own — the docs explicitly warn that orphan
+# tasks may be garbage-collected mid-await. The 20-60 s drafter LLM
+# call is the longest GC window in this whole loop. A weak reference
+# is exactly the wrong primitive here.
+#
+# Switch to a plain set + done-callback discard. The done callback
+# (_on_task_done) removes the entry once the task settles, so the
+# set never grows unboundedly; in the meantime the set keeps a
+# strong reference that prevents GC reaping mid-run.
+_INFLIGHT: set["asyncio.Task[Any]"] = set()
 
 
 def spawn_drafter_review(
@@ -152,13 +163,19 @@ async def _run_with_redirects(
     all_skill_names: list[str],
     on_candidate: Callable[[str], None] | None,
 ) -> str | None:
-    """Inner coroutine: import drafter lazily, run it with stdout/stderr
-    redirected to devnull, fire ``on_candidate`` on success.
+    """Inner coroutine: import drafter lazily, run it, fire ``on_candidate``
+    on success.
 
     Returns the candidate_id on success, ``None`` on every other path
     (no candidate, drafter unavailable, exception). The return is mostly
     informational — the side effect of firing ``on_candidate`` is what
     matters to the bridge.
+
+    Naming preserved for the diagnostic trail and external callers; the
+    actual ``redirect_stdout``/``redirect_stderr`` block was removed
+    in M3 (see module docstring) because it mutated process-wide
+    ``sys.stdout`` across an ``await`` and silently swallowed every
+    other coroutine's output during the drafter's 20-60 s LLM call.
     """
     # Lazy import: ``drafter`` may not be fully wired during early MVP
     # phases. A missing import shouldn't crash the bridge — it just
@@ -182,20 +199,18 @@ async def _run_with_redirects(
 
     candidate_id: str | None = None
     try:
-        # Devnull redirect — keeps any provider-client prints, tqdm bars,
-        # or stray debug from leaking into the bridge's stdout (which
-        # the renderer mirrors verbatim). Match the pattern
-        # ``outcome_watcher._classify_one`` uses for the same reason.
-        with open(os.devnull, "w", encoding="utf-8") as devnull, \
-             contextlib.redirect_stdout(devnull), \
-             contextlib.redirect_stderr(devnull):
-            result = await run_drafter(
-                session_id=session_id,
-                turn_id=turn_id,
-                conversation_excerpt=conversation_excerpt,
-                loaded_skill_names=loaded_skill_names,
-                all_skill_names=all_skill_names,
-            )
+        # No process-wide stdout/stderr redirect — see M3 in the module
+        # docstring. The Anthropic SDK is quiet by default; if it
+        # regresses, the fix belongs at the provider, not in a wrapper
+        # that mutes every concurrent coroutine for the duration of an
+        # ``await``.
+        result = await run_drafter(
+            session_id=session_id,
+            turn_id=turn_id,
+            conversation_excerpt=conversation_excerpt,
+            loaded_skill_names=loaded_skill_names,
+            all_skill_names=all_skill_names,
+        )
         # ``run_drafter`` returns either a candidate_id string, or
         # something falsy (None / "") meaning "nothing worth proposing
         # this pass." Both are normal outcomes — only the truthy branch
@@ -241,7 +256,11 @@ async def _run_with_redirects(
 
 def _on_task_done(task: asyncio.Task[Any]) -> None:
     """Done-callback: log any exception that escaped the inner coroutine,
-    swallow it, and let the WeakSet drop the reference."""
+    swallow it, and drop the strong reference from ``_INFLIGHT``."""
+    # H4: discard from the strong set here, mirroring the pattern
+    # ``outcome_watcher._tasks`` uses. Without this, the set would
+    # leak completed tasks forever.
+    _INFLIGHT.discard(task)
     if task.cancelled():
         logger.debug("review_worker: task %s cancelled", task.get_name())
         return
@@ -266,8 +285,8 @@ async def wait_for_drain(timeout: float = 60.0) -> None:
     return — we never raise, because the caller is usually already
     tearing down and can't usefully react.
     """
-    # Snapshot under a strong list — iterating a WeakSet while tasks
-    # complete and get GC'd is racy.
+    # Snapshot under a list — iterating the live set while done-
+    # callbacks discard entries is racy.
     tasks = [t for t in _INFLIGHT if not t.done()]
     if not tasks:
         return

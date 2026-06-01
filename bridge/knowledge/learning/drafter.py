@@ -53,6 +53,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import time
 from typing import Any
 
 from bridge.knowledge.learning import events, skills_guard
@@ -67,34 +68,114 @@ logger = logging.getLogger(__name__)
 def _emit_candidate_schema() -> dict[str, Any]:
     """JSON schema for the drafter's single structured-output call.
 
-    The enum on ``decision`` and the maxLength caps on every string field
-    are the model's hard guardrails — the provider will refuse to emit
-    output that violates them, so the rest of this module can assume
-    well-formed input."""
+    Anthropic's tool-call schema only honors a subset of JSON Schema —
+    ``oneOf`` / ``if`` / ``then`` / ``else`` keywords are silently
+    ignored, so we can't branch ``required`` fields on the value of
+    ``decision`` the way pure JSON Schema would. Instead, we require
+    EVERY save-path field at the top level and instruct the model (via
+    each property's description) to emit empty strings + empty arrays
+    when ``decision='skip'``. The drafter's parse path treats empty
+    save-fields with ``decision='skip'`` as a normal skip (no extra
+    cost) and rejects empty save-fields with ``decision='save'`` (the
+    existing name/body emptiness check below catches this before the
+    Skills Guard call so we never persist a half-built candidate).
+
+    The enum on ``decision``, the enum on ``skill_type`` (with ``""``
+    allowed for the skip path), and the maxLength caps on every string
+    field are the model's hard guardrails — the provider refuses to
+    emit output that violates them.
+    """
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["decision"],
+        # Every save-path field is required at the top level. The
+        # model emits empty strings / empty arrays on the skip branch
+        # rather than omitting the keys. Without this, decision='save'
+        # with no name/body silently burned a full Opus call.
+        "required": [
+            "decision",
+            "rationale",
+            "name",
+            "description",
+            "skill_type",
+            "triggers",
+            "tags",
+            "body",
+        ],
         "properties": {
-            "decision": {"type": "string", "enum": ["save", "skip"]},
-            "rationale": {"type": "string", "maxLength": 400},
-            "name": {"type": "string", "maxLength": 60},
-            "description": {"type": "string", "maxLength": 200},
+            "decision": {
+                "type": "string",
+                "enum": ["save", "skip"],
+                "description": (
+                    "Whether to emit a candidate. On 'skip' the "
+                    "save-path fields (name, description, skill_type, "
+                    "triggers, tags, body) must still be present as "
+                    "empty string / empty array."
+                ),
+            },
+            "rationale": {
+                "type": "string",
+                "maxLength": 400,
+                "description": (
+                    "On 'skip' — one-line refusal reason (operator "
+                    "reviews refusals to tune cadence). On 'save' — "
+                    "short note on WHY this skill is worth saving."
+                ),
+            },
+            # The prompt instructs the drafter to keep names 3-40 chars
+            # (kebab-case, no path separators). The schema is the
+            # provider-side guardrail for the same rule — keep them in
+            # lockstep so we never see a 41-char name reach the writer.
+            "name": {
+                "type": "string",
+                "maxLength": 40,
+                "description": (
+                    "On 'save' — kebab-case class-level skill name "
+                    "(3-40 chars). On 'skip' — empty string."
+                ),
+            },
+            "description": {
+                "type": "string",
+                "maxLength": 200,
+                "description": (
+                    "On 'save' — one-line description of when the "
+                    "skill applies. On 'skip' — empty string."
+                ),
+            },
             "skill_type": {
                 "type": "string",
-                "enum": ["build", "guard", "reference", "workflow"],
+                "enum": ["build", "guard", "reference", "workflow", ""],
+                "description": (
+                    "On 'save' — one of build / guard / reference / "
+                    "workflow. On 'skip' — empty string."
+                ),
             },
             "triggers": {
                 "type": "array",
                 "items": {"type": "string"},
                 "maxItems": 8,
+                "description": (
+                    "On 'save' — up to 8 trigger phrases. On 'skip' "
+                    "— empty array."
+                ),
             },
             "tags": {
                 "type": "array",
                 "items": {"type": "string"},
                 "maxItems": 8,
+                "description": (
+                    "On 'save' — up to 8 tags. On 'skip' — empty "
+                    "array."
+                ),
             },
-            "body": {"type": "string", "maxLength": 30000},
+            "body": {
+                "type": "string",
+                "maxLength": 30000,
+                "description": (
+                    "On 'save' — full SKILL.md body (markdown). On "
+                    "'skip' — empty string."
+                ),
+            },
         },
     }
 
@@ -102,13 +183,35 @@ def _emit_candidate_schema() -> dict[str, Any]:
 # ── Model selection ──────────────────────────────────────────────────
 
 
+_DEFAULT_DRAFTER_MODEL = "claude-opus-4-8"
+_DRAFTER_MODEL_ENV = "FREYJA_DRAFTER_MODEL"
+_logged_env_override = False
+
+
 def _drafter_model() -> str:
     """The model used by the drafter.
 
-    Defaults to ``claude-opus-4-8`` (top quality tier). Overridable via
+    Defaults to ``claude-opus-4-8`` (top quality tier — verified present
+    in ``freyja_bridge.AVAILABLE_MODELS``). Overridable via
     ``FREYJA_DRAFTER_MODEL`` so a cost-sensitive deployment can drop to
-    Sonnet without code changes."""
-    return os.environ.get("FREYJA_DRAFTER_MODEL", "claude-opus-4-8")
+    Sonnet without code changes.
+
+    When the env override is in effect, we log it ONCE per process so
+    the operator can spot a forgotten override that's silently routing
+    Opus calls to a cheaper / different model. Repeated drafter calls
+    don't re-log to keep the harness output quiet.
+    """
+    global _logged_env_override
+    override = os.environ.get(_DRAFTER_MODEL_ENV)
+    if override and override != _DEFAULT_DRAFTER_MODEL:
+        if not _logged_env_override:
+            logger.info(
+                "drafter: %s=%r overrides default %r",
+                _DRAFTER_MODEL_ENV, override, _DEFAULT_DRAFTER_MODEL,
+            )
+            _logged_env_override = True
+        return override
+    return _DEFAULT_DRAFTER_MODEL
 
 
 # ── User message assembly ────────────────────────────────────────────
@@ -271,6 +374,15 @@ async def _run_drafter_inner(
         return None
 
     messages = [Message(role="user", content=user_message)]
+    # System prompt = Hermes review block + Freyja port preamble + format
+    # contract. ~3-4KB of stable text reused across every drafter
+    # invocation. The Anthropic provider wraps any non-empty
+    # ``system_prompt`` in a block-format payload with
+    # ``cache_control: ephemeral`` attached (see
+    # engine/anthropic_provider.py:_build_request lines 713-722), so the
+    # second + later drafter calls within the cache window only pay
+    # output tokens — confirmed cache reuse so long as
+    # ``build_drafter_system_prompt()`` returns the same string.
     system_prompt = build_drafter_system_prompt()
 
     # Wrap the provider call in stdout/stderr redirect to devnull so any
@@ -323,6 +435,39 @@ async def _run_drafter_inner(
             "drafter: skip (session=%s rationale=%.200s)",
             session_id, rationale or "(none)",
         )
+        # Telemetry: persist a drafter_skip event so the operator (and
+        # any downstream dashboards) can distinguish "cadence never
+        # tripped" from "tripped but skipped". Without this, the
+        # "drafter ran but produced no candidate" path is invisible —
+        # the only signal is the absence of a candidate file, which is
+        # also what happens when no cadence trip fires.
+        _safe_event_append(
+            {
+                "event": events.EVENT_DRAFTER_SKIP,
+                "session_id": session_id,
+                "turn_id": turn_id or "",
+                "rationale": rationale or "",
+                "model": _drafter_model(),
+            }
+        )
+        # Low-noise bridge event so the renderer's drafter-activity
+        # strip can show "last decision: skip (rationale)" without
+        # polling the events.jsonl file. NOT a toast — this is meant
+        # for an always-visible activity surface, never a popup.
+        try:
+            emit(
+                {
+                    "type": "skill_drafter_pass",
+                    "sessionId": session_id,
+                    "decision": "skip",
+                    "rationale": rationale or "",
+                    "sourceTurnId": turn_id or "",
+                    "model": _drafter_model(),
+                    "decidedAt": int(time.time() * 1000),
+                }
+            )
+        except Exception:
+            logger.debug("drafter: emit(skill_drafter_pass) failed", exc_info=True)
         return None
 
     if decision != "save":
@@ -360,9 +505,21 @@ async def _run_drafter_inner(
     scan_content = f"{name}\n{description}\n{body}"
     scan = skills_guard.scan_text(scan_content)
 
+    # Key names MUST match ``candidates.Candidate`` dataclass field
+    # names so the upstream C1 fix (which constructs a Candidate from
+    # this payload) can do ``Candidate(**candidate_payload)`` cleanly.
+    # In particular: ``source_session_id`` not ``session_id``,
+    # ``source_turn_id`` not ``turn_id``, ``drafter_model`` not
+    # ``model``. Drift here surfaces as TypeError("unexpected keyword
+    # argument") which the outer try/except swallows silently.
+    #
+    # The ``guard_summary`` field is NOT on the Candidate dataclass —
+    # it's threaded separately to the emit() payload for the renderer.
+    # We strip it before constructing the dataclass (see write_pending
+    # path below).
     candidate_payload = {
-        "session_id": session_id,
-        "turn_id": turn_id or "",
+        "source_session_id": session_id,
+        "source_turn_id": turn_id or "",
         "name": name,
         "description": description,
         "skill_type": skill_type,
@@ -370,7 +527,7 @@ async def _run_drafter_inner(
         "tags": tags,
         "body": body,
         "rationale": rationale,
-        "model": _drafter_model(),
+        "drafter_model": _drafter_model(),
         "guard_verdict": scan.verdict,
         "guard_summary": scan.summary,
         "guard_findings": [f.to_dict() for f in scan.findings],
@@ -459,18 +616,28 @@ async def _run_drafter_inner(
     # render a confirmation toast without polling the candidates dir.
     # Best-effort: the bridge emit hits stdout, and any failure here is
     # logged + swallowed (we have the on-disk candidate either way).
+    #
+    # Field names are CAMELCASE — the renderer's store reducer + the
+    # SkillToast component read these exact names. A snake_case slip
+    # here surfaces as "undefined" in every toast field, so don't drift
+    # without also updating src/shared/events.ts.
     try:
+        body_preview = body if len(body) <= 600 else body[:600] + "\n…[truncated, see candidate file]…"
         emit(
             {
                 "type": "skill_candidate",
-                "session_id": session_id,
-                "turn_id": turn_id or "",
-                "candidate_id": candidate_id,
+                "sessionId": session_id,
+                "sourceTurnId": turn_id or "",
+                "candidateId": candidate_id,
                 "name": name,
                 "description": description,
-                "skill_type": skill_type,
-                "guard_verdict": scan.verdict,
-                "guard_summary": scan.summary,
+                "skillType": skill_type,
+                "bodyPreview": body_preview,
+                "triggers": triggers,
+                "tags": tags,
+                "guardVerdict": scan.verdict,
+                "guardSummary": scan.summary,
+                "draftedAt": int(time.time() * 1000),
             }
         )
     except Exception:

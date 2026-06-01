@@ -10,6 +10,9 @@ import {
   type SlackVerifyResult,
   type SlackManifestResult,
   type SimpleResult,
+  type SkillRollupResult,
+  type SkillListResult,
+  type SkillReadResult,
 } from '../shared/events.js'
 
 type EventListener = (event: BridgeEvent) => void
@@ -146,6 +149,25 @@ const api = {
   },
   async llmKeysProbe(): Promise<import('../shared/events').LlmKeysProbeResult> {
     return ipcRenderer.invoke(IPC.llmKeysProbe)
+  },
+  // ── Skill-learning surface ────────────────────────────────
+  async skillRollup(skillName: string): Promise<SkillRollupResult> {
+    return ipcRenderer.invoke(IPC.skillRollup, skillName)
+  },
+  async skillListCandidates(): Promise<SkillListResult> {
+    return ipcRenderer.invoke(IPC.skillListCandidates)
+  },
+  async skillListRejected(limit?: number): Promise<SkillListResult> {
+    return ipcRenderer.invoke(IPC.skillListRejected, limit)
+  },
+  async skillReadFile(skillName: string): Promise<SkillReadResult> {
+    return ipcRenderer.invoke(IPC.skillReadFile, skillName)
+  },
+  async skillSave(skillName: string, body: string): Promise<SimpleResult & { path?: string }> {
+    return ipcRenderer.invoke(IPC.skillSave, skillName, body)
+  },
+  async skillOpen(skillName: string): Promise<SimpleResult & { path?: string }> {
+    return ipcRenderer.invoke(IPC.skillOpen, skillName)
   },
 } as const
 

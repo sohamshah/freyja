@@ -2011,12 +2011,17 @@ class GatewayDaemon:
         await reader.start()
         self.control_channel = reader
 
-    def _on_skill_candidate_resolve(self, cmd: dict[str, Any]) -> None:
+    async def _on_skill_candidate_resolve(self, cmd: dict[str, Any]) -> None:
         """Promote or discard a drafter candidate authored in a Slack
         session. Lives on the daemon side because that's where the
         gateway-routed session and its drafter ran. The desktop calls
         ``confirmation.promote`` / ``confirmation.discard`` directly on
         the local subprocess; this is the gateway analog.
+
+        H11: confirmation.promote/discard do sync fs I/O on the asyncio
+        loop. Wrap each call in asyncio.to_thread so the dispatcher
+        loop keeps draining other commands while a slow promote is
+        flushing SKILL.md.
 
         Schema:
           { "type": "skill_candidate_resolve",
@@ -2037,18 +2042,26 @@ class GatewayDaemon:
         try:
             from bridge.knowledge.learning import confirmation
             if action == "promote":
-                result = confirmation.promote(
-                    candidate_id, actor="operator", edits=edits,
+                result = await asyncio.to_thread(
+                    confirmation.promote,
+                    candidate_id,
+                    actor="operator",
+                    edits=edits,
                 )
             else:
-                result = confirmation.discard(
-                    candidate_id, actor="operator", reason="operator-rejected",
+                result = await asyncio.to_thread(
+                    confirmation.discard,
+                    candidate_id,
+                    actor="operator",
+                    reason="operator-rejected",
                 )
         except Exception:  # noqa: BLE001
             logger.exception("control: skill_candidate_resolve raised")
             return
         # Echo via emit so the desktop tailer forwards the resolution
-        # event to the renderer (clears the toast).
+        # event to the renderer (clears the toast). H1: include ok so
+        # the renderer can distinguish a real promotion from a no-op
+        # failure (name collision, invalid name, guard-dangerous, ...).
         try:
             from bridge.freyja_bridge import emit
             emit(
@@ -2058,6 +2071,7 @@ class GatewayDaemon:
                     "candidateId": candidate_id,
                     "action": action,
                     "actor": "operator",
+                    "ok": bool(result.ok),
                     "skillPath": str(result.skill_path) if result.skill_path else None,
                     "reason": result.reason or "",
                 }

@@ -24,6 +24,13 @@ export interface Skill {
   scope?: 'project' | 'user' | 'compat' | 'plugin'
   status?: 'available' | 'suggested' | 'loaded' | 'pruned'
   path?: string
+  /** Lifetime value score from the skill-learning loop. The Sidebar
+   *  SkillRow paints a green/neutral/warn badge from this. Populated
+   *  on-demand via the `skill:rollup` IPC after a skill_loaded event
+   *  fires; otherwise undefined. */
+  vScore?: number
+  vHeadline?: string
+  vCounts?: Record<string, number>
 }
 
 export interface MemoryRevision {
@@ -761,8 +768,30 @@ export type BridgeEvent =
       candidateId: string
       action: 'promote' | 'discard'
       actor: 'operator' | 'auto'
+      ok?: boolean
       skillPath?: string
       reason?: string
+    } & SessionId)
+  | ({
+      /** Drafter completed a pass. Carries the decision and rationale
+       *  so the DrafterActivityStrip can show "last decision: skip
+       *  (...)" without needing to dive into events.jsonl. Fired both
+       *  for save and skip outcomes; save is also accompanied by a
+       *  `skill_candidate` event with the candidate detail. */
+      type: 'skill_drafter_pass'
+      decision: 'save' | 'skip' | 'discard'
+      rationale?: string
+      model?: string
+      ranAt: number
+    } & SessionId)
+  | ({
+      /** Periodic cadence-counter snapshot. The bridge emits one per
+       *  tick so the operator can see "next drafter pass in N turns."
+       *  `turnsUntilTrip` may be 0 when a trip is imminent. */
+      type: 'cadence_state'
+      turnsSinceLastReview: number
+      turnsUntilTrip: number
+      lastTrippedAt?: number
     } & SessionId)
   | ({
       /** Renderer-side title update. The bridge fires this after the
@@ -917,6 +946,14 @@ export const IPC = {
   slackSaveTokens: 'gateway:slack:save-tokens',
   slackSetAllowlist: 'gateway:slack:set-allowlist',
   slackGetConfig: 'gateway:slack:get-config',
+  // Skill-learning IPC — operator-facing inspection + edit surfaces.
+  skillRollup: 'skill:rollup',
+  skillListCandidates: 'skill:listCandidates',
+  skillListRejected: 'skill:listRejected',
+  skillSave: 'skill:save',
+  skillReadFile: 'skill:readFile',
+  skillOpen: 'skill:open',
+  llmKeysProbe: 'llm:keys:probe',
 } as const
 
 // ── Gateway IPC result types ────────────────────────────────────
@@ -959,6 +996,67 @@ export interface SimpleResult {
   ok: boolean
   error?: string
   message?: string
+}
+
+// ── Skill-learning IPC result types ─────────────────────────────
+
+export interface SkillRollupResult {
+  ok: boolean
+  /** Serialized ValueRollup — only present on ok=true. */
+  rollup?: {
+    skill: string
+    score: number
+    headline: string
+    loadCount: number
+    windowedLoadCount: number
+    counts: Record<string, number>
+    recentOutcomes: Array<{
+      ts: number
+      category: string
+      evidence?: string
+      sessionId?: string
+      turnId?: string
+    }>
+    computedAt: number
+  }
+  error?: string
+}
+
+export interface SkillCandidateRecord {
+  candidateId: string
+  name: string
+  description: string
+  skillType: string
+  bodyPreview: string
+  body?: string
+  triggers: string[]
+  tags: string[]
+  guardVerdict: 'safe' | 'caution' | 'dangerous'
+  guardSummary?: string
+  decision: 'save' | 'discard' | 'skip'
+  draftedAt: number
+  sourceSessionId?: string
+  sourceTurnId?: string
+}
+
+export interface SkillRejectedRecord extends SkillCandidateRecord {
+  rejectedAt?: number
+  reason?: string
+  actor?: string
+}
+
+export interface SkillListResult {
+  ok: boolean
+  candidates?: SkillCandidateRecord[]
+  rejected?: SkillRejectedRecord[]
+  error?: string
+}
+
+export interface SkillReadResult {
+  ok: boolean
+  body?: string
+  path?: string
+  error?: string
 }
 
 export interface LlmKeysProbeResult {

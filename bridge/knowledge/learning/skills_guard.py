@@ -27,11 +27,14 @@ Verdict policy
   · ≥3 ``high`` findings → ``dangerous`` (cluster signal).
   · Any ``high`` finding → ``caution``.
   · ≥3 ``medium`` findings → ``caution``.
+  · ≥5 ``low`` findings → ``caution`` (volume signal).
   · Otherwise → ``safe``.
 
 The dangerous-cluster heuristic catches "obfuscated benign looking"
 attacks where individual lines are merely suspicious but the whole
-content reads as exfiltration.
+content reads as exfiltration. The low-volume rule catches the
+inverse: 50 individually-mild patterns clustering on a body which is
+almost certainly not benign in aggregate.
 
 References:
   · Hermes scanner: ``~/work/services/hermes-agent/tools/skills_guard.py``
@@ -99,6 +102,41 @@ class ScanResult:
             "findings": [f.to_dict() for f in self.findings],
         }
 
+    def brief_summary(self) -> str:
+        """A one-line, UI-friendly summary suitable for a toast badge
+        ("2 high (exfiltration); 1 medium (network)").
+
+        Differs from ``self.summary`` in that it surfaces the dominant
+        category per severity bucket — operators glancing at a Slack
+        card or a SkillToast want to know *what kind of* attack tripped
+        the scan, not just the count. Returns an empty string when
+        there are no findings.
+        """
+        if not self.findings:
+            return ""
+        # Group findings by severity and within each bucket pick the
+        # most common category so the operator sees one representative
+        # label per severity row.
+        by_sev: dict[str, dict[str, int]] = {}
+        for f in self.findings:
+            by_sev.setdefault(f.severity, {})
+            by_sev[f.severity][f.category] = (
+                by_sev[f.severity].get(f.category, 0) + 1
+            )
+        parts: list[str] = []
+        for sev in ("critical", "high", "medium", "low"):
+            cats = by_sev.get(sev)
+            if not cats:
+                continue
+            total = sum(cats.values())
+            # Pick the category with the highest count; tie-break
+            # alphabetically for stability across runs (the spec doesn't
+            # care, but flaky brief_summary output would be noisy in
+            # tests + UI snapshots).
+            dominant = sorted(cats.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+            parts.append(f"{total} {sev} ({dominant})")
+        return "; ".join(parts)
+
 
 # ── Threat pattern table (verbatim port from Hermes) ──
 
@@ -122,7 +160,10 @@ THREAT_PATTERNS = [
      "requests library call with secret variable"),
 
     # ── Exfiltration: reading credential stores ──
-    (r'base64[^\n]*env',
+    # ``env`` and ``ENV`` are the strings we want to catch (env vars +
+    # dump utility); ``envelope`` and similar incidental words must not
+    # match. Use \b to anchor at a word boundary on both sides.
+    (r'base64[^\n]*\b(env|ENV)\b',
      "encoded_exfil", "high", "exfiltration",
      "base64 encoding combined with environment access"),
     (r'\$HOME/\.ssh|\~/\.ssh',
@@ -181,40 +222,43 @@ THREAT_PATTERNS = [
      "markdown link with variable interpolation"),
 
     # ── Prompt injection ──
-    (r'ignore\s+(?:\w+\s+)*(previous|all|above|prior)\s+instructions',
+    # English prose written by a human attacker frequently mixes case
+    # ("Ignore", "IGNORE", "Pretend"). These patterns explicitly opt
+    # into case-insensitive matching with an inline (?i) flag.
+    (r'(?i)ignore\s+(?:\w+\s+)*(previous|all|above|prior)\s+instructions',
      "prompt_injection_ignore", "critical", "injection",
      "prompt injection: ignore previous instructions"),
-    (r'you\s+are\s+(?:\w+\s+)*now\s+',
+    (r'(?i)you\s+are\s+(?:\w+\s+)*now\s+',
      "role_hijack", "high", "injection",
      "attempts to override the agent's role"),
-    (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user',
+    (r'(?i)do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user',
      "deception_hide", "critical", "injection",
      "instructs agent to hide information from user"),
-    (r'system\s+(?:\w+\s+)*prompt\s+(?:\w+\s+)*override',
+    (r'(?i)system\s+(?:\w+\s+)*prompt\s+(?:\w+\s+)*override',
      "sys_prompt_override", "critical", "injection",
      "attempts to override the system prompt"),
-    (r'pretend\s+(?:\w+\s+)*(you\s+are|to\s+be)\s+',
+    (r'(?i)pretend\s+(?:\w+\s+)*(you\s+are|to\s+be)\s+',
      "role_pretend", "high", "injection",
      "attempts to make the agent assume a different identity"),
-    (r'disregard\s+(?:\w+\s+)*(your|all|any)\s+(?:\w+\s+)*(instructions|rules|guidelines)',
+    (r'(?i)disregard\s+(?:\w+\s+)*(your|all|any)\s+(?:\w+\s+)*(instructions|rules|guidelines)',
      "disregard_rules", "critical", "injection",
      "instructs agent to disregard its rules"),
-    (r'output\s+(?:\w+\s+)*(system|initial)\s+prompt',
+    (r'(?i)output\s+(?:\w+\s+)*(system|initial)\s+prompt',
      "leak_system_prompt", "high", "injection",
      "attempts to extract the system prompt"),
-    (r'(when|if)\s+no\s*one\s+is\s+(watching|looking)',
+    (r'(?i)(when|if)\s+no\s*one\s+is\s+(watching|looking)',
      "conditional_deception", "high", "injection",
      "conditional instruction to behave differently when unobserved"),
-    (r'act\s+as\s+(if|though)\s+(?:\w+\s+)*you\s+(?:\w+\s+)*(have\s+no|don\'t\s+have)\s+(?:\w+\s+)*(restrictions|limits|rules)',
+    (r'(?i)act\s+as\s+(if|though)\s+(?:\w+\s+)*you\s+(?:\w+\s+)*(have\s+no|don\'t\s+have)\s+(?:\w+\s+)*(restrictions|limits|rules)',
      "bypass_restrictions", "critical", "injection",
      "instructs agent to act without restrictions"),
-    (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)',
+    (r'(?i)translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)',
      "translate_execute", "critical", "injection",
      "translate-then-execute evasion technique"),
-    (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->',
+    (r'(?i)<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->',
      "html_comment_injection", "high", "injection",
      "hidden instructions in HTML comments"),
-    (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none',
+    (r'(?i)<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none',
      "hidden_div", "high", "injection",
      "hidden HTML div (invisible instructions)"),
 
@@ -476,33 +520,36 @@ THREAT_PATTERNS = [
      "AWS access key ID in skill content"),
 
     # ── Additional prompt injection: jailbreak patterns ──
-    (r'\bDAN\s+mode\b|Do\s+Anything\s+Now',
+    # Same rationale as the prompt-injection block above: prose attacks
+    # routinely vary case ("DAN", "dan", "Developer Mode") and require
+    # case-insensitive matching, opted in per-pattern.
+    (r'(?i)\bDAN\s+mode\b|(?i)Do\s+Anything\s+Now',
      "jailbreak_dan", "critical", "injection",
      "DAN (Do Anything Now) jailbreak attempt"),
-    (r'\bdeveloper\s+mode\b.*\benabled?\b',
+    (r'(?i)\bdeveloper\s+mode\b.*\benabled?\b',
      "jailbreak_dev_mode", "critical", "injection",
      "developer mode jailbreak attempt"),
-    (r'hypothetical\s+scenario.*(?:ignore|bypass|override)',
+    (r'(?i)hypothetical\s+scenario.*(?:ignore|bypass|override)',
      "hypothetical_bypass", "high", "injection",
      "hypothetical scenario used to bypass restrictions"),
-    (r'for\s+educational\s+purposes?\s+only',
+    (r'(?i)for\s+educational\s+purposes?\s+only',
      "educational_pretext", "medium", "injection",
      "educational pretext often used to justify harmful content"),
-    (r'(respond|answer|reply)\s+without\s+(?:\w+\s+)*(restrictions|limitations|filters|safety)',
+    (r'(?i)(respond|answer|reply)\s+without\s+(?:\w+\s+)*(restrictions|limitations|filters|safety)',
      "remove_filters", "critical", "injection",
      "instructs agent to respond without safety filters"),
-    (r'you\s+have\s+been\s+(?:\w+\s+)*(updated|upgraded|patched)\s+to',
+    (r'(?i)you\s+have\s+been\s+(?:\w+\s+)*(updated|upgraded|patched)\s+to',
      "fake_update", "high", "injection",
      "fake update/patch announcement (social engineering)"),
-    (r'new\s+(?:\w+\s+)*policy|updated\s+(?:\w+\s+)*guidelines|revised\s+(?:\w+\s+)*instructions',
+    (r'(?i)new\s+(?:\w+\s+)*policy|(?i)updated\s+(?:\w+\s+)*guidelines|(?i)revised\s+(?:\w+\s+)*instructions',
      "fake_policy", "medium", "injection",
      "claims new policy/guidelines (may be social engineering)"),
 
     # ── Context window exfiltration ──
-    (r'(include|output|print|send|share)\s+(?:\w+\s+)*(conversation|chat\s+history|previous\s+messages|context)',
+    (r'(?i)(include|output|print|send|share)\s+(?:\w+\s+)*(conversation|chat\s+history|previous\s+messages|context)',
      "context_exfil", "high", "exfiltration",
      "instructs agent to output/share conversation history"),
-    (r'(send|post|upload|transmit)\s+.*\s+(to|at)\s+https?://',
+    (r'(?i)(send|post|upload|transmit)\s+.*\s+(to|at)\s+https?://',
      "send_to_url", "high", "exfiltration",
      "instructs agent to send data to a URL"),
 ]
@@ -518,11 +565,20 @@ def _compile_patterns() -> list[tuple[re.Pattern[str], str, str, str, str]]:
     """Pre-compile every regex. Done once at module load (the table is
     static). Bad patterns silently skip — Hermes ships with a clean
     table so this is defensive against a future edit, not expected to
-    fire."""
+    fire.
+
+    NOTE: We deliberately do NOT pass ``re.IGNORECASE`` here. Globally
+    case-folding the entire table created false positives — ``envelope``
+    matched any pattern fragment with ``env`` in it; ``Process.ENV``
+    tripped ``encoded_exfil``. Patterns that genuinely need to match
+    case-insensitively (English prompt-injection text written by a human
+    attacker who doesn't bother to lowercase) carry an inline ``(?i)``
+    flag in their regex literal in ``THREAT_PATTERNS``.
+    """
     compiled = []
     for entry in THREAT_PATTERNS:
         try:
-            pat = re.compile(entry[0], re.IGNORECASE | re.MULTILINE)
+            pat = re.compile(entry[0], re.MULTILINE)
         except re.error:
             continue
         compiled.append((pat, entry[1], entry[2], entry[3], entry[4]))
@@ -575,6 +631,10 @@ def scan_text(content: str) -> ScanResult:
         result.verdict = VERDICT_DANGEROUS
     elif sev_counts["high"] > 0 or sev_counts["medium"] >= 3:
         result.verdict = VERDICT_CAUTION
+    elif sev_counts["low"] >= 5:
+        # A pile of low-severity findings still warrants operator review:
+        # 50 individually-mild patterns rarely cluster on benign content.
+        result.verdict = VERDICT_CAUTION
     else:
         result.verdict = VERDICT_SAFE
 
@@ -593,11 +653,25 @@ def scan_text(content: str) -> ScanResult:
     return result
 
 
-def format_report(result: ScanResult) -> str:
+def format_report(result: ScanResult, html_safe: bool = False) -> str:
     """Render a human-readable scan report. Used in the operator-facing
     confirmation flow when a candidate has ``caution`` findings — the
-    operator needs to see the specific lines that tripped patterns."""
-    lines = [result.summary, ""]
+    operator needs to see the specific lines that tripped patterns.
+
+    When ``html_safe`` is True, ``<`` and ``>`` in the matched snippets
+    and descriptions are escaped so the renderer can drop the text into
+    a non-pre HTML container without breaking the DOM. We escape only
+    the angle brackets (not ampersands or quotes) because the report is
+    plain prose in every other respect; an attacker who embedded HTML
+    in their candidate body still can't break out without a literal
+    tag delimiter.
+    """
+    def _esc(s: str) -> str:
+        if not html_safe:
+            return s
+        return s.replace("<", "&lt;").replace(">", "&gt;")
+
+    lines = [_esc(result.summary), ""]
     if not result.findings:
         return lines[0]
     # Group by severity so the most important findings render first.
@@ -608,7 +682,7 @@ def format_report(result: ScanResult) -> str:
     for f in by_sev:
         lines.append(
             f"  [{f.severity.upper()}/{f.category}] line {f.line} — "
-            f"{f.description}"
+            f"{_esc(f.description)}"
         )
-        lines.append(f"    > {f.match}")
+        lines.append(f"    > {_esc(f.match)}")
     return "\n".join(lines)

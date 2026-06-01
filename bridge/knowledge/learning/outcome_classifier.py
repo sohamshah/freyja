@@ -36,16 +36,47 @@ from engine.types import Message, ThinkingConfig
 logger = logging.getLogger(__name__)
 
 
+# ── Length budgets ───────────────────────────────────────────────────
+
+
+# Per-skill-body cap in the classifier prompt. Skill bodies hard-cap at
+# 30000 chars in the drafter schema, but a 30K body costs ~$0.10 of
+# extra input tokens per classification — and the classifier doesn't
+# need the long tail to decide a category. Keep the head + tail so we
+# preserve the body's intro paragraph (when the skill applies) AND the
+# trailing examples / pitfalls section, which together carry most of
+# the signal a classifier uses.
+MAX_SKILL_BODY_CHARS = 8000
+
+
+def _truncate_skill_body(body: str) -> str:
+    """Cap the classifier-side skill body to ``MAX_SKILL_BODY_CHARS``.
+
+    Strategy is head + tail with an explicit truncation marker so the
+    model knows context was dropped — keeps the intro ("when this skill
+    applies") and the trailing examples/pitfalls (where most of the
+    actionable guidance lives), drops the middle.
+    """
+    if not body or len(body) <= MAX_SKILL_BODY_CHARS:
+        return body
+    half = MAX_SKILL_BODY_CHARS // 2
+    return body[:half] + "\n…[truncated]…\n" + body[-half:]
+
+
 # ── Schema (enforced provider-side) ──────────────────────────────────
 
 
 def classifier_schema() -> dict[str, Any]:
     """JSON schema for the structured-output call.
 
-    ``category`` is constrained to the 12-enum so the classifier physically
-    cannot emit a label the rollup logic doesn't know about. ``secondary``
-    is optional and unconstrained polarity, used to capture mixed signal
-    (e.g. primary=`cited` secondary=`partial`)."""
+    ``category`` is constrained to the 12-enum so the classifier
+    physically cannot emit a label the rollup logic doesn't know about.
+
+    M13: a previous version included an optional ``secondary`` label for
+    mixed-signal outcomes. The V rollup never consumed it (the
+    weight-summing only reads ``category``) — we were paying tokens +
+    schema surface for a field nothing read. Dropped here, in the
+    prompt, and in the dataclass."""
     enum = categories.schema_enum()
     return {
         "type": "object",
@@ -58,13 +89,6 @@ def classifier_schema() -> dict[str, Any]:
                 "description": (
                     "Best-fit single label for how this skill load played "
                     "out. See instructions for definitions."
-                ),
-            },
-            "secondary": {
-                "type": ["string", "null"],
-                "enum": enum + [None],
-                "description": (
-                    "Optional second label when signal is genuinely mixed."
                 ),
             },
             "evidence": {
@@ -94,9 +118,10 @@ def _build_classifier_prompt() -> str:
        in ``categories.ALL`` are explicit about what each label means.
 
     2. We push hard on "pick ONE label" because Opus' default behavior
-       on a mixed-signal turn is to hedge with multiple. We DO let
-       it set ``secondary`` for genuine mixed cases but make it clear
-       that the primary is the one that drives ranking.
+       on a mixed-signal turn is to hedge. M13: a previous version
+       offered an optional ``secondary`` slot for genuine mixed cases,
+       but the V rollup never read it; the field has been dropped from
+       both the schema and the prompt.
     """
     rows = []
     for c in categories.ALL:
@@ -142,11 +167,13 @@ def _build_classifier_prompt() -> str:
 
 @dataclass
 class OutcomeClassification:
-    """Result returned by the classifier."""
+    """Result returned by the classifier.
+
+    M13: ``secondary`` removed — see ``classifier_schema`` for rationale.
+    """
 
     skill_name: str
     category: str
-    secondary: str | None
     evidence: str
 
 
@@ -190,10 +217,16 @@ async def classify(
         logger.exception("classifier: failed to build provider")
         return None
 
+    # Cap the skill body so a 30K-char skill doesn't balloon every
+    # classification call. The model only needs enough context to know
+    # what behavior the skill was supposed to govern; the head + tail
+    # window preserves the intro + examples and drops the middle.
+    bounded_body = _truncate_skill_body(skill_body.strip())
+
     user_message = (
         f"Skill name: {skill_name}\n\n"
         f"Skill body (the guidance that was in the agent's context):\n"
-        f"---\n{skill_body.strip()}\n---\n\n"
+        f"---\n{bounded_body}\n---\n\n"
         f"Load context: {load_context or 'auto-loaded by agent'}\n\n"
         f"Post-load conversation window:\n"
         f"---\n{post_load_window.strip()}\n---\n\n"
@@ -216,7 +249,12 @@ async def classify(
         logger.exception("classifier: provider call failed for %s", skill_name)
         return None
 
-    parsed = getattr(result, "parsed", None)
+    # StructuredResponse exposes the parsed JSON on `.data`. Some older
+    # provider shims also surface `.parsed`. Accept either so a future
+    # SDK rename doesn't silently break classification.
+    parsed = getattr(result, "data", None)
+    if not isinstance(parsed, dict):
+        parsed = getattr(result, "parsed", None)
     if not isinstance(parsed, dict):
         logger.warning(
             "classifier: provider returned no parsed dict for %s", skill_name,
@@ -234,16 +272,10 @@ async def classify(
         )
         category = "clean"
 
-    secondary_raw = parsed.get("secondary")
-    secondary = str(secondary_raw) if isinstance(secondary_raw, str) and secondary_raw else None
-    if secondary and categories.get(secondary) is None:
-        secondary = None
-
     evidence = str(parsed.get("evidence") or "").strip()
 
     return OutcomeClassification(
         skill_name=skill_name,
         category=category,
-        secondary=secondary,
         evidence=evidence,
     )

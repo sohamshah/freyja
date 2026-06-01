@@ -76,19 +76,62 @@ class ValueRollup:
         show V=0 or 'no observations yet' in the listing."""
         return self.outcome_count > 0 or self.load_count > 0
 
+    def to_json(self, recent_outcomes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        """Serialize for IPC / renderer consumption. camelCase mirror of
+        the on-disk dataclass for the TS side. Optionally embed the last
+        N outcome events so the operator can see evidence text without a
+        round-trip."""
+        windowed = sum(self.counts.values())
+        return {
+            "skill": self.skill,
+            "score": round(self.v_score, 4),
+            "headline": self.headline(),
+            "loadCount": self.load_count,
+            "windowedLoadCount": windowed,
+            "counts": dict(self.counts),
+            "recentOutcomes": [
+                {
+                    "ts": int(o.get("ts") or 0),
+                    "category": str(o.get("category") or ""),
+                    "evidence": str(o.get("evidence") or ""),
+                    "sessionId": str(o.get("session_id") or "") or None,
+                    "turnId": str(o.get("turn_id") or "") or None,
+                }
+                for o in (recent_outcomes or [])
+            ],
+            "computedAt": self.computed_at,
+            "confidence": round(self.confidence, 4),
+            "archived": self.archived,
+        }
+
     def headline(self) -> str:
         """Compact one-line summary suitable for the system-prompt skill
         listing.
 
         Examples:
             "V=+1.34 · 23 loads · 18 cited, 4 clean, 1 correction"
+            "V=+1.50 · last 30 of 130 loads · 30 cited"   (H14: truncation surfaced)
             "limited data — 2 loads, 0 outcomes"
         """
         if self.outcome_count < 2:
             if self.load_count == 0:
                 return "no observations yet"
             return f"limited data — {self.load_count} loads, {self.outcome_count} outcomes"
-        head = f"V={_format_v(self.v_score)} · {self.load_count} loads"
+        # H14: when outcomes hit the rolling window cap and there are
+        # historically more loads than outcomes in the window, the
+        # headline should make clear that the displayed counts are the
+        # last-N window rather than lifetime. Otherwise a skill with 100
+        # corrections + 30 recent cited reads as "130 loads · 30 cited"
+        # and the corrections vanish from view.
+        truncated = (
+            self.outcome_count >= _V_WINDOW
+            and self.load_count > self.outcome_count
+        )
+        if truncated:
+            loads_frag = f"last {self.outcome_count} of {self.load_count} loads"
+        else:
+            loads_frag = f"{self.load_count} loads"
+        head = f"V={_format_v(self.v_score)} · {loads_frag}"
         breakdown = ", ".join(
             f"{count} {name}"
             for name, count in sorted(
@@ -120,7 +163,24 @@ _V_WINDOW = 30
 
 
 def _compute_from_events_for(skill_name: str) -> ValueRollup:
-    """Walk the event log, compute the rollup for one skill."""
+    """Walk the event log, compute the rollup for one skill.
+
+    H13: ``computed_at`` is pinned to the events-file mtime captured
+    BEFORE the read — not wall-clock time. Wall-clock would race against
+    a concurrent append (T1 read, T2 append, T3 finish-persist with
+    computed_at=T3 > append-mtime → next reader sees cache as fresh and
+    misses the appended event forever). With mtime-equal-not-greater
+    cache freshness, mtime advances past computed_at on any new event
+    and the next compute correctly recomputes.
+
+    M14: outcome events with categories outside the known taxonomy are
+    dropped before tallying — they would otherwise inflate
+    ``outcome_count`` while contributing zero weight, biasing V toward
+    0 for skills with malformed logs.
+    """
+    # Snapshot mtime BEFORE the scan. Any append after this point bumps
+    # the mtime and forces the next compute_rollup to re-walk.
+    events_mtime_at_read = events.latest_ts()
     rollup = ValueRollup(skill=skill_name)
     outcome_events: list[dict[str, Any]] = []
     for ev in events.iter_events(skill_name=skill_name):
@@ -131,6 +191,11 @@ def _compute_from_events_for(skill_name: str) -> ValueRollup:
             if ts > rollup.last_load_at:
                 rollup.last_load_at = ts
         elif kind == events.EVENT_OUTCOME:
+            # M14: drop events whose category isn't in the known
+            # taxonomy. Otherwise they'd land in the window and dilute V.
+            cat = str(ev.get("category") or "")
+            if categories.get(cat) is None:
+                continue
             outcome_events.append(ev)
         elif kind == events.EVENT_ARCHIVED:
             rollup.archived = True
@@ -165,7 +230,11 @@ def _compute_from_events_for(skill_name: str) -> ValueRollup:
         confidence = math.log(rollup.outcome_count + 1) / math.log(_V_WINDOW + 1)
         rollup.confidence = min(1.0, max(0.0, confidence))
         rollup.v_score = rollup.v_raw * rollup.confidence
-    rollup.computed_at = int(time.time() * 1000)
+    # H13: pin computed_at to the pre-read mtime so cache compare is
+    # mtime-equal, not wall-clock-greater. Fall back to wall clock when
+    # the events file doesn't exist yet so a brand-new install still
+    # produces a sortable timestamp.
+    rollup.computed_at = events_mtime_at_read or int(time.time() * 1000)
     return rollup
 
 
@@ -222,19 +291,75 @@ def _persist_rollup(rollup: ValueRollup) -> None:
         pass
 
 
+# M19: in-process LRU keyed by (skill_name, events_mtime). Avoids the
+# fsync churn of re-persisting a stale-cache compute on every call when
+# the events file hasn't changed but the disk cache is older than the
+# events mtime (a steady-state read path that previously paid an mkstemp
+# + fsync per skill per system-prompt build).
+#
+# M20: a single global events.jsonl mtime invalidates every per-skill
+# entry — even reading another skill's event evicts ours. We accept the
+# over-invalidation tradeoff (the recompute is microseconds) and rely on
+# this in-memory cache to absorb the read-after-other-skill-write case
+# without disk I/O.
+_ROLLUP_CACHE: dict[str, tuple[int, ValueRollup]] = {}
+_ROLLUP_CACHE_CAP = 256
+
+
+def _cache_get(skill_name: str, events_mtime: int) -> ValueRollup | None:
+    entry = _ROLLUP_CACHE.get(skill_name)
+    if entry is None:
+        return None
+    cached_mtime, rollup = entry
+    if cached_mtime == events_mtime:
+        return rollup
+    return None
+
+
+def _cache_put(skill_name: str, events_mtime: int, rollup: ValueRollup) -> None:
+    if len(_ROLLUP_CACHE) >= _ROLLUP_CACHE_CAP:
+        # Cheap eviction: drop the first inserted key. Steady-state usage
+        # is a small fixed set of skill names (the user's library), so we
+        # rarely hit the cap in practice — when we do, FIFO is fine.
+        try:
+            first_key = next(iter(_ROLLUP_CACHE))
+            _ROLLUP_CACHE.pop(first_key, None)
+        except StopIteration:
+            pass
+    _ROLLUP_CACHE[skill_name] = (events_mtime, rollup)
+
+
 def compute_rollup(skill_name: str) -> ValueRollup:
     """Public entrypoint. Cached compute: if the on-disk rollup is at
     least as fresh as the events file, returns the cached value;
     otherwise walks the log + rewrites the cache.
 
     Cheap to call on every system-prompt build — the typical case is
-    a no-op stat() comparison."""
-    cached = _read_cached(skill_name)
+    a no-op stat() comparison or an in-memory cache hit.
+
+    H13 change: cache freshness is mtime-equal, not wall-clock-greater.
+    M19 change: in-memory LRU avoids re-persisting unchanged rollups.
+    """
     events_mtime = events.latest_ts()
-    if cached is not None and cached.computed_at >= events_mtime:
+
+    # 1. In-memory LRU hit — fastest path, no disk I/O at all.
+    memo = _cache_get(skill_name, events_mtime)
+    if memo is not None:
+        return memo
+
+    # 2. On-disk cache hit — read once, populate the LRU.
+    cached = _read_cached(skill_name)
+    if cached is not None and cached.computed_at == events_mtime:
+        _cache_put(skill_name, events_mtime, cached)
         return cached
+
+    # 3. Miss — recompute, persist, populate LRU.
     rollup = _compute_from_events_for(skill_name)
-    _persist_rollup(rollup)
+    # Only persist when the disk copy is actually stale, to keep idle
+    # builds from re-fsyncing identical content.
+    if cached is None or cached.computed_at != rollup.computed_at:
+        _persist_rollup(rollup)
+    _cache_put(skill_name, rollup.computed_at, rollup)
     return rollup
 
 
