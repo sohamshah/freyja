@@ -1,0 +1,136 @@
+# usage_sidecar_schema
+# source: /Users/sohamshah/work/services/hermes-agent/tools/skill_usage.py
+
+## verbatim — state constants + paths
+
+```python
+STATE_ACTIVE = "active"
+STATE_STALE = "stale"
+STATE_ARCHIVED = "archived"
+_VALID_STATES = {STATE_ACTIVE, STATE_STALE, STATE_ARCHIVED}
+
+
+def _skills_dir() -> Path:
+    return get_hermes_home() / "skills"
+
+
+def _usage_file() -> Path:
+    return _skills_dir() / ".usage.json"
+```
+
+## verbatim — file lock (cross-process)
+
+```python
+@contextmanager
+def _usage_file_lock():
+    """Serialize .usage.json read-modify-write cycles across processes."""
+    lock_path = _usage_file().with_suffix(".json.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if fcntl is None and msvcrt is None:
+        yield
+        return
+
+    if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
+        lock_path.write_text(" ", encoding="utf-8")
+
+    fd = open(lock_path, "r+" if msvcrt else "a+", encoding="utf-8")
+    try:
+        if fcntl:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        else:
+            fd.seek(0)
+            msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
+        yield
+    finally:
+        try:
+            if fcntl:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            else:
+                fd.seek(0)
+                msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        fd.close()
+```
+
+## verbatim — _empty_record (the schema)
+
+```python
+def _empty_record() -> Dict[str, Any]:
+    return {
+        "created_by": None,
+        "use_count": 0,
+        "view_count": 0,
+        "last_used_at": None,
+        "last_viewed_at": None,
+        "patch_count": 0,
+        "last_patched_at": None,
+        "created_at": _now_iso(),
+        "state": STATE_ACTIVE,
+        "pinned": False,
+        "archived_at": None,
+    }
+```
+
+## verbatim — bump_view / bump_use / bump_patch
+
+```python
+def bump_view(skill_name: str) -> None:
+    """Bump view_count and last_viewed_at. Called from skill_view()."""
+    def _apply(rec: Dict[str, Any]) -> None:
+        rec["view_count"] = int(rec.get("view_count") or 0) + 1
+        rec["last_viewed_at"] = _now_iso()
+    _mutate(skill_name, _apply)
+
+
+def bump_use(skill_name: str) -> None:
+    """Bump use_count and last_used_at. Called when a skill is actively used
+    (e.g. loaded into the prompt path or referenced from an assistant turn)."""
+    def _apply(rec: Dict[str, Any]) -> None:
+        rec["use_count"] = int(rec.get("use_count") or 0) + 1
+        rec["last_used_at"] = _now_iso()
+    _mutate(skill_name, _apply)
+
+
+def bump_patch(skill_name: str) -> None:
+    """Bump patch_count and last_patched_at. Called from skill_manage (patch/edit)."""
+    def _apply(rec: Dict[str, Any]) -> None:
+        rec["patch_count"] = int(rec.get("patch_count") or 0) + 1
+        rec["last_patched_at"] = _now_iso()
+    _mutate(skill_name, _apply)
+```
+
+## verbatim — mark_agent_created + set_state
+
+```python
+def mark_agent_created(skill_name: str) -> None:
+    """Opt a skill created by skill_manage into curator management.
+
+    Viewing or invoking a manually authored skill may still create telemetry,
+    but only this explicit marker makes it eligible for automatic curation.
+    """
+    def _apply(rec: Dict[str, Any]) -> None:
+        rec["created_by"] = "agent"
+    _mutate(skill_name, _apply)
+
+
+def set_state(skill_name: str, state: str) -> None:
+    """Set lifecycle state. No-op if *state* is invalid."""
+    if state not in _VALID_STATES:
+        logger.debug("set_state: invalid state %r for %s", state, skill_name)
+        return
+    def _apply(rec: Dict[str, Any]) -> None:
+        rec["state"] = state
+        if state == STATE_ARCHIVED:
+            rec["archived_at"] = _now_iso()
+    _mutate(skill_name, _apply)
+```
+
+## design notes
+
+`fcntl.flock` + tempfile + atomic-replace is the cross-process safety net. We need it because the CLI, the daemon, and any forked review can all be writing to `.usage.json` concurrently.
+
+`created_by: "agent"` is the only flag distinguishing agent-created skills from operator-authored ones. The curator only acts on `created_by == "agent"` skills. User-authored skills are *immune*.
+
+For Freyja MVP: we're going append-only on `events.jsonl` (single file, all skills). That sidesteps the file-lock dance entirely. The `.value/<skill>.json` rollup IS read-modify-write but it's keyed per-skill so contention is per-skill, not per-process, and only one writer (the outcome watcher) touches it. We don't need full fcntl plumbing for MVP. We DO want atomic write (tempfile + os.replace) on the rollup file so a crash mid-write doesn't leave a half-JSON.

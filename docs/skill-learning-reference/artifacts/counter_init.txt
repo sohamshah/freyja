@@ -1,0 +1,42 @@
+# counter_init
+# source: /Users/sohamshah/work/services/hermes-agent/agent/agent_init.py
+
+## verbatim
+
+    # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
+    agent._memory_store = None
+    agent._memory_enabled = False
+    agent._user_profile_enabled = False
+    agent._memory_nudge_interval = 10
+    agent._turns_since_memory = 0
+    agent._iters_since_skill = 0
+    if not skip_memory:
+        try:
+            mem_config = _agent_cfg.get("memory", {})
+            agent._memory_enabled = mem_config.get("memory_enabled", False)
+            agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
+            agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
+            if agent._memory_enabled or agent._user_profile_enabled:
+                from tools.memory_tool import MemoryStore
+                agent._memory_store = MemoryStore(
+                    memory_char_limit=mem_config.get("memory_char_limit", 2200),
+                    user_char_limit=mem_config.get("user_char_limit", 1375),
+                )
+                agent._memory_store.load_from_disk()
+        except Exception:
+            pass  # Memory is optional -- don't break agent init
+    
+
+
+    # Skills config: nudge interval for skill creation reminders
+    agent._skill_nudge_interval = 10
+    try:
+        skills_config = _agent_cfg.get("skills", {})
+        agent._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
+    except Exception:
+        pass
+
+## design notes
+
+Defends against AttributeError on first nudge-check by setting safe defaults BEFORE the try/except config read — if `_agent_cfg.get("memory")` raises or returns malformed data, the counters and intervals still exist with sensible defaults (10 turns / 10 iters), so `_turns_since_memory += 1` and the modulo check never crash mid-conversation. Note the asymmetry a porter must preserve: `_turns_since_memory` and `_iters_since_skill` are runtime counters initialized to 0 (incremented per turn/iter), while `_memory_nudge_interval` and `_skill_nudge_interval` are config-driven thresholds defaulting to 10 (compared against the counters). Both interval reads use `int(...)` to coerce YAML strings/floats and are wrapped in bare try/except so a bad config value falls back to 10 rather than raising. The `skip_memory` gate only skips the config read — counters are set unconditionally above the gate, which is critical because skill nudging runs even when memory is skipped (the two systems share counter scaffolding but are independently gated). Caveat for porters: `nudge_interval` (memory) lives under `agent.memory.*` while `creation_nudge_interval` (skills) lives under `agent.skills.*` — the YAML key names differ and are NOT interchangeable.</design_notes>
+</invoke>

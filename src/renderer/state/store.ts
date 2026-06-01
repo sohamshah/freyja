@@ -222,6 +222,23 @@ export interface HarnessState extends SessionSlice {
     reason?: string
     details?: string
   }>
+  /** Drafter-produced skill candidates awaiting operator decision.
+   *  Newest first. SkillToast renders the head of the queue as a
+   *  non-modal toast at the bottom of the screen. */
+  skillCandidateQueue: Array<{
+    candidateId: string
+    sessionId?: string
+    name: string
+    description: string
+    skillType: 'build' | 'guard' | 'reference' | 'workflow'
+    bodyPreview: string
+    triggers: string[]
+    tags: string[]
+    guardVerdict: 'safe' | 'caution'
+    guardSummary?: string
+    draftedAt: number
+    sourceTurnId?: string
+  }>
   // Attachments queued for the next send. Videos are Gemini-only —
   // attachVideo refuses to enqueue when the active session isn't on a
   // google-family model. The bridge re-checks at message-build time.
@@ -407,6 +424,15 @@ export interface HarnessActions {
   branchSessionFrom(messageId: string, newName?: string): Promise<void>
   requestFileMatches(query: string): Promise<void>
   answerPermission(requestId: string, approved: boolean): Promise<void>
+  /** Resolve a drafter-produced skill candidate. ``promote`` writes it to
+   *  ~/.freyja/skills/<name>/SKILL.md (optionally with edits). ``discard``
+   *  moves it to the negative library so the drafter consults the
+   *  rejection on future passes. */
+  resolveSkillCandidate(
+    candidateId: string,
+    action: 'promote' | 'discard',
+    edits?: { name?: string; description?: string; body?: string },
+  ): Promise<void>
   hydrateFromDisk(): Promise<void>
   persistSession(sessionId: string): Promise<void>
   persistSessionIndex(): Promise<void>
@@ -746,6 +772,7 @@ function emptyState(): HarnessState {
     fileMatches: [],
     fileQuery: '',
     permissionQueue: [],
+    skillCandidateQueue: [],
     pendingAttachments: [],
     inputDraft: '',
     commandPaletteOpen: false,
@@ -2276,6 +2303,47 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           ],
         }
       }
+      if (ev.type === 'skill_candidate') {
+        return {
+          ...prev,
+          skillCandidateQueue: [
+            {
+              candidateId: ev.candidateId,
+              sessionId: ev.sessionId,
+              name: ev.name,
+              description: ev.description,
+              skillType: ev.skillType,
+              bodyPreview: ev.bodyPreview,
+              triggers: ev.triggers,
+              tags: ev.tags,
+              guardVerdict: ev.guardVerdict,
+              guardSummary: ev.guardSummary,
+              draftedAt: ev.draftedAt,
+              sourceTurnId: ev.sourceTurnId,
+            },
+            ...prev.skillCandidateQueue.filter(
+              (c) => c.candidateId !== ev.candidateId,
+            ),
+          ],
+        }
+      }
+      if (ev.type === 'skill_candidate_resolved') {
+        return {
+          ...prev,
+          skillCandidateQueue: prev.skillCandidateQueue.filter(
+            (c) => c.candidateId !== ev.candidateId,
+          ),
+          toast: {
+            id: nextId('toast'),
+            message:
+              ev.action === 'promote'
+                ? `Promoted skill ${ev.skillPath ? `→ ${ev.skillPath.split('/').slice(-2).join('/')}` : ''}`
+                : `Discarded skill candidate`,
+            tone: ev.action === 'promote' ? 'ok' : 'info',
+            at: Date.now(),
+          },
+        }
+      }
       if (ev.type === 'subagent_event') {
         // Ignored at the session level for now; future: render in subagent
         // detail modal.
@@ -3750,6 +3818,29 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       type: 'computer.emergency_stop',
       reason: reason || 'user',
     })
+  },
+
+  async resolveSkillCandidate(candidateId, action, edits) {
+    const state = useHarness.getState()
+    const cand = state.skillCandidateQueue.find((c) => c.candidateId === candidateId)
+    // Optimistic remove: the bridge's confirmation will echo a
+    // `skill_candidate_resolved` event but we don't make the operator
+    // wait for the round-trip before the toast disappears.
+    set((prev) => ({
+      skillCandidateQueue: prev.skillCandidateQueue.filter(
+        (c) => c.candidateId !== candidateId,
+      ),
+    }))
+    const api = (window as any).harness
+    if (api) {
+      await api.sendCommand({
+        type: 'skill_candidate_resolve',
+        sessionId: cand?.sessionId,
+        candidateId,
+        action,
+        edits,
+      })
+    }
   },
 
   async answerPermission(requestId, approved) {

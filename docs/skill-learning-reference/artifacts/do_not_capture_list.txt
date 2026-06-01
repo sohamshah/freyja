@@ -1,0 +1,40 @@
+# do_not_capture_list
+# source: extracted from _SKILL_REVIEW_PROMPT in background_review.py
+
+## verbatim
+
+```
+Do NOT capture (these become persistent self-imposed constraints
+that bite you later when the environment changes):
+  • Environment-dependent failures: missing binaries, fresh-install
+errors, post-migration path mismatches, 'command not found',
+unconfigured credentials, uninstalled packages. The user can fix
+these — they are not durable rules.
+  • Negative claims about tools or features ('browser tools do not
+work', 'X tool is broken', 'cannot use Y from execute_code'). These
+harden into refusals the agent cites against itself for months
+after the actual problem was fixed.
+  • Session-specific transient errors that resolved before the
+conversation ended. If retrying worked, the lesson is the retry
+pattern, not the original failure.
+  • One-off task narratives. A user asking 'summarize today's
+market' or 'analyze this PR' is not a class of work that warrants
+a skill.
+
+If a tool failed because of setup state, capture the FIX (install
+command, config step, env var to set) under an existing setup or
+troubleshooting skill — never 'this tool does not work' as a
+standalone constraint.
+```
+
+## design notes
+
+This list is the result of real production regressions across the Hermes team — each bullet point is a category of "skill" the model used to create that later harmed the agent. Most dangerous:
+
+- **Negative tool claims** are sticky: once the agent has "X is broken" in its skill library, it cites the skill against itself in future sessions even after X is fixed. We've seen this in the wild: Hermes' team had to manually purge an entire generation of "browser tool is broken" skills after the underlying issue was fixed in 0.3.0.
+- **Environment-dependent failures** are the second-worst: "command not found" baked into a skill means new users who set up their environment correctly still get refused.
+- **One-off task narratives** are the most common false-positive: the drafter will name a skill `summarize-todays-market-2026` when the user asks once. The class is "summarize a market"; the date doesn't belong.
+
+This block is what makes the SKILL_REVIEW_PROMPT load-bearing. Without it, the drafter saves all four of these classes and the skill library degrades over time.
+
+For Freyja: this block goes verbatim into our drafter prompt. We do not paraphrase, do not condense, do not "improve the wording." Years of bug-fix-driven evolution went into the exact phrasing.

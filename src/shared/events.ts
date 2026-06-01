@@ -416,6 +416,22 @@ export type BridgeCommand =
       sessionId?: string
       autoApprove: PermissionTier
     }
+  | {
+      /** Operator decided on a skill candidate. `action='promote'` writes
+       *  the candidate to ~/.freyja/skills/<name>/SKILL.md. `action='discard'`
+       *  moves it to the negative library. Routed to the bridge owning the
+       *  candidate (the local subprocess for desktop sessions, or the daemon
+       *  via the control channel for gateway sessions). */
+      type: 'skill_candidate_resolve'
+      sessionId?: string
+      candidateId: string
+      action: 'promote' | 'discard'
+      edits?: {
+        name?: string
+        description?: string
+        body?: string
+      }
+    }
   | { type: 'set_computer_enabled'; enabled: boolean }
   | { type: 'computer.emergency_stop'; reason?: string }
   | {
@@ -716,6 +732,37 @@ export type BridgeEvent =
       prompt: string
       reason?: string
       details?: string
+    } & SessionId)
+  | ({
+      /** Drafter produced a new skill candidate awaiting operator review.
+       *  The candidate has already passed Skills Guard; `guardVerdict` is
+       *  the scan outcome ("safe" or "caution"). Renderer displays a
+       *  non-modal toast; operator decides via the
+       *  `skill_candidate_resolve` command. */
+      type: 'skill_candidate'
+      candidateId: string
+      name: string
+      description: string
+      skillType: 'build' | 'guard' | 'reference' | 'workflow'
+      bodyPreview: string
+      triggers: string[]
+      tags: string[]
+      guardVerdict: 'safe' | 'caution'
+      guardSummary?: string
+      draftedAt: number
+      sourceTurnId?: string
+    } & SessionId)
+  | ({
+      /** Resolution echo — fired after the operator decides on a
+       *  candidate. Renderer uses this to clear the toast even if the
+       *  decision came from another surface (Slack click while desktop
+       *  was showing the candidate). */
+      type: 'skill_candidate_resolved'
+      candidateId: string
+      action: 'promote' | 'discard'
+      actor: 'operator' | 'auto'
+      skillPath?: string
+      reason?: string
     } & SessionId)
   | ({
       /** Renderer-side title update. The bridge fires this after the

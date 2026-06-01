@@ -524,6 +524,86 @@ class SlackAdapter:
             await ack()
             await self._handle_approval_click(body, respond, approved=False)
 
+        @self._app.action("freyja_skill_promote")
+        async def _on_skill_promote(ack, body, respond):
+            await ack()
+            await self._handle_skill_candidate_click(body, respond, action="promote")
+
+        @self._app.action("freyja_skill_discard")
+        async def _on_skill_discard(ack, body, respond):
+            await ack()
+            await self._handle_skill_candidate_click(body, respond, action="discard")
+
+    async def _handle_skill_candidate_click(
+        self,
+        body: dict[str, Any],
+        respond: Any,
+        *,
+        action: str,
+    ) -> None:
+        """Operator clicked Promote/Discard on a drafter candidate. We
+        invoke the confirmation module directly here (we're inside the
+        daemon process — confirmation.promote/discard write to disk and
+        emit the resolution event)."""
+        actions = body.get("actions") or []
+        candidate_id = ""
+        if actions:
+            candidate_id = str(actions[0].get("value") or "")
+        user_id = str((body.get("user") or {}).get("id") or "")
+        if not candidate_id:
+            return
+        try:
+            from bridge.knowledge.learning import confirmation
+            if action == "promote":
+                result = confirmation.promote(
+                    candidate_id, actor=f"slack:{user_id}",
+                )
+            else:
+                result = confirmation.discard(
+                    candidate_id, actor=f"slack:{user_id}", reason="operator-rejected",
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("[slack] skill candidate click handler raised")
+            return
+        # Echo so the desktop tailer forwards the resolution to any
+        # connected renderers.
+        try:
+            from bridge.freyja_bridge import emit as _emit
+            _emit(
+                {
+                    "type": "skill_candidate_resolved",
+                    "candidateId": candidate_id,
+                    "action": action,
+                    "actor": f"slack:{user_id}",
+                    "skillPath": str(result.skill_path) if result.skill_path else None,
+                    "reason": result.reason or "",
+                }
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        verb = "promoted" if action == "promote" else "discarded"
+        icon = "✅" if action == "promote" else "❌"
+        try:
+            await respond(
+                replace_original=True,
+                text=f"{verb} by <@{user_id}>",
+                blocks=[
+                    {
+                        "type": "context",
+                        "elements": [
+                            {
+                                "type": "mrkdwn",
+                                "text": f"{icon} *{verb}* by <@{user_id}>"
+                                + (f" → `{result.skill_path}`" if result.ok and result.skill_path else "")
+                                + (f" — {result.reason}" if not result.ok and result.reason else ""),
+                            }
+                        ],
+                    }
+                ],
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("skill candidate respond failed")
+
     async def _handle_approval_click(
         self,
         body: dict[str, Any],
@@ -1713,6 +1793,89 @@ class SlackAdapter:
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("[slack] send_approval_request failed: %s", exc)
+            return SendResult(ok=False, error=str(exc))
+
+    async def send_skill_candidate(
+        self,
+        chat_id: str,
+        candidate_id: str,
+        *,
+        name: str,
+        description: str,
+        body_preview: str,
+        guard_verdict: str,
+        guard_summary: str = "",
+        thread_id: str | None = None,
+    ) -> SendResult:
+        """Post a Block Kit card with Promote / Discard buttons for a
+        drafter-produced skill candidate. Operator clicks fire
+        ``freyja_skill_promote`` / ``freyja_skill_discard`` actions
+        which route to ``_handle_skill_candidate_click`` (parallel to
+        the existing destructive-approval flow)."""
+        if not self._app:
+            return SendResult(ok=False, error="not connected")
+        client = self._get_client(chat_id)
+        if client is None:
+            return SendResult(ok=False, error=f"no client for chat {chat_id}")
+        preview = body_preview if len(body_preview) <= 2000 else body_preview[:2000] + "…"
+        header_text = f"💡 *Freyja learned a skill*  ·  `{name}`"
+        if guard_verdict == "caution":
+            header_text += "  ⚠ caution"
+        blocks: list[dict[str, Any]] = [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": header_text},
+            },
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": description or "(no description)"},
+            },
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"```\n{preview}\n```"},
+            },
+        ]
+        if guard_verdict == "caution" and guard_summary:
+            blocks.append({
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": f"_Guard:_ {guard_summary[:1000]}"},
+                ],
+            })
+        blocks.append({
+            "type": "actions",
+            "block_id": f"freyja_skill_{candidate_id[:16]}",
+            "elements": [
+                {
+                    "type": "button",
+                    "action_id": "freyja_skill_promote",
+                    "text": {"type": "plain_text", "text": "Promote"},
+                    "style": "primary",
+                    "value": candidate_id,
+                },
+                {
+                    "type": "button",
+                    "action_id": "freyja_skill_discard",
+                    "text": {"type": "plain_text", "text": "Discard"},
+                    "style": "danger",
+                    "value": candidate_id,
+                },
+            ],
+        })
+        kwargs: dict[str, Any] = {
+            "channel": chat_id,
+            "text": f"Freyja learned a skill: {name}",
+            "blocks": blocks,
+        }
+        if thread_id:
+            kwargs["thread_ts"] = thread_id
+        try:
+            result = await client.chat_postMessage(**kwargs)
+            return SendResult(
+                ok=True, message_id=result.get("ts"), raw=result,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[slack] send_skill_candidate failed: %s", exc)
             return SendResult(ok=False, error=str(exc))
 
     # ── helpers ────────────────────────────────────────────────

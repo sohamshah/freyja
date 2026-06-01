@@ -12,6 +12,7 @@ import { Toast } from './components/Toast'
 import { DebugDrawer } from './components/DebugDrawer'
 import { ModelPicker } from './components/ModelPicker'
 import { PermissionPrompt } from './components/PermissionPrompt'
+import { SkillToast } from './components/SkillToast'
 import { SettingsModal } from './components/SettingsModal'
 import { EmergencyPanic } from './components/EmergencyPanic'
 import { ComputerPermissionWizard } from './components/ComputerPermissionWizard'
@@ -536,6 +537,7 @@ export function App() {
         {modelPickerOpen && <ModelPicker />}
         <SettingsModal />
         <PermissionPrompt />
+        <SkillToast />
         <ComputerPermissionWizard />
         <ComputerHotkeyOverlay />
         <EmergencyPanic />

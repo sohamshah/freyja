@@ -2501,6 +2501,20 @@ class _BridgeSession:
         self.turn_counter = 0
         self.pending_task: asyncio.Task | None = None
         self.tool_start_at: dict[str, float] = {}
+        # Skill-learning loop: per-session cadence counter (Hermes-style)
+        # decides when to spawn a drafter review. Outcome watcher classifies
+        # post-load behavior for skills the agent loads this session. Both
+        # are best-effort — failures here never raise into the turn loop.
+        try:
+            from bridge.knowledge.learning.review_scheduler import make_counter
+            from bridge.knowledge.learning.outcome_watcher import (
+                SkillOutcomeWatcher,
+            )
+            self.skill_cadence_counter = make_counter(self.id)
+            self.skill_outcome_watcher = SkillOutcomeWatcher(session_id=self.id)
+        except Exception:  # noqa: BLE001
+            self.skill_cadence_counter = None
+            self.skill_outcome_watcher = None
         # Cumulative USD cost across every LLM call in this session.
         # Accumulated inside _on_llm_call from each call's compute_cost
         # so the displayed spend tracks the actual per-model rate (the
@@ -4155,6 +4169,147 @@ class _BridgeSession:
             "skill": skill,
         }
         self.skill_maintenance_done = False
+        # Tell the outcome watcher so it can schedule classification once
+        # the post-load window accumulates. Best-effort.
+        watcher = getattr(self, "skill_outcome_watcher", None)
+        if watcher is not None:
+            try:
+                watcher.record_load(
+                    skill_name=name,
+                    skill_body=instructions,
+                    turn_index=self.turn_counter,
+                    load_context="agent_loaded",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _tick_skill_learning_hooks(self, *, success: bool) -> None:
+        """Called at turn_complete. Drives the skill-learning loop:
+
+          1. Tick the outcome watcher so any classifier-eligible skills
+             whose post-load window closed get dispatched.
+          2. Tick the cadence counter. If it trips, spawn a drafter
+             review for this session's conversation.
+
+        All wrapped in best-effort. The skill-learning loop must never
+        break the turn loop.
+        """
+        watcher = getattr(self, "skill_outcome_watcher", None)
+        counter = getattr(self, "skill_cadence_counter", None)
+        if not success and watcher is None and counter is None:
+            return
+        # 1. Outcome watcher.
+        if watcher is not None:
+            try:
+                from bridge.knowledge.learning.outcome_watcher import (
+                    TurnWindowBuilder,
+                )
+
+                # Adapter that exposes the session's transcript as a
+                # rendered turn window. The watcher dispatches against
+                # this when a skill's post-load window has closed.
+                session_ref = self
+
+                class _BridgeWindowBuilder(TurnWindowBuilder):
+                    def build_window(
+                        self, *, anchor_turn: int, max_turns: int, max_chars: int,
+                    ) -> str:
+                        return session_ref._render_post_turn_window(
+                            anchor_turn=anchor_turn,
+                            max_turns=max_turns,
+                            max_chars=max_chars,
+                        )
+
+                watcher.on_turn_complete(
+                    current_turn_index=self.turn_counter,
+                    window_builder=_BridgeWindowBuilder(),
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        # 2. Cadence counter + drafter spawn.
+        if counter is None or not success:
+            return
+        try:
+            tripped = counter.on_turn_complete(had_user_message=True)
+        except Exception:  # noqa: BLE001
+            return
+        if not tripped:
+            return
+        try:
+            self._spawn_drafter_review()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _spawn_drafter_review(self) -> None:
+        """Build the drafter context + spawn the review task."""
+        from bridge.knowledge.learning.review_worker import spawn_drafter_review
+
+        loaded = list(self.loaded_skills.keys()) if hasattr(self, "loaded_skills") else []
+        try:
+            all_skills = [s.name for s in self.skill_store.list_skills()] if self.skill_store else []
+        except Exception:  # noqa: BLE001
+            all_skills = []
+        conversation = self._render_post_turn_window(
+            anchor_turn=0,
+            max_turns=10_000,  # full conversation; cap by chars
+            max_chars=120_000,
+        )
+
+        def _on_candidate(candidate_id: str) -> None:
+            log("info", f"drafter produced candidate {candidate_id} for session {self.id}")
+
+        spawn_drafter_review(
+            session_id=self.id,
+            turn_id=self.current_turn_id,
+            conversation_excerpt=conversation,
+            loaded_skill_names=loaded,
+            all_skill_names=all_skills,
+            on_candidate=_on_candidate,
+        )
+
+    def _render_post_turn_window(
+        self,
+        *,
+        anchor_turn: int,
+        max_turns: int,
+        max_chars: int,
+    ) -> str:
+        """Render a rough text view of recent conversation for the
+        drafter / outcome classifier. Best-effort; if the session
+        machinery can't produce it, return an empty string."""
+        try:
+            messages = list(getattr(self.session, "messages", []) or [])
+        except Exception:  # noqa: BLE001
+            return ""
+        if not messages:
+            return ""
+        # Crude rendering: role + first 1000 chars of each message.
+        # Hermes uses a similar coarse rendering inside their review fork
+        # because the classifier doesn't need perfect fidelity, just
+        # enough surface signal to distinguish outcome categories.
+        lines: list[str] = []
+        for msg in messages[-(max_turns + 1):]:
+            try:
+                role = str(getattr(msg, "role", "") or "")
+                content = getattr(msg, "content", "") or ""
+                if isinstance(content, list):
+                    bits = []
+                    for blk in content:
+                        text = getattr(blk, "text", None)
+                        if isinstance(text, str):
+                            bits.append(text)
+                        elif isinstance(blk, dict):
+                            bits.append(str(blk.get("text") or blk.get("content") or ""))
+                    content = "\n".join(b for b in bits if b)
+                content = str(content)[:1000]
+                if not content.strip():
+                    continue
+                lines.append(f"[{role}]\n{content}\n")
+                if sum(len(l) for l in lines) > max_chars:
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+        return "\n".join(lines)[:max_chars]
 
     def _loaded_skill_tokens(self) -> int:
         return sum(int(info.get("tokens") or 0) for info in self.loaded_skills.values())
@@ -6287,6 +6442,9 @@ class _BridgeSession:
             # Persist transcript after successful turn so session can
             # be resumed after app restart.
             self._save_transcript()
+            # Skill-learning hooks: tick cadence + outcome watcher.
+            # Best-effort; never breaks the turn loop.
+            self._tick_skill_learning_hooks(success=True)
             latest_response = (getattr(result, "response", None) or "").strip()
             if not latest_response:
                 latest_response = "".join(self._turn_text_parts).strip()
@@ -9246,6 +9404,42 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                     "details": {"tier": tier, "scope": "global"},
                 }
             )
+        return
+
+    if ctype == "skill_candidate_resolve":
+        from bridge.knowledge.learning import confirmation
+        candidate_id = str(cmd.get("candidateId") or "")
+        action = str(cmd.get("action") or "")
+        edits = cmd.get("edits") or None
+        if not candidate_id:
+            log("warn", "skill_candidate_resolve missing candidateId")
+            return
+        if action == "promote":
+            result = confirmation.promote(
+                candidate_id,
+                actor="operator",
+                edits=edits if isinstance(edits, dict) else None,
+            )
+        elif action == "discard":
+            result = confirmation.discard(
+                candidate_id,
+                actor="operator",
+                reason="operator-rejected",
+            )
+        else:
+            log("warn", f"skill_candidate_resolve unknown action {action!r}")
+            return
+        emit(
+            {
+                "type": "skill_candidate_resolved",
+                "sessionId": session_id,
+                "candidateId": candidate_id,
+                "action": "promote" if action == "promote" else "discard",
+                "actor": "operator",
+                "skillPath": str(result.skill_path) if result.skill_path else None,
+                "reason": result.reason or "",
+            }
+        )
         return
 
     if ctype == "list_files":

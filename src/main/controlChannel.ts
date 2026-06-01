@@ -37,6 +37,17 @@ export type ControlCommand =
       sessionId: string
       autoApprove: string
     }
+  | {
+      type: 'skill_candidate_resolve'
+      sessionId: string
+      candidateId: string
+      action: 'promote' | 'discard'
+      edits?: {
+        name?: string
+        description?: string
+        body?: string
+      }
+    }
   // Add new commands here as `| { type: 'cancel_turn'; ... }` etc.
 
 function ensureDir(): void {

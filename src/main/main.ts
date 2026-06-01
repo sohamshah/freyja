@@ -327,6 +327,15 @@ function setupIpc() {
           autoApprove: String(c.autoApprove || ''),
         })
       }
+      if (cmd.type === 'skill_candidate_resolve') {
+        return sendControlCommand({
+          type: 'skill_candidate_resolve',
+          sessionId: cmdSessionId,
+          candidateId: String(c.candidateId || ''),
+          action: c.action === 'promote' ? 'promote' : 'discard',
+          edits: c.edits,
+        })
+      }
       // Fall through for other command types — they may not be supported
       // on the daemon today, but the local bridge will give a clear error
       // if they're misrouted, which is better than silently dropping.
