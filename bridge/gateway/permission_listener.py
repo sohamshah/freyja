@@ -81,6 +81,16 @@ class SlackPermissionListener:
             # replaced with an approved/denied footer by the click
             # handler in slack.py.
             self._on_resolved(event)
+        elif etype == "skill_candidate":
+            # Drafter produced a candidate while the session was
+            # gateway-routed. Post a Block Kit card so the operator
+            # can promote/discard from Slack.
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._handle_skill_candidate(event), self._loop,
+                )
+            except RuntimeError:
+                pass
 
     # ── implementation ──
 
@@ -129,3 +139,31 @@ class SlackPermissionListener:
             return
         from bridge.gateway.approval import unregister_external_resolver
         unregister_external_resolver(request_id)
+
+    async def _handle_skill_candidate(self, event: dict[str, Any]) -> None:
+        candidate_id = str(event.get("candidateId") or "")
+        if not candidate_id:
+            return
+        name = str(event.get("name") or "(unnamed)")
+        description = str(event.get("description") or "")
+        body_preview = str(event.get("bodyPreview") or "")
+        guard_verdict = str(event.get("guardVerdict") or "safe")
+        guard_summary = str(event.get("guardSummary") or "")
+        try:
+            result = await self.adapter.send_skill_candidate(
+                chat_id=self.source.chat_id,
+                candidate_id=candidate_id,
+                name=name,
+                description=description,
+                body_preview=body_preview,
+                guard_verdict=guard_verdict,
+                guard_summary=guard_summary,
+                thread_id=self.reply_thread_id,
+            )
+            if not getattr(result, "ok", False):
+                logger.warning(
+                    "Block Kit skill_candidate post failed for %s: %s",
+                    candidate_id, getattr(result, "error", "?"),
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("send_skill_candidate raised for %s", candidate_id)

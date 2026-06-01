@@ -112,6 +112,94 @@ const HARNESS_ROOT = app.isPackaged
   ? (process.resourcesPath ?? ROOT)
   : ROOT
 
+// Operator-visible knowledge state lives under FREYJA_HOME. The
+// skill-learning IPC handlers (skill:rollup, skill:save, skill:open,
+// etc.) read/write under FREYJA_HOME/skills. Mirrors what the Python
+// bridge uses via `paths.skills_root()`.
+const FREYJA_HOME =
+  process.env.FREYJA_HOME ?? path.join(os.homedir(), '.freyja')
+const SKILLS_ROOT = path.join(FREYJA_HOME, 'skills')
+
+/** Sanitize an operator-supplied skill name so it cannot escape SKILLS_ROOT.
+ *  Mirrors the Python guard in confirmation.promote (C6 fix). Returns null
+ *  when the name doesn't match the kebab-case rule. */
+function sanitizeSkillName(name: unknown): string | null {
+  if (typeof name !== 'string') return null
+  const norm = name.trim().toLowerCase()
+  if (!/^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/.test(norm)) return null
+  return norm
+}
+
+/** Locate the same Python interpreter the HarnessBridge picks so the
+ *  skill IPC helper doesn't drift from the live bridge's import paths. */
+function resolvePythonForHelper(): { bin: string; args: string[]; env: NodeJS.ProcessEnv } {
+  const candidates = [
+    process.env.FREYJA_PYTHON || '',
+    path.join(HARNESS_ROOT, 'python-bundle', 'bin', 'python3'),
+    path.join(ROOT, 'python-bundle', 'bin', 'python3'),
+    path.join(HARNESS_ROOT, '.venv', 'bin', 'python'),
+    path.join(ROOT, '.venv', 'bin', 'python'),
+  ].filter(Boolean)
+  const pythonPath = [HARNESS_ROOT, ROOT, process.env.PYTHONPATH || '']
+    .filter(Boolean)
+    .join(path.delimiter)
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    PYTHONUNBUFFERED: '1',
+    PYTHONPATH: pythonPath,
+  }
+  for (const c of candidates) {
+    if (c && fs.existsSync(c)) return { bin: c, args: [], env }
+  }
+  // Fall back to `uv run --project <root> python` if uv exists on PATH.
+  return { bin: 'uv', args: ['run', '--project', HARNESS_ROOT, 'python'], env }
+}
+
+async function runSkillHelper(
+  args: string[],
+): Promise<{ ok: boolean; error?: string; payload?: any }> {
+  const { bin, args: prefix, env } = resolvePythonForHelper()
+  const { spawn } = await import('node:child_process')
+  return new Promise((resolve) => {
+    let stdout = ''
+    let stderr = ''
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(
+        bin,
+        [...prefix, '-m', 'bridge.knowledge.learning._ipc_helper', ...args],
+        { env, cwd: HARNESS_ROOT },
+      )
+    } catch (err: any) {
+      resolve({ ok: false, error: `spawn failed: ${err?.message ?? err}` })
+      return
+    }
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk.toString()
+    })
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk.toString()
+    })
+    child.on('error', (err) => {
+      resolve({ ok: false, error: `${err.message} (stderr=${stderr.slice(0, 200)})` })
+    })
+    child.on('close', () => {
+      // The helper writes a single JSON object on the LAST non-empty line.
+      const lines = stdout.split(/\r?\n/).filter((l) => l.trim().length > 0)
+      const last = lines[lines.length - 1] ?? ''
+      try {
+        const payload = JSON.parse(last)
+        resolve({ ok: true, payload })
+      } catch (err: any) {
+        resolve({
+          ok: false,
+          error: `parse failed: ${err?.message ?? err} (stdout=${stdout.slice(0, 200)} stderr=${stderr.slice(0, 200)})`,
+        })
+      }
+    })
+  })
+}
+
 function resolveUserWorkspace(): string {
   const candidates = [
     process.env.FREYJA_WORKSPACE,
@@ -325,6 +413,15 @@ function setupIpc() {
           type: 'set_permission_policy',
           sessionId: cmdSessionId,
           autoApprove: String(c.autoApprove || ''),
+        })
+      }
+      if (cmd.type === 'skill_candidate_resolve') {
+        return sendControlCommand({
+          type: 'skill_candidate_resolve',
+          sessionId: cmdSessionId,
+          candidateId: String(c.candidateId || ''),
+          action: c.action === 'promote' ? 'promote' : 'discard',
+          edits: c.edits,
         })
       }
       // Fall through for other command types — they may not be supported
@@ -660,6 +757,87 @@ function setupIpc() {
   )
   ipcMain.handle(IPC.slackGetConfig, async () => handleSlackGetConfig())
   ipcMain.handle(IPC.llmKeysProbe, async () => handleLlmKeysProbe())
+
+  // ── Skill-learning surface ───────────────────────────────────────
+  // Read-only queries (rollup, list candidates, list rejected) shell
+  // out to the Python helper so the renderer never has to talk to the
+  // bridge subprocess directly. File reads/writes (skill:save,
+  // skill:readFile, skill:open) operate on FREYJA_HOME/skills using
+  // Node fs — no Python round-trip needed for those.
+  ipcMain.handle(IPC.skillRollup, async (_e, skillName: string) => {
+    const norm = sanitizeSkillName(skillName)
+    if (!norm) return { ok: false, error: 'invalid_skill_name' }
+    const res = await runSkillHelper(['rollup', norm])
+    if (!res.ok) return { ok: false, error: res.error ?? 'helper_failed' }
+    return res.payload ?? { ok: false, error: 'helper_empty' }
+  })
+  ipcMain.handle(IPC.skillListCandidates, async () => {
+    const res = await runSkillHelper(['list-candidates'])
+    if (!res.ok) return { ok: false, error: res.error ?? 'helper_failed' }
+    return res.payload ?? { ok: false, error: 'helper_empty' }
+  })
+  ipcMain.handle(IPC.skillListRejected, async (_e, limit?: number) => {
+    const args = typeof limit === 'number' && limit > 0
+      ? ['list-rejected', String(limit)]
+      : ['list-rejected']
+    const res = await runSkillHelper(args)
+    if (!res.ok) return { ok: false, error: res.error ?? 'helper_failed' }
+    return res.payload ?? { ok: false, error: 'helper_empty' }
+  })
+  ipcMain.handle(IPC.skillReadFile, async (_e, skillName: string) => {
+    const norm = sanitizeSkillName(skillName)
+    if (!norm) return { ok: false, error: 'invalid_skill_name' }
+    const skillPath = path.join(SKILLS_ROOT, norm, 'SKILL.md')
+    try {
+      const body = await fs.promises.readFile(skillPath, 'utf-8')
+      return { ok: true, body, path: skillPath }
+    } catch (err: any) {
+      return { ok: false, error: err?.message ?? String(err) }
+    }
+  })
+  ipcMain.handle(
+    IPC.skillSave,
+    async (_e, skillName: string, body: string) => {
+      const norm = sanitizeSkillName(skillName)
+      if (!norm) return { ok: false, error: 'invalid_skill_name' }
+      if (typeof body !== 'string') {
+        return { ok: false, error: 'invalid_body' }
+      }
+      // Enforce containment: resolve and require the path lives under
+      // SKILLS_ROOT after symlink expansion (defense in depth on top of
+      // the sanitizeSkillName regex).
+      const targetDir = path.join(SKILLS_ROOT, norm)
+      const resolved = path.resolve(targetDir)
+      const rootResolved = path.resolve(SKILLS_ROOT) + path.sep
+      if (!(resolved + path.sep).startsWith(rootResolved)) {
+        return { ok: false, error: 'invalid_skill_name' }
+      }
+      const targetPath = path.join(resolved, 'SKILL.md')
+      try {
+        await fs.promises.mkdir(resolved, { recursive: true })
+        const tmp = path.join(resolved, `.SKILL.md.tmp-${Date.now()}`)
+        await fs.promises.writeFile(tmp, body, 'utf-8')
+        await fs.promises.rename(tmp, targetPath)
+        return { ok: true, path: targetPath }
+      } catch (err: any) {
+        return { ok: false, error: err?.message ?? String(err) }
+      }
+    },
+  )
+  ipcMain.handle(IPC.skillOpen, async (_e, skillName: string) => {
+    const norm = sanitizeSkillName(skillName)
+    if (!norm) return { ok: false, error: 'invalid_skill_name' }
+    const skillPath = path.join(SKILLS_ROOT, norm, 'SKILL.md')
+    try {
+      const stat = await fs.promises.stat(skillPath)
+      if (!stat.isFile()) return { ok: false, error: 'not_a_file' }
+      const result = await shell.openPath(skillPath)
+      if (result) return { ok: false, error: result }
+      return { ok: true, path: skillPath }
+    } catch (err: any) {
+      return { ok: false, error: err?.message ?? String(err) }
+    }
+  })
 }
 
 // Hidden flag for automated UI screenshot capture:

@@ -1,0 +1,17 @@
+# skills_guidance
+# source: /Users/sohamshah/work/services/hermes-agent/agent/prompt_builder.py
+
+## verbatim
+
+SKILLS_GUIDANCE = (
+    "After completing a complex task (5+ tool calls), fixing a tricky error, "
+    "or discovering a non-trivial workflow, save the approach as a "
+    "skill with skill_manage so you can reuse it next time.\n"
+    "When using a skill and finding it outdated, incomplete, or wrong, "
+    "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
+    "Skills that aren't maintained become liabilities."
+)
+
+## design notes
+
+This constant defends against two failure modes in long-running agent sessions: (1) the agent solving the same non-trivial problem from scratch every time because it never persists the approach, and (2) accumulated skill rot where outdated skills silently mislead future runs. The first paragraph sets a concrete, low-friction trigger ("5+ tool calls", "tricky error", "non-trivial workflow") so the agent doesn't have to negotiate with itself about whether saving is warranted — the bar is intentionally generous. The second paragraph encodes a "patch-on-touch" maintenance discipline: the moment an agent notices a skill is wrong while using it, fixing it is part of the current task, not deferred — the closing line ("Skills that aren't maintained become liabilities") frames neglect as actively harmful, not merely suboptimal. Porting caveat: the text references the `skill_manage` tool with `action='patch'`; if Freyja's skill tool has a different name or action verb, those tokens must be renamed in lockstep or the guidance will instruct the model to call a non-existent tool. Also note this is a plain Python string concatenation (no f-string, no .format), so it can be copy-pasted as-is with no escape changes.

@@ -1,0 +1,31 @@
+# memory_guidance
+# source: /Users/sohamshah/work/services/hermes-agent/agent/prompt_builder.py
+
+## verbatim
+
+MEMORY_GUIDANCE = (
+    "You have persistent memory across sessions. Save durable facts using the memory "
+    "tool: user preferences, environment details, tool quirks, and stable conventions. "
+    "Memory is injected into every turn, so keep it compact and focused on facts that "
+    "will still matter later.\n"
+    "Prioritize what reduces future user steering — the most valuable memory is one "
+    "that prevents the user from having to correct or remind you again. "
+    "User preferences and recurring corrections matter more than procedural task details.\n"
+    "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO "
+    "state to memory; use session_search to recall those from past transcripts. "
+    "Specifically: do not record PR numbers, issue numbers, commit SHAs, 'fixed bug X', "
+    "'submitted PR Y', 'Phase N done', file counts, or any artifact that will be stale "
+    "in 7 days. If a fact will be stale in a week, it does not belong in memory. "
+    "If you've discovered a new way to do something, solved a problem that could be "
+    "necessary later, save it as a skill with the skill tool.\n"
+    "Write memories as declarative facts, not instructions to yourself. "
+    "'User prefers concise responses' ✓ — 'Always respond concisely' ✗. "
+    "'Project uses pytest with xdist' ✓ — 'Run tests with pytest -n 4' ✗. "
+    "Imperative phrasing gets re-read as a directive in later sessions and can "
+    "cause repeated work or override the user's current request. Procedures and "
+    "workflows belong in skills, not memory."
+)
+
+## design notes
+
+This constant defends against the four most common memory-pollution failure modes seen in long-running agents: (1) memory bloat from logging task outcomes (paragraph 3 explicitly enumerates PR numbers, commit SHAs, "Phase N done" — the artifacts agents most often try to save), (2) memory becoming stale within a week (the "7 days" / "stale in a week" heuristic gives a concrete TTL test), (3) the imperative-phrasing trap where a memory like "Always respond concisely" gets re-read in later sessions as a hard directive that overrides the current user's request (paragraph 4, with explicit ✓/✗ examples for both preference and tooling cases), and (4) confusion between memory (declarative facts) and skills (procedures/workflows) — the last sentence draws the boundary explicitly. The shape is four paragraphs separated by literal "\n" inside a single Python string (no trailing newlines between paragraphs except where shown), and it references sibling tools by name: `memory` tool for writing, `session_search` for recalling past transcripts, `skill` tool / `skill_manage` for procedural knowledge. When porting to Freyja: rename `session_search` and the skill tool references to whatever Freyja's equivalents are called, or the guidance will instruct the model to call nonexistent tools. The em-dashes (—) and unicode check/cross (✓/✗) are intentional and should be preserved verbatim — they survive tokenization fine and the visual contrast in ✓/✗ is load-bearing for the imperative-phrasing lesson.

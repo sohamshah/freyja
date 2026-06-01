@@ -1,0 +1,86 @@
+# cadence_counters
+# source: /Users/sohamshah/work/services/hermes-agent/agent/conversation_loop.py
+
+## verbatim — counter increment at turn START (memory trigger, ~L549-556)
+
+```python
+# Skill trigger is checked AFTER the agent loop completes, based on
+# how many tool iterations THIS turn used.
+_should_review_memory = False
+if (agent._memory_nudge_interval > 0
+        and "memory" in agent.valid_tool_names
+        and agent._memory_store):
+    agent._turns_since_memory += 1
+    if agent._turns_since_memory >= agent._memory_nudge_interval:
+        _should_review_memory = True
+        agent._turns_since_memory = 0
+```
+
+## verbatim — per-iteration increment (skill trigger, ~L818-820)
+
+```python
+if (agent._skill_nudge_interval > 0
+        and "skill_manage" in agent.valid_tool_names):
+    agent._iters_since_skill += 1
+```
+
+## verbatim — skill trigger check at turn END (~L4557-4562)
+
+```python
+# Check skill trigger NOW — based on how many tool iterations THIS turn used.
+_should_review_skills = False
+if (agent._skill_nudge_interval > 0
+        and agent._iters_since_skill >= agent._skill_nudge_interval
+        and "skill_manage" in agent.valid_tool_names):
+    _should_review_skills = True
+    agent._iters_since_skill = 0
+```
+
+## verbatim — spawn site (~L4572-4582)
+
+```python
+# Background memory/skill review — runs AFTER the response is delivered
+# so it never competes with the user's task for model attention.
+if final_response and not interrupted and (_should_review_memory or _should_review_skills):
+    try:
+        agent._spawn_background_review(
+            messages_snapshot=list(messages),
+            review_memory=_should_review_memory,
+            review_skills=_should_review_skills,
+        )
+    except Exception:
+        pass  # Background review is best-effort
+```
+
+## verbatim — gateway hydration trick (~L502-520)
+
+```python
+# Gateway creates a fresh AIAgent per inbound message (cache miss /
+# 1h idle eviction / config-signature mismatch / process restart), so
+# _turns_since_memory and _user_turn_count start at 0 every turn and
+# the memory.nudge_interval trigger may never be reached. Reconstruct
+# an effective count from prior user turns in conversation_history.
+# Idempotent: a cached agent that already accumulated counters keeps
+# them; only a freshly-built agent with empty in-memory state hydrates.
+if conversation_history and agent._user_turn_count == 0:
+    prior_user_turns = sum(
+        1 for m in conversation_history if m.get("role") == "user"
+    )
+    if prior_user_turns > 0:
+        agent._user_turn_count = prior_user_turns
+        if agent._memory_nudge_interval > 0 and agent._turns_since_memory == 0:
+            # % preserves original 1-in-N cadence rather than firing a
+            # review immediately on resume (which would surprise users
+            # whose session happened to land just past a multiple of N).
+            agent._turns_since_memory = prior_user_turns % agent._memory_nudge_interval
+```
+
+## design notes
+
+The counter is split: memory ticks per USER TURN (counted at turn start), skill ticks per TOOL ITERATION (counted per-iteration inside the tool loop). They reset on trip rather than on save — so even if the LLM decides not to save anything, the counter resets and the next 10 turns/iterations start fresh.
+
+`final_response and not interrupted` is the guard that prevents spawning a review for half-finished turns. Important when the user hits Ctrl-C or sends a new message mid-stream.
+
+The gateway hydration trick at L502 is critical: Hermes' gateway spawns a fresh AIAgent per inbound message, so the in-memory counter would always be 0 → nudge never fires. They count prior user turns from the conversation history and back-fill the counter. The `% nudge_interval` step preserves cadence — without it, a session that resumed just past 10 turns would immediately spawn a review on turn 1, which surprises users.
+
+For Freyja: we have persistent `_BridgeSession` so we don't need the hydration trick. The counter lives on `_BridgeSession`, increments per-turn (we don't split memory/skill since we're only doing skills for MVP), trips at threshold, spawns at turn-complete.

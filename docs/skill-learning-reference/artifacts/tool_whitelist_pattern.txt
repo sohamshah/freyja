@@ -1,0 +1,41 @@
+# tool_whitelist_pattern
+# source: /Users/sohamshah/work/services/hermes-agent/agent/background_review.py
+
+## verbatim
+
+            from model_tools import get_tool_definitions
+            from hermes_cli.plugins import (
+                set_thread_tool_whitelist,
+                clear_thread_tool_whitelist,
+            )
+
+            review_whitelist = {
+                t["function"]["name"]
+                for t in get_tool_definitions(
+                    enabled_toolsets=["memory", "skills"],
+                    quiet_mode=True,
+                )
+            }
+            set_thread_tool_whitelist(
+                review_whitelist,
+                deny_msg_fmt=(
+                    "Background review denied non-whitelisted tool: "
+                    "{tool_name}. Only memory/skill tools are allowed."
+                ),
+            )
+            try:
+                review_agent.run_conversation(
+                    user_message=(
+                        prompt
+                        + "\n\nYou can only call memory and skill "
+                        "management tools. Other tools will be denied "
+                        "at runtime — do not attempt them."
+                    ),
+                    conversation_history=messages_snapshot,
+                )
+            finally:
+                clear_thread_tool_whitelist()
+
+## design notes
+
+This pattern enforces a runtime tool whitelist at dispatch time (thread-local) rather than relying solely on the model omitting tools from its request — the parent's full `tools[]` array stays byte-identical for prefix-cache parity (see comment around the AIAgent construction: "Match parent's toolset config so ``tools[]`` is byte-identical in the request body — Anthropic's cache key includes it. (The runtime whitelist below still restricts dispatch.)"). This defends against three failure modes: (1) the review fork attempting non-review tools (bash, edit, browser) and causing side effects in the user's environment; (2) cache-key drift from narrowing `enabled_toolsets` on the fork; (3) prompt-only restrictions being ignored by the model — note the matching user-message addendum "Other tools will be denied at runtime — do not attempt them" which tells the model the enforcement is real. Caveats for porting: the whitelist is set thread-local (so background threads don't bleed into the main thread), it MUST be cleared in a `finally` (a recycled thread-id would inherit a stale whitelist — same hazard as the `_set_approval_callback(None)` clear in the outer `finally`), and `deny_msg_fmt` uses a `{tool_name}` placeholder substituted by the dispatcher. The whitelist is built from `get_tool_definitions(enabled_toolsets=["memory", "skills"])` so it tracks whatever the memory+skills toolsets currently expose, not a hardcoded name list — porting this verbatim requires Freyja to have an equivalent `get_tool_definitions` that returns tool entries shaped `{"function": {"name": ...}}` (OpenAI tool-format).

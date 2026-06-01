@@ -164,20 +164,70 @@ class SkillStore:
         return event
 
     def build_prompt(self, query: str = "", *, limit: int = 12) -> str:
-        matches = self.search(query, limit=limit) if query else [
-            (skill, 0, "") for skill in self.list_skills()[:limit]
+        # Lazy import — value_score depends on bridge.knowledge.learning,
+        # which is younger than this module. Importing at module scope
+        # would force a hard dep on the learning loop being present even
+        # for installations that don't use it yet.
+        try:
+            from bridge.knowledge.learning import value_score as _vs
+        except Exception:
+            _vs = None
+
+        matches = self.search(query, limit=limit * 2) if query else [
+            (skill, 0, "") for skill in self.list_skills()
         ]
         if not matches:
             return ""
+
+        # Pull V rollups for every candidate and re-rank by measured V
+        # before truncating to ``limit``. The match-score from search()
+        # is used as a tiebreaker so a freshly-promoted skill with no V
+        # data still respects query relevance.
+        rollups: dict[str, Any] = {}
+        if _vs is not None:
+            try:
+                rollups = _vs.compute_all([s.name for s, _, _ in matches])
+            except Exception:
+                rollups = {}
+
+        def _rank_key(item: tuple[SkillRecord, int, str]) -> tuple[float, int, float, int]:
+            skill, search_score, _reason = item
+            rollup = rollups.get(skill.name)
+            v = float(getattr(rollup, "v_score", 0.0)) if rollup is not None else 0.0
+            # Push archived skills to the end. Per-skill flag is set by
+            # ``value_score`` from the events log so this stays accurate
+            # without the SkillRecord needing to know.
+            archived = bool(getattr(rollup, "archived", False))
+            return (
+                1 if archived else 0,                 # archived → last
+                -int(round(v * 1000)),                 # higher V first
+                -search_score,                          # then query relevance
+                -_confidence_boost(skill.confidence),   # then declared confidence
+            )
+
+        matches.sort(key=_rank_key)
+        matches = matches[:limit]
+
         lines = [
             "## Available Skills",
             "",
             "Call `load_skill(name)` when one of these skills is relevant and you need full instructions.",
+            "Each skill carries an empirical value score (V) computed from prior outcomes:",
+            "  V is signed; positive means past loads of this skill correlated with cleaner",
+            "  outcomes, negative means corrections / abandonment / decay. Treat low-V skills",
+            "  with care; they may apply but ask whether the task is actually what they govern.",
+            "",
         ]
         for skill, _score, reason in matches:
             why = f" ({reason})" if reason else ""
+            rollup = rollups.get(skill.name)
+            if rollup is not None and getattr(rollup, "has_signal", lambda: False)():
+                head = rollup.headline()  # already starts with "V=..."
+            else:
+                head = "no prior data"
+            tags = f"{skill.skill_type}/{skill.confidence}"
             lines.append(
-                f"- `{skill.name}` [{skill.skill_type}/{skill.confidence}]{why}: {skill.description}"
+                f"- `{skill.name}` [{tags}] · {head}{why}: {skill.description}"
             )
         return "\n".join(lines)
 

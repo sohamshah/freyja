@@ -1042,6 +1042,35 @@ class GatewayDaemon:
             )
             return True
 
+        if cmd == "learn-this" or cmd == "learn_this":
+            # Operator-issued forced trip: bypass cadence and spawn the
+            # drafter right now. The drafter consumes the conversation
+            # snapshot and proposes a candidate; operator confirmation
+            # still required before promotion.
+            from bridge.gateway.session_router import session_key_for
+            key = session_key_for(message.source)
+            sess = (self.state.sessions if self.state else {}).get(key)
+            if sess is None:
+                reply = "No active session. Start a thread first, then /learn-this."
+            elif getattr(sess, "skill_cadence_counter", None) is None:
+                reply = "Skill learning is unavailable on this session."
+            else:
+                try:
+                    sess.skill_cadence_counter.force_trip()
+                    sess._spawn_drafter_review()
+                    reply = "Drafter running — Block Kit card will follow when the candidate is ready."
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("/learn-this failed")
+                    reply = f"/learn-this errored: {exc}"
+            await adapter.send(  # type: ignore[attr-defined]
+                message.source.chat_id,
+                reply,
+                thread_id=message.source.thread_id,
+                ephemeral_user_id=message.source.user_id,
+                raw_hint=message.raw,
+            )
+            return True
+
         if cmd == "stop":
             # Try to cancel the session's pending_task if any.
             from bridge.gateway.session_router import session_key_for
@@ -1978,8 +2007,77 @@ class GatewayDaemon:
         reader = ControlChannelReader()
         reader.register("permission_response", self._on_permission_response)
         reader.register("set_permission_policy", self._on_set_permission_policy)
+        reader.register("skill_candidate_resolve", self._on_skill_candidate_resolve)
         await reader.start()
         self.control_channel = reader
+
+    async def _on_skill_candidate_resolve(self, cmd: dict[str, Any]) -> None:
+        """Promote or discard a drafter candidate authored in a Slack
+        session. Lives on the daemon side because that's where the
+        gateway-routed session and its drafter ran. The desktop calls
+        ``confirmation.promote`` / ``confirmation.discard`` directly on
+        the local subprocess; this is the gateway analog.
+
+        H11: confirmation.promote/discard do sync fs I/O on the asyncio
+        loop. Wrap each call in asyncio.to_thread so the dispatcher
+        loop keeps draining other commands while a slow promote is
+        flushing SKILL.md.
+
+        Schema:
+          { "type": "skill_candidate_resolve",
+            "sessionId": "freyja:slack:...",
+            "candidateId": "<uuid hex>",
+            "action": "promote" | "discard",
+            "edits": { name?, description?, body? } | null }
+        """
+        candidate_id = str(cmd.get("candidateId") or "")
+        action = str(cmd.get("action") or "")
+        edits = cmd.get("edits") if isinstance(cmd.get("edits"), dict) else None
+        session_id = str(cmd.get("sessionId") or "")
+        if not candidate_id or action not in ("promote", "discard"):
+            logger.warning(
+                "control: skill_candidate_resolve missing/invalid fields"
+            )
+            return
+        try:
+            from bridge.knowledge.learning import confirmation
+            if action == "promote":
+                result = await asyncio.to_thread(
+                    confirmation.promote,
+                    candidate_id,
+                    actor="operator",
+                    edits=edits,
+                )
+            else:
+                result = await asyncio.to_thread(
+                    confirmation.discard,
+                    candidate_id,
+                    actor="operator",
+                    reason="operator-rejected",
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("control: skill_candidate_resolve raised")
+            return
+        # Echo via emit so the desktop tailer forwards the resolution
+        # event to the renderer (clears the toast). H1: include ok so
+        # the renderer can distinguish a real promotion from a no-op
+        # failure (name collision, invalid name, guard-dangerous, ...).
+        try:
+            from bridge.freyja_bridge import emit
+            emit(
+                {
+                    "type": "skill_candidate_resolved",
+                    "sessionId": session_id,
+                    "candidateId": candidate_id,
+                    "action": action,
+                    "actor": "operator",
+                    "ok": bool(result.ok),
+                    "skillPath": str(result.skill_path) if result.skill_path else None,
+                    "reason": result.reason or "",
+                }
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     def _on_set_permission_policy(self, cmd: dict[str, Any]) -> None:
         """Adjust a per-session autonomy tier from the desktop.

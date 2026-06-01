@@ -1,0 +1,19 @@
+# memory_review_prompt
+# source: /Users/sohamshah/work/services/hermes-agent/agent/background_review.py
+
+## verbatim
+
+_MEMORY_REVIEW_PROMPT = (
+    "Review the conversation above and consider saving to memory if appropriate.\n\n"
+    "Focus on:\n"
+    "1. Has the user revealed things about themselves — their persona, desires, "
+    "preferences, or personal details worth remembering?\n"
+    "2. Has the user expressed expectations about how you should behave, their work "
+    "style, or ways they want you to operate?\n\n"
+    "If something stands out, save it using the memory tool. "
+    "If nothing is worth saving, just say 'Nothing to save.' and stop."
+)
+
+## design notes
+
+This is the narrowest of three review prompts in background_review.py (alongside _SKILL_REVIEW_PROMPT and _COMBINED_REVIEW_PROMPT); it is selected when only a memory-review trigger fires (not skills) in spawn_background_review_thread (line 580). It defends against two failure modes: (1) the fork wandering into skill edits when only memory signals were observed — note it never mentions skills, scope is tightly bounded to persona/preferences; (2) noisy/empty writes — the explicit "Nothing to save." escape hatch gives the model a cheap, terminal exit instead of fabricating low-value memories. The two-question structure (persona/personal details vs. behavioral expectations) maps directly to the project's split between USER.md and MEMORY.md style stores. Caveats for porting: (a) this prompt is appended at runtime with a tool-whitelist nag ("You can only call memory and skill management tools...") inside _run_review_in_thread — the constant itself does NOT contain that suffix, so a Freyja port must add an equivalent runtime suffix or bake it into the constant; (b) the prompt assumes the conversation history is already supplied via conversation_history=messages_snapshot, hence "the conversation above" — it will misfire if used as a stand-alone user turn without prior context; (c) the em-dash characters (— U+2014) and curly-quoted "'" in "'Nothing to save.'" are intentional — preserve as UTF-8, do not normalize to ASCII or the model's stop-phrase matching may drift.

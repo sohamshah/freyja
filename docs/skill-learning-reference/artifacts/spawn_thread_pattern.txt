@@ -1,0 +1,71 @@
+# spawn_thread_pattern
+# source: /Users/sohamshah/work/services/hermes-agent/agent/background_review.py + run_agent.py
+
+## verbatim — spawn_background_review_thread (background_review.py:562-587)
+
+```python
+def spawn_background_review_thread(
+    agent: Any,
+    messages_snapshot: List[Dict],
+    review_memory: bool = False,
+    review_skills: bool = False,
+):
+    """Build the review thread target and prompt for a background review.
+
+    Returns a ``(target, prompt)`` tuple.  The caller (``AIAgent._spawn_background_review``)
+    owns the actual ``threading.Thread`` construction so test-level patches
+    of ``run_agent.threading.Thread`` keep working.
+    """
+    # Pick the right prompt based on which triggers fired.  Allow per-agent
+    # override (the prompts moved to module-level constants but old code paths
+    # that set agent._MEMORY_REVIEW_PROMPT etc. directly keep working).
+    if review_memory and review_skills:
+        prompt = getattr(agent, "_COMBINED_REVIEW_PROMPT", _COMBINED_REVIEW_PROMPT)
+    elif review_memory:
+        prompt = getattr(agent, "_MEMORY_REVIEW_PROMPT", _MEMORY_REVIEW_PROMPT)
+    else:
+        prompt = getattr(agent, "_SKILL_REVIEW_PROMPT", _SKILL_REVIEW_PROMPT)
+
+    def _target() -> None:
+        _run_review_in_thread(agent, messages_snapshot, prompt)
+
+    return _target, prompt
+```
+
+## verbatim — _spawn_background_review on AIAgent (run_agent.py:1336-1358)
+
+```python
+def _spawn_background_review(
+    self,
+    messages_snapshot: List[Dict],
+    review_memory: bool = False,
+    review_skills: bool = False,
+) -> None:
+    """Spawn the background memory/skill review thread.
+
+    Thin wrapper — the heavy lifting lives in
+    ``agent.background_review.spawn_background_review_thread`` which
+    returns the thread target.  ``threading.Thread`` is constructed
+    here so existing tests that patch ``run_agent.threading.Thread``
+    keep working.
+    """
+    from agent.background_review import spawn_background_review_thread
+    target, _prompt = spawn_background_review_thread(
+        self,
+        messages_snapshot,
+        review_memory=review_memory,
+        review_skills=review_skills,
+    )
+    t = threading.Thread(target=target, daemon=True, name="bg-review")
+    t.start()
+```
+
+## design notes
+
+`daemon=True` matters — process exit doesn't wait on the review. If the user hits Ctrl-C mid-review, the thread dies silently. Acceptable: the worst case is a candidate we would have saved is lost, and the next session's review will catch it again.
+
+`name="bg-review"` shows up in thread dumps and debugger views. Operators searching for stuck reviews can grep for it.
+
+Two-function split (`spawn_background_review_thread` returns `(target, prompt)`; `_spawn_background_review` actually constructs the thread) exists so unit tests can patch `threading.Thread` at one site without losing the prompt selection logic.
+
+For Freyja: we don't need a literal daemon thread because we're already in asyncio. `asyncio.create_task(...)` does the equivalent — the task runs alongside other work, no blocking on parent. We do still need to redirect stdout/stderr since the drafter LLM call might emit log output, and we don't want it leaking into the user's chat.
