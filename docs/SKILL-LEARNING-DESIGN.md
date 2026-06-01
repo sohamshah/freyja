@@ -1,6 +1,8 @@
 # Freyja Skill Learning — Design Brief
 
-_Status: draft v1 · 2026-05-31 · author: agent-pair (extends EVAL-HARNESS-DESIGN.md)_
+_Status: v1 shipped (Pipelines 1, 2, 4, 5, ranking, UI) · 2026-06-01 · extends EVAL-HARNESS-DESIGN.md_
+
+The MVP shipped in PR `worktree-skill-learning-mvp` (commits `c857198` MVP + `c580c18` 78-finding review pass). See **§0.5 Implementation status** for the as-of state and **§20** for the updated roadmap.
 
 ---
 
@@ -17,6 +19,76 @@ The system uses **more** LLM calls than Hermes — replay-based validation is ex
 We treat the existing eval harness as the substrate for "good outcome." Skill learning rides on top: instead of inventing new outcome metrics, every skill action (promote, demote, archive, patch) is justified in eval-harness terms. The same reward-hacking detector that catches gameable judge scores in agent runs also gates skill promotion against gameable replay scores.
 
 The doc is heavily prescriptive — eight pipelines specified end-to-end with file paths, data shapes, prompts, and budgets — because the failure modes here are well-documented and the design space is well-bounded by what Hermes already taught us.
+
+---
+
+## 0.5 · Implementation status
+
+This section is the canonical "what's actually in the codebase as of 2026-06-01" record. The pipeline sections (§6–§13) preserve the original design intent; this section says which pieces shipped, which got deferred, where reality diverged from the spec, and what remains worth pursuing. New readers: read §0–§5, then this section, then skim the pipeline sections only for what's marked `[deferred]`.
+
+### Shipped
+
+Code lives under `bridge/knowledge/learning/` (Python) and various `src/renderer/` + `src/main/` files (TypeScript). All artifacts under `~/.freyja/skills/`. 63 tests passing.
+
+| Pipeline | Status | Notes |
+|---|---|---|
+| **1 — Signal detection** | `[shipped, deviates]` | Implemented as Hermes-style cadence + LLM-judged drafting, NOT the deterministic regex catalog originally specified. See §6 + the architectural deviations below. |
+| **2 — Drafting** | `[shipped]` | Opus 4.8 1M-context drafter. Hermes `SKILL_REVIEW_PROMPT` + `MEMORY_GUIDANCE` ported verbatim. Schema-constrained candidate output. Skills Guard scanner ported verbatim (118 patterns; 2 dropped on the `IGNORECASE` rework — see Known gotchas). |
+| **3 — Replay-based validation** | `[deferred]` | Blocks on eval harness landing. Operator confirmation is the gate in MVP. See Roadmap. |
+| **4 — Operator confirmation** | `[shipped]` | Desktop `SkillToast` (with inline name+description edit), Slack Block Kit DM (`send_skill_candidate`), `/learn-this` slash command. Caution-verdict differentiation surfaces `guardSummary` above the body. 24h auto-discard NOT yet wired (auto-promote stays off until replay validation lands). |
+| **5 — Outcome watcher** | `[shipped, expanded]` | 12-category taxonomy (vs. 5 originally specified — see deviation #2). Opus 4.8 classifier with schema-enforced enum. Post-load window of 3 turns. Append-only `.events.jsonl`. Per-skill `.value/<name>.json` rollups. Mtime-pinned cache freshness + in-process LRU. |
+| **5b — Value scoring** | `[shipped]` | V rollup with log-shaped confidence ramp, rolling 30-event window, surfaces lifetime-vs-window truncation in `headline()`. Categories drop weight-zero unknown labels at read time. |
+| **5c — System-prompt ranking** | `[shipped]` | `SkillStore.build_prompt` ranks by V descending; renders each skill with its empirical track record (`V=+1.34 · 23 loads · 18 cited, 4 clean, 1 correction`). |
+| **6 — Decay model** | `[deferred]` | V-ranking + `outdated`-category detection give *effective* decay in the MVP: bad skills sink in the listing automatically. Multi-factor `D(s)` model is additive when warranted. |
+| **7 — Patch proposer** | `[deferred]` | Operators can edit SKILL.md via the new inline editor (Sidebar InspectorPopup or SkillCandidatesPanel). Automated patches need replay to validate, so this lands after Pipeline 3. |
+| **8 — Umbrella consolidation** | `[deferred]` | Render-time top-12 cap handles bloat for a while. Empirical consolidation lands after Pipeline 3. |
+| **Guardrails** | `[shipped, partial]` | L0 security scanner + L1 prompt-time refusal checklist + L3 operator confirmation + L5 outcome watcher + per-pattern Skills Guard policy. L2 statistical-significance gate, L6 env-drift, L8 umbrella non-regression: deferred with the parent pipelines. |
+| **Operator UI** | `[shipped]` | New: `SkillCandidatesPanel` (pending + rejected tabs), `DrafterActivityStrip` (last drafter decision + next cadence countdown), `SkillToast` with edit form + caution styling, V-score badge on `SkillRow`, full V rollup + last-5-outcomes timeline + body editor in `InspectorPopup`. 6 IPC channels (`skill:rollup`, `skill:listCandidates`, `skill:listRejected`, `skill:save`, `skill:readFile`, `skill:open`). |
+| **Bridge integration** | `[shipped]` | Cadence + outcome watcher per `_BridgeSession`. Hooks fire at all 7 `turn_complete` sites (native success / cancel / exception + harness). `shutdown_skill_learning()` drains pending classifications on session reset / delete. Sub-agents skip the loop (intentional — see deviation #4). |
+| **Telemetry / observability** | `[shipped]` | `.events.jsonl` is append-only with `fcntl.flock` + 256-char free-text truncation. New events: `drafted`, `drafter_skip`, `guard_verdict`, `promoted`, `discarded`, `loaded`, `outcome`. Renderer surfaces last drafter decision in the activity strip. |
+
+### Architectural deviations from the original design
+
+Each deviation was a deliberate operator decision documented at the time. Recording them here so future readers don't think the spec was followed verbatim.
+
+1. **Signal detection: cadence-LLM-judged instead of deterministic.** Original §6 called for regex correction-phrase detection + struggle-resolved + novel-workflow fingerprinting writing to `.signals.jsonl`, with the drafter consuming the signals. The operator preferred to follow Hermes' cadence-based pattern first and add deterministic detectors only if cadence proved inadequate. Cost: more LLM spend per cadence trip. Benefit: simpler code (no signal store), and the drafter gets the full conversation rather than a curated signal envelope. Original §6 left in place; consider it the v2 evolution if cadence proves too noisy or too lossy.
+2. **Outcome taxonomy: 12 categories instead of 5.** Original §10 used `clean | correction | error_loop | irrelevant | helpful`. Operator pushed for richer granularity over the utilization × utility cross-product: `user_endorsed`, `cited`, `compounded`, `partial`, `clean`, `ignored`, `redundant`, `false_trigger`, `correction`, `superseded`, `error_loop`, `outdated`. Categories are defined in `bridge/knowledge/learning/categories.py` with weights. Lets future pipelines (decay, patch, umbrella) make finer-grained decisions without a schema migration.
+3. **Drafter model: Opus 4.8 (1M ctx), not Haiku.** Original §7.2 specified Haiku for cost. Operator chose Opus for quality. Drafter is the high-precision arbiter of "is this signal real, and what's the right skill shape" — the cost-quality tradeoff favors precision here. Outcome classifier ALSO uses Opus by default for consistency.
+4. **Sub-agents skip the loop.** Original design treated sub-agents as first-class learners. Implementation found that sub-agents inherit the parent's `LoadSkillTool` closure, so naive wiring routed every sub-agent skill load to the parent's `loaded_skills` and V telemetry — polluting the parent's record with behavior the parent didn't drive. MVP fix: `_tick_skill_learning_hooks` short-circuits when `parent_session_id` is set. Real per-sub-agent attribution requires wrapping each child's `LoadSkillTool` with child-bound bookkeeping; deferred.
+5. **No statistical-significance gate in MVP confirmation.** Original §8.6 specified a 95% CI lower-bound gate before auto-promote. MVP requires explicit operator confirmation for every promote, so the statistical gate is moot until Pipeline 3 ships and auto-promote turns on.
+
+### Known gotchas / regressions to chase
+
+1. **Skills Guard pattern count: 118 of 120 compile.** The M6 fix dropped global `re.IGNORECASE` and added per-pattern `(?i)` inline flags. Two patterns failed to recompile with the inline syntax; `_compile_patterns` silently skips them per the defensive design. Action: spot which two, fix the inline syntax, restore 120.
+2. **Drafter system prompt cache_control not measured.** Anthropic provider passes `cache_control: ephemeral` on system prompts by default. Drafter docstring claims prefix-cache hits but the renderer never asserts the cache-read tokens are nonzero. Action: log cache_read_tokens for drafter calls; verify >0 after the second call.
+3. **Cold-start visibility for skills that have outcomes but no live `skill_loaded` event.** `Skill` interface in `events.ts` has optional `vScore` / `vHeadline` fields populated via `skill:rollup` IPC. Confirmed working for sidebar rows; operator should verify after a few days of real use that the values agree with what the model sees in the system prompt.
+4. **No prompt-cache hit verification anywhere in the loop.** Documented in M1 but not enforced.
+
+### What "working" looks like, post-deploy
+
+End-to-end test (per the e2e playbook):
+
+```
+operator does N turns → cadence trips at turn N → drafter spawns
+  → reads ~20 turns of context + current skill landscape + negative library
+  → Opus emits structured candidate (or skip with rationale)
+  → Skills Guard scans body
+  → safe/caution → candidate written to .candidates/<uuid>.yaml
+  → bridge emits skill_candidate event (camelCase fields)
+  → SkillToast appears on desktop, Block Kit card in Slack (if gateway-routed)
+  → operator clicks Promote (optionally with edits)
+  → bridge runs confirmation.promote in asyncio.to_thread
+  → re-runs Skills Guard on edited content if any of {name,description,body} changed
+  → name validated against _SAFE_NAME_RE + path-relative-to-skills_root
+  → SKILL.md written atomically with frontmatter (created_by: agent, etc.)
+  → EVENT_PROMOTED appended, candidate deleted, refresh hook fires
+  → next session loads the skill → outcome watcher records `loaded`
+  → 3 turns later → classifier picks one of 12 categories → outcome appended
+  → V rollup recomputes on next system-prompt build (mtime-keyed cache)
+  → sidebar SkillRow updates its V badge + headline
+```
+
+If any step is silent when you expect a candidate / outcome / V update, the debugging cheat sheet in the e2e playbook covers the diagnosis paths.
 
 ---
 
@@ -1186,64 +1258,69 @@ Known failure modes for the system as designed, and how each is defended:
 
 ## 20 · Phased implementation
 
-### Phase 0 — Foundation (assumed shipped)
+### Phases 1, 2, 4, 5 — `[shipped]` MVP (PR `worktree-skill-learning-mvp`)
 
-- Eval harness §5 grader stack (live + replay paths).
-- Eval harness §5.7 reward-hacking detector.
-- Per-session transcripts persisted to disk (already exist).
+The original phase plan ordered Pipeline 1 (signal detection) → Pipeline 2 (drafter) → Pipeline 3 (replay) → V ranking. The MVP collapsed Phases 1 and 2 into a single cadence-driven drafter (deviation #1 in §0.5) and shipped Phase 5's ranking + telemetry surface alongside, because operator confirmation flows are useless without V context.
 
-### Phase 1 — Observation only (~2 weeks, ~600 LOC)
+Concretely landed (commits `c857198` MVP + `c580c18` 78-finding review pass):
 
-- Pipeline 1 (signal detector). Writes to `.signals.jsonl` only.
-- Pipeline 5 (outcome watcher). Writes to `.events.jsonl`.
-- Renderer event: surface "Signal detected" in the desktop activity panel for operator visibility.
-- **No drafting yet.** This phase tells us if our signal detection is accurate by giving operators a window onto what would have been candidates.
+- Cadence counter + LLM-judged drafting (subsumes original Phase 1).
+- Skills Guard verbatim port (Phase 2 — see §0.5 gotcha #1).
+- Operator confirmation UI on desktop + Slack + `/learn-this` (Phase 2 + Phase 6 partial).
+- Outcome watcher with 12-category taxonomy + V rollup (Phase 1 + Phase 3 partial).
+- System-prompt ranking by V (Phase 3 partial — the one piece that doesn't need replay).
+- 6 IPC channels + UI surfaces (SkillCandidatesPanel pending/rejected tabs, DrafterActivityStrip, V badges on SkillRow, full InspectorPopup with body editor).
+- 63 tests covering all C-class regressions surfaced in the review pass.
 
-Exit criterion: operator agrees with ≥70% of detected signals in spot-checks.
+Total shipped: ~3200 LOC across `bridge/knowledge/learning/` + bridge integration + renderer + tests.
 
-### Phase 2 — Drafting + manual promotion (~3 weeks, ~800 LOC)
+Exit criterion (Phases 1+2 combined, original spec): "≥80% of drafts get promoted by operator." Not yet measurable — needs 30 days of real use. Track via the `EVENT_DRAFTED` / `EVENT_PROMOTED` ratio in `.events.jsonl`.
 
-- Pipeline 2 (drafter).
-- Pipeline 4 (confirmation UI), but no auto-promote.
-- Skills Guard scanner ported from Hermes.
-- Operator must explicitly approve every promotion.
+### Phase 3 — Replay-based validation `[deferred]` (~4 weeks, ~1200 LOC)
 
-Exit criterion: ≥80% of drafts get promoted by operator (means drafter quality is high enough).
+**Why it's next:** unlocks the core thesis. Until replay lands, V is descriptive (post-hoc) rather than predictive (pre-promote), and auto-promote stays off. This is the highest-leverage remaining piece.
 
-### Phase 3 — Replay validation (~4 weeks, ~1200 LOC)
+**Depends on:**
 
-- Pipeline 3 (replay validator).
-- Pipeline 4 auto-promote on validated + 24h timeout.
-- Per-skill $V$ tracking in `.value/`.
-- System-prompt ranking by $V$ (§15).
+- Eval harness shipping (`EVAL-HARNESS-DESIGN.md` §5 grader stack).
+- Cached-prefix forking against the daemon's session checkpoints (already designed in EVAL-HARNESS; needs implementation glue).
+- Replay budget per candidate (proposed: 5 comparison tasks × 2 runs × 2 conditions = 20 forks; ~$3 at Opus 4.8 rates).
 
-Exit criterion: $V$ measurements correlate (Pearson > 0.5) with operator's "kept this skill / discarded this skill" decisions over a 30-day window. Loose correlation, but enough to trust the metric for auto-promote decisions.
+**Concrete first slice:**
 
-### Phase 4 — Continuous improvement (~4 weeks, ~1000 LOC)
+1. `bridge/knowledge/learning/replay_validator.py` — given a candidate + skill body, pick N comparison tasks via embedding similarity over recent sessions, fork each, run with-skill vs without-skill, compute ΔV.
+2. Hook into `confirmation.py` — replay runs after Skills Guard but before operator surfacing; result surfaces as a fourth state on the toast: `validated`, `borderline`, `failed`.
+3. 24h auto-promote: if validated and operator hasn't acted, promote anyway. Add the timeout-bound discard path for `failed`.
+4. Statistical-significance gate (§8.6) finally becomes meaningful when auto-promote turns on.
 
-- Pipeline 6 (decay model).
-- Pipeline 7 (patch proposer).
-- Env-drift detection.
-- Refresh replays.
+Exit criterion: Pearson > 0.5 between predicted ΔV and operator's promote/discard call, over a 30-day window.
 
-Exit criterion: rolling-30-day average $V$ across the live skill set is non-decreasing over a 60-day window.
+### Phase 4 — Decay + patch proposer `[deferred]` (~4 weeks)
 
-### Phase 5 — Consolidation (~3 weeks, ~600 LOC)
+- **Pipeline 6 (multi-factor decay).** V-ranking already gives effective decay in the listing; this adds explicit `outcome_drift × env_drift × replacement_pressure` modeling so we can demote-then-archive without operator action. Cheap to add once ~30 days of outcome data exists.
+- **Pipeline 7 (patch proposer).** Operators can already edit via the InspectorPopup body editor and the SkillToast edit form. Automated patches need replay to validate, so this lands after Pipeline 3 (depends on §11.4 patch validation flow).
+- Env-drift detection (§11.2). Defer until env-drift complaints actually surface in `.events.jsonl`.
 
-- Pipeline 8 (umbrella proposer).
-- Cluster detection.
-- Operator surfaces for umbrella review.
+### Phase 5 — Umbrella consolidation `[deferred]` (~3 weeks)
 
-Exit criterion: skill count plateaus despite continued promotion (means umbrella absorption is keeping up).
+- Pipeline 8 (umbrella proposer). Render-time top-12 cap (currently in `SkillStore.build_prompt`) handles bloat for a while.
+- Cluster detection + non-regression gate (§8.5).
+- Operator surfaces for umbrella review (extend `SkillCandidatesPanel` with an "umbrella proposals" tab).
 
-### Phase 6 — Hardening + telemetry surface (~2 weeks)
+### Phase 6 — Per-model V + sub-agent attribution `[deferred]`
 
-- Per-skill cost dashboards.
-- Operator-facing UI for $V$ history per skill.
-- Slack flow for confirmation.
-- Manual override commands (`/skill restore`, `/skill repatch`, etc.).
+- Per-model V tracking (§14.4). Add when operator starts heavy multi-model use; today everything aggregates into a single rollup keyed off skill name.
+- Per-sub-agent V attribution. Requires wrapping child `LoadSkillTool` with bookkeeping; needed if sub-agents become heavy skill users (currently they intentionally skip the loop — deviation #4 in §0.5).
+- Multi-operator semantics (§21.10). Out of scope unless operator pair-uses a shared install.
 
-Total: ~18 weeks, ~4200 LOC. Larger than Hermes' 10,500 LOC system measured in "completed features delivered" but each line is doing measurable work toward making skills better. We're not trying to be smaller — we're trying to be defensible.
+### Phase 7 — Hardening + housekeeping `[partial]`
+
+Already shipped: DrafterActivityStrip, V history on InspectorPopup, Slack confirmation flow, `/learn-this`. Still open:
+
+- Fix the 2 Skills Guard patterns that fail to recompile after the inline-flag rework (gotcha #1 in §0.5).
+- Verify prompt-cache hits on drafter (gotcha #2 in §0.5).
+- Per-skill cost dashboards (low priority — no visible cost pressure yet).
+- Manual override commands: `/skill restore`, `/skill repatch`, `/skill mute` (low priority — InspectorPopup editor covers most of this).
 
 ---
 
@@ -1277,6 +1354,12 @@ We are not trying to build a smaller version of Hermes. We are trying to build a
 
 The system reuses Hermes' best ideas — the load-bearing prompts, the skill-guard scanner, the tool-whitelist enforcement, the cached-prefix forking — and replaces every place where Hermes uses LLM judgment as the final arbiter with replay-based empirical measurement.
 
-The architecture is more expensive to run per-candidate (~$1.50 per replay vs ~$0.10 per Hermes review). It's also more expensive to *build* — eight pipelines, multi-dimensional value vector, decay modeling. But every line does measurable work, and the operational guarantee at the end is something Hermes can't provide: **every active skill in the library has, at some point in its life, been empirically demonstrated to improve agent outcomes**. And if it stops improving them, the decay loop detects that and demotes.
+**MVP state (2026-06-01):** the measurement loop is partially built. The drafter, Skills Guard, operator confirmation, outcome watcher, 12-category taxonomy, V rollup, and V-ranked system prompt all shipped. What's running today is *descriptive measurement* — V tells us, after the fact, which skills correlated with good outcomes. That's enough to surface the right skills to the model and demote the dead ones in the listing without operator action.
+
+**What's still pending is the predictive half.** Replay-based pre-promotion validation (Pipeline 3) is the difference between "we noticed this skill correlated with good outcomes" and "we predicted this skill would improve outcomes before promoting it." Until replay lands, every promote requires operator judgment — which is fine for now, but caps the system's autonomy.
+
+The architecture remains more expensive than Hermes per-candidate (~$1.50 per replay vs ~$0.10 per Hermes review, once Pipeline 3 ships). The MVP is cheaper today (~$0.10 per drafter trip, since no replay runs) but also less defensible — we rely on the operator to catch bad skills rather than measurement to refuse them. That tradeoff is intentional for v1.
+
+The operational guarantee at the end — the one Hermes can't provide — remains: **every active skill in the library has, at some point in its life, been empirically demonstrated to improve agent outcomes**. Today that demonstration is post-hoc via the outcome watcher. After Phase 3 it's pre-promote via replay. After Phase 4 the decay loop detects when a skill stops improving outcomes and demotes.
 
 That's what makes the difference between "self-improving" as a marketing line and "self-improving" as a defensible operational property.
