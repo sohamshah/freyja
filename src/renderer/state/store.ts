@@ -633,6 +633,9 @@ async function downscaleImageForLLM(
 }
 
 const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  // Claude 4.8
+  'claude-opus-4-8': 1_000_000,
+  'claude-opus-4-8-fast': 1_000_000,
   // Claude 4.7
   'claude-opus-4-7': 1_000_000,
   // Claude 4.6
@@ -673,6 +676,8 @@ function contextWindowFor(model: string): number {
 }
 
 const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel: string }> = {
+  'claude-opus-4-8': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
+  'claude-opus-4-8-fast': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'claude-opus-4-7': { levels: ['auto'], defaultLevel: 'auto' },
   'claude-opus-4-6': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'max' },
   'claude-sonnet-4-6': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
