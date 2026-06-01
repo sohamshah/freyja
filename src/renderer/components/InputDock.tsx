@@ -477,11 +477,11 @@ export function InputDock() {
                       ? 'Type @ to mention files, / for commands, paste images or videos to attach'
                       : 'Type @ to mention files, / for commands, paste images to attach'
                 }
-                className="min-h-[22px] flex-1 resize-none bg-transparent text-[12.5px] text-fg-0 placeholder:text-fg-3 focus:outline-none"
+                className="min-h-[22px] flex-1 resize-none bg-transparent text-[12.5px] text-fg-0 placeholder:text-fg-2 focus:outline-none"
                 style={{ lineHeight: 1.55, maxHeight: `${MAX_PX}px` }}
               />
             </div>
-            <div className="font-mono flex items-center gap-3 pl-[22px] pr-0.5 text-[10px] text-fg-3/80">
+            <div className="font-mono flex items-center gap-3 pl-[22px] pr-0.5 text-[10px] text-fg-2/80">
               <div
                 className={`flex min-w-0 items-center gap-3 transition-opacity duration-150 ${
                   focused || isStreaming
@@ -510,7 +510,7 @@ export function InputDock() {
                     ■ force cancel (esc)
                   </button>
                 ) : (
-                  <span className="truncate text-fg-3/70">
+                  <span className="truncate text-fg-2/70">
                     {workspaceLabel} · {modelLabel}
                   </span>
                 )}

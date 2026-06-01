@@ -191,16 +191,32 @@ select {
     0 4px 16px -4px rgba(0, 0, 0, 0.2);
 }
 
+/* Top header backing. The app pane is transparent over macOS vibrancy,
+   so on a light wallpaper (fullscreen) the toolbar was painted by the
+   wallpaper itself and the muted-grey chrome text washed out to nothing.
+   A subtle dark frosted tint keeps the floating-glass feel while giving
+   every label a predictable dark surface to sit on — the same trick used
+   for the input cradle. */
+.app-header {
+  background: linear-gradient(180deg, rgba(12, 13, 16, 0.52), rgba(12, 13, 16, 0.36));
+  backdrop-filter: blur(22px) saturate(140%);
+  -webkit-backdrop-filter: blur(22px) saturate(140%);
+}
+
 /* Title bar controls — ghost text-tabs.
    Idle is a flat ghost label; hover lifts; active is recessed into the
    chrome like a physically pressed key. */
 .title-control {
   position: relative;
   min-width: 0;
+  /* Chrome controls keep their full label — never shrink-to-clip. The
+     model picker opts back into shrinking (flex-shrink:1 inline) so it
+     is the single elastic element that truncates when space is tight. */
+  flex-shrink: 0;
   overflow: hidden;
   border-radius: 6px;
   background: transparent;
-  color: rgba(232, 232, 232, 0.72);
+  color: rgba(232, 232, 232, 0.9);
   transition:
     color 120ms ease,
     background-color 120ms ease,
@@ -214,7 +230,8 @@ select {
 .title-readout {
   position: relative;
   min-width: 0;
-  color: rgba(168, 168, 168, 0.86);
+  flex-shrink: 0;
+  color: rgba(224, 227, 232, 0.9);
 }
 .title-readout-status {
   opacity: 0.95;
@@ -267,7 +284,7 @@ select {
   min-width: 38px;
   border-radius: 5px;
   padding: 0 8px;
-  color: rgba(180, 190, 190, 0.74);
+  color: rgba(208, 216, 216, 0.88);
   font-family: var(--font-mono);
   font-size: 9.5px;
   letter-spacing: 0;
@@ -299,7 +316,7 @@ select {
   cursor: default;
 }
 .title-kicker {
-  color: rgba(140, 140, 140, 0.7);
+  color: rgba(190, 195, 204, 0.78);
   font-family: var(--font-mono);
 }
 .title-effort {
@@ -645,7 +662,13 @@ select {
    max-width tracks the conversation column so focus mode (no sidebars)
    doesn't stretch the chatbox edge-to-edge. */
 .cradle {
-  background: rgba(11, 11, 11, 0.17);
+  /* Darker glass backing. The pane is translucent over macOS vibrancy,
+     so on a light wallpaper (fullscreen) a near-transparent tint let the
+     wallpaper bleed through and the dim placeholder/hint text washed out
+     to invisibility. A heavier dark tint keeps the frosted-glass feel
+     while guaranteeing foreground text always sits on a dark, predictable
+     surface — no per-pixel contrast detection needed. */
+  background: rgba(10, 10, 12, 0.46);
   backdrop-filter: blur(42px) saturate(150%);
   -webkit-backdrop-filter: blur(42px) saturate(150%);
   border-radius: 18px;
