@@ -41,6 +41,9 @@ SUMMARY_MAX_TOKENS = 8_000
 # ============================================================================
 
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    # Claude 4.8
+    "claude-opus-4-8": 1_000_000,
+    "claude-opus-4-8-fast": 1_000_000,
     # Claude 4.7
     "claude-opus-4-7": 1_000_000,
     # Claude 4.6
