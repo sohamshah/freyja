@@ -210,12 +210,17 @@ const TABS: Array<{ id: DashboardTab; label: string; hint: string }> = [
 function visibleDashboardTabs(
   strategy?: CoordinationStrategy,
 ): Array<{ id: DashboardTab; label: string; hint: string }> {
-  // In isolated mode the `overview` tab IS the tasks rail (OverviewTab
-  // short-circuits to TasksListRailView when the strategy matches). A
-  // standalone `tasks` tab would render the exact same component, so we
-  // hide it here. Every other mode keeps the dedicated tasks tab as the
-  // home for the parent's private planning ledger.
-  if (strategy === 'isolated') return TABS.filter((t) => t.id !== 'tasks')
+  // Hide the dedicated tasks tab in two modes:
+  //   - isolated: the `overview` tab IS the tasks rail (OverviewTab
+  //     short-circuits to TasksListRailView), so a separate tab would
+  //     render the same component twice.
+  //   - kanban: the tasks tool is intentionally not registered — the
+  //     kanban board is the only planning surface in this mode. The
+  //     tab would be permanently empty and signal "use this thing
+  //     that doesn't exist" to operators.
+  if (strategy === 'isolated' || strategy === 'kanban') {
+    return TABS.filter((t) => t.id !== 'tasks')
+  }
   return TABS
 }
 
