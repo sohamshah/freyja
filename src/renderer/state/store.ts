@@ -632,6 +632,13 @@ async function downscaleImageForLLM(
   }
 }
 
+// Renderer-side fallback for `usage.contextWindow` before the bridge
+// has sent its first usage event. Read by contextWindowFor() below;
+// the activity panel's `REQUEST CONTEXT N/M` denominator uses this
+// until the bridge takes over. See docs/ADDING-A-MODEL.md — keep in
+// sync with engine/constants.py and bridge/freyja_bridge.py
+// (AVAILABLE_MODELS). A missing entry falls back to 200k and shows
+// the wrong denominator on cold start.
 const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // Claude 4.8
   'claude-opus-4-8': 1_000_000,
@@ -675,6 +682,9 @@ function contextWindowFor(model: string): number {
   return MODEL_CONTEXT_WINDOWS[model] ?? 200_000
 }
 
+// Renderer-side fallback for reasoning capability when the bridge
+// hasn't sent its `ready` event yet. See docs/ADDING-A-MODEL.md —
+// keep in sync with bridge/freyja_bridge.py:MODEL_REASONING_META.
 const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel: string }> = {
   'claude-opus-4-8': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'claude-opus-4-8-fast': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },

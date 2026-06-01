@@ -4,6 +4,10 @@ import type { ModelChoice } from '../state/store'
 import type { HarnessChoice, SessionRuntime } from '@shared/events'
 import { formatTokens } from '../lib/format'
 
+// Renderer-side hardcoded catalog used by the picker when the bridge's
+// AVAILABLE_MODELS hasn't loaded yet (first paint, gateway disconnect,
+// etc.). Same shape as bridge/freyja_bridge.py:AVAILABLE_MODELS — see
+// docs/ADDING-A-MODEL.md for the full per-model checklist.
 const FALLBACK_MODELS: ModelChoice[] = [
   // Anthropic
   { id: 'claude-opus-4-8', family: 'anthropic', label: 'Claude Opus 4.8', tier: 'max', contextWindow: 1_000_000, thinking: true, reasoningMode: 'effort', reasoningLevels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], reasoningDefault: 'high', envVar: 'ANTHROPIC_API_KEY', description: 'Latest Opus. Long-horizon coding, mid-conversation system messages, ~4x fewer code flaws than 4.7. Adaptive thinking, 128k output.' },

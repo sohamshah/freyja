@@ -76,6 +76,8 @@ logger = logging.getLogger(__name__)
 # of the two sets gates the `supports_thinking` property. Pre-4.6 Opus/Sonnet
 # use the legacy `{type: "enabled", budget_tokens: N}` shape; 4.6+ uses
 # `{type: "adaptive"}` and is rejected with 400 if budget_tokens is set.
+# When adding a model see docs/ADDING-A-MODEL.md — these three sets +
+# `engine/types.py:_ADAPTIVE_THINKING_MODEL_IDS` must move together.
 ADAPTIVE_THINKING_MODELS = {
     "claude-sonnet-4-6",
     "claude-opus-4-6",

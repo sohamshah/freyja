@@ -532,6 +532,7 @@ class ThinkingConfig:
 # instead of the legacy budget_tokens shape. Defined here rather than in
 # anthropic_provider so engine.types can be imported without pulling the
 # Anthropic SDK. Keep in sync with anthropic_provider.ADAPTIVE_THINKING_MODELS.
+# See docs/ADDING-A-MODEL.md — this set is codepoint #9 of 14.
 _ADAPTIVE_THINKING_MODEL_IDS: set[str] = {
     "claude-sonnet-4-6",
     "claude-opus-4-6",

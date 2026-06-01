@@ -40,6 +40,11 @@ SUMMARY_MAX_TOKENS = 8_000
 # Context Window -- Per-model Overrides
 # ============================================================================
 
+# NOTE: when you add a model here, 13 other codepoints need matching
+# updates. See docs/ADDING-A-MODEL.md for the full checklist — the
+# missing-from-here case silently falls back to DEFAULT_CONTEXT_WINDOW
+# (200k) and Opus 4.8 sessions compacted 5× early before this dict
+# learned about it.
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     # Claude 4.8
     "claude-opus-4-8": 1_000_000,

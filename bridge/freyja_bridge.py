@@ -968,6 +968,14 @@ async def _main() -> None:
 
 
 # ─── Model catalog ─────────────────────────────────────────────────────────
+#
+# The catalog the bridge sends to the renderer on `ready`. Drives the
+# model picker, session header, and reasoning selector. Missing entries
+# here make the model invisible in the picker even if the bridge could
+# otherwise run it. When adding a model see docs/ADDING-A-MODEL.md —
+# this is one of 14 codepoints (engine/constants.py, engine/providers.py,
+# anthropic_provider.py capability sets, renderer fallbacks, etc.) that
+# need to land together.
 
 
 AVAILABLE_MODELS: list[dict[str, Any]] = [
@@ -1258,6 +1266,9 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
 ]
 
 
+# Per-model reasoning capability metadata, merged into AVAILABLE_MODELS
+# at send-time. See docs/ADDING-A-MODEL.md — missing entries here make
+# the reasoning selector either empty or default-wrong for the model.
 MODEL_REASONING_META: dict[str, dict[str, Any]] = {
     "claude-opus-4-8": {
         "reasoningMode": "effort",

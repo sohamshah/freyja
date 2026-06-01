@@ -67,6 +67,8 @@ logger = logging.getLogger(__name__)
 
 # Context window sizes for supported GPT-5.4 models (in tokens).
 # Source: https://platform.openai.com/docs/models
+# OpenAI-specific duplicate of engine/constants.py:MODEL_CONTEXT_WINDOWS.
+# See docs/ADDING-A-MODEL.md for the full per-model checklist.
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "gpt-5.5": 1_050_000,
     "gpt-5.4": 1_050_000,

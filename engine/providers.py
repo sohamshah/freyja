@@ -507,6 +507,9 @@ class ModelFallbackChain:
 # Model Registry & Provider Factory
 # ============================================================================
 
+# NOTE: see docs/ADDING-A-MODEL.md — 14 codepoints to keep in sync when
+# adding a model. This registry is the engine-side authority for
+# provider routing + context window + thinking flag.
 MODEL_REGISTRY: dict[str, dict[str, object]] = {
     # Anthropic models
     "claude-opus-4-8": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
@@ -648,6 +651,7 @@ ALL_MODEL_CHOICES = list(MODEL_REGISTRY.keys())
 # `cache_write` defaults to 1.25× input when omitted (Anthropic-style markup).
 # Numbers are best-effort; missing entries make compute_cost() return None
 # rather than mislead the diagnostics panel with a wrong figure.
+# See docs/ADDING-A-MODEL.md for the full per-model checklist.
 MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, float, float]] = {
     # Anthropic — 4.6/4.7/4.8 Opus are $5/$25 per Anthropic's models overview
     # (the migration guide for 4.7 says "at the same $5/$25 per MTok pricing"
@@ -710,6 +714,8 @@ def compute_cost(
         + cache_write_tokens * cache_write_rate
     ) / 1_000_000
 
+# See docs/ADDING-A-MODEL.md — fallback chain for graceful degradation
+# when a primary model 503s or hits its rate limit.
 FALLBACK_CHAINS: dict[str, list[str]] = {
     "claude-opus-4-8": ["claude-opus-4-7", "kimi-k2.6", "deepseek-v4-pro"],
     "claude-opus-4-8-fast": ["claude-opus-4-8", "claude-opus-4-7"],
