@@ -99,6 +99,8 @@ class ScheduleTool:
                 payload = await self._action_run_now(arguments)
             elif action == "runs":
                 payload = await self._action_runs(arguments)
+            elif action in ("get_run", "run_detail"):
+                payload = await self._action_get_run(arguments)
             elif action == "metrics":
                 payload = await self._action_metrics()
             else:
@@ -249,6 +251,30 @@ class ScheduleTool:
             "job_id": job_id,
             "count": len(runs),
             "runs": [_run_summary(r) for r in runs],
+            "hint": (
+                "Use action='get_run' with job_id + run_id for full "
+                "output_text and delivery details."
+            ),
+        }
+
+    async def _action_get_run(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Return the FULL run record for one run — full output_text,
+        all delivery reports, tokens, cost. Use this when the user
+        wants to see what a scheduled job actually produced."""
+        from bridge.scheduler.persistence import load_run, outputs_dir
+
+        job_id = _require_job_id(args)
+        run_id = (args.get("run_id") or "").strip()
+        if not run_id:
+            raise ValueError("'run_id' is required")
+        run = load_run(job_id, run_id)
+        if run is None:
+            raise KeyError(f"run {run_id} not found for job {job_id}")
+        output_dir = outputs_dir(job_id, run_id)
+        return {
+            "action": "get_run",
+            "run": _run_full(run),
+            "output_dir": str(output_dir),
         }
 
     async def _action_metrics(self) -> dict[str, Any]:
@@ -335,9 +361,37 @@ def _run_summary(r) -> dict[str, Any]:
         "duration_seconds": r.duration_seconds,
         "fire_number": r.fire_number,
         "iteration": r.iteration,
-        "preview": (r.output_text or "")[:200],
+        "preview": (r.output_text or "")[:500],
+        "output_size_chars": len(r.output_text or ""),
         "delivery_reports": [dr.to_dict() for dr in r.delivery_reports],
         "error": r.error,
+    }
+
+
+def _run_full(r) -> dict[str, Any]:
+    """Full run payload — used by get_run. Includes the entire
+    output_text so the agent can echo / quote / summarize it."""
+    return {
+        "run_id": r.run_id,
+        "job_id": r.job_id,
+        "job_name": r.job_name,
+        "status": r.status,
+        "started_at": r.started_at,
+        "finished_at": r.finished_at,
+        "duration_seconds": r.duration_seconds,
+        "fire_number": r.fire_number,
+        "iteration": r.iteration,
+        "iterations": r.iterations,
+        "execution_session_id": r.execution_session_id,
+        "output_text": r.output_text,
+        "output_attachments": r.output_attachments,
+        "input_tokens": r.input_tokens,
+        "output_tokens": r.output_tokens,
+        "cache_read_tokens": r.cache_read_tokens,
+        "cost_usd": r.cost_usd,
+        "delivery_reports": [dr.to_dict() for dr in r.delivery_reports],
+        "error": r.error,
+        "prompt": r.prompt,
     }
 
 
@@ -383,7 +437,10 @@ Actions:
                retained for the dashboard.
   · run_now  — fire a job once immediately, regardless of schedule.
                Does NOT reset the recurring cadence.
-  · runs     — list recent runs of a single job.
+  · runs     — list recent runs of a single job (preview only).
+  · get_run  — full run record for one run_id: complete output_text,
+               delivery reports, tokens, cost. Use this to retrieve
+               or echo what a scheduled job actually produced.
   · metrics  — system-wide scheduler health.
 
 Specifying when:
@@ -443,13 +500,18 @@ _PARAMETERS = {
             "enum": [
                 "create", "list", "get", "update",
                 "pause", "resume", "remove",
-                "run_now", "run", "runs", "metrics",
+                "run_now", "run", "runs", "get_run", "run_detail",
+                "metrics",
             ],
             "description": "Which scheduler operation to perform.",
         },
         "job_id": {
             "type": "string",
-            "description": "Job id. Required for get/update/pause/resume/remove/run_now/runs.",
+            "description": "Job id. Required for get/update/pause/resume/remove/run_now/runs/get_run.",
+        },
+        "run_id": {
+            "type": "string",
+            "description": "Specific run id. Required for get_run.",
         },
         "name": {
             "type": "string",

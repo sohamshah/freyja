@@ -167,12 +167,10 @@ export const useSchedulerStore = create<SchedulerStore>((set, get) => ({
   handleEvent(event) {
     if (event.type !== 'scheduler_response') return
     const ev = event as Extract<BridgeEvent, { type: 'scheduler_response' }>
-    if (ev.requestId) {
-      const handled = get().resolvePending(ev.requestId, ev)
-      if (handled) return
-    }
-    // Unsolicited / broadcast — common when other surfaces (Slack) mutate
-    // state. Refresh whatever slice matches.
+    // Always mirror the payload into the store FIRST, then resolve any
+    // pending promise. The previous order skipped store updates when a
+    // requestId matched — so promise-based callers got the data but
+    // the dashboard (which only watches store state) saw nothing.
     switch (ev.subtype) {
       case 'list_jobs':
         if (Array.isArray(ev.jobs)) set({ jobs: ev.jobs as unknown as SchedulerJob[] })
@@ -194,6 +192,27 @@ export const useSchedulerStore = create<SchedulerStore>((set, get) => ({
       case 'daemon_status':
         if (ev.status) get().setDaemonStatus(ev.status as unknown as DaemonStatus)
         break
+      case 'create_job':
+        if (ev.job) get().upsertJob(ev.job as unknown as SchedulerJob)
+        break
+      case 'pause_job':
+      case 'resume_job':
+      case 'remove_job':
+        // The mutation already happened on the bridge; ask for a fresh
+        // list so any side effects (status flip, next_fire_at recompute)
+        // land in the store.
+        break
+      case 'run_job_now':
+        // Append the run to recentRuns so the user sees it immediately
+        // instead of having to refresh.
+        if (ev.run) {
+          const r = ev.run as unknown as SchedulerRun
+          set((s) => ({ recentRuns: [r, ...s.recentRuns].slice(0, 100) }))
+        }
+        break
+    }
+    if (ev.requestId) {
+      get().resolvePending(ev.requestId, ev)
     }
   },
 }))

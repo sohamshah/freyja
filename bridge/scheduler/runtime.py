@@ -152,6 +152,33 @@ async def fire_job(
         # below to wait for completion.
         _schedule_or_queue_turn(sess, prompt, attachments=None)
         pending = getattr(sess, "pending_task", None)
+        # Detect the self-await trap. This fires when:
+        #   (a) `run_now` is invoked from within a tool call — the
+        #       calling agent's turn task is the same task that fire_job
+        #       is now running in;
+        #   (b) a scheduled fire targets a session whose own turn task
+        #       happens to be the one driving this fire (rare, but
+        #       possible inside nested tool flows).
+        # In either case, the prompt has been queued via
+        # _schedule_or_queue_turn and will run after the current turn
+        # finishes. We treat this run record as a dispatch acknowledgement
+        # rather than the actual execution — the agent's caller is told
+        # the prompt is queued so they don't think it failed silently.
+        current_task = asyncio.current_task()
+        if pending is not None and pending is current_task:
+            run.status = "queued"
+            run.error = (
+                "execution target is the calling session — prompt was "
+                "queued to run after the current turn finishes; this "
+                "run record represents the dispatch, not the eventual "
+                "execution. Look at the session's transcript for the "
+                "deferred turn's output."
+            )
+            run.finished_at = time.time()
+            run.duration_seconds = run.finished_at - run.started_at
+            save_run(run)
+            service.state.permission_tier = original_tier
+            return run
         if pending is not None:
             try:
                 # Apply the wall-clock timeout if configured.

@@ -101,7 +101,24 @@ async def deliver_desktop(
 
 
 def _format_with_meta(text: str, job: "JobRecord", run: "RunRecord") -> str:
-    return (
-        f"{text}\n\n"
-        f"_— from scheduled job **{job.name}** (`{job.id}`, run `{run.run_id}`)_"
+    """Wrap the run output with an unambiguous header + footer so:
+      · the user can visually tell this is from a scheduled job
+      · the agent can recognize it later (e.g. when asked "what did
+        the morning briefing find") and quote / summarize it
+      · the schedule tool's `get_run` action is one click away
+    """
+    import datetime as _dt
+    fired_at = _dt.datetime.fromtimestamp(run.started_at).strftime(
+        "%Y-%m-%d %H:%M"
     )
+    header = (
+        f"📅 **Scheduled run** · *{job.name}* "
+        f"(`{job.id}` · run `{run.run_id}` · fired {fired_at})\n"
+        f"---\n\n"
+    )
+    footer = (
+        f"\n\n---\n"
+        f"_Full record: `schedule(action='get_run', job_id='{job.id}', "
+        f"run_id='{run.run_id}')`_"
+    )
+    return header + (text or "_(no output produced)_") + footer

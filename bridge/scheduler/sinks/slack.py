@@ -56,8 +56,10 @@ async def deliver_slack(
     body = output.text or "_(scheduled run produced no output)_"
     if spec.include_metadata:
         footer = (
-            f"\n\n_— scheduled job: *{job.name}* "
-            f"(`{job.id}`, run `{run.run_id}`)_"
+            f"\n\n— _scheduled job *{job.name}* "
+            f"(`{job.id}`, run `{run.run_id}`). "
+            f"Full record via `schedule(action='get_run', "
+            f"job_id='{job.id}', run_id='{run.run_id}')`._"
         )
         body = body + footer
 
