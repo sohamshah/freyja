@@ -955,15 +955,53 @@ async def _main() -> None:
         # we install the macOS LaunchAgent (background daemon). Auto-
         # install matches the user's "very easy install" mandate.
         try:
-            from bridge.scheduler.daemon import ensure_daemon_installed
+            from bridge.scheduler.daemon import (
+                ensure_daemon_installed,
+                plist_path as _scheduler_plist_path,
+            )
 
             state.scheduler.on_durable_job_created = (
                 lambda _job: ensure_daemon_installed(reason="first_durable_job")
             )
+            # Template refresh: if the LaunchAgent was previously
+            # installed, regenerate the shim + plist from current
+            # templates so bug fixes (like the cd-into-bundle-parent
+            # shim fix that ended a 5,414-crash loop) propagate after
+            # `npm run rebuild` without the operator having to manually
+            # uninstall + reinstall. Skipped on first launch so a
+            # fresh desktop install doesn't auto-create a daemon the
+            # user hasn't asked for — that still waits for the first
+            # durable job.
+            try:
+                if _scheduler_plist_path().exists():
+                    ensure_daemon_installed(reason="template_refresh_on_boot")
+            except Exception as exc:  # noqa: BLE001
+                log("debug", f"daemon template refresh skipped: {exc}")
         except Exception as exc:  # noqa: BLE001
             log("debug", f"daemon auto-install hook not wired: {exc}")
     except Exception as exc:  # noqa: BLE001
         log("warn", f"scheduler failed to start: {exc}")
+    # Drain pending skill classifications left behind by a prior bridge
+    # run. Each ``.pending/<id>.json`` represents a skill load whose
+    # 3-turn post-load window didn't close before the previous bridge
+    # exited (typical for short sessions). The resume pass runs the
+    # classifier against whatever window we captured before exit. Fully
+    # best-effort: a failure logs and continues, so a bad pending file
+    # doesn't block bridge startup.
+    try:
+        from bridge.knowledge.learning import outcome_watcher as _ow
+        from bridge.knowledge.learning import skills_guard as _sg
+        await _ow.resume_pending_classifications()
+        # Also surface skills_guard pattern coverage at startup. If a
+        # future edit drops patterns the operator should see "118/120"
+        # in the log rather than a silent regression.
+        active, total = _sg.pattern_coverage()
+        if active != total:
+            log("warn", f"skills_guard pattern coverage: {active}/{total} (regression)")
+        else:
+            log("info", f"skills_guard pattern coverage: {active}/{total}")
+    except Exception as exc:  # noqa: BLE001
+        log("warn", f"skill learning resume failed: {exc}")
     await _command_loop(state)
 
 
@@ -9816,6 +9854,33 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 "reason": result.reason or "",
             }
         )
+        return
+
+    if ctype == "skill_learn_this":
+        # Operator-issued /learn-this. Force-trip the cadence counter
+        # for the named session, then spawn the drafter immediately
+        # against the current conversation. Mirror of the gateway's
+        # _on_skill_learn_this handler and the Slack-side /learn-this
+        # in run.py — same behavior, just reached via the local bridge
+        # subprocess's stdin instead of the control-file channel.
+        sess = state.sessions.get(session_id)
+        if sess is None:
+            log("warn", f"skill_learn_this: session {session_id!r} not found")
+            return
+        counter = getattr(sess, "skill_cadence_counter", None)
+        if counter is None:
+            log("info", f"skill_learn_this: skill learning disabled on {session_id}")
+            return
+        try:
+            # reset_for_immediate_run consumes the cadence cycle without
+            # arming a deferred trip — we spawn the drafter inline below,
+            # so we want the next automatic trip to be a full threshold
+            # away (not on the very next user turn).
+            counter.reset_for_immediate_run()
+            sess._spawn_drafter_review()
+            log("info", f"skill_learn_this: drafter spawned for {session_id}")
+        except Exception:  # noqa: BLE001
+            log("warn", f"skill_learn_this failed for {session_id}")
         return
 
     if ctype == "list_files":

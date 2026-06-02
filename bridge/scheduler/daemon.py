@@ -238,56 +238,89 @@ def _read_state() -> dict[str, Any]:
 
 
 def ensure_daemon_installed(*, reason: str = "auto") -> dict[str, Any]:
-    """Install + register the LaunchAgent if not already installed.
-    Idempotent. Returns a status dict suitable for system events /
-    dashboard."""
+    """Install + register the LaunchAgent. Always rewrites the shim +
+    plist from the current templates so a `npm run rebuild` / Freyja
+    relaunch picks up template fixes without the operator having to
+    manually `uninstall_daemon()` first.
+
+    Prior behavior short-circuited when both files existed, which meant
+    template bug fixes (like the cd-into-bundle-parent shim fix that
+    stopped the daemon from crashing 5,414 times in a row) shipped in
+    new app versions but the stale shim on disk kept running. Now we
+    rewrite unconditionally — the templates render the same output for
+    the same inputs, so rewriting when nothing changed is a no-op write.
+
+    Returns a status dict suitable for system events / dashboard."""
     if not is_supported_platform():
         return {"installed": False, "reason": "platform_unsupported"}
-
-    if plist_path().exists() and shim_path().exists():
-        # Already installed; ensure it's loaded.
-        loaded = _launchctl_print(LAUNCH_AGENT_LABEL)
-        if not loaded:
-            _launchctl_load()
-        return {
-            "installed": True,
-            "reason": "already_present",
-            "plist": str(plist_path()),
-        }
 
     try:
         executable, args = resolve_bridge_invocation()
     except RuntimeError as exc:
         return {"installed": False, "reason": f"resolution_failed: {exc}"}
 
-    # Write the shim first (the .plist points at it). `cwd` is the
-    # directory containing python-bundle (e.g. Contents/Resources for
-    # the .app install) — the bundled Python's pyvenv.cfg uses a
-    # relative `home` path that needs this cwd to resolve. See the
-    # _SHIM_TEMPLATE comment for the full reasoning.
+    # Always rewrite the shim. `cwd` is the directory containing
+    # python-bundle (e.g. Contents/Resources for the .app install) —
+    # the bundled Python's pyvenv.cfg uses a relative `home` path that
+    # needs this cwd to resolve. See the _SHIM_TEMPLATE comment for
+    # the full reasoning.
     args_str = " ".join(f'"{a}"' for a in args)
     shim = shim_path()
     shim_cwd = str(Path(executable).resolve().parent.parent.parent)
-    shim.write_text(_SHIM_TEMPLATE.format(
+    new_shim_content = _SHIM_TEMPLATE.format(
         python=executable,
         args=args_str,
         log=str(daemon_log_path()),
         cwd=shim_cwd,
-    ))
+    )
+    prior_shim = shim.read_text() if shim.exists() else None
+    shim.write_text(new_shim_content)
     os.chmod(shim, 0o755)
+    shim_changed = prior_shim != new_shim_content
 
-    # Then the plist.
+    # Then the plist. Same rewrite-unconditionally story as the shim:
+    # write the current template, compare to prior, reload launchd only
+    # if something actually changed (or if the launchd job isn't loaded
+    # at all). Writing identical content over an existing plist is a
+    # cheap no-op.
     launch_agents_dir().mkdir(parents=True, exist_ok=True)
     plist = plist_path()
-    plist.write_text(_PLIST_TEMPLATE.format(
+    new_plist_content = _PLIST_TEMPLATE.format(
         label=LAUNCH_AGENT_LABEL,
         shim=str(shim),
         freyja_home=str(freyja_home()),
         stdout=str(daemon_log_path()),
         stderr=str(daemon_log_path()),
-    ))
+    )
+    prior_plist = plist.read_text() if plist.exists() else None
+    plist.write_text(new_plist_content)
+    plist_changed = prior_plist != new_plist_content
 
-    _launchctl_load()
+    # Decide whether to (re)load launchd:
+    #   - plist changed → must unload+load so launchd re-reads it.
+    #   - launchd doesn't have the job loaded → load it.
+    #   - shim changed but plist didn't → no launchd action needed; the
+    #     shim path is the same, launchd execs it fresh on every
+    #     respawn so the next KeepAlive respawn (~10s) picks up the
+    #     new content automatically. We could `launchctl stop` to
+    #     hasten that, but the natural respawn cycle does the job.
+    currently_loaded = _launchctl_print(LAUNCH_AGENT_LABEL) is not None
+    if plist_changed and currently_loaded:
+        _launchctl_unload()
+        _launchctl_load()
+    elif not currently_loaded:
+        _launchctl_load()
+    elif shim_changed:
+        # Plist unchanged but shim was updated. Stop the running
+        # process so launchd respawns it with the new shim instead of
+        # waiting for the daemon to crash naturally.
+        try:
+            subprocess.run(
+                ["launchctl", "stop", LAUNCH_AGENT_LABEL],
+                check=False, capture_output=True, timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
     _write_state({
         "installed_at": time.time(),
@@ -296,18 +329,29 @@ def ensure_daemon_installed(*, reason: str = "auto") -> dict[str, Any]:
         "shim": str(shim),
         "bridge_executable": executable,
         "bridge_args": args,
+        "shim_rewritten": shim_changed,
+        "plist_rewritten": plist_changed,
     })
 
     try:
         from bridge.freyja_bridge import emit, log
 
-        log("info", f"scheduler daemon installed (reason={reason})")
+        log(
+            "info",
+            f"scheduler daemon ensured (reason={reason}, "
+            f"shim_changed={shim_changed}, plist_changed={plist_changed})",
+        )
         emit({
             "type": "system_event",
             "sessionId": "scheduler:global",
             "subtype": "scheduler_daemon_installed",
             "message": "Background scheduler daemon installed",
-            "details": {"reason": reason, "plist": str(plist)},
+            "details": {
+                "reason": reason,
+                "plist": str(plist),
+                "shimChanged": shim_changed,
+                "plistChanged": plist_changed,
+            },
         })
     except Exception:  # noqa: BLE001
         pass
@@ -317,6 +361,8 @@ def ensure_daemon_installed(*, reason: str = "auto") -> dict[str, Any]:
         "reason": reason,
         "plist": str(plist),
         "shim": str(shim),
+        "shim_changed": shim_changed,
+        "plist_changed": plist_changed,
     }
 
 
