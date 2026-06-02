@@ -24,7 +24,9 @@ import { SkillDiffModal } from './SkillDiffModal'
  * body so the operator can't miss the reason the guard flagged it.
  */
 export function SkillToast() {
-  const queue = useHarness((s) => s.skillCandidateQueue)
+  const queueAll = useHarness((s) => s.skillCandidateQueue)
+  const dismissed = useHarness((s) => s.dismissedSkillCandidates)
+  const dismiss = useHarness((s) => s.dismissSkillToast)
   const resolve = useHarness((s) => s.resolveSkillCandidate)
   const [expanded, setExpanded] = useState(false)
   const [editing, setEditing] = useState(false)
@@ -36,6 +38,10 @@ export function SkillToast() {
   // arms the action; the second click executes. Prevents the ~280-line
   // ema-release-ops content loss from happening accidentally.
   const [destructiveArmed, setDestructiveArmed] = useState(false)
+  // The visible queue skips candidates the operator has dismissed —
+  // they still live in skillCandidateQueue (and the SkillCandidatesPanel
+  // pending tab still shows them), they just don't pop up.
+  const queue = queueAll.filter((c) => !dismissed.has(c.candidateId))
   const current = queue[0]
 
   // M15 — reset local expansion / edit state when the head of the
@@ -97,18 +103,33 @@ export function SkillToast() {
       <div
         className={`overflow-hidden rounded-xl glass-strong shadow-2xl ring-1 ${cautionToneClasses}`}
       >
-        {/* Header */}
-        <div className="flex items-center gap-2 px-4 py-3 hairline-b">
+        {/* Header — bumped opacity (bg-black/70) so the title bar reads
+            cleanly against whatever's behind the toast (the diagnostics
+            panel + topo backdrop pre-bleed through the standard
+            glass-strong). Close button is a no-op-resolve dismiss:
+            keeps the candidate in the queue + panel, just hides this
+            popup so the operator can come back to it later. */}
+        <div className="relative z-[1] flex items-center gap-2 bg-black/70 px-4 py-3 hairline-b backdrop-blur-md">
           <span className="font-mono text-[14px] text-accent">💡</span>
           <span className="label text-accent">learned a skill</span>
           {isCaution && (
             <span className="label text-warn">⚠ review</span>
           )}
-          {queue.length > 1 && (
-            <span className="label ml-auto text-fg-3">
-              +{queue.length - 1} more
-            </span>
-          )}
+          <div className="ml-auto flex items-center gap-2">
+            {queue.length > 1 && (
+              <span className="label text-fg-3">
+                +{queue.length - 1} more
+              </span>
+            )}
+            <button
+              onClick={() => dismiss(current.candidateId)}
+              className="rounded-md bg-white/[0.06] px-2 py-[2px] font-mono text-[12px] leading-none text-fg-2 ring-hairline hover:bg-white/[0.12] hover:text-fg-0"
+              title="Dismiss this toast — candidate stays in the Skill Candidates panel for later"
+              aria-label="Close"
+            >
+              ×
+            </button>
+          </div>
         </div>
 
         {/* Caution summary — shown above the body, not behind a toggle */}

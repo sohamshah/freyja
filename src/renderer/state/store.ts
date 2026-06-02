@@ -245,6 +245,12 @@ export interface HarnessState extends SessionSlice {
      *  large content losses can't slip through accidentally. */
     existingSkill?: import('@shared/events').ExistingSkillStats
   }>
+  /** Candidate ids the operator has explicitly dismissed from the
+   *  bottom-right toast. The candidate STAYS in the queue (and in the
+   *  SkillCandidatesPanel — it's still pending) but the toast hides
+   *  it so the operator can keep working without losing it. New
+   *  candidates arriving after a dismiss still surface normally. */
+  dismissedSkillCandidates: Set<string>
   /** Drafter + cadence telemetry surfaced in DrafterActivityStrip.
    *  Populated from bridge events: ``skill_drafter_pass`` (post-run
    *  decision + rationale) and ``cadence_state`` (per-turn counter
@@ -488,6 +494,12 @@ export interface HarnessActions {
     action: 'promote' | 'discard',
     edits?: { name?: string; description?: string; body?: string },
   ): Promise<void>
+  /** Dismiss the candidate from the bottom-right toast WITHOUT
+   *  resolving it. Operator can still find it in the SkillCandidatesPanel
+   *  (pending tab) and promote/discard from there. Used when the toast
+   *  is in the way and the operator wants to come back to the decision
+   *  later. */
+  dismissSkillToast(candidateId: string): void
   /** Fetch the per-skill value rollup (V score + outcome timeline)
    *  via IPC and cache it under skillRollups[name]. Inspector + Sidebar
    *  call this when they want to display V data. */
@@ -864,6 +876,7 @@ function emptyState(): HarnessState {
     fileQuery: '',
     permissionQueue: [],
     skillCandidateQueue: [],
+    dismissedSkillCandidates: new Set<string>(),
     drafterActivity: {},
     drafterRuns: [],
     skillRollups: {},
@@ -2546,8 +2559,16 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         const pathFrag = ev.skillPath
           ? ` → ${ev.skillPath.split('/').slice(-2).join('/')}`
           : ''
+        // Clean the dismissed set on resolve so it doesn't grow
+        // unbounded over a long session.
+        let nextDismissed = prev.dismissedSkillCandidates
+        if (nextDismissed.has(ev.candidateId)) {
+          nextDismissed = new Set(nextDismissed)
+          nextDismissed.delete(ev.candidateId)
+        }
         return {
           ...prev,
+          dismissedSkillCandidates: nextDismissed,
           skillCandidateQueue: prev.skillCandidateQueue.filter(
             (c) => c.candidateId !== ev.candidateId,
           ),
@@ -4127,6 +4148,18 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       type: 'computer.emergency_stop',
       reason: reason || 'user',
     })
+  },
+
+  dismissSkillToast(candidateId) {
+    // Add to the dismissed set so the toast hides this candidate.
+    // The candidate stays in skillCandidateQueue so the
+    // SkillCandidatesPanel (pending tab) still shows it — this is just
+    // a "get the bottom-right popup out of my way" action.
+    const state = useHarness.getState()
+    if (state.dismissedSkillCandidates.has(candidateId)) return
+    const next = new Set(state.dismissedSkillCandidates)
+    next.add(candidateId)
+    useHarness.setState({ dismissedSkillCandidates: next })
   },
 
   async resolveSkillCandidate(candidateId, action, edits) {
