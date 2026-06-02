@@ -37,7 +37,7 @@ bridge-process scenarios there are even rarer.
 Threshold sourcing
 ──────────────────
 The runtime threshold comes from the env var
-``FREYJA_SKILL_NUDGE_INTERVAL`` (default 10) on each tick. We do not
+``FREYJA_SKILL_NUDGE_INTERVAL`` (default lives in constants.py) on each tick. We do not
 trust the threshold stored in the file — env-var changes between
 restarts should take effect immediately rather than being shadowed by
 a stale persisted value. The file's ``threshold`` field is purely
@@ -61,13 +61,13 @@ import tempfile
 from dataclasses import dataclass
 from typing import Any
 
+from bridge.knowledge.learning.constants import (
+    CADENCE_DEFAULT_THRESHOLD,
+    CADENCE_THRESHOLD_ENV_VAR,
+)
 from bridge.knowledge.learning.paths import cadence_path, ensure_loop_dirs
 
 logger = logging.getLogger(__name__)
-
-
-_ENV_VAR = "FREYJA_SKILL_NUDGE_INTERVAL"
-_DEFAULT_THRESHOLD = 10
 
 
 try:
@@ -77,24 +77,24 @@ except ImportError:
 
 
 def _read_threshold_from_env() -> int:
-    """Parse ``FREYJA_SKILL_NUDGE_INTERVAL`` with a safe fallback.
+    """Parse the cadence threshold env override with a safe fallback.
 
     Read on every tick so env-var changes between sessions in the same
     bridge take effect immediately. Cheap — os.environ.get + int().
     """
-    raw = os.environ.get(_ENV_VAR)
+    raw = os.environ.get(CADENCE_THRESHOLD_ENV_VAR)
     if raw is None or raw == "":
-        return _DEFAULT_THRESHOLD
+        return CADENCE_DEFAULT_THRESHOLD
     try:
         return int(raw)
     except ValueError:
         logger.warning(
             "Invalid %s=%r, falling back to default %d",
-            _ENV_VAR,
+            CADENCE_THRESHOLD_ENV_VAR,
             raw,
-            _DEFAULT_THRESHOLD,
+            CADENCE_DEFAULT_THRESHOLD,
         )
-        return _DEFAULT_THRESHOLD
+        return CADENCE_DEFAULT_THRESHOLD
 
 
 def _read_state() -> dict[str, Any]:

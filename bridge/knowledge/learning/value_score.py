@@ -154,12 +154,11 @@ def _format_v(v: float) -> str:
     return "+0.00"
 
 
-# How many recent outcomes to include in the V computation. We don't go
-# infinite-window because a skill that was bad for its first 50 loads
-# but has been fine since deserves to recover. Hermes uses a fixed
-# 30/90 day staleness cutoff; we use a recent-N window which is the
-# same idea expressed in event count.
-_V_WINDOW = 30
+# Knob definitions live in constants.py. Local alias for the existing
+# usages so we don't touch every line in the file.
+from bridge.knowledge.learning.constants import (
+    VALUE_ROLLING_WINDOW as _V_WINDOW,
+)
 
 
 def _compute_from_events_for(skill_name: str) -> ValueRollup:
@@ -303,7 +302,9 @@ def _persist_rollup(rollup: ValueRollup) -> None:
 # this in-memory cache to absorb the read-after-other-skill-write case
 # without disk I/O.
 _ROLLUP_CACHE: dict[str, tuple[int, ValueRollup]] = {}
-_ROLLUP_CACHE_CAP = 256
+from bridge.knowledge.learning.constants import (
+    VALUE_ROLLUP_CACHE_CAP as _ROLLUP_CACHE_CAP,
+)
 
 
 def _cache_get(skill_name: str, events_mtime: int) -> ValueRollup | None:

@@ -50,6 +50,11 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from bridge.knowledge.learning import events
+from bridge.knowledge.learning.constants import (
+    PENDING_EMPTY_TTL_MS,
+    POST_LOAD_WINDOW_MAX_CHARS,
+    POST_LOAD_WINDOW_TURNS,
+)
 from bridge.knowledge.learning.outcome_classifier import classify
 from bridge.knowledge.learning.paths import (
     ensure_loop_dirs,
@@ -60,17 +65,11 @@ from bridge.knowledge.learning.paths import (
 logger = logging.getLogger(__name__)
 
 
-# Number of post-load turns to include in the classifier's window. Set
-# small (3) so the classification is about what happened right after the
-# skill arrived in context — not about everything that happened the rest
-# of the day. Configurable for tuning.
-DEFAULT_POST_LOAD_TURNS = 3
-DEFAULT_MAX_WINDOW_CHARS = 12_000  # cap raw bytes for the classifier prompt
-
-# A pending file with zero captured post-load turns that's older than
-# this gets deleted at startup. The classifier has nothing to work with
-# anyway; keeping it forever is just disk noise.
-_EMPTY_PENDING_TTL_MS = 24 * 60 * 60 * 1000  # 24 hours
+# Backwards-compat aliases — the module-level names are referenced from
+# tests + a couple of call sites elsewhere. Centralized definitions
+# live in constants.py.
+DEFAULT_POST_LOAD_TURNS = POST_LOAD_WINDOW_TURNS
+DEFAULT_MAX_WINDOW_CHARS = POST_LOAD_WINDOW_MAX_CHARS
 
 
 def _now_ms() -> int:
@@ -472,7 +471,7 @@ async def resume_pending_classifications() -> None:
         ready = bool(record.get("ready", False))
         created_at = int(record.get("created_at", 0))
         if not ready and turn_count == 0:
-            if created_at and (now - created_at) > _EMPTY_PENDING_TTL_MS:
+            if created_at and (now - created_at) > PENDING_EMPTY_TTL_MS:
                 logger.info(
                     "outcome_watcher: dropping stale empty pending %s (age %.1fh)",
                     record.get("load_id", "?"), (now - created_at) / 3_600_000,

@@ -733,8 +733,8 @@ def test_drafter_default_model_is_available():
     from bridge.knowledge.learning import drafter
     from bridge.freyja_bridge import AVAILABLE_MODELS
     available_ids = {m["id"] for m in AVAILABLE_MODELS}
-    assert drafter._DEFAULT_DRAFTER_MODEL in available_ids, (
-        f"drafter default {drafter._DEFAULT_DRAFTER_MODEL!r} "
+    assert drafter.DRAFTER_DEFAULT_MODEL in available_ids, (
+        f"drafter default {drafter.DRAFTER_DEFAULT_MODEL!r} "
         f"not in AVAILABLE_MODELS — provider build would 404"
     )
 
@@ -1147,7 +1147,7 @@ def test_events_append_truncates_long_evidence(tmp_freyja_home):
     ]
     assert len(rows) == 1
     stored = rows[0].get("evidence", "")
-    assert len(stored) <= events._FREE_TEXT_MAX_CHARS
+    assert len(stored) <= events.EVENT_FREE_TEXT_MAX_CHARS
     # Truncation marker preserved (the cap minus the ellipsis byte).
     assert stored.endswith("…")
 

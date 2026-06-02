@@ -39,14 +39,14 @@ logger = logging.getLogger(__name__)
 # ── Length budgets ───────────────────────────────────────────────────
 
 
-# Per-skill-body cap in the classifier prompt. Skill bodies hard-cap at
-# 30000 chars in the drafter schema, but a 30K body costs ~$0.10 of
-# extra input tokens per classification — and the classifier doesn't
-# need the long tail to decide a category. Keep the head + tail so we
-# preserve the body's intro paragraph (when the skill applies) AND the
-# trailing examples / pitfalls section, which together carry most of
-# the signal a classifier uses.
-MAX_SKILL_BODY_CHARS = 8000
+# Per-skill-body cap — definition in constants.py. Backwards-compat
+# alias for call sites that import the symbol from this module.
+from bridge.knowledge.learning.constants import (
+    OUTCOME_CLASSIFIER_DEFAULT_MODEL,
+    OUTCOME_CLASSIFIER_MAX_SKILL_BODY_CHARS,
+    OUTCOME_CLASSIFIER_MODEL_ENV_VAR,
+)
+MAX_SKILL_BODY_CHARS = OUTCOME_CLASSIFIER_MAX_SKILL_BODY_CHARS
 
 
 def _truncate_skill_body(body: str) -> str:
@@ -178,7 +178,7 @@ class OutcomeClassification:
 
 
 def _classifier_model() -> str:
-    return os.environ.get("FREYJA_OUTCOME_CLASSIFIER_MODEL", "claude-opus-4-8")
+    return os.environ.get(OUTCOME_CLASSIFIER_MODEL_ENV_VAR, OUTCOME_CLASSIFIER_DEFAULT_MODEL)
 
 
 async def classify(

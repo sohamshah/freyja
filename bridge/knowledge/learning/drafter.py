@@ -58,6 +58,13 @@ import uuid
 from typing import Any
 
 from bridge.knowledge.learning import events, skills_guard
+from bridge.knowledge.learning.constants import (
+    DRAFTER_DEFAULT_MODEL,
+    DRAFTER_MAX_LISTED_SKILLS,
+    DRAFTER_MODEL_ENV_VAR,
+    OVERWRITE_DESTRUCTIVE_LINES,
+    OVERWRITE_DESTRUCTIVE_RATIO,
+)
 from bridge.knowledge.learning.drafter_prompt import build_drafter_system_prompt
 
 logger = logging.getLogger(__name__)
@@ -181,27 +188,11 @@ def _emit_candidate_schema() -> dict[str, Any]:
     }
 
 
-# ── Model selection ──────────────────────────────────────────────────
+# ── Module-level state ──────────────────────────────────────────────
+# Constants moved to `constants.py`; only mutable state stays here.
 
 
-_DEFAULT_DRAFTER_MODEL = "claude-opus-4-8"
-_DRAFTER_MODEL_ENV = "FREYJA_DRAFTER_MODEL"
 _logged_env_override = False
-
-
-# Threshold above which a candidate that overwrites an existing skill is
-# flagged ``isDestructive`` in the skill_candidate event. The renderer
-# uses this flag to swap PROMOTE → "REPLACE & DELETE -N LINES" and to
-# show a warning banner so the operator can't accidentally throw away a
-# big reference body. Tuned conservatively: the first SKILL.md the
-# operator wrote for ema-release-ops was 404 lines; a delete of >100
-# lines from any single promote is almost always a regression, not an
-# intentional rewrite.
-_DESTRUCTIVE_REMOVED_LINES = 100
-# Ratio-based fallback for skills that are small: deleting >50% of a
-# 60-line skill (e.g. 35 lines removed of 60) is still destructive even
-# if the absolute count is under 100.
-_DESTRUCTIVE_REMOVED_RATIO = 0.5
 
 
 def _compute_existing_skill_diff_stats(
@@ -249,10 +240,10 @@ def _compute_existing_skill_diff_stats(
                 removed += 1
         existing_line_count = len(old_lines)
         is_destructive = (
-            removed >= _DESTRUCTIVE_REMOVED_LINES
+            removed >= OVERWRITE_DESTRUCTIVE_LINES
             or (
                 existing_line_count > 0
-                and removed / existing_line_count >= _DESTRUCTIVE_REMOVED_RATIO
+                and removed / existing_line_count >= OVERWRITE_DESTRUCTIVE_RATIO
             )
         )
         return {
@@ -285,22 +276,19 @@ def _drafter_model() -> str:
     don't re-log to keep the harness output quiet.
     """
     global _logged_env_override
-    override = os.environ.get(_DRAFTER_MODEL_ENV)
-    if override and override != _DEFAULT_DRAFTER_MODEL:
+    override = os.environ.get(DRAFTER_MODEL_ENV_VAR)
+    if override and override != DRAFTER_DEFAULT_MODEL:
         if not _logged_env_override:
             logger.info(
                 "drafter: %s=%r overrides default %r",
-                _DRAFTER_MODEL_ENV, override, _DEFAULT_DRAFTER_MODEL,
+                DRAFTER_MODEL_ENV_VAR, override, DRAFTER_DEFAULT_MODEL,
             )
             _logged_env_override = True
         return override
-    return _DEFAULT_DRAFTER_MODEL
+    return DRAFTER_DEFAULT_MODEL
 
 
 # ── User message assembly ────────────────────────────────────────────
-
-
-_MAX_LISTED_SKILLS = 50
 
 
 def build_user_message(
@@ -322,7 +310,7 @@ def build_user_message(
     Sections:
 
       · [CURRENT SKILLS] — every skill name the operator has on disk.
-        Capped at ``_MAX_LISTED_SKILLS`` so a power-user library
+        Capped at ``DRAFTER_MAX_LISTED_SKILLS`` so a power-user library
         doesn't blow the input context; the drafter sees enough to
         avoid duplicates without paying for the long tail.
       · [LOADED THIS SESSION] — the subset of the above that was
@@ -339,15 +327,15 @@ def build_user_message(
       · [CONVERSATION] — the verbatim excerpt the cadence engine
         decided is worth reviewing.
     """
-    listed_all = all_skill_names[:_MAX_LISTED_SKILLS]
+    listed_all = all_skill_names[:DRAFTER_MAX_LISTED_SKILLS]
     all_block = (
         "\n".join(f"  - {name}" for name in listed_all)
         if listed_all
         else "  (none yet)"
     )
-    if len(all_skill_names) > _MAX_LISTED_SKILLS:
+    if len(all_skill_names) > DRAFTER_MAX_LISTED_SKILLS:
         all_block += (
-            f"\n  … {len(all_skill_names) - _MAX_LISTED_SKILLS} more not shown"
+            f"\n  … {len(all_skill_names) - DRAFTER_MAX_LISTED_SKILLS} more not shown"
         )
 
     loaded_block = (

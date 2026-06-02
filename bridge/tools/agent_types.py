@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from bridge.knowledge.learning.constants import DRAFTER_DEFAULT_MODEL
 from bridge.knowledge.learning.drafter_prompt import (
     build_agentic_drafter_system_prompt,
 )
@@ -636,9 +637,16 @@ AGENT_TYPES: dict[str, AgentType] = {
             "conversation isn't skill-worthy. Operator can re-engage this "
             "session to refine the candidate."
         ),
-        model="parent",
+        # Pinned to the drafter quality tier. Previously inherited from
+        # the parent session — but the user's Slack DMs route to Sonnet
+        # 4.6, so a /learn-this from Slack was running on Sonnet, not
+        # Opus. The drafter is the high-precision arbiter of "is this
+        # worth a skill, and how should it be shaped" — quality matters
+        # more than the per-trip cost delta.
+        model=DRAFTER_DEFAULT_MODEL,
         thinking_effort="high",
-        model_policy="inherit",
+        model_policy="first_available",
+        model_fallbacks=("claude-opus-4-7", "claude-sonnet-4-6"),
         # Read + skill-library + the publish tool. No write_file / edit_file
         # — the drafter never mutates the workspace; its only persistent
         # side effect is the candidate it writes via propose_skill.

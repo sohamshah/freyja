@@ -45,16 +45,11 @@ from typing import Any, Iterator
 
 from bridge.knowledge.learning.paths import events_path, ensure_loop_dirs
 
-# M23: free-text fields get truncated to this hard cap before serialization.
-# macOS PIPE_BUF is only 512B; a long evidence quote + a long summary easily
-# exceeds that and breaks the "single write is atomic" invariant the
-# append-only design depends on. 256 chars per field keeps a 200-byte
-# event well under 4kB even with both fields populated.
-_FREE_TEXT_MAX_CHARS = 256
-
-# Free-text event fields the writer truncates. These are the human-readable
-# slots; structural fields (skill, session_id, category, ts) stay verbatim.
-_TRUNCATED_FIELDS = ("evidence", "summary", "rationale", "note", "load_context")
+# Free-text truncation knobs — definition lives in constants.py.
+from bridge.knowledge.learning.constants import (
+    EVENT_FREE_TEXT_MAX_CHARS,
+    EVENT_TRUNCATED_FIELDS,
+)
 
 # Try to import fcntl for POSIX file locking. On Windows fcntl isn't
 # available and we fall back to the single-write atomicity that O_APPEND
@@ -75,10 +70,10 @@ def _truncate_free_text_fields(event: dict[str, Any]) -> None:
     the first sentence, the rest just bloats the log. Truncation adds
     an ellipsis marker so a reader can tell a value was cut.
     """
-    for key in _TRUNCATED_FIELDS:
+    for key in EVENT_TRUNCATED_FIELDS:
         val = event.get(key)
-        if isinstance(val, str) and len(val) > _FREE_TEXT_MAX_CHARS:
-            event[key] = val[: _FREE_TEXT_MAX_CHARS - 1] + "…"
+        if isinstance(val, str) and len(val) > EVENT_FREE_TEXT_MAX_CHARS:
+            event[key] = val[: EVENT_FREE_TEXT_MAX_CHARS - 1] + "…"
 
 # Event types. Strings (not enums) so old logs stay forward-compatible —
 # we never want to fail a read because a future writer added a new event
@@ -111,7 +106,7 @@ def append(event: dict[str, Any]) -> None:
     operator's turn is depending on. Caller is responsible for putting
     ``ts`` and ``skill`` on the dict; ``ts`` is filled if missing.
 
-    M23: free-text fields are truncated to ``_FREE_TEXT_MAX_CHARS``
+    M23: free-text fields are truncated to ``EVENT_FREE_TEXT_MAX_CHARS``
     before serialization, and the write is bracketed by an ``fcntl``
     exclusive flock on POSIX. The O_APPEND atomicity only holds for
     writes ≤ PIPE_BUF (4kB Linux, 512B macOS); a long evidence quote
