@@ -245,10 +245,12 @@ export interface HarnessState extends SessionSlice {
    *  snapshot). Both fields are optional so the strip degrades to "no
    *  data yet" when the bridge hasn't fired anything. */
   drafterActivity: {
-    lastDecision?: 'save' | 'skip' | 'discard'
+    lastDecision?: 'save' | 'skip' | 'discard' | 'error'
     lastRationale?: string
     lastModel?: string
     lastRanAt?: number
+    lastCandidateName?: string
+    lastCandidateId?: string
     turnsSinceLastReview?: number
     turnsUntilTrip?: number
     lastTrippedAt?: number
@@ -2396,6 +2398,8 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
             lastRationale: ev.rationale,
             lastModel: ev.model,
             lastRanAt: ev.ranAt ?? Date.now(),
+            lastCandidateName: ev.name,
+            lastCandidateId: ev.candidateId,
           },
         }
       }

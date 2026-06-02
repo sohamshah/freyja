@@ -54,6 +54,7 @@ import contextlib
 import logging
 import os
 import time
+import uuid
 from typing import Any
 
 from bridge.knowledge.learning import events, skills_guard
@@ -450,6 +451,19 @@ async def _run_drafter_inner(
                 "model": _drafter_model(),
             }
         )
+        # Also write the unified EVENT_DRAFTER_DECISION so a single
+        # query against .events.jsonl can answer "what did the drafter
+        # decide on its last run." Pairs with the trip event written
+        # by review_worker.
+        try:
+            events.append_drafter_decision(
+                session_id,
+                turn_id=turn_id,
+                result="skip",
+                rationale=rationale or "",
+            )
+        except Exception:  # noqa: BLE001
+            pass
         # Low-noise bridge event so the renderer's drafter-activity
         # strip can show "last decision: skip (rationale)" without
         # polling the events.jsonl file. NOT a toast — this is meant
@@ -463,7 +477,7 @@ async def _run_drafter_inner(
                     "rationale": rationale or "",
                     "sourceTurnId": turn_id or "",
                     "model": _drafter_model(),
-                    "decidedAt": int(time.time() * 1000),
+                    "ranAt": int(time.time() * 1000),
                 }
             )
         except Exception:
@@ -505,33 +519,36 @@ async def _run_drafter_inner(
     scan_content = f"{name}\n{description}\n{body}"
     scan = skills_guard.scan_text(scan_content)
 
-    # Key names MUST match ``candidates.Candidate`` dataclass field
-    # names so the upstream C1 fix (which constructs a Candidate from
-    # this payload) can do ``Candidate(**candidate_payload)`` cleanly.
-    # In particular: ``source_session_id`` not ``session_id``,
-    # ``source_turn_id`` not ``turn_id``, ``drafter_model`` not
-    # ``model``. Drift here surfaces as TypeError("unexpected keyword
-    # argument") which the outer try/except swallows silently.
+    # Construct the Candidate dataclass directly. The bug we hit before
+    # was constructing a dict here and passing it to write_pending which
+    # expects a Candidate — the dict was also missing ``candidate_id``,
+    # ``drafted_at``, and ``decision`` (all required dataclass fields),
+    # and carried an extra ``guard_summary`` field the dataclass doesn't
+    # accept. End-to-end candidate emission silently crashed at every
+    # write_pending call until this fix.
     #
-    # The ``guard_summary`` field is NOT on the Candidate dataclass —
-    # it's threaded separately to the emit() payload for the renderer.
-    # We strip it before constructing the dataclass (see write_pending
-    # path below).
-    candidate_payload = {
-        "source_session_id": session_id,
-        "source_turn_id": turn_id or "",
-        "name": name,
-        "description": description,
-        "skill_type": skill_type,
-        "triggers": triggers,
-        "tags": tags,
-        "body": body,
-        "rationale": rationale,
-        "drafter_model": _drafter_model(),
-        "guard_verdict": scan.verdict,
-        "guard_summary": scan.summary,
-        "guard_findings": [f.to_dict() for f in scan.findings],
-    }
+    # ``guard_summary`` is threaded SEPARATELY into the renderer emit()
+    # payload below; it's intentionally not on the dataclass because the
+    # YAML format keeps verdict+findings only (the summary text is
+    # derivable from the findings list at render time).
+    new_candidate_id = uuid.uuid4().hex
+    candidate = candidates.Candidate(
+        candidate_id=new_candidate_id,
+        drafted_at=int(time.time() * 1000),
+        source_session_id=session_id,
+        source_turn_id=turn_id or "",
+        drafter_model=_drafter_model(),
+        decision="save",
+        rationale=rationale,
+        guard_verdict=scan.verdict,
+        guard_findings=[f.to_dict() for f in scan.findings],
+        name=name,
+        description=description,
+        triggers=triggers,
+        tags=tags,
+        body=body,
+        skill_type=skill_type,
+    )
 
     candidate_id: str | None = None
 
@@ -541,10 +558,12 @@ async def _run_drafter_inner(
         # critical patterns. Write to rejected/ so we have an audit
         # trail + the negative library picks it up.
         try:
-            candidate_id = candidates.write_rejected(
-                candidate_payload,
+            candidates.write_rejected(
+                candidate,
                 reason="skills_guard_dangerous",
+                actor="guard",
             )
+            candidate_id = new_candidate_id
         except Exception:
             logger.exception(
                 "drafter: write_rejected failed (session=%s name=%s)",
@@ -582,12 +601,44 @@ async def _run_drafter_inner(
 
     # ── safe / caution path ──
     try:
-        candidate_id = candidates.write_pending(candidate_payload)
-    except Exception:
+        candidates.write_pending(candidate)
+        candidate_id = new_candidate_id
+    except Exception as exc:
         logger.exception(
             "drafter: write_pending failed (session=%s name=%s)",
             session_id, name,
         )
+        # Audit: distinguish "drafter rationally skipped" from "drafter
+        # produced a candidate but write failed." Without this, the
+        # outer review_worker logs `result=skip` for both — and the
+        # operator can't tell the system is broken vs. quiet.
+        error_rationale = f"write_pending failed: {type(exc).__name__}: {str(exc)[:200]}"
+        try:
+            events.append_drafter_decision(
+                session_id,
+                turn_id=turn_id,
+                result="error",
+                rationale=error_rationale,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        # Surface the failure to the DrafterActivityStrip so the user
+        # actually sees it instead of "no candidate appeared, must have
+        # skipped." This is the bridge event the renderer subscribes to.
+        try:
+            emit(
+                {
+                    "type": "skill_drafter_pass",
+                    "sessionId": session_id,
+                    "decision": "error",
+                    "rationale": error_rationale,
+                    "sourceTurnId": turn_id or "",
+                    "model": _drafter_model(),
+                    "ranAt": int(time.time() * 1000),
+                }
+            )
+        except Exception:
+            logger.debug("drafter: emit(skill_drafter_pass error) failed", exc_info=True)
         return None
 
     _safe_event_append(
@@ -642,6 +693,40 @@ async def _run_drafter_inner(
         )
     except Exception:
         logger.debug("drafter: emit(skill_candidate) failed", exc_info=True)
+
+    # Also surface the save decision to the DrafterActivityStrip — the
+    # strip listens on `skill_drafter_pass` and previously only saw the
+    # rational-skip path, so a successful candidate emission left the
+    # strip stale (last_decision still showed the previous run). Now
+    # the strip updates on every drafter exit: skip, candidate, error.
+    try:
+        emit(
+            {
+                "type": "skill_drafter_pass",
+                "sessionId": session_id,
+                "decision": "save",
+                "rationale": f"saved candidate {name!r}",
+                "sourceTurnId": turn_id or "",
+                "model": _drafter_model(),
+                "ranAt": int(time.time() * 1000),
+                "candidateId": candidate_id,
+                "name": name,
+            }
+        )
+    except Exception:
+        logger.debug("drafter: emit(skill_drafter_pass save) failed", exc_info=True)
+    # Unified decision event for the .events.jsonl audit trail. Pairs
+    # with EVENT_DRAFTER_TRIP (review_worker) and EVENT_DRAFTED above.
+    try:
+        events.append_drafter_decision(
+            session_id,
+            turn_id=turn_id,
+            result="candidate",
+            candidate_id=candidate_id,
+            rationale=f"saved {name}",
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
     logger.info(
         "drafter: candidate written (session=%s name=%s candidate=%s verdict=%s)",

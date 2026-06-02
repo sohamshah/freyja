@@ -779,10 +779,15 @@ export type BridgeEvent =
        *  for save and skip outcomes; save is also accompanied by a
        *  `skill_candidate` event with the candidate detail. */
       type: 'skill_drafter_pass'
-      decision: 'save' | 'skip' | 'discard'
+      decision: 'save' | 'skip' | 'discard' | 'error'
       rationale?: string
       model?: string
       ranAt: number
+      /** Populated on `decision: 'save'` — operator-facing skill name
+       *  + on-disk candidate id so the DrafterActivityStrip can link
+       *  to the pending candidate directly. */
+      name?: string
+      candidateId?: string
     } & SessionId)
   | ({
       /** Periodic cadence-counter snapshot. The bridge emits one per

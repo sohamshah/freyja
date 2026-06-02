@@ -696,38 +696,31 @@ def test_drafter_system_prompt_starts_with_freyja_port_note():
 # ── drafter: M22 — candidate payload key alignment ──
 
 
-def test_drafter_candidate_payload_keys_match_dataclass_fields():
-    """M22: the dict the drafter constructs for write_pending /
-    write_rejected must use ``source_session_id`` / ``source_turn_id`` /
-    ``drafter_model`` (the Candidate dataclass field names), not the
-    legacy ``session_id`` / ``turn_id`` / ``model`` keys. Drift here
-    surfaces as ``TypeError: unexpected keyword argument`` when the
-    upstream fix constructs ``Candidate(**payload)``.
-
-    We verify by slicing the drafter source to the ``candidate_payload
-    = {...}`` block — the events.jsonl payloads use ``session_id`` /
-    ``turn_id`` / ``model`` (events schema), which is a separate
-    contract that must NOT bleed into this check."""
+def test_drafter_constructs_candidate_via_dataclass():
+    """The drafter must construct ``candidates.Candidate`` directly
+    (not pass a dict to ``write_pending``). End-to-end candidate
+    emission was silently broken for weeks because the drafter built a
+    dict missing 3 required fields (candidate_id, drafted_at, decision)
+    and write_pending crashed at the first attribute access. The fix
+    constructs a Candidate inline; this test pins the call site so any
+    future "pass a dict" regression is caught immediately."""
     from pathlib import Path
     drafter_src = Path(
         __file__
     ).resolve().parent.parent / "bridge" / "knowledge" / "learning" / "drafter.py"
     text = drafter_src.read_text(encoding="utf-8")
-    start = text.find("candidate_payload = {")
-    assert start >= 0, "couldn't locate candidate_payload dict literal"
-    # Slice up to the closing brace of the dict literal.
-    end = text.find("}", start)
-    assert end >= 0
-    block = text[start:end]
-    # The new key names must be present in the candidate_payload dict.
-    assert '"source_session_id": session_id' in block
-    assert '"source_turn_id": turn_id or ""' in block
-    assert '"drafter_model": _drafter_model()' in block
-    # The legacy names (which break Candidate(**payload)) must NOT
-    # appear inside the candidate_payload dict literal.
-    assert '"session_id":' not in block
-    assert '"turn_id":' not in block
-    assert '"model":' not in block
+    # Must construct via Candidate(...) — never reintroduce the dict pattern.
+    assert "candidates.Candidate(" in text, "drafter must construct Candidate dataclass directly"
+    assert "candidates.write_pending(candidate)" in text, "write_pending must receive a Candidate instance"
+    # The 3 fields that were silently missing before — verify they're
+    # all populated at the Candidate construction site.
+    assert "candidate_id=new_candidate_id" in text
+    assert "drafted_at=int(time.time() * 1000)" in text
+    assert 'decision="save"' in text
+    # The dataclass field names that came in via M22 — keep enforced.
+    assert "source_session_id=session_id" in text
+    assert 'source_turn_id=turn_id or ""' in text
+    assert "drafter_model=_drafter_model()" in text
 
 
 # ── drafter: M2 — model id is in AVAILABLE_MODELS ──
@@ -1187,17 +1180,19 @@ def test_cadence_counter_skips_goal_loop_continuations(tmp_freyja_home, monkeypa
 # ── Drafter audit events: trip + decision land in events.jsonl ──
 
 
-def test_drafter_audit_events_trip_and_decision(tmp_freyja_home, monkeypatch):
-    """Cadence trip → drafter dispatch must leave a paired audit trail
-    in .events.jsonl regardless of whether a candidate was emitted.
-    Without trip/decision, 'drafter never ran' and 'drafter ran and
-    skipped' look identical from the logs, which was the original
-    debug-hostile design hole."""
+def test_drafter_audit_trip_event_fires_on_spawn(tmp_freyja_home, monkeypatch):
+    """Every cadence trip → drafter spawn must leave an
+    EVENT_DRAFTER_TRIP in .events.jsonl, regardless of what the drafter
+    decides. Without this, 'drafter never ran' and 'drafter ran and
+    decided X' look identical from the logs — the original debug-
+    hostile design hole."""
     import asyncio
     from bridge.knowledge.learning import events, review_worker
 
-    # Stub run_drafter to return None (skip) so we can assert the
-    # decision event records the skip path.
+    # Stub run_drafter to return None — the real drafter writes its own
+    # EVENT_DRAFTER_DECISION at each exit point (skip/save/error) and
+    # those internal writers are bypassed by the stub. The TRIP event
+    # is review_worker's responsibility and fires unconditionally.
     async def _fake_skip(**_kwargs):
         return None
 
@@ -1222,11 +1217,76 @@ def test_drafter_audit_events_trip_and_decision(tmp_freyja_home, monkeypatch):
 
     log = list(events.iter_events())
     trip = [e for e in log if e.get("event") == events.EVENT_DRAFTER_TRIP]
-    decision = [e for e in log if e.get("event") == events.EVENT_DRAFTER_DECISION]
     assert len(trip) == 1
     assert trip[0]["session_id"] == "audit-test"
-    assert len(decision) == 1
-    assert decision[0]["result"] == "skip"
+
+
+def test_drafter_end_to_end_save_writes_candidate_file(tmp_freyja_home, monkeypatch):
+    """End-to-end: when the drafter LLM returns decision=save, the
+    drafter must successfully write a .candidates/<id>.yaml file. The
+    original code passed a dict to write_pending instead of a
+    Candidate dataclass — every real candidate emission crashed at
+    `c.candidate_id` and silently returned None. This test pins the
+    full save path against the actual write_pending implementation."""
+    import asyncio
+    from pathlib import Path
+    from bridge.knowledge.learning import drafter
+    from bridge.knowledge.learning.paths import candidates_dir, ensure_loop_dirs
+
+    ensure_loop_dirs()
+
+    # Stub the LLM provider call inside drafter to return a parsed
+    # save-decision payload. We bypass the actual run_drafter wrapper
+    # and call the inner function so the test exercises everything
+    # AFTER the LLM call: Skills Guard scan, Candidate construction,
+    # write_pending, emit().
+    fake_parsed = {
+        "decision": "save",
+        "name": "end-to-end-test-skill",
+        "description": "test description",
+        "body": "# Test skill\nDo the thing safely.",
+        "skill_type": "build",
+        "triggers": [],
+        "tags": [],
+        "rationale": "",
+    }
+
+    class _FakeProvider:
+        async def complete_structured(self, **_kwargs):
+            class R:
+                parsed = fake_parsed
+                data = fake_parsed
+            return R()
+
+    monkeypatch.setattr(
+        "bridge.freyja_bridge.build_provider",
+        lambda *_a, **_kw: _FakeProvider(),
+        raising=False,
+    )
+    # emit is hit on the save path — make it a no-op for the test.
+    monkeypatch.setattr(
+        "bridge.freyja_bridge.emit",
+        lambda *_a, **_kw: None,
+        raising=False,
+    )
+
+    async def _run():
+        return await drafter.run_drafter(
+            session_id="e2e-test",
+            turn_id="t1",
+            conversation_excerpt="user: hi\nassistant: hello",
+            loaded_skill_names=[],
+            all_skill_names=[],
+        )
+
+    candidate_id = asyncio.run(_run())
+    # The pre-fix bug: candidate_id was None because write_pending
+    # crashed silently. After the fix it returns a fresh hex id.
+    assert candidate_id is not None and len(candidate_id) > 0
+    # And the YAML file is actually on disk under .candidates/.
+    candidate_files = list(candidates_dir().glob("*.yaml"))
+    assert len(candidate_files) == 1
+    assert candidate_files[0].stem == candidate_id
 
 
 def test_drafter_audit_decision_records_error(tmp_freyja_home, monkeypatch):

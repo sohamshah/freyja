@@ -41,9 +41,16 @@ export function DrafterActivityStrip() {
   const decisionTone =
     decision === 'save'
       ? 'text-ok'
-      : decision === 'discard'
-        ? 'text-warn'
-        : 'text-fg-2'
+      : decision === 'error'
+        ? 'text-danger'
+        : decision === 'discard'
+          ? 'text-warn'
+          : 'text-fg-2'
+  const lastCandidateName = activity.lastCandidateName
+  const decisionLabel =
+    decision === 'save' && lastCandidateName
+      ? `save (${lastCandidateName})`
+      : decision
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5 hairline-b text-[10.5px]">
@@ -51,7 +58,7 @@ export function DrafterActivityStrip() {
       {decision ? (
         <span>
           last decision:{' '}
-          <span className={`font-mono ${decisionTone}`}>{decision}</span>
+          <span className={`font-mono ${decisionTone}`}>{decisionLabel}</span>
         </span>
       ) : (
         <span className="text-fg-3">no review yet</span>

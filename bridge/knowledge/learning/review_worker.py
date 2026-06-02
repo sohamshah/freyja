@@ -275,19 +275,12 @@ async def _run_with_redirects(
                 candidate_id, session_id,
             )
 
-    # Audit event: the drafter has returned. Result is "candidate" or
-    # "skip" depending on whether run_drafter emitted anything. The
-    # error path already wrote a decision event above and returned.
-    try:
-        from bridge.knowledge.learning import events as _events
-        _events.append_drafter_decision(
-            session_id,
-            turn_id=turn_id,
-            result="candidate" if candidate_id else "skip",
-            candidate_id=candidate_id or "",
-        )
-    except Exception:  # noqa: BLE001
-        pass
+    # NOTE: drafter writes its own EVENT_DRAFTER_DECISION at every
+    # internal exit point (rational skip, candidate save, write
+    # failure) — we don't write a duplicate here. The exception
+    # branches above still fire the decision event because their
+    # rationale (cancellation, truly-unexpected raise) wouldn't reach
+    # the drafter's internal writers.
 
     if candidate_id:
         logger.info(
