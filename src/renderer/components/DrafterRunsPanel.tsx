@@ -16,6 +16,7 @@ import { useHarness } from '../state/store'
  */
 export function DrafterRunsPanel() {
   const runs = useHarness((s) => s.drafterRuns ?? [])
+  const switchSession = useHarness((s) => s.switchSession)
   const [expanded, setExpanded] = useState<string | null>(null)
 
   if (runs.length === 0) {
@@ -63,6 +64,15 @@ export function DrafterRunsPanel() {
                   {timeAgo(r.startedAt)}
                 </span>
               </button>
+              {r.subagentSessionId && (
+                <button
+                  onClick={() => switchSession(r.subagentSessionId!)}
+                  className="mt-1 inline-flex items-center gap-1 rounded bg-accent/10 px-1.5 py-[2px] font-mono text-[9.5px] uppercase tracking-wider text-accent ring-1 ring-accent/30 hover:bg-accent/20"
+                  title="Open the drafter sub-agent's session — scroll its transcript and keep talking"
+                >
+                  ↳ open session
+                </button>
+              )}
               {isExpanded && (
                 <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 rounded bg-white/[0.03] px-3 py-2 font-mono text-[10px] text-fg-1 ring-hairline">
                   <DetailRow label="runId" value={r.runId} mono />

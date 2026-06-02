@@ -20,6 +20,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from bridge.knowledge.learning.drafter_prompt import (
+    build_agentic_drafter_system_prompt,
+)
 from bridge.tools.goal_loop import (
     GOAL_JUDGE_SYSTEM_PROMPT,
     JUDGE_CALIBRATOR_SYSTEM_PROMPT,
@@ -615,6 +618,37 @@ AGENT_TYPES: dict[str, AgentType] = {
         # `sub_agent`, the parent's task description fills that role.
         system_prompt=GOAL_JUDGE_SYSTEM_PROMPT,
         max_iterations=iteration_cap("judge-deep", 3),
+    ),
+    "skill-drafter": AgentType(
+        name="skill-drafter",
+        description=(
+            "Reviews this conversation against the existing skill library and "
+            "proposes a candidate (create / amend / replace) via the "
+            "propose_skill tool. Operator sees a SkillToast for approval."
+        ),
+        usage_hint=(
+            "Auto-fired by the cadence counter and by operator /learn-this. "
+            "Reads existing skills via load_skill before deciding so a "
+            "candidate that overwrites a known skill amends rather than "
+            "rewrites. Reads files / runs grep when it needs to verify "
+            "claims the conversation makes. Calls propose_skill once when "
+            "decided; finishes with a plain text explanation when the "
+            "conversation isn't skill-worthy. Operator can re-engage this "
+            "session to refine the candidate."
+        ),
+        model="parent",
+        thinking_effort="high",
+        model_policy="inherit",
+        # Read + skill-library + the publish tool. No write_file / edit_file
+        # — the drafter never mutates the workspace; its only persistent
+        # side effect is the candidate it writes via propose_skill.
+        tool_include=frozenset({
+            "bash", "read_file", "list_directory", "glob", "grep",
+            "list_skills", "search_skills", "load_skill",
+            "propose_skill",
+        }),
+        system_prompt=build_agentic_drafter_system_prompt(),
+        max_iterations=iteration_cap("skill-drafter", 15),
     ),
     "plan": AgentType(
         name="plan",

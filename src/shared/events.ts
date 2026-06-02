@@ -803,6 +803,15 @@ export type BridgeEvent =
       runId?: string
     } & SessionId)
   | ({
+      /** Drafter sub-agent's session id resolved. Fires once after the
+       *  agentic drafter has been spawned and we know the child's
+       *  session id. Lets the DrafterRunsPanel row link to the
+       *  sub-agent's transcript so the operator can open it. */
+      type: 'skill_drafter_run_linked'
+      runId: string
+      subagentSessionId: string
+    } & SessionId)
+  | ({
       /** Drafter started a pass. Carries everything the renderer needs
        *  to render an in-flight row in the Drafter Runs view: the
        *  trigger (cadence vs operator-issued /learn-this), the

@@ -284,6 +284,9 @@ export interface HarnessState extends SessionSlice {
     rationale?: string
     candidateName?: string
     candidateId?: string
+    // populated by skill_drafter_run_linked once the agentic drafter's
+    // sub-agent session is resolved
+    subagentSessionId?: string
   }>
   /** Operator-visible cache of per-skill value rollups. Filled on
    *  demand by getSkillRollup; the renderer reuses entries while a
@@ -2475,6 +2478,17 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
             lastCandidateId: ev.candidateId,
           },
         }
+      }
+      if (ev.type === 'skill_drafter_run_linked') {
+        const runs = prev.drafterRuns ?? []
+        const idx = runs.findIndex((r) => r.runId === ev.runId)
+        if (idx < 0) return prev
+        const updated = [...runs]
+        updated[idx] = {
+          ...updated[idx],
+          subagentSessionId: ev.subagentSessionId,
+        }
+        return { ...prev, drafterRuns: updated }
       }
       if (ev.type === 'skill_drafter_started') {
         const sessionId = (ev as any).sessionId as string | undefined

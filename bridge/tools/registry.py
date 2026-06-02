@@ -30,7 +30,12 @@ from bridge.tools.task_board import TaskBoardTool
 from bridge.tools.video_analysis_tool import AnalyzeVideoTool
 from bridge.tools.memory_tools import MemoryTool, RecordUserPreferenceTool
 from bridge.tools.search_tools import GlobTool, GrepTool
-from bridge.tools.skill_tools import ListSkillsTool, LoadSkillTool, SearchSkillsTool
+from bridge.tools.skill_tools import (
+    ListSkillsTool,
+    LoadSkillTool,
+    ProposeSkillTool,
+    SearchSkillsTool,
+)
 from bridge.tools.session_memory_tool import SessionMemoryTool
 from bridge.tools.sub_agent_registry import SubAgentRegistry
 from bridge.tools.sub_agent_tool import SubAgentSpec, SubAgentTool
@@ -182,6 +187,18 @@ def build_desktop_registry(
         tools.append(SearchSkillsTool(skill_store, on_skill_event=on_skill_event))
         tools.append(LoadSkillTool(skill_store, on_skill_event=on_skill_event))
         tools.append(ListSkillsTool(skill_store, on_skill_event=on_skill_event))
+        # Available in the pool but only the `skill-drafter` AgentType
+        # lists it in `tool_include`. Other agents never see it.
+        # source_session_id = the PARENT'S session (i.e. the user
+        # session the drafter was spawned to review) so the candidate's
+        # provenance points back at the conversation that produced it,
+        # not at the drafter's own sub-session.
+        tools.append(
+            ProposeSkillTool(
+                session_id=subagent_parent_session_id or "",
+                source_turn_id="",
+            )
+        )
 
     # Bash — permission-gated
     if include_bash:

@@ -267,3 +267,156 @@ def build_drafter_system_prompt() -> str:
     cadence trips.
     """
     return FREYJA_PORT_PREAMBLE + HERMES_SKILL_REVIEW_PROMPT + FREYJA_FORMAT_BLOCK
+
+
+# ── Agentic drafter system prompt ─────────────────────────────────────
+#
+# Used when the drafter runs as a sub-agent (AgentType `skill-drafter`)
+# rather than as a single LLM call. The sub-agent has tools — it can
+# read existing skills, grep the workspace, and call `propose_skill` to
+# publish a candidate. The prompt below replaces the single-call output
+# format directive ("emit one YAML block") with operating instructions
+# for the agentic loop.
+#
+# Three blocks, in order:
+#
+#   1. PORT_PREAMBLE + Hermes review prompt — preserved verbatim so the
+#      signal-detection + writing-rule guidance the drafter has always
+#      followed continues to apply.
+#   2. AGENTIC_OPERATING_BLOCK — how to use the tools. What to read
+#      before deciding. When to call propose_skill vs. simply finish
+#      with a skip explanation.
+#   3. SKILL_CRAFT_BLOCK — distilled from `/skill-creator:skill-creator`
+#      (the canonical guide for writing good skills). Pulls the parts
+#      that apply to a single-file SKILL.md author: concise body, name
+#      rules, description-as-trigger, imperative form, no extraneous
+#      files. The forward-testing / evaluation / quick_validate sections
+#      are intentionally omitted (separate concern).
+
+
+AGENTIC_OPERATING_BLOCK = (
+    "\n─── Operating instructions (agentic mode) ───\n\n"
+    "You are running as a sub-agent with tools — not a single LLM call. "
+    "Use the tools to ground your decisions before you commit to a "
+    "candidate. Cost is a real constraint; iterate purposefully, not "
+    "indefinitely.\n\n"
+    "Recommended workflow:\n"
+    "  1. Skim the loaded skills in the conversation excerpt. If a "
+    "candidate name will MATCH an existing skill, call `load_skill` to "
+    "read the current SKILL.md FIRST. Do not propose a full-body "
+    "replacement of an existing skill from memory — you will lose 60%+ "
+    "of its content. Read it, identify what's missing or wrong, then "
+    "amend.\n"
+    "  2. If you're unsure whether a class-level skill already exists "
+    "for the genre, call `search_skills` or `list_skills` to check.\n"
+    "  3. For technical claims the conversation makes (file paths, "
+    "commands, error strings, config keys), verify with `read_file` / "
+    "`grep` / `bash` (read-only) when the verification is cheap. The "
+    "operator pays for sloppy guidance baked into skills more than "
+    "they pay for an extra tool call.\n"
+    "  4. When you've decided, call `propose_skill` ONCE with the "
+    "full candidate fields. The operator sees a SkillToast and "
+    "approves / edits / discards. The publish action is the only "
+    "output that matters — your transcript is reviewable but the "
+    "candidate is what gets persisted.\n"
+    "  5. If after review you genuinely have nothing skill-worthy to "
+    "propose, finish with a one-paragraph explanation of why. Don't "
+    "call `propose_skill` for a skill you don't actually want.\n\n"
+    "AMEND vs. REPLACE when overwriting an existing skill:\n"
+    "  · The propose_skill `body` field REPLACES the on-disk SKILL.md "
+    "verbatim on operator approval. If you want to amend, your body "
+    "MUST be the existing body with your additions woven in — not a "
+    "summary rewrite. Use load_skill, copy the body, edit, propose.\n"
+    "  · A candidate that deletes ≥100 lines OR ≥50% of the existing "
+    "skill is flagged ``destructive`` to the operator and requires a "
+    "double-tap confirm. Avoid this unless the existing skill is "
+    "genuinely wrong end-to-end.\n\n"
+    "Multiple candidates: each `propose_skill` call creates a new "
+    "candidate. If you want to give the operator a choice, you may "
+    "publish two with different names or framings — but the default is "
+    "one candidate per review pass. The operator can also re-engage "
+    "you (this session persists) and ask for revisions.\n"
+)
+
+
+SKILL_CRAFT_BLOCK = (
+    "\n─── How to write a good skill ───\n\n"
+    "(Distilled from skill-creator; same principles, terser.)\n\n"
+    "Frontmatter (name + description) is the ONLY part that's always in "
+    "context for future sessions. The description IS the triggering "
+    "mechanism. The body is loaded only after a trigger fires.\n\n"
+    "  · `name`: lowercase letters, digits, hyphens. Under 64 chars. "
+    "Short, verb-led, ideally namespaced when it improves triggering "
+    "(`gh-address-comments`, `ema-release-ops`). Match the genre of "
+    "work, not today's specific task.\n"
+    "  · `description`: include BOTH what the skill does AND specific "
+    "triggers/contexts — tool names, error strings, file types, "
+    "domain phrases. Examples: \"Use when the user mentions deploying, "
+    "cherry-picking, RC tags, harness, BackoffLimitExceeded, "
+    "alembic\". A future agent reads only this string to decide "
+    "whether to load the body. Put ALL the 'when to use' here.\n"
+    "  · Do NOT put 'When to Use This Skill' sections in the body. The "
+    "body is only loaded AFTER the description triggered.\n\n"
+    "Body content:\n"
+    "  · Concise is key. The context window is a public good. Assume "
+    "the consuming agent is already smart — only add what it doesn't "
+    "already know. Challenge each paragraph: does this justify its "
+    "token cost?\n"
+    "  · Under 500 lines. If you approach that, content should split "
+    "into reference files — but the propose_skill tool only emits "
+    "SKILL.md, so for now keep the single-file body tight and note "
+    "where future split would help.\n"
+    "  · Imperative voice: 'Run X before Y', not 'You should run X "
+    "before Y'.\n"
+    "  · Prefer concise examples over verbose explanations.\n"
+    "  · Match the level of specificity to fragility:\n"
+    "      - High freedom (text): when multiple approaches are valid\n"
+    "      - Medium (pseudocode / scripts with params): when there's "
+    "a preferred pattern\n"
+    "      - Low (exact scripts, few params): when fragile / error-prone\n"
+    "  · Procedural knowledge first. Domain-specific details and "
+    "non-obvious gotchas are the value. Generic 'best practices' the "
+    "consuming agent already knows are noise.\n\n"
+    "Do NOT include in a skill (the body is for procedural guidance, "
+    "not project documentation):\n"
+    "  · README.md / INSTALLATION_GUIDE.md / CHANGELOG.md / QUICK_REFERENCE.md\n"
+    "  · Meta-commentary about how the skill was created\n"
+    "  · 'I noticed that…' / 'This skill captures…' preambles\n\n"
+    "Voice — Hermes' rule, restated:\n"
+    "  · DECLARATIVE for stable preferences: 'Reviews use single-line "
+    "comments' ✓\n"
+    "  · NOT IMPERATIVE for stable preferences: 'Always use single-line "
+    "comments' ✗ — that overrides current user intent.\n"
+    "  · IMPERATIVE for procedural steps: 'Run X before Y' ✓ — this "
+    "is action guidance, not a permanent rule.\n\n"
+    "Rationale field on propose_skill: 1-3 sentences on what you "
+    "learned from THIS conversation that justifies the candidate. The "
+    "operator reads this on the toast detail view; it's how they "
+    "sanity-check that the framing matches their experience.\n"
+)
+
+
+def build_agentic_drafter_system_prompt() -> str:
+    """Assemble the full prompt for the ``skill-drafter`` AgentType.
+
+    Same review/guard/voice rules as the single-call drafter, plus the
+    agentic operating block (tool usage, amend-vs-replace, publish via
+    propose_skill) and the skill-craft block (skill-creator wisdom on
+    name/description/body discipline).
+
+    The output-format directive at the end of FREYJA_FORMAT_BLOCK (the
+    YAML schema for single-call output) is irrelevant in agentic mode —
+    the agent calls `propose_skill` which validates fields directly —
+    but we keep the rest of FREYJA_FORMAT_BLOCK for its name/voice
+    rules. The agent treats the YAML directive as legacy context.
+
+    Stable across invocations so the provider's prompt cache reuses it
+    across back-to-back drafter spawns.
+    """
+    return (
+        FREYJA_PORT_PREAMBLE
+        + HERMES_SKILL_REVIEW_PROMPT
+        + FREYJA_FORMAT_BLOCK
+        + AGENTIC_OPERATING_BLOCK
+        + SKILL_CRAFT_BLOCK
+    )

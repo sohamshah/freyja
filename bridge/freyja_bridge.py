@@ -4646,19 +4646,165 @@ class _BridgeSession:
         except Exception:  # noqa: BLE001
             pass
 
-        def _on_candidate(candidate_id: str) -> None:
-            log("info", f"drafter produced candidate {candidate_id} for session {self.id}")
+        # Spawn the skill-drafter sub-agent. The sub-agent owns the
+        # decision: it reads existing skills, optionally inspects files
+        # the conversation references, then calls `propose_skill` to
+        # publish a candidate (operator sees a SkillToast) — or finishes
+        # with a plain-text rationale when there's nothing worth
+        # capturing. Same pattern as _run_judge_calibrator.
+        #
+        # We don't await here — the spawn is fire-and-forget so the user
+        # turn loop returns immediately. The sub-agent runs in the
+        # background, streaming its transcript like any other sub-agent,
+        # and the operator can navigate into it via the subagents panel
+        # (or the DrafterRunsPanel row, once that links are wired).
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(
+                self._run_drafter_subagent(
+                    run_id=run_id,
+                    conversation_excerpt=conversation,
+                    loaded_skill_names=loaded,
+                    all_skill_names=all_skills,
+                    operator_guidance=operator_guidance,
+                    trigger=trigger,
+                )
+            )
+        except RuntimeError:
+            log("warn", "drafter: no running loop, sub-agent spawn skipped")
 
-        spawn_drafter_review(
-            session_id=self.id,
-            turn_id=self.current_turn_id,
-            conversation_excerpt=conversation,
-            loaded_skill_names=loaded,
-            all_skill_names=all_skills,
-            on_candidate=_on_candidate,
+    async def _run_drafter_subagent(
+        self,
+        *,
+        run_id: str,
+        conversation_excerpt: str,
+        loaded_skill_names: list[str],
+        all_skill_names: list[str],
+        operator_guidance: str,
+        trigger: str,
+    ) -> None:
+        """Spawn the ``skill-drafter`` AgentType as a sub-agent.
+
+        Mirrors ``_run_judge_calibrator``: same thin-wrapper pattern
+        around ``SubAgentTool.spawn_programmatically``. The sub-agent
+        has its own runner, transcript, streaming, and shows up in the
+        subagents panel — the operator can open it, scroll through what
+        tools the drafter called, and continue the conversation to
+        steer a re-publish (e.g. "patch instead of replacing").
+
+        Visibility:
+          · ``skill_drafter_started`` already fired in the caller —
+            this method only handles the spawn + final emit.
+          · On terminate (with or without a propose_skill call), emit
+            ``skill_drafter_pass`` so the DrafterActivityStrip + the
+            DrafterRunsPanel know the run finished and what happened.
+        """
+        from bridge.knowledge.learning.drafter import build_user_message
+
+        sub_tool = self.tool_registry._tools.get("sub_agent") if self.tool_registry else None
+        if sub_tool is None:
+            log("warn", "drafter: sub_agent tool unavailable; cannot spawn skill-drafter")
+            self._emit_drafter_pass(
+                run_id=run_id,
+                decision="error",
+                rationale="sub_agent tool unavailable",
+            )
+            return
+
+        # Reuse the existing user-message builder so the input shape
+        # matches what the single-call drafter sent (same conversation
+        # framing, negative library inclusion, operator guidance slot).
+        try:
+            from bridge.knowledge.learning import candidates as _candidates
+            negative_excerpt = _candidates.negative_library_excerpt()
+        except Exception:  # noqa: BLE001
+            negative_excerpt = ""
+        task_prompt = build_user_message(
+            conversation_excerpt=conversation_excerpt,
+            loaded_skill_names=loaded_skill_names,
+            all_skill_names=all_skill_names,
+            negative_library_excerpt=negative_excerpt,
             operator_guidance=operator_guidance,
-            run_id=run_id,
         )
+
+        try:
+            record, response_text, error = await sub_tool.spawn_programmatically(
+                agent_type_name="skill-drafter",
+                label="Skill drafter",
+                task=task_prompt,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"drafter: spawn_programmatically raised: {exc}")
+            self._emit_drafter_pass(
+                run_id=run_id,
+                decision="error",
+                rationale=f"spawn raised: {type(exc).__name__}: {exc}",
+            )
+            return
+
+        # Attach the sub-agent session id to the run so the renderer
+        # can link the DrafterRunsPanel row to the sub-agent transcript
+        # for navigation.
+        try:
+            emit({
+                "type": "skill_drafter_run_linked",
+                "sessionId": self.id,
+                "runId": run_id,
+                "subagentSessionId": getattr(record, "id", ""),
+            })
+        except Exception:  # noqa: BLE001
+            pass
+
+        # The sub-agent terminates after calling propose_skill (which
+        # emits skill_candidate on its own) OR after writing a final
+        # text response explaining why it skipped. We don't parse the
+        # response text — propose_skill already published the candidate
+        # if there was one; here we just announce that the run ended.
+        if error is not None:
+            self._emit_drafter_pass(
+                run_id=run_id,
+                decision="error",
+                rationale=f"runner: {type(error).__name__}: {str(error)[:200]}",
+            )
+            return
+
+        # Heuristic for skip vs. save: if the sub-agent's final message
+        # mentions calling propose_skill or contains "publish"/"candidate",
+        # we treat it as a save-attempt; otherwise it explained a skip.
+        # The skill_candidate event from propose_skill is the real source
+        # of truth — this is just for the DrafterActivityStrip pill.
+        text = (response_text or "").lower()
+        looks_like_publish = any(
+            kw in text for kw in ("propose_skill", "published candidate", "publishing candidate")
+        )
+        rationale_preview = (response_text or "").strip()[:240]
+        self._emit_drafter_pass(
+            run_id=run_id,
+            decision="save" if looks_like_publish else "skip",
+            rationale=rationale_preview,
+        )
+
+    def _emit_drafter_pass(
+        self,
+        *,
+        run_id: str,
+        decision: str,
+        rationale: str,
+    ) -> None:
+        """Single-site for the ``skill_drafter_pass`` emit so the run-
+        termination cases share one shape."""
+        try:
+            emit({
+                "type": "skill_drafter_pass",
+                "sessionId": self.id,
+                "decision": decision,
+                "rationale": rationale,
+                "model": "",
+                "ranAt": int(time.time() * 1000),
+                "runId": run_id,
+            })
+        except Exception:  # noqa: BLE001
+            log("warn", "drafter: emit(skill_drafter_pass) failed")
 
     def _render_post_turn_window(
         self,
