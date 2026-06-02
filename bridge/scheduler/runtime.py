@@ -188,24 +188,26 @@ async def fire_job(
             service.state.permission_tier = original_tier
             return run
         if pending is not None:
-            try:
-                # Apply the wall-clock timeout if configured.
-                timeout = job.timeout_seconds or (
-                    job.budget.wall_clock_timeout_seconds if job.budget else None
-                )
-                if timeout and timeout > 0:
-                    await asyncio.wait_for(asyncio.shield(pending), timeout=timeout)
-                else:
-                    await pending
-            except asyncio.TimeoutError:
-                # Cancel the in-flight turn so the runner stops the LLM
-                # stream cleanly; the run is marked timed_out.
-                try:
-                    pending.cancel()
-                except Exception:  # noqa: BLE001
-                    pass
+            # Poll the run JSON for cancel_requested while we wait. A
+            # peer process (e.g. the user clicked Cancel in the
+            # dashboard while the daemon is firing) can set this flag
+            # via persistence.request_run_cancellation; the firing
+            # process notices and cancels its local turn task.
+            timeout = job.timeout_seconds or (
+                job.budget.wall_clock_timeout_seconds if job.budget else None
+            )
+            cancel_outcome = await _await_pending_with_cancel_poll(
+                pending,
+                job_id=job.id,
+                run_id=run.run_id,
+                timeout_seconds=timeout,
+            )
+            if cancel_outcome == "timed_out":
                 run.status = "timed_out"
                 run.error = f"wall-clock timeout after {timeout}s"
+            elif cancel_outcome == "cancelled":
+                run.status = "cancelled"
+                run.error = "cancel_requested by peer process or user"
 
         # Read the most recent assistant message back out of the
         # transcript. This is the cleanest capture point: by the time
@@ -709,3 +711,89 @@ def _extract_text(msg: Any) -> str:
         if isinstance(text, str):
             parts.append(text)
     return "\n".join(parts).strip()
+
+
+# ─── Cross-process cancellation polling ────────────────────────────────
+
+
+# How often to poll for the cancel flag while the agent turn runs.
+# 1s gives the user sub-second-feel cancellation latency without
+# burning CPU on a stat call.
+_CANCEL_POLL_INTERVAL = 1.0
+
+
+async def _await_pending_with_cancel_poll(
+    pending: asyncio.Task,
+    *,
+    job_id: str,
+    run_id: str,
+    timeout_seconds: float | None,
+) -> str:
+    """Await ``pending`` while also polling the run JSON for
+    ``cancel_requested``.
+
+    Returns one of:
+      · "completed"  — turn finished on its own
+      · "cancelled"  — another process set cancel_requested; we
+        cancelled the local turn
+      · "timed_out"  — wall-clock budget exceeded; we cancelled
+
+    The poll uses a per-loop ``asyncio.wait`` with a 1s timeout so the
+    scheduler tick / other tasks aren't starved.
+    """
+    from bridge.scheduler.persistence import read_run_cancel_requested
+
+    started = time.time()
+    while True:
+        # If the turn finished while we slept, exit.
+        if pending.done():
+            return "completed"
+        # Wall-clock timeout check.
+        if timeout_seconds is not None and timeout_seconds > 0:
+            elapsed = time.time() - started
+            if elapsed >= timeout_seconds:
+                try:
+                    pending.cancel()
+                except Exception:  # noqa: BLE001
+                    pass
+                # Give the cancellation a brief grace period before
+                # returning, so the runner has a chance to clean up
+                # its LLM stream before we mark the run timed_out.
+                try:
+                    await asyncio.wait_for(asyncio.shield(pending), timeout=2.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                    pass
+                return "timed_out"
+        # Cross-process cancel-flag check.
+        if read_run_cancel_requested(job_id, run_id):
+            try:
+                pending.cancel()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                await asyncio.wait_for(asyncio.shield(pending), timeout=2.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                pass
+            return "cancelled"
+        # Sleep until next poll OR the task completes — whichever
+        # comes first. ``asyncio.wait`` lets us race the two.
+        poll_window = _CANCEL_POLL_INTERVAL
+        if timeout_seconds is not None and timeout_seconds > 0:
+            remaining = timeout_seconds - (time.time() - started)
+            poll_window = max(0.05, min(poll_window, remaining))
+        try:
+            done, _pending = await asyncio.wait(
+                {pending},
+                timeout=poll_window,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if done:
+                return "completed"
+        except asyncio.CancelledError:
+            # OUR task got cancelled (e.g. service.stop()). Pass it
+            # on to the turn so the LLM stream stops cleanly.
+            try:
+                pending.cancel()
+            except Exception:  # noqa: BLE001
+                pass
+            raise

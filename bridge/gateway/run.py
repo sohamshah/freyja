@@ -1935,6 +1935,22 @@ class GatewayDaemon:
             workspace, default_model,
         )
 
+        # Start the scheduler. Under the stateless design every process
+        # races for the owner_lock — only one wins and runs the tick
+        # loop. CRUD works on every instance because reads/writes go
+        # straight to disk, gated by per-job flocks. Without this
+        # start() call (the bug that left Slack-created jobs dangling
+        # forever in PID 79548), this process could service the
+        # ``schedule`` tool's create/list actions but never fire a job.
+        try:
+            await self.state.scheduler.start()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "gateway scheduler start failed: %s "
+                "(jobs created here will not fire from this process)",
+                exc,
+            )
+
         # Slack adapter is the only one in v1. Future: read
         # ~/.freyja/gateway.yaml to enable/disable adapters.
         adapter = SlackAdapter()

@@ -17,10 +17,11 @@ Layout:
       installed — reinstalling Freyja to a new folder keeps the
       LaunchAgent valid.
 
-  ~/.freyja/.locks/.bridge.lock
-      Advisory single-writer lock. The Electron-attached bridge holds
-      this while running; the daemon backs off when it's held, taking
-      over only when the user closes the app.
+  ~/.freyja/schedules/.locks/owner.lock
+      Held by the SchedulerService process running the tick loop.
+      Per-process fcntl.flock; auto-released on crash. Other processes
+      service CRUD via disk + per-job flocks but don't run a tick.
+      See bridge/scheduler/persistence.py for the new primitives.
 
 Public surface:
 
@@ -30,11 +31,6 @@ Public surface:
                                      durable job.
   uninstall_daemon()              — stop + unload + delete plist.
   daemon_status()                 — installed?, running?, pid?, last_tick
-  on_app_quit_handoff()           — called by Electron on quit to
-                                     hand control to the daemon.
-  on_app_start_takeover()         — called by Electron on start to
-                                     stop the daemon and reclaim
-                                     the bridge lock.
 """
 
 from __future__ import annotations
@@ -98,10 +94,13 @@ def daemon_pid_path() -> Path:
     return freyja_home() / ".scheduler-daemon.pid"
 
 
-def bridge_lock_path() -> Path:
-    p = freyja_home() / ".locks"
-    p.mkdir(parents=True, exist_ok=True)
-    return p / ".bridge.lock"
+# NOTE: the prior single-writer takeover mechanism (bridge_lock_path +
+# on_app_start_takeover + on_app_quit_handoff) was removed in favor of
+# a stateless SchedulerService that reads from disk on every operation
+# and uses ``fcntl.flock`` per-job lock files for fire coordination.
+# Multiple bridge processes can now coexist safely (Electron-attached +
+# LaunchAgent daemon + gateway). See bridge/scheduler/persistence.py
+# (FileLock, owner_lock_path, touch_wake) for the new primitives.
 
 
 # ─── Bridge / Python resolution ────────────────────────────────────────
@@ -225,16 +224,6 @@ def _write_state(state: dict[str, Any]) -> None:
         _state_file_path().write_text(json.dumps(state, indent=2))
     except OSError as exc:
         logger.warning("failed to write daemon state: %s", exc)
-
-
-def _read_state() -> dict[str, Any]:
-    p = _state_file_path()
-    if not p.exists():
-        return {}
-    try:
-        return json.loads(p.read_text())
-    except (OSError, json.JSONDecodeError):
-        return {}
 
 
 def ensure_daemon_installed(*, reason: str = "auto") -> dict[str, Any]:
@@ -422,47 +411,6 @@ def daemon_status() -> dict[str, Any]:
     }
 
 
-# ─── App ↔ Daemon coordination ─────────────────────────────────────────
-
-
-def on_app_start_takeover() -> None:
-    """Called by the Electron-attached bridge at start. Stops the
-    daemon so this process becomes the active scheduler. Acquires the
-    bridge lock (advisory).
-
-    Why not run both? Two SchedulerService instances scanning the same
-    ``~/.freyja/schedules/jobs/`` dir would race on next_fire_at
-    persistence and fire the same job twice. The lock + takeover
-    pattern enforces single-writer semantics.
-    """
-    if not is_supported_platform():
-        return
-    try:
-        subprocess.run(
-            ["launchctl", "stop", LAUNCH_AGENT_LABEL],
-            check=False, capture_output=True, timeout=5,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    _write_lock(os.getpid(), "electron_bridge")
-
-
-def on_app_quit_handoff() -> None:
-    """Called by Electron on quit. If durable jobs exist, restart the
-    daemon so they continue to fire. Releases the bridge lock."""
-    if not is_supported_platform():
-        return
-    _clear_lock()
-    if plist_path().exists():
-        try:
-            subprocess.run(
-                ["launchctl", "start", LAUNCH_AGENT_LABEL],
-                check=False, capture_output=True, timeout=5,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-
-
 # ─── launchctl wrappers ────────────────────────────────────────────────
 
 
@@ -534,34 +482,3 @@ def _launchctl_print(label: str) -> dict[str, Any] | None:
     return info or {"state": "unknown"}
 
 
-# ─── Bridge lock ───────────────────────────────────────────────────────
-
-
-def _write_lock(pid: int, owner: str) -> None:
-    try:
-        bridge_lock_path().write_text(json.dumps({
-            "pid": pid,
-            "owner": owner,
-            "acquired_at": time.time(),
-        }))
-    except OSError as exc:
-        logger.warning("failed to write bridge lock: %s", exc)
-
-
-def _clear_lock() -> None:
-    p = bridge_lock_path()
-    if p.exists():
-        try:
-            p.unlink()
-        except OSError:
-            pass
-
-
-def read_bridge_lock() -> dict[str, Any] | None:
-    p = bridge_lock_path()
-    if not p.exists():
-        return None
-    try:
-        return json.loads(p.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None

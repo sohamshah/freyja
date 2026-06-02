@@ -1,24 +1,36 @@
 """SchedulerService — long-running asyncio service that fires due
 jobs and exposes CRUD over scheduled jobs.
 
-Lifecycle:
-  · ``start()`` — boot the run loop, load all jobs from disk, recompute
-    next_fire_at for everyone, restore from disk.
-  · ``stop()`` — graceful shutdown; pending fires finish.
+Multi-process safe. The service has NO in-memory job table — every
+read hits disk, every mutation takes a per-job ``fcntl.flock`` before
+re-reading + writing. Two processes can run a SchedulerService
+concurrently (e.g. the Electron-attached bridge + the LaunchAgent
+daemon) without corrupting state or double-firing jobs.
 
-The service is owned by ``_BridgeState``. Surfaces (tool, slash,
-HTTP) all call into the same async API. Persistence is per-job;
-events.jsonl is the audit log. At-most-once is achieved by
-pre-advancing ``next_fire_at`` and persisting BEFORE firing.
+The mechanism:
 
-Concurrency invariants:
-  · One asyncio.Lock per job (created lazily) — prevents the same
-    job firing twice in parallel.
-  · The execution session has its own serialization via
-    ``_schedule_or_queue_turn`` — concurrent fires of different jobs
-    into the SAME session will queue, not race.
-  · A global semaphore bounds total concurrent fires; default very
-    high so we don't artificially throttle small loads.
+  · ``jobs/{id}.json`` is the canonical record. Atomic writes
+    (temp + rename) prevent partial-state reads.
+  · ``.locks/job-{id}.lock`` is acquired (non-blocking) before any
+    state-mutating operation, including pre-advance + fire dispatch.
+    Two processes racing the same due job: whoever flocks first
+    wins; the other skips.
+  · ``.wake`` is touched on every CRUD; tick loops poll its mtime
+    each iteration (1Hz cap) and re-scan on change. Wake latency is
+    bounded by the poll interval; no cross-process asyncio
+    primitives needed.
+  · ``request_run_cancellation`` writes a flag into the run JSON
+    that the firing process polls during its agent turn.
+
+Crash safety: ``fcntl.flock`` is released automatically by the kernel
+when the holder exits (clean OR crash). A dead process can never leave
+a job permanently locked.
+
+Internal hooks:
+
+  ``advance_self_paced(job_id, delay_seconds)`` — used by the
+  auto-registered ``continue_loop`` tool.
+  ``complete_self_paced(job_id, reason)`` — used by ``complete_loop``.
 """
 
 from __future__ import annotations
@@ -48,14 +60,21 @@ from bridge.scheduler.models import (
     new_job_id,
 )
 from bridge.scheduler.persistence import (
+    FileLock,
     append_event,
     delete_job,
     ensure_dirs,
+    iter_job_files,
+    job_lock_path,
     load_all_jobs,
     load_job,
     load_recent_runs_global,
     load_runs_for_job,
+    owner_lock_path,
+    read_wake_mtime,
+    request_run_cancellation,
     save_job,
+    touch_wake,
 )
 from bridge.scheduler.scheduling import (
     cadence_label,
@@ -73,9 +92,16 @@ logger = logging.getLogger("freyja.scheduler.service")
 # but a runaway "fire 10k jobs at the same instant" won't OOM the box.
 _DEFAULT_MAX_CONCURRENT_RUNS = 256
 
+# Tick cadence ceiling. The loop sleeps min(horizon, _TICK_CAP_SECONDS)
+# so wake events from peers are noticed promptly. At 1Hz a cross-process
+# create_job becomes visible within ~1s, which matches user expectations
+# without burning CPU.
+_TICK_CAP_SECONDS = 1.0
+
 
 class SchedulerService:
-    """Process-level scheduler. One instance lives on ``_BridgeState``.
+    """Process-level scheduler. Multiple instances may coexist; disk +
+    flock are the coordination layer.
 
     Public API:
 
@@ -83,12 +109,12 @@ class SchedulerService:
       ``await list_jobs(filter) -> list[JobRecord]``
       ``await get_job(job_id) -> JobRecord | None``
       ``await update_job(job_id, patch) -> JobRecord``
-      ``await pause_job(job_id)``
-      ``await resume_job(job_id)``
-      ``await remove_job(job_id)``
+      ``await pause_job(job_id) -> JobRecord``
+      ``await resume_job(job_id) -> JobRecord``
+      ``await remove_job(job_id) -> bool``
       ``await run_job_now(job_id) -> RunRecord``
       ``await get_runs(job_id, limit) -> list[RunRecord]``
-      ``await cancel_run(run_id)``
+      ``await cancel_run(run_id) -> bool``
       ``await metrics() -> SchedulerMetrics``
 
     Loop control:
@@ -99,8 +125,17 @@ class SchedulerService:
 
       ``advance_self_paced(job_id, delay_seconds)`` — used by the
       auto-registered ``continue_loop`` tool.
-      ``complete_self_paced(job_id, reason)`` — used by
-      ``complete_loop``.
+      ``complete_self_paced(job_id, reason)`` — used by ``complete_loop``.
+
+    Notes:
+
+      · ``cancel_run`` always works cross-process: it writes
+        ``cancel_requested=true`` into the run JSON. The owning
+        process polls during its agent turn and cancels the local
+        task. Same-process callers also get an immediate
+        ``Task.cancel()`` for speed.
+      · ``run_job_now`` flocks the per-job lock; if a peer is
+        already firing, it raises ``RuntimeError`` instead of racing.
     """
 
     def __init__(
@@ -110,14 +145,23 @@ class SchedulerService:
         max_concurrent_runs: int = _DEFAULT_MAX_CONCURRENT_RUNS,
     ) -> None:
         self.state = state
-        self._jobs: dict[str, JobRecord] = {}
-        self._job_locks: dict[str, asyncio.Lock] = {}
+        # In-flight runs owned by THIS process — used for same-process
+        # cancel and graceful shutdown. Peer-process runs are not
+        # visible here; they're cancelled via the cancel_requested
+        # flag on the run JSON.
         self._in_flight_runs: dict[str, asyncio.Task] = {}
-        self._wake = asyncio.Event()
         self._stopped = False
         self._loop_task: asyncio.Task | None = None
         self._concurrency = asyncio.Semaphore(max_concurrent_runs)
-        self._daily_cost: dict[str, float] = {}  # job_id → running 24h cost
+        # The owner-lock holder runs the tick loop. The other process
+        # still services CRUD via disk + per-job flocks.
+        self._owner_lock: FileLock | None = None
+        self._is_owner: bool = False
+        # Wake-mtime watermark: peers bump ``.wake`` on every CRUD;
+        # we use it to know whether to bother re-scanning even if our
+        # sleep timed out early. Currently informational — the tick
+        # always re-reads disk — but available for future optimisation.
+        self._last_wake_mtime: float = 0.0
         # Optional callback for emitting daemon-install hints — set by
         # the bridge's main on first scheduled-job creation.
         self.on_durable_job_created: Any = None
@@ -125,24 +169,61 @@ class SchedulerService:
     # ─── Lifecycle ────────────────────────────────────────────────────
 
     async def start(self) -> None:
+        """Boot the run loop. Acquires the cross-process owner lock; if
+        another scheduler in another process already holds it, this
+        instance runs in CRUD-only mode (no tick loop)."""
         ensure_dirs()
+        # Try to claim ownership of the tick loop. If a peer (daemon
+        # or another desktop bridge) already holds it, we still
+        # service CRUD — disk + per-job flocks keep us safe — but we
+        # don't run a tick. This avoids two processes burning CPU on
+        # parallel disk scans for the same jobs.
+        self._owner_lock = FileLock(owner_lock_path())
+        self._is_owner = self._owner_lock.acquire()
+        if not self._is_owner:
+            logger.info(
+                "scheduler started in CRUD-only mode "
+                "(peer holds owner lock at %s)",
+                owner_lock_path(),
+            )
+            append_event({
+                "type": "scheduler_started",
+                "mode": "crud_only",
+                "job_count": _count_jobs_on_disk(),
+            })
+            return
+
+        # Owner: recompute next_fire_at for every job and persist —
+        # the prior process may have crashed mid-update, leaving stale
+        # values. We hold each job's flock briefly while we rewrite.
+        boot_count = 0
         for job in load_all_jobs():
-            self._jobs[job.id] = job
-            # Recompute next_fire_at on every boot. Cron-style schedules
-            # need this; one-shots in the past are honored per
-            # misfire_policy below.
-            self._recompute_next_fire(job, force=True)
-        logger.info("scheduler booted: %d jobs", len(self._jobs))
+            with FileLock(job_lock_path(job.id)) as got:
+                if not got:
+                    # A peer is mutating this job concurrently — skip
+                    # the boot recompute; the next tick will catch up
+                    # via the normal scan path.
+                    continue
+                fresh = load_job(job.id) or job
+                self._recompute_next_fire(fresh, force=True)
+                save_job(fresh)
+                boot_count += 1
+        touch_wake()
+        logger.info("scheduler booted as owner: %d jobs", boot_count)
         append_event({
             "type": "scheduler_started",
-            "job_count": len(self._jobs),
+            "mode": "owner",
+            "job_count": boot_count,
         })
-        self._loop_task = asyncio.create_task(self._run_loop(), name="scheduler-loop")
+        self._loop_task = asyncio.create_task(
+            self._run_loop(), name="scheduler-loop",
+        )
 
     async def stop(self) -> None:
         self._stopped = True
-        self._wake.set()
         if self._loop_task is not None:
+            # The loop checks _stopped on each iteration; up to 1s
+            # before it notices. Wait up to 5s for clean exit.
             try:
                 await asyncio.wait_for(self._loop_task, timeout=5.0)
             except asyncio.TimeoutError:
@@ -155,250 +236,332 @@ class SchedulerService:
                 *self._in_flight_runs.values(),
                 return_exceptions=True,
             )
+        if self._owner_lock is not None:
+            self._owner_lock.release()
+            self._owner_lock = None
+            self._is_owner = False
         append_event({"type": "scheduler_stopped"})
 
     # ─── Main loop ────────────────────────────────────────────────────
 
     async def _run_loop(self) -> None:
-        while not self._stopped:
+        # Only the owner runs the tick loop. If we somehow lost
+        # ownership (shouldn't happen — kernel releases flocks only on
+        # process exit), bail.
+        while not self._stopped and self._is_owner:
             try:
                 await self._tick()
             except Exception as exc:  # noqa: BLE001
                 logger.exception("scheduler tick crashed: %s", exc)
-            # Sleep until the next due time, or until wake.
+            # Sleep until the next due time, capped at _TICK_CAP_SECONDS
+            # so cross-process wake-touches surface within ~1s. We
+            # always re-scan disk on the next tick regardless.
             now = time.time()
-            next_at = self._earliest_next_fire()
+            next_at = self._earliest_next_fire_from_disk()
             if next_at is None:
-                # No work to do — wake every hour to re-check (cheap).
-                delay = 3600.0
+                delay = _TICK_CAP_SECONDS
             else:
-                delay = max(0.1, next_at - now)
+                delay = max(0.05, min(next_at - now, _TICK_CAP_SECONDS))
+            self._last_wake_mtime = read_wake_mtime()
             try:
-                await asyncio.wait_for(self._wake.wait(), timeout=delay)
-            except asyncio.TimeoutError:
-                pass
-            finally:
-                self._wake.clear()
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                break
 
     async def _tick(self) -> None:
+        """Scan jobs from disk, find due, attempt to claim each with a
+        per-job flock + atomic pre-advance, fire winners. Multi-process
+        safe: two ticking schedulers compete via the flock, so each
+        due job fires exactly once across the fleet."""
         now = time.time()
-        due: list[JobRecord] = []
-        for job in self._jobs.values():
-            if not job.enabled or job.status != "active":
+        # Cheap read: enumerate file paths only. No JSON parse yet.
+        candidates: list[str] = []
+        for job_id, _path, _mtime in iter_job_files():
+            # We could optimise by stat-only checks here, but the
+            # parsed JobRecord is needed to know next_fire_at anyway.
+            # On a tick path, this is fine.
+            job = load_job(job_id)
+            if job is None or not job.enabled or job.status != "active":
                 continue
-            nf = job.next_fire_at
-            if nf is None:
+            if job.next_fire_at is None or job.next_fire_at > now:
                 continue
-            if nf <= now:
-                due.append(job)
-        if not due:
+            candidates.append(job_id)
+        for job_id in candidates:
+            asyncio.create_task(
+                self._try_claim_and_fire(job_id),
+                name=f"scheduler-claim-{job_id}",
+            )
+
+    async def _try_claim_and_fire(self, job_id: str) -> None:
+        """Acquire the per-job flock, re-read the job under it, verify
+        still due, pre-advance + persist, then fire. If the flock is
+        already held (by a peer process or our own concurrent claim),
+        skip — the holder is firing this job already.
+        """
+        lock = FileLock(job_lock_path(job_id))
+        if not lock.acquire():
+            # Another process / claim task got here first. Their
+            # pre-advance + fire is canonical; we drop out.
             return
-        # Pre-advance + persist all due jobs BEFORE firing any of them.
-        # This is the at-most-once invariant from Hermes.
-        for job in due:
+        try:
+            # Re-read under the lock — the peer may have already
+            # advanced next_fire_at past now.
+            job = load_job(job_id)
+            if job is None or not job.enabled or job.status != "active":
+                return
+            now = time.time()
+            if job.next_fire_at is None or job.next_fire_at > now:
+                return
+            # Pre-advance + persist BEFORE firing — at-most-once.
             self._recompute_next_fire(job, force=True, after_fire=True)
             save_job(job)
-        # Fire concurrently, bounded by the global semaphore.
-        for job in due:
+            touch_wake()
+            # Hand off to the fire path while STILL holding the lock —
+            # the fire path is responsible for releasing it after the
+            # run completes (so cancel_run flag polling sees the same
+            # owner).
             task = asyncio.create_task(
-                self._fire_with_concurrency(job),
+                self._fire_with_concurrency(job, lock),
                 name=f"scheduler-fire-{job.id}",
             )
             self._in_flight_runs[task.get_name()] = task
+            # Don't release lock here — _fire_with_concurrency owns it.
+            lock = None
+        finally:
+            if lock is not None:
+                lock.release()
 
-    async def _fire_with_concurrency(self, job: JobRecord) -> None:
+    async def _fire_with_concurrency(self, job: JobRecord, fire_lock: FileLock) -> None:
+        """Owns the per-job flock for the duration of the fire."""
+        task_name = asyncio.current_task().get_name()
         try:
             async with self._concurrency:
-                await self._fire_with_lock(job)
+                await self._fire_under_lock(job)
         except Exception as exc:  # noqa: BLE001
             logger.exception("fire crashed (job=%s): %s", job.id, exc)
         finally:
-            self._in_flight_runs.pop(asyncio.current_task().get_name(), None)
+            fire_lock.release()
+            self._in_flight_runs.pop(task_name, None)
 
-    async def _fire_with_lock(self, job: JobRecord) -> None:
-        lock = self._job_locks.setdefault(job.id, asyncio.Lock())
-        # Overlap policy gating. The lock guards "this job is currently
-        # running"; if held when we arrive, we either queue (await the
-        # lock), skip, or cancel the running fire.
-        if job.overlap_policy == "skip_if_running" and lock.locked():
-            append_event({
-                "type": "scheduler_run_skipped",
-                "job_id": job.id,
-                "reason": "overlap_policy=skip_if_running",
-            })
-            self.emit_event(
-                subtype="scheduler_run_skipped",
-                message=f"Scheduled job '{job.name}' skipped (already running)",
-                details={"jobId": job.id, "reason": "skip_if_running"},
-            )
-            return
-        if job.overlap_policy == "cancel_running" and lock.locked():
-            # Find any in-flight task for this job and cancel it.
-            for name, task in list(self._in_flight_runs.items()):
-                if name.startswith(f"scheduler-fire-{job.id}") and not task.done():
-                    task.cancel()
-        async with lock:
-            from bridge.scheduler.runtime import fire_job
-            run = await fire_job(self, job)
-            # Retry policy. If the run failed and the user configured
-            # retries, schedule a backoff fire. Subsequent retries
-            # multiply the backoff by ``backoff_multiplier`` so quickly
-            # ramping into the multi-minute range is the default.
-            retry = job.retry_policy
-            if (
-                retry is not None
-                and run.status in {"failed", "timed_out"}
-                and retry.max_retries > 0
-                and (not retry.on or _retry_kind(run) in retry.on)
+    async def _fire_under_lock(self, job: JobRecord) -> None:
+        """Run the agent turn for ``job``. The per-job flock is already
+        held by our caller, so retry-policy + self-paced default
+        writes are race-free."""
+        from bridge.scheduler.runtime import fire_job
+        run = await fire_job(self, job)
+        # Retry policy. If the run failed and the user configured
+        # retries, schedule a backoff fire.
+        retry = job.retry_policy
+        if (
+            retry is not None
+            and run.status in {"failed", "timed_out"}
+            and retry.max_retries > 0
+            and (not retry.on or _retry_kind(run) in retry.on)
+        ):
+            attempts = getattr(run, "_attempts", 0) + 1
+            if attempts <= retry.max_retries:
+                delay = retry.backoff_seconds * (
+                    retry.backoff_multiplier ** (attempts - 1)
+                )
+                # Re-read job under our held lock so we don't clobber
+                # any concurrent update_job from a peer (also locked,
+                # but ordered before us).
+                fresh = load_job(job.id) or job
+                fresh.next_fire_at = time.time() + float(delay)
+                save_job(fresh)
+                touch_wake()
+                append_event({
+                    "type": "scheduler_run_retrying",
+                    "job_id": job.id,
+                    "run_id": run.run_id,
+                    "attempt": attempts,
+                    "delay_seconds": delay,
+                })
+        # Self-paced jobs whose agent didn't set a next_fire_at get
+        # the configured max_delay as a safety net.
+        if isinstance(job.schedule, SelfPacedSchedule):
+            fresh = load_job(job.id) or job
+            if fresh.enabled and (
+                fresh.next_fire_at is None
+                or fresh.next_fire_at <= time.time()
             ):
-                attempts = getattr(run, "_attempts", 0) + 1
-                if attempts <= retry.max_retries:
-                    delay = retry.backoff_seconds * (
-                        retry.backoff_multiplier ** (attempts - 1)
-                    )
-                    job.next_fire_at = time.time() + float(delay)
-                    save_job(job)
-                    append_event({
-                        "type": "scheduler_run_retrying",
-                        "job_id": job.id,
-                        "run_id": run.run_id,
-                        "attempt": attempts,
-                        "delay_seconds": delay,
-                    })
-            # If self-paced and the agent didn't set a next_fire_at,
-            # default to max_delay_seconds. The runtime emits the
-            # warning.
-            if isinstance(job.schedule, SelfPacedSchedule) and job.enabled:
-                if job.next_fire_at is None or job.next_fire_at <= time.time():
-                    job.next_fire_at = time.time() + job.schedule.max_delay_seconds
-                    save_job(job)
-                    append_event({
-                        "type": "scheduler_self_paced_defaulted",
-                        "job_id": job.id,
-                        "delay_seconds": job.schedule.max_delay_seconds,
-                    })
-            # Wake so we re-evaluate horizon (job's next_fire_at moved).
-            self._wake.set()
+                fresh.next_fire_at = time.time() + job.schedule.max_delay_seconds
+                save_job(fresh)
+                touch_wake()
+                append_event({
+                    "type": "scheduler_self_paced_defaulted",
+                    "job_id": job.id,
+                    "delay_seconds": job.schedule.max_delay_seconds,
+                })
 
     # ─── CRUD ─────────────────────────────────────────────────────────
 
     async def create_job(self, spec: JobRecord) -> JobRecord:
         """Persist a new job. Computes ``next_fire_at`` from schedule.
-        Notifies durable-job hook if anyone subscribed (used by the
-        bridge to lazy-install the LaunchAgent daemon)."""
+        Reads back from disk before returning so the caller gets the
+        canonical (post-pre-advance, post-validation) record."""
         if not spec.id:
             spec.id = new_job_id()
         spec.created_at = spec.updated_at = time.time()
-        self._recompute_next_fire(spec, force=True)
-        self._jobs[spec.id] = spec
-        save_job(spec)
+        # Take the per-job lock to align with the rest of the CRUD
+        # surface (so concurrent create-vs-update on a known id can't
+        # race), then compute + persist.
+        with FileLock(job_lock_path(spec.id)) as got:
+            if not got:
+                # The id is in use AND being mutated — astronomically
+                # unlikely for a fresh uuid, but defensive.
+                raise RuntimeError(
+                    f"job id collision: {spec.id} is locked by a peer"
+                )
+            self._recompute_next_fire(spec, force=True)
+            save_job(spec)
+        touch_wake()
+        # Re-load from disk so the returned record matches what peers
+        # would see if they queried — not the just-mutated in-memory
+        # object.
+        canonical = load_job(spec.id) or spec
         append_event({
             "type": "scheduler_job_created",
-            "job_id": spec.id,
-            "name": spec.name,
-            "schedule": spec.schedule.to_dict(),
+            "job_id": canonical.id,
+            "name": canonical.name,
+            "schedule": canonical.schedule.to_dict(),
         })
         self.emit_event(
             subtype="scheduler_job_created",
-            message=f"Scheduled job '{spec.name}' created",
+            message=f"Scheduled job '{canonical.name}' created",
             details={
-                "jobId": spec.id,
-                "cadence": cadence_label(spec.schedule),
-                "nextFireAt": spec.next_fire_at,
+                "jobId": canonical.id,
+                "cadence": cadence_label(canonical.schedule),
+                "nextFireAt": canonical.next_fire_at,
             },
         )
-        self._wake.set()
-        # Daemon hint for durable jobs (anything non-ephemeral counts).
         try:
             if self.on_durable_job_created is not None:
                 if asyncio.iscoroutinefunction(self.on_durable_job_created):
-                    await self.on_durable_job_created(spec)
+                    await self.on_durable_job_created(canonical)
                 else:
-                    self.on_durable_job_created(spec)
+                    self.on_durable_job_created(canonical)
         except Exception:  # noqa: BLE001
             logger.debug("on_durable_job_created hook failed", exc_info=True)
-        return spec
+        return canonical
 
     async def list_jobs(self, filt: JobFilter | None = None) -> list[JobRecord]:
-        out = list(self._jobs.values())
-        if filt is None:
-            return sorted(out, key=lambda j: (j.next_fire_at or 1e18, j.name))
-        return sorted(
-            [j for j in out if _matches(j, filt)],
-            key=lambda j: (j.next_fire_at or 1e18, j.name),
-        )
+        """Read all jobs from disk and apply filter. O(n) in job count,
+        which is fine at our scale (1-10000 jobs). No in-memory cache
+        means cross-process writes are visible immediately."""
+        jobs = load_all_jobs()
+        if filt is not None:
+            jobs = [j for j in jobs if _matches(j, filt)]
+        return sorted(jobs, key=lambda j: (j.next_fire_at or 1e18, j.name))
 
     async def get_job(self, job_id: str) -> JobRecord | None:
-        return self._jobs.get(job_id) or load_job(job_id)
+        """Always read from disk — never trust an in-memory cache."""
+        return load_job(job_id)
 
     async def update_job(self, job_id: str, patch: JobPatch) -> JobRecord:
-        job = await self.get_job(job_id)
-        if job is None:
-            raise KeyError(job_id)
-        for field_name in (
-            "name", "description", "enabled", "max_fires", "prompt",
-            "permission_snapshot", "model_id", "coordination_strategy",
-            "skills_to_load", "budget", "artifact", "memory", "sinks",
-            "misfire_policy", "overlap_policy", "timeout_seconds",
-            "retry_policy", "tags",
-        ):
-            val = getattr(patch, field_name)
-            if val is not None:
-                setattr(job, field_name, val)
-        if patch.schedule is not None:
-            job.schedule = patch.schedule
-            self._recompute_next_fire(job, force=True)
-        if patch.execution is not None:
-            job.execution = patch.execution
-        self._jobs[job.id] = job
-        save_job(job)
+        """Take the per-job flock, re-read under it, apply the patch,
+        save. Eliminates lost-update against concurrent peer writes."""
+        with FileLock(job_lock_path(job_id)) as got:
+            if not got:
+                # A peer is firing this job. Updates wait for the next
+                # opportunity — the caller can retry. We could
+                # alternatively block here on flock; preferring fail-
+                # fast keeps the surface simple.
+                raise RuntimeError(
+                    f"job {job_id} is locked by a peer; retry shortly"
+                )
+            job = load_job(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            for field_name in (
+                "name", "description", "enabled", "max_fires", "prompt",
+                "permission_snapshot", "model_id", "coordination_strategy",
+                "skills_to_load", "budget", "artifact", "memory", "sinks",
+                "misfire_policy", "overlap_policy", "timeout_seconds",
+                "retry_policy", "tags",
+            ):
+                val = getattr(patch, field_name)
+                if val is not None:
+                    setattr(job, field_name, val)
+            if patch.schedule is not None:
+                job.schedule = patch.schedule
+                self._recompute_next_fire(job, force=True)
+            if patch.execution is not None:
+                job.execution = patch.execution
+            save_job(job)
+        touch_wake()
+        canonical = load_job(job_id) or job
         append_event({
             "type": "scheduler_job_updated",
-            "job_id": job.id,
+            "job_id": canonical.id,
         })
         self.emit_event(
             subtype="scheduler_job_updated",
-            message=f"Scheduled job '{job.name}' updated",
-            details={"jobId": job.id, "cadence": cadence_label(job.schedule)},
+            message=f"Scheduled job '{canonical.name}' updated",
+            details={"jobId": canonical.id, "cadence": cadence_label(canonical.schedule)},
         )
-        self._wake.set()
-        return job
+        return canonical
 
-    async def pause_job(self, job_id: str) -> None:
-        job = await self.get_job(job_id)
-        if job is None:
-            raise KeyError(job_id)
-        job.enabled = False
-        job.status = "paused"
-        save_job(job)
+    async def pause_job(self, job_id: str) -> JobRecord:
+        with FileLock(job_lock_path(job_id)) as got:
+            if not got:
+                raise RuntimeError(f"job {job_id} is locked by a peer; retry shortly")
+            job = load_job(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            job.enabled = False
+            job.status = "paused"
+            save_job(job)
+        touch_wake()
         append_event({"type": "scheduler_job_paused", "job_id": job_id})
+        canonical = load_job(job_id) or job
         self.emit_event(
             subtype="scheduler_job_paused",
-            message=f"Scheduled job '{job.name}' paused",
+            message=f"Scheduled job '{canonical.name}' paused",
             details={"jobId": job_id},
         )
+        return canonical
 
-    async def resume_job(self, job_id: str) -> None:
-        job = await self.get_job(job_id)
-        if job is None:
-            raise KeyError(job_id)
-        job.enabled = True
-        job.status = "active"
-        self._recompute_next_fire(job, force=True)
-        save_job(job)
+    async def resume_job(self, job_id: str) -> JobRecord:
+        with FileLock(job_lock_path(job_id)) as got:
+            if not got:
+                raise RuntimeError(f"job {job_id} is locked by a peer; retry shortly")
+            job = load_job(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            job.enabled = True
+            job.status = "active"
+            self._recompute_next_fire(job, force=True)
+            save_job(job)
+        touch_wake()
         append_event({"type": "scheduler_job_resumed", "job_id": job_id})
+        canonical = load_job(job_id) or job
         self.emit_event(
             subtype="scheduler_job_resumed",
-            message=f"Scheduled job '{job.name}' resumed",
-            details={"jobId": job_id, "nextFireAt": job.next_fire_at},
+            message=f"Scheduled job '{canonical.name}' resumed",
+            details={"jobId": job_id, "nextFireAt": canonical.next_fire_at},
         )
-        self._wake.set()
+        return canonical
 
     async def remove_job(self, job_id: str) -> bool:
-        job = self._jobs.pop(job_id, None) or load_job(job_id)
-        if job is None:
-            return False
-        deleted = delete_job(job_id)
+        with FileLock(job_lock_path(job_id)) as got:
+            if not got:
+                raise RuntimeError(f"job {job_id} is locked by a peer; retry shortly")
+            job = load_job(job_id)
+            if job is None:
+                return False
+            deleted = delete_job(job_id)
+        touch_wake()
+        # Best-effort cleanup of the lock file. Safe to leave behind
+        # if removal fails — next iter_job_files won't return the
+        # deleted job anyway, and FileLock recreates the file on
+        # next acquire.
+        try:
+            jlp = job_lock_path(job_id)
+            if jlp.exists():
+                jlp.unlink()
+        except OSError:
+            pass
         append_event({"type": "scheduler_job_removed", "job_id": job_id})
         self.emit_event(
             subtype="scheduler_job_removed",
@@ -408,27 +571,58 @@ class SchedulerService:
         return deleted
 
     async def run_job_now(self, job_id: str) -> RunRecord:
+        """Fire a job immediately. Acquires the per-job flock so a
+        concurrent scheduled tick won't double-fire. Doesn't touch
+        ``next_fire_at`` — manual runs are independent of cadence."""
         job = await self.get_job(job_id)
         if job is None:
             raise KeyError(job_id)
-        # Doesn't touch next_fire_at — manual runs don't reset the
-        # cadence.
-        async with self._concurrency:
-            from bridge.scheduler.runtime import fire_job
-            return await fire_job(self, job)
+        lock = FileLock(job_lock_path(job_id))
+        if not lock.acquire():
+            raise RuntimeError(
+                f"job {job_id} is currently firing in another process; "
+                f"try again when the current fire completes"
+            )
+        try:
+            async with self._concurrency:
+                from bridge.scheduler.runtime import fire_job
+                # Re-read inside the lock for freshness.
+                fresh = load_job(job_id) or job
+                return await fire_job(self, fresh)
+        finally:
+            lock.release()
 
     async def get_runs(self, job_id: str, *, limit: int = 50) -> list[RunRecord]:
         return load_runs_for_job(job_id, limit=limit)
 
     async def cancel_run(self, run_id: str) -> bool:
-        for name, task in self._in_flight_runs.items():
+        """Cancel a run, possibly in another process. Mechanism:
+        1. If we have the run task in-process, cancel it directly
+           (fast path).
+        2. Always also write ``cancel_requested=true`` into the run
+           JSON. The firing process (whichever one) polls this flag
+           during its agent turn and cancels its local task.
+        """
+        # Same-process fast path.
+        same_process_cancelled = False
+        for name, task in list(self._in_flight_runs.items()):
             if run_id in name and not task.done():
                 task.cancel()
-                return True
-        return False
+                same_process_cancelled = True
+        # Cross-process flag — we need the job_id to find the run
+        # file. Scan recent runs across all jobs and find the match.
+        try:
+            from bridge.scheduler.persistence import load_recent_runs_global
+            for run in load_recent_runs_global(limit=200):
+                if run.run_id == run_id:
+                    request_run_cancellation(run.job_id, run_id)
+                    return True
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("cancel_run flag-write failed: %s", exc)
+        return same_process_cancelled
 
     async def metrics(self) -> SchedulerMetrics:
-        jobs = list(self._jobs.values())
+        jobs = load_all_jobs()
         enabled = sum(1 for j in jobs if j.enabled and j.status == "active")
         paused = sum(1 for j in jobs if j.status == "paused")
         disabled = sum(1 for j in jobs if j.status.startswith("disabled"))
@@ -478,17 +672,23 @@ class SchedulerService:
     ) -> dict[str, Any]:
         """Called by the auto-registered ``continue_loop`` tool when
         the agent declares the next wakeup."""
-        job = await self.get_job(job_id)
-        if job is None:
-            raise KeyError(job_id)
-        if not isinstance(job.schedule, SelfPacedSchedule):
-            raise ValueError("continue_loop is only valid for self-paced jobs")
-        clamped = max(
-            job.schedule.min_delay_seconds,
-            min(job.schedule.max_delay_seconds, int(delay_seconds)),
-        )
-        job.next_fire_at = time.time() + clamped
-        save_job(job)
+        with FileLock(job_lock_path(job_id)) as got:
+            if not got:
+                raise RuntimeError(
+                    f"job {job_id} is locked by a peer; cannot advance"
+                )
+            job = load_job(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            if not isinstance(job.schedule, SelfPacedSchedule):
+                raise ValueError("continue_loop is only valid for self-paced jobs")
+            clamped = max(
+                job.schedule.min_delay_seconds,
+                min(job.schedule.max_delay_seconds, int(delay_seconds)),
+            )
+            job.next_fire_at = time.time() + clamped
+            save_job(job)
+        touch_wake()
         append_event({
             "type": "scheduler_self_paced_continued",
             "job_id": job_id,
@@ -500,7 +700,6 @@ class SchedulerService:
             message=f"Self-paced job '{job.name}' continued",
             details={"jobId": job_id, "delaySeconds": clamped, "reason": reason},
         )
-        self._wake.set()
         return {"delay_seconds": clamped, "next_fire_at": job.next_fire_at}
 
     async def complete_self_paced(
@@ -509,13 +708,19 @@ class SchedulerService:
         *,
         reason: str = "",
     ) -> dict[str, Any]:
-        job = await self.get_job(job_id)
-        if job is None:
-            raise KeyError(job_id)
-        job.enabled = False
-        job.status = "disabled_max_fires"  # reuse — "natural completion"
-        job.next_fire_at = None
-        save_job(job)
+        with FileLock(job_lock_path(job_id)) as got:
+            if not got:
+                raise RuntimeError(
+                    f"job {job_id} is locked by a peer; cannot complete"
+                )
+            job = load_job(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            job.enabled = False
+            job.status = "disabled_max_fires"  # reuse — "natural completion"
+            job.next_fire_at = None
+            save_job(job)
+        touch_wake()
         append_event({
             "type": "scheduler_self_paced_completed",
             "job_id": job_id,
@@ -554,15 +759,17 @@ class SchedulerService:
             logger.warning("compute_next_fire failed for %s: %s", job.id, exc)
             job.next_fire_at = None
         if job.next_fire_at is None:
-            # One-shot already-fired or unparseable cron: disable.
             if isinstance(job.schedule, SelfPacedSchedule):
-                return  # loop will set next_fire_at after fire
+                return
             job.enabled = False
             job.status = "disabled_max_fires"
 
-    def _earliest_next_fire(self) -> float | None:
+    def _earliest_next_fire_from_disk(self) -> float | None:
+        """Scan disk for the minimum next_fire_at across all active
+        jobs. O(n) in job count; called once per tick. At 1000 jobs
+        and 1Hz ticks this is ~1ms — fine."""
         ts: float | None = None
-        for j in self._jobs.values():
+        for j in load_all_jobs():
             if not j.enabled or j.status != "active":
                 continue
             if j.next_fire_at is None:
@@ -594,6 +801,14 @@ class SchedulerService:
             "message": message,
             "details": details or {},
         })
+
+
+def _count_jobs_on_disk() -> int:
+    """Cheap job-count for telemetry — pure readdir, no JSON parse."""
+    n = 0
+    for _ in iter_job_files():
+        n += 1
+    return n
 
 
 def _retry_kind(run: Any) -> str:
