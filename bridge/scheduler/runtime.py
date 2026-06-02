@@ -138,6 +138,14 @@ async def fire_job(
     # requested any, and inject a small system-style header that tells
     # the model this is a scheduled fire (so it doesn't ask clarifying
     # questions or expect a human in the loop).
+    # Snapshot working notes BEFORE composing the prompt — the
+    # composer reads them, and the post-turn diff needs the pre-state
+    # to compute what the agent added.
+    try:
+        from bridge.scheduler.memory import snapshot_notes
+        snapshot_notes(job, run.run_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("notes snapshot failed: %s", exc)
     prompt = _compose_fire_prompt(job, run, service)
 
     # ── Run the agent turn ────────────────────────────────────────────
@@ -260,6 +268,22 @@ async def fire_job(
 
     run.iterations = iteration_count
     run.output_text = output_text
+
+    # Capture what the agent added to its working notes during this
+    # turn — diffed against the pre-turn snapshot. This delta is what
+    # the NEXT fire injects under "What you added in recent runs."
+    # Empty deltas don't pollute the dir (the helper cleans up on
+    # zero-diff fires).
+    try:
+        from bridge.scheduler.memory import capture_notes_delta
+        delta_text = capture_notes_delta(job, run.run_id)
+        if delta_text:
+            logger.info(
+                "captured notes delta for job=%s run=%s (%d chars)",
+                job.id, run.run_id, len(delta_text),
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("notes delta capture failed: %s", exc)
 
     # Persist outputs to disk regardless of sink success — the dashboard
     # uses these as the source of truth for "what did this run produce?"
@@ -423,14 +447,120 @@ def _compose_fire_prompt(
             parts.append("[Preloaded skills for this run:]")
             parts.extend(skill_blocks)
 
+    # Working memory — accumulated notes + recent deltas. This is
+    # what makes a recurring job feel like it's actually compounding:
+    # the agent sees what it's learned over prior runs, what it's
+    # tried that didn't work, style/voice decisions, etc.
+    try:
+        from bridge.scheduler.memory import notes_path_for, render_memory_for_prompt
+
+        memory_block = render_memory_for_prompt(job)
+        if memory_block:
+            parts.append("# Memory across runs\n\n" + memory_block)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("memory render failed: %s", exc)
+
+    # Artifact reference — the canonical thing this job's runs revolve
+    # around. We give the agent the reference (a path, a URL — anything)
+    # and trust it to use its existing tools (web_fetch, gh CLI, file
+    # I/O, etc.) to read or update it. No scheduler-specific artifact
+    # tools — the agent already has the full toolbox.
+    if job.artifact:
+        parts.append(_artifact_block(job))
+
+    # Notes-maintenance contract — only when memory is enabled.
+    # Tells the agent to capture learnings before finishing the turn.
+    if getattr(job.memory, "enabled", True):
+        try:
+            from bridge.scheduler.memory import notes_path_for as _np
+            notes_p = str(_np(job))
+        except Exception:  # noqa: BLE001
+            notes_p = "(memory path resolution failed)"
+        parts.append(
+            "# Notes contract\n\n"
+            f"Your working notes file is at `{notes_p}`. "
+            "Before finishing this turn, append any learnings that will "
+            "help future runs of this job:\n"
+            "- process refinements / shortcuts that worked\n"
+            "- APIs, endpoints, or services that didn't work + why\n"
+            "- decisions you made and the reasoning\n"
+            "- style/voice/format conventions for the artifact\n"
+            "- anything you wish you'd known at the start of this run\n\n"
+            "Use `edit_file` / `write_file` / `bash` to update the file. "
+            "Don't restate what's already in the notes — append only what's new. "
+            "There is no length cap — be substantive when it matters."
+        )
+
     # Self-paced loops get the continue/complete contract appended.
     if isinstance(job.schedule, SelfPacedSchedule):
         parts.append(_self_paced_contract(job, run))
 
     # The job's actual prompt goes last so it's what the model sees
     # most prominently.
-    parts.append(job.prompt)
+    parts.append("# Your task\n\n" + job.prompt)
     return "\n\n".join(parts)
+
+
+def _artifact_block(job: JobRecord) -> str:
+    """Render the artifact reference for the fire-time prompt. Free-form
+    string — could be a local path, a URL, a github reference. We do
+    one cheap heuristic: if it looks like a local file path that
+    exists, include its current contents inline (small files only) so
+    the agent doesn't have to do a tool call just to read it. For URLs
+    or paths above the inline cap, we just tell the agent where it is
+    and let it fetch.
+    """
+    import os as _os
+    from pathlib import Path as _Path
+
+    ref = (job.artifact or "").strip()
+    inline_cap = 50_000  # ~12k tokens — beyond that the agent should fetch
+
+    looks_local = (
+        ref.startswith("/")
+        or ref.startswith("~")
+        or ref.startswith("./")
+        or ref.startswith("../")
+        or (len(ref) > 1 and ref[1] == ":")  # windows-ish
+    )
+
+    block_header = (
+        "# Artifact\n\n"
+        f"The canonical reference for this job is: `{ref}`\n\n"
+        "Read it at fire start so you know the current state, then "
+        "update it as part of completing your task. Use your existing "
+        "tools (`read_file` / `edit_file` / `bash` / `gh` CLI / "
+        "`web_fetch`, etc.) — whatever the artifact type requires."
+    )
+
+    if looks_local:
+        try:
+            p = _Path(_os.path.expanduser(_os.path.expandvars(ref)))
+            if p.exists() and p.is_file():
+                size = p.stat().st_size
+                if size > 0 and size <= inline_cap:
+                    try:
+                        contents = p.read_text(encoding="utf-8")
+                        return (
+                            block_header
+                            + f"\n\n## Current contents ({size} bytes)\n\n```\n{contents}\n```"
+                        )
+                    except (OSError, UnicodeDecodeError):
+                        pass
+                elif size > inline_cap:
+                    return (
+                        block_header
+                        + f"\n\n_(File is {size} bytes — too large to inline. "
+                        f"Read it with `read_file` or `bash`.)_"
+                    )
+                else:
+                    return block_header + "\n\n_(File exists but is empty — write the first version.)_"
+            elif not p.exists():
+                return block_header + "\n\n_(File does not exist yet — create it.)_"
+        except Exception:  # noqa: BLE001
+            pass
+
+    return block_header
 
 
 def _self_paced_contract(job: JobRecord, run: RunRecord) -> str:

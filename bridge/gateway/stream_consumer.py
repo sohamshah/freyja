@@ -333,6 +333,13 @@ class _StreamState:
     coalesce_last_tool: str | None = None
     coalesce_count: int = 0
 
+    # Full body text accumulated across all _flush_text_locked calls.
+    # Passed to stop_stream as markdown_text so Slack stores it as the
+    # message's text fallback. Without this, Slack stores "with
+    # interactive elements" as the text field, which is what
+    # conversations.replies returns — making the AI's own prior
+    # responses unreadable in thread context.
+    body_accumulated: str = ""
 
 class SlackStreamConsumer:
     """One per turn. Lifetime: from message-received → turn_complete.
@@ -703,6 +710,7 @@ class SlackStreamConsumer:
             return
         delta = self._state.text_buffer
         self._state.text_buffer = ""
+        self._state.body_accumulated += delta
         try:
             from slack_sdk.models.messages.chunk import MarkdownTextChunk
         except ImportError:
@@ -1143,11 +1151,20 @@ class SlackStreamConsumer:
 
         # Stop the stream. No more content; this finalizes the
         # message visually (Slack removes the streaming indicator).
+        # Pass body_accumulated as markdown_text so Slack stores the
+        # actual response text as the message's text fallback. Without
+        # this, Slack stores "with interactive elements" — which is
+        # what conversations.replies returns, making the AI's prior
+        # responses unreadable in thread context. Cap at 10k chars;
+        # run.py already truncates per-message context to 1500 chars
+        # so anything beyond that is excess.
         # Skipped on the fallback path — there's no stream to stop.
         if self._state.stream_ts and not self._state.stream_failed:
+            final_text = self._state.body_accumulated[:10_000] or None
             stop_result = await self.adapter.stop_stream(
                 self.source.chat_id,
                 self._state.stream_ts,
+                markdown_text=final_text,
                 blocks=inline_blocks or None,
             )
             if not stop_result.ok:
@@ -1160,6 +1177,7 @@ class SlackStreamConsumer:
                     await self.adapter.stop_stream(
                         self.source.chat_id,
                         self._state.stream_ts,
+                        markdown_text=final_text,
                     )
                     inline_blocks = None  # signal fallback to upload all
 

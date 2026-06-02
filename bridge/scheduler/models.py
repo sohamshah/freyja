@@ -356,6 +356,38 @@ class BudgetSpec:
 
 
 @dataclass
+class MemorySpec:
+    """Per-job working memory carried across fires.
+
+    The agent's running notes file (free-form markdown) plus recent
+    per-fire deltas are injected at fire start. The agent maintains
+    notes.md itself using its existing file tools — no scheduler-
+    specific tool surface is required.
+
+    Defaults are unbounded by design: a recurring job that runs for a
+    year shouldn't silently lose context to an arbitrary cap. The user
+    can set ``max_notes_chars`` to cap the injection if they want.
+    """
+
+    enabled: bool = True
+    notes_path: str | None = None              # None = auto-allocated per job
+    max_notes_chars: int | None = None         # None = no cap
+    include_last_n_deltas: int = 3             # 0 = none
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> MemorySpec:
+        return cls(
+            enabled=bool(d.get("enabled", True)),
+            notes_path=d.get("notes_path"),
+            max_notes_chars=d.get("max_notes_chars"),
+            include_last_n_deltas=int(d.get("include_last_n_deltas", 3)),
+        )
+
+
+@dataclass
 class RetryPolicy:
     max_retries: int = 0
     backoff_seconds: int = 60
@@ -419,6 +451,19 @@ class JobRecord:
     skills_to_load: list[str] = field(default_factory=list)
     budget: BudgetSpec | None = None
 
+    # Artifact — the external thing this job's runs revolve around.
+    # Free-form string: a local path, a github repo URL, a github file
+    # URL, a github issue URL, a google doc URL, anything stable. The
+    # agent uses its existing tools (web_fetch, gh CLI, file I/O, etc.)
+    # to read and update it; the scheduler just injects the reference
+    # at fire start so the agent always knows where the canonical
+    # output lives. None = no bound artifact.
+    artifact: str | None = None
+
+    # Working memory carried across fires. Enabled by default; user
+    # can disable per job or tune caps.
+    memory: MemorySpec = field(default_factory=lambda: MemorySpec())
+
     # Delivery
     sinks: list[SinkSpec] = field(default_factory=list)
 
@@ -456,6 +501,8 @@ class JobRecord:
             "coordination_strategy": self.coordination_strategy,
             "skills_to_load": list(self.skills_to_load),
             "budget": self.budget.to_dict() if self.budget else None,
+            "artifact": self.artifact,
+            "memory": self.memory.to_dict(),
             "sinks": [s.to_dict() for s in self.sinks],
             "misfire_policy": self.misfire_policy,
             "overlap_policy": self.overlap_policy,
@@ -488,6 +535,12 @@ class JobRecord:
             coordination_strategy=d.get("coordination_strategy", "bus"),
             skills_to_load=list(d.get("skills_to_load") or []),
             budget=BudgetSpec.from_dict(d["budget"]) if d.get("budget") else None,
+            artifact=d.get("artifact"),
+            memory=(
+                MemorySpec.from_dict(d["memory"])
+                if isinstance(d.get("memory"), dict)
+                else MemorySpec()
+            ),
             sinks=[sink_from_dict(s) for s in (d.get("sinks") or [])],
             misfire_policy=d.get("misfire_policy", "skip"),
             overlap_policy=d.get("overlap_policy", "queue"),
@@ -609,6 +662,8 @@ class JobPatch:
     coordination_strategy: str | None = None
     skills_to_load: list[str] | None = None
     budget: BudgetSpec | None = None
+    artifact: str | None = None
+    memory: MemorySpec | None = None
     sinks: list[SinkSpec] | None = None
     misfire_policy: str | None = None
     overlap_policy: str | None = None

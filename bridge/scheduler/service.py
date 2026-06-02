@@ -338,8 +338,9 @@ class SchedulerService:
         for field_name in (
             "name", "description", "enabled", "max_fires", "prompt",
             "permission_snapshot", "model_id", "coordination_strategy",
-            "skills_to_load", "budget", "sinks", "misfire_policy",
-            "overlap_policy", "timeout_seconds", "retry_policy", "tags",
+            "skills_to_load", "budget", "artifact", "memory", "sinks",
+            "misfire_policy", "overlap_policy", "timeout_seconds",
+            "retry_policy", "tags",
         ):
             val = getattr(patch, field_name)
             if val is not None:

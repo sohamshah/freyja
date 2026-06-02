@@ -20,6 +20,7 @@ from bridge.scheduler.models import (
     JobFilter,
     JobPatch,
     JobRecord,
+    MemorySpec,
     OnceSchedule,
     SelfPacedSchedule,
 )
@@ -103,6 +104,12 @@ class ScheduleTool:
                 payload = await self._action_get_run(arguments)
             elif action == "metrics":
                 payload = await self._action_metrics()
+            elif action == "view_notes":
+                payload = await self._action_view_notes(arguments)
+            elif action == "view_deltas":
+                payload = await self._action_view_deltas(arguments)
+            elif action == "append_notes":
+                payload = await self._action_append_notes(arguments)
             else:
                 return _err(call_id, f"unknown action: {action!r}")
         except KeyError as exc:
@@ -141,6 +148,14 @@ class ScheduleTool:
         if isinstance(args.get("budget"), dict):
             budget = BudgetSpec.from_dict(args["budget"])
 
+        memory = MemorySpec()
+        if isinstance(args.get("memory"), dict):
+            memory = MemorySpec.from_dict(args["memory"])
+
+        artifact = args.get("artifact")
+        if artifact is not None:
+            artifact = str(artifact).strip() or None
+
         spec = JobRecord(
             id="",
             name=name,
@@ -158,6 +173,8 @@ class ScheduleTool:
             coordination_strategy=args.get("coordination_strategy", "bus"),
             skills_to_load=list(args.get("skills_to_load") or []),
             budget=budget,
+            artifact=artifact,
+            memory=memory,
             sinks=sinks,
             misfire_policy=args.get("misfire_policy", "skip"),
             overlap_policy=args.get("overlap_policy", "queue"),
@@ -218,6 +235,11 @@ class ScheduleTool:
             )
         if isinstance(args.get("budget"), dict):
             patch.budget = BudgetSpec.from_dict(args["budget"])
+        if "artifact" in args:
+            val = args.get("artifact")
+            patch.artifact = str(val).strip() if val is not None else None
+        if isinstance(args.get("memory"), dict):
+            patch.memory = MemorySpec.from_dict(args["memory"])
         job = await self._service.update_job(job_id, patch)
         return {"action": "updated", "job": _job_summary(job)}
 
@@ -275,6 +297,67 @@ class ScheduleTool:
             "action": "get_run",
             "run": _run_full(run),
             "output_dir": str(output_dir),
+        }
+
+    async def _action_view_notes(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Return the full contents of the job's working notes file. Use
+        this when the user asks "what has the agent learned over time?"
+        or when you want to inspect/edit the memory yourself."""
+        from bridge.scheduler.memory import notes_path_for, read_notes
+
+        job_id = _require_job_id(args)
+        job = await self._service.get_job(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        notes = read_notes(job)
+        return {
+            "action": "view_notes",
+            "job_id": job_id,
+            "notes_path": str(notes_path_for(job)),
+            "notes": notes,
+            "size_chars": len(notes),
+            "memory_enabled": bool(getattr(job.memory, "enabled", True)),
+        }
+
+    async def _action_view_deltas(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Return recent per-run notes deltas (most-recent first). The
+        delta for a run is what the agent appended to notes.md DURING
+        that run — i.e. its learnings from that specific fire."""
+        from bridge.scheduler.memory import read_recent_deltas
+
+        job_id = _require_job_id(args)
+        job = await self._service.get_job(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        limit = max(1, int(args.get("limit", 10)))
+        deltas = read_recent_deltas(job, limit=limit)
+        return {
+            "action": "view_deltas",
+            "job_id": job_id,
+            "count": len(deltas),
+            "deltas": deltas,
+        }
+
+    async def _action_append_notes(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Programmatically append text to the job's notes file. Useful
+        for seeding initial context ("here are the style rules", "use
+        endpoint X not Y") that the very first fire should already see.
+        """
+        from bridge.scheduler.memory import append_notes, notes_path_for
+
+        job_id = _require_job_id(args)
+        text = (args.get("text") or "").strip()
+        if not text:
+            raise ValueError("'text' is required and must be non-empty")
+        job = await self._service.get_job(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        path = append_notes(job, text)
+        return {
+            "action": "append_notes",
+            "job_id": job_id,
+            "notes_path": str(path),
+            "appended_chars": len(text),
         }
 
     async def _action_metrics(self) -> dict[str, Any]:
@@ -344,6 +427,8 @@ def _job_summary(j: JobRecord) -> dict[str, Any]:
         "max_fires": j.max_fires,
         "prompt_preview": j.prompt[:200],
         "execution": j.execution.to_dict(),
+        "artifact": j.artifact,
+        "memory": j.memory.to_dict(),
         "sinks": [s.to_dict() for s in j.sinks],
         "tags": list(j.tags),
         "creator_surface": j.creator.surface,
@@ -441,7 +526,27 @@ Actions:
   · get_run  — full run record for one run_id: complete output_text,
                delivery reports, tokens, cost. Use this to retrieve
                or echo what a scheduled job actually produced.
+  · view_notes   — full working-notes file for a job. The agent
+                   maintains this across fires; it's where
+                   process/style/API learnings accumulate.
+  · view_deltas  — per-run notes deltas (what the agent appended
+                   during each fire), newest-first.
+  · append_notes — seed/append text to the notes file directly. Useful
+                   for setting initial context before the first fire
+                   ("here's the voice", "avoid endpoint X").
   · metrics  — system-wide scheduler health.
+
+Artifact + memory:
+
+  `artifact` is a free-form reference (path, URL, github link, etc.)
+  to whatever this job's runs revolve around. Injected at fire start;
+  agent reads and updates it with its existing tools.
+
+  `memory` is a working-notes file the agent maintains across fires.
+  Defaults: enabled, unbounded, last 3 run-deltas auto-injected. The
+  agent appends to it with edit_file/write_file/bash like any other
+  file. Override notes_path to route to a project folder under version
+  control if the user wants memory committed alongside their work.
 
 Specifying when:
   Pass either:
@@ -501,6 +606,7 @@ _PARAMETERS = {
                 "create", "list", "get", "update",
                 "pause", "resume", "remove",
                 "run_now", "run", "runs", "get_run", "run_detail",
+                "view_notes", "view_deltas", "append_notes",
                 "metrics",
             ],
             "description": "Which scheduler operation to perform.",
@@ -512,6 +618,32 @@ _PARAMETERS = {
         "run_id": {
             "type": "string",
             "description": "Specific run id. Required for get_run.",
+        },
+        "artifact": {
+            "type": "string",
+            "description": (
+                "Optional canonical reference this job's runs revolve "
+                "around — a local path, github URL, github file/issue "
+                "URL, gdoc URL, anything stable. Injected into the "
+                "fire-time prompt so the agent always knows where the "
+                "canonical output lives. Agent uses its existing tools "
+                "(file I/O, gh CLI, web_fetch, bash) to read/update it. "
+                "Empty/omit for jobs that don't bind to one thing."
+            ),
+        },
+        "memory": {
+            "type": "object",
+            "description": (
+                "Optional memory config. Defaults: enabled=true, no "
+                "size caps, last 3 run-deltas injected. Override fields:"
+                " enabled (bool), notes_path (str — route notes to a "
+                "specific file), max_notes_chars (int — cap how much "
+                "gets injected; tail kept), include_last_n_deltas (int)."
+            ),
+        },
+        "text": {
+            "type": "string",
+            "description": "Text to append (append_notes action).",
         },
         "name": {
             "type": "string",
