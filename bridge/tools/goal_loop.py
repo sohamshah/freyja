@@ -500,8 +500,17 @@ class GoalVerdict:
     # threshold to prevent runaway spend on a persistent error.
     judge_failed: bool = False
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
+    def to_dict(self, *, include_raw: bool = False) -> dict[str, Any]:
+        """Serialize for transport. `raw` is the verbatim JSON string the
+        judge returned and duplicates the structured fields entirely —
+        we default it OFF so transient telemetry events don't carry 6KB
+        of duplication per verdict (real-world incident: 82-event slice
+        with two judge-rework cycles was ~12KB heavier than needed and
+        held the same content twice in the renderer's slice memory).
+        Persistence callers (sidecar files, replay) pass
+        `include_raw=True` so the round-trip via `verdict_from_dict` is
+        lossless."""
+        payload: dict[str, Any] = {
             "done": self.done,
             "reason": self.reason,
             "confidence": self.confidence,
@@ -510,8 +519,10 @@ class GoalVerdict:
             "judgeSessionId": self.judge_session_id,
             "fallbackFrom": self.fallback_from,
             "judgeFailed": self.judge_failed,
-            "raw": self.raw,
         }
+        if include_raw:
+            payload["raw"] = self.raw
+        return payload
 
 
 # JSON schema for the judge's structured response. Used by providers that
@@ -1043,14 +1054,22 @@ class GoalState:
             open_questions_block=questions_block,
         )
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, include_raw: bool = False) -> dict[str, Any]:
+        """Serialize for transport. `include_raw=True` propagates to the
+        nested GoalVerdict so the verbatim judge JSON round-trips for
+        persistence. Defaults to False for event/telemetry callers — see
+        GoalVerdict.to_dict for the why."""
         return {
             "goal": self.goal,
             "status": self.status,
             "turnsUsed": self.turns_used,
             "createdAt": int(self.created_at * 1000),
             "updatedAt": int(self.updated_at * 1000),
-            "lastVerdict": self.last_verdict.to_dict() if self.last_verdict else None,
+            "lastVerdict": (
+                self.last_verdict.to_dict(include_raw=include_raw)
+                if self.last_verdict
+                else None
+            ),
             "pauseReason": self.pause_reason,
         }
 

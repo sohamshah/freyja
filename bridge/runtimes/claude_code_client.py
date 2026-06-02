@@ -204,7 +204,14 @@ class ClaudeCodeClient:
         self._command = resolved
         logger.info("claude spawn: %s %s", self._command, " ".join(self._args))
 
-        env = os.environ.copy()
+        # `child_env()` strips Freyja's PYTHONHOME/PYTHONPATH/VIRTUAL_ENV
+        # so any python the Claude Code subprocess spawns (MCP servers,
+        # hooks, user scripts) doesn't crash with "No module named
+        # 'encodings'". The harness binary itself is Node, but it can
+        # and does spawn python children. See bridge/process_env.py.
+        from bridge.process_env import child_env
+
+        env = child_env()
         env.update(self._env_overrides)
         # Claude Code refuses to emit ANSI without a TTY by default, but
         # explicit env vars make this deterministic across shells.

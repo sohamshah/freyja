@@ -11,6 +11,7 @@ import asyncio
 import os
 from typing import Any
 
+from bridge.process_env import child_env
 from bridge.tools.base import (
     PermissionLevel,
     PermissionRequest,
@@ -323,13 +324,19 @@ For long-running commands, consider using & for background execution.""",
                 is_error=True,
             )
 
-        # Execute async using asyncio subprocess
+        # Execute async using asyncio subprocess. `env=child_env()`
+        # strips Freyja's PYTHONHOME/PYTHONPATH/VIRTUAL_ENV so any
+        # python the agent runs from bash (system python3, a uv-managed
+        # venv, etc.) doesn't crash with "No module named 'encodings'"
+        # because it inherited a PYTHONHOME pointed at Freyja's bundle.
+        # See bridge/process_env.py for the full incident note.
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,
                 cwd=working_dir,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=child_env(),
             )
 
             try:

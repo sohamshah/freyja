@@ -117,8 +117,18 @@ rm -rf "$BUNDLE_DIR/lib/python$PYTHON_VERSION/site-packages/_distutils_hack" 2>/
 rm -rf "$BUNDLE_DIR/lib/python$PYTHON_VERSION/site-packages/maturin" 2>/dev/null || true
 
 # Write a pyvenv.cfg so the bundled Python finds its stdlib.
-# Use an absolute path resolved at bundle time — the bridge.ts sets
-# PYTHONHOME to this directory at runtime.
+#
+# IMPORTANT — `home` is RELATIVE on purpose: the bundle gets copied into
+# /Applications/Freyja.app/Contents/Resources/python-bundle by electron-
+# builder, so an absolute path baked at build time would be wrong post-
+# install. But a relative path is cwd-dependent at startup — if anything
+# invokes the bundled python with cwd != Contents/Resources, Python can't
+# resolve `home = python-bundle/bin`, fails to find its stdlib, and
+# aborts with "Fatal Python error: Failed to import encodings module".
+# bridge.ts (Electron path) sets cwd correctly. The launchd scheduler
+# daemon's shim (bridge/scheduler/daemon.py) `cd`s into the right dir
+# before exec. Any other launcher must do the same OR explicitly set
+# PYTHONHOME=<absolute path to python-bundle>.
 cat > "$BUNDLE_DIR/pyvenv.cfg" << PYEOF
 home = $BUNDLE_DIR/bin
 include-system-site-packages = false

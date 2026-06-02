@@ -180,7 +180,13 @@ class CodexClient:
         self._command = resolved
         logger.info("codex spawn: %s %s", self._command, " ".join(self._args))
 
-        env = os.environ.copy()
+        # `child_env()` strips Freyja's PYTHONHOME/PYTHONPATH/VIRTUAL_ENV
+        # so any python codex spawns (MCP servers, exec sandbox, etc.)
+        # doesn't crash with "No module named 'encodings'" because it
+        # inherited the bundle's PYTHONHOME. See bridge/process_env.py.
+        from bridge.process_env import child_env
+
+        env = child_env()
         env.update(self._env_overrides)
         env.setdefault("NO_COLOR", "1")
         env.setdefault("TERM", "dumb")

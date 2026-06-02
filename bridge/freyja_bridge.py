@@ -2576,6 +2576,15 @@ class _BridgeSession:
         # board without the parent having to drive each one by hand.
         self.auto_dispatch_enabled: bool = False
         self._kanban_dispatcher_task: asyncio.Task[Any] | None = None
+        # Wall-clock ms of the last non-force kanban tick. Coalesces
+        # tight double-fires when the post-turn hook and the idle loop
+        # both try to dispatch within KANBAN_TICK_COALESCE_MS — the
+        # duplicate-tick storms in the judge-kanban-session export (3
+        # ticks at 14:32:21, 2 ticks each at 14:38:45 and 14:39:08)
+        # came from this exact race and caused racy worker spawns mid-
+        # rework. Forced ticks (operator-initiated dashboard add-card)
+        # bypass the gate and refresh the watermark.
+        self._last_kanban_tick_ms: int = 0
         # Auto-rename guard. After the first user → assistant exchange
         # finishes successfully, the bridge fires a one-shot Haiku call
         # to give the session a 2-3 word title and emits
@@ -3742,11 +3751,21 @@ class _BridgeSession:
         try:
             from bridge.transcript_persistence import save_goal_state
 
+            # include_raw=True here so the round-trip via
+            # verdict_from_dict on restart is lossless. Event-emit
+            # callers (e.g. _emit_goal_event) use the default False
+            # so transient telemetry doesn't carry the duplicated raw
+            # JSON. See GoalVerdict.to_dict for the size-hygiene
+            # incident this defaults around.
             payload = {
-                "goalState": self.goal_state.to_dict() if self.goal_state else None,
+                "goalState": (
+                    self.goal_state.to_dict(include_raw=True)
+                    if self.goal_state else None
+                ),
                 "judgeRules": self.judge_rules.to_dict() if self.judge_rules else None,
                 "verdictHistory": [
-                    v.to_dict() for v in (self.goal_verdict_history or [])
+                    v.to_dict(include_raw=True)
+                    for v in (self.goal_verdict_history or [])
                 ],
                 "judgeRulesProposal": (
                     self.judge_rules_proposal.to_dict()
@@ -4931,6 +4950,13 @@ class _BridgeSession:
     # ─── Kanban auto-dispatch (Move A) + verifier (Move C) ────────────────
 
     KANBAN_DISPATCH_INTERVAL = 30.0
+    # Minimum gap between non-force ticks. Two ticks landing inside this
+    # window are coalesced into one. Pick 2s as the floor — the idle
+    # loop sleeps for 30s between ticks normally, and the post-turn
+    # hook fires at most once per turn (turns take seconds, not ms), so
+    # legitimate ticks land at least seconds apart. Sub-second collisions
+    # mean the two paths racing, not actual scheduled work.
+    KANBAN_TICK_COALESCE_MS = 2_000
     KANBAN_MAX_PARALLEL = 3
     # Hard cap on review<->rework cycles before a card moves to blocked
     # and surfaces to the operator. The 5th failed verdict skips the
@@ -5139,6 +5165,7 @@ class _BridgeSession:
         through a force path."""
         if self.kanban_board is None or self.tool_registry is None:
             return
+        now_ms = int(time.time() * 1000)
         if not force:
             if not self.auto_dispatch_enabled:
                 return
@@ -5147,6 +5174,13 @@ class _BridgeSession:
                 # dispatch until they're processed. Mirrors the goal-loop
                 # preemption.
                 return
+            # Coalesce double-fires: post-turn hook + idle loop can both
+            # try to dispatch within the same second, producing duplicate
+            # kanban_tick events and (worse) racy worker spawns on the
+            # same card. Operator-forced ticks (force=True) always run.
+            if now_ms - self._last_kanban_tick_ms < self.KANBAN_TICK_COALESCE_MS:
+                return
+        self._last_kanban_tick_ms = now_ms
         # Emit a lightweight tick event so the renderer can show a
         # next-tick countdown on the autopilot strip without having to
         # poll. Idle ticks (no dispatch decisions) still send this so
@@ -9188,6 +9222,21 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
     if ctype == "switch_session":
         if not session_id:
             return
+        # Capture pre-switch identity so we can detect a true no-op
+        # switch (same session id, same config) and skip emitting
+        # session_switched. Real-world incident: the operator clicking
+        # between sub-agent panes and back to the same parent session
+        # produced 4 session_switched events for mpvpoxwg in 90s. The
+        # bridge work is already cheap (existing-session ensure short-
+        # circuits), but every redundant event re-renders renderer
+        # slices and adds noise to the system-event log.
+        prev_active = state.active_session_id
+        prev_sess = state.sessions.get(session_id) if session_id else None
+        prev_model = prev_sess.model_id if prev_sess else None
+        prev_reasoning = prev_sess.reasoning_level if prev_sess else None
+        prev_strategy = prev_sess.coordination_strategy if prev_sess else None
+        prev_runtime = prev_sess.runtime if prev_sess else None
+
         sess = await state.ensure_session(
             session_id,
             model_id=cmd.get("model"),
@@ -9196,6 +9245,19 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             runtime=cmd.get("runtime"),
             harness_session_id=cmd.get("harnessSessionId"),
         )
+        no_op = (
+            prev_active == sess.id
+            and prev_sess is not None
+            and prev_model == sess.model_id
+            and prev_reasoning == sess.reasoning_level
+            and prev_strategy == sess.coordination_strategy
+            and prev_runtime == sess.runtime
+        )
+        if no_op:
+            # Skip the event but keep the log line so we can still see
+            # the redundant request in diagnostics if it spikes.
+            log("debug", f"switch_session no-op for {sess.id}")
+            return
         log("info", f"switched to session {sess.id} (runtime={sess.runtime})")
         emit(
             {

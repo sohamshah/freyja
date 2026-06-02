@@ -201,7 +201,17 @@ _SHIM_TEMPLATE = """#!/bin/bash
 #   `freyja daemon reinstall`
 # from inside the Freyja app, which regenerates both this file and the
 # LaunchAgent plist.
+#
+# The `cd` is load-bearing. The bundled Python's pyvenv.cfg uses a
+# relative `home = python-bundle/bin` path (see scripts/bundle-python.sh)
+# that only resolves correctly when cwd is the directory CONTAINING
+# python-bundle. launchd starts agents with cwd=/, so without this `cd`
+# the python interpreter fails to find its stdlib and aborts with:
+#   Fatal Python error: Failed to import encodings module
+# That bug produced 5,414 daemon crashes and a 37k-line daemon.log
+# before it was caught. Don't remove the `cd`.
 
+cd "{cwd}" || exit 1
 exec "{python}" {args} >> "{log}" 2>&1
 """
 
@@ -250,13 +260,19 @@ def ensure_daemon_installed(*, reason: str = "auto") -> dict[str, Any]:
     except RuntimeError as exc:
         return {"installed": False, "reason": f"resolution_failed: {exc}"}
 
-    # Write the shim first (the .plist points at it).
+    # Write the shim first (the .plist points at it). `cwd` is the
+    # directory containing python-bundle (e.g. Contents/Resources for
+    # the .app install) — the bundled Python's pyvenv.cfg uses a
+    # relative `home` path that needs this cwd to resolve. See the
+    # _SHIM_TEMPLATE comment for the full reasoning.
     args_str = " ".join(f'"{a}"' for a in args)
     shim = shim_path()
+    shim_cwd = str(Path(executable).resolve().parent.parent.parent)
     shim.write_text(_SHIM_TEMPLATE.format(
         python=executable,
         args=args_str,
         log=str(daemon_log_path()),
+        cwd=shim_cwd,
     ))
     os.chmod(shim, 0o755)
 
