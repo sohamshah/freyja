@@ -449,6 +449,76 @@ def emit_error(message: str, recoverable: bool = False) -> None:
     emit({"type": "error", "message": message, "recoverable": recoverable})
 
 
+def _format_user_facing_runner_failure(
+    *,
+    reason: str,
+    message: str,
+    already_streamed: bool,
+) -> str:
+    """Build a short, operator-facing message for a runner give-up.
+
+    Maps the engine's ``FailoverReason`` enum to plain text the user
+    will see in Slack / desktop. Returns the empty string when the
+    runner already streamed prose earlier in the turn — in that case
+    the user has output to read and a tail "(provider error)" line is
+    noise. The caller passes ``already_streamed`` so we centralize
+    that policy in one place.
+
+    Keep wording tight: this lands in Slack as a chat bubble and on
+    desktop as inline text. The operator wants the cause and an
+    actionable next step, not a stack trace.
+    """
+    if already_streamed:
+        return ""
+    # `reason` comes from engine.runner classify_failover_reason —
+    # values include: rate_limit, auth, billing, timeout, context,
+    # tool_use, retry, unknown. We surface the ones the operator can
+    # act on; everything else falls through to a generic message.
+    short = (message or "").strip()
+    # Truncate long provider error blobs so the chat bubble stays
+    # readable. The full message is in the bridge log anyway.
+    if len(short) > 260:
+        short = short[:260].rstrip() + "…"
+    if reason == "rate_limit":
+        return (
+            "Provider is overloaded right now — the model returned "
+            "rate-limit / overloaded errors on every retry. "
+            f"Detail: {short}. Try again in a minute, or switch model "
+            "with `/model claude-opus-4-8`."
+        )
+    if reason == "auth":
+        return (
+            "Provider auth failed — your API key may be expired, "
+            "revoked, or wrong for this model. "
+            f"Detail: {short}. Check your provider key, then retry."
+        )
+    if reason == "billing":
+        return (
+            "Provider rejected the request for billing reasons — "
+            "credits exhausted, organization paused, or quota hit. "
+            f"Detail: {short}. Top up and retry."
+        )
+    if reason == "timeout":
+        return (
+            "The provider call timed out repeatedly. "
+            f"Detail: {short}. Retrying may help; "
+            "switching to a smaller/faster model usually does."
+        )
+    if reason == "context":
+        return (
+            "The request exceeded the model's context window even "
+            "after the engine attempted to compact history. "
+            f"Detail: {short}. Try `/reset` to start fresh, or move "
+            "to a longer-context model with `/model claude-opus-4-8`."
+        )
+    # Catch-all (unknown / tool_use / retry) — still better than
+    # silence. The operator gets the reason tag for log triage.
+    return (
+        f"The agent stopped before responding. Reason: {reason}. "
+        f"Detail: {short}. Try again in a moment."
+    )
+
+
 def _sanitize_auto_title(raw: str) -> str:
     """Clean up Haiku's auto-rename output. Strips quotes, leading
     article-noise like "Title:", clamps length, collapses whitespace.
@@ -6752,12 +6822,59 @@ class _BridgeSession:
                     "stopReason": getattr(result, "stop_reason", "end_turn"),
                 }
             )
+            # When the runner ran to completion but `result.success` is
+            # False, it means the engine gave up — typically after N
+            # consecutive ProviderError retries (rate_limit / overloaded
+            # / auth / billing). Previously we ignored result.success and
+            # emitted turn_complete(success=True), so the gateway/desktop
+            # silently finalized with nothing user-facing. The operator
+            # was left staring at "Catching up — back to you shortly"
+            # forever.
+            #
+            # Fix: stream a user-facing failure message via text_delta
+            # BEFORE emitting turn_complete(success=False), so the same
+            # path that delivers normal prose delivers the failure
+            # explanation. The gateway's SlackStreamConsumer flushes the
+            # text on turn_complete; the desktop renderer paints it
+            # inline like any other assistant message.
+            #
+            # We only emit a message when nothing was streamed earlier
+            # in the turn — if the agent had already produced text and
+            # then the provider errored late, the user has prose to
+            # read and a tail "(provider error: retrying failed)" would
+            # be redundant noise. The pre-existing turn-text capture
+            # in `_turn_text_parts` is the source of truth.
+            agent_succeeded = bool(getattr(result, "success", True))
+            if not agent_succeeded:
+                err = getattr(result, "error", None)
+                reason = str(getattr(err, "reason", "") or "unknown")
+                err_msg = str(getattr(err, "message", "") or "(no detail)")
+                already_streamed = bool(
+                    ("".join(self._turn_text_parts)).strip()
+                )
+                user_facing = _format_user_facing_runner_failure(
+                    reason=reason,
+                    message=err_msg,
+                    already_streamed=already_streamed,
+                )
+                if user_facing:
+                    emit({
+                        "type": "text_delta",
+                        "sessionId": self.id,
+                        "text": user_facing,
+                    })
+                log(
+                    "warn",
+                    f"turn failed (silent-bypass fix): session={self.id} "
+                    f"reason={reason} message={err_msg[:200]} "
+                    f"user_notified={'yes' if user_facing else 'suppressed-already-streamed'}",
+                )
             emit(
                 {
                     "type": "turn_complete",
                     "sessionId": self.id,
                     "turnId": self.current_turn_id,
-                    "success": True,
+                    "success": agent_succeeded,
                 }
             )
             # Persist transcript after successful turn so session can
@@ -6769,13 +6886,13 @@ class _BridgeSession:
             # nudges — flag them so the cadence counter doesn't tick
             # the user-turn count off the actual user activity.
             self._tick_skill_learning_hooks(
-                success=True,
+                success=agent_succeeded,
                 had_user_message=not is_goal_continuation,
             )
             latest_response = (getattr(result, "response", None) or "").strip()
             if not latest_response:
                 latest_response = "".join(self._turn_text_parts).strip()
-            if result.success:
+            if agent_succeeded:
                 await self._maybe_continue_goal(latest_response)
                 if self.auto_dispatch_enabled:
                     try:

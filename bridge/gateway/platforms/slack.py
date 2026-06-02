@@ -933,7 +933,22 @@ class SlackAdapter:
         response_url = command.get("response_url") or ""
         trigger_id = command.get("trigger_id") or ""
 
+        # Audit: log every slash command at the moment Slack delivers
+        # it. Without this, a slash that drops before reaching the
+        # gateway router (allowlist denial, missing channel, regex
+        # mismatch) is completely invisible — exactly the failure mode
+        # that left "did /reset actually fire?" unanswerable.
+        args_preview = (args_text[:80] + "…") if len(args_text) > 80 else args_text
+        logger.info(
+            "[slack] slash dispatched: cmd=/%s args=%r channel=%s team=%s user=%s",
+            cmd, args_preview, channel_id, team_id, user_id,
+        )
+
         if not channel_id or not cmd:
+            logger.warning(
+                "[slack] slash dispatch dropped: missing channel_id or cmd (cmd=%r channel=%r)",
+                cmd, channel_id,
+            )
             return
 
         # Same allowlist gate as inbound messages — slash commands are

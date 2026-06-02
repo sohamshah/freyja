@@ -991,6 +991,17 @@ class GatewayDaemon:
         """Reply to certain slashes directly without involving the
         agent. Returns True if handled, False to fall through."""
         cmd = (message.slash_command_name or "").lower()
+        # Audit: log every slash command the gateway router considers.
+        # This is the natural triage point: if you ever ask "did
+        # /reset get processed?", grep for this line and the matching
+        # in-gateway-handled / fell-through follow-up below.
+        logger.info(
+            "[gateway] slash router considering: cmd=/%s args=%r chat=%s thread=%s",
+            cmd,
+            (message.slash_command_args or "")[:80],
+            message.source.chat_id,
+            message.source.thread_id,
+        )
 
         if cmd == "freyja":
             sub = (message.slash_command_args or "").strip().lower()
@@ -1108,7 +1119,16 @@ class GatewayDaemon:
         if cmd == "reset":
             from bridge.gateway.session_router import session_key_for
             key = session_key_for(message.source)
+            had_session = (self.state.sessions if self.state else {}).get(key) is not None
+            logger.info(
+                "[gateway] /reset dispatch: session_key=%s had_session=%s chat=%s thread=%s",
+                key, had_session, message.source.chat_id, message.source.thread_id,
+            )
             self._reset_session(key)
+            logger.info(
+                "[gateway] /reset complete: session_key=%s — next message starts fresh",
+                key,
+            )
             await adapter.send(  # type: ignore[attr-defined]
                 message.source.chat_id,
                 "Session reset. Next message starts fresh.",
@@ -1130,6 +1150,10 @@ class GatewayDaemon:
         if cmd == "perms":
             return await self._handle_perms_command(message, adapter)
 
+        logger.info(
+            "[gateway] slash router fell through: cmd=/%s — passing to agent",
+            cmd,
+        )
         return False
 
     async def _handle_mode_command(
