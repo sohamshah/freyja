@@ -54,8 +54,14 @@ export type ControlCommand =
       // spawns a drafter pass against the current conversation. The
       // gateway has its own Slack-side handler that does the same
       // thing — this command lets the desktop reach the same path.
+      //
+      // ``guidance`` is the free-text accompanying the slash command
+      // ("focus on the deploy workflow", "generalize the X pattern",
+      // etc.). Empty when the operator just typed /learn-this with no
+      // hint. Passed through verbatim to the drafter.
       type: 'skill_learn_this'
       sessionId: string
+      guidance?: string
     }
   // Add new commands here as `| { type: 'cancel_turn'; ... }` etc.
 

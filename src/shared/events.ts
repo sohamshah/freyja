@@ -958,6 +958,7 @@ export const IPC = {
   skillSave: 'skill:save',
   skillReadFile: 'skill:readFile',
   skillOpen: 'skill:open',
+  fsCompletePath: 'fs:completePath',
   llmKeysProbe: 'llm:keys:probe',
 } as const
 
@@ -1001,6 +1002,27 @@ export interface SimpleResult {
   ok: boolean
   error?: string
   message?: string
+}
+
+// Local filesystem path-completion result. Used by the InputDock to
+// offer Hermes-style autocomplete when the operator types `~/` or `/`
+// in a message. Handler lives in main.ts (direct Node fs, no bridge
+// round-trip) because the data is local and the suggestion needs to
+// be responsive on every keystroke.
+export interface PathCompletionResult {
+  ok: boolean
+  /** Up to N entries matching the prefix. Empty array on no match. */
+  matches: Array<{
+    /** Basename of the entry. */
+    name: string
+    /** Full path with `~/` left intact when the prefix used it, so
+     *  the inserted string matches what the operator was typing. */
+    path: string
+    /** True for directories — InputDock appends a trailing `/` on
+     *  insertion so the operator can keep tab-completing. */
+    isDir: boolean
+  }>
+  error?: string
 }
 
 // ── Skill-learning IPC result types ─────────────────────────────

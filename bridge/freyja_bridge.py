@@ -4468,7 +4468,7 @@ class _BridgeSession:
         except Exception:  # noqa: BLE001
             pass
 
-    def _spawn_drafter_review(self) -> None:
+    def _spawn_drafter_review(self, *, operator_guidance: str = "") -> None:
         """Build the drafter context + spawn the review task.
 
         Window contract
@@ -4514,6 +4514,7 @@ class _BridgeSession:
             loaded_skill_names=loaded,
             all_skill_names=all_skills,
             on_candidate=_on_candidate,
+            operator_guidance=operator_guidance,
         )
 
     def _render_post_turn_window(
@@ -9863,6 +9864,11 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         # _on_skill_learn_this handler and the Slack-side /learn-this
         # in run.py — same behavior, just reached via the local bridge
         # subprocess's stdin instead of the control-file channel.
+        #
+        # ``guidance`` is the operator's free-text hint typed after the
+        # command (e.g. "/learn-this focus on the deployment cherry-
+        # pick pattern"). Passed verbatim to the drafter so the LLM
+        # knows what the operator wants out of this review.
         sess = state.sessions.get(session_id)
         if sess is None:
             log("warn", f"skill_learn_this: session {session_id!r} not found")
@@ -9871,14 +9877,19 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         if counter is None:
             log("info", f"skill_learn_this: skill learning disabled on {session_id}")
             return
+        guidance = str(cmd.get("guidance") or "").strip()
         try:
             # reset_for_immediate_run consumes the cadence cycle without
             # arming a deferred trip — we spawn the drafter inline below,
             # so we want the next automatic trip to be a full threshold
             # away (not on the very next user turn).
             counter.reset_for_immediate_run()
-            sess._spawn_drafter_review()
-            log("info", f"skill_learn_this: drafter spawned for {session_id}")
+            sess._spawn_drafter_review(operator_guidance=guidance)
+            log(
+                "info",
+                f"skill_learn_this: drafter spawned for {session_id} "
+                f"({'with guidance' if guidance else 'no guidance'})",
+            )
         except Exception:  # noqa: BLE001
             log("warn", f"skill_learn_this failed for {session_id}")
         return

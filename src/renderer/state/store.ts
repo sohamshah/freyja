@@ -4353,11 +4353,19 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           show('no active session', 'warn')
           return true
         }
+        const guidance = (args ?? '').trim()
         api
-          .sendCommand({ type: 'skill_learn_this', sessionId: sid })
+          .sendCommand({
+            type: 'skill_learn_this',
+            sessionId: sid,
+            guidance: guidance || undefined,
+          })
           .then((r: { ok: boolean; error?: string }) => {
             if (r?.ok) {
-              show('drafter spawned — candidate will appear when ready', 'ok')
+              const tail = guidance
+                ? ` (guidance: ${guidance.length > 60 ? guidance.slice(0, 60) + '…' : guidance})`
+                : ''
+              show(`drafter spawned — candidate will appear when ready${tail}`, 'ok')
             } else {
               show(`/learn-this failed: ${r?.error ?? 'unknown'}`, 'danger')
             }

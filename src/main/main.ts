@@ -428,6 +428,7 @@ function setupIpc() {
         return sendControlCommand({
           type: 'skill_learn_this',
           sessionId: cmdSessionId,
+          guidance: typeof c.guidance === 'string' ? c.guidance : undefined,
         })
       }
       // Fall through for other command types — they may not be supported
@@ -842,6 +843,80 @@ function setupIpc() {
       return { ok: true, path: skillPath }
     } catch (err: any) {
       return { ok: false, error: err?.message ?? String(err) }
+    }
+  })
+  // Filesystem path autocomplete — Hermes-style. Fires on every
+  // keystroke from the InputDock so it stays fast: directory readdir
+  // only, no recursive walk. Hard-capped at 40 results and 1000 entries
+  // scanned so a huge dir (e.g. `~/node_modules`) doesn't stall the
+  // ipc loop.
+  ipcMain.handle(IPC.fsCompletePath, async (_e, rawPrefix: string) => {
+    if (typeof rawPrefix !== 'string' || rawPrefix.length === 0) {
+      return { ok: true, matches: [] }
+    }
+    const HOME = os.homedir()
+    // The prefix the operator sees in the textarea — we preserve `~/`
+    // in the returned path so the inserted string matches their typing
+    // verbatim (replacing `~/` with `/Users/foo/` would be jarring).
+    const usesHome = rawPrefix.startsWith('~/')
+    const expanded = usesHome
+      ? path.join(HOME, rawPrefix.slice(2))
+      : rawPrefix
+    // Split into directory + basename prefix. If the input ends with
+    // `/` we list the directory itself (no name filter); otherwise we
+    // list the parent and filter by the partial basename.
+    const endsWithSep = rawPrefix.endsWith('/')
+    let dirToList: string
+    let basenameFilter: string
+    let dirDisplay: string
+    if (endsWithSep) {
+      dirToList = expanded
+      basenameFilter = ''
+      dirDisplay = rawPrefix
+    } else {
+      dirToList = path.dirname(expanded)
+      basenameFilter = path.basename(expanded)
+      const lastSep = rawPrefix.lastIndexOf('/')
+      dirDisplay = lastSep >= 0 ? rawPrefix.slice(0, lastSep + 1) : ''
+    }
+    try {
+      const entries = await fs.promises.readdir(dirToList, { withFileTypes: true })
+      const filterLower = basenameFilter.toLowerCase()
+      const wantsDotfiles = basenameFilter.startsWith('.')
+      const matches: Array<{ name: string; path: string; isDir: boolean }> = []
+      const MAX = 40
+      const MAX_SCAN = 1000
+      let scanned = 0
+      for (const entry of entries) {
+        scanned += 1
+        if (scanned > MAX_SCAN) break
+        const name = entry.name
+        if (!wantsDotfiles && name.startsWith('.')) continue
+        if (filterLower && !name.toLowerCase().startsWith(filterLower)) continue
+        const isDir = entry.isDirectory()
+        matches.push({
+          name,
+          path: `${dirDisplay}${name}`,
+          isDir,
+        })
+        if (matches.length >= MAX) break
+      }
+      // Sort: directories first (easier to keep tab-completing), then
+      // alphabetical. Filter-matching entries are already prefix-sorted
+      // by readdir() in many filesystems but not guaranteed.
+      matches.sort((a, b) => {
+        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
+        return a.name.localeCompare(b.name)
+      })
+      return { ok: true, matches }
+    } catch (err: any) {
+      // ENOENT on the parent dir is the common case while the user
+      // is mid-type — return empty matches rather than an error so the
+      // popup just closes silently.
+      if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') {
+        return { ok: true, matches: [] }
+      }
+      return { ok: false, error: err?.message ?? String(err), matches: [] }
     }
   })
 }

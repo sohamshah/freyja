@@ -1055,14 +1055,22 @@ class GatewayDaemon:
             elif getattr(sess, "skill_cadence_counter", None) is None:
                 reply = "Skill learning is unavailable on this session."
             else:
+                # Free-text accompanying /learn-this — e.g. "focus on
+                # the deployment workflow" — gets passed verbatim to
+                # the drafter as operator guidance.
+                guidance = (message.slash_command_args or "").strip()
                 try:
                     # See review_scheduler.reset_for_immediate_run: we
                     # spawn the drafter inline below, so we consume the
                     # cadence cycle now rather than arming a deferred
                     # trip that would re-fire on the next user turn.
                     sess.skill_cadence_counter.reset_for_immediate_run()
-                    sess._spawn_drafter_review()
-                    reply = "Drafter running — Block Kit card will follow when the candidate is ready."
+                    sess._spawn_drafter_review(operator_guidance=guidance)
+                    reply = (
+                        "Drafter running — Block Kit card will follow when the candidate is ready."
+                        if not guidance
+                        else f"Drafter running with guidance: {guidance[:120]}{'…' if len(guidance) > 120 else ''}"
+                    )
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("/learn-this failed")
                     reply = f"/learn-this errored: {exc}"
@@ -2120,13 +2128,14 @@ class GatewayDaemon:
         if getattr(sess, "skill_cadence_counter", None) is None:
             logger.info("control: skill_learn_this — skill learning disabled on %s", session_id)
             return
+        guidance = str(cmd.get("guidance") or "").strip()
         try:
             # See review_scheduler.reset_for_immediate_run: we spawn
             # the drafter inline rather than waiting for a tick, so we
             # consume the cadence cycle now to prevent a double-fire on
             # the next user turn.
             sess.skill_cadence_counter.reset_for_immediate_run()
-            sess._spawn_drafter_review()
+            sess._spawn_drafter_review(operator_guidance=guidance)
         except Exception:  # noqa: BLE001
             logger.exception("control: skill_learn_this raised for %s", session_id)
 

@@ -31,6 +31,68 @@ function detectAtToken(
   return null
 }
 
+/** Find a `/word` slash-command token at the current caret position.
+ *
+ *  Matches the @-mention detector's contract so the slash popup can
+ *  trigger ANYWHERE in the message, not just at the start. Walks
+ *  backward from the caret looking for a `/` that's either at the
+ *  start of the input or preceded by whitespace; everything between
+ *  the `/` and the caret must be slash-command-name characters
+ *  (letters, digits, dash, underscore). Returns null if the caret has
+ *  moved past the token. */
+function detectSlashToken(
+  text: string,
+  caret: number,
+): { start: number; end: number; query: string } | null {
+  let i = caret - 1
+  while (i >= 0) {
+    const ch = text[i]
+    if (ch === '/') {
+      if (i > 0 && !/\s/.test(text[i - 1])) return null
+      const end = i + 1 + (text.slice(i + 1).match(/^[a-zA-Z0-9_-]*/)?.[0].length ?? 0)
+      if (end < caret) return null
+      return { start: i, end, query: text.slice(i + 1, end) }
+    }
+    if (/\s/.test(ch)) return null
+    i -= 1
+  }
+  return null
+}
+
+/** Find a path-prefix token at the caret. Triggers on `~/`, `./`,
+ *  `../`, or any absolute path containing a `/` after the first
+ *  character. Hermes-style autocomplete fires off this. Single-`/`
+ *  tokens like `/learn-this` are excluded so they go to the slash-
+ *  command popup instead. */
+function detectPathToken(
+  text: string,
+  caret: number,
+): { start: number; end: number; prefix: string } | null {
+  // Walk back to the previous whitespace or start of input.
+  let i = caret - 1
+  while (i >= 0 && !/\s/.test(text[i])) {
+    i -= 1
+  }
+  const start = i + 1
+  const prefix = text.slice(start, caret)
+  if (!prefix) return null
+  // `~/` and relative paths always trigger.
+  if (
+    prefix.startsWith('~/') ||
+    prefix.startsWith('./') ||
+    prefix.startsWith('../')
+  ) {
+    return { start, end: caret, prefix }
+  }
+  // Absolute path: require a second `/` so we don't shadow slash
+  // commands like `/learn-this`. The operator can keep typing past
+  // the second slash to get completion.
+  if (prefix.startsWith('/') && prefix.lastIndexOf('/') > 0) {
+    return { start, end: caret, prefix }
+  }
+  return null
+}
+
 export function InputDock() {
   const draft = useHarness((s) => s.inputDraft)
   const setDraft = useHarness((s) => s.setInputDraft)
@@ -53,14 +115,23 @@ export function InputDock() {
   const [focused, setFocused] = useState(false)
   const [selectedSuggestion, setSelectedSuggestion] = useState(0)
   const [caret, setCaret] = useState(0)
+  const [pathMatches, setPathMatches] = useState<
+    Array<{ name: string; path: string; isDir: boolean }>
+  >([])
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   const MAX_PX = 260
 
+  // Slash token detection runs against the caret position so the popup
+  // triggers anywhere in the message, not just at the start. Examples:
+  //   "/learn-this …"     → token at 0 (start of message)
+  //   "context: /skills"  → token at 9 (after the space)
+  //   "see foo/bar"       → no token (slash not after whitespace)
+  const slashToken = useMemo(() => detectSlashToken(draft, caret), [draft, caret])
   const slashSuggestions: SlashCommand[] = useMemo(() => {
-    if (!draft.startsWith('/')) return []
-    return matchSlash(draft.split(/\s+/)[0])
-  }, [draft])
+    if (!slashToken) return []
+    return matchSlash('/' + slashToken.query)
+  }, [slashToken])
   const activeSession = sessions.find((session) => session.id === activeSessionId)
   const workspaceLabel = compactPath(activeSession?.workspace || '~/')
   const modelLabel = activeSession?.model || model
@@ -77,6 +148,10 @@ export function InputDock() {
 
   // Detect the active @ token at the current caret position.
   const atToken = useMemo(() => detectAtToken(draft, caret), [draft, caret])
+  // Hermes-style path autocomplete — fires when the operator types
+  // `~/`, `./`, `../`, or `/dir/...`. Local fs read, no bridge round-
+  // trip. Token shape mirrors @-mentions for consistency.
+  const pathToken = useMemo(() => detectPathToken(draft, caret), [draft, caret])
 
   // Fire a list_files request (debounced via the focus effect below).
   useEffect(() => {
@@ -86,6 +161,30 @@ export function InputDock() {
     }, 80)
     return () => window.clearTimeout(handle)
   }, [atToken?.query, requestFileMatches])
+
+  // Debounced path completion. Cleared when the token disappears so a
+  // stale popup never lingers after the operator deletes the prefix.
+  useEffect(() => {
+    if (!pathToken) {
+      setPathMatches([])
+      return
+    }
+    const handle = window.setTimeout(() => {
+      const api = (window as any).harness
+      if (!api?.fsCompletePath) return
+      api
+        .fsCompletePath(pathToken.prefix)
+        .then((res: { ok: boolean; matches?: Array<{ name: string; path: string; isDir: boolean }> }) => {
+          if (res?.ok && Array.isArray(res.matches)) {
+            setPathMatches(res.matches)
+          } else {
+            setPathMatches([])
+          }
+        })
+        .catch(() => setPathMatches([]))
+    }, 60)
+    return () => window.clearTimeout(handle)
+  }, [pathToken?.prefix])
 
   useEffect(() => {
     if (draft.length === 0) setSelectedSuggestion(0)
@@ -143,6 +242,70 @@ export function InputDock() {
     })
   }
 
+  /** Replace the current path token with the selected entry's path.
+   *  Directories get a trailing `/` so the operator can tab-complete
+   *  the next segment; files insert verbatim and the caret moves to
+   *  the character past the inserted path so the operator can keep
+   *  typing prose. Unlike the @-mention path insert this does NOT
+   *  wrap in backticks — the operator is typing a literal filesystem
+   *  path, not a model-facing mention. */
+  const insertPathCompletion = (
+    entry: { name: string; path: string; isDir: boolean },
+  ) => {
+    if (!pathToken) return
+    const before = draft.slice(0, pathToken.start)
+    const after = draft.slice(pathToken.end)
+    const inserted = entry.isDir ? `${entry.path}/` : entry.path
+    const nextDraft = `${before}${inserted}${after}`
+    setDraft(nextDraft)
+    setSelectedSuggestion(0)
+    // For dirs, leave the caret right after the trailing slash so the
+    // next keystroke (or another Tab) keeps completing. For files,
+    // same logic — the operator can type a space and continue.
+    const nextCaret = before.length + inserted.length
+    requestAnimationFrame(() => {
+      const el = inputRef.current
+      if (el) {
+        el.focus()
+        el.selectionStart = el.selectionEnd = nextCaret
+        setCaret(nextCaret)
+      }
+    })
+  }
+
+  /** Replace the current slash token with `picked.name + ' '`. Used by
+   *  Tab and by mouse-clicks on a popup row so the user can keep
+   *  typing arguments after the command name. */
+  const insertSlashCommand = (commandName: string) => {
+    if (!slashToken) return
+    const before = draft.slice(0, slashToken.start)
+    const after = draft.slice(slashToken.end)
+    const inserted = `${commandName} `
+    const nextDraft = `${before}${inserted}${after}`
+    setDraft(nextDraft)
+    setSelectedSuggestion(0)
+    const nextCaret = before.length + inserted.length
+    requestAnimationFrame(() => {
+      const el = inputRef.current
+      if (el) {
+        el.focus()
+        el.selectionStart = el.selectionEnd = nextCaret
+        setCaret(nextCaret)
+      }
+    })
+  }
+
+  /** True when the active slash token IS the entire trimmed message —
+   *  in that case Enter should execute the command directly. Otherwise
+   *  the user is composing a longer message and Enter should insert
+   *  the command name without firing. */
+  const slashTokenSpansWholeDraft = useMemo(() => {
+    if (!slashToken) return false
+    const trimmed = draft.trim()
+    const token = draft.slice(slashToken.start, slashToken.end)
+    return trimmed === token
+  }, [draft, slashToken])
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (slashSuggestions.length > 0) {
       if (e.key === 'ArrowDown') {
@@ -156,43 +319,81 @@ export function InputDock() {
         return
       }
       if (e.key === 'Tab') {
-        // Tab only autocompletes — keeps the cursor in the textarea so
-        // the user can type args after the command name.
+        // Tab autocompletes the current token. Replaces only the
+        // `/word` substring, not the whole draft, so a mid-message
+        // slash insertion preserves surrounding prose.
         e.preventDefault()
         const picked = slashSuggestions[selectedSuggestion]
         if (picked) {
-          setDraft(picked.name + ' ')
-          setSelectedSuggestion(0)
+          insertSlashCommand(picked.name)
         }
         return
       }
       if (e.key === 'Enter' && !e.shiftKey) {
-        // Enter *executes* the highlighted suggestion directly. Previous
-        // behavior re-inserted the command name and returned without
-        // running it, leaving the user stuck on a chatbox that wouldn't
-        // submit zero-arg commands like /usage.
         e.preventDefault()
         const picked = slashSuggestions[selectedSuggestion]
         if (picked) {
-          const trimmed = draft.trim()
-          // If the user already typed `/cmd some args`, preserve those args;
-          // otherwise execute with no args.
-          const matchesPicked =
-            trimmed === picked.name || trimmed.startsWith(picked.name + ' ')
-          const args =
-            matchesPicked && trimmed.length > picked.name.length
-              ? trimmed.slice(picked.name.length + 1)
-              : ''
-          const handled = runSlashCommand(picked.name, args)
-          if (handled) {
-            setDraft('')
-            setSelectedSuggestion(0)
-          } else {
-            showToast(`unknown command: ${picked.name}`, 'warn')
-            setDraft('')
+          // If the slash token spans the entire message, the operator
+          // is invoking a command (zero-arg or with args after the
+          // name) — execute. Otherwise the slash is being typed
+          // mid-message and Enter should insert the command name
+          // without firing, matching the @-mention behavior.
+          if (slashTokenSpansWholeDraft) {
+            const trimmed = draft.trim()
+            const matchesPicked =
+              trimmed === picked.name || trimmed.startsWith(picked.name + ' ')
+            const args =
+              matchesPicked && trimmed.length > picked.name.length
+                ? trimmed.slice(picked.name.length + 1)
+                : ''
+            const handled = runSlashCommand(picked.name, args)
+            if (handled) {
+              setDraft('')
+              setSelectedSuggestion(0)
+            } else {
+              showToast(`unknown command: ${picked.name}`, 'warn')
+              setDraft('')
+            }
+            return
           }
+          // Mid-message: insert and continue typing.
+          insertSlashCommand(picked.name)
           return
         }
+      }
+      if (e.key === 'Escape') {
+        // Dismiss the popup by collapsing selection state. The token
+        // detector will re-fire on the next caret/draft change.
+        e.preventDefault()
+        setSelectedSuggestion(0)
+        setCaret(-1)
+        return
+      }
+    }
+    if (pathToken && pathMatches.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSelectedSuggestion((i) => (i + 1) % pathMatches.length)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSelectedSuggestion((i) => (i - 1 + pathMatches.length) % pathMatches.length)
+        return
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+        e.preventDefault()
+        const picked = pathMatches[selectedSuggestion]
+        if (picked) {
+          insertPathCompletion(picked)
+          return
+        }
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setPathMatches([])
+        setSelectedSuggestion(0)
+        return
       }
     }
     if (atToken && fileMatches.length > 0) {
@@ -327,8 +528,7 @@ export function InputDock() {
               <button
                 key={c.name}
                 onClick={() => {
-                  setDraft(c.name + ' ')
-                  inputRef.current?.focus()
+                  insertSlashCommand(c.name)
                 }}
                 onMouseEnter={() => setSelectedSuggestion(i)}
                 className={`flex w-full items-center gap-3 rounded-md px-2.5 py-2 text-left text-[12px] ${
@@ -343,7 +543,35 @@ export function InputDock() {
           </div>
         </div>
       )}
-      {atToken && fileMatches.length > 0 && slashSuggestions.length === 0 && (
+      {pathToken && pathMatches.length > 0 && slashSuggestions.length === 0 && (
+        <div className="absolute bottom-full left-1/2 z-20 mb-3 w-[560px] -translate-x-1/2 rounded-xl glass-strong p-1.5 shadow-2xl ring-hairline-strong">
+          <div className="flex items-center justify-between px-2 py-1.5 label">
+            <span>paths · {pathToken.prefix}</span>
+            <span className="text-[9.5px] text-fg-3">{pathMatches.length}</span>
+          </div>
+          <div className="max-h-[280px] overflow-y-auto">
+            {pathMatches.map((m, i) => (
+              <button
+                key={m.path}
+                onClick={() => insertPathCompletion(m)}
+                onMouseEnter={() => setSelectedSuggestion(i)}
+                className={`flex w-full items-center gap-2 rounded-md px-2.5 py-[7px] text-left text-[12px] ${
+                  i === selectedSuggestion
+                    ? 'bg-accent/15 text-fg-0'
+                    : 'text-fg-1 hover:bg-white/[0.04]'
+                }`}
+              >
+                <span className="text-[11.5px] text-accent">
+                  {m.name}
+                  {m.isDir ? '/' : ''}
+                </span>
+                <span className="truncate text-[10px] text-fg-2">{m.path}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {atToken && fileMatches.length > 0 && slashSuggestions.length === 0 && pathMatches.length === 0 && (
         <div className="absolute bottom-full left-1/2 z-20 mb-3 w-[560px] -translate-x-1/2 rounded-xl glass-strong p-1.5 shadow-2xl ring-hairline-strong">
           <div className="flex items-center justify-between px-2 py-1.5 label">
             <span>files{atToken.query ? ` · @${atToken.query}` : ''}</span>
@@ -474,8 +702,8 @@ export function InputDock() {
                   pendingAttachments.length > 0
                     ? 'Add a caption or send as-is'
                     : isGeminiSession
-                      ? 'Type @ to mention files, / for commands, paste images or videos to attach'
-                      : 'Type @ to mention files, / for commands, paste images to attach'
+                      ? 'Type @ to mention files, / for commands, ~/ for paths, paste images or videos to attach'
+                      : 'Type @ to mention files, / for commands, ~/ for paths, paste images to attach'
                 }
                 className="min-h-[22px] flex-1 resize-none bg-transparent text-[12.5px] text-fg-0 placeholder:text-fg-2 focus:outline-none"
                 style={{ lineHeight: 1.55, maxHeight: `${MAX_PX}px` }}
@@ -498,6 +726,9 @@ export function InputDock() {
                 </span>
                 <span>
                   <kbd className="kbd">@</kbd> files
+                </span>
+                <span>
+                  <kbd className="kbd">~/</kbd> paths
                 </span>
               </div>
               <div className="ml-auto flex min-w-0 items-center">

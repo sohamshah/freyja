@@ -169,6 +169,9 @@ const api = {
   async skillOpen(skillName: string): Promise<SimpleResult & { path?: string }> {
     return ipcRenderer.invoke(IPC.skillOpen, skillName)
   },
+  async fsCompletePath(prefix: string): Promise<import('../shared/events').PathCompletionResult> {
+    return ipcRenderer.invoke(IPC.fsCompletePath, prefix)
+  },
 } as const
 
 export type HarnessApi = typeof api

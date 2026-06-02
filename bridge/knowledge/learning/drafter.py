@@ -227,6 +227,7 @@ def build_user_message(
     loaded_skill_names: list[str],
     all_skill_names: list[str],
     negative_library_excerpt: str,
+    operator_guidance: str = "",
 ) -> str:
     """Assemble the per-turn user message.
 
@@ -247,6 +248,12 @@ def build_user_message(
         "PATCH a loaded skill first" preference order.
       · [NEGATIVE LIBRARY] — recently-rejected candidates so the
         drafter doesn't re-propose the same shape twice.
+      · [OPERATOR GUIDANCE] — optional. When the operator typed
+        ``/learn-this <free text>``, the free text is piped here so
+        the drafter knows what to focus on, what to generalize, or
+        which part of the conversation to extract. When empty the
+        section is omitted entirely (don't pollute the cache prefix
+        with empty slots).
       · [CONVERSATION] — the verbatim excerpt the cadence engine
         decided is worth reviewing.
     """
@@ -271,6 +278,15 @@ def build_user_message(
 
     excerpt = conversation_excerpt.strip() or "(empty)"
 
+    guidance = (operator_guidance or "").strip()
+    guidance_block = (
+        f"[OPERATOR GUIDANCE]\nThe operator invoked /learn-this with this hint — take it as a steer, "
+        f"not as a hard constraint, and still skip if the conversation doesn't support a real skill:\n"
+        f"{guidance}\n\n"
+        if guidance
+        else ""
+    )
+
     return (
         "[CURRENT SKILLS]\n"
         f"{all_block}\n\n"
@@ -278,6 +294,7 @@ def build_user_message(
         f"{loaded_block}\n\n"
         "[NEGATIVE LIBRARY]\n"
         f"{neg_block}\n\n"
+        f"{guidance_block}"
         "[CONVERSATION]\n"
         f"{excerpt}\n\n"
         "[TASK]\n"
@@ -296,6 +313,7 @@ async def run_drafter(
     conversation_excerpt: str,
     loaded_skill_names: list[str],
     all_skill_names: list[str],
+    operator_guidance: str = "",
 ) -> str | None:
     """Run the drafter for one cadence-qualifying turn.
 
@@ -303,6 +321,13 @@ async def run_drafter(
     pending or rejected) on save. Returns ``None`` when the drafter
     decided to skip, when the provider returned no parsed output, or
     when any step in the pipeline failed.
+
+    ``operator_guidance`` is the free-text hint accompanying a
+    ``/learn-this`` invocation (e.g. "focus on the deployment workflow"
+    or "generalize the cherry-pick pattern"). Empty for automatic
+    cadence trips. Threaded into the user message so the LLM knows the
+    operator's framing without changing the system prompt — preserving
+    prompt-cache hits for the system block.
 
     Never raises — the entire body is wrapped in a try/except so a
     failure here cannot break the bridge's turn loop. Telemetry-side
@@ -316,6 +341,7 @@ async def run_drafter(
             conversation_excerpt=conversation_excerpt,
             loaded_skill_names=loaded_skill_names,
             all_skill_names=all_skill_names,
+            operator_guidance=operator_guidance,
         )
     except Exception:
         # Last-resort guard: nothing in the drafter is allowed to
@@ -335,6 +361,7 @@ async def _run_drafter_inner(
     conversation_excerpt: str,
     loaded_skill_names: list[str],
     all_skill_names: list[str],
+    operator_guidance: str = "",
 ) -> str | None:
     # Local imports for two reasons:
     #   1. ``bridge.freyja_bridge`` is a heavy module; we don't want to
@@ -363,6 +390,7 @@ async def _run_drafter_inner(
         loaded_skill_names=loaded_skill_names,
         all_skill_names=all_skill_names,
         negative_library_excerpt=negative_excerpt,
+        operator_guidance=operator_guidance,
     )
 
     # Build provider. Failures here mean Opus is unreachable in this

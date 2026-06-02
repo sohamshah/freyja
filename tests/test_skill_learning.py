@@ -1221,6 +1221,34 @@ def test_drafter_audit_trip_event_fires_on_spawn(tmp_freyja_home, monkeypatch):
     assert trip[0]["session_id"] == "audit-test"
 
 
+def test_build_user_message_includes_operator_guidance_when_provided():
+    """/learn-this can carry free-text guidance ("focus on the deploy
+    workflow") that should appear in the user message so the drafter
+    knows the operator's framing. Empty guidance omits the section
+    entirely to keep the prompt-cache prefix stable for automatic
+    cadence trips."""
+    from bridge.knowledge.learning import drafter
+    with_guidance = drafter.build_user_message(
+        conversation_excerpt="user: deploy now\nassistant: cherry-pick…",
+        loaded_skill_names=["release-ops"],
+        all_skill_names=["release-ops"],
+        negative_library_excerpt="",
+        operator_guidance="focus on the cherry-pick pattern across staging+prod",
+    )
+    assert "[OPERATOR GUIDANCE]" in with_guidance
+    assert "focus on the cherry-pick pattern" in with_guidance
+
+    without_guidance = drafter.build_user_message(
+        conversation_excerpt="user: hi",
+        loaded_skill_names=[],
+        all_skill_names=[],
+        negative_library_excerpt="",
+    )
+    # Section MUST be omitted when guidance is empty — otherwise the
+    # automatic cadence trip pays a cache miss on every empty slot.
+    assert "[OPERATOR GUIDANCE]" not in without_guidance
+
+
 def test_drafter_end_to_end_save_writes_candidate_file(tmp_freyja_home, monkeypatch):
     """End-to-end: when the drafter LLM returns decision=save, the
     drafter must successfully write a .candidates/<id>.yaml file. The
