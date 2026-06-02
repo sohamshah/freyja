@@ -127,6 +127,18 @@ export function SkillCandidatesPanel() {
                           review
                         </span>
                       )}
+                      {cand.existingSkill?.exists && (
+                        <span
+                          className={`rounded px-1 py-[1px] font-mono text-[8.5px] uppercase tracking-[0.08em] ring-1 ${
+                            cand.existingSkill.isDestructive
+                              ? 'bg-danger/15 text-danger ring-danger/30'
+                              : 'bg-accent/15 text-accent ring-accent/30'
+                          }`}
+                          title={`Overwrites existing skill: +${cand.existingSkill.linesAdded ?? 0} / -${cand.existingSkill.linesRemoved ?? 0} lines${cand.existingSkill.linesExisting ? ` of ${cand.existingSkill.linesExisting}` : ''}`}
+                        >
+                          ↻ +{cand.existingSkill.linesAdded ?? 0} / -{cand.existingSkill.linesRemoved ?? 0}
+                        </span>
+                      )}
                     </div>
                     <div className="mt-0.5 text-[11px] leading-[1.4] text-fg-2 line-clamp-2">
                       {cand.description}

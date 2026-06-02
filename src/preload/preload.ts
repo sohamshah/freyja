@@ -169,6 +169,11 @@ const api = {
   async skillOpen(skillName: string): Promise<SimpleResult & { path?: string }> {
     return ipcRenderer.invoke(IPC.skillOpen, skillName)
   },
+  async skillCandidateDiff(
+    candidateId: string,
+  ): Promise<import('../shared/events').SkillCandidateDiffResult> {
+    return ipcRenderer.invoke(IPC.skillCandidateDiff, candidateId)
+  },
   async fsCompletePath(prefix: string): Promise<import('../shared/events').PathCompletionResult> {
     return ipcRenderer.invoke(IPC.fsCompletePath, prefix)
   },

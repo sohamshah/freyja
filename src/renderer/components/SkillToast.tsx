@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useHarness } from '../state/store'
+import { SkillDiffModal } from './SkillDiffModal'
 
 /**
  * Non-modal toast surfaced at the bottom-right of the screen when a
@@ -29,6 +30,12 @@ export function SkillToast() {
   const [editing, setEditing] = useState(false)
   const [editName, setEditName] = useState('')
   const [editDesc, setEditDesc] = useState('')
+  const [showDiff, setShowDiff] = useState(false)
+  // Destructive-promote double-tap guard — when the new body deletes
+  // a large chunk of the existing skill, the first PROMOTE click only
+  // arms the action; the second click executes. Prevents the ~280-line
+  // ema-release-ops content loss from happening accidentally.
+  const [destructiveArmed, setDestructiveArmed] = useState(false)
   const current = queue[0]
 
   // M15 — reset local expansion / edit state when the head of the
@@ -39,16 +46,36 @@ export function SkillToast() {
     setEditing(false)
     setEditName(current?.name ?? '')
     setEditDesc(current?.description ?? '')
+    setDestructiveArmed(false)
+    setShowDiff(false)
   }, [current?.candidateId, current?.name, current?.description])
 
   if (!current) return null
 
   const triggers = current.triggers ?? []
   const isCaution = current.guardVerdict === 'caution'
+  const existing = current.existingSkill
+  const overwrites = existing?.exists === true
+  const isDestructive = overwrites && existing?.isDestructive === true
+  const linesAdded = existing?.linesAdded ?? 0
+  const linesRemoved = existing?.linesRemoved ?? 0
 
   const promote = () => {
+    // Destructive-promote double-tap: first click arms, second confirms.
+    // Only applies when the candidate would delete ≥100 lines or ≥50%
+    // of the existing skill. Operators editing name/description don't
+    // trigger this; only body replacement does, since the body is what
+    // the drafter substituted.
+    if (isDestructive && !destructiveArmed) {
+      setDestructiveArmed(true)
+      // Auto-disarm after 6s so a stale "armed" state can't sit
+      // around waiting for a misclick.
+      setTimeout(() => setDestructiveArmed(false), 6000)
+      return
+    }
     setExpanded(false)
     setEditing(false)
+    setDestructiveArmed(false)
     const edits =
       editing && (editName.trim() !== current.name || editDesc.trim() !== current.description)
         ? {
@@ -88,6 +115,49 @@ export function SkillToast() {
         {isCaution && current.guardSummary && (
           <div className="border-l-2 border-warn/40 bg-warn/[0.05] px-4 py-2 text-[11px] leading-[1.5] text-warn">
             {current.guardSummary}
+          </div>
+        )}
+
+        {/* Overwrite stats — shown above the body so the operator sees
+            "↻ overwrites existing skill (+47 / -287)" before they read
+            anything else. Destructive promotes get a red banner; non-
+            destructive overwrites get a neutral info row. */}
+        {overwrites && (
+          <div
+            className={`border-l-2 px-4 py-2 text-[11px] leading-[1.5] ${
+              isDestructive
+                ? 'border-danger/60 bg-danger/[0.07] text-danger'
+                : 'border-accent/40 bg-accent/[0.06] text-fg-1'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="font-mono">↻ overwrites existing</span>
+                <span className="font-mono text-[10.5px]">
+                  <span className="text-ok">+{linesAdded}</span>
+                  <span className="text-fg-3"> / </span>
+                  <span className="text-danger">-{linesRemoved}</span>
+                  {existing?.linesExisting !== undefined && (
+                    <span className="text-fg-3">
+                      {' '}
+                      of {existing.linesExisting} lines
+                    </span>
+                  )}
+                </span>
+              </div>
+              <button
+                onClick={() => setShowDiff(true)}
+                className="font-mono text-[10px] uppercase tracking-[0.08em] text-fg-2 hover:text-fg-0 underline-offset-2 hover:underline"
+              >
+                view diff
+              </button>
+            </div>
+            {isDestructive && (
+              <div className="mt-1 text-[10.5px]">
+                Promote will delete {linesRemoved} lines from the existing
+                skill. Click EDIT to review, or PROMOTE twice to confirm.
+              </div>
+            )}
           </div>
         )}
 
@@ -187,15 +257,41 @@ export function SkillToast() {
             </button>
             <button
               onClick={promote}
-              className="rounded-md bg-accent/15 px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.08em] text-accent ring-1 ring-accent/40 hover:bg-accent/25"
+              className={`rounded-md px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.08em] ring-1 ${
+                isDestructive
+                  ? destructiveArmed
+                    ? 'bg-danger/30 text-danger ring-danger/60 hover:bg-danger/40'
+                    : 'bg-danger/15 text-danger ring-danger/40 hover:bg-danger/25'
+                  : 'bg-accent/15 text-accent ring-accent/40 hover:bg-accent/25'
+              }`}
+              title={
+                isDestructive
+                  ? destructiveArmed
+                    ? `Click again to confirm — will delete ${linesRemoved} lines`
+                    : `Will delete ${linesRemoved} lines · click to arm, click again to confirm`
+                  : undefined
+              }
             >
-              {editing && (editName.trim() !== current.name || editDesc.trim() !== current.description)
-                ? 'promote with edits'
-                : 'promote'}
+              {isDestructive
+                ? destructiveArmed
+                  ? `confirm · delete -${linesRemoved}`
+                  : `replace -${linesRemoved}`
+                : editing &&
+                    (editName.trim() !== current.name ||
+                      editDesc.trim() !== current.description)
+                  ? 'promote with edits'
+                  : 'promote'}
             </button>
           </div>
         </div>
       </div>
+      {showDiff && (
+        <SkillDiffModal
+          candidateId={current.candidateId}
+          name={current.name}
+          onClose={() => setShowDiff(false)}
+        />
+      )}
     </div>
   )
 }

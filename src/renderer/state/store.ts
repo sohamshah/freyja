@@ -238,6 +238,12 @@ export interface HarnessState extends SessionSlice {
     guardSummary?: string
     draftedAt: number
     sourceTurnId?: string
+    /** Stats vs. the existing on-disk SKILL.md with the same name.
+     *  Surfaced in SkillToast + SkillCandidatesPanel as a "↻ overwrites
+     *  existing: +X / -Y" badge. ``isDestructive`` flips the PROMOTE
+     *  button to a red "REPLACE & DELETE -Y LINES" confirmation so
+     *  large content losses can't slip through accidentally. */
+    existingSkill?: import('@shared/events').ExistingSkillStats
   }>
   /** Drafter + cadence telemetry surfaced in DrafterActivityStrip.
    *  Populated from bridge events: ``skill_drafter_pass`` (post-run
@@ -2407,6 +2413,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
               guardSummary: ev.guardSummary ?? '',
               draftedAt: ev.draftedAt ?? Date.now(),
               sourceTurnId: ev.sourceTurnId,
+              existingSkill: ev.existingSkill,
             },
             ...prev.skillCandidateQueue.filter(
               (c) => c.candidateId !== ev.candidateId,

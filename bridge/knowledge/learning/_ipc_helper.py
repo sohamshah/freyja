@@ -40,6 +40,15 @@ def _findings_to_summary(findings: list[dict[str, Any]] | None) -> str:
 def _candidate_to_record(c: candidates.Candidate) -> dict[str, Any]:
     body = c.body or ""
     preview = body[:600] + ("…" if len(body) > 600 else "")
+    # Compute overwrite stats so the candidates panel row shows the
+    # +X/-Y badge inline — same shape as the live skill_candidate
+    # event. Lazy import to avoid pulling drafter into the IPC helper
+    # at module load time (it imports freyja_bridge, which is heavy).
+    try:
+        from bridge.knowledge.learning.drafter import _compute_existing_skill_diff_stats
+        existing_stats = _compute_existing_skill_diff_stats(c.name or "", body)
+    except Exception:  # noqa: BLE001
+        existing_stats = {"exists": False}
     return {
         "candidateId": c.candidate_id,
         "name": c.name,
@@ -55,6 +64,7 @@ def _candidate_to_record(c: candidates.Candidate) -> dict[str, Any]:
         "draftedAt": int(c.drafted_at or 0),
         "sourceSessionId": c.source_session_id or None,
         "sourceTurnId": c.source_turn_id or None,
+        "existingSkill": existing_stats,
     }
 
 
@@ -143,6 +153,61 @@ def _list_rejected(limit: int = 50) -> dict[str, Any]:
     return {"ok": True, "rejected": out}
 
 
+def _candidate_diff(candidate_id: str) -> dict[str, Any]:
+    """Return a unified diff between a pending candidate's body and the
+    on-disk SKILL.md for the same skill name.
+
+    Used by the renderer's SkillDiffModal when the operator clicks
+    "view diff" on an overwriting candidate. The skill_candidate event
+    only carries +/- stats; this call lazily produces the full diff
+    text so we don't bloat every event with a potentially 100KB body
+    delta.
+    """
+    import difflib
+    from bridge.knowledge.learning.paths import skills_root, safe_skill_filename
+
+    c = candidates.get_pending(candidate_id)
+    if c is None:
+        return {"ok": False, "error": "candidate not found"}
+    safe = safe_skill_filename(c.name or "")
+    if not safe:
+        return {"ok": False, "error": "invalid skill name"}
+    skill_path = skills_root() / safe / "SKILL.md"
+    if not skill_path.exists():
+        # No existing skill — the "diff" is the whole new body, but
+        # render it as a single +-block.
+        return {
+            "ok": True,
+            "exists": False,
+            "candidateBody": c.body or "",
+            "existingBody": "",
+            "unifiedDiff": "",
+        }
+    try:
+        existing_body = skill_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return {"ok": False, "error": f"read existing failed: {exc!r}"}
+    new_body = c.body or ""
+    diff_lines = list(
+        difflib.unified_diff(
+            existing_body.splitlines(),
+            new_body.splitlines(),
+            fromfile=f"{c.name} (existing)",
+            tofile=f"{c.name} (candidate)",
+            lineterm="",
+            n=3,
+        )
+    )
+    return {
+        "ok": True,
+        "exists": True,
+        "skillPath": str(skill_path),
+        "existingBody": existing_body,
+        "candidateBody": new_body,
+        "unifiedDiff": "\n".join(diff_lines),
+    }
+
+
 def main(argv: list[str]) -> int:
     cmd = argv[1] if len(argv) > 1 else ""
     try:
@@ -157,6 +222,12 @@ def main(argv: list[str]) -> int:
         elif cmd == "list-rejected":
             limit = int(argv[2]) if len(argv) > 2 else 50
             result = _list_rejected(limit=limit)
+        elif cmd == "candidate-diff":
+            candidate_id = argv[2] if len(argv) > 2 else ""
+            if not candidate_id:
+                result = {"ok": False, "error": "candidate-diff requires candidate id"}
+            else:
+                result = _candidate_diff(candidate_id)
         else:
             result = {"ok": False, "error": f"unknown command: {cmd!r}"}
     except Exception as e:  # noqa: BLE001

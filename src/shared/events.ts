@@ -758,6 +758,13 @@ export type BridgeEvent =
       guardSummary?: string
       draftedAt: number
       sourceTurnId?: string
+      /** Diff stats against the existing on-disk SKILL.md with the
+       *  same name. Lets the SkillToast / SkillCandidatesPanel show
+       *  "↻ overwrites existing: +47 / -287 lines" and flag
+       *  destructive promotes BEFORE the operator clicks PROMOTE. When
+       *  the named skill doesn't exist, exists=false and the candidate
+       *  is net-new. */
+      existingSkill?: ExistingSkillStats
     } & SessionId)
   | ({
       /** Resolution echo — fired after the operator decides on a
@@ -983,6 +990,7 @@ export const IPC = {
   skillSave: 'skill:save',
   skillReadFile: 'skill:readFile',
   skillOpen: 'skill:open',
+  skillCandidateDiff: 'skill:candidateDiff',
   fsCompletePath: 'fs:completePath',
   llmKeysProbe: 'llm:keys:probe',
 } as const
@@ -1027,6 +1035,38 @@ export interface SimpleResult {
   ok: boolean
   error?: string
   message?: string
+}
+
+/** Stats comparing a candidate body to the existing on-disk SKILL.md.
+ *  Computed in bridge/knowledge/learning/drafter.py at candidate-emit
+ *  time AND by the list-candidates helper for pre-existing pending
+ *  candidates. ``isDestructive`` is true when the new body deletes
+ *  ≥100 lines OR ≥50% of the existing body — the operator gets a
+ *  red warning + a renamed PROMOTE button in either case. */
+export interface ExistingSkillStats {
+  exists: boolean
+  linesAdded?: number
+  linesRemoved?: number
+  linesExisting?: number
+  linesNew?: number
+  bytesExisting?: number
+  bytesNew?: number
+  isDestructive?: boolean
+  skillPath?: string
+}
+
+export interface SkillCandidateDiffResult {
+  ok: boolean
+  /** False when no existing SKILL.md — the "diff" is the whole new
+   *  body. The renderer renders this as a single +-block. */
+  exists?: boolean
+  skillPath?: string
+  existingBody?: string
+  candidateBody?: string
+  /** difflib.unified_diff output joined by newlines. Empty when
+   *  exists=false. */
+  unifiedDiff?: string
+  error?: string
 }
 
 // Local filesystem path-completion result. Used by the InputDock to
@@ -1089,6 +1129,10 @@ export interface SkillCandidateRecord {
   draftedAt: number
   sourceSessionId?: string
   sourceTurnId?: string
+  /** Same shape as the skill_candidate event field — populated by
+   *  list-candidates so the panel can render the +/- badge on every
+   *  pending row, not just on freshly-arrived ones. */
+  existingSkill?: ExistingSkillStats
 }
 
 export interface SkillRejectedRecord extends SkillCandidateRecord {

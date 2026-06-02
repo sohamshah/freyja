@@ -791,6 +791,14 @@ function setupIpc() {
     if (!res.ok) return { ok: false, error: res.error ?? 'helper_failed' }
     return res.payload ?? { ok: false, error: 'helper_empty' }
   })
+  ipcMain.handle(IPC.skillCandidateDiff, async (_e, candidateId: string) => {
+    if (typeof candidateId !== 'string' || !candidateId) {
+      return { ok: false, error: 'invalid_candidate_id' }
+    }
+    const res = await runSkillHelper(['candidate-diff', candidateId])
+    if (!res.ok) return { ok: false, error: res.error ?? 'helper_failed' }
+    return res.payload ?? { ok: false, error: 'helper_empty' }
+  })
   ipcMain.handle(IPC.skillReadFile, async (_e, skillName: string) => {
     const norm = sanitizeSkillName(skillName)
     if (!norm) return { ok: false, error: 'invalid_skill_name' }

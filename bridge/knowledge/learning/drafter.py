@@ -189,6 +189,88 @@ _DRAFTER_MODEL_ENV = "FREYJA_DRAFTER_MODEL"
 _logged_env_override = False
 
 
+# Threshold above which a candidate that overwrites an existing skill is
+# flagged ``isDestructive`` in the skill_candidate event. The renderer
+# uses this flag to swap PROMOTE → "REPLACE & DELETE -N LINES" and to
+# show a warning banner so the operator can't accidentally throw away a
+# big reference body. Tuned conservatively: the first SKILL.md the
+# operator wrote for ema-release-ops was 404 lines; a delete of >100
+# lines from any single promote is almost always a regression, not an
+# intentional rewrite.
+_DESTRUCTIVE_REMOVED_LINES = 100
+# Ratio-based fallback for skills that are small: deleting >50% of a
+# 60-line skill (e.g. 35 lines removed of 60) is still destructive even
+# if the absolute count is under 100.
+_DESTRUCTIVE_REMOVED_RATIO = 0.5
+
+
+def _compute_existing_skill_diff_stats(
+    skill_name: str,
+    new_body: str,
+) -> dict[str, Any]:
+    """Compare a candidate body against the on-disk SKILL.md, if any.
+
+    Returns a dict the renderer attaches to the candidate row. When the
+    skill doesn't exist on disk, returns ``{"exists": False}`` and the
+    renderer treats the candidate as net-new. When it does exist,
+    returns line-level stats so the toast can render "↻ overwrites
+    existing: +47 / -287 lines" plus an ``isDestructive`` flag.
+
+    The actual unified diff is NOT included here — it can be large
+    (10–100 KB for a long skill). The diff modal fetches it on demand
+    via the ``skill:candidateDiff`` IPC handler.
+
+    Best-effort: any failure (missing file, read error, encoding
+    weirdness) returns ``{"exists": False}`` so the candidate emit
+    path is never blocked by a stats computation problem.
+    """
+    try:
+        from bridge.knowledge.learning.paths import skills_root, safe_skill_filename
+        import difflib
+        # Mirror the dir-naming rule that confirmation.promote uses so
+        # the existence check matches the actual on-disk path.
+        safe = safe_skill_filename(skill_name)
+        if not safe:
+            return {"exists": False}
+        skill_path = skills_root() / safe / "SKILL.md"
+        if not skill_path.exists() or not skill_path.is_file():
+            return {"exists": False}
+        existing_body = skill_path.read_text(encoding="utf-8", errors="replace")
+        old_lines = existing_body.splitlines()
+        new_lines = (new_body or "").splitlines()
+        added = 0
+        removed = 0
+        for line in difflib.unified_diff(old_lines, new_lines, lineterm=""):
+            if line.startswith("+++") or line.startswith("---"):
+                continue
+            if line.startswith("+"):
+                added += 1
+            elif line.startswith("-"):
+                removed += 1
+        existing_line_count = len(old_lines)
+        is_destructive = (
+            removed >= _DESTRUCTIVE_REMOVED_LINES
+            or (
+                existing_line_count > 0
+                and removed / existing_line_count >= _DESTRUCTIVE_REMOVED_RATIO
+            )
+        )
+        return {
+            "exists": True,
+            "linesAdded": added,
+            "linesRemoved": removed,
+            "linesExisting": existing_line_count,
+            "linesNew": len(new_lines),
+            "bytesExisting": len(existing_body),
+            "bytesNew": len(new_body or ""),
+            "isDestructive": is_destructive,
+            "skillPath": str(skill_path),
+        }
+    except Exception:  # noqa: BLE001
+        logger.debug("drafter: diff stats failed for %s", skill_name, exc_info=True)
+        return {"exists": False}
+
+
 def _drafter_model() -> str:
     """The model used by the drafter.
 
@@ -707,6 +789,13 @@ async def _run_drafter_inner(
     # without also updating src/shared/events.ts.
     try:
         body_preview = body if len(body) <= 600 else body[:600] + "\n…[truncated, see candidate file]…"
+        # Compute overwrite stats so the toast can show "↻ overwrites
+        # existing: +X / -Y" and flag destructive promotes BEFORE the
+        # operator clicks PROMOTE. The first ema-release-ops draft was
+        # ~120 lines replacing a 404-line skill; without this badge the
+        # operator had no way to spot the 65% content loss until after
+        # promotion deleted it from disk.
+        existing_stats = _compute_existing_skill_diff_stats(name, body)
         emit(
             {
                 "type": "skill_candidate",
@@ -722,6 +811,7 @@ async def _run_drafter_inner(
                 "guardVerdict": scan.verdict,
                 "guardSummary": scan.summary,
                 "draftedAt": int(time.time() * 1000),
+                "existingSkill": existing_stats,
             }
         )
     except Exception:
