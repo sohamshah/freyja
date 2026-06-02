@@ -227,7 +227,7 @@ def test_candidates_negative_library_is_string(tmp_freyja_home):
 # ── review_scheduler ──
 
 
-def test_cadence_counter_trips_on_threshold(monkeypatch):
+def test_cadence_counter_trips_on_threshold(tmp_freyja_home, monkeypatch):
     monkeypatch.setenv("FREYJA_SKILL_NUDGE_INTERVAL", "3")
     from bridge.knowledge.learning import review_scheduler as rs
     c = rs.make_counter("s")
@@ -237,7 +237,7 @@ def test_cadence_counter_trips_on_threshold(monkeypatch):
     assert trips == [False, False, True, False, False, True, False]
 
 
-def test_cadence_force_trip_bypasses_threshold(monkeypatch):
+def test_cadence_force_trip_bypasses_threshold(tmp_freyja_home, monkeypatch):
     monkeypatch.setenv("FREYJA_SKILL_NUDGE_INTERVAL", "999")
     from bridge.knowledge.learning import review_scheduler as rs
     c = rs.make_counter("s")
@@ -245,7 +245,7 @@ def test_cadence_force_trip_bypasses_threshold(monkeypatch):
     assert c.on_turn_complete(had_user_message=True) is True
 
 
-def test_cadence_disabled_threshold_does_not_trip(monkeypatch):
+def test_cadence_disabled_threshold_does_not_trip(tmp_freyja_home, monkeypatch):
     monkeypatch.setenv("FREYJA_SKILL_NUDGE_INTERVAL", "0")
     from bridge.knowledge.learning import review_scheduler as rs
     c = rs.make_counter("s")
@@ -254,6 +254,62 @@ def test_cadence_disabled_threshold_does_not_trip(monkeypatch):
         c.on_turn_complete(had_user_message=True) is False
         for _ in range(20)
     )
+
+
+def test_cadence_persists_across_counter_instances(tmp_freyja_home, monkeypatch):
+    """Workspace-global cadence: a fresh counter instance (simulating a
+    second session, OR a bridge restart) reads the persisted count and
+    continues from where the previous instance left off."""
+    monkeypatch.setenv("FREYJA_SKILL_NUDGE_INTERVAL", "5")
+    from bridge.knowledge.learning import review_scheduler as rs
+    c1 = rs.make_counter("session-A")
+    # 3 ticks on session A: counter at 3, not tripped.
+    for _ in range(3):
+        assert c1.on_turn_complete(had_user_message=True) is False
+    assert c1.count == 3
+    # Fresh counter on a different session — same workspace, same file.
+    c2 = rs.make_counter("session-B")
+    assert c2.count == 3  # picks up where A left off
+    # 2 more ticks should trip: 3+2 = 5.
+    assert c2.on_turn_complete(had_user_message=True) is False
+    assert c2.on_turn_complete(had_user_message=True) is True
+    # State recorded which session caused the trip.
+    state = rs.read_cadence_state()
+    assert state["last_trip_session_id"] == "session-B"
+    assert state["turns_since_last_review"] == 0
+
+
+def test_cadence_force_trip_survives_restart(tmp_freyja_home, monkeypatch):
+    """force_trip persists to disk — if the bridge restarts between
+    /learn-this and the next turn, the trip flag survives."""
+    monkeypatch.setenv("FREYJA_SKILL_NUDGE_INTERVAL", "999")
+    from bridge.knowledge.learning import review_scheduler as rs
+    c1 = rs.make_counter("session-A")
+    c1.force_trip()
+    # New counter — simulates bridge restart.
+    c2 = rs.make_counter("session-B")
+    assert c2.on_turn_complete(had_user_message=True) is True
+
+
+def test_cadence_reset_for_immediate_run_clears_count_and_forced(tmp_freyja_home, monkeypatch):
+    """/learn-this spawns the drafter inline. We don't want the next
+    automatic tick to ALSO fire because count was near threshold or
+    because force_trip was armed — reset_for_immediate_run zeroes both."""
+    monkeypatch.setenv("FREYJA_SKILL_NUDGE_INTERVAL", "3")
+    from bridge.knowledge.learning import review_scheduler as rs
+    c = rs.make_counter("session-A")
+    # Push the count to threshold-1 so we're one tick from firing.
+    c.on_turn_complete(had_user_message=True)
+    c.on_turn_complete(had_user_message=True)
+    assert c.count == 2  # ready to fire on the next tick
+    c.force_trip()       # also arm forced for good measure
+    # Operator hits /learn-this — handler resets and spawns inline.
+    c.reset_for_immediate_run()
+    state = rs.read_cadence_state()
+    assert state["turns_since_last_review"] == 0
+    assert state["forced"] is False
+    # Next tick should NOT fire (count was reset to 0).
+    assert c.on_turn_complete(had_user_message=True) is False
 
 
 # ── confirmation ──
@@ -1004,7 +1060,7 @@ def test_watcher_classifier_failure_does_not_mark_classified(tmp_freyja_home, mo
         assert "m12-skill" not in w._classified
         # Second pass: record_load should re-enqueue (since not classified).
         w.record_load(skill_name="m12-skill", skill_body="b", turn_index=6)
-        assert any(p.skill_name == "m12-skill" for p in w._pending)
+        assert any(h.skill_name == "m12-skill" for h in w._handles)
 
     asyncio.run(_run())
 
@@ -1106,7 +1162,7 @@ def test_events_append_truncates_long_evidence(tmp_freyja_home):
 # ── M4: cadence counter ignores agent-only iterations ──
 
 
-def test_cadence_counter_skips_goal_loop_continuations(monkeypatch):
+def test_cadence_counter_skips_goal_loop_continuations(tmp_freyja_home, monkeypatch):
     """M4: goal-loop continuations are agent-only iterations between
     user nudges. The bridge passes ``had_user_message=False`` for
     those so the cadence counter doesn't over-count the user-turn
@@ -1122,10 +1178,130 @@ def test_cadence_counter_skips_goal_loop_continuations(monkeypatch):
     # counter, none should trip.
     for _ in range(50):
         assert c.on_turn_complete(had_user_message=False) is False
-    # The counter's internal user-turn count is still zero, so the
+    # The counter's persisted user-turn count is still zero, so the
     # first 3 real user turns produce the normal F, F, T pattern.
     trips = [c.on_turn_complete(had_user_message=True) for _ in range(3)]
     assert trips == [False, False, True]
+
+
+# ── Drafter audit events: trip + decision land in events.jsonl ──
+
+
+def test_drafter_audit_events_trip_and_decision(tmp_freyja_home, monkeypatch):
+    """Cadence trip → drafter dispatch must leave a paired audit trail
+    in .events.jsonl regardless of whether a candidate was emitted.
+    Without trip/decision, 'drafter never ran' and 'drafter ran and
+    skipped' look identical from the logs, which was the original
+    debug-hostile design hole."""
+    import asyncio
+    from bridge.knowledge.learning import events, review_worker
+
+    # Stub run_drafter to return None (skip) so we can assert the
+    # decision event records the skip path.
+    async def _fake_skip(**_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "bridge.knowledge.learning.drafter.run_drafter",
+        _fake_skip,
+        raising=False,
+    )
+
+    async def _run():
+        task = review_worker.spawn_drafter_review(
+            session_id="audit-test",
+            turn_id="t1",
+            conversation_excerpt="hello",
+            loaded_skill_names=[],
+            all_skill_names=[],
+        )
+        assert task is not None
+        await task
+
+    asyncio.run(_run())
+
+    log = list(events.iter_events())
+    trip = [e for e in log if e.get("event") == events.EVENT_DRAFTER_TRIP]
+    decision = [e for e in log if e.get("event") == events.EVENT_DRAFTER_DECISION]
+    assert len(trip) == 1
+    assert trip[0]["session_id"] == "audit-test"
+    assert len(decision) == 1
+    assert decision[0]["result"] == "skip"
+
+
+def test_drafter_audit_decision_records_error(tmp_freyja_home, monkeypatch):
+    """When run_drafter raises, the decision event records result=error
+    plus the exception class for triage. Failure path was previously
+    completely silent."""
+    import asyncio
+    from bridge.knowledge.learning import events, review_worker
+
+    async def _fake_raise(**_kwargs):
+        raise RuntimeError("provider 500")
+
+    monkeypatch.setattr(
+        "bridge.knowledge.learning.drafter.run_drafter",
+        _fake_raise,
+        raising=False,
+    )
+
+    async def _run():
+        task = review_worker.spawn_drafter_review(
+            session_id="audit-err",
+            turn_id="t1",
+            conversation_excerpt="hello",
+            loaded_skill_names=[],
+            all_skill_names=[],
+        )
+        assert task is not None
+        await task
+
+    asyncio.run(_run())
+
+    log = list(events.iter_events())
+    decision = [e for e in log if e.get("event") == events.EVENT_DRAFTER_DECISION]
+    assert len(decision) == 1
+    assert decision[0]["result"] == "error"
+    assert "RuntimeError" in decision[0].get("rationale", "")
+
+
+# ── Skills Guard pattern count assertion ──
+
+
+def test_skills_guard_pattern_count_matches_source():
+    """Every entry in THREAT_PATTERNS must compile. If 118/120 compile
+    silently (as the original code allowed), Hermes' threat coverage
+    regressed without warning. pattern_coverage() must equal the source
+    table length."""
+    from bridge.knowledge.learning import skills_guard
+    active, total = skills_guard.pattern_coverage()
+    assert active == total, (
+        f"skills_guard pattern coverage regressed: {active}/{total} compile. "
+        "Check the daemon log for which THREAT_PATTERNS entries failed."
+    )
+
+
+def test_skills_guard_logs_loud_warning_on_bad_pattern(caplog):
+    """A failing pattern triggers an error-level log (not silent skip).
+    Simulates the regression case by injecting a bad pattern and
+    re-running _compile_patterns."""
+    import logging
+    from bridge.knowledge.learning import skills_guard
+
+    bad_table = list(skills_guard.THREAT_PATTERNS) + [
+        ("(unbalanced", "test_bad", "low", "obfuscation", "intentional bad regex"),
+    ]
+    with caplog.at_level(logging.ERROR, logger="bridge.knowledge.learning.skills_guard"):
+        # Patch THREAT_PATTERNS temporarily, recompile, restore.
+        original = skills_guard.THREAT_PATTERNS
+        try:
+            skills_guard.THREAT_PATTERNS = bad_table  # type: ignore[attr-defined]
+            skills_guard._compile_patterns()
+        finally:
+            skills_guard.THREAT_PATTERNS = original  # type: ignore[attr-defined]
+    # Loud warning includes the failing pattern id + reason.
+    assert any("test_bad" in r.message for r in caplog.records)
+    assert any("dropped" in r.message for r in caplog.records)
 
 
 # ── H4: review_worker._INFLIGHT is a strong set ──
@@ -1208,13 +1384,13 @@ def test_shutdown_skill_learning_drains_pending(tmp_freyja_home):
         turn_index=0,
         load_context="agent_loaded",
     )
-    assert len(watcher._pending) == 1
+    assert len(watcher._handles) == 1
 
     # Drain via the helper. on_session_end runs synchronously and
     # tries to schedule classification — with no running loop the
-    # scheduler logs + drops, but _pending MUST end empty.
+    # scheduler logs + drops, but _handles MUST end empty.
     sess.shutdown_skill_learning()
-    assert watcher._pending == []
+    assert watcher._handles == []
 
     # Idempotent — H3 call sites may double-fire under races.
     sess.shutdown_skill_learning()

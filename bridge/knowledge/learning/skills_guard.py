@@ -523,7 +523,7 @@ THREAT_PATTERNS = [
     # Same rationale as the prompt-injection block above: prose attacks
     # routinely vary case ("DAN", "dan", "Developer Mode") and require
     # case-insensitive matching, opted in per-pattern.
-    (r'(?i)\bDAN\s+mode\b|(?i)Do\s+Anything\s+Now',
+    (r'(?i)\bDAN\s+mode\b|Do\s+Anything\s+Now',
      "jailbreak_dan", "critical", "injection",
      "DAN (Do Anything Now) jailbreak attempt"),
     (r'(?i)\bdeveloper\s+mode\b.*\benabled?\b',
@@ -541,7 +541,7 @@ THREAT_PATTERNS = [
     (r'(?i)you\s+have\s+been\s+(?:\w+\s+)*(updated|upgraded|patched)\s+to',
      "fake_update", "high", "injection",
      "fake update/patch announcement (social engineering)"),
-    (r'(?i)new\s+(?:\w+\s+)*policy|(?i)updated\s+(?:\w+\s+)*guidelines|(?i)revised\s+(?:\w+\s+)*instructions',
+    (r'(?i)new\s+(?:\w+\s+)*policy|updated\s+(?:\w+\s+)*guidelines|revised\s+(?:\w+\s+)*instructions',
      "fake_policy", "medium", "injection",
      "claims new policy/guidelines (may be social engineering)"),
 
@@ -561,11 +561,12 @@ THREAT_PATTERNS = [
 _SEVERITY_RANK = {"critical": 3, "high": 2, "medium": 1, "low": 0}
 
 
+_logger = __import__("logging").getLogger(__name__)
+
+
 def _compile_patterns() -> list[tuple[re.Pattern[str], str, str, str, str]]:
     """Pre-compile every regex. Done once at module load (the table is
-    static). Bad patterns silently skip — Hermes ships with a clean
-    table so this is defensive against a future edit, not expected to
-    fire.
+    static).
 
     NOTE: We deliberately do NOT pass ``re.IGNORECASE`` here. Globally
     case-folding the entire table created false positives — ``envelope``
@@ -574,18 +575,56 @@ def _compile_patterns() -> list[tuple[re.Pattern[str], str, str, str, str]]:
     case-insensitively (English prompt-injection text written by a human
     attacker who doesn't bother to lowercase) carry an inline ``(?i)``
     flag in their regex literal in ``THREAT_PATTERNS``.
+
+    Failures are no longer silent. A pattern that won't compile means
+    Hermes' threat coverage is incomplete — the previous version's
+    ``except re.error: continue`` dropped patterns without trace, so
+    a regression in the table looked identical to a clean load.
     """
     compiled = []
-    for entry in THREAT_PATTERNS:
+    failures: list[tuple[int, str, str]] = []
+    for idx, entry in enumerate(THREAT_PATTERNS):
         try:
             pat = re.compile(entry[0], re.MULTILINE)
-        except re.error:
+        except re.error as exc:
+            failures.append((idx, entry[1], str(exc)))
             continue
         compiled.append((pat, entry[1], entry[2], entry[3], entry[4]))
+    if failures:
+        # Loud warning: if any pattern in the verbatim Hermes port
+        # fails to compile, the scanner's coverage just regressed.
+        # Surface every failure with its index + pattern_id + reason so
+        # the operator can locate the offender in THREAT_PATTERNS.
+        for idx, pat_id, err in failures:
+            _logger.error(
+                "skills_guard: pattern[%d] %s failed to compile: %s",
+                idx, pat_id, err,
+            )
+        _logger.error(
+            "skills_guard: %d/%d patterns dropped — Hermes threat coverage is incomplete. "
+            "Fix THREAT_PATTERNS before relying on the scanner's verdict.",
+            len(failures), len(THREAT_PATTERNS),
+        )
     return compiled
 
 
+# Exposed for diagnostics + the startup-warning test. ``THREAT_PATTERNS``
+# is the source-of-truth list; ``_COMPILED`` is what scan_text actually
+# walks. Any divergence between the two lengths is a regression.
 _COMPILED = _compile_patterns()
+TOTAL_PATTERNS = len(THREAT_PATTERNS)
+ACTIVE_PATTERNS = len(_COMPILED)
+
+
+def pattern_coverage() -> tuple[int, int]:
+    """Return ``(active, total)`` for the threat pattern table.
+
+    Used by the bridge's startup self-check + ``/diag skills`` to
+    surface "we are running with N/M patterns" without re-running the
+    compile loop. The desktop-side renderer mirrors this count in the
+    drafter activity strip when patterns < total.
+    """
+    return ACTIVE_PATTERNS, TOTAL_PATTERNS
 
 
 def scan_text(content: str) -> ScanResult:

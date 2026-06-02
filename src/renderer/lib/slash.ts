@@ -22,6 +22,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/permissions', description: 'Jump to the permission policy' },
   { name: '/subagents', description: 'Open the swarm dashboard', keys: 'Cmd+O' },
   { name: '/skills', description: 'Browse the skills index' },
+  { name: '/learn-this', description: 'Force the skill drafter to run on this conversation' },
   { name: '/memory', description: 'Show persistent memory notes' },
   { name: '/sessions', description: 'List recent sessions' },
   { name: '/export', description: 'Export transcript (markdown / jsonl)' },

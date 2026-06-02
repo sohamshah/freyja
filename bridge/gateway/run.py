@@ -1056,7 +1056,11 @@ class GatewayDaemon:
                 reply = "Skill learning is unavailable on this session."
             else:
                 try:
-                    sess.skill_cadence_counter.force_trip()
+                    # See review_scheduler.reset_for_immediate_run: we
+                    # spawn the drafter inline below, so we consume the
+                    # cadence cycle now rather than arming a deferred
+                    # trip that would re-fire on the next user turn.
+                    sess.skill_cadence_counter.reset_for_immediate_run()
                     sess._spawn_drafter_review()
                     reply = "Drafter running — Block Kit card will follow when the candidate is ready."
                 except Exception as exc:  # noqa: BLE001
@@ -1943,6 +1947,21 @@ class GatewayDaemon:
             self._sweep_orphaned_permission_requests()
         except Exception:  # noqa: BLE001
             logger.exception("startup permission sweep raised")
+        # Drain skill-learning pending classifications + report
+        # skills_guard pattern coverage. Same logic as the desktop
+        # bridge startup; we run it here too because gateway-routed
+        # sessions write to the same .pending/ directory.
+        try:
+            from bridge.knowledge.learning import outcome_watcher as _ow
+            from bridge.knowledge.learning import skills_guard as _sg
+            await _ow.resume_pending_classifications()
+            active, total = _sg.pattern_coverage()
+            if active != total:
+                logger.warning("skills_guard pattern coverage: %d/%d (regression)", active, total)
+            else:
+                logger.info("skills_guard pattern coverage: %d/%d", active, total)
+        except Exception:  # noqa: BLE001
+            logger.exception("startup skill_learning resume raised")
 
     def _sweep_orphaned_permission_requests(self) -> None:
         """Find permission_requests that were never resolved and close them."""
@@ -2008,6 +2027,7 @@ class GatewayDaemon:
         reader.register("permission_response", self._on_permission_response)
         reader.register("set_permission_policy", self._on_set_permission_policy)
         reader.register("skill_candidate_resolve", self._on_skill_candidate_resolve)
+        reader.register("skill_learn_this", self._on_skill_learn_this)
         await reader.start()
         self.control_channel = reader
 
@@ -2078,6 +2098,37 @@ class GatewayDaemon:
             )
         except Exception:  # noqa: BLE001
             pass
+
+    async def _on_skill_learn_this(self, cmd: dict[str, Any]) -> None:
+        """Operator-issued /learn-this from the desktop, routed for a
+        gateway-owned (Slack) session. Force-trips the session's
+        cadence counter and spawns the drafter immediately.
+
+        Mirror of the in-line Slack handler above (the ``cmd ==
+        "learn-this"`` branch in _handle_command). Lives here too so a
+        desktop operator hovering over a Slack thread session can fire
+        /learn-this without switching surfaces.
+        """
+        session_id = str(cmd.get("sessionId") or "")
+        if not session_id:
+            logger.warning("control: skill_learn_this missing sessionId")
+            return
+        sess = (self.state.sessions if self.state else {}).get(session_id)
+        if sess is None:
+            logger.info("control: skill_learn_this — session %s not found", session_id)
+            return
+        if getattr(sess, "skill_cadence_counter", None) is None:
+            logger.info("control: skill_learn_this — skill learning disabled on %s", session_id)
+            return
+        try:
+            # See review_scheduler.reset_for_immediate_run: we spawn
+            # the drafter inline rather than waiting for a tick, so we
+            # consume the cadence cycle now to prevent a double-fire on
+            # the next user turn.
+            sess.skill_cadence_counter.reset_for_immediate_run()
+            sess._spawn_drafter_review()
+        except Exception:  # noqa: BLE001
+            logger.exception("control: skill_learn_this raised for %s", session_id)
 
     def _on_set_permission_policy(self, cmd: dict[str, Any]) -> None:
         """Adjust a per-session autonomy tier from the desktop.

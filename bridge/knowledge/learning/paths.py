@@ -77,6 +77,31 @@ def events_path() -> Path:
     return skills_root() / ".events.jsonl"
 
 
+def cadence_path() -> Path:
+    """Workspace-global cadence counter state.
+
+    A single JSON file accumulating turn counts across every session.
+    Previously the counter lived per-session in memory; with sessions
+    running 3–5 turns and a threshold of 10, that meant the drafter
+    almost never fired in real use. Going workspace-global means
+    "every N turns of operator activity, drafter runs" — which matches
+    the operator-facing mental model. See review_scheduler.py.
+    """
+    return skills_root() / ".cadence.json"
+
+
+def pending_dir() -> Path:
+    """Persisted skill-load → classification pending records.
+
+    Each ``<load_id>.json`` file represents one outstanding skill load
+    whose 3-turn post-load window has not yet closed. Files survive
+    bridge restarts and session end; outcome_watcher.resume_pending()
+    re-runs the classifier for any pending file whose window has
+    accumulated enough content or whose session is gone.
+    """
+    return skills_root() / ".pending"
+
+
 def value_dir() -> Path:
     """Per-skill V rollup directory.
 
@@ -117,6 +142,7 @@ def ensure_loop_dirs() -> None:
         rejected_dir(),
         archived_dir(),
         value_dir(),
+        pending_dir(),
     ):
         try:
             d.mkdir(parents=True, exist_ok=True)

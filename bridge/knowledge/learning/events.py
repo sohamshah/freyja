@@ -84,6 +84,8 @@ def _truncate_free_text_fields(event: dict[str, Any]) -> None:
 # we never want to fail a read because a future writer added a new event
 # kind. Readers ignore unknown event types.
 
+EVENT_DRAFTER_TRIP = "drafter_trip"        # cadence tripped, drafter call about to start
+EVENT_DRAFTER_DECISION = "drafter_decision"  # drafter returned: result + rationale
 EVENT_DRAFTED = "drafted"                 # candidate written to .candidates/
 EVENT_DRAFTER_SKIP = "drafter_skip"        # cadence tripped, drafter ran, decided skip
 EVENT_GUARD_VERDICT = "guard_verdict"     # Skills Guard scan result attached
@@ -164,6 +166,55 @@ def append_loaded(skill_name: str, session_id: str, *, turn_id: str = "", extra:
         payload["turn_id"] = turn_id
     if extra:
         payload.update(extra)
+    append(payload)
+
+
+def append_drafter_trip(session_id: str, *, turn_id: str | None = None) -> None:
+    """Emit a ``drafter_trip`` event: cadence fired, drafter is about to
+    spawn. Pairs with a subsequent ``drafter_decision`` so the audit log
+    can prove the drafter actually ran (and didn't silently fail to
+    start). M-fix: previously there was no telemetry between cadence
+    and candidate emit, so "drafter never ran" and "drafter ran and
+    skipped" looked identical from the outside."""
+    payload: dict[str, Any] = {
+        "event": EVENT_DRAFTER_TRIP,
+        "skill": "",
+        "session_id": session_id,
+    }
+    if turn_id:
+        payload["turn_id"] = turn_id
+    append(payload)
+
+
+def append_drafter_decision(
+    session_id: str,
+    *,
+    turn_id: str | None,
+    result: str,
+    candidate_id: str = "",
+    rationale: str = "",
+) -> None:
+    """Emit a ``drafter_decision`` event after the drafter returns.
+
+    ``result`` is one of ``"candidate"`` (a candidate was emitted),
+    ``"skip"`` (drafter declined to produce anything), or ``"error"``
+    (the drafter call raised). The rationale field carries either the
+    drafter's free-text "why I skipped" or the exception class on
+    error. ``candidate_id`` is populated only on the candidate path so
+    the audit log can be joined with the actual candidate file.
+    """
+    payload: dict[str, Any] = {
+        "event": EVENT_DRAFTER_DECISION,
+        "skill": "",
+        "session_id": session_id,
+        "result": result,
+    }
+    if turn_id:
+        payload["turn_id"] = turn_id
+    if candidate_id:
+        payload["candidate_id"] = candidate_id
+    if rationale:
+        payload["rationale"] = rationale
     append(payload)
 
 

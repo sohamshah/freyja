@@ -4338,6 +4338,31 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         state.setFocusedPanel('sidebar')
         show(`${Object.keys(state.skills).length} skill(s) loaded`, 'info')
         return true
+      case '/learn-this': {
+        const api = (window as any).harness
+        if (!api?.sendCommand) {
+          show('skill learning unavailable', 'warn')
+          return true
+        }
+        const sid = state.activeSessionId
+        if (!sid) {
+          show('no active session', 'warn')
+          return true
+        }
+        api
+          .sendCommand({ type: 'skill_learn_this', sessionId: sid })
+          .then((r: { ok: boolean; error?: string }) => {
+            if (r?.ok) {
+              show('drafter spawned — candidate will appear when ready', 'ok')
+            } else {
+              show(`/learn-this failed: ${r?.error ?? 'unknown'}`, 'danger')
+            }
+          })
+          .catch((err: unknown) => {
+            show(`/learn-this errored: ${String(err)}`, 'danger')
+          })
+        return true
+      }
       case '/subagents': {
         state.toggleMissionDashboard(true, 'overview')
         return true

@@ -424,6 +424,12 @@ function setupIpc() {
           edits: c.edits,
         })
       }
+      if (cmd.type === 'skill_learn_this') {
+        return sendControlCommand({
+          type: 'skill_learn_this',
+          sessionId: cmdSessionId,
+        })
+      }
       // Fall through for other command types — they may not be supported
       // on the daemon today, but the local bridge will give a clear error
       // if they're misrouted, which is better than silently dropping.

@@ -48,6 +48,15 @@ export type ControlCommand =
         body?: string
       }
     }
+  | {
+      // Operator-issued /learn-this from the desktop. The bridge looks
+      // up the session by id, force-trips its cadence counter, and
+      // spawns a drafter pass against the current conversation. The
+      // gateway has its own Slack-side handler that does the same
+      // thing — this command lets the desktop reach the same path.
+      type: 'skill_learn_this'
+      sessionId: string
+    }
   // Add new commands here as `| { type: 'cancel_turn'; ... }` etc.
 
 function ensureDir(): void {

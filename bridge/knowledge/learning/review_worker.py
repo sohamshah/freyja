@@ -197,6 +197,20 @@ async def _run_with_redirects(
         )
         return None
 
+    # Audit event: the drafter is about to start. Pairs with the
+    # drafter_decision event below so a reader can prove the drafter
+    # ran (not "cadence tripped but the spawn silently failed"). M-fix:
+    # without this pair, "drafter never ran" and "drafter ran and
+    # skipped" look identical from the outside.
+    try:
+        from bridge.knowledge.learning import events as _events
+        _events.append_drafter_trip(session_id, turn_id=turn_id)
+    except Exception:  # noqa: BLE001
+        # Telemetry failure must never break the loop. Continue without
+        # the trip event; the decision event below still reports the
+        # outcome.
+        pass
+
     candidate_id: str | None = None
     try:
         # No process-wide stdout/stderr redirect — see M3 in the module
@@ -221,12 +235,32 @@ async def _run_with_redirects(
         # Propagate cancellation so the loop's shutdown semantics work
         # correctly. Don't log — cancellation is normal during session
         # reset / shutdown.
+        try:
+            from bridge.knowledge.learning import events as _events
+            _events.append_drafter_decision(
+                session_id,
+                turn_id=turn_id,
+                result="error",
+                rationale="cancelled",
+            )
+        except Exception:  # noqa: BLE001
+            pass
         raise
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
         logger.exception(
             "review_worker: drafter raised for session=%s turn=%s",
             session_id, turn_id,
         )
+        try:
+            from bridge.knowledge.learning import events as _events
+            _events.append_drafter_decision(
+                session_id,
+                turn_id=turn_id,
+                result="error",
+                rationale=f"{type(exc).__name__}: {str(exc)[:200]}",
+            )
+        except Exception:  # noqa: BLE001
+            pass
         return None
 
     if candidate_id and on_candidate is not None:
@@ -240,6 +274,20 @@ async def _run_with_redirects(
                 "review_worker: on_candidate callback raised for candidate=%s session=%s",
                 candidate_id, session_id,
             )
+
+    # Audit event: the drafter has returned. Result is "candidate" or
+    # "skip" depending on whether run_drafter emitted anything. The
+    # error path already wrote a decision event above and returned.
+    try:
+        from bridge.knowledge.learning import events as _events
+        _events.append_drafter_decision(
+            session_id,
+            turn_id=turn_id,
+            result="candidate" if candidate_id else "skip",
+            candidate_id=candidate_id or "",
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
     if candidate_id:
         logger.info(
