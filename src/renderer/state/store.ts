@@ -255,6 +255,30 @@ export interface HarnessState extends SessionSlice {
     turnsUntilTrip?: number
     lastTrippedAt?: number
   }
+  /** Recent drafter runs, newest first. Populated from the
+   *  ``skill_drafter_started`` → ``skill_drafter_pass`` event pair.
+   *  Capped at 25 entries (the Activity panel's "Drafter Runs"
+   *  section paginates beyond that). The list is global rather than
+   *  per-session because the drafter cadence counter is workspace-
+   *  global — a run triggered in any session is operator-relevant
+   *  activity worth surfacing in the activity feed. */
+  drafterRuns: Array<{
+    runId: string
+    sessionId: string
+    startedAt: number
+    finishedAt?: number
+    trigger: 'cadence' | 'learn_this' | 'unknown'
+    guidance: string
+    loadedSkills: string[]
+    allSkillsCount: number
+    conversationCharCount: number
+    model: string
+    // populated by skill_drafter_pass
+    decision?: 'save' | 'skip' | 'discard' | 'error'
+    rationale?: string
+    candidateName?: string
+    candidateId?: string
+  }>
   /** Operator-visible cache of per-skill value rollups. Filled on
    *  demand by getSkillRollup; the renderer reuses entries while a
    *  drawer / inspector is open instead of re-IPC'ing on every paint. */
@@ -832,6 +856,7 @@ function emptyState(): HarnessState {
     permissionQueue: [],
     skillCandidateQueue: [],
     drafterActivity: {},
+    drafterRuns: [],
     skillRollups: {},
     skillCandidatesCache: null,
     skillRejectedCache: null,
@@ -2390,17 +2415,79 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         }
       }
       if (ev.type === 'skill_drafter_pass') {
+        const finishedAt = ev.ranAt ?? Date.now()
+        // Pair with the started event by runId. If no matching
+        // started entry exists (started event lost, renderer launched
+        // mid-run), fall back to the most recent in-flight run for
+        // the same session so the activity feed still pairs them.
+        const runs = prev.drafterRuns ?? []
+        const targetRunId = ev.runId
+        let updated = runs
+        if (targetRunId) {
+          const idx = runs.findIndex((r) => r.runId === targetRunId)
+          if (idx >= 0) {
+            updated = [...runs]
+            updated[idx] = {
+              ...updated[idx],
+              finishedAt,
+              decision: ev.decision,
+              rationale: ev.rationale,
+              candidateName: ev.name,
+              candidateId: ev.candidateId,
+            }
+          }
+        }
+        if (updated === runs) {
+          // Fallback: oldest-in-flight for this session.
+          const sessionId = (ev as any).sessionId as string | undefined
+          const idx = runs.findIndex(
+            (r) => r.finishedAt === undefined && r.sessionId === sessionId,
+          )
+          if (idx >= 0) {
+            updated = [...runs]
+            updated[idx] = {
+              ...updated[idx],
+              finishedAt,
+              decision: ev.decision,
+              rationale: ev.rationale,
+              candidateName: ev.name,
+              candidateId: ev.candidateId,
+            }
+          }
+        }
         return {
           ...prev,
+          drafterRuns: updated,
           drafterActivity: {
             ...prev.drafterActivity,
             lastDecision: ev.decision,
             lastRationale: ev.rationale,
             lastModel: ev.model,
-            lastRanAt: ev.ranAt ?? Date.now(),
+            lastRanAt: finishedAt,
             lastCandidateName: ev.name,
             lastCandidateId: ev.candidateId,
           },
+        }
+      }
+      if (ev.type === 'skill_drafter_started') {
+        const sessionId = (ev as any).sessionId as string | undefined
+        const newRun = {
+          runId: ev.runId,
+          sessionId: sessionId ?? '',
+          startedAt: ev.startedAt ?? Date.now(),
+          trigger: ev.trigger,
+          guidance: ev.guidance ?? '',
+          loadedSkills: ev.loadedSkills ?? [],
+          allSkillsCount: ev.allSkillsCount ?? 0,
+          conversationCharCount: ev.conversationCharCount ?? 0,
+          model: ev.model ?? '',
+        }
+        // Cap at 25 so the rolling list doesn't grow unbounded across
+        // a long session.
+        const runs = [newRun, ...(prev.drafterRuns ?? [])].slice(0, 25)
+        return {
+          ...prev,
+          drafterRuns: runs,
         }
       }
       if (ev.type === 'cadence_state') {

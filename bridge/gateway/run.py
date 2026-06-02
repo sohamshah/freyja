@@ -1076,7 +1076,7 @@ class GatewayDaemon:
                     # cadence cycle now rather than arming a deferred
                     # trip that would re-fire on the next user turn.
                     sess.skill_cadence_counter.reset_for_immediate_run()
-                    sess._spawn_drafter_review(operator_guidance=guidance)
+                    sess._spawn_drafter_review(operator_guidance=guidance, trigger="learn_this")
                     reply = (
                         "Drafter running — Block Kit card will follow when the candidate is ready."
                         if not guidance
@@ -2159,7 +2159,7 @@ class GatewayDaemon:
             # consume the cadence cycle now to prevent a double-fire on
             # the next user turn.
             sess.skill_cadence_counter.reset_for_immediate_run()
-            sess._spawn_drafter_review(operator_guidance=guidance)
+            sess._spawn_drafter_review(operator_guidance=guidance, trigger="learn_this")
         except Exception:  # noqa: BLE001
             logger.exception("control: skill_learn_this raised for %s", session_id)
 

@@ -4534,11 +4534,16 @@ class _BridgeSession:
         if not tripped:
             return
         try:
-            self._spawn_drafter_review()
+            self._spawn_drafter_review(trigger="cadence")
         except Exception:  # noqa: BLE001
             pass
 
-    def _spawn_drafter_review(self, *, operator_guidance: str = "") -> None:
+    def _spawn_drafter_review(
+        self,
+        *,
+        operator_guidance: str = "",
+        trigger: str = "cadence",
+    ) -> None:
         """Build the drafter context + spawn the review task.
 
         Window contract
@@ -4562,6 +4567,7 @@ class _BridgeSession:
         clamps to 0 so the drafter sees the whole short conversation.
         """
         from bridge.knowledge.learning.review_worker import spawn_drafter_review
+        import uuid as _uuid
 
         loaded = list(self.loaded_skills.keys()) if hasattr(self, "loaded_skills") else []
         try:
@@ -4574,6 +4580,72 @@ class _BridgeSession:
             max_chars=120_000,
         )
 
+        # Generate a unique runId so the renderer can pair the
+        # ``skill_drafter_started`` event with the eventual
+        # ``skill_drafter_pass`` decision event. Without this, two
+        # near-simultaneous runs (cadence trip racing with /learn-this)
+        # would smear in the activity feed.
+        run_id = _uuid.uuid4().hex[:12]
+        drafter_model_id = ""
+        try:
+            from bridge.knowledge.learning.drafter import _drafter_model
+            drafter_model_id = _drafter_model()
+        except Exception:  # noqa: BLE001
+            pass
+
+        # Visibility events: one machine-shaped bridge event for the
+        # DrafterRuns panel + one human-readable system_event so the
+        # run also appears in the rolling activity feed.
+        started_at = int(time.time() * 1000)
+        guidance_clean = (operator_guidance or "").strip()
+        try:
+            emit({
+                "type": "skill_drafter_started",
+                "sessionId": self.id,
+                "runId": run_id,
+                "startedAt": started_at,
+                "trigger": trigger,
+                "guidance": guidance_clean,
+                "loadedSkills": loaded,
+                "allSkillsCount": len(all_skills),
+                "conversationCharCount": len(conversation or ""),
+                "model": drafter_model_id,
+                "sourceTurnId": self.current_turn_id or "",
+            })
+        except Exception:  # noqa: BLE001
+            log("warn", "drafter: emit(skill_drafter_started) failed")
+
+        # System event message — operator-facing one-liner. Goes into
+        # systemEvents alongside compaction / kanban / etc., so the
+        # operator sees "drafter started" in the same stream they
+        # already watch for everything else the agent is doing.
+        msg_parts = ["Skill drafter started"]
+        if trigger == "learn_this":
+            msg_parts.append("(manual /learn-this)")
+        elif trigger == "cadence":
+            msg_parts.append("(cadence trip)")
+        if guidance_clean:
+            preview = guidance_clean if len(guidance_clean) <= 120 else guidance_clean[:120] + "…"
+            msg_parts.append(f"— guidance: {preview}")
+        try:
+            emit({
+                "type": "system_event",
+                "sessionId": self.id,
+                "subtype": "skill_drafter_started",
+                "message": " ".join(msg_parts),
+                "details": {
+                    "runId": run_id,
+                    "trigger": trigger,
+                    "guidance": guidance_clean,
+                    "loadedSkills": loaded,
+                    "allSkillsCount": len(all_skills),
+                    "conversationCharCount": len(conversation or ""),
+                    "model": drafter_model_id,
+                },
+            })
+        except Exception:  # noqa: BLE001
+            pass
+
         def _on_candidate(candidate_id: str) -> None:
             log("info", f"drafter produced candidate {candidate_id} for session {self.id}")
 
@@ -4585,6 +4657,7 @@ class _BridgeSession:
             all_skill_names=all_skills,
             on_candidate=_on_candidate,
             operator_guidance=operator_guidance,
+            run_id=run_id,
         )
 
     def _render_post_turn_window(
@@ -10001,7 +10074,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             # so we want the next automatic trip to be a full threshold
             # away (not on the very next user turn).
             counter.reset_for_immediate_run()
-            sess._spawn_drafter_review(operator_guidance=guidance)
+            sess._spawn_drafter_review(operator_guidance=guidance, trigger="learn_this")
             log(
                 "info",
                 f"skill_learn_this: drafter spawned for {session_id} "

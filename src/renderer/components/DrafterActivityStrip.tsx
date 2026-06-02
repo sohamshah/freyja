@@ -17,6 +17,7 @@ import { useHarness } from '../state/store'
  */
 export function DrafterActivityStrip() {
   const activity = useHarness((s) => s.drafterActivity)
+  const runs = useHarness((s) => s.drafterRuns ?? [])
 
   const decision = activity.lastDecision
   const rationale = activity.lastRationale
@@ -24,16 +25,42 @@ export function DrafterActivityStrip() {
   const turnsUntilTrip = activity.turnsUntilTrip
   const turnsSinceLastReview = activity.turnsSinceLastReview
 
+  // In-flight run takes precedence over "last decision". When a run
+  // is mid-LLM-call we want the strip to clearly say "running" so the
+  // operator knows work is happening, not that they're stuck on a
+  // stale finished verdict.
+  const inFlight = runs.find((r) => r.finishedAt === undefined)
+
   const hasAny =
     decision !== undefined ||
     turnsUntilTrip !== undefined ||
-    turnsSinceLastReview !== undefined
+    turnsSinceLastReview !== undefined ||
+    inFlight !== undefined
 
   if (!hasAny) {
     return (
       <div className="flex items-center gap-2 px-3 py-1.5 hairline-b">
         <span className="label text-fg-3">drafter</span>
         <span className="font-mono text-[10.5px] text-fg-3">idle · awaiting first review pass</span>
+      </div>
+    )
+  }
+  if (inFlight) {
+    return (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5 hairline-b text-[10.5px]">
+        <span className="label text-fg-3">drafter</span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
+          <span className="font-mono text-accent">running</span>
+          <span className="text-fg-3">
+            ({inFlight.trigger === 'learn_this' ? 'manual /learn-this' : 'cadence trip'})
+          </span>
+        </span>
+        {inFlight.guidance ? (
+          <span className="ml-auto truncate text-fg-2" title={inFlight.guidance}>
+            "{inFlight.guidance.length > 60 ? inFlight.guidance.slice(0, 60) + '…' : inFlight.guidance}"
+          </span>
+        ) : null}
       </div>
     )
   }

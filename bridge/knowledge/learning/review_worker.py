@@ -85,6 +85,7 @@ def spawn_drafter_review(
     all_skill_names: list[str],
     on_candidate: Callable[[str], None] | None = None,
     operator_guidance: str = "",
+    run_id: str = "",
 ) -> asyncio.Task[Any] | None:
     """Schedule a drafter review on the running event loop.
 
@@ -142,6 +143,7 @@ def spawn_drafter_review(
         all_skill_names=all_skill_names,
         on_candidate=on_candidate,
         operator_guidance=operator_guidance,
+        run_id=run_id,
     )
     # Truncate session_id in the task name — names show up in error
     # logs and stack dumps; long opaque ids make those hard to scan.
@@ -165,6 +167,7 @@ async def _run_with_redirects(
     all_skill_names: list[str],
     on_candidate: Callable[[str], None] | None,
     operator_guidance: str = "",
+    run_id: str = "",
 ) -> str | None:
     """Inner coroutine: import drafter lazily, run it, fire ``on_candidate``
     on success.
@@ -228,6 +231,7 @@ async def _run_with_redirects(
             loaded_skill_names=loaded_skill_names,
             all_skill_names=all_skill_names,
             operator_guidance=operator_guidance,
+            run_id=run_id,
         )
         # ``run_drafter`` returns either a candidate_id string, or
         # something falsy (None / "") meaning "nothing worth proposing

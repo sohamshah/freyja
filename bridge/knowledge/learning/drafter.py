@@ -314,6 +314,7 @@ async def run_drafter(
     loaded_skill_names: list[str],
     all_skill_names: list[str],
     operator_guidance: str = "",
+    run_id: str = "",
 ) -> str | None:
     """Run the drafter for one cadence-qualifying turn.
 
@@ -342,6 +343,7 @@ async def run_drafter(
             loaded_skill_names=loaded_skill_names,
             all_skill_names=all_skill_names,
             operator_guidance=operator_guidance,
+            run_id=run_id,
         )
     except Exception:
         # Last-resort guard: nothing in the drafter is allowed to
@@ -362,6 +364,7 @@ async def _run_drafter_inner(
     loaded_skill_names: list[str],
     all_skill_names: list[str],
     operator_guidance: str = "",
+    run_id: str = "",
 ) -> str | None:
     # Local imports for two reasons:
     #   1. ``bridge.freyja_bridge`` is a heavy module; we don't want to
@@ -506,6 +509,7 @@ async def _run_drafter_inner(
                     "sourceTurnId": turn_id or "",
                     "model": _drafter_model(),
                     "ranAt": int(time.time() * 1000),
+                    "runId": run_id,
                 }
             )
         except Exception:
@@ -663,6 +667,7 @@ async def _run_drafter_inner(
                     "sourceTurnId": turn_id or "",
                     "model": _drafter_model(),
                     "ranAt": int(time.time() * 1000),
+                    "runId": run_id,
                 }
             )
         except Exception:

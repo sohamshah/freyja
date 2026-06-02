@@ -788,6 +788,31 @@ export type BridgeEvent =
        *  to the pending candidate directly. */
       name?: string
       candidateId?: string
+      /** Pairs this completion event with the earlier
+       *  ``skill_drafter_started`` so the renderer can join start →
+       *  end without timing heuristics. Empty for events emitted by
+       *  paths that didn't go through the new started flow (none
+       *  today, kept optional for safety). */
+      runId?: string
+    } & SessionId)
+  | ({
+      /** Drafter started a pass. Carries everything the renderer needs
+       *  to render an in-flight row in the Drafter Runs view: the
+       *  trigger (cadence vs operator-issued /learn-this), the
+       *  operator's free-text guidance if any, the list of skills the
+       *  drafter is seeing as already-loaded, the conversation size
+       *  the drafter is reading, and the model. Pairs with
+       *  ``skill_drafter_pass`` via ``runId``. */
+      type: 'skill_drafter_started'
+      runId: string
+      startedAt: number
+      trigger: 'cadence' | 'learn_this' | 'unknown'
+      guidance: string
+      loadedSkills: string[]
+      allSkillsCount: number
+      conversationCharCount: number
+      model: string
+      sourceTurnId?: string
     } & SessionId)
   | ({
       /** Periodic cadence-counter snapshot. The bridge emits one per

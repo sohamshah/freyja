@@ -9,6 +9,7 @@ import { ChangesSection } from './ChangesSection'
 import { TopoBackdrop } from './TopoBackdrop'
 import { StickyHeader } from './StickyHeader'
 import { DrafterActivityStrip } from './DrafterActivityStrip'
+import { DrafterRunsPanel } from './DrafterRunsPanel'
 import { SkillCandidatesPanel } from './SkillCandidatesPanel'
 
 export function ActivityPanel() {
@@ -146,6 +147,8 @@ export function ActivityPanel() {
       <div className="flex-1 overflow-y-auto">
         {/* ── Drafter / cadence telemetry strip ──────────────── */}
         <DrafterActivityStrip />
+        {/* ── Drafter runs (started/finished pairs with detail) ── */}
+        <DrafterRunsPanel />
         {/* ── Drafter candidates + negative library ──────────── */}
         <SkillCandidatesPanelContainer />
         {/* ── Computer live view (only when a session is active) ── */}
