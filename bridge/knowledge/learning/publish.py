@@ -189,7 +189,9 @@ def publish_candidate(
     # dependency at module load).
     try:
         from bridge.knowledge.learning.drafter import _compute_existing_skill_diff_stats
-        existing_stats = _compute_existing_skill_diff_stats(name, body)
+        # Pass the Candidate so the diff renders the full SKILL.md
+        # (assembled frontmatter + body) — matches what promote writes.
+        existing_stats = _compute_existing_skill_diff_stats(candidate)
     except Exception:  # noqa: BLE001
         existing_stats = {"exists": False}
 

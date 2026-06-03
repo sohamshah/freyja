@@ -228,7 +228,7 @@ def promote(
                 reason="guard_dangerous_after_edit",
             )
 
-    body_text = _render_skill_md(edited)
+    body_text = render_skill_md(edited)
 
     try:
         _atomic_write_skill_md(skill_path, body_text)
@@ -485,7 +485,7 @@ def _yaml_scalar(value: str) -> str:
     return s
 
 
-def _render_skill_md(c: candidates.Candidate) -> str:
+def render_skill_md(c: candidates.Candidate) -> str:
     """Render a candidate as a SKILL.md document.
 
     Frontmatter keys mirror what ``skill_store._parse_skill_md`` reads:

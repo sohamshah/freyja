@@ -46,7 +46,7 @@ def _candidate_to_record(c: candidates.Candidate) -> dict[str, Any]:
     # at module load time (it imports freyja_bridge, which is heavy).
     try:
         from bridge.knowledge.learning.drafter import _compute_existing_skill_diff_stats
-        existing_stats = _compute_existing_skill_diff_stats(c.name or "", body)
+        existing_stats = _compute_existing_skill_diff_stats(c)
     except Exception:  # noqa: BLE001
         existing_stats = {"exists": False}
     return {
@@ -154,16 +154,25 @@ def _list_rejected(limit: int = 50) -> dict[str, Any]:
 
 
 def _candidate_diff(candidate_id: str) -> dict[str, Any]:
-    """Return a unified diff between a pending candidate's body and the
-    on-disk SKILL.md for the same skill name.
+    """Return a unified diff between the candidate's rendered SKILL.md
+    and the on-disk SKILL.md for the same skill name.
+
+    We render the candidate via ``confirmation.render_skill_md`` — i.e.
+    we diff the EXACT bytes that will land on disk after promote
+    (frontmatter assembled from name/description/triggers/tags + body
+    appended). Previously this compared ``candidate.body`` directly to
+    the on-disk SKILL.md, which made it look like the description was
+    being deleted on every overwrite — because the body field never
+    contains frontmatter, but the on-disk file does. The user's promote
+    re-emits the frontmatter; the diff was just misleading.
 
     Used by the renderer's SkillDiffModal when the operator clicks
-    "view diff" on an overwriting candidate. The skill_candidate event
-    only carries +/- stats; this call lazily produces the full diff
-    text so we don't bloat every event with a potentially 100KB body
-    delta.
+    "view diff" on an overwriting candidate. Lazy: the skill_candidate
+    event only carries +/- stats; this call produces the full diff
+    text on demand.
     """
     import difflib
+    from bridge.knowledge.learning.confirmation import render_skill_md
     from bridge.knowledge.learning.paths import skills_root, safe_skill_filename
 
     c = candidates.get_pending(candidate_id)
@@ -173,27 +182,27 @@ def _candidate_diff(candidate_id: str) -> dict[str, Any]:
     if not safe:
         return {"ok": False, "error": "invalid skill name"}
     skill_path = skills_root() / safe / "SKILL.md"
+    new_text = render_skill_md(c)
     if not skill_path.exists():
-        # No existing skill — the "diff" is the whole new body, but
-        # render it as a single +-block.
+        # No existing skill — the "diff" is the whole new SKILL.md, but
+        # render as a single +-block.
         return {
             "ok": True,
             "exists": False,
-            "candidateBody": c.body or "",
+            "candidateBody": new_text,
             "existingBody": "",
             "unifiedDiff": "",
         }
     try:
-        existing_body = skill_path.read_text(encoding="utf-8", errors="replace")
+        existing_text = skill_path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         return {"ok": False, "error": f"read existing failed: {exc!r}"}
-    new_body = c.body or ""
     diff_lines = list(
         difflib.unified_diff(
-            existing_body.splitlines(),
-            new_body.splitlines(),
+            existing_text.splitlines(),
+            new_text.splitlines(),
             fromfile=f"{c.name} (existing)",
-            tofile=f"{c.name} (candidate)",
+            tofile=f"{c.name} (after promote)",
             lineterm="",
             n=3,
         )
@@ -202,8 +211,8 @@ def _candidate_diff(candidate_id: str) -> dict[str, Any]:
         "ok": True,
         "exists": True,
         "skillPath": str(skill_path),
-        "existingBody": existing_body,
-        "candidateBody": new_body,
+        "existingBody": existing_text,
+        "candidateBody": new_text,
         "unifiedDiff": "\n".join(diff_lines),
     }
 

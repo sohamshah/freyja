@@ -195,40 +195,39 @@ def _emit_candidate_schema() -> dict[str, Any]:
 _logged_env_override = False
 
 
-def _compute_existing_skill_diff_stats(
-    skill_name: str,
-    new_body: str,
-) -> dict[str, Any]:
-    """Compare a candidate body against the on-disk SKILL.md, if any.
+def _compute_existing_skill_diff_stats(candidate: Any) -> dict[str, Any]:
+    """Compare a candidate's FULL rendered SKILL.md against the on-disk
+    one, if any.
 
-    Returns a dict the renderer attaches to the candidate row. When the
-    skill doesn't exist on disk, returns ``{"exists": False}`` and the
-    renderer treats the candidate as net-new. When it does exist,
-    returns line-level stats so the toast can render "↻ overwrites
-    existing: +47 / -287 lines" plus an ``isDestructive`` flag.
-
-    The actual unified diff is NOT included here — it can be large
-    (10–100 KB for a long skill). The diff modal fetches it on demand
-    via the ``skill:candidateDiff`` IPC handler.
+    Critical: we render the candidate the same way ``confirmation.promote``
+    will (frontmatter assembled from name/description/triggers/tags +
+    body appended) BEFORE diffing. The old code diffed
+    ``candidate.body`` against the existing SKILL.md (which has
+    frontmatter) — making it look like every overwrite was deleting
+    the description, when in fact promote re-emits the frontmatter
+    from the candidate fields and the description is preserved.
 
     Best-effort: any failure (missing file, read error, encoding
     weirdness) returns ``{"exists": False}`` so the candidate emit
     path is never blocked by a stats computation problem.
     """
     try:
+        from bridge.knowledge.learning.confirmation import render_skill_md
         from bridge.knowledge.learning.paths import skills_root, safe_skill_filename
         import difflib
-        # Mirror the dir-naming rule that confirmation.promote uses so
-        # the existence check matches the actual on-disk path.
+        skill_name = getattr(candidate, "name", "") or ""
         safe = safe_skill_filename(skill_name)
         if not safe:
             return {"exists": False}
         skill_path = skills_root() / safe / "SKILL.md"
         if not skill_path.exists() or not skill_path.is_file():
             return {"exists": False}
-        existing_body = skill_path.read_text(encoding="utf-8", errors="replace")
-        old_lines = existing_body.splitlines()
-        new_lines = (new_body or "").splitlines()
+        existing_text = skill_path.read_text(encoding="utf-8", errors="replace")
+        # Render the candidate as the full SKILL.md (with assembled
+        # frontmatter) — this is what will land on disk on promote.
+        new_text = render_skill_md(candidate)
+        old_lines = existing_text.splitlines()
+        new_lines = new_text.splitlines()
         added = 0
         removed = 0
         for line in difflib.unified_diff(old_lines, new_lines, lineterm=""):
@@ -252,13 +251,17 @@ def _compute_existing_skill_diff_stats(
             "linesRemoved": removed,
             "linesExisting": existing_line_count,
             "linesNew": len(new_lines),
-            "bytesExisting": len(existing_body),
-            "bytesNew": len(new_body or ""),
+            "bytesExisting": len(existing_text),
+            "bytesNew": len(new_text),
             "isDestructive": is_destructive,
             "skillPath": str(skill_path),
         }
     except Exception:  # noqa: BLE001
-        logger.debug("drafter: diff stats failed for %s", skill_name, exc_info=True)
+        logger.debug(
+            "drafter: diff stats failed for %s",
+            getattr(candidate, "name", "?"),
+            exc_info=True,
+        )
         return {"exists": False}
 
 
