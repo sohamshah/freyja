@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useHarness } from '../state/store'
 import type {
@@ -479,7 +479,6 @@ export function Sidebar() {
       <div ref={sessionsScrollRef} className="min-h-0 flex-1 overflow-y-auto">
         <div className="px-3 pt-3 pb-2">
           <SessionSearch value={sessionQuery} onChange={setSessionQuery} />
-          <OriginFilterChips value={originFilter} onChange={setOriginFilter} />
         </div>
         <Section
           title="sessions"
@@ -487,6 +486,7 @@ export function Sidebar() {
           open={open.sessions}
           onToggle={() => setOpen((p) => ({ ...p, sessions: !p.sessions }))}
         >
+          <OriginFilterChips value={originFilter} onChange={setOriginFilter} />
           {sessionTree.length === 0 && (sessionQuery.trim().length > 0 || originFilter !== 'all') && (
             <div className="px-2 py-2 text-[11px] italic text-fg-2">
               {sessionQuery.trim().length > 0 && originFilter !== 'all'
@@ -738,34 +738,41 @@ function OriginFilterChips({
   value: 'all' | 'local' | 'slack'
   onChange: (v: 'all' | 'local' | 'slack') => void
 }) {
-  // Tight 3-segment toggle. "Local" is the inverse of slack-gateway —
-  // sessions started inside the desktop app rather than coming in
-  // over the slack gateway. We pick "Local" over "Desktop" / "App"
-  // because it's short, contrasts cleanly with "Slack", and reads
-  // naturally regardless of how the operator named the platform.
+  // Lives inside the Sessions section as the first row — middot-
+  // separated mono labels, active in accent. Matches the rest of
+  // the sidebar's quiet vocabulary (small mono badges, hairline
+  // rings) instead of stamping a segmented control in. "Local" is
+  // the inverse of slack-gateway — short, 5-letter parity with
+  // "Slack", reads naturally regardless of how the operator named
+  // the platform.
   const opts: Array<{ key: 'all' | 'local' | 'slack'; label: string; title: string }> = [
     { key: 'all', label: 'all', title: 'Show every session' },
     { key: 'local', label: 'local', title: 'Show only sessions started inside the desktop app' },
     { key: 'slack', label: 'slack', title: 'Show only sessions that came in over the Slack gateway' },
   ]
   return (
-    <div className="mt-1.5 flex items-center gap-px rounded-md bg-black/30 p-px ring-1 ring-white/[0.07]">
-      {opts.map((o) => {
+    <div className="mb-1 flex items-center gap-1.5 px-2 pb-1.5 pt-0.5">
+      {opts.map((o, i) => {
         const active = value === o.key
         return (
-          <button
-            key={o.key}
-            type="button"
-            onClick={() => onChange(o.key)}
-            title={o.title}
-            className={`flex-1 rounded-[5px] px-2 py-[3px] font-mono text-[10px] uppercase tracking-[0.10em] transition-colors ${
-              active
-                ? 'bg-accent/20 text-accent ring-1 ring-accent/30'
-                : 'text-fg-3 hover:bg-white/[0.04] hover:text-fg-1'
-            }`}
-          >
-            {o.label}
-          </button>
+          <Fragment key={o.key}>
+            {i > 0 && (
+              <span aria-hidden className="select-none font-mono text-[10px] text-fg-3/40">·</span>
+            )}
+            <button
+              type="button"
+              onClick={() => onChange(o.key)}
+              title={o.title}
+              aria-pressed={active}
+              className={`font-mono text-[10px] uppercase tracking-[0.12em] transition-colors ${
+                active
+                  ? 'text-accent'
+                  : 'text-fg-3 hover:text-fg-1'
+              }`}
+            >
+              {o.label}
+            </button>
+          </Fragment>
         )
       })}
     </div>
