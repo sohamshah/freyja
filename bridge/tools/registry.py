@@ -25,6 +25,7 @@ from bridge.tools.file_tools import (
     WriteFileTool,
 )
 from bridge.tools.image_generation_tool import GenerateImageTool
+from bridge.tools.view_image_tool import ViewImageTool
 from bridge.tools.kanban_board import KanbanTool
 from bridge.tools.task_board import TaskBoardTool
 from bridge.tools.video_analysis_tool import AnalyzeVideoTool
@@ -206,7 +207,11 @@ def build_desktop_registry(
 
     # Browser CDP tools — require browser launched with --remote-debugging-port
     tools.append(BrowserExecuteJsTool())
-    tools.append(BrowserScreenshotTool())
+    # Pass the session image_store so screenshots get a stable ref the
+    # agent can reuse via view_image after compaction or on a later
+    # turn. Tool still works without the store (ref text just stays
+    # blank in that case).
+    tools.append(BrowserScreenshotTool(image_store=image_store))
 
     # Creative media generation — WARM tier so it is discoverable, but the
     # model must explicitly load the schema before spending on generation.
@@ -220,6 +225,15 @@ def build_desktop_registry(
             ),
         )
     )
+
+    # Load image bytes into the agent's own context window. HOT tier
+    # because it's the read-side counterpart to generate_image /
+    # browser_screenshot and matters across most multimodal flows —
+    # discoverability shouldn't gate on tool_search the way generation
+    # does. Inherits to subagents by default (DEFAULT_EXCLUDED_TOOLS
+    # in sub_agent_tool.py covers only recursion guards + actor-id
+    # gated tools).
+    tools.append(ViewImageTool(image_store=image_store))
 
     # Video understanding via Gemini. Local files go through the Files API,
     # YouTube URLs go through ``Part.from_uri`` directly. WARM so the schema

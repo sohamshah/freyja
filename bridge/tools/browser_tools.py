@@ -23,13 +23,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import tempfile
 from typing import Any
 
 import httpx
 
-from bridge.tools.base import ToolDefinition, ToolResult, ToolTier
+from bridge.tools.base import (
+    ImageBlock,
+    TextBlock,
+    ToolDefinition,
+    ToolResult,
+    ToolTier,
+)
+
+logger = logging.getLogger(__name__)
 
 # ── defaults ────────────────────────────────────────────────────────────────
 CDP_HOST = "localhost"
@@ -357,6 +366,14 @@ class BrowserScreenshotTool:
     Saves to a temp PNG file and returns the path.
     """
 
+    def __init__(self, image_store: Any | None = None) -> None:
+        """The image_store is used to register the captured PNG so the
+        agent gets a stable ref (e.g. `img_007`) to reload the
+        screenshot via `view_image` on a later turn. None-tolerant —
+        the tool still works without a store, it just won't mint refs.
+        """
+        self._image_store = image_store
+
     @property
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
@@ -364,10 +381,10 @@ class BrowserScreenshotTool:
             summary=(
                 "Capture the rendered frame of a browser tab as a PNG via CDP. "
                 "Works on canvas/WebGL animations that canvas.toDataURL() can't read. "
-                "Returns a file path to the saved image."
+                "Image bytes are returned inline so the model sees the screenshot directly."
             ),
             tier=ToolTier.HOT,
-            description="""Capture a screenshot of a live browser tab using the Chrome DevTools Protocol.
+            description="""Capture a screenshot of a live browser tab using the Chrome DevTools Protocol. The PNG bytes are returned directly as an inline image block, so you can SEE the screenshot in your next turn — no follow-up `view_image` call needed for the immediate inspection. A session image ref (e.g. `img_007`) is also assigned so you can reload it later if it ages out of context.
 
 **Why this instead of the OS screenshot tool?**
 - Captures only the browser page — no OS chrome, dock, or other windows
@@ -441,11 +458,10 @@ open -a Arc --args --remote-debugging-port=9222
         port: int = int(arguments.get("cdp_port", CDP_DEFAULT_PORT))
 
         try:
-            path = await asyncio.wait_for(
+            capture = await asyncio.wait_for(
                 self._run(tab_url_filter, full_page, scale, clip, port),
                 timeout=30.0,
             )
-            return ToolResult(call_id=call_id, content=path, is_error=False)
         except asyncio.TimeoutError:
             return ToolResult(
                 call_id=call_id,
@@ -455,6 +471,55 @@ open -a Arc --args --remote-debugging-port=9222
         except Exception as exc:
             return ToolResult(call_id=call_id, content=str(exc), is_error=True)
 
+        path = capture["path"]
+        size_kb = capture["size_kb"]
+        url = capture["url"]
+        b64 = capture["data_base64"]
+
+        # Register the screenshot in the session image store so the
+        # agent can reload it via view_image on a later turn after it
+        # ages out of immediate context. The alias `latest_image`
+        # tracks the most-recently-loaded image regardless of source,
+        # matching how attachments + generate_image bump it.
+        assigned_ref: str | None = None
+        if self._image_store is not None:
+            try:
+                asset = self._image_store.add_base64(
+                    b64,
+                    "image/png",
+                    label="browser screenshot",
+                    source="browser_screenshot",
+                    aliases=("latest_image", "latest_browser_screenshot"),
+                )
+                assigned_ref = asset.ref
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "browser_screenshot: image_store registration failed"
+                )
+
+        ref_text = (
+            f" Stored as `{assigned_ref}` (alias `latest_browser_screenshot`)."
+            if assigned_ref
+            else ""
+        )
+        summary = (
+            f"Saved {size_kb} KB PNG → {path}\nTab: {url}{ref_text}"
+        )
+
+        # ImageBlock alongside the text summary so the model sees the
+        # actual rendered pixels in the next provider call. Anthropic
+        # accepts this natively; the OpenAI + Gemini provider paths in
+        # this same change marshal the block to input_image /
+        # FunctionResponsePart.inline_data respectively.
+        return ToolResult(
+            call_id=call_id,
+            content=[
+                TextBlock(text=summary),
+                ImageBlock.from_base64(b64, "image/png"),
+            ],
+            is_error=False,
+        )
+
     async def _run(
         self,
         tab_url_filter: str | None,
@@ -462,7 +527,7 @@ open -a Arc --args --remote-debugging-port=9222
         scale: float,
         clip: dict | None,
         port: int,
-    ) -> str:
+    ) -> dict[str, Any]:
         # 1. List tabs
         try:
             tabs = await _list_tabs(port)
@@ -527,4 +592,11 @@ open -a Arc --args --remote-debugging-port=9222
 
         size_kb = len(img_bytes) // 1024
         url = tab.get("url", "?")
-        return f"Saved {size_kb} KB PNG → {path}\nTab: {url}"
+        return {
+            "path": path,
+            "size_kb": size_kb,
+            "url": url,
+            # Already-base64 form so the caller can mint an ImageBlock
+            # without redundant b64-encode of the raw bytes.
+            "data_base64": img_b64,
+        }

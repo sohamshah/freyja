@@ -16,6 +16,7 @@ knows about ``GEMINI_API_KEY``.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -544,6 +545,31 @@ class GoogleProvider:
         )
 
     @staticmethod
+    def _image_block_to_function_response_blob(
+        block: ImageBlock,
+    ) -> "gtypes.FunctionResponseBlob | None":
+        """Build a Gemini FunctionResponseBlob from one of our ImageBlocks.
+
+        Returns None if the source type can't be embedded (e.g. URL
+        without inline bytes) — the caller should drop a text marker
+        in that case so the model can ask for the bytes explicitly.
+        """
+        if block.source_type == "base64" and block.data:
+            try:
+                raw = base64.b64decode(block.data)
+            except Exception:  # noqa: BLE001
+                return None
+            return gtypes.FunctionResponseBlob(
+                mime_type=block.media_type or "image/png",
+                data=raw,
+            )
+        # URL-source ImageBlocks would need a Files API upload first to
+        # become file_data. Out of scope for view_image's standard path
+        # (which always loads bytes locally before constructing the
+        # block), so we just decline gracefully.
+        return None
+
+    @staticmethod
     def _resolve_tool_mode(tool_choice: dict | None) -> str | None:
         """Translate the engine's tool_choice dict to Gemini's mode string."""
         if not tool_choice:
@@ -676,26 +702,52 @@ class GoogleProvider:
                 continue
 
             if msg.role == "tool_result":
-                # Gemini wants function responses tagged with the *name* of
-                # the function, not the call id. The runner sets
-                # tool_call_id but doesn't carry the name through — we
-                # serialize whatever text we have under a stable response
-                # shape so the model still sees the result.
+                # Gemini wants function responses tagged with the *name*
+                # of the function, not the call id. The runner sets
+                # tool_call_id but doesn't carry the name through.
+                function_name = msg.tool_call_id or "tool_result"
+                response_parts: list[gtypes.FunctionResponsePart] | None = None
+
                 if isinstance(msg.content, str):
                     response_payload: dict[str, Any] = {"result": msg.content}
-                    function_name = msg.tool_call_id or "tool_result"
                 else:
+                    text_chunks: list[str] = []
+                    image_response_parts: list[gtypes.FunctionResponsePart] = []
+                    for block in msg.content:
+                        if isinstance(block, TextBlock):
+                            if block.text:
+                                text_chunks.append(block.text)
+                            continue
+                        if isinstance(block, ImageBlock):
+                            blob = self._image_block_to_function_response_blob(block)
+                            if blob is not None:
+                                image_response_parts.append(
+                                    gtypes.FunctionResponsePart(inline_data=blob)
+                                )
+                            else:
+                                text_chunks.append("[image block could not be serialized]")
+                            continue
+                        # Anything else — fall through to text rendering.
+                        text_chunks.append(_content_blocks_to_text([block]))
+
                     response_payload = {
-                        "result": _content_blocks_to_text(msg.content),
+                        "result": "\n".join(c for c in text_chunks if c),
                     }
-                    function_name = msg.tool_call_id or "tool_result"
-                parts = [
-                    gtypes.Part.from_function_response(
-                        name=function_name,
-                        response=response_payload,
-                    )
-                ]
-                contents.append(gtypes.Content(role="user", parts=parts))
+                    if image_response_parts:
+                        response_parts = image_response_parts
+
+                # `Part.from_function_response` accepts an optional
+                # `parts` kwarg (FunctionResponse.parts on the wire).
+                # Each FunctionResponsePart can carry inline_data
+                # (raw bytes + mime) — which is how tool results with
+                # images survive into Gemini's context instead of
+                # being stringified into the response dict.
+                fr_part = gtypes.Part.from_function_response(
+                    name=function_name,
+                    response=response_payload,
+                    parts=response_parts,
+                )
+                contents.append(gtypes.Content(role="user", parts=[fr_part]))
                 continue
 
         return contents

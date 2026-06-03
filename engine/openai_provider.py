@@ -305,6 +305,9 @@ class OpenAIProvider:
 
     @staticmethod
     def _tool_result_text(content: Any) -> str:
+        """Text-only fallback for tool results. Kept for callers that
+        explicitly want flattened text; the live tool_result path now
+        uses ``_tool_result_output`` so images survive."""
         if isinstance(content, str):
             return content
         if isinstance(content, list):
@@ -319,6 +322,69 @@ class OpenAIProvider:
             )
             return "".join(text_parts) + suffix
         return str(content)
+
+    @staticmethod
+    def _tool_result_output(content: Any) -> Any:
+        """Build the ``function_call_output.output`` field.
+
+        Returns a string for legacy/text-only results (preserves prompt-
+        cache prefix exactness), and the Responses API content-array
+        shape when there are ImageBlocks to surface. The array form is
+        what unlocks view_image / browser_screenshot for GPT-5.x — the
+        model gets actual ``input_image`` items it can attend to,
+        rather than the text-coerce path's ``[image block(s) omitted]``
+        placeholder.
+        """
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return str(content)
+
+        has_image = any(isinstance(block, ImageBlock) for block in content)
+        if not has_image:
+            # No images — keep the historical string output so prompt
+            # caches keyed off the pre-array shape stay warm.
+            return "".join(
+                block.text for block in content if isinstance(block, TextBlock)
+            )
+
+        items: list[dict[str, Any]] = []
+        for block in content:
+            if isinstance(block, TextBlock):
+                if block.text:
+                    items.append({"type": "input_text", "text": block.text})
+            elif isinstance(block, ImageBlock):
+                if block.source_type == "url" and block.url:
+                    image_url = block.url
+                elif block.source_type == "base64" and block.data:
+                    image_url = f"data:{block.media_type};base64,{block.data}"
+                else:
+                    # Unrecognized source shape — leave a marker so the
+                    # model can ask the agent to retry rather than just
+                    # silently dropping context.
+                    items.append(
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "[image block could not be serialized — "
+                                f"source_type={block.source_type!r}]"
+                            ),
+                        }
+                    )
+                    continue
+                items.append(
+                    {
+                        "type": "input_image",
+                        "image_url": image_url,
+                        # `auto` lets OpenAI pick the appropriate detail
+                        # tier based on its own heuristics. We could
+                        # let agents tune this per call, but the cost
+                        # difference is small and the default avoids
+                        # surfacing yet another knob.
+                        "detail": "auto",
+                    }
+                )
+        return items
 
     @staticmethod
     def _tool_call_lookup(messages: list[Message]) -> dict[str, ToolCall]:
@@ -616,8 +682,14 @@ class OpenAIProvider:
                         continue
 
                 # Tool results become function_call_output items (bare typed).
+                # When the content is a list with ImageBlocks (view_image,
+                # browser_screenshot, etc.), the Responses API accepts an
+                # array shape: `output: [{type:"input_text",...}, {type:
+                # "input_image", image_url:"data:..."}]`. Otherwise we keep
+                # the historical text-coerce path for parity with the
+                # chat-completions era.
                 # Ref: https://platform.openai.com/docs/guides/function-calling
-                tool_output = self._tool_result_text(message.content)
+                tool_output = self._tool_result_output(message.content)
                 input_items.append({
                     "type": "function_call_output",
                     "call_id": message.tool_call_id,
