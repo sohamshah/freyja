@@ -29,7 +29,7 @@ from engine.constants import (
     SUMMARY_MAX_TOKENS,
 )
 from engine.session import TranscriptManager
-from engine.types import ImageBlock, Message
+from engine.types import ImageBlock, Message, ThinkingConfig
 
 if TYPE_CHECKING:
     from engine.providers import ModelProvider
@@ -771,10 +771,31 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
             prompt = self.SUMMARY_PROMPT.format(conversation=safe_conversation)
 
         start_perf = _time.perf_counter()
-        response = provider.complete(
-            messages=[Message(role="user", content=prompt)],
-            max_tokens=self.summary_max_tokens,
-        )
+        # CRITICAL: explicitly disable thinking on the summarizer call
+        # (Anthropic-family providers only — others bake reasoning
+        # into the request via config-time settings). The provider's
+        # default thinking config (carried from the session's
+        # reasoning_level) is "adaptive thinking, high effort" on
+        # Opus 4.7+. Without this override, the model spends the full
+        # output budget on reasoning tokens and emits zero visible
+        # text — the wrapper then sees `response.content` = "" and
+        # raises "Empty summary generated". Summarization is a
+        # structured-text ask; no thinking needed.
+        complete_kwargs: dict[str, Any] = {
+            "messages": [Message(role="user", content=prompt)],
+            "max_tokens": self.summary_max_tokens,
+        }
+        try:
+            response = provider.complete(
+                **complete_kwargs,
+                thinking=ThinkingConfig(enabled=False, effort="none"),
+            )
+        except TypeError:
+            # Provider's complete() doesn't accept `thinking` kwarg
+            # (non-Anthropic). Fall through with defaults — those
+            # providers configure reasoning at provider-construction
+            # time, not per-call.
+            response = provider.complete(**complete_kwargs)
         duration_ms = int((_time.perf_counter() - start_perf) * 1000)
 
         # Pull usage off the response so callers can attribute the
