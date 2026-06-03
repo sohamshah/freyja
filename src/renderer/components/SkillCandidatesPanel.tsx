@@ -112,69 +112,75 @@ export function SkillCandidatesPanel() {
                   isCaution ? 'ring-warn/30' : 'ring-white/10'
                 } bg-white/[0.025] px-3 py-2`}
               >
-                <div className="flex items-center gap-2">
+                {/* Title block — full width. Click toggles the body
+                    preview. Badges + name flex-wrap so a long name +
+                    overwrite stat don't push the layout. */}
+                <button
+                  type="button"
+                  onClick={() => setOpenId(isOpen ? null : cand.candidateId)}
+                  className="block w-full text-left"
+                >
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="font-mono text-[12px] text-fg-0 break-all">
+                      {cand.name}
+                    </span>
+                    {isCaution && (
+                      <span className="rounded bg-warn/15 px-1 py-[1px] font-mono text-[8.5px] uppercase tracking-[0.08em] text-warn ring-1 ring-warn/30">
+                        review
+                      </span>
+                    )}
+                    {cand.existingSkill?.exists && (
+                      <span
+                        className={`rounded px-1 py-[1px] font-mono text-[8.5px] uppercase tracking-[0.08em] ring-1 ${
+                          cand.existingSkill.isDestructive
+                            ? 'bg-danger/15 text-danger ring-danger/30'
+                            : 'bg-accent/15 text-accent ring-accent/30'
+                        }`}
+                        title={`Overwrites existing skill: +${cand.existingSkill.linesAdded ?? 0} / -${cand.existingSkill.linesRemoved ?? 0} lines${cand.existingSkill.linesExisting ? ` of ${cand.existingSkill.linesExisting}` : ''}`}
+                      >
+                        ↻ +{cand.existingSkill.linesAdded ?? 0} / -{cand.existingSkill.linesRemoved ?? 0}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-0.5 text-[11px] leading-[1.4] text-fg-2 line-clamp-2">
+                    {cand.description}
+                  </div>
+                </button>
+                {/* Action row — own line below the title so PROMOTE
+                    can't get clipped when the operator drags the
+                    activity panel narrower. flex-wrap so even an
+                    extra-narrow panel (e.g. 220px) wraps the buttons
+                    onto multiple rows instead of overflowing. */}
+                <div className="mt-2 flex flex-wrap items-center justify-end gap-1">
                   <button
                     type="button"
-                    onClick={() => setOpenId(isOpen ? null : cand.candidateId)}
-                    className="flex-1 text-left"
+                    onClick={() => (isEditing ? setEditId(null) : startEdit(cand))}
+                    className="rounded-md bg-white/[0.04] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:text-fg-0"
                   >
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-[12px] text-fg-0">
-                        {cand.name}
-                      </span>
-                      {isCaution && (
-                        <span className="rounded bg-warn/15 px-1 py-[1px] font-mono text-[8.5px] uppercase tracking-[0.08em] text-warn ring-1 ring-warn/30">
-                          review
-                        </span>
-                      )}
-                      {cand.existingSkill?.exists && (
-                        <span
-                          className={`rounded px-1 py-[1px] font-mono text-[8.5px] uppercase tracking-[0.08em] ring-1 ${
-                            cand.existingSkill.isDestructive
-                              ? 'bg-danger/15 text-danger ring-danger/30'
-                              : 'bg-accent/15 text-accent ring-accent/30'
-                          }`}
-                          title={`Overwrites existing skill: +${cand.existingSkill.linesAdded ?? 0} / -${cand.existingSkill.linesRemoved ?? 0} lines${cand.existingSkill.linesExisting ? ` of ${cand.existingSkill.linesExisting}` : ''}`}
-                        >
-                          ↻ +{cand.existingSkill.linesAdded ?? 0} / -{cand.existingSkill.linesRemoved ?? 0}
-                        </span>
-                      )}
-                    </div>
-                    <div className="mt-0.5 text-[11px] leading-[1.4] text-fg-2 line-clamp-2">
-                      {cand.description}
-                    </div>
+                    {isEditing ? 'cancel' : 'edit'}
                   </button>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => (isEditing ? setEditId(null) : startEdit(cand))}
-                      className="rounded-md bg-white/[0.04] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:text-fg-0"
-                    >
-                      {isEditing ? 'cancel' : 'edit'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        isEditing
-                          ? submitEdit(cand.candidateId, 'discard')
-                          : resolve(cand.candidateId, 'discard')
-                      }
-                      className="rounded-md bg-white/[0.04] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:bg-danger/15 hover:text-danger"
-                    >
-                      discard
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        isEditing
-                          ? submitEdit(cand.candidateId, 'promote')
-                          : resolve(cand.candidateId, 'promote')
-                      }
-                      className="rounded-md bg-accent/15 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-accent ring-1 ring-accent/30 hover:bg-accent/25"
-                    >
-                      {isEditing ? 'promote with edits' : 'promote'}
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      isEditing
+                        ? submitEdit(cand.candidateId, 'discard')
+                        : resolve(cand.candidateId, 'discard')
+                    }
+                    className="rounded-md bg-white/[0.04] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:bg-danger/15 hover:text-danger"
+                  >
+                    discard
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      isEditing
+                        ? submitEdit(cand.candidateId, 'promote')
+                        : resolve(cand.candidateId, 'promote')
+                    }
+                    className="rounded-md bg-accent/15 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-accent ring-1 ring-accent/30 hover:bg-accent/25"
+                  >
+                    {isEditing ? 'promote with edits' : 'promote'}
+                  </button>
                 </div>
                 {isCaution && cand.guardSummary && (
                   <div className="mt-2 rounded border-l-2 border-warn/40 bg-warn/[0.06] px-2 py-1 text-[10.5px] leading-[1.45] text-warn">
