@@ -171,6 +171,13 @@ export function Sidebar() {
   // Search query for sessions (titles + content). Empty string = no filter.
   const [sessionQuery, setSessionQuery] = useState('')
 
+  // Origin filter — slack-gateway sessions vs everything else. A
+  // session is treated as Slack-origin when ITS ROOT (top of the
+  // parent chain in the visible tree) has agentType === 'gateway-
+  // slack' — that way subagents of a slack-originated session also
+  // show up under the Slack filter instead of being orphaned.
+  const [originFilter, setOriginFilter] = useState<'all' | 'local' | 'slack'>('all')
+
   // Inspector popup for a skill or memory, opened by clicking the row.
   const [inspectItem, setInspectItem] = useState<
     | { kind: 'skill'; item: Skill }
@@ -245,18 +252,66 @@ export function Sidebar() {
     return trimmed.split(/\s+/).filter(Boolean)
   }, [sessionQuery])
 
+  // Set of every session id whose ROOT is a slack-gateway session.
+  // The Slack badge in the row footer is set per-session by checking
+  // `agentType === 'gateway-slack'` directly; for filter purposes we
+  // need the whole tree (slack root + its subagent descendants) so a
+  // subagent spawned from a slack session isn't orphaned from the
+  // Slack view.
+  const slackRootedIds = useMemo(() => {
+    const byId = new Map(sessions.map((s) => [s.id, s]))
+    const cache = new Map<string, boolean>()
+    const isSlackRooted = (id: string): boolean => {
+      const cached = cache.get(id)
+      if (cached !== undefined) return cached
+      const s = byId.get(id)
+      if (!s) return false
+      // Self check first — a slack session at any depth marks the
+      // subtree; the typical case is the root, but a re-rooted
+      // subagent still shows up correctly.
+      if (s.agentType === 'gateway-slack') {
+        cache.set(id, true)
+        return true
+      }
+      if (!s.parentSessionId) {
+        cache.set(id, false)
+        return false
+      }
+      const parent = isSlackRooted(s.parentSessionId)
+      cache.set(id, parent)
+      return parent
+    }
+    const out = new Set<string>()
+    for (const s of sessions) {
+      if (isSlackRooted(s.id)) out.add(s.id)
+    }
+    return out
+  }, [sessions])
+
   // For each session, decide whether it matches the search query.
   // Prefix match: every token in the query must appear as a prefix of
   // some whitespace-separated word in the searchable text.
+  //
+  // The origin filter is applied on top: when active, restricts the
+  // matched set to slack-rooted (or its inverse for local). When no
+  // search is active but a non-`all` origin is, this still returns a
+  // concrete set so the tree-walker filters correctly.
   const matchedSessionIds = useMemo(() => {
-    if (searchTokens.length === 0) return null
+    const noSearch = searchTokens.length === 0
+    const noOrigin = originFilter === 'all'
+    if (noSearch && noOrigin) return null
     const matched = new Set<string>()
     for (const s of sessions) {
-      const text = sessionSearchIndex.get(s.id) ?? ''
-      if (matchesAllTokens(text, searchTokens)) matched.add(s.id)
+      if (!noSearch) {
+        const text = sessionSearchIndex.get(s.id) ?? ''
+        if (!matchesAllTokens(text, searchTokens)) continue
+      }
+      if (originFilter === 'slack' && !slackRootedIds.has(s.id)) continue
+      if (originFilter === 'local' && slackRootedIds.has(s.id)) continue
+      matched.add(s.id)
     }
     return matched
-  }, [sessions, sessionSearchIndex, searchTokens])
+  }, [sessions, sessionSearchIndex, searchTokens, originFilter, slackRootedIds])
 
   // Per-session timestamp of the most recent USER message. Drives
   // top-level recency sort below. We pick "last user message" instead
@@ -424,6 +479,7 @@ export function Sidebar() {
       <div ref={sessionsScrollRef} className="min-h-0 flex-1 overflow-y-auto">
         <div className="px-3 pt-3 pb-2">
           <SessionSearch value={sessionQuery} onChange={setSessionQuery} />
+          <OriginFilterChips value={originFilter} onChange={setOriginFilter} />
         </div>
         <Section
           title="sessions"
@@ -431,9 +487,15 @@ export function Sidebar() {
           open={open.sessions}
           onToggle={() => setOpen((p) => ({ ...p, sessions: !p.sessions }))}
         >
-          {sessionTree.length === 0 && sessionQuery.trim().length > 0 && (
+          {sessionTree.length === 0 && (sessionQuery.trim().length > 0 || originFilter !== 'all') && (
             <div className="px-2 py-2 text-[11px] italic text-fg-2">
-              No sessions match "{sessionQuery.trim()}".
+              {sessionQuery.trim().length > 0 && originFilter !== 'all'
+                ? `No ${originFilter} sessions match "${sessionQuery.trim()}".`
+                : sessionQuery.trim().length > 0
+                  ? `No sessions match "${sessionQuery.trim()}".`
+                  : originFilter === 'slack'
+                    ? 'No Slack-gateway sessions yet.'
+                    : 'No local sessions.'}
             </div>
           )}
           {sessionTree.map((s) => (
@@ -665,6 +727,47 @@ function Section({
         </button>
       </StickyHeader>
       {open && <div className="space-y-0.5 px-2 pb-2 pt-1">{children}</div>}
+    </div>
+  )
+}
+
+function OriginFilterChips({
+  value,
+  onChange,
+}: {
+  value: 'all' | 'local' | 'slack'
+  onChange: (v: 'all' | 'local' | 'slack') => void
+}) {
+  // Tight 3-segment toggle. "Local" is the inverse of slack-gateway —
+  // sessions started inside the desktop app rather than coming in
+  // over the slack gateway. We pick "Local" over "Desktop" / "App"
+  // because it's short, contrasts cleanly with "Slack", and reads
+  // naturally regardless of how the operator named the platform.
+  const opts: Array<{ key: 'all' | 'local' | 'slack'; label: string; title: string }> = [
+    { key: 'all', label: 'all', title: 'Show every session' },
+    { key: 'local', label: 'local', title: 'Show only sessions started inside the desktop app' },
+    { key: 'slack', label: 'slack', title: 'Show only sessions that came in over the Slack gateway' },
+  ]
+  return (
+    <div className="mt-1.5 flex items-center gap-px rounded-md bg-black/30 p-px ring-1 ring-white/[0.07]">
+      {opts.map((o) => {
+        const active = value === o.key
+        return (
+          <button
+            key={o.key}
+            type="button"
+            onClick={() => onChange(o.key)}
+            title={o.title}
+            className={`flex-1 rounded-[5px] px-2 py-[3px] font-mono text-[10px] uppercase tracking-[0.10em] transition-colors ${
+              active
+                ? 'bg-accent/20 text-accent ring-1 ring-accent/30'
+                : 'text-fg-3 hover:bg-white/[0.04] hover:text-fg-1'
+            }`}
+          >
+            {o.label}
+          </button>
+        )
+      })}
     </div>
   )
 }
