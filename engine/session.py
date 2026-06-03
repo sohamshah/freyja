@@ -33,6 +33,7 @@ from engine.types import (
     TextBlock,
     ThinkingBlock,
     ToolCall,
+    ToolResultBlock,
 )
 from engine.tokenizer import count_tokens
 
@@ -643,6 +644,146 @@ class TranscriptManager:
             kept_recent=0,
             hard_limit=max_bytes,
         )
+
+    def prune_cumulative_image_payload(
+        self,
+        target_bytes: int,
+    ) -> ImagePruneResult:
+        """Replace OLDEST image blocks until cumulative base64 bytes
+        across the transcript drop under ``target_bytes``.
+
+        Distinct from ``prune_oversized_images`` — that method handles
+        the per-image API limit (Anthropic's 5 MiB inline cap). This
+        method handles the CUMULATIVE failure mode where every image
+        is individually fine but the request body's total inline
+        content blows the endpoint's payload cap. The two paths
+        compose: per-image first (drops 6 MiB monsters), cumulative
+        second (drops oldest 2 MiB images when many of them stack).
+
+        Walks both direct ``msg.content`` ImageBlocks and ImageBlocks
+        nested inside ``ToolResultBlock.content`` (browser screenshots,
+        view_image results, etc.). Walks oldest entry → newest; stops
+        as soon as cumulative bytes are under target. That preserves
+        the most recent images — usually what the agent is actively
+        working with — and drops the long tail.
+
+        Each elided block is replaced with a small TextBlock marker
+        so message ordering + tool_use/tool_result adjacency stay
+        intact (Anthropic 400s on orphaned tool blocks).
+        """
+        target_bytes = max(64 * 1024, int(target_bytes))
+
+        # Collect all image blocks in transcript order, with their
+        # location so we can mutate in place.
+        collected: list[tuple[int, list, int, ImageBlock, int]] = []
+
+        def _walk_blocks(entry_index: int, container: list) -> None:
+            for block_index, block in enumerate(container):
+                if (
+                    isinstance(block, ImageBlock)
+                    and block.source_type == "base64"
+                    and block.data
+                ):
+                    collected.append(
+                        (entry_index, container, block_index, block, len(block.data))
+                    )
+                    continue
+                # Nest into ToolResultBlock.content for tool-result-
+                # carried images (browser_screenshot, view_image, etc.).
+                if isinstance(block, ToolResultBlock) and isinstance(block.content, list):
+                    _walk_blocks(entry_index, block.content)
+
+        for entry_index, entry in enumerate(self._entries):
+            msg = entry.message
+            if msg is None or isinstance(msg.content, str):
+                continue
+            if isinstance(msg.content, list):
+                _walk_blocks(entry_index, msg.content)
+
+        total_images = len(collected)
+        if total_images == 0:
+            return ImagePruneResult(
+                images_before=0,
+                images_after=0,
+                tool_result_images_before=0,
+                tool_result_images_after=0,
+                kept_recent=0,
+                hard_limit=target_bytes,
+            )
+
+        cumulative = sum(item[4] for item in collected)
+        if cumulative <= target_bytes:
+            return ImagePruneResult(
+                images_before=total_images,
+                images_after=total_images,
+                tool_result_images_before=0,
+                tool_result_images_after=0,
+                kept_recent=total_images,
+                hard_limit=target_bytes,
+            )
+
+        elided = 0
+        remaining = cumulative
+        for entry_index, container, idx, block, size in collected:
+            if remaining <= target_bytes:
+                break
+            placeholder = TextBlock(
+                text=(
+                    "[image elided to fit request payload — was "
+                    f"{block.media_type}, {size // 1024} KiB base64. "
+                    "If you still need this image, ask the user to "
+                    "re-attach or call view_image with the original ref.]"
+                )
+            )
+            container[idx] = placeholder
+            elided += 1
+            remaining -= size
+
+        logger.info(
+            "Pruned %d cumulative image block(s) (was %d MiB → %d MiB, "
+            "target %d MiB)",
+            elided,
+            cumulative // (1024 * 1024),
+            remaining // (1024 * 1024),
+            target_bytes // (1024 * 1024),
+        )
+
+        return ImagePruneResult(
+            images_before=total_images,
+            images_after=total_images - elided,
+            tool_result_images_before=elided,
+            tool_result_images_after=0,
+            kept_recent=total_images - elided,
+            hard_limit=target_bytes,
+        )
+
+    def cumulative_image_bytes(self) -> int:
+        """Total base64 bytes across all ImageBlocks in the transcript.
+        Used by the compaction gate to decide whether image-heavy slices
+        warrant summarization even when text is thin.
+        """
+        total = 0
+
+        def _walk(container: list) -> None:
+            nonlocal total
+            for block in container:
+                if (
+                    isinstance(block, ImageBlock)
+                    and block.source_type == "base64"
+                    and block.data
+                ):
+                    total += len(block.data)
+                    continue
+                if isinstance(block, ToolResultBlock) and isinstance(block.content, list):
+                    _walk(block.content)
+
+        for entry in self._entries:
+            msg = entry.message
+            if msg is None or isinstance(msg.content, str):
+                continue
+            if isinstance(msg.content, list):
+                _walk(msg.content)
+        return total
 
     def set_entry_pinned(self, entry_id: str, pinned: bool) -> bool:
         """Toggle the compaction_excluded flag on a single entry.

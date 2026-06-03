@@ -68,6 +68,31 @@ def _count_images(messages: list[Message]) -> int:
     return total
 
 
+def _count_image_bytes_in_blocks(blocks: list) -> int:
+    """Sum base64 bytes of any ImageBlocks in this block list, walking
+    one level into ToolResultBlock content. Mirrors the walk used in
+    `TranscriptManager.cumulative_image_bytes` but operates on a
+    detached block list so the compaction gate can use it on
+    pre-split slices without pulling in transcript internals.
+    """
+    from engine.types import ToolResultBlock  # local to avoid a hot import cycle
+
+    total = 0
+    for block in blocks:
+        if isinstance(block, ImageBlock) and block.source_type == "base64" and block.data:
+            total += len(block.data)
+            continue
+        if isinstance(block, ToolResultBlock) and isinstance(block.content, list):
+            for sub in block.content:
+                if (
+                    isinstance(sub, ImageBlock)
+                    and sub.source_type == "base64"
+                    and sub.data
+                ):
+                    total += len(sub.data)
+    return total
+
+
 # ============================================================================
 # Compaction Result
 # ============================================================================
@@ -353,6 +378,7 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
         # recover meaningful space. Use Message.get_text() directly to
         # avoid the heavier per-call formatting overhead.
         summarizable_chars = 0
+        older_image_bytes = 0
         for m in messages[:split_point]:
             try:
                 text = m.get_text() if hasattr(m, "get_text") else str(m.content)
@@ -360,10 +386,27 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
             except Exception:
                 # Defensive: never let a malformed message block the gate.
                 pass
+            # Also count image bytes in the older slice so we don't
+            # falsely skip when there's a heavy image worth dropping
+            # via summarization (summarization replaces the messages
+            # holding the images with a text-only summary, freeing
+            # ALL their image bytes — that can be the largest win even
+            # when the text itself is small).
+            try:
+                content = getattr(m, "content", None)
+                if isinstance(content, list):
+                    older_image_bytes += _count_image_bytes_in_blocks(content)
+            except Exception:
+                pass
         summarizable_tokens = summarizable_chars // 4
+        # An older slice carrying >= ~512 KiB of image bytes is worth
+        # summarizing even with thin text — the byte savings dwarf
+        # the LLM-call cost.
+        IMAGE_BYTES_FORCE_SUMMARIZE = 512 * 1024
         if (
             len(messages) < self.min_messages
             and summarizable_tokens < MIN_TOKENS_TO_SUMMARIZE
+            and older_image_bytes < IMAGE_BYTES_FORCE_SUMMARIZE
         ):
             return CompactionResult(
                 success=False,
@@ -374,9 +417,12 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
                     f"Nothing worth summarizing — {split_point} older "
                     f"message{'s' if split_point != 1 else ''} totals "
                     f"~{summarizable_tokens:,} tokens "
-                    f"(threshold {MIN_TOKENS_TO_SUMMARIZE:,}). If a single "
-                    "block is oversized (e.g. an image), the bridge will "
-                    "prune it instead of summarizing."
+                    f"(threshold {MIN_TOKENS_TO_SUMMARIZE:,}) and "
+                    f"~{older_image_bytes // 1024} KiB of images "
+                    f"(threshold {IMAGE_BYTES_FORCE_SUMMARIZE // 1024} KiB). "
+                    "The recent-tail probably holds the heavy block; "
+                    "the runner's overflow cascade prunes oldest images "
+                    "instead of summarizing in that case."
                 ),
             )
 

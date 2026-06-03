@@ -736,13 +736,12 @@ def _downscale_b64_image(data: str, media_type: str) -> tuple[str, str, bool]:
     return data, media_type, False
 
 
-# Cumulative image-bytes threshold across the whole transcript before
-# we start eliding older image blocks. Anthropic enforces a hard
-# request-body cap (around 32 MiB on the messages endpoint) plus JSON
-# overhead — three or four user-attached PNGs at 2-4 MiB each can blow
-# past it even when every single image is under the per-image 5 MiB cap
-# that `_sanitize_session_oversize_images` defends. Conservative target
-# leaves room for JSON envelope + tool definitions + text.
+# Pre-turn proactive cumulative-image-bytes target. The overflow
+# cascade in the runner uses a tighter 8 MiB target for reactive
+# pruning on actual 413s; this looser target catches sessions that
+# are trending toward overflow but haven't tripped yet, so the
+# operator never sees the loop. Single source of truth lives in
+# TranscriptManager.prune_cumulative_image_payload.
 _TRANSCRIPT_IMAGE_BUDGET_BYTES = 12 * 1024 * 1024
 
 
@@ -750,94 +749,30 @@ def _elide_old_images_for_payload(
     session: Any,
     target_bytes: int = _TRANSCRIPT_IMAGE_BUDGET_BYTES,
 ) -> tuple[int, int]:
-    """Walk the transcript and replace oldest image blocks with text
-    placeholders when cumulative image bytes exceed ``target_bytes``.
-
-    Anthropic's per-image cap is policed by
-    ``_sanitize_session_oversize_images``; this helper handles the
-    distinct CUMULATIVE failure mode (HTTP 413 "Request exceeds the
-    maximum size") where each image is individually fine but the sum
-    blows the request-body cap. Surfaces in the runner as a
-    `request_too_large` ProviderError, which routes to the overflow
-    cascade — but text summarization there doesn't shrink image
-    bytes, so the retry hits the same 413. This elision is the
-    image-side counterpart to text compaction.
-
-    Eliding mutates the transcript in place. Future turns won't replay
-    the elided images — once payload pressure has been relieved we
-    stay relieved. The placeholder text preserves enough context
-    (media type + size) that the agent can ask the user to re-attach
-    if it really needs the image back.
-
-    Returns ``(elided_count, bytes_freed)``.
+    """Pre-turn wrapper around
+    ``TranscriptManager.prune_cumulative_image_payload``. Returns
+    ``(elided_count, bytes_freed)`` for log-line parity with the
+    older standalone implementation.
     """
-    if session is None:
+    if session is None or not hasattr(session, "transcript"):
         return 0, 0
     try:
-        from engine.types import ImageBlock, TextBlock, ToolResultBlock
+        before_bytes = session.transcript.cumulative_image_bytes()
     except Exception:  # noqa: BLE001
+        return 0, 0
+    if before_bytes <= target_bytes:
         return 0, 0
     try:
-        entries = session.transcript.entries  # type: ignore[attr-defined]
+        result = session.transcript.prune_cumulative_image_payload(target_bytes)
     except Exception:  # noqa: BLE001
+        log("warn", "prune_cumulative_image_payload raised", exc_info=True)
         return 0, 0
-
-    # Collect (entry_index, container, container_idx, block_ref, size)
-    # so we can drop oldest-first and keep recent images intact.
-    collected: list[tuple[int, list, int, Any, int]] = []
-
-    def _walk(entry_idx: int, container: list) -> None:
-        for idx, block in enumerate(container):
-            if isinstance(block, ImageBlock) and block.source_type == "base64" and block.data:
-                size = len(block.data)
-                collected.append((entry_idx, container, idx, block, size))
-                continue
-            if isinstance(block, ToolResultBlock) and isinstance(block.content, list):
-                _walk(entry_idx, block.content)
-
-    for entry_idx, entry in enumerate(entries):
-        msg = getattr(entry, "message", None)
-        if msg is None:
-            continue
-        content = getattr(msg, "content", None)
-        if isinstance(content, list):
-            _walk(entry_idx, content)
-
-    if not collected:
-        return 0, 0
-
-    total = sum(item[4] for item in collected)
-    if total <= target_bytes:
-        return 0, 0
-
-    elided = 0
-    freed = 0
-    remaining = total
-    # ``collected`` is in transcript order; elide from the oldest
-    # entries until cumulative bytes are under target. Keeps the most
-    # recent images (which the agent is most likely actively using).
-    for entry_idx, container, idx, block, size in collected:
-        if remaining <= target_bytes:
-            break
-        placeholder = TextBlock(
-            text=(
-                "[image elided to fit Anthropic request-payload cap — "
-                f"was {block.media_type}, {size // 1024} KiB base64. "
-                "If you still need it, ask the user to re-attach.]"
-            )
-        )
-        container[idx] = placeholder
-        elided += 1
-        freed += size
-        remaining -= size
-
-    log(
-        "info",
-        f"elided {elided} old image(s) "
-        f"({freed // (1024 * 1024)} MiB freed) — cumulative bytes "
-        f"{total // (1024 * 1024)} MiB → {remaining // (1024 * 1024)} MiB "
-        f"(target {target_bytes // (1024 * 1024)} MiB)",
-    )
+    elided = max(0, result.images_before - result.images_after)
+    try:
+        after_bytes = session.transcript.cumulative_image_bytes()
+    except Exception:  # noqa: BLE001
+        after_bytes = before_bytes
+    freed = max(0, before_bytes - after_bytes)
     return elided, freed
 
 

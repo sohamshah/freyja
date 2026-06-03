@@ -638,7 +638,13 @@ class AgentRunner:
         session: Session,
         ctx: RunnerContext,
     ) -> bool:
-        """Handle context overflow with three-tier cascade."""
+        """Handle context overflow with three-tier cascade.
+
+        Same order as the async path: image-byte elision first (cheap,
+        no LLM call), then text summarization, then fallback chain
+        advance. See the async ``_handle_overflow_cascade`` docstring
+        for the rationale.
+        """
         logger.warning(
             f"Context overflow detected - attempting summarization "
             f"(attempt {ctx.compaction_attempts + 1}/{self.config.max_compaction_attempts})"
@@ -647,6 +653,27 @@ class AgentRunner:
         if ctx.compaction_attempts >= self.config.max_compaction_attempts:
             logger.error("Exhausted compaction attempts")
             return False
+
+        # Tier 1 — image-byte elision before paying for summarization.
+        try:
+            image_prune = session.transcript.prune_cumulative_image_payload(
+                target_bytes=4 * 1024 * 1024,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("image elision raised")
+            image_prune = None
+        if image_prune is not None:
+            elided = image_prune.images_before - image_prune.images_after
+            if elided > 0:
+                logger.warning(
+                    "Pruned %d oldest image block(s) to free payload "
+                    "(images: %d → %d) — retrying without summarization",
+                    elided,
+                    image_prune.images_before,
+                    image_prune.images_after,
+                )
+                ctx.consecutive_errors = 0
+                return True
 
         ctx.state = RunnerState.COMPACTING
         result = self._attempt_compaction(session, ctx)
@@ -1935,6 +1962,18 @@ class AsyncAgentRunner:
     ) -> bool:
         """Handle context overflow with three-tier cascade.
 
+        Order of attempts:
+          1. Image-byte elision (cheap, no LLM call). When the bloat
+             is image bytes — common after browser_screenshot,
+             generate_image, or a user dragging in a 3-4 MiB
+             attachment — text summarization can't help because the
+             tiny older slice has little to summarize and the bulk of
+             the bytes is in the recent-tail that the compactor
+             preserves verbatim. Image elision walks oldest-first and
+             replaces the heavy blocks with text placeholders.
+          2. Text summarization via the compactor.
+          3. Fallback chain advance.
+
         Emits compaction_start before the attempt and compaction_complete /
         compaction_skipped after — without these the dashboard's compaction
         count + savings trend + trigger-source breakdown all under-count
@@ -1948,6 +1987,44 @@ class AsyncAgentRunner:
         if ctx.compaction_attempts >= self.config.max_compaction_attempts:
             logger.error("Exhausted compaction attempts | session=%s", session.id)
             return False
+
+        # Tier 1 — image-byte elision before paying for an LLM
+        # summarization round-trip. Anthropic's request-body cap is
+        # tighter than the context window, so a session can hit
+        # request_too_large at well-under-window token counts when a
+        # single image attachment is heavy. Drop to 8 MiB so even
+        # one ~4 MiB user attachment triggers elision before we
+        # spend on summarization.
+        try:
+            image_prune = session.transcript.prune_cumulative_image_payload(
+                target_bytes=4 * 1024 * 1024,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("image elision raised | session=%s", session.id)
+            image_prune = None
+        if image_prune is not None:
+            elided = image_prune.images_before - image_prune.images_after
+            if elided > 0:
+                # Emit a compaction event so the dashboard reflects
+                # this recovery in the same telemetry stream as text
+                # summarization. The trigger label distinguishes it.
+                await self._emit_system_event(SystemEvent(
+                    type="compaction_complete",
+                    message=(
+                        f"Overflow-cascade image elision: pruned "
+                        f"{elided} oldest image block(s) to free request "
+                        "payload before retrying"
+                    ),
+                    details={
+                        "trigger": "overflow_cascade_image_elision",
+                        "images_before": image_prune.images_before,
+                        "images_after": image_prune.images_after,
+                        "elided": elided,
+                        "target_bytes": image_prune.hard_limit,
+                    },
+                ))
+                ctx.consecutive_errors = 0
+                return True
 
         tokens_before = self._current_context_tokens(session)
         await self._emit_system_event(SystemEvent(
