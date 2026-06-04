@@ -36,54 +36,31 @@ export function DispatcherBrief({ open, onClose, cards, agents, objective }: Pro
       title="Autopilot Rules"
       prelude={
         <>
-          When an agent comes free, autopilot decides what they should pick up next. Tune the
-          rules below to control who can claim what, when to escalate, and when to defer to the
-          operator.
+          This brief documents the rules autopilot follows when an agent comes free. It is
+          currently <span className="text-fg-0">read-only</span> — values below are the live
+          defaults baked into <code className="text-fg-0">bridge/freyja_bridge.py</code>{' '}
+          (search for <code className="text-fg-0">KANBAN_DISPATCH_INTERVAL</code>,{' '}
+          <code className="text-fg-0">KANBAN_STALE_SECONDS</code>,{' '}
+          <code className="text-fg-0">KANBAN_MAX_REVIEW_ITERATIONS</code>). In-app editing is on
+          the roadmap; until then, override via env or by editing the bridge constants and
+          restarting.
         </>
       }
       signoffName="soham"
       preview={
         <BriefPreview
-          label="given this brief, the next dispatch will be:"
+          label="given the rules below, the next dispatch will be:"
           verdict={nextCard ? 'dispatch' : 'idle'}
           reason={
             nextCard ? (
               <>
-                <span className="text-fg-0">{nextCard.title}</span> — first card eligible under the
-                rules. Will be assigned to the first agent that comes free.
+                <span className="text-fg-0">{nextCard.title}</span> — first card eligible under
+                the rules. Will be assigned to the first agent that comes free.
               </>
             ) : (
               'no ready cards · waiting for a card to enter the queue.'
             )
           }
-          counterfactuals={[
-            {
-              body: (
-                <>
-                  If you reduce <span className="text-fg-0">stale after</span> to{' '}
-                  <code className="text-fg-0">8m</code>, current stale claims would be reclaimed sooner.
-                </>
-              ),
-            },
-            {
-              body: (
-                <>
-                  If you set <span className="text-fg-0">max in flight</span> to{' '}
-                  <code className="text-fg-0">2</code>, idle agents could pick up a second card alongside
-                  their current one.
-                </>
-              ),
-            },
-            {
-              body: (
-                <>
-                  If you set <span className="text-fg-0">escalation</span> to{' '}
-                  <span className="text-fg-0">"before every dispatch"</span>, autopilot will pause and ask
-                  you before each move.
-                </>
-              ),
-            },
-          ]}
         />
       }
     >
@@ -138,14 +115,16 @@ export function DispatcherBrief({ open, onClose, cards, agents, objective }: Pro
   )
 }
 
+// Read-only policy row. Used to have an `edit` button with no
+// onClick — a textbook "looks editable, isn't" trust break. Removed
+// in favor of a static row with the value highlighted via <Val>.
+// When the dispatcher policies become bridge-editable, the editor
+// goes here.
 function Policy({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="grid grid-cols-[auto_1fr_auto] gap-3.5 items-center rounded-md border border-white/[0.06] bg-white/[0.018] px-3 py-2.5">
+    <div className="grid grid-cols-[auto_1fr] gap-3.5 items-center rounded-md border border-white/[0.06] bg-white/[0.018] px-3 py-2.5">
       <span className="text-fg-3 text-[10.5px] uppercase tracking-[0.18em] min-w-[120px]">{label}</span>
       <span className="text-fg-0 text-[13px]">{children}</span>
-      <button type="button" className="rounded border border-white/[0.06] bg-white/[0.03] px-2 py-0.5 text-fg-2 text-[10px] uppercase tracking-[0.18em] hover:text-fg-0 hover:bg-white/[0.06] transition">
-        edit
-      </button>
     </div>
   )
 }
@@ -158,23 +137,23 @@ function Val({ children }: { children: React.ReactNode }) {
   )
 }
 
+// Read-only choice row. Previously rendered as a clickable
+// pseudo-radio with a hover affordance, even though none of the items
+// changed any state — pure theater. Now the unchecked options render
+// as dimmed siblings of the active rule, no interactivity, no hover.
 function Radio({ checked, children }: { checked?: boolean; children: React.ReactNode }) {
   return (
-    <li
-      className={`grid grid-cols-[18px_1fr] gap-3 px-2 py-1.5 rounded cursor-pointer transition ${
-        checked ? '' : 'hover:bg-white/[0.018]'
-      }`}
-    >
+    <li className="grid grid-cols-[18px_1fr] gap-3 px-2 py-1.5">
       <span
         className={`h-3.5 w-3.5 rounded-full border-[1.5px] flex items-center justify-center ${
-          checked ? 'border-accent' : 'border-fg-3'
+          checked ? 'border-accent' : 'border-fg-4'
         }`}
       >
         {checked ? (
           <span className="h-1.5 w-1.5 rounded-full bg-accent shadow-[0_0_6px_rgba(168,212,252,0.6)]" />
         ) : null}
       </span>
-      <span className={`italic font-sans font-light text-[14px] ${checked ? 'text-fg-0' : 'text-fg-1'}`}>
+      <span className={`italic font-sans font-light text-[14px] ${checked ? 'text-fg-0' : 'text-fg-3'}`}>
         {children}
       </span>
     </li>

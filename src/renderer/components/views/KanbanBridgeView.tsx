@@ -32,6 +32,27 @@ interface Props {
 const STALE_THRESHOLD_MS = 12 * 60 * 1000
 const KANBAN_MAX_REVIEW_ITERATIONS = 5
 
+// Shape we read from the most recent kanban_tick event so the
+// autopilot countdown + the running-column empty state can both show
+// "next tick in Ns" without each computing it from telemetry. Source:
+// bridge/freyja_bridge.py:_kanban_tick emits intervalSeconds on every
+// tick specifically for this UI use.
+interface TickInfo {
+  lastTickAt: number
+  intervalSeconds: number
+}
+
+function findLatestTickInfo(telemetryEvents: TelemetryEventView[]): TickInfo | null {
+  for (let i = telemetryEvents.length - 1; i >= 0; i--) {
+    const ev = telemetryEvents[i]
+    if (ev.subtype !== 'kanban_tick') continue
+    const interval = Number((ev.details as Record<string, unknown> | undefined)?.intervalSeconds)
+    if (!Number.isFinite(interval) || interval <= 0) continue
+    return { lastTickAt: ev.at, intervalSeconds: interval }
+  }
+  return null
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Top-level view
 // ─────────────────────────────────────────────────────────────────────────────
@@ -49,6 +70,11 @@ export function KanbanBridgeView({
   onOpenDispatcherBrief,
 }: Props) {
   const setKanbanAutopilot = useHarness((s) => s.setKanbanAutopilot)
+  const cancelKanbanCard = useHarness((s) => s.cancelKanbanCard)
+  const unblockKanbanCard = useHarness((s) => s.unblockKanbanCard)
+  const forceDispatchKanbanCard = useHarness((s) => s.forceDispatchKanbanCard)
+  const reassignKanbanCard = useHarness((s) => s.reassignKanbanCard)
+  const showToast = useHarness((s) => s.showToast)
   const [openCardId, setOpenCardId] = useState<string | null>(null)
   const [addOpen, setAddOpen] = useState(false)
   const [addColumn, setAddColumn] = useState<ColumnKey>('ready')
@@ -60,6 +86,34 @@ export function KanbanBridgeView({
     () => dispatchEvents(telemetryEvents),
     [telemetryEvents],
   )
+  // Most recent kanban_tick + its interval. Recomputes only when the
+  // event stream changes — the per-second tick countdown happens
+  // inside TickCountdownChip via its own setInterval so this parent
+  // doesn't re-render every second.
+  const tickInfo = useMemo(() => findLatestTickInfo(telemetryEvents), [telemetryEvents])
+
+  // Per-card staleness — derived from the bridge's `kanban_stale`
+  // events. Bridge fires one per card after KANBAN_STALE_SECONDS of no
+  // activity (freyja_bridge.py:5727-5734) carrying { cardId, ageSeconds }.
+  // We keep the most recent stale event per card; the TicketCard halo
+  // is shown while the card is still in-flight + the card's
+  // `updatedAt` hasn't moved past the stale event (i.e. the
+  // staleness wasn't already resolved by a fresher heartbeat).
+  const staleByCard = useMemo(() => {
+    const m = new Map<string, { firstStaleAt: number; ageSeconds: number }>()
+    for (const ev of telemetryEvents) {
+      if (ev.subtype !== 'kanban_stale') continue
+      const details = (ev.details ?? {}) as Record<string, unknown>
+      const cardId = typeof details.cardId === 'string' ? details.cardId : ''
+      if (!cardId) continue
+      const ageSeconds = Number(details.ageSeconds) || 0
+      const existing = m.get(cardId)
+      if (!existing || existing.firstStaleAt < ev.at) {
+        m.set(cardId, { firstStaleAt: ev.at, ageSeconds })
+      }
+    }
+    return m
+  }, [telemetryEvents])
   // Verdict events indexed by cardId so each TicketCard's
   // JudgeIterationMeter can mount its own per-card history without
   // re-walking the global event stream per card.
@@ -118,6 +172,7 @@ export function KanbanBridgeView({
         contextPct={contextPct}
         cost={cost}
         autoDispatchEnabled={autoDispatchEnabled}
+        tickInfo={tickInfo}
         onToggleAutopilot={() => {
           void setKanbanAutopilot(sessionId, !autoDispatchEnabled)
         }}
@@ -131,8 +186,11 @@ export function KanbanBridgeView({
           buckets={buckets}
           stations={stations}
           verdictsByCard={verdictsByCard}
+          staleByCard={staleByCard}
           addOpen={addOpen}
           addColumn={addColumn}
+          autoDispatchEnabled={autoDispatchEnabled}
+          tickInfo={tickInfo}
           onOpenAddForm={(col) => {
             setAddColumn(col)
             setAddOpen(true)
@@ -166,6 +224,42 @@ export function KanbanBridgeView({
         footer={
           openCard ? (
             <>
+              <CardOperatorActions
+                card={openCard}
+                sessionId={sessionId}
+                autoDispatchEnabled={autoDispatchEnabled}
+                onCancel={async () => {
+                  await cancelKanbanCard(sessionId, openCard.id)
+                  showToast(`Cancelled ${openCard.id}`, 'info')
+                }}
+                onUnblock={async () => {
+                  await unblockKanbanCard(sessionId, openCard.id)
+                  showToast(`Unblocked ${openCard.id}`, 'info')
+                }}
+                onForceDispatch={async () => {
+                  await forceDispatchKanbanCard(sessionId, openCard.id)
+                  showToast(`Force-dispatched ${openCard.id}`, 'info')
+                }}
+                onReassign={async () => {
+                  const current = openCard.assignee ?? ''
+                  // window.prompt is intentional — a real editor lands
+                  // alongside the in-app DispatcherBrief editor (K-3
+                  // follow-up). For now, prompt is honest about being
+                  // a quick override path.
+                  const next = window.prompt(
+                    `Reassign ${openCard.id} agent_type (blank = unassigned):`,
+                    current,
+                  )
+                  if (next == null) return
+                  await reassignKanbanCard(sessionId, openCard.id, next)
+                  showToast(
+                    next.trim()
+                      ? `Reassigned ${openCard.id} → ${next.trim()}`
+                      : `Cleared assignee on ${openCard.id}`,
+                    'info',
+                  )
+                }}
+              />
               {openCard.workerSessionId ? (
                 <>
                   <DrawerAction
@@ -215,6 +309,100 @@ export function KanbanBridgeView({
   )
 }
 
+// Operator action row in the drawer footer. Each button is conditional
+// on card state so the operator only sees the verbs that mean
+// something for the card they're looking at — `cancel` only on
+// running, `unblock` only when the card is blocked or in one of the
+// terminal failure statuses (bucketed there by K-1), `force dispatch`
+// only when there's something to dispatch, `reassign` available
+// whenever the card isn't already done. Confirmation prompts gate the
+// destructive actions because the IPC effects are immediate.
+function CardOperatorActions({
+  card,
+  sessionId,
+  autoDispatchEnabled,
+  onCancel,
+  onUnblock,
+  onForceDispatch,
+  onReassign,
+}: {
+  card: KanbanCardView
+  sessionId: string
+  autoDispatchEnabled: boolean
+  onCancel: () => void | Promise<void>
+  onUnblock: () => void | Promise<void>
+  onForceDispatch: () => void | Promise<void>
+  onReassign: () => void | Promise<void>
+}) {
+  // suppress unused-var warning — sessionId is captured by the
+  // parent's onCancel/onUnblock/... callbacks; we don't need it here.
+  void sessionId
+  const status = (card.status ?? '').toLowerCase()
+  const isRunning = status === 'running' || status === 'in_progress' || status === 'in-progress'
+  const isBlocked = status === 'blocked'
+  const isTerminalFail = TERMINAL_FAILURE_STATUSES.has(status)
+  const isDone = status === 'done' || status === 'sealed' || status === 'completed'
+  const isReadyish = status === 'ready' || status === 'triage' || status === 'done_unverified'
+
+  const showCancel = isRunning
+  const showUnblock = isBlocked || isTerminalFail
+  // Force-dispatch is most useful when autopilot is off, but we keep
+  // it visible whenever the card is dispatchable so the operator can
+  // skip the queue cadence even with autopilot on.
+  const showForceDispatch = isReadyish && card.metadata?.role !== 'mission_root'
+  const showReassign = !isDone
+
+  // Nothing to do — render nothing rather than an empty divider.
+  if (!showCancel && !showUnblock && !showForceDispatch && !showReassign) return null
+
+  return (
+    <>
+      {showForceDispatch ? (
+        <DrawerAction
+          variant="accent"
+          onClick={() => {
+            void onForceDispatch()
+          }}
+        >
+          {autoDispatchEnabled ? 'Dispatch now' : 'Force dispatch'}
+        </DrawerAction>
+      ) : null}
+      {showUnblock ? (
+        <DrawerAction
+          onClick={() => {
+            void onUnblock()
+          }}
+        >
+          Unblock
+        </DrawerAction>
+      ) : null}
+      {showReassign ? (
+        <DrawerAction
+          onClick={() => {
+            void onReassign()
+          }}
+        >
+          Reassign…
+        </DrawerAction>
+      ) : null}
+      {showCancel ? (
+        <DrawerAction
+          variant="danger"
+          onClick={() => {
+            const ok = window.confirm(
+              `Cancel running card ${card.id}? The worker subagent will be killed and the card marked cancelled.`,
+            )
+            if (!ok) return
+            void onCancel()
+          }}
+        >
+          Cancel
+        </DrawerAction>
+      ) : null}
+    </>
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Header
 // ─────────────────────────────────────────────────────────────────────────────
@@ -228,6 +416,7 @@ function SessionHeader({
   contextPct,
   cost,
   autoDispatchEnabled,
+  tickInfo,
   onToggleAutopilot,
   onOpenDispatcherBrief,
 }: {
@@ -239,6 +428,7 @@ function SessionHeader({
   contextPct: number
   cost: number
   autoDispatchEnabled: boolean
+  tickInfo: TickInfo | null
   onToggleAutopilot: () => void
   onOpenDispatcherBrief: () => void
 }) {
@@ -288,6 +478,10 @@ function SessionHeader({
           <AutopilotToggle
             enabled={autoDispatchEnabled}
             onClick={onToggleAutopilot}
+          />
+          <TickCountdownChip
+            enabled={autoDispatchEnabled}
+            tickInfo={tickInfo}
           />
           <button
             type="button"
@@ -383,6 +577,79 @@ function AutopilotToggle({
   )
 }
 
+// Live tick countdown alongside the autopilot toggle. Reads the bridge's
+// most recent kanban_tick event + its intervalSeconds and re-renders
+// itself every second (parent does not). When autopilot is off we
+// render `tick · paused` instead of a number so the operator can still
+// see the cadence parameter.
+function TickCountdownChip({
+  enabled,
+  tickInfo,
+}: {
+  enabled: boolean
+  tickInfo: TickInfo | null
+}) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!enabled || !tickInfo) return undefined
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [enabled, tickInfo])
+
+  // No tick observed yet (fresh session, autopilot just enabled) —
+  // show the configured interval as a hint instead of going blank.
+  if (!tickInfo) {
+    return (
+      <span
+        title="No tick observed yet — dispatcher will fire on the next interval."
+        className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[10px] tracking-[0.10em] ${
+          enabled
+            ? 'border-accent/[0.20] bg-accent/[0.04] text-accent/70'
+            : 'border-white/[0.06] bg-white/[0.02] text-fg-4'
+        }`}
+      >
+        <span className="uppercase tracking-[0.14em]">tick</span>
+        <span className="tabular-nums">{enabled ? '— pending' : '— paused'}</span>
+      </span>
+    )
+  }
+
+  const nextAt = tickInfo.lastTickAt + tickInfo.intervalSeconds * 1000
+  const remainingMs = nextAt - now
+  const remainingSec = Math.max(0, Math.ceil(remainingMs / 1000))
+  const firing = enabled && remainingSec <= 0
+  // When OFF: show the cadence parameter as `tick · paused (30s)` so
+  // the operator sees what would happen if they flipped it back on.
+  if (!enabled) {
+    return (
+      <span
+        title={`Autopilot paused. Cadence is ${tickInfo.intervalSeconds}s when enabled.`}
+        className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.02] px-2 py-1 font-mono text-[10px] tracking-[0.10em] text-fg-4"
+      >
+        <span className="uppercase tracking-[0.14em]">tick</span>
+        <span className="tabular-nums">paused · {tickInfo.intervalSeconds}s</span>
+      </span>
+    )
+  }
+  return (
+    <span
+      title={`Autopilot is on. Last dispatcher tick fired ${Math.max(0, Math.round((now - tickInfo.lastTickAt) / 1000))}s ago; next in ${remainingSec}s (cadence ${tickInfo.intervalSeconds}s).`}
+      className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[10px] tracking-[0.10em] transition ${
+        firing
+          ? 'border-accent/[0.55] bg-accent/[0.12] text-accent shadow-[0_0_0_1px_rgba(168,212,252,0.25)]'
+          : 'border-accent/[0.25] bg-accent/[0.05] text-accent/85'
+      }`}
+    >
+      <span className="uppercase tracking-[0.14em]">tick</span>
+      {firing ? (
+        <span className="tabular-nums">firing…</span>
+      ) : (
+        <span className="tabular-nums">in {remainingSec}s</span>
+      )}
+    </span>
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Task board — 5 columns side-by-side
 // ─────────────────────────────────────────────────────────────────────────────
@@ -407,8 +674,11 @@ function TaskBoard({
   buckets,
   stations,
   verdictsByCard,
+  staleByCard,
   addOpen,
   addColumn,
+  autoDispatchEnabled,
+  tickInfo,
   onOpenAddForm,
   onCloseAddForm,
   onOpenCard,
@@ -419,8 +689,11 @@ function TaskBoard({
   buckets: Buckets
   stations: Station[]
   verdictsByCard: Map<string, JudgeHistoryEntry[]>
+  staleByCard: Map<string, { firstStaleAt: number; ageSeconds: number }>
   addOpen: boolean
   addColumn: ColumnKey
+  autoDispatchEnabled: boolean
+  tickInfo: TickInfo | null
   onOpenAddForm: (col: ColumnKey) => void
   onCloseAddForm: () => void
   onOpenCard: (id: string) => void
@@ -460,7 +733,11 @@ function TaskBoard({
             cards={buckets[col.key]}
             stationsByCard={stationsByCard}
             verdictsByCard={verdictsByCard}
+            staleByCard={staleByCard}
             isAddingHere={addOpen && addColumn === col.key}
+            autoDispatchEnabled={autoDispatchEnabled}
+            tickInfo={tickInfo}
+            readyCount={buckets.ready.length}
             onOpenAddForm={() => onOpenAddForm(col.key)}
             onOpenCard={onOpenCard}
             onOpenAgent={onOpenAgent}
@@ -478,7 +755,11 @@ function BoardColumnSection({
   cards,
   stationsByCard,
   verdictsByCard,
+  staleByCard,
   isAddingHere,
+  autoDispatchEnabled,
+  tickInfo,
+  readyCount,
   onOpenAddForm,
   onOpenCard,
   onOpenAgent,
@@ -489,7 +770,11 @@ function BoardColumnSection({
   cards: KanbanCardView[]
   stationsByCard: Map<string, Station[]>
   verdictsByCard: Map<string, JudgeHistoryEntry[]>
+  staleByCard: Map<string, { firstStaleAt: number; ageSeconds: number }>
   isAddingHere: boolean
+  autoDispatchEnabled: boolean
+  tickInfo: TickInfo | null
+  readyCount: number
   onOpenAddForm: () => void
   onOpenCard: (id: string) => void
   onOpenAgent: (sessionId: string) => void
@@ -535,7 +820,13 @@ function BoardColumnSection({
       </header>
       <div className="flex-1 overflow-y-auto px-2 py-2">
         {cards.length === 0 ? (
-          <EmptyColumnSlot label={label} />
+          <EmptyColumnSlot
+            columnKey={columnKey}
+            label={label}
+            autoDispatchEnabled={autoDispatchEnabled}
+            tickInfo={tickInfo}
+            readyCount={readyCount}
+          />
         ) : (
           <ul className="m-0 flex list-none flex-col gap-2 p-0">
             {cards.map((c) => (
@@ -545,6 +836,7 @@ function BoardColumnSection({
                 column={columnKey}
                 stations={stationsByCard.get(c.id) ?? []}
                 verdicts={verdictsByCard.get(c.id) ?? []}
+                staleEvent={staleByCard.get(c.id)}
                 onOpen={() => onOpenCard(c.id)}
                 onOpenAgent={onOpenAgent}
               />
@@ -556,10 +848,122 @@ function BoardColumnSection({
   )
 }
 
-function EmptyColumnSlot({ label }: { label: string }) {
+// Per-column empty state. Each column's copy is tuned to what the
+// dispatcher is doing — the running column especially "lies" about
+// being empty by surfacing the autopilot's intent (`next dispatch in
+// Ns`), so the operator can tell the difference between "nothing
+// scheduled" and "autopilot is about to fire".
+function EmptyColumnSlot({
+  columnKey,
+  label,
+  autoDispatchEnabled,
+  tickInfo,
+  readyCount,
+}: {
+  columnKey: ColumnKey
+  label: string
+  autoDispatchEnabled: boolean
+  tickInfo: TickInfo | null
+  readyCount: number
+}) {
+  const baseCls =
+    'mt-2 rounded-md border border-dashed border-white/[0.05] bg-white/[0.01] px-3 py-6 text-center font-mono text-[10.5px] uppercase tracking-[0.14em] text-fg-3'
+
+  // Running column needs autopilot-aware copy + a live countdown when
+  // there's work waiting. Three shapes:
+  //   - autopilot off       → `paused · turn on autopilot`
+  //   - on, ready empty     → `idle · waiting for ready cards`
+  //   - on, ready not empty → live `next dispatch in Ns` (RunningEmptyCountdown)
+  if (columnKey === 'flight') {
+    if (!autoDispatchEnabled) {
+      return (
+        <div className={baseCls}>
+          <div>idle · autopilot paused</div>
+          <div className="mt-1 text-[9.5px] tracking-[0.10em] text-fg-4 normal-case">
+            turn on autopilot to start dispatching ready cards
+          </div>
+        </div>
+      )
+    }
+    if (readyCount === 0) {
+      return (
+        <div className={baseCls}>
+          <div>idle · no ready cards</div>
+          <div className="mt-1 text-[9.5px] tracking-[0.10em] text-fg-4 normal-case">
+            add a card to ready and autopilot will pick it up
+          </div>
+        </div>
+      )
+    }
+    return <RunningEmptyCountdown tickInfo={tickInfo} readyCount={readyCount} />
+  }
+
+  if (columnKey === 'review') {
+    return <div className={baseCls}>no cards awaiting judge</div>
+  }
+  if (columnKey === 'blocked') {
+    return (
+      <div className={baseCls}>
+        <div className="text-ok">no blocked cards</div>
+      </div>
+    )
+  }
+  if (columnKey === 'done') {
+    return <div className={baseCls}>no completions yet</div>
+  }
+  // ready
   return (
-    <div className="mt-2 rounded-md border border-dashed border-white/[0.05] bg-white/[0.01] px-3 py-6 text-center font-mono text-[10.5px] uppercase tracking-[0.14em] text-fg-3">
-      no {label}
+    <div className={baseCls}>
+      <div>no {label} cards</div>
+      <div className="mt-1 text-[9.5px] tracking-[0.10em] text-fg-4 normal-case">
+        click + new to add the first one
+      </div>
+    </div>
+  )
+}
+
+// Running column lying-about-being-empty: autopilot is on, ready cards
+// exist, and the next tick will dispatch one. Local 1s ticker so this
+// component re-renders every second without touching the rest of the
+// board.
+function RunningEmptyCountdown({
+  tickInfo,
+  readyCount,
+}: {
+  tickInfo: TickInfo | null
+  readyCount: number
+}) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!tickInfo) return undefined
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [tickInfo])
+
+  const baseCls =
+    'mt-2 rounded-md border border-dashed border-accent/[0.20] bg-accent/[0.025] px-3 py-6 text-center font-mono text-[10.5px] uppercase tracking-[0.14em] text-accent/85'
+
+  if (!tickInfo) {
+    return (
+      <div className={baseCls}>
+        <div>idle · dispatch pending</div>
+        <div className="mt-1 text-[9.5px] tracking-[0.10em] text-fg-3 normal-case">
+          {readyCount} ready · autopilot will pick on the next tick
+        </div>
+      </div>
+    )
+  }
+
+  const nextAt = tickInfo.lastTickAt + tickInfo.intervalSeconds * 1000
+  const remainingSec = Math.max(0, Math.ceil((nextAt - now) / 1000))
+  return (
+    <div className={baseCls}>
+      <div>
+        next dispatch in <span className="tabular-nums">{remainingSec}s</span>
+      </div>
+      <div className="mt-1 text-[9.5px] tracking-[0.10em] text-fg-3 normal-case">
+        {readyCount} ready · cadence {tickInfo.intervalSeconds}s
+      </div>
     </div>
   )
 }
@@ -573,6 +977,7 @@ function TicketCard({
   column,
   stations,
   verdicts,
+  staleEvent,
   onOpen,
   onOpenAgent,
 }: {
@@ -580,6 +985,7 @@ function TicketCard({
   column: ColumnKey
   stations: Station[]
   verdicts: JudgeHistoryEntry[]
+  staleEvent: { firstStaleAt: number; ageSeconds: number } | undefined
   onOpen: () => void
   onOpenAgent: (sessionId: string) => void
 }) {
@@ -620,12 +1026,29 @@ function TicketCard({
   const isDone = column === 'done'
 
   const progress = computeProgress(card, column)
-  const eta = computeEta(card, column)
+  const livenessLabel = computeLivenessLabel(card, column)
 
   const judgeSessionId = card.judgeSessionId
   const workerSessionId = card.workerSessionId
 
-  const showProgressBar = inFlight && progress != null
+  // Show the liveness bar for every in-flight card, even when
+  // `progress` is null — heartbeat mode communicates "alive" without
+  // inventing a percentage.
+  const showProgressBar = inFlight
+
+  // Card-level staleness. Bridge emits `kanban_stale` when the card
+  // has had no activity for >= KANBAN_STALE_SECONDS. The halo stays
+  // until either (a) the card leaves in-flight or (b) a fresh
+  // `updatedAt` arrives after the stale event (i.e. the worker came
+  // back to life). Mirrors the agent-stale halo on Station avatars
+  // so the operator reads card-stale and worker-stale with the same
+  // vocabulary.
+  const isStale = !!(
+    inFlight &&
+    staleEvent &&
+    (!card.updatedAt || card.updatedAt <= staleEvent.firstStaleAt)
+  )
+  const staleAgeMinutes = isStale && staleEvent ? Math.max(1, Math.round(staleEvent.ageSeconds / 60)) : 0
   const showJudgeMeter =
     inReview || isBlocked || (verdicts.length > 0 && !isDone)
 
@@ -641,7 +1064,9 @@ function TicketCard({
     ? 'border-warn/[0.28] bg-warn/[0.04]'
     : isDone
       ? 'border-white/[0.05] bg-white/[0.015]'
-      : 'border-white/[0.07] bg-white/[0.022] hover:border-white/[0.14] hover:bg-white/[0.04]'
+      : isStale
+        ? 'border-warn/[0.45] bg-warn/[0.045] shadow-[0_0_0_1px_rgba(184,160,120,0.18),0_0_18px_-6px_rgba(184,160,120,0.35)]'
+        : 'border-white/[0.07] bg-white/[0.022] hover:border-white/[0.14] hover:bg-white/[0.04]'
 
   return (
     <li>
@@ -665,7 +1090,18 @@ function TicketCard({
               <PriorityChip priority={card.priority} />
             ) : null}
           </div>
-          <StatusPip column={column} workerTerminalState={card.workerTerminalState} />
+          <div className="flex items-center gap-1.5">
+            {isStale ? (
+              <span
+                title={`No card activity in ~${staleAgeMinutes}m. Bridge fired kanban_stale; the dispatcher may respawn this card on the next tick.`}
+                className="inline-flex items-center gap-1 rounded border border-warn/[0.35] bg-warn/[0.08] px-1.5 py-px font-mono text-[9.5px] uppercase tracking-[0.14em] text-warn"
+              >
+                <span className="block h-1 w-1 rounded-full bg-warn animate-pulse-soft" />
+                stale {staleAgeMinutes}m
+              </span>
+            ) : null}
+            <StatusPip column={column} status={card.status} workerTerminalState={card.workerTerminalState} />
+          </div>
         </div>
 
         <h3 className="m-0 line-clamp-2 font-mono text-[12.5px] font-normal leading-[1.4] tracking-[-0.005em] text-fg-0">
@@ -690,7 +1126,7 @@ function TicketCard({
         ) : null}
 
         {showProgressBar ? (
-          <ProgressBar progress={progress ?? 0} eta={eta} />
+          <ProgressBar progress={progress} livenessLabel={livenessLabel} />
         ) : null}
 
         {showJudgeMeter ? (
@@ -782,25 +1218,45 @@ function OperatorChip() {
 
 function StatusPip({
   column,
+  status,
   workerTerminalState,
 }: {
   column: ColumnKey
+  status?: string
   workerTerminalState?: string
 }) {
   const meta = STATUS_PIP_META[column]
-  // For review/blocked, surface what the worker exited as — clean
-  // delivery vs partial crash — since that meaningfully changes how
-  // an operator should read the card.
+  // Two sources of "what really happened":
+  //   1. status — a terminal failure (crashed / timed_out / failed /
+  //      cancelled) means the worker exited unhealthy and we want the
+  //      pip to NAME the failure rather than say generic "blocked".
+  //   2. workerTerminalState — the bridge populates this for review/
+  //      blocked cards so the operator can read clean-delivery vs
+  //      partial-crash.
+  // (1) wins when both are present — it's the canonical status.
+  const terminalLabel = terminalStatusLabel(status)
   const subtitle =
-    (column === 'review' || column === 'blocked') && workerTerminalState
-      ? workerTerminalState
-      : null
+    terminalLabel
+      ?? ((column === 'review' || column === 'blocked') && workerTerminalState
+        ? workerTerminalState
+        : null)
+  const isTerminalFailure = !!terminalLabel
+  const cls = isTerminalFailure
+    ? 'text-danger bg-danger/[0.10] border border-danger/[0.34]'
+    : meta.cls
+  const dotCls = isTerminalFailure ? 'bg-danger animate-pulse-soft' : meta.dotCls
   return (
     <span
-      title={subtitle ? `${meta.label} · worker exited ${subtitle}` : meta.label}
-      className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.14em] ${meta.cls}`}
+      title={
+        isTerminalFailure
+          ? `Worker ended as: ${terminalLabel}. Card is in blocked until you intervene.`
+          : subtitle
+            ? `${meta.label} · worker exited ${subtitle}`
+            : meta.label
+      }
+      className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.14em] ${cls}`}
     >
-      <span className={`h-1 w-1 rounded-full ${meta.dotCls}`} />
+      <span className={`h-1 w-1 rounded-full ${dotCls}`} />
       {subtitle ?? meta.label}
     </span>
   )
@@ -850,18 +1306,38 @@ function AgentTypeBadge({ type }: { type?: string }) {
   )
 }
 
-function ProgressBar({ progress, eta }: { progress: number; eta?: string }) {
-  const pct = Math.max(0, Math.min(100, progress))
+// Two modes:
+//   - `progress` set       → real worker telemetry; fill the bar to
+//                            that percentage and show the number.
+//   - `progress` null      → heartbeat mode. Track is full-width but
+//                            the only visible motion is the flowing
+//                            accent highlight. Reads as "alive" without
+//                            inventing a percentage.
+// The label below is the honest liveness string ("active just now" /
+// "last activity 2m ago" / "first turn pending") instead of a fake
+// ETA. See computeLivenessLabel for the source contract.
+function ProgressBar({
+  progress,
+  livenessLabel,
+}: {
+  progress: number | null
+  livenessLabel?: string
+}) {
+  const hasReal = progress != null && Number.isFinite(progress)
+  const pct = hasReal ? Math.max(0, Math.min(100, progress as number)) : 100
+  const heartbeat = !hasReal
   return (
     <div className="flex flex-col gap-1">
       <div className="relative h-1.5 overflow-hidden rounded-full bg-white/[0.04]">
+        {/* Filled track. In heartbeat mode the fill is invisible
+            (transparent) so only the flowing highlight overlay reads. */}
         <div
-          className="absolute inset-y-0 left-0 rounded-full bg-accent/70"
+          className={`absolute inset-y-0 left-0 rounded-full ${heartbeat ? 'bg-transparent' : 'bg-accent/70'}`}
           style={{ width: `${pct}%`, transition: 'width 600ms cubic-bezier(0.16, 1, 0.3, 1)' }}
         />
         {/* Flowing highlight overlay so the active card visibly
-            indicates "things are happening" even when the percentage
-            isn't visibly changing. */}
+            indicates "things are happening". In heartbeat mode this
+            is the ONLY visible signal. */}
         <div
           className="absolute inset-y-0 left-0 animate-kanban-progress-flow rounded-full opacity-50"
           style={{
@@ -873,8 +1349,8 @@ function ProgressBar({ progress, eta }: { progress: number; eta?: string }) {
         />
       </div>
       <div className="flex items-center justify-between font-mono text-[10px] tabular-nums text-fg-3">
-        <span>{pct.toFixed(0)}%</span>
-        {eta ? <span className="text-fg-2">eta {eta}</span> : null}
+        {hasReal ? <span>{pct.toFixed(0)}%</span> : <span className="text-fg-4">·</span>}
+        {livenessLabel ? <span className="text-fg-2 normal-case">{livenessLabel}</span> : null}
       </div>
     </div>
   )
@@ -1902,6 +2378,34 @@ interface Buckets {
   done: KanbanCardView[]
 }
 
+// Backend statuses that mean "the worker exited unhealthy and the
+// card needs operator attention". The bridge sets these via the
+// dispatcher / scheduler / circuit-breaker; the renderer used to drop
+// them into READY via a trailing `else` which made worker explosions
+// invisible on the very surface designed to make worker explosions
+// visible. They now route to BLOCKED and the StatusPip surfaces the
+// specific terminal reason ("crashed" / "timed out" / etc.).
+const TERMINAL_FAILURE_STATUSES = new Set<string>([
+  'crashed',
+  'timed_out',
+  'timeout',
+  'failed',
+  'cancelled',
+  'canceled',
+])
+
+// Human-readable subtitle per terminal status — surfaced by StatusPip
+// as the pip's label when the card is in blocked-via-error.
+export function terminalStatusLabel(status: string | undefined | null): string | null {
+  if (!status) return null
+  const s = status.toLowerCase()
+  if (s === 'crashed') return 'crashed'
+  if (s === 'timed_out' || s === 'timeout') return 'timed out'
+  if (s === 'failed') return 'failed'
+  if (s === 'cancelled' || s === 'canceled') return 'cancelled'
+  return null
+}
+
 function bucketCards(cards: KanbanCardView[]): Buckets {
   const buckets: Buckets = {
     ready: [],
@@ -1915,6 +2419,7 @@ function bucketCards(cards: KanbanCardView[]): Buckets {
     if (s === 'done' || s === 'complete' || s === 'completed' || s === 'sealed')
       buckets.done.push(c)
     else if (s === 'blocked') buckets.blocked.push(c)
+    else if (TERMINAL_FAILURE_STATUSES.has(s)) buckets.blocked.push(c)
     else if (s === 'review') buckets.review.push(c)
     else if (s === 'done_unverified') buckets.review.push(c)
     else if (s === 'running' || s === 'in_progress' || s === 'in-progress')
@@ -1977,30 +2482,34 @@ function cardStatusLabel(card: KanbanCardView): string {
   return 'ready'
 }
 
+// Real progress only — `null` when the worker hasn't reported any.
+// We used to synthesize a logistic-curve percent from card age, but
+// the displayed number had nothing to do with real work and made the
+// surface lie. The bar's heartbeat-mode (full-width flowing highlight)
+// now carries "alive" instead. When workers start reporting tokens or
+// tool-call counts we'll bind real telemetry here.
 function computeProgress(card: KanbanCardView, column: ColumnKey): number | null {
   if (column !== 'flight') return null
-  if (typeof card.progress === 'number' && card.progress > 0)
-    return card.progress * 100
-  // Heuristic: estimate progress from age since started, capped at
-  // 95% until the worker actually finishes. Use 6 minutes as the
-  // "typical card" half-life so simple cards quickly look ~85% and
-  // long-runners hold near 90% rather than racing to 100.
-  if (!card.startedAt) return 5
-  const ageMs = Date.now() - card.startedAt
-  const minutes = ageMs / 60000
-  if (minutes <= 0) return 5
-  const pct = 100 - 100 / (1 + minutes / 6)
-  return Math.min(95, Math.max(5, pct))
+  if (typeof card.progress === 'number' && card.progress > 0) {
+    return Math.max(0, Math.min(100, card.progress * 100))
+  }
+  return null
 }
 
-function computeEta(card: KanbanCardView, column: ColumnKey): string | undefined {
+// Honest liveness label for the running column: how long since
+// anything changed on this card. Sources:
+//   - `startedAt` missing  → first turn hasn't landed yet
+//   - `updatedAt` within ~15s → "active just now"
+//   - otherwise → relative `Xm Ys ago` using last update wall-clock
+// The previous implementation invented a fake ETA ("eta 4m 12s") from
+// a hardcoded 8-minute budget; we'd rather show silence than a lie.
+function computeLivenessLabel(card: KanbanCardView, column: ColumnKey): string | undefined {
   if (column !== 'flight') return undefined
-  if (!card.startedAt) return undefined
-  const ageMs = Date.now() - card.startedAt
-  const expectedMs = 8 * 60 * 1000 // 8 min default
-  const remaining = expectedMs - ageMs
-  if (remaining <= 0) return 'past est'
-  return humanDuration(remaining)
+  if (!card.startedAt) return 'first turn pending'
+  const last = card.updatedAt || card.startedAt
+  const ageMs = Date.now() - last
+  if (ageMs < 15_000) return 'active just now'
+  return `last activity ${humanDuration(ageMs)} ago`
 }
 
 function minutesAgo(ms: number): string {

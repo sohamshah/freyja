@@ -398,6 +398,16 @@ export interface HarnessActions {
    *  `_disabled` system events on flip; the store's `system_event`
    *  reducer picks those up to keep `autoDispatchEnabled` in sync. */
   setKanbanAutopilot(sessionId: string, enabled: boolean): Promise<void>
+  /** Per-card operator overrides on the kanban board. Each wraps a
+   *  one-shot bridge IPC: cancel kills the running worker, unblock
+   *  pops the card back into ready, forceDispatch sends the card to
+   *  a worker now (bypassing the autopilot toggle + cadence), and
+   *  reassign updates the card's `assignee` so future dispatches
+   *  pick a different agent_type. */
+  cancelKanbanCard(sessionId: string, cardId: string): Promise<void>
+  unblockKanbanCard(sessionId: string, cardId: string): Promise<void>
+  forceDispatchKanbanCard(sessionId: string, cardId: string): Promise<void>
+  reassignKanbanCard(sessionId: string, cardId: string, assignee?: string): Promise<void>
   cancelTurn(): Promise<void>
   setModel(model: string, reasoningLevel?: string): Promise<void>
   setReasoningLevel(reasoningLevel: string): Promise<void>
@@ -2791,6 +2801,51 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       type: 'kanban_autopilot',
       sessionId,
       enabled,
+    })
+  },
+
+  async cancelKanbanCard(sessionId, cardId) {
+    if (!sessionId || !cardId) return
+    const api = (window as any).harness
+    if (!api?.sendCommand) return
+    await api.sendCommand({
+      type: 'kanban_operator_cancel',
+      sessionId,
+      cardId,
+    })
+  },
+
+  async unblockKanbanCard(sessionId, cardId) {
+    if (!sessionId || !cardId) return
+    const api = (window as any).harness
+    if (!api?.sendCommand) return
+    await api.sendCommand({
+      type: 'kanban_operator_unblock',
+      sessionId,
+      cardId,
+    })
+  },
+
+  async forceDispatchKanbanCard(sessionId, cardId) {
+    if (!sessionId || !cardId) return
+    const api = (window as any).harness
+    if (!api?.sendCommand) return
+    await api.sendCommand({
+      type: 'kanban_operator_force_dispatch',
+      sessionId,
+      cardId,
+    })
+  },
+
+  async reassignKanbanCard(sessionId, cardId, assignee) {
+    if (!sessionId || !cardId) return
+    const api = (window as any).harness
+    if (!api?.sendCommand) return
+    await api.sendCommand({
+      type: 'kanban_operator_reassign',
+      sessionId,
+      cardId,
+      assignee: (assignee ?? '').trim() || undefined,
     })
   },
 

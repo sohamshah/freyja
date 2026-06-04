@@ -227,10 +227,12 @@ function DepRow({ text, status, meta }: DependencyItem) {
 export function DrawerAction({
   children,
   variant = 'default',
+  disabled,
   onClick,
 }: {
   children: React.ReactNode
-  variant?: 'default' | 'ok' | 'warn'
+  variant?: 'default' | 'ok' | 'warn' | 'danger' | 'accent'
+  disabled?: boolean
   onClick?: () => void
 }) {
   const cls =
@@ -238,12 +240,17 @@ export function DrawerAction({
       ? 'text-ok border-ok/25 bg-ok/[0.06] hover:bg-ok/[0.12]'
       : variant === 'warn'
       ? 'text-warn border-warn/25 bg-warn/[0.05] hover:bg-warn/[0.10]'
+      : variant === 'danger'
+      ? 'text-danger border-danger/30 bg-danger/[0.06] hover:bg-danger/[0.14]'
+      : variant === 'accent'
+      ? 'text-accent border-accent/30 bg-accent/[0.06] hover:bg-accent/[0.14]'
       : 'text-fg-1 border-white/[0.06] bg-white/[0.03] hover:bg-white/[0.06] hover:text-fg-0'
   return (
     <button
       type="button"
+      disabled={disabled}
       onClick={onClick}
-      className={`rounded-md border px-3 py-1.5 font-mono text-[11px] tracking-[0.04em] transition ${cls}`}
+      className={`rounded-md border px-3 py-1.5 font-mono text-[11px] tracking-[0.04em] transition ${cls} disabled:opacity-40 disabled:cursor-not-allowed`}
     >
       {children}
     </button>

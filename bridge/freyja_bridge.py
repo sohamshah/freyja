@@ -9388,6 +9388,170 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             log("warn", f"kanban_operator_create dispatch failed: {exc}")
         return
 
+    if ctype == "kanban_operator_cancel":
+        # Operator wants to kill an in-flight card. We send the
+        # subagent kill signal (cancel_event — sub_agent_tool's
+        # watchdog picks it up + unwinds the runner) AND mark the
+        # card cancelled on the board so the renderer reflects the
+        # decision immediately. Drop the dispatched-set entry so the
+        # next autopilot tick can pick the card up again if the
+        # operator unblocks/re-readies it.
+        if not session_id:
+            return
+        card_id = str(cmd.get("cardId") or "").strip()
+        if not card_id:
+            return
+        sess = await state.ensure_session(session_id)
+        if sess.kanban_board is None:
+            return
+        task = await sess.kanban_board.get(card_id)
+        if task is None:
+            log("warn", f"kanban_operator_cancel: card {card_id} not found")
+            return
+        worker_sid = (getattr(task, "worker_session_id", "") or "").strip()
+        if worker_sid and sess.subagent_registry is not None:
+            try:
+                sess.subagent_registry.kill(worker_sid)
+            except Exception as exc:  # noqa: BLE001
+                log("warn", f"kanban_operator_cancel: kill({worker_sid}) raised: {exc}")
+        try:
+            await sess.kanban_board.update(
+                card_id,
+                actor="operator",
+                status="cancelled",
+                comment="Cancelled by operator from the board",
+                worker_terminal_state="cancelled",
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"kanban_operator_cancel failed for {card_id}: {exc}")
+            return
+        sess._kanban_dispatched.discard(card_id)  # noqa: SLF001
+        sess._emit_kanban_event(  # noqa: SLF001
+            "kanban_operator_cancelled",
+            f"Operator cancelled {card_id}",
+            details={"cardId": card_id, "workerSessionId": worker_sid},
+        )
+        return
+
+    if ctype == "kanban_operator_unblock":
+        # Pop a card out of `blocked` (or one of the terminal failure
+        # statuses bucketed there) back into `ready` so autopilot can
+        # try again. board.unblock() handles the state transition;
+        # we just translate the IPC.
+        if not session_id:
+            return
+        card_id = str(cmd.get("cardId") or "").strip()
+        if not card_id:
+            return
+        sess = await state.ensure_session(session_id)
+        if sess.kanban_board is None:
+            return
+        try:
+            await sess.kanban_board.unblock(card_id, actor="operator")
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"kanban_operator_unblock failed for {card_id}: {exc}")
+            return
+        # Reset breaker bookkeeping: an unblocked card gets a fresh
+        # chance, otherwise autopilot would skip it the moment it
+        # came up for re-dispatch.
+        sess._kanban_dispatched.discard(card_id)  # noqa: SLF001
+        sess._emit_kanban_event(  # noqa: SLF001
+            "kanban_operator_unblocked",
+            f"Operator unblocked {card_id}",
+            details={"cardId": card_id},
+        )
+        return
+
+    if ctype == "kanban_operator_force_dispatch":
+        # Operator explicitly wants ONE card on a worker right now,
+        # bypassing the global autopilot toggle + the dispatcher's
+        # tick interval. Build the same plan shape `_kanban_tick`
+        # would build for this card and call `_dispatch_kanban_card`
+        # directly. Capacity, blocked-by parents, and assignee
+        # defaulting still apply — the operator override is on
+        # cadence + toggle, not on safety gates.
+        if not session_id:
+            return
+        card_id = str(cmd.get("cardId") or "").strip()
+        if not card_id:
+            return
+        sess = await state.ensure_session(session_id)
+        if sess.kanban_board is None or sess.tool_registry is None:
+            return
+        task = await sess.kanban_board.get(card_id)
+        if task is None:
+            log("warn", f"kanban_operator_force_dispatch: card {card_id} not found")
+            return
+        if task.status not in ("ready", "triage", "done_unverified"):
+            log(
+                "warn",
+                f"kanban_operator_force_dispatch: card {card_id} status "
+                f"{task.status!r} is not dispatchable",
+            )
+            return
+        if task.id in sess._kanban_dispatched:  # noqa: SLF001
+            log("debug", f"kanban_operator_force_dispatch: {card_id} already dispatched")
+            return
+        sub_tool = sess.tool_registry._tools.get("sub_agent")  # noqa: SLF001
+        if sub_tool is None:
+            return
+        if task.status == "done_unverified":
+            plan = {
+                "card": task,
+                "agent_type": "verify",
+                "label": f"verify {task.id}",
+                "lane": "verifier",
+            }
+        else:
+            agent_type = task.assignee or "general"
+            plan = {
+                "card": task,
+                "agent_type": agent_type,
+                "label": f"{agent_type} {task.id}",
+                "lane": "worker",
+            }
+        try:
+            await sess._dispatch_kanban_card(plan, sub_tool=sub_tool, source="operator_force")  # noqa: SLF001
+            sess._kanban_dispatched.add(task.id)  # noqa: SLF001
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"kanban_operator_force_dispatch failed for {card_id}: {exc}")
+        return
+
+    if ctype == "kanban_operator_reassign":
+        # Change a card's `assignee` (agent_type label) so autopilot
+        # picks a different specialization next time it lands the
+        # card on a worker. Affects future dispatches; does NOT
+        # interrupt a card currently in flight.
+        if not session_id:
+            return
+        card_id = str(cmd.get("cardId") or "").strip()
+        if not card_id:
+            return
+        sess = await state.ensure_session(session_id)
+        if sess.kanban_board is None:
+            return
+        new_assignee = str(cmd.get("assignee") or "").strip()
+        try:
+            await sess.kanban_board.update(
+                card_id,
+                actor="operator",
+                assignee=new_assignee,
+                comment=(
+                    f"Reassigned to `{new_assignee}` by operator"
+                    if new_assignee
+                    else "Cleared assignee by operator"
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"kanban_operator_reassign failed for {card_id}: {exc}")
+            return
+        sess._emit_kanban_event(  # noqa: SLF001
+            "kanban_operator_reassigned",
+            f"Operator reassigned {card_id} → {new_assignee or 'unassigned'}",
+            details={"cardId": card_id, "assignee": new_assignee},
+        )
+        return
+
     if ctype in ("memory_update", "memory_delete", "memory_restore", "memory_merge"):
         # All memory mutation commands need a session id so the audit
         # trail records which session the user was in when they made the
