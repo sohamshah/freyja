@@ -126,6 +126,48 @@ export function useFrameObjectUrl(frame?: FrameRef | null): string | undefined {
   )
 }
 
+/** Decode the base64 payload of an SVG frame back to its raw XML markup
+ *  so it can be inlined into the DOM. Returns ``undefined`` for any
+ *  non-SVG mime type OR a frame whose bytes are no longer cached.
+ *
+ *  Why inline instead of using ``<img src={objectUrl}>``? An SVG loaded
+ *  via the ``<img>`` tag is treated as an opaque image: CSS hover /
+ *  animation, embedded ``<style>``/``<script>``, and JS event handlers
+ *  inside the SVG all run in a sandboxed context that the host
+ *  document can't see. The operator-facing requirement is "visual +
+ *  interactive" — they want to hover, click, see CSS animations and
+ *  inline JS run. That only works when the SVG markup is part of the
+ *  host DOM, which means decoding the bytes here and feeding them to
+ *  ``dangerouslySetInnerHTML``. */
+export function getFrameSvgMarkup(frame?: FrameRef | null): string | undefined {
+  if (!frame) return undefined
+  if (frame.mimeType !== 'image/svg+xml') return undefined
+  // Prefer the in-memory cached entry — it always has the bytes.
+  // Fall back to a directly-attached pngBase64 (legacy persisted frames).
+  let base64: string | undefined
+  if (frame.frameId) {
+    const entry = frames.get(frame.frameId)
+    if (entry) base64 = entry.pngBase64
+  }
+  if (!base64 && frame.pngBase64) base64 = frame.pngBase64
+  if (!base64) return undefined
+  try {
+    return decodeURIComponent(escape(atob(base64)))
+  } catch {
+    // atob may throw on malformed payloads; escape/decodeURIComponent
+    // may throw on bytes that aren't valid UTF-8. Either way: bail and
+    // let the caller fall back to the <img> path.
+    return undefined
+  }
+}
+
+export function useFrameSvgMarkup(frame?: FrameRef | null): string | undefined {
+  return useMemo(
+    () => getFrameSvgMarkup(frame),
+    [frame?.frameId, frame?.pngBase64, frame?.mimeType],
+  )
+}
+
 export function getPersistableFrame(frame?: FrameRef | null): FrameRef | undefined {
   if (!frame) return undefined
   const entry = frame.frameId ? frames.get(frame.frameId) : undefined

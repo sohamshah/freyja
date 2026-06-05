@@ -323,6 +323,7 @@ const TOOL_CATEGORIES: Record<string, { color: string; label: string }> = {
   read_findings:   { color: '#d0a040', label: 'bus' },
   // Media
   generate_image:  { color: '#b6f2ff', label: 'media' },
+  generate_svg:    { color: '#b6f2ff', label: 'media' },
 }
 
 function getToolCategory(name: string) {
@@ -357,7 +358,7 @@ function summarizeArgs(name: string, args?: Record<string, unknown>): string {
     case 'grep': return str('pattern') ? `"${str('pattern').slice(0, 50)}"` : ''
     case 'publish_finding': return str('content').slice(0, 50)
     case 'sub_agent': return str('label') || ''
-    case 'generate_image': return str('prompt').slice(0, limit)
+    case 'generate_image': case 'generate_svg': return str('prompt').slice(0, limit)
   }
   if (typeof args.path === 'string') return args.path as string
   return ''

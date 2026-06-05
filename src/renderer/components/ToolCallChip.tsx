@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useHarness } from '../state/store'
 import { formatDuration } from '../lib/format'
 import { Spinner } from '../lib/spinner'
-import { useFrameObjectUrl } from '../lib/frameMedia'
+import { useFrameObjectUrl, useFrameSvgMarkup } from '../lib/frameMedia'
 import { FileChangeBadge, FileChangeCard } from './FileChangeCard'
 import type { ToolCallRecord } from '@shared/events'
 
@@ -331,7 +331,15 @@ function ToolResultImage({
   label: string
 }) {
   const url = useFrameObjectUrl(image)
-  if (!url) {
+  // SVG result images get inlined into the DOM so CSS hover /
+  // animations, inline <style>, and any embedded JS that the SVG
+  // depends on actually fire. The <img> path treats the SVG as an
+  // opaque image — operator-facing this looks "rendered" but isn't
+  // interactive. We compute both: prefer the inline svg markup when
+  // present, fall back to the object URL for raster mime types.
+  const svgMarkup = useFrameSvgMarkup(image)
+  const isSvg = image.mimeType === 'image/svg+xml'
+  if (!url && !svgMarkup) {
     return (
       <figure className="rounded-lg bg-black/70 p-4 ring-1 ring-danger/25">
         <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-danger">
@@ -353,18 +361,45 @@ function ToolResultImage({
 
   return (
     <figure className="overflow-hidden rounded-lg bg-black ring-1 ring-white/10">
-      <img
-        src={url}
-        alt={label}
-        className="block max-h-[520px] w-full object-contain"
-        loading="lazy"
-        decoding="async"
-        draggable={false}
-      />
+      {isSvg && svgMarkup ? (
+        // Inline SVG. The wrapper sets a max-height so a generated SVG
+        // without intrinsic dimensions still fits in the chip; the SVG
+        // child element's own width/height/viewBox decides how it
+        // scales inside. `[&>svg]` lets Tailwind reach the injected
+        // root SVG element so we can constrain it without re-parsing.
+        <div
+          className="svg-result block max-h-[520px] w-full overflow-auto bg-white text-black [&>svg]:mx-auto [&>svg]:block [&>svg]:h-auto [&>svg]:max-h-[520px] [&>svg]:w-full [&>svg]:object-contain"
+          aria-label={label}
+          // eslint-disable-next-line react/no-danger
+          dangerouslySetInnerHTML={{ __html: svgMarkup }}
+        />
+      ) : (
+        <img
+          src={url}
+          alt={label}
+          className="block max-h-[520px] w-full object-contain"
+          loading="lazy"
+          decoding="async"
+          draggable={false}
+        />
+      )}
       <figcaption className="flex items-center justify-between gap-3 px-3 py-1.5 font-mono text-[9.5px] uppercase tracking-[0.08em] text-fg-2">
         <span>{label}</span>
-        <span className="text-fg-3">
-          {dimensions}{size ? ` · ${size}` : ''}
+        <span className="flex items-center gap-2 text-fg-3">
+          {isSvg && <span className="font-mono text-[9px] text-accent">SVG</span>}
+          <span>
+            {dimensions}{size ? ` · ${size}` : ''}
+          </span>
+          {url && (
+            <a
+              href={url}
+              download={`${label.replace(/\s+/g, '-')}.${isSvg ? 'svg' : 'png'}`}
+              className="font-mono text-[9px] uppercase tracking-wider text-fg-2 hover:text-fg-0"
+              title="Download this result"
+            >
+              ↓
+            </a>
+          )}
         </span>
       </figcaption>
     </figure>
