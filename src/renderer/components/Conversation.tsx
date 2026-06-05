@@ -2,7 +2,7 @@ import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffec
 import { useHarness, type SystemEventRecord } from '../state/store'
 import { renderMarkdown } from '../lib/markdown'
 import { HeroWelcome } from './HeroWelcome'
-import { ToolCallChip } from './ToolCallChip'
+import { ToolCallChip, ToolResultImages } from './ToolCallChip'
 import { Widget } from './Widget'
 import { ParallelToolGroup } from './ParallelToolGroup'
 import { SubagentCard } from './SubagentCard'
@@ -20,6 +20,21 @@ import {
 } from './shared/StructuredJson'
 import type { CalibrationStatus, JudgeRules } from './shared/types'
 import type { Message, MessagePart } from '@shared/events'
+
+/** Stable module-level empty array so the resultImages selector below
+ *  returns the SAME reference on every call when the tool call has no
+ *  images. Without this, the selector returned a fresh `[]` literal
+ *  every time → React's useSyncExternalStore (Zustand internals) saw
+ *  a changed snapshot every render → re-render loop → React error #185
+ *  ("Maximum update depth exceeded"). The non-empty path receives the
+ *  store's actual array, which IS reference-stable per update, so this
+ *  fixes the empty case — and the empty case is what every Part hit
+ *  since only the generate_svg / image-returning tools populate
+ *  resultImages. */
+type ResultImagesArr = NonNullable<
+  ReturnType<typeof useHarness.getState>['toolCalls'][string]['resultImages']
+>
+const EMPTY_RESULT_IMAGES: ResultImagesArr = []
 
 /** Current search query shared across all conversation parts. Empty
  *  string means "no active search" — no highlights are rendered. */
@@ -1119,6 +1134,11 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
     if (part.type !== 'tool_call' || !part.toolCallId) return undefined
     return s.toolCalls[part.toolCallId]?.name
   })
+  const resultImages = useHarness((s) => {
+    if (part.type !== 'tool_call' || !part.toolCallId) return EMPTY_RESULT_IMAGES
+    return s.toolCalls[part.toolCallId]?.resultImages ?? EMPTY_RESULT_IMAGES
+  })
+  const hasResultImages = resultImages.length > 0
   const searchQuery = useContext(SearchQueryContext)
   const kanbanLookup = useContext(KanbanCardLookupContext)
   const sourceText = part.type === 'text' ? part.text ?? '' : ''
@@ -1167,7 +1187,16 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
     // them into the `widget` group kind which renders FloatingWidget
     // directly. So the chip path here is the right fallback for any
     // non-widget tool call.
-    return <ToolCallChip id={part.toolCallId} />
+    return (
+      <div className="flex flex-col gap-2.5">
+        <ToolCallChip id={part.toolCallId} />
+        {hasResultImages && (
+          <div className="max-w-[76%] rounded-lg overflow-hidden border border-white/[0.06] bg-black/35 shadow-sm">
+            <ToolResultImages images={resultImages} toolCallId={part.toolCallId} className="p-3" />
+          </div>
+        )}
+      </div>
+    )
   }
   if (part.type === 'subagent' && part.subagentId) {
     return <SubagentCard id={part.subagentId} />
