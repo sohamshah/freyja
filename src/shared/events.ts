@@ -980,6 +980,9 @@ export const IPC = {
   artifactRead: 'artifact:read',
   artifactWrite: 'artifact:write',
   compactionMetrics: 'compaction:metrics',
+  getActionLedger: 'session:actionLedger',
+  getWorkingMemory: 'session:workingMemory',
+  getRecall: 'session:recall',
   // Gateway / Slack onboarding
   gatewayStatus: 'gateway:status',
   gatewayInstall: 'gateway:install',

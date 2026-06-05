@@ -26,6 +26,9 @@ import {
   exportSessionToFile as persistExportSession,
   listSessions as persistListSessions,
   loadSession as persistLoadSession,
+  readActionLedger as persistReadActionLedger,
+  readWorkingMemory as persistReadWorkingMemory,
+  readRecall as persistReadRecall,
   migrateLegacySessionFiles,
   saveSessionIndex as persistSaveSessionIndex,
   saveSession as persistSaveSession,
@@ -668,6 +671,21 @@ function setupIpc() {
     } catch (err) {
       return { ok: false, rows: [], error: String(err) }
     }
+  })
+
+  // Per-session action ledger — what the agent did (effects/observations).
+  ipcMain.handle(IPC.getActionLedger, async (_event, id: string) => {
+    return persistReadActionLedger(id)
+  })
+
+  // Per-session working memory — the agent's grounded workstreams (one doc).
+  ipcMain.handle(IPC.getWorkingMemory, async (_event, id: string) => {
+    return persistReadWorkingMemory(id)
+  })
+
+  // Per-session recall — search the verbatim pre-compaction transcript archive.
+  ipcMain.handle(IPC.getRecall, async (_event, id: string, query?: string) => {
+    return persistReadRecall(id, query)
   })
 
   ipcMain.handle(IPC.sessionExport, async (_event, id: string) => {

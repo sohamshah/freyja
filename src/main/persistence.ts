@@ -920,6 +920,164 @@ function readJsonl(filePath: string): unknown[] {
   }
 }
 
+export type ActionLedgerRow = {
+  kind: string
+  class: 'effect' | 'observation'
+  operation?: string
+  summary?: string
+  path?: string | null
+  repo?: string | null
+  dir?: string | null
+  target?: string
+  resultChars?: number
+  creatorId?: string
+  toolCallId?: string | null
+  createdAt: number
+  source?: string
+  gitDelta?: Array<{ op: string; path: string }>
+  additions?: number
+  deletions?: number
+  diff?: string
+  diffTruncated?: boolean
+}
+
+/**
+ * Read a session's action ledger (what the agent did) from
+ * `~/.freyja/projects/<safeId>/action_ledger.jsonl`. Mirrors the project-dir
+ * path-building of loadSessionExportBundle so it lines up with the bridge's
+ * `project_output_dir` writer.
+ */
+export function readActionLedger(
+  id: string,
+): { ok: true; rows: ActionLedgerRow[] } | { ok: false; error: string } {
+  try {
+    const safeId = sanitizeForFsId(id)
+    const projectDir = path.join(os.homedir(), '.freyja', 'projects', safeId)
+    const rows = readJsonl(path.join(projectDir, 'action_ledger.jsonl')) as ActionLedgerRow[]
+    return { ok: true, rows }
+  } catch (err) {
+    return { ok: false, error: String(err) }
+  }
+}
+
+/**
+ * Read a session's working-memory doc (the agent's grounded workstreams) from
+ * `~/.freyja/projects/<safeId>/working_memory.json`. The file is ONE document
+ * `{ version, sessionId, entities: { id -> entity } }` (see
+ * `bridge/working_memory.py`), not a JSONL stream — so it's parsed whole.
+ * A missing file is a normal empty state, not an error.
+ */
+export function readWorkingMemory(
+  id: string,
+): { ok: true; entities: Record<string, any> } | { ok: false; error: string } {
+  try {
+    const safeId = sanitizeForFsId(id)
+    const projectDir = path.join(os.homedir(), '.freyja', 'projects', safeId)
+    const memPath = path.join(projectDir, 'working_memory.json')
+    if (!fs.existsSync(memPath)) return { ok: true, entities: {} }
+    const raw = fs.readFileSync(memPath, 'utf8')
+    const doc = JSON.parse(raw) as { entities?: Record<string, any> }
+    const entities = doc && typeof doc.entities === 'object' && doc.entities ? doc.entities : {}
+    return { ok: true, entities }
+  } catch (err) {
+    return { ok: false, error: String(err) }
+  }
+}
+
+const RECALL_MAX_ROWS = 200
+const RECALL_SNIPPET = 280
+
+/** Best-effort flatten of a serialized Message's content to text — mirrors
+ * `recall_tool._message_text` so the renderer's recall drawer sees the same
+ * text the agent's `recall` tool searches. */
+function flattenMessageContent(message: any): string {
+  if (!message) return ''
+  const content = message.content
+  if (typeof content === 'string') return content
+  const parts: string[] = []
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      if (block && typeof block === 'object') {
+        if (typeof block.text === 'string') parts.push(block.text)
+        else if (typeof block.content === 'string') parts.push(block.content)
+        else if (Array.isArray(block.content)) {
+          for (const sub of block.content) {
+            if (sub && typeof sub === 'object' && typeof sub.text === 'string') parts.push(sub.text)
+          }
+        }
+      } else if (typeof block === 'string') {
+        parts.push(block)
+      }
+    }
+  }
+  return parts.filter(Boolean).join('\n')
+}
+
+/** A window of `text` centered on the first case-insensitive match — mirrors
+ * `recall_tool._snippet`. With no query, returns a leading slice. */
+function recallSnippet(text: string, query: string): string {
+  if (!query) return text.slice(0, RECALL_SNIPPET)
+  const lo = text.toLowerCase()
+  const idx = lo.indexOf(query.toLowerCase())
+  if (idx < 0) return text.slice(0, RECALL_SNIPPET)
+  const start = Math.max(0, idx - Math.floor(RECALL_SNIPPET / 3))
+  const end = Math.min(text.length, idx + Math.floor((2 * RECALL_SNIPPET) / 3))
+  const prefix = start > 0 ? '…' : ''
+  const suffix = end < text.length ? '…' : ''
+  return `${prefix}${text.slice(start, end)}${suffix}`
+}
+
+/**
+ * Read a session's verbatim transcript archive from
+ * `~/.freyja/projects/<safeId>/raw_messages.jsonl` (the same file the `recall`
+ * tool searches) and surface it to the renderer's recall drawer. Each row is
+ * flattened to text; when `query` is given, rows are filtered by a
+ * case-insensitive substring match, otherwise a recent timeline slice is
+ * returned (never blank). Newest-last, capped at ~200 rows.
+ */
+export function readRecall(
+  id: string,
+  query?: string,
+):
+  | { ok: true; rows: Array<{ role: string; turn_id: string | null; ts: number; text: string; snippet: string }> }
+  | { ok: false; error: string } {
+  try {
+    const safeId = sanitizeForFsId(id)
+    const projectDir = path.join(os.homedir(), '.freyja', 'projects', safeId)
+    const raw = readJsonl(path.join(projectDir, 'raw_messages.jsonl')) as Array<{
+      ts: number
+      session_id: string
+      turn_id: string | null
+      message: any
+    }>
+    const q = (query ?? '').trim()
+    const out: Array<{ role: string; turn_id: string | null; ts: number; text: string; snippet: string }> = []
+    for (const row of raw) {
+      const msg = row?.message ?? {}
+      const text = flattenMessageContent(msg)
+      if (q && !text.toLowerCase().includes(q.toLowerCase())) continue
+      // raw_messages.jsonl writes ts via Python time.time() = epoch SECONDS,
+      // but the renderer's relativeTime()/Date treats it as epoch MS (matching
+      // the ledger + working memory). Normalize seconds → ms here so the spine
+      // datelines read correctly (a 10-digit ts is seconds; 13-digit is ms).
+      const rawTs = typeof row?.ts === 'number' ? row.ts : 0
+      const ts = rawTs > 0 && rawTs < 1e12 ? Math.round(rawTs * 1000) : rawTs
+      out.push({
+        role: typeof msg.role === 'string' ? msg.role : '',
+        turn_id: row?.turn_id ?? null,
+        ts,
+        text,
+        snippet: recallSnippet(text, q),
+      })
+    }
+    // Keep the most recent matches/turns, newest-last.
+    const rows = out.slice(-RECALL_MAX_ROWS)
+    return { ok: true, rows }
+  } catch (err) {
+    return { ok: false, error: String(err) }
+  }
+}
+
 function loadSessionExportBundle(id: string): SessionExportBundle | null {
   const sess = loadSession(id)
   if (!sess) return null

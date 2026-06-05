@@ -781,10 +781,19 @@ class AgentRunner:
                 except Exception:  # noqa: BLE001
                     logger.exception("forwarding summarizer call to on_llm_call failed")
 
+            _ground_truth = None
+            _gct = getattr(self, "get_compaction_ground_truth", None)
+            if _gct is not None:
+                try:
+                    _ground_truth = _gct()
+                except Exception:  # noqa: BLE001
+                    _ground_truth = None
             result = self.compaction.compact(
                 session.transcript,
                 self.provider,
                 on_summarizer_call=_on_sum_call,
+                ground_truth=_ground_truth,
+                on_working_memory_upserts=getattr(self, "apply_working_memory_upserts", None),
             )
             # Track savings for the thrash detector. <10% savings on
             # this attempt counts toward the cooldown counter.
@@ -899,6 +908,17 @@ class AsyncAgentRunner:
         # to the trailing user message. Empty list = nothing to add.
         # Errors are swallowed so a bad callback can't break the runner.
         get_extra_system_reminders: Callable[[], list[str]] | None = None,
+        # Optional provider of a deterministic "confirmed actions" string
+        # (the action ledger) seeded into the summarizer so a runtime-forced
+        # compaction can't drop the agent's own write-actions. Returns None
+        # when unavailable. Kept as a plain-string callback so the engine
+        # stays ignorant of the bridge's ledger.
+        get_compaction_ground_truth: Callable[[], str | None] | None = None,
+        # Optional sink for structured working-memory upserts the summarizer
+        # emits during compaction (Milestone 2b). Receives a list of dicts; the
+        # bridge folds them into the session's working memory. Engine stays
+        # ignorant of the bridge store — it just forwards the parsed list.
+        apply_working_memory_upserts: Callable[[list[dict[str, Any]]], None] | None = None,
     ):
         self.provider = provider
         self.config = config or AgentConfig()
@@ -939,6 +959,8 @@ class AsyncAgentRunner:
         self._turn_start_pressure_band: int | None = None
         self._channel3_advisory_pending: str = ""
         self.get_extra_system_reminders = get_extra_system_reminders
+        self.get_compaction_ground_truth = get_compaction_ground_truth
+        self.apply_working_memory_upserts = apply_working_memory_upserts
 
     def _compute_truncation_budget(self, session: Session) -> int:
         """Compute a context-aware token budget for truncating a tool result."""
@@ -2180,10 +2202,19 @@ class AsyncAgentRunner:
                 except Exception:  # noqa: BLE001
                     logger.exception("forwarding summarizer call to on_llm_call failed")
 
+            _ground_truth = None
+            _gct = getattr(self, "get_compaction_ground_truth", None)
+            if _gct is not None:
+                try:
+                    _ground_truth = _gct()
+                except Exception:  # noqa: BLE001
+                    _ground_truth = None
             result = self.compaction.compact(
                 session.transcript,
                 self.provider,
                 on_summarizer_call=_on_sum_call,
+                ground_truth=_ground_truth,
+                on_working_memory_upserts=getattr(self, "apply_working_memory_upserts", None),
             )
             # Track savings for the thrash detector. <10% savings on
             # this attempt counts toward the cooldown counter.

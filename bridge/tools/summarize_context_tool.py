@@ -75,12 +75,25 @@ class SummarizeContextTool:
         on_system_event: Callable[[dict[str, Any]], None] | None = None,
         on_pin_changed: Callable[[dict[str, Any]], None] | None = None,
         on_summarizer_llm_call: Callable[[dict[str, Any]], None] | None = None,
+        on_pinned_facts: Callable[[str], None] | None = None,
+        get_ground_truth: Callable[[], str | None] | None = None,
+        on_working_memory_upserts: Callable[[list[dict[str, Any]]], None] | None = None,
     ) -> None:
         self._get_session = get_session
         self._get_provider = get_provider
         self._get_compactor = get_compactor
         self._on_summarize_call = on_summarize_call
         self._get_current_pressure_pct = get_current_pressure_pct
+        # Persists preserve_facts to the durable action ledger when a cheap
+        # scope leaves them nowhere to attach (the silent-no-op fix). And a
+        # reader for the runtime ledger's confirmed actions, seeded into the
+        # summarizer so the produced summary can't omit them.
+        self._on_pinned_facts = on_pinned_facts
+        self._get_ground_truth = get_ground_truth
+        # Folds the summarizer's structured <working_memory> block into the
+        # session's working memory (Milestone 2b) on the agent-driven LLM
+        # compaction path — the primary cooperative path.
+        self._on_working_memory_upserts = on_working_memory_upserts
         # System-event emit so agent-driven compactions show up inline
         # in the conversation timeline alongside runtime-driven ones
         # (Gap N). Bridge wires this to its renderer emit channel.
@@ -302,22 +315,36 @@ class SummarizeContextTool:
                 if fact and fact not in result.summary:
                     missing.append(fact)
             if missing:
-                self._repair_preserve_facts(transcript, missing)
-                # Re-read the (now repaired) summary from the transcript
-                # so result.summary reflects the appendix we just added.
-                # Defensive: tolerate transcript shape changes.
-                try:
-                    last_entry = next(
-                        (
-                            e for e in reversed(transcript.entries)
-                            if getattr(e, "is_compaction", False)
-                        ),
-                        None,
-                    )
-                    if last_entry and last_entry.compaction_summary:
-                        result.summary = last_entry.compaction_summary
-                except Exception:
-                    pass
+                repaired = self._repair_preserve_facts(transcript, missing)
+                if repaired:
+                    # Re-read the (now repaired) summary from the transcript
+                    # so result.summary reflects the appendix we just added.
+                    # Defensive: tolerate transcript shape changes.
+                    try:
+                        last_entry = next(
+                            (
+                                e for e in reversed(transcript.entries)
+                                if getattr(e, "is_compaction", False)
+                            ),
+                            None,
+                        )
+                        if last_entry and last_entry.compaction_summary:
+                            result.summary = last_entry.compaction_summary
+                    except Exception:
+                        pass
+                elif self._on_pinned_facts is not None:
+                    # Cheap scope (tool_results_only / exploration_only) created
+                    # no compaction entry for the appendix to attach to. Instead
+                    # of the old silent no-op, persist the facts to the durable
+                    # action ledger so they survive compaction AND get surfaced
+                    # in the standing write-ledger reminder. This is the fix for
+                    # the bug that silently swallowed the agent's own
+                    # "agent-harness backend is DONE" anchor in session-mpxlhh4o.
+                    for fact in missing:
+                        try:
+                            self._on_pinned_facts(fact)
+                        except Exception:
+                            logger.exception("preserve_facts ledger persist failed")
 
         # Always emit telemetry, even on failure — the bad outcomes are
         # part of the training corpus.
@@ -434,11 +461,12 @@ class SummarizeContextTool:
         if missing:
             body["preserve_facts_missing"] = missing
             body["warning"] = (
-                f"{len(missing)} preserve_facts entries were auto-appended to "
-                "the summary because the summarizer paraphrased them. Future "
-                "reads of the summary will contain them verbatim. If a fact "
-                "is load-bearing for ongoing work, prefer pinning the source "
-                "message via pin_entries on this tool."
+                f"{len(missing)} preserve_facts entries were not found verbatim "
+                "in the summary. They have been persisted durably (appended to "
+                "the summary when one was produced, or written to the session "
+                "action ledger for cheap scopes) and will be surfaced back to "
+                "you, so they are not lost. If a fact is load-bearing for "
+                "ongoing work, prefer pin_entries on this tool."
             )
 
         return ToolResult(
@@ -466,9 +494,13 @@ class SummarizeContextTool:
         except Exception:
             logger.exception("summarize_context pin_changed emit failed")
 
-    def _repair_preserve_facts(self, transcript: Any, missing: list[str]) -> None:
+    def _repair_preserve_facts(self, transcript: Any, missing: list[str]) -> bool:
         """Append a Preserved Facts appendix to the most recent compaction
         entry's summary so the missing strings literally appear.
+
+        Returns True if an appendix was attached to a compaction entry, False
+        if there was no compaction entry to attach to (the cheap-scope case the
+        caller then handles by persisting to the durable ledger).
 
         Pragmatic, deterministic, no extra LLM call: when the summarizer
         paraphrases a fact the agent flagged as load-bearing, we just
@@ -486,7 +518,7 @@ class SummarizeContextTool:
                     target_entry = entry
                     break
             if target_entry is None or not target_entry.compaction_summary:
-                return
+                return False
             appendix_lines = ["", "## Preserved Facts (auto-repaired)"]
             for fact in missing:
                 appendix_lines.append(f"- {fact}")
@@ -496,8 +528,10 @@ class SummarizeContextTool:
                 + "\n".join(appendix_lines)
                 + "\n"
             )
+            return True
         except Exception:
             logger.exception("preserve_facts repair failed")
+            return False
 
     def _dispatch(
         self,
@@ -523,9 +557,17 @@ class SummarizeContextTool:
         (tool_results_only / exploration_only) don't make any LLM call,
         so the callback isn't passed there.
         """
+        ground_truth = None
+        if self._get_ground_truth is not None:
+            try:
+                ground_truth = self._get_ground_truth()
+            except Exception:
+                ground_truth = None
         if scope in ("since_last_compaction", "all", "early"):
             return compactor.compact(
                 transcript, provider, on_summarizer_call=on_summarizer_call,
+                ground_truth=ground_truth,
+                on_working_memory_upserts=self._on_working_memory_upserts,
             )
         if scope == "tool_results_only":
             return self._compact_tool_results_only(transcript)
@@ -534,6 +576,8 @@ class SummarizeContextTool:
         # Shouldn't be reached — scope was validated above.
         return compactor.compact(
             transcript, provider, on_summarizer_call=on_summarizer_call,
+            ground_truth=ground_truth,
+            on_working_memory_upserts=self._on_working_memory_upserts,
         )
 
     def _compact_tool_results_only(self, transcript: Any):

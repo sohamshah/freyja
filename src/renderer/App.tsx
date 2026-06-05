@@ -21,6 +21,7 @@ import { MissionDashboard } from './components/MissionDashboard'
 import { ScheduledJobsDashboard } from './components/ScheduledJobsDashboard'
 import { SlackSetupWizard } from './components/SlackSetupWizard'
 import { MetricsDashboard } from './components/MetricsDashboard'
+import { RecallPanel } from './components/RecallPanel'
 import { SplashScreen } from './components/SplashScreen'
 import { IdleSleep } from './components/IdleSleep'
 import { QuickSwitcher } from './components/QuickSwitcher'
@@ -80,6 +81,9 @@ export function App() {
   const commandPaletteOpen = useHarness((s) => s.commandPaletteOpen)
   const missionDashboardOpen = useHarness((s) => s.missionDashboardOpen)
   const toggleMissionDashboard = useHarness((s) => s.toggleMissionDashboard)
+  const recallDrawer = useHarness((s) => s.recallDrawer)
+  const closeRecallDrawer = useHarness((s) => s.closeRecallDrawer)
+  const recallSessionId = useHarness((s) => s.activeSessionId)
   const slackSetupOpen = useHarness((s) => s.slackSetupOpen)
   const toggleSlackSetup = useHarness((s) => s.toggleSlackSetup)
   const activeSubagentId = useHarness((s) => s.activeSubagentId)
@@ -541,6 +545,12 @@ export function App() {
           onClose={() => toggleSlackSetup(false)}
         />
         <MetricsDashboard />
+        <RecallPanel
+          open={recallDrawer.open}
+          onClose={closeRecallDrawer}
+          sessionId={recallSessionId}
+          initialQuery={recallDrawer.query}
+        />
 
         {activeSubagentId && <SubagentDetail id={activeSubagentId} />}
         {modelPickerOpen && <ModelPicker />}

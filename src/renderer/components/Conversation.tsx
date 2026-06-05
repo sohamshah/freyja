@@ -14,6 +14,7 @@ import { highlightHtml, highlightRuns } from '../lib/searchHighlight'
 import { MessageContextMenu, type MessageMenuAction } from './MessageContextMenu'
 import { BranchSessionDialog } from './BranchSessionDialog'
 import { CalibrationCard } from './shared/CalibrationCard'
+import { InlineForgetting, InlineCompactionReceipt } from './MemorySystemCards'
 import {
   StructuredJsonView,
   tryParseCompleteJson,
@@ -56,7 +57,7 @@ const KanbanCardLookupContext = createContext<Map<string, KanbanCardSnapshot>>(
  *  parts (e.g. `goal_judge` verdict cards) can hydrate their full
  *  payload at render time without duplicating verdict data into the
  *  message-part shape. Populated by ConversationStream. */
-const SystemEventLookupContext = createContext<Map<string, SystemEventRecord>>(
+export const SystemEventLookupContext = createContext<Map<string, SystemEventRecord>>(
   new Map(),
 )
 
@@ -1219,6 +1220,16 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
     // needs to act on it (rephrase, switch model, or escalate).
     if (part.systemSubtype === 'refusal_detected' && part.eventId) {
       return <InlineRefusal eventId={part.eventId} text={part.text ?? ''} />
+    }
+    // Grounded Memory — the runtime caught the agent's self-model
+    // diverging from the durable ledger (forgetting_detected) or
+    // relocated work during an LLM compaction (compaction_receipt).
+    // Both hydrate from SystemEventLookupContext via their eventId.
+    if (part.systemSubtype === 'forgetting_detected' && part.eventId) {
+      return <InlineForgetting eventId={part.eventId} />
+    }
+    if (part.systemSubtype === 'compaction_receipt' && part.eventId) {
+      return <InlineCompactionReceipt eventId={part.eventId} />
     }
     return (
       <div className="flex items-center gap-2 rounded-md bg-white/[0.025] px-2.5 py-1.5 text-[11px] text-fg-2 ring-hairline">

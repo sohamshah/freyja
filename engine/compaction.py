@@ -60,6 +60,37 @@ def _is_summary_inject(msg: Message) -> bool:
     return False
 
 
+_WM_TYPES = ("workstream", "decision", "finding", "open_thread")
+
+
+def _parse_working_memory_block(text: str) -> list[dict[str, Any]]:
+    """Extract structured working-memory upserts from a summarizer output's
+    optional ``<working_memory>[...]</working_memory>`` JSON block (Milestone
+    2b). Pure + defensive — returns [] on any malformed/missing block so a bad
+    model emission never breaks compaction. The bridge applies the result.
+    """
+    import json as _json
+    import re as _re
+
+    m = _re.search(r"<working_memory>(.*?)</working_memory>", text or "", _re.DOTALL)
+    if not m:
+        return []
+    raw = m.group(1).strip()
+    if not raw:
+        return []
+    try:
+        data = _json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in data:
+        if isinstance(item, dict) and item.get("type") in _WM_TYPES:
+            out.append(item)
+    return out[:12]  # cap to keep the projection bounded
+
+
 def _count_images(messages: list[Message]) -> int:
     total = 0
     for msg in messages:
@@ -209,6 +240,7 @@ CRITICAL RULES:
 - PRESERVE every concrete fact from the previous summary (file paths, function signatures, error messages, decisions, artifact paths, user requests). Do not drop them, do not paraphrase them away.
 - EXTEND the relevant sections — for example, append newly-completed actions to "Files and Code Sections", append new user requests to "All User Messages", update "Current Work" to reflect the latest state.
 - REMOVE only material that has been superseded (e.g. an old "Current Work" task that is now complete moves to "Files and Code Sections"; a "Pending Task" that's now done moves into completed work).
+- NEVER remove a completed write-action from the "Actions I performed" list. A file you created or edited, a command that changed state, a commit or PR — these stay listed verbatim in first person for the life of the session, even once the work is finished. They are not "superseded" by completion.
 - KEEP the same 9-section structure as the previous summary.
 - If the previous summary preserved a fact verbatim and that fact is still relevant, keep it verbatim.
 
@@ -218,7 +250,9 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {conversation}
 
-Respond with <analysis>...</analysis> followed by <summary>...</summary>. The <summary> block must contain the FULL updated summary (not just a diff)."""
+Respond with <analysis>...</analysis> followed by <summary>...</summary>. The <summary> block must contain the FULL updated summary (not just a diff).
+
+After </summary>, you MAY emit a <working_memory> block — a JSON array (max 8) of durable structured notes, each {{"type": "workstream"|"decision"|"finding"|"open_thread", ...}}. workstream: "title","request". decision: "title","rationale","workstream" (parent title). finding: "text",optional "source","workstream". open_thread: "text","workstream". Record NEW workstreams/decisions/findings since the prior summary; reference parent workstreams by title (re-using an existing title updates it). Omit if nothing new is structural."""
 
     SUMMARY_PROMPT = """Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions.
 
@@ -250,6 +284,11 @@ Your summary MUST include these sections:
    - List specific files examined, modified, or created
    - Include relevant code snippets (especially recent changes)
    - Note why each file is important
+   - Keep a distinct first-person list titled "Actions I performed" naming every
+     file you CREATED or EDITED, every command that changed state, and every
+     commit/PR — written as "I created X", "I edited Y". A completed action does
+     not become irrelevant by being finished: never drop it or fold it away.
+     This is what lets you later answer truthfully whether you made changes.
 
 4. Sub-agent Artifact References:
    - CRITICAL: Preserve ALL file paths to sub-agent artifacts
@@ -286,7 +325,10 @@ Your summary MUST include these sections:
 CONVERSATION TO SUMMARIZE:
 {conversation}
 
-Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be thorough but focused on what's needed to continue the work."""
+Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be thorough but focused on what's needed to continue the work.
+
+After </summary>, you MAY emit a <working_memory> block — a JSON array (max 8) of durable structured notes to carry forward, each an object with "type" one of "workstream" | "decision" | "finding" | "open_thread". For workstream: "title" (short) and "request" (the goal). For decision: "title", "rationale", and "workstream" (the parent workstream's title). For finding: "text", optional "source", and "workstream". For open_thread: "text" and "workstream". Capture the active workstream, the key decisions, and important findings — the reasoning a file list can't convey. Reference a parent workstream by its title. Omit the block entirely if nothing structural is worth keeping.
+Example: <working_memory>[{{"type":"workstream","title":"Port widgets","request":"add show_widget to agent-harness, render in ema-next"}},{{"type":"decision","title":"SSE over MCP Apps","rationale":"simpler, no new protocol","workstream":"Port widgets"}}]</working_memory>"""
 
     _MAX_CHARS_TO_SUMMARIZE = MAX_CHARS_TO_SUMMARIZE
 
@@ -325,6 +367,8 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
         provider: "ModelProvider",
         *,
         on_summarizer_call: "Callable[[dict[str, Any]], None] | None" = None,
+        ground_truth: str | None = None,
+        on_working_memory_upserts: "Callable[[list[dict[str, Any]]], None] | None" = None,
     ) -> CompactionResult:
         """Compact the transcript by summarizing old messages.
 
@@ -499,6 +543,8 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
                 previous_summary=previous_summary,
                 stats_out=summarizer_stats,
                 on_summarizer_call=on_summarizer_call,
+                ground_truth=ground_truth,
+                on_working_memory_upserts=on_working_memory_upserts,
             )
         except Exception as e:
             logger.warning(f"Summary generation failed: {e}")
@@ -777,6 +823,8 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
         previous_summary: str | None = None,
         stats_out: dict[str, Any] | None = None,
         on_summarizer_call: Callable[[dict[str, Any]], None] | None = None,
+        ground_truth: str | None = None,
+        on_working_memory_upserts: Callable[[list[dict[str, Any]]], None] | None = None,
     ) -> str:
         """Generate a summary using the model provider.
 
@@ -815,6 +863,23 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
             )
         else:
             prompt = self.SUMMARY_PROMPT.format(conversation=safe_conversation)
+
+        # Seed the summarizer with the runtime's deterministic ledger of
+        # confirmed write-actions (when the caller supplies one). This makes
+        # "I created widget_tools.py" impossible to omit from the summary even
+        # if the conversation slice that recorded it was truncated — the model
+        # is handed the action list as ground truth rather than having to
+        # rediscover it from a lossy transcript.
+        if ground_truth:
+            safe_gt = redact_sensitive_text(ground_truth)
+            prompt = (
+                "Confirmed actions (ground truth from the runtime ledger — these "
+                "file writes/edits and state changes definitely happened this "
+                "session). Your summary must list each in the first-person "
+                "'Actions I performed' section, attributed to yourself; do not "
+                "omit or soften them:\n"
+                f"{safe_gt}\n\n"
+            ) + prompt
 
         start_perf = _time.perf_counter()
         # CRITICAL: explicitly disable thinking on the summarizer call
@@ -916,6 +981,18 @@ Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be tho
 
         if not summary:
             raise ValueError("Could not extract summary from model output")
+
+        # Compaction-as-projection (Milestone 2b): if the summarizer emitted a
+        # <working_memory> block, hand the parsed upserts to the caller so the
+        # bridge can fold them into the structured working memory. Best-effort —
+        # never let a malformed block break the compaction.
+        if on_working_memory_upserts is not None:
+            try:
+                wm_upserts = _parse_working_memory_block(raw_output)
+                if wm_upserts:
+                    on_working_memory_upserts(wm_upserts)
+            except Exception:
+                logger.debug("working_memory projection failed", exc_info=True)
 
         return redact_sensitive_text(summary)
 

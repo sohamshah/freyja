@@ -38,6 +38,7 @@ from bridge.tools.sub_agent_registry import (
     SubAgentState,
 )
 from bridge.project_paths import project_output_dir, project_output_guidance
+from bridge.session_ledger import render_ledger_reminder
 from engine.compaction import SummaryCompaction
 
 logger = logging.getLogger(__name__)
@@ -207,6 +208,10 @@ class SubAgentSpec:
     # `_new_tracing_registry` so child tool calls emit tool_result events
     # with the child's sessionId.
     wrap_registry: Callable[[ToolRegistry, str], ToolRegistry] | None = None
+    # Per-session action ledger (shared object with the parent; rows are
+    # creator-tagged). Lets a child surface its OWN write-ledger reminder,
+    # filtered to its session id.
+    session_ledger: Any | None = None
     # Session-scoped message bus for inter-agent communication.
     message_bus: Any | None = None
     # Session-level coordination strategy.
@@ -1447,6 +1452,57 @@ Parameters:
                 except Exception:
                     continue
 
+        # Child-scoped write-ledger reminder + summarizer seed, filtered to
+        # this child's OWN effects (rows in the shared ledger are tagged by
+        # record.id). Each spawn gets independent debounce state in a local
+        # dict — children have no per-instance owner to hang it on.
+        _child_led = self._spec.session_ledger
+        _child_ledger_state = {"turns": 0, "digest": "", "comp": 0}
+
+        def _child_extra_reminders() -> list[str]:
+            if _child_led is None:
+                return []
+            try:
+                effects = _child_led.effects(creator_id=record.id)
+                pinned = _child_led.pinned_facts(creator_id=record.id)
+                if not effects and not pinned:
+                    return []
+                _child_ledger_state["turns"] += 1
+                comp = int(getattr(session, "compaction_count", 0) or 0)
+                just_compacted = comp > _child_ledger_state["comp"]
+                digest = _child_led.digest(creator_id=record.id)
+                if (
+                    digest == _child_ledger_state["digest"]
+                    and not just_compacted
+                    and _child_ledger_state["turns"] < 4
+                ):
+                    return []
+                _child_ledger_state.update(digest=digest, turns=0, comp=comp)
+                block = render_ledger_reminder(
+                    effects, pinned, just_compacted=just_compacted,
+                    shell_note=int(getattr(_child_led, "shell_effect_count", 0) or 0) > 0,
+                )
+                return [block] if block else []
+            except Exception:
+                return []
+
+        def _child_ground_truth() -> str | None:
+            if _child_led is None:
+                return None
+            try:
+                lines = [
+                    f"- {r.get('summary')}"
+                    for r in _child_led.effects(creator_id=record.id)[:40]
+                    if r.get("summary")
+                ]
+                lines += [
+                    f"- (pinned) {f}"
+                    for f in _child_led.pinned_facts(creator_id=record.id)[:10]
+                ]
+                return "\n".join(lines) if lines else None
+            except Exception:
+                return None
+
         runner = AsyncAgentRunner(
             provider=provider,
             compaction_strategy=SummaryCompaction(),
@@ -1457,6 +1513,8 @@ Parameters:
             on_tool_metric=_on_sub_tool_metric,
             on_pre_iteration=_drain_subagent_inbox,
             thinking=child_thinking,
+            get_extra_system_reminders=_child_extra_reminders,
+            get_compaction_ground_truth=_child_ground_truth,
         )
         sub_runner_holder["runner"] = runner
 

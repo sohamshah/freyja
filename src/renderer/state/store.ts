@@ -329,6 +329,10 @@ export interface HarnessState extends SessionSlice {
     | 'scheduler'
   /** Cross-session compaction metrics dashboard (header button toggle). */
   metricsDashboardOpen: boolean
+  /** Grounded Memory recall drawer ("The Morgue"). Opened from the
+   *  working-memory section header and the inline memory cards via
+   *  `openRecallDrawer`; the single RecallPanel instance mounts in App. */
+  recallDrawer: { open: boolean; query: string }
   activeSubagentId: string | null
   focusedPanel: 'sidebar' | 'conversation' | 'activity'
   debugOpen: boolean
@@ -419,6 +423,10 @@ export interface HarnessActions {
     tab?: HarnessState['missionDashboardTab'],
   ): void
   toggleMetricsDashboard(open?: boolean): void
+  /** Open/close the Grounded Memory recall drawer; `query` seeds the
+   *  search field (omit to open on the recent-dispatches timeline). */
+  openRecallDrawer(query?: string): void
+  closeRecallDrawer(): void
   toggleModelPicker(open?: boolean): void
   toggleSlackSetup(open?: boolean): void
   setFocusedPanel(p: HarnessState['focusedPanel']): void
@@ -898,6 +906,7 @@ function emptyState(): HarnessState {
     missionDashboardOpen: false,
     missionDashboardTab: 'overview',
     metricsDashboardOpen: false,
+    recallDrawer: { open: false, query: '' },
     modelPickerOpen: false,
     slackSetupOpen: false,
     activeSubagentId: null,
@@ -1589,6 +1598,13 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         // instead of getting a generic-greeting reply from a fresh
         // thread and wondering why.
         'harness_session_recreated',
+        // Grounded Memory — the runtime noticed the agent's self-model
+        // diverging from the durable ledger (forgetting_detected) or
+        // relocated work during an LLM compaction (compaction_receipt).
+        // Both render as restrained inline memory cards in
+        // Conversation.tsx (InlineForgetting / InlineCompactionReceipt).
+        'forgetting_detected',
+        'compaction_receipt',
       ]
       // The runner's automatic "halved N old tool results" pruning
       // (engine/runner.py:2078,2141) fires on most turns once context
@@ -2970,6 +2986,13 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
 
   toggleMetricsDashboard(open) {
     set((prev) => ({ metricsDashboardOpen: open ?? !prev.metricsDashboardOpen }))
+  },
+
+  openRecallDrawer(query) {
+    set({ recallDrawer: { open: true, query: query ?? '' } })
+  },
+  closeRecallDrawer() {
+    set((prev) => ({ recallDrawer: { ...prev.recallDrawer, open: false } }))
   },
 
   toggleModelPicker(open) {

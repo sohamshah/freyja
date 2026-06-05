@@ -4,6 +4,8 @@ import { formatTokens, formatCost, relativeTime } from '../lib/format'
 import { ComputerLiveView } from './ComputerLiveView'
 import { LogStreamModal } from './LogStreamModal'
 import { ArtifactsSection } from './ArtifactsSection'
+import { ActionLedgerSection } from './ActionLedgerSection'
+import { WorkingMemorySection } from './WorkingMemorySection'
 import { ToolTimeline } from './ToolTimeline'
 import { ChangesSection } from './ChangesSection'
 import { TopoBackdrop } from './TopoBackdrop'
@@ -24,6 +26,7 @@ export function ActivityPanel() {
   // `state.sessionArchive`, and the active slice so it works whether a
   // subagent is currently loaded or not.
   const activeSessionId = useHarness((s) => s.activeSessionId)
+  const openRecallDrawer = useHarness((s) => s.openRecallDrawer)
   const subagentSpend = useHarness(
     (s) => aggregateSessionCost(s, s.activeSessionId) - (s.usage?.totalCost ?? 0),
   )
@@ -228,6 +231,24 @@ export function ActivityPanel() {
 
         {/* ── Artifacts ─────────────────────────────────── */}
         <ArtifactsSection />
+
+        {/* ── Working memory (what it means) — sits above the ledger
+              (what I did). A quiet 'recall ↗' affordance opens The Morgue
+              (the verbatim pre-compaction archive). ── */}
+        <div className="relative">
+          <WorkingMemorySection />
+          <button
+            type="button"
+            onClick={() => openRecallDrawer()}
+            title="Open recall — search the verbatim archive (The Morgue)"
+            className="kanban-card-mention absolute right-3 top-[9px] z-[6] cursor-pointer font-mono text-[9.5px]"
+          >
+            recall <span className="text-[9px]">↗</span>
+          </button>
+        </div>
+
+        {/* ── Action ledger (what the agent did this session) ── */}
+        <ActionLedgerSection />
 
         <div>
           <StickyHeader>

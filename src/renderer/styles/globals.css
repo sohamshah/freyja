@@ -35,6 +35,36 @@
   animation: pixel-dither 1100ms cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
+/* ─── ScrambleText (descrambler reveal)
+   ──────────────────────────────────────────────────────────────────
+   Each character of a ScrambleText component is wrapped in a .scr-ch
+   span by the React effect. During scramble: subtle blur + per-frame
+   pixel jitter (translate via CSS custom props). On lock: a brief
+   brightness + text-shadow pulse using currentColor so the reveal
+   plays in whatever tone color the wrapping element carries.
+   Used in MetricsDashboard StatTiles — animation fires on each open
+   because the dashboard returns null when closed. */
+.scr-ch {
+  display: inline-block;
+  transform: translate(var(--jx, 0px), var(--jy, 0px));
+  transition: filter 240ms ease-out, text-shadow 320ms ease-out;
+  will-change: transform, filter;
+  pointer-events: auto;
+}
+.scr-ch:not(.locked) {
+  filter: blur(0.35px) brightness(1.10);
+}
+.scr-ch.locked {
+  animation: scr-lock-pulse 380ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+@keyframes scr-lock-pulse {
+  0%   { filter: brightness(1.55) blur(0px); text-shadow: 0 0 10px currentColor; }
+  100% { filter: brightness(1.0)  blur(0px); text-shadow: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .scr-ch { filter: none; transform: none; animation: none; }
+}
+
 /* ─── Departure Mono ───────────────────────────────────────────────
    helenazhang.com · departuremono.com · SIL OFL license. Copied into
    assets/fonts/. Pixel-perfect at 11px increments per the designer's
@@ -75,6 +105,15 @@
   /* Editorial serif — reserved for hero moments (mission objective h1,
      drawer title, brief memo title). Loaded from Google Fonts. */
   --font-serif: 'Fraunces', Georgia, serif;
+  /* Palette tokens mirrored at :root so CSS (not just Tailwind classes)
+     can reference the one saturated accent + the muted status trio. These
+     match tailwind.config.cjs and the widget-runtime scope. */
+  --accent: #a8d4fc;
+  --accent-hi: #c4e0fc;
+  --accent-lo: #7aafea;
+  --ok: #a8b0a8;
+  --warn: #b8a078;
+  --danger: #b48282;
 }
 
 html,
@@ -873,6 +912,56 @@ select {
 @keyframes council-tile-pulse {
   0%, 100% { opacity: 0.22; }
   50%      { opacity: 0.55; }
+}
+
+/* ───────────────────────────────────────────────────────────────────────
+   Grounded Memory — three tiny primitives shared by the working-memory
+   Ledger-Cards, the recall drawer, and the inline correction/receipt cards.
+   Kept minimal on purpose: a single live glow, the active-card pulse (reuses
+   the council-tile pulse so live memory reads exactly like live agents), and
+   one dashed separator rule. All motion is gated on prefers-reduced-motion.
+   ─────────────────────────────────────────────────────────────────────── */
+
+/* The ONE glow in the memory surfaces — only the live StatusPip carries it. */
+.memory-pip--live {
+  box-shadow: 0 0 7px var(--accent, rgba(168, 212, 252, 0.9));
+}
+
+/* The single moving thing: the active workstream card's accent ring breathes
+   like a running council tile ("the ink is still wet"). The ::before inset
+   ring + opacity pulse mirror .council-tile.is-running exactly. */
+.memory-card--live {
+  position: relative;
+  box-shadow:
+    inset 0 0.5px 0 0 rgba(255, 255, 255, 0.15),
+    inset 0 0 0 1px rgba(168, 212, 252, 0.30),
+    0 4px 20px -4px rgba(0, 0, 0, 0.28);
+}
+.memory-card--live::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 1px var(--accent, rgba(168, 212, 252, 0.5));
+  opacity: 0.32;
+  animation: council-tile-pulse 2.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Dashed separator — the inner rule on cards, the rule under SectionSlug,
+   the seal line on receipts. Bottom by default; modifiers for top/full. */
+.memory-dash-rule {
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.06);
+}
+.memory-dash-rule--t {
+  border-top: 1px dashed rgba(255, 255, 255, 0.06);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .memory-card--live::before {
+    animation: none;
+    opacity: 0.4;
+  }
 }
 
 /* ───────────────────────────────────────────────────────────────────────

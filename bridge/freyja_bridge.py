@@ -52,14 +52,17 @@ from bridge.artifact_store import (
     SessionArtifactStore,
 )
 from bridge.project_paths import project_output_dir, project_output_guidance
-from bridge.session_ledger import (
+from bridge.session_ledger import (  # noqa: E402
     SessionLedger,
     classify_bash_command,
     detect_negative_self_claim,
     git_status_delta,
     render_ledger_reminder,
 )
-from bridge.working_memory import WorkingMemory, apply_working_memory_upserts
+from bridge.working_memory import (  # noqa: E402
+    WorkingMemory,
+    apply_working_memory_upserts,
+)
 
 
 # ─── Stdout helpers ─────────────────────────────────────────────────────────
