@@ -328,12 +328,15 @@ function FindingRow({ entity }: { entity: Entity }) {
   return (
     <div className="flex items-baseline gap-2">
       <ChildLabel text="found" />
-      <div className="min-w-0 flex-1 font-mono text-[10.5px] leading-[1.5] text-fg-1">
-        {entity.text}
+      <div className="min-w-0 flex-1">
+        <div className="font-mono text-[10.5px] leading-[1.5] text-fg-1">{entity.text}</div>
         {entity.source && (
-          <span className="ml-1 text-[10px] text-accent underline decoration-dotted underline-offset-2">
-            ({entity.source})
-          </span>
+          // The `source` is free-text attribution (how the finding was learned),
+          // NOT a link — render it muted on its own line so it doesn't read as
+          // a broken clickable citation.
+          <div className="mt-0.5 font-mono text-[9.5px] leading-[1.5] text-fg-3">
+            source · {entity.source}
+          </div>
         )}
       </div>
     </div>
