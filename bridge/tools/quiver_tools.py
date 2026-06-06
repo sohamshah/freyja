@@ -145,9 +145,15 @@ Requires the QUIVER_API_KEY environment variable.""",
             "Content-Type": "application/json"
         }
 
+        # Arrow renders (especially -max and multi-variation requests) can sit
+        # in Quiver's queue well past a minute under load. Give the read phase a
+        # generous 5-minute budget; keep connect/write/pool short so a genuinely
+        # dead endpoint still fails fast.
+        timeout = httpx.Timeout(connect=10.0, read=300.0, write=30.0, pool=10.0)
+
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.post(url, json=payload, headers=headers, timeout=60.0)
+                response = await client.post(url, json=payload, headers=headers, timeout=timeout)
 
             if response.status_code != 200:
                 error_msg = f"API Error {response.status_code}: "
@@ -205,5 +211,11 @@ Requires the QUIVER_API_KEY environment variable.""",
 
             return ToolResult(call_id=call_id, content=results_blocks)
 
+        except httpx.TimeoutException:
+            return ToolResult(
+                call_id=call_id,
+                content="Quiver render timed out after 300s (5 min). The renderer is likely overloaded — retry shortly.",
+                is_error=True,
+            )
         except Exception as exc:
             return ToolResult(call_id=call_id, content=f"Network or processing failure: {exc}", is_error=True)
