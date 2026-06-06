@@ -65,19 +65,33 @@ _WM_TYPES = ("workstream", "decision", "finding", "open_thread")
 
 def _parse_working_memory_block(text: str) -> list[dict[str, Any]]:
     """Extract structured working-memory upserts from a summarizer output's
-    optional ``<working_memory>[...]</working_memory>`` JSON block (Milestone
-    2b). Pure + defensive — returns [] on any malformed/missing block so a bad
-    model emission never breaks compaction. The bridge applies the result.
+    ``<working_memory>[...]</working_memory>`` JSON block (Milestone 2b).
+
+    Tolerant by design — models (especially Gemini) routinely wrap the JSON in
+    ```json code fences or emit the array right after </summary> without the
+    tags. Earlier this was strict, so a fenced block silently produced zero
+    upserts and working memory never updated on compaction. Pure + defensive:
+    returns [] on anything genuinely unparseable so a bad emission never breaks
+    compaction; the bridge applies the result.
     """
     import json as _json
     import re as _re
 
-    m = _re.search(r"<working_memory>(.*?)</working_memory>", text or "", _re.DOTALL)
-    if not m:
+    if not text:
         return []
-    raw = m.group(1).strip()
+    m = _re.search(r"<working_memory>(.*?)</working_memory>", text, _re.DOTALL | _re.IGNORECASE)
+    raw = m.group(1).strip() if m else ""
+    if not raw and "<working_memory" not in text.lower():
+        # Tag-less fallback: a JSON array in the tail after </summary>
+        # (some models drop the tags). Fence-stripping below handles ```json.
+        tail = text.rsplit("</summary>", 1)[-1]
+        m2 = _re.search(r"(\[.*\])", tail, _re.DOTALL)
+        raw = m2.group(1).strip() if m2 else ""
     if not raw:
         return []
+    # Strip a ```json … ``` (or bare ```) fence the model may have wrapped it in.
+    raw = _re.sub(r"^```[a-zA-Z0-9]*\s*", "", raw)
+    raw = _re.sub(r"\s*```$", "", raw).strip()
     try:
         data = _json.loads(raw)
     except Exception:
@@ -252,7 +266,7 @@ NEW TURNS TO INCORPORATE:
 
 Respond with <analysis>...</analysis> followed by <summary>...</summary>. The <summary> block must contain the FULL updated summary (not just a diff).
 
-After </summary>, you MAY emit a <working_memory> block — a JSON array (max 8) of durable structured notes, each {{"type": "workstream"|"decision"|"finding"|"open_thread", ...}}. workstream: "title","request". decision: "title","rationale","workstream" (parent title). finding: "text",optional "source","workstream". open_thread: "text","workstream". Record NEW workstreams/decisions/findings since the prior summary; reference parent workstreams by title (re-using an existing title updates it). Omit if nothing new is structural."""
+After </summary> you MUST emit a <working_memory> block (raw JSON only — no markdown code fences): a JSON array (max 8) of durable structured notes, each {{"type": "workstream"|"decision"|"finding"|"open_thread", ...}}. workstream: "title","request". decision: "title","rationale","workstream" (parent title). finding: "text",optional "source","workstream". open_thread: "text","workstream". Always include the active workstream plus any decisions/findings since the prior summary; reference parent workstreams by title (re-using an existing title updates it). If there is genuinely nothing structural, emit an empty array []."""
 
     SUMMARY_PROMPT = """Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions.
 
@@ -327,7 +341,7 @@ CONVERSATION TO SUMMARIZE:
 
 Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be thorough but focused on what's needed to continue the work.
 
-After </summary>, you MAY emit a <working_memory> block — a JSON array (max 8) of durable structured notes to carry forward, each an object with "type" one of "workstream" | "decision" | "finding" | "open_thread". For workstream: "title" (short) and "request" (the goal). For decision: "title", "rationale", and "workstream" (the parent workstream's title). For finding: "text", optional "source", and "workstream". For open_thread: "text" and "workstream". Capture the active workstream, the key decisions, and important findings — the reasoning a file list can't convey. Reference a parent workstream by its title. Omit the block entirely if nothing structural is worth keeping.
+After </summary> you MUST emit a <working_memory> block (raw JSON only — no markdown code fences) — a JSON array (max 8) of durable structured notes, each an object with "type" one of "workstream" | "decision" | "finding" | "open_thread". For workstream: "title" (short) and "request" (the goal). For decision: "title", "rationale", and "workstream" (the parent workstream's title). For finding: "text", optional "source", and "workstream". For open_thread: "text" and "workstream". Always capture the active workstream, the key decisions, and important findings — the reasoning a file list can't convey. Reference a parent workstream by its title. If there is genuinely nothing structural, emit an empty array [].
 Example: <working_memory>[{{"type":"workstream","title":"Port widgets","request":"add show_widget to agent-harness, render in ema-next"}},{{"type":"decision","title":"SSE over MCP Apps","rationale":"simpler, no new protocol","workstream":"Port widgets"}}]</working_memory>"""
 
     _MAX_CHARS_TO_SUMMARIZE = MAX_CHARS_TO_SUMMARIZE
@@ -986,11 +1000,13 @@ Example: <working_memory>[{{"type":"workstream","title":"Port widgets","request"
         # <working_memory> block, hand the parsed upserts to the caller so the
         # bridge can fold them into the structured working memory. Best-effort —
         # never let a malformed block break the compaction.
+        # Always call the sink (even with an empty list) so the bridge can run
+        # its deterministic ledger-based refresh on every compaction — working
+        # memory must update on compaction regardless of whether the summarizer
+        # emitted a parseable block.
         if on_working_memory_upserts is not None:
             try:
-                wm_upserts = _parse_working_memory_block(raw_output)
-                if wm_upserts:
-                    on_working_memory_upserts(wm_upserts)
+                on_working_memory_upserts(_parse_working_memory_block(raw_output))
             except Exception:
                 logger.debug("working_memory projection failed", exc_info=True)
 

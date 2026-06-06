@@ -214,6 +214,29 @@ def test_parse_working_memory_block_malformed_is_safe():
     assert _parse_working_memory_block("<working_memory>{}</working_memory>") == []  # not a list
 
 
+def test_parse_working_memory_block_strips_code_fences():
+    # Models (esp. Gemini) wrap the JSON in ```json fences — must still parse.
+    raw = (
+        "<summary>S</summary>\n"
+        "<working_memory>\n```json\n"
+        '[{"type":"workstream","title":"Port","request":"x"}]\n'
+        "```\n</working_memory>"
+    )
+    items = _parse_working_memory_block(raw)
+    assert len(items) == 1 and items[0]["type"] == "workstream"
+
+
+def test_parse_working_memory_block_tagless_after_summary():
+    # Some models drop the tags and just emit the array after </summary>.
+    raw = '<summary>S</summary>\n[{"type":"finding","text":"f"}]'
+    items = _parse_working_memory_block(raw)
+    assert len(items) == 1 and items[0]["type"] == "finding"
+
+
+def test_parse_working_memory_block_empty_array():
+    assert _parse_working_memory_block("<working_memory>[]</working_memory>") == []
+
+
 def test_apply_upserts_creates_and_links(tmp_path):
     wm = _mk(tmp_path)
     n = apply_working_memory_upserts(wm, [
