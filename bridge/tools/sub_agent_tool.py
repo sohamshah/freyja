@@ -75,6 +75,41 @@ SUB_AGENT_IDENTITY_HEADER = (
 )
 
 
+# Tools whose presence on a sub-agent's registry means the agent
+# genuinely produces files the operator will want to find later. The
+# `project_output_guidance` block (telling the agent where to write
+# standalone artifacts) only makes sense when AT LEAST ONE of these
+# tools is available. Without this gate, a read-only judge-deep / a
+# pure-reasoning judge-calibrator / a skill-drafter (whose only output
+# is the propose_skill call) all got 700 chars of guidance telling
+# them about ``write_file`` / ``artifacts`` / ``bash working_dir`` —
+# tools they don't have, behaviors they can't perform.
+#
+# ``bash`` alone is intentionally excluded. Several agent types
+# (judge-deep, plan, review, verify, skill-drafter) include bash for
+# read-only inspection; their system prompts explicitly forbid bash
+# write/mutation. Treating bash presence as write capability would
+# re-inject the same misleading guidance.
+_WRITE_CAPABLE_TOOLS = frozenset({
+    "write_file",
+    "edit_file",
+    "edit_json",
+    "generate_image",
+    "generate_svg",
+    "artifacts",
+})
+
+
+def _has_explicit_write_capability(child_registry: ToolRegistry) -> bool:
+    """True iff the child registry contains at least one tool that
+    produces a file the operator might want routed to the project
+    output directory. Drives whether ``project_output_guidance`` is
+    appended to the sub-agent's system prompt."""
+    return bool(
+        _WRITE_CAPABLE_TOOLS & frozenset(child_registry._tools.keys())  # noqa: SLF001
+    )
+
+
 def _build_sub_agent_system_prompt(
     child_registry: ToolRegistry,
     *,
@@ -84,7 +119,9 @@ def _build_sub_agent_system_prompt(
     """Inject the actual available tool list into the sub-agent prompt.
 
     Mirrors what the parent bridge does in `_BridgeSession.initialize` so
-    the sub-agent knows what it can call.
+    the sub-agent knows what it can call. ``project_output_guidance``
+    is conditional — only included when the agent actually has tools
+    that produce files (see ``_has_explicit_write_capability``).
     """
     from bridge.tools.coordination import current_datetime_block
 
@@ -92,10 +129,15 @@ def _build_sub_agent_system_prompt(
         f"- `{name}` — {tool.definition.summary}"
         for name, tool in sorted(child_registry._tools.items())  # noqa: SLF001
     )
+    output_block = (
+        f"\n{project_output_guidance(parent_session_id, parent_workspace)}\n"
+        if _has_explicit_write_capability(child_registry)
+        else ""
+    )
     return (
         f"{SUB_AGENT_IDENTITY_HEADER}\n"
         f"\n{current_datetime_block()}\n"
-        f"\n{project_output_guidance(parent_session_id, parent_workspace)}\n"
+        f"{output_block}"
         f"Available tools:\n{tool_lines}\n"
     )
 
@@ -1060,11 +1102,28 @@ Parameters:
                 f"- `{name}` — {tool.definition.summary}"
                 for name, tool in sorted(child_registry._tools.items())  # noqa: SLF001
             )
+            # Same conditional gate as the default builder — only inject
+            # workspace/output guidance when the agent has explicit
+            # write tools. Skipping it for pure-reasoning profiles
+            # (judge-calibrator with 0 tools) and read-only profiles
+            # (judge-deep, plan, review, verify, skill-drafter) shaves
+            # ~700 chars and removes prompt content that contradicts
+            # the agent's actual capabilities.
+            output_block = (
+                f"\n{project_output_guidance(self._spec.parent_session_id, self._spec.parent_workspace)}\n"
+                if _has_explicit_write_capability(child_registry)
+                else ""
+            )
+            tools_block = (
+                f"Available tools:\n{tool_lines}\n"
+                if tool_lines
+                else "Available tools: (none — pure reasoning)\n"
+            )
             system_prompt = (
                 f"{agent_type.system_prompt}\n"
                 f"\n{current_datetime_block()}\n"
-                f"\n{project_output_guidance(self._spec.parent_session_id, self._spec.parent_workspace)}\n"
-                f"Available tools:\n{tool_lines}\n"
+                f"{output_block}"
+                f"{tools_block}"
             )
             system_prompt += self._coordination_guidance(record)
         else:
