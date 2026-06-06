@@ -11173,6 +11173,79 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                   "subtype": "create_job", "error": str(exc)})
         return
 
+    if ctype == "scheduler.update_job":
+        # Patch fields on an existing job. Mirrors create_job's payload
+        # shape — the operator can edit name/description/prompt/sinks
+        # via plain strings, swap the cadence via a natural-language
+        # ``when`` (or a typed ``schedule`` dict), and tweak
+        # timeout/misfire/overlap/tags directly. Anything absent on the
+        # payload is left unchanged.
+        try:
+            from bridge.scheduler.models import JobPatch
+            from bridge.scheduler.persistence import load_job as _load_job
+            from bridge.scheduler.service import (
+                build_creator_ref, build_execution, build_schedule, build_sinks,
+            )
+            job_id = cmd.get("jobId", "")
+            payload = cmd.get("payload") or {}
+            patch = JobPatch()
+            if "name" in payload: patch.name = payload.get("name")
+            if "description" in payload: patch.description = payload.get("description")
+            if "prompt" in payload: patch.prompt = payload.get("prompt")
+            if "enabled" in payload: patch.enabled = bool(payload.get("enabled"))
+            if "max_fires" in payload:
+                v = payload.get("max_fires")
+                patch.max_fires = int(v) if v is not None else None
+            if "timeout_seconds" in payload:
+                v = payload.get("timeout_seconds")
+                patch.timeout_seconds = int(v) if v is not None else None
+            if "misfire_policy" in payload: patch.misfire_policy = payload.get("misfire_policy")
+            if "overlap_policy" in payload: patch.overlap_policy = payload.get("overlap_policy")
+            if "tags" in payload:
+                tags = payload.get("tags") or []
+                if isinstance(tags, str):
+                    tags = [t.strip() for t in tags.split(",") if t.strip()]
+                patch.tags = list(tags)
+            if "permission_snapshot" in payload:
+                patch.permission_snapshot = payload.get("permission_snapshot")
+            if "model_id" in payload: patch.model_id = payload.get("model_id")
+            if "coordination_strategy" in payload:
+                patch.coordination_strategy = payload.get("coordination_strategy")
+            if "skills_to_load" in payload:
+                skills = payload.get("skills_to_load") or []
+                if isinstance(skills, str):
+                    skills = [s.strip() for s in skills.split(",") if s.strip()]
+                patch.skills_to_load = list(skills)
+            # Schedule: accept either a typed dict or an NL ``when``.
+            if payload.get("when") or payload.get("schedule"):
+                patch.schedule = build_schedule(
+                    payload.get("when"),
+                    payload.get("schedule"),
+                    timezone=payload.get("timezone", "UTC"),
+                )
+            # Execution + sinks need the JOB's creator to resolve
+            # ``here``/persistent shortcuts (not the renderer's active
+            # session — that would silently redirect a Slack-created
+            # job to the desktop on edit).
+            existing = _load_job(job_id) if (
+                "execution" in payload or "sinks" in payload
+            ) else None
+            creator = existing.creator if existing else build_creator_ref(
+                surface="desktop",
+                session_id=state.active_session_id or "",
+            )
+            if "execution" in payload and payload.get("execution") is not None:
+                patch.execution = build_execution(payload.get("execution"), creator=creator)
+            if "sinks" in payload and payload.get("sinks") is not None:
+                patch.sinks = build_sinks(payload.get("sinks"), creator=creator, state=state)
+            job = await state.scheduler.update_job(job_id, patch)
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "update_job", "job": job.to_dict()})
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "update_job", "error": str(exc)})
+        return
+
     if ctype == "scheduler.pause_job":
         try:
             await state.scheduler.pause_job(cmd.get("jobId", ""))

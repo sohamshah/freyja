@@ -85,6 +85,12 @@ export function ScheduledJobsDashboard() {
     })
   }, [runFilter, selectedJobId, runsByJob, recentRuns])
 
+  // The pre-filter base count — drives the "no runs yet" vs
+  // "filter hides everything" empty-state copy.
+  const baseRunCount = selectedJobId
+    ? (runsByJob[selectedJobId] || []).length
+    : recentRuns.length
+
   const selectedRun = useMemo(() => {
     if (!selectedRunId) return null
     if (selectedJobId) {
@@ -163,36 +169,38 @@ export function ScheduledJobsDashboard() {
           <EmptyState onCreate={() => setCreating(true)} />
         ) : (
           <>
-            {/* Schedule cards (left column) */}
-            <div className="flex min-w-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-5">
-              {selectedJobId && (
-                <button
-                  type="button"
-                  onClick={() => selectJob(null)}
-                  className="self-start font-mono text-[10px] uppercase tracking-[0.14em] text-fg-3 transition hover:text-fg-0"
-                >
-                  ← back to all schedules
-                </button>
-              )}
-              {(selectedJobId ? jobs.filter((j) => j.id === selectedJobId) : jobs).map((j) => (
-                <ScheduleCard
-                  key={j.id}
-                  job={j}
-                  runs={runsByJob[j.id] || recentRuns.filter((r) => r.job_id === j.id)}
-                  focused={selectedJobId === j.id}
-                  now={now}
-                  onClick={() => selectJob(selectedJobId === j.id ? null : j.id)}
-                />
-              ))}
-            </div>
+            {/* Left column — either the list of schedule cards, or the
+               * focused schedule's detail surface. */}
+            {focusedJob ? (
+              <ScheduleDetail
+                job={focusedJob}
+                runs={runsByJob[focusedJob.id] || recentRuns.filter((r) => r.job_id === focusedJob.id)}
+                now={now}
+                onBack={() => selectJob(null)}
+              />
+            ) : (
+              <div className="flex min-w-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-5">
+                {jobs.map((j) => (
+                  <ScheduleCard
+                    key={j.id}
+                    job={j}
+                    runs={runsByJob[j.id] || recentRuns.filter((r) => r.job_id === j.id)}
+                    focused={false}
+                    now={now}
+                    onClick={() => selectJob(j.id)}
+                  />
+                ))}
+              </div>
+            )}
 
             {/* Run feed (right column) */}
             <div className="flex w-[440px] shrink-0 flex-col gap-3 border-l border-white/[0.06] px-5 py-5">
-              <div className="flex items-center justify-between">
-                <span className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-fg-3">
-                  {focusedJob ? `runs · ${focusedJob.name}` : 'recent runs · all schedules'}
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] uppercase tracking-[0.14em] text-fg-3">
+                  {focusedJob ? <>runs · <span className="text-fg-1 normal-case tracking-normal">{focusedJob.name}</span></>
+                    : 'recent runs · all schedules'}
                 </span>
-                <span className="font-mono text-[10px] text-fg-3">
+                <span className="shrink-0 font-mono text-[10px] tabular-nums text-fg-3">
                   {filteredRuns.length}
                 </span>
               </div>
@@ -215,8 +223,10 @@ export function ScheduledJobsDashboard() {
               <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
                 {filteredRuns.length === 0 ? (
                   <div className="rounded border border-dashed border-white/[0.08] p-4 text-center font-mono text-[11px] text-fg-3">
-                    {focusedJob ? 'this schedule has no runs yet'
-                      : 'no runs to show — try a different filter'}
+                    {baseRunCount === 0
+                      ? (focusedJob ? 'this schedule has no runs yet — try “run now” above'
+                                    : 'no schedules have fired yet')
+                      : `no ${runFilter} runs — ${baseRunCount} other${baseRunCount === 1 ? '' : 's'} hidden by the filter`}
                   </div>
                 ) : (
                   filteredRuns.map((r) => (
@@ -692,6 +702,514 @@ function shortUrl(u: string): string {
   } catch {
     return u.slice(0, 30)
   }
+}
+
+// ─── Schedule detail (focused view) ──────────────────────────────────
+
+/**
+ * Sectioned editor for a single schedule. The focused-state of the
+ * left column. Everything stored on a JobRecord is exposed; the
+ * primary fields (name · prompt · cadence · sinks · timeouts ·
+ * description · tags · enabled · max_fires) are editable inline with
+ * dirty-tracking + save/discard. Execution-spec internals (model,
+ * coordination strategy, skills) are shown read-only — editing those
+ * needs more UI than the operator-facing scheduler should host today.
+ */
+function ScheduleDetail(props: {
+  job: SchedulerJob
+  runs: SchedulerRun[]
+  now: number
+  onBack: () => void
+}) {
+  const { job, runs, now } = props
+
+  // Editable form state. We re-seed whenever the job id changes (the
+  // user switched between schedules) and whenever the bridge pushes
+  // an updated job snapshot with no pending edits — preserving in-
+  // progress edits avoids clobbering the operator's work-in-progress.
+  const [form, setForm] = useState(() => seedForm(job))
+  const formRef = React.useRef(form)
+  formRef.current = form
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [preview, setPreview] = useState<number[] | null>(null)
+  const [previewError, setPreviewError] = useState<string | null>(null)
+
+  // Re-seed when the user jumps to a different schedule.
+  useEffect(() => {
+    setForm(seedForm(job))
+    setError(null)
+  }, [job.id])
+
+  // When the bridge pushes a fresh snapshot (status flip, fire count
+  // tick, etc.) for the SAME job, only adopt fields that aren't dirty
+  // — we never want to wipe in-progress edits, but also don't want
+  // status/fire_count to stay stale.
+  useEffect(() => {
+    setForm((current) => mergeSnapshot(current, job))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job.status, job.enabled, job.last_fire_at, job.next_fire_at, job.fire_count])
+
+  // Live preview of next 5 fires for the WHEN string the user typed.
+  // Debounced so each keystroke doesn't hit the bridge.
+  useEffect(() => {
+    const trimmed = form.when.trim()
+    if (!trimmed) {
+      setPreview(null)
+      setPreviewError(null)
+      return
+    }
+    const handle = setTimeout(() => {
+      schedulerApi
+        .previewNextFires({ when: trimmed, n: 5 })
+        .then((resp) => {
+          if (resp.error) {
+            setPreview(null)
+            setPreviewError(resp.error)
+          } else {
+            setPreviewError(null)
+            setPreview(resp.fires || [])
+          }
+        })
+        .catch((e) => {
+          setPreview(null)
+          setPreviewError(String(e))
+        })
+    }, 300)
+    return () => clearTimeout(handle)
+  }, [form.when])
+
+  const dirty = computeDirty(form, job)
+
+  const act = async (verb: string, fn: () => Promise<unknown>) => {
+    setBusy(verb)
+    try {
+      await fn()
+      schedulerApi.listJobs().catch(() => {})
+    } finally { setBusy(null) }
+  }
+
+  const save = async () => {
+    setBusy('save')
+    setError(null)
+    try {
+      const payload = buildPatchPayload(form, job)
+      if (Object.keys(payload).length === 0) {
+        setBusy(null)
+        return
+      }
+      const resp: any = await schedulerApi.updateJob(job.id, payload)
+      if (resp?.error) {
+        setError(resp.error)
+      }
+    } catch (e) {
+      setError((e as Error).message)
+    } finally { setBusy(null) }
+  }
+
+  const discard = () => {
+    setForm(seedForm(job))
+    setError(null)
+  }
+
+  const cadenceSummary = formatSchedule(job.schedule)
+  const lastRun = runs[0]
+
+  return (
+    <div className="flex min-w-0 flex-1 flex-col overflow-y-auto px-6 py-5">
+      {/* Crumb + back */}
+      <button
+        type="button"
+        onClick={props.onBack}
+        className="mb-4 self-start font-mono text-[10px] uppercase tracking-[0.14em] text-fg-3 transition hover:text-fg-0"
+      >
+        ← back to all schedules
+      </button>
+
+      {/* Header strip */}
+      <div className="flex items-start gap-3">
+        <StatusDot status={job.status} enabled={job.enabled} />
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <input
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+            placeholder="(unnamed schedule)"
+            className="bg-transparent font-serif text-[28px] font-light leading-tight tracking-[-0.01em] text-fg-0 outline-none placeholder:text-fg-3 focus:bg-white/[0.02] focus:rounded focus:px-2 focus:-mx-2"
+          />
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-fg-2">
+            <span className={`rounded px-1.5 py-0.5 text-[9.5px] uppercase tracking-[0.12em] ${statusPillClass(job.status)}`}>
+              {job.enabled ? job.status : 'paused'}
+            </span>
+            <span>{cadenceSummary}</span>
+            <span className="text-fg-3">·</span>
+            <span>next <span className="text-fg-1">{formatRelative(job.next_fire_at, now)}</span></span>
+            {job.last_fire_at && (
+              <>
+                <span className="text-fg-3">·</span>
+                <span>last <span className="text-fg-1">{formatRelative(job.last_fire_at, now)}</span></span>
+              </>
+            )}
+            <span className="text-fg-3">·</span>
+            <span>
+              {job.fire_count}
+              {form.max_fires ? `/${form.max_fires}` : (job.max_fires ? `/${job.max_fires}` : '')}
+              {' '}fires
+            </span>
+            {lastRun && (
+              <>
+                <span className="text-fg-3">·</span>
+                <span>last run <span className={runStatusTextClass(lastRun.status)}>{lastRun.status}</span></span>
+              </>
+            )}
+          </div>
+        </div>
+        <div className="flex shrink-0 gap-2">
+          {job.enabled ? (
+            <CardButton onClick={() => act('pause', () => schedulerApi.pauseJob(job.id))}
+              disabled={busy !== null} label="pause" />
+          ) : (
+            <CardButton onClick={() => act('resume', () => schedulerApi.resumeJob(job.id))}
+              disabled={busy !== null} label="resume" accent />
+          )}
+          <CardButton onClick={() => act('run', () => schedulerApi.runJobNow(job.id))}
+            disabled={busy !== null} label="run now" />
+          <CardButton
+            onClick={async () => {
+              if (!window.confirm(`Delete schedule “${job.name}”? Past runs are kept.`)) return
+              await act('remove', () => schedulerApi.removeJob(job.id))
+              props.onBack()
+            }}
+            disabled={busy !== null}
+            label="delete"
+            danger
+          />
+        </div>
+      </div>
+
+      {/* 14-day timeline (taller than in list-card form) */}
+      <div className="mt-5 h-10 flex-shrink-0">
+        <TimelineStrip runs={runs} now={now} nextFireAt={job.next_fire_at ?? null} />
+      </div>
+
+      {/* Sections */}
+      <div className="mt-6 flex flex-col gap-5">
+        <Section label="prompt"
+                 hint="self-contained instruction the agent runs at each fire">
+          <textarea
+            value={form.prompt}
+            onChange={(e) => setForm({ ...form, prompt: e.target.value })}
+            rows={Math.min(12, Math.max(4, form.prompt.split('\n').length + 1))}
+            className="w-full resize-y rounded border border-white/[0.10] bg-black/[0.30] px-3 py-2 font-mono text-[12px] leading-[1.55] text-fg-0 focus:border-accent/[0.40] focus:outline-none"
+          />
+        </Section>
+
+        <Section label="when"
+                 hint="natural language reschedules the job — preview shows the next 5 fires">
+          <div className="flex flex-col gap-2">
+            <input
+              value={form.when}
+              onChange={(e) => setForm({ ...form, when: e.target.value })}
+              placeholder={cadenceSummary}
+              className="w-full rounded border border-white/[0.10] bg-black/[0.30] px-3 py-2 font-mono text-[12px] text-fg-0 placeholder:text-fg-3 focus:border-accent/[0.40] focus:outline-none"
+            />
+            <div className="flex flex-wrap gap-1.5">
+              {SUGGESTIONS.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setForm({ ...form, when: s })}
+                  className="rounded border border-white/[0.08] bg-white/[0.02] px-2 py-1 font-mono text-[10.5px] text-fg-2 transition hover:bg-white/[0.06] hover:text-fg-0"
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+            <PreviewStrip preview={preview} error={previewError} hasInput={form.when.trim().length > 0} />
+            <div className="font-mono text-[10.5px] text-fg-3">
+              current: <span className="text-fg-1">{cadenceSummary}</span>
+              {(job.schedule as any)?.timezone && (
+                <> · timezone <span className="text-fg-1">{String((job.schedule as any).timezone)}</span></>
+              )}
+            </div>
+          </div>
+        </Section>
+
+        <Section label="sinks"
+                 hint="where each fire's output is delivered">
+          <input
+            value={form.sinks}
+            onChange={(e) => setForm({ ...form, sinks: e.target.value })}
+            placeholder="here · slack:current · desktop · laptop:/path · https://hook"
+            className="w-full rounded border border-white/[0.10] bg-black/[0.30] px-3 py-2 font-mono text-[12px] text-fg-0 placeholder:text-fg-3 focus:border-accent/[0.40] focus:outline-none"
+          />
+          {(job.sinks || []).length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {(job.sinks || []).map((s, i) => (
+                <SinkChip key={i} sink={s as Record<string, unknown>} />
+              ))}
+            </div>
+          )}
+        </Section>
+
+        <Section label="execution"
+                 hint="how each fire runs (read-only — change via the new-schedule modal if you need a different execution kind)">
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1 font-mono text-[11.5px]">
+            <Meta k="kind" v={String((job.execution as any)?.kind || '?')} />
+            <Meta k="permission" v={job.permission_snapshot || '—'} />
+            <Meta k="model" v={job.model_id || '(inherit)'} />
+            <Meta k="coordination" v={job.coordination_strategy || '(inherit)'} />
+            <Meta k="skills"
+                  v={(job.skills_to_load || []).length === 0 ? '(none)' : (job.skills_to_load || []).join(', ')} />
+            <Meta k="session"
+                  v={String((job.execution as any)?.session_id || '—').slice(0, 16) || '—'} />
+          </div>
+        </Section>
+
+        <Section label="delivery policy"
+                 hint="how the runtime handles overlaps, misses, and overruns">
+          <div className="grid grid-cols-3 gap-3">
+            <FormField label="misfire">
+              <select
+                value={form.misfire_policy}
+                onChange={(e) => setForm({ ...form, misfire_policy: e.target.value })}
+                className="w-full rounded border border-white/[0.10] bg-black/[0.30] px-2 py-1.5 font-mono text-[11.5px] text-fg-0 focus:border-accent/[0.40] focus:outline-none"
+              >
+                <option value="">(default)</option>
+                <option value="run_now">run_now — fire immediately</option>
+                <option value="skip">skip — drop missed fire</option>
+              </select>
+            </FormField>
+            <FormField label="overlap">
+              <select
+                value={form.overlap_policy}
+                onChange={(e) => setForm({ ...form, overlap_policy: e.target.value })}
+                className="w-full rounded border border-white/[0.10] bg-black/[0.30] px-2 py-1.5 font-mono text-[11.5px] text-fg-0 focus:border-accent/[0.40] focus:outline-none"
+              >
+                <option value="">(default)</option>
+                <option value="skip">skip — drop if previous still running</option>
+                <option value="queue">queue — run after previous finishes</option>
+                <option value="cancel_running">cancel_running — kill previous + start fresh</option>
+              </select>
+            </FormField>
+            <FormField label="timeout (s)">
+              <input
+                type="number"
+                min={0}
+                value={form.timeout_seconds}
+                onChange={(e) => setForm({ ...form, timeout_seconds: e.target.value })}
+                placeholder="(none)"
+                className="w-full rounded border border-white/[0.10] bg-black/[0.30] px-2 py-1.5 font-mono text-[11.5px] tabular-nums text-fg-0 placeholder:text-fg-3 focus:border-accent/[0.40] focus:outline-none"
+              />
+            </FormField>
+          </div>
+        </Section>
+
+        <Section label="meta">
+          <div className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-2 font-mono text-[11.5px]">
+            <span className="text-fg-3">description</span>
+            <input
+              value={form.description}
+              onChange={(e) => setForm({ ...form, description: e.target.value })}
+              placeholder="(optional — internal note)"
+              className="bg-black/[0.30] rounded border border-white/[0.10] px-2 py-1.5 text-fg-0 placeholder:text-fg-3 focus:border-accent/[0.40] focus:outline-none"
+            />
+            <span className="text-fg-3">tags</span>
+            <input
+              value={form.tags}
+              onChange={(e) => setForm({ ...form, tags: e.target.value })}
+              placeholder="comma-separated"
+              className="bg-black/[0.30] rounded border border-white/[0.10] px-2 py-1.5 text-fg-0 placeholder:text-fg-3 focus:border-accent/[0.40] focus:outline-none"
+            />
+            <span className="text-fg-3">max fires</span>
+            <input
+              type="number"
+              min={0}
+              value={form.max_fires}
+              onChange={(e) => setForm({ ...form, max_fires: e.target.value })}
+              placeholder="(unlimited)"
+              className="bg-black/[0.30] rounded border border-white/[0.10] px-2 py-1.5 tabular-nums text-fg-0 placeholder:text-fg-3 focus:border-accent/[0.40] focus:outline-none"
+            />
+            <span className="text-fg-3">created by</span>
+            <span className="text-fg-1">
+              {job.creator?.surface || '?'}
+              {job.creator?.user_name ? ` · ${job.creator.user_name}` : ''}
+            </span>
+            <span className="text-fg-3">created</span>
+            <span className="text-fg-1">{job.created_at ? formatAbsolute(job.created_at) : '—'}</span>
+            <span className="text-fg-3">updated</span>
+            <span className="text-fg-1">{job.updated_at ? formatAbsolute(job.updated_at) : '—'}</span>
+            <span className="text-fg-3">id</span>
+            <span className="select-all text-fg-2">{job.id}</span>
+          </div>
+        </Section>
+      </div>
+
+      {/* Sticky save bar — only visible when dirty */}
+      {(dirty || error) && (
+        <div className="sticky bottom-0 mt-6 flex items-center gap-3 rounded-md border border-accent/[0.18] bg-bg-0/[0.92] px-3 py-2 backdrop-blur">
+          {error ? (
+            <span className="flex-1 font-mono text-[11px] text-danger">{error}</span>
+          ) : (
+            <span className="flex-1 font-mono text-[10.5px] uppercase tracking-[0.14em] text-fg-3">
+              unsaved changes
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={discard}
+            disabled={busy !== null}
+            className="rounded border border-white/[0.10] bg-white/[0.02] px-3 py-1.5 font-mono text-[10.5px] uppercase tracking-[0.14em] text-fg-2 transition hover:bg-white/[0.06] hover:text-fg-0 disabled:opacity-40"
+          >
+            discard
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={busy !== null || !dirty}
+            className="rounded border border-accent/[0.30] bg-accent/[0.10] px-4 py-1.5 font-mono text-[10.5px] uppercase tracking-[0.14em] text-accent transition hover:bg-accent/[0.18] disabled:opacity-40"
+          >
+            {busy === 'save' ? 'saving…' : 'save changes'}
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Section(props: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <section className="flex flex-col gap-2">
+      <div className="flex items-baseline gap-3">
+        <h3 className="m-0 font-mono text-[10.5px] uppercase tracking-[0.14em] text-fg-3">
+          {props.label}
+        </h3>
+        {props.hint && (
+          <span className="font-mono text-[10.5px] text-fg-3/70">— {props.hint}</span>
+        )}
+      </div>
+      {props.children}
+    </section>
+  )
+}
+
+function FormField(props: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-fg-3">
+        {props.label}
+      </span>
+      {props.children}
+    </label>
+  )
+}
+
+function Meta(props: { k: string; v: string }) {
+  return (
+    <div className="flex gap-3">
+      <span className="w-24 shrink-0 text-fg-3">{props.k}</span>
+      <span className="min-w-0 truncate text-fg-1" title={props.v}>{props.v}</span>
+    </div>
+  )
+}
+
+interface ScheduleForm {
+  name: string
+  description: string
+  prompt: string
+  when: string
+  sinks: string
+  tags: string
+  max_fires: string
+  timeout_seconds: string
+  misfire_policy: string
+  overlap_policy: string
+}
+
+function seedForm(job: SchedulerJob): ScheduleForm {
+  return {
+    name: job.name || '',
+    description: job.description || '',
+    prompt: job.prompt || '',
+    when: '',
+    sinks: (job.sinks || []).map((s) => sinkToShortString(s as Record<string, unknown>)).join(', '),
+    tags: (job.tags || []).join(', '),
+    max_fires: job.max_fires == null ? '' : String(job.max_fires),
+    timeout_seconds: job.timeout_seconds == null ? '' : String(job.timeout_seconds),
+    misfire_policy: job.misfire_policy || '',
+    overlap_policy: job.overlap_policy || '',
+  }
+}
+
+function mergeSnapshot(current: ScheduleForm, _job: SchedulerJob): ScheduleForm {
+  // Lifecycle fields (enabled/status/fire_count/next_fire_at) live on
+  // the job — the form never holds them, so a snapshot push doesn't
+  // need to merge anything user-editable. Returning the current form
+  // unchanged guarantees we never clobber in-progress edits.
+  return current
+}
+
+function computeDirty(form: ScheduleForm, job: SchedulerJob): boolean {
+  if (form.name !== (job.name || '')) return true
+  if (form.description !== (job.description || '')) return true
+  if (form.prompt !== (job.prompt || '')) return true
+  if (form.when.trim().length > 0) return true
+  const currentSinks = (job.sinks || []).map((s) => sinkToShortString(s as Record<string, unknown>)).join(', ')
+  if (form.sinks !== currentSinks) return true
+  if (form.tags !== (job.tags || []).join(', ')) return true
+  const cm = job.max_fires == null ? '' : String(job.max_fires)
+  if (form.max_fires !== cm) return true
+  const ct = job.timeout_seconds == null ? '' : String(job.timeout_seconds)
+  if (form.timeout_seconds !== ct) return true
+  if (form.misfire_policy !== (job.misfire_policy || '')) return true
+  if (form.overlap_policy !== (job.overlap_policy || '')) return true
+  return false
+}
+
+function buildPatchPayload(form: ScheduleForm, job: SchedulerJob): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (form.name !== (job.name || '')) out.name = form.name
+  if (form.description !== (job.description || '')) out.description = form.description
+  if (form.prompt !== (job.prompt || '')) out.prompt = form.prompt
+  if (form.when.trim().length > 0) out.when = form.when.trim()
+  const currentSinks = (job.sinks || []).map((s) => sinkToShortString(s as Record<string, unknown>)).join(', ')
+  if (form.sinks !== currentSinks) {
+    out.sinks = form.sinks.split(',').map((s) => s.trim()).filter(Boolean)
+  }
+  if (form.tags !== (job.tags || []).join(', ')) {
+    out.tags = form.tags.split(',').map((t) => t.trim()).filter(Boolean)
+  }
+  const cm = job.max_fires == null ? '' : String(job.max_fires)
+  if (form.max_fires !== cm) {
+    out.max_fires = form.max_fires === '' ? null : Number(form.max_fires)
+  }
+  const ct = job.timeout_seconds == null ? '' : String(job.timeout_seconds)
+  if (form.timeout_seconds !== ct) {
+    out.timeout_seconds = form.timeout_seconds === '' ? null : Number(form.timeout_seconds)
+  }
+  if (form.misfire_policy !== (job.misfire_policy || '')) out.misfire_policy = form.misfire_policy
+  if (form.overlap_policy !== (job.overlap_policy || '')) out.overlap_policy = form.overlap_policy
+  return out
+}
+
+function sinkToShortString(s: Record<string, unknown>): string {
+  const k = String(s.kind || '')
+  if (k === 'slack') {
+    const ch = String(s.chat_id || '').trim()
+    return ch ? `slack:${ch}` : 'slack:current'
+  }
+  if (k === 'desktop') {
+    const sid = String(s.session_id || '').trim()
+    return sid ? `desktop:${sid}` : 'here'
+  }
+  if (k === 'filesystem') {
+    const p = String(s.path_template || '').trim()
+    return p ? `laptop:${p}` : 'filesystem'
+  }
+  if (k === 'webhook') {
+    const u = String(s.url || '').trim()
+    return u || 'webhook'
+  }
+  return k || 'unknown'
 }
 
 // ─── Run row + drawer ───────────────────────────────────────────────
