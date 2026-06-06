@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useHarness } from '../state/store'
+import { SkillDetailModal } from './SkillDetailModal'
 import { SkillDiffModal } from './SkillDiffModal'
 
 /**
@@ -28,11 +29,11 @@ export function SkillToast() {
   const dismissed = useHarness((s) => s.dismissedSkillCandidates)
   const dismiss = useHarness((s) => s.dismissSkillToast)
   const resolve = useHarness((s) => s.resolveSkillCandidate)
-  const [expanded, setExpanded] = useState(false)
   const [editing, setEditing] = useState(false)
   const [editName, setEditName] = useState('')
   const [editDesc, setEditDesc] = useState('')
   const [showDiff, setShowDiff] = useState(false)
+  const [showDetail, setShowDetail] = useState(false)
   // Destructive-promote double-tap guard — when the new body deletes
   // a large chunk of the existing skill, the first PROMOTE click only
   // arms the action; the second click executes. Prevents the ~280-line
@@ -48,12 +49,12 @@ export function SkillToast() {
   // queue changes so a fresh candidate doesn't inherit the previous
   // one's "expanded" or stale edit-draft text.
   useEffect(() => {
-    setExpanded(false)
     setEditing(false)
     setEditName(current?.name ?? '')
     setEditDesc(current?.description ?? '')
     setDestructiveArmed(false)
     setShowDiff(false)
+    setShowDetail(false)
   }, [current?.candidateId, current?.name, current?.description])
 
   if (!current) return null
@@ -79,7 +80,6 @@ export function SkillToast() {
       setTimeout(() => setDestructiveArmed(false), 6000)
       return
     }
-    setExpanded(false)
     setEditing(false)
     setDestructiveArmed(false)
     const edits =
@@ -92,7 +92,6 @@ export function SkillToast() {
     resolve(current.candidateId, 'promote', edits)
   }
   const discard = () => {
-    setExpanded(false)
     setEditing(false)
     resolve(current.candidateId, 'discard')
   }
@@ -230,31 +229,14 @@ export function SkillToast() {
           </div>
         )}
 
-        {/* Expanded detail */}
-        {expanded && (
-          <div className="hairline-t px-4 py-3">
-            {current.guardSummary && !isCaution && (
-              <div className="mb-3">
-                <div className="mb-1 label">guard report</div>
-                <div className="selectable rounded-md bg-black/35 p-2 font-mono text-[10.5px] leading-[1.5] text-fg-1 ring-hairline whitespace-pre-wrap">
-                  {current.guardSummary}
-                </div>
-              </div>
-            )}
-            <div className="label mb-1">body preview</div>
-            <div className="selectable max-h-[280px] overflow-y-auto rounded-md bg-black/30 p-2.5 font-mono text-[11px] leading-[1.55] text-fg-1 ring-hairline whitespace-pre-wrap">
-              {current.bodyPreview}
-            </div>
-          </div>
-        )}
-
         {/* Actions */}
         <div className="flex items-center justify-between gap-2 hairline-t px-4 py-2.5">
           <button
-            onClick={() => setExpanded((v) => !v)}
+            onClick={() => setShowDetail(true)}
             className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-fg-3 hover:text-fg-1"
+            title="Open a centered modal with the full skill body — no truncation"
           >
-            {expanded ? 'collapse' : 'view detail'}
+            view detail
           </button>
           <div className="flex items-center gap-2">
             <button
@@ -311,6 +293,19 @@ export function SkillToast() {
           candidateId={current.candidateId}
           name={current.name}
           onClose={() => setShowDiff(false)}
+        />
+      )}
+      {showDetail && (
+        <SkillDetailModal
+          candidateId={current.candidateId}
+          name={current.name}
+          description={current.description}
+          triggers={current.triggers ?? []}
+          tags={current.tags ?? []}
+          guardSummary={current.guardSummary}
+          guardVerdict={current.guardVerdict}
+          existingSkill={current.existingSkill}
+          onClose={() => setShowDetail(false)}
         />
       )}
     </div>
