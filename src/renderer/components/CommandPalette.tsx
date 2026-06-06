@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useHarness } from '../state/store'
+import { useSchedulerStore } from '../state/scheduler-store'
 import { SLASH_COMMANDS } from '../lib/slash'
 
 interface PaletteItem {
@@ -17,6 +18,8 @@ export function CommandPalette() {
   const sessions = useHarness((s) => s.sessions)
   const openSubagent = useHarness((s) => s.openSubagent)
   const toggleMissionDashboard = useHarness((s) => s.toggleMissionDashboard)
+  const openScheduler = useSchedulerStore((s) => s.openDashboard)
+  const schedulerJobCount = useSchedulerStore((s) => s.jobs.length)
   const openSessionPane = useHarness((s) => s.openSessionPane)
   const setDraft = useHarness((s) => s.setInputDraft)
   const burst = useHarness((s) => s.requestDemoBurst)
@@ -82,6 +85,18 @@ export function CommandPalette() {
           close(false)
         },
       },
+      {
+        id: 'scheduler:open',
+        title: 'Scheduled Jobs',
+        subtitle: schedulerJobCount > 0
+          ? `${schedulerJobCount} schedule${schedulerJobCount === 1 ? '' : 's'} · past runs · daemon status (⌘⇧S)`
+          : 'Create a schedule, browse past runs, daemon status (⌘⇧S)',
+        group: 'Command',
+        action: () => {
+          openScheduler()
+          close(false)
+        },
+      },
     )
     for (const c of SLASH_COMMANDS.filter((command) => !command.hidden)) {
       out.push({
@@ -92,6 +107,13 @@ export function CommandPalette() {
         action: () => {
           if (c.name === '/burst') {
             burst()
+          } else if (c.name === '/schedule'
+                     || c.name === '/schedules'
+                     || c.name === '/jobs'
+                     || c.name === '/cron') {
+            // Skip the slash-prefill round-trip — these all just open
+            // the modal directly.
+            openScheduler()
           } else {
             setDraft(c.name + ' ')
           }
@@ -136,7 +158,7 @@ export function CommandPalette() {
       })
     }
     return out
-  }, [skills, subagents, sessions, setDraft, close, openSubagent, burst, toggleMissionDashboard, openSessionPane])
+  }, [skills, subagents, sessions, setDraft, close, openSubagent, burst, toggleMissionDashboard, openSessionPane, openScheduler, schedulerJobCount])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()

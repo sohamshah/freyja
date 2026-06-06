@@ -4598,6 +4598,17 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         state.toggleMissionDashboard(true, 'overview')
         return true
       }
+      case '/schedule':
+      case '/schedules':
+      case '/jobs':
+      case '/cron': {
+        // Lazy import keeps the harness store free of a hard dep on
+        // scheduler-store (which has its own IPC binding lifecycle).
+        import('./scheduler-store')
+          .then(({ useSchedulerStore }) => useSchedulerStore.getState().openDashboard())
+          .catch(() => show('scheduler unavailable', 'warn'))
+        return true
+      }
       case '/tools':
         state.listTools()
         show('loading tool catalog…', 'info')

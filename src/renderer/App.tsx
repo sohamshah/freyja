@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { unstable_batchedUpdates } from 'react-dom'
 import { useHarness } from './state/store'
+import { useSchedulerStore } from './state/scheduler-store'
 import { TitleBar } from './components/TitleBar'
 import { Sidebar } from './components/Sidebar'
 import { SessionPanes } from './components/SessionPanes'
@@ -98,6 +99,9 @@ export function App() {
   const settingsOpen = useHarness((s) => s.settingsOpen)
   const toggleSettings = useHarness((s) => s.toggleSettings)
   const hydrateSettings = useHarness((s) => s.hydrateSettings)
+  const schedulerOpen = useSchedulerStore((s) => s.showDashboard)
+  const openScheduler = useSchedulerStore((s) => s.openDashboard)
+  const closeScheduler = useSchedulerStore((s) => s.closeDashboard)
   const sidebarCollapsed = useHarness((s) => s.sidebarCollapsed)
   const activityPanelCollapsed = useHarness((s) => s.activityPanelCollapsed)
   const focusMode = useHarness((s) => s.focusMode)
@@ -126,10 +130,15 @@ export function App() {
         // Mirror scheduler-targeted events into the scheduler store
         // so the dashboard updates without going through the main
         // harness store (which has no scheduler awareness).
-        if (event?.type === 'scheduler_response') {
+        if (event?.type === 'scheduler_response'
+            || (typeof event?.type === 'string'
+                && event.type.startsWith('scheduler_'))) {
           // Lazy import — scheduler-store is small but the App.tsx
           // import graph already has a lot of weight; this defers
-          // the cost to the first scheduler event.
+          // the cost to the first scheduler event. Includes both the
+          // response envelope and the push lifecycle events
+          // (scheduler_run_* / scheduler_job_*) so the dashboard
+          // stays live without polling.
           import('./state/scheduler-store').then(({ useSchedulerStore }) => {
             useSchedulerStore.getState().handleEvent(event)
           }).catch(() => {})
@@ -407,6 +416,14 @@ export function App() {
         toggleMissionDashboard()
         return
       }
+      // ⌘⇧S — open the scheduled jobs modal (idempotent — second press
+      // is a no-op so users can mash it without flicker; Esc closes).
+      if (mod && e.shiftKey && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault()
+        if (schedulerOpen) closeScheduler()
+        else openScheduler()
+        return
+      }
       if (mod && e.key === 'b') {
         // ⌘B: child session → back to parent. At the top-level session
         // this is a no-op (we used to fire a demo "burst" message here,
@@ -482,6 +499,7 @@ export function App() {
         // agent's injected Esc won't match any of these conditions.
         if (settingsOpen) toggleSettings(false)
         else if (modelPickerOpen) toggleModelPicker(false)
+        else if (schedulerOpen) closeScheduler()
         else if (missionDashboardOpen) toggleMissionDashboard(false)
         else if (commandPaletteOpen) toggleCommandPalette(false)
         else if (debugOpen) toggleDebug(false)
@@ -508,6 +526,9 @@ export function App() {
     settingsOpen,
     toggleSettings,
     hydrateSettings,
+    schedulerOpen,
+    openScheduler,
+    closeScheduler,
   ])
 
   // Opt-in faux backdrop so headless screenshots can showcase the glass
@@ -540,6 +561,7 @@ export function App() {
         )}
         {commandPaletteOpen && <CommandPalette />}
         {missionDashboardOpen && <MissionDashboard />}
+        {schedulerOpen && <ScheduledJobsDashboard />}
         <SlackSetupWizard
           open={slackSetupOpen}
           onClose={() => toggleSlackSetup(false)}

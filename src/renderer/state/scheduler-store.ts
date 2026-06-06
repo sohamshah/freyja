@@ -97,6 +97,18 @@ interface SchedulerStore {
   daemonStatus: DaemonStatus | null
   pendingRequests: Map<string, PendingRequest>
 
+  // ── UI modal state ─────────────────────────────────────────────
+  // The dashboard mounts as a top-level modal (⌘⇧S, /schedule, palette,
+  // daemon pill, or the legacy MissionDashboard tab can all open it).
+  // Selected job/run drive the focused schedule card + run drawer.
+  showDashboard: boolean
+  selectedJobId: string | null
+  selectedRunId: string | null
+  openDashboard(): void
+  closeDashboard(): void
+  selectJob(jobId: string | null): void
+  selectRun(runId: string | null): void
+
   // ── Mutators (used by the bridge event bus) ─────────────────────
   setJobs(jobs: SchedulerJob[]): void
   upsertJob(job: SchedulerJob): void
@@ -119,6 +131,16 @@ export const useSchedulerStore = create<SchedulerStore>((set, get) => ({
   metrics: null,
   daemonStatus: null,
   pendingRequests: new Map(),
+
+  showDashboard: false,
+  selectedJobId: null,
+  selectedRunId: null,
+  openDashboard() { set({ showDashboard: true }) },
+  closeDashboard() {
+    set({ showDashboard: false, selectedRunId: null })
+  },
+  selectJob(jobId) { set({ selectedJobId: jobId }) },
+  selectRun(runId) { set({ selectedRunId: runId }) },
 
   setJobs(jobs) { set({ jobs }) },
   upsertJob(job) {
@@ -165,6 +187,61 @@ export const useSchedulerStore = create<SchedulerStore>((set, get) => ({
   },
 
   handleEvent(event) {
+    // Push events from the scheduler runtime keep the dashboard live
+    // without polling. We mutate the local state and let the renderer
+    // re-render off zustand. Each branch is no-op-safe if the bridge
+    // hasn't surfaced the full payload yet.
+    const t = (event as { type?: string }).type
+    if (t === 'scheduler_job_created'
+        || t === 'scheduler_job_updated') {
+      const j = (event as any).job
+      if (j) get().upsertJob(j as SchedulerJob)
+      return
+    }
+    if (t === 'scheduler_job_paused' || t === 'scheduler_job_resumed') {
+      // Status flip — easiest to just refresh the list so next_fire_at
+      // and the status field reconcile.
+      schedulerApi.listJobs().catch(() => {})
+      return
+    }
+    if (t === 'scheduler_job_removed') {
+      const id = (event as any).job_id
+      if (typeof id === 'string') get().removeJob(id)
+      return
+    }
+    if (typeof t === 'string'
+        && t.startsWith('scheduler_run_')
+        && t !== 'scheduler_run_retrying') {
+      // Any run lifecycle event — claimed, succeeded, failed, cancelled,
+      // timed_out — refresh the parent job (for fire_count + next_fire_at)
+      // and stash the run.
+      const run = (event as any).run
+      const jobId = run?.job_id || (event as any).job_id
+      if (run && jobId) {
+        set((s) => {
+          const list = s.runsByJob[jobId] || []
+          const idx = list.findIndex((r) => r.run_id === run.run_id)
+          const next = idx >= 0 ? [...list] : [run as SchedulerRun, ...list]
+          if (idx >= 0) next[idx] = run as SchedulerRun
+          const recent = (() => {
+            const ri = s.recentRuns.findIndex((r) => r.run_id === run.run_id)
+            if (ri >= 0) {
+              const rn = [...s.recentRuns]
+              rn[ri] = run as SchedulerRun
+              return rn
+            }
+            return [run as SchedulerRun, ...s.recentRuns].slice(0, 200)
+          })()
+          return {
+            runsByJob: { ...s.runsByJob, [jobId]: next.slice(0, 100) },
+            recentRuns: recent,
+          }
+        })
+      }
+      // also pull a fresh job to update next_fire_at / last_fire_at
+      if (jobId) schedulerApi.getJob(jobId).catch(() => {})
+      return
+    }
     if (event.type !== 'scheduler_response') return
     const ev = event as Extract<BridgeEvent, { type: 'scheduler_response' }>
     // Always mirror the payload into the store FIRST, then resolve any
@@ -280,5 +357,20 @@ export const schedulerApi = {
   },
   daemonUninstall() {
     return _send('scheduler.daemon_uninstall')
+  },
+  previewNextFires(
+    args: { jobId?: string; when?: string; schedule?: Record<string, unknown>;
+            timezone?: string; n?: number },
+  ) {
+    return _send<{ fires: number[]; error?: string }>(
+      'scheduler.preview_next_fires',
+      {
+        jobId: args.jobId,
+        when: args.when,
+        schedule: args.schedule,
+        timezone: args.timezone || 'UTC',
+        n: args.n ?? 5,
+      },
+    )
   },
 }

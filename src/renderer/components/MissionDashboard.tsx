@@ -19,7 +19,6 @@ import { BusFlowView } from './views/BusFlowView'
 import { JudgeBrief } from './views/JudgeBrief'
 import { DispatcherBrief } from './views/DispatcherBrief'
 import { ActivityView } from './views/ActivityView'
-import { ScheduledJobsDashboard } from './ScheduledJobsDashboard'
 
 // 'swarm' / 'findings' / 'telemetry' kept for legacy callers; they all
 // redirect to the corresponding live tab below.
@@ -204,7 +203,11 @@ const TABS: Array<{ id: DashboardTab; label: string; hint: string }> = [
   { id: 'tasks', label: 'tasks', hint: 'planning ledger' },
   { id: 'activity', label: 'activity', hint: 'session timeline' },
   { id: 'profiles', label: 'profiles', hint: 'subagents' },
-  { id: 'scheduler', label: 'scheduler', hint: 'jobs & loops' },
+  // Scheduler lives as its own modal now (⌘⇧S / /schedule / palette
+  // entry / TitleBar SchedulerPill). Mounting it inside a dashboard
+  // tab double-stacked a fixed overlay on top of the dashboard chrome,
+  // and the dashboard's session-scoped frame implied scheduler state
+  // belonged to one session — it doesn't.
 ]
 
 function visibleDashboardTabs(
@@ -844,7 +847,6 @@ export function MissionDashboard() {
           />
         )}
         {tab === 'profiles' && <ProfilesTab />}
-        {tab === 'scheduler' && <ScheduledJobsDashboard />}
       </div>
     </div>
   )

@@ -11212,6 +11212,55 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                   "subtype": "daemon_uninstall", "error": str(exc)})
         return
 
+    if ctype == "scheduler.preview_next_fires":
+        # Returns up to N future fire timestamps for either an existing
+        # job (by ``jobId``) or a free-form schedule spec (``schedule``
+        # dict or NL ``when`` string + ``timezone``). Used by the new-
+        # schedule modal's live preview and by the timeline strip on
+        # schedule cards.
+        try:
+            import time as _time
+            from bridge.scheduler.scheduling import compute_next_fire
+            n = max(1, min(int(cmd.get("n", 5)), 20))
+            schedule = None
+            last_fire: float | None = None
+            job_id = cmd.get("jobId")
+            if job_id:
+                job = await state.scheduler.get_job(job_id)
+                if job is None:
+                    raise ValueError(f"job not found: {job_id}")
+                schedule = job.schedule
+                last_fire = job.last_fire_at or None
+            else:
+                from bridge.scheduler.service import build_schedule
+                schedule = build_schedule(
+                    cmd.get("when"),
+                    cmd.get("schedule"),
+                    timezone=cmd.get("timezone", "UTC"),
+                )
+            now = _time.time()
+            fires: list[float] = []
+            cursor = last_fire
+            for _ in range(n):
+                nxt = compute_next_fire(schedule, now=now, last_fire=cursor)
+                if nxt is None or nxt <= now:
+                    break
+                fires.append(nxt)
+                cursor = nxt
+                # advance ``now`` so cron/interval keep stepping forward
+                now = nxt
+            emit({
+                "type": "scheduler_response",
+                "requestId": cmd.get("id"),
+                "subtype": "preview_next_fires",
+                "jobId": job_id or None,
+                "fires": fires,
+            })
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "preview_next_fires", "error": str(exc)})
+        return
+
     if ctype == "computer.emergency_stop":
         # Global scope force-cancel: same mechanism as per-session
         # cancel, applied to every session at once.
