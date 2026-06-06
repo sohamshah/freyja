@@ -8552,18 +8552,64 @@ class _BridgeSession:
         return "\n".join(lines) if lines else None
 
     def _apply_wm_upserts(self, upserts: list[dict[str, Any]]) -> None:
-        """Fold the summarizer's structured working-memory upserts into the
-        session's working memory (Milestone 2b — compaction-as-projection).
-        Best-effort; never raise on the compaction path."""
+        """Fold a compaction's structured working-memory upserts into the
+        session's working memory (Milestone 2b — compaction-as-projection),
+        then run a deterministic ledger-based refresh so working memory updates
+        on EVERY compaction even when the summarizer emits no parseable block
+        (common on models that skip the optional block). Best-effort; never
+        raise on the compaction path."""
         wm = getattr(self, "working_memory", None)
-        if wm is None or not upserts:
+        if wm is None:
             return
         try:
-            n = apply_working_memory_upserts(wm, upserts)
-            if n:
-                log("debug", f"working memory projection applied {n} upsert(s)")
+            if upserts:
+                n = apply_working_memory_upserts(wm, upserts)
+                if n:
+                    log("debug", f"working memory projection applied {n} upsert(s)")
         except Exception:  # noqa: BLE001
             log("debug", "working memory projection failed")
+        try:
+            self._refresh_wm_artifacts_from_ledger(wm)
+        except Exception:  # noqa: BLE001
+            log("debug", "working memory ledger refresh failed")
+
+    def _refresh_wm_artifacts_from_ledger(self, wm: Any) -> None:
+        """Deterministic floor: reflect the action ledger's file effects into
+        the active workstream as artifact_notes, so the files the agent changed
+        always show in working memory after a compaction — no LLM required.
+        Idempotent (matched by path). Only enriches an EXISTING workstream; it
+        never fabricates one (the summarizer block owns workstream creation)."""
+        led = getattr(self, "session_ledger", None)
+        if led is None:
+            return
+        effects = [e for e in led.effects(creator_id=self.id) if e.get("path")]
+        if not effects:
+            return
+        workstreams = wm.list(type="workstream")
+        if not workstreams:
+            return
+        active = next(
+            (w for w in workstreams if w.get("status") == "active"), workstreams[-1]
+        )
+        ws_id = active.get("id")
+        for e in effects[:12]:
+            path = str(e.get("path") or "")
+            if not path:
+                continue
+            existing = wm.find_by_primary(
+                type="artifact_note", value=path, workstream_id=ws_id
+            )
+            wm.upsert(
+                type="artifact_note",
+                entity_id=existing,
+                fields={
+                    "path": path,
+                    "note": e.get("summary"),
+                    "additions": e.get("additions"),
+                    "deletions": e.get("deletions"),
+                    "workstreamId": ws_id,
+                },
+            )
 
     def _session_memory_present(self) -> bool:
         try:
