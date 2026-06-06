@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useHarness } from '../state/store'
-import { StickyHeader } from './StickyHeader'
 import {
+  ChildLabel,
   DatelineTS,
   GalleyArtifact,
-  LeafMark,
   SectionSlug,
   StatusPip,
   type PipStatus,
@@ -68,6 +67,7 @@ function openFile(path?: string) {
 
 export function WorkingMemorySection({ topOffset = 0 }: { topOffset?: number }) {
   const activeSessionId = useHarness((s) => s.activeSessionId)
+  const openRecallDrawer = useHarness((s) => s.openRecallDrawer)
   // Refetch when new activity lands (cheap, avoids polling) — same tick as the ledger.
   const activityTick = useHarness((s) => s.systemEvents.length)
   const [entities, setEntities] = useState<Record<string, Entity>>({})
@@ -157,12 +157,20 @@ export function WorkingMemorySection({ topOffset = 0 }: { topOffset?: number }) 
     <div className="hairline-b">
       <SectionSlug
         kicker="working memory"
-        title={total > 0 ? 'The Edition' : 'Working Memory'}
         count={total > 0 ? total : undefined}
         expanded={expanded}
         onToggle={() => setExpanded((v) => !v)}
         topOffset={topOffset}
-      />
+      >
+        <button
+          type="button"
+          onClick={() => openRecallDrawer()}
+          title="Search this session's full transcript"
+          className="kanban-card-mention cursor-pointer font-mono text-[9.5px]"
+        >
+          history <span className="text-[9px]">↗</span>
+        </button>
+      </SectionSlug>
 
       {!expanded ? null : !loaded ? (
         <LoadingGhost />
@@ -223,15 +231,15 @@ function WorkstreamCard({
         isLive ? 'memory-card--live' : ''
       } ${isPaused ? 'opacity-70' : ''}`}
     >
-      {/* Card head: pip + serif title + status word + dateline */}
+      {/* Card head: status pip + task title + status word + dateline */}
       <div className="flex items-baseline gap-2">
         <StatusPip status={wsPip(status)} className="translate-y-[-1px]" />
         <span
-          className={`min-w-0 flex-1 truncate font-serif text-[14px] font-light italic leading-tight ${
+          className={`min-w-0 flex-1 truncate font-mono text-[12px] font-medium leading-tight ${
             isPaused ? 'text-fg-2' : 'text-fg-0'
           }`}
         >
-          {workstream.title || 'Untitled workstream'}
+          {workstream.title || 'Untitled task'}
         </span>
         <span
           className={`shrink-0 font-mono text-[9px] uppercase tracking-[0.12em] ${
@@ -243,10 +251,10 @@ function WorkstreamCard({
         <DatelineTS ts={ts} />
       </div>
 
-      {/* The request as an italic deck under a 2px left quote rule. */}
+      {/* The goal/request — a readable mono line under a left rule. */}
       {workstream.request && (
         <div
-          className={`mt-1.5 border-l-2 pl-2 font-serif text-[12px] italic leading-snug ${
+          className={`mt-1.5 border-l-2 pl-2 font-mono text-[10.5px] leading-snug ${
             isPaused ? 'border-fg-4 text-fg-2' : 'border-fg-3 text-fg-1'
           }`}
         >
@@ -296,22 +304,20 @@ function hasChildren(g: Grouped): boolean {
 }
 
 /* ──────────────────────────────────────────────────────────────────────
-   Typed-child rows — compact hairline rows hanging off the LeafMark gutter.
+   Typed-child rows — a labeled left column (decided / found / open) so each
+   entry says what it is, content aligned to a common left edge.
    ────────────────────────────────────────────────────────────────────── */
 
 function DecisionRow({ entity }: { entity: Entity }) {
   return (
-    <div className="flex items-baseline gap-1.5">
-      <LeafMark kind="decision" />
+    <div className="flex items-baseline gap-2">
+      <ChildLabel text="decided" />
       <div className="min-w-0 flex-1">
-        <span className="font-mono text-[10.5px] leading-[1.5] text-fg-1">
-          {entity.title}
-        </span>
+        <div className="font-mono text-[10.5px] leading-[1.5] text-fg-1">{entity.title}</div>
         {entity.rationale && (
-          <span className="font-mono text-[10.5px] leading-[1.5] text-fg-3">
-            {' — '}
+          <div className="mt-0.5 font-mono text-[10px] leading-[1.5] text-fg-2">
             {entity.rationale}
-          </span>
+          </div>
         )}
       </div>
     </div>
@@ -320,14 +326,12 @@ function DecisionRow({ entity }: { entity: Entity }) {
 
 function FindingRow({ entity }: { entity: Entity }) {
   return (
-    <div className="flex items-baseline gap-1.5">
-      <LeafMark kind="finding" />
-      <div className="min-w-0 flex-1">
-        <span className="font-mono text-[10.5px] leading-[1.5] text-fg-2">
-          {entity.text}
-        </span>
+    <div className="flex items-baseline gap-2">
+      <ChildLabel text="found" />
+      <div className="min-w-0 flex-1 font-mono text-[10.5px] leading-[1.5] text-fg-1">
+        {entity.text}
         {entity.source && (
-          <span className="ml-1 font-mono text-[10px] leading-[1.5] text-accent underline decoration-dotted underline-offset-2">
+          <span className="ml-1 text-[10px] text-accent underline decoration-dotted underline-offset-2">
             ({entity.source})
           </span>
         )}
@@ -339,8 +343,8 @@ function FindingRow({ entity }: { entity: Entity }) {
 function ThreadRow({ entity }: { entity: Entity }) {
   const resolved = entity.status === 'resolved'
   return (
-    <div className="flex items-baseline gap-1.5">
-      <LeafMark kind="open_thread" resolved={resolved} />
+    <div className="flex items-baseline gap-2">
+      <ChildLabel text="open" color={resolved ? 'text-fg-3' : 'text-warn'} />
       <span
         className={`min-w-0 flex-1 font-mono text-[10.5px] leading-[1.5] ${
           resolved ? 'text-fg-3 line-through' : 'text-fg-1'

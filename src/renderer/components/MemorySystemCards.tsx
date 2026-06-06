@@ -98,7 +98,7 @@ function RecallAffordance({
         }
       }}
     >
-      recall <span className="text-[9px]">↗</span>
+      history <span className="text-[9px]">↗</span>
     </span>
   )
 }
@@ -131,9 +131,9 @@ export function InlineForgetting({ eventId }: { eventId: string }) {
       className="animate-fade-in flex flex-col gap-1.5 rounded-md bg-danger/[0.05] px-3 py-2 text-[11px] ring-1 ring-danger/15"
       style={{ borderLeft: '2px solid var(--danger)' }}
     >
-      {/* kicker — calm erratum framing, not an alarm */}
+      {/* kicker — calm correction framing, not an alarm */}
       <div className="flex items-baseline justify-between gap-2">
-        <span className="label text-danger">CORRECTION · the record disagrees</span>
+        <span className="label text-danger">correction</span>
         {event && <DatelineTS ts={event.at} />}
       </div>
 
@@ -151,7 +151,7 @@ export function InlineForgetting({ eventId }: { eventId: string }) {
       <div className="flex items-baseline gap-1.5">
         <StatusPip status="blocked" className="mt-[5px]" />
         <span className="min-w-0 flex-1 font-mono text-[10.5px] leading-[1.5] text-fg-0">
-          but the record shows{' '}
+          but you took{' '}
           <span className="tabular-nums">{count}</span> {plural(count)} this session
           {effects.length > 0 ? ':' : '.'}
         </span>
@@ -208,47 +208,34 @@ export function InlineCompactionReceipt({ eventId }: { eventId: string }) {
 
   if (count == null) return null
 
-  const stamp = event
-    ? new Date(event.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    : null
-
   return (
     <div
       className="animate-fade-in flex flex-col gap-1.5 rounded-md bg-ok/[0.06] px-3 py-2 text-[11px] ring-1 ring-ok/15"
       style={{ borderLeft: '2px solid var(--ok)' }}
     >
-      {/* kicker — the reassuring receipt header */}
+      {/* kicker — reassuring: context was compacted, nothing lost */}
       <div className="flex items-baseline justify-between gap-2">
-        <span className="label text-ok">▣ RECEIPT · nothing lost</span>
+        <span className="label text-ok">context compacted</span>
         {event && <DatelineTS ts={event.at} />}
       </div>
 
-      {/* the durable line — what survives the press */}
+      {/* the durable line — what was kept */}
       <div className="flex items-baseline gap-1.5">
         <span aria-hidden="true" className="shrink-0 font-mono text-[10.5px] leading-[1.5] text-ok">
           ✓
         </span>
         <span className="min-w-0 flex-1 font-mono text-[10.5px] leading-[1.5] text-fg-0">
-          <span className="tabular-nums">{count}</span> {plural(count)} stay durable in the record
+          <span className="tabular-nums">{count}</span> {plural(count)} kept; older detail still
+          searchable
         </span>
       </div>
 
-      {/* dashed seal rule */}
-      <div className="memory-dash-rule" />
-
-      {/* recovery affordance — older detail isn't gone, just relocated */}
+      {/* recovery affordance — older detail isn't gone, just searchable */}
       <div className="flex items-baseline gap-1.5">
         <span className="min-w-0 flex-1 font-mono text-[10px] leading-[1.5] text-fg-2">
-          older detail recoverable — <RecallAffordance tone="ok" />
+          view the full transcript — <RecallAffordance tone="ok" />
         </span>
       </div>
-
-      {/* tabular stamp footer */}
-      {stamp && (
-        <span className="font-mono text-[9px] uppercase tracking-[0.08em] tabular-nums text-fg-3">
-          stamped {stamp}
-        </span>
-      )}
     </div>
   )
 }

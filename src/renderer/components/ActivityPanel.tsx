@@ -26,7 +26,6 @@ export function ActivityPanel() {
   // `state.sessionArchive`, and the active slice so it works whether a
   // subagent is currently loaded or not.
   const activeSessionId = useHarness((s) => s.activeSessionId)
-  const openRecallDrawer = useHarness((s) => s.openRecallDrawer)
   const subagentSpend = useHarness(
     (s) => aggregateSessionCost(s, s.activeSessionId) - (s.usage?.totalCost ?? 0),
   )
@@ -232,20 +231,10 @@ export function ActivityPanel() {
         {/* ── Artifacts ─────────────────────────────────── */}
         <ArtifactsSection />
 
-        {/* ── Working memory (what it means) — sits above the ledger
-              (what I did). A quiet 'recall ↗' affordance opens The Morgue
-              (the verbatim pre-compaction archive). ── */}
-        <div className="relative">
-          <WorkingMemorySection />
-          <button
-            type="button"
-            onClick={() => openRecallDrawer()}
-            title="Open recall — search the verbatim archive (The Morgue)"
-            className="kanban-card-mention absolute right-3 top-[9px] z-[6] cursor-pointer font-mono text-[9.5px]"
-          >
-            recall <span className="text-[9px]">↗</span>
-          </button>
-        </div>
+        {/* ── Working memory (what the agent is tracking) — sits above the
+              ledger (what it actually did). Its header carries a 'history ↗'
+              affordance that opens the full-transcript search. ── */}
+        <WorkingMemorySection />
 
         {/* ── Action ledger (what the agent did this session) ── */}
         <ActionLedgerSection />

@@ -2,23 +2,21 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { DatelineTS } from './memory/primitives'
 
 /**
- * RecallPanel — "The Morgue" (Grounded Memory Surface 2).
+ * RecallPanel — the session History drawer (Grounded Memory Surface 2).
  *
- * A controlled recall drawer over the verbatim, pre-compaction transcript
- * archive (raw_messages.jsonl). Compaction condenses/evicts old turns from the
- * live context, but every message is preserved verbatim; this drawer is the UI
- * face of the `recall` tool — grep the archive and read back what the summary
+ * A controlled drawer over the verbatim, pre-compaction transcript archive
+ * (raw_messages.jsonl). Compaction condenses/evicts old turns from the live
+ * context, but every message is preserved verbatim; this drawer is the UI face
+ * of the `recall` tool — search the archive and read back what the summary
  * dropped.
  *
- * The surface reads as old newsroom clippings filed down a left time-spine:
- *   ⌕ search field (accent caret) → debounced query
- *   reverse-chron clipping rows, each with a left role-mark (assistant ◆ /
- *   user ◂ / system ⊡), the snippet (matched query lit in accent), and a
- *   right-aligned DatelineTS. Day boundaries get a heavier rule + uppercase
- *   fg-3 dateline. Empty query falls back to the recent timeline — never blank.
+ * Layout: a search field (accent caret) → debounced query → reverse-chron rows
+ * down a left time-spine, each with a left role-mark, the snippet (matched
+ * query highlighted in accent), and a right-aligned timestamp. Day boundaries
+ * get a heavier rule + dateline. Empty query falls back to recent turns — never
+ * blank.
  *
- * Motion budget: rows fade in once, staggered ~30ms, gated on
- * prefers-reduced-motion. Nothing pulses here — the morgue is still.
+ * Motion: rows fade in once, staggered ~30ms, gated on prefers-reduced-motion.
  */
 
 const DEBOUNCE_MS = 250
@@ -220,11 +218,11 @@ export function RecallPanel({ open, onClose, sessionId, initialQuery = '' }: Rec
         {/* Header — title slug + the search field with its accent caret. */}
         <div className="shrink-0 px-4 pb-3 pt-3 hairline-b">
           <div className="flex items-baseline justify-between gap-2">
-            <div className="flex items-baseline gap-2">
-              <span className="font-serif text-[14px] font-light italic leading-none text-fg-0">
-                the morgue
+            <div className="flex flex-col gap-0.5">
+              <span className="label">history</span>
+              <span className="font-mono text-[10px] leading-[1.4] text-fg-3">
+                search this session's full transcript
               </span>
-              <span className="label">recall</span>
             </div>
             <button
               onClick={onClose}
@@ -243,7 +241,7 @@ export function RecallPanel({ open, onClose, sessionId, initialQuery = '' }: Rec
               ref={inputRef}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="search the record…"
+              placeholder="search this session…"
               spellCheck={false}
               autoComplete="off"
               className="min-w-0 flex-1 bg-transparent font-mono text-[11px] text-fg-0 placeholder:text-fg-3 focus:outline-none"
@@ -259,7 +257,7 @@ export function RecallPanel({ open, onClose, sessionId, initialQuery = '' }: Rec
           </label>
 
           <div className="mt-2 label">
-            {hasQuery ? `clippings «${q}»` : 'recent dispatches'}
+            {hasQuery ? `results for "${q}"` : 'recent'}
           </div>
         </div>
 
@@ -278,7 +276,7 @@ export function RecallPanel({ open, onClose, sessionId, initialQuery = '' }: Rec
             <GhostRows />
           ) : isEmpty ? (
             <div className="px-4 py-4 font-mono text-[11px] italic text-fg-3">
-              {hasQuery ? `No clipping matches «${q}».` : 'No archived dispatches yet.'}
+              {hasQuery ? `No matches for "${q}".` : 'No history yet.'}
             </div>
           ) : (
             <div className="pb-6">
