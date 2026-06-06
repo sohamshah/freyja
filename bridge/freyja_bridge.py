@@ -2401,6 +2401,20 @@ def _tool_content_preview_and_images(
     return "\n".join(part for part in text_parts if part), images
 
 
+def _runner_ctx_window(runner: Any) -> int:
+    """The provider's real context window — the authoritative denominator for
+    the renderer's REQUEST CONTEXT meter. Shipped on every usage event so the
+    dashboard reflects the model's actual window (e.g. 1M for Gemini/Opus)
+    instead of the renderer's static per-model fallback table, which silently
+    drifts whenever a model is added to the provider registry but not the UI.
+    Returns 0 when unknown so the renderer keeps its cold-start estimate."""
+    try:
+        prov = getattr(runner, "provider", None)
+        return int(getattr(prov, "context_window", 0) or 0)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def _git_repo_root(cwd: str) -> str | None:
     """Resolve the git toplevel for ``cwd`` (None if not a repo). Best-effort,
     short timeout — used to attribute mutating bash commands to exact files."""
@@ -2756,6 +2770,9 @@ def _new_tracing_registry(
                             "cacheReadTokens": cr_tok,
                             "cacheWriteTokens": cw_tok,
                             "cost": cost,
+                            "contextWindow": _runner_ctx_window(
+                                get_runner() if get_runner else None
+                            ),
                         }
                     )
             except Exception:  # noqa: BLE001
@@ -3659,18 +3676,37 @@ class _BridgeSession:
         # Emit the system prompt so the renderer can include it in
         # session exports for training data. This is a one-time event
         # per session initialization (not per turn).
-        emit(
-            {
-                "type": "system_event",
-                "sessionId": self.id,
-                "subtype": "system_prompt_set",
-                "message": "System prompt configured",
-                "details": {
-                    "systemPrompt": system_prompt,
-                    "coordinationStrategy": self.coordination_strategy,
-                },
-            }
-        )
+        #
+        # SUB-AGENT EXCEPTION: when the operator opens a sub-agent
+        # session post-hoc (e.g. to scroll the skill-drafter's
+        # transcript), ``ensure_session`` constructs a fresh
+        # _BridgeSession for the sub-agent's id using the parent
+        # desktop session's defaults. ``initialize()`` then builds a
+        # desktop-style system prompt and would emit it here — that
+        # event then routes to the sub-agent's slice in the renderer
+        # and OVERWRITES the real sub-agent prompt (which was captured
+        # at original spawn time by SubAgentTool's own system_prompt_set
+        # emit). Result: the operator sees the parent desktop's prompt
+        # on the sub-agent's pane.
+        #
+        # Sub-agent session ids start with ``sub_`` by convention (see
+        # SubAgentTool.allocate). When the id matches, skip the emit:
+        # the renderer's persisted slice already carries the correct
+        # systemPrompt from SubAgentTool's original emit, and we don't
+        # want to clobber it with desktop-default boilerplate.
+        if not self.id.startswith("sub_"):
+            emit(
+                {
+                    "type": "system_event",
+                    "sessionId": self.id,
+                    "subtype": "system_prompt_set",
+                    "message": "System prompt configured",
+                    "details": {
+                        "systemPrompt": system_prompt,
+                        "coordinationStrategy": self.coordination_strategy,
+                    },
+                }
+            )
         for item in self.memory_store.list_items(limit=50):
             emit(
                 {
@@ -4599,6 +4635,7 @@ class _BridgeSession:
                 "cacheReadTokens": 0,
                 "cacheWriteTokens": 0,
                 "cost": cost,
+                "contextWindow": _runner_ctx_window(self.runner),
             }
         )
 
@@ -7345,6 +7382,7 @@ class _BridgeSession:
                     "cacheReadTokens": cum_cr,
                     "cacheWriteTokens": cum_cw,
                     "cost": float(self.cumulative_cost),
+                    "contextWindow": _runner_ctx_window(self.runner),
                 }
             )
             await self._run_skill_maintenance(effective_ctx)
@@ -10790,6 +10828,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                     "cacheReadTokens": cr_tok,
                     "cacheWriteTokens": cw_tok,
                     "cost": float(sess.cumulative_cost),
+                    "contextWindow": _runner_ctx_window(sess.runner),
                 }
             )
         return
