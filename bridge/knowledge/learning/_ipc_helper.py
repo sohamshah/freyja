@@ -6,6 +6,7 @@ to answer read-only queries that need the learning-loop modules:
   rollup <skill_name>          → JSON ValueRollup with last 10 outcome events
   list-candidates              → JSON array of pending candidates
   list-rejected [limit]        → JSON array of rejected candidates
+  list-promoted [limit]        → JSON array of recently promoted skills
 
 Results are written to stdout as a single JSON object on the final
 line; logs / warnings go to stderr. The main process parses the last
@@ -153,6 +154,115 @@ def _list_rejected(limit: int = 50) -> dict[str, Any]:
     return {"ok": True, "rejected": out}
 
 
+def _list_promoted(limit: int = 50) -> dict[str, Any]:
+    """Return recently promoted skills for the SkillCandidatesPanel
+    "learned" tab.
+
+    Walks ``~/.freyja/skills/.events.jsonl`` for EVENT_PROMOTED rows,
+    most-recent-first, dedupes by ``skill`` (operators may promote the
+    same name twice; we keep only the latest), and dehydrates each row
+    by reading the SKILL.md frontmatter for description/triggers/tags.
+    If the SKILL.md is gone (deleted/archived) we still surface the
+    bare event row so the audit trail isn't dropped.
+    """
+    from pathlib import Path
+
+    try:
+        from bridge.knowledge.learning.paths import skills_root, safe_skill_filename
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"paths import: {e!r}"}
+
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    try:
+        rows: list[dict[str, Any]] = []
+        for ev in events.iter_events():
+            if ev.get("event") != events.EVENT_PROMOTED:
+                continue
+            rows.append(ev)
+        rows.sort(key=lambda e: int(e.get("ts") or 0), reverse=True)
+
+        for ev in rows:
+            name = str(ev.get("skill") or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+
+            description = ""
+            triggers: list[str] = []
+            tags: list[str] = []
+            body = ""
+            skill_path_str = str(ev.get("skill_path") or "").strip()
+            skill_path = Path(skill_path_str) if skill_path_str else (
+                skills_root() / safe_skill_filename(name) / "SKILL.md"
+            )
+            if skill_path.exists():
+                try:
+                    raw = skill_path.read_text(encoding="utf-8", errors="replace")
+                    description, triggers, tags, body = _split_skill_md(raw)
+                except OSError:
+                    pass
+
+            preview = body[:600] + ("…" if len(body) > 600 else "")
+            out.append({
+                "candidateId": str(ev.get("candidate_id") or ""),
+                "name": name,
+                "description": description,
+                "triggers": triggers,
+                "tags": tags,
+                "promotedAt": int(ev.get("ts") or 0),
+                "skillPath": str(skill_path) if skill_path else None,
+                "body": body,
+                "bodyPreview": preview,
+                "actor": str(ev.get("actor") or ""),
+            })
+            if len(out) >= limit:
+                break
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"list_promoted: {e!r}"}
+    return {"ok": True, "promoted": out}
+
+
+def _split_skill_md(text: str) -> tuple[str, list[str], list[str], str]:
+    """Pull description / triggers / tags from SKILL.md frontmatter.
+
+    Frontmatter is YAML between leading ``---`` fences. Body is what
+    follows. We tolerate a missing frontmatter block (body becomes the
+    full text, no metadata). PyYAML failures fall back to empty meta.
+    """
+    if not text.startswith("---"):
+        return "", [], [], text
+    lines = text.split("\n")
+    end_idx = -1
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            end_idx = i
+            break
+    if end_idx < 0:
+        return "", [], [], text
+    fm_text = "\n".join(lines[1:end_idx])
+    body = "\n".join(lines[end_idx + 1:]).lstrip("\n")
+    # The drafter sometimes emits ``triggers:[]`` / ``tags:[]`` with no
+    # space after the colon — invalid YAML, but harmless to fix here so
+    # the description/triggers still surface in the learned tab. Same
+    # for the more common ``key:value`` shorthand on the same line.
+    import re as _re
+    fm_normalized = _re.sub(r"^(\w[\w-]*):(\S)", r"\1: \2", fm_text, flags=_re.MULTILINE)
+    try:
+        import yaml
+        meta = yaml.safe_load(fm_normalized) or {}
+    except Exception:  # noqa: BLE001
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    description = str(meta.get("description") or "").strip()
+    triggers_raw = meta.get("triggers") or []
+    tags_raw = meta.get("tags") or []
+    triggers = [str(t) for t in triggers_raw] if isinstance(triggers_raw, list) else []
+    tags = [str(t) for t in tags_raw] if isinstance(tags_raw, list) else []
+    return description, triggers, tags, body
+
+
 def _candidate_diff(candidate_id: str) -> dict[str, Any]:
     """Return a unified diff between the candidate's rendered SKILL.md
     and the on-disk SKILL.md for the same skill name.
@@ -231,6 +341,9 @@ def main(argv: list[str]) -> int:
         elif cmd == "list-rejected":
             limit = int(argv[2]) if len(argv) > 2 else 50
             result = _list_rejected(limit=limit)
+        elif cmd == "list-promoted":
+            limit = int(argv[2]) if len(argv) > 2 else 50
+            result = _list_promoted(limit=limit)
         elif cmd == "candidate-diff":
             candidate_id = argv[2] if len(argv) > 2 else ""
             if not candidate_id:

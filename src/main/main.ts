@@ -809,6 +809,14 @@ function setupIpc() {
     if (!res.ok) return { ok: false, error: res.error ?? 'helper_failed' }
     return res.payload ?? { ok: false, error: 'helper_empty' }
   })
+  ipcMain.handle(IPC.skillListPromoted, async (_e, limit?: number) => {
+    const args = typeof limit === 'number' && limit > 0
+      ? ['list-promoted', String(limit)]
+      : ['list-promoted']
+    const res = await runSkillHelper(args)
+    if (!res.ok) return { ok: false, error: res.error ?? 'helper_failed' }
+    return res.payload ?? { ok: false, error: 'helper_empty' }
+  })
   ipcMain.handle(IPC.skillCandidateDiff, async (_e, candidateId: string) => {
     if (typeof candidateId !== 'string' || !candidateId) {
       return { ok: false, error: 'invalid_candidate_id' }

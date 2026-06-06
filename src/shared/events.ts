@@ -1003,6 +1003,7 @@ export const IPC = {
   skillRollup: 'skill:rollup',
   skillListCandidates: 'skill:listCandidates',
   skillListRejected: 'skill:listRejected',
+  skillListPromoted: 'skill:listPromoted',
   skillSave: 'skill:save',
   skillReadFile: 'skill:readFile',
   skillOpen: 'skill:open',
@@ -1157,10 +1158,30 @@ export interface SkillRejectedRecord extends SkillCandidateRecord {
   actor?: string
 }
 
+/** A skill that was promoted from a candidate. Backs the "learned" tab
+ *  in SkillCandidatesPanel. Lives in `~/.freyja/skills/.events.jsonl`
+ *  (EVENT_PROMOTED entries); the bridge dehydrates each entry by reading
+ *  the corresponding SKILL.md for description/triggers/tags. */
+export interface SkillPromotedRecord {
+  candidateId: string
+  name: string
+  description: string
+  triggers: string[]
+  tags: string[]
+  promotedAt: number
+  skillPath?: string
+  /** Reconstructed from the SKILL.md frontmatter+body when available. */
+  body?: string
+  bodyPreview?: string
+  /** Optional actor (operator | autopromote) — recorded in the event log. */
+  actor?: string
+}
+
 export interface SkillListResult {
   ok: boolean
   candidates?: SkillCandidateRecord[]
   rejected?: SkillRejectedRecord[]
+  promoted?: SkillPromotedRecord[]
   error?: string
 }
 
