@@ -590,11 +590,15 @@ class SessionLedger:
             return None
         name = _short_path(path)
         op = "create" if tool_name == "write_file" else "edit"
-        # Pull "(N lines)" out of the write/edit confirmation when present.
-        lines_m = re.search(r"\((\d[\d,]*)\s+lines?\)", result_text or "")
         verb = "created" if op == "create" else "edited"
-        if lines_m:
-            summary = f"{verb} {name} ({lines_m.group(1)} lines)"
+        # Only annotate a CREATE with its total line count (a meaningful file
+        # size). For an EDIT, the tool's "(N lines)" is just the replacement
+        # block size — usually 1 — which misleads ("edited X (1 lines)" while
+        # the file was edited 20×). edits carry magnitude via the diff stats
+        # instead, and effects() aggregates the edit count across the session.
+        if op == "create":
+            lines_m = re.search(r"\((\d[\d,]*)\s+lines?\)", result_text or "")
+            summary = f"{verb} {name} ({lines_m.group(1)} lines)" if lines_m else f"{verb} {name}"
         else:
             summary = f"{verb} {name}"
         return self.record_effect(
@@ -655,13 +659,19 @@ class SessionLedger:
             return list(self._rows)
 
     def effects(self, creator_id: str | None = None) -> list[dict[str, Any]]:
-        """Effect rows, newest-first, deduped: file effects collapse to the
-        newest row per path; pinned facts are excluded (surfaced separately).
+        """Effect rows, newest-first, with file effects AGGREGATED per path.
+
+        A file touched N times collapses to ONE row that carries the edit
+        ``editCount`` and the summed additions/deletions, with a summary like
+        ``edited foo.py ×23 (+120 −45)`` — so the agent's reminder + the UI
+        reflect the real volume of work instead of the last edit's misleading
+        "(1 lines)". Non-file effects (shell commands, images) stay individual.
+        Pinned facts are excluded (surfaced separately).
 
         When ``creator_id`` is given, only that creator's effects are returned —
         the bridge passes its own session id so a sub-agent's writes (recorded
         into the same shared ledger) don't flood the parent's reminder."""
-        latest_by_path: dict[str, dict[str, Any]] = {}
+        agg_by_path: dict[str, dict[str, Any]] = {}
         non_file: list[dict[str, Any]] = []
         for row in self._snapshot():
             if row.get("class") != "effect" or row.get("kind") == "pinned_fact":
@@ -669,19 +679,57 @@ class SessionLedger:
             if creator_id is not None and row.get("creatorId") != creator_id:
                 continue
             path = row.get("path")
-            if path:
-                prev = latest_by_path.get(path)
-                if prev is None or int(row.get("createdAt") or 0) >= int(
-                    prev.get("createdAt") or 0
-                ):
-                    # Preserve original op: if the file was ever *created* this
-                    # session, keep "created" as the headline verb.
-                    if prev is not None and prev.get("operation") == "create":
-                        row = {**row, "operation": "create", "summary": row.get("summary")}
-                    latest_by_path[path] = row
-            else:
+            if not path:
                 non_file.append(row)
-        merged = list(latest_by_path.values()) + non_file
+                continue
+            add = int(row.get("additions") or 0)
+            dele = int(row.get("deletions") or 0)
+            has_diff = row.get("additions") is not None or row.get("deletions") is not None
+            cur = agg_by_path.get(path)
+            if cur is None:
+                agg_by_path[path] = {
+                    **row,
+                    "editCount": 1,
+                    "additions": add if has_diff else None,
+                    "deletions": dele if has_diff else None,
+                    "_hasDiff": has_diff,
+                }
+            else:
+                cur["editCount"] += 1
+                if int(row.get("createdAt") or 0) >= int(cur.get("createdAt") or 0):
+                    cur["createdAt"] = row.get("createdAt")
+                # A file ever *created* this session keeps the "created" verb.
+                if row.get("operation") == "create":
+                    cur["operation"] = "create"
+                if has_diff:
+                    cur["additions"] = int(cur.get("additions") or 0) + add
+                    cur["deletions"] = int(cur.get("deletions") or 0) + dele
+                    cur["_hasDiff"] = True
+
+        # Build an honest aggregated summary for each file, but keep the
+        # original single-row summary (e.g. "created foo.py (680 lines)") when
+        # there's nothing to aggregate — only rewrite when a file was touched
+        # more than once or carries diff magnitude.
+        for path, r in agg_by_path.items():
+            cnt = int(r.get("editCount") or 1)
+            has_diff = bool(r.get("_hasDiff")) and (
+                int(r.get("additions") or 0) or int(r.get("deletions") or 0)
+            )
+            r.pop("_hasDiff", None)
+            if cnt <= 1 and not has_diff:
+                continue
+            name = _short_path(str(path))
+            verb = "created" if r.get("operation") == "create" else "edited"
+            parts = [f"{verb} {name}"]
+            if cnt > 1:
+                parts.append(f"×{cnt}")
+            if has_diff:
+                parts.append(
+                    f"(+{int(r.get('additions') or 0)} −{int(r.get('deletions') or 0)})"
+                )
+            r["summary"] = " ".join(parts)
+
+        merged = list(agg_by_path.values()) + non_file
         merged.sort(key=lambda r: int(r.get("createdAt") or 0), reverse=True)
         return merged
 

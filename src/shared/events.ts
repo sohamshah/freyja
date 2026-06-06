@@ -700,6 +700,8 @@ export type BridgeEvent =
       cacheReadTokens: number
       cacheWriteTokens: number
       cost: number
+      /** Provider's real context window — authoritative dashboard denominator. */
+      contextWindow?: number
     } & SessionId)
   | ({
       type: 'usage_snapshot'
@@ -709,6 +711,8 @@ export type BridgeEvent =
       cacheReadTokens: number
       cacheWriteTokens: number
       cost: number
+      /** Provider's real context window — authoritative dashboard denominator. */
+      contextWindow?: number
     } & SessionId)
   | ({ type: 'message_stop'; stopReason: string } & SessionId)
   | ({ type: 'turn_complete'; turnId: string; success: boolean } & SessionId)

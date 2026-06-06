@@ -14,8 +14,29 @@ type LedgerRow = {
   path?: string | null
   dir?: string | null
   repo?: string | null
+  additions?: number | null
+  deletions?: number | null
   createdAt?: number
 }
+
+/** A file effect aggregated across every edit/write to that path — so a file
+ *  the agent touched 23 times reads as one row with "×23" and the summed
+ *  diff, instead of collapsing to the last edit's misleading "(1 lines)". */
+type FileAgg = {
+  type: 'file'
+  path: string
+  filename: string
+  operation: string
+  count: number
+  additions: number
+  deletions: number
+  hasDiff: boolean
+  createdAt: number
+  dir?: string | null
+  repo?: string | null
+}
+type OtherItem = { type: 'other'; row: LedgerRow; createdAt: number }
+type DisplayItem = FileAgg | OtherItem
 
 const OP_META: Record<string, { glyph: string; color: string }> = {
   create: { glyph: '+', color: 'text-ok' },
@@ -69,31 +90,59 @@ export function ActionLedgerSection() {
     }
   }, [activeSessionId, activityTick])
 
-  const { effects, pinned } = useMemo(() => {
-    // Dedup effects by path (newest), matching SessionLedger.effects().
-    const byPath = new Map<string, LedgerRow>()
-    const nonFile: LedgerRow[] = []
+  const { items, pinned, actionCount } = useMemo(() => {
+    // Aggregate file effects by path (count edits + sum diff); keep non-file
+    // effects (shell commands, images) as individual rows.
+    const byPath = new Map<string, FileAgg>()
+    const other: OtherItem[] = []
     const pins: LedgerRow[] = []
+    let count = 0
     for (const r of rows) {
       if (r.kind === 'pinned_fact') {
         pins.push(r)
         continue
       }
       if (r.class !== 'effect') continue
+      count += 1
       if (r.path) {
-        const prev = byPath.get(r.path)
-        if (!prev || (r.createdAt ?? 0) >= (prev.createdAt ?? 0)) byPath.set(r.path, r)
+        const add = r.additions ?? 0
+        const del = r.deletions ?? 0
+        const hasDiff = r.additions != null || r.deletions != null
+        const cur = byPath.get(r.path)
+        if (!cur) {
+          byPath.set(r.path, {
+            type: 'file',
+            path: r.path,
+            filename: r.path.split('/').pop() ?? r.path,
+            operation: r.operation ?? 'edit',
+            count: 1,
+            additions: add,
+            deletions: del,
+            hasDiff,
+            createdAt: r.createdAt ?? 0,
+            dir: r.dir,
+            repo: r.repo,
+          })
+        } else {
+          cur.count += 1
+          cur.additions += add
+          cur.deletions += del
+          cur.hasDiff = cur.hasDiff || hasDiff
+          // A file that was ever created keeps the "create" verb.
+          if (r.operation === 'create') cur.operation = 'create'
+          cur.createdAt = Math.max(cur.createdAt, r.createdAt ?? 0)
+        }
       } else {
-        nonFile.push(r)
+        other.push({ type: 'other', row: r, createdAt: r.createdAt ?? 0 })
       }
     }
-    const merged = [...byPath.values(), ...nonFile].sort(
-      (a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0),
+    const merged: DisplayItem[] = [...byPath.values(), ...other].sort(
+      (a, b) => b.createdAt - a.createdAt,
     )
-    return { effects: merged, pinned: pins }
+    return { items: merged, pinned: pins, actionCount: count }
   }, [rows])
 
-  const total = effects.length
+  const total = items.length
 
   return (
     <div className="hairline-b">
@@ -104,7 +153,7 @@ export function ActionLedgerSection() {
             className="flex items-baseline gap-2 text-left"
           >
             <div className="label">actions this session</div>
-            <span className="font-mono text-[10px] text-fg-3">{total}</span>
+            <span className="font-mono text-[10px] tabular-nums text-fg-3">{actionCount}</span>
             <span className="text-[9px] text-fg-3">{expanded ? '▾' : '▸'}</span>
           </button>
         </div>
@@ -116,12 +165,51 @@ export function ActionLedgerSection() {
         </div>
       ) : (
         <div className="space-y-1 px-4 pb-3 pt-1">
-          {effects.map((row, i) => {
+          {items.map((item, i) => {
+            if (item.type === 'file') {
+              const meta = opMeta(item.operation)
+              const verb = item.operation === 'create' ? 'created' : 'edited'
+              return (
+                <div
+                  key={`${item.path}-${i}`}
+                  title={item.path}
+                  className="flex w-full items-center gap-2 rounded-md bg-white/[0.02] px-2 py-1.5 ring-hairline"
+                >
+                  <span className={`shrink-0 font-mono text-[11px] font-bold ${meta.color}`}>
+                    {meta.glyph}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline gap-1.5">
+                      <span className="truncate font-mono text-[10.5px] text-fg-0">
+                        {verb} {item.filename}
+                      </span>
+                      {item.count > 1 && (
+                        <span className="shrink-0 font-mono text-[9px] tabular-nums text-fg-3">
+                          ×{item.count}
+                        </span>
+                      )}
+                      {item.hasDiff && (item.additions > 0 || item.deletions > 0) && (
+                        <span className="shrink-0 font-mono text-[9px] tabular-nums">
+                          <span className="text-ok">+{item.additions}</span>{' '}
+                          <span className="text-danger">−{item.deletions}</span>
+                        </span>
+                      )}
+                    </div>
+                    {(item.repo || item.dir) && (
+                      <div className="truncate font-mono text-[8.5px] text-fg-3">
+                        {item.repo || item.dir}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )
+            }
+            const row = item.row
             const meta = opMeta(row.operation)
             return (
               <div
-                key={`${row.path ?? row.summary ?? 'r'}-${i}`}
-                title={row.path ?? row.summary}
+                key={`${row.summary ?? 'r'}-${i}`}
+                title={row.summary}
                 className="flex w-full items-center gap-2 rounded-md bg-white/[0.02] px-2 py-1.5 ring-hairline"
               >
                 <span className={`shrink-0 font-mono text-[11px] font-bold ${meta.color}`}>

@@ -166,9 +166,9 @@ export function WorkingMemorySection({ topOffset = 0 }: { topOffset?: number }) 
           type="button"
           onClick={() => openRecallDrawer()}
           title="Search this session's full transcript"
-          className="kanban-card-mention cursor-pointer font-mono text-[9.5px]"
+          className="rounded bg-white/[0.04] px-1.5 py-[2px] font-mono text-[9px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
         >
-          history <span className="text-[9px]">↗</span>
+          history ↗
         </button>
       </SectionSlug>
 

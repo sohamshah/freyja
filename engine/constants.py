@@ -75,6 +75,13 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "kimi-k2.5": 262_144,
     "glm5": 202_752,
     "minimax-m2.5": 196_608,
+    # Google Gemini — keep in sync with engine/providers.py MODEL_REGISTRY.
+    "gemini-3.1-pro-preview": 1_048_576,
+    "gemini-3.5-flash": 1_048_576,
+    "gemini-3.1-flash": 1_048_576,
+    "gemini-3.1-flash-lite": 1_048_576,
+    "gemini-2.5-pro": 1_048_576,
+    "gemini-2.5-flash": 1_048_576,
 }
 
 # ============================================================================

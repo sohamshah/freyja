@@ -741,6 +741,16 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   'glm5': 202_752,
   'kimi-k2.5': 262_144,
   'minimax-m2.5': 196_608,
+  // Google Gemini (keep in sync with engine/providers.py MODEL_REGISTRY).
+  // These were missing here, so gemini-* sessions showed `ctx N/200k` while
+  // the real window is ~1M — the dashboard denominator (not the provider /
+  // compaction, which read the registry) was wrong.
+  'gemini-3.1-pro-preview': 1_048_576,
+  'gemini-3.5-flash': 1_048_576,
+  'gemini-3.1-flash': 1_048_576,
+  'gemini-3.1-flash-lite': 1_048_576,
+  'gemini-2.5-pro': 1_048_576,
+  'gemini-2.5-flash': 1_048_576,
 }
 
 function contextWindowFor(model: string): number {
@@ -1700,6 +1710,12 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         totalCost: ev.cost,
         lastTurnInputTokens: contextTokens,
         lastTurnOutputTokens: ev.outputTokens,
+        // Authoritative window from the provider (when sent) overrides the
+        // renderer's static per-model fallback so the denominator can't drift.
+        contextWindow:
+          ev.contextWindow && ev.contextWindow > 0
+            ? ev.contextWindow
+            : slice.usage.contextWindow,
       }
       return next
     }
@@ -1713,6 +1729,10 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         totalOutputTokens: ev.outputTokens,
         totalCacheReadTokens: ev.cacheReadTokens,
         totalCacheWriteTokens: ev.cacheWriteTokens,
+        contextWindow:
+          ev.contextWindow && ev.contextWindow > 0
+            ? ev.contextWindow
+            : slice.usage.contextWindow,
         totalCost: ev.cost || slice.usage.totalCost,
       }
       return next

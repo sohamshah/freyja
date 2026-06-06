@@ -156,6 +156,43 @@ def test_effects_dedup_keeps_created_verb(tmp_path):
     assert effs[0]["operation"] == "create"  # creation verb preserved
 
 
+def test_effects_aggregates_repeated_edits(tmp_path):
+    # 23 edits to one file should collapse to ONE row carrying the edit count
+    # and summed diff — not 23 rows, and not a misleading "(1 lines)".
+    led = _mk(tmp_path)
+    p = "/repo/v2/index.html"
+    for i in range(3):
+        led.record_from_tool(
+            tool_name="edit_file", tool_args={"path": p},
+            result_text="Edited file: index.html\nReplaced lines 1-1 (1 lines)",
+            result_chars=40, is_error=False, tool_call_id=f"t{i}", creator_id="s1",
+            extra={"additions": 10, "deletions": 4},
+        )
+    effs = led.effects(creator_id="s1")
+    assert len(effs) == 1
+    row = effs[0]
+    assert row["editCount"] == 3
+    assert row["additions"] == 30  # summed
+    assert row["deletions"] == 12
+    assert "×3" in row["summary"]
+    assert "(1 lines)" not in row["summary"]  # the misleading per-edit count is gone
+    assert "+30" in row["summary"] and "−12" in row["summary"]
+
+
+def test_single_create_keeps_line_count(tmp_path):
+    # A lone create with no diff keeps its meaningful "(N lines)" file size.
+    led = _mk(tmp_path)
+    led.record_from_tool(
+        tool_name="write_file", tool_args={"path": "/repo/new.py"},
+        result_text="Created file: new.py\nWrote 9000 characters (680 lines)",
+        result_chars=40, is_error=False, tool_call_id="t1", creator_id="s1",
+    )
+    effs = led.effects(creator_id="s1")
+    assert len(effs) == 1
+    assert "(680 lines)" in effs[0]["summary"]
+    assert "×" not in effs[0]["summary"]
+
+
 def test_bash_effect_vs_observation_recording(tmp_path):
     led = _mk(tmp_path)
     led.record_from_tool(
