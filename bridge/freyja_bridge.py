@@ -1844,11 +1844,12 @@ Grounding (do not skip):
   file looked like, what a search returned), use `recall`."""
 
 _INSTALL_DEPS_BLOCK = """# Installing dependencies
-On a missing-package error, install the package and retry — yolo tier
-auto-approves. Prefer `uv pip install` in venvs, otherwise `uv add`,
-`npm install`, `brew install`. Common Python import → package map:
-`fitz`→pymupdf, `cv2`→opencv-python, `PIL`→pillow, `yaml`→pyyaml,
-`sklearn`→scikit-learn."""
+On a missing-package error, install the package and retry. The operator
+may need to approve the install command if they're not on yolo tier —
+that's fine, surface the install attempt and let them allow it once.
+Prefer `uv pip install` in venvs, otherwise `uv add`, `npm install`,
+`brew install`. Common Python import → package map: `fitz`→pymupdf,
+`cv2`→opencv-python, `PIL`→pillow, `yaml`→pyyaml, `sklearn`→scikit-learn."""
 
 _SESSION_COMMANDS_BLOCK = """# Session-specific commands
 The operator can drive Freyja via slash commands. You can't run them yourself, but suggest the right one when it's the cleanest path for the user:
@@ -1857,9 +1858,11 @@ The operator can drive Freyja via slash commands. You can't run them yourself, b
 - `/compact [scope]` — force a context compaction pass (you can also call `summarize_context` directly).
 - `/model <id>` — switch model mid-session.
 - `/skills` — operator browse of the skill index (use `list_skills` / `search_skills` yourself).
+- `/learn-this [guidance]` — force the skill drafter to review this conversation now. Optional trailing text steers the drafter ("/learn-this focus on the deploy cherry-pick pattern"). Suggest this when the operator says something is worth remembering across sessions.
 - `/memory` — operator-only view of persistent notes.
 - `/dashboard` — open the mission dashboard (Cmd+Shift+M).
 - `/subagents` — open the swarm dashboard (Cmd+O).
+- `/schedule` — view + manage scheduled / cron jobs (also aliased `/schedules`, `/jobs`, `/cron`).
 - `/usage` — show token and cost usage so far.
 - `/export` — export the transcript as markdown / jsonl.
 
@@ -1885,10 +1888,11 @@ _TOOL_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "list_displays", "list_windows", "focus_window",
         "find_element", "read_ax_tree", "computer", "computer_use", "wait",
     )),
-    ("Media", ("generate_image", "analyze_video")),
+    ("Media", ("generate_image", "generate_svg", "analyze_video")),
     ("Knowledge", (
         "list_skills", "search_skills", "load_skill",
         "memory", "session_memory", "record_user_preference",
+        "working_memory", "recall",
     )),
     ("Coordination", (
         "sub_agent", "subagents", "summarize_context", "tool_search",
