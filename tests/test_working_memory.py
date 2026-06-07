@@ -11,7 +11,10 @@ from bridge.working_memory import (
     apply_working_memory_upserts,
     render_working_memory,
 )
-from engine.compaction import _parse_working_memory_block
+from engine.compaction import (
+    SummaryCompaction,
+    _working_memory_schema,
+)
 
 
 def _mk(tmp_path):
@@ -194,47 +197,96 @@ async def test_tool_read_folds_in_ledger_effects(tmp_path):
     assert "widget_tools.py (680 lines)" in rendered
 
 
-# ── compaction-as-projection (2b) ──────────────────────────────────────────
+# ── compaction extraction (Call B) ──────────────────────────────────────────
 
-def test_parse_working_memory_block():
-    raw = (
-        "<summary>S</summary>\n"
-        '<working_memory>[{"type":"workstream","title":"Port","request":"do x"},'
-        '{"type":"decision","title":"SSE","rationale":"simple","workstream":"Port"},'
-        '{"type":"bogus","title":"skip"}]</working_memory>'
+def test_working_memory_schema_shape():
+    schema = _working_memory_schema()
+    assert schema["type"] == "object"
+    assert set(schema["required"]) == {"summary", "actions_completed", "entities"}
+    props = schema["properties"]
+    assert props["summary"]["type"] == "string"
+    assert props["actions_completed"]["type"] == "array"
+    assert props["actions_completed"]["items"]["type"] == "string"
+    ent = props["entities"]["items"]
+    assert ent["required"] == ["type"]
+    # Every entity type the store understands is offered to the model.
+    assert set(ent["properties"]["type"]["enum"]) == {
+        "workstream", "decision", "finding", "open_thread", "artifact_note",
+    }
+
+
+def test_normalize_working_memory_drops_invalid_and_empty():
+    out = SummaryCompaction._normalize_working_memory({
+        "summary": "  did stuff  ",
+        "actions_completed": ["a", "  ", "", "b", 3],  # blanks/non-str dropped
+        "entities": [
+            {"type": "workstream", "title": "Port", "request": "ship", "note": ""},
+            {"type": "bogus", "title": "x"},     # invalid type → dropped
+            "not a dict",                          # non-dict → dropped
+            {"type": "finding", "text": "f", "source": None},  # null field stripped
+        ],
+    })
+    assert out["summary"] == "did stuff"
+    assert out["actions_completed"] == ["a", "b"]
+    types = [e["type"] for e in out["entities"]]
+    assert types == ["workstream", "finding"]
+    # Empty-string and null fields are stripped from stored entities.
+    assert "note" not in out["entities"][0]
+    assert "source" not in out["entities"][1]
+
+
+def test_normalize_working_memory_handles_missing_keys():
+    out = SummaryCompaction._normalize_working_memory({})
+    assert out == {"summary": "", "actions_completed": [], "entities": []}
+
+
+# ── overview (high-level summary + actions-completed) ────────────────────────
+
+def test_set_overview_persists_and_renders(tmp_path):
+    wm = _mk(tmp_path)
+    wm.set_overview(
+        summary="Built the two-call compaction split.",
+        actions_completed=["Added _extract_working_memory", "Wired Call B"],
     )
-    items = _parse_working_memory_block(raw)
-    assert len(items) == 2  # bogus type dropped
-    assert items[0]["type"] == "workstream"
+    out = wm.render()
+    assert "## Summary" in out
+    assert "Built the two-call compaction split." in out
+    assert "## Actions completed" in out
+    assert "- Added _extract_working_memory" in out
+    # Survives a reload (new instance over the same dir).
+    wm2 = WorkingMemory(session_id="s1", project_dir=tmp_path)
+    wm2.ensure()
+    ov = wm2.overview()
+    assert ov["summary"] == "Built the two-call compaction split."
+    assert ov["actionsCompleted"] == ["Added _extract_working_memory", "Wired Call B"]
+    assert "## Summary" in wm2.render()
 
 
-def test_parse_working_memory_block_malformed_is_safe():
-    assert _parse_working_memory_block("no block here") == []
-    assert _parse_working_memory_block("<working_memory>not json</working_memory>") == []
-    assert _parse_working_memory_block("<working_memory>{}</working_memory>") == []  # not a list
+def test_overview_normalizes_blanks(tmp_path):
+    wm = _mk(tmp_path)
+    wm.set_overview(summary="  s  ", actions_completed=["x", "  ", "", "y"])
+    ov = wm.overview()
+    assert ov["summary"] == "s"
+    assert ov["actionsCompleted"] == ["x", "y"]
 
 
-def test_parse_working_memory_block_strips_code_fences():
-    # Models (esp. Gemini) wrap the JSON in ```json fences — must still parse.
-    raw = (
-        "<summary>S</summary>\n"
-        "<working_memory>\n```json\n"
-        '[{"type":"workstream","title":"Port","request":"x"}]\n'
-        "```\n</working_memory>"
-    )
-    items = _parse_working_memory_block(raw)
-    assert len(items) == 1 and items[0]["type"] == "workstream"
+def test_overview_combines_with_entities(tmp_path):
+    wm = _mk(tmp_path)
+    wm.upsert(type="workstream", fields={"title": "Port", "request": "ship"})
+    wm.set_overview(summary="Working on the port.", actions_completed=["did x"])
+    out = wm.render()
+    # Both the overview and the entity graph are present.
+    assert "## Summary" in out and "Working on the port." in out
+    assert "Port" in out
 
 
-def test_parse_working_memory_block_tagless_after_summary():
-    # Some models drop the tags and just emit the array after </summary>.
-    raw = '<summary>S</summary>\n[{"type":"finding","text":"f"}]'
-    items = _parse_working_memory_block(raw)
-    assert len(items) == 1 and items[0]["type"] == "finding"
-
-
-def test_parse_working_memory_block_empty_array():
-    assert _parse_working_memory_block("<working_memory>[]</working_memory>") == []
+def test_overview_alone_makes_render_nonempty_and_not_empty(tmp_path):
+    wm = _mk(tmp_path)
+    assert wm.render() is None
+    assert wm.is_empty()
+    wm.set_overview(summary="only a summary", actions_completed=[])
+    assert wm.render() is not None
+    assert not wm.is_empty()
 
 
 def test_apply_upserts_creates_and_links(tmp_path):

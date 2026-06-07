@@ -237,6 +237,10 @@ class WorkingMemory:
         # takes the lock, so a re-entrant lock is required.
         self._lock = threading.RLock()
         self._entities: dict[str, dict[str, Any]] = {}
+        # High-level overview produced by compaction's extraction call (Call B):
+        # {summary, actionsCompleted, updatedAt}. The explicit "what happened /
+        # what was done" surface, kept distinct from the entity graph.
+        self._overview: dict[str, Any] | None = None
         self._dir_ready = False
 
     def ensure(self) -> None:
@@ -249,6 +253,7 @@ class WorkingMemory:
 
     def _load(self) -> None:
         self._entities = {}
+        self._overview = None
         try:
             if not self.path.exists():
                 return
@@ -256,6 +261,9 @@ class WorkingMemory:
             ents = doc.get("entities") if isinstance(doc, dict) else None
             if isinstance(ents, dict):
                 self._entities = {str(k): v for k, v in ents.items() if isinstance(v, dict)}
+            ov = doc.get("overview") if isinstance(doc, dict) else None
+            if isinstance(ov, dict):
+                self._overview = ov
         except Exception:  # noqa: BLE001
             logger.debug("working memory load failed", exc_info=True)
 
@@ -293,6 +301,34 @@ class WorkingMemory:
             self._entities[eid] = ent
             self._save()
             return ent
+
+    def set_overview(
+        self, *, summary: str | None, actions_completed: list[str] | None = None
+    ) -> dict[str, Any]:
+        """Set the high-level overview (Call B's summary + actions-completed).
+
+        Replaces the prior overview wholesale — Call B is given the current
+        working memory and asked to produce the full, up-to-date summary each
+        round, so this is a full-state set rather than a merge. Empty/missing
+        fields are normalized so the renderer/persistence stay simple."""
+        now = int(time.time() * 1000)
+        clean_summary = summary.strip() if isinstance(summary, str) else ""
+        clean_actions: list[str] = []
+        for a in actions_completed or []:
+            if isinstance(a, str) and a.strip():
+                clean_actions.append(a.strip())
+        with self._lock:
+            self._overview = {
+                "summary": clean_summary,
+                "actionsCompleted": clean_actions,
+                "updatedAt": now,
+            }
+            self._save()
+            return self._overview
+
+    def overview(self) -> dict[str, Any] | None:
+        with self._lock:
+            return dict(self._overview) if self._overview else None
 
     def resolve(self, entity_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -358,11 +394,37 @@ class WorkingMemory:
         return None
 
     def render(self, *, ledger_effects: list[dict[str, Any]] | None = None) -> str | None:
-        return render_working_memory(self.all(), ledger_effects=ledger_effects)
+        entity_text = render_working_memory(self.all(), ledger_effects=ledger_effects)
+        overview_text = self._render_overview()
+        if overview_text and entity_text:
+            return f"{overview_text}\n\n{entity_text}"
+        return overview_text or entity_text
+
+    def _render_overview(self) -> str | None:
+        with self._lock:
+            ov = dict(self._overview) if self._overview else None
+        if not ov:
+            return None
+        summary = str(ov.get("summary") or "").strip()
+        actions = [a for a in (ov.get("actionsCompleted") or []) if str(a).strip()]
+        if not summary and not actions:
+            return None
+        lines: list[str] = ["## Summary"]
+        if summary:
+            lines.append(summary)
+        if actions:
+            lines.append("")
+            lines.append("## Actions completed")
+            for a in actions:
+                lines.append(f"- {a}")
+        return "\n".join(lines)
 
     def is_empty(self) -> bool:
         with self._lock:
-            return not self._entities
+            if self._entities:
+                return False
+            ov = self._overview or {}
+            return not (ov.get("summary") or ov.get("actionsCompleted"))
 
     # ── persistence ──────────────────────────────────────────────────────
 
@@ -371,7 +433,12 @@ class WorkingMemory:
             if not self._dir_ready:
                 self.project_dir.mkdir(parents=True, exist_ok=True)
                 self._dir_ready = True
-            doc = {"version": 1, "sessionId": self.session_id, "entities": self._entities}
+            doc = {
+                "version": 1,
+                "sessionId": self.session_id,
+                "overview": self._overview,
+                "entities": self._entities,
+            }
             tmp = self.path.with_suffix(".json.tmp")
             with self._lock:
                 tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")

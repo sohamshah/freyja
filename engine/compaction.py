@@ -32,7 +32,7 @@ from engine.session import TranscriptManager
 from engine.types import ImageBlock, Message, ThinkingConfig
 
 if TYPE_CHECKING:
-    from engine.providers import ModelProvider
+    from engine.providers import ModelProvider, StructuredResponse
 
 logger = logging.getLogger(__name__)
 
@@ -60,49 +60,140 @@ def _is_summary_inject(msg: Message) -> bool:
     return False
 
 
-_WM_TYPES = ("workstream", "decision", "finding", "open_thread")
+_WM_TYPES = ("workstream", "decision", "finding", "open_thread", "artifact_note")
 
 
-def _parse_working_memory_block(text: str) -> list[dict[str, Any]]:
-    """Extract structured working-memory upserts from a summarizer output's
-    ``<working_memory>[...]</working_memory>`` JSON block (Milestone 2b).
+def _working_memory_schema() -> dict[str, Any]:
+    """JSON schema for compaction's dedicated working-memory extraction
+    call (Call B).
 
-    Tolerant by design — models (especially Gemini) routinely wrap the JSON in
-    ```json code fences or emit the array right after </summary> without the
-    tags. Earlier this was strict, so a fenced block silently produced zero
-    upserts and working memory never updated on compaction. Pure + defensive:
-    returns [] on anything genuinely unparseable so a bad emission never breaks
-    compaction; the bridge applies the result.
+    Call B is a second, parallel LLM call made off the *same* conversation
+    payload as the prose summary (Call A). Where Call A produces the
+    human-facing narrative, Call B produces the structured, durable memory:
+    a high-level summary, an explicit list of actions completed / work done,
+    and the entity graph (workstreams, decisions, findings, open threads,
+    artifact notes). Forcing structured output here removes the whole class
+    of failures the old regex-parse path had — fenced JSON, dropped tags,
+    optional emission. The provider refuses to return output that violates
+    this schema.
+
+    Like the drafter's schema, this targets the *subset* of JSON Schema that
+    Anthropic's tool-call backend honors (no ``oneOf``/``if``/``then``), so
+    per-type field requirements are expressed in prose in the property
+    descriptions rather than via conditional ``required`` blocks. Each entity
+    requires only ``type``; the model fills the fields that apply to that type.
     """
-    import json as _json
-    import re as _re
-
-    if not text:
-        return []
-    m = _re.search(r"<working_memory>(.*?)</working_memory>", text, _re.DOTALL | _re.IGNORECASE)
-    raw = m.group(1).strip() if m else ""
-    if not raw and "<working_memory" not in text.lower():
-        # Tag-less fallback: a JSON array in the tail after </summary>
-        # (some models drop the tags). Fence-stripping below handles ```json.
-        tail = text.rsplit("</summary>", 1)[-1]
-        m2 = _re.search(r"(\[.*\])", tail, _re.DOTALL)
-        raw = m2.group(1).strip() if m2 else ""
-    if not raw:
-        return []
-    # Strip a ```json … ``` (or bare ```) fence the model may have wrapped it in.
-    raw = _re.sub(r"^```[a-zA-Z0-9]*\s*", "", raw)
-    raw = _re.sub(r"\s*```$", "", raw).strip()
-    try:
-        data = _json.loads(raw)
-    except Exception:
-        return []
-    if not isinstance(data, list):
-        return []
-    out: list[dict[str, Any]] = []
-    for item in data:
-        if isinstance(item, dict) and item.get("type") in _WM_TYPES:
-            out.append(item)
-    return out[:12]  # cap to keep the projection bounded
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["summary", "actions_completed", "entities"],
+        "properties": {
+            "summary": {
+                "type": "string",
+                "description": (
+                    "A high-level summary of the session so far — the durable "
+                    "narrative an agent resuming this session needs: the goal, "
+                    "where things stand, and what is left. A few sentences to a "
+                    "short paragraph. Faithful to what actually happened; never "
+                    "invent progress."
+                ),
+            },
+            "actions_completed": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "An explicit list of concrete actions taken / work "
+                    "completed this session, each a short first-person bullet "
+                    "(e.g. 'Created bridge/working_memory.py', 'Fixed the "
+                    "context-window display bug'). Include every file "
+                    "written/edited and state change you are confident "
+                    "happened — especially any present in the confirmed-actions "
+                    "ground truth. Empty array only if genuinely nothing was "
+                    "done yet."
+                ),
+            },
+            "entities": {
+                "type": "array",
+                "description": (
+                    "The durable entity graph: the structured reasoning a file "
+                    "list can't convey. Update and extend the CURRENT working "
+                    "memory provided in the system prompt — reuse an existing "
+                    "title/text to update that entity rather than duplicating "
+                    "it. Empty array only if there is genuinely nothing "
+                    "structural to record."
+                ),
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["type"],
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": list(_WM_TYPES),
+                            "description": (
+                                "workstream: a goal/effort. decision: a choice "
+                                "made + why. finding: something learned. "
+                                "open_thread: an unresolved task. artifact_note: "
+                                "a note about a file touched."
+                            ),
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": (
+                                "Short title — for workstream and decision. "
+                                "Reuse an existing title to update that entity."
+                            ),
+                        },
+                        "request": {
+                            "type": "string",
+                            "description": "For workstream: the goal/ask.",
+                        },
+                        "rationale": {
+                            "type": "string",
+                            "description": "For decision: why this choice was made.",
+                        },
+                        "text": {
+                            "type": "string",
+                            "description": (
+                                "For finding and open_thread: the substance."
+                            ),
+                        },
+                        "source": {
+                            "type": "string",
+                            "description": (
+                                "For finding: optional attribution (where it "
+                                "came from)."
+                            ),
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "For artifact_note: the file path.",
+                        },
+                        "note": {
+                            "type": "string",
+                            "description": "For artifact_note: the note about it.",
+                        },
+                        "workstream": {
+                            "type": "string",
+                            "description": (
+                                "Parent workstream title for decision / finding "
+                                "/ open_thread / artifact_note. Reference by the "
+                                "workstream's title; an unknown title is "
+                                "auto-created."
+                            ),
+                        },
+                        "status": {
+                            "type": "string",
+                            "description": (
+                                "Optional status for a workstream "
+                                "(active/done) or open_thread (open/resolved)."
+                            ),
+                        },
+                    },
+                },
+            },
+        },
+    }
 
 
 def _count_images(messages: list[Message]) -> int:
@@ -264,9 +355,7 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {conversation}
 
-Respond with <analysis>...</analysis> followed by <summary>...</summary>. The <summary> block must contain the FULL updated summary (not just a diff).
-
-After </summary> you MUST emit a <working_memory> block (raw JSON only — no markdown code fences): a JSON array (max 8) of durable structured notes, each {{"type": "workstream"|"decision"|"finding"|"open_thread", ...}}. workstream: "title","request". decision: "title","rationale","workstream" (parent title). finding: "text",optional "source","workstream". open_thread: "text","workstream". Always include the active workstream plus any decisions/findings since the prior summary; reference parent workstreams by title (re-using an existing title updates it). If there is genuinely nothing structural, emit an empty array []."""
+Respond with <analysis>...</analysis> followed by <summary>...</summary>. The <summary> block must contain the FULL updated summary (not just a diff)."""
 
     SUMMARY_PROMPT = """Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions.
 
@@ -339,10 +428,26 @@ Your summary MUST include these sections:
 CONVERSATION TO SUMMARIZE:
 {conversation}
 
-Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be thorough but focused on what's needed to continue the work.
+Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be thorough but focused on what's needed to continue the work."""
 
-After </summary> you MUST emit a <working_memory> block (raw JSON only — no markdown code fences) — a JSON array (max 8) of durable structured notes, each an object with "type" one of "workstream" | "decision" | "finding" | "open_thread". For workstream: "title" (short) and "request" (the goal). For decision: "title", "rationale", and "workstream" (the parent workstream's title). For finding: "text", optional "source", and "workstream". For open_thread: "text" and "workstream". Always capture the active workstream, the key decisions, and important findings — the reasoning a file list can't convey. Reference a parent workstream by its title. If there is genuinely nothing structural, emit an empty array [].
-Example: <working_memory>[{{"type":"workstream","title":"Port widgets","request":"add show_widget to agent-harness, render in ema-next"}},{{"type":"decision","title":"SSE over MCP Apps","rationale":"simpler, no new protocol","workstream":"Port widgets"}}]</working_memory>"""
+    WORKING_MEMORY_EXTRACTION_PROMPT = """You maintain the durable working memory for a long-running coding agent session. The conversation below is about to be compacted (older turns dropped from the live context), so your job is to capture everything that must survive into the agent's persistent memory.
+
+You produce three things, returned as structured output:
+
+1. summary — a high-level summary of the session: the goal, where things stand, and what remains. The durable narrative an agent resuming this session needs.
+
+2. actions_completed — an explicit list of concrete actions taken / work completed: every file created or edited, every command that changed state, every commit/PR, every bug fixed. First-person, one short bullet each. This list is the answer to "what have I actually done this session?" — be complete and specific.
+
+3. entities — the durable entity graph (workstreams, decisions, findings, open threads, artifact notes): the structured reasoning a file list can't convey.
+
+RULES:
+- Be FAITHFUL. Record only what actually happened. Never invent progress, files, or decisions.
+- UPDATE and EXTEND the current working memory (shown below) rather than starting over. Reuse an existing entity's title/text to update it; only add genuinely new entities. Do not duplicate.
+- Treat the confirmed-actions ground truth (when provided) as authoritative — every confirmed write-action must appear in actions_completed, attributed to yourself, even if the conversation slice that recorded it was truncated.
+- Prefer durable, high-signal facts over transient chatter.
+{current_working_memory}{ground_truth}
+CONVERSATION TO EXTRACT FROM:
+{conversation}"""
 
     _MAX_CHARS_TO_SUMMARIZE = MAX_CHARS_TO_SUMMARIZE
 
@@ -382,7 +487,8 @@ Example: <working_memory>[{{"type":"workstream","title":"Port widgets","request"
         *,
         on_summarizer_call: "Callable[[dict[str, Any]], None] | None" = None,
         ground_truth: str | None = None,
-        on_working_memory_upserts: "Callable[[list[dict[str, Any]]], None] | None" = None,
+        on_working_memory_upserts: "Callable[[dict[str, Any] | None], None] | None" = None,
+        working_memory_state: str | None = None,
     ) -> CompactionResult:
         """Compact the transcript by summarizing old messages.
 
@@ -551,13 +657,18 @@ Example: <working_memory>[{{"type":"workstream","title":"Port widgets","request"
         summarizer_stats: dict[str, Any] = {}
         summary: str | None = None
         try:
-            summary = self._generate_summary(
+            # Two parallel calls off the same conversation payload: Call A
+            # (prose summary, returned here) and Call B (structured working
+            # memory, applied via on_working_memory_upserts). See
+            # `_run_summary_and_working_memory`.
+            summary = self._run_summary_and_working_memory(
                 conversation_text,
                 provider,
                 previous_summary=previous_summary,
                 stats_out=summarizer_stats,
                 on_summarizer_call=on_summarizer_call,
                 ground_truth=ground_truth,
+                working_memory_state=working_memory_state,
                 on_working_memory_upserts=on_working_memory_upserts,
             )
         except Exception as e:
@@ -838,7 +949,6 @@ Example: <working_memory>[{{"type":"workstream","title":"Port widgets","request"
         stats_out: dict[str, Any] | None = None,
         on_summarizer_call: Callable[[dict[str, Any]], None] | None = None,
         ground_truth: str | None = None,
-        on_working_memory_upserts: Callable[[list[dict[str, Any]]], None] | None = None,
     ) -> str:
         """Generate a summary using the model provider.
 
@@ -996,21 +1106,283 @@ Example: <working_memory>[{{"type":"workstream","title":"Port widgets","request"
         if not summary:
             raise ValueError("Could not extract summary from model output")
 
-        # Compaction-as-projection (Milestone 2b): if the summarizer emitted a
-        # <working_memory> block, hand the parsed upserts to the caller so the
-        # bridge can fold them into the structured working memory. Best-effort —
-        # never let a malformed block break the compaction.
-        # Always call the sink (even with an empty list) so the bridge can run
-        # its deterministic ledger-based refresh on every compaction — working
-        # memory must update on compaction regardless of whether the summarizer
-        # emitted a parseable block.
-        if on_working_memory_upserts is not None:
-            try:
-                on_working_memory_upserts(_parse_working_memory_block(raw_output))
-            except Exception:
-                logger.debug("working_memory projection failed", exc_info=True)
-
+        # Working memory is no longer derived from this call's output. It is
+        # produced by a dedicated structured-output call (Call B,
+        # `_extract_working_memory`) that runs in parallel off the same
+        # conversation payload — see `_run_summary_and_working_memory`. This
+        # call (Call A) is now summary-only.
         return redact_sensitive_text(summary)
+
+    def _extract_working_memory(
+        self,
+        conversation: str,
+        provider: "ModelProvider",
+        *,
+        working_memory_state: str | None = None,
+        ground_truth: str | None = None,
+        stats_out: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Call B — extract structured working memory from the conversation.
+
+        A dedicated, schema-constrained LLM call that runs in parallel with
+        the prose-summary call (Call A) off the *same* conversation payload.
+        Returns the parsed structured dict
+        ``{summary, actions_completed, entities}`` or ``None`` if the provider
+        can't do structured output / the call fails / the payload is empty.
+
+        Best-effort by contract: callers treat ``None`` as "no LLM-derived
+        working memory this round" and fall back to the deterministic
+        ledger-based refresh. Quality, not speed, is the priority here (the
+        user's explicit ask) — we hand the model the *current* working memory
+        and the confirmed-action ground truth so it updates/extends rather
+        than re-derives, and we give it a generous token budget.
+        """
+        import asyncio
+        import time as _time
+
+        from engine.redact import redact_sensitive_text
+
+        # Structured output is a provider capability; not every backend has it.
+        if not hasattr(provider, "complete_structured"):
+            return None
+
+        safe_conversation = redact_sensitive_text(conversation)
+        if not safe_conversation.strip():
+            return None
+
+        wm_section = ""
+        if working_memory_state and working_memory_state.strip():
+            wm_section = (
+                "\nCURRENT WORKING MEMORY (update and extend this — do not "
+                "start over):\n"
+                f"{redact_sensitive_text(working_memory_state)}\n"
+            )
+        gt_section = ""
+        if ground_truth and ground_truth.strip():
+            gt_section = (
+                "\nCONFIRMED ACTIONS (ground truth from the runtime ledger — "
+                "these file writes/edits and state changes definitely happened "
+                "this session; every one must appear in actions_completed):\n"
+                f"{redact_sensitive_text(ground_truth)}\n"
+            )
+
+        system_prompt = self.WORKING_MEMORY_EXTRACTION_PROMPT.format(
+            current_working_memory=wm_section,
+            ground_truth=gt_section,
+            conversation=safe_conversation,
+        )
+
+        async def _run() -> "StructuredResponse":
+            return await provider.complete_structured(
+                messages=[Message(role="user", content="Extract the working memory.")],
+                schema=_working_memory_schema(),
+                schema_name="working_memory",
+                schema_description=(
+                    "High-level summary, actions completed, and the durable "
+                    "entity graph for the session."
+                ),
+                system_prompt=system_prompt,
+                max_tokens=self.summary_max_tokens,
+                thinking=ThinkingConfig(enabled=False),
+            )
+
+        start_perf = _time.perf_counter()
+        try:
+            # Runs in a ThreadPoolExecutor worker (no event loop) — asyncio.run
+            # is safe here; the sibling summary call runs concurrently.
+            resp = asyncio.run(_run())
+        except Exception:
+            logger.debug("working-memory extraction call failed", exc_info=True)
+            return None
+        duration_ms = int((_time.perf_counter() - start_perf) * 1000)
+
+        # Capture spend so the orchestrator can attribute it as compaction
+        # overhead (same treatment as the summary call).
+        if stats_out is not None:
+            usage = getattr(resp, "usage", None)
+            in_tok = int(getattr(usage, "input_tokens", 0) or 0) if usage else 0
+            out_tok = int(getattr(usage, "output_tokens", 0) or 0) if usage else 0
+            cr_tok = int(getattr(usage, "cache_read_tokens", 0) or 0) if usage else 0
+            cw_tok = int(getattr(usage, "cache_write_tokens", 0) or 0) if usage else 0
+            model_id = (
+                getattr(resp, "model", None)
+                or getattr(provider, "model_id", None)
+                or "unknown"
+            )
+            cost: float | None = None
+            try:
+                from engine.providers import compute_cost
+                cost = compute_cost(
+                    model_id,
+                    input_tokens=in_tok,
+                    output_tokens=out_tok,
+                    cache_read_tokens=cr_tok,
+                    cache_write_tokens=cw_tok,
+                )
+            except Exception:
+                cost = None
+            stats_out.update({
+                "call_kind": "working_memory_extraction",
+                "provider": getattr(provider, "name", "unknown"),
+                "model": model_id,
+                "input_tokens": in_tok,
+                "output_tokens": out_tok,
+                "cache_read_tokens": cr_tok,
+                "cache_write_tokens": cw_tok,
+                "duration_ms": duration_ms,
+                "cost_usd": cost,
+            })
+
+        data = getattr(resp, "data", None)
+        if not isinstance(data, dict) or not data:
+            return None
+        return self._normalize_working_memory(data)
+
+    @staticmethod
+    def _normalize_working_memory(data: dict[str, Any]) -> dict[str, Any]:
+        """Coerce Call B's raw structured output into the shape the bridge
+        sink expects: ``{summary: str, actions_completed: [str],
+        entities: [dict]}``, dropping malformed entries defensively so a
+        partial model response never breaks the apply step."""
+        summary = data.get("summary")
+        summary = summary.strip() if isinstance(summary, str) else ""
+
+        actions = data.get("actions_completed")
+        actions_out: list[str] = []
+        if isinstance(actions, list):
+            for a in actions:
+                if isinstance(a, str) and a.strip():
+                    actions_out.append(a.strip())
+
+        entities = data.get("entities")
+        entities_out: list[dict[str, Any]] = []
+        if isinstance(entities, list):
+            for ent in entities:
+                if isinstance(ent, dict) and ent.get("type") in _WM_TYPES:
+                    # Drop null/empty fields so apply_working_memory_upserts
+                    # only stores fields the model actually filled.
+                    entities_out.append({
+                        k: v for k, v in ent.items()
+                        if v is not None and v != ""
+                    })
+        return {
+            "summary": summary,
+            "actions_completed": actions_out,
+            "entities": entities_out[:24],  # bound the per-round graph growth
+        }
+
+    def _run_summary_and_working_memory(
+        self,
+        conversation: str,
+        provider: "ModelProvider",
+        *,
+        previous_summary: str | None = None,
+        stats_out: dict[str, Any] | None = None,
+        on_summarizer_call: Callable[[dict[str, Any]], None] | None = None,
+        ground_truth: str | None = None,
+        working_memory_state: str | None = None,
+        on_working_memory_upserts: "Callable[[dict[str, Any] | None], None] | None" = None,
+    ) -> str:
+        """Run the prose-summary call (Call A) and the structured
+        working-memory extraction (Call B) concurrently against the same
+        conversation payload, and return Call A's summary.
+
+        The two calls are fully decoupled — quality of each is independent of
+        the other (the user's explicit design ask):
+
+        - Call A's result IS the compaction summary; its exceptions propagate
+          so ``compact()``'s overflow-fallback path still fires.
+        - Call B is best-effort. Its structured result (or ``None``) is handed
+          to ``on_working_memory_upserts``, which is ALWAYS invoked when wired
+          — even with ``None`` — so the bridge's deterministic ledger-based
+          refresh runs on every compaction.
+
+        Telemetry for both calls is fired from this (main) thread after both
+        workers have finished, so the ``on_summarizer_call`` hook is never
+        invoked concurrently.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        # No working-memory sink wired → nothing to extract; just the summary
+        # (single call, on its own thread-free path).
+        if on_working_memory_upserts is None:
+            return self._generate_summary(
+                conversation,
+                provider,
+                previous_summary=previous_summary,
+                stats_out=stats_out,
+                on_summarizer_call=on_summarizer_call,
+                ground_truth=ground_truth,
+            )
+
+        wm_stats: dict[str, Any] = {}
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="compact") as pool:
+            # Call A fires on_summarizer_call itself (inside its worker); we
+            # let it, then resolve it last so its hook has completed before we
+            # fire Call B's from this thread — no concurrent hook calls.
+            fa = pool.submit(
+                self._generate_summary,
+                conversation,
+                provider,
+                previous_summary=previous_summary,
+                stats_out=stats_out,
+                on_summarizer_call=on_summarizer_call,
+                ground_truth=ground_truth,
+            )
+            fb = pool.submit(
+                self._extract_working_memory,
+                conversation,
+                provider,
+                working_memory_state=working_memory_state,
+                ground_truth=ground_truth,
+                stats_out=wm_stats,
+            )
+
+            # Resolve Call B first (best-effort, never raises out of here).
+            wm_result: dict[str, Any] | None
+            try:
+                wm_result = fb.result()
+            except Exception:
+                logger.debug("working-memory extraction failed", exc_info=True)
+                wm_result = None
+
+            # Resolve Call A, capturing (not raising yet) so working memory is
+            # applied even when the summary call overflowed.
+            summary_exc: Exception | None = None
+            summary: str | None = None
+            try:
+                summary = fa.result()
+            except Exception as e:  # noqa: BLE001
+                summary_exc = e
+
+        # Both workers are now done — safe to touch shared hooks/state.
+        try:
+            on_working_memory_upserts(wm_result)
+        except Exception:
+            logger.debug("working_memory sink failed", exc_info=True)
+
+        # Attribute Call B's spend as compaction overhead (Call A already
+        # fired its own hook inside its worker).
+        if on_summarizer_call is not None and wm_stats:
+            try:
+                on_summarizer_call({
+                    "call_kind": "working_memory_extraction",
+                    "provider": wm_stats.get("provider", "unknown"),
+                    "model": wm_stats.get("model", "unknown"),
+                    "input_tokens": wm_stats.get("input_tokens", 0),
+                    "output_tokens": wm_stats.get("output_tokens", 0),
+                    "cache_read_tokens": wm_stats.get("cache_read_tokens", 0),
+                    "cache_write_tokens": wm_stats.get("cache_write_tokens", 0),
+                    "duration_ms": wm_stats.get("duration_ms", 0),
+                    "cost_usd": wm_stats.get("cost_usd"),
+                    "iterative": previous_summary is not None,
+                })
+            except Exception:
+                logger.debug("on_summarizer_call (wm) hook failed", exc_info=True)
+
+        if summary_exc is not None:
+            raise summary_exc
+        return summary  # type: ignore[return-value]
 
     def _generate_fallback_summary(self, messages: list[Message]) -> str:
         """Generate a simple fallback summary when LLM summarization fails."""
