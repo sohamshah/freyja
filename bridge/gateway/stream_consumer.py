@@ -2,53 +2,54 @@
 
 Subscribes to events for a specific session id via the bridge's
 ``register_session_listener``. Each new turn instantiates a fresh
-consumer that opens ONE streaming message via Slack's chat.startStream
-+ chat.appendStream + chat.stopStream API trio (slack-sdk 3.40+),
-delivering both the agent's prose response AND its tool calls /
-thinking through native Slack Block Kit primitives:
+consumer that produces TWO Slack messages in the user's thread:
 
-  · ``markdown_text`` chunks for the agent's user-facing prose body
-  · ``TaskUpdateChunk`` per tool call — renders as a collapsible card
-    with a status indicator (``in_progress`` → ``complete`` / ``error``)
-    that the user can expand to see args + output
+  1. A task-mode streaming message (chat.startStream → appendStream →
+     stopStream) carrying ONLY collapsible cards: Plan headers,
+     thinking, and one TaskUpdate per tool call.
+  2. A regular chat.postMessage carrying the agent's prose body,
+     posted after the stream is sealed.
+
+Two messages, not one. Slack's task-mode stream API rejects body
+delivery inside the streaming envelope — ``MarkdownTextChunk`` on
+stopStream errors with ``streaming_mode_mismatch``, and a
+``markdown_text=`` parameter combined with chunks errors with
+``cannot_provide_both_markdown_text_and_chunks``. So the body lives
+outside the stream as an adjacent reply; same UX pattern as other
+Slack assistants (collapsed thinking card up top, answer below).
+
+Chunk types used inside the card stream:
+  · ``PlanUpdateChunk`` once per phase to title a card group
+  · ``TaskUpdateChunk`` per tool call — collapsible card with
+    in_progress → complete/error status, args, and output
   · ``TaskUpdateChunk`` per thinking phase — surfaces the model's
-    reasoning as another collapsible card titled "Thinking"
-  · ``PlanUpdateChunk`` once near the start to give the task-card
-    group a header
+    reasoning as a collapsible card titled "Thinking"
   · ``chat.stopStream(blocks=…)`` for inline image attachments
-    rendered at the end of the message
-
-Replaces the prior dual-message pattern (a primary text message edited
-via chat.update + a separate "tool progress" bubble with emoji lines).
-Slack's native collapsing means we no longer need our own emoji-based
-progress visual — the chevron + timeline is rendered by Slack.
 
 Verbosity (off/new/all/verbose) controls how much detail lands in the
 task cards. Default is ``all`` (every tool call gets a card) since
 native collapse means the visual cost is near-zero. ``off`` skips
-task cards entirely (markdown_text only). Heartbeat tool calls are
-suppressed in all levels except ``verbose``.
+task cards entirely. Heartbeat tool calls are suppressed in all
+levels except ``verbose``.
 
 Lifecycle:
   · First event of the turn → set Slack Assistant Threads typing status
   · First substantive event (text/tool/thinking) → start_stream opens
-    the message; capture the ts for subsequent calls
-  · text_delta → buffer locally; throttled flush to append_stream
+    the card stream; capture the ts for subsequent calls
+  · text_delta → append to body_buffer (drained once at finalize)
   · thinking_delta → open/extend the "Thinking" task card
   · tool_use_start → record name; (rendering deferred until tool_input_end
     so we can heartbeat-filter)
   · tool_input_end → emit TaskUpdateChunk(status="in_progress")
   · tool_result → emit TaskUpdateChunk(status="complete", output=…);
     handle inline image data
-  · turn_complete → flush remaining text; close any open thinking card;
-    call stop_stream (with image blocks if any pending)
-  · stop_typing + on_complete callback → unregisters this consumer
+  · turn_complete → close any open thinking card; call stop_stream
+    (with image blocks if any pending); chat.postMessage the body
 
-Backwards compat note: this code REPLACES the prior chat.postMessage +
-chat.update flow entirely. If start_stream fails (rate limit, API
-change, workspace tier limitation), the fallback path posts a
-minimal error message via send() — see T20 for the planned graceful
-chat.postMessage fallback.
+If start_stream fails (rate limit, API change, workspace tier), the
+``cards_disabled`` flag flips and card emission becomes a no-op for
+the rest of the turn. Body delivery is unaffected — it always goes
+out as a separate postMessage at finalize regardless of card state.
 """
 
 from __future__ import annotations
@@ -82,6 +83,12 @@ logger = logging.getLogger(__name__)
 # that we send them immediately.
 DEFAULT_TEXT_FLUSH_INTERVAL_MS = 500
 DEFAULT_THINKING_FLUSH_INTERVAL_MS = 800
+
+# Slack's chat.appendStream rejects payloads >~4000 chars with
+# ``msg_too_long``. Cap thinking-card deltas below that with a
+# safety margin; oversized deltas are split into multiple successive
+# TaskUpdateChunks against the same card id (Slack appends them).
+_THINKING_DELTA_CAP = 3500
 
 # Image extension allowlist for the "File saved to `/path`" → upload
 # path extraction. Used by _handle_tool_result.
@@ -256,22 +263,24 @@ class _StreamState:
     # We have attempted start_stream (success or failure). Idempotent
     # gating for _ensure_stream_opened.
     stream_opened: bool = False
-    # start_stream failed; downstream calls degrade to a fallback send.
-    stream_failed: bool = False
+    # start_stream failed (or a later card emit hit
+    # message_not_in_streaming_state). Card emission becomes a no-op;
+    # body delivery is independent and proceeds normally as a separate
+    # chat.postMessage at finalize.
+    cards_disabled: bool = False
 
-    # Body text accumulator. Deltas land here; the flush loop drains
-    # them to append_stream(markdown_text=…) every throttle window.
-    text_buffer: str = ""
-    last_text_flush_ms: float = 0.0
+    # Body prose buffer. Deltas accumulate here for the whole turn;
+    # finalize() drains it once via chat.postMessage in the same thread.
+    # Body never lives inside the streaming envelope (task-mode streams
+    # reject MarkdownTextChunk), so there's no need for live streaming,
+    # throttling, or a separate text_buffer / fallback_committed split.
+    body_buffer: str = ""
 
-    # Thinking-card accumulator. Same pattern as text but routes to a
-    # TaskUpdateChunk(title="Thinking") instead of markdown_text.
-    # `thinking_buffer` is the FULL cumulative reasoning text; we
-    # track `thinking_sent` separately so each TaskUpdateChunk we
-    # emit carries only the unsent delta. Slack APPENDS the `output`
-    # field on consecutive task updates with the same id (the same
-    # semantics as markdown_text on appendStream), so sending the
-    # cumulative buffer on every flush concatenates the entire
+    # Thinking-card accumulator. `thinking_buffer` is the FULL cumulative
+    # reasoning text; `thinking_sent` tracks the prefix already emitted
+    # so each TaskUpdateChunk carries only the new delta. Slack APPENDS
+    # the `output` field on consecutive task updates with the same id,
+    # so sending the cumulative buffer would concatenate the entire
     # reasoning text repeatedly into the card.
     thinking_card_id: str | None = None
     thinking_buffer: str = ""
@@ -316,30 +325,11 @@ class _StreamState:
     # one chat.stopStream call doesn't blow past Slack's payload cap.
     pending_image_blocks: list[dict[str, Any]] = field(default_factory=list)
 
-    # Graceful fallback when chat.startStream fails (rate limit, API
-    # change, workspace tier). The fallback path uses chat.postMessage
-    # for the first delta and chat.update for subsequent deltas — the
-    # old streaming pattern. Tool calls are NOT rendered as cards in
-    # fallback mode (Slack post/update doesn't support task cards);
-    # they're either dropped or appended as a text suffix. The user
-    # still gets the prose response.
-    fallback_message_id: str | None = None
-    fallback_buffer: str = ""
-    fallback_committed: str = ""
-
     # Same-tool coalescing under verbosity="new". Records the last
     # tool-name + repeat count so we can decorate the card title with
     # ×N instead of emitting N separate cards.
     coalesce_last_tool: str | None = None
     coalesce_count: int = 0
-
-    # Full body text accumulated across all _flush_text_locked calls.
-    # Passed to stop_stream as markdown_text so Slack stores it as the
-    # message's text fallback. Without this, Slack stores "with
-    # interactive elements" as the text field, which is what
-    # conversations.replies returns — making the AI's own prior
-    # responses unreadable in thread context.
-    body_accumulated: str = ""
 
 class SlackStreamConsumer:
     """One per turn. Lifetime: from message-received → turn_complete.
@@ -528,12 +518,12 @@ class SlackStreamConsumer:
     async def _ensure_stream_opened(self) -> None:
         """Idempotent: open the stream on first call, no-op after."""
         async with self._lock:
-            if self._state.stream_opened or self._state.stream_failed:
+            if self._state.stream_opened or self._state.cards_disabled:
                 return
             self._state.stream_opened = True
             if not self._reply_thread_id:
                 logger.warning("[slack] no thread anchor — start_stream skipped")
-                self._state.stream_failed = True
+                self._state.cards_disabled = True
                 return
             # recipient_team_id + recipient_user_id are what Slack uses
             # to actually put the message into streaming state — without
@@ -552,7 +542,7 @@ class SlackStreamConsumer:
             if result.ok and result.message_id:
                 self._state.stream_ts = result.message_id
             else:
-                self._state.stream_failed = True
+                self._state.cards_disabled = True
                 logger.warning(
                     "[slack] chat.startStream failed: %s — falling back to "
                     "chat.postMessage / chat.update path. Task cards will "
@@ -578,7 +568,7 @@ class SlackStreamConsumer:
         opens a fresh Plan with its own title.
         """
         async with self._lock:
-            if self._state.stream_failed or not self._state.stream_ts:
+            if self._state.cards_disabled or not self._state.stream_ts:
                 return
             if self._state.phase_open:
                 return
@@ -600,7 +590,7 @@ class SlackStreamConsumer:
             if not result.ok:
                 logger.debug("[slack] plan chunk append failed: %s", result.error)
                 if "message_not_in_streaming_state" in (result.error or "").lower():
-                    self._state.stream_failed = True
+                    self._state.cards_disabled = True
 
     def _close_phase_if_after_cards(self) -> None:
         """End the current phase if at least one card has been emitted
@@ -633,141 +623,26 @@ class SlackStreamConsumer:
         ):
             self._close_phase_if_after_cards()
 
-    # ── text body (markdown_text deltas) ──
+    # ── text body ──
 
     async def _append_text(self, text: str) -> None:
-        """Accumulate body text and throttle-flush.
+        """Append a body delta. Buffered; flushed once at finalize().
 
-        Two paths:
-          · streaming OK → buffer + append_stream(markdown_text=…)
-          · streaming failed → buffer + post/update via send/edit.
-            The user still gets the prose response; only the
-            collapsible task cards are missing.
+        Body prose never lives inside the streaming envelope: task-mode
+        streams reject ``MarkdownTextChunk`` (streaming_mode_mismatch).
+        At finalize the whole buffer ships as a single chat.postMessage
+        in the same thread. No streaming, throttling, or fallback
+        branching is needed — there's exactly one delivery path.
         """
         async with self._lock:
-            self._state.text_buffer += text
-            now_ms = time.monotonic() * 1000
-            if now_ms - self._state.last_text_flush_ms < self.edit_interval_ms:
-                return
-            if self._state.stream_failed:
-                await self._flush_fallback_locked()
-            else:
-                await self._flush_text_locked()
-
-    async def _flush_fallback_locked(self) -> None:
-        """Send the accumulated text via the legacy post/update path.
-
-        First flush: chat.postMessage and capture the ts.
-        Subsequent flushes: chat.update with the cumulative content.
-        Caller holds the lock.
-        """
-        if not self._state.text_buffer:
-            return
-        self._state.fallback_committed += self._state.text_buffer
-        self._state.text_buffer = ""
-        content = self._state.fallback_committed
-        try:
-            if self._state.fallback_message_id is None:
-                result = await self.adapter.send(
-                    self.source.chat_id,
-                    content,
-                    thread_id=self._reply_thread_id,
-                    raw_hint=self.raw_hint,
-                )
-                if result.ok and result.message_id:
-                    self._state.fallback_message_id = result.message_id
-                else:
-                    logger.warning(
-                        "[slack] fallback send failed: %s", result.error,
-                    )
-            else:
-                result = await self.adapter.edit(
-                    self.source.chat_id,
-                    self._state.fallback_message_id,
-                    content,
-                )
-                if not result.ok:
-                    logger.warning(
-                        "[slack] fallback edit failed: %s", result.error,
-                    )
-        finally:
-            self._state.last_text_flush_ms = time.monotonic() * 1000
-
-    async def _flush_text_locked(self) -> None:
-        """Send any buffered body text. Caller holds the lock.
-
-        We open the stream with ``task_display_mode="plan"`` so the
-        message lives in "task" streaming mode — once that's set the
-        server rejects subsequent ``markdown_text`` top-level appends
-        with ``streaming_mode_mismatch``. Body text in this mode has
-        to ride as a ``MarkdownTextChunk`` inside the chunks array
-        instead, which renders the same prose between/after the
-        plan + task cards.
-        """
-        if self._state.stream_failed or not self._state.stream_ts:
-            return
-        if not self._state.text_buffer:
-            return
-        delta = self._state.text_buffer
-        self._state.text_buffer = ""
-        self._state.body_accumulated += delta
-        try:
-            from slack_sdk.models.messages.chunk import MarkdownTextChunk
-        except ImportError:
-            # Old SDK without the chunk type — fall back to top-level
-            # markdown_text (works on text-mode streams; will error on
-            # task-mode streams, but we have no better option).
-            result = await self.adapter.append_stream(
-                self.source.chat_id,
-                self._state.stream_ts,
-                markdown_text=delta,
-            )
-        else:
-            chunk = MarkdownTextChunk(text=delta)
-            result = await self.adapter.append_stream(
-                self.source.chat_id,
-                self._state.stream_ts,
-                chunks=[chunk],
-            )
-        self._state.last_text_flush_ms = time.monotonic() * 1000
-        if not result.ok:
-            # Slack closes a streaming message after an idle window
-            # (~empirically ~minutes; we hit this every time a long
-            # ``subagents`` wait sits between LLM iterations). Once
-            # that happens every future appendStream rejects with
-            # "message_not_in_streaming_state" and nothing the model
-            # produces afterwards reaches the user. Detect the
-            # closed-stream case AND any other appendStream failure
-            # and switch to the chat.postMessage / chat.update
-            # fallback path that ``_append_text`` and
-            # ``_flush_fallback_locked`` already implement — at least
-            # the prose body lands in Slack, even if task cards stop
-            # updating. Restore the delta we already drained from
-            # text_buffer into fallback_buffer so nothing is lost.
-            error_str = (result.error or "").lower()
-            is_closed = "message_not_in_streaming_state" in error_str
-            logger.warning(
-                "[slack] text appendStream failed (%s) — %s",
-                result.error,
-                "stream closed, switching to postMessage fallback"
-                if is_closed
-                else "marking stream failed and falling back",
-            )
-            # Restore the drained delta to text_buffer — the fallback
-            # flush reads from there. Without this, every byte we
-            # drained on the failing call is silently dropped.
-            self._state.text_buffer = delta + self._state.text_buffer
-            self._state.stream_failed = True
-            # Kick the fallback flush immediately so the user sees
-            # the in-flight text now rather than waiting for finalize.
-            await self._flush_fallback_locked()
+            self._state.body_buffer += text
 
     # ── thinking card (TaskUpdateChunk) ──
 
     async def _append_thinking(self, text: str) -> None:
         """Open or extend the current Thinking task card."""
         async with self._lock:
-            if self._state.stream_failed:
+            if self._state.cards_disabled:
                 return
             if not self._state.thinking_card_id:
                 self._state.thinking_card_id = f"thinking-{uuid.uuid4().hex[:8]}"
@@ -783,15 +658,17 @@ class SlackStreamConsumer:
         Thinking card. Caller holds the lock.
 
         Slack's TaskUpdateChunk.output is APPEND-semantics across
-        consecutive updates with the same card id — same as how
-        markdown_text appends to the streaming body. To avoid
-        duplicating the cumulative reasoning text on every flush
-        we send only what hasn't been sent yet (delta), tracked
-        via ``thinking_sent``. The final ``status="complete"``
-        flush still fires even if no new content has arrived since
-        the last in_progress flush, so the card resolves visually.
+        consecutive updates with the same card id, so we send only
+        the unsent suffix on each flush.
+
+        Per-call size: Slack's appendStream rejects payloads >~4000
+        chars with ``msg_too_long``. We cap the delta at
+        ``_THINKING_DELTA_CAP`` and emit multiple successive
+        TaskUpdateChunks (Slack appends them) when the delta is
+        larger. The final ``status="complete"`` flush always fires
+        so the card resolves visually.
         """
-        if self._state.stream_failed or not self._state.stream_ts:
+        if self._state.cards_disabled or not self._state.stream_ts:
             return
         if not self._state.thinking_card_id:
             return
@@ -804,24 +681,48 @@ class SlackStreamConsumer:
         # we're still in_progress — they'd be no-op churn. Always
         # send the final "complete" status so the card resolves.
         if not delta and status == "in_progress":
+            self._state.last_thinking_flush_ms = time.monotonic() * 1000
             return
-        chunk = TaskUpdateChunk(
-            id=self._state.thinking_card_id,
-            title="Thinking",
-            status=status,
-            output=delta or None,
+        # Split the delta into appendStream-sized pieces. Each piece
+        # carries an in_progress status; only the LAST piece carries
+        # the requested status (so a "complete" final flush actually
+        # marks the card complete).
+        pieces = (
+            [delta[i : i + _THINKING_DELTA_CAP] for i in range(0, len(delta), _THINKING_DELTA_CAP)]
+            if delta
+            else [""]
         )
-        result = await self.adapter.append_stream(
-            self.source.chat_id,
-            self._state.stream_ts,
-            chunks=[chunk],
-        )
+        for idx, piece in enumerate(pieces):
+            is_last = idx == len(pieces) - 1
+            chunk = TaskUpdateChunk(
+                id=self._state.thinking_card_id,
+                title="Thinking",
+                status=status if is_last else "in_progress",
+                output=piece or None,
+            )
+            result = await self.adapter.append_stream(
+                self.source.chat_id,
+                self._state.stream_ts,
+                chunks=[chunk],
+            )
+            if not result.ok:
+                err = (result.error or "").lower()
+                logger.debug("[slack] thinking appendStream failed: %s", result.error)
+                if "msg_too_long" in err:
+                    # Server-side cap is tighter than we expected. Skip
+                    # the rest of the delta rather than retry — we'd
+                    # just hit the same error. Advancing thinking_sent
+                    # past the failed piece preserves invariants for
+                    # the next delta.
+                    logger.warning(
+                        "[slack] thinking delta exceeds Slack cap (%d chars) — dropped",
+                        len(piece),
+                    )
+                if "message_not_in_streaming_state" in err:
+                    self._state.cards_disabled = True
+                    break
         self._state.thinking_sent = self._state.thinking_buffer
         self._state.last_thinking_flush_ms = time.monotonic() * 1000
-        if not result.ok:
-            logger.debug("[slack] thinking appendStream failed: %s", result.error)
-            if "message_not_in_streaming_state" in (result.error or "").lower():
-                self._state.stream_failed = True
 
     async def _close_thinking_card(self) -> None:
         """Finalize the open Thinking card (status=complete) so the
@@ -967,7 +868,7 @@ class SlackStreamConsumer:
         agent looked when running web_fetch / web_search / browser
         tools."""
         async with self._lock:
-            if self._state.stream_failed or not self._state.stream_ts:
+            if self._state.cards_disabled or not self._state.stream_ts:
                 return
             try:
                 from slack_sdk.models.messages.chunk import TaskUpdateChunk
@@ -1002,7 +903,7 @@ class SlackStreamConsumer:
                 # chat.postMessage fallback path and the user still
                 # sees the agent's prose response.
                 if "message_not_in_streaming_state" in (result.error or "").lower():
-                    self._state.stream_failed = True
+                    self._state.cards_disabled = True
 
     def _format_tool_title(self, name: str, args: dict[str, Any]) -> str:
         """Build a Task Card title: ``name`` plus a short arg preview
@@ -1122,21 +1023,11 @@ class SlackStreamConsumer:
     # ── finalize ──
 
     async def finalize(self) -> None:
-        """Flush remaining text, close cards, call stop_stream."""
+        """Close the card stream, deliver the body as a postMessage."""
         async with self._lock:
             if self._state.finalized:
                 return
             self._state.finalized = True
-
-        # Flush whatever's still in the text buffer. Don't honour the
-        # throttle — this is the last chance. Routes to the streaming
-        # or fallback path based on which one we ended up on.
-        async with self._lock:
-            self._state.last_text_flush_ms = 0.0
-            if self._state.stream_failed:
-                await self._flush_fallback_locked()
-            else:
-                await self._flush_text_locked()
 
         # Close any open thinking card.
         await self._close_thinking_card()
@@ -1149,37 +1040,46 @@ class SlackStreamConsumer:
         # user still sees them, just in an adjacent message.
         inline_blocks = self._build_inline_image_blocks()
 
-        # Stop the stream. No more content; this finalizes the
-        # message visually (Slack removes the streaming indicator).
-        # Pass body_accumulated as markdown_text so Slack stores the
-        # actual response text as the message's text fallback. Without
-        # this, Slack stores "with interactive elements" — which is
-        # what conversations.replies returns, making the AI's prior
-        # responses unreadable in thread context. Cap at 10k chars;
-        # run.py already truncates per-message context to 1500 chars
-        # so anything beyond that is excess.
-        # Skipped on the fallback path — there's no stream to stop.
-        if self._state.stream_ts and not self._state.stream_failed:
-            final_text = self._state.body_accumulated[:10_000] or None
+        # Seal the card stream (cards-only — no body inside the envelope).
+        # Task-mode streams reject MarkdownTextChunk on stopStream
+        # (streaming_mode_mismatch) and reject markdown_text combined
+        # with chunks (cannot_provide_both), so body delivery lives in
+        # a separate chat.postMessage below.
+        if self._state.stream_ts and not self._state.cards_disabled:
             stop_result = await self.adapter.stop_stream(
                 self.source.chat_id,
                 self._state.stream_ts,
-                markdown_text=final_text,
                 blocks=inline_blocks or None,
             )
             if not stop_result.ok:
                 logger.warning("[slack] chat.stopStream failed: %s", stop_result.error)
-                # The inline blocks may have been the cause (e.g. a
-                # malformed image block). Retry without them so the
-                # stream at least finalizes — the image will then land
-                # via the fallback files_upload below.
+                # A malformed block can trip stopStream — retry bare
+                # so the stream finalizes; images fall through to the
+                # post-stream files_upload below.
                 if inline_blocks:
                     await self.adapter.stop_stream(
                         self.source.chat_id,
                         self._state.stream_ts,
-                        markdown_text=final_text,
                     )
-                    inline_blocks = None  # signal fallback to upload all
+                    inline_blocks = None
+
+        # Body delivery: one chat.postMessage in the same thread.
+        # Cap at 10k chars; run.py already truncates per-message
+        # context to 1500 chars so anything beyond that is excess.
+        # Skip when there's no prose (turns ending only in tool calls).
+        final_text = self._state.body_buffer[:10_000]
+        if final_text:
+            send_result = await self.adapter.send(
+                self.source.chat_id,
+                final_text,
+                thread_id=self._reply_thread_id,
+                raw_hint=self.raw_hint,
+            )
+            if not send_result.ok:
+                logger.warning(
+                    "[slack] body postMessage failed: %s",
+                    send_result.error,
+                )
 
         # Fallback files_upload: covers images whose inline path
         # didn't reach Slack (unshared upload failed OR stop_stream
