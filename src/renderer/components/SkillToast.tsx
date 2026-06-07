@@ -89,7 +89,7 @@ export function SkillToast() {
             description: editDesc.trim() || undefined,
           }
         : undefined
-    resolve(current.candidateId, 'promote', edits)
+    resolve(current.candidateId, 'promote', edits, Boolean(existing?.exists))
   }
   const discard = () => {
     setEditing(false)

@@ -404,6 +404,59 @@ def test_confirmation_collision_refuses_overwrite(tmp_freyja_home):
     assert "collision" in (res.reason or "").lower()
 
 
+def test_confirmation_overwrite_replaces_existing_skill_md(tmp_freyja_home):
+    """When the operator passes overwrite=True the existing SKILL.md is
+    replaced and any sibling files in the skill dir (references/,
+    scripts/) are preserved.
+
+    Operator flow: candidate panel shows +X/-Y badge, operator clicks
+    promote, store passes overwrite=true to the bridge.
+    """
+    from bridge.knowledge.learning import candidates, confirmation
+    from bridge.knowledge.learning.paths import skills_root
+    pre_existing = skills_root() / "overwrite-target"
+    pre_existing.mkdir(parents=True, exist_ok=True)
+    (pre_existing / "SKILL.md").write_text(
+        "---\nname: overwrite-target\ndescription: stale\n---\nold body\n",
+    )
+    # Sibling files the operator may have curated — must survive.
+    sibling = pre_existing / "references"
+    sibling.mkdir()
+    (sibling / "guide.md").write_text("preserve me")
+
+    c = candidates.Candidate(
+        candidate_id=uuid.uuid4().hex,
+        drafted_at=1730000000000,
+        source_session_id="s",
+        source_turn_id="",
+        drafter_model="test",
+        decision="save",
+        rationale="",
+        guard_verdict="safe",
+        guard_findings=[],
+        name="overwrite-target",
+        description="fresh",
+        skill_type="build",
+        triggers=[],
+        tags=[],
+        body="new body",
+    )
+    candidates.write_pending(c)
+
+    # Without overwrite: refuses (existing behavior).
+    res_no = confirmation.promote(c.candidate_id)
+    assert not res_no.ok and "collision" in (res_no.reason or "")
+
+    # With overwrite=True: succeeds, SKILL.md replaced, references survive.
+    res_yes = confirmation.promote(c.candidate_id, overwrite=True)
+    assert res_yes.ok, res_yes.reason
+    body = res_yes.skill_path.read_text()
+    assert "new body" in body
+    assert "old body" not in body
+    assert "fresh" in body  # frontmatter description updated
+    assert (sibling / "guide.md").read_text() == "preserve me"
+
+
 # ── regression tests for C-class fixes ──
 
 

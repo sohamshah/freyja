@@ -10965,6 +10965,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         candidate_id = str(cmd.get("candidateId") or "")
         action = str(cmd.get("action") or "")
         edits = cmd.get("edits") or None
+        overwrite = bool(cmd.get("overwrite") or False)
         if not candidate_id:
             log("warn", "skill_candidate_resolve missing candidateId")
             return
@@ -10979,6 +10980,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 candidate_id,
                 actor="operator",
                 edits=edits if isinstance(edits, dict) else None,
+                overwrite=overwrite,
             )
         elif action == "discard":
             result = await asyncio.to_thread(

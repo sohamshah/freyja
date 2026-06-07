@@ -97,6 +97,7 @@ def promote(
     *,
     actor: str = "operator",
     edits: dict[str, Any] | None = None,
+    overwrite: bool = False,
 ) -> PromotionResult:
     """Promote a pending candidate to a real skill on disk.
 
@@ -176,10 +177,17 @@ def promote(
             reason="invalid_name",
         )
 
-    # Collision check. Bare existence of the directory is enough —
-    # there might be a SKILL.md, references/, scripts/, anything we
-    # don't want to clobber. The operator forces by renaming via edits.
-    if target_dir.exists():
+    # Collision check. The bare existence of the target directory is
+    # ambiguous — could be a normal updateable SKILL.md, or could be a
+    # curated directory with references/ + scripts/ the operator
+    # doesn't want clobbered. The desktop UI distinguishes the two:
+    # the candidate emit path computes a +X/-Y diff stat against the
+    # existing SKILL.md and shows it as a "review" badge, and the
+    # operator clicks promote explicitly through that signal. When
+    # that happens the renderer passes overwrite=True. The atomic
+    # write only touches SKILL.md (via os.replace), so other files in
+    # the directory survive — this is the safe overwrite semantic.
+    if target_dir.exists() and not overwrite:
         logger.info(
             "confirmation.promote name_collision name=%s id=%s",
             name, candidate_id,

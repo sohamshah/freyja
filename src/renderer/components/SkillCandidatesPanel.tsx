@@ -78,7 +78,15 @@ export function SkillCandidatesPanel() {
             body: editBody || undefined,
           }
         : undefined
-    void resolve(candidateId, action, edits)
+    // Look up the candidate to see if the promote is intentionally
+    // overwriting an existing skill. The +X/-Y badge means yes —
+    // pass overwrite=true so the backend doesn't refuse name_collision.
+    // After an edit the name might have changed; if the new name no
+    // longer collides we still pass true (the backend just ignores it).
+    const cand = pending.find((c) => c.candidateId === candidateId)
+    const overwrite =
+      action === 'promote' && Boolean(cand?.existingSkill?.exists)
+    void resolve(candidateId, action, edits, overwrite)
     setEditId(null)
   }
 
@@ -202,11 +210,20 @@ export function SkillCandidatesPanel() {
                     onClick={() =>
                       isEditing
                         ? submitEdit(cand.candidateId, 'promote')
-                        : resolve(cand.candidateId, 'promote')
+                        : resolve(
+                            cand.candidateId,
+                            'promote',
+                            undefined,
+                            Boolean(cand.existingSkill?.exists),
+                          )
                     }
                     className="rounded-md bg-accent/15 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-accent ring-1 ring-accent/30 hover:bg-accent/25"
                   >
-                    {isEditing ? 'promote with edits' : 'promote'}
+                    {isEditing
+                      ? 'promote with edits'
+                      : cand.existingSkill?.exists
+                        ? 'overwrite'
+                        : 'promote'}
                   </button>
                 </div>
                 {isCaution && cand.guardSummary && (

@@ -512,6 +512,11 @@ export interface HarnessActions {
     candidateId: string,
     action: 'promote' | 'discard',
     edits?: { name?: string; description?: string; body?: string },
+    /** Pass true when the candidate intentionally updates an existing
+     *  skill (the +X/-Y badge case). The backend refuses by default to
+     *  protect curated skill directories; this flag is the operator's
+     *  explicit "yes, overwrite" signal. */
+    overwrite?: boolean,
   ): Promise<void>
   /** Dismiss the candidate from the bottom-right toast WITHOUT
    *  resolving it. Operator can still find it in the SkillCandidatesPanel
@@ -4331,7 +4336,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     useHarness.setState({ dismissedSkillCandidates: next })
   },
 
-  async resolveSkillCandidate(candidateId, action, edits) {
+  async resolveSkillCandidate(candidateId, action, edits, overwrite) {
     // H1 / M16: do NOT optimistically remove. The bridge does sync fs
     // I/O on a thread (see freyja_bridge.py + gateway/run.py) and
     // responds with `skill_candidate_resolved { ok }`. If we removed
@@ -4354,6 +4359,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         candidateId,
         action,
         edits,
+        overwrite: overwrite ?? false,
       })
     } catch (err) {
       // Send itself failed (IPC dead). Toast a warn so the operator
