@@ -60,6 +60,8 @@ from engine.types import (
     ToolUseBlock,
     ToolUseStartEvent,
     VideoBlock,
+    image_media_type_supported,
+    unsupported_image_placeholder_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -554,6 +556,10 @@ class GoogleProvider:
         without inline bytes) — the caller should drop a text marker
         in that case so the model can ask for the bytes explicitly.
         """
+        if not image_media_type_supported(block.media_type):
+            # e.g. image/svg+xml — Gemini can't view it. Decline so the caller
+            # drops a text marker instead of sending a blob the API rejects.
+            return None
         if block.source_type == "base64" and block.data:
             try:
                 raw = base64.b64decode(block.data)
@@ -765,7 +771,14 @@ class GoogleProvider:
                 if block.text:
                     parts.append(gtypes.Part.from_text(text=block.text))
             elif isinstance(block, ImageBlock):
-                if block.source_type == "url" and block.url:
+                if not image_media_type_supported(block.media_type):
+                    # e.g. image/svg+xml — Gemini can't view it; degrade to text.
+                    parts.append(
+                        gtypes.Part.from_text(
+                            text=unsupported_image_placeholder_text(block.media_type)
+                        )
+                    )
+                elif block.source_type == "url" and block.url:
                     parts.append(
                         gtypes.Part.from_uri(
                             file_uri=block.url, mime_type=block.media_type

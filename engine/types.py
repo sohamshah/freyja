@@ -123,6 +123,37 @@ class ImageBlock:
         return d
 
 
+# Inline-image media types the major model vision APIs (Anthropic / OpenAI /
+# Gemini) accept. Anything else — notably ``image/svg+xml`` from generate_svg —
+# makes those APIs return a 400 ("Input should be 'image/jpeg', 'image/png',
+# 'image/gif' or 'image/webp'"), and because the bad block lives in the
+# transcript it poisons EVERY subsequent request, not just the one that
+# produced it. Providers swap such blocks for a text placeholder before
+# sending; the bridge keeps them out of the transcript in the first place.
+SUPPORTED_IMAGE_MEDIA_TYPES: frozenset[str] = frozenset({
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+})
+
+
+def image_media_type_supported(media_type: str | None) -> bool:
+    """True if ``media_type`` is an inline image type a model can actually view."""
+    return (media_type or "").strip().lower() in SUPPORTED_IMAGE_MEDIA_TYPES
+
+
+def unsupported_image_placeholder_text(media_type: str | None) -> str:
+    """Text stand-in for an image a model can't view, so an unsupported block
+    (e.g. an SVG) degrades to a note instead of a hard provider 400."""
+    mt = (media_type or "").strip() or "unknown"
+    return (
+        f"[image omitted — {mt} is not a format this model can view inline "
+        f"(supported: jpeg, png, gif, webp); it was saved and is available "
+        f"to the operator]"
+    )
+
+
 @dataclass
 class DocumentBlock:
     """PDF document content block for the Anthropic API.

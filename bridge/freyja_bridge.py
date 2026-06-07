@@ -2405,6 +2405,45 @@ def _tool_content_preview_and_images(
     return "\n".join(part for part in text_parts if part), images
 
 
+def _strip_unsupported_image_blocks(content: Any) -> list[Any] | None:
+    """Replace ImageBlocks whose media type no model can view (e.g.
+    ``image/svg+xml`` from generate_svg) with a text placeholder, so they never
+    enter the model-facing transcript and can't 400 the provider.
+
+    Call this AFTER extracting UI images from the result (the operator still
+    sees the render); only the model's copy is downgraded to text. Returns a new
+    content list when a substitution was made, or ``None`` when nothing changed
+    (caller keeps the original object)."""
+    if not isinstance(content, list):
+        return None
+    try:
+        from engine.types import (
+            ImageBlock,
+            TextBlock,
+            image_media_type_supported,
+            unsupported_image_placeholder_text,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    changed = False
+    out: list[Any] = []
+    for block in content:
+        if isinstance(block, ImageBlock) and not image_media_type_supported(
+            getattr(block, "media_type", "")
+        ):
+            out.append(
+                TextBlock(
+                    text=unsupported_image_placeholder_text(
+                        getattr(block, "media_type", "")
+                    )
+                )
+            )
+            changed = True
+        else:
+            out.append(block)
+    return out if changed else None
+
+
 def _runner_ctx_window(runner: Any) -> int:
     """The provider's real context window — the authoritative denominator for
     the renderer's REQUEST CONTEXT meter. Shipped on every usage event so the
@@ -2591,6 +2630,17 @@ def _new_tracing_registry(
         duration_ms = int((time.monotonic() - start) * 1000)
         content = getattr(result, "content", "")
         preview, images = _tool_content_preview_and_images(content)
+
+        # Layer B — keep model-unviewable image types (e.g. generate_svg's
+        # image/svg+xml) OUT of the transcript the model sees. The UI images
+        # were just extracted above, so the operator still sees the render; the
+        # model gets a text note instead of a block every provider 400s on.
+        _sanitized = _strip_unsupported_image_blocks(content)
+        if _sanitized is not None:
+            try:
+                result.content = _sanitized
+            except Exception:  # noqa: BLE001
+                pass
 
         # Diff stats for the mutating file tool, captured from the change_set
         # below and threaded into the session-ledger effect row so the

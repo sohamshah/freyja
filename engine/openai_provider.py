@@ -58,6 +58,8 @@ from engine.types import (
     ToolCall,
     ToolInputDeltaEvent,
     ToolUseStartEvent,
+    image_media_type_supported,
+    unsupported_image_placeholder_text,
 )
 
 if TYPE_CHECKING:
@@ -354,6 +356,13 @@ class OpenAIProvider:
                 if block.text:
                     items.append({"type": "input_text", "text": block.text})
             elif isinstance(block, ImageBlock):
+                if not image_media_type_supported(block.media_type):
+                    # e.g. image/svg+xml — OpenAI 400s on it; degrade to text.
+                    items.append({
+                        "type": "input_text",
+                        "text": unsupported_image_placeholder_text(block.media_type),
+                    })
+                    continue
                 if block.source_type == "url" and block.url:
                     image_url = block.url
                 elif block.source_type == "base64" and block.data:
@@ -586,11 +595,21 @@ class OpenAIProvider:
                         elif isinstance(block, ImageBlock):
                             # URL source uses the URL directly; base64 uses a data URI.
                             # Ref: https://platform.openai.com/docs/guides/images-vision
-                            if block.source_type == "url":
-                                image_url = block.url
+                            if not image_media_type_supported(block.media_type):
+                                # e.g. image/svg+xml — OpenAI 400s on it; degrade to text.
+                                content_blocks.append({
+                                    "type": "input_text",
+                                    "text": unsupported_image_placeholder_text(block.media_type),
+                                })
+                            elif block.source_type == "url":
+                                content_blocks.append(
+                                    {"type": "input_image", "image_url": block.url}
+                                )
                             else:
-                                image_url = f"data:{block.media_type};base64,{block.data}"
-                            content_blocks.append({"type": "input_image", "image_url": image_url})
+                                data_uri = f"data:{block.media_type};base64,{block.data}"
+                                content_blocks.append(
+                                    {"type": "input_image", "image_url": data_uri}
+                                )
 
                         elif isinstance(block, DocumentBlock):
                             # Base64 documents use a data URI; URL documents use file_url.

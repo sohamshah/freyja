@@ -63,9 +63,20 @@ from engine.types import (
     ToolCall,
     ToolInputDeltaEvent,
     ToolUseStartEvent,
+    image_media_type_supported,
+    unsupported_image_placeholder_text,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _anthropic_image_block(block: ImageBlock) -> dict[str, Any]:
+    """Serialize an ImageBlock for the Anthropic API, swapping any media type
+    Anthropic can't accept (e.g. image/svg+xml) for a text placeholder so one
+    bad block can't 400 the whole request. See SUPPORTED_IMAGE_MEDIA_TYPES."""
+    if image_media_type_supported(block.media_type):
+        return block.to_api_format()
+    return {"type": "text", "text": unsupported_image_placeholder_text(block.media_type)}
 
 
 # Re-export for backward compatibility (some tests/callers import from here)
@@ -855,7 +866,7 @@ class AnthropicProvider:
                         if isinstance(block, TextBlock):
                             api_content.append({"type": "text", "text": block.text})
                         elif isinstance(block, ImageBlock):
-                            api_content.append(block.to_api_format())
+                            api_content.append(_anthropic_image_block(block))
                         elif isinstance(block, DocumentBlock):
                             api_content.append(block.to_api_format())
                         else:
@@ -928,7 +939,7 @@ class AnthropicProvider:
                                 {"type": "text", "text": block.text}
                             )
                         elif isinstance(block, ImageBlock):
-                            api_blocks.append(block.to_api_format())
+                            api_blocks.append(_anthropic_image_block(block))
                         else:
                             api_blocks.append(
                                 {"type": "text", "text": str(block)}
