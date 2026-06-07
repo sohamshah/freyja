@@ -90,11 +90,15 @@ export function SkillCandidatesPanel() {
     setEditId(null)
   }
 
+  // Tabs row sits at the top of the section (no duplicate label —
+  // the outer SkillCandidatesPanelContainer header already names the
+  // section). Body is the only scroll container; it has a real
+  // max-height so the inner list can scroll even when the outer
+  // ActivityPanel layout doesn't give us flex-1 height.
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex flex-col">
       <div className="flex items-center gap-2 px-3 py-2 hairline-b">
-        <span className="label text-fg-2">drafter candidates</span>
-        <div className="ml-2 flex items-center gap-1">
+        <div className="flex items-center gap-1">
           <TabButton active={tab === 'pending'} onClick={() => setTab('pending')}>
             pending · {pending.length}
           </TabButton>
@@ -120,7 +124,7 @@ export function SkillCandidatesPanel() {
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 py-2">
+      <div className="max-h-[420px] overflow-y-auto px-3 py-2">
         {tab === 'pending' && pending.length === 0 && (
           <div className="rounded-md bg-white/[0.025] px-3 py-2 text-[11px] text-fg-3 ring-hairline">
             No pending skill candidates. The drafter writes here when a

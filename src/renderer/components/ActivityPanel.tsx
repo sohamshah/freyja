@@ -10,7 +10,6 @@ import { ToolTimeline } from './ToolTimeline'
 import { ChangesSection } from './ChangesSection'
 import { TopoBackdrop } from './TopoBackdrop'
 import { StickyHeader } from './StickyHeader'
-import { DrafterActivityStrip } from './DrafterActivityStrip'
 import { DrafterRunsPanel } from './DrafterRunsPanel'
 import { SkillCandidatesPanel } from './SkillCandidatesPanel'
 
@@ -147,11 +146,9 @@ export function ActivityPanel() {
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {/* ── Drafter / cadence telemetry strip ──────────────── */}
-        <DrafterActivityStrip />
         {/* ── Drafter runs (started/finished pairs with detail) ── */}
         <DrafterRunsPanel />
-        {/* ── Drafter candidates + negative library ──────────── */}
+        {/* ── Drafter / cadence + candidate queue in one section ── */}
         <SkillCandidatesPanelContainer />
         {/* ── Computer live view (only when a session is active) ── */}
         <ComputerLiveView />
@@ -588,6 +585,8 @@ function detailNumber(
 function SkillCandidatesPanelContainer() {
   const pendingCount = useHarness((s) => s.skillCandidateQueue.length)
   const cachedCount = useHarness((s) => s.skillCandidatesCache?.length ?? 0)
+  const drafterActivity = useHarness((s) => s.drafterActivity)
+  const drafterRuns = useHarness((s) => s.drafterRuns ?? [])
   const [open, setOpen] = useState(pendingCount > 0)
   // Auto-expand the section when a fresh candidate arrives — the
   // operator usually wants to see it without hunting for the section.
@@ -595,27 +594,62 @@ function SkillCandidatesPanelContainer() {
     if (pendingCount > 0) setOpen(true)
   }, [pendingCount])
   const total = Math.max(pendingCount, cachedCount)
+  const inFlight = drafterRuns.find((r) => r.finishedAt === undefined)
+  // Compact status text shown in the section header — replaces the
+  // standalone DrafterActivityStrip so the operator sees loop state
+  // and the candidate queue under one heading instead of two.
+  let statusText = ''
+  let statusTone = 'text-fg-3'
+  if (inFlight) {
+    statusText = 'running'
+    statusTone = 'text-accent'
+  } else if (drafterActivity.lastDecision === 'save') {
+    statusText = `last: save${
+      drafterActivity.lastCandidateName ? ` (${drafterActivity.lastCandidateName})` : ''
+    }`
+    statusTone = 'text-ok'
+  } else if (drafterActivity.lastDecision === 'discard') {
+    statusText = 'last: discard'
+    statusTone = 'text-warn'
+  } else if (drafterActivity.lastDecision === 'error') {
+    statusText = 'last: error'
+    statusTone = 'text-danger'
+  } else if (drafterActivity.lastDecision === 'skip') {
+    statusText = 'last: skip'
+  } else if (drafterActivity.turnsUntilTrip !== undefined) {
+    statusText = `next in ${Math.max(0, drafterActivity.turnsUntilTrip)} turn${
+      drafterActivity.turnsUntilTrip === 1 ? '' : 's'
+    }`
+  } else {
+    statusText = 'idle'
+  }
   return (
     <div className="hairline-b">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between px-4 py-2 text-left hover:bg-white/[0.025]"
+        className="flex w-full items-center justify-between gap-2 px-4 py-2 text-left hover:bg-white/[0.025]"
       >
-        <div className="flex items-center gap-2">
-          <span className="label">skill candidates</span>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="label">drafter</span>
           {total > 0 && (
             <span className="rounded bg-accent/15 px-1.5 py-[1px] font-mono text-[10px] text-accent ring-1 ring-accent/25">
               {total}
             </span>
           )}
+          <span className={`truncate font-mono text-[10px] ${statusTone}`}>
+            {inFlight && (
+              <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-accent align-middle" />
+            )}
+            {statusText}
+          </span>
         </div>
-        <span className="font-mono text-[10px] text-fg-3">
+        <span className="shrink-0 font-mono text-[10px] text-fg-3">
           {open ? 'hide' : 'show'}
         </span>
       </button>
       {open && (
-        <div className="max-h-[460px] overflow-hidden hairline-t">
+        <div className="hairline-t">
           <SkillCandidatesPanel />
         </div>
       )}
