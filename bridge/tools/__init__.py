@@ -22,6 +22,7 @@ from bridge.tools.memory_tools import RecordUserPreferenceTool
 from bridge.tools.registry import build_desktop_registry
 from bridge.tools.search_tools import GlobTool, GrepTool
 from bridge.tools.skill_tools import ListSkillsTool, LoadSkillTool, SearchSkillsTool
+from bridge.tools.quiver_tools import GenerateSvgTool
 
 __all__ = [
     "AnalyzeVideoTool",
@@ -33,6 +34,7 @@ __all__ = [
     "GlobTool",
     "GrepTool",
     "GenerateImageTool",
+    "GenerateSvgTool",
     "KanbanTool",
     "ListDirectoryTool",
     "ListSkillsTool",
