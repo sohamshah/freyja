@@ -125,6 +125,117 @@ def parse_verbosity_flags(text: str) -> tuple[str | None, str]:
     return level, cleaned
 
 
+# ─── --model / --mode inline-flag parsing ─────────────────────────────
+#
+# Same rationale as the verbosity flags above: Slack slash commands
+# don't fire inside threads, so the first @-mention that starts a
+# Freyja thread has no way to set the session's model or mode. These
+# flags fill that gap.
+#
+# Syntax: ``--model <value>`` or ``--model=<value>`` (same for --mode).
+# Each consumes two tokens (flag + value) when in space-separated form.
+# Only tokens at the start of the message are considered — a stray
+# ``--model foo`` mid-message (e.g. a pasted CLI snippet) is left
+# untouched.
+#
+# Returns the parsed values + cleaned text + a list of validation
+# errors. The caller (run.py) surfaces errors as a Slack reply and
+# bails before scheduling the agent turn.
+
+_VALID_COORDINATION_MODES: tuple[str, ...] = ("bus", "goal", "kanban")
+# Anchor at the START only — model/mode are configuration intents and
+# almost always lead the message ("--model opus-4-8 fix the bug").
+# Ignoring trailing positions also avoids consuming values inside
+# pasted commands. Two forms accepted per flag.
+_INLINE_SESSION_FLAG_RE = re.compile(
+    r"^\s*(?:--(model|mode))(?:\s+|=)([^\s]+)",
+    re.IGNORECASE,
+)
+
+
+def parse_inline_session_flags(
+    text: str,
+) -> tuple[str | None, str | None, str, list[str]]:
+    """Strip ``--model <id>`` and ``--mode <name>`` from the start of ``text``.
+
+    Returns ``(model_id, mode, cleaned_text, errors)``:
+
+      · ``model_id``: validated model id (matches ``MODEL_REGISTRY``)
+        or ``None`` if no --model flag was present
+      · ``mode``: one of ``bus``/``goal``/``kanban`` or ``None``
+      · ``cleaned_text``: ``text`` with the recognized flags removed
+      · ``errors``: human-readable validation messages; non-empty if
+        the user wrote a flag whose value didn't validate. ``cleaned_text``
+        still has the bad flag stripped so the caller can echo back
+        the intended message body.
+
+    Examples:
+        ``"--model claude-opus-4-8 fix the bug"`` →
+            ``("claude-opus-4-8", None, "fix the bug", [])``
+        ``"--mode goal --model claude-opus-4-8 ship it"`` →
+            ``("claude-opus-4-8", "goal", "ship it", [])``
+        ``"--mode banana write some code"`` →
+            ``(None, None, "write some code",
+               ["Invalid mode `banana`. Available: `bus`, `goal`, `kanban`."])``
+        ``"normal message"`` →
+            ``(None, None, "normal message", [])``
+    """
+    if not text:
+        return None, None, "", []
+
+    model: str | None = None
+    mode: str | None = None
+    errors: list[str] = []
+    raw = text
+
+    # Peel up to 2 leading flag tokens (one --model + one --mode in
+    # either order). Use a bounded loop; >2 iterations would mean
+    # duplicate flags, which we just take last-wins on.
+    for _ in range(4):
+        m = _INLINE_SESSION_FLAG_RE.match(raw)
+        if not m:
+            break
+        flag = m.group(1).lower()
+        value = m.group(2)
+        if flag == "model":
+            model = value
+        else:
+            mode = value
+        # Strip the matched span from the front so the next iteration
+        # sees the trimmed body.
+        raw = raw[m.end() :].lstrip()
+
+    cleaned = raw
+
+    # Validation — lazy imports keep session_router import-cheap.
+    if mode is not None and mode.lower() not in _VALID_COORDINATION_MODES:
+        errors.append(
+            f"Invalid mode `{mode}`. Available: "
+            + ", ".join(f"`{m}`" for m in _VALID_COORDINATION_MODES)
+            + "."
+        )
+        mode = None
+    elif mode is not None:
+        mode = mode.lower()
+
+    if model is not None:
+        try:
+            from engine.providers import MODEL_REGISTRY
+            valid = model in MODEL_REGISTRY
+        except Exception:  # noqa: BLE001
+            # If the registry can't be imported (e.g. unit-test
+            # context), accept the value rather than reject blindly.
+            valid = True
+        if not valid:
+            errors.append(
+                f"Invalid model `{model}`. Send `/freyja models` "
+                "(in a DM or top-level channel message) to see options."
+            )
+            model = None
+
+    return model, mode, cleaned, errors
+
+
 def normalize_verbosity(value: str | None) -> str:
     """Coerce a possibly-missing or invalid verbosity string to a valid
     level. Used when reading the sticky value off a session attribute —
