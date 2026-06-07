@@ -7441,6 +7441,12 @@ class _BridgeSession:
                     "cacheWriteTokens": cum_cw,
                     "cost": float(self.cumulative_cost),
                     "contextWindow": _runner_ctx_window(self.runner),
+                    # Context-composition breakdown (system / tools / transcript +
+                    # tool count) so the ActivityPanel's segmented bar can render.
+                    # Snapshots already include this; the per-turn usage event used
+                    # to drop it, so a session that never opened the compaction
+                    # path showed 0/0/0 and the bar stayed hidden.
+                    **self._context_composition(),
                 }
             )
             await self._run_skill_maintenance(effective_ctx)
