@@ -64,7 +64,7 @@ def _cmd(command: str, description: str, *, usage_hint: str | None = None) -> di
 SLASH_COMMANDS: list[dict[str, str]] = [
     _cmd("/freyja",  "Show what Freyja can do",                          usage_hint="[help|status|perms]"),
     _cmd("/goal",    "Arm a goal loop with an autonomous judge",          usage_hint="<objective>"),
-    _cmd("/mode",    "Switch coordination strategy",                      usage_hint="bus|goal|kanban|isolated"),
+    _cmd("/mode",    "Switch coordination strategy",                      usage_hint="bus|goal|kanban"),
     _cmd("/model",   "Switch the agent model for this session",           usage_hint="<model-id>"),
     _cmd("/stop",    "Interrupt the current turn"),
     _cmd("/reset",   "Start a fresh conversation in this thread/DM"),

@@ -3,7 +3,7 @@
 
 export type BridgeMode = 'live' | 'demo' | 'error'
 
-export type CoordinationStrategy = 'bus' | 'isolated' | 'kanban' | 'goal'
+export type CoordinationStrategy = 'bus' | 'kanban' | 'goal'
 
 export type SkillConfidence = 'unvalidated' | 'experimental' | 'verified' | 'deprecated'
 

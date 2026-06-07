@@ -26,7 +26,6 @@ def current_datetime_block() -> str:
 
 
 STRATEGY_BUS = "bus"
-STRATEGY_ISOLATED = "isolated"
 STRATEGY_KANBAN = "kanban"
 STRATEGY_GOAL = "goal"
 
@@ -46,11 +45,6 @@ COORDINATION_STRATEGIES: dict[str, CoordinationStrategy] = {
         label="Message bus",
         summary="Current Freyja mode: profile-driven agents publish/read findings on a shared bus.",
         uses_message_bus=True,
-    ),
-    STRATEGY_ISOLATED: CoordinationStrategy(
-        id=STRATEGY_ISOLATED,
-        label="Tasks",
-        summary="Solo/task mode: the parent keeps an explicit task ledger and allocates work as needed.",
     ),
     STRATEGY_KANBAN: CoordinationStrategy(
         id=STRATEGY_KANBAN,
@@ -72,12 +66,16 @@ def normalize_coordination_strategy(value: str | None) -> str:
         "default": STRATEGY_BUS,
         "message-bus": STRATEGY_BUS,
         "messages": STRATEGY_BUS,
-        "delegate": STRATEGY_ISOLATED,
-        "delegation": STRATEGY_ISOLATED,
-        "solo": STRATEGY_ISOLATED,
+        # Former isolated-mode aliases — redirect to bus. Workers that
+        # need task-status reporting now pass task_id to sub_agent and
+        # get TaskBoardTool injected regardless of mode.
+        "delegate": STRATEGY_BUS,
+        "delegation": STRATEGY_BUS,
+        "solo": STRATEGY_BUS,
+        "isolated": STRATEGY_BUS,
+        "tasks": STRATEGY_BUS,
+        "task": STRATEGY_BUS,
         "board": STRATEGY_KANBAN,
-        "tasks": STRATEGY_ISOLATED,
-        "task": STRATEGY_ISOLATED,
         "goal-loop": STRATEGY_GOAL,
         "goals": STRATEGY_GOAL,
         "ralph": STRATEGY_GOAL,
@@ -102,14 +100,6 @@ def strategy_uses_kanban(value: str | None) -> bool:
 
 def coordination_prompt(value: str | None) -> str:
     strategy = normalize_coordination_strategy(value)
-    if strategy == STRATEGY_ISOLATED:
-        return (
-            "Coordination strategy: TASK-FIRST SOLO.\n"
-            "- The `tasks` tool is BOTH your personal planning surface and the coordination ledger for sub-agents in this mode.\n"
-            "- Create tasks for meaningful units of work, claim active work, heartbeat during long-running work, and complete/block with clear handoffs.\n"
-            "- Use sub-agents as independent workers only when useful. Pass `task_id` when spawning a worker for an existing task — the worker inherits the tasks tool scoped to that task and updates it as it works.\n"
-            "- Workers do not get message-bus tools here; the parent owns synthesis and the task ledger is the durable coordination surface.\n"
-        )
     if strategy == STRATEGY_KANBAN:
         return (
             "Coordination strategy: KANBAN BOARD.\n"
@@ -194,5 +184,6 @@ def coordination_prompt(value: str | None) -> str:
         "- Use `tasks` for your own multi-step planning — especially for synthesis-heavy work (reading multiple findings, writing a structured deliverable, comparing options). Tasks are private to you; the operator sees them.\n"
         "- Use sub-agent profiles for parallel work and ask workers to publish findings when discoveries help siblings.\n"
         "- Use `read_findings` during overlapping research or review so agents can build on each other.\n"
+        "- Pass `task_id` when spawning a worker for a task you've created — the worker gets the `tasks` tool and can heartbeat, complete, or block the task directly.\n"
         "- The parent should still synthesize the final answer and resolve conflicts — your task list is how the operator follows your synthesis path.\n"
     )

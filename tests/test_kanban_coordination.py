@@ -4,7 +4,6 @@ import pytest
 
 from bridge.tools.coordination import (
     STRATEGY_BUS,
-    STRATEGY_ISOLATED,
     STRATEGY_KANBAN,
     coordination_prompt,
     normalize_coordination_strategy,
@@ -18,10 +17,13 @@ from bridge.tools.registry import build_desktop_registry
 def test_coordination_strategy_normalization_and_capabilities() -> None:
     assert normalize_coordination_strategy(None) == STRATEGY_BUS
     assert normalize_coordination_strategy("message_bus") == STRATEGY_BUS
-    assert normalize_coordination_strategy("solo") == STRATEGY_ISOLATED
+    # Former isolated-mode aliases all redirect to bus
+    assert normalize_coordination_strategy("solo") == STRATEGY_BUS
+    assert normalize_coordination_strategy("isolated") == STRATEGY_BUS
+    assert normalize_coordination_strategy("tasks") == STRATEGY_BUS
     assert normalize_coordination_strategy("board") == STRATEGY_KANBAN
     assert strategy_uses_message_bus(STRATEGY_BUS)
-    assert not strategy_uses_message_bus(STRATEGY_ISOLATED)
+    assert not strategy_uses_message_bus(STRATEGY_KANBAN)
     assert strategy_uses_kanban(STRATEGY_KANBAN)
     assert "KANBAN BOARD" in coordination_prompt(STRATEGY_KANBAN)
 

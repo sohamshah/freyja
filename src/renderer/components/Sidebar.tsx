@@ -2042,11 +2042,6 @@ const STRATEGY_CHIP_META: Record<
     cls: 'text-accent/90 bg-accent/[0.07] ring-1 ring-accent/[0.18]',
     tooltip: 'Message-bus mode — agents publish + read shared findings',
   },
-  isolated: {
-    label: 'task',
-    cls: 'text-fg-1 bg-white/[0.05] ring-1 ring-white/[0.10]',
-    tooltip: 'Task-first solo — single-agent work ledger, no shared bus',
-  },
   kanban: {
     label: 'board',
     cls: 'text-warn bg-warn/[0.08] ring-1 ring-warn/[0.20]',

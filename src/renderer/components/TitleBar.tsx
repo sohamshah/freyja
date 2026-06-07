@@ -13,12 +13,7 @@ const STRATEGIES: Array<{
   {
     id: 'bus',
     label: 'bus',
-    title: 'Message bus: profile agents can publish/read shared findings',
-  },
-  {
-    id: 'isolated',
-    label: 'tasks',
-    title: 'Tasks: parent-led work with a visible task ledger and optional workers',
+    title: 'Message bus: profile agents publish/read shared findings; workers assigned a task_id own their own status',
   },
   {
     id: 'kanban',

@@ -1,13 +1,10 @@
 """Lightweight task ledger — the universal planning primitive available
 in every coordination mode.
 
-Historically this was scoped to STRATEGY_ISOLATED ("task-first solo")
-where it doubled as the worker coordination ledger. As of the
-universal-tasks build, the same ledger is also available to the parent
-in bus / kanban / goal modes for personal planning — synthesis steps,
-multi-section deliverables, gating user requests, etc. The semantic
-contract is unchanged from the isolated days; only the availability
-gate moved.
+The parent in any mode uses this for personal planning (synthesis steps,
+multi-section deliverables, gating user requests). Workers that are
+explicitly assigned a task_id at spawn time also receive the tool so
+they can heartbeat, complete, and block their own task directly.
 
 Persistence is via TaskJournal (see bridge/task_journal.py): an
 append-only JSONL log replayed on session restore. The journal makes
@@ -480,11 +477,9 @@ class TaskBoardTool:
     """Tool wrapper around a session-local task ledger.
 
     Universal planning primitive available in every coordination mode.
-    The parent in any mode uses it for personal planning (synthesis,
-    multi-section deliverables, gating user requests). In isolated mode
-    workers also receive the tool — they update the task they were
-    spawned for. In other modes, workers don't receive the tool;
-    parent updates tasks on the worker's behalf based on lifecycle.
+    The parent always receives this tool. Workers receive it when they
+    were explicitly assigned a task_id at spawn time — they can then
+    heartbeat, complete, and block their own task directly.
 
     See `bridge/task_journal.py` for persistence semantics.
     """
@@ -565,8 +560,8 @@ For work that takes minutes, call `action=heartbeat` with optional `progress` (0
 ## Handoff payload on completion
 `complete` accepts `summary` (one-line outcome), `result` (longer detail), and `artifacts` (file paths or refs produced). The operator sees these in the rail — it's how they know what your work produced.
 
-## Sub-agent integration (isolated mode)
-When spawning a worker with `sub_agent`, pass `task_id` so the worker inherits the task and updates it as it works. The parent doesn't need to babysit. In bus/kanban/goal modes, workers don't get the `tasks` tool directly — the parent updates the task itself when the worker returns.
+## Sub-agent integration
+When spawning a worker with `sub_agent`, pass `task_id` so the worker inherits the task and updates it as it works. The parent doesn't need to babysit. Workers without an explicit `task_id` don't get the `tasks` tool — the parent updates the task itself when the worker returns.
 
 ## Action summary
 - `list` — see all tasks (ordered: todo → active → blocked → done → cancelled, then priority, then created)

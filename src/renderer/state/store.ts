@@ -833,8 +833,9 @@ function normalizeReasoningFor(
 }
 
 function normalizeCoordinationStrategy(value?: string | null): CoordinationStrategy {
-  if (value === 'isolated' || value === 'kanban' || value === 'bus' || value === 'goal') return value
-  if (value === 'solo' || value === 'delegate') return 'isolated'
+  if (value === 'kanban' || value === 'bus' || value === 'goal') return value
+  // Former isolated-mode aliases — all redirect to bus
+  if (value === 'isolated' || value === 'solo' || value === 'delegate' || value === 'tasks' || value === 'task') return 'bus'
   if (value === 'board') return 'kanban'
   if (value === 'goals' || value === 'goal-loop' || value === 'ralph') return 'goal'
   return 'bus'
