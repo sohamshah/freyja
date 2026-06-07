@@ -77,7 +77,8 @@ class SummarizeContextTool:
         on_summarizer_llm_call: Callable[[dict[str, Any]], None] | None = None,
         on_pinned_facts: Callable[[str], None] | None = None,
         get_ground_truth: Callable[[], str | None] | None = None,
-        on_working_memory_upserts: Callable[[list[dict[str, Any]]], None] | None = None,
+        on_working_memory_upserts: Callable[[dict[str, Any] | None], None] | None = None,
+        get_working_memory_state: Callable[[], str | None] | None = None,
     ) -> None:
         self._get_session = get_session
         self._get_provider = get_provider
@@ -90,10 +91,13 @@ class SummarizeContextTool:
         # summarizer so the produced summary can't omit them.
         self._on_pinned_facts = on_pinned_facts
         self._get_ground_truth = get_ground_truth
-        # Folds the summarizer's structured <working_memory> block into the
-        # session's working memory (Milestone 2b) on the agent-driven LLM
-        # compaction path — the primary cooperative path.
+        # Folds compaction's dedicated working-memory extraction (Call B) into
+        # the session's working memory on the agent-driven LLM compaction path
+        # — the primary cooperative path. Receives the full structured dict.
         self._on_working_memory_upserts = on_working_memory_upserts
+        # Provides the CURRENT working-memory state to seed Call B so it
+        # updates/extends the existing memory rather than re-deriving it.
+        self._get_working_memory_state = get_working_memory_state
         # System-event emit so agent-driven compactions show up inline
         # in the conversation timeline alongside runtime-driven ones
         # (Gap N). Bridge wires this to its renderer emit channel.
@@ -563,11 +567,18 @@ class SummarizeContextTool:
                 ground_truth = self._get_ground_truth()
             except Exception:
                 ground_truth = None
+        working_memory_state = None
+        if self._get_working_memory_state is not None:
+            try:
+                working_memory_state = self._get_working_memory_state()
+            except Exception:
+                working_memory_state = None
         if scope in ("since_last_compaction", "all", "early"):
             return compactor.compact(
                 transcript, provider, on_summarizer_call=on_summarizer_call,
                 ground_truth=ground_truth,
                 on_working_memory_upserts=self._on_working_memory_upserts,
+                working_memory_state=working_memory_state,
             )
         if scope == "tool_results_only":
             return self._compact_tool_results_only(transcript)
@@ -578,6 +589,7 @@ class SummarizeContextTool:
             transcript, provider, on_summarizer_call=on_summarizer_call,
             ground_truth=ground_truth,
             on_working_memory_upserts=self._on_working_memory_upserts,
+            working_memory_state=working_memory_state,
         )
 
     def _compact_tool_results_only(self, transcript: Any):

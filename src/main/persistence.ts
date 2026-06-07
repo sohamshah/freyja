@@ -430,6 +430,26 @@ function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
   let totalInput = 0, totalOutput = 0, totalCacheR = 0, totalCacheW = 0
   let attachmentSeq = 0
   for (const e of entries) {
+    // Compaction entries carry no `message` (it's null) — they hold the
+    // summary the compactor wrote. Reconstruct them as an expandable inline
+    // compaction part so the event is visible AND its full call output
+    // survives a quit/rebuild/reopen, instead of silently vanishing.
+    if (e?.is_compaction && typeof e?.compaction_summary === 'string') {
+      messages.push({
+        id: e.id || String(messages.length),
+        role: 'assistant',
+        parts: [
+          {
+            type: 'system',
+            systemSubtype: 'compaction_complete',
+            text: 'Context compacted',
+            systemSummaryText: e.compaction_summary,
+          },
+        ],
+        createdAt: Math.floor((e.timestamp ?? 0) * 1000),
+      })
+      continue
+    }
     const msg = e?.message
     if (!msg || (msg.role !== 'user' && msg.role !== 'assistant')) continue
     const parts: any[] = []
@@ -969,19 +989,42 @@ export function readActionLedger(
  */
 export function readWorkingMemory(
   id: string,
-): { ok: true; entities: Record<string, any> } | { ok: false; error: string } {
+):
+  | { ok: true; entities: Record<string, any>; overview: WorkingMemoryOverview | null }
+  | { ok: false; error: string } {
   try {
     const safeId = sanitizeForFsId(id)
     const projectDir = path.join(os.homedir(), '.freyja', 'projects', safeId)
     const memPath = path.join(projectDir, 'working_memory.json')
-    if (!fs.existsSync(memPath)) return { ok: true, entities: {} }
+    if (!fs.existsSync(memPath)) return { ok: true, entities: {}, overview: null }
     const raw = fs.readFileSync(memPath, 'utf8')
-    const doc = JSON.parse(raw) as { entities?: Record<string, any> }
+    const doc = JSON.parse(raw) as {
+      entities?: Record<string, any>
+      overview?: WorkingMemoryOverview | null
+    }
     const entities = doc && typeof doc.entities === 'object' && doc.entities ? doc.entities : {}
-    return { ok: true, entities }
+    // The high-level overview (summary + actions completed) produced by
+    // compaction's extraction call (Call B). Null when never written.
+    const ov = doc && typeof doc.overview === 'object' && doc.overview ? doc.overview : null
+    const overview: WorkingMemoryOverview | null = ov
+      ? {
+          summary: typeof ov.summary === 'string' ? ov.summary : '',
+          actionsCompleted: Array.isArray(ov.actionsCompleted)
+            ? ov.actionsCompleted.filter((a: unknown): a is string => typeof a === 'string')
+            : [],
+          updatedAt: typeof ov.updatedAt === 'number' ? ov.updatedAt : undefined,
+        }
+      : null
+    return { ok: true, entities, overview }
   } catch (err) {
     return { ok: false, error: String(err) }
   }
+}
+
+type WorkingMemoryOverview = {
+  summary: string
+  actionsCompleted: string[]
+  updatedAt?: number
 }
 
 const RECALL_MAX_ROWS = 200

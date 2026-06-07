@@ -224,6 +224,12 @@ export interface MessagePart {
    *  Lets the inline renderer look up the full event payload (e.g. the
    *  judge's verdict details) without duplicating data into the part. */
   eventId?: string
+  /** Full text output of a compaction's summary call, embedded directly on
+   *  the part (not just referenced by `eventId`) so the expandable inline
+   *  compaction box survives both the rolling 100-entry `systemEvents`
+   *  buffer AND a quit/rebuild/reopen — the message stream is what gets
+   *  persisted and reconstructed, so the durable copy lives here. */
+  systemSummaryText?: string
 }
 
 export interface MessageAttachmentRef {
@@ -702,6 +708,14 @@ export type BridgeEvent =
       cost: number
       /** Provider's real context window — authoritative dashboard denominator. */
       contextWindow?: number
+      /** Estimated composition of the request context (system prompt + tool
+       *  schemas + transcript). Lets the panel show WHICH part dominates the
+       *  context floor instead of just the total. Static-ish except transcript. */
+      systemPromptTokens?: number
+      toolTokens?: number
+      transcriptTokens?: number
+      /** Number of tools registered in this session's tool registry. */
+      toolCount?: number
     } & SessionId)
   | ({
       type: 'usage_snapshot'
@@ -713,6 +727,10 @@ export type BridgeEvent =
       cost: number
       /** Provider's real context window — authoritative dashboard denominator. */
       contextWindow?: number
+      systemPromptTokens?: number
+      toolTokens?: number
+      transcriptTokens?: number
+      toolCount?: number
     } & SessionId)
   | ({ type: 'message_stop'; stopReason: string } & SessionId)
   | ({ type: 'turn_complete'; turnId: string; success: boolean } & SessionId)

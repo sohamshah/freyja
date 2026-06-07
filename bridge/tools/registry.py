@@ -102,6 +102,7 @@ def build_desktop_registry(
     summarize_context_on_pinned_facts: Any | None = None,
     summarize_context_ground_truth_getter: Any | None = None,
     summarize_context_on_working_memory_upserts: Any | None = None,
+    summarize_context_working_memory_state_getter: Any | None = None,
     # Per-session action ledger (runtime-authored ground truth of what the
     # agent did). When provided, the `recall` tool is registered for archive
     # search; capture + reminder injection are wired at the bridge level.
@@ -462,6 +463,7 @@ def build_desktop_registry(
                 on_pinned_facts=summarize_context_on_pinned_facts,
                 get_ground_truth=summarize_context_ground_truth_getter,
                 on_working_memory_upserts=summarize_context_on_working_memory_upserts,
+                get_working_memory_state=summarize_context_working_memory_state_getter,
             )
         )
 

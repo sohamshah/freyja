@@ -52,6 +52,15 @@ type Grouped = {
   threads: Entity[]
 }
 
+/** The high-level overview written by compaction's extraction call (Call B):
+ *  a durable session summary + an explicit actions-completed list, kept
+ *  distinct from the entity graph (bridge/working_memory.py `overview`). */
+type Overview = {
+  summary: string
+  actionsCompleted: string[]
+  updatedAt?: number
+}
+
 /** Map a workstream status to a StatusPip status (active|paused|done). */
 function wsPip(status?: string): PipStatus {
   if (status === 'paused') return 'paused'
@@ -71,6 +80,7 @@ export function WorkingMemorySection({ topOffset = 0 }: { topOffset?: number }) 
   // Refetch when new activity lands (cheap, avoids polling) — same tick as the ledger.
   const activityTick = useHarness((s) => s.systemEvents.length)
   const [entities, setEntities] = useState<Record<string, Entity>>({})
+  const [overview, setOverview] = useState<Overview | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState(true)
@@ -83,6 +93,7 @@ export function WorkingMemorySection({ topOffset = 0 }: { topOffset?: number }) 
       const api = (window as any).harness
       if (!api?.getWorkingMemory || !activeSessionId) {
         setEntities({})
+        setOverview(null)
         setLoaded(true)
         return
       }
@@ -92,11 +103,13 @@ export function WorkingMemorySection({ topOffset = 0 }: { topOffset?: number }) 
         if (!res?.ok) {
           setError(res?.error ?? 'failed to load')
           setEntities({})
+          setOverview(null)
           setLoaded(true)
           return
         }
         setError(null)
         setEntities((res.entities ?? {}) as Record<string, Entity>)
+        setOverview((res.overview ?? null) as Overview | null)
         setLoaded(true)
       } catch (err) {
         if (!cancelled) {
@@ -152,6 +165,10 @@ export function WorkingMemorySection({ topOffset = 0 }: { topOffset?: number }) 
   }, [entities])
 
   const total = workstreams.length + doneStreams.length
+  const hasOverview = !!(
+    overview &&
+    (overview.summary?.trim() || (overview.actionsCompleted?.length ?? 0) > 0)
+  )
 
   return (
     <div className="hairline-b">
@@ -178,12 +195,14 @@ export function WorkingMemorySection({ topOffset = 0 }: { topOffset?: number }) 
         <div className="px-4 pb-3 pt-2 font-mono text-[11px] text-fg-3">
           memory unavailable: {error}
         </div>
-      ) : total === 0 ? (
+      ) : total === 0 && !hasOverview ? (
         <div className="px-4 pb-3 pt-2 font-mono text-[11px] italic text-fg-3">
           No workstreams set this session.
         </div>
       ) : (
         <div className="space-y-2.5 px-4 pb-3 pt-2">
+          {hasOverview && <OverviewCard overview={overview!} />}
+
           {workstreams.map((ws) => (
             <WorkstreamCard
               key={ws.id}
@@ -199,6 +218,69 @@ export function WorkingMemorySection({ topOffset = 0 }: { topOffset?: number }) 
               onToggle={() => setShowDone((v) => !v)}
               childrenOf={childrenOf}
             />
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   Overview card — the high-level session summary + actions completed,
+   written by compaction's extraction call (Call B). Leads the panel as the
+   durable "what happened / what's been done" surface, above the workstreams.
+   ────────────────────────────────────────────────────────────────────── */
+
+function OverviewCard({ overview }: { overview: Overview }) {
+  const summary = overview.summary?.trim() ?? ''
+  const actions = overview.actionsCompleted ?? []
+  const [showAllActions, setShowAllActions] = useState(false)
+  const ACTIONS_FOLD = 6
+  const shown = showAllActions ? actions : actions.slice(0, ACTIONS_FOLD)
+  const hidden = actions.length - shown.length
+  const ts = overview.updatedAt
+
+  return (
+    <div className="glass-raised animate-fade-in rounded-lg p-3">
+      <div className="mb-1.5 flex items-baseline gap-2">
+        <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-fg-2">
+          summary
+        </span>
+        {typeof ts === 'number' && ts > 0 && (
+          <DatelineTS ts={ts} className="ml-auto" />
+        )}
+      </div>
+
+      {summary ? (
+        <p className="font-mono text-[11.5px] leading-[1.55] text-fg-1">{summary}</p>
+      ) : (
+        <p className="font-mono text-[11px] italic text-fg-3">No summary yet.</p>
+      )}
+
+      {actions.length > 0 && (
+        <div className="mt-2.5">
+          <div className="mb-1 font-mono text-[9px] uppercase tracking-[0.12em] text-fg-2">
+            actions completed
+          </div>
+          <ul className="space-y-[3px]">
+            {shown.map((a, i) => (
+              <li
+                key={i}
+                className="flex gap-1.5 font-mono text-[11px] leading-[1.45] text-fg-1"
+              >
+                <span className="select-none text-ok/70">✓</span>
+                <span className="min-w-0">{a}</span>
+              </li>
+            ))}
+          </ul>
+          {hidden > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowAllActions(true)}
+              className="mt-1 font-mono text-[10px] text-fg-3 hover:text-fg-1"
+            >
+              + {hidden} more
+            </button>
           )}
         </div>
       )}

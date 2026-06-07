@@ -91,6 +91,14 @@ export interface SessionSlice {
     lastTurnInputTokens: number
     lastTurnOutputTokens: number
     contextWindow: number
+    /** Estimated composition of the request context: which of system-prompt /
+     *  tool-schema / transcript dominates the floor. Set from usage events;
+     *  preserved across plain `usage` ticks that don't carry them. */
+    systemPromptTokens?: number
+    toolTokens?: number
+    transcriptTokens?: number
+    /** Tool count registered in this session. */
+    toolCount?: number
   }
   systemEvents: SystemEventRecord[]
   /** Durable per-card kanban snapshot. Keyed by `card_NNN` id; value
@@ -1637,6 +1645,24 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
       const isRunnerToolHalving =
         ev.subtype === 'context_pruning' &&
         /halved \d+\s+old tool results/i.test(ev.message ?? '')
+      // Embed the full compaction summary directly on the part so the
+      // expandable inline box survives the rolling systemEvents buffer and
+      // a quit/rebuild/reopen (the message stream is what's persisted).
+      const compactionSummaryText =
+        ev.subtype === 'compaction_complete'
+          ? (typeof ev.details?.summary_text === 'string'
+              ? (ev.details.summary_text as string)
+              : typeof ev.details?.summary_preview === 'string'
+                ? (ev.details.summary_preview as string)
+                : undefined)
+          : undefined
+      const systemPart: MessagePart = {
+        type: 'system',
+        text: ev.message,
+        systemSubtype: ev.subtype,
+        eventId: sysEventId,
+        ...(compactionSummaryText ? { systemSummaryText: compactionSummaryText } : {}),
+      }
       if (
         slice.currentStreamingMessageId &&
         (chatVisible ||
@@ -1644,18 +1670,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
       ) {
         next.messages = slice.messages.map((m) =>
           m.id === slice.currentStreamingMessageId
-            ? {
-                ...m,
-                parts: [
-                  ...m.parts,
-                  {
-                    type: 'system',
-                    text: ev.message,
-                    systemSubtype: ev.subtype,
-                    eventId: sysEventId,
-                  },
-                ],
-              }
+            ? { ...m, parts: [...m.parts, systemPart] }
             : m,
         )
       } else if (chatVisible) {
@@ -1664,14 +1679,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
           {
             id: nextId('msg'),
             role: 'assistant',
-            parts: [
-              {
-                type: 'system',
-                text: ev.message,
-                systemSubtype: ev.subtype,
-                eventId: sysEventId,
-              },
-            ],
+            parts: [systemPart],
             createdAt: Date.now(),
           },
         ]
@@ -1727,6 +1735,12 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
           ev.contextWindow && ev.contextWindow > 0
             ? ev.contextWindow
             : slice.usage.contextWindow,
+        // Context-composition breakdown — preserve the last-known value when an
+        // event omits it (the breakdown is near-static; only transcript grows).
+        systemPromptTokens: ev.systemPromptTokens ?? slice.usage.systemPromptTokens,
+        toolTokens: ev.toolTokens ?? slice.usage.toolTokens,
+        transcriptTokens: ev.transcriptTokens ?? slice.usage.transcriptTokens,
+        toolCount: ev.toolCount ?? slice.usage.toolCount,
       }
       return next
     }
@@ -1745,6 +1759,10 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
             ? ev.contextWindow
             : slice.usage.contextWindow,
         totalCost: ev.cost || slice.usage.totalCost,
+        systemPromptTokens: ev.systemPromptTokens ?? slice.usage.systemPromptTokens,
+        toolTokens: ev.toolTokens ?? slice.usage.toolTokens,
+        transcriptTokens: ev.transcriptTokens ?? slice.usage.transcriptTokens,
+        toolCount: ev.toolCount ?? slice.usage.toolCount,
       }
       return next
     }

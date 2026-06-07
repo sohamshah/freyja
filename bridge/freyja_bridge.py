@@ -2459,6 +2459,7 @@ def _new_tracing_registry(
     session_ledger: "SessionLedger | None" = None,
     label_for_session=None,
     get_cumulative_cost=None,
+    get_context_composition=None,
 ):
     """Wrap a ToolRegistry so each execute() call streams events to the UI.
 
@@ -2764,21 +2765,29 @@ def _new_tracing_registry(
                             cost = float(get_cumulative_cost() or 0.0)
                         except Exception:  # noqa: BLE001
                             cost = 0.0
-                    emit(
-                        {
-                            "type": "usage",
-                            "sessionId": session_id,
-                            "contextTokens": context_tok,
-                            "inputTokens": in_tok,
-                            "outputTokens": out_tok,
-                            "cacheReadTokens": cr_tok,
-                            "cacheWriteTokens": cw_tok,
-                            "cost": cost,
-                            "contextWindow": _runner_ctx_window(
-                                get_runner() if get_runner else None
-                            ),
-                        }
-                    )
+                    usage_event = {
+                        "type": "usage",
+                        "sessionId": session_id,
+                        "contextTokens": context_tok,
+                        "inputTokens": in_tok,
+                        "outputTokens": out_tok,
+                        "cacheReadTokens": cr_tok,
+                        "cacheWriteTokens": cw_tok,
+                        "cost": cost,
+                        "contextWindow": _runner_ctx_window(
+                            get_runner() if get_runner else None
+                        ),
+                    }
+                    # Context-composition breakdown (system / tools / transcript
+                    # + tool count) so the panel can show what fills the floor.
+                    if get_context_composition is not None:
+                        try:
+                            comp = get_context_composition() or {}
+                            if comp:
+                                usage_event.update(comp)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    emit(usage_event)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -3540,6 +3549,7 @@ class _BridgeSession:
             session_ledger=self.session_ledger,
             label_for_session=_label_for_session,
             get_cumulative_cost=lambda: self.cumulative_cost,
+            get_context_composition=lambda: self._context_composition(),
         )
 
         tool_list = _grouped_tool_list(registry._tools)  # noqa: SLF001
@@ -4299,6 +4309,37 @@ class _BridgeSession:
         except Exception:  # noqa: BLE001
             return 0
 
+    def _context_composition(self) -> dict[str, int]:
+        """Estimated breakdown of the request context sent to the model each
+        turn — system prompt + tool-schema definitions + conversation
+        transcript — plus the count of registered tools.
+
+        The system prompt and tool schemas are fixed per-request overhead that
+        compaction structurally cannot reduce (compaction only ever shrinks the
+        transcript). Surfacing the split lets the UI show WHICH part dominates
+        the context floor instead of only the total. Best-effort; returns an
+        empty dict if the session isn't ready."""
+        sess = getattr(self, "session", None)
+        if sess is None:
+            return {}
+        try:
+            from engine.tokenizer import count_tokens
+            sys_tok = int(count_tokens(getattr(sess, "system_prompt", "") or ""))
+        except Exception:  # noqa: BLE001
+            sys_tok = 0
+        tool_tok = int(getattr(sess, "tool_tokens", 0) or 0)
+        try:
+            transcript_tok = int(sess.transcript.estimate_tokens())
+        except Exception:  # noqa: BLE001
+            transcript_tok = 0
+        tool_count = len(getattr(sess, "tools", []) or [])
+        return {
+            "systemPromptTokens": sys_tok,
+            "toolTokens": tool_tok,
+            "transcriptTokens": transcript_tok,
+            "toolCount": tool_count,
+        }
+
     def _current_usage_fields(self) -> tuple[int, int, int, int, float]:
         """Best-effort cumulative runner usage for a usage_snapshot event."""
         if self.runner is None:
@@ -4458,6 +4499,13 @@ class _BridgeSession:
             round((context_tokens_before / eff_window) * 100, 1)
             if eff_window and eff_window > 0 else None
         )
+        # Composition of the request context — so the readout shows WHICH part
+        # fills the floor. The system prompt + tool schemas are fixed overhead
+        # compaction can't touch; only the transcript is summarizable.
+        _comp = self._context_composition()
+        _sys_tok = int(_comp.get("systemPromptTokens", 0) or 0)
+        _tool_tok = int(_comp.get("toolTokens", 0) or 0)
+        _tool_count = int(_comp.get("toolCount", 0) or 0)
         start_details = {
             "trigger": "manual",
             "tokens_before": context_tokens_before,
@@ -4465,6 +4513,9 @@ class _BridgeSession:
             "request_tokens_before": request_tokens_before,
             "last_provider_context_tokens": provider_context_before,
             "transcript_tokens_before": transcript_tokens_before,
+            "system_prompt_tokens": _sys_tok,
+            "tool_tokens": _tool_tok,
+            "tool_count": _tool_count,
             "entries_before": entries_before,
             "effective_window": eff_window,
             "pressure_pct_before": pct_before,
@@ -4478,8 +4529,10 @@ class _BridgeSession:
                 "subtype": "compaction_start",
                 "message": (
                     "Manual compaction started "
-                    f"({context_tokens_before:,} context tokens; "
-                    f"{transcript_tokens_before:,} transcript tokens)"
+                    f"({context_tokens_before:,} context tokens = "
+                    f"{_tool_tok:,} tools + {_sys_tok:,} system + "
+                    f"{transcript_tokens_before:,} transcript; "
+                    f"{_tool_count} tools loaded)"
                 ),
                 "details": start_details,
             }
@@ -4640,6 +4693,7 @@ class _BridgeSession:
                 "cacheWriteTokens": 0,
                 "cost": cost,
                 "contextWindow": _runner_ctx_window(self.runner),
+                **self._context_composition(),
             }
         )
 
@@ -10879,6 +10933,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                     "cacheWriteTokens": cw_tok,
                     "cost": float(sess.cumulative_cost),
                     "contextWindow": _runner_ctx_window(sess.runner),
+                    **sess._context_composition(),
                 }
             )
         return

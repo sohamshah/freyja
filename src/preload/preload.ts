@@ -77,7 +77,16 @@ const api = {
   },
   async getWorkingMemory(
     sessionId: string,
-  ): Promise<{ ok: boolean; entities?: Record<string, any>; error?: string }> {
+  ): Promise<{
+    ok: boolean
+    entities?: Record<string, any>
+    overview?: {
+      summary: string
+      actionsCompleted: string[]
+      updatedAt?: number
+    } | null
+    error?: string
+  }> {
     return ipcRenderer.invoke(IPC.getWorkingMemory, sessionId)
   },
   async getRecall(
