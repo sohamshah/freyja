@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useHarness } from '../state/store'
 import { formatCost, formatDuration, formatTokens } from '../lib/format'
+import { ScrambleText } from './ScrambleText'
 import type { CompactionTelemetryRow } from '@shared/events'
 
 /**
@@ -1049,8 +1050,12 @@ function StatTile({
   return (
     <div className={`flex flex-col rounded-xl glass-raised p-4 ring-hairline ${className ?? ''}`}>
       <span className="label">{label}</span>
-      <span className={`mt-2 font-mono text-[20px] leading-none ${toneClass}`}>{value}</span>
-      <span className="mt-1 truncate font-mono text-[10px] text-fg-3">{sub}</span>
+      <span className={`mt-2 font-mono text-[20px] leading-none ${toneClass}`}>
+        <ScrambleText value={value} pace={2.4} />
+      </span>
+      <span className="mt-1 truncate font-mono text-[10px] text-fg-3">
+        <ScrambleText value={sub} pace={2.4} />
+      </span>
     </div>
   )
 }
