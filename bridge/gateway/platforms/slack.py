@@ -75,6 +75,13 @@ SLACK_MAX_MESSAGE_LENGTH = 39_000   # Slack hard cap is 40k; leave room
 _MD_TO_SLACK_BOLD = re.compile(r"\*\*([^*\n]+?)\*\*")
 _MD_TO_SLACK_ITAL = re.compile(r"__([^_\n]+?)__")
 _MD_LINK = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
+# Standalone "---" line — CommonMark horizontal rule. Slack mrkdwn
+# renders it as literal text, which looks like noise. Drop it.
+_MD_HR = re.compile(r"^[ \t]*-{3,}[ \t]*$\n?", re.MULTILINE)
+# GFM table rows: any line that starts AND ends with a pipe.
+_MD_TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
+# GFM table separator: ``|---|---|`` (optionally with colons for alignment).
+_MD_TABLE_SEP = re.compile(r"^\s*\|\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|\s*$")
 
 
 def extract_text_from_slack_blocks(blocks: list[dict[str, Any]] | None) -> str:
@@ -168,6 +175,46 @@ def extract_text_from_slack_blocks(blocks: list[dict[str, Any]] | None) -> str:
     return "\n".join(out_lines).strip()
 
 
+def _convert_gfm_tables(content: str) -> str:
+    """Convert GFM tables to Slack-friendly form.
+
+    Slack mrkdwn has no table primitive. A naive passthrough leaves
+    raw pipes on every row, which is unreadable. Wrap the whole
+    table in a fenced code block so columns align in monospace and
+    the user sees the structure as a table even though Slack can't
+    render it as one.
+
+    A GFM table is: a header row, a separator row (``|---|---|``),
+    and one or more body rows — all matching ``^|...|$``.
+    """
+    lines = content.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        if (
+            i + 1 < len(lines)
+            and _MD_TABLE_ROW.match(lines[i])
+            and _MD_TABLE_SEP.match(lines[i + 1])
+        ):
+            header = lines[i]
+            j = i + 2
+            while j < len(lines) and _MD_TABLE_ROW.match(lines[j]):
+                j += 1
+            rows = [header] + lines[i + 2 : j]
+            rendered: list[str] = []
+            for r in rows:
+                cells = [c.strip() for c in r.strip().strip("|").split("|")]
+                rendered.append(" | ".join(cells))
+            out.append("```")
+            out.extend(rendered)
+            out.append("```")
+            i = j
+        else:
+            out.append(lines[i])
+            i += 1
+    return "\n".join(out)
+
+
 def _markdown_to_slack(content: str) -> str:
     """Convert common CommonMark idioms to Slack mrkdwn.
 
@@ -177,7 +224,17 @@ def _markdown_to_slack(content: str) -> str:
       <url|text>    instead of [text](url)
       `inline`      same
       ```block```   same
+
+    GFM tables → fenced code block (columns align in monospace).
+    Horizontal rules → stripped (Slack has no divider primitive in
+    mrkdwn; the literal ``---`` looks like noise).
     """
+    # Tables FIRST so the ``|---|`` separators don't get processed
+    # by the HR pass (they wouldn't match — the HR regex requires
+    # the line to start with ``-``, not ``|`` — but ordering also
+    # documents intent).
+    content = _convert_gfm_tables(content)
+    content = _MD_HR.sub("", content)
     # Replace **bold** with *bold*. Iterate from inside out by
     # operating on non-greedy matches.
     content = _MD_TO_SLACK_BOLD.sub(r"*\1*", content)

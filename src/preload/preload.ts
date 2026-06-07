@@ -189,6 +189,9 @@ const api = {
   async skillListRejected(limit?: number): Promise<SkillListResult> {
     return ipcRenderer.invoke(IPC.skillListRejected, limit)
   },
+  async skillListPromoted(limit?: number): Promise<SkillListResult> {
+    return ipcRenderer.invoke(IPC.skillListPromoted, limit)
+  },
   async skillReadFile(skillName: string): Promise<SkillReadResult> {
     return ipcRenderer.invoke(IPC.skillReadFile, skillName)
   },

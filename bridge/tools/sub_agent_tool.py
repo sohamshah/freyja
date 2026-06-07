@@ -31,7 +31,7 @@ from bridge.tools.base import (
     ToolResult,
     ToolTier,
 )
-from bridge.tools.coordination import STRATEGY_BUS, STRATEGY_ISOLATED, STRATEGY_KANBAN
+from bridge.tools.coordination import STRATEGY_BUS, STRATEGY_GOAL, STRATEGY_KANBAN
 from bridge.tools.sub_agent_registry import (
     SubAgentRecord,
     SubAgentRegistry,
@@ -264,10 +264,10 @@ class SubAgentSpec:
     # KanbanTool instances so workers that create child cards see the
     # same autopilot signal the parent sees in its create response.
     kanban_autopilot_state_provider: Callable[[], bool] | None = None
-    # Optional task ledger. Available in every coordination mode now —
-    # in isolated, workers also get a bound TaskBoardTool; in other
-    # modes, only the parent gets it (workers' updates flow through
-    # the parent via the spawn lifecycle hook).
+    # Optional task ledger. Available in every coordination mode — the
+    # parent always gets it; workers get a bound TaskBoardTool when the
+    # caller explicitly passes task_id so they can heartbeat / complete /
+    # block their own task directly.
     task_board: Any | None = None
     # Reader for the session-wide tool-call counter, passed to bound
     # TaskBoardTool instances so the stale-task reminder can stamp
@@ -350,10 +350,10 @@ Parameters:
                         "description": (
                             "Optional task ledger id this sub-agent should serve. The worker's "
                             "lifecycle drives status updates on this task — running on spawn, "
-                            "complete with summary on success, blocked on failure. Available in "
-                            "any coordination mode; in isolated mode the worker is also handed "
-                            "the full `tasks` tool and instructed to focus on this id (it can "
-                            "still read/mutate any task on the board)."
+                            "complete with summary on success, blocked on failure. When set, the "
+                            "worker is also handed the full `tasks` tool so it can heartbeat, "
+                            "complete, or block the task directly (it can read/mutate any task "
+                            "on the board)."
                         ),
                     },
                 },
@@ -436,27 +436,12 @@ Parameters:
             record.inbox = None
         if kanban_task_id:
             record.kanban_task_id = kanban_task_id  # type: ignore[attr-defined]
-        # Task assignment — isolated mode auto-creates a task when the
-        # caller didn't pass one (legacy behavior); other modes only
-        # stamp `record.task_id` if the caller explicitly passed one
-        # so the operator never sees surprise auto-created tasks they
-        # didn't ask for.
-        if self._spec.coordination_strategy == STRATEGY_ISOLATED:
-            task_id = await self._prepare_task_assignment(
-                task_id=task_id,
-                label=label,
-                task=task,
-                agent_type=agent_type.name,
-                record_id=sub_id,
-            )
-            if task_id:
-                record.task_id = task_id  # type: ignore[attr-defined]
-        elif task_id and self._spec.task_board is not None:
-            # Verify the task exists + record assignee on it; emit a
-            # task event so the renderer's task slice picks up the
-            # assignment. No auto-create in non-isolated modes — the
-            # operator's mental model is "the agent updates a task I
-            # see in the rail," not "the agent invents tasks."
+        # Task assignment — when the caller explicitly passes task_id,
+        # verify the task exists, stamp the assignee on it, and bind it
+        # to the record so the worker gets TaskBoardTool injected below.
+        # No auto-create: the operator's mental model is "the agent updates
+        # a task I already see in the rail," not "the agent invents tasks."
+        if task_id and self._spec.task_board is not None:
             try:
                 item = await self._spec.task_board.update(
                     task_id,
@@ -687,49 +672,6 @@ Parameters:
         # tool call, so there's no ToolResult to return.
         asyncio.create_task(self._run_background(record), name=f"resume-{sub_id}")
         return sub_id
-
-    async def _prepare_task_assignment(
-        self,
-        *,
-        task_id: str,
-        label: str,
-        task: str,
-        agent_type: str,
-        record_id: str,
-    ) -> str:
-        if self._spec.task_board is None:
-            return task_id
-        actor = "parent"
-        try:
-            if task_id:
-                item = await self._spec.task_board.update(
-                    task_id,
-                    actor=actor,
-                    assignee=label,
-                    note=f"Assigned to {label} ({agent_type})",
-                )
-                if item is None:
-                    return ""
-                await self._emit_task_state_event("update", item)
-                return task_id
-
-            item = await self._spec.task_board.create(
-                title=label,
-                body=task,
-                assignee=label,
-                actor=actor,
-            )
-            await self._spec.task_board.update(
-                item.id,
-                actor=actor,
-                assignee=label,
-                note=f"Auto-created for sub-agent {record_id}",
-            )
-            await self._emit_task_state_event("create", item)
-            return item.id
-        except Exception:  # noqa: BLE001
-            logger.debug("failed to prepare task assignment", exc_info=True)
-            return task_id
 
     async def spawn_programmatically(
         self,
@@ -1078,9 +1020,16 @@ Parameters:
                 )
             )
 
+        # Inject TaskBoardTool into workers that were explicitly assigned a
+        # task (task_id passed to sub_agent). This lets them heartbeat,
+        # complete, and block their own task directly rather than waiting
+        # for the parent to update it after the fact.
+        # Excluded for goal-mode workers — they have no coordination surface;
+        # task ownership would let them sidestep the judge-evaluated goal loop.
         if (
-            self._spec.coordination_strategy == STRATEGY_ISOLATED
+            getattr(record, "task_id", None)
             and self._spec.task_board is not None
+            and self._spec.coordination_strategy != STRATEGY_GOAL
         ):
             from bridge.tools.task_board import TaskBoardTool
             child_registry.register(
@@ -1960,16 +1909,6 @@ Parameters:
         from bridge.tools.coordination import STRATEGY_GOAL
 
         strategy = self._spec.coordination_strategy
-        if strategy == STRATEGY_ISOLATED:
-            task_id = getattr(record, "task_id", "")
-            assignment = f"`{task_id}`" if task_id else "your assigned task"
-            return (
-                "\nCoordination mode: task-first solo.\n"
-                f"Your task-led assignment is {assignment}. Call `tasks` with action=`show` first "
-                "when a task id is available. Use `heartbeat` during long work, `complete` with "
-                "verified artifacts/results when done, or `block` with the exact blocker. You do not have "
-                "sibling communication tools; the task ledger is the durable handoff surface.\n"
-            )
         if strategy == STRATEGY_KANBAN:
             task_id = getattr(record, "kanban_task_id", "")
             assignment = (
@@ -2028,10 +1967,20 @@ Parameters:
                 "messaging or shared boards in this mode — return a tight structured summary "
                 "and the parent will integrate it into its goal-loop synthesis.\n"
             )
+        # BUS (default): sibling bus tools + optional task ownership
+        task_id = getattr(record, "task_id", "")
+        task_guidance = ""
+        if task_id:
+            task_guidance = (
+                f"\nYou have been assigned task `{task_id}`. Call `tasks` with action=`show` "
+                "first to see the full spec. Use `heartbeat` during long work, `complete` with "
+                "verified artifacts when done, or `block` with the exact blocker.\n"
+            )
         return (
             "\nCoordination mode: message bus.\n"
             "When you discover something useful, call `publish_finding` so sibling agents can "
             "see it. Call `read_findings` to check what siblings have found when topics overlap.\n"
+            + task_guidance
         )
 
     async def _mark_kanban_running(self, record: SubAgentRecord) -> None:

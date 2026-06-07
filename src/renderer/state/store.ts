@@ -308,6 +308,7 @@ export interface HarnessState extends SessionSlice {
   skillRollups: Record<string, NonNullable<import('@shared/events').SkillRollupResult['rollup']>>
   skillCandidatesCache: import('@shared/events').SkillCandidateRecord[] | null
   skillRejectedCache: import('@shared/events').SkillRejectedRecord[] | null
+  skillPromotedCache: import('@shared/events').SkillPromotedRecord[] | null
   // Attachments queued for the next send. Videos are Gemini-only —
   // attachVideo refuses to enqueue when the active session isn't on a
   // google-family model. The bridge re-checks at message-build time.
@@ -519,6 +520,11 @@ export interface HarnessActions {
     candidateId: string,
     action: 'promote' | 'discard',
     edits?: { name?: string; description?: string; body?: string },
+    /** Pass true when the candidate intentionally updates an existing
+     *  skill (the +X/-Y badge case). The backend refuses by default to
+     *  protect curated skill directories; this flag is the operator's
+     *  explicit "yes, overwrite" signal. */
+    overwrite?: boolean,
   ): Promise<void>
   /** Dismiss the candidate from the bottom-right toast WITHOUT
    *  resolving it. Operator can still find it in the SkillCandidatesPanel
@@ -539,6 +545,10 @@ export interface HarnessActions {
   refreshSkillCandidates(): Promise<void>
   /** Load the negative library (rejected candidates). */
   refreshRejectedSkills(limit?: number): Promise<void>
+  /** Load the recently-promoted skill list (EVENT_PROMOTED rows
+   *  hydrated with each SKILL.md frontmatter). Powers the "learned"
+   *  tab in SkillCandidatesPanel. */
+  refreshPromotedSkills(limit?: number): Promise<void>
   /** Read the raw SKILL.md body so the inspector can show the full
    *  document. Caller handles caching. */
   readSkillFile(skillName: string): Promise<string | null>
@@ -823,8 +833,9 @@ function normalizeReasoningFor(
 }
 
 function normalizeCoordinationStrategy(value?: string | null): CoordinationStrategy {
-  if (value === 'isolated' || value === 'kanban' || value === 'bus' || value === 'goal') return value
-  if (value === 'solo' || value === 'delegate') return 'isolated'
+  if (value === 'kanban' || value === 'bus' || value === 'goal') return value
+  // Former isolated-mode aliases — all redirect to bus
+  if (value === 'isolated' || value === 'solo' || value === 'delegate' || value === 'tasks' || value === 'task') return 'bus'
   if (value === 'board') return 'kanban'
   if (value === 'goals' || value === 'goal-loop' || value === 'ralph') return 'goal'
   return 'bus'
@@ -918,6 +929,7 @@ function emptyState(): HarnessState {
     skillRollups: {},
     skillCandidatesCache: null,
     skillRejectedCache: null,
+    skillPromotedCache: null,
     pendingAttachments: [],
     inputDraft: '',
     commandPaletteOpen: false,
@@ -2630,12 +2642,63 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           nextDismissed = new Set(nextDismissed)
           nextDismissed.delete(ev.candidateId)
         }
+        // Capture the resolved record from queue or disk-cache BEFORE
+        // we filter it out — needed for the optimistic skillPromoted
+        // push so the "learned" tab shows the promote without waiting
+        // on a refreshPromotedSkills round-trip.
+        const resolvedRecord =
+          prev.skillCandidateQueue.find((c) => c.candidateId === ev.candidateId) ||
+          (prev.skillCandidatesCache ?? []).find(
+            (c) => c.candidateId === ev.candidateId,
+          ) ||
+          null
+        // Drop the candidate from the on-disk pending cache so it
+        // doesn't reappear from a stale snapshot. Previously only the
+        // live queue was filtered — candidates loaded via
+        // refreshSkillCandidates would stay visible after promote.
+        let nextCandidatesCache = prev.skillCandidatesCache
+        if (
+          nextCandidatesCache &&
+          nextCandidatesCache.some((c) => c.candidateId === ev.candidateId)
+        ) {
+          nextCandidatesCache = nextCandidatesCache.filter(
+            (c) => c.candidateId !== ev.candidateId,
+          )
+        }
+        // Optimistic in-memory push to the "learned" tab. The IPC
+        // refresh on tab focus re-reads the events log and supersedes
+        // this entry — but the live push covers the gap so the tab is
+        // useful immediately after a promote.
+        let nextPromotedCache = prev.skillPromotedCache
+        if (ev.action === 'promote' && resolvedRecord) {
+          const optimistic: import('@shared/events').SkillPromotedRecord = {
+            candidateId: ev.candidateId,
+            name: resolvedRecord.name,
+            description: resolvedRecord.description,
+            triggers: resolvedRecord.triggers ?? [],
+            tags: resolvedRecord.tags ?? [],
+            promotedAt: Date.now(),
+            skillPath: ev.skillPath ?? undefined,
+            body:
+              (resolvedRecord as { body?: string }).body ??
+              resolvedRecord.bodyPreview,
+            bodyPreview: resolvedRecord.bodyPreview,
+            actor: 'operator',
+          }
+          const base = (nextPromotedCache ?? []).filter(
+            (p) =>
+              p.candidateId !== ev.candidateId && p.name !== resolvedRecord.name,
+          )
+          nextPromotedCache = [optimistic, ...base].slice(0, 100)
+        }
         return {
           ...prev,
           dismissedSkillCandidates: nextDismissed,
           skillCandidateQueue: prev.skillCandidateQueue.filter(
             (c) => c.candidateId !== ev.candidateId,
           ),
+          skillCandidatesCache: nextCandidatesCache,
+          skillPromotedCache: nextPromotedCache,
           toast: {
             id: nextId('toast'),
             message:
@@ -4187,6 +4250,20 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     }
   },
 
+  async refreshPromotedSkills(limit) {
+    const api = (window as any).harness
+    if (!api?.skillListPromoted) return
+    try {
+      const res = await api.skillListPromoted(limit)
+      if (res?.ok) {
+        set({ skillPromotedCache: res.promoted ?? [] })
+      }
+    } catch {
+      // best-effort; the optimistic push from skill_candidate_resolved
+      // still covers the just-promoted entry until the next refresh.
+    }
+  },
+
   async readSkillFile(skillName) {
     const api = (window as any).harness
     if (!api?.skillReadFile) return null
@@ -4278,7 +4355,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     useHarness.setState({ dismissedSkillCandidates: next })
   },
 
-  async resolveSkillCandidate(candidateId, action, edits) {
+  async resolveSkillCandidate(candidateId, action, edits, overwrite) {
     // H1 / M16: do NOT optimistically remove. The bridge does sync fs
     // I/O on a thread (see freyja_bridge.py + gateway/run.py) and
     // responds with `skill_candidate_resolved { ok }`. If we removed
@@ -4301,6 +4378,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         candidateId,
         action,
         edits,
+        overwrite: overwrite ?? false,
       })
     } catch (err) {
       // Send itself failed (IPC dead). Toast a warn so the operator

@@ -213,15 +213,10 @@ const TABS: Array<{ id: DashboardTab; label: string; hint: string }> = [
 function visibleDashboardTabs(
   strategy?: CoordinationStrategy,
 ): Array<{ id: DashboardTab; label: string; hint: string }> {
-  // Hide the dedicated tasks tab in two modes:
-  //   - isolated: the `overview` tab IS the tasks rail (OverviewTab
-  //     short-circuits to TasksListRailView), so a separate tab would
-  //     render the same component twice.
-  //   - kanban: the tasks tool is intentionally not registered — the
-  //     kanban board is the only planning surface in this mode. The
-  //     tab would be permanently empty and signal "use this thing
-  //     that doesn't exist" to operators.
-  if (strategy === 'isolated' || strategy === 'kanban') {
+  // Hide the dedicated tasks tab in kanban mode — the tasks tool is
+  // intentionally not registered there (the kanban board is the only
+  // planning surface). The tab would be permanently empty.
+  if (strategy === 'kanban') {
     return TABS.filter((t) => t.id !== 'tasks')
   }
   return TABS
@@ -950,19 +945,6 @@ function OverviewTab({
         />
         <JudgeBrief open={judgeBriefOpen} onClose={() => setJudgeBriefOpen(false)} goalState={goalState} />
       </>
-    )
-  }
-  if (coordinationStrategy === 'isolated') {
-    return (
-      <TasksListRailView
-        objective={objective}
-        tasks={taskCards}
-        agents={agents}
-        events={telemetryEvents}
-        contextPct={contextPct}
-        cost={cost}
-        onAttach={onAttach}
-      />
     )
   }
   if (coordinationStrategy === 'bus') {
@@ -2530,7 +2512,6 @@ function statusTextClass(status: AgentView['status']): string {
 
 function coordinationLabel(strategy?: CoordinationStrategy): string {
   if (strategy === 'kanban') return 'board'
-  if (strategy === 'isolated') return 'tasks'
   if (strategy === 'goal') return 'goal'
   return 'bus'
 }

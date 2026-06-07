@@ -270,6 +270,7 @@ export const useSchedulerStore = create<SchedulerStore>((set, get) => ({
         if (ev.status) get().setDaemonStatus(ev.status as unknown as DaemonStatus)
         break
       case 'create_job':
+      case 'update_job':
         if (ev.job) get().upsertJob(ev.job as unknown as SchedulerJob)
         break
       case 'pause_job':
@@ -333,6 +334,11 @@ export const schedulerApi = {
   },
   createJob(payload: Record<string, unknown>) {
     return _send('scheduler.create_job', { payload })
+  },
+  updateJob(jobId: string, payload: Record<string, unknown>) {
+    return _send<{ job?: SchedulerJob; error?: string }>(
+      'scheduler.update_job', { jobId, payload },
+    )
   },
   pauseJob(jobId: string) {
     return _send('scheduler.pause_job', { jobId })

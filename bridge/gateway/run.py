@@ -251,7 +251,7 @@ def _help_card_text() -> str:
         "• `/freyja loop <prompt>` — self-paced loop\n"
         "• `/freyja daemon install|status` — background scheduler daemon\n"
         "• `/goal <obj>`     — arm a goal loop\n"
-        "• `/mode <s>`       — switch coordination (bus / goal / kanban / isolated)\n"
+        "• `/mode <s>`       — switch coordination (bus / goal / kanban)\n"
         "• `/model <id>`     — switch the agent model\n"
         "• `/stop`           — interrupt the current turn\n"
         "• `/reset`          — start a fresh conversation\n"
@@ -1167,10 +1167,10 @@ class GatewayDaemon:
         from bridge.tools.coordination import normalize_coordination_strategy  # noqa: F401
 
         target = (message.slash_command_args or "").strip().lower()
-        if target not in {"bus", "goal", "kanban", "isolated"}:
+        if target not in {"bus", "goal", "kanban"}:
             await adapter.send(  # type: ignore[attr-defined]
                 message.source.chat_id,
-                "Usage: `/mode <bus|goal|kanban|isolated>`",
+                "Usage: `/mode <bus|goal|kanban>`",
                 thread_id=message.source.thread_id,
                 ephemeral_user_id=message.source.user_id,
                 raw_hint=message.raw,
@@ -1892,7 +1892,6 @@ class GatewayDaemon:
             ("bus", "default · shared event bus across sub-agents"),
             ("goal", "autonomous judge loop until objective met"),
             ("kanban", "multi-agent board with assigned cards"),
-            ("isolated", "no sub-agent fanout, single-agent run"),
         ]
         for mid, blurb in modes:
             marker = "✓ " if mid == current_strategy else "  "

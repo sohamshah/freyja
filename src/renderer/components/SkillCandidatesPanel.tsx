@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useHarness } from '../state/store'
 import { SkillDetailModal } from './SkillDetailModal'
 
-type Tab = 'pending' | 'rejected'
+type Tab = 'pending' | 'learned' | 'rejected'
 
 /**
  * Skill-candidate queue + negative-library viewer.
@@ -21,9 +21,12 @@ export function SkillCandidatesPanel() {
   const queue = useHarness((s) => s.skillCandidateQueue)
   const cachedPending = useHarness((s) => s.skillCandidatesCache)
   const rejected = useHarness((s) => s.skillRejectedCache)
+  const promoted = useHarness((s) => s.skillPromotedCache)
   const refreshPending = useHarness((s) => s.refreshSkillCandidates)
   const refreshRejected = useHarness((s) => s.refreshRejectedSkills)
+  const refreshPromoted = useHarness((s) => s.refreshPromotedSkills)
   const resolve = useHarness((s) => s.resolveSkillCandidate)
+  const openSkillFile = useHarness((s) => s.openSkillFile)
   const [tab, setTab] = useState<Tab>('pending')
   const [openId, setOpenId] = useState<string | null>(null)
   const [editId, setEditId] = useState<string | null>(null)
@@ -41,7 +44,8 @@ export function SkillCandidatesPanel() {
   useEffect(() => {
     if (tab === 'pending') void refreshPending()
     if (tab === 'rejected') void refreshRejected(100)
-  }, [tab, refreshPending, refreshRejected])
+    if (tab === 'learned') void refreshPromoted(100)
+  }, [tab, refreshPending, refreshRejected, refreshPromoted])
 
   // Merge the live queue with the on-disk cache so a candidate that
   // came in via skill_candidate event and one already on disk are
@@ -74,17 +78,32 @@ export function SkillCandidatesPanel() {
             body: editBody || undefined,
           }
         : undefined
-    void resolve(candidateId, action, edits)
+    // Look up the candidate to see if the promote is intentionally
+    // overwriting an existing skill. The +X/-Y badge means yes —
+    // pass overwrite=true so the backend doesn't refuse name_collision.
+    // After an edit the name might have changed; if the new name no
+    // longer collides we still pass true (the backend just ignores it).
+    const cand = pending.find((c) => c.candidateId === candidateId)
+    const overwrite =
+      action === 'promote' && Boolean(cand?.existingSkill?.exists)
+    void resolve(candidateId, action, edits, overwrite)
     setEditId(null)
   }
 
+  // Tabs row sits at the top of the section (no duplicate label —
+  // the outer SkillCandidatesPanelContainer header already names the
+  // section). Body is the only scroll container; it has a real
+  // max-height so the inner list can scroll even when the outer
+  // ActivityPanel layout doesn't give us flex-1 height.
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex flex-col">
       <div className="flex items-center gap-2 px-3 py-2 hairline-b">
-        <span className="label text-fg-2">drafter candidates</span>
-        <div className="ml-2 flex items-center gap-1">
+        <div className="flex items-center gap-1">
           <TabButton active={tab === 'pending'} onClick={() => setTab('pending')}>
             pending · {pending.length}
+          </TabButton>
+          <TabButton active={tab === 'learned'} onClick={() => setTab('learned')}>
+            learned · {promoted?.length ?? 0}
           </TabButton>
           <TabButton active={tab === 'rejected'} onClick={() => setTab('rejected')}>
             rejected · {rejected?.length ?? 0}
@@ -92,14 +111,20 @@ export function SkillCandidatesPanel() {
         </div>
         <button
           type="button"
-          onClick={() => (tab === 'pending' ? refreshPending() : refreshRejected(100))}
+          onClick={() =>
+            tab === 'pending'
+              ? refreshPending()
+              : tab === 'learned'
+                ? refreshPromoted(100)
+                : refreshRejected(100)
+          }
           className="ml-auto font-mono text-[10px] uppercase tracking-[0.08em] text-fg-3 hover:text-fg-1"
         >
           refresh
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 py-2">
+      <div className="max-h-[420px] overflow-y-auto px-3 py-2">
         {tab === 'pending' && pending.length === 0 && (
           <div className="rounded-md bg-white/[0.025] px-3 py-2 text-[11px] text-fg-3 ring-hairline">
             No pending skill candidates. The drafter writes here when a
@@ -189,11 +214,20 @@ export function SkillCandidatesPanel() {
                     onClick={() =>
                       isEditing
                         ? submitEdit(cand.candidateId, 'promote')
-                        : resolve(cand.candidateId, 'promote')
+                        : resolve(
+                            cand.candidateId,
+                            'promote',
+                            undefined,
+                            Boolean(cand.existingSkill?.exists),
+                          )
                     }
                     className="rounded-md bg-accent/15 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-accent ring-1 ring-accent/30 hover:bg-accent/25"
                   >
-                    {isEditing ? 'promote with edits' : 'promote'}
+                    {isEditing
+                      ? 'promote with edits'
+                      : cand.existingSkill?.exists
+                        ? 'overwrite'
+                        : 'promote'}
                   </button>
                 </div>
                 {isCaution && cand.guardSummary && (
@@ -240,6 +274,63 @@ export function SkillCandidatesPanel() {
                 {isOpen && !isEditing && (
                   <div className="mt-2 max-h-[280px] overflow-y-auto rounded-md bg-black/30 p-2 font-mono text-[11px] leading-[1.55] text-fg-1 ring-hairline whitespace-pre-wrap">
                     {(cand as any).body || cand.bodyPreview}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+
+        {tab === 'learned' && (!promoted || promoted.length === 0) && (
+          <div className="rounded-md bg-white/[0.025] px-3 py-2 text-[11px] text-fg-3 ring-hairline">
+            No promoted skills yet. Once a candidate is promoted it
+            moves here and is written to ~/.freyja/skills/&lt;name&gt;/SKILL.md.
+          </div>
+        )}
+        {tab === 'learned' &&
+          (promoted ?? []).map((rec) => {
+            const isOpen = openId === rec.candidateId
+            return (
+              <div
+                key={`${rec.candidateId || rec.name}-${rec.promotedAt}`}
+                className="mb-2 rounded-md ring-1 ring-accent/15 bg-accent/[0.04] px-3 py-2"
+              >
+                <button
+                  type="button"
+                  onClick={() => setOpenId(isOpen ? null : rec.candidateId || rec.name)}
+                  className="w-full text-left"
+                >
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="font-mono text-[12px] text-fg-0 break-all">
+                      {rec.name}
+                    </span>
+                    <span className="rounded bg-accent/15 px-1 py-[1px] font-mono text-[8.5px] uppercase tracking-[0.08em] text-accent ring-1 ring-accent/30">
+                      learned
+                    </span>
+                    <span className="ml-auto font-mono text-[10px] text-fg-3">
+                      {rec.promotedAt
+                        ? new Date(rec.promotedAt).toLocaleString()
+                        : ''}
+                    </span>
+                  </div>
+                  {rec.description && (
+                    <div className="mt-0.5 text-[11px] leading-[1.4] text-fg-2 line-clamp-2">
+                      {rec.description}
+                    </div>
+                  )}
+                </button>
+                <div className="mt-2 flex flex-wrap items-center justify-end gap-1">
+                  <button
+                    type="button"
+                    onClick={() => void openSkillFile(rec.name)}
+                    className="rounded-md bg-white/[0.04] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:text-fg-0"
+                    title={rec.skillPath || 'Open SKILL.md in your editor'}
+                  >
+                    open file
+                  </button>
+                </div>
+                {isOpen && (rec.body || rec.bodyPreview) && (
+                  <div className="mt-2 max-h-[280px] overflow-y-auto rounded-md bg-black/30 p-2 font-mono text-[11px] leading-[1.55] text-fg-1 ring-hairline whitespace-pre-wrap">
+                    {rec.body || rec.bodyPreview}
                   </div>
                 )}
               </div>
