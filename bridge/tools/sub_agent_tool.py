@@ -38,6 +38,7 @@ from bridge.tools.sub_agent_registry import (
     SubAgentState,
 )
 from bridge.project_paths import project_output_dir, project_output_guidance
+from bridge.session_ledger import render_ledger_reminder
 from engine.compaction import SummaryCompaction
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,41 @@ SUB_AGENT_IDENTITY_HEADER = (
 )
 
 
+# Tools whose presence on a sub-agent's registry means the agent
+# genuinely produces files the operator will want to find later. The
+# `project_output_guidance` block (telling the agent where to write
+# standalone artifacts) only makes sense when AT LEAST ONE of these
+# tools is available. Without this gate, a read-only judge-deep / a
+# pure-reasoning judge-calibrator / a skill-drafter (whose only output
+# is the propose_skill call) all got 700 chars of guidance telling
+# them about ``write_file`` / ``artifacts`` / ``bash working_dir`` —
+# tools they don't have, behaviors they can't perform.
+#
+# ``bash`` alone is intentionally excluded. Several agent types
+# (judge-deep, plan, review, verify, skill-drafter) include bash for
+# read-only inspection; their system prompts explicitly forbid bash
+# write/mutation. Treating bash presence as write capability would
+# re-inject the same misleading guidance.
+_WRITE_CAPABLE_TOOLS = frozenset({
+    "write_file",
+    "edit_file",
+    "edit_json",
+    "generate_image",
+    "generate_svg",
+    "artifacts",
+})
+
+
+def _has_explicit_write_capability(child_registry: ToolRegistry) -> bool:
+    """True iff the child registry contains at least one tool that
+    produces a file the operator might want routed to the project
+    output directory. Drives whether ``project_output_guidance`` is
+    appended to the sub-agent's system prompt."""
+    return bool(
+        _WRITE_CAPABLE_TOOLS & frozenset(child_registry._tools.keys())  # noqa: SLF001
+    )
+
+
 def _build_sub_agent_system_prompt(
     child_registry: ToolRegistry,
     *,
@@ -83,7 +119,9 @@ def _build_sub_agent_system_prompt(
     """Inject the actual available tool list into the sub-agent prompt.
 
     Mirrors what the parent bridge does in `_BridgeSession.initialize` so
-    the sub-agent knows what it can call.
+    the sub-agent knows what it can call. ``project_output_guidance``
+    is conditional — only included when the agent actually has tools
+    that produce files (see ``_has_explicit_write_capability``).
     """
     from bridge.tools.coordination import current_datetime_block
 
@@ -91,10 +129,15 @@ def _build_sub_agent_system_prompt(
         f"- `{name}` — {tool.definition.summary}"
         for name, tool in sorted(child_registry._tools.items())  # noqa: SLF001
     )
+    output_block = (
+        f"\n{project_output_guidance(parent_session_id, parent_workspace)}\n"
+        if _has_explicit_write_capability(child_registry)
+        else ""
+    )
     return (
         f"{SUB_AGENT_IDENTITY_HEADER}\n"
         f"\n{current_datetime_block()}\n"
-        f"\n{project_output_guidance(parent_session_id, parent_workspace)}\n"
+        f"{output_block}"
         f"Available tools:\n{tool_lines}\n"
     )
 
@@ -207,6 +250,10 @@ class SubAgentSpec:
     # `_new_tracing_registry` so child tool calls emit tool_result events
     # with the child's sessionId.
     wrap_registry: Callable[[ToolRegistry, str], ToolRegistry] | None = None
+    # Per-session action ledger (shared object with the parent; rows are
+    # creator-tagged). Lets a child surface its OWN write-ledger reminder,
+    # filtered to its session id.
+    session_ledger: Any | None = None
     # Session-scoped message bus for inter-agent communication.
     message_bus: Any | None = None
     # Session-level coordination strategy.
@@ -1055,11 +1102,28 @@ Parameters:
                 f"- `{name}` — {tool.definition.summary}"
                 for name, tool in sorted(child_registry._tools.items())  # noqa: SLF001
             )
+            # Same conditional gate as the default builder — only inject
+            # workspace/output guidance when the agent has explicit
+            # write tools. Skipping it for pure-reasoning profiles
+            # (judge-calibrator with 0 tools) and read-only profiles
+            # (judge-deep, plan, review, verify, skill-drafter) shaves
+            # ~700 chars and removes prompt content that contradicts
+            # the agent's actual capabilities.
+            output_block = (
+                f"\n{project_output_guidance(self._spec.parent_session_id, self._spec.parent_workspace)}\n"
+                if _has_explicit_write_capability(child_registry)
+                else ""
+            )
+            tools_block = (
+                f"Available tools:\n{tool_lines}\n"
+                if tool_lines
+                else "Available tools: (none — pure reasoning)\n"
+            )
             system_prompt = (
                 f"{agent_type.system_prompt}\n"
                 f"\n{current_datetime_block()}\n"
-                f"\n{project_output_guidance(self._spec.parent_session_id, self._spec.parent_workspace)}\n"
-                f"Available tools:\n{tool_lines}\n"
+                f"{output_block}"
+                f"{tools_block}"
             )
             system_prompt += self._coordination_guidance(record)
         else:
@@ -1447,6 +1511,57 @@ Parameters:
                 except Exception:
                     continue
 
+        # Child-scoped write-ledger reminder + summarizer seed, filtered to
+        # this child's OWN effects (rows in the shared ledger are tagged by
+        # record.id). Each spawn gets independent debounce state in a local
+        # dict — children have no per-instance owner to hang it on.
+        _child_led = self._spec.session_ledger
+        _child_ledger_state = {"turns": 0, "digest": "", "comp": 0}
+
+        def _child_extra_reminders() -> list[str]:
+            if _child_led is None:
+                return []
+            try:
+                effects = _child_led.effects(creator_id=record.id)
+                pinned = _child_led.pinned_facts(creator_id=record.id)
+                if not effects and not pinned:
+                    return []
+                _child_ledger_state["turns"] += 1
+                comp = int(getattr(session, "compaction_count", 0) or 0)
+                just_compacted = comp > _child_ledger_state["comp"]
+                digest = _child_led.digest(creator_id=record.id)
+                if (
+                    digest == _child_ledger_state["digest"]
+                    and not just_compacted
+                    and _child_ledger_state["turns"] < 4
+                ):
+                    return []
+                _child_ledger_state.update(digest=digest, turns=0, comp=comp)
+                block = render_ledger_reminder(
+                    effects, pinned, just_compacted=just_compacted,
+                    shell_note=int(getattr(_child_led, "shell_effect_count", 0) or 0) > 0,
+                )
+                return [block] if block else []
+            except Exception:
+                return []
+
+        def _child_ground_truth() -> str | None:
+            if _child_led is None:
+                return None
+            try:
+                lines = [
+                    f"- {r.get('summary')}"
+                    for r in _child_led.effects(creator_id=record.id)[:40]
+                    if r.get("summary")
+                ]
+                lines += [
+                    f"- (pinned) {f}"
+                    for f in _child_led.pinned_facts(creator_id=record.id)[:10]
+                ]
+                return "\n".join(lines) if lines else None
+            except Exception:
+                return None
+
         runner = AsyncAgentRunner(
             provider=provider,
             compaction_strategy=SummaryCompaction(),
@@ -1457,6 +1572,8 @@ Parameters:
             on_tool_metric=_on_sub_tool_metric,
             on_pre_iteration=_drain_subagent_inbox,
             thinking=child_thinking,
+            get_extra_system_reminders=_child_extra_reminders,
+            get_compaction_ground_truth=_child_ground_truth,
         )
         sub_runner_holder["runner"] = runner
 

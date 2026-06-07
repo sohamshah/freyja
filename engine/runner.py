@@ -775,16 +775,33 @@ class AgentRunner:
                         "tool_calls": 0,
                         "thinking_blocks": 0,
                         "error": None,
-                        "call_kind": "summarizer",
+                        "call_kind": payload.get("call_kind", "summarizer"),
                         "iterative": payload.get("iterative", False),
                     })
                 except Exception:  # noqa: BLE001
                     logger.exception("forwarding summarizer call to on_llm_call failed")
 
+            _ground_truth = None
+            _gct = getattr(self, "get_compaction_ground_truth", None)
+            if _gct is not None:
+                try:
+                    _ground_truth = _gct()
+                except Exception:  # noqa: BLE001
+                    _ground_truth = None
+            _wm_state = None
+            _gws = getattr(self, "get_working_memory_state", None)
+            if _gws is not None:
+                try:
+                    _wm_state = _gws()
+                except Exception:  # noqa: BLE001
+                    _wm_state = None
             result = self.compaction.compact(
                 session.transcript,
                 self.provider,
                 on_summarizer_call=_on_sum_call,
+                ground_truth=_ground_truth,
+                on_working_memory_upserts=getattr(self, "apply_working_memory_upserts", None),
+                working_memory_state=_wm_state,
             )
             # Track savings for the thrash detector. <10% savings on
             # this attempt counts toward the cooldown counter.
@@ -899,6 +916,23 @@ class AsyncAgentRunner:
         # to the trailing user message. Empty list = nothing to add.
         # Errors are swallowed so a bad callback can't break the runner.
         get_extra_system_reminders: Callable[[], list[str]] | None = None,
+        # Optional provider of a deterministic "confirmed actions" string
+        # (the action ledger) seeded into the summarizer so a runtime-forced
+        # compaction can't drop the agent's own write-actions. Returns None
+        # when unavailable. Kept as a plain-string callback so the engine
+        # stays ignorant of the bridge's ledger.
+        get_compaction_ground_truth: Callable[[], str | None] | None = None,
+        # Optional sink for the structured working memory produced by
+        # compaction's dedicated extraction call (Call B). Receives the full
+        # ``{summary, actions_completed, entities}`` dict (or None); the bridge
+        # folds it into the session's working memory. Engine stays ignorant of
+        # the bridge store — it just forwards the result.
+        apply_working_memory_upserts: Callable[[dict[str, Any] | None], None] | None = None,
+        # Optional provider of the session's CURRENT working-memory state as a
+        # rendered string, fed to compaction's extraction call (Call B) so it
+        # updates/extends the existing memory rather than re-deriving it.
+        # Returns None when unavailable.
+        get_working_memory_state: Callable[[], str | None] | None = None,
     ):
         self.provider = provider
         self.config = config or AgentConfig()
@@ -939,6 +973,9 @@ class AsyncAgentRunner:
         self._turn_start_pressure_band: int | None = None
         self._channel3_advisory_pending: str = ""
         self.get_extra_system_reminders = get_extra_system_reminders
+        self.get_compaction_ground_truth = get_compaction_ground_truth
+        self.apply_working_memory_upserts = apply_working_memory_upserts
+        self.get_working_memory_state = get_working_memory_state
 
     def _compute_truncation_budget(self, session: Session) -> int:
         """Compute a context-aware token budget for truncating a tool result."""
@@ -2174,16 +2211,33 @@ class AsyncAgentRunner:
                         "tool_calls": 0,
                         "thinking_blocks": 0,
                         "error": None,
-                        "call_kind": "summarizer",
+                        "call_kind": payload.get("call_kind", "summarizer"),
                         "iterative": payload.get("iterative", False),
                     })
                 except Exception:  # noqa: BLE001
                     logger.exception("forwarding summarizer call to on_llm_call failed")
 
+            _ground_truth = None
+            _gct = getattr(self, "get_compaction_ground_truth", None)
+            if _gct is not None:
+                try:
+                    _ground_truth = _gct()
+                except Exception:  # noqa: BLE001
+                    _ground_truth = None
+            _wm_state = None
+            _gws = getattr(self, "get_working_memory_state", None)
+            if _gws is not None:
+                try:
+                    _wm_state = _gws()
+                except Exception:  # noqa: BLE001
+                    _wm_state = None
             result = self.compaction.compact(
                 session.transcript,
                 self.provider,
                 on_summarizer_call=_on_sum_call,
+                ground_truth=_ground_truth,
+                on_working_memory_upserts=getattr(self, "apply_working_memory_upserts", None),
+                working_memory_state=_wm_state,
             )
             # Track savings for the thrash detector. <10% savings on
             # this attempt counts toward the cooldown counter.

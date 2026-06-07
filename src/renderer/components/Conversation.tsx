@@ -2,7 +2,7 @@ import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffec
 import { useHarness, type SystemEventRecord } from '../state/store'
 import { renderMarkdown } from '../lib/markdown'
 import { HeroWelcome } from './HeroWelcome'
-import { ToolCallChip } from './ToolCallChip'
+import { ToolCallChip, ToolResultImages } from './ToolCallChip'
 import { Widget } from './Widget'
 import { ParallelToolGroup } from './ParallelToolGroup'
 import { SubagentCard } from './SubagentCard'
@@ -14,12 +14,28 @@ import { highlightHtml, highlightRuns } from '../lib/searchHighlight'
 import { MessageContextMenu, type MessageMenuAction } from './MessageContextMenu'
 import { BranchSessionDialog } from './BranchSessionDialog'
 import { CalibrationCard } from './shared/CalibrationCard'
+import { InlineForgetting, InlineCompactionReceipt } from './MemorySystemCards'
 import {
   StructuredJsonView,
   tryParseCompleteJson,
 } from './shared/StructuredJson'
 import type { CalibrationStatus, JudgeRules } from './shared/types'
 import type { Message, MessagePart } from '@shared/events'
+
+/** Stable module-level empty array so the resultImages selector below
+ *  returns the SAME reference on every call when the tool call has no
+ *  images. Without this, the selector returned a fresh `[]` literal
+ *  every time → React's useSyncExternalStore (Zustand internals) saw
+ *  a changed snapshot every render → re-render loop → React error #185
+ *  ("Maximum update depth exceeded"). The non-empty path receives the
+ *  store's actual array, which IS reference-stable per update, so this
+ *  fixes the empty case — and the empty case is what every Part hit
+ *  since only the generate_svg / image-returning tools populate
+ *  resultImages. */
+type ResultImagesArr = NonNullable<
+  ReturnType<typeof useHarness.getState>['toolCalls'][string]['resultImages']
+>
+const EMPTY_RESULT_IMAGES: ResultImagesArr = []
 
 /** Current search query shared across all conversation parts. Empty
  *  string means "no active search" — no highlights are rendered. */
@@ -41,7 +57,7 @@ const KanbanCardLookupContext = createContext<Map<string, KanbanCardSnapshot>>(
  *  parts (e.g. `goal_judge` verdict cards) can hydrate their full
  *  payload at render time without duplicating verdict data into the
  *  message-part shape. Populated by ConversationStream. */
-const SystemEventLookupContext = createContext<Map<string, SystemEventRecord>>(
+export const SystemEventLookupContext = createContext<Map<string, SystemEventRecord>>(
   new Map(),
 )
 
@@ -1119,6 +1135,11 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
     if (part.type !== 'tool_call' || !part.toolCallId) return undefined
     return s.toolCalls[part.toolCallId]?.name
   })
+  const resultImages = useHarness((s) => {
+    if (part.type !== 'tool_call' || !part.toolCallId) return EMPTY_RESULT_IMAGES
+    return s.toolCalls[part.toolCallId]?.resultImages ?? EMPTY_RESULT_IMAGES
+  })
+  const hasResultImages = resultImages.length > 0
   const searchQuery = useContext(SearchQueryContext)
   const kanbanLookup = useContext(KanbanCardLookupContext)
   const sourceText = part.type === 'text' ? part.text ?? '' : ''
@@ -1167,7 +1188,16 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
     // them into the `widget` group kind which renders FloatingWidget
     // directly. So the chip path here is the right fallback for any
     // non-widget tool call.
-    return <ToolCallChip id={part.toolCallId} />
+    return (
+      <div className="flex flex-col gap-2.5">
+        <ToolCallChip id={part.toolCallId} />
+        {hasResultImages && (
+          <div className="max-w-[76%] rounded-lg overflow-hidden border border-white/[0.06] bg-black/35 shadow-sm">
+            <ToolResultImages images={resultImages} toolCallId={part.toolCallId} className="p-3" />
+          </div>
+        )}
+      </div>
+    )
   }
   if (part.type === 'subagent' && part.subagentId) {
     return <SubagentCard id={part.subagentId} />
@@ -1190,6 +1220,30 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
     // needs to act on it (rephrase, switch model, or escalate).
     if (part.systemSubtype === 'refusal_detected' && part.eventId) {
       return <InlineRefusal eventId={part.eventId} text={part.text ?? ''} />
+    }
+    // Grounded Memory — the runtime caught the agent's self-model
+    // diverging from the durable ledger (forgetting_detected) or
+    // relocated work during an LLM compaction (compaction_receipt).
+    // Both hydrate from SystemEventLookupContext via their eventId.
+    if (part.systemSubtype === 'forgetting_detected' && part.eventId) {
+      return <InlineForgetting eventId={part.eventId} />
+    }
+    if (part.systemSubtype === 'compaction_receipt' && part.eventId) {
+      return <InlineCompactionReceipt eventId={part.eventId} />
+    }
+    // A completed compaction gets an expandable box: collapsed it's a chip
+    // with the headline; expanded it shows the full summary call output. The
+    // summary text is embedded on the part (systemSummaryText) so it survives
+    // the rolling systemEvents buffer and a quit/rebuild/reopen; the eventId
+    // lookup only enriches it with token deltas when still in the buffer.
+    if (part.systemSubtype === 'compaction_complete') {
+      return (
+        <InlineCompaction
+          eventId={part.eventId}
+          headline={part.text ?? 'Context compacted'}
+          summaryText={part.systemSummaryText}
+        />
+      )
     }
     return (
       <div className="flex items-center gap-2 rounded-md bg-white/[0.025] px-2.5 py-1.5 text-[11px] text-fg-2 ring-hairline">
@@ -1244,6 +1298,93 @@ function InlineRefusal({ eventId, text }: { eventId: string; text: string }) {
         </div>
         <span className="text-fg-1">{text || 'Model declined to respond.'}</span>
       </div>
+    </div>
+  )
+}
+
+// ============ INLINE COMPACTION ============
+//
+// A completed compaction renders as a collapsed chip the operator can
+// expand to read the full summary the compactor wrote — the durable
+// "what the model now remembers" record. The summary text is embedded
+// on the message part (systemSummaryText), so it survives the rolling
+// 100-entry systemEvents buffer AND a quit/rebuild/reopen. The eventId
+// lookup is best-effort enrichment: when the event is still in the
+// buffer we show the token deltas; once it rolls off (or after a
+// reload from a synthesized transcript) we just show the headline +
+// summary, which is all that's needed.
+
+function InlineCompaction({
+  eventId,
+  headline,
+  summaryText,
+}: {
+  eventId?: string
+  headline: string
+  summaryText?: string
+}) {
+  const lookup = useContext(SystemEventLookupContext)
+  const event = eventId ? lookup.get(eventId) : undefined
+  const [expanded, setExpanded] = useState(false)
+
+  const details = (event?.details ?? {}) as {
+    summary_text?: string
+    summary_preview?: string
+    context_tokens_before?: number
+    context_tokens_after?: number
+    entries_removed?: number
+  }
+  // Prefer the embedded copy; fall back to the live event payload.
+  const fullSummary =
+    summaryText || details.summary_text || details.summary_preview || ''
+  const before = details.context_tokens_before
+  const after = details.context_tokens_after
+  const fmt = (n?: number) =>
+    typeof n === 'number' ? `${Math.round(n / 1000)}k` : null
+  const delta =
+    fmt(before) && fmt(after) ? `${fmt(before)} → ${fmt(after)} ctx` : null
+  const canExpand = fullSummary.trim().length > 0
+
+  return (
+    <div className="rounded-md bg-white/[0.025] ring-hairline">
+      <button
+        type="button"
+        onClick={() => canExpand && setExpanded((v) => !v)}
+        className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-fg-2 ${
+          canExpand ? 'cursor-pointer hover:bg-white/[0.02]' : 'cursor-default'
+        }`}
+      >
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="shrink-0">
+          <circle cx="5" cy="5" r="4" fill="none" stroke="#ffcc66" strokeWidth="1" />
+          <path d="M3.2 5 L4.4 6.2 L6.8 3.6" stroke="#ffcc66" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+        </svg>
+        <span className="font-mono text-[10.5px] uppercase text-warn/80">compacted</span>
+        <span className="min-w-0 flex-1 truncate text-fg-1">{headline}</span>
+        {delta && (
+          <span className="shrink-0 font-mono text-[9.5px] text-fg-3">{delta}</span>
+        )}
+        {canExpand && (
+          <svg
+            width="9"
+            height="9"
+            viewBox="0 0 10 10"
+            fill="none"
+            className={`shrink-0 text-fg-3 transition-transform ${expanded ? 'rotate-90' : ''}`}
+          >
+            <path d="M3.5 2 L6.5 5 L3.5 8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        )}
+      </button>
+      {expanded && canExpand && (
+        <div className="border-t border-white/[0.06] px-3 py-2">
+          <div className="mb-1 font-mono text-[9.5px] uppercase tracking-[0.08em] text-fg-3">
+            summary written to context
+          </div>
+          <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap break-words font-mono text-[10.5px] leading-[1.5] text-fg-1">
+            {fullSummary}
+          </pre>
+        </div>
+      )}
     </div>
   )
 }

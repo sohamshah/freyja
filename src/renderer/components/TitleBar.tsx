@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { aggregateSessionCost, useHarness } from '../state/store'
+import { useSchedulerStore } from '../state/scheduler-store'
 import { formatTokens, formatCost } from '../lib/format'
 import { Spinner } from '../lib/spinner'
 import type { CoordinationStrategy, GatewayStatus } from '@shared/events'
@@ -189,6 +190,7 @@ export function TitleBar() {
         <span className="ml-1.5 font-mono text-fg-0">{formatCost(aggregateCost)}</span>
       </TitleControl>
       <div className="ml-auto flex shrink-0 items-center gap-2 text-fg-1">
+        <SchedulerPill />
         <GatewayStatusPill />
         <TitleControl
           className="no-drag hidden h-[28px] px-2.5 text-[10px] xl:inline-flex"
@@ -342,6 +344,89 @@ function TopographicMark({ size = 22 }: { size?: number }) {
         />
       ))}
     </svg>
+  )
+}
+
+/**
+ * Scheduler pill. Renders only when ≥1 schedule exists.
+ *   · green    — daemon supported + installed + running
+ *   · warn     — daemon supported but not running (will fall back to
+ *                bridge in-process timer, which only runs while Freyja
+ *                is open)
+ *   · neutral  — daemon unsupported (Linux, Windows) or unknown
+ * Subtitle shows the next-fire countdown when one is scheduled.
+ * Click → opens the scheduled jobs modal.
+ */
+function SchedulerPill() {
+  const jobCount = useSchedulerStore((s) => s.jobs.length)
+  const enabledCount = useSchedulerStore(
+    (s) => s.jobs.filter((j) => j.enabled).length,
+  )
+  const nextFireAt = useSchedulerStore((s) => s.metrics?.next_fire_at ?? null)
+  const nextFireJobName = useSchedulerStore(
+    (s) => s.metrics?.next_fire_job_name ?? null,
+  )
+  const daemon = useSchedulerStore((s) => s.daemonStatus)
+  const open = useSchedulerStore((s) => s.openDashboard)
+
+  // Tick once per second so the countdown stays live without a
+  // full-tree re-render. We only use `now` locally below.
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000))
+  useEffect(() => {
+    const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000)
+    return () => clearInterval(t)
+  }, [])
+
+  if (jobCount === 0) return null
+
+  const supported = daemon?.supported ?? false
+  const installed = daemon?.installed ?? false
+  const running = daemon?.running ?? false
+  let dotClass = 'bg-fg-2'
+  let dotTitle = 'daemon: status unknown'
+  if (supported && installed && running) {
+    dotClass = 'bg-ok'
+    dotTitle = `daemon running (pid ${daemon?.pid ?? '—'})`
+  } else if (supported && (!installed || !running)) {
+    dotClass = 'bg-warn'
+    dotTitle = installed
+      ? 'daemon installed but not running'
+      : 'daemon not installed — schedules only fire while Freyja is open'
+  } else if (!supported) {
+    dotClass = 'bg-fg-2'
+    dotTitle = 'background daemon unavailable on this platform'
+  }
+
+  let countdown: string | null = null
+  if (nextFireAt && nextFireAt > now) {
+    const dt = nextFireAt - now
+    if (dt < 60) countdown = `${dt}s`
+    else if (dt < 3600) countdown = `${Math.floor(dt / 60)}m`
+    else if (dt < 86400) countdown = `${Math.floor(dt / 3600)}h`
+    else countdown = `${Math.floor(dt / 86400)}d`
+  }
+
+  const title = nextFireJobName && countdown
+    ? `${enabledCount}/${jobCount} active · next: “${nextFireJobName}” in ${countdown} · ${dotTitle}`
+    : `${enabledCount}/${jobCount} schedules · ${dotTitle}`
+
+  return (
+    <button
+      type="button"
+      onClick={() => open()}
+      title={title}
+      className="no-drag hidden h-[28px] shrink-0 items-center gap-1.5 rounded border border-white/[0.12] bg-white/[0.05] px-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-fg-1 transition hover:border-white/[0.22] hover:bg-white/[0.08] hover:text-fg-0 xl:inline-flex"
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${dotClass}`} />
+      <span>sched</span>
+      <span className="text-fg-0">{enabledCount}</span>
+      {countdown && (
+        <>
+          <span className="text-fg-2">·</span>
+          <span className="text-fg-0">{countdown}</span>
+        </>
+      )}
+    </button>
   )
 }
 

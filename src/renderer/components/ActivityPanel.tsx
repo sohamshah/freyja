@@ -4,6 +4,8 @@ import { formatTokens, formatCost, relativeTime } from '../lib/format'
 import { ComputerLiveView } from './ComputerLiveView'
 import { LogStreamModal } from './LogStreamModal'
 import { ArtifactsSection } from './ArtifactsSection'
+import { ActionLedgerSection } from './ActionLedgerSection'
+import { WorkingMemorySection } from './WorkingMemorySection'
 import { ToolTimeline } from './ToolTimeline'
 import { ChangesSection } from './ChangesSection'
 import { TopoBackdrop } from './TopoBackdrop'
@@ -179,6 +181,7 @@ export function ActivityPanel() {
           <div className="mt-2 grid grid-cols-1 gap-2 text-[10.5px]">
             <Metric label="billed input" value={formatTokens(usage.totalInputTokens)} />
           </div>
+          <ContextComposition usage={usage} />
           <div className="mt-2 flex items-center justify-between border-t border-white/5 pt-2 text-[10.5px]">
             <span className="text-fg-2">session spend</span>
             <span className="font-mono text-fg-0">{formatCost(totalSpend)}</span>
@@ -228,6 +231,14 @@ export function ActivityPanel() {
 
         {/* ── Artifacts ─────────────────────────────────── */}
         <ArtifactsSection />
+
+        {/* ── Working memory (what the agent is tracking) — sits above the
+              ledger (what it actually did). Its header carries a 'history ↗'
+              affordance that opens the full-transcript search. ── */}
+        <WorkingMemorySection />
+
+        {/* ── Action ledger (what the agent did this session) ── */}
+        <ActionLedgerSection />
 
         <div>
           <StickyHeader>
@@ -504,6 +515,53 @@ function Metric({ label, value }: { label: string; value: string }) {
     <div className="rounded bg-white/[0.025] px-1.5 py-1 text-center ring-hairline">
       <div className="text-[9px] uppercase tracking-[0.1em] text-fg-3">{label}</div>
       <div className="mt-0.5 font-mono text-[11px] text-fg-0">{value}</div>
+    </div>
+  )
+}
+
+/**
+ * Context-composition breakdown — shows WHICH part fills the request-context
+ * floor: tool-schema definitions + system prompt + conversation transcript.
+ * The first two are fixed per-request overhead that compaction can't touch;
+ * only the transcript (green) is summarizable. A segmented bar + a legend with
+ * the registered tool count, so the operator can see at a glance why the
+ * context number is what it is instead of doing the arithmetic. Hidden until
+ * the breakdown arrives from the bridge (an estimate, like the meter above).
+ */
+function ContextComposition({
+  usage,
+}: {
+  usage: {
+    systemPromptTokens?: number
+    toolTokens?: number
+    transcriptTokens?: number
+    toolCount?: number
+  }
+}) {
+  const sys = usage.systemPromptTokens ?? 0
+  const tools = usage.toolTokens ?? 0
+  const txn = usage.transcriptTokens ?? 0
+  const total = sys + tools + txn
+  if (total <= 0) return null
+  const pct = (n: number) => `${((n / total) * 100).toFixed(1)}%`
+  return (
+    <div className="mt-2">
+      <div className="mb-1 flex items-center justify-between text-[9px] uppercase tracking-[0.1em] text-fg-3">
+        <span>context composition (est.)</span>
+        {typeof usage.toolCount === 'number' && usage.toolCount > 0 && (
+          <span className="text-fg-2">{usage.toolCount} tools</span>
+        )}
+      </div>
+      <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-white/[0.06]">
+        <div className="h-full bg-accent/70" style={{ width: pct(tools) }} title={`tool schemas — ${formatTokens(tools)}`} />
+        <div className="h-full bg-warn/70" style={{ width: pct(sys) }} title={`system prompt — ${formatTokens(sys)}`} />
+        <div className="h-full bg-ok/70" style={{ width: pct(txn) }} title={`transcript (summarizable) — ${formatTokens(txn)}`} />
+      </div>
+      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[9.5px] text-fg-2">
+        <span><span className="text-accent">■</span> tools {formatTokens(tools)}</span>
+        <span><span className="text-warn">■</span> system {formatTokens(sys)}</span>
+        <span><span className="text-ok">■</span> transcript {formatTokens(txn)}</span>
+      </div>
     </div>
   )
 }

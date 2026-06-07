@@ -13,8 +13,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-from bridge.tools.base import ToolRegistry
 from bridge.tools.artifacts_tool import ArtifactsTool
+from bridge.tools.base import ToolRegistry
 from bridge.tools.bash_tool import BashTool
 from bridge.tools.browser_tools import BrowserExecuteJsTool, BrowserScreenshotTool
 from bridge.tools.file_tools import (
@@ -25,19 +25,18 @@ from bridge.tools.file_tools import (
     WriteFileTool,
 )
 from bridge.tools.image_generation_tool import GenerateImageTool
-from bridge.tools.view_image_tool import ViewImageTool
 from bridge.tools.kanban_board import KanbanTool
-from bridge.tools.task_board import TaskBoardTool
-from bridge.tools.video_analysis_tool import AnalyzeVideoTool
 from bridge.tools.memory_tools import MemoryTool, RecordUserPreferenceTool
+from bridge.tools.quiver_tools import GenerateSvgTool
+from bridge.tools.recall_tool import RecallTool
 from bridge.tools.search_tools import GlobTool, GrepTool
+from bridge.tools.session_memory_tool import SessionMemoryTool
 from bridge.tools.skill_tools import (
     ListSkillsTool,
     LoadSkillTool,
     ProposeSkillTool,
     SearchSkillsTool,
 )
-from bridge.tools.session_memory_tool import SessionMemoryTool
 from bridge.tools.sub_agent_registry import SubAgentRegistry
 from bridge.tools.sub_agent_tool import SubAgentSpec, SubAgentTool
 from bridge.tools.subagents_tool import SubAgentsTool
@@ -48,8 +47,12 @@ from bridge.tools.talk_tool import (
     TalkRouterContext,
     TalkTool,
 )
+from bridge.tools.task_board import TaskBoardTool
 from bridge.tools.tool_search_tool import ToolSearchTool
+from bridge.tools.video_analysis_tool import AnalyzeVideoTool
+from bridge.tools.view_image_tool import ViewImageTool
 from bridge.tools.widget_tool import ReadWidgetSpecTool, ShowWidgetTool
+from bridge.tools.working_memory_tool import WorkingMemoryTool
 
 # Computer-use tools are imported lazily below — they pull in
 # `freyja_native` which may not be built in every environment.
@@ -96,6 +99,17 @@ def build_desktop_registry(
     summarize_context_on_system_event: Any | None = None,
     summarize_context_on_pin_changed: Any | None = None,
     summarize_context_on_summarizer_llm_call: Any | None = None,
+    summarize_context_on_pinned_facts: Any | None = None,
+    summarize_context_ground_truth_getter: Any | None = None,
+    summarize_context_on_working_memory_upserts: Any | None = None,
+    summarize_context_working_memory_state_getter: Any | None = None,
+    # Per-session action ledger (runtime-authored ground truth of what the
+    # agent did). When provided, the `recall` tool is registered for archive
+    # search; capture + reminder injection are wired at the bridge level.
+    session_ledger: Any | None = None,
+    # Structured working memory (agent-authored semantic layer). When provided,
+    # the `working_memory` tool is registered.
+    working_memory: Any | None = None,
     # Reader for the session-wide tool-call counter. The `tasks` tool
     # uses it to stamp each task's `last_touched_tool_index` after an
     # action lands, which the stale-task reminder reads to decide if
@@ -225,6 +239,12 @@ def build_desktop_registry(
             ),
         )
     )
+    tools.append(
+        GenerateSvgTool(
+            image_store=image_store,
+            project_output_dir=project_output_dir,
+        )
+    )
 
     # Load image bytes into the agent's own context window. HOT tier
     # because it's the read-side counterpart to generate_image /
@@ -242,6 +262,30 @@ def build_desktop_registry(
 
     if artifact_store is not None:
         tools.append(ArtifactsTool(artifact_store))
+
+    # `recall` — search this session's verbatim pre-compaction archive
+    # (raw_messages.jsonl), so detail dropped by compaction is recoverable.
+    if _mem_session:
+        tools.append(
+            RecallTool(
+                session_id=_mem_session,
+                project_output_dir=project_output_dir,
+            )
+        )
+
+    # `working_memory` — structured, agent-authored semantic memory. Reads fold
+    # in the ledger's confirmed file effects so the agent needn't restate them.
+    if working_memory is not None:
+        tools.append(
+            WorkingMemoryTool(
+                memory=working_memory,
+                get_ledger_effects=(
+                    (lambda: session_ledger.effects(creator_id=_mem_session))
+                    if session_ledger is not None and _mem_session
+                    else None
+                ),
+            )
+        )
 
     # Session-local board coordination. This is intentionally only present
     # when a session starts in kanban mode, so the strategy is visible in the
@@ -329,6 +373,7 @@ def build_desktop_registry(
             task_board=task_board,
             task_tool_call_index_getter=task_tool_call_index_getter,
             artifact_store=artifact_store,
+            session_ledger=session_ledger,
             talk_router=talk_router,
             parent_gateway_source_getter=subagent_gateway_source_getter,
         )
@@ -415,6 +460,10 @@ def build_desktop_registry(
                 on_system_event=summarize_context_on_system_event,
                 on_pin_changed=summarize_context_on_pin_changed,
                 on_summarizer_llm_call=summarize_context_on_summarizer_llm_call,
+                on_pinned_facts=summarize_context_on_pinned_facts,
+                get_ground_truth=summarize_context_ground_truth_getter,
+                on_working_memory_upserts=summarize_context_on_working_memory_upserts,
+                get_working_memory_state=summarize_context_working_memory_state_getter,
             )
         )
 

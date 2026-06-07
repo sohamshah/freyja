@@ -299,10 +299,22 @@ class TranscriptManager:
                 last_compaction_summary = entry.compaction_summary
             elif entry.message is not None:
                 if last_compaction_summary:
+                    # Keep the exact "[Previous conversation summary]" prefix —
+                    # both the iterative-strip (compaction._is_summary_inject)
+                    # and the provider's cache-breakpoint helper match on it.
+                    # The appended clause reframes the recap as the agent's own
+                    # first-person memory rather than detached third-party notes,
+                    # which is what lets an agent disown its own prior actions.
                     messages.append(
                         Message(
                             role="system",
-                            content=f"[Previous conversation summary]\n{last_compaction_summary}",
+                            content=(
+                                "[Previous conversation summary] (a condensed "
+                                "record of your own earlier actions and findings "
+                                "in this same session — treat it as your memory, "
+                                "not someone else's notes)\n"
+                                f"{last_compaction_summary}"
+                            ),
                         )
                     )
                     last_compaction_summary = None

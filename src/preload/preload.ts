@@ -70,6 +70,35 @@ const api = {
   async compactionMetrics(): Promise<{ ok: boolean; rows?: any[]; error?: string }> {
     return ipcRenderer.invoke(IPC.compactionMetrics)
   },
+  async getActionLedger(
+    sessionId: string,
+  ): Promise<{ ok: boolean; rows?: any[]; error?: string }> {
+    return ipcRenderer.invoke(IPC.getActionLedger, sessionId)
+  },
+  async getWorkingMemory(
+    sessionId: string,
+  ): Promise<{
+    ok: boolean
+    entities?: Record<string, any>
+    overview?: {
+      summary: string
+      actionsCompleted: string[]
+      updatedAt?: number
+    } | null
+    error?: string
+  }> {
+    return ipcRenderer.invoke(IPC.getWorkingMemory, sessionId)
+  },
+  async getRecall(
+    sessionId: string,
+    query?: string,
+  ): Promise<{
+    ok: boolean
+    rows?: Array<{ role: string; turn_id: string | null; ts: number; text: string; snippet: string }>
+    error?: string
+  }> {
+    return ipcRenderer.invoke(IPC.getRecall, sessionId, query)
+  },
   async sessionExport(id: string): Promise<{
     ok: boolean
     cancelled?: boolean

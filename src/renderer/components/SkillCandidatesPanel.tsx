@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useHarness } from '../state/store'
+import { SkillDetailModal } from './SkillDetailModal'
 
 type Tab = 'pending' | 'rejected'
 
@@ -29,6 +30,11 @@ export function SkillCandidatesPanel() {
   const [editName, setEditName] = useState('')
   const [editDesc, setEditDesc] = useState('')
   const [editBody, setEditBody] = useState('')
+  // Active candidate for the centered detail modal. Distinct from
+  // openId (which controls inline expand-in-row for a quick peek) —
+  // operator can have one row inline-expanded AND open the full
+  // modal for a different one. Esc / click-outside / × dismiss.
+  const [detailCandidateId, setDetailCandidateId] = useState<string | null>(null)
 
   // First-mount load — also refresh whenever the user flips tabs so
   // we don't show stale data after a candidate was promoted elsewhere.
@@ -152,6 +158,14 @@ export function SkillCandidatesPanel() {
                     extra-narrow panel (e.g. 220px) wraps the buttons
                     onto multiple rows instead of overflowing. */}
                 <div className="mt-2 flex flex-wrap items-center justify-end gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setDetailCandidateId(cand.candidateId)}
+                    className="rounded-md bg-white/[0.04] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:text-fg-0"
+                    title="Open the full skill body in a centered modal — no truncation"
+                  >
+                    view
+                  </button>
                   <button
                     type="button"
                     onClick={() => (isEditing ? setEditId(null) : startEdit(cand))}
@@ -294,6 +308,30 @@ export function SkillCandidatesPanel() {
             )
           })}
       </div>
+      {detailCandidateId && (() => {
+        const cand =
+          pending.find((c) => c.candidateId === detailCandidateId) ??
+          (rejected ?? []).find((c) => c.candidateId === detailCandidateId)
+        if (!cand) return null
+        return (
+          <SkillDetailModal
+            candidateId={cand.candidateId}
+            name={cand.name}
+            description={cand.description}
+            triggers={cand.triggers ?? []}
+            tags={cand.tags ?? []}
+            guardSummary={cand.guardSummary}
+            guardVerdict={
+              cand.guardVerdict === 'caution' ? 'caution' : 'safe'
+            }
+            existingSkill={
+              (cand as { existingSkill?: import('@shared/events').ExistingSkillStats })
+                .existingSkill
+            }
+            onClose={() => setDetailCandidateId(null)}
+          />
+        )
+      })()}
     </div>
   )
 }

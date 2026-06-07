@@ -91,6 +91,14 @@ export interface SessionSlice {
     lastTurnInputTokens: number
     lastTurnOutputTokens: number
     contextWindow: number
+    /** Estimated composition of the request context: which of system-prompt /
+     *  tool-schema / transcript dominates the floor. Set from usage events;
+     *  preserved across plain `usage` ticks that don't carry them. */
+    systemPromptTokens?: number
+    toolTokens?: number
+    transcriptTokens?: number
+    /** Tool count registered in this session. */
+    toolCount?: number
   }
   systemEvents: SystemEventRecord[]
   /** Durable per-card kanban snapshot. Keyed by `card_NNN` id; value
@@ -329,6 +337,10 @@ export interface HarnessState extends SessionSlice {
     | 'scheduler'
   /** Cross-session compaction metrics dashboard (header button toggle). */
   metricsDashboardOpen: boolean
+  /** Grounded Memory recall drawer ("The Morgue"). Opened from the
+   *  working-memory section header and the inline memory cards via
+   *  `openRecallDrawer`; the single RecallPanel instance mounts in App. */
+  recallDrawer: { open: boolean; query: string }
   activeSubagentId: string | null
   focusedPanel: 'sidebar' | 'conversation' | 'activity'
   debugOpen: boolean
@@ -419,6 +431,10 @@ export interface HarnessActions {
     tab?: HarnessState['missionDashboardTab'],
   ): void
   toggleMetricsDashboard(open?: boolean): void
+  /** Open/close the Grounded Memory recall drawer; `query` seeds the
+   *  search field (omit to open on the recent-dispatches timeline). */
+  openRecallDrawer(query?: string): void
+  closeRecallDrawer(): void
   toggleModelPicker(open?: boolean): void
   toggleSlackSetup(open?: boolean): void
   setFocusedPanel(p: HarnessState['focusedPanel']): void
@@ -733,6 +749,16 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   'glm5': 202_752,
   'kimi-k2.5': 262_144,
   'minimax-m2.5': 196_608,
+  // Google Gemini (keep in sync with engine/providers.py MODEL_REGISTRY).
+  // These were missing here, so gemini-* sessions showed `ctx N/200k` while
+  // the real window is ~1M — the dashboard denominator (not the provider /
+  // compaction, which read the registry) was wrong.
+  'gemini-3.1-pro-preview': 1_048_576,
+  'gemini-3.5-flash': 1_048_576,
+  'gemini-3.1-flash': 1_048_576,
+  'gemini-3.1-flash-lite': 1_048_576,
+  'gemini-2.5-pro': 1_048_576,
+  'gemini-2.5-flash': 1_048_576,
 }
 
 function contextWindowFor(model: string): number {
@@ -898,6 +924,7 @@ function emptyState(): HarnessState {
     missionDashboardOpen: false,
     missionDashboardTab: 'overview',
     metricsDashboardOpen: false,
+    recallDrawer: { open: false, query: '' },
     modelPickerOpen: false,
     slackSetupOpen: false,
     activeSubagentId: null,
@@ -1589,6 +1616,13 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         // instead of getting a generic-greeting reply from a fresh
         // thread and wondering why.
         'harness_session_recreated',
+        // Grounded Memory — the runtime noticed the agent's self-model
+        // diverging from the durable ledger (forgetting_detected) or
+        // relocated work during an LLM compaction (compaction_receipt).
+        // Both render as restrained inline memory cards in
+        // Conversation.tsx (InlineForgetting / InlineCompactionReceipt).
+        'forgetting_detected',
+        'compaction_receipt',
       ]
       // The runner's automatic "halved N old tool results" pruning
       // (engine/runner.py:2078,2141) fires on most turns once context
@@ -1600,6 +1634,24 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
       const isRunnerToolHalving =
         ev.subtype === 'context_pruning' &&
         /halved \d+\s+old tool results/i.test(ev.message ?? '')
+      // Embed the full compaction summary directly on the part so the
+      // expandable inline box survives the rolling systemEvents buffer and
+      // a quit/rebuild/reopen (the message stream is what's persisted).
+      const compactionSummaryText =
+        ev.subtype === 'compaction_complete'
+          ? (typeof ev.details?.summary_text === 'string'
+              ? (ev.details.summary_text as string)
+              : typeof ev.details?.summary_preview === 'string'
+                ? (ev.details.summary_preview as string)
+                : undefined)
+          : undefined
+      const systemPart: MessagePart = {
+        type: 'system',
+        text: ev.message,
+        systemSubtype: ev.subtype,
+        eventId: sysEventId,
+        ...(compactionSummaryText ? { systemSummaryText: compactionSummaryText } : {}),
+      }
       if (
         slice.currentStreamingMessageId &&
         (chatVisible ||
@@ -1607,18 +1659,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
       ) {
         next.messages = slice.messages.map((m) =>
           m.id === slice.currentStreamingMessageId
-            ? {
-                ...m,
-                parts: [
-                  ...m.parts,
-                  {
-                    type: 'system',
-                    text: ev.message,
-                    systemSubtype: ev.subtype,
-                    eventId: sysEventId,
-                  },
-                ],
-              }
+            ? { ...m, parts: [...m.parts, systemPart] }
             : m,
         )
       } else if (chatVisible) {
@@ -1627,14 +1668,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
           {
             id: nextId('msg'),
             role: 'assistant',
-            parts: [
-              {
-                type: 'system',
-                text: ev.message,
-                systemSubtype: ev.subtype,
-                eventId: sysEventId,
-              },
-            ],
+            parts: [systemPart],
             createdAt: Date.now(),
           },
         ]
@@ -1684,6 +1718,18 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         totalCost: ev.cost,
         lastTurnInputTokens: contextTokens,
         lastTurnOutputTokens: ev.outputTokens,
+        // Authoritative window from the provider (when sent) overrides the
+        // renderer's static per-model fallback so the denominator can't drift.
+        contextWindow:
+          ev.contextWindow && ev.contextWindow > 0
+            ? ev.contextWindow
+            : slice.usage.contextWindow,
+        // Context-composition breakdown — preserve the last-known value when an
+        // event omits it (the breakdown is near-static; only transcript grows).
+        systemPromptTokens: ev.systemPromptTokens ?? slice.usage.systemPromptTokens,
+        toolTokens: ev.toolTokens ?? slice.usage.toolTokens,
+        transcriptTokens: ev.transcriptTokens ?? slice.usage.transcriptTokens,
+        toolCount: ev.toolCount ?? slice.usage.toolCount,
       }
       return next
     }
@@ -1697,7 +1743,15 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         totalOutputTokens: ev.outputTokens,
         totalCacheReadTokens: ev.cacheReadTokens,
         totalCacheWriteTokens: ev.cacheWriteTokens,
+        contextWindow:
+          ev.contextWindow && ev.contextWindow > 0
+            ? ev.contextWindow
+            : slice.usage.contextWindow,
         totalCost: ev.cost || slice.usage.totalCost,
+        systemPromptTokens: ev.systemPromptTokens ?? slice.usage.systemPromptTokens,
+        toolTokens: ev.toolTokens ?? slice.usage.toolTokens,
+        transcriptTokens: ev.transcriptTokens ?? slice.usage.transcriptTokens,
+        toolCount: ev.toolCount ?? slice.usage.toolCount,
       }
       return next
     }
@@ -2970,6 +3024,13 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
 
   toggleMetricsDashboard(open) {
     set((prev) => ({ metricsDashboardOpen: open ?? !prev.metricsDashboardOpen }))
+  },
+
+  openRecallDrawer(query) {
+    set({ recallDrawer: { open: true, query: query ?? '' } })
+  },
+  closeRecallDrawer() {
+    set((prev) => ({ recallDrawer: { ...prev.recallDrawer, open: false } }))
   },
 
   toggleModelPicker(open) {
@@ -4573,6 +4634,17 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       }
       case '/subagents': {
         state.toggleMissionDashboard(true, 'overview')
+        return true
+      }
+      case '/schedule':
+      case '/schedules':
+      case '/jobs':
+      case '/cron': {
+        // Lazy import keeps the harness store free of a hard dep on
+        // scheduler-store (which has its own IPC binding lifecycle).
+        import('./scheduler-store')
+          .then(({ useSchedulerStore }) => useSchedulerStore.getState().openDashboard())
+          .catch(() => show('scheduler unavailable', 'warn'))
         return true
       }
       case '/tools':

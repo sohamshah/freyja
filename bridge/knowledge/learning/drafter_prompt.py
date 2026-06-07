@@ -396,27 +396,99 @@ SKILL_CRAFT_BLOCK = (
 )
 
 
+AGENTIC_FREYJA_CONTEXT = (
+    "─── You are the Freyja skill drafter (sub-agent) ───\n\n"
+    "You run as a sub-agent of the operator's main Freyja session. Your "
+    "single job: review the parent conversation and decide what skill "
+    "knowledge — if any — should be added, amended, or kept as-is. The "
+    "operator never receives your output directly; they receive the "
+    "candidate you publish via ``propose_skill`` (or your plain-text "
+    "explanation if you decline).\n\n"
+    "Runtime contract:\n"
+    "  · You have tools. Use them. Your full toolset is listed in the "
+    "``Available tools:`` section appended below — read tools "
+    "(``read_file``, ``list_directory``, ``glob``, ``grep``, ``bash`` "
+    "for READ-ONLY inspection only — no writes / installs / git "
+    "mutations), skill-library tools (``list_skills``, "
+    "``search_skills``, ``load_skill``), and one publish tool "
+    "(``propose_skill``).\n"
+    "  · There is NO emit_candidate, skill_manage, skill_patch, or "
+    "skill_view tool. Older versions of this prompt mentioned those — "
+    "ignore any such references in the legacy Hermes block below.\n"
+    "  · The only persistent side effect you can make is calling "
+    "``propose_skill`` exactly once when you have something to publish. "
+    "Everything else is read-only.\n\n"
+    "What `propose_skill` does on your behalf:\n"
+    "  1. Runs Skills Guard (120 threat patterns) over your name + "
+    "description + body. ``dangerous`` refuses; ``caution`` flags for "
+    "operator review; ``safe`` proceeds.\n"
+    "  2. Writes the candidate to ``~/.freyja/skills/.candidates/<uuid>"
+    ".yaml``.\n"
+    "  3. Surfaces a SkillToast on the operator's desktop / Block Kit "
+    "card on Slack with promote / edit / discard buttons. On promote, "
+    "the candidate is written verbatim (with assembled frontmatter) "
+    "to ``~/.freyja/skills/<name>/SKILL.md``, overwriting any existing "
+    "skill of the same name.\n\n"
+    "Skip semantics:\n"
+    "  · If after review nothing is skill-worthy, do NOT call "
+    "``propose_skill``. Finish with a short plain-text paragraph "
+    "explaining why. The operator reads your transcript; an honest "
+    "skip is better than a forced low-signal candidate.\n"
+    "  · 'Nothing skill-worthy' includes the Hermes 'Do NOT capture' "
+    "rules in the block below (one-shot fixes, session-specific "
+    "artifacts, SHAs/PR numbers, etc.).\n\n"
+    "Patch vs. replace — read the legacy Hermes block below for the "
+    "signal-detection rules, but TRANSLATE its 'preference order' to "
+    "Freyja's reality:\n"
+    "  · 'Patch loaded skill' → call ``load_skill('<name>')`` first to "
+    "read the existing body, then propose a candidate with the SAME "
+    "name whose body is the existing content with your additions woven "
+    "in. Do NOT summarize-rewrite from memory.\n"
+    "  · 'Update umbrella' → same: load it first, then amend.\n"
+    "  · 'Add references/ file' → not supported (one-file SKILL.md "
+    "only); embed the supplementary content inline and note in your "
+    "rationale that a future ``references/`` split would help.\n"
+    "  · 'Create new umbrella' → propose a fresh class-level name.\n\n"
+    "When the next block tells you 'do NOT skip' or 'every save creates "
+    "a new candidate' or 'no patch semantics', it is wrong for THIS "
+    "runtime. Defer to the rules above.\n\n"
+)
+
+
 def build_agentic_drafter_system_prompt() -> str:
     """Assemble the full prompt for the ``skill-drafter`` AgentType.
 
-    Same review/guard/voice rules as the single-call drafter, plus the
-    agentic operating block (tool usage, amend-vs-replace, publish via
-    propose_skill) and the skill-craft block (skill-creator wisdom on
-    name/description/body discipline).
+    Order:
+      1. ``AGENTIC_FREYJA_CONTEXT`` — accurate runtime contract: you
+         have tools, you call propose_skill, you CAN skip with plain
+         text. Replaces the stale ``FREYJA_PORT_PREAMBLE`` (which was
+         written for the old single-LLM-call drafter and lied about
+         tool availability).
+      2. ``HERMES_SKILL_REVIEW_PROMPT`` — verbatim Hermes review fork
+         for signal detection. Some directives ("do NOT skip", "every
+         save creates a new candidate") are wrong for our runtime; the
+         AGENTIC_FREYJA_CONTEXT above explicitly overrides them.
+      3. ``AGENTIC_OPERATING_BLOCK`` — workflow guidance (load_skill
+         before proposing same-named candidate, verify claims via
+         read_file/grep, call propose_skill once).
+      4. ``SKILL_CRAFT_BLOCK`` — distilled skill-creator wisdom on
+         name/description/body discipline.
 
-    The output-format directive at the end of FREYJA_FORMAT_BLOCK (the
-    YAML schema for single-call output) is irrelevant in agentic mode —
-    the agent calls `propose_skill` which validates fields directly —
-    but we keep the rest of FREYJA_FORMAT_BLOCK for its name/voice
-    rules. The agent treats the YAML directive as legacy context.
+    Note: ``FREYJA_FORMAT_BLOCK`` is intentionally DROPPED from the
+    agentic path. It hard-coded the single-call output schema
+    (``emit_candidate`` YAML), said "no skill_manage tools" (false in
+    agentic mode — we have read tools), said "do NOT skip" (false —
+    we want honest skips), and "every save creates a new candidate"
+    (false — patches via load_skill + propose_skill are first-class).
+    Its salvageable content (voice/name/body rules) lives in
+    ``SKILL_CRAFT_BLOCK``.
 
-    Stable across invocations so the provider's prompt cache reuses it
-    across back-to-back drafter spawns.
+    Stable across invocations so the provider's prompt cache reuses
+    cleanly across back-to-back drafter spawns.
     """
     return (
-        FREYJA_PORT_PREAMBLE
+        AGENTIC_FREYJA_CONTEXT
         + HERMES_SKILL_REVIEW_PROMPT
-        + FREYJA_FORMAT_BLOCK
         + AGENTIC_OPERATING_BLOCK
         + SKILL_CRAFT_BLOCK
     )

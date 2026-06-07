@@ -52,6 +52,17 @@ from bridge.artifact_store import (
     SessionArtifactStore,
 )
 from bridge.project_paths import project_output_dir, project_output_guidance
+from bridge.session_ledger import (  # noqa: E402
+    SessionLedger,
+    classify_bash_command,
+    detect_negative_self_claim,
+    git_status_delta,
+    render_ledger_reminder,
+)
+from bridge.working_memory import (  # noqa: E402
+    WorkingMemory,
+    apply_working_memory_upserts,
+)
 
 
 # ─── Stdout helpers ─────────────────────────────────────────────────────────
@@ -1817,15 +1828,28 @@ Before compacting:
   ongoing work, pass its ordinal via `pin_entries` so the summarizer
   preserves it verbatim.
 - For short critical strings (credentials, exact file paths, error
-  messages) use `preserve_facts` — the runtime guarantees they appear
-  in the produced summary."""
+  messages) use `preserve_facts` — the runtime keeps them durable (in
+  the produced summary, or, for the cheap scopes that don't make one, in
+  the session action ledger) and surfaces them back to you.
+
+Grounding (do not skip):
+- A runtime reminder lists the files and actions you've created or
+  changed this session, drawn from a durable ledger that survives
+  compaction. Treat it as the source of truth for what you did.
+- Before you tell the user you made no changes, only explored, or can't
+  remember what you did, check that ledger and run `git status` in the
+  relevant repo. Your in-context memory may have been compacted; the
+  ledger and git have not.
+- To recover detail compaction condensed (an old tool result, what a
+  file looked like, what a search returned), use `recall`."""
 
 _INSTALL_DEPS_BLOCK = """# Installing dependencies
-On a missing-package error, install the package and retry — yolo tier
-auto-approves. Prefer `uv pip install` in venvs, otherwise `uv add`,
-`npm install`, `brew install`. Common Python import → package map:
-`fitz`→pymupdf, `cv2`→opencv-python, `PIL`→pillow, `yaml`→pyyaml,
-`sklearn`→scikit-learn."""
+On a missing-package error, install the package and retry. The operator
+may need to approve the install command if they're not on yolo tier —
+that's fine, surface the install attempt and let them allow it once.
+Prefer `uv pip install` in venvs, otherwise `uv add`, `npm install`,
+`brew install`. Common Python import → package map: `fitz`→pymupdf,
+`cv2`→opencv-python, `PIL`→pillow, `yaml`→pyyaml, `sklearn`→scikit-learn."""
 
 _SESSION_COMMANDS_BLOCK = """# Session-specific commands
 The operator can drive Freyja via slash commands. You can't run them yourself, but suggest the right one when it's the cleanest path for the user:
@@ -1834,9 +1858,11 @@ The operator can drive Freyja via slash commands. You can't run them yourself, b
 - `/compact [scope]` — force a context compaction pass (you can also call `summarize_context` directly).
 - `/model <id>` — switch model mid-session.
 - `/skills` — operator browse of the skill index (use `list_skills` / `search_skills` yourself).
+- `/learn-this [guidance]` — force the skill drafter to review this conversation now. Optional trailing text steers the drafter ("/learn-this focus on the deploy cherry-pick pattern"). Suggest this when the operator says something is worth remembering across sessions.
 - `/memory` — operator-only view of persistent notes.
 - `/dashboard` — open the mission dashboard (Cmd+Shift+M).
 - `/subagents` — open the swarm dashboard (Cmd+O).
+- `/schedule` — view + manage scheduled / cron jobs (also aliased `/schedules`, `/jobs`, `/cron`).
 - `/usage` — show token and cost usage so far.
 - `/export` — export the transcript as markdown / jsonl.
 
@@ -1862,10 +1888,11 @@ _TOOL_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "list_displays", "list_windows", "focus_window",
         "find_element", "read_ax_tree", "computer", "computer_use", "wait",
     )),
-    ("Media", ("generate_image", "analyze_video")),
+    ("Media", ("generate_image", "generate_svg", "analyze_video")),
     ("Knowledge", (
         "list_skills", "search_skills", "load_skill",
         "memory", "session_memory", "record_user_preference",
+        "working_memory", "recall",
     )),
     ("Coordination", (
         "sub_agent", "subagents", "summarize_context", "tool_search",
@@ -2208,8 +2235,56 @@ def _truncate_preview(text: str, limit: int = 2000) -> str:
     return f"{head}\n\n… [truncated {len(text) - limit} chars] …\n\n{tail}"
 
 
+def _svg_dimensions_from_bytes(raw: bytes) -> tuple[int, int] | None:
+    """Best-effort SVG dimension parser. Prefers viewBox over width/height
+    because SVGs without explicit pixel sizes (the common case for
+    generate_svg outputs) still carry a viewBox."""
+    import re
+    try:
+        head = raw[:4096].decode("utf-8", errors="ignore")
+    except Exception:  # noqa: BLE001
+        return None
+    if "<svg" not in head.lower():
+        return None
+    # Strip the <svg ...> open tag to limit regex scope and avoid
+    # accidentally matching a nested <rect width=> later in the file.
+    svg_open = re.search(r"<svg\b[^>]*>", head, re.IGNORECASE | re.DOTALL)
+    if not svg_open:
+        return None
+    tag = svg_open.group(0)
+    # Try viewBox first — yields render-true aspect even when no pixel
+    # size is set. Format: "minX minY width height".
+    vb = re.search(r'viewBox\s*=\s*"([^"]+)"', tag, re.IGNORECASE)
+    if vb:
+        parts = vb.group(1).strip().split()
+        if len(parts) == 4:
+            try:
+                return int(float(parts[2])), int(float(parts[3]))
+            except (TypeError, ValueError):
+                pass
+    # Fall back to width/height attrs. Strip "px" / unit suffixes.
+    def _attr(name: str) -> int | None:
+        m = re.search(rf'{name}\s*=\s*"([^"]+)"', tag, re.IGNORECASE)
+        if not m:
+            return None
+        v = re.match(r"\s*([\d.]+)", m.group(1))
+        if not v:
+            return None
+        try:
+            return int(float(v.group(1)))
+        except (TypeError, ValueError):
+            return None
+    w, h = _attr("width"), _attr("height")
+    if w and h:
+        return w, h
+    return None
+
+
 def _image_dimensions_from_bytes(raw: bytes) -> tuple[int, int] | None:
-    """Best-effort PNG/JPEG/WebP dimension parser for tool-result previews."""
+    """Best-effort PNG/JPEG/WebP/SVG dimension parser for tool-result previews."""
+    svg_dims = _svg_dimensions_from_bytes(raw)
+    if svg_dims is not None:
+        return svg_dims
     if len(raw) >= 24 and raw.startswith(b"\x89PNG\r\n\x1a\n"):
         return int.from_bytes(raw[16:20], "big"), int.from_bytes(raw[20:24], "big")
 
@@ -2330,6 +2405,50 @@ def _tool_content_preview_and_images(
     return "\n".join(part for part in text_parts if part), images
 
 
+def _runner_ctx_window(runner: Any) -> int:
+    """The provider's real context window — the authoritative denominator for
+    the renderer's REQUEST CONTEXT meter. Shipped on every usage event so the
+    dashboard reflects the model's actual window (e.g. 1M for Gemini/Opus)
+    instead of the renderer's static per-model fallback table, which silently
+    drifts whenever a model is added to the provider registry but not the UI.
+    Returns 0 when unknown so the renderer keeps its cold-start estimate."""
+    try:
+        prov = getattr(runner, "provider", None)
+        return int(getattr(prov, "context_window", 0) or 0)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _git_repo_root(cwd: str) -> str | None:
+    """Resolve the git toplevel for ``cwd`` (None if not a repo). Best-effort,
+    short timeout — used to attribute mutating bash commands to exact files."""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if out.returncode == 0:
+            root = out.stdout.strip()
+            return root or None
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def _git_porcelain(root: str) -> str:
+    """`git status --porcelain` for ``root`` (empty string on any failure)."""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["git", "-C", root, "status", "--porcelain"],
+            capture_output=True, text=True, timeout=3,
+        )
+        return out.stdout if out.returncode == 0 else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _new_tracing_registry(
     base_registry,
     session_id: str,
@@ -2337,8 +2456,10 @@ def _new_tracing_registry(
     *,
     path_resolver: FilePathResolver | None = None,
     artifact_store: SessionArtifactStore | None = None,
+    session_ledger: "SessionLedger | None" = None,
     label_for_session=None,
     get_cumulative_cost=None,
+    get_context_composition=None,
 ):
     """Wrap a ToolRegistry so each execute() call streams events to the UI.
 
@@ -2389,9 +2510,42 @@ def _new_tracing_registry(
         except Exception as exc:  # noqa: BLE001
             log("debug", f"tool_input_end emit failed: {exc}")
 
+        # Snapshot git state before a mutating bash command so we can attribute
+        # the exact files it changes (higher fidelity than command-pattern).
+        _git_root: str | None = None
+        _git_before = ""
+        # Only pay for the git snapshot when the command looks mutating —
+        # read-only bash (ls/cat/grep/git status) skips the subprocess entirely.
+        if (
+            tool_name == "bash"
+            and session_ledger is not None
+            and classify_bash_command(
+                str(tool_args.get("command") or tool_args.get("cmd") or "")
+            ) == "effect"
+        ):
+            try:
+                _bash_cwd = str(tool_args.get("cwd") or "") or (
+                    str(path_resolver.workspace) if path_resolver is not None else ""
+                )
+                if _bash_cwd:
+                    _root = await asyncio.to_thread(_git_repo_root, _bash_cwd)
+                    # Only attribute files if no other command is mid-capture in
+                    # this repo (avoids cross-attribution under parallel bash).
+                    if _root and session_ledger.begin_git_capture(_root):
+                        _git_root = _root
+                        _git_before = await asyncio.to_thread(_git_porcelain, _git_root)
+            except Exception:  # noqa: BLE001
+                if _git_root:
+                    session_ledger.end_git_capture(_git_root)
+                _git_root = None
+
         try:
             result = await original_execute(call, **kwargs)
         except Exception as exc:
+            # Release any git-capture claim so a raising bash tool doesn't leave
+            # the repo permanently "in flight" (blocking future attribution).
+            if _git_root and session_ledger is not None:
+                session_ledger.end_git_capture(_git_root)
             duration_ms = int((time.monotonic() - start) * 1000)
             emit(
                 {
@@ -2438,12 +2592,36 @@ def _new_tracing_registry(
         content = getattr(result, "content", "")
         preview, images = _tool_content_preview_and_images(content)
 
+        # Diff stats for the mutating file tool, captured from the change_set
+        # below and threaded into the session-ledger effect row so the
+        # working-memory panel can render a +N/−M MarginMark + a diff peek.
+        # Best-effort: never break the loop on a malformed change_set.
+        _ledger_diff_extra: dict[str, Any] | None = None
         if file_change_tracker is not None:
             try:
                 change_set = file_change_tracker.finish(
                     success=not bool(getattr(result, "is_error", False)),
                 )
                 if change_set:
+                    try:
+                        _totals = change_set.get("totals") or {}
+                        _files = change_set.get("files") or []
+                        _first = _files[0] if _files else {}
+                        _diff = _first.get("diff")
+                        if isinstance(_diff, str) and len(_diff) > 4000:
+                            _diff = _diff[:4000]
+                        _ledger_diff_extra = {
+                            "additions": int(_totals.get("additions") or 0),
+                            "deletions": int(_totals.get("deletions") or 0),
+                            "diff": _diff,
+                            "diffTruncated": bool(
+                                _first.get("diffTruncated")
+                                or (isinstance(_first.get("diff"), str)
+                                    and len(_first["diff"]) > 4000)
+                            ),
+                        }
+                    except Exception:  # noqa: BLE001
+                        _ledger_diff_extra = None
                     emit(
                         {
                             "type": "file_change_set",
@@ -2516,6 +2694,54 @@ def _new_tracing_registry(
                         )
                     except Exception as exc:  # noqa: BLE001
                         log("debug", f"image artifact manifest record failed: {exc}")
+        # Session action ledger — runtime-authored ground truth of what the
+        # agent did (effects) and looked at (observations). Independent of the
+        # artifact manifest: covers bash effects + observations and drives the
+        # standing write-ledger reminder. Best-effort; never break the loop.
+        if session_ledger is not None:
+            try:
+                _ptext = preview if isinstance(preview, str) else ""
+                _is_err = bool(getattr(result, "is_error", False))
+                _recorded_git = False
+                # Prefer exact file attribution for mutating bash via the git
+                # before/after delta; fall back to command-pattern otherwise.
+                if tool_name == "bash" and _git_root and not _is_err:
+                    try:
+                        _git_after = await asyncio.to_thread(_git_porcelain, _git_root)
+                        _delta = git_status_delta(_git_before, _git_after)
+                    except Exception:  # noqa: BLE001
+                        _delta = []
+                    if _delta:
+                        _cmd = str(
+                            tool_args.get("command") or tool_args.get("cmd") or ""
+                        ).strip()
+                        session_ledger.record_shell_git_effect(
+                            command=_cmd, delta=_delta, repo=_git_root,
+                            creator_id=session_id, tool_call_id=tool_id,
+                        )
+                        _recorded_git = True
+                if not _recorded_git:
+                    session_ledger.record_from_tool(
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                        result_text=_ptext[:4000],
+                        result_chars=len(_ptext),
+                        is_error=_is_err,
+                        tool_call_id=tool_id,
+                        # `session_id` here is the acting session (the child's id
+                        # for sub-agent tool calls, the parent's for the main
+                        # loop), so effects stay attributable to who performed them.
+                        creator_id=session_id,
+                        # Diff stats for a mutating file tool, captured above
+                        # from the change_set — lands additions/deletions/diff on
+                        # the effect row (None for bash/image/observations).
+                        extra=_ledger_diff_extra,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                log("debug", f"session ledger record failed: {exc}")
+            finally:
+                if _git_root:
+                    session_ledger.end_git_capture(_git_root)
         emit(event)
 
         # Emit a live usage snapshot after each tool call so the activity
@@ -2539,18 +2765,29 @@ def _new_tracing_registry(
                             cost = float(get_cumulative_cost() or 0.0)
                         except Exception:  # noqa: BLE001
                             cost = 0.0
-                    emit(
-                        {
-                            "type": "usage",
-                            "sessionId": session_id,
-                            "contextTokens": context_tok,
-                            "inputTokens": in_tok,
-                            "outputTokens": out_tok,
-                            "cacheReadTokens": cr_tok,
-                            "cacheWriteTokens": cw_tok,
-                            "cost": cost,
-                        }
-                    )
+                    usage_event = {
+                        "type": "usage",
+                        "sessionId": session_id,
+                        "contextTokens": context_tok,
+                        "inputTokens": in_tok,
+                        "outputTokens": out_tok,
+                        "cacheReadTokens": cr_tok,
+                        "cacheWriteTokens": cw_tok,
+                        "cost": cost,
+                        "contextWindow": _runner_ctx_window(
+                            get_runner() if get_runner else None
+                        ),
+                    }
+                    # Context-composition breakdown (system / tools / transcript
+                    # + tool count) so the panel can show what fills the floor.
+                    if get_context_composition is not None:
+                        try:
+                            comp = get_context_composition() or {}
+                            if comp:
+                                usage_event.update(comp)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    emit(usage_event)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -2635,6 +2872,16 @@ class _BridgeSession:
             session_id=self.project_session_id,
             project_dir=self.project_output_dir,
         )
+        self.session_ledger = SessionLedger(
+            session_id=self.project_session_id,
+            project_dir=self.project_output_dir,
+        )
+        self.session_ledger.ensure()
+        self.working_memory = WorkingMemory(
+            session_id=self.project_session_id,
+            project_dir=self.project_output_dir,
+        )
+        self.working_memory.ensure()
         self.path_resolver = FilePathResolver(
             workspace=Path(self.workspace),
             project_dir=self.project_output_dir,
@@ -2752,6 +2999,18 @@ class _BridgeSession:
         # be re-judged without the worker dispatch logic blocking it.
         self._kanban_judge_pending: set[str] = set()
         self.task_board: Any | None = None
+        # Write-ledger reminder bookkeeping. The standing reminder re-emits
+        # only when the ledger digest changes, with a floor so it re-appears
+        # at least every _LEDGER_REMINDER_FLOOR turns even on a stable set
+        # (a tail-appended copy can age out via pruning). `_ledger_seen_compactions`
+        # tracks the session's compaction_count so we can switch to the
+        # "just compacted" framing on the turn after one fires. The detector
+        # guard ensures we flag a given forgetting episode only once.
+        self._ledger_last_digest: str | None = None
+        self._ledger_turns_since_emit: int = 0
+        self._ledger_seen_compactions: int = 0
+        self._wm_seen_compactions: int = 0
+        self._forgetting_flag_index: int = -1
         # Monotonically-incrementing tool-call counter scoped to this
         # session. Used by the stale-task reminder to figure out "has
         # the agent done meaningful tool-call progress since this task
@@ -2822,6 +3081,16 @@ class _BridgeSession:
             session_id=self.project_session_id,
             project_dir=self.project_output_dir,
         )
+        self.session_ledger = SessionLedger(
+            session_id=self.project_session_id,
+            project_dir=self.project_output_dir,
+        )
+        self.session_ledger.ensure()
+        self.working_memory = WorkingMemory(
+            session_id=self.project_session_id,
+            project_dir=self.project_output_dir,
+        )
+        self.working_memory.ensure()
         self.path_resolver = FilePathResolver(
             workspace=Path(self.workspace),
             project_dir=self.project_output_dir,
@@ -3048,6 +3317,7 @@ class _BridgeSession:
                 session_id,
                 path_resolver=self.path_resolver,
                 artifact_store=self.artifact_store,
+                session_ledger=self.session_ledger,
                 label_for_session=_label_for_session,
             )
 
@@ -3120,6 +3390,18 @@ class _BridgeSession:
             image_store=self.image_store,
             project_output_dir=self.project_output_dir,
             artifact_store=self.artifact_store,
+            session_ledger=self.session_ledger,
+            working_memory=self.working_memory,
+            # Persist preserve_facts the cheap scopes can't anchor (the
+            # silent-no-op fix), and seed the summarizer with the ledger's
+            # confirmed actions so the produced summary can't omit them.
+            summarize_context_on_pinned_facts=(
+                lambda fact: self.session_ledger.record_pinned_fact(fact, creator_id=self.id)
+            ),
+            summarize_context_ground_truth_getter=self._ledger_ground_truth,
+            # Project the agent-driven (cooperative) compaction's structured
+            # notes into working memory too — the primary compaction path.
+            summarize_context_on_working_memory_upserts=self._apply_wm_upserts,
             on_memory_updated=_emit_memory_updated,
             on_skill_event=_emit_skill_event,
             talk_router=self._talk_router,
@@ -3264,8 +3546,10 @@ class _BridgeSession:
             get_runner=lambda: self.runner,
             path_resolver=self.path_resolver,
             artifact_store=self.artifact_store,
+            session_ledger=self.session_ledger,
             label_for_session=_label_for_session,
             get_cumulative_cost=lambda: self.cumulative_cost,
+            get_context_composition=lambda: self._context_composition(),
         )
 
         tool_list = _grouped_tool_list(registry._tools)  # noqa: SLF001
@@ -3390,7 +3674,12 @@ class _BridgeSession:
             # `<system-reminder>` blocks per request; empty most of the
             # time. Rides alongside the runner-managed context-pressure
             # note via the same trailing-user-message append path.
-            get_extra_system_reminders=self._build_stale_task_reminders,
+            get_extra_system_reminders=self._build_extra_system_reminders,
+            # Seed runtime-forced summaries with the ledger's confirmed actions
+            # so the overflow/forced path can't drop the agent's own writes.
+            get_compaction_ground_truth=self._ledger_ground_truth,
+            # Fold the summarizer's structured notes into working memory (2b).
+            apply_working_memory_upserts=self._apply_wm_upserts,
         )
         self.runner = runner
         log(
@@ -3401,18 +3690,37 @@ class _BridgeSession:
         # Emit the system prompt so the renderer can include it in
         # session exports for training data. This is a one-time event
         # per session initialization (not per turn).
-        emit(
-            {
-                "type": "system_event",
-                "sessionId": self.id,
-                "subtype": "system_prompt_set",
-                "message": "System prompt configured",
-                "details": {
-                    "systemPrompt": system_prompt,
-                    "coordinationStrategy": self.coordination_strategy,
-                },
-            }
-        )
+        #
+        # SUB-AGENT EXCEPTION: when the operator opens a sub-agent
+        # session post-hoc (e.g. to scroll the skill-drafter's
+        # transcript), ``ensure_session`` constructs a fresh
+        # _BridgeSession for the sub-agent's id using the parent
+        # desktop session's defaults. ``initialize()`` then builds a
+        # desktop-style system prompt and would emit it here — that
+        # event then routes to the sub-agent's slice in the renderer
+        # and OVERWRITES the real sub-agent prompt (which was captured
+        # at original spawn time by SubAgentTool's own system_prompt_set
+        # emit). Result: the operator sees the parent desktop's prompt
+        # on the sub-agent's pane.
+        #
+        # Sub-agent session ids start with ``sub_`` by convention (see
+        # SubAgentTool.allocate). When the id matches, skip the emit:
+        # the renderer's persisted slice already carries the correct
+        # systemPrompt from SubAgentTool's original emit, and we don't
+        # want to clobber it with desktop-default boilerplate.
+        if not self.id.startswith("sub_"):
+            emit(
+                {
+                    "type": "system_event",
+                    "sessionId": self.id,
+                    "subtype": "system_prompt_set",
+                    "message": "System prompt configured",
+                    "details": {
+                        "systemPrompt": system_prompt,
+                        "coordinationStrategy": self.coordination_strategy,
+                    },
+                }
+            )
         for item in self.memory_store.list_items(limit=50):
             emit(
                 {
@@ -3716,7 +4024,11 @@ class _BridgeSession:
                 from engine.compaction import SummaryCompaction
 
                 compactor = SummaryCompaction()
-                compactor.compact(self.session.transcript, self.provider)
+                compactor.compact(
+                    self.session.transcript, self.provider,
+                    ground_truth=self._ledger_ground_truth(),
+                    on_working_memory_upserts=self._apply_wm_upserts,
+                )
                 self.session.compaction_count += 1
                 emit(
                     {
@@ -3997,6 +4309,37 @@ class _BridgeSession:
         except Exception:  # noqa: BLE001
             return 0
 
+    def _context_composition(self) -> dict[str, int]:
+        """Estimated breakdown of the request context sent to the model each
+        turn — system prompt + tool-schema definitions + conversation
+        transcript — plus the count of registered tools.
+
+        The system prompt and tool schemas are fixed per-request overhead that
+        compaction structurally cannot reduce (compaction only ever shrinks the
+        transcript). Surfacing the split lets the UI show WHICH part dominates
+        the context floor instead of only the total. Best-effort; returns an
+        empty dict if the session isn't ready."""
+        sess = getattr(self, "session", None)
+        if sess is None:
+            return {}
+        try:
+            from engine.tokenizer import count_tokens
+            sys_tok = int(count_tokens(getattr(sess, "system_prompt", "") or ""))
+        except Exception:  # noqa: BLE001
+            sys_tok = 0
+        tool_tok = int(getattr(sess, "tool_tokens", 0) or 0)
+        try:
+            transcript_tok = int(sess.transcript.estimate_tokens())
+        except Exception:  # noqa: BLE001
+            transcript_tok = 0
+        tool_count = len(getattr(sess, "tools", []) or [])
+        return {
+            "systemPromptTokens": sys_tok,
+            "toolTokens": tool_tok,
+            "transcriptTokens": transcript_tok,
+            "toolCount": tool_count,
+        }
+
     def _current_usage_fields(self) -> tuple[int, int, int, int, float]:
         """Best-effort cumulative runner usage for a usage_snapshot event."""
         if self.runner is None:
@@ -4156,6 +4499,13 @@ class _BridgeSession:
             round((context_tokens_before / eff_window) * 100, 1)
             if eff_window and eff_window > 0 else None
         )
+        # Composition of the request context — so the readout shows WHICH part
+        # fills the floor. The system prompt + tool schemas are fixed overhead
+        # compaction can't touch; only the transcript is summarizable.
+        _comp = self._context_composition()
+        _sys_tok = int(_comp.get("systemPromptTokens", 0) or 0)
+        _tool_tok = int(_comp.get("toolTokens", 0) or 0)
+        _tool_count = int(_comp.get("toolCount", 0) or 0)
         start_details = {
             "trigger": "manual",
             "tokens_before": context_tokens_before,
@@ -4163,6 +4513,9 @@ class _BridgeSession:
             "request_tokens_before": request_tokens_before,
             "last_provider_context_tokens": provider_context_before,
             "transcript_tokens_before": transcript_tokens_before,
+            "system_prompt_tokens": _sys_tok,
+            "tool_tokens": _tool_tok,
+            "tool_count": _tool_count,
             "entries_before": entries_before,
             "effective_window": eff_window,
             "pressure_pct_before": pct_before,
@@ -4176,8 +4529,10 @@ class _BridgeSession:
                 "subtype": "compaction_start",
                 "message": (
                     "Manual compaction started "
-                    f"({context_tokens_before:,} context tokens; "
-                    f"{transcript_tokens_before:,} transcript tokens)"
+                    f"({context_tokens_before:,} context tokens = "
+                    f"{_tool_tok:,} tools + {_sys_tok:,} system + "
+                    f"{transcript_tokens_before:,} transcript; "
+                    f"{_tool_count} tools loaded)"
                 ),
                 "details": start_details,
             }
@@ -4222,6 +4577,8 @@ class _BridgeSession:
             self.session.transcript,
             self.provider,
             on_summarizer_call=_on_sum_call_manual,
+            ground_truth=self._ledger_ground_truth(),
+            on_working_memory_upserts=self._apply_wm_upserts,
         )
 
         if not result.success:
@@ -4335,6 +4692,8 @@ class _BridgeSession:
                 "cacheReadTokens": 0,
                 "cacheWriteTokens": 0,
                 "cost": cost,
+                "contextWindow": _runner_ctx_window(self.runner),
+                **self._context_composition(),
             }
         )
 
@@ -7081,6 +7440,7 @@ class _BridgeSession:
                     "cacheReadTokens": cum_cr,
                     "cacheWriteTokens": cum_cw,
                     "cost": float(self.cumulative_cost),
+                    "contextWindow": _runner_ctx_window(self.runner),
                 }
             )
             await self._run_skill_maintenance(effective_ctx)
@@ -7728,6 +8088,28 @@ class _BridgeSession:
         + export bundle see consistent data regardless of who triggered
         the compaction (Gap 2).
         """
+        # Compaction "receipt": on a real LLM summary (not the frequent cheap
+        # prune), tell the agent + user that work was relocated, not lost — the
+        # durable ledger still holds the actions and `recall` recovers detail.
+        if subtype == "compaction_complete":
+            try:
+                led = getattr(self, "session_ledger", None)
+                effs = led.effects(creator_id=self.id) if led is not None else []
+                if effs:
+                    emit({
+                        "type": "system_event",
+                        "sessionId": self.id,
+                        "subtype": "compaction_receipt",
+                        "message": (
+                            f"Compaction relocated detail, didn't lose it — "
+                            f"{len(effs)} action(s) you took this session stay "
+                            f"in the durable ledger; older detail is recoverable "
+                            f"with `recall`."
+                        ),
+                        "details": {"effect_count": len(effs)},
+                    })
+            except Exception:  # noqa: BLE001
+                log("debug", "compaction receipt emit failed")
         try:
             from bridge.compaction_telemetry import append_telemetry
 
@@ -8096,6 +8478,279 @@ class _BridgeSession:
     # gets a chance to redirect, leaving the session silent forever
     # after.
     _MAX_TASK_REMINDERS_PER_TURN = 1
+
+    # Re-emit the standing write-ledger reminder at least every N turns even
+    # when the effect set is unchanged — a tail-appended copy on an old user
+    # message can be condensed by pruning, so we refresh a live copy onto the
+    # current turn periodically.
+    _LEDGER_REMINDER_FLOOR = 4
+
+    def _build_extra_system_reminders(self) -> list[str]:
+        """Producer for the runner's ``get_extra_system_reminders``.
+
+        Concatenates, in priority order: (1) a one-shot forgetting correction
+        if the agent just disowned its own work, (2) the standing write-ledger
+        reminder (runtime ground truth of what it did), (3) the stale-task
+        reminder. All ride the same cache-friendly tail-append seam.
+        """
+        blocks: list[str] = []
+        try:
+            corr = self._build_forgetting_correction()
+            if corr:
+                blocks.append(corr)
+        except Exception:
+            log("debug", "forgetting correction failed")
+        try:
+            led = self._build_write_ledger_reminder()
+            if led:
+                blocks.append(led)
+        except Exception:
+            log("debug", "write-ledger reminder failed")
+        try:
+            wm = self._build_working_memory_injection()
+            if wm:
+                blocks.append(wm)
+        except Exception:
+            log("debug", "working-memory injection failed")
+        try:
+            blocks.extend(self._build_stale_task_reminders())
+        except Exception:
+            log("debug", "stale-task reminder failed")
+        return blocks
+
+    def _build_working_memory_injection(self) -> str | None:
+        """One-shot post-compaction re-grounding of the agent's STRUCTURED
+        notes (Milestone 2b). Fires only on the turn after a real LLM
+        compaction — the ledger reminder covers continuous ground truth, while
+        this restores the semantic layer (workstreams/decisions/findings) that
+        the compaction just folded into working memory. Kept one-shot because
+        the full render can be large; the agent can re-read it any time via the
+        working_memory tool."""
+        wm = getattr(self, "working_memory", None)
+        if wm is None or self.session is None:
+            return None
+        comp_count = int(getattr(self.session, "compaction_count", 0) or 0)
+        if comp_count <= self._wm_seen_compactions:
+            return None
+        self._wm_seen_compactions = comp_count
+        try:
+            rendered = wm.render()
+        except Exception:  # noqa: BLE001
+            return None
+        if not rendered:
+            return None
+        return (
+            "<system-reminder>\n"
+            "Context was just compacted. Here are your structured working "
+            "notes (durable; re-read any time with working_memory(action="
+            "'read')):\n\n"
+            f"{rendered}\n"
+            "</system-reminder>"
+        )
+
+    def _build_write_ledger_reminder(self) -> str | None:
+        """The standing first-person record of what the agent did this session.
+
+        Re-emits when the ledger digest changes, a compaction just fired (so we
+        switch to the "just compacted" framing), or the turn floor elapsed.
+        Returns None when there's nothing to surface."""
+        led = getattr(self, "session_ledger", None)
+        if led is None:
+            return None
+        # Filter to this session's own effects so a sub-agent's writes (which
+        # share the parent's ledger object) don't appear as the parent's.
+        effects = led.effects(creator_id=self.id)
+        pinned = led.pinned_facts(creator_id=self.id)
+        memory_present = self._session_memory_present()
+        if not effects and not pinned and not memory_present:
+            return None
+
+        self._ledger_turns_since_emit += 1
+        comp_count = 0
+        if self.session is not None:
+            comp_count = int(getattr(self.session, "compaction_count", 0) or 0)
+        just_compacted = comp_count > self._ledger_seen_compactions
+
+        digest = led.digest(creator_id=self.id) + ("|mem" if memory_present else "")
+        if (
+            digest == self._ledger_last_digest
+            and not just_compacted
+            and self._ledger_turns_since_emit < self._LEDGER_REMINDER_FLOOR
+        ):
+            return None
+
+        self._ledger_last_digest = digest
+        self._ledger_turns_since_emit = 0
+        self._ledger_seen_compactions = comp_count
+        return render_ledger_reminder(
+            effects,
+            pinned,
+            just_compacted=just_compacted,
+            shell_note=int(getattr(led, "shell_effect_count", 0) or 0) > 0,
+            memory_present=memory_present,
+        )
+
+    def _ledger_ground_truth(self) -> str | None:
+        """Render the ledger's confirmed actions as a seed for the summarizer
+        (engine.compaction.SummaryCompaction.compact(ground_truth=...))."""
+        led = getattr(self, "session_ledger", None)
+        if led is None:
+            return None
+        lines: list[str] = []
+        for row in led.effects(creator_id=self.id)[:40]:
+            s = str(row.get("summary") or "").strip()
+            if s:
+                lines.append(f"- {s}")
+        for fact in led.pinned_facts(creator_id=self.id)[:10]:
+            lines.append(f"- (pinned) {fact}")
+        return "\n".join(lines) if lines else None
+
+    def _apply_wm_upserts(self, upserts: list[dict[str, Any]]) -> None:
+        """Fold a compaction's structured working-memory upserts into the
+        session's working memory (Milestone 2b — compaction-as-projection),
+        then run a deterministic ledger-based refresh so working memory updates
+        on EVERY compaction even when the summarizer emits no parseable block
+        (common on models that skip the optional block). Best-effort; never
+        raise on the compaction path."""
+        wm = getattr(self, "working_memory", None)
+        if wm is None:
+            return
+        try:
+            if upserts:
+                n = apply_working_memory_upserts(wm, upserts)
+                if n:
+                    log("debug", f"working memory projection applied {n} upsert(s)")
+        except Exception:  # noqa: BLE001
+            log("debug", "working memory projection failed")
+        try:
+            self._refresh_wm_artifacts_from_ledger(wm)
+        except Exception:  # noqa: BLE001
+            log("debug", "working memory ledger refresh failed")
+
+    def _refresh_wm_artifacts_from_ledger(self, wm: Any) -> None:
+        """Deterministic floor: reflect the action ledger's file effects into
+        the active workstream as artifact_notes, so the files the agent changed
+        always show in working memory after a compaction — no LLM required.
+        Idempotent (matched by path). Only enriches an EXISTING workstream; it
+        never fabricates one (the summarizer block owns workstream creation)."""
+        led = getattr(self, "session_ledger", None)
+        if led is None:
+            return
+        effects = [e for e in led.effects(creator_id=self.id) if e.get("path")]
+        if not effects:
+            return
+        workstreams = wm.list(type="workstream")
+        if not workstreams:
+            return
+        active = next(
+            (w for w in workstreams if w.get("status") == "active"), workstreams[-1]
+        )
+        ws_id = active.get("id")
+        for e in effects[:12]:
+            path = str(e.get("path") or "")
+            if not path:
+                continue
+            existing = wm.find_by_primary(
+                type="artifact_note", value=path, workstream_id=ws_id
+            )
+            wm.upsert(
+                type="artifact_note",
+                entity_id=existing,
+                fields={
+                    "path": path,
+                    "note": e.get("summary"),
+                    "additions": e.get("additions"),
+                    "deletions": e.get("deletions"),
+                    "workstreamId": ws_id,
+                },
+            )
+
+    def _session_memory_present(self) -> bool:
+        try:
+            p = Path(self.project_output_dir) / "memory.md"
+            return p.exists() and p.stat().st_size > 0
+        except Exception:
+            return False
+
+    def _build_forgetting_correction(self) -> str | None:
+        """Self-model monitor: if the agent's last message disowns work the
+        ledger shows it did, inject a one-shot correction + emit telemetry."""
+        led = getattr(self, "session_ledger", None)
+        if led is None or not led.has_effects(creator_id=self.id) or self.session is None:
+            return None
+        text = self._last_assistant_text(self.session)
+        if not text or not detect_negative_self_claim(text):
+            return None
+        # Flag a given episode only once (keyed on the tool-call index so a
+        # later, genuinely-new claim can still fire).
+        if self._forgetting_flag_index == self._tool_call_index:
+            return None
+        self._forgetting_flag_index = self._tool_call_index
+        effects = led.effects(creator_id=self.id)
+        self._emit_forgetting_telemetry(len(effects))
+        names = "; ".join(str(r.get("summary") or "") for r in effects[:5] if r.get("summary"))
+        return (
+            "<system-reminder>\n"
+            "Your previous message suggested you made no changes or only "
+            "explored this session, but the runtime ledger records "
+            f"{len(effects)} action(s) you took — e.g. {names}. Re-check the "
+            "write-ledger above and `git status` before answering; if you did "
+            "the work, acknowledge it.\n"
+            "</system-reminder>"
+        )
+
+    @staticmethod
+    def _last_assistant_text(sess: Any) -> str:
+        try:
+            entries = sess.transcript.entries
+        except Exception:
+            return ""
+        for entry in reversed(entries):
+            msg = getattr(entry, "message", None)
+            if msg is None or getattr(msg, "role", "") != "assistant":
+                continue
+            content = getattr(msg, "content", "")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts = [
+                    getattr(b, "text", "") for b in content
+                    if isinstance(getattr(b, "text", None), str)
+                ]
+                return "\n".join(parts)
+            return ""
+        return ""
+
+    def _emit_forgetting_telemetry(self, effect_count: int) -> None:
+        try:
+            from bridge.compaction_telemetry import append_telemetry
+            append_telemetry({
+                "type": "forgetting_detected",
+                "session_id": self.id,
+                "effect_count": effect_count,
+                "tool_call_index": self._tool_call_index,
+            })
+        except Exception:
+            log("debug", "forgetting telemetry failed")
+        # Also surface it to the renderer so the user can see when the agent's
+        # self-model diverged from ground truth (not just a telemetry row).
+        try:
+            emit({
+                "type": "system_event",
+                "sessionId": self.id,
+                "subtype": "forgetting_detected",
+                "message": (
+                    f"Self-model check: a message implied no changes this "
+                    f"session, but the ledger records {effect_count} action(s) "
+                    f"you took. A correction was surfaced to the agent."
+                ),
+                "details": {
+                    "effect_count": effect_count,
+                    "tool_call_index": self._tool_call_index,
+                },
+            })
+        except Exception:  # noqa: BLE001
+            log("debug", "forgetting system_event emit failed")
 
     def _build_stale_task_reminders(self) -> list[str]:
         """Producer for the runner's `get_extra_system_reminders`.
@@ -10277,6 +10932,8 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                     "cacheReadTokens": cr_tok,
                     "cacheWriteTokens": cw_tok,
                     "cost": float(sess.cumulative_cost),
+                    "contextWindow": _runner_ctx_window(sess.runner),
+                    **sess._context_composition(),
                 }
             )
         return
@@ -10697,6 +11354,55 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         except Exception as exc:  # noqa: BLE001
             emit({"type": "scheduler_response", "requestId": cmd.get("id"),
                   "subtype": "daemon_uninstall", "error": str(exc)})
+        return
+
+    if ctype == "scheduler.preview_next_fires":
+        # Returns up to N future fire timestamps for either an existing
+        # job (by ``jobId``) or a free-form schedule spec (``schedule``
+        # dict or NL ``when`` string + ``timezone``). Used by the new-
+        # schedule modal's live preview and by the timeline strip on
+        # schedule cards.
+        try:
+            import time as _time
+            from bridge.scheduler.scheduling import compute_next_fire
+            n = max(1, min(int(cmd.get("n", 5)), 20))
+            schedule = None
+            last_fire: float | None = None
+            job_id = cmd.get("jobId")
+            if job_id:
+                job = await state.scheduler.get_job(job_id)
+                if job is None:
+                    raise ValueError(f"job not found: {job_id}")
+                schedule = job.schedule
+                last_fire = job.last_fire_at or None
+            else:
+                from bridge.scheduler.service import build_schedule
+                schedule = build_schedule(
+                    cmd.get("when"),
+                    cmd.get("schedule"),
+                    timezone=cmd.get("timezone", "UTC"),
+                )
+            now = _time.time()
+            fires: list[float] = []
+            cursor = last_fire
+            for _ in range(n):
+                nxt = compute_next_fire(schedule, now=now, last_fire=cursor)
+                if nxt is None or nxt <= now:
+                    break
+                fires.append(nxt)
+                cursor = nxt
+                # advance ``now`` so cron/interval keep stepping forward
+                now = nxt
+            emit({
+                "type": "scheduler_response",
+                "requestId": cmd.get("id"),
+                "subtype": "preview_next_fires",
+                "jobId": job_id or None,
+                "fires": fires,
+            })
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "preview_next_fires", "error": str(exc)})
         return
 
     if ctype == "computer.emergency_stop":
