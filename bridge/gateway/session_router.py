@@ -152,13 +152,19 @@ _INLINE_SESSION_FLAG_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Standalone --models flag (no value). Matched before the value-bearing
+# regex so "--models" isn't accidentally treated as "--model" with value
+# "s" or similar.
+_INLINE_MODELS_FLAG_RE = re.compile(r"^\s*--models\b", re.IGNORECASE)
+
 
 def parse_inline_session_flags(
     text: str,
-) -> tuple[str | None, str | None, str, list[str]]:
-    """Strip ``--model <id>`` and ``--mode <name>`` from the start of ``text``.
+) -> tuple[str | None, str | None, str, list[str], bool]:
+    """Strip ``--model <id>``, ``--mode <name>``, and ``--models`` from the
+    start of ``text``.
 
-    Returns ``(model_id, mode, cleaned_text, errors)``:
+    Returns ``(model_id, mode, cleaned_text, errors, show_models)``:
 
       · ``model_id``: validated model id (matches ``MODEL_REGISTRY``)
         or ``None`` if no --model flag was present
@@ -168,25 +174,37 @@ def parse_inline_session_flags(
         the user wrote a flag whose value didn't validate. ``cleaned_text``
         still has the bad flag stripped so the caller can echo back
         the intended message body.
+      · ``show_models``: ``True`` if ``--models`` was present. The caller
+        should short-circuit to the models listing and skip the agent turn.
 
     Examples:
         ``"--model claude-opus-4-8 fix the bug"`` →
-            ``("claude-opus-4-8", None, "fix the bug", [])``
+            ``("claude-opus-4-8", None, "fix the bug", [], False)``
         ``"--mode goal --model claude-opus-4-8 ship it"`` →
-            ``("claude-opus-4-8", "goal", "ship it", [])``
+            ``("claude-opus-4-8", "goal", "ship it", [], False)``
         ``"--mode banana write some code"`` →
             ``(None, None, "write some code",
-               ["Invalid mode `banana`. Available: `bus`, `goal`, `kanban`."])``
+               ["Invalid mode `banana`. Available: `bus`, `goal`, `kanban`."], False)``
+        ``"--models"`` →
+            ``(None, None, "", [], True)``
         ``"normal message"`` →
-            ``(None, None, "normal message", [])``
+            ``(None, None, "normal message", [], False)``
     """
     if not text:
-        return None, None, "", []
+        return None, None, "", [], False
 
     model: str | None = None
     mode: str | None = None
     errors: list[str] = []
     raw = text
+
+    # --models (standalone, no value) — detect and strip before the
+    # value-bearing flag loop so "--models" isn't parsed as "--model s".
+    show_models = False
+    m_models = _INLINE_MODELS_FLAG_RE.match(raw)
+    if m_models:
+        show_models = True
+        raw = raw[m_models.end():].lstrip()
 
     # Peel up to 2 leading flag tokens (one --model + one --mode in
     # either order). Use a bounded loop; >2 iterations would mean
@@ -228,12 +246,12 @@ def parse_inline_session_flags(
             valid = True
         if not valid:
             errors.append(
-                f"Invalid model `{model}`. Send `/freyja models` "
-                "(in a DM or top-level channel message) to see options."
+                f"Invalid model `{model}`. Use `--models` or `/freyja models` "
+                "to see available options."
             )
             model = None
 
-    return model, mode, cleaned, errors
+    return model, mode, cleaned, errors, show_models
 
 
 def normalize_verbosity(value: str | None) -> str:

@@ -265,6 +265,8 @@ def _help_card_text() -> str:
         "and coordination strategy from the start. Examples:\n"
         "    `@Freyja --model claude-opus-4-8 ship the auth bug`\n"
         "    `@Freyja --mode goal --model claude-opus-4-8 build a JSON parser`\n"
+        "  Use `--models` anywhere (including inside threads) to list all "
+        "available models, harnesses, and coordination modes.\n"
         "\n"
         "*Channels*: @mention me to start a thread, then keep replying in "
         "the thread without re-mentioning.\n"
@@ -442,16 +444,16 @@ class GatewayDaemon:
             if handled:
                 return
 
-        # Inline --model / --mode flags. Slack slash commands don't
-        # fire inside threads, so this is the only way to set a
-        # session's model or coordination mode on the first message
-        # of a new thread. Parsed BEFORE route_message so the values
-        # apply at session-creation time (ensure_session takes both
-        # as kwargs). Invalid values: reply with the validation error
-        # and bail — don't silently fall through to defaults, the
-        # user clearly tried to express an intent.
+        # Inline --model / --mode / --models flags. Slack slash commands
+        # don't fire inside threads, so these are the only way to query or
+        # set a session's model or coordination mode on the first message of
+        # a new thread. Parsed BEFORE route_message so the values apply at
+        # session-creation time (ensure_session takes both as kwargs).
+        # Invalid values: reply with the validation error and bail — don't
+        # silently fall through to defaults, the user clearly tried to
+        # express an intent.
         from bridge.gateway.session_router import parse_inline_session_flags
-        in_model, in_mode, cleaned_text, flag_errors = (
+        in_model, in_mode, cleaned_text, flag_errors, show_models = (
             parse_inline_session_flags(message.text or "")
         )
         if flag_errors:
@@ -463,10 +465,23 @@ class GatewayDaemon:
                 raw_hint=message.raw,
             )
             return
+        if show_models:
+            # --models is a query flag — render the models list and skip
+            # the agent turn entirely. Works inside threads where
+            # /freyja models can't fire as a slash command.
+            models_text = await self._render_models(message)
+            await adapter.send(
+                message.source.chat_id,
+                models_text,
+                thread_id=message.source.thread_id,
+                raw_hint=message.raw,
+            )
+            return
         if in_model is not None or in_mode is not None:
             # Strip the flag tokens from the text so the agent's
             # prompt doesn't carry them. IncomingMessage is mutable.
             message.text = cleaned_text
+
 
         try:
             # Pass in_mode through as-is (None when no --mode flag).
