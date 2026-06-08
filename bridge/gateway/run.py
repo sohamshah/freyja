@@ -469,11 +469,16 @@ class GatewayDaemon:
             message.text = cleaned_text
 
         try:
+            # Pass in_mode through as-is (None when no --mode flag).
+            # route_message seeds the "bus" default only on NEW
+            # sessions — for EXISTING sessions, None means
+            # "don't touch the current strategy", which preserves
+            # kanban/goal across follow-up messages.
             key, session = await route_message(
                 message,
                 self.state,
                 default_model=in_model,
-                default_strategy=in_mode or "bus",
+                default_strategy=in_mode,
             )
         except Exception:
             logger.exception("failed to route inbound message")
