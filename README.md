@@ -10,421 +10,420 @@
 
 <p align="center">
   Freyja is an agentic desktop app that can write code, browse the web, operate your Mac,
-  launch specialist subagents, preserve the full trajectory, and show what is happening
-  while the work is still alive.
+  spawn specialist subagents, preserve the full session trajectory, and show what is
+  happening while the work is still alive.
 </p>
 
 <p align="center">
-  <img src="docs/assets/freyja-system-map.svg" alt="Freyja operating map" />
+  <img src="docs/assets/freyja-system-map.svg" alt="Freyja system map" />
 </p>
 
-<p align="center">
-  <em>The desktop cockpit, event spine, engine, model mesh, swarm lanes, native tools, and persistent observability plane.</em>
-</p>
+> **Platform:** macOS on Apple Silicon  
+> **Status:** internal alpha, `v0.1.0`  
+> **Stack:** Electron · React · TypeScript · Python · Rust · pyo3
 
-> Platform: macOS on Apple Silicon<br>
-> Status: internal alpha, `v0.1.0`<br>
-> Stack: Electron, React, TypeScript, Python, Rust, pyo3
+---
 
-## Why Freyja Exists
+## What It Is
 
-Most agent apps are either chat boxes with tools bolted on, or opaque runners
-that become impossible to inspect once the work gets large. Freyja is built for
-the messy middle: multi-hour sessions, many subagents, computer-use screenshots,
-tool traces, files changing under your feet, context compaction, and models with
-different strengths working together.
+Most agent apps are either chat boxes with tools bolted on, or opaque runners that become impossible to inspect once the work gets large. Freyja is built for the messy middle: multi-hour sessions, many subagents, computer-use screenshots, tool traces, files changing under your feet, context compaction, and models with different strengths working in parallel.
 
-The product goal is simple: give powerful agents a real desktop mission control
-surface without hiding the machinery. You should be able to watch the swarm,
-inspect the evidence, jump to a file edit, see when context was compacted, and
-recover the trajectory later.
+The product goal is simple: give powerful agents a real desktop mission-control surface without hiding the machinery. You should be able to watch the swarm, inspect the evidence, jump to a file edit, see when context was compacted, and recover the trajectory later.
 
-## What It Can Do
-
-- Run a first-class desktop chat with streaming model output, attached images,
-  tool calls, inline screenshots, and a persistent session sidebar.
-- Drive macOS directly: screenshot, click, type, scroll, inspect windows, query
-  accessibility trees, focus windows, find elements, and execute multi-step
-  computer-use loops.
-- Spawn background subagents with explicit profiles for planning, research,
-  coding, review, testing, browser QA, performance profiling, docs, and memory
-  curation.
-- Pick how subagents coordinate per session — message bus (publish/read shared
-  findings), isolated (independent leaf workers, parent synthesizes), or kanban
-  (a session board with cards, dependencies, status, and handoffs).
-- Visualize collaboration as a round-based mission graph: subagent spawn waves,
-  publish/read edges, inferred cross-agent reuse, kanban board state, and bus
-  traffic stay visible after the swarm completes.
-- Open multiple sessions side-by-side with split panes — the active session
-  stays writable, the rest are live read-only views of running or archived
-  trajectories.
-- Generate creative imagery in-line via the `generate_image` tool, with a
-  session-local image store so agents can refer to attachments and outputs by
-  stable refs instead of carrying base64 in tool args.
-- Show live work products: file changes, diff cards, artifacts, markdown/code
-  previews, logs, screenshots, and subagent output.
-- Persist transcripts, artifacts, settings, session slices, message bus events,
-  memory, skill usage, compaction events, and trajectory exports.
-- Keep long computer-use sessions under control with request-level image pruning:
-  the UI keeps the visual trail, while provider requests keep only the most
-  recent screenshot image blocks needed for the next step.
-
-## Product Surface
-
-<p align="center">
-  <img src="docs/assets/freyja-cockpit.svg" alt="Freyja desktop cockpit — title bar, sessions sidebar with the live swarm, streaming conversation with tool chips and a screenshot frame, and the activity panel with context, spend, tool timeline, changes, and artifacts" />
-</p>
-
-<p align="center">
-  <em>The cockpit: workspace sidebar, streaming conversation with tool calls and inline computer-use frames, and the activity rail.</em>
-</p>
-
-Freyja has a few major views that work together:
-
-- Main conversation: streaming text, tool groups, visual computer-use frames,
-  pasted images, file changes, and the input dock. Splittable into multiple
-  panes for side-by-side session views.
-- Activity rail: context, spend, tool timeline, compaction/media events, changes,
-  artifacts, system events, and logs.
-- Mission dashboard: a wide operational view for swarms, collaboration rounds,
-  message-bus edges, kanban cards, findings, evidence, agent health, compaction
-  before/after points, image policy, and session lanes.
-- Artifact workspace: focused inspection for generated files, markdown, JSON,
-  SVG, HTML, images, and code.
-- Title bar: model and reasoning picker, sub-agent coordination strategy,
-  workspace/dashboard/activity toggles, and a focus mode that hides the side
-  panels for distraction-free runs.
-
-## System Architecture
-
-Freyja ships as a single `.app` bundle with four layers:
-
-| Layer | Tech | What it owns |
-| --- | --- | --- |
-| UI | Electron, React, Vite, Tailwind, Zustand | Mission UI, chat, dashboard, diffs, artifacts, local persistence |
-| Bridge | Python asyncio over JSONL stdin/stdout | Sessions, commands, subagent orchestration, skills, memory, events |
-| Engine | Pure Python | Agent loop, provider adapters, compaction, context pressure, tool dispatch |
-| Native | Rust + pyo3 | macOS screen capture, input, windows, accessibility primitives |
-
-At runtime Electron spawns `bridge/freyja_bridge.py`, talks to it over JSONL,
-and proxies capture/input through the main process so macOS TCC permissions are
-owned by the app bundle instead of a random shell process.
-
-```mermaid
-flowchart LR
-  UI["Electron + React UI"] --> Bridge["Python JSONL bridge"]
-  Bridge --> Engine["Async agent engine"]
-  Engine --> Providers["Claude / GPT / Cerebras / Fireworks"]
-  Engine --> Tools["File, shell, web, browser, computer-use tools"]
-  Tools --> Native["Rust native macOS automation"]
-  Bridge --> Store["~/.freyja sessions, artifacts, memory, skills"]
-```
-
-## Model Mesh
-
-Freyja currently exposes 21 model profiles across 4 provider families:
-
-| Family | Models |
-| --- | --- |
-| Anthropic | Claude Opus 4.7, Opus 4.6, Sonnet 4.6, Sonnet 4.5, Opus 4.5, Haiku 4.5 |
-| OpenAI | GPT-5.5, GPT-5.4, GPT-5.4 Mini, GPT-5.4 Nano, GPT-5.3 Codex |
-| Cerebras | Z.ai GLM 4.7 |
-| Fireworks | Kimi K2.5, Kimi K2.6, DeepSeek V4 Pro, GLM 5.1, GLM 5, MiniMax M2.7, MiniMax M2.5, Qwen3.6 Plus |
-
-The picker tracks context window, provider family, API key availability,
-reasoning mode, supported reasoning levels, and model-specific reasoning
-history behavior. Provider adapters live in `engine/*_provider.py`; the visible
-model catalog lives in `bridge/freyja_bridge.py`.
-
-## Agent Profiles
-
-<p align="center">
-  <img src="docs/assets/freyja-mission.svg" alt="Freyja mission dashboard — kanban board with cards moving across todo, running, and done lanes; central swarm graph with parent and four sub-agents connected by publish/read message-bus edges and kanban handoffs; findings feed and live agents lane" />
-</p>
-
-<p align="center">
-  <em>The mission dashboard: kanban board, swarm graph with publish/read edges and kanban handoffs, and a live findings feed.</em>
-</p>
-
-Subagents are declarative profiles in `bridge/tools/agent_types.py`. Each profile
-controls model choice, fallback policy, thinking effort, tool allowlist, prompt,
-and iteration budget.
-
-Built-ins:
-
-| Profile | Purpose |
-| --- | --- |
-| `general` | Default delegation, inherits the parent model and safe tools |
-| `explore` | Deep web/file/codebase research with publishing to the bus |
-| `explore-fast` | Fast fanout lookup over a rotating low-latency model set |
-| `code` | Isolated file/code edits with high thinking and editing tools |
-| `verify` | Independent read-only validation after implementation |
-| `plan` | Read-only implementation planning before broad work |
-| `review` | Read-only code review focused on bugs, regressions, and tests |
-| `test` | Build/test execution and failure diagnosis |
-| `browser-qa` | Frontend behavior, layout, and browser screenshot checks |
-| `performance` | Profiling and low-risk optimization investigation |
-| `docs` | Documentation and design-document writing |
-| `memory-curator` | Skill and memory hygiene |
-
-Custom project/user profiles can be added as markdown files under
-`.freyja/agents` or `~/.freyja/agents`.
-
-## Tools
-
-The bridge exposes a desktop tool registry with file, shell, web, browser,
-computer-use, memory, skills, subagents, and message-bus tools. Highlights:
-
-- File system: read, write, edit, JSON edit, glob, grep, list directories.
-- Shell: bounded command execution with summarized output.
-- Web: search, fetch, and research workflows.
-- Browser: CDP-backed JavaScript and screenshot inspection for frontend QA.
-- Computer use: screenshot, click, type, key events, scroll, move mouse,
-  inspect regions, focus/list windows, read accessibility trees, find elements.
-- Provider-native computer use: OpenAI `computer_call` requests route through
-  Freyja's shared desktop backend while returning screenshots in the provider's
-  expected native shape. Provider-specific tool protocols are isolated in a
-  small adapter layer so future models can add their own native tool formats.
-- Creative media: `generate_image` for inline image generation, plus a
-  session-local image store that gives every attachment and result a stable
-  `img_…` reference for follow-up edits.
-- Collaboration: `sub_agent`, `subagents`, `publish_finding`, `read_findings`,
-  and `kanban` (session board) — the subset offered to children depends on the
-  active coordination strategy.
-- Knowledge: `record_user_preference`, `list_skills`, `search_skills`,
-  `load_skill`, with file-backed usage tracking and pruning.
-
-## Memory And Skills
-
-Freyja keeps this intentionally simple. No database is required.
-
-- Durable memory is file-backed under `~/.freyja/knowledge` and project-aware.
-- Skills are markdown files discovered from `~/.freyja/skills`,
-  `~/.claude/skills`, `knowledge/`, and `.freyja/skills`.
-- The prompt builder retrieves relevant memories and skills by query.
-- Skill loading is explicit, visible in the UI, and tracked with lightweight
-  usage metadata.
-- Skill pruning removes irrelevant loaded skill context when a session grows,
-  keeping prompts lean without deleting the skill itself.
-
-This repository includes starter project skills in `.freyja/skills`:
-`analyze-session`, `frontend-design`, `holographic-label-system`, and
-`teach-impeccable`.
-
-## Context, Compaction, And Media
-
-Long sessions are first-class. Freyja tracks context pressure, compaction
-events, image history, and request media policy instead of treating them as
-invisible backend chores.
-
-- Token pressure triggers pruning and LLM-based compaction.
-- Compactions are represented as transcript events with before/after token
-  estimates and summary text.
-- The mission dashboard shows compaction before/after cards and image history
-  policy.
-- Computer-use tool-result images are pruned from provider request history
-  after the most recent few frames, while the UI and local frame dump retain
-  the visual trail.
-- Request-level image safety leaves provider headroom for user attachments.
-
-Key constants live in `engine/constants.py`.
-
-## Generative UI Widgets
-
-Agents can render interactive HTML/SVG widgets directly in the conversation
-— metric dashboards, diagrams, charts, and structured input forms that
-submit back as the next user message. The architecture mirrors Claude
-Desktop's "Imagine" pattern and the MCP Apps SEP-1865 wire shape so a
-future MCP client integration is a thin shim, not a rewrite.
-
-- Two bridge tools (`bridge/tools/widget_tool.py`): `widget_spec` returns
-  the design-system reference (CSS classes, color ramps, Tabler icons,
-  elicit form chrome, hard constraints), `show_widget` emits a
-  `widget_render` event carrying the agent's HTML/SVG fragment keyed by
-  tool-call id.
-- The renderer mounts each widget in a sandboxed iframe
-  (`allow-scripts allow-popups`, no `allow-same-origin` — opaque origin
-  blocks parent DOM access) with a Freyja-flavored design-system runtime
-  (`src/renderer/widgetRuntime.ts`): CSS variables matching the mono
-  palette, pre-built SVG classes, nine color ramps × seven stops, the
-  Tabler webfont via jsDelivr, `sendPrompt(text)` / `openLink(url)`
-  globals, and auto-wired `.elicit-*` forms (zero JS in the agent's
-  fragment — the shell handles selection state, multi-select,
-  "Other"-reveal, and submit collection in the documented
-  `Subject — Field: value · Field: value` format).
-- Widgets render chromeless directly in the chat — `groupParts` pulls
-  `show_widget` tool calls out of the parallel-tools grouping into a
-  dedicated `widget` group kind so the tool chip is hidden entirely and
-  the widget floats on the chat surface (see `FloatingWidget` in
-  `src/renderer/components/Conversation.tsx`).
-- The iframe declares `color-scheme: dark` three ways so `background:
-  transparent` actually resolves to transparent (Chromium's default
-  light-mode fallback was painting widgets against a white rectangle).
-
-**Pending / next steps:**
-- MCP client wired into the bridge so external MCP Apps servers
-  (Claude Desktop's `visualize`, mcpui.dev catalog, etc.) can connect and
-  return `ui://` resources that route through the same `widget_render`
-  path. The renderer side is reusable — only the Python MCP client +
-  resource-fetch loop need writing.
-- Bundle Tabler icons locally (currently ~650KB jsDelivr fetch on first
-  widget per session) and route `openLink` through Electron's
-  `shell.openExternal` via preload IPC for a proper OS handoff.
-- `update_widget` semantics — currently each `show_widget` call produces
-  an independent iframe; stepper-style multi-turn forms need design.
-- Preload Chart.js / Mermaid in the runtime so chart and diagram
-  widgets don't pay a per-iframe CDN cost.
-- Light-mode CSS variables — runtime is dark-only today.
+---
 
 ## Setup
 
-**Prerequisites**: macOS on Apple Silicon, Node 18+, Python 3.11+, [uv](https://docs.astral.sh/uv/), Rust toolchain.
+### Prerequisites
+
+- macOS on Apple Silicon
+- Node 18+, Python 3.11+, [`uv`](https://docs.astral.sh/uv/), Rust toolchain
 
 ```bash
 brew install node python uv rustup-init && rustup-init
+```
 
-git clone https://github.com/<you>/freyja.git && cd freyja
-cp .env.example .env   # fill the API keys you want — ANTHROPIC_API_KEY,
-                       # OPENAI_API_KEY, CEREBRAS_API_KEY, FIREWORKS_API_KEY
+### Install
+
+```bash
+git clone https://github.com/sohamshah/freyja.git && cd freyja
+cp .env.example .env   # fill in your API keys — see the .env section below
 npm install
 uv sync --extra dev
 
-# One-time native extension build (macOS screen / input / accessibility).
+# One-time native extension build (macOS screen capture / input / accessibility)
 cd native/freyja_native && uv run maturin develop --release && cd ../..
 ```
 
-That's all the dependency setup. From here you have two workflows.
+### Run
 
-### Development (hot reload)
+**Development (hot reload):**
 
 ```bash
 npm run dev
 ```
 
-Vite hot-reloads the renderer. Python bridge/engine edits need an app
-restart. Useful for UI iteration but does **not** produce a real `.app`
-bundle — computer-use permissions are gated by the parent process, so for
-realistic testing use the packaged build below.
+Vite hot-reloads the renderer. Bridge and engine edits require an app restart. Computer-use permissions are gated by the parent process, so for realistic screen/input testing use the packaged build instead.
 
-### Packaged build (`.app` you actually install)
+**Packaged `.app` build (needed for computer-use, TCC permissions):**
 
 ```bash
-npm install
-uv sync
-cd native/freyja_native && uv run maturin develop --release && cd ../..
-
-./scripts/bundle-python.sh   # pulls a hermetic Python into python-bundle/
+npm run setup-signing-cert   # one-time — creates a self-signed Keychain cert so
+                             # TCC grants persist across rebuilds
 npm run rebuild              # builds, signs, installs to /Applications, launches
 ```
 
-`npm run rebuild` runs the full electron-builder pipeline, replaces
-`/Applications/Freyja.app` with the new bundle, and launches it. It
-preserves macOS TCC permissions (Screen Recording, Accessibility, Input
-Monitoring, Full Disk Access) across rebuilds by signing every build
-with the same self-signed certificate — so you only grant permissions
-**once**, not after every iteration.
+`npm run rebuild` replaces `/Applications/Freyja.app` and preserves macOS TCC grants (Screen Recording, Accessibility, Input Monitoring, Full Disk Access) across rebuilds by signing every build with the same self-signed cert. You grant permissions once.
 
-**One-time keychain setup** for permission persistence:
+<details>
+<summary>Manual cert setup (if you prefer the Keychain GUI)</summary>
 
-Easiest path — run the bundled CLI helper (uses `openssl` + `security`,
-takes ~10 seconds, asks for `sudo` once to trust the cert):
+1. Open **Keychain Access → Certificate Assistant → Create a Certificate…**
+2. Name it `Freyja Dev`, Identity Type `Self Signed Root`, Certificate Type `Code Signing`. Tick **Let me override defaults** to extend validity past one year.
+3. Right-click the cert → **Get Info → Trust → Code Signing: Always Trust**.
 
-```bash
-npm run setup-signing-cert
-```
-
-Manual alternative — if you'd rather use the GUI:
-
-1. Open **Keychain Access** → menu **Keychain Access → Certificate
-   Assistant → Create a Certificate…** (if you don't see Certificate
-   Assistant under that menu, use the CLI helper above).
-2. Name `Freyja Dev`, Identity Type `Self Signed Root`, Certificate Type
-   `Code Signing`. Tick **Let me override defaults** to extend validity
-   beyond one year.
-3. Right-click the new cert → **Get Info → Trust → Code Signing: Always Trust**.
-
-Either way, verify with:
-
+Verify with:
 ```bash
 security find-identity -v -p codesigning | grep "Freyja Dev"
 ```
+</details>
 
-Once that's in place, `npm run rebuild` is a single command per iteration.
-The script's header (`./scripts/rebuild.sh --help`) documents flags and
-the reset path (`tccutil reset All co.freyja.desktop`) if you ever want a
-clean grant slate.
-
-If you'd rather build without the rebuild script:
+Other build targets:
 
 ```bash
-npm run package           # build .app into out/mac-arm64/
-npm run dist              # also creates a DMG
+npm run package   # build .app into out/mac-arm64/ (no install)
+npm run dist      # build .app + create a DMG
 ```
 
-Builds default to ad-hoc signing (no certificate needed) but TCC
-permissions will not persist across rebuilds with that path.
+---
 
-### Bridge standalone (engine debugging)
+## Environment Variables
+
+Copy `.env.example` to `.env` and fill in what you need.
+
+### Model providers — set at least one
+
+| Variable | Provider | Notes |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | Anthropic | Claude Opus / Sonnet / Haiku. Default model is `claude-sonnet-4-6`. |
+| `OPENAI_API_KEY` | OpenAI | GPT-5.x family |
+| `CEREBRAS_API_KEY` | Cerebras / Z.ai | `zai-glm-4.7` |
+| `FIREWORKS_API_KEY` | Fireworks | Kimi K2, DeepSeek V4 Pro, MiniMax M2, GLM 5, Qwen 3.6 |
+| `GEMINI_API_KEY` | Google | Gemini 2.5 / 3.x; also required for the `analyze_video` tool |
+
+### Tools
+
+| Variable | Used by | Notes |
+|---|---|---|
+| `PARALLEL_API_KEY` | `web_search`, `web_fetch`, `web_research` | Required for all web/search tools |
+| `QUIVER_API_KEY` | `generate_svg` | Quiver AI Arrow renderer for high-fidelity SVG generation |
+
+### Slack gateway
+
+| Variable | Notes |
+|---|---|
+| `SLACK_BOT_TOKEN` | `xoxb-…` Bot token from **Settings → Install App**. Comma-separate for multi-workspace. |
+| `SLACK_APP_TOKEN` | `xapp-…` App-Level Token (scope: `connections:write`) from **Settings → Socket Mode**. |
+
+See [Slack gateway setup](#slack-gateway) below for the guided wizard.
+
+### Freyja runtime (optional)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `FREYJA_MODEL` | `claude-sonnet-4-6` | Default model for new sessions |
+| `FREYJA_WORKSPACE` | `~` | Root workspace directory |
+| `FREYJA_PERMISSION_AUTO` | `low` | Auto-approval tier: `low` (read-only auto), `medium`, `high`, `yolo` |
+| `FREYJA_DEBUG_LOG` | `0` | Set to `1` for verbose bridge logging |
+| `FREYJA_COMPUTER_ENABLED` | `0` | Set to `1` to enable computer-use tools |
+| `FREYJA_IMAGE_MODEL` | _(provider default)_ | Model used for `generate_image` calls |
+| `FREYJA_FRAME_DUMP` | `0` | Set to `1` to dump computer-use frames to disk |
+| `FREYJA_FRAME_DUMP_DIR` | _(temp dir)_ | Directory for frame dumps |
+| `FREYJA_HEADLESS` | `0` | Run bridge without Electron UI |
+| `FREYJA_PERMISSION_TIMEOUT_SEC` | `30` | Seconds to wait for permission approvals |
+
+**Minimum viable `.env` to get started:**
 
 ```bash
-uv run python -m bridge.freyja_bridge
+ANTHROPIC_API_KEY=sk-ant-...
+PARALLEL_API_KEY=...
 ```
 
-The bridge reads JSONL commands from stdin and emits JSONL events to
-stdout — useful when debugging engine behavior without the Electron UI.
+---
 
-## Project Layout
+## Slack Gateway
 
-```text
+Freyja includes a background gateway daemon that lets you chat with the same agent engine from Slack, without the desktop app running. It uses Socket Mode — no public URL or inbound firewall rules required.
+
+### Guided setup
+
+```bash
+freyja setup slack
+```
+
+The wizard walks you through:
+1. Generating the Slack app manifest and copying it to your clipboard
+2. Creating the app at api.slack.com
+3. Enabling Socket Mode and collecting the App-Level Token (`xapp-…`)
+4. Installing to your workspace and collecting the Bot Token (`xoxb-…`)
+5. Verifying tokens via `auth_test`
+6. Installing and starting the gateway as a launchd service
+
+### Manual gateway management
+
+```bash
+freyja gateway run          # foreground daemon (dev / debug)
+freyja gateway install      # install launchd plist + start
+freyja gateway uninstall    # stop + remove plist
+freyja gateway start        # launchctl start (already-installed plist)
+freyja gateway stop         # graceful SIGTERM
+freyja gateway status       # show running pid + connected platforms
+freyja gateway logs         # tail the gateway log
+freyja gateway logs --follow
+```
+
+### Gateway config (`~/.freyja/gateway.yaml`)
+
+```yaml
+defaults:
+  model: claude-sonnet-4-6        # default model for gateway sessions
+  coordination_strategy: bus      # bus | isolated | kanban
+
+slack:
+  # Map of workspace_id → list of allowed user IDs.
+  # Empty list = allow any user in that workspace.
+  # Workspace absent = deny-all (safe default for shared workspaces).
+  allowed_user_ids:
+    T012345: [U001, U002]
+  enforce_workspace_allowlist: true
+  mention_required_in_channels: true  # DMs always respond; channels need @mention
+  reply_in_thread: true
+  enable_tool_filter: false           # set true in shared workspaces to restrict tools
+```
+
+---
+
+## What It Can Do
+
+### Desktop chat
+
+Streaming text, tool calls and results, inline computer-use frames, pasted images, file diffs, and a persistent session sidebar. Supports multiple panes for side-by-side session views.
+
+### Computer use
+
+Drive macOS directly: screenshot, click, type, scroll, move mouse, inspect windows, read accessibility trees, find elements, query displays, and execute multi-step UI automation loops. Requires Screen Recording, Accessibility, and Input Monitoring permissions — granted once when using the signed `.app` bundle.
+
+### Subagent swarms
+
+Spawn background subagents with dedicated profiles for different roles. The active coordination strategy controls how they collaborate:
+
+| Strategy | Behavior |
+|---|---|
+| `bus` | Agents publish and read shared findings on a message bus. Siblings build on each other's discoveries. |
+| `isolated` | Agents are fully independent leaf workers. The parent synthesizes. |
+| `kanban` | A session board with cards, dependencies, status lanes, and structured handoffs. |
+
+Swarms are visualized as a round-based mission graph: spawn waves, publish/read edges, kanban board state, and bus traffic stay visible after the swarm completes.
+
+### Model mesh
+
+29 model profiles across 5 provider families:
+
+| Family | Models |
+|---|---|
+| Anthropic | Claude Opus 4.8, Opus 4.7, Sonnet 4.6, Opus 4.6, Sonnet 4.5, Opus 4.5, Haiku 4.5 |
+| OpenAI | GPT-5.5, GPT-5.4, GPT-5.4 Pro, GPT-5.4 Mini, GPT-5.4 Nano, GPT-5.3 Codex |
+| Cerebras | Z.ai GLM 4.7 |
+| Fireworks | Kimi K2.6, Kimi K2.5, DeepSeek V4 Pro, GLM 5.1, GLM 5, MiniMax M2.7, MiniMax M2.5, Qwen 3.6 Plus |
+| Google | Gemini 3.1 Pro Preview, Gemini 3.5 Flash, Gemini 3.1 Flash, Gemini 3.1 Flash Lite, Gemini 2.5 Pro, Gemini 2.5 Flash |
+
+The model picker tracks context window, thinking-mode support, API key availability, and per-model reasoning history behavior. Provider adapters live in `engine/*_provider.py`; the catalog is in `engine/providers.py`.
+
+### Generative UI widgets
+
+Agents can render interactive HTML/SVG widgets directly in the conversation — metric dashboards, diagrams, charts, and structured input forms that submit back as the next user message.
+
+- `widget_spec` returns the design-system reference (CSS classes, color ramps, Tabler icons, elicit form chrome, hard constraints)
+- `show_widget` emits a `widget_render` event carrying the agent's HTML/SVG fragment, sandboxed in an iframe with a Freyja design-system runtime
+
+### Context and compaction
+
+Long sessions are first-class. Freyja tracks context pressure, compaction events, image history, and request media policy:
+
+- Token pressure triggers pruning and LLM-based compaction automatically
+- Compactions are visible in the transcript with before/after token estimates and a summary
+- Computer-use tool-result images are pruned from provider requests after the most recent few frames, while the UI retains the visual trail
+- The mission dashboard shows compaction cards and image-history policy
+
+### Memory and skills
+
+- Durable memory is file-backed under `~/.freyja/knowledge` and project-aware
+- Skills are markdown files discovered from `~/.freyja/skills`, `~/.claude/skills`, `knowledge/`, and `.freyja/skills`
+- Skill loading is explicit, visible in the UI, and tracked with usage metadata
+- Custom agent profiles can be added as markdown files under `.freyja/agents` or `~/.freyja/agents`
+
+### Goal mode
+
+`/goal <objective>` sets a judge-evaluated goal loop. A skeptical judge agent periodically assesses whether the stated goal has been satisfied and can stop the loop or escalate blockers to the operator.
+
+### Scheduled jobs
+
+`schedule` tool lets agents create, inspect, and manage cron-style jobs that fire agent turns at specified times. Managed via `/schedule` in the chat or the `freyja gateway` CLI.
+
+---
+
+## Tool Reference
+
+The full tool surface, organized by category:
+
+| Category | Tools |
+|---|---|
+| **File system** | `read_file`, `write_file`, `edit_file`, `edit_json`, `glob`, `grep`, `list_directory`, `artifacts` |
+| **Shell** | `bash` |
+| **Web / search** | `web_search`, `web_fetch`, `web_research` |
+| **Browser** | `browser_execute_js`, `browser_screenshot` |
+| **Computer use** | `screenshot`, `click`, `type_text`, `press_key`, `key_down`, `key_up`, `scroll`, `move_mouse`, `cursor_position`, `focus_window`, `list_windows`, `list_displays`, `inspect_region`, `find_element`, `read_ax_tree`, `wait`, `computer_use` |
+| **Creative media** | `generate_image`, `generate_svg`, `analyze_video`, `view_image`, `send_attachment` |
+| **Generative UI** | `widget_spec`, `show_widget` |
+| **Memory / knowledge** | `memory`, `session_memory`, `working_memory`, `recall`, `record_user_preference` |
+| **Skills** | `list_skills`, `search_skills`, `load_skill`, `propose_skill` |
+| **Subagents** | `sub_agent`, `subagents`, `talk`, `list_agent_sessions` |
+| **Coordination** | `tasks`, `kanban`, `publish_finding`, `read_findings` |
+| **Context** | `summarize_context` |
+| **Goals / scheduling** | `schedule` |
+| **Utilities** | `tool_search` |
+
+### Built-in subagent profiles
+
+| Profile | Purpose |
+|---|---|
+| `general` | Default delegation; inherits parent model and safe tools |
+| `explore` | Deep web/file/codebase research with bus publishing |
+| `explore-fast` | Fast fanout lookup over a rotating low-latency model set |
+| `code` | Isolated file/code edits with high thinking |
+| `verify` | Independent read-only validation after implementation |
+| `plan` | Read-only implementation planning |
+| `review` | Read-only code review focused on bugs and regressions |
+| `test` | Build/test execution and failure diagnosis |
+| `browser-qa` | Frontend behavior, layout, and screenshot checks |
+| `performance` | Profiling and low-risk optimization investigation |
+| `docs` | Documentation and design-document writing |
+| `memory-curator` | Skill and memory hygiene |
+| `judge-deep` | Skeptical third-party adjudication for goal-mode loops |
+| `skill-drafter` | Reviews conversations and proposes skill candidates for approval |
+| `specifier` | Kanban card specifier — expands triage cards into structured specs |
+
+Custom profiles can be added as markdown files under `.freyja/agents/` or `~/.freyja/agents/`.
+
+---
+
+## Architecture
+
+Freyja ships as a single `.app` bundle with four layers:
+
+| Layer | Tech | What it owns |
+|---|---|---|
+| UI | Electron, React, Vite, Tailwind, Zustand | Mission UI, chat, dashboard, diffs, artifacts, local persistence |
+| Bridge | Python asyncio over JSONL stdin/stdout | Sessions, commands, subagent orchestration, skills, memory, events |
+| Engine | Pure Python | Agent loop, provider adapters, compaction, context pressure, tool dispatch |
+| Native | Rust + pyo3 | macOS screen capture, input, windows, accessibility primitives |
+
+At runtime Electron spawns `bridge/freyja_bridge.py`, talks to it over JSONL, and proxies capture/input through the main process so macOS TCC permissions are owned by the app bundle instead of a random shell process.
+
+```
+Electron + React UI  →  Python JSONL bridge  →  Async agent engine
+                                                         ↓
+                                                 Provider adapters
+                                               (Claude / GPT / Gemini / ...)
+                                                         ↓
+                                                   Tool registry
+                                                         ↓
+                                              Rust native macOS layer
+```
+
+The bridge also hosts the gateway daemon (`bridge/gateway/`) as a separate process tree — the Slack gateway runs independently of the Electron app.
+
+### Project layout
+
+```
 freyja/
 ├── src/
-│   ├── main/                 Electron main process and native proxies
-│   ├── preload/              contextBridge API
-│   ├── renderer/             React UI, mission dashboard, activity rail
-│   └── shared/               IPC and event types
+│   ├── main/           Electron main process and native proxies
+│   ├── preload/        contextBridge API
+│   ├── renderer/       React UI, mission dashboard, activity rail
+│   └── shared/         IPC and event types
 ├── bridge/
 │   ├── freyja_bridge.py      JSONL bridge, sessions, commands, events
-│   ├── knowledge/            file-backed memory and skill stores
-│   └── tools/                desktop tool registry and implementations
+│   ├── gateway/              Slack gateway daemon + CLI + setup wizard
+│   ├── knowledge/            File-backed memory and skill stores
+│   └── tools/                Desktop tool registry and implementations
 ├── engine/
-│   ├── runner.py             async agent loop
-│   ├── session.py            transcript, compaction, image pruning
+│   ├── runner.py             Async agent loop
+│   ├── session.py            Transcript, compaction, image pruning
 │   ├── compaction.py         LLM summary compaction strategy
-│   └── *_provider.py         provider adapters
+│   ├── providers.py          Model registry and provider mesh
+│   └── *_provider.py         Per-provider adapters
 ├── native/freyja_native/     Rust pyo3 macOS capture/input/window/AX layer
-├── docs/                     architecture, performance, skills, research
-├── scripts/                  dev, packaging, signing, trajectory export
+├── docs/                     Architecture, performance, skills, research
+├── scripts/                  Dev, packaging, signing, trajectory export
 ├── tests/                    Python regression tests
-└── .freyja/skills/           starter project skills
+└── .freyja/skills/           Starter project skills
 ```
+
+---
 
 ## Useful Commands
 
 ```bash
+# Development
 npm run build
+npm run dev
+
+# Testing
 uv run --extra dev pytest -q
 python3 -m py_compile bridge/freyja_bridge.py engine/runner.py
+
+# Packaging
+npm run rebuild              # build + sign + install + launch
+npm run package              # build .app only
+npm run dist                 # build .app + DMG
+
+# Bridge standalone (debugging without Electron)
+uv run python -m bridge.freyja_bridge
 ```
 
-## Documentation
-
-- `docs/ARCHITECTURE.md`: system architecture deep dive.
-- `docs/PERFORMANCE-DEEP-DIVE.md`: renderer, media, session, and subagent
-  performance analysis.
-- `docs/SKILLS-MEMORY-DESIGN.md`: skills and memory design.
-- `docs/WARP-FILE-EDIT-UX-RESEARCH.md`: file-edit UX research and design notes.
-- `docs/TRAJECTORY-TRAINING.md`: trajectory export formats.
+---
 
 ## Troubleshooting
 
-| Symptom | Likely fix |
-| --- | --- |
-| App starts in demo mode | Check `.env` and bridge startup logs |
-| Packaged bridge cannot import modules | Re-run `./scripts/bundle-python.sh` |
-| `freyja_native` missing in dev | Run `uv run maturin develop --release` inside `native/freyja_native` |
-| Computer-use permissions fail | Grant Screen Recording, Accessibility, Input Monitoring, and (for filesystem access outside `~/`) Full Disk Access to the installed `/Applications/Freyja.app`, then restart. If grants vanish after each rebuild, you skipped the one-time Keychain Access cert in the Setup section — `npm run rebuild` needs the `Freyja Dev` self-signed identity for TCC to persist grants. |
-| Context grows with many screenshots | Use the dashboard image policy view; provider requests should prune old tool-result images automatically |
-| OpenAI image attachments are ignored | Ensure the bridge is restarted after the image attachment fix and confirm `OPENAI_API_KEY` is set |
+| Symptom | Fix |
+|---|---|
+| App starts in demo mode | Check `.env` — at minimum `ANTHROPIC_API_KEY` must be set. Check bridge startup logs (`FREYJA_DEBUG_LOG=1`). |
+| Packaged bridge can't import modules | Re-run `./scripts/bundle-python.sh` then `npm run rebuild` |
+| `freyja_native` missing in dev | Run `uv run maturin develop --release` inside `native/freyja_native/` |
+| Computer-use permissions fail | Grant Screen Recording, Accessibility, Input Monitoring (and Full Disk Access for paths outside `~/`) to `/Applications/Freyja.app`, then restart. If grants vanish after each rebuild, run `npm run setup-signing-cert` — `npm run rebuild` needs the `Freyja Dev` self-signed identity for TCC to persist. Reset with `tccutil reset All co.freyja.desktop`. |
+| `web_search` / `web_fetch` fail | Set `PARALLEL_API_KEY` in `.env` |
+| `generate_svg` returns auth error | Set `QUIVER_API_KEY` in `.env`. Check your Quiver API credits at quiverlabs.ai. |
+| Context grows large with screenshots | Use the dashboard image-policy view; provider requests auto-prune old tool-result images after the most recent few frames |
+| Slack gateway not responding | Run `freyja gateway status` and `freyja gateway logs`. Verify `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` are set in `~/.freyja/.env`. |
+| Adding a new model | See `docs/ADDING-A-MODEL.md` — there are 13+ codepoints that need matching updates |
+
+---
+
+## Documentation
+
+| Doc | Contents |
+|---|---|
+| `docs/ARCHITECTURE.md` | System architecture deep dive |
+| `docs/ADDING-A-MODEL.md` | Checklist for adding a new model to the mesh |
+| `docs/PERFORMANCE-DEEP-DIVE.md` | Renderer, media, session, and subagent performance analysis |
+| `docs/SKILLS-MEMORY-DESIGN.md` | Skills and memory design |
+| `docs/COMPACTION-DECISION-DRAFT.md` | Context compaction strategy and cooperative protocol |
+| `docs/SLACK-GATEWAY.md` | Slack gateway protocol, manifest, and scopes reference |
+| `docs/TRAJECTORY-TRAINING.md` | Session trajectory export formats |
+| `docs/WARP-FILE-EDIT-UX-RESEARCH.md` | File-edit UX research and design notes |
+
+---
 
 ## License
 
