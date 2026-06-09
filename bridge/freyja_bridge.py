@@ -3935,11 +3935,28 @@ class _BridgeSession:
         self._system_prompt = ""
         self.kanban_board = None
         self.mission_root_card_id = None
+        # reset() clears the autopilot flag. Emit a disabled event ONLY
+        # if it was previously on, so the renderer's toggle state stays
+        # in sync and post-restore IPCs (see ensure_session) can re-arm
+        # autopilot without fighting a stale True in the bridge.
+        prev_auto_dispatch = self.auto_dispatch_enabled
         self.auto_dispatch_enabled = False
         if self._kanban_dispatcher_task is not None:
             self._kanban_dispatcher_task.cancel()
         self._kanban_dispatcher_task = None
         self._kanban_dispatched = set()
+        if prev_auto_dispatch:
+            try:
+                self._emit_kanban_event(
+                    "kanban_autopilot_disabled",
+                    "Kanban auto-dispatch cleared by session reset",
+                    details={"reason": "session_reset"},
+                    chat_visible=False,
+                )
+            except Exception:  # noqa: BLE001
+                # reset() is called from many paths including teardown;
+                # emit failures must never block the reset itself.
+                pass
         self.task_board = None
         self.goal_state = None
         self._turn_text_parts = []
@@ -6038,14 +6055,40 @@ class _BridgeSession:
             log("warn", f"auto-rename failed for {self.id}: {exc}")
 
     def set_auto_dispatch_enabled(self, enabled: bool) -> None:
-        """Flip the kanban auto-dispatch switch for this session. Idempotent.
-        Starts the background loop on transition off→on, stops it on on→off."""
+        """Flip the kanban auto-dispatch switch for this session.
+
+        Always emits a ``kanban_autopilot_enabled``/``_disabled`` event,
+        even on idempotent calls and strategy mismatches. The renderer
+        treats these events as the authoritative source of truth for
+        the toggle's displayed state; silent short-circuits used to
+        leave the UI stuck out of sync (e.g. UI says ON, bridge says
+        OFF after a restart, click sends ON→OFF which matches bridge's
+        OFF → silent no-op → toggle never moves). Idempotent emits are
+        cheap and let the renderer reconcile after any drift.
+        """
         from bridge.tools.coordination import strategy_uses_kanban
 
         if not strategy_uses_kanban(self.coordination_strategy):
+            # Strategy mismatch — force OFF and emit so the UI corrects.
+            # chat_visible=False because this is reconciliation noise,
+            # not an operator-visible state change.
             self.auto_dispatch_enabled = False
+            self._emit_kanban_event(
+                "kanban_autopilot_disabled",
+                "Kanban autopilot unavailable — session is not in kanban mode",
+                details={"reason": "strategy_not_kanban"},
+                chat_visible=False,
+            )
             return
         if enabled == self.auto_dispatch_enabled:
+            # No change, but echo the current state so a renderer that
+            # drifted from us can correct itself.
+            self._emit_kanban_event(
+                "kanban_autopilot_enabled" if enabled else "kanban_autopilot_disabled",
+                "Kanban auto-dispatch state confirmed",
+                details={"reason": "idempotent_reconcile"},
+                chat_visible=False,
+            )
             return
         self.auto_dispatch_enabled = enabled
         if enabled:
@@ -11002,6 +11045,25 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             runtime=cmd.get("runtime"),
             harness_session_id=cmd.get("harnessSessionId"),
         )
+        # Restore the kanban autopilot flag from the renderer's
+        # persisted slice. Without this, a bridge restart leaves
+        # ``auto_dispatch_enabled=False`` for every session even if the
+        # operator had it enabled before — the dispatcher loop never
+        # starts and cards in `ready` sit idle while the UI swears
+        # autopilot is on. The renderer reads the value from the
+        # persisted slice (``autoDispatchEnabled``) and ships it with
+        # every switch_session so the bridge can reconcile. The
+        # set_auto_dispatch_enabled call itself gates on
+        # strategy_uses_kanban; we forward the value blindly.
+        autopilot_intent = cmd.get("autoDispatchEnabled")
+        if autopilot_intent is not None:
+            try:
+                sess.set_auto_dispatch_enabled(bool(autopilot_intent))
+            except Exception as exc:  # noqa: BLE001
+                log(
+                    "warn",
+                    f"autopilot restore failed for {sess.id}: {exc}",
+                )
         no_op = (
             prev_active == sess.id
             and prev_sess is not None

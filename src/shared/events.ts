@@ -414,6 +414,11 @@ export type BridgeCommand =
        *  Freyja session — passed back so the harness can attempt to
        *  resume its own internal session instead of starting fresh. */
       harnessSessionId?: string
+      /** Persisted kanban autopilot state from the renderer's slice.
+       *  Forwarded so the bridge can re-arm its dispatcher loop after
+       *  a restart; without this, ``auto_dispatch_enabled`` defaults to
+       *  False in memory even when the slice on disk says it was on. */
+      autoDispatchEnabled?: boolean
     }
   | { type: 'usage'; sessionId?: string }
   | { type: 'list_files'; sessionId?: string; query: string; limit?: number }

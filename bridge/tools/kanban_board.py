@@ -87,6 +87,14 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
         "done",
         # Verdict fail + iter<5 → worker rewoken, card back in flight.
         "running",
+        # Rework-from-scratch path: judge verdict says the approach
+        # itself was wrong (not just the execution), so the card goes
+        # back to the ready queue for re-planning before another
+        # worker picks it up. Without this, the agent can only retry
+        # with the same worker mid-flight (``running``) or hard-block
+        # — there's no way to surface "this needs to be redone from
+        # scratch" without the operator manually moving the card.
+        "ready",
         # 5th failed verdict → blocked, operator territory.
         "blocked",
         # Escape hatch.

@@ -2925,6 +2925,26 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
 
   async setKanbanAutopilot(sessionId, enabled) {
     if (!sessionId) return
+    // Optimistic update so the toggle responds even if the bridge
+    // swallows the IPC (silent no-ops used to leave the UI stuck out
+    // of sync after a bridge restart — UI said ON, bridge said OFF,
+    // clicking sent ON→OFF which matched the bridge's OFF → same-value
+    // short-circuit emitted no event → toggle never moved). The bridge
+    // now always emits a reconcile event, so any divergence between
+    // optimism and bridge truth corrects within one IPC round-trip.
+    set((prev) => {
+      if (sessionId === prev.activeSessionId) {
+        return { autoDispatchEnabled: enabled }
+      }
+      const archived = prev.sessionArchive?.[sessionId]
+      if (!archived) return {}
+      return {
+        sessionArchive: {
+          ...prev.sessionArchive,
+          [sessionId]: { ...archived, autoDispatchEnabled: enabled },
+        },
+      }
+    })
     const api = (window as any).harness
     if (!api?.sendCommand) return
     await api.sendCommand({
@@ -3313,6 +3333,19 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       sessionSnapshot?.runtime ?? archivedSlice?.runtime ?? 'native'
     const harnessSessionIdForBridge =
       sessionSnapshot?.harnessSessionId ?? archivedSlice?.harnessSessionId
+    // Forward the persisted autopilot flag so the bridge can re-arm
+    // its dispatcher loop after a restart. Without this, a kanban
+    // session whose slice had autopilot=true comes back to a bridge
+    // whose in-memory _BridgeSession defaults to false; cards in
+    // `ready` sit idle until the operator clicks the toggle (which
+    // also has its own silent-no-op pathology we just fixed). Only
+    // sent for kanban-strategy sessions — the bridge ignores the
+    // field on other strategies, but the renderer can avoid the
+    // round-trip noise.
+    const autoDispatchForBridge =
+      strategyForBridge === 'kanban'
+        ? (archivedSlice?.autoDispatchEnabled ?? false)
+        : undefined
 
     const api = (window as any).harness
     if (api) {
@@ -3324,6 +3357,9 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         coordinationStrategy: strategyForBridge,
         runtime: runtimeForBridge,
         harnessSessionId: harnessSessionIdForBridge,
+        ...(autoDispatchForBridge !== undefined
+          ? { autoDispatchEnabled: autoDispatchForBridge }
+          : {}),
       })
     }
   },
