@@ -52,6 +52,8 @@ is 50k so 32k is well within reach."""
 # (200k) and Opus 4.8 sessions compacted 5× early before this dict
 # learned about it.
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    # Fable 5 (Mythos-class, GA 2026-06-09)
+    "claude-fable-5": 1_000_000,
     # Claude 4.8
     "claude-opus-4-8": 1_000_000,
     "claude-opus-4-8-fast": 1_000_000,

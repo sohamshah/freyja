@@ -1156,6 +1156,16 @@ async def _main() -> None:
 AVAILABLE_MODELS: list[dict[str, Any]] = [
     # ─── Anthropic (ANTHROPIC_API_KEY) ─────────────────────────────────
     {
+        "id": "claude-fable-5",
+        "family": "anthropic",
+        "label": "Claude Fable 5",
+        "tier": "max",
+        "contextWindow": 1_000_000,
+        "thinking": True,
+        "envVar": "ANTHROPIC_API_KEY",
+        "description": "Mythos-class model made safe for general use. Most capable widely-released Claude; state-of-the-art on long-horizon agentic and knowledge work. Adaptive thinking (always on), 128k output. Premium $10/$50 per MTok.",
+    },
+    {
         "id": "claude-opus-4-8",
         "family": "anthropic",
         "label": "Claude Opus 4.8",
@@ -1445,6 +1455,11 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
 # at send-time. See docs/ADDING-A-MODEL.md — missing entries here make
 # the reasoning selector either empty or default-wrong for the model.
 MODEL_REASONING_META: dict[str, dict[str, Any]] = {
+    "claude-fable-5": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high", "max"],
+        "reasoningDefault": "high",
+    },
     "claude-opus-4-8": {
         "reasoningMode": "effort",
         "reasoningLevels": ["none", "low", "medium", "high", "xhigh", "max"],

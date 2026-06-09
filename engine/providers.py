@@ -512,6 +512,7 @@ class ModelFallbackChain:
 # provider routing + context window + thinking flag.
 MODEL_REGISTRY: dict[str, dict[str, object]] = {
     # Anthropic models
+    "claude-fable-5": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-opus-4-8": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-opus-4-8-fast": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-opus-4-7": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
@@ -656,6 +657,8 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, 
     # Anthropic — 4.6/4.7/4.8 Opus are $5/$25 per Anthropic's models overview
     # (the migration guide for 4.7 says "at the same $5/$25 per MTok pricing"
     # as 4.6; 4.5 keeps the legacy $15/$75 tier). Cache_read = 10% of input.
+    # Fable 5 is a premium $10/$50 tier (cache_read $1, cache_write $12.50).
+    "claude-fable-5": (10.0, 50.0, 1.0, 12.5),
     "claude-opus-4-8": (5.0, 25.0, 0.50),
     "claude-opus-4-8-fast": (10.0, 50.0, 1.0),  # fast-mode multiplier on 4.8
     "claude-opus-4-7": (5.0, 25.0, 0.50),
@@ -717,6 +720,7 @@ def compute_cost(
 # See docs/ADDING-A-MODEL.md — fallback chain for graceful degradation
 # when a primary model 503s or hits its rate limit.
 FALLBACK_CHAINS: dict[str, list[str]] = {
+    "claude-fable-5": ["claude-opus-4-8", "claude-opus-4-7", "kimi-k2.6"],
     "claude-opus-4-8": ["claude-opus-4-7", "kimi-k2.6", "deepseek-v4-pro"],
     "claude-opus-4-8-fast": ["claude-opus-4-8", "claude-opus-4-7"],
     "claude-opus-4-7": ["claude-opus-4-8", "claude-opus-4-6", "kimi-k2.6", "deepseek-v4-pro"],
