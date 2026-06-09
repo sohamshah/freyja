@@ -570,6 +570,7 @@ _ADAPTIVE_THINKING_MODEL_IDS: set[str] = {
     "claude-haiku-4-5",
     "claude-opus-4-7",
     "claude-opus-4-8",
+    "claude-fable-5",
 }
 
 

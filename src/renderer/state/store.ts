@@ -723,6 +723,8 @@ async function downscaleImageForLLM(
 // (AVAILABLE_MODELS). A missing entry falls back to 200k and shows
 // the wrong denominator on cold start.
 const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  // Fable 5
+  'claude-fable-5': 1_000_000,
   // Claude 4.8
   'claude-opus-4-8': 1_000_000,
   'claude-opus-4-8-fast': 1_000_000,
@@ -779,6 +781,7 @@ function contextWindowFor(model: string): number {
 // hasn't sent its `ready` event yet. See docs/ADDING-A-MODEL.md —
 // keep in sync with bridge/freyja_bridge.py:MODEL_REASONING_META.
 const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel: string }> = {
+  'claude-fable-5': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'high' },
   'claude-opus-4-8': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'claude-opus-4-8-fast': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'claude-opus-4-7': { levels: ['auto'], defaultLevel: 'auto' },
