@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { aggregateSessionCost, useHarness, type SystemEventRecord } from '../state/store'
+import { activeSessionScope, aggregateSessionCost, useHarness, type SystemEventRecord } from '../state/store'
 import { formatTokens, formatCost, relativeTime } from '../lib/format'
 import { ComputerLiveView } from './ComputerLiveView'
 import { LogStreamModal } from './LogStreamModal'
@@ -583,10 +583,35 @@ function detailNumber(
  * header shows the pending candidate count + a caret to expand.
  */
 function SkillCandidatesPanelContainer() {
-  const pendingCount = useHarness((s) => s.skillCandidateQueue.length)
-  const cachedCount = useHarness((s) => s.skillCandidatesCache?.length ?? 0)
+  const rawQueue = useHarness((s) => s.skillCandidateQueue)
+  const rawCache = useHarness((s) => s.skillCandidatesCache)
   const drafterActivity = useHarness((s) => s.drafterActivity)
-  const drafterRuns = useHarness((s) => s.drafterRuns ?? [])
+  const rawDrafterRuns = useHarness((s) => s.drafterRuns ?? [])
+  // Session-scoped totals: header badge and auto-expand both reflect
+  // what THIS session has produced (incl. sub-agents), not the global
+  // candidate pile on disk. Matches the inner panel's filter so the
+  // count and the list always agree.
+  const activeSessionId = useHarness((s) => s.activeSessionId)
+  const sessions = useHarness((s) => s.sessions)
+  const scope = useMemo(
+    () => activeSessionScope(activeSessionId, sessions),
+    [activeSessionId, sessions],
+  )
+  const pendingCount = useMemo(() => {
+    if (!scope) return 0
+    return rawQueue.filter((q) => q.sessionId && scope.has(q.sessionId)).length
+  }, [rawQueue, scope])
+  const cachedCount = useMemo(() => {
+    if (!scope || !rawCache) return 0
+    return rawCache.filter(
+      (c) => c.sourceSessionId && scope.has(c.sourceSessionId),
+    ).length
+  }, [rawCache, scope])
+  const drafterRuns = useMemo(
+    () =>
+      scope ? rawDrafterRuns.filter((r) => scope.has(r.sessionId)) : [],
+    [rawDrafterRuns, scope],
+  )
   const [open, setOpen] = useState(pendingCount > 0)
   // Auto-expand the section when a fresh candidate arrives — the
   // operator usually wants to see it without hunting for the section.

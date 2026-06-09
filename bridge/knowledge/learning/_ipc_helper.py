@@ -204,6 +204,7 @@ def _list_promoted(limit: int = 50) -> dict[str, Any]:
                     pass
 
             preview = body[:600] + ("…" if len(body) > 600 else "")
+            source_session_id = ev.get("source_session_id")
             out.append({
                 "candidateId": str(ev.get("candidate_id") or ""),
                 "name": name,
@@ -215,6 +216,11 @@ def _list_promoted(limit: int = 50) -> dict[str, Any]:
                 "body": body,
                 "bodyPreview": preview,
                 "actor": str(ev.get("actor") or ""),
+                # Carries the candidate's originating session so the
+                # activity panel can scope the "learned" tab to the
+                # current session + its descendants. Empty string for
+                # legacy rows that pre-date this field.
+                "sourceSessionId": str(source_session_id) if source_session_id else "",
             })
             if len(out) >= limit:
                 break

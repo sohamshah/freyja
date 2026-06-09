@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useHarness } from '../state/store'
+import { activeSessionScope, useHarness } from '../state/store'
 
 /**
  * Recent drafter runs — what's being read as input, what got created.
@@ -15,9 +15,24 @@ import { useHarness } from '../state/store'
  * rationale text.
  */
 export function DrafterRunsPanel() {
-  const runs = useHarness((s) => s.drafterRuns ?? [])
+  const rawRuns = useHarness((s) => s.drafterRuns ?? [])
   const switchSession = useHarness((s) => s.switchSession)
+  const activeSessionId = useHarness((s) => s.activeSessionId)
+  const sessions = useHarness((s) => s.sessions)
   const [expanded, setExpanded] = useState<string | null>(null)
+
+  // Session-scoped: include this session + all sub-agent descendants.
+  // The drafter runs list is global across the bridge — without this
+  // trim the activity panel shows cadence runs from sessions the
+  // operator isn't even looking at.
+  const scope = useMemo(
+    () => activeSessionScope(activeSessionId, sessions),
+    [activeSessionId, sessions],
+  )
+  const runs = useMemo(
+    () => (scope ? rawRuns.filter((r) => scope.has(r.sessionId)) : []),
+    [rawRuns, scope],
+  )
 
   if (runs.length === 0) {
     return null

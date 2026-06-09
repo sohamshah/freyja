@@ -626,6 +626,27 @@ function collectDescendantSessionIds(
   return out
 }
 
+/** The set of session IDs the activity-panel should scope to: the
+ *  active session itself plus all transitive descendants (sub-agents,
+ *  their sub-agents, etc.). Returns null when there's no active session.
+ *
+ *  Used by SkillCandidatesPanel + DrafterRunsPanel to filter their
+ *  globally-fed lists (drafter runs, pending / learned / rejected
+ *  candidates all live on disk across every session) down to "what this
+ *  session tree did" — the right panel is meant to be session-scoped,
+ *  not global. */
+export function activeSessionScope(
+  activeId: string | undefined | null,
+  sessions: SessionSnapshot[],
+): Set<string> | null {
+  if (!activeId) return null
+  const scope = new Set<string>([activeId])
+  for (const id of collectDescendantSessionIds(sessions, activeId)) {
+    scope.add(id)
+  }
+  return scope
+}
+
 /** Best-known cumulative cost for a session: live `slice.usage.totalCost`
  *  when the session is loaded, otherwise the snapshot's persisted
  *  `totalCost` so unloaded subagents still contribute their tracked
@@ -2697,6 +2718,16 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         // useful immediately after a promote.
         let nextPromotedCache = prev.skillPromotedCache
         if (ev.action === 'promote' && resolvedRecord) {
+          // sourceSessionId: pulled from the candidate's own record
+          // (the live queue carries sessionId; the on-disk cache
+          // carries sourceSessionId). Lets the activity panel's
+          // session-scoped filter keep the just-promoted skill visible
+          // until the IPC refresh supersedes this optimistic entry.
+          const candAsAny = resolvedRecord as {
+            sessionId?: string
+            sourceSessionId?: string
+            body?: string
+          }
           const optimistic: import('@shared/events').SkillPromotedRecord = {
             candidateId: ev.candidateId,
             name: resolvedRecord.name,
@@ -2705,11 +2736,11 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
             tags: resolvedRecord.tags ?? [],
             promotedAt: Date.now(),
             skillPath: ev.skillPath ?? undefined,
-            body:
-              (resolvedRecord as { body?: string }).body ??
-              resolvedRecord.bodyPreview,
+            body: candAsAny.body ?? resolvedRecord.bodyPreview,
             bodyPreview: resolvedRecord.bodyPreview,
             actor: 'operator',
+            sourceSessionId:
+              candAsAny.sourceSessionId ?? candAsAny.sessionId,
           }
           const base = (nextPromotedCache ?? []).filter(
             (p) =>

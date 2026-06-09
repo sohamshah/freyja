@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { useHarness } from '../state/store'
+import { useEffect, useMemo, useState } from 'react'
+import { activeSessionScope, useHarness } from '../state/store'
 import { SkillDetailModal } from './SkillDetailModal'
 
 type Tab = 'pending' | 'learned' | 'rejected'
@@ -18,15 +18,64 @@ type Tab = 'pending' | 'learned' | 'rejected'
  * ``confirmation.promote``.
  */
 export function SkillCandidatesPanel() {
-  const queue = useHarness((s) => s.skillCandidateQueue)
-  const cachedPending = useHarness((s) => s.skillCandidatesCache)
-  const rejected = useHarness((s) => s.skillRejectedCache)
-  const promoted = useHarness((s) => s.skillPromotedCache)
+  const rawQueue = useHarness((s) => s.skillCandidateQueue)
+  const rawCachedPending = useHarness((s) => s.skillCandidatesCache)
+  const rawRejected = useHarness((s) => s.skillRejectedCache)
+  const rawPromoted = useHarness((s) => s.skillPromotedCache)
   const refreshPending = useHarness((s) => s.refreshSkillCandidates)
   const refreshRejected = useHarness((s) => s.refreshRejectedSkills)
   const refreshPromoted = useHarness((s) => s.refreshPromotedSkills)
   const resolve = useHarness((s) => s.resolveSkillCandidate)
   const openSkillFile = useHarness((s) => s.openSkillFile)
+  // Activity panel is strictly session-scoped: show candidates / runs
+  // produced by THIS session and its sub-agents only. The IPC layer
+  // ships every session's records (the candidates / rejected / events
+  // files are global on disk); we trim to scope here at the render
+  // boundary so a long-running install doesn't drown the panel in
+  // unrelated history.
+  const activeSessionId = useHarness((s) => s.activeSessionId)
+  const sessions = useHarness((s) => s.sessions)
+  const scope = useMemo(
+    () => activeSessionScope(activeSessionId, sessions),
+    [activeSessionId, sessions],
+  )
+  const inScope = (sid?: string | null): boolean => {
+    // No active session → show nothing (panel is for the current
+    // session). A record with no sourceSessionId likely predates the
+    // field; treat it as out-of-scope rather than leaking it in.
+    if (!scope) return false
+    if (!sid) return false
+    return scope.has(sid)
+  }
+  const queue = useMemo(
+    () => rawQueue.filter((q) => inScope(q.sessionId)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rawQueue, scope],
+  )
+  const cachedPending = useMemo(
+    () =>
+      rawCachedPending == null
+        ? null
+        : rawCachedPending.filter((c) => inScope(c.sourceSessionId)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rawCachedPending, scope],
+  )
+  const rejected = useMemo(
+    () =>
+      rawRejected == null
+        ? null
+        : rawRejected.filter((r) => inScope(r.sourceSessionId)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rawRejected, scope],
+  )
+  const promoted = useMemo(
+    () =>
+      rawPromoted == null
+        ? null
+        : rawPromoted.filter((p) => inScope(p.sourceSessionId)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rawPromoted, scope],
+  )
   const [tab, setTab] = useState<Tab>('pending')
   const [openId, setOpenId] = useState<string | null>(null)
   const [editId, setEditId] = useState<string | null>(null)

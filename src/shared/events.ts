@@ -1198,6 +1198,10 @@ export interface SkillPromotedRecord {
   bodyPreview?: string
   /** Optional actor (operator | autopromote) — recorded in the event log. */
   actor?: string
+  /** Session that produced the original candidate. Lets the activity
+   *  panel scope its "learned" tab to the current session + descendants
+   *  instead of showing every promote across every session. */
+  sourceSessionId?: string
 }
 
 export interface SkillListResult {
