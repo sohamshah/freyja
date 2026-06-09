@@ -1457,7 +1457,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
 MODEL_REASONING_META: dict[str, dict[str, Any]] = {
     "claude-fable-5": {
         "reasoningMode": "effort",
-        "reasoningLevels": ["none", "low", "medium", "high", "max"],
+        "reasoningLevels": ["none", "low", "medium", "high", "xhigh", "max"],
         "reasoningDefault": "high",
     },
     "claude-opus-4-8": {

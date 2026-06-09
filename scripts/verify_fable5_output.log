@@ -1,41 +1,23 @@
-################################################################
-# RUN A — system python3 (Python 3.12.8), anthropic 0.105.2
-# invoked: /usr/local/bin/python3 scripts/verify_fable5.py
-# at: 2026-06-09T21:37:07Z
-################################################################
+# invoked: /usr/local/bin/python3 scripts/verify_fable5.py   @ 2026-06-09T21:41:21Z
 anthropic.__version__ = 0.105.2
 python.executable     = /usr/local/bin/python3
 
-=== POSITIVE: model='claude-fable-5' ===
-http        = 200 (no exception)
-model       = claude-fable-5
-id          = msg_01NZfFwfcn2V5w4dtFwpF5ne
-stop_reason = end_turn
-usage       = 27 in / 23 out
-text        = The capital of France is Paris, and the Seine River runs through it.
-
-=== NEGATIVE CONTROL: model='claude-fable-5-NOPE-xyz' ===
-http        = 404
-body        = {"type":"error","error":{"type":"not_found_error","message":"model: claude-fable-5-NOPE-xyz"},"request_id":"req_011CbtQb7GqXakijBXxmFeQe"}
-RUN_A_EXIT=0
-
-################################################################
-# RUN B — freyja venv python, anthropic 0.94.0 (the SDK Freyja runs)
-# invoked: ~/personal/freyja/.venv/bin/python scripts/verify_fable5.py
-# at: 2026-06-09T21:37:12Z
-################################################################
-anthropic.__version__ = 0.94.0
-python.executable     = /Users/sohamshah/personal/freyja/.venv/bin/python
+=== AUTHORITATIVE: GET /v1/models (provider catalog) ===
+claude-fable-5 in server catalog: True
+display_name      = Claude Fable 5
+max_input_tokens  = 1000000
+max_tokens        = 128000
+thinking.adaptive = {'supported': True}
 
 === POSITIVE: model='claude-fable-5' ===
 http        = 200 (no exception)
 model       = claude-fable-5
-id          = msg_01HYrBPqikehpfDBunt9Q6Zc
+id          = msg_01JHszvf3oeSKDroz8CYrynG
 stop_reason = end_turn
 usage       = 27 in / 23 out
-text        = The capital of France is Paris, and the Seine River runs through it.
+text        = The capital of France is Paris, and the River Seine runs through it.
 
 === NEGATIVE CONTROL: model='claude-fable-5-NOPE-xyz' ===
 http        = 404
-body        = {"type":"error","error":{"type":"not_found_error","message":"model: claude-fable-5-NOPE-xyz"},"request_id":"req_011CbtQbRPm3AiXnVyD2WffG"}
-RUN_B_EXIT=0
+body        = {"type":"error","error":{"type":"not_found_error","message":"model: claude-fable-5-NOPE-xyz"},"request_id":"req_011CbtQumtJLDA9yBdE1SN6J"}
+EXIT=0

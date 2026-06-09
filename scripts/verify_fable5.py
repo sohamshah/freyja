@@ -24,6 +24,17 @@ def main() -> int:
         return 2
     client = anthropic.Anthropic(api_key=key)
 
+    print("\n=== AUTHORITATIVE: GET /v1/models (provider catalog) ===")
+    catalog = client.models.list(limit=1000)
+    ids = [m.id for m in catalog.data]
+    print("claude-fable-5 in server catalog:", "claude-fable-5" in ids)
+    obj = client.models.retrieve("claude-fable-5")
+    d = obj.model_dump()
+    print("display_name      =", d.get("display_name"))
+    print("max_input_tokens  =", d.get("max_input_tokens"))
+    print("max_tokens        =", d.get("max_tokens"))
+    print("thinking.adaptive =", d.get("capabilities", {}).get("thinking", {}).get("types", {}).get("adaptive"))
+
     print("\n=== POSITIVE: model='claude-fable-5' ===")
     r = client.messages.create(
         model="claude-fable-5",
