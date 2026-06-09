@@ -8661,16 +8661,56 @@ class _BridgeSession:
             lines.append(f"- (pinned) {fact}")
         return "\n".join(lines) if lines else None
 
-    def _apply_wm_upserts(self, upserts: list[dict[str, Any]]) -> None:
-        """Fold a compaction's structured working-memory upserts into the
-        session's working memory (Milestone 2b — compaction-as-projection),
-        then run a deterministic ledger-based refresh so working memory updates
-        on EVERY compaction even when the summarizer emits no parseable block
-        (common on models that skip the optional block). Best-effort; never
-        raise on the compaction path."""
+    def _apply_wm_upserts(self, wm_result: Any) -> None:
+        """Fold a compaction's structured working-memory output (Call B) into
+        the session's working memory, then run a deterministic ledger-based
+        refresh so working memory updates on EVERY compaction even when Call B
+        fails / the model emits nothing structural.
+
+        ``wm_result`` is whatever ``_run_summary_and_working_memory`` passes —
+        a dict ``{summary, actions_completed, entities}`` when Call B succeeded,
+        or None when it didn't. The old list-of-upserts shape is tolerated for
+        backwards compatibility with any caller still using the pre-Call-B path.
+
+        Best-effort; never raises on the compaction path.
+        """
         wm = getattr(self, "working_memory", None)
         if wm is None:
             return
+
+        # Normalize the input shape. Call B returns {summary, actions_completed,
+        # entities}; legacy callers may still hand us a list[dict] of upserts.
+        upserts: list[dict[str, Any]] = []
+        overview_summary: str | None = None
+        overview_actions: list[str] = []
+        if isinstance(wm_result, dict):
+            ents = wm_result.get("entities")
+            if isinstance(ents, list):
+                upserts = [e for e in ents if isinstance(e, dict)]
+            s = wm_result.get("summary")
+            if isinstance(s, str) and s.strip():
+                overview_summary = s.strip()
+            actions = wm_result.get("actions_completed")
+            if isinstance(actions, list):
+                overview_actions = [
+                    a.strip() for a in actions if isinstance(a, str) and a.strip()
+                ]
+        elif isinstance(wm_result, list):
+            # Old shape: list of upsert dicts. No overview to set.
+            upserts = [e for e in wm_result if isinstance(e, dict)]
+
+        # Persist the high-level overview (Call B's summary + actions). Replaces
+        # the previous overview wholesale — Call B sees the current overview in
+        # its system prompt and produces the fresh full-state version.
+        if overview_summary is not None or overview_actions:
+            try:
+                wm.set_overview(
+                    summary=overview_summary, actions_completed=overview_actions
+                )
+            except Exception:  # noqa: BLE001
+                log("debug", "working memory overview update failed")
+
+        # Apply the entity graph (workstreams + their children).
         try:
             if upserts:
                 n = apply_working_memory_upserts(wm, upserts)
@@ -8678,6 +8718,7 @@ class _BridgeSession:
                     log("debug", f"working memory projection applied {n} upsert(s)")
         except Exception:  # noqa: BLE001
             log("debug", "working memory projection failed")
+
         try:
             self._refresh_wm_artifacts_from_ledger(wm)
         except Exception:  # noqa: BLE001

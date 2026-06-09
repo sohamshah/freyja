@@ -208,8 +208,17 @@ def test_working_memory_schema_shape():
     assert props["actions_completed"]["type"] == "array"
     assert props["actions_completed"]["items"]["type"] == "string"
     ent = props["entities"]["items"]
-    assert ent["required"] == ["type"]
-    # Every entity type the store understands is offered to the model.
+    # OpenAI strict-mode compatibility: every declared property is required.
+    # Optional fields use type: ["string", "null"] so the model can return null
+    # for the ones that don't apply to the chosen entity type.
+    assert set(ent["required"]) == set(ent["properties"].keys())
+    assert "type" in ent["required"]
+    # Optional (nullable) fields really are nullable.
+    for k in ("title", "request", "rationale", "text", "source", "path",
+              "note", "workstream", "status"):
+        assert ent["properties"][k]["type"] == ["string", "null"], k
+    # `type` itself is required and constrained to the known entity kinds.
+    assert ent["properties"]["type"]["type"] == "string"
     assert set(ent["properties"]["type"]["enum"]) == {
         "workstream", "decision", "finding", "open_thread", "artifact_note",
     }

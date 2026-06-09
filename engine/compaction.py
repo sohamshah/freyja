@@ -77,12 +77,86 @@ def _working_memory_schema() -> dict[str, Any]:
     optional emission. The provider refuses to return output that violates
     this schema.
 
-    Like the drafter's schema, this targets the *subset* of JSON Schema that
-    Anthropic's tool-call backend honors (no ``oneOf``/``if``/``then``), so
-    per-type field requirements are expressed in prose in the property
-    descriptions rather than via conditional ``required`` blocks. Each entity
-    requires only ``type``; the model fills the fields that apply to that type.
+    The schema is OpenAI-strict-compatible: every property in an object with
+    ``additionalProperties: false`` is listed in ``required``, and optional
+    fields use ``type: ["string", "null"]`` so the model can return null for
+    the fields that don't apply to a given entity type. This was previously
+    Anthropic-only (only ``type`` required, others omitted) which OpenAI's
+    structured-output backend rejects as an invalid schema — Call B then
+    silently failed and working memory never updated on gpt-* sessions.
+    Anthropic still accepts this stricter form.
     """
+    # The item-level "optional" fields. They're all in required so OpenAI
+    # accepts the schema, but typed as nullable so the model can return null
+    # for the ones that don't apply to the entity type it picked.
+    _NULLABLE_ITEM_FIELDS = (
+        "title", "request", "rationale", "text",
+        "source", "path", "note", "workstream", "status",
+    )
+    item_required = ["type", *_NULLABLE_ITEM_FIELDS]
+    item_properties: dict[str, Any] = {
+        "type": {
+            "type": "string",
+            "enum": list(_WM_TYPES),
+            "description": (
+                "workstream: a goal/effort. decision: a choice made + why. "
+                "finding: something learned. open_thread: an unresolved task. "
+                "artifact_note: a note about a file touched."
+            ),
+        },
+        "title": {
+            "type": ["string", "null"],
+            "description": (
+                "Short title — for workstream and decision. Reuse an existing "
+                "title to update that entity. null for entity types that "
+                "don't use title."
+            ),
+        },
+        "request": {
+            "type": ["string", "null"],
+            "description": "For workstream: the goal/ask. null otherwise.",
+        },
+        "rationale": {
+            "type": ["string", "null"],
+            "description": "For decision: why this choice was made. null otherwise.",
+        },
+        "text": {
+            "type": ["string", "null"],
+            "description": (
+                "For finding and open_thread: the substance. null otherwise."
+            ),
+        },
+        "source": {
+            "type": ["string", "null"],
+            "description": (
+                "For finding: optional attribution (where it came from). null "
+                "otherwise."
+            ),
+        },
+        "path": {
+            "type": ["string", "null"],
+            "description": "For artifact_note: the file path. null otherwise.",
+        },
+        "note": {
+            "type": ["string", "null"],
+            "description": "For artifact_note: the note about it. null otherwise.",
+        },
+        "workstream": {
+            "type": ["string", "null"],
+            "description": (
+                "Parent workstream title for decision / finding / open_thread / "
+                "artifact_note. Reference by the workstream's title; an unknown "
+                "title is auto-created. null for workstream entities themselves."
+            ),
+        },
+        "status": {
+            "type": ["string", "null"],
+            "description": (
+                "Optional status for a workstream (active/done) or open_thread "
+                "(open/resolved). null otherwise."
+            ),
+        },
+    }
     return {
         "type": "object",
         "additionalProperties": False,
@@ -125,71 +199,8 @@ def _working_memory_schema() -> dict[str, Any]:
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["type"],
-                    "properties": {
-                        "type": {
-                            "type": "string",
-                            "enum": list(_WM_TYPES),
-                            "description": (
-                                "workstream: a goal/effort. decision: a choice "
-                                "made + why. finding: something learned. "
-                                "open_thread: an unresolved task. artifact_note: "
-                                "a note about a file touched."
-                            ),
-                        },
-                        "title": {
-                            "type": "string",
-                            "description": (
-                                "Short title — for workstream and decision. "
-                                "Reuse an existing title to update that entity."
-                            ),
-                        },
-                        "request": {
-                            "type": "string",
-                            "description": "For workstream: the goal/ask.",
-                        },
-                        "rationale": {
-                            "type": "string",
-                            "description": "For decision: why this choice was made.",
-                        },
-                        "text": {
-                            "type": "string",
-                            "description": (
-                                "For finding and open_thread: the substance."
-                            ),
-                        },
-                        "source": {
-                            "type": "string",
-                            "description": (
-                                "For finding: optional attribution (where it "
-                                "came from)."
-                            ),
-                        },
-                        "path": {
-                            "type": "string",
-                            "description": "For artifact_note: the file path.",
-                        },
-                        "note": {
-                            "type": "string",
-                            "description": "For artifact_note: the note about it.",
-                        },
-                        "workstream": {
-                            "type": "string",
-                            "description": (
-                                "Parent workstream title for decision / finding "
-                                "/ open_thread / artifact_note. Reference by the "
-                                "workstream's title; an unknown title is "
-                                "auto-created."
-                            ),
-                        },
-                        "status": {
-                            "type": "string",
-                            "description": (
-                                "Optional status for a workstream "
-                                "(active/done) or open_thread (open/resolved)."
-                            ),
-                        },
-                    },
+                    "required": item_required,
+                    "properties": item_properties,
                 },
             },
         },

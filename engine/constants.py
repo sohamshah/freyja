@@ -33,8 +33,14 @@ DEFAULT_THINKING_BUDGET_TOKENS = 10_000
 SUBAGENT_MAX_TOKENS = 16_000
 """Max output tokens for sub-agent LLM calls."""
 
-SUMMARY_MAX_TOKENS = 8_000
-"""Max tokens for the LLM-generated compaction summary."""
+SUMMARY_MAX_TOKENS = 32_000
+"""Max tokens for the LLM-generated compaction summary.
+
+Generous on purpose — a heavy session (150k+ transcript) routinely produces
+3-4k tokens of summary, and we don't want the model to clip mid-bullet.
+Was 8k, which gpt-5.5 maxed out on a single PR-review session and left the
+inline summary visibly truncated. All providers accept this; OpenAI's default
+is 50k so 32k is well within reach."""
 
 # ============================================================================
 # Context Window -- Per-model Overrides
