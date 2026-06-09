@@ -720,24 +720,37 @@ class SessionKanbanBoard:
     async def digest(self, *, max_per_bucket: int = 8) -> dict[str, Any]:
         """Compact triage view of the whole board.
 
-        Buckets surface the cards the parent agent most likely needs to act
-        on next: in-flight work with the assignee and age; recently-unblocked
-        cards ready to dispatch; stuck (blocked) cards needing human input;
-        and cards still waiting on dependencies. Caller can drill into any
-        id via `show`. Intentionally returns only summary fields and id —
-        ride-along payload is small enough for repeated calls."""
+        Surfaces every status bucket the parent agent might need to
+        reason about — not just the "actionable" four. Before, ``review``
+        and ``done`` cards were silently dropped from both bucket
+        details AND the totals dict, so an agent looking at a board
+        with 11 cards in review saw ``running:0, ready:0, blocked:0,
+        waiting:0, cards:12`` and inferred "everything must be done"
+        (observed verbatim in session-mq67ogk0). The agent has no way
+        to know review/done exist as columns unless this surface
+        reports them.
+
+        Bucket detail caps via ``max_per_bucket``; ``totals.byStatus``
+        gives a full count per status so the agent can read
+        "12 cards: 11 review, 1 running" at a glance even when
+        bucket details are truncated."""
         async with self._lock:
+            from collections import Counter
             now = time.time()
             running: list[dict[str, Any]] = []
             ready: list[dict[str, Any]] = []
+            review: list[dict[str, Any]] = []
             blocked: list[dict[str, Any]] = []
             waiting: list[dict[str, Any]] = []
+            done: list[dict[str, Any]] = []
+            by_status: Counter[str] = Counter()
             for task in self._tasks.values():
                 # Skip mission_root — see the comment in the list
                 # action handler. Agent-facing surfaces don't include
                 # the synthetic conversation container.
                 if task.metadata.get("role") == "mission_root":
                     continue
+                by_status[task.status] += 1
                 if task.status == "running":
                     running.append(
                         {
@@ -757,6 +770,18 @@ class SessionKanbanBoard:
                             "assignee": task.assignee,
                             "priority": task.priority,
                             "promotedAtSeconds": int(now - task.updated_at),
+                        }
+                    )
+                elif task.status in ("review", "done_unverified"):
+                    review.append(
+                        {
+                            "id": task.id,
+                            "title": task.title,
+                            "assignee": task.assignee,
+                            "priority": task.priority,
+                            "reviewIteration": task.review_iteration,
+                            "workerTerminalState": task.worker_terminal_state,
+                            "ageSeconds": int(now - task.updated_at),
                         }
                     )
                 elif task.status == "blocked":
@@ -786,23 +811,47 @@ class SessionKanbanBoard:
                             "unresolvedParents": unresolved,
                         }
                     )
+                elif task.status == "done":
+                    done.append(
+                        {
+                            "id": task.id,
+                            "title": task.title,
+                            "assignee": task.assignee,
+                            "completedAtSeconds": int(
+                                now - (task.completed_at or task.updated_at)
+                            ),
+                        }
+                    )
+                # Other terminal failures (cancelled, failed, crashed,
+                # timed_out) intentionally don't get a dedicated bucket;
+                # they show up in ``totals.byStatus`` so the agent knows
+                # they exist and can call ``list`` to drill in.
 
             running.sort(key=lambda r: r["lastUpdateSeconds"], reverse=True)
             ready.sort(key=lambda r: (r["priority"], r["promotedAtSeconds"]))
+            # Oldest review-age first — those are the most likely stuck.
+            review.sort(key=lambda r: r["ageSeconds"], reverse=True)
             blocked.sort(key=lambda r: r["lastUpdateSeconds"], reverse=True)
             waiting.sort(key=lambda r: r["priority"])
+            # Most recently completed first.
+            done.sort(key=lambda r: r["completedAtSeconds"])
             return {
                 "missionRoot": self._mission_root_id,
                 "running": running[:max_per_bucket],
                 "ready": ready[:max_per_bucket],
+                "review": review[:max_per_bucket],
                 "blocked": blocked[:max_per_bucket],
                 "waiting": waiting[:max_per_bucket],
+                "done": done[:max_per_bucket],
                 "totals": {
                     "running": len(running),
                     "ready": len(ready),
+                    "review": len(review),
                     "blocked": len(blocked),
                     "waiting": len(waiting),
+                    "done": len(done),
                     "cards": len(self._tasks),
+                    "byStatus": dict(by_status),
                 },
             }
 

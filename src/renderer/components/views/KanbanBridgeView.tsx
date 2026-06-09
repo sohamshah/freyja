@@ -1234,30 +1234,45 @@ function StatusPip({
   //      blocked cards so the operator can read clean-delivery vs
   //      partial-crash.
   // (1) wins when both are present — it's the canonical status.
+  //
+  // Render rules:
+  //   · Terminal failure → name the failure ("crashed", "timed out", …)
+  //     in danger styling.
+  //   · Review column → ALWAYS lead with the column label ("review")
+  //     and append the worker terminal as context. Previously the
+  //     worker terminal alone was the label, so cards in the REVIEW
+  //     column showed "● DONE" badges (worker terminal = "done") and
+  //     looked indistinguishable from actually-done cards. Now they
+  //     read "review · worker done" so the column intent is clear.
+  //   · Blocked column → keep the worker-terminal-as-label behavior
+  //     (e.g. "blocked-by-worker") because it's already the most
+  //     informative thing to surface for that column.
+  //   · Other columns → use the column label.
   const terminalLabel = terminalStatusLabel(status)
-  const subtitle =
-    terminalLabel
-      ?? ((column === 'review' || column === 'blocked') && workerTerminalState
-        ? workerTerminalState
-        : null)
   const isTerminalFailure = !!terminalLabel
   const cls = isTerminalFailure
     ? 'text-danger bg-danger/[0.10] border border-danger/[0.34]'
     : meta.cls
   const dotCls = isTerminalFailure ? 'bg-danger animate-pulse-soft' : meta.dotCls
+  let label = meta.label
+  let titleText: string = meta.label
+  if (isTerminalFailure && terminalLabel) {
+    label = terminalLabel
+    titleText = `Worker ended as: ${terminalLabel}. Card is in blocked until you intervene.`
+  } else if (column === 'review' && workerTerminalState) {
+    label = `${meta.label} · worker ${workerTerminalState}`
+    titleText = `${meta.label} · worker exited ${workerTerminalState} — awaiting judge verdict.`
+  } else if (column === 'blocked' && workerTerminalState) {
+    label = workerTerminalState
+    titleText = `${meta.label} · worker exited ${workerTerminalState}`
+  }
   return (
     <span
-      title={
-        isTerminalFailure
-          ? `Worker ended as: ${terminalLabel}. Card is in blocked until you intervene.`
-          : subtitle
-            ? `${meta.label} · worker exited ${subtitle}`
-            : meta.label
-      }
+      title={titleText}
       className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.14em] ${cls}`}
     >
       <span className={`h-1 w-1 rounded-full ${dotCls}`} />
-      {subtitle ?? meta.label}
+      {label}
     </span>
   )
 }

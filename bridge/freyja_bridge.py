@@ -30,6 +30,7 @@ import base64
 import json
 import logging
 import os
+import random
 import re
 import sys
 import time
@@ -182,6 +183,21 @@ def _write_debug_log(event: dict[str, Any]) -> None:
 # pathological tool-loops — set high enough that well-behaved
 # investigations never hit it.
 _DEEP_JUDGE_SAFETY_NET_ITERATIONS = 50
+
+# Per-card random model pool for the kanban judge lane. Each card going
+# into review draws a verdict from one of these providers uniformly at
+# random — single-model judge would systematically over-pass or
+# over-fail to its own training biases; cross-provider variance acts as
+# an ensemble check. Sticky-wake judges keep their original session's
+# model (the session is already pinned). Models that aren't available
+# (missing API key, not registered) fall through to the agent_type's
+# default resolution at spawn time. Keep this list short — adding more
+# models linearly increases the chance you hit a missing-API-key path.
+_KANBAN_JUDGE_MODEL_POOL: tuple[str, ...] = (
+    "claude-opus-4-8",
+    "gpt-5.5",
+    "gemini-3.1-pro-preview",
+)
 # Cap on consecutive judge_failed verdicts before the goal loop pauses
 # itself. Catches persistent failure modes (schema 400 on every synth,
 # provider outage on every inline call) that would otherwise loop
@@ -6616,11 +6632,21 @@ class _BridgeSession:
                 # thinking, read-only tools (read_file, list_directory,
                 # grep, glob, bash, fetch_url) — under the same high
                 # safety-net cap goal-mode uses.
+                #
+                # Cross-provider ensemble: pick a model uniformly at
+                # random from ``_KANBAN_JUDGE_MODEL_POOL`` for THIS
+                # card's verdict. Sticky-wake (rework iterations 2+)
+                # keeps the same judge session and therefore the same
+                # model — only fresh spawns get re-randomized. If the
+                # picked model isn't available the spawn falls through
+                # to the agent_type's default resolution.
+                judge_model = random.choice(_KANBAN_JUDGE_MODEL_POOL)
                 record, _resp, error = await sub_tool.spawn_programmatically(
                     agent_type_name="judge-deep",
-                    label=f"Kanban judge ({card.id})",
+                    label=f"Kanban judge ({card.id}) · {judge_model}",
                     task=prompt,
                     max_iterations_override=_DEEP_JUDGE_SAFETY_NET_ITERATIONS,
+                    model_override=judge_model,
                 )
                 if error is not None:
                     raise error

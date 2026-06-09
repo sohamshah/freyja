@@ -683,6 +683,7 @@ Parameters:
         tool_filter: frozenset[str] | None = None,
         max_iterations_override: int | None = None,
         mode: str = "foreground",
+        model_override: str | None = None,
     ) -> tuple[SubAgentRecord, str | None, Exception | None]:
         """Spawn a sub-agent from internal bridge code (not via a model
         tool call). Same machinery as `execute()` — same record, same
@@ -696,27 +697,56 @@ Parameters:
         bespoke spawners that bypassed SubAgentTool entirely and
         therefore couldn't participate in the talk system.
 
+        ``model_override`` lets the caller force a specific model id
+        instead of going through the agent_type's resolution rules.
+        Used by the kanban dispatcher's judge lane to randomize
+        verdict providers per card (opus/gpt-5.5/gemini). If the
+        override isn't available (missing API key, not in registry),
+        falls back to the agent_type's normal resolution.
+
         Returns (record, response_text, error_or_None). One of
         (response_text, error) is set; the record is always populated
         so the caller can read tokens/iterations regardless.
         """
         from bridge.compaction_telemetry import append_telemetry
+        from bridge.tools.agent_types import _model_available
 
         # ---- model resolution ----
         agent_type = get_agent_type(agent_type_name, self._spec.parent_workspace)
-        try:
-            model_resolution = resolve_model_choice(agent_type, self._spec.parent_model)
-        except Exception as exc:  # noqa: BLE001
-            return (
-                self._spec.registry.register(
-                    id=f"sub_failed_{int(time.time()*1000):x}",
-                    label=label,
-                    task=task,
-                    mode=mode,
-                ),
-                None,
-                exc,
-            )
+        model_resolution = None
+        if model_override:
+            ok, reason = _model_available(model_override, self._spec.parent_model)
+            if ok:
+                from bridge.tools.agent_types import ModelResolution
+                model_resolution = ModelResolution(
+                    model=model_override,
+                    policy="override",
+                    candidates=(model_override,),
+                    unavailable=(),
+                    fallback_used=False,
+                    available=True,
+                )
+            else:
+                logger.warning(
+                    "spawn_programmatically: model_override %r unavailable (%s) — "
+                    "falling back to agent_type resolution",
+                    model_override,
+                    reason,
+                )
+        if model_resolution is None:
+            try:
+                model_resolution = resolve_model_choice(agent_type, self._spec.parent_model)
+            except Exception as exc:  # noqa: BLE001
+                return (
+                    self._spec.registry.register(
+                        id=f"sub_failed_{int(time.time()*1000):x}",
+                        label=label,
+                        task=task,
+                        mode=mode,
+                    ),
+                    None,
+                    exc,
+                )
         if not model_resolution.available:
             reasons = "; ".join(
                 f"{m}: {r}" for m, r in model_resolution.unavailable
