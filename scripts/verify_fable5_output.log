@@ -1,23 +1,36 @@
-# invoked: /usr/local/bin/python3 scripts/verify_fable5.py   @ 2026-06-09T21:41:21Z
+# COMMAND: /usr/local/bin/python3 scripts/verify_fable5.py
+# WHEN(UTC): 2026-06-09T21:47:40Z
+# HOST: Soham-ShahEMA-Unlimited-IncEngineering-BlueprintJL29595VHM | PWD: /Users/sohamshah/personal/freyja-fable-5
+#####################################################################
+== A. PROVENANCE ==
 anthropic.__version__ = 0.105.2
 python.executable     = /usr/local/bin/python3
+ANTHROPIC_BASE_URL override = None
+key prefix            = sk-ant-...
 
-=== AUTHORITATIVE: GET /v1/models (provider catalog) ===
-claude-fable-5 in server catalog: True
-display_name      = Claude Fable 5
-max_input_tokens  = 1000000
-max_tokens        = 128000
-thinking.adaptive = {'supported': True}
+== B. AUTHORITATIVE CATALOG (GET /v1/models) ==
+server returned 11 models
+claude-fable-5 in catalog: True
+retrieved.display_name     = Claude Fable 5
+retrieved.max_input_tokens = 1000000
+retrieved.max_tokens       = 128000
+retrieved.thinking.adaptive= {'supported': True} | enabled(legacy)= {'supported': False}
 
-=== POSITIVE: model='claude-fable-5' ===
-http        = 200 (no exception)
-model       = claude-fable-5
-id          = msg_01JHszvf3oeSKDroz8CYrynG
-stop_reason = end_turn
-usage       = 27 in / 23 out
-text        = The capital of France is Paris, and the River Seine runs through it.
+== C. RAW-SDK 200 ROUND-TRIP ==
+model = claude-fable-5 | id = msg_01TWEgnfrZhRgvLVbWbeGqun | stop = end_turn | usage = 27 / 23
+text  = The capital of France is Paris, and the Seine River runs through it.
 
-=== NEGATIVE CONTROL: model='claude-fable-5-NOPE-xyz' ===
-http        = 404
-body        = {"type":"error","error":{"type":"not_found_error","message":"model: claude-fable-5-NOPE-xyz"},"request_id":"req_011CbtQumtJLDA9yBdE1SN6J"}
+== D. ENGINE-PATH ROUND-TRIPS (freyja AnthropicProvider, varied prompts) ==
+Q: Name three prime numbers between 50 and 70.
+   model = claude-fable-5 | usage = 22 / 74
+   text  = Three prime numbers between 50 and 70 are **53, 59, and 61**.  (The complete list of primes in that range is 53, 59, 61, and 67.)
+Q: What is 12 factorial? Just the number.
+   model = claude-fable-5 | usage = 20 / 14
+   text  = 479001600
+Q: Give a 5-word motto for a lighthouse keeper.
+   model = claude-fable-5 | usage = 26 / 12
+   text  = "Steady light through every storm."
+
+== E. NEGATIVE CONTROL (bogus slug must 404) ==
+http = 404 | body = {"type":"error","error":{"type":"not_found_error","message":"model: claude-fable-5-NOPE-xyz"},"request_id":"req_011CbtRQoTs3v2jr7ng3nAg9"}
 EXIT=0
