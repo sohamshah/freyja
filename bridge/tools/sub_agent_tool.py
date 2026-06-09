@@ -1992,11 +1992,25 @@ Parameters:
         ):
             return
         try:
+            # Stamp ``worker_session_id`` at SPAWN time, not lazily on
+            # terminal. Previously this was only written by
+            # ``_mark_kanban_terminal`` when the worker reached
+            # ``complete``/``cancel``/``crash``. Workers that died
+            # before the terminal hook (bridge restart, ungraceful
+            # cancel) left the card with worker_session_id="" forever,
+            # which then tripped ``_handle_kanban_verdict``'s
+            # "can't rework" early return on the next judge pass —
+            # producing the unbounded review loop observed in
+            # session-mq67ogk0's trace (three identical iter-0/5
+            # rejections against an empty worktree). Setting it at
+            # spawn makes the worker→card binding durable across any
+            # subsequent failure mode.
             task = await self._spec.kanban_board.update(
                 task_id,
                 actor=f"{record.label} ({record.id})",
                 status="running",
                 assignee=record.label,
+                worker_session_id=record.id,
                 comment="Sub-agent started",
             )
             await self._emit_kanban_state_event("update", task)

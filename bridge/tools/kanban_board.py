@@ -575,8 +575,23 @@ class SessionKanbanBoard:
             if status:
                 next_status = normalize_status(status)
                 if not is_valid_transition(task.status, next_status):
+                    # Include the valid next-states in the error so the
+                    # agent doesn't burn a turn on trial-and-error.
+                    # Without the hint, the agent in session-mq67ogk0
+                    # tried review→ready (rejected), then considered
+                    # review→blocked, then settled on review→running —
+                    # all while doing extra digest calls to map the
+                    # state machine. Surfacing the valid options inline
+                    # collapses that into one turn.
+                    valid = sorted(ALLOWED_TRANSITIONS.get(task.status, set()))
+                    valid_str = (
+                        ", ".join(repr(s) for s in valid)
+                        if valid
+                        else "(terminal — no transitions allowed)"
+                    )
                     raise ValueError(
-                        f"invalid transition {task.status!r} -> {next_status!r}"
+                        f"invalid transition {task.status!r} -> {next_status!r}. "
+                        f"From {task.status!r} you can move to: {{{valid_str}}}"
                     )
                 # Circuit breaker: a crashed/timed_out transition past the
                 # threshold is rewritten to `failed` so the dispatcher
@@ -594,8 +609,17 @@ class SessionKanbanBoard:
                     if task.consecutive_failures:
                         changes["consecutiveFailures"] = 0
                     task.consecutive_failures = 0
-                if next_status == "running" and task.started_at is None:
+                # Reset ``started_at`` whenever the card transitions
+                # INTO ``running`` from a non-running state, not just on
+                # the first time ever. Previously only the first dispatch
+                # stamped it, so a card going review→running for rework
+                # (or blocked→running on unstick) reported cumulative
+                # wall time since the original spawn — the trace showed
+                # a "running for 1h55m" phantom for a card whose new
+                # worker had only been alive for seconds.
+                if next_status == "running" and task.status != "running":
                     task.started_at = now
+                    changes["startedAt"] = int(now * 1000)
                 if next_status in TERMINAL_STATUSES and task.completed_at is None:
                     task.completed_at = now
                 task.status = next_status

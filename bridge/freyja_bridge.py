@@ -6223,6 +6223,43 @@ class _BridgeSession:
                 continue
             if card.id in self._kanban_judge_pending:
                 continue
+            # Empty-card guard: if the card lands in review with no
+            # worker session AND no artifacts, there's nothing for the
+            # judge to evaluate. Auto-park to ``blocked`` so the
+            # operator can re-dispatch deliberately, instead of
+            # spawning a judge every 30s against an empty worktree.
+            # Defense-in-depth alongside _handle_kanban_verdict's
+            # requeue path — that handler catches the same case after
+            # the FIRST verdict; this guard catches it BEFORE the
+            # judge spawns at all, saving the full judge round-trip.
+            if not card.worker_session_id and not (card.artifacts or []):
+                try:
+                    await self.kanban_board.update(
+                        card.id,
+                        actor="kanban-dispatcher",
+                        status="blocked",
+                        summary=(
+                            "No worker session and no artifacts to "
+                            "review — auto-parked. Move to `ready` to "
+                            "retry, or to `cancelled` to drop."
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log(
+                        "warn",
+                        f"empty-review auto-park failed for {card.id}: {exc}",
+                    )
+                else:
+                    self._emit_kanban_event(
+                        "kanban_blocked",
+                        f"{card.id} blocked: nothing to review",
+                        details={
+                            "cardId": card.id,
+                            "reason": "empty_review_card",
+                            "chatVisible": True,
+                        },
+                    )
+                continue
             self._kanban_judge_pending.add(card.id)
             asyncio.create_task(
                 self._run_kanban_judge_for_card(card, sub_tool=sub_tool),
@@ -6723,9 +6760,48 @@ class _BridgeSession:
         # worker with the verdict as a critique message.
         critique = _format_verdict_as_critique(card, verdict)
         if not card.worker_session_id:
+            # Worker session is missing — the prior worker died before
+            # ``_mark_kanban_running`` could stamp its id (legacy data
+            # from before that fix was shipped), OR the bridge restarted
+            # mid-flight and the binding was never restored. We can't
+            # rework against a phantom worker; the only sensible move is
+            # to re-queue the card so the dispatcher can spawn a fresh
+            # worker on the next tick. Without this, the dispatcher kept
+            # waking the judge every 30s against an unchanged worktree
+            # and emitted identical "Judge rejected (iter 0/5)" events
+            # forever (observed in session-mq67ogk0).
             log(
                 "warn",
-                f"kanban_handle_verdict: card {card.id} has no worker_session_id; can't rework",
+                f"kanban_handle_verdict: card {card.id} has no worker_session_id; "
+                f"requeuing review->ready for fresh dispatch",
+            )
+            try:
+                await self.kanban_board.update(
+                    card.id,
+                    actor="kanban-judge",
+                    status="ready",
+                    summary=(
+                        "Cannot rework: no worker session recorded "
+                        "(worker likely cancelled/crashed before "
+                        "spawn binding). Requeued for fresh dispatch. "
+                        f"Last verdict: {verdict.reason[:1500]}"
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                log(
+                    "warn",
+                    f"kanban_handle_verdict requeue failed for {card.id}: {exc}",
+                )
+                return
+            self._emit_kanban_event(
+                "kanban_rework_requeued",
+                f"Requeued {card.id} for fresh dispatch (no worker session)",
+                details={
+                    "cardId": card.id,
+                    "reviewIteration": card.review_iteration,
+                    "verdict": verdict.to_dict(),
+                    "chatVisible": True,
+                },
             )
             return
         try:

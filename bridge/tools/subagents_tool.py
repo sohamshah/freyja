@@ -106,11 +106,40 @@ whole session if truly needed).""",
                     content="Error: `id` is required for kill",
                     is_error=True,
                 )
-            killed = self._registry.kill(sub_id)
+            # Distinguish three outcomes so callers can fence
+            # idempotently without is_error noise:
+            #   · unknown id → genuine error (typo / wrong session)
+            #   · already terminal → no-op success (goal already met)
+            #   · running → kill sent, success
+            # Previously a kill against an already-finished agent
+            # returned is_error=True, which both surprised operators
+            # ("I just wanted to make sure it was stopped") and
+            # propagated into agent traces as a failure to retry —
+            # see session-mq67ogk0 where the parent killed a judge
+            # that had already finished and the result confused the
+            # next turn's reasoning.
+            record = self._registry.get(sub_id)
+            if record is None:
+                return ToolResult(
+                    call_id=call_id,
+                    content=f"Unknown sub-agent: {sub_id}",
+                    is_error=True,
+                )
+            if not record.is_running:
+                terminal = record.state.name.lower() if record.state else "terminal"
+                return ToolResult(
+                    call_id=call_id,
+                    content=(
+                        f"Sub-agent {sub_id} already in terminal state "
+                        f"({terminal}) — kill is a no-op"
+                    ),
+                    is_error=False,
+                )
+            self._registry.kill(sub_id)
             return ToolResult(
                 call_id=call_id,
-                content=f"Kill signal {'sent' if killed else 'ignored (not running)'} for {sub_id}",
-                is_error=not killed,
+                content=f"Kill signal sent to {sub_id}",
+                is_error=False,
             )
 
         if action == "wait":
