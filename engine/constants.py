@@ -173,6 +173,17 @@ MAX_CHARS_TO_SUMMARIZE = 400_000
 """Maximum characters of transcript fed to the compaction LLM."""
 
 # ============================================================================
+# Mid-session Working Memory Trigger (Call B between compactions)
+# ============================================================================
+
+WM_EXTRACT_TURN_DEBOUNCE = 3
+"""Minimum turn gap between consecutive mid-session working-memory extractions
+(Call B fires triggered by session_memory mutations or other primitive signals).
+The trigger is skipped if fewer than this many turns have elapsed since the
+last Call B OR since the last compaction-driven Call B. Prevents runaway
+LLM spend when the agent appends to session_memory several times in one turn."""
+
+# ============================================================================
 # Content Truncation Ratios
 # ============================================================================
 

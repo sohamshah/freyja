@@ -31,6 +31,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -52,8 +53,22 @@ class SessionMemoryTool:
 
     ACTIONS = ("read", "write", "append", "clear")
 
-    def __init__(self, *, session_id: str) -> None:
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        on_mutation: Callable[[str], None] | None = None,
+    ) -> None:
         self._session_id = session_id
+        # Sync, fire-and-forget callback invoked AFTER a successful mutation
+        # (write|append|clear; never read; never on error). It runs on the
+        # bridge event loop — `execute()` invokes it AFTER awaiting
+        # `loop.run_in_executor(...)`, so the executor thread has already
+        # handed control back. The bridge's wrapper uses
+        # `call_soon_threadsafe` defensively so the same callback stays
+        # correct if a future call site (e.g. invoking from inside
+        # `_execute_sync`) does run it on a worker thread.
+        self._on_mutation = on_mutation
 
     @property
     def _path(self) -> Path:
@@ -107,9 +122,23 @@ class SessionMemoryTool:
 
     async def execute(self, call_id: str, arguments: dict[str, Any]) -> ToolResult:
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
+        result = await loop.run_in_executor(
             None, self._execute_sync, call_id, arguments
         )
+        # Fire mutation callback ONLY on successful writes — never on read,
+        # never on error. Mutations are the agent's natural "consolidate now"
+        # signal; the bridge hooks Call B (working-memory extraction) here.
+        if self._on_mutation is not None and not result.is_error:
+            action = str(arguments.get("action") or "").strip().lower()
+            if action in {"write", "append", "clear"}:
+                try:
+                    self._on_mutation(action)
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "session_memory on_mutation callback failed",
+                        exc_info=True,
+                    )
+        return result
 
     def _execute_sync(self, call_id: str, arguments: dict[str, Any]) -> ToolResult:
         action = str(arguments.get("action") or "").strip().lower()
