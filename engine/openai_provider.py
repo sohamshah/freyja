@@ -404,13 +404,31 @@ class OpenAIProvider:
         return lookup
 
     def _computer_call_input_item(self, tool_call: ToolCall) -> dict[str, Any]:
+        """Serialize a prior computer_call back into the Responses API
+        input list for context replay.
+
+        ``pending_safety_checks`` is intentionally NOT emitted here.
+        OpenAI's current Responses API rejects the field outright on
+        the new ``{"type": "computer"}`` tool with::
+
+            400 - 'pending_safety_checks' is not supported for the
+            "computer" tool.
+
+        Previously the field was a no-op on input replay and silently
+        ignored; the API now hard-rejects, breaking any session that
+        ever invoked the computer tool. We persist the value on
+        ``provider_data`` so future re-emission stays possible if the
+        API restores it, but we don't echo it back on replay. The
+        ``acknowledged_safety_checks`` field on ``computer_call_output``
+        items is still accepted (see ``_computer_call_output_item``)
+        and only emitted when non-empty, so it isn't affected.
+        """
         data = tool_call.provider_data or {}
         item: dict[str, Any] = {
             "type": "computer_call",
             "id": data.get("id") or tool_call.id,
             "call_id": tool_call.id,
             "status": data.get("status") or "completed",
-            "pending_safety_checks": data.get("pending_safety_checks") or [],
         }
         if data.get("actions") is not None:
             item["actions"] = data["actions"]
