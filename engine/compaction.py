@@ -500,6 +500,7 @@ CONVERSATION TO EXTRACT FROM:
         ground_truth: str | None = None,
         on_working_memory_upserts: "Callable[[dict[str, Any] | None], None] | None" = None,
         working_memory_state: str | None = None,
+        on_working_memory_call_start: "Callable[[dict[str, Any]], None] | None" = None,
     ) -> CompactionResult:
         """Compact the transcript by summarizing old messages.
 
@@ -681,6 +682,7 @@ CONVERSATION TO EXTRACT FROM:
                 ground_truth=ground_truth,
                 working_memory_state=working_memory_state,
                 on_working_memory_upserts=on_working_memory_upserts,
+                on_working_memory_call_start=on_working_memory_call_start,
             )
         except Exception as e:
             logger.warning(f"Summary generation failed: {e}")
@@ -1132,6 +1134,7 @@ CONVERSATION TO EXTRACT FROM:
         working_memory_state: str | None = None,
         ground_truth: str | None = None,
         stats_out: dict[str, Any] | None = None,
+        on_call_start: "Callable[[dict[str, Any]], None] | None" = None,
     ) -> dict[str, Any] | None:
         """Call B — extract structured working memory from the conversation.
 
@@ -1197,12 +1200,37 @@ CONVERSATION TO EXTRACT FROM:
                 thinking=ThinkingConfig(enabled=False),
             )
 
+        # Observability — fire the start hook just before the network call so
+        # the bridge can emit a `working_memory_start` system event the
+        # operator sees in the conversation while Call B is in flight.
+        if on_call_start is not None:
+            try:
+                on_call_start({
+                    "provider": getattr(provider, "name", "unknown"),
+                    "model": getattr(provider, "model_id", "unknown"),
+                    "has_state": bool(working_memory_state and working_memory_state.strip()),
+                    "has_ground_truth": bool(ground_truth and ground_truth.strip()),
+                    "conversation_chars": len(safe_conversation),
+                })
+            except Exception:
+                logger.debug("on_working_memory_call_start hook failed", exc_info=True)
+
         start_perf = _time.perf_counter()
         try:
             # Runs in a ThreadPoolExecutor worker (no event loop) — asyncio.run
             # is safe here; the sibling summary call runs concurrently.
             resp = asyncio.run(_run())
-        except Exception:
+        except Exception as exc:
+            # Bubble the failure into stats_out so the orchestrator can emit a
+            # `working_memory_complete` event with status=failed instead of the
+            # whole call going silent. We still return None so the apply path
+            # treats it as "best-effort, nothing structural this round".
+            if stats_out is not None:
+                stats_out.update({
+                    "call_kind": "working_memory_extraction",
+                    "status": "failed",
+                    "error": f"{type(exc).__name__}: {exc}"[:500],
+                })
             logger.debug("working-memory extraction call failed", exc_info=True)
             return None
         duration_ms = int((_time.perf_counter() - start_perf) * 1000)
@@ -1232,8 +1260,21 @@ CONVERSATION TO EXTRACT FROM:
                 )
             except Exception:
                 cost = None
+            # Capture the raw structured JSON the model returned so the
+            # bridge can ship it in the `working_memory_complete` event for
+            # the operator's expandable inspection box. Cap the serialized
+            # size so a pathological response can't blow the event payload.
+            raw_obj = getattr(resp, "data", None)
+            try:
+                import json as _json
+                raw_text = _json.dumps(raw_obj, indent=2, ensure_ascii=False)
+            except Exception:
+                raw_text = str(raw_obj)
+            if isinstance(raw_text, str) and len(raw_text) > 24_000:
+                raw_text = raw_text[:24_000] + "\n…(truncated)…"
             stats_out.update({
                 "call_kind": "working_memory_extraction",
+                "status": "ok",
                 "provider": getattr(provider, "name", "unknown"),
                 "model": model_id,
                 "input_tokens": in_tok,
@@ -1242,6 +1283,7 @@ CONVERSATION TO EXTRACT FROM:
                 "cache_write_tokens": cw_tok,
                 "duration_ms": duration_ms,
                 "cost_usd": cost,
+                "raw_output": raw_text,
             })
 
         data = getattr(resp, "data", None)
@@ -1293,6 +1335,7 @@ CONVERSATION TO EXTRACT FROM:
         ground_truth: str | None = None,
         working_memory_state: str | None = None,
         on_working_memory_upserts: "Callable[[dict[str, Any] | None], None] | None" = None,
+        on_working_memory_call_start: "Callable[[dict[str, Any]], None] | None" = None,
     ) -> str:
         """Run the prose-summary call (Call A) and the structured
         working-memory extraction (Call B) concurrently against the same
@@ -1347,6 +1390,7 @@ CONVERSATION TO EXTRACT FROM:
                 working_memory_state=working_memory_state,
                 ground_truth=ground_truth,
                 stats_out=wm_stats,
+                on_call_start=on_working_memory_call_start,
             )
 
             # Resolve Call B first (best-effort, never raises out of here).
@@ -1373,11 +1417,16 @@ CONVERSATION TO EXTRACT FROM:
             logger.debug("working_memory sink failed", exc_info=True)
 
         # Attribute Call B's spend as compaction overhead (Call A already
-        # fired its own hook inside its worker).
+        # fired its own hook inside its worker). Carries raw_output / status /
+        # error too so the bridge can emit a `working_memory_complete` system
+        # event with the full structured response in an expandable box.
         if on_summarizer_call is not None and wm_stats:
             try:
                 on_summarizer_call({
                     "call_kind": "working_memory_extraction",
+                    "status": wm_stats.get("status", "ok"),
+                    "error": wm_stats.get("error"),
+                    "raw_output": wm_stats.get("raw_output"),
                     "provider": wm_stats.get("provider", "unknown"),
                     "model": wm_stats.get("model", "unknown"),
                     "input_tokens": wm_stats.get("input_tokens", 0),

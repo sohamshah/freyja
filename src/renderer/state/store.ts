@@ -1635,6 +1635,12 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
         // Conversation.tsx (InlineForgetting / InlineCompactionReceipt).
         'forgetting_detected',
         'compaction_receipt',
+        // Working-memory extraction (Call B of compaction). The start chip
+        // signals the call is in flight; the complete chip is expandable
+        // and shows the raw structured JSON the model returned — the
+        // operator's "did it actually fire and what did it produce" surface.
+        'working_memory_start',
+        'working_memory_complete',
       ]
       // The runner's automatic "halved N old tool results" pruning
       // (engine/runner.py:2078,2141) fires on most turns once context
@@ -1646,23 +1652,30 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
       const isRunnerToolHalving =
         ev.subtype === 'context_pruning' &&
         /halved \d+\s+old tool results/i.test(ev.message ?? '')
-      // Embed the full compaction summary directly on the part so the
-      // expandable inline box survives the rolling systemEvents buffer and
-      // a quit/rebuild/reopen (the message stream is what's persisted).
-      const compactionSummaryText =
-        ev.subtype === 'compaction_complete'
-          ? (typeof ev.details?.summary_text === 'string'
-              ? (ev.details.summary_text as string)
-              : typeof ev.details?.summary_preview === 'string'
-                ? (ev.details.summary_preview as string)
-                : undefined)
-          : undefined
+      // Embed the full compaction summary / working-memory raw output
+      // directly on the part so the expandable inline box survives the
+      // rolling systemEvents buffer and a quit/rebuild/reopen (the message
+      // stream is what's persisted).
+      let inlineExpandableText: string | undefined
+      if (ev.subtype === 'compaction_complete') {
+        inlineExpandableText =
+          typeof ev.details?.summary_text === 'string'
+            ? (ev.details.summary_text as string)
+            : typeof ev.details?.summary_preview === 'string'
+              ? (ev.details.summary_preview as string)
+              : undefined
+      } else if (ev.subtype === 'working_memory_complete') {
+        inlineExpandableText =
+          typeof ev.details?.raw_output === 'string'
+            ? (ev.details.raw_output as string)
+            : undefined
+      }
       const systemPart: MessagePart = {
         type: 'system',
         text: ev.message,
         systemSubtype: ev.subtype,
         eventId: sysEventId,
-        ...(compactionSummaryText ? { systemSummaryText: compactionSummaryText } : {}),
+        ...(inlineExpandableText ? { systemSummaryText: inlineExpandableText } : {}),
       }
       if (
         slice.currentStreamingMessageId &&

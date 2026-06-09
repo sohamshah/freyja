@@ -1245,6 +1245,21 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
         />
       )
     }
+    // Working-memory extraction (Call B). Complete chip is expandable and
+    // shows the raw structured JSON the model returned, so the operator can
+    // verify Call B actually fired AND inspect what it produced. The start
+    // chip falls through to the default chip below — it's just a status
+    // signal while the call is in flight.
+    if (part.systemSubtype === 'working_memory_complete') {
+      return (
+        <InlineCompaction
+          eventId={part.eventId}
+          headline={part.text ?? 'Working memory extracted'}
+          summaryText={part.systemSummaryText}
+          variant="working_memory"
+        />
+      )
+    }
     return (
       <div className="flex items-center gap-2 rounded-md bg-white/[0.025] px-2.5 py-1.5 text-[11px] text-fg-2 ring-hairline">
         <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="shrink-0">
@@ -1318,10 +1333,16 @@ function InlineCompaction({
   eventId,
   headline,
   summaryText,
+  variant = 'compaction',
 }: {
   eventId?: string
   headline: string
   summaryText?: string
+  /** 'compaction' = warn-coloured "compacted" chip with the prose summary
+   *  in the expanded box. 'working_memory' = accent-coloured "wm" chip with
+   *  Call B's raw structured JSON. Same expandable shell, different label
+   *  + colour so the operator can see at a glance which call this was. */
+  variant?: 'compaction' | 'working_memory'
 }) {
   const lookup = useContext(SystemEventLookupContext)
   const event = eventId ? lookup.get(eventId) : undefined
@@ -1330,19 +1351,36 @@ function InlineCompaction({
   const details = (event?.details ?? {}) as {
     summary_text?: string
     summary_preview?: string
+    raw_output?: string
     context_tokens_before?: number
     context_tokens_after?: number
     entries_removed?: number
+    input_tokens?: number
+    output_tokens?: number
+    duration_ms?: number
   }
-  // Prefer the embedded copy; fall back to the live event payload.
+  // Prefer the embedded copy; fall back to the live event payload. For the
+  // working-memory variant the embedded copy is raw_output (Call B's
+  // structured JSON) — same render path, different text.
   const fullSummary =
-    summaryText || details.summary_text || details.summary_preview || ''
+    summaryText ||
+    details.summary_text ||
+    details.summary_preview ||
+    details.raw_output ||
+    ''
   const before = details.context_tokens_before
   const after = details.context_tokens_after
   const fmt = (n?: number) =>
     typeof n === 'number' ? `${Math.round(n / 1000)}k` : null
   const delta =
-    fmt(before) && fmt(after) ? `${fmt(before)} → ${fmt(after)} ctx` : null
+    variant === 'working_memory'
+      ? typeof details.input_tokens === 'number' &&
+        typeof details.output_tokens === 'number'
+        ? `${fmt(details.input_tokens)} → ${fmt(details.output_tokens)}`
+        : null
+      : fmt(before) && fmt(after)
+        ? `${fmt(before)} → ${fmt(after)} ctx`
+        : null
   const canExpand = fullSummary.trim().length > 0
 
   return (
@@ -1354,11 +1392,24 @@ function InlineCompaction({
           canExpand ? 'cursor-pointer hover:bg-white/[0.02]' : 'cursor-default'
         }`}
       >
-        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="shrink-0">
-          <circle cx="5" cy="5" r="4" fill="none" stroke="#ffcc66" strokeWidth="1" />
-          <path d="M3.2 5 L4.4 6.2 L6.8 3.6" stroke="#ffcc66" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-        </svg>
-        <span className="font-mono text-[10.5px] uppercase text-warn/80">compacted</span>
+        {variant === 'working_memory' ? (
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="shrink-0">
+            <circle cx="5" cy="5" r="4" fill="none" stroke="#5eead4" strokeWidth="1" />
+            <circle cx="5" cy="5" r="1.2" fill="#5eead4" />
+          </svg>
+        ) : (
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="shrink-0">
+            <circle cx="5" cy="5" r="4" fill="none" stroke="#ffcc66" strokeWidth="1" />
+            <path d="M3.2 5 L4.4 6.2 L6.8 3.6" stroke="#ffcc66" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+          </svg>
+        )}
+        <span
+          className={`font-mono text-[10.5px] uppercase ${
+            variant === 'working_memory' ? 'text-accent/80' : 'text-warn/80'
+          }`}
+        >
+          {variant === 'working_memory' ? 'wm extract' : 'compacted'}
+        </span>
         <span className="min-w-0 flex-1 truncate text-fg-1">{headline}</span>
         {delta && (
           <span className="shrink-0 font-mono text-[9.5px] text-fg-3">{delta}</span>
@@ -1378,7 +1429,9 @@ function InlineCompaction({
       {expanded && canExpand && (
         <div className="border-t border-white/[0.06] px-3 py-2">
           <div className="mb-1 font-mono text-[9.5px] uppercase tracking-[0.08em] text-fg-3">
-            summary written to context
+            {variant === 'working_memory'
+              ? 'raw structured output (call b)'
+              : 'summary written to context'}
           </div>
           <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap break-words font-mono text-[10.5px] leading-[1.5] text-fg-1">
             {fullSummary}

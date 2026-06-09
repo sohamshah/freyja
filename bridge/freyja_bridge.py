@@ -4599,6 +4599,49 @@ class _BridgeSession:
         # this the manual-compaction summarizer is invisible to spend
         # metrics.
         def _on_sum_call_manual(payload: dict[str, Any]) -> None:
+            # Two call kinds flow through this hook: the prose-summary call
+            # (Call A) and the dedicated working-memory extraction (Call B).
+            # We attribute both to the runner's on_llm_call so their spend
+            # shows in the dashboard, AND for Call B we ALSO emit a
+            # `working_memory_complete` system event with the raw structured
+            # JSON the model returned — the operator's "did Call B actually
+            # work and what did it say" inspection surface.
+            is_wm_call = payload.get("call_kind") == "working_memory_extraction"
+            if is_wm_call:
+                try:
+                    status = str(payload.get("status") or "ok")
+                    in_tok = int(payload.get("input_tokens", 0) or 0)
+                    out_tok = int(payload.get("output_tokens", 0) or 0)
+                    dur_ms = int(payload.get("duration_ms", 0) or 0)
+                    raw_output = payload.get("raw_output")
+                    headline = (
+                        "Working memory extracted "
+                        f"({in_tok:,} in → {out_tok:,} out, {dur_ms/1000:.1f}s)"
+                        if status == "ok"
+                        else f"Working memory extraction failed: {payload.get('error') or 'unknown'}"
+                    )
+                    emit({
+                        "type": "system_event",
+                        "sessionId": self.id,
+                        "subtype": "working_memory_complete",
+                        "message": headline,
+                        "details": {
+                            "status": status,
+                            "model": payload.get("model"),
+                            "input_tokens": in_tok,
+                            "output_tokens": out_tok,
+                            "duration_ms": dur_ms,
+                            "cost_usd": payload.get("cost_usd"),
+                            "error": payload.get("error"),
+                            # Carries the structured JSON the LLM returned so
+                            # the renderer's expandable box can show exactly
+                            # what Call B produced.
+                            "raw_output": raw_output,
+                            "chatVisible": True,
+                        },
+                    })
+                except Exception:  # noqa: BLE001
+                    pass
             if self.runner is None or self.runner.on_llm_call is None:
                 return
             try:
@@ -4616,8 +4659,32 @@ class _BridgeSession:
                     "tool_calls": 0,
                     "thinking_blocks": 0,
                     "error": None,
-                    "call_kind": "summarizer",
+                    "call_kind": (
+                        "working_memory_extraction" if is_wm_call else "summarizer"
+                    ),
                     "iterative": payload.get("iterative", False),
+                })
+            except Exception:  # noqa: BLE001
+                pass
+
+        def _on_wm_call_start(payload: dict[str, Any]) -> None:
+            # Fire a system event the moment Call B begins — gives the
+            # operator a visible "extracting working memory…" chip in the
+            # conversation while the call is in flight, instead of a silent
+            # pause before the complete event lands.
+            try:
+                emit({
+                    "type": "system_event",
+                    "sessionId": self.id,
+                    "subtype": "working_memory_start",
+                    "message": "Extracting working memory…",
+                    "details": {
+                        "model": payload.get("model"),
+                        "has_state": bool(payload.get("has_state")),
+                        "has_ground_truth": bool(payload.get("has_ground_truth")),
+                        "conversation_chars": int(payload.get("conversation_chars", 0) or 0),
+                        "chatVisible": True,
+                    },
                 })
             except Exception:  # noqa: BLE001
                 pass
@@ -4629,6 +4696,7 @@ class _BridgeSession:
             on_summarizer_call=_on_sum_call_manual,
             ground_truth=self._ledger_ground_truth(),
             on_working_memory_upserts=self._apply_wm_upserts,
+            on_working_memory_call_start=_on_wm_call_start,
         )
 
         if not result.success:
