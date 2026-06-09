@@ -2962,6 +2962,31 @@ class _BridgeSession:
         self.current_tool_id: str | None = None
         self.current_turn_id: str | None = None
         self.turn_counter = 0
+        # ── Mid-session working-memory trigger state ────────────────────
+        # Reusable primitive that lets ANY "consolidate now" signal
+        # (session_memory mutations today; future: working_memory upserts,
+        # TaskUpdate completions, end-of-turn heartbeat) fire Call B
+        # against the current transcript, debounced + async.
+        # `_last_wm_extract_turn_id` anchors the debounce window for this
+        # trigger; `_last_compaction_turn_id` reuses the same cooldown so
+        # a fresh compaction (which already ran Call B) blocks a duplicate
+        # mid-session extraction; `_wm_extract_in_flight` is a per-loop
+        # re-entry guard (single bridge loop → no lock needed).
+        self._last_wm_extract_turn_id: str | None = None
+        self._last_compaction_turn_id: str | None = None
+        self._wm_extract_in_flight: bool = False
+        # True while a compaction is currently running (the bridge has
+        # awaited `asyncio.to_thread(compactor.compact, ...)` and not yet
+        # received a result). The mid-session WM trigger checks this so a
+        # session_memory mutation that lands DURING compaction can't fire
+        # a second Call B concurrently with the one compaction is running
+        # internally. `_last_compaction_turn_id` only covers the "compaction
+        # recently FINISHED" cooldown — this flag covers in-progress.
+        self._compaction_in_flight: bool = False
+        # Captured at initialize() so the session_memory tool's
+        # executor-thread callback can hop back to the bridge loop via
+        # `loop.call_soon_threadsafe` before scheduling _trigger_wm_extract.
+        self._bridge_loop: "asyncio.AbstractEventLoop | None" = None
         # Maps turn_index → message-list length at the START of that
         # turn (before the user message of that turn was added). Used by
         # ``_render_post_turn_window`` to slice transcript ranges per
@@ -3389,6 +3414,36 @@ class _BridgeSession:
             ),
         )
 
+        # Capture the running event loop so the SessionMemoryTool mutation
+        # callback always has a known loop to schedule against, regardless
+        # of which thread it ends up firing on. Today the tool invokes
+        # `on_mutation` AFTER awaiting `loop.run_in_executor(...)` returns
+        # — i.e. it runs on the bridge event loop, where
+        # `asyncio.create_task` would work directly. We still go through
+        # `call_soon_threadsafe` below because (a) calling it from the
+        # loop's own thread is safe and (b) it stays correct if a future
+        # call site moves the hook into `_execute_sync` (which DOES run on
+        # a ThreadPoolExecutor worker with no live event loop).
+        try:
+            self._bridge_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._bridge_loop = None
+
+        def _on_session_memory_mutation(action: str) -> None:
+            loop = self._bridge_loop
+            if loop is None or loop.is_closed():
+                return
+            try:
+                loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(
+                        self._trigger_wm_extract(
+                            f"session_memory:{action}"
+                        )
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                log("debug", "session_memory → wm trigger schedule failed")
+
         registry = build_desktop_registry(
             workspace=Path(self.workspace),
             subagent_registry=sub_registry,
@@ -3453,6 +3508,12 @@ class _BridgeSession:
             # notes into working memory too — the primary compaction path.
             summarize_context_on_working_memory_upserts=self._apply_wm_upserts,
             on_memory_updated=_emit_memory_updated,
+            # Wire the session_memory mutation → Call B primitive. Today
+            # the tool fires this from the bridge event loop (after its
+            # executor await returns); the shim above still routes through
+            # `call_soon_threadsafe` so a worker-thread call site would
+            # also be correct.
+            on_session_memory_mutation=_on_session_memory_mutation,
             on_skill_event=_emit_skill_event,
             talk_router=self._talk_router,
             talk_caller_session_id=self.id,
@@ -3855,6 +3916,14 @@ class _BridgeSession:
         self.turn_counter = 0
         self.current_tool_id = None
         self.current_turn_id = None
+        # Wm-trigger debounce/flight state is per-session — clear it but
+        # leave _bridge_loop intact (it's lifecycle-tied to the harness,
+        # not the session, so a reset followed by another initialize() in
+        # the same loop still works).
+        self._last_wm_extract_turn_id = None
+        self._last_compaction_turn_id = None
+        self._wm_extract_in_flight = False
+        self._compaction_in_flight = False
         # Clear per-turn message cursors so the next session's outcome
         # watcher doesn't index into a stale transcript.
         self._turn_message_cursors = {0: 0}
@@ -4074,12 +4143,24 @@ class _BridgeSession:
                 from engine.compaction import SummaryCompaction
 
                 compactor = SummaryCompaction()
-                compactor.compact(
-                    self.session.transcript, self.provider,
-                    ground_truth=self._ledger_ground_truth(),
-                    on_working_memory_upserts=self._apply_wm_upserts,
-                )
+                # Block the mid-session WM trigger for the whole window
+                # this compaction is running — its internal Call B and a
+                # session_memory-driven Call B would otherwise race.
+                self._compaction_in_flight = True
+                try:
+                    compactor.compact(
+                        self.session.transcript, self.provider,
+                        ground_truth=self._ledger_ground_truth(),
+                        on_working_memory_upserts=self._apply_wm_upserts,
+                    )
+                finally:
+                    self._compaction_in_flight = False
                 self.session.compaction_count += 1
+                # Anchor the mid-session WM-trigger cooldown to this
+                # compaction so a session_memory mutation in the next few
+                # turns doesn't immediately re-run Call B — Call B already
+                # ran inside `compactor.compact()` above.
+                self._last_compaction_turn_id = self.current_turn_id
                 emit(
                     {
                         "type": "system_event",
@@ -4626,6 +4707,12 @@ class _BridgeSession:
                         "subtype": "working_memory_complete",
                         "message": headline,
                         "details": {
+                            # Stamp the trigger so consumers can positively
+                            # identify the compaction-driven Call B path
+                            # (mirrors the mid-session trigger which carries
+                            # `session_memory:<action>`). Manual compaction
+                            # bypasses the runner — `compaction:manual`.
+                            "trigger": "compaction:manual",
                             "status": status,
                             "model": payload.get("model"),
                             "input_tokens": in_tok,
@@ -4679,6 +4766,10 @@ class _BridgeSession:
                     "subtype": "working_memory_start",
                     "message": "Extracting working memory…",
                     "details": {
+                        # Match `_on_sum_call_manual` above — every Call B
+                        # emission carries a trigger so consumers don't
+                        # have to infer the source from absence.
+                        "trigger": "compaction:manual",
                         "model": payload.get("model"),
                         "has_state": bool(payload.get("has_state")),
                         "has_ground_truth": bool(payload.get("has_ground_truth")),
@@ -4689,15 +4780,23 @@ class _BridgeSession:
             except Exception:  # noqa: BLE001
                 pass
 
-        result = await asyncio.to_thread(
-            compactor.compact,
-            self.session.transcript,
-            self.provider,
-            on_summarizer_call=_on_sum_call_manual,
-            ground_truth=self._ledger_ground_truth(),
-            on_working_memory_upserts=self._apply_wm_upserts,
-            on_working_memory_call_start=_on_wm_call_start,
-        )
+        # Block the mid-session WM trigger for the duration of this
+        # compaction — without this a session_memory mutation that lands
+        # mid-await would fire a duplicate Call B concurrently with the
+        # one compaction is running internally.
+        self._compaction_in_flight = True
+        try:
+            result = await asyncio.to_thread(
+                compactor.compact,
+                self.session.transcript,
+                self.provider,
+                on_summarizer_call=_on_sum_call_manual,
+                ground_truth=self._ledger_ground_truth(),
+                on_working_memory_upserts=self._apply_wm_upserts,
+                on_working_memory_call_start=_on_wm_call_start,
+            )
+        finally:
+            self._compaction_in_flight = False
 
         if not result.success:
             skip_details = {
@@ -4730,6 +4829,11 @@ class _BridgeSession:
             return
 
         self.session.compaction_count += 1
+        # Anchor the mid-session WM-trigger cooldown — Call B already ran
+        # inside the manual `compactor.compact(...)` above, so subsequent
+        # session_memory mutations in the next few turns shouldn't fire a
+        # duplicate extraction.
+        self._last_compaction_turn_id = self.current_turn_id
         try:
             request_tokens_after = int(self.session.estimate_tokens())
         except Exception:  # noqa: BLE001
@@ -8163,6 +8267,17 @@ class _BridgeSession:
                 "context_pruning", "media_pruning",
             }:
                 self._mirror_compaction_event(subtype, details)
+                # Track in-progress compaction for the runner-driven
+                # (auto / overflow-cascade) path. The runner emits
+                # `compaction_start` before `_attempt_compaction` and
+                # `compaction_complete` / `compaction_skipped` after. The
+                # mid-session WM trigger reads this flag so a
+                # session_memory mutation that lands while compaction is
+                # running can't fire a second Call B concurrently.
+                if subtype == "compaction_start":
+                    self._compaction_in_flight = True
+                elif subtype in ("compaction_complete", "compaction_skipped"):
+                    self._compaction_in_flight = False
                 # Snapshot the transcript on the boundary events so the
                 # operator can always inspect what got summarized.
                 # Universal across triggers (Gap 3).
@@ -8196,6 +8311,12 @@ class _BridgeSession:
                         self._save_transcript()
                     except Exception:  # noqa: BLE001
                         pass
+                    # Anchor the mid-session WM-trigger cooldown for the
+                    # runtime / auto compaction path too — Call B ran
+                    # inside the runner-driven compactor, so any
+                    # session_memory mutation in the next few turns
+                    # shouldn't fire a duplicate extraction.
+                    self._last_compaction_turn_id = self.current_turn_id
         except Exception as exc:  # noqa: BLE001
             log("error", f"on_system_event error: {exc}")
 
@@ -8792,6 +8913,220 @@ class _BridgeSession:
         except Exception:  # noqa: BLE001
             log("debug", "working memory ledger refresh failed")
 
+    async def _trigger_wm_extract(self, trigger: str) -> None:
+        """Reusable primitive: fire Call B against the current transcript,
+        debounced + async, regardless of which signal triggered it.
+
+        Today this is wired to session_memory mutations (write/append/clear),
+        but the contract is signal-agnostic — `trigger` is a free-text label
+        ("session_memory:append", "task_completed", "end_of_turn", …) that
+        gets stamped onto the working_memory_start / _complete events so the
+        operator can see WHY the extraction fired.
+
+        Skip conditions (all "best effort — silent return"):
+          • session/runner/provider not yet built.
+          • Another Call B already in flight (re-entry guard).
+          • Fewer than ``WM_EXTRACT_TURN_DEBOUNCE`` turns since the last
+            mid-session extraction OR since the last compaction (which
+            already ran Call B internally).
+          • Empty transcript / can't snapshot conversation.
+
+        On success: emits the existing `working_memory_start` /
+        `working_memory_complete` system_events (same shape Conversation.tsx
+        renders today), applies the result via ``_apply_wm_upserts``, and
+        forwards spend through ``runner.on_llm_call`` as
+        ``call_kind=working_memory_extraction`` so it lands in the dashboard
+        alongside the compaction-driven Call B calls.
+        """
+        from engine.compaction import SummaryCompaction
+        from engine.constants import WM_EXTRACT_TURN_DEBOUNCE
+
+        # ── Cheap synchronous guards ────────────────────────────────────
+        if self.session is None or self.runner is None or self.provider is None:
+            return
+        if self._wm_extract_in_flight:
+            return
+        # Compaction-in-progress check. `_last_compaction_turn_id` only
+        # tells us about RECENTLY-FINISHED compactions; this flag covers
+        # the window between "compaction kicked off" and "compaction
+        # returned" (the bridge event loop is free during the
+        # `asyncio.to_thread` await, so tool callbacks can land here while
+        # compaction's own Call B is still running).
+        if self._compaction_in_flight:
+            return
+        cur_turn_id = self.current_turn_id
+        if cur_turn_id is None:
+            return
+
+        def _turn_index(tid: str | None) -> int | None:
+            if not tid or not tid.startswith("turn-"):
+                return None
+            try:
+                return int(tid.split("-", 1)[1])
+            except (ValueError, IndexError):
+                return None
+
+        cur_idx = _turn_index(cur_turn_id)
+        if cur_idx is None:
+            cur_idx = int(self.turn_counter or 0)
+        last_extract_idx = _turn_index(self._last_wm_extract_turn_id)
+        last_compaction_idx = _turn_index(self._last_compaction_turn_id)
+        if (
+            last_extract_idx is not None
+            and (cur_idx - last_extract_idx) < WM_EXTRACT_TURN_DEBOUNCE
+        ):
+            return
+        if (
+            last_compaction_idx is not None
+            and (cur_idx - last_compaction_idx) < WM_EXTRACT_TURN_DEBOUNCE
+        ):
+            return
+
+        # ── Snapshot point-in-time state BEFORE spawning background work ─
+        # Reading these inside the worker thread would race against turns
+        # that land while Call B is in flight — snapshot here.
+        compactor = SummaryCompaction()
+        try:
+            messages = self.session.transcript.get_messages()
+        except Exception:  # noqa: BLE001
+            return
+        if not messages:
+            return
+        try:
+            conversation = compactor._format_conversation(messages)  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            return
+        wm_state: str | None = None
+        try:
+            wm = getattr(self, "working_memory", None)
+            wm_state = wm.render() if wm is not None else None
+        except Exception:  # noqa: BLE001
+            wm_state = None
+        ground_truth = self._ledger_ground_truth()
+        trigger_label = trigger
+        provider = self.provider
+
+        # ── Mark in-flight + emit `working_memory_start` chip ──────────
+        self._wm_extract_in_flight = True
+        try:
+            emit({
+                "type": "system_event",
+                "sessionId": self.id,
+                "subtype": "working_memory_start",
+                "message": "Extracting working memory…",
+                "details": {
+                    "trigger": trigger_label,
+                    "model": getattr(provider, "model_id", "unknown"),
+                    "has_state": bool(wm_state and wm_state.strip()),
+                    "has_ground_truth": bool(
+                        ground_truth and ground_truth.strip()
+                    ),
+                    "conversation_chars": len(conversation),
+                    "chatVisible": True,
+                },
+            })
+        except Exception:  # noqa: BLE001
+            pass
+
+        stats: dict[str, Any] = {}
+        wm_result: dict[str, Any] | None = None
+        try:
+            # `_extract_working_memory` calls `asyncio.run` internally, so
+            # it must run in a worker thread (forbidden inside a live
+            # event loop). `asyncio.to_thread` mirrors the manual + auto
+            # compaction paths.
+            wm_result = await asyncio.to_thread(
+                compactor._extract_working_memory,  # noqa: SLF001
+                conversation,
+                provider,
+                working_memory_state=wm_state,
+                ground_truth=ground_truth,
+                stats_out=stats,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("debug", f"mid-session wm extract failed: {exc}")
+            stats.setdefault("status", "failed")
+            stats.setdefault("error", f"{type(exc).__name__}: {exc}"[:500])
+        finally:
+            self._wm_extract_in_flight = False
+            self._last_wm_extract_turn_id = cur_turn_id
+
+        # ── Apply via the existing sink ────────────────────────────────
+        try:
+            self._apply_wm_upserts(wm_result)
+        except Exception:  # noqa: BLE001
+            log("debug", "mid-session wm apply failed")
+
+        # ── Emit `working_memory_complete` chip (same shape as manual) ─
+        try:
+            status = str(
+                stats.get("status")
+                or ("ok" if wm_result is not None else "failed")
+            )
+            in_tok = int(stats.get("input_tokens", 0) or 0)
+            out_tok = int(stats.get("output_tokens", 0) or 0)
+            dur_ms = int(stats.get("duration_ms", 0) or 0)
+            if status == "ok":
+                headline = (
+                    "Working memory extracted "
+                    f"({in_tok:,} in → {out_tok:,} out, "
+                    f"{dur_ms / 1000:.1f}s)"
+                )
+            else:
+                headline = (
+                    "Working memory extraction failed: "
+                    f"{stats.get('error') or 'unknown'}"
+                )
+            emit({
+                "type": "system_event",
+                "sessionId": self.id,
+                "subtype": "working_memory_complete",
+                "message": headline,
+                "details": {
+                    "trigger": trigger_label,
+                    "status": status,
+                    "model": stats.get("model"),
+                    "input_tokens": in_tok,
+                    "output_tokens": out_tok,
+                    "duration_ms": dur_ms,
+                    "cost_usd": stats.get("cost_usd"),
+                    "error": stats.get("error"),
+                    "raw_output": stats.get("raw_output"),
+                    "chatVisible": True,
+                },
+            })
+        except Exception:  # noqa: BLE001
+            pass
+
+        # ── Cost attribution: forward to runner.on_llm_call so the call
+        # shows in the dashboard tagged as working_memory_extraction
+        # (same treatment as the manual + auto compaction paths).
+        try:
+            if (
+                self.runner is not None
+                and getattr(self.runner, "on_llm_call", None) is not None
+                and stats.get("status") == "ok"
+            ):
+                self.runner.on_llm_call({
+                    "provider": stats.get("provider", "unknown"),
+                    "model": stats.get("model", "unknown"),
+                    "duration_ms": stats.get("duration_ms", 0),
+                    "streaming": False,
+                    "input_tokens": stats.get("input_tokens", 0),
+                    "output_tokens": stats.get("output_tokens", 0),
+                    "cache_read_tokens": stats.get("cache_read_tokens", 0),
+                    "cache_write_tokens": stats.get("cache_write_tokens", 0),
+                    "reasoning_tokens": 0,
+                    "stop_reason": "end_turn",
+                    "tool_calls": 0,
+                    "thinking_blocks": 0,
+                    "error": None,
+                    "call_kind": "working_memory_extraction",
+                    "iterative": False,
+                })
+        except Exception:  # noqa: BLE001
+            pass
+
     def _refresh_wm_artifacts_from_ledger(self, wm: Any) -> None:
         """Deterministic floor: reflect the action ledger's file effects into
         the active workstream as artifact_notes, so the files the agent changed
@@ -9154,6 +9489,19 @@ class _BridgeSession:
         try:
             emit(event)
         except Exception:
+            pass
+        # Track in-progress compaction for the agent-driven
+        # (summarize_context tool) path. Without this, a session_memory
+        # mutation that lands while the tool's compactor is running could
+        # fire a duplicate Call B concurrently with the one the tool is
+        # running internally.
+        try:
+            subtype = event.get("subtype")
+            if subtype == "compaction_start":
+                self._compaction_in_flight = True
+            elif subtype in ("compaction_complete", "compaction_skipped"):
+                self._compaction_in_flight = False
+        except Exception:  # noqa: BLE001
             pass
         # If this is a compaction system_event, mirror to the existing
         # telemetry path so the dashboard's trigger/savings surfaces

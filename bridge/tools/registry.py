@@ -90,6 +90,7 @@ def build_desktop_registry(
     project_output_dir: Path | str | None = None,
     artifact_store: Any | None = None,
     on_memory_updated: Any | None = None,
+    on_session_memory_mutation: Any | None = None,
     on_skill_event: Any | None = None,
     summarize_context_session_getter: Any | None = None,
     summarize_context_provider_getter: Any | None = None,
@@ -186,7 +187,21 @@ def build_desktop_registry(
         )
     )
     if _mem_session:
-        tools.append(SessionMemoryTool(session_id=_mem_session))
+        # `on_mutation` (write|append|clear) is the bridge's hook for
+        # firing a mid-session working-memory extraction (Call B) — the
+        # agent reliably writes to session_memory, but rarely calls the
+        # working_memory tool directly, so session_memory writes are the
+        # natural "consolidate now" signal. The callback runs on the
+        # bridge event loop today (the tool awaits its executor first,
+        # then fires the hook), but the bridge wraps it with
+        # `call_soon_threadsafe` defensively so future call sites on a
+        # worker thread still hand off to the loop correctly.
+        tools.append(
+            SessionMemoryTool(
+                session_id=_mem_session,
+                on_mutation=on_session_memory_mutation,
+            )
+        )
     tools.append(
         MemoryTool(
             workspace=workspace_path,

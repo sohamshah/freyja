@@ -333,3 +333,276 @@ def test_apply_upserts_empty_is_noop(tmp_path):
     wm = _mk(tmp_path)
     assert apply_working_memory_upserts(wm, []) == 0
     assert wm.is_empty()
+
+
+# ── mid-session WM trigger primitive (_trigger_wm_extract) ──────────────────
+#
+# These tests drive the trigger directly against a stub that exposes the
+# attributes _BridgeSession._trigger_wm_extract reads. The point is to pin
+# the debounce / in-flight / sink / event-emit contract WITHOUT booting a
+# full bridge runtime — that surface is exercised separately by the
+# session_memory tool tests + manual smoke.
+
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from bridge import freyja_bridge as fb
+
+
+class _StubSession:
+    """Minimum surface _trigger_wm_extract reads: transcript.get_messages."""
+
+    def __init__(self, messages):
+        self.transcript = SimpleNamespace(get_messages=lambda: messages)
+
+
+class _StubProvider:
+    name = "stub"
+    model_id = "stub-model"
+
+    def complete_structured(self, *_args, **_kwargs):  # pragma: no cover
+        raise NotImplementedError("never called in these tests")
+
+
+class _StubRunner:
+    def __init__(self):
+        self.calls = []
+        self.on_llm_call = self.calls.append
+
+
+def _make_stub(
+    *,
+    current_turn_id="turn-5",
+    last_extract="turn-1",
+    last_compaction=None,
+    in_flight=False,
+    compaction_in_flight=False,
+    has_messages=True,
+):
+    """Build the duck-typed object the unbound _trigger_wm_extract method
+    can be invoked against. Mirrors the real _BridgeSession surface only
+    for the fields the method touches — every other field stays absent
+    deliberately so we catch attribute drift if the implementation
+    grows quietly."""
+    messages = [SimpleNamespace(role="user", content="hi", tool_calls=None)] if has_messages else []
+    stub = SimpleNamespace(
+        id="sess-1",
+        current_turn_id=current_turn_id,
+        turn_counter=int(current_turn_id.split("-", 1)[1]) if current_turn_id else 0,
+        _last_wm_extract_turn_id=last_extract,
+        _last_compaction_turn_id=last_compaction,
+        _wm_extract_in_flight=in_flight,
+        _compaction_in_flight=compaction_in_flight,
+        session=_StubSession(messages),
+        provider=_StubProvider(),
+        runner=_StubRunner(),
+        working_memory=None,
+        applied=[],
+    )
+    # The real method calls these as bound methods on self; bind them.
+    stub._ledger_ground_truth = lambda: None
+    stub._apply_wm_upserts = lambda result: stub.applied.append(result)
+    return stub
+
+
+async def test_trigger_debounce_blocks_within_n_turns():
+    # turn-5 with last extraction at turn-4 → gap=1 < WM_EXTRACT_TURN_DEBOUNCE(3)
+    stub = _make_stub(current_turn_id="turn-5", last_extract="turn-4")
+    emitted: list[dict] = []
+    with patch.object(fb, "emit", side_effect=emitted.append), patch.object(
+        SummaryCompaction, "_extract_working_memory"
+    ) as extract:
+        await fb._BridgeSession._trigger_wm_extract(stub, "test")
+    extract.assert_not_called()
+    assert stub.applied == []  # sink untouched
+    assert emitted == []  # no start/complete chips
+
+
+async def test_trigger_in_flight_flag_prevents_reentry():
+    stub = _make_stub(in_flight=True)
+    with patch.object(SummaryCompaction, "_extract_working_memory") as extract:
+        await fb._BridgeSession._trigger_wm_extract(stub, "test")
+    extract.assert_not_called()
+    # Now clear the flag and ensure the debounce-satisfied call DOES run.
+    stub._wm_extract_in_flight = False
+    stub._last_wm_extract_turn_id = None  # remove debounce as the source
+    emitted: list[dict] = []
+    with patch.object(fb, "emit", side_effect=emitted.append), patch.object(
+        SummaryCompaction,
+        "_extract_working_memory",
+        return_value={"summary": "s", "actions_completed": [], "entities": []},
+    ) as extract2:
+        await fb._BridgeSession._trigger_wm_extract(stub, "test")
+    extract2.assert_called_once()
+
+
+async def test_trigger_skips_if_recent_compaction():
+    stub = _make_stub(
+        current_turn_id="turn-10",
+        last_extract=None,
+        last_compaction="turn-9",  # gap=1 < 3
+    )
+    with patch.object(fb, "emit"), patch.object(
+        SummaryCompaction, "_extract_working_memory"
+    ) as extract:
+        await fb._BridgeSession._trigger_wm_extract(stub, "test")
+    extract.assert_not_called()
+
+
+async def test_trigger_skips_if_compaction_in_flight():
+    """A session_memory mutation that lands while compaction is RUNNING
+    (not just recently finished) must not fire Call B — compaction is
+    already running its own internal Call B and a duplicate concurrent
+    extraction would race on the same transcript snapshot."""
+    stub = _make_stub(
+        current_turn_id="turn-10",
+        last_extract=None,
+        last_compaction=None,  # nothing recent — only the in-flight flag should block
+        compaction_in_flight=True,
+    )
+    with patch.object(fb, "emit"), patch.object(
+        SummaryCompaction, "_extract_working_memory"
+    ) as extract:
+        await fb._BridgeSession._trigger_wm_extract(stub, "test")
+    extract.assert_not_called()
+
+
+async def test_trigger_fires_when_debounce_satisfied():
+    # turn-5 last extracted at turn-1 → gap=4 ≥ 3; no recent compaction.
+    stub = _make_stub(
+        current_turn_id="turn-5",
+        last_extract="turn-1",
+        last_compaction=None,
+    )
+    wm_result = {
+        "summary": "did stuff",
+        "actions_completed": ["a"],
+        "entities": [],
+    }
+
+    def _fake_extract(self, _conv, _provider, **kwargs):
+        # Populate stats_out the way the real Call B does, so the trigger
+        # can emit the `_complete` chip with sensible metadata + forward
+        # to runner.on_llm_call.
+        stats = kwargs.get("stats_out")
+        if stats is not None:
+            stats.update({
+                "status": "ok",
+                "provider": "stub",
+                "model": "stub-model",
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "duration_ms": 42,
+                "cost_usd": 0.0,
+                "raw_output": "{}",
+            })
+        return wm_result
+
+    emitted: list[dict] = []
+    with patch.object(fb, "emit", side_effect=emitted.append), patch.object(
+        SummaryCompaction, "_extract_working_memory", new=_fake_extract
+    ):
+        await fb._BridgeSession._trigger_wm_extract(stub, "session_memory:write")
+
+    # Sink got the structured result.
+    assert stub.applied == [wm_result]
+    # Anchor turn advanced so subsequent triggers within the window get debounced.
+    assert stub._last_wm_extract_turn_id == "turn-5"
+    # in-flight flag cleared.
+    assert stub._wm_extract_in_flight is False
+    # Both lifecycle chips emitted, in order, with the trigger label
+    # stamped. Filter to system_event records — `log()` debug lines
+    # also route through `emit` and are not part of this contract.
+    sys_events = [e for e in emitted if e.get("type") == "system_event"]
+    subtypes = [e["subtype"] for e in sys_events]
+    assert subtypes == ["working_memory_start", "working_memory_complete"]
+    for e in sys_events:
+        assert e["details"]["trigger"] == "session_memory:write"
+    # Runner saw the spend tagged as the extraction kind.
+    runner_calls = stub.runner.calls
+    assert len(runner_calls) == 1
+    assert runner_calls[0]["call_kind"] == "working_memory_extraction"
+    assert runner_calls[0]["input_tokens"] == 10
+    assert runner_calls[0]["output_tokens"] == 5
+
+
+async def test_trigger_resets_in_flight_on_exception():
+    stub = _make_stub(
+        current_turn_id="turn-5",
+        last_extract="turn-1",
+        last_compaction=None,
+    )
+
+    def _boom(self, _conv, _provider, **_kwargs):
+        raise RuntimeError("network ded")
+
+    emitted: list[dict] = []
+    with patch.object(fb, "emit", side_effect=emitted.append), patch.object(
+        SummaryCompaction, "_extract_working_memory", new=_boom
+    ):
+        await fb._BridgeSession._trigger_wm_extract(stub, "test")
+
+    # Flag MUST clear even on failure — otherwise the next trigger is
+    # permanently locked out.
+    assert stub._wm_extract_in_flight is False
+    # And the user-visible `_complete` chip still fires (with status=failed)
+    # so the operator sees a definite resolution, not a phantom start.
+    # (Filter to system_event records; the bridge's `log()` helper also
+    # routes through `emit` for debug lines.)
+    sys_events = [e for e in emitted if e.get("type") == "system_event"]
+    subtypes = [e["subtype"] for e in sys_events]
+    assert subtypes == ["working_memory_start", "working_memory_complete"]
+    assert sys_events[1]["details"]["status"] == "failed"
+    assert sys_events[1]["details"]["error"]
+
+
+async def test_trigger_emits_trigger_label_in_details():
+    stub = _make_stub(
+        current_turn_id="turn-5",
+        last_extract="turn-1",
+        last_compaction=None,
+    )
+
+    def _ok(self, _conv, _provider, **kwargs):
+        stats = kwargs.get("stats_out")
+        if stats is not None:
+            stats["status"] = "ok"
+        return {"summary": "", "actions_completed": [], "entities": []}
+
+    emitted: list[dict] = []
+    with patch.object(fb, "emit", side_effect=emitted.append), patch.object(
+        SummaryCompaction, "_extract_working_memory", new=_ok
+    ):
+        await fb._BridgeSession._trigger_wm_extract(
+            stub, "session_memory:append"
+        )
+
+    sys_events = [e for e in emitted if e.get("type") == "system_event"]
+    assert [e["details"]["trigger"] for e in sys_events] == [
+        "session_memory:append",
+        "session_memory:append",
+    ]
+
+
+async def test_trigger_skips_when_no_messages():
+    """Empty transcripts have nothing to consolidate — silent skip, no chip."""
+    stub = _make_stub(has_messages=True)
+    stub.session = _StubSession([])
+    emitted: list[dict] = []
+    with patch.object(fb, "emit", side_effect=emitted.append), patch.object(
+        SummaryCompaction, "_extract_working_memory"
+    ) as extract:
+        await fb._BridgeSession._trigger_wm_extract(stub, "test")
+    extract.assert_not_called()
+    assert emitted == []
+
+
+async def test_trigger_skips_when_runner_missing():
+    """Pre-initialize() the bridge has no runner — must no-op silently."""
+    stub = _make_stub()
+    stub.runner = None
+    with patch.object(SummaryCompaction, "_extract_working_memory") as extract:
+        await fb._BridgeSession._trigger_wm_extract(stub, "test")
+    extract.assert_not_called()
