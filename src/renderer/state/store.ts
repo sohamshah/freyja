@@ -1589,6 +1589,16 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
       if (ev.subtype === 'system_prompt_set' && ev.details?.systemPrompt) {
         next.systemPrompt = ev.details.systemPrompt as string
       }
+      // The bridge stamps the session's real coordination strategy on this
+      // event. For Slack/gateway sessions whose mode was set via an inline
+      // `--mode` flag (not the desktop picker), this is the only signal the
+      // desktop gets — without applying it the mode badge stays at the 'bus'
+      // default even though the session ran as goal/kanban.
+      if (ev.subtype === 'system_prompt_set' && typeof ev.details?.coordinationStrategy === 'string') {
+        next.coordinationStrategy = normalizeCoordinationStrategy(
+          ev.details.coordinationStrategy as string,
+        )
+      }
       // Harness sessions: stamp the harness-allocated sessionId onto
       // the slice so the next save round-trips it through the sidecar
       // (renderer-side resume relies on the persisted id being there

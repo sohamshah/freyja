@@ -4373,6 +4373,12 @@ class _BridgeSession:
             # Stash the model id so cross-provider detection works on restore.
             data.setdefault("metadata", {})["model_id"] = self.model_id
             data.setdefault("metadata", {})["reasoning_level"] = self.reasoning_level
+            # Stash the coordination strategy too, so the desktop's
+            # transcript-reconstruction path (persistence.ts → synthesize) shows
+            # the real mode. Without this it falls back to 'bus' even for a
+            # session that ran as goal/kanban — notably Slack sessions whose
+            # mode was set via an inline `--mode` flag rather than the UI.
+            data.setdefault("metadata", {})["coordination_strategy"] = self.coordination_strategy
             save_transcript(self.id, data)
         except Exception as exc:
             log("warn", f"failed to save transcript for {self.id}: {exc}")
