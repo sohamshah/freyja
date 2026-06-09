@@ -407,6 +407,79 @@ D3 7.8.5 + topojson 3.0.2, Mermaid 11 via esm.sh, Three.js r128.
 """
 
 
+_SPEC_EQUATION = """\
+## Module: equation (showcase LaTeX with KaTeX)
+
+Inline math in normal prose already renders automatically — just write
+`$\\pi_\\theta$` or `$$…$$` in your chat reply and the markdown layer
+typesets it. Use a **widget** only when an equation deserves to be a
+standalone, framed artifact: a key result, a derivation, or a formula
+whose symbols you want to break down term by term (the "read the
+pieces" explainer pattern).
+
+The runtime auto-loads KaTeX when your fragment contains `$$`, `$`,
+`\\(`, `\\[`, or an `.eqn` card, and auto-renders every delimiter after
+mount. You write raw TeX — no JS, no manual render call.
+
+### Delimiters
+
+  $$ … $$   display (centered block)
+  \\[ … \\]   display
+  $ … $     inline
+  \\( … \\)   inline
+
+### Equation card
+
+    <div class="eqn">
+      <div class="eqn-title">
+        <i class="ti ti-math-function" aria-hidden="true"></i>
+        <span>Autoregressive policy</span>
+      </div>
+      <div class="eqn-main">
+        $$\\pi_\\theta(y \\mid x) = \\prod_{t=1}^{|y|} \\pi_\\theta(y_t \\mid x, y_{\\lt t})$$
+      </div>
+      <p class="eqn-note">The chain rule of probability, applied left to right.</p>
+      <div class="eqn-terms">
+        <div class="eqn-term">
+          <div class="eqn-term-sym">$\\theta$</div>
+          <div class="eqn-term-def">The model's parameters — the weights you train.</div>
+        </div>
+        <div class="eqn-term">
+          <div class="eqn-term-sym">$y_{\\lt t}$</div>
+          <div class="eqn-term-def">Everything before step <code>t</code> — the prefix so far.</div>
+        </div>
+        <div class="eqn-term">
+          <div class="eqn-term-sym">$\\pi_\\theta(y_t \\mid x, y_{\\lt t})$</div>
+          <div class="eqn-term-def">The next-token distribution: a softmax over the vocabulary.</div>
+        </div>
+      </div>
+        </div>
+      </div>
+    </div>
+
+`.eqn-title` (with a Tabler icon) and `.eqn-note` / `.eqn-terms` are all
+optional — a bare `.eqn` with just an `.eqn-main` is a clean framed
+formula. The term breakdown reads symbol-on-the-left, gloss-on-the-right;
+keep glosses to one short sentence and wrap literal token names in
+`<code>`.
+
+### Constraints
+
+- **Never put a literal `<` or `>` inside widget TeX.** The browser parses
+  `y_{<t}` as an HTML tag and corrupts the widget before KaTeX runs. Write
+  `\\lt`, `\\gt`, `\\leq`, `\\geq` instead (`y_{\\lt t}`), and use `\\mid`
+  for the conditioning bar. This applies ONLY to widget markup — inline
+  prose math in a normal reply handles `<`/`>` fine.
+- Escape backslashes for the tool call as usual (`\\pi`, `\\theta`,
+  `\\prod`) — what reaches the widget must be valid TeX.
+- KaTeX (not full LaTeX): supported macros are the standard math set.
+  Avoid `\\usepackage`, `\\begin{document}`, tikz, or text-mode layout.
+- Malformed TeX renders in a soft error color instead of throwing — it
+  won't break the rest of the widget, but check your output.
+- Don't wrap `$$` inside `<pre>`/`<code>` — those tags are skipped by
+  the auto-renderer (so you can still show TeX *source* if you want).
+"""
+
 _SPEC_FOOTER = """\
 ## Cheat sheet
 
@@ -435,12 +508,15 @@ _MODULE_SECTIONS: dict[str, str] = {
     "chart": _SPEC_PATTERNS,
     "art": _SPEC_PATTERNS,
     "elicitation": _SPEC_ELICITATION,
+    "equation": _SPEC_EQUATION,
 }
 
 
 def _compile_spec(modules: list[str] | None) -> str:
     if not modules:
-        return "\n\n".join([_SPEC_HEADER, _SPEC_ELICITATION, _SPEC_PATTERNS, _SPEC_FOOTER])
+        return "\n\n".join(
+            [_SPEC_HEADER, _SPEC_ELICITATION, _SPEC_PATTERNS, _SPEC_EQUATION, _SPEC_FOOTER]
+        )
     seen: set[str] = set()
     chunks = [_SPEC_HEADER]
     for m in modules:
@@ -495,6 +571,7 @@ class ReadWidgetSpecTool:
                                 "chart",
                                 "art",
                                 "elicitation",
+                                "equation",
                             ],
                         },
                         "description": (
@@ -544,7 +621,9 @@ class ShowWidgetTool:
                 ".elicit-* form chrome auto-wires selection, multi-select, Other "
                 "reveal, and submit — no <script> needed inside elicitation forms.\n\n"
                 "Use this for dashboards (metric grids), structured input forms "
-                "(elicitations), diagrams, mockups, charts, and small illustrations. "
+                "(elicitations), diagrams, mockups, charts, small illustrations, and "
+                "showcase LaTeX equations (KaTeX, via the `equation` module — note "
+                "inline math in normal prose already renders without a widget). "
                 "Call `widget_spec` first so your fragment respects the runtime "
                 "contract.\n\n"
                 "`widget_code` is a FRAGMENT — no <!doctype>, <html>, <head>, or "

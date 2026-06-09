@@ -39,6 +39,17 @@ export interface WidgetBuildOptions {
 export function buildWidgetHtml(opts: WidgetBuildOptions): string {
   const safeTitle = escapeHtml(opts.title || 'widget')
   const body = opts.kind === 'svg' ? wrapSvgFragment(opts.code) : opts.code
+  // Only pull in KaTeX (≈300KB across css+js) when the fragment actually
+  // contains math — detected by a display/inline delimiter or an explicit
+  // `.eqn` equation card. Keeps plain dashboards/diagrams lean.
+  const needsMath = /\$\$|\\\(|\\\[|class=["']?[^"']*\beqn\b/.test(opts.code)
+  const mathHead = needsMath
+    ? [
+        `<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">`,
+        `<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>`,
+        `<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" onload="window.__freyjaRenderMath&&window.__freyjaRenderMath()"></script>`,
+      ].join('\n')
+    : ''
   return [
     '<!doctype html>',
     // color-scheme declared on <html> tells Chromium this document is
@@ -53,6 +64,7 @@ export function buildWidgetHtml(opts: WidgetBuildOptions): string {
     `<title>${safeTitle}</title>`,
     '<meta name="viewport" content="width=device-width, initial-scale=1" />',
     `<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.44.0/dist/tabler-icons.min.css">`,
+    mathHead,
     `<style>${RUNTIME_CSS}</style>`,
     '</head>',
     '<body>',
@@ -302,6 +314,79 @@ button:hover {
   border: 2px solid var(--color-border-info);
 }
 
+/* ============== Equation card (.eqn) ============== */
+/* A framed display equation with optional annotated term breakdown —
+ * the showcase counterpart to inline prose math. KaTeX is auto-rendered
+ * by the runtime; author writes $$…$$ / $…$ directly in the markup. */
+.eqn {
+  background: var(--color-background-secondary);
+  border: 1px solid var(--color-border-secondary);
+  border-radius: var(--border-radius-lg);
+  overflow: hidden;
+}
+.eqn-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--color-border-tertiary);
+  background: var(--color-background-tertiary);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary);
+}
+.eqn-title i { font-size: 14px; color: var(--color-text-info); }
+.eqn-main {
+  padding: 18px 16px;
+  text-align: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.eqn-main .katex-display { margin: 0; }
+.eqn-main .katex { font-size: 1.18em; color: var(--color-text-primary); }
+.eqn-note {
+  padding: 0 16px 14px;
+  margin: 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+/* Annotated term breakdown — each row pairs a rendered symbol with a
+ * plain-English gloss, mirroring the "read the pieces" explainer. */
+.eqn-terms {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border-top: 1px solid var(--color-border-tertiary);
+  background: var(--color-border-tertiary);
+}
+.eqn-term {
+  display: grid;
+  grid-template-columns: minmax(72px, max-content) 1fr;
+  gap: 14px;
+  align-items: baseline;
+  padding: 10px 16px;
+  background: var(--color-background-secondary);
+}
+.eqn-term-sym {
+  font-size: 1.02em;
+  color: var(--color-text-primary);
+  text-align: right;
+  white-space: nowrap;
+}
+.eqn-term-sym .katex { font-size: 1em; }
+.eqn-term-def {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+  text-align: left;
+}
+.eqn-term-def code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  color: var(--color-text-info);
+}
 /* ============== SVG classes ============== */
 text.t  { font: 14px var(--font-sans); fill: var(--color-text-primary); }
 text.ts { font: 12px var(--font-sans); fill: var(--color-text-secondary); }
@@ -668,11 +753,35 @@ const RUNTIME_JS = String.raw`
   var mo = new MutationObserver(reportHeight);
   mo.observe(document.body, { childList: true, subtree: true, attributes: true, characterData: true });
 
+  // KaTeX auto-render. The katex + auto-render scripts are injected into
+  // <head> (with defer) only when the fragment contains math; once the
+  // contrib script loads it calls window.__freyjaRenderMath. We also call
+  // it from boot in case the scripts resolved before boot ran.
+  window.__freyjaRenderMath = function(){
+    if (typeof window.renderMathInElement !== 'function') return;
+    var root = document.getElementById('freyja-widget-root');
+    if (!root) return;
+    try {
+      window.renderMathInElement(root, {
+        delimiters: [
+          { left: '$$', right: '$$', display: true },
+          { left: '\\[', right: '\\]', display: true },
+          { left: '$', right: '$', display: false },
+          { left: '\\(', right: '\\)', display: false }
+        ],
+        throwOnError: false,
+        ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+      });
+    } catch (e) {}
+    reportHeight();
+  };
+
   // Initial pass — wire any elicit forms that streamed in pre-load,
-  // attach range readouts, and signal ready.
+  // attach range readouts, render math, and signal ready.
   function boot(){
     document.querySelectorAll('.elicit').forEach(attachElicit);
     attachRangeReadouts();
+    window.__freyjaRenderMath();
     reportHeight();
     post('ui/ready', {});
   }

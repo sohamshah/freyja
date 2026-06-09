@@ -8,8 +8,11 @@
 //   - Blockquotes
 //   - Horizontal rules (---, ***, ___)
 //   - GitHub-flavored tables with alignment
+//   - LaTeX math via KaTeX: inline $…$ / \(…\) and display $$…$$ / \[…\]
 //
 // All HTML is escaped before inline processing.
+
+import katex from 'katex'
 
 const ESCAPE_MAP: Record<string, string> = {
   '&': '&amp;',
@@ -21,6 +24,102 @@ const ESCAPE_MAP: Record<string, string> = {
 
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ESCAPE_MAP[c] ?? c)
+}
+
+// ── Math (KaTeX) ───────────────────────────────────────────────────────────
+// Math is extracted from the raw source into sentinel placeholders BEFORE any
+// markdown/escaping runs, so `_`, `^`, `\`, `*`, `<`, `&` inside TeX are never
+// mangled by the inline-styling or HTML-escaping passes. The rendered KaTeX
+// HTML is spliced back in as the very last step.
+//
+// Streaming-safe by construction: every delimiter regex REQUIRES its closing
+// token, so a half-streamed `$$\pi` simply doesn't match and stays as literal
+// text until the closing `$$` arrives — no flicker, no thrown errors mid-token.
+//
+// Sentinels use NUL bytes (never present in model output) so they can't
+// collide with real content and survive line-splitting + paragraph joins.
+const MATH_INLINE_SENTINEL = (n: number) => `\u0000MATHI${n}\u0000`
+const MATH_DISPLAY_SENTINEL = (n: number) => `\u0000MATHD${n}\u0000`
+
+function renderTex(tex: string, displayMode: boolean): string {
+  try {
+    return katex.renderToString(tex.trim(), {
+      displayMode,
+      throwOnError: false,
+      output: 'htmlAndMathml',
+      strict: false,
+      trust: false,
+    })
+  } catch {
+    // throwOnError:false already handles parse errors; this only fires on
+    // truly unexpected failures. Fall back to the raw source as plain text.
+    const wrap = displayMode ? 'div' : 'span'
+    return `<${wrap} class="math-fallback">${esc(tex)}</${wrap}>`
+  }
+}
+
+interface MathStore {
+  inline: string[]
+  display: string[]
+}
+
+/** Pull every math span out of the raw source, replacing each with a
+ *  sentinel. Display delimiters are matched first so a `$$` block isn't
+ *  shredded by the inline `$` rule. Returns the rewritten source plus the
+ *  rendered-HTML store keyed by sentinel index. */
+function protectMath(src: string): { text: string; store: MathStore } {
+  const store: MathStore = { inline: [], display: [] }
+  let out = src
+
+  // Display: $$…$$ and \[…\] (may span multiple lines).
+  out = out.replace(/\$\$([\s\S]+?)\$\$/g, (_m, body) => {
+    store.display.push(renderTex(body, true))
+    return MATH_DISPLAY_SENTINEL(store.display.length - 1)
+  })
+  out = out.replace(/\\\[([\s\S]+?)\\\]/g, (_m, body) => {
+    store.display.push(renderTex(body, true))
+    return MATH_DISPLAY_SENTINEL(store.display.length - 1)
+  })
+
+  // Inline: \(…\) — unambiguous, no currency confusion.
+  out = out.replace(/\\\(([\s\S]+?)\\\)/g, (_m, body) => {
+    store.inline.push(renderTex(body, false))
+    return MATH_INLINE_SENTINEL(store.inline.length - 1)
+  })
+
+  // Inline: $…$ — guarded against currency ("$5 and $10"). The opener may
+  // not be preceded by `$`/`\`, no whitespace may hug either delimiter, and
+  // a closing `$` may not be immediately followed by a digit. Backslash
+  // escapes inside the body are allowed (\$, \%, etc.).
+  out = out.replace(
+    /(?<![\\$])\$(?!\s)((?:\\.|[^$\\\n])+?)(?<!\s)\$(?!\d)/g,
+    (_m, body) => {
+      store.inline.push(renderTex(body, false))
+      return MATH_INLINE_SENTINEL(store.inline.length - 1)
+    },
+  )
+
+  return { text: out, store }
+}
+
+/** Splice rendered KaTeX back into the final HTML. Display sentinels that
+ *  ended up wrapped in their own `<p>` are unwrapped so the block-level
+ *  `.katex-display` isn't nested inside a paragraph. */
+function restoreMath(html: string, store: MathStore): string {
+  let out = html
+  out = out.replace(
+    /<p>\u0000MATHD(\d+)\u0000<\/p>/g,
+    (_m, idx) => store.display[+idx] ?? '',
+  )
+  out = out.replace(
+    /\u0000MATHD(\d+)\u0000/g,
+    (_m, idx) => store.display[+idx] ?? '',
+  )
+  out = out.replace(
+    /\u0000MATHI(\d+)\u0000/g,
+    (_m, idx) => store.inline[+idx] ?? '',
+  )
+  return out
 }
 
 /**
@@ -114,7 +213,8 @@ function splitRow(line: string): string[] {
 
 export function renderMarkdown(src: string): string {
   if (!src) return ''
-  const lines = src.replace(/\r\n/g, '\n').split('\n')
+  const { text: protectedSrc, store: mathStore } = protectMath(src)
+  const lines = protectedSrc.replace(/\r\n/g, '\n').split('\n')
   const out: string[] = []
   let i = 0
   let inList = false
@@ -277,5 +377,5 @@ export function renderMarkdown(src: string): string {
   }
 
   closeList()
-  return out.filter(Boolean).join('\n')
+  return restoreMath(out.filter(Boolean).join('\n'), mathStore)
 }

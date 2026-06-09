@@ -542,6 +542,63 @@ select {
   display: block;
   white-space: pre;
 }
+
+/* ── KaTeX math ──────────────────────────────────────────────────────────
+   Math keeps KaTeX's own typeface (correct mathematical typography) but is
+   tuned to sit naturally inside Freyja's mono-first dark prose: inline math
+   inherits the prose color and optical size; display math gets a quiet
+   panel echoing .md pre, with horizontal overflow for wide expressions. */
+.md .katex {
+  font-size: 1.05em;
+  color: #ececec;
+  line-height: 1.2;
+}
+.md .katex .mord,
+.md .katex .mbin,
+.md .katex .mrel,
+.md .katex .mopen,
+.md .katex .mclose,
+.md .katex .mpunct,
+.md .katex .minner {
+  color: inherit;
+}
+/* Inline math nestles into the sentence — no pill, just a hair of breathing
+   room so subscripts/superscripts don't crowd adjacent words. */
+.md .katex:not(.katex-display .katex) {
+  padding: 0 0.05em;
+}
+.md .katex-display {
+  margin: 1em 0;
+  padding: 14px 18px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.28);
+  box-shadow:
+    inset 0 0.5px 0 0 rgba(255, 255, 255, 0.06),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.04),
+    0 2px 8px -2px rgba(0, 0, 0, 0.22);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.md .katex-display > .katex {
+  color: #f0f0f0;
+  font-size: 1.12em;
+  text-align: center;
+  white-space: nowrap;
+}
+/* KaTeX renders an invisible MathML copy for a11y; never let it paint. */
+.md .katex .katex-mathml {
+  position: absolute;
+  clip: rect(1px, 1px, 1px, 1px);
+  padding: 0;
+  border: 0;
+  height: 1px;
+  width: 1px;
+  overflow: hidden;
+}
+.md .math-fallback {
+  font-family: var(--font-code);
+  color: var(--accent-hi, #c4e0fc);
+}
 .md a {
   color: #a8d4fc;
   text-decoration: underline;
