@@ -125,6 +125,25 @@ INLINE_SYSTEM_MESSAGE_MODELS = {
     "claude-opus-4-8",
 }
 
+# Models that REJECT forced tool_choice ({"type":"tool"} / {"type":"any"}) with
+# a 400 "tool_choice forces tool use is not compatible with this model." Their
+# always-on (Mythos-class) reasoning makes forced tool use incompatible even
+# when the request omits the thinking param. Verified empirically against the
+# live API (2026-06): claude-fable-5 rejects both forced modes but reliably
+# calls a single tool under tool_choice:"auto"; opus-4-8/4-7, sonnet-4-6, and
+# haiku-4-5 all accept forced tool use. complete_structured falls back to
+# "auto" for these; the retry-on-400 path covers any future model not listed.
+FORCED_TOOL_CHOICE_UNSUPPORTED_MODELS = {
+    "claude-fable-5",
+}
+
+
+def _model_rejects_forced_tool_choice(model: str) -> bool:
+    """True if `model` 400s on forced tool_choice (substring match tolerates a
+    dated/`-fast` suffix on the model id)."""
+    m = (model or "").lower()
+    return any(base in m for base in FORCED_TOOL_CHOICE_UNSUPPORTED_MODELS)
+
 # Model speed tiers for user selection
 MODEL_SPEED_TIERS = {
     "fast": "claude-haiku-4-5",       # Fastest, most cost-effective
@@ -392,17 +411,37 @@ class AnthropicProvider:
         # the tool call, not reason about it)
         effective_thinking = thinking or ThinkingConfig(enabled=False)
 
-        try:
-            response = await self.complete_async(
+        async def _call(tool_choice: dict) -> ProviderResponse:
+            return await self.complete_async(
                 messages=messages,
                 tools=[synthetic_tool],
                 system_prompt=system_prompt,
                 max_tokens=max_tokens,
                 thinking=effective_thinking,
-                tool_choice={"type": "tool", "name": schema_name},
+                tool_choice=tool_choice,
             )
-        except ProviderError:
-            raise
+
+        forced_choice = {"type": "tool", "name": schema_name}
+        auto_choice = {"type": "auto"}
+
+        # Some models (e.g. claude-fable-5) 400 on forced tool_choice but call a
+        # single tool reliably under "auto" — skip the doomed forced attempt for
+        # those. For every other model, force the tool call (guarantees the
+        # structured output) and fall back to "auto" only if the model turns out
+        # to reject forced use too (future-proofs the list above).
+        use_forced = not _model_rejects_forced_tool_choice(self._model)
+        try:
+            response = await _call(forced_choice if use_forced else auto_choice)
+        except ProviderError as exc:
+            if use_forced and "forces tool use is not compatible" in str(exc).lower():
+                logger.info(
+                    "complete_structured: %s rejects forced tool_choice; "
+                    "retrying with tool_choice=auto",
+                    self._model,
+                )
+                response = await _call(auto_choice)
+            else:
+                raise
 
         # Raw response logging — debugging structured output failures.
         tool_call_names = (
