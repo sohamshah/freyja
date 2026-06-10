@@ -78,6 +78,27 @@ _EFFORT_TO_THINKING_LEVEL: dict[str, str] = {
 }
 
 
+# Gemini reasoning models that REJECT thinking_level=MINIMAL with a 400
+# ("Thinking level MINIMAL is not supported for this model"). Verified live
+# (2026-06): gemini-3.1-pro-preview rejects MINIMAL but accepts LOW/HIGH (and
+# structured output works at LOW); the flash models accept MINIMAL. We map our
+# "disable thinking" / structured-output intent onto each model's lowest
+# SUPPORTED tier, so e.g. the kanban/goal judge synthesis (structured output
+# with thinking off) doesn't 400 when the cross-provider ensemble picks one.
+_MINIMAL_UNSUPPORTED_MODELS: tuple[str, ...] = (
+    "gemini-3.1-pro-preview",
+)
+
+
+def _floor_thinking_level(model: str) -> str:
+    """Lowest thinking tier ``model`` accepts: LOW for reasoning models that
+    reject MINIMAL, else MINIMAL. Substring match tolerates a dated suffix."""
+    m = (model or "").lower()
+    if any(base in m for base in _MINIMAL_UNSUPPORTED_MODELS):
+        return "LOW"
+    return "MINIMAL"
+
+
 @dataclass
 class GoogleConfig:
     """Configuration for the Google Gemini provider."""
@@ -528,16 +549,17 @@ class GoogleProvider:
         from ``enabled`` — set False for ``complete_structured`` where
         thinking content interferes with strict JSON decoding.
         """
+        floor = _floor_thinking_level(self._model)
         if thinking is None:
             if force_include_thoughts is False:
                 return gtypes.ThinkingConfig(
-                    thinking_level="MINIMAL", include_thoughts=False
+                    thinking_level=floor, include_thoughts=False
                 )
             return None
 
         enabled = bool(getattr(thinking, "enabled", False))
         if not enabled:
-            return gtypes.ThinkingConfig(thinking_level="MINIMAL", include_thoughts=False)
+            return gtypes.ThinkingConfig(thinking_level=floor, include_thoughts=False)
 
         effort = str(getattr(thinking, "effort", "high")).lower()
         level = _EFFORT_TO_THINKING_LEVEL.get(effort, "HIGH")
