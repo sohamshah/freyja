@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useContext, useEffect, useMemo, useState } from 'react'
 import { useHarness } from '../state/store'
 import { formatDuration } from '../lib/format'
 import { Spinner } from '../lib/spinner'
 import { useFrameObjectUrl } from '../lib/frameMedia'
 import { FileChangeBadge, FileChangeCard } from './FileChangeCard'
 import { summarizePartialJson, ToolResultImages } from './ToolCallChip'
+import { SearchQueryContext, HighlightText } from './searchContext'
 import type { ToolCallRecord } from '@shared/events'
 
 /**
@@ -110,7 +111,18 @@ function ToolLane({
     summarizeArgs(record.name, record.arguments) ||
     summarizePartialJson(record.name, record.partialJson)
   const hasAnyArgs = record.arguments !== undefined || !!record.partialJson
-  const open = userOpen ?? (isRunning && hasAnyArgs)
+  const argsText =
+    record.arguments !== undefined
+      ? JSON.stringify(record.arguments, null, 2)
+      : record.partialJson ?? ''
+  // Auto-expand when the search query only matches hidden body (args/result).
+  const searchQuery = useContext(SearchQueryContext)
+  const q = searchQuery.trim().toLowerCase()
+  const matchInBody =
+    !!q &&
+    (argsText.toLowerCase().includes(q) ||
+      (record.result ?? '').toLowerCase().includes(q))
+  const open = (userOpen ?? (isRunning && hasAnyArgs)) || matchInBody
   const toolCategory = getToolCategory(record.name)
 
   const statusDot = isRunning ? (
@@ -163,13 +175,13 @@ function ToolLane({
 
         {/* Tool name */}
         <span className="shrink-0 font-mono text-[11px] text-accent">
-          {record.name}
+          <HighlightText text={record.name} query={searchQuery} />
         </span>
 
         {/* Args summary */}
         {summary && (
           <span className="min-w-0 truncate font-mono text-[10.5px] text-fg-2">
-            {summary}
+            <HighlightText text={summary} query={searchQuery} />
           </span>
         )}
 
@@ -263,9 +275,7 @@ function ToolLane({
                 )}
               </div>
               <pre className="max-h-[160px] overflow-auto whitespace-pre-wrap rounded-md bg-black/40 p-2 text-[10.5px] text-fg-0">
-                {record.arguments !== undefined
-                  ? JSON.stringify(record.arguments, null, 2)
-                  : record.partialJson}
+                <HighlightText text={argsText} query={searchQuery} />
               </pre>
             </div>
           )}
@@ -277,7 +287,7 @@ function ToolLane({
               <pre className={`max-h-[200px] overflow-auto whitespace-pre-wrap rounded-md bg-black/40 p-2 text-[10.5px] ${
                 record.isError ? 'text-danger' : 'text-fg-0'
               }`}>
-                {record.result}
+                <HighlightText text={record.result} query={searchQuery} />
               </pre>
             </div>
           )}

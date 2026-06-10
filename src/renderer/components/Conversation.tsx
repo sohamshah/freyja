@@ -9,6 +9,7 @@ import { SubagentCard } from './SubagentCard'
 import { SubagentSwarmGrid } from './SubagentSwarmGrid'
 import { ChildSessionBreadcrumb } from './ChildSessionBreadcrumb'
 import { ConversationSearch } from './ConversationSearch'
+import { SearchQueryContext } from './searchContext'
 import { Spinner } from '../lib/spinner'
 import { highlightHtml, highlightRuns } from '../lib/searchHighlight'
 import { MessageContextMenu, type MessageMenuAction } from './MessageContextMenu'
@@ -37,9 +38,8 @@ type ResultImagesArr = NonNullable<
 >
 const EMPTY_RESULT_IMAGES: ResultImagesArr = []
 
-/** Current search query shared across all conversation parts. Empty
- *  string means "no active search" — no highlights are rendered. */
-const SearchQueryContext = createContext<string>('')
+// `SearchQueryContext` lives in ./searchContext so tool chips can consume it
+// without a circular import; re-exported here for the existing part renderers.
 
 /** Snapshot map of `card_NNN` -> { status, title, assignee } so the
  *  Part renderer can decorate card mentions in parent prose without
@@ -187,6 +187,9 @@ export function Conversation() {
   const [searchQuery, setSearchQuery] = useState('')
   const [activeMatchIdx, setActiveMatchIdx] = useState(0)
   const [totalMatches, setTotalMatches] = useState(0)
+  // Bumped on every ⌘F so the bar re-focuses + selects its text even when it's
+  // already open (press ⌘F again to immediately retype a new query).
+  const [searchFocusNonce, setSearchFocusNonce] = useState(0)
 
   const closeSearch = useCallback(() => {
     setSearchOpen(false)
@@ -195,14 +198,15 @@ export function Conversation() {
     setTotalMatches(0)
   }, [])
 
-  // Global ⌘F / Ctrl+F — open the search bar, or re-focus + select if
-  // it's already open. Esc inside the search input itself closes.
+  // Global ⌘F / Ctrl+F — open the search bar, or (if already open) re-focus the
+  // input and select its contents. Esc inside the input closes (handled there).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey
       if (mod && (e.key === 'f' || e.key === 'F')) {
         e.preventDefault()
         setSearchOpen(true)
+        setSearchFocusNonce((n) => n + 1)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -262,6 +266,23 @@ export function Conversation() {
       totalMatches > 0 ? (prev - 1 + totalMatches) % totalMatches : 0,
     )
   }, [totalMatches])
+
+  // ⌘G / ⌘⇧G (and F3 / ⇧F3) — find-next / find-prev once the bar is open, the
+  // standard "find again" chord, so the operator can navigate without reaching
+  // for Enter or the arrow buttons.
+  useEffect(() => {
+    if (!searchOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey
+      const isFindAgain = (mod && (e.key === 'g' || e.key === 'G')) || e.key === 'F3'
+      if (!isFindAgain) return
+      e.preventDefault()
+      if (e.shiftKey) prevMatch()
+      else nextMatch()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [searchOpen, nextMatch, prevMatch])
 
   const lockScrollUp = useCallback(() => {
     if (scrolledUpRef.current) return
@@ -403,6 +424,7 @@ export function Conversation() {
             onPrev={prevMatch}
             total={totalMatches}
             activeIdx={totalMatches > 0 ? activeMatchIdx : -1}
+            focusNonce={searchFocusNonce}
           />
         )}
         <div ref={scrollerRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden">
@@ -424,6 +446,7 @@ export function Conversation() {
           onPrev={prevMatch}
           total={totalMatches}
           activeIdx={totalMatches > 0 ? activeMatchIdx : -1}
+          focusNonce={searchFocusNonce}
         />
       )}
       <SearchQueryContext.Provider value={searchQuery}>

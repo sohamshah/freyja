@@ -8,6 +8,9 @@ interface Props {
   onPrev: () => void
   total: number
   activeIdx: number // 0-based; -1 when no matches
+  /** Bumped by the parent on every ⌘F so we re-focus + select the input even
+   *  when the bar is already open (lets the operator press ⌘F to retype). */
+  focusNonce: number
 }
 
 /**
@@ -22,16 +25,18 @@ export function ConversationSearch({
   onPrev,
   total,
   activeIdx,
+  focusNonce,
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null)
 
-  // Focus + select the input whenever this component mounts.
+  // Focus + select the input on mount AND on every ⌘F (focusNonce bump), so a
+  // repeat ⌘F selects all existing text for an immediate retype.
   useEffect(() => {
     const el = inputRef.current
     if (!el) return
     el.focus()
     el.select()
-  }, [])
+  }, [focusNonce])
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Escape') {
@@ -59,7 +64,13 @@ export function ConversationSearch({
       className="pointer-events-none absolute left-0 right-0 top-0 z-10 flex justify-center px-4 pt-3"
       // Let clicks on the actual bar work, but ignore the outer spacer.
     >
-      <div className="pointer-events-auto flex w-full max-w-[520px] items-center gap-2 rounded-lg glass-strong px-3 py-2 ring-hairline-strong">
+      <div
+        className="pointer-events-auto flex w-full max-w-[520px] items-center gap-2 rounded-lg glass-strong px-3 py-2 ring-hairline-strong"
+        // Near-opaque surface so the query + match count read cleanly against
+        // the busy transcript scrolling behind it (glass-strong alone is ~54%).
+        // Inline wins over the class's `background`; blur + shadow still apply.
+        style={{ background: 'rgba(14, 14, 14, 0.95)' }}
+      >
         <span className="label text-fg-2">find</span>
         <input
           ref={inputRef}

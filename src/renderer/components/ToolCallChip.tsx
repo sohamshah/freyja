@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useContext, useEffect, useState } from 'react'
 import { useHarness } from '../state/store'
 import { formatDuration } from '../lib/format'
 import { Spinner } from '../lib/spinner'
 import { useFrameObjectUrl, useFrameSvgMarkup } from '../lib/frameMedia'
 import { FileChangeBadge, FileChangeCard } from './FileChangeCard'
+import { SearchQueryContext, HighlightText } from './searchContext'
 import type { ToolCallRecord } from '@shared/events'
 
 export function ToolCallChip({ id, record }: { id: string; record?: ToolCallRecord }) {
@@ -20,6 +21,7 @@ export function ToolCallChip({ id, record }: { id: string; record?: ToolCallReco
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
   const [imgExpanded, setImgExpanded] = useState(false)
   const frameUrl = useFrameObjectUrl(call?.frame)
+  const searchQuery = useContext(SearchQueryContext)
 
   useEffect(() => {
     if (focusSerial > 0) setUserOpen(true)
@@ -42,7 +44,16 @@ export function ToolCallChip({ id, record }: { id: string; record?: ToolCallReco
 
   const isStreaming = call.status === 'running'
   const hasAnyArgs = call.arguments !== undefined || !!call.partialJson
-  const open = userOpen ?? (isStreaming && hasAnyArgs)
+  // Auto-expand a collapsed chip when the active search query only matches its
+  // hidden body (args / result) — otherwise that hit isn't in the DOM and the
+  // find navigation can't reach it. Reverts when the query clears. The tool
+  // name + summary live in the always-visible header, so those need no expand.
+  const q = searchQuery.trim().toLowerCase()
+  const matchInBody =
+    !!q &&
+    (argsText.toLowerCase().includes(q) ||
+      (call.result ?? '').toLowerCase().includes(q))
+  const open = (userOpen ?? (isStreaming && hasAnyArgs)) || matchInBody
   // Heartbeats are liveness pings — they carry no narrative value and
   // shouldn't compete with real actions for visual weight. Render them
   // as a one-line muted note so a string of them reads as background
@@ -64,7 +75,9 @@ export function ToolCallChip({ id, record }: { id: string; record?: ToolCallReco
         <span className="flex w-[18px] justify-center">
           <span className="block h-1 w-1 rounded-full bg-fg-3/55" />
         </span>
-        <span className="font-mono text-[10.5px] italic">{summary || 'heartbeat'}</span>
+        <span className="font-mono text-[10.5px] italic">
+          <HighlightText text={summary || 'heartbeat'} query={searchQuery} />
+        </span>
       </div>
     )
   }
@@ -94,9 +107,13 @@ export function ToolCallChip({ id, record }: { id: string; record?: ToolCallReco
         className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-white/[0.025]"
       >
         <span className="flex w-[18px] shrink-0 justify-center">{statusIndicator}</span>
-        <span className="shrink-0 font-mono text-[11.5px] text-accent">{call.name}</span>
+        <span className="shrink-0 font-mono text-[11.5px] text-accent">
+          <HighlightText text={call.name} query={searchQuery} />
+        </span>
         {summary && (
-          <span className="min-w-0 truncate font-mono text-[11px] text-fg-1">{summary}</span>
+          <span className="min-w-0 truncate font-mono text-[11px] text-fg-1">
+            <HighlightText text={summary} query={searchQuery} />
+          </span>
         )}
         <span className="ml-auto flex shrink-0 items-center gap-2 text-[10px] text-fg-2">
           {hasFrame && (
@@ -173,7 +190,7 @@ export function ToolCallChip({ id, record }: { id: string; record?: ToolCallReco
                 )}
               </div>
               <pre className="max-h-[180px] overflow-auto whitespace-pre-wrap rounded-md bg-black/45 p-2 text-[11px] text-fg-0">
-                {argsText}
+                <HighlightText text={argsText} query={searchQuery} />
               </pre>
             </div>
           )}
@@ -188,7 +205,7 @@ export function ToolCallChip({ id, record }: { id: string; record?: ToolCallReco
                   call.isError ? 'text-danger' : 'text-fg-0'
                 }`}
               >
-                {call.result}
+                <HighlightText text={call.result} query={searchQuery} />
               </pre>
             </div>
           )}
