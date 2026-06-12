@@ -461,7 +461,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.9" },
-    { name = "anthropic", specifier = ">=0.30" },
+    { name = "anthropic", specifier = ">=0.87" },
     { name = "google-genai", specifier = ">=2.0" },
     { name = "httpx", specifier = ">=0.25" },
     { name = "maturin", specifier = ">=1.5" },

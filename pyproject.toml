@@ -8,7 +8,9 @@ license = "MIT"
 
 dependencies = [
     # LLM provider SDKs
-    "anthropic>=0.30",
+    # anthropic >=0.87: APIStatusError.type (read by the mid-stream SSE
+    # error dispatch in engine/anthropic_provider._convert_api_error).
+    "anthropic>=0.87",
     "openai>=1.30",
     "google-genai>=2.0",
     "httpx>=0.25",

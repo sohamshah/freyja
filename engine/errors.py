@@ -118,6 +118,14 @@ _CONTEXT_OVERFLOW_PATTERNS: list[str] = [
     "exceeds the model's maximum context",
 ]
 
+# Anthropic body-level "api_error" type marker (their 500-equivalent).
+# Matches both the compact-JSON form ("type":"api_error") and the Python
+# dict-repr form the SDK produces for mid-stream SSE error events
+# ('type': 'api_error' — single quotes, colon-space).
+_API_INTERNAL_ERROR_PATTERN = re.compile(
+    r"['\"]type['\"]\s*:\s*['\"]api_error['\"]", re.IGNORECASE
+)
+
 # Transient HTTP error codes (5xx that should be treated as timeout)
 _TRANSIENT_HTTP_CODES = TRANSIENT_HTTP_CODES
 
@@ -212,6 +220,19 @@ def is_transient_http_error(message: str) -> bool:
     return status is not None and status in _TRANSIENT_HTTP_CODES
 
 
+def is_api_internal_error(message: str) -> bool:
+    """Check if message carries an Anthropic body-level api_error.
+
+    "api_error" is Anthropic's 500-equivalent ("an unexpected error
+    internal to Anthropic's systems") and is transient. Mid-stream SSE
+    error events surface it with the stream's HTTP 200 status, so the
+    body type marker is the only reliable signal.
+    """
+    if not message:
+        return False
+    return bool(_API_INTERNAL_ERROR_PATTERN.search(message))
+
+
 def is_context_overflow_error(message: str) -> bool:
     """
     Check if message indicates a context overflow error.
@@ -297,9 +318,10 @@ def classify_failover_reason(message: str) -> FailoverReason | None:
     if is_transient_http_error(message):
         return "timeout"
 
-    # JSON API internal server error treated as timeout
-    lower = message.lower()
-    if '"type":"api_error"' in lower and "internal server error" in lower:
+    # Anthropic body-level api_error (internal server error) treated as
+    # timeout. Quote-agnostic: matches both compact JSON and the dict
+    # repr the SDK produces for mid-stream SSE error events.
+    if is_api_internal_error(message):
         return "timeout"
 
     # Rate limit (includes overloaded)
@@ -342,6 +364,7 @@ def is_retryable_error(message: str) -> bool:
     - Context overflow (can be recovered via compaction)
     - Overloaded service
     - Transient HTTP errors (5xx)
+    - Anthropic body-level api_error (server-side internal error)
 
     Non-retryable errors include:
     - Authentication failures
@@ -362,6 +385,8 @@ def is_retryable_error(message: str) -> bool:
     if is_overloaded_error(message):
         return True
     if is_transient_http_error(message):
+        return True
+    if is_api_internal_error(message):
         return True
 
     # These are not retryable

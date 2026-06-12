@@ -1130,6 +1130,24 @@ class AnthropicProvider:
         message = str(error)
         status = error.status_code
 
+        # Mid-stream SSE error events are raised by the SDK with the
+        # status of the already-connected stream response (200), so the
+        # status switch below can't see their real nature. The SDK
+        # preserves the body's error type — dispatch on it when the
+        # status carries no error signal. (getattr: APIStatusError.type
+        # only exists since anthropic 0.87 — never crash in the error
+        # converter on an older SDK.)
+        error_type = getattr(error, "type", None)
+        if status < 400 and error_type:
+            if error_type in ("api_error", "overloaded_error", "timeout_error"):
+                # Transient server-side faults; their HTTP-level twins
+                # (500/529) take the retryable branch below.
+                return ProviderError(
+                    message, status=status, code=error_type, retryable=True
+                )
+            if error_type == "rate_limit_error":
+                return RateLimitError(message)
+
         if status == 401:
             return AuthenticationError(message)
         elif status == 402:
