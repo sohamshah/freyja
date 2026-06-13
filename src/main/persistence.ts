@@ -981,6 +981,80 @@ export function readActionLedger(
 }
 
 /**
+ * Read the morning briefing for one day (newest when `date` is omitted)
+ * from `~/.freyja/briefing/{YYYY-MM-DD}/`. Written daily by the briefer
+ * scheduled job (see bridge/briefing.py). Missing briefing is a normal
+ * empty state — the Morning Room renders its zero-state with a
+ * "generate now" affordance using brieferJobId.
+ */
+export function readBriefing(date?: string): {
+  ok: boolean
+  dates: string[]
+  date: string | null
+  json: any | null
+  markdown: string | null
+  brieferJobId: string | null
+  error?: string
+} {
+  try {
+    const root = path.join(os.homedir(), '.freyja', 'briefing')
+    let dates: string[] = []
+    if (fs.existsSync(root)) {
+      dates = fs
+        .readdirSync(root, { withFileTypes: true })
+        .filter((d) => d.isDirectory() && /^\d{4}-\d{2}-\d{2}$/.test(d.name))
+        .map((d) => d.name)
+        .sort()
+        .reverse()
+    }
+    const chosen = date && dates.includes(date) ? date : (dates[0] ?? null)
+    let json: any | null = null
+    let markdown: string | null = null
+    if (chosen) {
+      const dayDir = path.join(root, chosen)
+      const jp = path.join(dayDir, 'briefing.json')
+      const mp = path.join(dayDir, 'briefing.md')
+      if (fs.existsSync(jp)) {
+        try {
+          const parsed = JSON.parse(fs.readFileSync(jp, 'utf8'))
+          if (parsed && typeof parsed === 'object') json = parsed
+        } catch {
+          // Malformed JSON — leave null; the view falls back to markdown.
+        }
+      }
+      if (fs.existsSync(mp)) {
+        try {
+          markdown = fs.readFileSync(mp, 'utf8')
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    let brieferJobId: string | null = null
+    const ptr = path.join(root, 'briefer.json')
+    if (fs.existsSync(ptr)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(ptr, 'utf8'))
+        if (parsed && typeof parsed.job_id === 'string') brieferJobId = parsed.job_id
+      } catch {
+        /* ignore */
+      }
+    }
+    return { ok: true, dates, date: chosen, json, markdown, brieferJobId }
+  } catch (err) {
+    return {
+      ok: false,
+      dates: [],
+      date: null,
+      json: null,
+      markdown: null,
+      brieferJobId: null,
+      error: String(err),
+    }
+  }
+}
+
+/**
  * Read a session's working-memory doc (the agent's grounded workstreams) from
  * `~/.freyja/projects/<safeId>/working_memory.json`. The file is ONE document
  * `{ version, sessionId, entities: { id -> entity } }` (see

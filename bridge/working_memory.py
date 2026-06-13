@@ -225,6 +225,114 @@ def apply_working_memory_upserts(
     return applied
 
 
+def apply_wm_result(wm: "WorkingMemory", wm_result: Any) -> dict[str, int]:
+    """Fold a Call B extraction result into a WorkingMemory instance.
+
+    Single source of truth for the normalize-and-apply step shared by the
+    live compaction sink (``_BridgeSession._apply_wm_upserts``) and the
+    offline backfill pass (``bridge/wm_backfill.py``). Keeping both callers
+    on one function means the wire-format tolerance (dict vs legacy list)
+    and the overview semantics can't drift apart again — the original
+    set_overview/upserts type-mismatch bug happened precisely because the
+    projection logic lived inline in one caller.
+
+    ``wm_result`` shapes tolerated:
+      · ``{summary, actions_completed, entities}`` — Call B's output
+      · ``list[dict]`` — legacy pre-Call-B upsert list (no overview)
+      · anything else (None included) — no-op
+
+    Returns ``{"overview": 0|1, "upserts": N}`` for caller logging.
+    Best-effort: exceptions from individual steps are swallowed (this runs
+    on compaction/backfill paths that must never raise).
+    """
+    counts = {"overview": 0, "upserts": 0}
+    if wm is None:
+        return counts
+
+    upserts: list[dict[str, Any]] = []
+    overview_summary: str | None = None
+    overview_actions: list[str] = []
+    if isinstance(wm_result, dict):
+        ents = wm_result.get("entities")
+        if isinstance(ents, list):
+            upserts = [e for e in ents if isinstance(e, dict)]
+        s = wm_result.get("summary")
+        if isinstance(s, str) and s.strip():
+            overview_summary = s.strip()
+        actions = wm_result.get("actions_completed")
+        if isinstance(actions, list):
+            overview_actions = [
+                a.strip() for a in actions if isinstance(a, str) and a.strip()
+            ]
+    elif isinstance(wm_result, list):
+        upserts = [e for e in wm_result if isinstance(e, dict)]
+
+    if overview_summary is not None or overview_actions:
+        try:
+            wm.set_overview(
+                summary=overview_summary, actions_completed=overview_actions
+            )
+            counts["overview"] = 1
+        except Exception:  # noqa: BLE001
+            logger.debug("apply_wm_result: overview update failed", exc_info=True)
+
+    try:
+        if upserts:
+            counts["upserts"] = apply_working_memory_upserts(wm, upserts)
+    except Exception:  # noqa: BLE001
+        logger.debug("apply_wm_result: entity projection failed", exc_info=True)
+    return counts
+
+
+def refresh_wm_artifacts_from_ledger(
+    wm: "WorkingMemory", ledger: Any, *, creator_id: str | None = None
+) -> int:
+    """Deterministic floor: reflect the action ledger's file effects into the
+    active workstream as artifact_notes so changed files always appear in
+    working memory — no LLM required. Idempotent (matched by path). Only
+    enriches an EXISTING workstream; never fabricates one (the summarizer
+    owns workstream creation).
+
+    Shared by the live bridge sink and the offline backfill. Returns the
+    number of artifact_notes upserted."""
+    if wm is None or ledger is None:
+        return 0
+    try:
+        effects = [e for e in ledger.effects(creator_id=creator_id) if e.get("path")]
+    except Exception:  # noqa: BLE001
+        return 0
+    if not effects:
+        return 0
+    workstreams = wm.list(type="workstream")
+    if not workstreams:
+        return 0
+    active = next(
+        (w for w in workstreams if w.get("status") == "active"), workstreams[-1]
+    )
+    ws_id = active.get("id")
+    n = 0
+    for e in effects[:12]:
+        path = str(e.get("path") or "")
+        if not path:
+            continue
+        existing = wm.find_by_primary(
+            type="artifact_note", value=path, workstream_id=ws_id
+        )
+        if wm.upsert(
+            type="artifact_note",
+            entity_id=existing,
+            fields={
+                "path": path,
+                "note": e.get("summary"),
+                "additions": e.get("additions"),
+                "deletions": e.get("deletions"),
+                "workstreamId": ws_id,
+            },
+        ):
+            n += 1
+    return n
+
+
 class WorkingMemory:
     """Per-session structured working memory backed by one JSON document."""
 

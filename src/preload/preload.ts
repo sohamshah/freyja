@@ -75,6 +75,17 @@ const api = {
   ): Promise<{ ok: boolean; rows?: any[]; error?: string }> {
     return ipcRenderer.invoke(IPC.getActionLedger, sessionId)
   },
+  async getBriefing(date?: string): Promise<{
+    ok: boolean
+    dates: string[]
+    date: string | null
+    json: any | null
+    markdown: string | null
+    brieferJobId: string | null
+    error?: string
+  }> {
+    return ipcRenderer.invoke(IPC.getBriefing, date)
+  },
   async getWorkingMemory(
     sessionId: string,
   ): Promise<{

@@ -338,6 +338,9 @@ export interface HarnessState extends SessionSlice {
     | 'scheduler'
   /** Cross-session compaction metrics dashboard (header button toggle). */
   metricsDashboardOpen: boolean
+  /** Morning Room — the daily briefing landing view (⌘⇧B). Opens
+   *  automatically on the first launch of a day that has a briefing. */
+  morningRoomOpen: boolean
   /** Grounded Memory recall drawer ("The Morgue"). Opened from the
    *  working-memory section header and the inline memory cards via
    *  `openRecallDrawer`; the single RecallPanel instance mounts in App. */
@@ -432,6 +435,7 @@ export interface HarnessActions {
     tab?: HarnessState['missionDashboardTab'],
   ): void
   toggleMetricsDashboard(open?: boolean): void
+  toggleMorningRoom(open?: boolean): void
   /** Open/close the Grounded Memory recall drawer; `query` seeds the
    *  search field (omit to open on the recent-dispatches timeline). */
   openRecallDrawer(query?: string): void
@@ -960,6 +964,7 @@ function emptyState(): HarnessState {
     missionDashboardOpen: false,
     missionDashboardTab: 'overview',
     metricsDashboardOpen: false,
+    morningRoomOpen: false,
     recallDrawer: { open: false, query: '' },
     modelPickerOpen: false,
     slackSetupOpen: false,
@@ -3164,6 +3169,10 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
 
   toggleMetricsDashboard(open) {
     set((prev) => ({ metricsDashboardOpen: open ?? !prev.metricsDashboardOpen }))
+  },
+
+  toggleMorningRoom(open) {
+    set((prev) => ({ morningRoomOpen: open ?? !prev.morningRoomOpen }))
   },
 
   openRecallDrawer(query) {

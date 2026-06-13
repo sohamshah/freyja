@@ -595,6 +595,20 @@ export type BridgeCommand =
   | { type: 'scheduler.daemon_status'; id?: string }
   | { type: 'scheduler.daemon_install'; id?: string; reason?: string }
   | { type: 'scheduler.daemon_uninstall'; id?: string }
+  | {
+      type: 'scheduler.preview_next_fires'
+      id?: string
+      jobId?: string
+      when?: string
+      schedule?: Record<string, unknown>
+      timezone?: string
+      n?: number
+    }
+  // Offline working-memory backfill — summarize idle sessions whose
+  // working_memory.json is missing/stale. Responds immediately
+  // ({started:true}); progress + final report arrive as
+  // wm_backfill_complete system events.
+  | { type: 'wm.backfill'; id?: string; limit?: number; dryRun?: boolean }
 
 // --- Events produced by the bridge and forwarded to the renderer ---
 
@@ -1010,6 +1024,7 @@ export const IPC = {
   getActionLedger: 'session:actionLedger',
   getWorkingMemory: 'session:workingMemory',
   getRecall: 'session:recall',
+  getBriefing: 'briefing:read',
   // Gateway / Slack onboarding
   gatewayStatus: 'gateway:status',
   gatewayInstall: 'gateway:install',
@@ -1036,6 +1051,72 @@ export const IPC = {
 } as const
 
 // ── Gateway IPC result types ────────────────────────────────────
+
+// ─── Morning briefing contract ───────────────────────────────────────
+// Written daily by the briefer scheduled job to
+// ~/.freyja/briefing/{date}/briefing.json (schema authored in
+// bridge/briefing.py BRIEFING_SCHEMA_DOC — keep in lockstep).
+
+export interface BriefingIntent {
+  kind: 'open_session' | 'fire_job' | 'prompt'
+  session_id?: string | null
+  job_id?: string | null
+  prompt?: string | null
+}
+
+export interface BriefingAction {
+  label: string
+  kind: 'primary' | 'secondary'
+  intent?: BriefingIntent | null
+}
+
+export interface BriefingProject {
+  name: string
+  state: 'ready' | 'in_motion' | 'blocked' | 'quiet'
+  attention?: boolean
+  summary: string
+  session_id?: string | null
+}
+
+export interface BriefingDecision {
+  verb: string
+  project: string
+  ref?: string
+  meta?: string
+  body: string
+  actions: BriefingAction[]
+}
+
+export interface BriefingTodayItem {
+  time?: string
+  project: string
+  what: string
+  duration?: string
+  intent?: BriefingIntent | null
+}
+
+export interface BriefingDoc {
+  version: number
+  date: string
+  generated_at_iso?: string
+  since_label?: string
+  hero?: { projects_in_motion?: number; events_since?: number }
+  projects?: BriefingProject[]
+  decisions?: BriefingDecision[]
+  today?: BriefingTodayItem[]
+  weekly_review?: unknown
+  colophon?: string
+}
+
+export interface BriefingReadResult {
+  ok: boolean
+  dates: string[]
+  date: string | null
+  json: BriefingDoc | null
+  markdown: string | null
+  brieferJobId: string | null
+  error?: string
+}
 
 export interface GatewayStatus {
   pid: number | null

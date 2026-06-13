@@ -1118,6 +1118,32 @@ async def _main() -> None:
             log("debug", f"daemon auto-install hook not wired: {exc}")
     except Exception as exc:  # noqa: BLE001
         log("warn", f"scheduler failed to start: {exc}")
+    # Offline working-memory backfill — hourly pass that summarizes idle
+    # sessions whose working_memory.json is missing or older than the
+    # transcript. This is the substrate the morning briefing reads; the
+    # live triggers (compaction Call B, session_memory mutations) only
+    # cover sessions that are actively running. Cross-process flock
+    # inside the pass prevents duplicate spend when the daemon/gateway
+    # are also alive. Disable with FREYJA_WM_BACKFILL=0.
+    try:
+        from bridge.wm_backfill import backfill_loop as _wm_backfill_loop
+
+        # Hold the reference on state — asyncio only keeps weak refs to
+        # tasks, so an unreferenced background task can be GC'd mid-loop.
+        state._wm_backfill_task = asyncio.create_task(  # noqa: SLF001
+            _wm_backfill_loop(), name="wm-backfill",
+        )
+    except Exception as exc:  # noqa: BLE001
+        log("debug", f"wm backfill loop not started: {exc}")
+    # Auto-create the morning briefer job (idempotent via tag). The
+    # briefer is a regular scheduled job that writes the daily briefing
+    # the Morning Room view renders.
+    try:
+        from bridge.briefing import ensure_briefer_job
+
+        await ensure_briefer_job(state)
+    except Exception as exc:  # noqa: BLE001
+        log("debug", f"briefer job not ensured: {exc}")
     # Drain pending skill classifications left behind by a prior bridge
     # run. Each ``.pending/<id>.json`` represents a skill load whose
     # 3-turn post-load window didn't close before the previous bridge
@@ -9033,46 +9059,16 @@ class _BridgeSession:
         if wm is None:
             return
 
-        # Normalize the input shape. Call B returns {summary, actions_completed,
-        # entities}; legacy callers may still hand us a list[dict] of upserts.
-        upserts: list[dict[str, Any]] = []
-        overview_summary: str | None = None
-        overview_actions: list[str] = []
-        if isinstance(wm_result, dict):
-            ents = wm_result.get("entities")
-            if isinstance(ents, list):
-                upserts = [e for e in ents if isinstance(e, dict)]
-            s = wm_result.get("summary")
-            if isinstance(s, str) and s.strip():
-                overview_summary = s.strip()
-            actions = wm_result.get("actions_completed")
-            if isinstance(actions, list):
-                overview_actions = [
-                    a.strip() for a in actions if isinstance(a, str) and a.strip()
-                ]
-        elif isinstance(wm_result, list):
-            # Old shape: list of upsert dicts. No overview to set.
-            upserts = [e for e in wm_result if isinstance(e, dict)]
+        # Normalize + apply via the shared projection (single source of
+        # truth with the offline backfill — see bridge/working_memory.py).
+        from bridge.working_memory import apply_wm_result
 
-        # Persist the high-level overview (Call B's summary + actions). Replaces
-        # the previous overview wholesale — Call B sees the current overview in
-        # its system prompt and produces the fresh full-state version.
-        if overview_summary is not None or overview_actions:
-            try:
-                wm.set_overview(
-                    summary=overview_summary, actions_completed=overview_actions
-                )
-            except Exception:  # noqa: BLE001
-                log("debug", "working memory overview update failed")
-
-        # Apply the entity graph (workstreams + their children).
-        try:
-            if upserts:
-                n = apply_working_memory_upserts(wm, upserts)
-                if n:
-                    log("debug", f"working memory projection applied {n} upsert(s)")
-        except Exception:  # noqa: BLE001
-            log("debug", "working memory projection failed")
+        counts = apply_wm_result(wm, wm_result)
+        if counts.get("upserts"):
+            log(
+                "debug",
+                f"working memory projection applied {counts['upserts']} upsert(s)",
+            )
 
         try:
             self._refresh_wm_artifacts_from_ledger(wm)
@@ -9294,42 +9290,15 @@ class _BridgeSession:
             pass
 
     def _refresh_wm_artifacts_from_ledger(self, wm: Any) -> None:
-        """Deterministic floor: reflect the action ledger's file effects into
-        the active workstream as artifact_notes, so the files the agent changed
-        always show in working memory after a compaction — no LLM required.
-        Idempotent (matched by path). Only enriches an EXISTING workstream; it
-        never fabricates one (the summarizer block owns workstream creation)."""
+        """Deterministic floor — delegates to the shared implementation in
+        bridge/working_memory.py (also used by the offline backfill) so the
+        live and offline projections can't drift."""
         led = getattr(self, "session_ledger", None)
         if led is None:
             return
-        effects = [e for e in led.effects(creator_id=self.id) if e.get("path")]
-        if not effects:
-            return
-        workstreams = wm.list(type="workstream")
-        if not workstreams:
-            return
-        active = next(
-            (w for w in workstreams if w.get("status") == "active"), workstreams[-1]
-        )
-        ws_id = active.get("id")
-        for e in effects[:12]:
-            path = str(e.get("path") or "")
-            if not path:
-                continue
-            existing = wm.find_by_primary(
-                type="artifact_note", value=path, workstream_id=ws_id
-            )
-            wm.upsert(
-                type="artifact_note",
-                entity_id=existing,
-                fields={
-                    "path": path,
-                    "note": e.get("summary"),
-                    "additions": e.get("additions"),
-                    "deletions": e.get("deletions"),
-                    "workstreamId": ws_id,
-                },
-            )
+        from bridge.working_memory import refresh_wm_artifacts_from_ledger
+
+        refresh_wm_artifacts_from_ledger(wm, led, creator_id=self.id)
 
     def _session_memory_present(self) -> bool:
         try:
@@ -12129,6 +12098,54 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                   "subtype": "daemon_uninstall", "error": str(exc)})
         return
 
+    if ctype == "wm.backfill":
+        # Kick an offline working-memory backfill pass in the background.
+        # Responds immediately with {started: true}; per-session progress
+        # surfaces as wm_backfill_session system events and the final
+        # report as a wm_backfill_complete event. ``limit`` caps how many
+        # sessions get summarized this pass; ``dryRun`` scans + reports
+        # without LLM calls.
+        try:
+            from bridge.wm_backfill import run_backfill_pass
+
+            limit = max(1, min(int(cmd.get("limit", 8) or 8), 100))
+            dry_run = bool(cmd.get("dryRun", False))
+            request_id = cmd.get("id")
+
+            async def _run_pass() -> None:
+                try:
+                    report = await asyncio.to_thread(
+                        run_backfill_pass, limit=limit, dry_run=dry_run,
+                    )
+                    emit({
+                        "type": "system_event",
+                        "sessionId": "wm-backfill:global",
+                        "subtype": "wm_backfill_complete",
+                        "message": (
+                            f"WM backfill: "
+                            f"{sum(1 for r in report.get('results', []) if r.get('status') == 'ok')}"
+                            f"/{len(report.get('results', []))} summarized"
+                        ),
+                        "details": {"requestId": request_id, **report},
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    emit({
+                        "type": "system_event",
+                        "sessionId": "wm-backfill:global",
+                        "subtype": "wm_backfill_complete",
+                        "message": f"WM backfill failed: {exc}",
+                        "details": {"requestId": request_id, "error": str(exc)},
+                    })
+
+            asyncio.create_task(_run_pass(), name="wm-backfill-manual")
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "wm_backfill", "started": True,
+                  "limit": limit, "dryRun": dry_run})
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "scheduler_response", "requestId": cmd.get("id"),
+                  "subtype": "wm_backfill", "error": str(exc)})
+        return
+
     if ctype == "scheduler.preview_next_fires":
         # Returns up to N future fire timestamps for either an existing
         # job (by ``jobId``) or a free-form schedule spec (``schedule``
@@ -12349,6 +12366,25 @@ async def _main_headless() -> None:
             return
         state.gateway_runner = gateway  # type: ignore[attr-defined]
         await state.scheduler.start()  # type: ignore[attr-defined]
+        # Offline WM backfill runs in the daemon too — it's the process
+        # that's alive overnight, which is exactly when idle sessions
+        # should get summarized for the morning briefing. The pass-level
+        # flock makes this safe alongside the Electron bridge's loop.
+        try:
+            from bridge.wm_backfill import backfill_loop as _wm_backfill_loop
+
+            # Reference held on state so the task can't be GC'd.
+            state._wm_backfill_task = asyncio.create_task(  # noqa: SLF001
+                _wm_backfill_loop(), name="wm-backfill",
+            )
+        except Exception as wm_exc:  # noqa: BLE001
+            log("debug", f"wm backfill loop not started: {wm_exc}")
+        try:
+            from bridge.briefing import ensure_briefer_job
+
+            await ensure_briefer_job(state)
+        except Exception as br_exc:  # noqa: BLE001
+            log("debug", f"briefer job not ensured: {br_exc}")
     except Exception as exc:  # noqa: BLE001
         log("error", f"headless boot failed: {exc}")
         return

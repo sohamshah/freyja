@@ -22,6 +22,7 @@ import { MissionDashboard } from './components/MissionDashboard'
 import { ScheduledJobsDashboard } from './components/ScheduledJobsDashboard'
 import { SlackSetupWizard } from './components/SlackSetupWizard'
 import { MetricsDashboard } from './components/MetricsDashboard'
+import { MorningRoom } from './components/MorningRoom'
 import { RecallPanel } from './components/RecallPanel'
 import { SplashScreen } from './components/SplashScreen'
 import { IdleSleep } from './components/IdleSleep'
@@ -81,6 +82,7 @@ export function App() {
   const toggleCommandPalette = useHarness((s) => s.toggleCommandPalette)
   const commandPaletteOpen = useHarness((s) => s.commandPaletteOpen)
   const missionDashboardOpen = useHarness((s) => s.missionDashboardOpen)
+  const morningRoomOpen = useHarness((s) => s.morningRoomOpen)
   const toggleMissionDashboard = useHarness((s) => s.toggleMissionDashboard)
   const recallDrawer = useHarness((s) => s.recallDrawer)
   const closeRecallDrawer = useHarness((s) => s.closeRecallDrawer)
@@ -213,6 +215,32 @@ export function App() {
         schedulerApi.metrics().catch(() => {})
         schedulerApi.daemonStatus().catch(() => {})
       }).catch(() => {})
+
+      // Morning Room landing policy: open automatically on the FIRST
+      // launch of a day that has a briefing. localStorage tracks the
+      // last auto-open date so subsequent launches the same day land
+      // in the normal shell (⌘⇧B reopens it on demand).
+      ;(async () => {
+        try {
+          const res = await api.getBriefing?.()
+          // Local calendar date — the briefer writes its date dir with
+          // `date +%F` (local), and toISOString() is UTC, which is the
+          // wrong day every morning east of Greenwich / evening west.
+          const { localToday } = await import('./components/MorningRoom')
+          const today = localToday()
+          const seenKey = 'freyja.morningRoom.lastAutoOpen'
+          if (
+            res?.json &&
+            res?.date === today &&
+            localStorage.getItem(seenKey) !== today
+          ) {
+            localStorage.setItem(seenKey, today)
+            useHarness.getState().toggleMorningRoom(true)
+          }
+        } catch {
+          /* no briefing — land in the shell as usual */
+        }
+      })()
 
       // Auto-refresh the session list so gateway-created sessions
       // (Slack DMs, etc.) appear in the sidebar without requiring an
@@ -424,6 +452,12 @@ export function App() {
         else openScheduler()
         return
       }
+      // ⌘⇧B — Morning Room (the daily briefing landing view).
+      if (mod && e.shiftKey && (e.key === 'b' || e.key === 'B')) {
+        e.preventDefault()
+        useHarness.getState().toggleMorningRoom()
+        return
+      }
       if (mod && e.key === 'b') {
         // ⌘B: child session → back to parent. At the top-level session
         // this is a no-op (we used to fire a demo "burst" message here,
@@ -562,6 +596,7 @@ export function App() {
         {commandPaletteOpen && <CommandPalette />}
         {missionDashboardOpen && <MissionDashboard />}
         {schedulerOpen && <ScheduledJobsDashboard />}
+        {morningRoomOpen && <MorningRoom />}
         <SlackSetupWizard
           open={slackSetupOpen}
           onClose={() => toggleSlackSetup(false)}

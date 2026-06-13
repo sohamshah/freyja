@@ -557,6 +557,25 @@ def _artifact_block(job: JobRecord) -> str:
                     )
                 else:
                     return block_header + "\n\n_(File exists but is empty — write the first version.)_"
+            elif p.is_dir():
+                # Directory artifact (e.g. the briefer's briefing/ root):
+                # list a few entries so the agent sees the current shape
+                # without a tool call, newest first.
+                try:
+                    entries = sorted(
+                        (e for e in p.iterdir() if not e.name.startswith(".")),
+                        key=lambda e: e.stat().st_mtime,
+                        reverse=True,
+                    )[:12]
+                    listing = "\n".join(
+                        f"- {e.name}{'/' if e.is_dir() else ''}" for e in entries
+                    ) or "(empty)"
+                    return (
+                        block_header
+                        + f"\n\n_(Directory — current entries, newest first:)_\n{listing}"
+                    )
+                except OSError:
+                    return block_header + "\n\n_(Directory — list it with `bash`.)_"
             elif not p.exists():
                 return block_header + "\n\n_(File does not exist yet — create it.)_"
         except Exception:  # noqa: BLE001

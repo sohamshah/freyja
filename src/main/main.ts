@@ -29,6 +29,7 @@ import {
   readActionLedger as persistReadActionLedger,
   readWorkingMemory as persistReadWorkingMemory,
   readRecall as persistReadRecall,
+  readBriefing as persistReadBriefing,
   migrateLegacySessionFiles,
   saveSessionIndex as persistSaveSessionIndex,
   saveSession as persistSaveSession,
@@ -676,6 +677,11 @@ function setupIpc() {
   // Per-session action ledger — what the agent did (effects/observations).
   ipcMain.handle(IPC.getActionLedger, async (_event, id: string) => {
     return persistReadActionLedger(id)
+  })
+
+  // Morning briefing — daily synthesis written by the briefer job.
+  ipcMain.handle(IPC.getBriefing, async (_event, date?: string) => {
+    return persistReadBriefing(date)
   })
 
   // Per-session working memory — the agent's grounded workstreams (one doc).
