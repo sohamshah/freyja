@@ -8,8 +8,9 @@
  * bridge/briefing.py; typed as BriefingDoc in src/shared/events.ts).
  *
  * Design translation notes vs the mockup:
- *  · No Three.js wisp backdrop — keeps the bundle dependency-free; the
- *    SVG grain + vignette carry the atmosphere.
+ *  · The Three.js wisp backdrop is carried over as <WispBackdrop>, but
+ *    ported to raw WebGL so it ships without the three.js dependency
+ *    (see WispBackdrop.tsx). The SVG grain + vignette layer over it.
  *  · Hero descrambler is a small rAF loop instead of GSAP.
  *  · State encoded by glyph shape (● ◐ ▲ ·), hairline dividers, one
  *    steel-blue accent, ▸/→ text-link actions — all per the mockup.
@@ -24,6 +25,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useHarness } from '../state/store'
+import { WispBackdrop } from './WispBackdrop'
 import type {
   BriefingDoc,
   BriefingIntent,
@@ -273,6 +275,7 @@ export function MorningRoom() {
 
   return (
     <div className="mroom-overlay">
+      <WispBackdrop />
       <div className="mroom-grain" aria-hidden="true" />
       <header className="mroom-chrome">
         <div className="mroom-brand">
@@ -618,6 +621,16 @@ const STYLES = `
 .mroom-overlay::before {
   content: ""; position: fixed; inset: 0; pointer-events: none;
   background: radial-gradient(ellipse 110% 130% at 50% 50%, transparent 35%, rgba(6,7,11,0.40) 100%);
+}
+.mroom-wisp {
+  /* The WebGL particle field. z-index:-1 keeps it inside the overlay's
+     own stacking context (the overlay is z-45), painting above the solid
+     #06070b backdrop but below the in-flow briefing content and the
+     grain/vignette — so the text never sits on raw canvas.
+     width/height:100% are REQUIRED: <canvas> is a replaced element, so
+     inset:0 alone leaves it at its intrinsic 300x150 in the corner. */
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  z-index: -1; display: block; pointer-events: none;
 }
 .mroom-grain {
   position: fixed; inset: 0; pointer-events: none; z-index: 1;
