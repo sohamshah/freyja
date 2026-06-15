@@ -36,11 +36,15 @@ class _CloneableProvider:
         self.name = "fake"
         self.model_id = "fake-model"
         self.used = False
+        self.closed = False
         _CloneableProvider.instances.append(self)
 
     async def complete_structured(self, messages, **kw):
         self.used = True
         return _resp()
+
+    async def close(self):
+        self.closed = True
 
 
 def test_extract_working_memory_uses_isolated_clone():
@@ -53,7 +57,12 @@ def test_extract_working_memory_uses_isolated_clone():
     # A fresh clone was constructed and used; the SHARED provider was not.
     assert len(_CloneableProvider.instances) == 2  # shared + clone
     assert shared.used is False, "shared provider's client must not be touched"
-    assert _CloneableProvider.instances[1].used is True  # the clone did the call
+    clone = _CloneableProvider.instances[1]
+    assert clone.used is True  # the clone did the call
+    # The clone is closed within the throwaway loop (no aclose-on-closed-loop
+    # noise / leak); the shared provider is never closed.
+    assert clone.closed is True
+    assert shared.closed is False
 
 
 def test_extract_working_memory_passthrough_without_config():

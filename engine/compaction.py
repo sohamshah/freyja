@@ -1211,18 +1211,34 @@ CONVERSATION TO EXTRACT FROM:
                 return None
 
         async def _run() -> "StructuredResponse":
-            return await call_provider.complete_structured(
-                messages=[Message(role="user", content="Extract the working memory.")],
-                schema=_working_memory_schema(),
-                schema_name="working_memory",
-                schema_description=(
-                    "High-level summary, actions completed, and the durable "
-                    "entity graph for the session."
-                ),
-                system_prompt=system_prompt,
-                max_tokens=self.summary_max_tokens,
-                thinking=ThinkingConfig(enabled=False),
-            )
+            try:
+                return await call_provider.complete_structured(
+                    messages=[Message(role="user", content="Extract the working memory.")],
+                    schema=_working_memory_schema(),
+                    schema_name="working_memory",
+                    schema_description=(
+                        "High-level summary, actions completed, and the durable "
+                        "entity graph for the session."
+                    ),
+                    system_prompt=system_prompt,
+                    max_tokens=self.summary_max_tokens,
+                    thinking=ThinkingConfig(enabled=False),
+                )
+            finally:
+                # Close the CLONE's async client on THIS loop, before asyncio.run
+                # closes it. Otherwise the unclosed httpx client is GC'd later
+                # and its aclose() is scheduled on the now-closed loop, logging
+                # "Task exception was never retrieved … Event loop is closed" and
+                # leaking the connection. Never close the shared session provider.
+                if call_provider is not provider:
+                    _close = getattr(call_provider, "close", None)
+                    if _close is not None:
+                        try:
+                            _res = _close()
+                            if asyncio.iscoroutine(_res):
+                                await _res
+                        except Exception:
+                            pass
 
         # Observability — fire the start hook just before the network call so
         # the bridge can emit a `working_memory_start` system event the

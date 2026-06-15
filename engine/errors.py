@@ -47,6 +47,27 @@ _TIMEOUT_PATTERNS: list[Pattern[str] | str] = [
     re.compile(r"\bunhandled stop reason:\s*abort\b", re.IGNORECASE),
 ]
 
+# Connection-level transient disconnects — the peer/proxy dropped the TCP/HTTP
+# connection mid-flight (no HTTP status code to key on). Almost always a passing
+# network or server blip, so re-issuing the request usually succeeds. Notably
+# httpx's RemoteProtocolError ("peer closed connection without sending complete
+# message body (incomplete chunked read)") on a long streaming LLM call, which
+# otherwise escapes the runner's `except ProviderError` retry path raw and fails
+# the whole turn non-retryably.
+_TRANSIENT_CONNECTION_PATTERNS: list[Pattern[str] | str] = [
+    "peer closed connection",
+    "incomplete chunked read",
+    "incomplete read",
+    "remoteprotocolerror",
+    "connection reset",
+    "connection aborted",
+    "broken pipe",
+    "server disconnected",
+    "connection error",
+    "connecterror",
+    re.compile(r"\beof occurred\b", re.IGNORECASE),  # SSL EOF mid-stream
+]
+
 _BILLING_PATTERNS: list[Pattern[str] | str] = [
     re.compile(
         r'["\'"]?(?:status|code)["\']?\s*[:=]\s*402\b|'
@@ -220,6 +241,13 @@ def is_transient_http_error(message: str) -> bool:
     return status is not None and status in _TRANSIENT_HTTP_CODES
 
 
+def is_transient_connection_error(message: str) -> bool:
+    """Check if message indicates a transient connection-level disconnect (the
+    peer/proxy dropped the connection mid-request — RemoteProtocolError, reset,
+    broken pipe, SSL EOF, etc.). Retryable: re-issuing usually succeeds."""
+    return _matches_patterns(message, _TRANSIENT_CONNECTION_PATTERNS)
+
+
 def is_api_internal_error(message: str) -> bool:
     """Check if message carries an Anthropic body-level api_error.
 
@@ -385,6 +413,8 @@ def is_retryable_error(message: str) -> bool:
     if is_overloaded_error(message):
         return True
     if is_transient_http_error(message):
+        return True
+    if is_transient_connection_error(message):
         return True
     if is_api_internal_error(message):
         return True

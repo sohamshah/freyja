@@ -1413,6 +1413,13 @@ class AsyncAgentRunner:
             )
         except Exception as exc:
             self._notify_llm_call(provider, start, streaming=False, response=None, error=exc)
+            # A raw transport error (e.g. httpx RemoteProtocolError) isn't a
+            # ProviderError, so the loop's `except ProviderError` retry path
+            # never sees it — it escapes to the top-level catch-all and fails the
+            # turn non-retryably. Re-cast transient ones so the retry machine
+            # re-issues the call.
+            if not isinstance(exc, ProviderError) and is_retryable_error(str(exc)):
+                raise ProviderError(str(exc), retryable=True) from exc
             raise
         self._notify_llm_call(provider, start, streaming=False, response=response, error=None)
         return response
@@ -1451,6 +1458,12 @@ class AsyncAgentRunner:
             )
         except Exception as exc:
             self._notify_llm_call(provider, start, streaming=True, response=None, error=exc)
+            # See _call_provider_async: re-cast a raw transient transport error
+            # (e.g. httpx RemoteProtocolError "peer closed connection" mid-stream)
+            # as a retryable ProviderError so the retry machine re-issues it
+            # instead of the turn dying in the top-level catch-all.
+            if not isinstance(exc, ProviderError) and is_retryable_error(str(exc)):
+                raise ProviderError(str(exc), retryable=True) from exc
             raise
         self._notify_llm_call(provider, start, streaming=True, response=response, error=None)
         return response
