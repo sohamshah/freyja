@@ -497,6 +497,19 @@ def _compose_fire_prompt(
     if isinstance(job.schedule, SelfPacedSchedule):
         parts.append(_self_paced_contract(job, run))
 
+    # Fire-time context preludes — data that changes per fire and so
+    # can't live in the snapshotted prompt. The briefer uses this to
+    # inject its deterministic recency shortlist; other jobs get nothing.
+    # Guarded: a prelude failure must never break a fire.
+    try:
+        from bridge.briefing import fire_context_block
+
+        prelude = fire_context_block(job)
+        if prelude:
+            parts.append(prelude)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("fire context prelude failed: %s", exc)
+
     # The job's actual prompt goes last so it's what the model sees
     # most prominently.
     parts.append("# Your task\n\n" + job.prompt)

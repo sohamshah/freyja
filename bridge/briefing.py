@@ -42,6 +42,16 @@ logger = logging.getLogger("freyja.briefing")
 BRIEFER_TAG = "briefer"
 BRIEFER_NAME = "Morning briefing"
 
+# Recency-shortlist tuning. The briefer's substrate is hundreds of
+# project dirs (most months-stale); free-form triage over them is
+# unreliable and skipped the most recent session in practice. So we
+# compute the fresh set deterministically and inject it at fire time.
+_SKIP_PREFIXES = ("sub_", "comp_", "scheduler")
+_SHORTLIST_MIN = 3          # always surface at least the N most-recent
+_SHORTLIST_MAX = 30         # bound the injected block
+_DEFAULT_LOOKBACK_SECONDS = 72 * 3600  # fallback window if no prior edition
+_OVERVIEW_PREVIEW_CHARS = 320
+
 
 def briefing_root() -> Path:
     base = os.environ.get("FREYJA_HOME") or os.path.expanduser("~/.freyja")
@@ -129,6 +139,166 @@ def _home_str() -> str:
     return os.environ.get("FREYJA_HOME") or os.path.expanduser("~/.freyja")
 
 
+# ─── Recency shortlist (fire-time context) ─────────────────────────────
+# The briefer can't reliably hand-triage 150+ working_memory.json files,
+# and its snapshotted prompt can't carry data that changes daily. So we
+# compute the set of sessions active since the last edition determinist-
+# ically and inject it at fire time (runtime._compose_fire_prompt calls
+# fire_context_block). Keyed on session updatedAt — NOT working-memory
+# mtime — so a lagging backfill can never hide a freshly-active session.
+
+
+def _sessions_index() -> list[dict]:
+    p = Path(_home_str()) / "sessions" / "_index.json"
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return []
+    sessions = data.get("sessions") if isinstance(data, dict) else None
+    return [s for s in sessions if isinstance(s, dict)] if isinstance(sessions, list) else []
+
+
+def _session_id(s: dict) -> str:
+    return str(s.get("id") or s.get("session_id") or s.get("sessionId") or "")
+
+
+def _updated_ms(s: dict) -> float:
+    v = s.get("updatedAt") or s.get("updated_at") or s.get("lastActivity") or 0
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def recency_shortlist(*, now: float, since: float) -> list[tuple[float, str, str]]:
+    """Non-subagent sessions active since ``since`` (epoch s), newest
+    first, as ``(updated_ms, session_id, title)``. Always returns at
+    least ``_SHORTLIST_MIN`` (the most recent, even if older than
+    ``since``) so a quiet window still surfaces the latest activity, and
+    never more than ``_SHORTLIST_MAX``."""
+    rows: list[tuple[float, str, str]] = []
+    for s in _sessions_index():
+        sid = _session_id(s)
+        if not sid or sid.startswith(_SKIP_PREFIXES):
+            continue
+        rows.append((_updated_ms(s), sid, str(s.get("title") or "")[:80]))
+    rows.sort(reverse=True)
+    recent = [r for r in rows if r[0] / 1000.0 >= since]
+    if len(recent) < _SHORTLIST_MIN:
+        recent = rows[:_SHORTLIST_MIN]
+    return recent[:_SHORTLIST_MAX]
+
+
+def _wm_overview(session_id: str) -> dict | None:
+    """Best-effort {summary, open_threads} for a session's working
+    memory. None when the file is missing/unparseable (e.g. backfill
+    hasn't summarized it yet) — the session still belongs on the list."""
+    p = Path(_home_str()) / "projects" / session_id / "working_memory.json"
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(d, dict):
+        return None
+    ov = d.get("overview")
+    summary = str(ov.get("summary") or "") if isinstance(ov, dict) else ""
+    threads = d.get("open_threads")
+    n_open = 0
+    if isinstance(threads, list):
+        n_open = sum(
+            1 for t in threads
+            if isinstance(t, dict) and str(t.get("status") or "").lower() == "open"
+        )
+    return {"summary": summary, "open_threads": n_open}
+
+
+def _prior_briefing_ts(today_str: str) -> float | None:
+    """generated_at epoch of the most recent edition strictly before
+    ``today_str`` — the window a fresh edition (or a same-day rebrief)
+    should measure 'new' against."""
+    from datetime import datetime
+
+    for date in list_briefing_dates():  # newest first
+        if date >= today_str:
+            continue
+        jp = briefing_root() / date / "briefing.json"
+        try:
+            d = json.loads(jp.read_text(encoding="utf-8"))
+            iso = (d or {}).get("generated_at_iso")
+            if iso:
+                return datetime.fromisoformat(iso).timestamp()
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def render_recency_block(*, now: float | None = None) -> str:
+    """The fire-time block: every session active since the last edition,
+    newest first, each with a working-memory preview. Empty string when
+    there's nothing to show (no sessions / no index)."""
+    import time
+
+    now = now if now is not None else time.time()
+    today_str = time.strftime("%Y-%m-%d", time.localtime(now))
+    prior = _prior_briefing_ts(today_str)
+    since = prior if prior is not None else (now - _DEFAULT_LOOKBACK_SECONDS)
+    entries = recency_shortlist(now=now, since=since)
+    if not entries:
+        return ""
+
+    home = _home_str()
+    since_label = (
+        time.strftime("%Y-%m-%d %H:%M", time.localtime(prior))
+        if prior is not None else "the last ~72h"
+    )
+    lines = [
+        f"# Sessions active since your last briefing ({since_label}) — READ EVERY ONE",
+        "",
+        "This is the authoritative, complete set of non-subagent sessions "
+        "touched since your last edition, newest first. It is computed "
+        "deterministically — do NOT rely on your own scan to find what's new. "
+        f"For EACH entry below, read its full "
+        f"`{home}/projects/<id>/working_memory.json` (and the tail of that "
+        "dir's `action_ledger.jsonl`) before you sample any older session. "
+        "Never skip an entry because it looks finished: a delivered artifact "
+        "awaiting the user is a `ready` project, not a non-event. The previews "
+        "are partial — open the files for the real content.",
+        "",
+    ]
+    for i, (ms, sid, title) in enumerate(entries, 1):
+        ov = _wm_overview(sid)
+        when = (
+            time.strftime("%Y-%m-%d %H:%M", time.localtime(ms / 1000.0))
+            if ms else "unknown"
+        )
+        ttl = f' · "{title}"' if title else ""
+        if ov is None:
+            lines.append(f"{i}. {sid}{ttl} · updated {when}")
+            lines.append(
+                "    overview: (working memory not yet summarized — read this "
+                "session's action_ledger.jsonl tail directly)"
+            )
+        else:
+            summary = " ".join((ov["summary"] or "").split())[:_OVERVIEW_PREVIEW_CHARS]
+            threads = f" · {ov['open_threads']} open thread(s)" if ov["open_threads"] else ""
+            lines.append(f"{i}. {sid}{ttl} · updated {when}{threads}")
+            lines.append(f"    overview: {summary or '(empty)'}")
+    return "\n".join(lines)
+
+
+def fire_context_block(job: Any) -> str:
+    """Hook called by the scheduler at fire time. Returns the recency
+    block for the briefer job, '' for every other job. Guarded so a
+    failure here can never break a scheduled fire."""
+    try:
+        if BRIEFER_TAG not in (getattr(job, "tags", None) or []):
+            return ""
+        return render_recency_block()
+    except Exception:  # noqa: BLE001
+        logger.debug("recency block render failed", exc_info=True)
+        return ""
+
+
 def briefer_prompt() -> str:
     """Render the briefer's prompt with the live FREYJA_HOME. Called at
     job-creation time (the prompt is snapshotted onto the JobRecord)."""
@@ -142,18 +312,27 @@ execute project work yourself.
 
 1. Your working notes (injected above) — calibration you've learned
    about how this user wants their briefing.
-2. Yesterday's briefing, if it exists: the newest directory under
+2. **The "Sessions active since your last briefing" block above is your
+   authoritative reading list** — it is computed deterministically and
+   names EVERY non-subagent session touched since the last edition,
+   newest first, with a working-memory preview. Read each listed
+   session's full {home}/projects/<id>/working_memory.json AND the tail
+   of its action_ledger.jsonl (last ~30 lines; createdAt is epoch ms).
+   Do not skip any — this set is what "new since yesterday" means, and a
+   delivered artifact awaiting the user is a `ready` project. If that
+   block is absent, fall back to scanning {home}/projects/*/working_memory.json.
+3. Yesterday's briefing, if it exists: the newest directory under
    {home}/briefing/ (format YYYY-MM-DD) — read its briefing.json so
-   today's edition reflects what changed rather than restating.
-3. Session summaries: every {home}/projects/*/working_memory.json.
-   Each has an `overview` ({{summary, actionsCompleted}}) and an entity
-   graph (workstreams / decisions / findings / open_threads /
-   artifact_notes). Skip docs that are empty. open_threads with
-   status "open" are your primary decision candidates.
-4. Recent activity: for sessions whose working memory mentions ongoing
-   work, {home}/projects/<same-dir>/action_ledger.jsonl tail (last
-   ~30 lines) tells you what concretely happened and when (createdAt is
-   epoch ms).
+   today's edition reflects what changed rather than restating, and so
+   project NAMES stay stable day to day.
+4. Carry-forward context: after the fresh set, you MAY sample older
+   {home}/projects/*/working_memory.json for long-running projects that
+   didn't move recently but still belong in the picture (e.g. an open PR,
+   a paused series). Each has an `overview` ({{summary, actionsCompleted}})
+   and an entity graph (workstreams / decisions / findings / open_threads
+   / artifact_notes). open_threads with status "open" are decision
+   candidates. Don't exhaustively read all of them — the fresh set above
+   is the priority.
 5. Session index: {home}/sessions/_index.json — titles + updatedAt
    for mapping session ids to human names and recency.
 6. Scheduled jobs: {home}/schedules/jobs/*.json and each job's
@@ -161,9 +340,9 @@ execute project work yourself.
    partial_failure runs are decision candidates; enabled jobs with
    upcoming fires belong in today's plan context.
 
-Use bash (ls, cat, jq if available, python3) — read efficiently: list
-first, then open only what matters. Most working_memory.json files are
-small; do read all the non-empty ones.
+Use bash (ls, cat, jq if available, python3) — read efficiently. The
+fresh-set files above are the ones you MUST open; everything else is
+optional context.
 
 # Synthesize
 
@@ -246,6 +425,7 @@ async def ensure_briefer_job(state: Any) -> str | None:
             jobs = await scheduler.list_jobs(None)
             for j in jobs:
                 if BRIEFER_TAG in (getattr(j, "tags", None) or []):
+                    await _maybe_refresh_prompt(scheduler, j)
                     _write_pointer(j.id)
                     return j.id
         except Exception:  # noqa: BLE001
@@ -254,6 +434,24 @@ async def ensure_briefer_job(state: Any) -> str | None:
         return await _create_briefer_job(state, scheduler)
     finally:
         lock.release()
+
+
+async def _maybe_refresh_prompt(scheduler: Any, job: Any) -> None:
+    """Keep the live briefer job's snapshotted prompt in sync with the
+    code. The prompt is frozen onto the JobRecord at creation, so a code
+    change to ``briefer_prompt()`` would otherwise never reach the
+    already-existing job. Patch only when it actually differs (so this is
+    a no-op on every boot after the upgrade lands)."""
+    try:
+        desired = briefer_prompt()
+        if getattr(job, "prompt", "") == desired:
+            return
+        from bridge.scheduler.models import JobPatch
+
+        await scheduler.update_job(job.id, JobPatch(prompt=desired))
+        logger.info("briefer prompt refreshed to current code version (%s)", job.id)
+    except Exception:  # noqa: BLE001
+        logger.debug("briefer prompt refresh failed", exc_info=True)
 
 
 async def _create_briefer_job(state: Any, scheduler: Any) -> str | None:
