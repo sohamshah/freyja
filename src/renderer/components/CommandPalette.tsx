@@ -36,6 +36,16 @@ export function CommandPalette() {
     const out: PaletteItem[] = []
     out.push(
       {
+        id: 'morning-room',
+        title: 'Morning Room',
+        subtitle: "Today's briefing — projects, decisions, and a staged plan (⌘⇧B)",
+        group: 'Command',
+        action: () => {
+          useHarness.getState().toggleMorningRoom(true)
+          close(false)
+        },
+      },
+      {
         id: 'mission:overview',
         title: 'Mission Dashboard',
         subtitle: 'Overview of session health, active agents, findings, changes, and artifacts',

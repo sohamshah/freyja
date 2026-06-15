@@ -214,25 +214,35 @@ export function MorningRoom() {
   }, [b.doc, newSession, sendMessage, showToast, markDispatched, unmarkDispatched])
 
   const generateNow = useCallback(async () => {
-    if (!b.brieferJobId) return
+    if (!b.brieferJobId || generating) return
     setGenerating(true)
+    // Snapshot the current edition's stamp so the poll can tell a
+    // FRESH briefing from the one already on screen — when rebriefing,
+    // today's briefing.json already exists, so "file present" isn't
+    // enough; we wait until generated_at_iso (or the date) changes.
+    const beforeStamp = b.doc?.generated_at_iso ?? null
+    const beforeDate = b.date
     try {
       const { schedulerApi } = await import('../state/scheduler-store')
       await schedulerApi.runJobNow(b.brieferJobId)
       showToast('Briefer running — this takes a couple of minutes', 'info')
-      // Poll for the file landing. Timers are held in a ref and cleared
-      // on unmount so closing the room doesn't leave a 10-minute orphan
-      // interval calling setState on an unmounted component.
+      // Timers held in a ref + cleared on unmount so closing the room
+      // doesn't leave a 10-minute orphan interval calling setState.
       clearInterval(pollTimersRef.current.interval)
       clearTimeout(pollTimersRef.current.timeout)
       pollTimersRef.current.interval = setInterval(async () => {
         const api = (window as any).harness
         const res = await api?.getBriefing?.()
-        if (res?.date === localToday() && res?.json) {
+        const isNew =
+          res?.json &&
+          (res.date !== beforeDate ||
+            (res.json.generated_at_iso ?? null) !== beforeStamp)
+        if (isNew) {
           clearInterval(pollTimersRef.current.interval)
           clearTimeout(pollTimersRef.current.timeout)
           setGenerating(false)
           load().catch(() => {})
+          showToast('Briefing refreshed', 'info')
         }
       }, 5000)
       pollTimersRef.current.timeout = setTimeout(() => {
@@ -243,7 +253,7 @@ export function MorningRoom() {
       setGenerating(false)
       showToast(`Briefer failed to start: ${String(err).slice(0, 80)}`, 'warn')
     }
-  }, [b.brieferJobId, load, showToast])
+  }, [b.brieferJobId, b.doc, b.date, generating, load, showToast])
 
   // Clear any in-flight generate-now poll when the room unmounts.
   useEffect(() => {
@@ -267,15 +277,43 @@ export function MorningRoom() {
       <header className="mroom-chrome">
         <div className="mroom-brand">
           <span className="mroom-mark" />
-          <span className="mroom-brand-name">freyja</span>
-          <span className="mroom-brand-div">·</span>
           <span className="mroom-brand-room">morning room</span>
+          {b.date && b.date !== localToday() && (
+            <span className="mroom-brand-stale">· {b.date}</span>
+          )}
         </div>
         <div className="mroom-chrome-right">
           {(doc?.decisions?.length ?? 0) > 0 && (
             <span className="mroom-waiting">
               {doc!.decisions!.length} decision{doc!.decisions!.length === 1 ? '' : 's'} waiting
             </span>
+          )}
+          {b.dates.length > 1 && (
+            <select
+              className="mroom-date-select"
+              value={b.date ?? ''}
+              onChange={(e) => {
+                setB((p) => ({ ...p, loading: true }))
+                load(e.target.value).catch(() => {})
+              }}
+              title="View a past briefing"
+            >
+              {b.dates.map((d) => (
+                <option key={d} value={d}>
+                  {d === localToday() ? `${d} · today` : d}
+                </option>
+              ))}
+            </select>
+          )}
+          {b.brieferJobId && (
+            <button
+              className="mroom-rebrief"
+              onClick={generateNow}
+              disabled={generating}
+              title="Regenerate today’s briefing now"
+            >
+              {generating ? '↻ generating…' : '↻ rebrief'}
+            </button>
           )}
           <button
             className="mroom-close"
@@ -590,30 +628,51 @@ const STYLES = `
 .mroom-chrome {
   position: sticky; top: 0; z-index: 30;
   display: flex; justify-content: space-between; align-items: center;
-  padding: 10px 20px;
+  /* Left inset clears the macOS traffic lights (OS-drawn at ~0-78px);
+     88px matches the app's other full-screen modals (MissionDashboard,
+     ScheduledJobsDashboard pl-[88px]). 46px height matches the real
+     title bar so the takeover lines up with the window frame. */
+  height: 46px;
+  padding: 0 16px 0 88px;
   background: linear-gradient(180deg, rgba(6,7,11,0.96), rgba(6,7,11,0.82));
   backdrop-filter: blur(16px) saturate(140%);
   border-bottom: 1px solid rgba(255,255,255,0.06);
   font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
   color: #6e6e6e;
+  /* The strip is a drag handle so the window still moves; controls
+     below opt out via .no-drag equivalents. */
+  -webkit-app-region: drag;
 }
+.mroom-chrome button,
+.mroom-chrome select { -webkit-app-region: no-drag; }
 .mroom-brand { display: flex; align-items: center; gap: 10px; }
 .mroom-mark {
-  width: 12px; height: 12px; border-radius: 2px;
+  width: 11px; height: 11px; border-radius: 2px;
   background: linear-gradient(135deg, #c4e0fc, #7aafea);
   box-shadow: 0 0 10px rgba(168,212,252,0.55);
 }
-.mroom-brand-room { color: #e8e8e8; }
-.mroom-brand-div { color: #2a2a2a; }
-.mroom-chrome-right { display: flex; align-items: center; gap: 16px; }
+.mroom-brand-room { color: #e8e8e8; letter-spacing: 0.18em; }
+.mroom-brand-stale { color: #b8a078; letter-spacing: 0.1em; }
+.mroom-chrome-right { display: flex; align-items: center; gap: 12px; }
 .mroom-waiting { color: #a8d4fc; letter-spacing: 0.1em; }
-.mroom-close {
+.mroom-date-select {
+  background: rgba(255,255,255,0.04); color: #a8a8a8;
+  border: 1px solid rgba(255,255,255,0.08); border-radius: 4px;
+  font-family: inherit; font-size: 9px; letter-spacing: 0.06em;
+  padding: 3px 6px; cursor: pointer; text-transform: none;
+}
+.mroom-rebrief, .mroom-close {
   background: none; border: 1px solid rgba(255,255,255,0.08);
   color: #6e6e6e; font-family: inherit; font-size: 9px;
   letter-spacing: 0.14em; padding: 4px 8px; border-radius: 4px;
   cursor: pointer; text-transform: uppercase;
 }
-.mroom-close:hover { color: #e8e8e8; }
+.mroom-rebrief:hover, .mroom-close:hover {
+  color: #e8e8e8; border-color: rgba(255,255,255,0.18);
+}
+.mroom-rebrief { color: #a8d4fc; }
+.mroom-rebrief:hover { color: #c4e0fc; border-color: rgba(168,212,252,0.4); }
+.mroom-rebrief:disabled { color: #4a4a4a; cursor: default; }
 .mroom-brief {
   position: relative; z-index: 5;
   max-width: 760px; margin: 0 auto;

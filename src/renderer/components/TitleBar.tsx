@@ -50,6 +50,8 @@ export function TitleBar() {
   )
   const isStreaming = useHarness((s) => s.isStreaming)
   const missionDashboardOpen = useHarness((s) => s.missionDashboardOpen)
+  const morningRoomOpen = useHarness((s) => s.morningRoomOpen)
+  const toggleMorningRoom = useHarness((s) => s.toggleMorningRoom)
   const metricsDashboardOpen = useHarness((s) => s.metricsDashboardOpen)
   const toggleMetricsDashboard = useHarness((s) => s.toggleMetricsDashboard)
   const sidebarCollapsed = useHarness((s) => s.sidebarCollapsed)
@@ -95,6 +97,14 @@ export function TitleBar() {
         active={!sidebarCollapsed}
       >
         <span className="font-mono uppercase">workspace</span>
+      </TitleControl>
+      <TitleControl
+        className="no-drag h-[28px] px-2.5 text-[10px]"
+        onClick={() => toggleMorningRoom(true)}
+        title="Open the Morning Room — today's briefing (⌘⇧B)"
+        active={morningRoomOpen}
+      >
+        <span className="font-mono uppercase">briefing</span>
       </TitleControl>
       <TitleControl
         className="no-drag h-[28px] px-2.5 text-[10px]"
