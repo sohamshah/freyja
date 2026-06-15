@@ -1186,8 +1186,32 @@ CONVERSATION TO EXTRACT FROM:
             conversation=safe_conversation,
         )
 
+        # Run the structured call on an ISOLATED clone of the provider. This
+        # call runs inside a ThreadPoolExecutor worker via `asyncio.run`, which
+        # spins up a fresh event loop and CLOSES it when done. A real provider's
+        # async HTTP client (Anthropic/OpenAI AsyncClient, Gemini `.aio`) binds
+        # its connection pool to whatever loop first drives it — so reusing the
+        # shared session provider here would seed its pool with connections
+        # bound to this throwaway loop, and the next real LLM call on the main
+        # loop dies with "RuntimeError: Event loop is closed". A same-config
+        # clone gets its own client that lives and dies with this loop, leaving
+        # the session provider untouched. Mocks (no `_config`) pass through.
+        call_provider = provider
+        _cfg = getattr(provider, "_config", None)
+        if _cfg is not None:
+            try:
+                call_provider = type(provider)(_cfg)
+            except Exception:
+                # Can't isolate → skip rather than risk poisoning the shared
+                # client; the ledger-based refresh still updates working memory.
+                logger.debug(
+                    "working-memory extraction: provider clone failed; skipping",
+                    exc_info=True,
+                )
+                return None
+
         async def _run() -> "StructuredResponse":
-            return await provider.complete_structured(
+            return await call_provider.complete_structured(
                 messages=[Message(role="user", content="Extract the working memory.")],
                 schema=_working_memory_schema(),
                 schema_name="working_memory",
