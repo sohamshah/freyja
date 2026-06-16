@@ -265,29 +265,29 @@ export function MorningRoom() {
     }
   }, [])
 
-  // App-open auto-recovery. If today's edition is missing when the room
-  // opens — the classic case being the 6am scheduled fire that slept
-  // through a maintenance DarkWake and produced nothing — generate it
-  // once so the user lands on a fresh briefing rather than yesterday's
-  // (or an empty state). Gated to once per local day via localStorage so
-  // reopening the room, or a manual rebrief, never re-triggers it; the
-  // generate's own poll then refreshes the view when the edition lands.
+  // App-open recovery (ask-first). When today's edition is missing — the
+  // classic case being the 6am fire that slept through a maintenance
+  // DarkWake and produced nothing — we never spend silently. If a stale
+  // (yesterday's) edition is on screen we surface a "generate today's?"
+  // banner; the empty state already carries its own generate button. A
+  // "not now" is remembered per local day so it doesn't nag on reopen.
+  const [recoveryDismissed, setRecoveryDismissed] = useState(false)
   useEffect(() => {
-    if (b.loading || generating || !b.brieferJobId) return
-    const today = localToday()
-    if (b.date === today && b.doc) return // today's edition already present
-    let alreadyTried = false
     try {
-      const key = `freyja.morningRoom.autoRebrief.${today}`
-      alreadyTried = localStorage.getItem(key) === '1'
-      if (!alreadyTried) localStorage.setItem(key, '1') // set BEFORE firing
+      const key = `freyja.morningRoom.recoveryDismissed.${localToday()}`
+      setRecoveryDismissed(localStorage.getItem(key) === '1')
     } catch {
-      /* localStorage unavailable — fall through and generate once */
+      setRecoveryDismissed(false)
     }
-    if (alreadyTried) return
-    showToast('No briefing for today yet — generating…', 'info')
-    void generateNow()
-  }, [b.loading, b.date, b.doc, b.brieferJobId, generating, generateNow, showToast])
+  }, [b.date])
+  const dismissRecovery = useCallback(() => {
+    setRecoveryDismissed(true)
+    try {
+      localStorage.setItem(`freyja.morningRoom.recoveryDismissed.${localToday()}`, '1')
+    } catch {
+      /* localStorage unavailable — dismissal lasts the session only */
+    }
+  }, [])
 
   const doc = b.doc
   // Only fire_job/prompt intents are batch-dispatchable — open_session
@@ -364,6 +364,19 @@ export function MorningRoom() {
           />
         ) : (
           <>
+            {b.date !== localToday() && !!b.brieferJobId && !generating && !recoveryDismissed && (
+              <div className="mroom-recovery">
+                <span className="mroom-recovery-msg">
+                  Showing {b.date}. Today's briefing hasn't been generated yet.
+                </span>
+                <button className="mroom-recovery-go" onClick={generateNow}>
+                  ▸ generate today’s
+                </button>
+                <button className="mroom-recovery-skip" onClick={dismissRecovery}>
+                  not now
+                </button>
+              </div>
+            )}
             <Hero doc={doc} />
             {(doc.projects?.length ?? 0) > 0 && (
               <section className="mroom-section">
@@ -716,6 +729,26 @@ const STYLES = `
 .mroom-rebrief:hover, .mroom-close:hover {
   color: #e8e8e8; border-color: rgba(255,255,255,0.18);
 }
+/* App-open recovery prompt — a thin ask-first bar shown above a stale
+   edition when today's hasn't been generated. No silent spend. */
+.mroom-recovery {
+  display: flex; align-items: center; gap: 16px;
+  margin: 0 0 26px; padding: 9px 14px;
+  border: 1px solid rgba(168,212,252,0.18); border-radius: 6px;
+  background: rgba(168,212,252,0.04);
+  font-size: 11px; letter-spacing: 0.02em;
+}
+.mroom-recovery-msg { color: #b0b0b0; flex: 1; }
+.mroom-recovery-go {
+  background: none; border: none; cursor: pointer; padding: 0;
+  color: #a8d4fc; font-family: inherit; font-size: 11px; letter-spacing: 0.04em;
+}
+.mroom-recovery-go:hover { color: #c4e0fc; }
+.mroom-recovery-skip {
+  background: none; border: none; cursor: pointer; padding: 0;
+  color: #6e6e6e; font-family: inherit; font-size: 11px;
+}
+.mroom-recovery-skip:hover { color: #999; }
 .mroom-rebrief { color: #a8d4fc; }
 .mroom-rebrief:hover { color: #c4e0fc; border-color: rgba(168,212,252,0.4); }
 .mroom-rebrief:disabled { color: #4a4a4a; cursor: default; }

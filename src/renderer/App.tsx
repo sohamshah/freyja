@@ -243,10 +243,10 @@ export function App() {
       // Morning Room landing policy: open automatically on the FIRST
       // launch of a day. If today's edition exists we land on it; if it's
       // MISSING (e.g. the 6am fire slept through), we still open so the
-      // room's own auto-recovery can generate today's edition — that's
-      // what makes "ready when you sit down" hold after an overnight
-      // sleep. localStorage tracks the last auto-open date so subsequent
-      // launches the same day land in the normal shell (⌘⇧B reopens it).
+      // room can surface its ask-first recovery prompt ("generate today's?")
+      // — the briefing is never generated without an explicit click.
+      // localStorage tracks the last auto-open date so subsequent launches
+      // the same day land in the normal shell (⌘⇧B reopens it).
       ;(async () => {
         try {
           const res = await api.getBriefing?.()
