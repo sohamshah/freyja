@@ -372,7 +372,10 @@ function Header({
 }) {
   const title = view === 'changes' ? 'changes workspace' : 'artifact workspace'
   return (
-    <div className="drag flex items-center gap-3 border-b border-white/[0.06] bg-[#0a0a0e]/60 pl-[82px] pr-3 py-2.5">
+    <div
+      className="drag flex items-center gap-3 border-b border-white/[0.06] bg-[#0a0a0e]/60 pr-3 py-2.5"
+      style={{ paddingLeft: 'var(--titlebar-inset, 82px)' }}
+    >
       {/* Title + count */}
       <div className="no-drag flex items-center gap-2">
         <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-fg-1">

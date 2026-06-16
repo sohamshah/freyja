@@ -66,10 +66,14 @@ export function BriefMemo({
   return (
     <div className="fixed inset-0 z-[70] flex flex-col bg-black/65 backdrop-blur-[8px]">
       {/* Strip header — scope + status, balanced by the close button.
-          pl-[88px] clears the OS-level traffic-light buttons (rendered
-          on top of the window content under hiddenInset titleBarStyle).
+          The zoom-counter-scaled --titlebar-inset var (set at the App root)
+          clears the OS-level traffic-light buttons at any zoom (rendered on
+          top of the window content under hiddenInset titleBarStyle).
           no-drag on the close button so the OS doesn't intercept clicks. */}
-      <div className="flex items-center gap-4 border-b border-white/[0.06] bg-bg-0/95 py-3 pl-[88px] pr-4 backdrop-blur-[10px]">
+      <div
+        className="flex items-center gap-4 border-b border-white/[0.06] bg-bg-0/95 py-3 pr-4 backdrop-blur-[10px]"
+        style={{ paddingLeft: 'var(--titlebar-inset, 82px)' }}
+      >
         <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-fg-3">
           {to}
         </span>

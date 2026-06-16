@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webFrame } from 'electron'
 import {
   IPC,
   type BridgeCommand,
@@ -39,6 +39,12 @@ const api = {
   },
   async getMode(): Promise<BridgeMode> {
     return ipcRenderer.invoke(IPC.getMode)
+  },
+  // Current webContents zoom factor (1 = 100%, 0.8 = zoomed out). The title
+  // bar counter-scales its native-traffic-light inset by this so the logo
+  // keeps a constant distance from the OS window buttons (which don't zoom).
+  getZoomFactor(): number {
+    return webFrame.getZoomFactor()
   },
   async requestDemoBurst(): Promise<{ ok: boolean }> {
     return ipcRenderer.invoke(IPC.requestDemoBurst)

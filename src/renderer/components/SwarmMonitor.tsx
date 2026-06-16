@@ -70,9 +70,13 @@ export function SwarmMonitor({
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-[#0c0c10]/95 backdrop-blur-md">
-      {/* Header bar — pl-[82px] clears the macOS traffic light buttons
+      {/* Header bar — the zoom-counter-scaled --titlebar-inset var (set at the
+          App root) clears the macOS traffic light buttons at any zoom level
           (hiddenInset title bar with trafficLightPosition y:16). */}
-      <div className="drag flex items-center justify-between border-b border-white/[0.06] pl-[82px] pr-5 py-2.5">
+      <div
+        className="drag flex items-center justify-between border-b border-white/[0.06] pr-5 py-2.5"
+        style={{ paddingLeft: 'var(--titlebar-inset, 82px)' }}
+      >
         <div className="no-drag flex items-center gap-3">
           <span className="font-mono text-[11px] uppercase tracking-[0.1em] text-accent">
             swarm monitor

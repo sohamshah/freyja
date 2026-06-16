@@ -171,6 +171,30 @@ export function App() {
     [flushBridgeEvents],
   )
 
+  // Keep header bars a constant distance from the macOS traffic lights at any
+  // zoom. The native buttons sit at a fixed device-point position and DON'T
+  // zoom, but our CSS left-inset does — so on ⌘-/⌘+ the logo (and the swarm /
+  // artifact / brief headers) drift toward/away from them. Counter-scale the
+  // inset by the zoom factor (exposed as the `--titlebar-inset` CSS var that
+  // every header bar consumes) so its rendered size stays put. Lives here at
+  // the root so it tracks zoom regardless of which top-level view is mounted.
+  // A `resize` fires on every zoom change (zoom alters the CSS-px viewport).
+  useEffect(() => {
+    const BASE_INSET = 82
+    const apply = () => {
+      const api = (window as { harness?: { getZoomFactor?: () => number } }).harness
+      const z = typeof api?.getZoomFactor === 'function' ? api.getZoomFactor() : 1
+      const zoom = Number.isFinite(z) && z > 0 ? z : 1
+      document.documentElement.style.setProperty(
+        '--titlebar-inset',
+        `${BASE_INSET / zoom}px`,
+      )
+    }
+    apply()
+    window.addEventListener('resize', apply)
+    return () => window.removeEventListener('resize', apply)
+  }, [])
+
   useEffect(() => {
     const api = (window as any).harness
     bridgeApiRef.current = api

@@ -72,7 +72,12 @@ export function TitleBar() {
   const ctxPct = Math.min(100, Math.round((contextTokens / usage.contextWindow) * 100))
 
   return (
-    <div className="app-header drag hairline-b flex h-[46px] shrink-0 items-center gap-2 pl-[82px] pr-4 text-[12px] text-fg-1">
+    <div
+      // paddingLeft clears the macOS traffic lights; the var is zoom-counter-
+      // scaled at the App root so it holds a constant distance at any zoom.
+      className="app-header drag hairline-b flex h-[46px] shrink-0 items-center gap-2 pr-4 text-[12px] text-fg-1"
+      style={{ paddingLeft: 'var(--titlebar-inset, 82px)' }}
+    >
       <div className="flex items-center gap-2 text-fg-0">
         <TopographicMark />
         <span
