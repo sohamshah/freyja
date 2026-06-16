@@ -265,6 +265,30 @@ export function MorningRoom() {
     }
   }, [])
 
+  // App-open auto-recovery. If today's edition is missing when the room
+  // opens — the classic case being the 6am scheduled fire that slept
+  // through a maintenance DarkWake and produced nothing — generate it
+  // once so the user lands on a fresh briefing rather than yesterday's
+  // (or an empty state). Gated to once per local day via localStorage so
+  // reopening the room, or a manual rebrief, never re-triggers it; the
+  // generate's own poll then refreshes the view when the edition lands.
+  useEffect(() => {
+    if (b.loading || generating || !b.brieferJobId) return
+    const today = localToday()
+    if (b.date === today && b.doc) return // today's edition already present
+    let alreadyTried = false
+    try {
+      const key = `freyja.morningRoom.autoRebrief.${today}`
+      alreadyTried = localStorage.getItem(key) === '1'
+      if (!alreadyTried) localStorage.setItem(key, '1') // set BEFORE firing
+    } catch {
+      /* localStorage unavailable — fall through and generate once */
+    }
+    if (alreadyTried) return
+    showToast('No briefing for today yet — generating…', 'info')
+    void generateNow()
+  }, [b.loading, b.date, b.doc, b.brieferJobId, generating, generateNow, showToast])
+
   const doc = b.doc
   // Only fire_job/prompt intents are batch-dispatchable — open_session
   // rows need the user present, so they don't count toward "run all N".
@@ -500,7 +524,16 @@ function ProjectLine(props: { project: BriefingProject; onOpen?: () => void }) {
 function Hero(props: { doc: BriefingDoc }) {
   const { doc } = props
   const ref = useRef<HTMLHeadingElement | null>(null)
-  const projects = doc.hero?.projects_in_motion ?? doc.projects?.length ?? 0
+  // Derive the headline count from the actual project states — the same
+  // expression the Projects section label uses — so the two can never
+  // disagree. The briefer-authored hero.projects_in_motion drifted from
+  // the states it summarized (said 3 while 2 were in_motion / 4 active);
+  // trusting the rendered list is the single source of truth. Fall back
+  // to the authored number only when there are no projects to count.
+  const projects =
+    doc.projects?.filter((p) => p.state !== 'quiet').length ??
+    doc.hero?.projects_in_motion ??
+    0
   const events = doc.hero?.events_since ?? 0
   const since = doc.since_label ?? 'your last visit'
   const headline = useMemo(

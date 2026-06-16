@@ -217,9 +217,12 @@ export function App() {
       }).catch(() => {})
 
       // Morning Room landing policy: open automatically on the FIRST
-      // launch of a day that has a briefing. localStorage tracks the
-      // last auto-open date so subsequent launches the same day land
-      // in the normal shell (⌘⇧B reopens it on demand).
+      // launch of a day. If today's edition exists we land on it; if it's
+      // MISSING (e.g. the 6am fire slept through), we still open so the
+      // room's own auto-recovery can generate today's edition — that's
+      // what makes "ready when you sit down" hold after an overnight
+      // sleep. localStorage tracks the last auto-open date so subsequent
+      // launches the same day land in the normal shell (⌘⇧B reopens it).
       ;(async () => {
         try {
           const res = await api.getBriefing?.()
@@ -229,16 +232,16 @@ export function App() {
           const { localToday } = await import('./components/MorningRoom')
           const today = localToday()
           const seenKey = 'freyja.morningRoom.lastAutoOpen'
-          if (
-            res?.json &&
-            res?.date === today &&
-            localStorage.getItem(seenKey) !== today
-          ) {
+          const firstLaunchToday = localStorage.getItem(seenKey) !== today
+          const hasTodayEdition = res?.json && res?.date === today
+          // A briefer job means recovery is possible even with no edition.
+          const canRecover = !!res?.brieferJobId
+          if (firstLaunchToday && (hasTodayEdition || canRecover)) {
             localStorage.setItem(seenKey, today)
             useHarness.getState().toggleMorningRoom(true)
           }
         } catch {
-          /* no briefing — land in the shell as usual */
+          /* no briefing surface available — land in the shell as usual */
         }
       })()
 
