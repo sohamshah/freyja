@@ -211,14 +211,36 @@ export function Sidebar() {
 
   // User-toggled expansion overrides. Adds rows that aren't in the
   // active lineage but the user explicitly clicked open.
+  // Two opt-in/opt-out sets drive sub-session folding:
+  //   · expandedSessions  — sessions the operator explicitly expanded
+  //                         (the default-collapsed, non-active branches).
+  //   · collapsedSessions — sessions the operator explicitly collapsed,
+  //                         VETOing the auto-expand the active session +
+  //                         its ancestors get. Without this veto the active
+  //                         session's swarm could never be folded away.
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set())
-  const toggleExpanded = useCallback((id: string) => {
-    setExpandedSessions((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
+  const [collapsedSessions, setCollapsedSessions] = useState<Set<string>>(new Set())
+  // Bidirectional: `currentlyExpanded` (the row's computed state) decides the
+  // direction so one handler serves both the auto-expanded active row and a
+  // default-collapsed background row.
+  const toggleExpanded = useCallback((id: string, currentlyExpanded: boolean) => {
+    if (currentlyExpanded) {
+      setCollapsedSessions((prev) => new Set(prev).add(id))
+      setExpandedSessions((prev) => {
+        if (!prev.has(id)) return prev
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
+    } else {
+      setExpandedSessions((prev) => new Set(prev).add(id))
+      setCollapsedSessions((prev) => {
+        if (!prev.has(id)) return prev
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
+    }
   }, [])
 
   // Searchable text per session — title + a flat dump of every message's
@@ -398,11 +420,13 @@ export function Sidebar() {
       })
       for (const s of sorted) {
         const hasChildren = (byParent.get(s.id) ?? []).length > 0
+        // A search match always wins (never hide a hit). Otherwise an explicit
+        // collapse vetoes the active-ancestor auto-expand and any manual expand.
         const isExpanded =
           hasChildren &&
-          (activeAncestors.has(s.id)
-            || expandedSessions.has(s.id)
-            || searchExpand.has(s.id))
+          (searchExpand.has(s.id)
+            || (!collapsedSessions.has(s.id)
+              && (activeAncestors.has(s.id) || expandedSessions.has(s.id))))
         if (matchedSessionIds && !searchExpand.has(s.id)) {
           // Filter out non-matching branches entirely when searching.
           continue
@@ -415,7 +439,7 @@ export function Sidebar() {
     }
     walk(null, 0)
     return out
-  }, [sessions, activeAncestors, expandedSessions, matchedSessionIds, lastUserAt])
+  }, [sessions, activeAncestors, expandedSessions, collapsedSessions, matchedSessionIds, lastUserAt])
 
   const orderedSubagents: SubagentRecord[] = useMemo(() => {
     return subagentOrder.map((id) => subagents[id]).filter(Boolean) as SubagentRecord[]
@@ -506,7 +530,7 @@ export function Sidebar() {
               isActive={s.id === activeSessionId}
               hasChildren={s.hasChildren}
               isExpanded={s.isExpanded}
-              onToggleExpand={() => toggleExpanded(s.id)}
+              onToggleExpand={() => toggleExpanded(s.id, s.isExpanded)}
               onOpen={(mode) => openSessionPane(s.id, mode)}
             />
           ))}
@@ -1830,8 +1854,22 @@ function SessionRow({
             setMenuOpen(false)
             return
           }
-          if (!isActive) onOpen(event.metaKey || event.ctrlKey ? 'split' : 'replace')
+          if (isActive) {
+            // Already selected — repurpose the otherwise-dead click on the
+            // active card to fold/unfold its sub-session tree (the operator's
+            // ask: less clutter for the session you're actually viewing).
+            if (hasChildren) onToggleExpand()
+          } else {
+            onOpen(event.metaKey || event.ctrlKey ? 'split' : 'replace')
+          }
         }}
+        title={
+          isActive && hasChildren
+            ? isExpanded
+              ? 'Click to collapse sub-sessions'
+              : 'Click to expand sub-sessions'
+            : undefined
+        }
         style={{ paddingLeft: `${leftPad}px` }}
         className={`flex w-full items-start gap-2 rounded-md py-[7px] pr-2 text-left text-[12px] hover:bg-white/[0.04] ${
           isActive ? 'bg-white/[0.06] text-fg-0 ring-hairline' : 'text-fg-1'
@@ -1930,6 +1968,16 @@ function SessionRow({
             <span>{label}</span>
             <span>·</span>
             <span>{relativeTime(s.updatedAt)}</span>
+            {/* Folded marker — so a collapsed parent advertises how much it's
+                hiding instead of the sub-tree just vanishing. */}
+            {hasChildren && !isExpanded && subagentCount > 0 && (
+              <span
+                title={`${subagentCount} sub-session${subagentCount === 1 ? '' : 's'} collapsed — click to expand`}
+                className="ml-0.5 inline-flex items-center rounded px-1 py-px font-mono text-[9px] text-fg-3 ring-1 ring-white/[0.08]"
+              >
+                ▸ {subagentCount}
+              </span>
+            )}
           </div>
         </div>
         {/* Action buttons on hover */}
