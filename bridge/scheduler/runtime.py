@@ -271,6 +271,22 @@ async def fire_job(
     run.iterations = iteration_count
     run.output_text = output_text
 
+    # Zero-work guard. A run that completed the normal path but made no
+    # model calls and produced no text never actually executed — the
+    # agent was frozen before its first iteration (classically: the
+    # machine slept through a cron fire that landed during a maintenance
+    # DarkWake). Marking it "succeeded" would let an empty run masquerade
+    # as real output (e.g. a morning briefing that was never written) and
+    # suppress any retry. Fail it explicitly instead so it's visible and
+    # downstream recovery can re-fire.
+    if run.status == "running" and iteration_count == 0 and not (output_text or "").strip():
+        run.status = "failed"
+        run.error = (
+            "agent made 0 iterations and produced no output — the fire was "
+            "interrupted before it could start (most often the machine slept "
+            "through the scheduled time). Nothing was produced."
+        )
+
     # Capture what the agent added to its working notes during this
     # turn — diffed against the pre-turn snapshot. This delta is what
     # the NEXT fire injects under "What you added in recent runs."

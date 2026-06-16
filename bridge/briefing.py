@@ -86,7 +86,7 @@ BRIEFING_SCHEMA_DOC = """{
   "generated_at_iso": "ISO-8601 with offset",
   "since_label": "HH:MM yesterday" or "your last visit",
   "hero": {
-    "projects_in_motion": <int>,
+    "projects_in_motion": <int — MUST equal the number of projects below whose state is not "quiet">,
     "events_since": <int>
   },
   "projects": [
@@ -371,6 +371,15 @@ optional context.
 
 # Write
 
+ALWAYS write today's edition fresh, OVERWRITING any briefing.json /
+briefing.md already present for today. There is exactly ONE edition per
+day and every fire makes it reflect the current moment. NEVER skip
+writing because today's file already exists or "looks current" — a fire
+is often a user-triggered rebrief that expects a regenerated edition, and
+a fire that writes nothing reads to the user as a broken button. If
+nothing material changed since the existing edition, still rewrite it
+(refreshed timestamp, same substance is fine).
+
 mkdir -p {home}/briefing/$(date +%F)/ then write BOTH:
 
 1. {home}/briefing/$(date +%F)/briefing.json — EXACTLY this schema:
@@ -379,7 +388,9 @@ mkdir -p {home}/briefing/$(date +%F)/ then write BOTH:
 
    Valid JSON, no trailing commas, no comments. session_id/job_id must
    be REAL ids you saw in the data — never invent them. Omit an intent
-   field (use null) rather than fabricating a target.
+   field (use null) rather than fabricating a target. generated_at_iso
+   MUST be the real current time INCLUDING seconds (e.g. via
+   `date +%Y-%m-%dT%H:%M:%S%z`) so two rebriefs are always distinguishable.
 
 2. {home}/briefing/$(date +%F)/briefing.md — the same content as a
    readable memo: hero line, ## Projects, ## Needs you, ## Today,
