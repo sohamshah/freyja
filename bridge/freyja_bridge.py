@@ -9757,6 +9757,43 @@ class _BridgeState:
 
         existing = self.sessions.get(session_id)
         if existing is not None:
+            # While a turn is IN FLIGHT, ensure_session is a pure VIEW
+            # operation — never reconcile config or touch the transcript.
+            #
+            # Why this matters: a switch away-and-back re-sends the
+            # renderer's persisted model / reasoning / strategy, which can
+            # register as a spurious "change" below. The ``if changed:``
+            # path then calls ``reset()`` (wipes the in-memory transcript,
+            # which holds the entire running turn) + ``try_restore_transcript``
+            # (reloads the last *saved* disk snapshot). But the transcript is
+            # only persisted at turn boundaries, so mid-turn that snapshot is
+            # stale — it's missing the whole live turn. The result the
+            # operator sees: the conversation they were watching vanishes and
+            # reverts to an old state, while new messages silently queue
+            # behind the still-running turn. A runtime swap would be worse
+            # still — it retires the harness adapter out from under the active
+            # turn. None of this can be applied mid-turn anyway (you can't
+            # swap a model on a request that's already streaming), so defer
+            # all of it: leave the session exactly as the running turn expects
+            # and just make it the active view. The renderer keeps its own
+            # live conversation slice, so the switch-back shows the in-flight
+            # turn intact. The sibling no-change path
+            # (_restore_persisted_transcript_if_empty) already short-circuits
+            # on this same condition — this guard extends the same protection
+            # to the reset/restore path.
+            if existing.pending_task is not None and not existing.pending_task.done():
+                if any(
+                    v is not None
+                    for v in (model_id, reasoning_level, coordination_strategy, runtime)
+                ):
+                    log(
+                        "info",
+                        f"ensure_session: turn in flight on {session_id} — "
+                        "deferring config reconciliation (would clobber the "
+                        "live transcript); treating switch as view-only",
+                    )
+                self.active_session_id = session_id
+                return existing
             # CRITICAL: do NOT overwrite existing.gateway_source here.
             # An in-flight turn for an EARLIER message would suddenly
             # see the NEW message's source mid-execution, and its
