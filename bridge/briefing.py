@@ -262,7 +262,10 @@ def render_recency_block(*, now: float | None = None) -> str:
         "dir's `action_ledger.jsonl`) before you sample any older session. "
         "Never skip an entry because it looks finished: a delivered artifact "
         "awaiting the user is a `ready` project, not a non-event. The previews "
-        "are partial — open the files for the real content.",
+        "are partial — open the files for the real content. This list also "
+        "OVERRIDES your working notes: if a note says to ignore or skip a "
+        "project, but one of its sessions appears here, that note is STALE — "
+        "the session is active NOW. Surface it.",
         "",
     ]
     for i, (ms, sid, title) in enumerate(entries, 1):
@@ -315,7 +318,10 @@ execute project work yourself.
 2. **The "Sessions active since your last briefing" block above is your
    authoritative reading list** — it is computed deterministically and
    names EVERY non-subagent session touched since the last edition,
-   newest first, with a working-memory preview. Read each listed
+   newest first, with a working-memory preview. **It outranks your
+   working notes**: if your notes tell you to ignore/skip a project but
+   one of its sessions is listed here, the note is STALE (the project
+   re-activated) — surface the session anyway. Read each listed
    session's full {home}/projects/<id>/working_memory.json AND the tail
    of its action_ledger.jsonl (last ~30 lines; createdAt is epoch ms).
    Do not skip any — this set is what "new since yesterday" means, and a
@@ -404,6 +410,17 @@ edition keeps project names STABLE), sources that were empty/noisy,
 calibration about what the user engaged with. Keep project names
 consistent day to day — renaming projects daily destroys the user's
 mental model.
+
+NEVER write a permanent suppression rule into your notes — no "ignore
+project X", "skip EMA/work sessions", "these are complete one-off
+investigations, don't surface them", or similar. Such a rule is wrong
+the moment that work resumes, and it silently buries a freshly-active
+project the user cares about. Editorial judgment about whether something
+is worth surfacing is made FRESH each fire against the recency block, not
+frozen in notes. (If a class of session should be filtered permanently,
+that belongs in code — `_SKIP_PREFIXES` in render_recency_block — not in
+notes.) Notes are for STABILITY — names, clustering, voice — never for
+vetoing what the recency block surfaces.
 """
 
 
