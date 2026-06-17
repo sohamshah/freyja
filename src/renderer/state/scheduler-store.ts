@@ -35,6 +35,10 @@ export interface SchedulerJob {
 export interface SchedulerRun {
   run_id: string
   job_id: string
+  // The ephemeral session the fire executed in (e.g.
+  // "scheduler:<job>.ephemeral"). Already present in the bridge's
+  // RunRecord; typed here so the sidebar can open the run's transcript.
+  execution_session_id?: string | null
   job_name: string
   status: string
   started_at: number

@@ -1,6 +1,7 @@
 import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useHarness } from '../state/store'
+import { useSchedulerStore } from '../state/scheduler-store'
 import type {
   CoordinationStrategy,
   MemoryRecord,
@@ -14,7 +15,7 @@ import { Spinner } from '../lib/spinner'
 import { StickyHeader } from './StickyHeader'
 import { TopoBackdrop } from './TopoBackdrop'
 
-type Section = 'sessions' | 'skills' | 'subagents' | 'memory'
+type Section = 'sessions' | 'skills' | 'subagents' | 'memory' | 'runs'
 
 /** Token-prefix match: every token in `tokens` must appear as a
  *  prefix of some whitespace-separated word in `haystack`. Both
@@ -73,6 +74,12 @@ export function Sidebar() {
   const computerSessions = useHarness((s) => s.computerSessions)
   const newSession = useHarness((s) => s.newSession)
   const openSessionPane = useHarness((s) => s.openSessionPane)
+  const switchSession = useHarness((s) => s.switchSession)
+  // Scheduled-job runs surface here too — they execute in ephemeral
+  // `scheduler:<job>.ephemeral` sessions that are deliberately kept out
+  // of _index.json (so they never leak into the briefer's recency
+  // shortlist), so they'd otherwise be invisible in the workspace.
+  const recentRuns = useSchedulerStore((s) => s.recentRuns)
   const messageCount = useHarness((s) => s.messages.length)
   const toggleSidebar = useHarness((s) => s.toggleSidebar)
   const sidebarWidth = useHarness((s) => s.sidebarWidth)
@@ -132,6 +139,7 @@ export function Sidebar() {
     skills: false,
     subagents: true,
     memory: false,
+    runs: false,
   })
 
   const sortedSkills = useMemo(() => {
@@ -643,6 +651,56 @@ export function Sidebar() {
                   split
                 </span>
                 <span className="self-center font-mono text-[9px] text-fg-3">
+                  open →
+                </span>
+              </button>
+            )
+          })}
+        </Section>
+
+        <Section
+          title="scheduled runs"
+          count={recentRuns.length}
+          open={open.runs}
+          onToggle={() => setOpen((p) => ({ ...p, runs: !p.runs }))}
+        >
+          {recentRuns.length === 0 && (
+            <div className="px-2 py-2 text-[11px] italic text-fg-2">
+              No scheduled runs yet
+            </div>
+          )}
+          {recentRuns.slice(0, 12).map((run) => {
+            const sid =
+              run.execution_session_id || `scheduler:${run.job_id}.ephemeral`
+            const failed = run.status === 'failed' || run.status === 'timed_out'
+            const active = run.status === 'running' || run.status === 'delivering'
+            const dotClass = failed ? 'bg-danger' : active ? 'bg-accent' : 'bg-ok'
+            return (
+              <button
+                key={run.run_id}
+                onClick={() => {
+                  void switchSession(sid)
+                }}
+                title={`${run.job_name} · fire ${run.fire_number} · ${run.status}`}
+                className="group relative flex w-full items-start gap-2 rounded-md px-2 py-[7px] text-left text-[12px] text-fg-1 hover:bg-white/[0.04]"
+              >
+                <span className="mt-[3px] flex h-3 w-[18px] items-center justify-center">
+                  <span className={`block h-1.5 w-1.5 rounded-full ${dotClass}`} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="truncate">{run.job_name || 'scheduled run'}</span>
+                    <span className="shrink-0 font-mono text-[9px] text-fg-3">
+                      #{run.fire_number}
+                    </span>
+                  </div>
+                  <div className="font-mono text-[9px] text-fg-3">
+                    {/* started_at is epoch SECONDS (bridge sets it via
+                        time.time()); relativeTime wants ms. */}
+                    {run.status} · {relativeTime(run.started_at * 1000)}
+                  </div>
+                </div>
+                <span className="self-center font-mono text-[9px] text-fg-3 opacity-0 group-hover:opacity-100">
                   open →
                 </span>
               </button>
