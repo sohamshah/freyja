@@ -3298,11 +3298,29 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     // sessionArchive is a snapshot from whenever the user last
     // opened the session — by the next click it can be many turns
     // stale (operator kept chatting in Slack while looking at the
-    // desktop). Always re-synthesize from the live transcript so
-    // the conversation pane shows what's actually on-disk now.
+    // desktop). So by default we re-synthesize gateway sessions from
+    // the live transcript on disk.
+    //
+    // EXCEPTION: when an in-flight turn is streaming into THIS app —
+    // i.e. the operator continued the session in the desktop and is
+    // watching the stream live — the cached archive slice is the
+    // FRESHEST source. Background events keep folding into
+    // sessionArchive[id] while the session isn't active (see the
+    // non-active branch in handleEvent), so the partial stream is
+    // intact there. Disk, by contrast, is STALE mid-turn: the
+    // transcript only persists at turn boundaries. Re-synthesizing
+    // from disk in that case throws away the in-progress stream buffer
+    // the operator was watching and reverts to the last saved state.
+    // So: keep the cached slice whenever it's mid-stream; only fall
+    // back to the disk re-synthesis when there's no live stream to
+    // lose. (isStreaming is set at turn_start and cleared only at the
+    // matching turn_complete, so it reliably flags an active turn.)
     const targetMeta = prev.sessions.find((s) => s.id === sessionId)
     const isGateway = targetMeta?.agentType === 'gateway-slack'
-    let archivedSlice = isGateway ? undefined : prev.sessionArchive[sessionId]
+    const cachedSlice = prev.sessionArchive[sessionId]
+    const cachedIsStreaming = !!cachedSlice?.isStreaming
+    let archivedSlice =
+      isGateway && !cachedIsStreaming ? undefined : cachedSlice
     if (!archivedSlice) {
       // Try to load from disk.
       const loaded = await prev.loadPersistedSessionIntoArchive(sessionId)
