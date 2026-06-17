@@ -251,6 +251,28 @@ if [ -f ~/Library/LaunchAgents/co.freyja.gateway.plist ]; then
   fi
 fi
 
+# ───── restart the scheduler daemon (if installed) ──────────────────
+# The scheduler runs as its own LaunchAgent (com.freyja.scheduler) that
+# fires jobs headless — including the morning briefer. Like the gateway,
+# launchd keeps the OLD process alive across a rebuild, so it keeps
+# executing pre-rebuild bridge code until kicked. (This is exactly how a
+# briefer rebrief silently ran without the new recency block: the desktop
+# app updated but this daemon didn't.) kickstart -k does stop+start in
+# one call; -k is harmless if it happens to be stopped.
+if [ -f ~/Library/LaunchAgents/com.freyja.scheduler.plist ]; then
+  echo "→ Restarting scheduler daemon to pick up new Python code…"
+  # kickstart -k is a synchronous kill+restart (unlike the gateway's
+  # async stop/start dance above), so no PID polling is needed. We DON'T
+  # silence the failure path: a kickstart that fails here means the
+  # daemon keeps running stale code — exactly the bug this block exists
+  # to prevent — so surface it (non-fatal; the app itself still works).
+  if ! launchctl kickstart -k "gui/$(id -u)/com.freyja.scheduler"; then
+    echo "  · WARN: scheduler daemon restart failed (it may not be loaded)."
+    echo "    If briefings look stale, run:"
+    echo "      launchctl kickstart -k gui/\$(id -u)/com.freyja.scheduler"
+  fi
+fi
+
 # ───── launch ───────────────────────────────────────────────────────
 if [ "$OPEN_APP" -eq 1 ]; then
   echo "→ Launching"
