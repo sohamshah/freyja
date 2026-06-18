@@ -252,6 +252,70 @@ FREYJA_FORMAT_BLOCK = (
 )
 
 
+# ── Freyja emission bar (shared) ──
+#
+# Appended LAST in both the single-call and agentic system prompts so it
+# is the final guidance the model reads before deciding to emit. It
+# OVERRIDES the Hermes block's "Be ACTIVE / a pass that does nothing is a
+# missed opportunity" framing, which is wrong for Freyja's cost model.
+# Stable across invocations — preserves prompt-cache reuse.
+
+
+FREYJA_EMISSION_BAR = (
+    "\n\n"
+    "─── Emission bar (Freyja — read LAST, overrides 'Be ACTIVE' above) ───\n\n"
+    "The Hermes block opens 'Be ACTIVE — a pass that does nothing is a "
+    "missed learning opportunity.' That is FALSE for Freyja. Apply the "
+    "gates below; they OVERRIDE the Hermes framing wherever they "
+    "conflict.\n\n"
+    "1. Asymmetric cost — the bar is HIGH.\n"
+    "   · A skill that should NOT exist is paid on EVERY future session: "
+    "it false-triggers, crowds the context window, and the operator pays "
+    "to reject it.\n"
+    "   · A skill you skip is paid ONCE and is recoverable — the pattern "
+    "recurs and you catch it next time.\n"
+    "   When uncertain, SKIP. A pass that correctly saves nothing is a "
+    "SUCCESS. Most passes should save nothing.\n\n"
+    "2. The re-derivability test — the PRIMARY gate.\n"
+    "   Could a competent agent recover this knowledge cheaply on its "
+    "own — by reading the repo/source it is already working in, or by "
+    "reasoning from what it knows?\n"
+    "     · YES → do NOT save. A description of how a codebase's own "
+    "modules are wired is re-derivable by reading that code; it belongs "
+    "in the repo's CLAUDE.md, not a retrieved skill.\n"
+    "     · NO  → savable, no matter how narrow. Hard-won, empirical, "
+    "counterintuitive, or default-correcting knowledge is the value.\n"
+    "   SAVE:  'Lag CHOP averages the spectrum to ~1e-06 — don't use it "
+    "for smoothing.' (found by trial; unreachable by reasoning)\n"
+    "   SKIP:  'Freyja's widgets use show_widget / widget_spec.' (one "
+    "grep away in the repo you're already in)\n\n"
+    "3. The corrective test.\n"
+    "   Finish the sentence: 'Without this skill, a future agent would "
+    "predictably do ___ wrong.' If you cannot, it is not load-bearing — "
+    "skip. The strongest skills lead with the failure they prevent.\n\n"
+    "4. Trigger = a recurring ACTIVITY, never a location.\n"
+    "   The description IS the trigger. It must name a recurring activity "
+    "('cut a release', 'build TD visuals', 'drive Chrome over CDP'), not "
+    "a location or area ('working in the freyja repo', 'the widget "
+    "subsystem'). A location trigger fires on every session in that area "
+    "and is the #1 cause of skills that load but never help. If the only "
+    "honest trigger is a location, you are describing documentation — "
+    "skip per gate 2.\n\n"
+    "Calibration — what a skill worth saving looks like (the range is "
+    "WIDE; the constant is non-obvious, corrective knowledge for a "
+    "recurring activity):\n"
+    "   · A tool/craft skill — hyper-specific BECAUSE the specifics are "
+    "hard-won and the model gets them wrong by default; critical rules "
+    "first, long tail in references/.\n"
+    "   · A methodology skill — a repeatable process for a recurring "
+    "task, grounded in a real failure, shipping runnable scripts.\n"
+    "   · A taste skill — transferable craft that fights the model's "
+    "pull toward generic output; principle-level, with concrete tests.\n"
+    "   None of these is 'a description of how one codebase is built.' "
+    "That is the anti-pattern, however non-obvious it felt to discover."
+)
+
+
 def build_drafter_system_prompt() -> str:
     """Assemble the full system prompt.
 
@@ -266,7 +330,12 @@ def build_drafter_system_prompt() -> str:
     provider's prompt cache reuses it cleanly across back-to-back
     cadence trips.
     """
-    return FREYJA_PORT_PREAMBLE + HERMES_SKILL_REVIEW_PROMPT + FREYJA_FORMAT_BLOCK
+    return (
+        FREYJA_PORT_PREAMBLE
+        + HERMES_SKILL_REVIEW_PROMPT
+        + FREYJA_FORMAT_BLOCK
+        + FREYJA_EMISSION_BAR
+    )
 
 
 # ── Agentic drafter system prompt ─────────────────────────────────────
@@ -347,8 +416,11 @@ SKILL_CRAFT_BLOCK = (
     "mechanism. The body is loaded only after a trigger fires.\n\n"
     "  · `name`: lowercase letters, digits, hyphens. Under 64 chars. "
     "Short, verb-led, ideally namespaced when it improves triggering "
-    "(`gh-address-comments`, `ema-release-ops`). Match the genre of "
-    "work, not today's specific task.\n"
+    "(`gh-address-comments`, `ema-release-ops`). Name the recurring "
+    "ACTIVITY — not today's task, and not a codebase or area. Good: "
+    "`ema-release-ops` (an activity you re-run). Bad: "
+    "`freyja-widget-architecture` (a description of one codebase's "
+    "internals — re-derivable docs, not a skill).\n"
     "  · `description`: include BOTH what the skill does AND specific "
     "triggers/contexts — tool names, error strings, file types, "
     "domain phrases. Examples: \"Use when the user mentions deploying, "
@@ -374,9 +446,13 @@ SKILL_CRAFT_BLOCK = (
     "      - Medium (pseudocode / scripts with params): when there's "
     "a preferred pattern\n"
     "      - Low (exact scripts, few params): when fragile / error-prone\n"
-    "  · Procedural knowledge first. Domain-specific details and "
-    "non-obvious gotchas are the value. Generic 'best practices' the "
-    "consuming agent already knows are noise.\n\n"
+    "  · Procedural knowledge first. Non-obvious, hard-won gotchas are "
+    "the value — the threshold you'd get wrong, the trap that wasted an "
+    "hour. Two things are NOT value even though they feel domain-"
+    "specific: (a) generic 'best practices' the agent already knows, "
+    "and (b) descriptions of how the code in front of you is structured "
+    "(re-derivable by reading it). Save what cannot be cheaply "
+    "recovered.\n\n"
     "Do NOT include in a skill (the body is for procedural guidance, "
     "not project documentation):\n"
     "  · README.md / INSTALLATION_GUIDE.md / CHANGELOG.md / QUICK_REFERENCE.md\n"
@@ -491,4 +567,5 @@ def build_agentic_drafter_system_prompt() -> str:
         + HERMES_SKILL_REVIEW_PROMPT
         + AGENTIC_OPERATING_BLOCK
         + SKILL_CRAFT_BLOCK
+        + FREYJA_EMISSION_BAR
     )
