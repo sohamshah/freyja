@@ -780,12 +780,14 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   'zai-glm-4.7': 131_072,
   'deepseek-v4-pro': 1_048_576,
   'glm-5.1': 202_752,
+  'glm-5.2': 1_048_576,
   'kimi-k2.6': 262_144,
+  'kimi-k2.7-code': 262_144,
   'minimax-m2.7': 196_608,
+  'minimax-m3': 524_288,
   'qwen3.6-plus': 1_000_000,
-  'glm5': 202_752,
+  'qwen3.7-plus': 262_144,
   'kimi-k2.5': 262_144,
-  'minimax-m2.5': 196_608,
   // Google Gemini (keep in sync with engine/providers.py MODEL_REGISTRY).
   // These were missing here, so gemini-* sessions showed `ctx N/200k` while
   // the real window is ~1M — the dashboard denominator (not the provider /
@@ -822,10 +824,13 @@ const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel
   'gpt-5.3-codex': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], defaultLevel: 'medium' },
   'deepseek-v4-pro': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'high' },
   'glm-5.1': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
+  'glm-5.2': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'high' },
   'kimi-k2.6': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
+  'kimi-k2.7-code': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
   'minimax-m2.7': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
+  'minimax-m3': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
   'qwen3.6-plus': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'medium' },
-  'minimax-m2.5': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
+  'qwen3.7-plus': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'medium' },
 }
 
 function modelChoiceFor(model: string, models: ModelChoice[] = []): ModelChoice | undefined {

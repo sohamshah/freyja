@@ -1354,6 +1354,16 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "description": "Moonshot's newer multimodal agentic model via Fireworks. Vision + 262k ctx.",
     },
     {
+        "id": "kimi-k2.7-code",
+        "family": "fireworks",
+        "label": "Kimi K2.7 Code",
+        "tier": "max",
+        "contextWindow": 262_144,
+        "thinking": True,
+        "envVar": "FIREWORKS_API_KEY",
+        "description": "Moonshot's Kimi K2.7 Code via Fireworks. Coding-focused agentic model, vision + 262k ctx, ~30% fewer thinking tokens than K2.6.",
+    },
+    {
         "id": "deepseek-v4-pro",
         "family": "fireworks",
         "label": "DeepSeek V4 Pro",
@@ -1374,14 +1384,14 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "description": "Z.ai's newer GLM 5.1 via Fireworks. Agentic engineering, tool use, 202.8k ctx.",
     },
     {
-        "id": "glm5",
+        "id": "glm-5.2",
         "family": "fireworks",
-        "label": "GLM 5 (Fireworks)",
-        "tier": "balanced",
-        "contextWindow": 202_752,
-        "thinking": False,
+        "label": "GLM 5.2",
+        "tier": "max",
+        "contextWindow": 1_048_576,
+        "thinking": True,
         "envVar": "FIREWORKS_API_KEY",
-        "description": "Zhipu's GLM 5 via Fireworks.",
+        "description": "Z.ai's GLM 5.2 via Fireworks. Long-horizon agentic coding flagship, tool use, 1M ctx.",
     },
     {
         "id": "minimax-m2.7",
@@ -1394,14 +1404,14 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "description": "MiniMax M2.7 via Fireworks. Agent harnesses, teams, skills, and dynamic tool search.",
     },
     {
-        "id": "minimax-m2.5",
+        "id": "minimax-m3",
         "family": "fireworks",
-        "label": "MiniMax M2.5",
-        "tier": "fast",
-        "contextWindow": 196_608,
+        "label": "MiniMax M3",
+        "tier": "max",
+        "contextWindow": 524_288,
         "thinking": True,
         "envVar": "FIREWORKS_API_KEY",
-        "description": "MiniMax M2.5 via Fireworks. Fast and cheap.",
+        "description": "MiniMax M3 via Fireworks. Native multimodal (text/image/video), 512k ctx, MiniMax Sparse Attention, frontier agentic coding.",
     },
     {
         "id": "qwen3.6-plus",
@@ -1412,6 +1422,16 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "thinking": True,
         "envVar": "FIREWORKS_API_KEY",
         "description": "Alibaba's Qwen3.6 Plus via Fireworks. Vision, function calling, preserved reasoning, 1M ctx.",
+    },
+    {
+        "id": "qwen3.7-plus",
+        "family": "fireworks",
+        "label": "Qwen 3.7 Plus",
+        "tier": "balanced",
+        "contextWindow": 262_144,
+        "thinking": True,
+        "envVar": "FIREWORKS_API_KEY",
+        "description": "Alibaba's Qwen 3.7 Plus via Fireworks (Fireworks-exclusive flagship). Vision + 262k ctx, function calling, effort reasoning.",
     },
     # ─── Google Gemini (GEMINI_API_KEY) ────────────────────────────────
     {
@@ -1562,7 +1582,18 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningLevels": ["none", "low", "medium", "high"],
         "reasoningDefault": "high",
     },
+    "glm-5.2": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high", "max"],
+        "reasoningDefault": "high",
+    },
     "kimi-k2.6": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high"],
+        "reasoningDefault": "high",
+        "reasoningHistory": ["preserved"],
+    },
+    "kimi-k2.7-code": {
         "reasoningMode": "effort",
         "reasoningLevels": ["none", "low", "medium", "high"],
         "reasoningDefault": "high",
@@ -1574,7 +1605,7 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningDefault": "medium",
         "reasoningHistory": ["interleaved"],
     },
-    "minimax-m2.5": {
+    "minimax-m3": {
         "reasoningMode": "required",
         "reasoningLevels": ["low", "medium", "high"],
         "reasoningDefault": "medium",
@@ -1583,6 +1614,12 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
     "qwen3.6-plus": {
         "reasoningMode": "effort",
         "reasoningLevels": ["none", "low", "medium", "high"],
+        "reasoningDefault": "medium",
+        "reasoningHistory": ["preserved"],
+    },
+    "qwen3.7-plus": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high", "max"],
         "reasoningDefault": "medium",
         "reasoningHistory": ["preserved"],
     },

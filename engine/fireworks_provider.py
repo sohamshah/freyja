@@ -60,12 +60,14 @@ FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1"
 FIREWORKS_MODEL_MAP: dict[str, str] = {
     "deepseek-v4-pro": "accounts/fireworks/models/deepseek-v4-pro",
     "glm-5.1": "accounts/fireworks/models/glm-5p1",
+    "glm-5.2": "accounts/fireworks/models/glm-5p2",
     "kimi-k2.6": "accounts/fireworks/models/kimi-k2p6",
+    "kimi-k2.7-code": "accounts/fireworks/models/kimi-k2p7-code",
     "minimax-m2.7": "accounts/fireworks/models/minimax-m2p7",
+    "minimax-m3": "accounts/fireworks/models/minimax-m3",
     "qwen3.6-plus": "accounts/fireworks/models/qwen3p6-plus",
+    "qwen3.7-plus": "accounts/fireworks/models/qwen3p7-plus",
     "kimi-k2.5": "accounts/fireworks/models/kimi-k2p5",
-    "glm5": "accounts/fireworks/models/glm-5",
-    "minimax-m2.5": "accounts/fireworks/models/minimax-m2p5",
 }
 
 FIREWORKS_CONTEXT_WINDOWS: dict[str, int] = {
@@ -73,18 +75,22 @@ FIREWORKS_CONTEXT_WINDOWS: dict[str, int] = {
     "accounts/fireworks/models/deepseek-v4-pro": 1_048_576,
     "glm-5.1": 202_752,
     "accounts/fireworks/models/glm-5p1": 202_752,
+    "glm-5.2": 1_048_576,
+    "accounts/fireworks/models/glm-5p2": 1_048_576,
     "kimi-k2.6": 262_144,
     "accounts/fireworks/models/kimi-k2p6": 262_144,
+    "kimi-k2.7-code": 262_144,
+    "accounts/fireworks/models/kimi-k2p7-code": 262_144,
     "minimax-m2.7": 196_608,
     "accounts/fireworks/models/minimax-m2p7": 196_608,
+    "minimax-m3": 524_288,
+    "accounts/fireworks/models/minimax-m3": 524_288,
     "qwen3.6-plus": 1_000_000,
     "accounts/fireworks/models/qwen3p6-plus": 1_000_000,
+    "qwen3.7-plus": 262_144,
+    "accounts/fireworks/models/qwen3p7-plus": 262_144,
     "kimi-k2.5": 262_144,
     "accounts/fireworks/models/kimi-k2p5": 262_144,
-    "glm5": 202_752,
-    "accounts/fireworks/models/glm-5": 202_752,
-    "minimax-m2.5": 196_608,
-    "accounts/fireworks/models/minimax-m2p5": 196_608,
 }
 
 
@@ -92,8 +98,14 @@ FIREWORKS_CONTEXT_WINDOWS: dict[str, int] = {
 FIREWORKS_VISION_MODELS: set[str] = {
     "kimi-k2.6",
     "accounts/fireworks/models/kimi-k2p6",
+    "kimi-k2.7-code",
+    "accounts/fireworks/models/kimi-k2p7-code",
+    "minimax-m3",
+    "accounts/fireworks/models/minimax-m3",
     "qwen3.6-plus",
     "accounts/fireworks/models/qwen3p6-plus",
+    "qwen3.7-plus",
+    "accounts/fireworks/models/qwen3p7-plus",
     "kimi-k2.5",
     "accounts/fireworks/models/kimi-k2p5",
 }
@@ -106,26 +118,38 @@ FIREWORKS_REASONING_MODE: dict[str, str] = {
     # GLM 5.1 exposes reasoning/tool calling in Fireworks model metadata.
     "glm-5.1": "effort",
     "accounts/fireworks/models/glm-5p1": "effort",
+    "glm-5.2": "effort",
+    "accounts/fireworks/models/glm-5p2": "effort",
     # Kimi K2.6 / Qwen 3.6 use Fireworks reasoning fields and support
     # preserved reasoning history in model-specific prompt formatting.
     "kimi-k2.6": "effort",
     "accounts/fireworks/models/kimi-k2p6": "effort",
+    "kimi-k2.7-code": "effort",
+    "accounts/fireworks/models/kimi-k2p7-code": "effort",
     "qwen3.6-plus": "effort",
     "accounts/fireworks/models/qwen3p6-plus": "effort",
+    "qwen3.7-plus": "effort",
+    "accounts/fireworks/models/qwen3p7-plus": "effort",
     # Fireworks docs list MiniMax M2 reasoning as required/on by default.
     "minimax-m2.7": "required",
     "accounts/fireworks/models/minimax-m2p7": "required",
-    "minimax-m2.5": "required",
-    "accounts/fireworks/models/minimax-m2p5": "required",
+    "minimax-m3": "required",
+    "accounts/fireworks/models/minimax-m3": "required",
 }
 
 FIREWORKS_REASONING_LEVELS: dict[str, tuple[str, ...]] = {
     "deepseek-v4-pro": ("none", "low", "medium", "high", "max"),
     "accounts/fireworks/models/deepseek-v4-pro": ("none", "low", "medium", "high", "max"),
+    "kimi-k2.7-code": ("none", "low", "medium", "high"),
+    "accounts/fireworks/models/kimi-k2p7-code": ("none", "low", "medium", "high"),
     "minimax-m2.7": ("low", "medium", "high"),
     "accounts/fireworks/models/minimax-m2p7": ("low", "medium", "high"),
-    "minimax-m2.5": ("low", "medium", "high"),
-    "accounts/fireworks/models/minimax-m2p5": ("low", "medium", "high"),
+    "minimax-m3": ("low", "medium", "high"),
+    "accounts/fireworks/models/minimax-m3": ("low", "medium", "high"),
+    "glm-5.2": ("none", "low", "medium", "high", "max"),
+    "accounts/fireworks/models/glm-5p2": ("none", "low", "medium", "high", "max"),
+    "qwen3.7-plus": ("none", "low", "medium", "high", "max"),
+    "accounts/fireworks/models/qwen3p7-plus": ("none", "low", "medium", "high", "max"),
 }
 
 FIREWORKS_REASONING_HISTORY: dict[str, str] = {
@@ -133,12 +157,16 @@ FIREWORKS_REASONING_HISTORY: dict[str, str] = {
     "accounts/fireworks/models/deepseek-v4-pro": "interleaved",
     "qwen3.6-plus": "preserved",
     "accounts/fireworks/models/qwen3p6-plus": "preserved",
+    "qwen3.7-plus": "preserved",
+    "accounts/fireworks/models/qwen3p7-plus": "preserved",
     "kimi-k2.6": "preserved",
     "accounts/fireworks/models/kimi-k2p6": "preserved",
+    "kimi-k2.7-code": "preserved",
+    "accounts/fireworks/models/kimi-k2p7-code": "preserved",
     "minimax-m2.7": "interleaved",
     "accounts/fireworks/models/minimax-m2p7": "interleaved",
-    "minimax-m2.5": "interleaved",
-    "accounts/fireworks/models/minimax-m2p5": "interleaved",
+    "minimax-m3": "interleaved",
+    "accounts/fireworks/models/minimax-m3": "interleaved",
 }
 
 

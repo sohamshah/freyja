@@ -77,12 +77,14 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     # Fireworks
     "deepseek-v4-pro": 1_048_576,
     "glm-5.1": 202_752,
+    "glm-5.2": 1_048_576,
     "kimi-k2.6": 262_144,
+    "kimi-k2.7-code": 262_144,
     "minimax-m2.7": 196_608,
+    "minimax-m3": 524_288,
     "qwen3.6-plus": 1_000_000,
+    "qwen3.7-plus": 262_144,
     "kimi-k2.5": 262_144,
-    "glm5": 202_752,
-    "minimax-m2.5": 196_608,
     # Google Gemini — keep in sync with engine/providers.py MODEL_REGISTRY.
     "gemini-3.1-pro-preview": 1_048_576,
     "gemini-3.5-flash": 1_048_576,
