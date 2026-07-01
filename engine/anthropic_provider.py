@@ -90,6 +90,7 @@ def _anthropic_image_block(block: ImageBlock) -> dict[str, Any]:
 # When adding a model see docs/ADDING-A-MODEL.md — these three sets +
 # `engine/types.py:_ADAPTIVE_THINKING_MODEL_IDS` must move together.
 ADAPTIVE_THINKING_MODELS = {
+    "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-opus-4-6",
     "claude-haiku-4-5",

@@ -59,6 +59,8 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "claude-opus-4-8-fast": 1_000_000,
     # Claude 4.7
     "claude-opus-4-7": 1_000_000,
+    # Claude 5
+    "claude-sonnet-5": 1_000_000,
     # Claude 4.6
     "claude-opus-4-6": 1_000_000,
     "claude-sonnet-4-6": 1_000_000,

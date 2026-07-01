@@ -565,6 +565,7 @@ class ThinkingConfig:
 # Anthropic SDK. Keep in sync with anthropic_provider.ADAPTIVE_THINKING_MODELS.
 # See docs/ADDING-A-MODEL.md — this set is codepoint #9 of 14.
 _ADAPTIVE_THINKING_MODEL_IDS: set[str] = {
+    "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-opus-4-6",
     "claude-haiku-4-5",

@@ -1242,6 +1242,16 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "description": "Balanced default. Strong quality, sane latency.",
     },
     {
+        "id": "claude-sonnet-5",
+        "family": "anthropic",
+        "label": "Claude Sonnet 5",
+        "tier": "balanced",
+        "contextWindow": 1_000_000,
+        "thinking": True,
+        "envVar": "ANTHROPIC_API_KEY",
+        "description": "Anthropic's most agentic Sonnet. 1M ctx, adaptive extended thinking, vision.",
+    },
+    {
         "id": "claude-haiku-4-5",
         "family": "anthropic",
         "label": "Claude Haiku 4.5",
@@ -1525,6 +1535,11 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningMode": "effort",
         "reasoningLevels": ["none", "low", "medium", "high", "max"],
         "reasoningDefault": "max",
+    },
+    "claude-sonnet-5": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "high",
     },
     "claude-sonnet-4-6": {
         "reasoningMode": "effort",
@@ -9749,9 +9764,15 @@ class _BridgeSession:
 class _BridgeState:
     """Process-level state: workspace + session map + global policy."""
 
-    def __init__(self, workspace: str, default_model: str) -> None:
+    def __init__(
+        self,
+        workspace: str,
+        default_model: str,
+        default_reasoning_level: str | None = None,
+    ) -> None:
         self.workspace = workspace
         self.default_model = default_model
+        self.default_reasoning_level = default_reasoning_level
         self.sessions: dict[str, _BridgeSession] = {}
         self.active_session_id: str | None = None
         # Global auto-approve tier. New sessions inherit this and live
@@ -9902,7 +9923,11 @@ class _BridgeState:
             session_id,
             workspace=self.workspace,
             model_id=model_id or self.default_model,
-            reasoning_level=reasoning_level,
+            reasoning_level=(
+                reasoning_level
+                if reasoning_level is not None
+                else self.default_reasoning_level
+            ),
             coordination_strategy=coordination_strategy,
             state=self,
             runtime=runtime,

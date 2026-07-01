@@ -8,6 +8,7 @@ Schema (all keys optional; missing → default):
 
   defaults:
     model: claude-opus-4-8             # default model for new sessions (high thinking)
+    reasoning_level: xhigh             # optional default reasoning effort (low/medium/high/xhigh/max)
     coordination_strategy: bus         # default strategy
   slack:
     allowed_user_ids:                  # per-workspace allowlist of
@@ -86,6 +87,7 @@ class GatewayConfig:
     """Top-level gateway config."""
 
     default_model: str = "claude-opus-4-8"
+    default_reasoning_level: str | None = None
     default_strategy: str = "bus"
     slack: SlackConfig = field(default_factory=SlackConfig)
 
@@ -123,6 +125,11 @@ class GatewayConfig:
             default_model=str(
                 defaults.get("model") or "claude-opus-4-8"
             ),
+            default_reasoning_level=(
+                str(defaults["reasoning_level"])
+                if defaults.get("reasoning_level")
+                else None
+            ),
             default_strategy=str(
                 defaults.get("coordination_strategy") or "bus"
             ),
@@ -131,11 +138,12 @@ class GatewayConfig:
 
     def to_yaml(self) -> str:
         """Serialize the config back to YAML for write_config."""
+        defaults_payload: dict[str, Any] = {"model": self.default_model}
+        if self.default_reasoning_level:
+            defaults_payload["reasoning_level"] = self.default_reasoning_level
+        defaults_payload["coordination_strategy"] = self.default_strategy
         payload: dict[str, Any] = {
-            "defaults": {
-                "model": self.default_model,
-                "coordination_strategy": self.default_strategy,
-            },
+            "defaults": defaults_payload,
             "slack": {
                 "allowed_user_ids": {
                     team: list(ids)

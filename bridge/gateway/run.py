@@ -1976,14 +1976,19 @@ class GatewayDaemon:
         """Stand up the bridge state + connect all configured adapters."""
         from bridge.freyja_bridge import _BridgeState
 
+        from bridge.gateway.config import GatewayConfig
+
+        cfg = GatewayConfig.load()
         workspace = os.environ.get("FREYJA_WORKSPACE") or str(Path.home())
-        default_model = os.environ.get("FREYJA_MODEL", "claude-sonnet-4-6")
+        default_model = os.environ.get("FREYJA_MODEL") or cfg.default_model
         self.state = _BridgeState(
-            workspace=workspace, default_model=default_model
+            workspace=workspace,
+            default_model=default_model,
+            default_reasoning_level=cfg.default_reasoning_level,
         )
         logger.info(
-            "bridge state ready (workspace=%s, model=%s)",
-            workspace, default_model,
+            "bridge state ready (workspace=%s, model=%s, reasoning=%s)",
+            workspace, default_model, cfg.default_reasoning_level,
         )
 
         # Start the scheduler. Under the stateless design every process

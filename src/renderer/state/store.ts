@@ -755,6 +755,8 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   'claude-opus-4-8-fast': 1_000_000,
   // Claude 4.7
   'claude-opus-4-7': 1_000_000,
+  // Claude 5
+  'claude-sonnet-5': 1_000_000,
   // Claude 4.6
   'claude-opus-4-6': 1_000_000,
   'claude-sonnet-4-6': 1_000_000,
@@ -813,6 +815,7 @@ const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel
   'claude-opus-4-8-fast': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'claude-opus-4-7': { levels: ['auto'], defaultLevel: 'auto' },
   'claude-opus-4-6': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'max' },
+  'claude-sonnet-5': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'claude-sonnet-4-6': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
   'claude-haiku-4-5': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
   'claude-opus-4-5': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
