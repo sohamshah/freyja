@@ -23,6 +23,7 @@ FailoverReason = Literal[
     "billing",        # Billing/payment issue (402)
     "timeout",        # Request timeout or transient 5xx
     "model_not_found",  # Model doesn't exist (404)
+    "refusal",        # Safety-classifier refusal (HTTP 200, stop_reason="refusal")
     "unknown",        # Unclassified error
 ]
 
@@ -939,6 +940,10 @@ class AgentResult:
     iterations: int = 0
     error: AgentError | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    stop_reason: str | None = None
+    """The final provider stop_reason for the run (e.g. "end_turn",
+    "refusal"). The bridge forwards it on the message_stop event so the
+    UI/event log records the real stop instead of a hardcoded end_turn."""
 
 
 # ============================================================================

@@ -145,6 +145,45 @@ def _model_rejects_forced_tool_choice(model: str) -> bool:
     m = (model or "").lower()
     return any(base in m for base in FORCED_TOOL_CHOICE_UNSUPPORTED_MODELS)
 
+
+# Models whose safety classifiers can decline a request with
+# stop_reason="refusal" (HTTP 200, possibly cutting the stream mid-output) —
+# and false-positive on benign adjacent topics (e.g. a Kindle *device*
+# jailbreak discussion tripping the cyber classifier, observed 2026-07-06).
+# For these we opt into Anthropic's server-side refusal fallbacks: a declined
+# request is transparently re-served by REFUSAL_FALLBACK_TARGET inside the
+# same call. A decline before any output isn't billed; the rescue bills at
+# the fallback model's own rates.
+REFUSAL_FALLBACK_MODELS = {
+    "claude-fable-5",
+    "claude-mythos-5",
+}
+REFUSAL_FALLBACK_TARGET = "claude-opus-4-8"
+SERVER_FALLBACK_BETA = "server-side-fallback-2026-06-01"
+
+
+def _model_wants_refusal_fallback(model: str) -> bool:
+    """True if `model` should request server-side refusal fallbacks."""
+    m = (model or "").lower()
+    return any(base in m for base in REFUSAL_FALLBACK_MODELS)
+
+
+def _normalize_stop_details(raw: Any) -> dict[str, Any] | None:
+    """Normalize a stop_details value (pydantic model or dict) to a dict.
+
+    The SDK may expose `stop_details` as a typed RefusalStopDetails object,
+    an attr bag, or a raw dict depending on which event it came from.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    if hasattr(raw, "model_dump"):
+        return raw.model_dump()
+    if hasattr(raw, "__dict__"):
+        return {k: v for k, v in raw.__dict__.items() if not k.startswith("_")}
+    return {"raw": str(raw)}
+
 # Model speed tiers for user selection
 MODEL_SPEED_TIERS = {
     "fast": "claude-haiku-4-5",       # Fastest, most cost-effective
@@ -622,41 +661,67 @@ class AnthropicProvider:
             async with self._async_client.messages.stream(
                 **request_kwargs
             ) as stream:
-                # Process events if callback provided
-                if on_event:
-                    async for event in stream:
-                        stream_event: StreamEvent | None = None
+                # Always iterate the raw events — even without an on_event
+                # callback — because the SDK's stream accumulator copies
+                # stop_reason from `message_delta` but silently DROPS
+                # `stop_details` (verified against anthropic 0.94:
+                # lib/streaming/_messages.py accumulate_event). Without this
+                # capture, a streamed refusal loses its category/explanation
+                # and the diagnostics show a bare stop_reason.
+                captured_stop_details: Any = None
+                async for event in stream:
+                    if event.type == "message_delta":
+                        _sd = getattr(
+                            getattr(event, "delta", None), "stop_details", None
+                        )
+                        if _sd is not None:
+                            captured_stop_details = _sd
 
-                        if event.type == "content_block_start":
-                            block = event.content_block
-                            if block.type == "tool_use":
-                                stream_event = ToolUseStartEvent(
-                                    id=block.id,
-                                    name=block.name,
-                                )
+                    if on_event is None:
+                        continue
 
-                        elif event.type == "content_block_delta":
-                            delta = event.delta
-                            if delta.type == "text_delta":
-                                stream_event = TextDeltaEvent(text=delta.text)
-                            elif delta.type == "thinking_delta":
-                                stream_event = ThinkingDeltaEvent(
-                                    thinking=delta.thinking
-                                )
-                            elif delta.type == "input_json_delta":
-                                stream_event = ToolInputDeltaEvent(
-                                    partial_json=delta.partial_json
-                                )
+                    stream_event: StreamEvent | None = None
 
-                        if stream_event:
-                            # Handle both sync and async callbacks
-                            result = on_event(stream_event)
-                            if asyncio.iscoroutine(result):
-                                await result
+                    if event.type == "content_block_start":
+                        block = event.content_block
+                        if block.type == "tool_use":
+                            stream_event = ToolUseStartEvent(
+                                id=block.id,
+                                name=block.name,
+                            )
+
+                    elif event.type == "content_block_delta":
+                        delta = event.delta
+                        if delta.type == "text_delta":
+                            stream_event = TextDeltaEvent(text=delta.text)
+                        elif delta.type == "thinking_delta":
+                            stream_event = ThinkingDeltaEvent(
+                                thinking=delta.thinking
+                            )
+                        elif delta.type == "input_json_delta":
+                            stream_event = ToolInputDeltaEvent(
+                                partial_json=delta.partial_json
+                            )
+
+                    if stream_event:
+                        # Handle both sync and async callbacks
+                        result = on_event(stream_event)
+                        if asyncio.iscoroutine(result):
+                            await result
 
                 # Get final message
                 response = await stream.get_final_message()
                 parsed = self._parse_response(response)
+                if parsed.stop_details is None and captured_stop_details is not None:
+                    parsed.stop_details = _normalize_stop_details(
+                        captured_stop_details
+                    )
+                    if parsed.stop_reason == "refusal":
+                        logger.warning(
+                            "refusal stop_details recovered from stream delta | "
+                            "model=%s | details=%s",
+                            self._model, parsed.stop_details,
+                        )
 
                 # Log response summary
                 tool_names = [tc.name for tc in (parsed.tool_calls or [])]
@@ -818,6 +883,27 @@ class AnthropicProvider:
             extra_headers["anthropic-beta"] = FAST_MODE_BETA
             request_kwargs["extra_headers"] = extra_headers
 
+        # Server-side refusal fallbacks (beta). Fable-class safety
+        # classifiers can decline a request with stop_reason="refusal" —
+        # opting in makes the API transparently re-serve the declined
+        # request on REFUSAL_FALLBACK_TARGET within the same call, so the
+        # user gets an answer instead of a dead turn. SDK 0.94 doesn't
+        # type `fallbacks` yet, so it's wired via extra_body/extra_headers
+        # like fast mode above. Response markers: a `fallback` content
+        # block at each switch point and `response.model` naming the model
+        # that actually served the message (see _parse_response).
+        if _model_wants_refusal_fallback(self._model):
+            extra_body = request_kwargs.get("extra_body") or {}
+            extra_body["fallbacks"] = [{"model": REFUSAL_FALLBACK_TARGET}]
+            request_kwargs["extra_body"] = extra_body
+            extra_headers = request_kwargs.get("extra_headers") or {}
+            existing_beta = extra_headers.get("anthropic-beta")
+            extra_headers["anthropic-beta"] = (
+                f"{existing_beta},{SERVER_FALLBACK_BETA}"
+                if existing_beta else SERVER_FALLBACK_BETA
+            )
+            request_kwargs["extra_headers"] = extra_headers
+
         return request_kwargs
 
     @staticmethod
@@ -936,10 +1022,12 @@ class AnthropicProvider:
                                 "data": block.data,
                             })
 
-                # Add text content if present
+                # Add text content if present. Whitespace-only text blocks
+                # are rejected by the API ("text content blocks must contain
+                # non-whitespace text"), so they're never emitted.
                 if msg.content:
                     text = msg.content if isinstance(msg.content, str) else str(msg.content)
-                    if text:
+                    if text.strip():
                         content.append({"type": "text", "text": text})
 
                 # Add tool_use blocks if present
@@ -956,10 +1044,19 @@ class AnthropicProvider:
                 if msg.thinking_blocks or msg.tool_calls:
                     result.append({"role": "assistant", "content": content})
                 else:
-                    result.append({
-                        "role": "assistant",
-                        "content": msg.content if isinstance(msg.content, str) else msg.content,
-                    })
+                    text = msg.content if isinstance(msg.content, str) else str(msg.content or "")
+                    if not text.strip():
+                        # Empty assistant turn — e.g. a refusal stub persisted
+                        # by a pre-fix transcript. Serializing it produces an
+                        # empty/whitespace text block the API 400s on, and two
+                        # in a row used to merge into "\n\n" and permanently
+                        # poison the session. Drop it from the request.
+                        logger.warning(
+                            "dropping empty assistant message from request "
+                            "(likely a persisted refusal stub)"
+                        )
+                        continue
+                    result.append({"role": "assistant", "content": text})
 
             elif msg.role == "tool_result":
                 # Tool results go in user message with tool_result block.
@@ -1018,9 +1115,12 @@ class AnthropicProvider:
                 prev_content = result[-1]["content"]
                 curr_content = msg["content"]
 
-                # Merge content
+                # Merge content. Filter empty string parts so two empty
+                # messages can't merge into a whitespace-only "\n\n" body
+                # (the API rejects whitespace-only text blocks).
                 if isinstance(prev_content, str) and isinstance(curr_content, str):
-                    result[-1]["content"] = prev_content + "\n\n" + curr_content
+                    parts = [p for p in (prev_content, curr_content) if p.strip()]
+                    result[-1]["content"] = "\n\n".join(parts)
                 elif isinstance(prev_content, list) and isinstance(curr_content, list):
                     result[-1]["content"] = prev_content + curr_content
                 elif isinstance(prev_content, str) and isinstance(curr_content, list):
@@ -1043,35 +1143,76 @@ class AnthropicProvider:
 
     def _parse_response(self, response: Any) -> ProviderResponse:
         """Parse Anthropic response to internal format."""
-        # Extract content by type
+        # Extract content by type. A server-side refusal fallback inserts a
+        # `fallback` content block at each model-switch point — everything
+        # BEFORE the last fallback block is the declined model's partial and
+        # must not be echoed back on later turns (thinking/tool_use from the
+        # refused portion are rejected on replay), so track block positions.
         text_parts = []
         tool_calls = []
         thinking_blocks = []
+        fallback_boundary = -1  # index of the last `fallback` block, if any
+        fallback_switches: list[str] = []
 
-        for block in response.content:
+        for idx, block in enumerate(response.content):
             if block.type == "text":
                 text_parts.append(block.text)
             elif block.type == "tool_use":
                 tool_calls.append(
-                    ToolCallResponse(
+                    (idx, ToolCallResponse(
                         id=block.id,
                         name=block.name,
                         arguments=block.input,
-                    )
+                    ))
                 )
             elif block.type == "thinking":
                 thinking_blocks.append(
-                    ThinkingBlock(
+                    (idx, ThinkingBlock(
                         thinking=block.thinking,
                         signature=getattr(block, "signature", ""),
-                    )
+                    ))
                 )
             elif block.type == "redacted_thinking":
                 thinking_blocks.append(
-                    RedactedThinkingBlock(
+                    (idx, RedactedThinkingBlock(
                         data=block.data,
-                    )
+                    ))
                 )
+            elif block.type == "fallback":
+                fallback_boundary = idx
+                try:
+                    raw = (
+                        block.model_dump() if hasattr(block, "model_dump")
+                        else dict(block.__dict__)
+                    )
+                except Exception:  # noqa: BLE001
+                    raw = {}
+                from_model = (raw.get("from") or {}).get("model", "?")
+                to_model = (raw.get("to") or {}).get("model", "?")
+                fallback_switches.append(f"{from_model} declined → {to_model}")
+
+        if fallback_switches:
+            logger.warning(
+                "refusal fallback engaged | requested=%s | %s | served_by=%s",
+                self._model,
+                "; ".join(fallback_switches),
+                getattr(response, "model", "?"),
+            )
+        elif getattr(response, "model", None) and self._model not in str(response.model):
+            # Sticky fallback routing serves the turn directly on the
+            # fallback model with no fallback block — the model name on
+            # the response is the only signal.
+            logger.info(
+                "request served by %s (requested %s — sticky refusal-fallback routing)",
+                response.model, self._model,
+            )
+
+        # Drop thinking/tool_use blocks from before the fallback boundary
+        # (the refused model's partial); keep everything after it. Text
+        # blocks are kept in full — the API itself uses the partial text
+        # as continuation context for the fallback model.
+        thinking_blocks = [b for i, b in thinking_blocks if i > fallback_boundary]
+        tool_calls = [tc for i, tc in tool_calls if i > fallback_boundary]
 
         # Build usage
         usage = APIUsage(
@@ -1095,25 +1236,20 @@ class AnthropicProvider:
             )
 
         # Capture `stop_details` (Opus 4.7+ refusal categorization)
-        # straight through. Pydantic models may expose this as either an
-        # object with attrs or a raw dict, so normalize to a dict for
-        # downstream consumers.
-        stop_details_raw = getattr(response, "stop_details", None)
-        stop_details: dict[str, Any] | None = None
-        if stop_details_raw is not None:
-            if isinstance(stop_details_raw, dict):
-                stop_details = stop_details_raw
-            elif hasattr(stop_details_raw, "model_dump"):
-                stop_details = stop_details_raw.model_dump()
-            elif hasattr(stop_details_raw, "__dict__"):
-                stop_details = {
-                    k: v for k, v in stop_details_raw.__dict__.items()
-                    if not k.startswith("_")
-                }
-        if stop_details and response.stop_reason == "refusal":
+        # straight through, normalized to a dict for downstream consumers.
+        # ALWAYS log a refusal — with the full details when the API sent
+        # them, and an explicit "(none provided)" when it didn't, so the
+        # bridge log never shows a refusal that just looks like a silent
+        # early stop.
+        stop_details = _normalize_stop_details(
+            getattr(response, "stop_details", None)
+        )
+        if response.stop_reason == "refusal":
             logger.warning(
-                "refusal stop_details | model=%s | details=%s",
-                self._model, stop_details,
+                "refusal stop | model=%s | served_by=%s | stop_details=%s",
+                self._model,
+                getattr(response, "model", "?"),
+                stop_details if stop_details else "(none provided)",
             )
 
         return ProviderResponse(

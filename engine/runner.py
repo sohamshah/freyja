@@ -168,6 +168,46 @@ class RunnerContext:
     something that resets the count (e.g. user sends a fresh message)."""
 
 
+def _describe_refusal(response: ProviderResponse) -> tuple[str, dict[str, Any]]:
+    """Format a safety-classifier refusal for logs, events, and the user.
+
+    Returns ``(message, details)``: `message` is a compact human-readable
+    line carrying the FULL real reason the API gave (category and
+    explanation from `stop_details`, or an explicit note that the API sent
+    none); `details` is the structured payload for diagnostic events.
+    """
+    details = response.stop_details or {}
+    category = details.get("category") or None
+    explanation = details.get("explanation") or None
+    partial = response.content or ""
+
+    parts: list[str] = []
+    if category:
+        parts.append(f"category={category}")
+    if explanation:
+        parts.append(f"explanation: {explanation}")
+    if not details:
+        parts.append("the API returned no stop_details for this refusal")
+    elif not category and not explanation:
+        parts.append(f"stop_details: {details}")
+    if partial.strip():
+        parts.append(
+            f"{len(partial)} chars of partial output were cut off mid-stream "
+            "and discarded from the model's context"
+        )
+    message = "; ".join(parts)
+
+    info: dict[str, Any] = {
+        "stop_details": response.stop_details,
+        "category": category,
+        "explanation": explanation,
+        "model": response.model,
+        "partial_output_chars": len(partial),
+        "partial_output_discarded": bool(partial.strip()),
+    }
+    return message, info
+
+
 def _call_key(name: str, arguments: dict) -> str:
     """Stable key for a (tool_name, arguments) pair."""
     import hashlib, json as _json
@@ -203,6 +243,20 @@ class StopCondition:
         # Check iteration limit
         if iteration >= max_iter:
             logger.info(f"Stopping: reached max iterations ({max_iter})")
+            return True
+
+        # Safety-classifier refusal (HTTP 200 + stop_reason="refusal",
+        # Fable-class models). NEVER continue the loop on a refusal: there
+        # are no tool calls to run, and re-calling with the transcript
+        # ending in the (partial) assistant message is an assistant
+        # prefill — rejected with a 400 by Fable 5 / the 4.6+ family.
+        # The run loops handle refusals explicitly before reaching this
+        # check; this is the backstop for any path that doesn't.
+        if response.stop_reason == "refusal":
+            logger.warning(
+                "Stopping: model refusal (stop_details=%s)",
+                response.stop_details or "(none provided)",
+            )
             return True
 
         # Check for end_turn without tool calls
@@ -342,6 +396,31 @@ class AgentRunner:
                 ctx.consecutive_errors = 0
                 ctx.last_error = None
 
+                # Safety-classifier refusal — same handling as the async
+                # loop: discard the (partial) output instead of committing
+                # it, and end the run with the full refusal diagnostics.
+                if response.stop_reason == "refusal":
+                    refusal_msg, refusal_info = _describe_refusal(response)
+                    logger.error(
+                        "Model refusal | session=%s | model=%s | %s",
+                        session.id, response.model, refusal_msg,
+                    )
+                    ctx.state = RunnerState.FAILED
+                    return AgentResult(
+                        success=False,
+                        error=AgentError(
+                            reason="refusal",
+                            message=refusal_msg,
+                            retryable=False,
+                            model=response.model,
+                            code="refusal",
+                        ),
+                        usage=self.usage.to_stats(),
+                        iterations=ctx.iteration,
+                        metadata={"refusal": refusal_info},
+                        stop_reason="refusal",
+                    )
+
                 if response.tool_calls:
                     tool_calls_for_message = [
                         ToolCall(
@@ -429,7 +508,7 @@ class AgentRunner:
                             ctx.loop_break_injected = True
                             continue
 
-                else:
+                elif (response.content or "").strip() or response.thinking_blocks:
                     session.add_assistant_message(
                         response.content,
                         thinking_blocks=response.thinking_blocks,
@@ -437,6 +516,15 @@ class AgentRunner:
                         output_tokens=response.usage.output_tokens if response.usage else 0,
                         cache_read_tokens=getattr(response.usage, "cache_read_tokens", 0) or 0,
                         cache_write_tokens=getattr(response.usage, "cache_write_tokens", 0) or 0,
+                    )
+                else:
+                    # Empty response with no tool calls and no thinking —
+                    # committing it would append an empty assistant turn the
+                    # API later rejects (whitespace-only text block / prefill).
+                    logger.warning(
+                        "Skipping transcript commit of empty assistant response "
+                        "| stop=%s | session=%s",
+                        response.stop_reason, session.id,
                     )
 
                 if stop.should_stop(response, ctx.iteration, max_iterations):
@@ -1053,6 +1141,7 @@ class AsyncAgentRunner:
         """Main async agent loop with streaming."""
         final_response: str = ""
         pre_verification_response: str = ""
+        last_stop_reason: str | None = None
 
         while ctx.iteration < max_iterations and ctx.state == RunnerState.RUNNING:
             ctx.iteration += 1
@@ -1087,6 +1176,7 @@ class AsyncAgentRunner:
                     response = await self._call_provider_async(session)
 
                 self.usage.update(response.usage)
+                last_stop_reason = response.stop_reason
                 # Channel 3 (mid-stream advisory): now that usage is
                 # updated and the band is current, see if pressure
                 # crossed mid-turn so the next tool result wrapper can
@@ -1096,6 +1186,37 @@ class AsyncAgentRunner:
 
                 ctx.consecutive_errors = 0
                 ctx.last_error = None
+
+                # Safety-classifier refusal (HTTP 200, stop_reason="refusal";
+                # Fable-class models — server-side fallbacks in the provider
+                # rescue most of these, so reaching here means the whole
+                # chain refused). Handled BEFORE the assistant message is
+                # committed: per Anthropic guidance the partial output of a
+                # mid-stream refusal must be discarded, and committing it is
+                # what used to poison the transcript (truncated/empty
+                # assistant turns → assistant-prefill 400s and
+                # whitespace-only text blocks on every subsequent call).
+                if response.stop_reason == "refusal":
+                    refusal_msg, refusal_info = _describe_refusal(response)
+                    logger.error(
+                        "Model refusal | session=%s | model=%s | %s",
+                        session.id, response.model, refusal_msg,
+                    )
+                    ctx.state = RunnerState.FAILED
+                    return AgentResult(
+                        success=False,
+                        error=AgentError(
+                            reason="refusal",
+                            message=refusal_msg,
+                            retryable=False,
+                            model=response.model,
+                            code="refusal",
+                        ),
+                        usage=self.usage.to_stats(),
+                        iterations=ctx.iteration,
+                        metadata={"refusal": refusal_info},
+                        stop_reason="refusal",
+                    )
 
                 if response.tool_calls:
                     tool_calls_for_message = [
@@ -1192,7 +1313,7 @@ class AsyncAgentRunner:
                             ctx.loop_break_injected = True
                             continue
 
-                else:
+                elif (response.content or "").strip() or response.thinking_blocks:
                     session.add_assistant_message(
                         response.content,
                         thinking_blocks=response.thinking_blocks,
@@ -1200,6 +1321,15 @@ class AsyncAgentRunner:
                         output_tokens=response.usage.output_tokens if response.usage else 0,
                         cache_read_tokens=getattr(response.usage, "cache_read_tokens", 0) or 0,
                         cache_write_tokens=getattr(response.usage, "cache_write_tokens", 0) or 0,
+                    )
+                else:
+                    # Empty response with no tool calls and no thinking —
+                    # committing it would append an empty assistant turn the
+                    # API later rejects (whitespace-only text block / prefill).
+                    logger.warning(
+                        "Skipping transcript commit of empty assistant response "
+                        "| stop=%s | session=%s",
+                        response.stop_reason, session.id,
                     )
 
                 if stop.should_stop(response, ctx.iteration, max_iterations):
@@ -1348,6 +1478,7 @@ class AsyncAgentRunner:
                 response=final_response,
                 usage=usage_stats,
                 iterations=ctx.iteration,
+                stop_reason=last_stop_reason,
             )
         elif ctx.iteration >= max_iterations:
             logger.warning("Agent reached max iterations (%d) | session=%s", max_iterations, session.id)

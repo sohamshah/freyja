@@ -495,6 +495,29 @@ def _format_user_facing_runner_failure(
     desktop as inline text. The operator wants the cause and an
     actionable next step, not a stack trace.
     """
+    if reason == "refusal":
+        # Safety-classifier refusal. Unlike provider errors, this message
+        # shows even when prose already streamed — the refusal is exactly
+        # what explains why that prose cut off mid-sentence, and the
+        # engine discarded the partial from the model's context. `message`
+        # carries the full real reason (category + explanation from the
+        # API's stop_details, or an explicit note that none were sent) —
+        # don't truncate it down to a vague stub.
+        detail = (message or "").strip() or "no detail provided by the API"
+        if len(detail) > 900:
+            detail = detail[:900].rstrip() + "…"
+        prefix = "\n\n---\n" if already_streamed else ""
+        cut_off_note = (
+            "The text above was cut off by the refusal and has been "
+            "discarded from the model's context. "
+            if already_streamed else ""
+        )
+        return (
+            f"{prefix}⚠️ The model's safety classifiers stopped this response "
+            f"(stop_reason=refusal). {cut_off_note}Details: {detail}. "
+            "Rephrasing usually helps; `/model claude-opus-4-8` sidesteps "
+            "the Fable-class classifiers entirely."
+        )
     if already_streamed:
         return ""
     # `reason` comes from engine.runner classify_failover_reason —
@@ -7920,7 +7943,10 @@ class _BridgeSession:
                 {
                     "type": "message_stop",
                     "sessionId": self.id,
-                    "stopReason": getattr(result, "stop_reason", "end_turn"),
+                    # AgentResult.stop_reason carries the real final stop
+                    # (e.g. "refusal") — the old getattr default hardcoded
+                    # end_turn into the event log even on refused turns.
+                    "stopReason": getattr(result, "stop_reason", None) or "end_turn",
                 }
             )
             # When the runner ran to completion but `result.success` is
@@ -7964,10 +7990,14 @@ class _BridgeSession:
                         "sessionId": self.id,
                         "text": user_facing,
                     })
+                # Refusal diagnostics carry the category/explanation the
+                # API gave — keep them intact in the log; only generic
+                # provider blobs get truncated.
+                logged_msg = err_msg if reason == "refusal" else err_msg[:200]
                 log(
                     "warn",
                     f"turn failed (silent-bypass fix): session={self.id} "
-                    f"reason={reason} message={err_msg[:200]} "
+                    f"reason={reason} message={logged_msg} "
                     f"user_notified={'yes' if user_facing else 'suppressed-already-streamed'}",
                 )
             emit(
@@ -8801,27 +8831,37 @@ class _BridgeSession:
                 return
 
             # Refusal categorization (Anthropic Opus 4.7+ stop_details).
-            # Surface the category inline in the conversation so the
-            # operator sees "Refused: <category>" instead of a turn that
-            # just ends silently with a generic stop_reason. The system
-            # prompt's existing inline-chip path renders subtype
-            # `refusal_detected` with a danger-styled chip.
-            if stop_reason == "refusal" and stop_details:
+            # Surface the FULL reason inline in the conversation so the
+            # operator sees the category and the API's explanation instead
+            # of a turn that just ends silently. Fires on every refusal —
+            # including ones where the API sent no stop_details (seen in
+            # practice on streamed Fable 5 refusals), which used to make
+            # the chip silently not render. The renderer draws subtype
+            # `refusal_detected` as a danger-styled chip.
+            if stop_reason == "refusal":
+                sd = stop_details or {}
                 category = (
-                    stop_details.get("type")
-                    or stop_details.get("category")
-                    or stop_details.get("reason")
+                    sd.get("category")
+                    or sd.get("type")
+                    or sd.get("reason")
                     or "unspecified"
                 )
+                explanation = str(sd.get("explanation") or "").strip()
+                chip_message = f"Refused by safeguards: {category}"
+                if explanation:
+                    chip_message += f" — {explanation}"
+                if not sd:
+                    chip_message += " (API returned no stop_details)"
                 emit(
                     {
                         "type": "system_event",
                         "sessionId": self.id,
                         "subtype": "refusal_detected",
-                        "message": f"Refused by safeguards: {category}",
+                        "message": chip_message,
                         "details": {
                             "stopDetails": stop_details,
                             "category": str(category),
+                            "explanation": explanation or None,
                             "model": model,
                             "provider": provider,
                             "chatVisible": True,
