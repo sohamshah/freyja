@@ -593,6 +593,27 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
         return
       }
 
+      case 'voice_mission_update': {
+        const s = get()
+        // A live exchange hears the report: inject it as a typed turn so
+        // Freyja speaks it in-conversation (sendText no-ops safely if the
+        // data channel is already gone).
+        if (s.active && _demo === null && _engine !== null) {
+          _engine.sendText(`Mission update — ${event.title}: ${event.text}`)
+          resetIdleTimer()
+        }
+        // Always glanceable on the HUD chip; the mission-lane receipt the
+        // bridge emits alongside covers the receipts affordances.
+        set({
+          activity: {
+            verb: 'mission.report',
+            status: 'ok',
+            summary: `${event.title}: ${event.text}`.slice(0, 120),
+          },
+        })
+        return
+      }
+
       case 'voice_timer_fired': {
         // Surface the fire on the HUD chip; the bridge also posts a
         // macOS notification, so this is glanceable state, not the alarm.

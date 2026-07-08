@@ -20,7 +20,8 @@ def _mk(name, tier="auto", params=None, required=None, description="does a thing
     )
 
 
-# All slice-1 verbs the adapters register; mission.spawn is service-side.
+# All verbs the adapters register (slice 1 + slice-2 reach);
+# mission.spawn / mission.status / computer.do are service-side.
 EXPECTED_VERBS = {
     "spotify.play",
     "spotify.pause",
@@ -36,7 +37,14 @@ EXPECTED_VERBS = {
     "timer.set",
     "timer.list",
     "timer.cancel",
+    "slack.read",
+    "slack.send",
+    "screen.look",
 }
+
+# Confirm tier = outward/destructive actions: quitting an app, sending
+# a message someone else will read.
+CONFIRM_VERBS = {"app.quit", "slack.send"}
 
 
 def test_register_get_all():
@@ -101,7 +109,7 @@ def test_default_registry_verbs_and_tiers():
     reg = build_default_registry()
     assert {v.name for v in reg.all()} == EXPECTED_VERBS
     for verb in reg.all():
-        expected_tier = "confirm" if verb.name == "app.quit" else "auto"
+        expected_tier = "confirm" if verb.name in CONFIRM_VERBS else "auto"
         assert verb.tier == expected_tier, verb.name
         assert verb.description
         assert callable(verb.run)
@@ -110,8 +118,7 @@ def test_default_registry_verbs_and_tiers():
 def test_default_registry_catalog_confirm_marker():
     catalog = build_default_registry().catalog_markdown()
     confirm_lines = [ln for ln in catalog.splitlines() if "[requires spoken confirmation]" in ln]
-    assert len(confirm_lines) == 1
-    assert confirm_lines[0].startswith("- app.quit(")
+    assert {ln.split("(")[0] for ln in confirm_lines} == {f"- {v}" for v in CONFIRM_VERBS}
     # Every registered verb has a line.
     assert len(catalog.splitlines()) == len(EXPECTED_VERBS)
 

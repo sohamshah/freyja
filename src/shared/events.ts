@@ -1113,6 +1113,17 @@ export type BridgeEvent =
       matched: string
     }
   | { type: 'voice_timer_fired'; label: string; seconds: number }
+  | {
+      /** A spawned mission finished (report-back watcher). If a voice
+       *  session is live the renderer speaks it in-conversation. */
+      type: 'voice_mission_update'
+      /** Active voice session at report time, '' when none was live. */
+      voiceSessionId: string
+      missionSessionId: string
+      title: string
+      /** Final assistant text, capped at 400 chars bridge-side. */
+      text: string
+    }
 
 // --- Channel names ---
 

@@ -70,8 +70,18 @@ def _args_hash(args: dict[str, Any]) -> str:
 # ("app.quit name=Slack"). Verbs without a template (or whose template
 # raises on odd args) fall back to the raw form; the raw verb+args
 # always live on the receipt's args field regardless.
+def _slack_send_confirm(args: dict[str, Any]) -> str:
+    if args.get("channel"):
+        target = "#" + str(args["channel"]).lstrip("#")
+    else:
+        target = "@" + str(args["user"])  # KeyError → raw fallback below
+    return f"Send to {target}: {str(args['text'])[:60]}"
+
+
 _CONFIRM_SUMMARY_TEMPLATES: dict[str, Any] = {
     "app.quit": lambda args: f"Quit {args['name']}",
+    "slack.send": _slack_send_confirm,
+    "computer.do": lambda args: f"Drive the Mac: {str(args['task'])[:60]}",
 }
 
 
@@ -87,6 +97,21 @@ def _describe(verb: str, args: dict[str, Any]) -> str:
         return verb
     parts = " ".join(f"{k}={v}" for k, v in args.items())
     return f"{verb} {parts}"
+
+
+async def _post_notification(title: str, text: str) -> tuple[bool, str]:
+    """macOS banner via osascript (same recipe as the timer fire).
+    Module-level so tests can monkeypatch the seam; returns (ok, detail)
+    and never raises — a dead notifier must not eat a mission report."""
+    try:
+        from bridge.voice.adapters.mac import as_quoted, run_osascript
+
+        return await run_osascript(
+            f"display notification {as_quoted(text)} "
+            f'with title {as_quoted(title)} sound name "Glass"'
+        )
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
 
 
 class VoiceService:
@@ -130,6 +155,11 @@ class VoiceService:
         # Panic dedupe: one voice_panic per session — the renderer ends
         # the session on panic, so per-session ≡ per-utterance here.
         self._panicked_sessions: set[str] = set()
+        # Spawned missions (slice 2), sessionId → tracking dict
+        # {sessionId, title, prompt_head, started_ts, state, last_text?}.
+        # Process-lifetime, like the undo ledger — a bridge restart
+        # orphans the watchers anyway.
+        self._missions: dict[str, dict[str, Any]] = {}
 
     # ── plumbing ─────────────────────────────────────────────────────────
 
@@ -188,7 +218,7 @@ class VoiceService:
 
             registry = build_default_registry()
             self._registry = registry
-            self._register_mission_spawn(registry)
+            self._register_service_verbs(registry)
         return self._registry
 
     # ── lifecycle ────────────────────────────────────────────────────────
@@ -520,7 +550,7 @@ class VoiceService:
         args_token = args.pop("confirm_token", None)
         if not isinstance(confirm_token, str):
             confirm_token = args_token if isinstance(args_token, str) else None
-        lane = "mission" if verb == "mission.spawn" else "brain"
+        lane = "mission" if verb in ("mission.spawn", "mission.status", "computer.do") else "brain"
         await self._execute(
             verb=verb,
             args=args,
@@ -866,14 +896,163 @@ class VoiceService:
             receipt=undo_receipt,
         )
 
-    # ── mission.spawn (needs bridge session access, so it lives here) ────
+    # ── missions (need bridge session access, so they live here) ─────────
 
-    def _register_mission_spawn(self, registry: Any) -> None:
+    @staticmethod
+    def _derive_title(text: str, words: int = 6) -> str:
+        """First ~6 words of a prompt as a human mission label."""
+        parts = text.split()
+        title = " ".join(parts[:words])
+        return f"{title}…" if len(parts) > words else title
+
+    def _dispatch_turn(self, sess: Any, prompt: str) -> None:
+        """Hand the prompt to the session's turn machinery. Lazy import —
+        freyja_bridge imports this module at boot; also the test seam
+        (tests substitute a fake that plants a controllable pending_task)."""
+        from bridge.freyja_bridge import _schedule_or_queue_turn
+
+        _schedule_or_queue_turn(sess, prompt, None)
+
+    async def _spawn_mission(self, prompt: str, title: str) -> str:
+        """Create a real Freyja agent session, dispatch the prompt, track
+        it, and attach the report-back watcher. Returns the sessionId."""
+        session_id = f"voice-mission-{int(time.time() * 1000):x}"
+        sess = await self._state.ensure_session(
+            session_id, model_id=self._state.default_model
+        )
+        self._dispatch_turn(sess, prompt)
+        self._missions[session_id] = {
+            "sessionId": session_id,
+            "title": title,
+            "prompt_head": prompt[:80],
+            "started_ts": int(time.time() * 1000),
+            "state": "running",
+        }
+        self.spawn(f"mission-watch-{session_id}", self._watch_mission(sess, session_id, title))
+        return session_id
+
+    @staticmethod
+    def _extract_final_text(sess: Any) -> str:
+        """The mission's final assistant text, read back off the session
+        transcript — same capture point as the scheduler runtime's
+        _extract_last_assistant_text: by the time pending_task is done,
+        the response has been written to the session. Walk back from the
+        tail to the last assistant message of the trailing turn."""
+        inner = getattr(sess, "session", None)
+        if inner is None:
+            return ""
+        try:
+            entries = list(inner.transcript.entries)
+        except Exception:  # noqa: BLE001
+            return ""
+        for entry in reversed(entries):
+            msg = getattr(entry, "message", None)
+            if msg is None:
+                continue
+            role = getattr(msg, "role", "")
+            if role == "user":
+                break
+            if role != "assistant":
+                continue
+            content = getattr(msg, "content", "")
+            if isinstance(content, str):
+                text = content.strip()
+            else:
+                parts: list[str] = []
+                for block in content or []:
+                    block_text = getattr(block, "text", None)
+                    if isinstance(block_text, str):
+                        parts.append(block_text)
+                text = "\n".join(parts).strip()
+            if text:
+                return text
+        return ""
+
+    async def _watch_mission(self, sess: Any, session_id: str, title: str) -> None:
+        """Report-back: await the mission's turn, then surface the outcome
+        everywhere the operator might be — a mission-lane receipt (HUD +
+        persisted), a macOS notification, and a voice_mission_update
+        event that a live voice session speaks aloud. Never lets an
+        exception escape: a watcher bug must not crash the service, so
+        failures degrade to a log line + an ok=False receipt."""
+        try:
+            pending = getattr(sess, "pending_task", None)
+            if pending is not None:
+                # wait(), not await-the-task: a failed/cancelled turn must
+                # not re-raise here — it IS the outcome we're reporting.
+                await asyncio.wait({pending})
+            if pending is None:
+                ok, text = False, "mission never started a turn"
+            elif pending.cancelled():
+                ok, text = False, "mission cancelled"
+            elif pending.exception() is not None:
+                ok, text = False, f"mission failed: {pending.exception()}"
+            else:
+                text = self._extract_final_text(sess)
+                # A completed turn with no text never really ran (same
+                # reasoning as the scheduler's zero-work guard).
+                ok = bool(text)
+                if not text:
+                    text = "mission finished with no reply"
+            info = self._missions.get(session_id)
+            if info is not None:
+                info["state"] = "done" if ok else "failed"
+                info["last_text"] = text[:400]
+            summary = f"{title}: {text[:90]}"
+            self._record(
+                voice_session_id=self._active_session_id,
+                heard="",
+                lane="mission",
+                verb="mission.report",
+                args={"sessionId": session_id},
+                ok=ok,
+                summary=summary,
+                undoable=False,
+            )
+            notified, detail = await _post_notification("Freyja — mission", summary)
+            if not notified:
+                self._log("warn", f"mission notification failed for {session_id}: {detail}")
+            # Spoken report-back: the renderer feeds this into a live
+            # voice session as a user-lane text turn so Freyja SAYS it.
+            self._emit(
+                {
+                    "type": "voice_mission_update",
+                    "voiceSessionId": self._active_session_id or "",
+                    "missionSessionId": session_id,
+                    "title": title,
+                    "text": text[:400],
+                }
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — watcher must never crash anything
+            self._log("warn", f"mission watcher failed for {session_id}: {exc}")
+            try:
+                info = self._missions.get(session_id)
+                if info is not None:
+                    info["state"] = "failed"
+                self._record(
+                    voice_session_id=self._active_session_id,
+                    heard="",
+                    lane="mission",
+                    verb="mission.report",
+                    args={"sessionId": session_id},
+                    ok=False,
+                    summary=f"{title}: report-back failed — {exc}",
+                    undoable=False,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _register_service_verbs(self, registry: Any) -> None:
+        """mission.spawn / mission.status / computer.do — registered here
+        rather than in the adapters because they need bridge session
+        access (ensure_session, computer_enabled) through self._state."""
         from bridge.voice.verbs import Verb, VerbResult
 
         service = self
 
-        async def _run(args: dict[str, Any]) -> Any:
+        async def _run_spawn(args: dict[str, Any]) -> Any:
             prompt = str(args.get("prompt") or "").strip()
             if not prompt:
                 return VerbResult(
@@ -881,19 +1060,52 @@ class VoiceService:
                     summary="mission needs a prompt",
                     error="missing_prompt",
                 )
-            title = str(args.get("title") or "").strip()
-            # Lazy — freyja_bridge imports this module at boot.
-            from bridge.freyja_bridge import _schedule_or_queue_turn
-
-            session_id = f"voice-mission-{int(time.time() * 1000):x}"
-            sess = await service._state.ensure_session(
-                session_id, model_id=service._state.default_model
-            )
-            _schedule_or_queue_turn(sess, prompt, None)
-            label = title or prompt[:40]
+            title = str(args.get("title") or "").strip() or service._derive_title(prompt)
+            session_id = await service._spawn_mission(prompt, title)
             return VerbResult(
                 ok=True,
-                summary=f"mission spawned: {label}",
+                summary=f"mission spawned: {title}",
+                data={"sessionId": session_id},
+            )
+
+        async def _run_status(args: dict[str, Any]) -> Any:
+            missions = sorted(
+                (dict(m) for m in service._missions.values()),
+                key=lambda m: m.get("started_ts", 0),
+                reverse=True,
+            )
+            counts = {"running": 0, "done": 0, "failed": 0}
+            for mission in missions:
+                state = str(mission.get("state") or "")
+                if state in counts:
+                    counts[state] += 1
+            parts = [f"{n} {state}" for state, n in counts.items() if n]
+            summary = ", ".join(parts) if parts else "no missions yet"
+            return VerbResult(ok=True, summary=summary, data={"missions": missions})
+
+        async def _run_computer(args: dict[str, Any]) -> Any:
+            task = str(args.get("task") or "").strip()
+            if not task:
+                return VerbResult(
+                    ok=False, summary="computer.do needs a task", error="missing_task"
+                )
+            if not bool(getattr(service._state, "computer_enabled", False)):
+                return VerbResult(
+                    ok=False,
+                    summary="computer control is disabled — enable it in settings",
+                    data={"setup": "computer"},
+                )
+            title = f"computer: {service._derive_title(task)}"
+            prompt = (
+                "Use the computer tools (screenshot, click, type, read_ax_tree, "
+                f"and the rest) to accomplish this task on this Mac: {task}. "
+                "Narrate briefly as you work; stop when the task is done or "
+                "you are blocked."
+            )
+            session_id = await service._spawn_mission(prompt, title)
+            return VerbResult(
+                ok=True,
+                summary=f"mission spawned: {title}",
                 data={"sessionId": session_id},
             )
 
@@ -902,7 +1114,7 @@ class VoiceService:
                 name="mission.spawn",
                 description=(
                     "hand multi-step work to a full Freyja agent session; "
-                    "returns the new sessionId"
+                    "reports back when done; returns the new sessionId"
                 ),
                 params={
                     "prompt": {
@@ -913,7 +1125,32 @@ class VoiceService:
                 },
                 required=["prompt"],
                 tier="auto",
-                run=_run,
+                run=_run_spawn,
+            )
+        )
+        registry.register(
+            Verb(
+                name="mission.status",
+                description="Status of missions spawned by voice: running / done / failed",
+                params={},
+                required=[],
+                tier="auto",
+                run=_run_status,
+            )
+        )
+        registry.register(
+            Verb(
+                name="computer.do",
+                description=(
+                    "Drive the Mac GUI hands-on (click, type, screenshot) via a "
+                    "computer-use mission; reports back when done"
+                ),
+                params={
+                    "task": {"type": "string", "description": "what to accomplish"},
+                },
+                required=["task"],
+                tier="confirm",
+                run=_run_computer,
             )
         )
 

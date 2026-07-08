@@ -102,6 +102,7 @@ Bridge → renderer events:
 | `voice_error` | `{voiceSessionId?, code, message}` |
 | `voice_panic` | `{voiceSessionId, matched}` (floor detected stop-word in live transcript; renderer must `response.cancel`, pause playback, end session) |
 | `voice_timer_fired` | `{label, seconds}` |
+| `voice_mission_update` | `{voiceSessionId ("" if none live), missionSessionId, title, text (≤400)}` — slice 2: a spawned mission finished; a live voice session speaks it via `engine.sendText` |
 
 `Receipt` (shape shared by python dataclass and TS type):
 
@@ -196,7 +197,29 @@ def as_quoted(s: str) -> str:
 | `app.frontmost` | `{}` | auto | — | System Events frontmost process |
 | `timer.set` | `{seconds \| minutes, label?}` | auto | ✓ (cancel) | asyncio task in service; on fire: `voice_timer_fired` event + `display notification` |
 | `timer.list` / `timer.cancel {label?}` | | auto | — | |
-| `mission.spawn` | `{prompt, title?}` | auto | — | registered in service.py; creates real Freyja session; `data.sessionId` |
+| `mission.spawn` | `{prompt, title?}` | auto | — | registered in service.py; creates real Freyja session; `data.sessionId`; slice 2: title derived from first ~6 prompt words + report-back watcher (see below) |
+
+### Slice 2 — reach verbs (2026-07-08, grounded in the operator's real morning session)
+
+The gaps: "check this out" (no screen sight) and "send a Slack message"
+(only a blind mission). New rows:
+
+| verb | args | tier | undo | notes |
+|---|---|---|---|---|
+| `slack.read` | `{channel, count? (default 8, cap 20)}` | auto | — | `slack_sdk` AsyncWebClient with the FIRST token of the comma-separated `SLACK_BOT_TOKEN` (voice is single-workspace for now); channel by name via cached `conversations_list` (public+private, ≤~1000, 5-min module cache); authors via cached `users_info`; returns `data.messages [{who, text (≤300), when HH:MM}]`, chronological; no token → ok=false `data.setup="slack"` |
+| `slack.send` | `{channel? \| user?, text}` | **confirm** | — (a sent message is sent) | channel by name as above; `user` DMs by display/real-name match (cached `users_list` → `conversations_open` → `chat_postMessage`); summary `→ #general: <text[:60]>`; API errors surface as terse one-liners, never tracebacks |
+| `screen.look` | `{question?}` | auto | — | `screencapture -x -C` via `mac.run_exec` (packaged app owns the Screen Recording TCC; dev may fail → clean "needs Screen Recording permission"); PIL downscale ≤1568px wide + JPEG q70; one-shot vision call via httpx (`FREYJA_VOICE_LOOK_MODEL`, default `gpt-5-mini`, 25 s timeout); returns `data.text`, summary `text[:80]`; tmp file deleted in finally |
+| `mission.status` | `{}` | auto | — | registered in service.py; tracked spawns `{sessionId, title, prompt_head, started_ts, state running\|done\|failed, last_text?}`; summary like "2 running, 1 done" |
+| `computer.do` | `{task}` | **confirm** | — | registered in service.py; refuses with `data.setup="computer"` while `state.computer_enabled` is falsy; else spawns a mission titled `computer: <task head>` whose prompt drives the computer tools (screenshot, click, type, read_ax_tree, …); same report-back watcher |
+
+Mission report-back (service.py): every spawn registers a named watcher
+task that awaits the session's `pending_task` (the scheduler-runtime
+capture pattern), then extracts the final assistant text and surfaces the
+outcome three ways — a `mission`-lane receipt (verb `mission.report`,
+summary `<title>: <first ~90 chars>`), a macOS notification (title
+"Freyja — mission", sound Glass), and the `voice_mission_update` event
+(§2) so a live voice session speaks it. Watcher exceptions never
+propagate: log + ok=false receipt.
 
 Execution rules (service.py, pinned):
 - Unknown verb → `VerbResult(ok=False, error="unknown_verb", summary=...)` — the model

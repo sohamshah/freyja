@@ -1,4 +1,4 @@
-# Galdr — voice agent for Freyja (slice 1)
+# Galdr — voice agent for Freyja (slices 1–2)
 
 Speak to your Mac. Freyja opens a realtime voice exchange, the model calls
 verbs that run natively on the machine, and every action lands as an
@@ -23,9 +23,11 @@ any code was written).
 - The **actuator** is a single `act` meta-tool. The model picks a verb
   from a catalog baked into its instructions; the bridge dispatches it
   through a `VerbRegistry` to native adapters (AppleScript / `open` /
-  Core Audio via osascript / async timers). Slice-1 verbs: `spotify.*`
-  (transport + optional search), `system.volume` (undoable), `app.open/
-  focus/quit/frontmost`, `timer.set/list/cancel`, `mission.spawn`.
+  Core Audio via osascript / async timers / slack_sdk / screencapture).
+  Slice-1 verbs: `spotify.*` (transport + optional search),
+  `system.volume` (undoable), `app.open/focus/quit/frontmost`,
+  `timer.set/list/cancel`, `mission.spawn`. Slice-2 reach: `slack.read`,
+  `slack.send`, `screen.look`, `mission.status`, `computer.do`.
 - **Two-tier safety.** `auto` verbs run immediately; `confirm` verbs
   (quit an app) require a single-use, 90-second, args-scoped token — the
   model must relay the ask and re-call after you say yes, out loud.
@@ -35,7 +37,23 @@ any code was written).
 - **The floor.** Panic words (*"stop"*, *"never mind"*) and deterministic
   transport commands are parsed locally and never touch the model — the
   panic scan runs over partial transcripts so *"stop"* cancels mid-sentence.
-- **mission.spawn** hands multi-step work to a real Freyja agent session.
+- **mission.spawn** hands multi-step work to a real Freyja agent session —
+  and (slice 2) **reports back**: when the mission finishes, its final
+  answer lands as a receipt, a macOS notification, and — if a voice
+  exchange is live — Freyja says it out loud. **mission.status** answers
+  *"how are my missions doing?"* ("2 running, 1 done").
+- **Slack, first-class** (slice 2). *"Read me #general"* → `slack.read`
+  pulls the last messages (names resolved, cached) for a spoken digest;
+  *"tell Ada I'm running late"* → `slack.send` posts to a channel or DMs
+  a person by name — confirm-tier, since a sent message is sent.
+- **screen.look** (slice 2) gives the voice its eyes: *"check this out"*
+  captures the screen (`screencapture`, packaged-app TCC), downscales it,
+  and asks a one-shot vision model (`FREYJA_VOICE_LOOK_MODEL`, default
+  gpt-5-mini) for a two-sentence read.
+- **computer.do** (slice 2, confirm-tier) hands the model the mouse and
+  keyboard: spawns a computer-use mission ("computer: …") with the same
+  report-back — refused with a setup hint while computer control is
+  disabled in settings.
 
 ## Architecture
 
@@ -79,9 +97,14 @@ bridge**.
 
 ## Config
 
-- `OPENAI_API_KEY` (required) — the voice brain.
+- `OPENAI_API_KEY` (required) — the voice brain (and screen.look's eyes).
 - `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` (optional) — play-by-name
   search; without them, transport verbs and URI play still work.
+- `SLACK_BOT_TOKEN` (optional) — slack.read / slack.send; comma-separated
+  multi-workspace tokens supported, voice uses the first. Without it the
+  verbs refuse with a spoken setup hint.
+- `FREYJA_VOICE_LOOK_MODEL` (optional, default `gpt-5-mini`) — the
+  one-shot vision model behind screen.look.
 - `~/.freyja/voice/config.json` — model/voice/VAD/idle-timeout, bridge-owned.
 
 ## Deliberately out of slice 1

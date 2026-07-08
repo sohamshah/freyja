@@ -506,6 +506,15 @@ def test_describe_human_templates_and_fallback():
     assert _describe("app.quit", {}) == "app.quit"
     assert _describe("custom.verb", {"a": 1}) == "custom.verb a=1"
     assert _describe("custom.verb", {}) == "custom.verb"
+    # slice-2 confirm verbs read as prose too
+    assert _describe("slack.send", {"channel": "#general", "text": "hi"}) == (
+        "Send to #general: hi"
+    )
+    assert _describe("slack.send", {"user": "Ada", "text": "hi"}) == "Send to @Ada: hi"
+    assert _describe("slack.send", {"text": "hi"}) == "slack.send text=hi"  # no target → raw
+    assert _describe("computer.do", {"task": "open settings"}) == (
+        "Drive the Mac: open settings"
+    )
 
 
 async def test_confirm_full_cycle(tmp_path):
@@ -902,3 +911,258 @@ async def test_spawn_surfaces_handler_exceptions_as_voice_error(tmp_path):
     errors = events_of(events, "voice_error")
     assert errors and errors[0]["code"] == "tool_call_failed"
     assert "kaput" in errors[0]["message"]
+
+
+# ── mission machinery: spawn + report-back, status, computer.do ───────────
+# (slice 2). Real service-side registration runs against the FakeRegistry;
+# _dispatch_turn is the seam standing in for freyja_bridge's
+# _schedule_or_queue_turn, planting a controllable pending_task exactly
+# like the real one does.
+
+
+def _mission_state(computer_enabled=True):
+    sessions = {}
+
+    async def ensure_session(session_id, model_id=None, **kwargs):
+        sess = SimpleNamespace(
+            id=session_id,
+            model_id=model_id,
+            pending_task=None,
+            session=SimpleNamespace(transcript=SimpleNamespace(entries=[])),
+        )
+        sessions[session_id] = sess
+        return sess
+
+    return SimpleNamespace(
+        default_model="test-model",
+        computer_enabled=computer_enabled,
+        ensure_session=ensure_session,
+        sessions=sessions,
+    )
+
+
+def _entry(role, content):
+    return SimpleNamespace(message=SimpleNamespace(role=role, content=content))
+
+
+def _mission_rig(tmp_path, monkeypatch, *, computer_enabled=True):
+    """Service with real service-verb registration + fake dispatch/notify.
+
+    Returns (svc, events, rig) where rig.gate releases the mission turn,
+    rig.finish(text)/rig.fail(exc) choose its outcome, rig.prompts logs
+    dispatched prompts, rig.notes logs notifications."""
+    state = _mission_state(computer_enabled=computer_enabled)
+    svc, events = make_service(tmp_path, state=state)
+    svc._register_service_verbs(svc._registry)
+
+    rig = SimpleNamespace(
+        state=state,
+        gate=asyncio.Event(),
+        prompts=[],
+        notes=[],
+        final_text="mission report text",
+        exc=None,
+    )
+
+    async def fake_notify(title, text):
+        rig.notes.append((title, text))
+        return True, ""
+
+    monkeypatch.setattr(voice_service_module, "_post_notification", fake_notify)
+
+    def fake_dispatch(sess, prompt):
+        rig.prompts.append(prompt)
+
+        async def turn():
+            await rig.gate.wait()
+            if rig.exc is not None:
+                raise rig.exc
+            sess.session.transcript.entries.append(_entry("user", prompt))
+            sess.session.transcript.entries.append(_entry("assistant", rig.final_text))
+
+        sess.pending_task = asyncio.create_task(turn())
+
+    monkeypatch.setattr(svc, "_dispatch_turn", fake_dispatch)
+    return svc, events, rig
+
+
+async def _drain_watchers(svc):
+    tasks = list(svc._tasks)
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_mission_spawn_report_back(tmp_path, monkeypatch):
+    svc, events, rig = _mission_rig(tmp_path, monkeypatch)
+    svc._active_session_id = "voice-live"
+    rig.final_text = "Deploy is green and the PR is merged."
+
+    await svc.handle_tool_call(
+        _act_cmd(
+            "voice-live",
+            "c1",
+            "mission.spawn",
+            args={"prompt": "check the deploy status and merge the PR"},
+        )
+    )
+    (result,) = events_of(events, "voice_tool_result")
+    assert result["ok"] is True
+    body = json.loads(result["output"])
+    session_id = body["data"]["sessionId"]
+    # Title = first ~6 words of the prompt.
+    title = "check the deploy status and merge…"
+    assert body["summary"] == f"mission spawned: {title}"
+    assert rig.state.sessions[session_id].model_id == "test-model"
+
+    # Report-back: release the turn, let the watcher finish.
+    events.clear()
+    rig.gate.set()
+    await _drain_watchers(svc)
+
+    receipts = [e["receipt"] for e in events_of(events, "voice_receipt")]
+    (report,) = [r for r in receipts if r["verb"] == "mission.report"]
+    assert report["lane"] == "mission"
+    assert report["ok"] is True
+    assert report["undoable"] is False
+    assert report["summary"] == f"{title}: Deploy is green and the PR is merged."
+
+    assert rig.notes == [("Freyja — mission", report["summary"])]
+
+    (update,) = events_of(events, "voice_mission_update")
+    assert update == {
+        "type": "voice_mission_update",
+        "voiceSessionId": "voice-live",
+        "missionSessionId": session_id,
+        "title": title,
+        "text": "Deploy is green and the PR is merged.",
+    }
+
+
+async def test_mission_report_back_failure(tmp_path, monkeypatch):
+    svc, events, rig = _mission_rig(tmp_path, monkeypatch)
+    rig.exc = RuntimeError("turn exploded")
+
+    await svc.handle_tool_call(
+        _act_cmd("v1", "c1", "mission.spawn", args={"prompt": "do the risky thing"})
+    )
+    events.clear()
+    rig.gate.set()
+    await _drain_watchers(svc)
+
+    receipts = [e["receipt"] for e in events_of(events, "voice_receipt")]
+    (report,) = [r for r in receipts if r["verb"] == "mission.report"]
+    assert report["ok"] is False
+    assert "turn exploded" in report["summary"]
+    (update,) = events_of(events, "voice_mission_update")
+    assert update["voiceSessionId"] == ""  # no live voice session at report time
+    assert "turn exploded" in update["text"]
+    # The watcher failure must not surface as a voice_error crash.
+    assert not events_of(events, "voice_error")
+
+
+async def test_mission_status_counts_states(tmp_path, monkeypatch):
+    svc, events, rig = _mission_rig(tmp_path, monkeypatch)
+
+    await svc.handle_tool_call(_act_cmd("v1", "c0", "mission.status"))
+    assert json.loads(events_of(events, "voice_tool_result")[0]["output"])["summary"] == (
+        "no missions yet"
+    )
+    events.clear()
+
+    await svc.handle_tool_call(
+        _act_cmd("v1", "c1", "mission.spawn", args={"prompt": "first mission"})
+    )
+    events.clear()
+    await svc.handle_tool_call(_act_cmd("v1", "c2", "mission.status"))
+    (st,) = events_of(events, "voice_tool_result")
+    body = json.loads(st["output"])
+    assert body["summary"] == "1 running"
+    (mission,) = body["data"]["missions"]
+    assert mission["state"] == "running"
+    assert mission["title"] == "first mission"
+    assert mission["prompt_head"] == "first mission"
+    # status receipts ride the mission lane
+    (receipt_ev,) = events_of(events, "voice_receipt")
+    assert receipt_ev["receipt"]["lane"] == "mission"
+
+    events.clear()
+    rig.gate.set()
+    await _drain_watchers(svc)
+    events.clear()
+    await svc.handle_tool_call(_act_cmd("v1", "c3", "mission.status"))
+    body = json.loads(events_of(events, "voice_tool_result")[0]["output"])
+    assert body["summary"] == "1 done"
+    assert body["data"]["missions"][0]["last_text"] == "mission report text"
+
+
+async def test_computer_do_disabled_refuses_after_confirm(tmp_path, monkeypatch):
+    svc, events, rig = _mission_rig(tmp_path, monkeypatch, computer_enabled=False)
+
+    # Confirm tier: first call never runs the verb.
+    await svc.handle_tool_call(
+        _act_cmd("v1", "c1", "computer.do", args={"task": "open the settings pane"})
+    )
+    (r1,) = events_of(events, "voice_tool_result")
+    assert r1["ok"] is False
+    assert r1["needsConfirm"]["summary"] == "Drive the Mac: open the settings pane"
+    token = r1["needsConfirm"]["token"]
+
+    # Confirmed — but the gate is off, so it refuses with setup guidance.
+    events.clear()
+    await svc.handle_tool_call(
+        _act_cmd(
+            "v1",
+            "c2",
+            "computer.do",
+            args={"task": "open the settings pane"},
+            confirm_token=token,
+        )
+    )
+    (r2,) = events_of(events, "voice_tool_result")
+    assert r2["ok"] is False
+    body = json.loads(r2["output"])
+    assert body["summary"] == "computer control is disabled — enable it in settings"
+    assert body["data"] == {"setup": "computer"}
+    assert rig.state.sessions == {}  # nothing was spawned
+    assert rig.prompts == []
+
+
+async def test_computer_do_enabled_spawns_computer_mission(tmp_path, monkeypatch):
+    svc, events, rig = _mission_rig(tmp_path, monkeypatch, computer_enabled=True)
+
+    await svc.handle_tool_call(
+        _act_cmd("v1", "c1", "computer.do", args={"task": "open the settings pane"})
+    )
+    token = events_of(events, "voice_tool_result")[0]["needsConfirm"]["token"]
+    events.clear()
+    await svc.handle_tool_call(
+        _act_cmd(
+            "v1",
+            "c2",
+            "computer.do",
+            args={"task": "open the settings pane"},
+            confirm_token=token,
+        )
+    )
+    (r2,) = events_of(events, "voice_tool_result")
+    assert r2["ok"] is True
+    body = json.loads(r2["output"])
+    title = "computer: open the settings pane"
+    assert body["summary"] == f"mission spawned: {title}"
+    session_id = body["data"]["sessionId"]
+    assert session_id in rig.state.sessions
+    # The mission prompt instructs computer-tool use around the task.
+    (prompt,) = rig.prompts
+    assert "screenshot, click, type, read_ax_tree" in prompt
+    assert "open the settings pane" in prompt
+    assert "stop when the task is done" in prompt
+    (receipt_ev,) = events_of(events, "voice_receipt")
+    assert receipt_ev["receipt"]["lane"] == "mission"
+
+    # Same report-back watcher as mission.spawn.
+    events.clear()
+    rig.gate.set()
+    await _drain_watchers(svc)
+    (update,) = events_of(events, "voice_mission_update")
+    assert update["title"] == title
+    assert update["missionSessionId"] == session_id
