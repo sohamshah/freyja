@@ -1141,6 +1141,17 @@ async def _main() -> None:
             log("debug", f"daemon auto-install hook not wired: {exc}")
     except Exception as exc:  # noqa: BLE001
         log("warn", f"scheduler failed to start: {exc}")
+    # Galdr voice service — mints realtime client secrets, dispatches the
+    # `act` tool, owns receipts/undo/confirm tiers. start() is cheap and
+    # non-fatal by contract: no network happens until the first
+    # voice_session_start, so a broken voice stack can't block boot.
+    try:
+        from bridge.voice import VoiceService
+
+        state.voice = VoiceService(state)
+        await state.voice.start()
+    except Exception as exc:  # noqa: BLE001
+        log("warn", f"voice service failed to start: {exc}")
     # Offline working-memory backfill — hourly pass that summarizes idle
     # sessions whose working_memory.json is missing or older than the
     # transcript. This is the substrate the morning briefing reads; the
@@ -9865,6 +9876,10 @@ class _BridgeState:
         # Gateway runner reference (set by the gateway boot). Slack sink
         # falls back here when adapters list isn't populated yet.
         self.gateway_runner: Any = None
+        # Galdr voice service (bridge/voice). Set by _main after the
+        # scheduler boots; None in contexts that never speak (tests,
+        # headless gateway) — voice_* handlers guard on it.
+        self.voice: Any = None
 
     async def ensure_session(
         self,
@@ -12395,6 +12410,86 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         except Exception as exc:  # noqa: BLE001
             emit({"type": "scheduler_response", "requestId": cmd.get("id"),
                   "subtype": "preview_next_fires", "error": str(exc)})
+        return
+
+    # ── Voice (Galdr) ───────────────────────────────────────────────────
+    # Every voice_* command delegates to the process-level VoiceService
+    # (bridge/voice). Handlers spawn tasks — verb runs can shell out to
+    # osascript for seconds and the mint is a network round trip, so the
+    # command loop must never block behind them. Task-internal failures
+    # surface as voice_error from VoiceService.spawn's done-callback; the
+    # try/excepts here cover synchronous dispatch failures.
+    if isinstance(ctype, str) and ctype.startswith("voice_") and state.voice is None:
+        emit(
+            {
+                "type": "voice_error",
+                "code": "voice_unavailable",
+                "message": "voice service is not running in this bridge process",
+            }
+        )
+        return
+
+    if ctype == "voice_session_start":
+        try:
+            state.voice.spawn("session_start", state.voice.handle_session_start(cmd))
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "voice_error", "code": "voice_session_start_failed", "message": str(exc)})
+        return
+
+    if ctype == "voice_session_end":
+        try:
+            state.voice.spawn("session_end", state.voice.handle_session_end(cmd))
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "voice_error", "code": "voice_session_end_failed", "message": str(exc)})
+        return
+
+    if ctype == "voice_tool_call":
+        try:
+            state.voice.spawn("tool_call", state.voice.handle_tool_call(cmd))
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "voice_error", "code": "voice_tool_call_failed", "message": str(exc)})
+        return
+
+    if ctype == "voice_transcript":
+        try:
+            state.voice.spawn("transcript", state.voice.handle_transcript(cmd))
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "voice_error", "code": "voice_transcript_failed", "message": str(exc)})
+        return
+
+    if ctype == "voice_typed_command":
+        try:
+            state.voice.spawn("typed_command", state.voice.handle_typed_command(cmd))
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "voice_error", "code": "voice_typed_command_failed", "message": str(exc)})
+        return
+
+    if ctype == "voice_receipts_list":
+        try:
+            state.voice.spawn("receipts_list", state.voice.handle_receipts_list(cmd))
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "voice_error", "code": "voice_receipts_list_failed", "message": str(exc)})
+        return
+
+    if ctype == "voice_undo":
+        try:
+            state.voice.spawn("undo", state.voice.handle_undo(cmd))
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "voice_error", "code": "voice_undo_failed", "message": str(exc)})
+        return
+
+    if ctype == "voice_get_config":
+        try:
+            state.voice.spawn("get_config", state.voice.handle_get_config(cmd))
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "voice_error", "code": "voice_get_config_failed", "message": str(exc)})
+        return
+
+    if ctype == "voice_set_config":
+        try:
+            state.voice.spawn("set_config", state.voice.handle_set_config(cmd))
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "voice_error", "code": "voice_set_config_failed", "message": str(exc)})
         return
 
     if ctype == "computer.emergency_stop":

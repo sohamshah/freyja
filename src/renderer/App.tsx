@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { unstable_batchedUpdates } from 'react-dom'
 import { useHarness } from './state/store'
 import { useSchedulerStore } from './state/scheduler-store'
+import { bindVoiceBridge, useVoiceStore } from './state/voice-store'
 import { TitleBar } from './components/TitleBar'
 import { Sidebar } from './components/Sidebar'
 import { SessionPanes } from './components/SessionPanes'
@@ -27,6 +28,7 @@ import { RecallPanel } from './components/RecallPanel'
 import { SplashScreen } from './components/SplashScreen'
 import { IdleSleep } from './components/IdleSleep'
 import { QuickSwitcher } from './components/QuickSwitcher'
+import { VoiceHUD } from './components/voice/VoiceHUD'
 import { startInRendererDemo } from './lib/inRendererDemo'
 import { extractConversationSummary } from './lib/conversationSummary'
 
@@ -145,6 +147,13 @@ export function App() {
             useSchedulerStore.getState().handleEvent(event)
           }).catch(() => {})
         }
+        // Mirror voice_* events into the voice store — same pattern as
+        // the scheduler mirroring above, but synchronous: the store is
+        // already statically imported for the Esc-priority handler and
+        // the ⌥Space toggle, so there's no lazy-load win to be had.
+        if (typeof event?.type === 'string' && event.type.startsWith('voice_')) {
+          useVoiceStore.getState().handleEvent(event)
+        }
       }
     })
     for (const event of events) {
@@ -240,6 +249,23 @@ export function App() {
         schedulerApi.daemonStatus().catch(() => {})
       }).catch(() => {})
 
+      // Voice (Galdr) wiring — same fire-and-forget send contract as
+      // the scheduler binding; replies come back through onEvent as
+      // voice_* events and are mirrored in flushBridgeEvents. hydrate()
+      // pulls config + recent receipts so the title-bar sigil and the
+      // activity-panel section are populated on boot. ⌥Space arrives
+      // from the main process globalShortcut via the voice:toggle IPC.
+      bindVoiceBridge({
+        send: (cmd: any) => {
+          try { api.sendCommand?.(cmd) } catch { /* ignore */ }
+        },
+      })
+      useVoiceStore.getState().hydrate()
+      const unsubVoiceToggle =
+        typeof api.onVoiceToggle === 'function'
+          ? api.onVoiceToggle(() => useVoiceStore.getState().toggleVoice())
+          : undefined
+
       // Morning Room landing policy: open automatically on the FIRST
       // launch of a day. If today's edition exists we land on it; if it's
       // MISSING (e.g. the 6am fire slept through), we still open so the
@@ -292,6 +318,7 @@ export function App() {
 
       return () => {
         unsub()
+        unsubVoiceToggle?.()
         window.removeEventListener('focus', focusHandler)
         clearInterval(pollTimer)
         if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
@@ -303,12 +330,41 @@ export function App() {
     // in a regular browser or when loaded as a plain HTML file.
     const driver = startInRendererDemo((ev) => enqueueBridgeEvent(ev))
     ;(window as any).__harnessDemo = driver
+    // Seed a representative voice config through the normal event path
+    // so the settings voice group and title-bar sigil are reviewable in
+    // demo mode too ("every surface is live"). Real config only ever
+    // arrives from the bridge as a voice_config event.
+    useVoiceStore.getState().handleEvent({
+      type: 'voice_config',
+      config: {
+        enabled: true,
+        model: 'gpt-realtime-2.1-mini',
+        voice: 'marin',
+        vadMode: 'semantic_vad',
+        idleTimeoutSec: 25,
+        available: {
+          models: ['gpt-realtime-2.1', 'gpt-realtime-2.1-mini', 'gpt-realtime'],
+          voices: ['marin', 'cedar', 'alloy', 'echo'],
+        },
+        hasApiKey: true,
+        spotifySearch: false,
+      },
+    })
     return () => {
       driver.stop()
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
       flushBridgeEvents()
     }
   }, [enqueueBridgeEvent, flushBridgeEvents, hydrateSettings])
+
+  // Screenshot / design-review rig: ?voicedemo=1 opens the voice HUD on
+  // boot; voice-store detects the flag and runs the scripted demo walk
+  // instead of a real engine session.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('voicedemo') === '1') {
+      useVoiceStore.getState().toggleVoice()
+    }
+  }, [])
 
   // Triple-Esc detection state. Resets after 1 second of inactivity.
   const escTimesRef = useRef<number[]>([])
@@ -555,6 +611,25 @@ export function App() {
         }
       }
       if (e.key === 'Escape') {
+        // Voice HUD has Esc priority — one press ends the exchange (or
+        // dismisses a mint-error capsule) before any dialog handling
+        // below runs. Read via getState() so the handler doesn't churn
+        // on every voice event. The HUD's inline floor-command input
+        // stops propagation of its own Esc, so it never reaches here.
+        // SettingsModal / PermissionPrompt register their OWN window
+        // Esc listeners that fire no matter what we do — while either
+        // is up, let it own the keypress so one Esc doesn't both
+        // dismiss the modal and kill the voice session.
+        const voice = useVoiceStore.getState()
+        if (
+          voice.hudOpen &&
+          !settingsOpen &&
+          useHarness.getState().permissionQueue.length === 0
+        ) {
+          e.preventDefault()
+          voice.endVoice('esc')
+          return
+        }
         // Dialog dismissal — these are fine to handle on bare Esc
         // because they're no-ops when no dialog is open, and the
         // agent's injected Esc won't match any of these conditions.
@@ -639,6 +714,8 @@ export function App() {
         {activeSubagentId && <SubagentDetail id={activeSubagentId} />}
         {modelPickerOpen && <ModelPicker />}
         <SettingsModal />
+        {/* Voice capsule — z-40, above the shell, below PermissionPrompt. */}
+        <VoiceHUD />
         <PermissionPrompt />
         <SkillToast />
         <ComputerPermissionWizard />

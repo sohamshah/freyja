@@ -226,6 +226,23 @@ const api = {
   async fsCompletePath(prefix: string): Promise<import('../shared/events').PathCompletionResult> {
     return ipcRenderer.invoke(IPC.fsCompletePath, prefix)
   },
+  // ── Voice (Galdr) ─────────────────────────────────────────
+  // Main-process ⌥Space globalShortcut → renderer. Voice commands
+  // themselves flow through the generic sendCommand path; this is the
+  // only voice-specific preload surface.
+  onVoiceToggle(listener: () => void): () => void {
+    const handler = () => {
+      try {
+        listener()
+      } catch (err) {
+        console.error('[preload] voice toggle listener error', err)
+      }
+    }
+    ipcRenderer.on(IPC.voiceToggle, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC.voiceToggle, handler)
+    }
+  },
 } as const
 
 export type HarnessApi = typeof api

@@ -355,6 +355,41 @@ export interface CommandAttachment {
   sizeBytes?: number
 }
 
+// ── Voice (Galdr) shared types ─────────────────────────────────────
+// Shape shared by the bridge's python dataclass and the renderer —
+// pinned in docs/GALDR-BUILD.md §2. One row per verb execution
+// (including refusals and undos); persisted bridge-side to
+// ~/.freyja/voice/receipts.jsonl.
+
+export type Receipt = {
+  id: string
+  ts: number // epoch ms
+  /** Best-known utterance text ("" if typed). */
+  heard: string
+  lane: 'floor' | 'brain' | 'mission' | 'undo'
+  /** e.g. "spotify.play" */
+  verb: string
+  args: Record<string, unknown>
+  ok: boolean
+  /** One-line human outcome, e.g. "▶ Vienna — Billy Joel". */
+  summary: string
+  undoable: boolean
+  undone?: boolean
+  voiceSessionId?: string
+}
+
+export type VoiceConfig = {
+  enabled: boolean
+  model: string
+  voice: string
+  vadMode: 'semantic_vad' | 'server_vad'
+  idleTimeoutSec: number
+  available: { models: string[]; voices: string[] }
+  /** Capability flags for the UI. */
+  hasApiKey: boolean
+  spotifySearch: boolean
+}
+
 // --- Commands sent from renderer to main (and by main to the bridge) ---
 
 export type BridgeCommand =
@@ -609,6 +644,43 @@ export type BridgeCommand =
   // ({started:true}); progress + final report arrive as
   // wm_backfill_complete system events.
   | { type: 'wm.backfill'; id?: string; limit?: number; dryRun?: boolean }
+  // ── Voice IPC (docs/GALDR-BUILD.md §2) ────────────────────────────
+  | { type: 'voice_session_start' }
+  | {
+      type: 'voice_session_end'
+      voiceSessionId: string
+      reason: string
+      stats?: { seconds: number; inputTokens?: number; outputTokens?: number }
+    }
+  | {
+      type: 'voice_tool_call'
+      voiceSessionId: string
+      callId: string
+      name: string
+      argumentsJson: string
+      heard?: string
+    }
+  | {
+      type: 'voice_transcript'
+      voiceSessionId: string
+      role: 'user' | 'assistant'
+      text: string
+      final: boolean
+    }
+  | { type: 'voice_typed_command'; text: string }
+  | { type: 'voice_receipts_list'; limit?: number }
+  | { type: 'voice_undo'; receiptId: string }
+  | { type: 'voice_get_config' }
+  | {
+      type: 'voice_set_config'
+      patch: {
+        enabled?: boolean
+        model?: string
+        voice?: string
+        vadMode?: 'semantic_vad' | 'server_vad'
+        idleTimeoutSec?: number
+      }
+    }
 
 // --- Events produced by the bridge and forwarded to the renderer ---
 
@@ -999,6 +1071,48 @@ export type BridgeEvent =
       error?: string
     } & SessionId)
   | { type: 'emergency_stop'; reason?: string; stopped?: number }
+  // ── Voice events (docs/GALDR-BUILD.md §2) ─────────────────────────
+  // Deliberately NOT session-scoped: voice sessions are keyed by
+  // voiceSessionId, not by chat sessionId, so these skip the SessionId
+  // mixin and its per-session persistence side effects.
+  | {
+      type: 'voice_session_ready'
+      voiceSessionId: string
+      clientSecret: string
+      model: string
+      expiresAt: number
+      webrtcUrl: string
+    }
+  | {
+      type: 'voice_session_closed'
+      voiceSessionId: string
+      reason: string
+      receiptsCount: number
+      seconds: number
+    }
+  | {
+      type: 'voice_tool_result'
+      voiceSessionId?: string
+      callId: string
+      ok: boolean
+      /** JSON string for the model — relayed verbatim as function_call_output. */
+      output: string
+      say?: string
+      receipt?: Receipt
+      needsConfirm?: { token: string; summary: string }
+    }
+  | { type: 'voice_receipt'; receipt: Receipt }
+  | { type: 'voice_receipts'; receipts: Receipt[] }
+  | { type: 'voice_config'; config: VoiceConfig }
+  | { type: 'voice_error'; voiceSessionId?: string; code: string; message: string }
+  | {
+      /** Floor detected a stop-word in the live transcript. Renderer must
+       *  response.cancel, pause playback, and end the session. */
+      type: 'voice_panic'
+      voiceSessionId: string
+      matched: string
+    }
+  | { type: 'voice_timer_fired'; label: string; seconds: number }
 
 // --- Channel names ---
 
@@ -1048,6 +1162,8 @@ export const IPC = {
   skillCandidateDiff: 'skill:candidateDiff',
   fsCompletePath: 'fs:completePath',
   llmKeysProbe: 'llm:keys:probe',
+  // Voice: main-process ⌥Space globalShortcut → renderer toggleVoice().
+  voiceToggle: 'voice:toggle',
 } as const
 
 // ── Gateway IPC result types ────────────────────────────────────

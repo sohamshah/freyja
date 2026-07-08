@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import { aggregateSessionCost, useHarness } from '../state/store'
 import { useSchedulerStore } from '../state/scheduler-store'
+import { useVoiceStore } from '../state/voice-store'
 import { formatTokens, formatCost } from '../lib/format'
 import { Spinner } from '../lib/spinner'
+import { VoiceSigil } from './voice/VoiceSigil'
 import type { CoordinationStrategy, GatewayStatus } from '@shared/events'
 
 const STRATEGIES: Array<{
@@ -154,6 +156,7 @@ export function TitleBar() {
         )}
         <span className="ml-2 text-fg-1">▾</span>
       </TitleControl>
+      <VoiceSigilControl />
       <div
         className={`no-drag title-strategy hidden h-[28px] shrink-0 items-center gap-0.5 px-1 2xl:flex ${
           strategyLocked ? 'title-strategy-locked' : ''
@@ -221,6 +224,37 @@ export function TitleBar() {
         </span>
       </div>
     </div>
+  )
+}
+
+/**
+ * Galdr voice control — the Sigil at title-bar scale. Its animation IS
+ * the pipeline state (live from voice-store, mic level included), so
+ * the mic-truth indicator is visible even with the HUD dismissed.
+ * Hidden entirely when voice is configured off or there's no API key;
+ * shown while config is still unknown (pre-hydrate) so the control
+ * doesn't pop in late on every launch.
+ */
+function VoiceSigilControl() {
+  const engineState = useVoiceStore((s) => s.engineState)
+  const micLevel = useVoiceStore((s) => s.micLevel)
+  const active = useVoiceStore((s) => s.active)
+  const config = useVoiceStore((s) => s.config)
+  const toggleVoice = useVoiceStore((s) => s.toggleVoice)
+
+  if (config && (!config.enabled || !config.hasApiKey)) return null
+
+  return (
+    <button
+      type="button"
+      onClick={() => toggleVoice()}
+      title="voice · ⌥space"
+      className={`title-control title-control-button no-drag flex h-[28px] w-[32px] shrink-0 items-center justify-center ${
+        active ? 'shadow-glow-accent' : ''
+      }`}
+    >
+      <VoiceSigil size={20} state={engineState} level={micLevel} />
+    </button>
   )
 }
 
