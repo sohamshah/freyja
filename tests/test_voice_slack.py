@@ -343,3 +343,89 @@ async def test_send_api_error_is_terse(reg, fake_client, token_env):
     res = await reg.get("slack.send").run({"channel": "general", "text": "hi"})
     assert not res.ok
     assert res.summary == "Slack send failed: not_in_channel"
+
+
+# ── rate limiting (Slack's non-Marketplace 1-req/min history quota) ───────
+
+
+class _FakeRateLimitError(Exception):
+    """Duck-types SlackApiError: .response has .get('error') + .headers."""
+
+    def __init__(self, retry_after):
+        super().__init__("ratelimited")
+
+        class _Resp(dict):
+            pass
+
+        self.response = _Resp(error="ratelimited")
+        self.response.headers = {"Retry-After": str(retry_after)}
+
+
+async def test_read_ratelimited_long_wait_is_graceful(reg, fake_client, token_env):
+    """A 60s Retry-After (the 1/min history quota) must come back as a
+    spoken-truth refusal with the wait, never a bare 'ratelimited'."""
+    FakeSlackClient.fail_with = _FakeRateLimitError(60)
+    res = await reg.get("slack.read").run({"channel": "general"})
+    assert not res.ok
+    assert res.summary == "Slack is rate-limiting channel reads — again in ~60s"
+    assert res.data["retryAfterSec"] == 60
+    assert "try again" in res.error
+
+
+async def test_read_ratelimited_short_wait_retries_inline(reg, fake_client, token_env, monkeypatch):
+    """Retry-After ≤3s is a burst limit — one inline retry should recover
+    without surfacing anything to the operator."""
+    naps = []
+
+    async def fake_sleep(s):
+        naps.append(s)
+
+    monkeypatch.setattr(slack.asyncio, "sleep", fake_sleep)
+    original_log = FakeSlackClient._log
+    state = {"failed": False}
+
+    def flaky_log(self, method, kwargs):
+        type(self).calls.append((method, kwargs))
+        if method == "conversations_history" and not state["failed"]:
+            state["failed"] = True
+            raise _FakeRateLimitError(2)
+
+    monkeypatch.setattr(FakeSlackClient, "_log", flaky_log)
+    res = await reg.get("slack.read").run({"channel": "general"})
+    monkeypatch.setattr(FakeSlackClient, "_log", original_log)
+    assert res.ok, res.summary
+    assert naps == [2]
+    assert len(calls_named("conversations_history")) == 2
+
+
+async def test_read_history_cached_within_ttl(reg, fake_client, token_env):
+    """The second read of the same channel inside the TTL must not spend
+    another conversations.history request — that's the 1/min quota."""
+    res1 = await reg.get("slack.read").run({"channel": "general"})
+    res2 = await reg.get("slack.read").run({"channel": "general"})
+    assert res1.ok and res2.ok
+    assert len(calls_named("conversations_history")) == 1
+    assert res2.data["messages"] == res1.data["messages"]
+
+
+async def test_channel_resolution_stops_at_first_matching_page(reg, fake_client, token_env, monkeypatch):
+    """Pagination must early-exit when the wanted channel is on the page —
+    a five-page cold burst is what 429s big workspaces."""
+    pages = [
+        {"channels": [{"id": "C-GENERAL", "name": "general"}],
+         "response_metadata": {"next_cursor": "page2"}},
+        {"channels": [{"id": "C-OTHER", "name": "other"}],
+         "response_metadata": {"next_cursor": "page3"}},
+    ]
+    state = {"i": 0}
+
+    async def paged_list(self, **kwargs):
+        self._log("conversations_list", kwargs)
+        page = pages[min(state["i"], len(pages) - 1)]
+        state["i"] += 1
+        return page
+
+    monkeypatch.setattr(FakeSlackClient, "conversations_list", paged_list)
+    res = await reg.get("slack.read").run({"channel": "general"})
+    assert res.ok, res.summary
+    assert len(calls_named("conversations_list")) == 1  # stopped at page 1

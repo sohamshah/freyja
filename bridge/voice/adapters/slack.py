@@ -21,6 +21,7 @@ reset the caches; nothing here ever hits real Slack in the suite.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from typing import Any, Optional
@@ -35,6 +36,10 @@ _LIST_MAX_ITEMS = 1000  # ~5 pages; a spoken verb never needs more
 _READ_DEFAULT_COUNT = 8
 _READ_MAX_COUNT = 20
 _TEXT_TRUNCATE = 300
+# conversations.history is ~1 req/min for non-Marketplace apps (Slack's
+# May-2025 policy, enforced for existing installs since 2026-03-03) —
+# cache the last fetch per channel so repeat asks don't burn the quota.
+_HISTORY_TTL_SEC = 45.0
 
 _MISSING_TOKEN_SUMMARY = (
     "Slack isn't wired — run `freyja setup slack` or set SLACK_BOT_TOKEN"
@@ -47,13 +52,18 @@ _channel_cache: dict[str, Any] = {"token": None, "expires": 0.0, "by_name": {}}
 _member_cache: dict[str, Any] = {"token": None, "expires": 0.0, "members": []}
 # user id → display name (users_info) — process-lifetime.
 _name_cache: dict[str, str] = {}
+# channel id → (expires, raw newest-first messages) — see _HISTORY_TTL_SEC.
+_history_cache: dict[str, tuple[float, list[dict]]] = {}
 
 
 def _reset_caches() -> None:
     """Test seam — drop every module-level cache."""
-    _channel_cache.update({"token": None, "expires": 0.0, "by_name": {}})
+    _channel_cache.update(
+        {"token": None, "expires": 0.0, "by_name": {}, "cursor": None, "complete": False}
+    )
     _member_cache.update({"token": None, "expires": 0.0, "members": []})
     _name_cache.clear()
+    _history_cache.clear()
 
 
 def _token() -> Optional[str]:
@@ -99,15 +109,88 @@ def _terse_error(exc: Exception) -> str:
     return str(exc).splitlines()[0][:120] if str(exc) else exc.__class__.__name__
 
 
-async def _channel_map(client: AsyncWebClient, token: str) -> dict[str, str]:
+class _RateLimited(Exception):
+    """Slack said 429 — carries the server's Retry-After in seconds."""
+
+    def __init__(self, retry_after: int):
+        super().__init__(f"ratelimited (retry after {retry_after}s)")
+        self.retry_after = retry_after
+
+
+def _retry_after_of(exc: Exception) -> Optional[int]:
+    """Retry-After seconds when the exception is a Slack 429, else None."""
+    resp = getattr(exc, "response", None)
+    try:
+        if resp is not None and str(resp.get("error") or "") == "ratelimited":
+            headers = getattr(resp, "headers", None) or {}
+            return max(1, int(str(headers.get("Retry-After", "60")) or "60"))
+    except Exception:  # noqa: BLE001 — response shape is theirs, not ours
+        return 60
+    return None
+
+
+async def _call(coro_fn, *args: Any, **kwargs: Any) -> Any:
+    """One Slack Web API call with 429 handling: a short Retry-After gets
+    one inline retry (burst limits clear in a second or two); a long one
+    — the 1-req/min conversations.history quota Slack now applies to
+    non-Marketplace apps — surfaces as _RateLimited so the verb can tell
+    the operator the truth instead of a bare 'ratelimited'."""
+    try:
+        return await coro_fn(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 — only 429s are handled here
+        wait = _retry_after_of(exc)
+        if wait is None:
+            raise
+        if wait <= 3:
+            await asyncio.sleep(wait)
+            try:
+                return await coro_fn(*args, **kwargs)
+            except Exception as exc2:  # noqa: BLE001
+                wait2 = _retry_after_of(exc2)
+                if wait2 is None:
+                    raise
+                raise _RateLimited(wait2) from exc2
+        raise _RateLimited(wait) from exc
+
+
+def _rate_limited_result(action: str, exc: _RateLimited) -> VerbResult:
+    return VerbResult(
+        ok=False,
+        summary=f"Slack is rate-limiting {action} — again in ~{exc.retry_after}s",
+        data={"retryAfterSec": exc.retry_after},
+        error=(
+            f"Slack limits this app's {action} (non-Marketplace apps get "
+            f"~1 channel-history read per minute). Offer to try again in "
+            f"about {exc.retry_after} seconds."
+        ),
+    )
+
+
+async def _resolve_channel(
+    client: AsyncWebClient, token: str, name: str
+) -> Optional[str]:
+    """Channel name → id, paginating lazily: stop at the page that names
+    the channel. Common channels land on page one, so the cold-cache cost
+    is usually ONE Tier-2 call instead of a five-page burst — bursts are
+    what 429 large workspaces. The partial map is cached and topped up
+    only when a later lookup misses."""
     now = time.time()
+    wanted = name.lower()
     if _channel_cache["token"] == token and now < _channel_cache["expires"]:
-        return _channel_cache["by_name"]
-    by_name: dict[str, str] = {}
-    cursor: Optional[str] = None
-    fetched = 0
+        cached = _channel_cache["by_name"].get(wanted)
+        if cached is not None or _channel_cache.get("complete"):
+            return cached
+    by_name: dict[str, str] = dict(
+        _channel_cache["by_name"]
+        if _channel_cache["token"] == token and now < _channel_cache["expires"]
+        else {}
+    )
+    cursor: Optional[str] = _channel_cache.get("cursor") if by_name else None
+    complete = False
+    fetched = len(by_name)
     while fetched < _LIST_MAX_ITEMS:
-        resp = await client.conversations_list(
+        resp = await _call(
+            client.conversations_list,
             types="public_channel,private_channel",
             exclude_archived=True,
             limit=_LIST_PAGE_LIMIT,
@@ -115,23 +198,27 @@ async def _channel_map(client: AsyncWebClient, token: str) -> dict[str, str]:
         )
         channels = list(resp.get("channels") or [])
         for ch in channels:
-            name = str(ch.get("name") or "")
+            cname = str(ch.get("name") or "")
             cid = str(ch.get("id") or "")
-            if name and cid:
-                by_name[name.lower()] = cid
+            if cname and cid:
+                by_name[cname.lower()] = cid
         fetched += len(channels)
         cursor = str((resp.get("response_metadata") or {}).get("next_cursor") or "") or None
         if cursor is None:
+            complete = True
             break
-    _channel_cache.update({"token": token, "expires": now + _CACHE_TTL_SEC, "by_name": by_name})
-    return by_name
-
-
-async def _resolve_channel(
-    client: AsyncWebClient, token: str, name: str
-) -> Optional[str]:
-    by_name = await _channel_map(client, token)
-    return by_name.get(name.lower())
+        if wanted in by_name:
+            break
+    _channel_cache.update(
+        {
+            "token": token,
+            "expires": now + _CACHE_TTL_SEC,
+            "by_name": by_name,
+            "cursor": cursor,
+            "complete": complete,
+        }
+    )
+    return by_name.get(wanted)
 
 
 async def _display_name(client: AsyncWebClient, user_id: str) -> str:
@@ -238,8 +325,19 @@ async def _read(args: dict[str, Any]) -> VerbResult:
             return VerbResult(
                 ok=False, summary=f"no channel named #{channel}", error="unknown_channel" + _other_workspace_hint()
             )
-        resp = await client.conversations_history(channel=channel_id, limit=count)
-        raw_messages = list(resp.get("messages") or [])
+        # History is the scarce call — Slack allows non-Marketplace apps
+        # ~1 conversations.history request per MINUTE, so a fresh read
+        # within the TTL reuses the last fetch instead of burning it.
+        now = time.time()
+        cached = _history_cache.get(channel_id)
+        if cached is not None and now < cached[0]:
+            raw_messages = cached[1]
+        else:
+            resp = await _call(
+                client.conversations_history, channel=channel_id, limit=count
+            )
+            raw_messages = list(resp.get("messages") or [])
+            _history_cache[channel_id] = (now + _HISTORY_TTL_SEC, raw_messages)
         messages: list[dict[str, str]] = []
         # History arrives newest-first; flip so the digest reads in order.
         for message in reversed(raw_messages):
@@ -253,6 +351,8 @@ async def _read(args: dict[str, Any]) -> VerbResult:
                 ts = 0.0
             when = time.strftime("%H:%M", time.localtime(ts)) if ts else ""
             messages.append({"who": who, "text": text, "when": when})
+    except _RateLimited as exc:
+        return _rate_limited_result("channel reads", exc)
     except Exception as exc:  # noqa: BLE001 — API failures become terse summaries
         err = _terse_error(exc)
         return VerbResult(ok=False, summary=f"Slack read failed: {err}", error=err)
@@ -305,14 +405,16 @@ async def _send(args: dict[str, Any]) -> VerbResult:
                     ok=False, summary=f"no Slack member matching {user}", error="unknown_user"
                 )
             user_id, name = match
-            opened = await client.conversations_open(users=[user_id])
+            opened = await _call(client.conversations_open, users=[user_id])
             target_id = str((opened.get("channel") or {}).get("id") or "")
             if not target_id:
                 return VerbResult(
                     ok=False, summary=f"couldn't open a DM with {name}", error="dm_open_failed"
                 )
             label = f"@{name}"
-        await client.chat_postMessage(channel=target_id, text=text)
+        await _call(client.chat_postMessage, channel=target_id, text=text)
+    except _RateLimited as exc:
+        return _rate_limited_result("sends", exc)
     except Exception as exc:  # noqa: BLE001
         err = _terse_error(exc)
         return VerbResult(ok=False, summary=f"Slack send failed: {err}", error=err)
