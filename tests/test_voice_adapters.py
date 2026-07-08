@@ -67,6 +67,31 @@ def _reset_spotify_token_cache():
     spotify._token_cache.update({"token": None, "expires": 0.0})
 
 
+@pytest.fixture(autouse=True)
+def _stub_installed_apps(monkeypatch):
+    """Pin the app index so app.* resolution is deterministic and never
+    touches the real machine's Spotlight / /Applications."""
+    from bridge.voice.adapters import system
+
+    index = {
+        "safari": "Safari",
+        "arc": "Arc",
+        "google chrome": "Google Chrome",
+        "google chrome canary": "Google Chrome Canary",
+        "slack": "Slack",
+        "visual studio code": "Visual Studio Code",
+        "system settings": "System Settings",
+    }
+
+    async def fake_installed():
+        return dict(index)
+
+    monkeypatch.setattr(system, "_installed_apps", fake_installed)
+    system._app_cache.update({"expires": 0.0, "by_name": {}})
+    yield
+    system._app_cache.update({"expires": 0.0, "by_name": {}})
+
+
 @pytest.fixture
 def no_spotify_creds(monkeypatch):
     monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
@@ -342,10 +367,12 @@ async def test_app_open_falls_back_to_applescript(reg, osa, run_exec):
 
 
 @pytest.mark.asyncio
-async def test_app_focus_script(reg, osa):
+async def test_app_focus_opens_and_activates(reg, osa, run_exec):
+    # Focus is open-if-needed + activate; `open -a` brings a running app
+    # forward, so the resolved name goes straight through it.
     res = await reg.get("app.focus").run({"name": "Safari"})
     assert res.ok and res.summary == "focused Safari"
-    assert osa.scripts == ['tell application "Safari" to activate']
+    assert run_exec.calls == [["open", "-a", "Safari"]]
 
 
 @pytest.mark.asyncio
@@ -356,6 +383,81 @@ async def test_app_quit_script_and_undo_reopens(reg, osa, run_exec):
     undo_res = await res.undo()
     assert undo_res.ok and undo_res.summary == "opened Safari"
     assert run_exec.calls == [["open", "-a", "Safari"]]
+
+
+@pytest.mark.asyncio
+async def test_app_open_resolves_misheard_name(reg, osa, run_exec):
+    # The live gap: the model says "Arc Browser"; the bundle is "Arc".
+    res = await reg.get("app.open").run({"name": "Arc Browser"})
+    assert res.ok and res.summary == "opened Arc"
+    assert run_exec.calls == [["open", "-a", "Arc"]]
+
+
+@pytest.mark.asyncio
+async def test_app_open_resolves_subword(reg, osa, run_exec):
+    res = await reg.get("app.open").run({"name": "chrome"})
+    assert res.ok and res.summary == "opened Google Chrome"
+    assert run_exec.calls == [["open", "-a", "Google Chrome"]]
+
+
+@pytest.mark.asyncio
+async def test_app_open_prefers_plainest_when_close(reg, osa, run_exec):
+    # "chrome" is a subword of both Chrome and Chrome Canary; the plainest
+    # (shortest) name is the one meant — resolve, don't nag.
+    res = await reg.get("app.open").run({"name": "chrome"})
+    assert res.ok and res.summary == "opened Google Chrome"
+    assert run_exec.calls == [["open", "-a", "Google Chrome"]]
+
+
+@pytest.mark.asyncio
+async def test_app_open_subword_resolves_canary(reg, osa, run_exec):
+    # "canary" is a full spoken word inside exactly one app name → resolve.
+    res = await reg.get("app.open").run({"name": "canary"})
+    assert res.ok and res.summary == "opened Google Chrome Canary"
+
+
+@pytest.mark.asyncio
+async def test_app_open_weak_match_asks(reg, osa, run_exec):
+    # "chrome browser" shares only "chrome" with two apps and isn't a
+    # prefix of either — a weak overlap, so surface both and ask.
+    res = await reg.get("app.open").run({"name": "chrome browser"})
+    assert not res.ok
+    assert "Google Chrome" in res.data["suggestions"]
+    assert run_exec.calls == []  # never launched anything
+
+
+@pytest.mark.asyncio
+async def test_app_open_ambiguous_tie_asks(reg, monkeypatch, osa, run_exec):
+    # A genuine tie — two equally short top matches — must ask, not guess.
+    from bridge.voice.adapters import system as sysmod
+
+    async def two_ties():
+        return {"notes": "Notes", "nomad": "Nomad"}
+
+    monkeypatch.setattr(sysmod, "_installed_apps", two_ties)
+    res = await reg.get("app.open").run({"name": "no"})
+    assert not res.ok
+    assert set(res.data["suggestions"]) == {"Notes", "Nomad"}
+    assert run_exec.calls == []
+
+
+@pytest.mark.asyncio
+async def test_app_open_unknown_fails_cleanly(reg, osa, run_exec):
+    # No resolver opinion + launch fails both ways → clean failure.
+    run_exec.result = (False, "not found")
+    osa.replies = [(False, "no such app")]
+    res = await reg.get("app.open").run({"name": "zzqwidget"})
+    assert not res.ok
+    assert res.summary == "couldn't open zzqwidget"
+
+
+@pytest.mark.asyncio
+async def test_app_quit_resolves_before_quitting(reg, osa, run_exec):
+    res = await reg.get("app.quit").run({"name": "arc browser"})
+    assert res.ok and res.summary == "quit Arc"
+    assert osa.scripts == ['tell application "Arc" to quit']
+    undo_res = await res.undo()
+    assert undo_res.ok and undo_res.summary == "opened Arc"
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,596 @@
+"""Live computer verbs (bridge/voice/adapters/computer.py).
+
+Nothing here touches the real screen: the atomic computer tools are
+replaced wholesale via the ``computer._ensure_tools`` seam, System
+Events resolution via ``computer._resolve_app``, osascript/exec via the
+``mac`` module (same style as the other adapter suites), and the vision
+path via ``screen._look``.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from bridge.voice.adapters import computer, mac
+from bridge.voice.verbs import VerbRegistry
+
+# ── fakes ─────────────────────────────────────────────────────────────────
+
+
+class FakeTool:
+    """Duck-types an atomic computer tool: async execute(call_id, args)."""
+
+    def __init__(self, name, result=None):
+        self.name = name
+        self.calls = []
+        self.result = result if result is not None else _ok_result(f"{name} ok")
+
+    async def execute(self, call_id, arguments):
+        self.calls.append(dict(arguments))
+        return self.result
+
+
+def _ok_result(content):
+    return SimpleNamespace(is_error=False, content=content)
+
+
+def _err_result(content):
+    return SimpleNamespace(is_error=True, content=content)
+
+
+def _image_result(data=b"img-bytes", mime="image/jpeg"):
+    return SimpleNamespace(
+        is_error=False,
+        content=[
+            SimpleNamespace(text="Captured screenshot 1280x800"),
+            SimpleNamespace(data=base64.b64encode(data).decode("ascii"), media_type=mime),
+        ],
+    )
+
+
+TREE = {
+    "role": "AXApplication",
+    "title": "Mail",
+    "children": [
+        {
+            "role": "AXWindow",
+            "title": "Inbox",
+            "children": [
+                {"role": "AXButton", "title": "Compose", "bounds": [100, 40, 60, 24]},
+                {"role": "AXTextField", "description": "Search", "bounds": [300, 40, 200, 24]},
+                {"role": "AXLink", "title": "L" * 80, "bounds": [10, 100, 50, 12]},
+                {
+                    "role": "AXGroup",
+                    "children": [
+                        {"role": "AXCheckBox", "title": "Unread only", "bounds": [12, 200, 20, 20]}
+                    ],
+                },
+                {"role": "AXStaticText", "title": "not interactive", "bounds": [0, 0, 10, 10]},
+                {"role": "AXButton", "title": "NoBounds"},
+            ],
+        },
+        {
+            "role": "AXWindow",
+            "title": "Other",
+            "children": [
+                {"role": "AXButton", "title": "OtherWinButton", "bounds": [1, 1, 10, 10]}
+            ],
+        },
+    ],
+}
+
+
+def _ax_result(tree):
+    return _ok_result(
+        "AX tree for pid=42 (bounds in API coordinate space, matching your "
+        "last screenshot):\n" + json.dumps(tree)
+    )
+
+
+TOOL_NAMES = (
+    "screenshot",
+    "click",
+    "type_text",
+    "press_key",
+    "scroll",
+    "read_ax_tree",
+    "find_element",
+)
+
+
+@pytest.fixture
+def rig(monkeypatch, tmp_path):
+    """Enabled registry + fake tool layer + fake System Events resolve."""
+    monkeypatch.setattr(computer, "_TOOLS", None)
+    monkeypatch.setattr(computer, "_snapshot", None)
+    monkeypatch.setattr(computer, "_generation", 0)
+    monkeypatch.setattr(computer, "_ref_seq", 0)
+    monkeypatch.setattr(computer, "_FRAMES_DIR", tmp_path / "frames")
+
+    tools = {name: FakeTool(name) for name in TOOL_NAMES}
+    tools["screenshot"].result = _image_result()
+    tools["read_ax_tree"].result = _ax_result(TREE)
+    monkeypatch.setattr(computer, "_ensure_tools", lambda: tools)
+
+    async def fake_resolve(app_arg):
+        return (app_arg or "Mail"), 42, "Inbox", ""
+
+    monkeypatch.setattr(computer, "_resolve_app", fake_resolve)
+
+    look_calls = []
+
+    async def fake_look(args):
+        look_calls.append(dict(args))
+        return SimpleNamespace(ok=True, data={"text": "a mail window, compose top left"})
+
+    monkeypatch.setattr(computer.screen, "_look", fake_look)
+
+    registry = VerbRegistry()
+    computer.register(registry, enabled_fn=lambda: True)
+    return SimpleNamespace(
+        registry=registry, tools=tools, look_calls=look_calls, frames=tmp_path / "frames"
+    )
+
+
+async def _run(rig, verb, args=None):
+    return await rig.registry.get(verb).run(dict(args or {}))
+
+
+# ── gating ────────────────────────────────────────────────────────────────
+
+_GATE_ARGS = {
+    "computer.see": {},
+    "computer.click": {"ref": "e1"},
+    "computer.type": {"text": "hello"},
+    "computer.press": {"key": "enter"},
+    "computer.scroll": {"direction": "down"},
+    "computer.menu": {"menu_path": ["File", "New Tab"]},
+    "computer.open_url": {"url": "https://example.com"},
+}
+
+
+async def test_every_verb_gates_when_disabled(rig, monkeypatch):
+    registry = VerbRegistry()
+    computer.register(registry, enabled_fn=lambda: False)
+    assert sorted(_GATE_ARGS) == sorted(v.name for v in registry.all())
+    for name, args in _GATE_ARGS.items():
+        res = await registry.get(name).run(dict(args))
+        assert res.ok is False, name
+        assert res.data == {"setup": "computer"}, name
+        assert res.summary == "computer control is disabled — enable it in settings"
+        assert "Settings → Computer Control" in res.error
+    # The gate fires before any tool is constructed or called.
+    assert all(tool.calls == [] for tool in rig.tools.values())
+
+
+async def test_gate_reads_the_signal_live(rig):
+    """A settings flip applies to an already-registered verb."""
+    enabled = {"on": False}
+    registry = VerbRegistry()
+    computer.register(registry, enabled_fn=lambda: enabled["on"])
+    res = await registry.get("computer.press").run({"key": "enter"})
+    assert res.ok is False and res.data == {"setup": "computer"}
+    enabled["on"] = True
+    res = await registry.get("computer.press").run({"key": "enter"})
+    assert res.ok is True
+
+
+# ── computer.see ──────────────────────────────────────────────────────────
+
+
+async def test_see_condenses_interactive_elements(rig):
+    res = await _run(rig, "computer.see")
+    assert res.ok
+    assert res.summary == "saw Mail: 4 elements"
+    assert res.data["app"] == "Mail"
+    assert res.data["window"] == "Inbox"
+    elements = res.data["elements"]
+    assert [e["ref"] for e in elements] == ["e1", "e2", "e3", "e4"]
+    assert elements[0] == {"ref": "e1", "role": "button", "label": "Compose"}
+    assert elements[1] == {"ref": "e2", "role": "text field", "label": "Search"}
+    assert elements[3] == {"ref": "e4", "role": "checkbox", "label": "Unread only"}
+    # Labels truncate at 60 with an ellipsis.
+    assert elements[2]["label"] == "L" * 59 + "…"
+    assert len(elements[2]["label"]) == 60
+    # No coordinates ever reach the model.
+    assert all(set(e) == {"ref", "role", "label"} for e in elements)
+    # The other window's elements are not listed.
+    assert "OtherWinButton" not in {e["label"] for e in elements}
+    # Coordinates live server-side in the snapshot (bounds centers).
+    snap = computer._snapshot
+    assert snap.app == "Mail" and snap.pid == 42 and snap.generation == 1
+    assert snap.elements["e1"] == (130, 52, "Compose")
+    assert snap.elements["e2"] == (400, 52, "Search")
+    # AX was queried for the resolved pid.
+    assert rig.tools["read_ax_tree"].calls == [{"pid": 42}]
+    # Rich AX + no question → the vision path never ran.
+    assert rig.look_calls == []
+
+
+async def test_see_generation_and_refs_advance(rig):
+    first = await _run(rig, "computer.see")
+    second = await _run(rig, "computer.see")
+    assert [e["ref"] for e in first.data["elements"]] == ["e1", "e2", "e3", "e4"]
+    # Refs never restart: an old ref stays detectably stale (see below).
+    assert [e["ref"] for e in second.data["elements"]] == ["e5", "e6", "e7", "e8"]
+    assert computer._snapshot.generation == 2
+    assert "e1" not in computer._snapshot.elements
+
+
+async def test_see_sparse_ax_triggers_vision(rig):
+    sparse = {
+        "role": "AXWindow",
+        "title": "Inbox",
+        "children": [{"role": "AXButton", "title": "Only", "bounds": [0, 0, 10, 10]}],
+    }
+    rig.tools["read_ax_tree"].result = _ax_result(sparse)
+    res = await _run(rig, "computer.see")
+    assert res.ok
+    assert res.data["caption"] == "a mail window, compose top left"
+    assert rig.look_calls == [{}]  # no question → screen.look's default
+
+
+async def test_see_question_triggers_vision_even_with_rich_ax(rig):
+    res = await _run(rig, "computer.see", {"question": "is there an unread badge?"})
+    assert res.ok
+    assert res.data["caption"] == "a mail window, compose top left"
+    assert rig.look_calls == [{"question": "is there an unread badge?"}]
+
+
+async def test_see_ax_error_falls_back_to_vision(rig):
+    rig.tools["read_ax_tree"].result = _err_result("read_ax_tree failed: boom")
+    res = await _run(rig, "computer.see")
+    assert res.ok
+    assert res.data["elements"] == []
+    assert res.data["caption"] == "a mail window, compose top left"
+
+
+async def test_see_records_screenshot_and_prunes(rig):
+    frames = rig.frames
+    frames.mkdir(parents=True)
+    for i in range(12):
+        (frames / f"see-{i:04d}.jpg").write_bytes(b"old")
+    res = await _run(rig, "computer.see")
+    path = res.data["screenshotPath"]
+    assert path.startswith(str(frames))
+    with open(path, "rb") as fh:
+        assert fh.read() == b"img-bytes"
+    remaining = sorted(p.name for p in frames.iterdir())
+    assert len(remaining) == 10  # 12 old + 1 new, pruned to the newest 10
+    assert path.endswith(remaining[-1])
+    assert "see-0000.jpg" not in remaining
+
+
+async def test_see_setup_failure_surfaces_when_blind(rig):
+    rig.tools["read_ax_tree"].result = _err_result(
+        "Error: freyja_native not available (no module)"
+    )
+    res = await _run(rig, "computer.see")
+    assert res.ok is False
+    assert res.data == {"setup": "computer"}
+    assert "freyja_native" in res.error
+
+
+async def test_see_app_resolution_failure(rig, monkeypatch):
+    async def fail_resolve(app_arg):
+        return app_arg, None, "", "Can't get application process \"Nope\""
+
+    monkeypatch.setattr(computer, "_resolve_app", fail_resolve)
+    res = await _run(rig, "computer.see", {"app": "Nope"})
+    assert res.ok is False
+    assert "couldn't see Nope" in res.summary
+
+
+# ── computer.click ────────────────────────────────────────────────────────
+
+
+async def test_click_by_fresh_ref_uses_cached_coordinates(rig):
+    await _run(rig, "computer.see")
+    res = await _run(rig, "computer.click", {"ref": "e1"})
+    assert res.ok
+    assert res.summary == "clicked Compose"
+    (call,) = rig.tools["click"].calls
+    assert (call["x"], call["y"]) == (130, 52)
+
+
+async def test_click_stale_generation_ref_refused(rig):
+    await _run(rig, "computer.see")  # e1..e4
+    await _run(rig, "computer.see")  # e5..e8 supersede
+    res = await _run(rig, "computer.click", {"ref": "e1"})
+    assert res.ok is False
+    assert "run computer.see first" in res.summary
+    assert rig.tools["click"].calls == []
+
+
+async def test_click_ref_without_any_see_refused(rig):
+    res = await _run(rig, "computer.click", {"ref": "e1"})
+    assert res.ok is False
+    assert "run computer.see first" in res.summary
+    assert rig.tools["click"].calls == []
+
+
+async def test_click_by_element_label_queries_find_element(rig):
+    rig.tools["find_element"].result = _ok_result(
+        "Found element: bounds=(10, 20, 100x40), center=(60, 40). "
+        "Coordinates are in the SAME space as your last screenshot."
+    )
+    res = await _run(rig, "computer.click", {"element": "Compose"})
+    assert res.ok
+    assert res.summary == "clicked Compose"
+    assert rig.tools["find_element"].calls == [{"pid": 42, "label": "Compose"}]
+    (call,) = rig.tools["click"].calls
+    assert (call["x"], call["y"]) == (60, 40)
+
+
+async def test_click_by_element_not_found(rig):
+    rig.tools["find_element"].result = _ok_result(
+        "No element found for pid=42 label='Zilch'. Try relaxing the query."
+    )
+    res = await _run(rig, "computer.click", {"element": "Zilch"})
+    assert res.ok is False
+    assert "Zilch" in res.summary
+    assert rig.tools["click"].calls == []
+
+
+async def test_click_by_coordinates(rig):
+    res = await _run(rig, "computer.click", {"x": 5, "y": 6})
+    assert res.ok
+    assert res.summary == "clicked (5, 6)"
+    (call,) = rig.tools["click"].calls
+    assert (call["x"], call["y"]) == (5, 6)
+
+
+async def test_click_without_target_refused(rig):
+    res = await _run(rig, "computer.click")
+    assert res.ok is False
+    assert rig.tools["click"].calls == []
+
+
+async def test_click_permission_error_maps_to_setup(rig):
+    await _run(rig, "computer.see")
+    rig.tools["click"].result = _err_result(
+        "click: Accessibility permission is NOT working. macOS is silently "
+        "dropping CGEvent injection.\n\nFIX:\n  1. Open System Settings"
+    )
+    res = await _run(rig, "computer.click", {"ref": "e1"})
+    assert res.ok is False
+    assert res.data == {"setup": "computer"}
+    assert "Accessibility" in res.error
+
+
+# ── computer.type ─────────────────────────────────────────────────────────
+
+
+async def test_type_passes_full_text_to_tool(rig):
+    res = await _run(rig, "computer.type", {"text": "hello there"})
+    assert res.ok
+    assert res.summary == 'typed "hello there"'
+    assert rig.tools["type_text"].calls == [{"text": "hello there"}]
+
+
+async def test_type_summary_truncates_long_text(rig):
+    text = "x" * 60
+    res = await _run(rig, "computer.type", {"text": text})
+    assert res.ok
+    # The tool (and therefore the receipt args) got the full text…
+    assert rig.tools["type_text"].calls == [{"text": text}]
+    # …but the spoken/journaled summary never carries it verbatim.
+    assert text not in res.summary
+    assert res.summary == f'typed "{"x" * 39}…"'
+
+
+async def test_type_requires_text(rig):
+    res = await _run(rig, "computer.type", {"text": ""})
+    assert res.ok is False
+    assert rig.tools["type_text"].calls == []
+
+
+# ── computer.press ────────────────────────────────────────────────────────
+
+
+async def test_press_plain_key(rig):
+    res = await _run(rig, "computer.press", {"key": "enter"})
+    assert res.ok and res.summary == "pressed enter"
+    assert rig.tools["press_key"].calls == [{"key": "enter", "modifiers": []}]
+
+
+async def test_press_with_modifiers(rig):
+    res = await _run(rig, "computer.press", {"key": "t", "modifiers": ["cmd"]})
+    assert res.ok and res.summary == "pressed cmd+t"
+    assert rig.tools["press_key"].calls == [{"key": "t", "modifiers": ["cmd"]}]
+
+
+async def test_press_combo_string_maps_to_modifiers(rig):
+    res = await _run(rig, "computer.press", {"key": "cmd+shift+t"})
+    assert res.ok and res.summary == "pressed cmd+shift+t"
+    assert rig.tools["press_key"].calls == [{"key": "t", "modifiers": ["cmd", "shift"]}]
+
+
+async def test_press_normalizes_modifier_aliases(rig):
+    await _run(rig, "computer.press", {"key": "a", "modifiers": ["Command", "Option"]})
+    assert rig.tools["press_key"].calls == [{"key": "a", "modifiers": ["cmd", "alt"]}]
+
+
+# ── computer.scroll ───────────────────────────────────────────────────────
+
+
+async def test_scroll_down_default_amount(rig):
+    res = await _run(rig, "computer.scroll", {"direction": "down"})
+    assert res.ok and res.summary == "scrolled down"
+    assert rig.tools["scroll"].calls == [{"dx": 0, "dy": 8}]
+
+
+async def test_scroll_directions_and_amount(rig):
+    await _run(rig, "computer.scroll", {"direction": "up", "amount": 3})
+    await _run(rig, "computer.scroll", {"direction": "left"})
+    await _run(rig, "computer.scroll", {"direction": "right", "amount": 2})
+    assert rig.tools["scroll"].calls == [
+        {"dx": 0, "dy": -3},
+        {"dx": -8, "dy": 0},
+        {"dx": 2, "dy": 0},
+    ]
+
+
+async def test_scroll_at_ref_uses_cached_point(rig):
+    await _run(rig, "computer.see")
+    res = await _run(rig, "computer.scroll", {"direction": "down", "ref": "e2"})
+    assert res.ok
+    assert rig.tools["scroll"].calls == [{"dx": 0, "dy": 8, "x": 400, "y": 52}]
+
+
+async def test_scroll_stale_ref_refused(rig):
+    await _run(rig, "computer.see")
+    await _run(rig, "computer.see")
+    res = await _run(rig, "computer.scroll", {"direction": "down", "ref": "e1"})
+    assert res.ok is False
+    assert "run computer.see first" in res.summary
+    assert rig.tools["scroll"].calls == []
+
+
+async def test_scroll_bad_direction_refused(rig):
+    res = await _run(rig, "computer.scroll", {"direction": "sideways"})
+    assert res.ok is False
+    assert rig.tools["scroll"].calls == []
+
+
+# ── computer.menu ─────────────────────────────────────────────────────────
+
+
+class OsaRecorder:
+    def __init__(self, ok=True, out=""):
+        self.scripts = []
+        self.ok = ok
+        self.out = out
+
+    async def __call__(self, script, timeout=6.0):
+        self.scripts.append(script)
+        return self.ok, self.out
+
+
+async def test_menu_frontmost_two_level_path(rig, monkeypatch):
+    osa = OsaRecorder()
+    monkeypatch.setattr(mac, "run_osascript", osa)
+    res = await _run(rig, "computer.menu", {"menu_path": ["File", "New Tab"]})
+    assert res.ok
+    assert res.summary == "menu: File → New Tab"
+    (script,) = osa.scripts
+    assert script == (
+        'tell application "System Events"\n'
+        "tell (first application process whose frontmost is true)\n"
+        "set frontmost to true\n"
+        'click menu item "New Tab" of menu "File" of menu bar 1\n'
+        "end tell\n"
+        "end tell"
+    )
+
+
+async def test_menu_named_app_nested_path_quotes_every_segment(rig, monkeypatch):
+    osa = OsaRecorder()
+    monkeypatch.setattr(mac, "run_osascript", osa)
+    res = await _run(
+        rig,
+        "computer.menu",
+        {"menu_path": ["Format", 'Fo"nt', "Bold"], "app": "TextEdit"},
+    )
+    assert res.ok
+    (script,) = osa.scripts
+    assert script == (
+        'tell application "System Events"\n'
+        'tell process "TextEdit"\n'
+        "set frontmost to true\n"
+        'click menu item "Bold" of menu "Fo\\"nt" of menu item "Fo\\"nt" '
+        'of menu "Format" of menu bar 1\n'
+        "end tell\n"
+        "end tell"
+    )
+
+
+async def test_menu_needs_at_least_menu_and_item(rig, monkeypatch):
+    osa = OsaRecorder()
+    monkeypatch.setattr(mac, "run_osascript", osa)
+    res = await _run(rig, "computer.menu", {"menu_path": ["File"]})
+    assert res.ok is False
+    assert osa.scripts == []
+
+
+async def test_menu_assistive_access_denial_maps_to_setup(rig, monkeypatch):
+    osa = OsaRecorder(ok=False, out="osascript is not allowed assistive access")
+    monkeypatch.setattr(mac, "run_osascript", osa)
+    res = await _run(rig, "computer.menu", {"menu_path": ["File", "New Tab"]})
+    assert res.ok is False
+    assert res.data == {"setup": "computer"}
+
+
+# ── computer.open_url ─────────────────────────────────────────────────────
+
+
+class ExecRecorder:
+    def __init__(self, ok=True, out=""):
+        self.calls = []
+        self.ok = ok
+        self.out = out
+
+    async def __call__(self, argv, timeout=6.0):
+        self.calls.append(list(argv))
+        return self.ok, self.out
+
+
+async def test_open_url_https(rig, monkeypatch):
+    execer = ExecRecorder()
+    monkeypatch.setattr(mac, "run_exec", execer)
+    res = await _run(rig, "computer.open_url", {"url": "https://example.com/x?y=1"})
+    assert res.ok
+    assert res.summary == "opened example.com"
+    assert execer.calls == [["open", "https://example.com/x?y=1"]]
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["javascript:alert(1)", "file:///etc/passwd", "notaurl", "ftp://x.com", "http://"],
+)
+async def test_open_url_rejects_non_http_schemes(rig, monkeypatch, url):
+    execer = ExecRecorder()
+    monkeypatch.setattr(mac, "run_exec", execer)
+    res = await _run(rig, "computer.open_url", {"url": url})
+    assert res.ok is False
+    assert execer.calls == []
+
+
+# ── receipts flow through the service unchanged ───────────────────────────
+
+
+async def test_receipts_flow_through_service_execute(rig, tmp_path):
+    from bridge.voice.service import VoiceService
+
+    events = []
+    svc = VoiceService(
+        SimpleNamespace(default_model="test-model", computer_enabled=True),
+        base_dir=tmp_path / "voice",
+        registry=rig.registry,
+        emit_fn=events.append,
+    )
+    await svc.handle_tool_call(
+        {
+            "voiceSessionId": "v1",
+            "callId": "c1",
+            "name": "act",
+            "argumentsJson": json.dumps({"verb": "computer.press", "args": {"key": "enter"}}),
+        }
+    )
+    (result,) = [e for e in events if e["type"] == "voice_tool_result"]
+    assert result["ok"] is True
+    assert json.loads(result["output"])["summary"] == "pressed enter"
+    receipt = result["receipt"]
+    assert receipt["verb"] == "computer.press"
+    assert receipt["lane"] == "brain"
+    assert receipt["ok"] is True
+    assert receipt["args"] == {"key": "enter"}
+    (live_receipt,) = [e for e in events if e["type"] == "voice_receipt"]
+    assert live_receipt["receipt"]["id"] == receipt["id"]
+    # Persisted too — the receipts file is the audit trail.
+    lines = (tmp_path / "voice" / "receipts.jsonl").read_text().strip().splitlines()
+    assert json.loads(lines[-1])["verb"] == "computer.press"

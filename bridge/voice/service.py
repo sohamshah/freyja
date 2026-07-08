@@ -1145,8 +1145,9 @@ class VoiceService:
             Verb(
                 name="computer.do",
                 description=(
-                    "Drive the Mac GUI hands-on (click, type, screenshot) via a "
-                    "computer-use mission; reports back when done"
+                    "Long multi-step GUI work as a background mission (reports "
+                    "back when done); for live see/click/type steps use the "
+                    "computer.* verbs directly"
                 ),
                 params={
                     "task": {"type": "string", "description": "what to accomplish"},
@@ -1156,6 +1157,21 @@ class VoiceService:
                 run=_run_computer,
             )
         )
+        # Live computer verbs (rung 2 — see/click/type in the exchange).
+        # Registered here, not in register_all, because their gate is the
+        # same enablement signal agent sessions are built from:
+        # state.computer_enabled, which set_computer_enabled flips at
+        # runtime — the adapter re-reads it per call via enabled_fn, so a
+        # settings flip applies without rebuilding this registry.
+        try:
+            from bridge.voice.adapters import computer as computer_adapter
+
+            computer_adapter.register(
+                registry,
+                enabled_fn=lambda: bool(getattr(service._state, "computer_enabled", False)),
+            )
+        except Exception as exc:  # noqa: BLE001 — adapters may not be present
+            self._log("warn", f"voice computer verbs unavailable: {exc}")
 
     # ── shared emit helpers ──────────────────────────────────────────────
 

@@ -27,7 +27,8 @@ any code was written).
   Slice-1 verbs: `spotify.*` (transport + optional search),
   `system.volume` (undoable), `app.open/focus/quit/frontmost`,
   `timer.set/list/cancel`, `mission.spawn`. Slice-2 reach: `slack.read`,
-  `slack.send`, `screen.look`, `mission.status`, `computer.do`.
+  `slack.send`, `screen.look`, `mission.status`, `computer.do`, and the
+  live computer verbs `computer.see/click/type/press/scroll/menu/open_url`.
 - **Two-tier safety.** `auto` verbs run immediately; `confirm` verbs
   (quit an app) require a single-use, 90-second, args-scoped token — the
   model must relay the ask and re-call after you say yes, out loud.
@@ -54,6 +55,17 @@ any code was written).
   keyboard: spawns a computer-use mission ("computer: …") with the same
   report-back — refused with a setup hint while computer control is
   disabled in settings.
+- **Live computer control** (slice 2b). *"Click the compose button"*
+  happens in the exchange, not in a background mission: `computer.see`
+  condenses the front window's AX tree into numbered refs (coordinates
+  never reach the model — they're cached bridge-side), `computer.click /
+  type / press / scroll` act by ref through the same atomic tools agent
+  sessions use (identical highlight, coordinate translation, permission
+  preflights), `computer.menu` clicks menu-bar paths by name, and
+  `computer.open_url` opens http(s) links. Every `see` drops a screenshot
+  receipt under `~/.freyja/voice/frames/` (last 10 kept); refs go stale
+  the moment the screen changes and the verbs refuse them. All gated on
+  the same computer-control setting, with spoken setup hints.
 
 ## Architecture
 

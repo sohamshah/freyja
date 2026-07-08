@@ -210,7 +210,33 @@ The gaps: "check this out" (no screen sight) and "send a Slack message"
 | `slack.send` | `{channel? \| user?, text}` | **confirm** | — (a sent message is sent) | channel by name as above; `user` DMs by display/real-name match (cached `users_list` → `conversations_open` → `chat_postMessage`); summary `→ #general: <text[:60]>`; API errors surface as terse one-liners, never tracebacks |
 | `screen.look` | `{question?}` | auto | — | `screencapture -x -C` via `mac.run_exec` (packaged app owns the Screen Recording TCC; dev may fail → clean "needs Screen Recording permission"); PIL downscale ≤1568px wide + JPEG q70; one-shot vision call via httpx (`FREYJA_VOICE_LOOK_MODEL`, default `gpt-5-mini`, 25 s timeout); returns `data.text`, summary `text[:80]`; tmp file deleted in finally |
 | `mission.status` | `{}` | auto | — | registered in service.py; tracked spawns `{sessionId, title, prompt_head, started_ts, state running\|done\|failed, last_text?}`; summary like "2 running, 1 done" |
-| `computer.do` | `{task}` | **confirm** | — | registered in service.py; refuses with `data.setup="computer"` while `state.computer_enabled` is falsy; else spawns a mission titled `computer: <task head>` whose prompt drives the computer tools (screenshot, click, type, read_ax_tree, …); same report-back watcher |
+| `computer.do` | `{task}` | **confirm** | — | registered in service.py; refuses with `data.setup="computer"` while `state.computer_enabled` is falsy; else spawns a mission titled `computer: <task head>` whose prompt drives the computer tools (screenshot, click, type, read_ax_tree, …); same report-back watcher. Positioned as the LONG-JOB path — live steps go through `computer.*` below |
+
+### Slice 2b — live computer verbs (rung 2: direct GUI control in the exchange)
+
+`bridge/voice/adapters/computer.py`; registered by service.py (its gate is
+`state.computer_enabled`, re-read per call via `enabled_fn`). All actions run
+through the SAME atomic tool classes agent sessions use
+(`bridge.tools.computer_tools`) so coordinate translation, the 200 ms
+pre-action highlight delay, permission preflights, and proxy fallbacks are
+identical; the `ComputerToolSpec` is built once per process with a documented
+no-op `emit_event` (no renderer pane for voice frames; §11 forbids
+session-scoped voice events). ALL verbs below are gated: control disabled /
+permissions missing → ok=false with the tool layer's own actionable message
+and `data.setup="computer"`. Ref cache is ONE process-level "last seen"
+snapshot (voice is a single-operator surface); refs are numbered by a
+process-lifetime counter (`e1..e5`, then `e6..e12`) so a ref minted by an
+older see is detectably stale instead of silently re-pointing.
+
+| verb | args | tier | undo | notes |
+|---|---|---|---|---|
+| `computer.see` | `{question?, app?}` | auto | — | the eyes: frontmost (or named) app + focused window via System Events; interactive elements (buttons/links/fields/checkboxes/menus/tabs) condensed from `ReadAxTreeTool` as `{ref, role, label≤60}` — centers stay SERVER-SIDE in the snapshot, no coordinates to the model; screenshot saved to `~/.freyja/voice/frames/` (last 10 kept) as `data.screenshotPath`; `question` given OR <3 elements (AX-opaque) → also runs the `screen.look` vision helper → `data.caption`; summary `saw <app>: N elements` |
+| `computer.click` | `{ref? \| element? \| x?,y?}` | auto | — | resolution order ref → element (live `FindElementTool` lookup against the frontmost pid) → x,y; stale/unknown ref → refusal "run computer.see first"; clicks via `ClickTool` (highlight + translation identical to agent clicks) |
+| `computer.type` | `{text}` | auto | — | `TypeTextTool` into the focused field; receipt summary truncates >40 chars with `…` (full text stays on receipt args) |
+| `computer.press` | `{key, modifiers?}` | auto | — | `PressKeyTool`; accepts `"cmd+t"`-style combo strings (split into key + modifiers) and command/option/control aliases |
+| `computer.scroll` | `{direction, amount?, ref?/x?/y?}` | auto | — | `ScrollTool`; direction → dx/dy (default amount 8); ref resolves via the snapshot with the same staleness rule |
+| `computer.menu` | `{menu_path[], app?}` | auto | — | System Events UI scripting via `mac.run_osascript`: nested `click menu item … of menu … of menu bar 1` path for the frontmost (or named) process; every segment `as_quoted`; needs ≥2 path segments; zero coordinates |
+| `computer.open_url` | `{url}` | auto | — | scheme allowlist http/https only (javascript:/file: refused), then `run_exec(["open", url])` |
 
 Mission report-back (service.py): every spawn registers a named watcher
 task that awaits the session's `pending_task` (the scheduler-runtime
