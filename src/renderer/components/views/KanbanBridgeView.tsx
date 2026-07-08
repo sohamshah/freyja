@@ -5,14 +5,12 @@ import type {
   TelemetryEventView,
 } from '../shared/types'
 import {
-  DetailDrawer,
   DrawerAction,
-  DrawerAssignment,
-  DrawerDependencies,
   DrawerSection,
   DrawerTimeline,
 } from '../shared/DetailDrawer'
 import { useHarness } from '../../state/store'
+import { useEscapeClose } from '../../lib/useEscapeClose'
 import { AddTaskForm } from './AddTaskForm'
 import { ShinyFabricBackdrop } from './ShinyFabricBackdrop'
 
@@ -30,7 +28,7 @@ interface Props {
 }
 
 const STALE_THRESHOLD_MS = 12 * 60 * 1000
-const KANBAN_MAX_REVIEW_ITERATIONS = 5
+const KANBAN_MAX_REVIEW_ITERATIONS = 3
 
 // Shape we read from the most recent kanban_tick event so the
 // autopilot countdown + the running-column empty state can both show
@@ -79,8 +77,23 @@ export function KanbanBridgeView({
   const [addOpen, setAddOpen] = useState(false)
   const [addColumn, setAddColumn] = useState<ColumnKey>('ready')
 
+  // Slow wall-clock tick so wall-clock-derived staleness (agentStations
+  // reads Date.now() at compute time) refreshes even when no card/agent
+  // props change — otherwise the roster's stale badge + "Xm ago" freeze
+  // during an idle mission until the next event lands.
+  const [staleClock, setStaleClock] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setStaleClock((n) => n + 1), 30_000)
+    return () => clearInterval(id)
+  }, [])
+
   const buckets = useMemo(() => bucketCards(cards), [cards])
-  const stations = useMemo(() => agentStations(agents, cards), [agents, cards])
+  const stations = useMemo(
+    () => agentStations(agents, cards),
+    // staleClock intentionally re-triggers the wall-clock staleness calc.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [agents, cards, staleClock],
+  )
   const stalest = useMemo(() => stations.find((s) => s.stale), [stations])
   const dispatchFeed = useMemo(
     () => dispatchEvents(telemetryEvents),
@@ -158,8 +171,15 @@ export function KanbanBridgeView({
   }, [telemetryEvents])
 
   const openCard = openCardId ? cards.find((c) => c.id === openCardId) ?? null : null
-  const drawerOpen = openCard != null
   const cardJudgeHistory = openCard ? verdictsByCard.get(openCard.id) ?? [] : []
+
+  // Esc closes the card focus view / add-task form back to the board
+  // before the dashboard-level Esc handler can fire (which would otherwise
+  // close the whole dashboard). See useEscapeClose — both are registered
+  // at this always-mounted component's mount so they win the capture-order
+  // race against MissionDashboard's listener.
+  useEscapeClose(openCard != null, () => setOpenCardId(null))
+  useEscapeClose(addOpen, () => setAddOpen(false))
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-bg-0">
@@ -179,132 +199,57 @@ export function KanbanBridgeView({
         onOpenDispatcherBrief={onOpenDispatcherBrief}
       />
 
-      <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_320px] overflow-hidden">
-        <TaskBoard
+      {openCard ? (
+        <CardFocusView
+          card={openCard}
+          allCards={cards}
+          judgeHistory={cardJudgeHistory}
+          stations={stations}
           sessionId={sessionId}
-          cards={cards}
-          buckets={buckets}
-          stations={stations}
-          verdictsByCard={verdictsByCard}
-          staleByCard={staleByCard}
-          addOpen={addOpen}
-          addColumn={addColumn}
           autoDispatchEnabled={autoDispatchEnabled}
-          tickInfo={tickInfo}
-          onOpenAddForm={(col) => {
-            setAddColumn(col)
-            setAddOpen(true)
-          }}
-          onCloseAddForm={() => setAddOpen(false)}
+          onClose={() => setOpenCardId(null)}
           onOpenCard={setOpenCardId}
-          onOpenAgent={(id) => onAttach(id, 'split')}
+          onAttach={onAttach}
         />
-        <RightRail
-          dispatchEvents={dispatchFeed}
-          stations={stations}
-          stalest={stalest}
-          onOpenAgent={(id) => onAttach(id, 'split')}
-          onOpenDispatcherBrief={onOpenDispatcherBrief}
-        />
-      </div>
+      ) : (
+        <>
+          <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_320px] overflow-hidden">
+            <TaskBoard
+              sessionId={sessionId}
+              cards={cards}
+              buckets={buckets}
+              stations={stations}
+              verdictsByCard={verdictsByCard}
+              staleByCard={staleByCard}
+              addOpen={addOpen}
+              addColumn={addColumn}
+              autoDispatchEnabled={autoDispatchEnabled}
+              tickInfo={tickInfo}
+              onOpenAddForm={(col) => {
+                setAddColumn(col)
+                setAddOpen(true)
+              }}
+              onCloseAddForm={() => setAddOpen(false)}
+              onOpenCard={setOpenCardId}
+              onOpenAgent={(id) => onAttach(id, 'split')}
+            />
+            <RightRail
+              dispatchEvents={dispatchFeed}
+              stations={stations}
+              stalest={stalest}
+              onOpenAgent={(id) => onAttach(id, 'split')}
+              onOpenDispatcherBrief={onOpenDispatcherBrief}
+            />
+          </div>
 
-      <BottomStrip
-        cards={cards}
-        buckets={buckets}
-        telemetryEvents={telemetryEvents}
-        contextPct={contextPct}
-      />
-
-      <DetailDrawer
-        open={drawerOpen}
-        onClose={() => setOpenCardId(null)}
-        title={openCard?.title ?? ''}
-        statusLabel={openCard ? cardStatusLabel(openCard) : undefined}
-        backdrop={<ShinyFabricBackdrop active={drawerOpen} intensity={0.85} />}
-        footer={
-          openCard ? (
-            <>
-              <CardOperatorActions
-                card={openCard}
-                sessionId={sessionId}
-                autoDispatchEnabled={autoDispatchEnabled}
-                onCancel={async () => {
-                  await cancelKanbanCard(sessionId, openCard.id)
-                  showToast(`Cancelled ${openCard.id}`, 'info')
-                }}
-                onUnblock={async () => {
-                  await unblockKanbanCard(sessionId, openCard.id)
-                  showToast(`Unblocked ${openCard.id}`, 'info')
-                }}
-                onForceDispatch={async () => {
-                  await forceDispatchKanbanCard(sessionId, openCard.id)
-                  showToast(`Force-dispatched ${openCard.id}`, 'info')
-                }}
-                onReassign={async () => {
-                  const current = openCard.assignee ?? ''
-                  // window.prompt is intentional — a real editor lands
-                  // alongside the in-app DispatcherBrief editor (K-3
-                  // follow-up). For now, prompt is honest about being
-                  // a quick override path.
-                  const next = window.prompt(
-                    `Reassign ${openCard.id} agent_type (blank = unassigned):`,
-                    current,
-                  )
-                  if (next == null) return
-                  await reassignKanbanCard(sessionId, openCard.id, next)
-                  showToast(
-                    next.trim()
-                      ? `Reassigned ${openCard.id} → ${next.trim()}`
-                      : `Cleared assignee on ${openCard.id}`,
-                    'info',
-                  )
-                }}
-              />
-              {openCard.workerSessionId ? (
-                <>
-                  <DrawerAction
-                    onClick={() =>
-                      onAttach(openCard.workerSessionId!, 'split')
-                    }
-                  >
-                    Worker · split
-                  </DrawerAction>
-                  <DrawerAction
-                    onClick={() =>
-                      onAttach(openCard.workerSessionId!, 'replace')
-                    }
-                  >
-                    Worker · here
-                  </DrawerAction>
-                </>
-              ) : null}
-              {openCard.judgeSessionId ? (
-                <DrawerAction
-                  onClick={() => onAttach(openCard.judgeSessionId!, 'split')}
-                >
-                  Judge · split
-                </DrawerAction>
-              ) : null}
-              {!openCard.workerSessionId && !openCard.judgeSessionId ? (
-                <DrawerAction
-                  onClick={() => onAttach(openCard.id, 'split')}
-                >
-                  Open
-                </DrawerAction>
-              ) : null}
-            </>
-          ) : null
-        }
-      >
-        {openCard ? (
-          <CardDrawerBody
-            card={openCard}
-            allCards={cards}
-            judgeHistory={cardJudgeHistory}
-            onOpenAgent={(id) => onAttach(id, 'split')}
+          <BottomStrip
+            cards={cards}
+            buckets={buckets}
+            telemetryEvents={telemetryEvents}
+            contextPct={contextPct}
           />
-        ) : null}
-      </DetailDrawer>
+        </>
+      )}
     </div>
   )
 }
@@ -339,13 +284,14 @@ function CardOperatorActions({
   void sessionId
   const status = (card.status ?? '').toLowerCase()
   const isRunning = status === 'running' || status === 'in_progress' || status === 'in-progress'
-  const isBlocked = status === 'blocked'
-  const isTerminalFail = TERMINAL_FAILURE_STATUSES.has(status)
-  const isDone = status === 'done' || status === 'sealed' || status === 'completed'
+  const isDone = status === 'done' || status === 'sealed' || status === 'completed' || status === 'complete'
   const isReadyish = status === 'ready' || status === 'triage' || status === 'done_unverified'
 
   const showCancel = isRunning
-  const showUnblock = isBlocked || isTerminalFail
+  // Only retry-eligible statuses can move back to READY — absorbing
+  // terminal states (failed / cancelled) are excluded so we don't offer
+  // a button the bridge would reject as an illegal transition.
+  const showUnblock = UNBLOCKABLE_STATUSES.has(status)
   // Force-dispatch is most useful when autopilot is off, but we keep
   // it visible whenever the card is dispatchable so the operator can
   // skip the queue cadence even with autopilot on.
@@ -514,7 +460,7 @@ function StatTile({
         : accent === 'warn'
           ? 'text-warn'
           : accent === 'info'
-            ? 'text-fg-0'
+            ? 'text-accent-lo'
             : 'text-fg-0'
   return (
     <div className="flex min-w-[58px] flex-col items-start rounded-md border border-white/[0.05] bg-white/[0.015] px-2.5 py-1.5">
@@ -2064,150 +2010,493 @@ function WipBar({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Drawer body
+// Card focus view — full board-area takeover for one card (replaces the
+// old cramped 480px drawer + the black void beside it). A wide two-column
+// layout: the LEFT rail carries the work (result + artifacts) and the
+// brief/spec; the RIGHT rail carries assignment + session jumps, the judge
+// review history, the clickable connection graph, and the activity feed.
+// Esc / the "board" button return to the board (parent owns the state +
+// the capture-phase Esc listener that beats the dashboard's own).
 // ─────────────────────────────────────────────────────────────────────────────
 
-function CardDrawerBody({
+function CardFocusView({
   card,
   allCards,
   judgeHistory,
-  onOpenAgent,
+  stations,
+  sessionId,
+  autoDispatchEnabled,
+  onClose,
+  onOpenCard,
+  onAttach,
 }: {
   card: KanbanCardView
   allCards: KanbanCardView[]
   judgeHistory: JudgeHistoryEntry[]
-  onOpenAgent: (sessionId: string) => void
+  stations: Station[]
+  sessionId: string
+  autoDispatchEnabled: boolean
+  onClose: () => void
+  onOpenCard: (id: string) => void
+  onAttach: (id: string, mode?: 'replace' | 'split') => void
 }) {
-  const events = (card.events ?? []).slice(-12)
-  const blocks = (card.children ?? [])
-    .map((id) => allCards.find((c) => c.id === id))
-    .filter((c): c is KanbanCardView => !!c)
-  const deps = (card.parents ?? [])
-    .map((id) => allCards.find((c) => c.id === id))
-    .filter((c): c is KanbanCardView => !!c)
+  const cancelKanbanCard = useHarness((s) => s.cancelKanbanCard)
+  const unblockKanbanCard = useHarness((s) => s.unblockKanbanCard)
+  const forceDispatchKanbanCard = useHarness((s) => s.forceDispatchKanbanCard)
+  const reassignKanbanCard = useHarness((s) => s.reassignKanbanCard)
+  const showToast = useHarness((s) => s.showToast)
+
+  const column = columnForCard(card)
   const isOperatorCard = card.createdBy === 'operator'
+
+  const parents = (card.parents ?? [])
+    .map((id) => allCards.find((c) => c.id === id))
+    .filter((c): c is KanbanCardView => !!c)
+  const children = (card.children ?? [])
+    .map((id) => allCards.find((c) => c.id === id))
+    .filter((c): c is KanbanCardView => !!c)
+
+  const events = (card.events ?? []).slice(-14)
+  const ageLabel = card.startedAt
+    ? `${Math.round((Date.now() - card.startedAt) / 60000)}m`
+    : undefined
+  const cardStation = stations.find((s) => s.cardId === card.id)
+
+  const hasWork =
+    !!card.result?.trim() ||
+    !!card.summary?.trim() ||
+    (card.artifacts?.length ?? 0) > 0
+
   return (
-    <>
-      {isOperatorCard ? (
-        <div className="mb-2 inline-flex items-center gap-1.5 rounded-md border border-accent/[0.30] bg-accent/[0.08] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-accent">
-          <span aria-hidden>↗</span>
-          <span>added by you</span>
+    <section className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-bg-0 animate-fade-in">
+      {/* Pixely shiny-fabric backdrop — the same decorative layer the old
+          detail drawer had. Sits behind every header/body/footer pixel;
+          pointer-events-none so it never eats clicks, and the content
+          rails are lifted to z-10 to read on top of it. */}
+      <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
+        <ShinyFabricBackdrop active intensity={0.85} />
+      </div>
+
+      {/* Sub-header — status · identity · back-to-board */}
+      <div className="relative z-10 flex items-start justify-between gap-4 border-b border-white/[0.06] px-8 pb-4 pt-5">
+        <div className="min-w-0">
+          <div className="mb-2.5 flex flex-wrap items-center gap-2.5">
+            <StatusPip
+              column={column}
+              status={card.status}
+              workerTerminalState={card.workerTerminalState}
+            />
+            <CardIdBadge id={card.id} />
+            {isOperatorCard ? <OperatorChip /> : null}
+            {card.priority != null && card.priority !== 2 ? (
+              <PriorityChip priority={card.priority} />
+            ) : null}
+            {card.assignee ? (
+              <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-fg-2">
+                <AgentTypeBadge type={card.assignee} />
+                {card.assignee}
+              </span>
+            ) : null}
+            {ageLabel ? (
+              <span className="font-mono text-[10.5px] tabular-nums text-fg-3">
+                · {ageLabel}
+              </span>
+            ) : null}
+          </div>
+          <h1 className="m-0 max-w-[900px] font-serif text-[27px] font-light leading-[1.25] tracking-[-0.01em] text-fg-0">
+            {card.title}
+          </h1>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          title="Back to board (Esc)"
+          className="mt-0.5 inline-flex shrink-0 items-center gap-2 rounded-md border border-white/[0.08] bg-white/[0.02] px-2.5 py-1.5 font-mono text-[10.5px] uppercase tracking-[0.16em] text-fg-3 transition hover:border-white/[0.18] hover:bg-white/[0.05] hover:text-fg-0"
+        >
+          <span className="rounded border border-white/[0.10] px-1 py-px text-[9px] normal-case tracking-normal text-fg-2">
+            esc
+          </span>
+          board
+        </button>
+      </div>
+
+      {/* Two-column body — each rail scrolls independently */}
+      <div className="relative z-10 grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_400px] overflow-hidden">
+        {/* LEFT — work + brief + spec */}
+        <div className="flex min-h-0 flex-col gap-8 overflow-y-auto px-8 py-6">
+          <DrawerSection label="work / result">
+            {hasWork ? (
+              <div className="flex flex-col gap-4">
+                {card.summary?.trim() ? (
+                  <div>
+                    <div className="mb-1 font-mono text-[9.5px] uppercase tracking-[0.14em] text-fg-4">
+                      latest summary
+                    </div>
+                    <p className="m-0 whitespace-pre-wrap font-mono text-[12.5px] leading-[1.7] text-fg-1">
+                      {card.summary}
+                    </p>
+                  </div>
+                ) : null}
+                {card.result?.trim() ? (
+                  <div>
+                    <div className="mb-1 font-mono text-[9.5px] uppercase tracking-[0.14em] text-fg-4">
+                      result
+                    </div>
+                    <p className="m-0 whitespace-pre-wrap font-mono text-[12.5px] leading-[1.7] text-fg-1">
+                      {card.result}
+                    </p>
+                  </div>
+                ) : null}
+                {(card.artifacts?.length ?? 0) > 0 ? (
+                  <div>
+                    <div className="mb-1.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-fg-4">
+                      artifacts · {card.artifacts!.length}
+                    </div>
+                    <ul className="m-0 flex list-none flex-col gap-1 p-0">
+                      {card.artifacts!.map((p) => (
+                        <li
+                          key={p}
+                          className="flex items-center gap-2 truncate rounded border border-white/[0.05] bg-white/[0.015] px-2.5 py-1.5 font-mono text-[11.5px] text-fg-1"
+                        >
+                          <span className="shrink-0 text-fg-3">◇</span>
+                          <span className="truncate">{p}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <div className="rounded-md border border-dashed border-white/[0.06] bg-white/[0.01] px-4 py-6 text-center font-mono text-[11px] text-fg-3">
+                no work reported yet
+              </div>
+            )}
+          </DrawerSection>
+
+          {card.body ? (
+            <DrawerSection label="brief">
+              <p className="m-0 whitespace-pre-wrap font-mono text-[12.5px] leading-[1.75] text-fg-1">
+                {card.body}
+              </p>
+            </DrawerSection>
+          ) : null}
+
+          {card.spec ? <SpecSection spec={card.spec} /> : null}
+        </div>
+
+        {/* RIGHT — assignment · judge · connections · activity */}
+        <div className="flex min-h-0 flex-col gap-7 overflow-y-auto border-l border-white/[0.06] bg-bg-1/30 px-6 py-6">
+          <DrawerSection label="assignment">
+            <div className="flex flex-col gap-2.5">
+              <div className="flex items-center gap-2.5 rounded-[10px] border border-white/[0.07] bg-white/[0.02] px-3 py-2.5">
+                {cardStation ? (
+                  <AgentBadge
+                    station={cardStation}
+                    variant="inline"
+                    onOpenAgent={(id) => onAttach(id, 'split')}
+                  />
+                ) : (
+                  <AgentTypeBadge type={card.assignee} />
+                )}
+                <span className="truncate font-mono text-[12px] text-fg-1">
+                  {card.assignee || cardStation?.agent.agentType || 'unassigned'}
+                </span>
+                {ageLabel ? (
+                  <span className="ml-auto font-mono text-[10.5px] tabular-nums text-fg-3">
+                    {ageLabel}
+                  </span>
+                ) : null}
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {card.workerSessionId ? (
+                  <>
+                    <MiniJump
+                      label="worker · split"
+                      onClick={() => onAttach(card.workerSessionId!, 'split')}
+                    />
+                    <MiniJump
+                      label="worker · here"
+                      onClick={() => onAttach(card.workerSessionId!, 'replace')}
+                    />
+                  </>
+                ) : null}
+                {card.judgeSessionId ? (
+                  <MiniJump
+                    label="judge · split"
+                    onClick={() => onAttach(card.judgeSessionId!, 'split')}
+                  />
+                ) : null}
+                {!card.workerSessionId && !card.judgeSessionId ? (
+                  <MiniJump
+                    label="open session"
+                    onClick={() => onAttach(card.id, 'split')}
+                  />
+                ) : null}
+              </div>
+            </div>
+          </DrawerSection>
+
+          {judgeHistory.length > 0 ||
+          card.judgeSessionId ||
+          column === 'review' ||
+          column === 'blocked' ? (
+            <DrawerSection
+              label={`judge reviews · ${judgeHistory.length}/${KANBAN_MAX_REVIEW_ITERATIONS}`}
+            >
+              <JudgeIterationMeter
+                card={card}
+                verdicts={judgeHistory}
+                inReview={column === 'review'}
+                isBlocked={column === 'blocked'}
+                judgeSessionId={card.judgeSessionId}
+                onOpenJudge={
+                  card.judgeSessionId
+                    ? () => onAttach(card.judgeSessionId!, 'split')
+                    : undefined
+                }
+              />
+              {judgeHistory.length > 0 ? (
+                <ul className="mt-2 flex list-none flex-col gap-1 p-0">
+                  {judgeHistory.map((v) => (
+                    <li
+                      key={v.iteration}
+                      className={`rounded-md border px-2.5 py-1.5 font-mono text-[11px] leading-[1.5] ${
+                        v.done
+                          ? 'border-ok/[0.24] bg-ok/[0.04] text-fg-1'
+                          : 'border-warn/[0.20] bg-warn/[0.04] text-fg-1'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.14em]">
+                        <span>
+                          iter {v.iteration} ·{' '}
+                          <span className={v.done ? 'text-ok' : 'text-warn'}>
+                            {v.done ? 'passed' : 'rejected'}
+                          </span>
+                        </span>
+                        <span className="tabular-nums text-fg-3">
+                          conf {v.confidence.toFixed(2)}
+                        </span>
+                      </div>
+                      {v.reason ? (
+                        <div className="mt-1 whitespace-pre-wrap text-fg-2">
+                          {truncate(v.reason, 400)}
+                        </div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="mt-1 font-mono text-[10.5px] text-fg-4">
+                  no verdicts yet
+                </div>
+              )}
+            </DrawerSection>
+          ) : null}
+
+          {parents.length > 0 || children.length > 0 ? (
+            <DrawerSection label="connections">
+              <div className="flex flex-col gap-3">
+                {parents.length > 0 ? (
+                  <div>
+                    <div className="mb-1.5 font-mono text-[9.5px] uppercase tracking-[0.16em] text-fg-4">
+                      depends on · {parents.length}
+                    </div>
+                    <ul className="m-0 flex list-none flex-col gap-1 p-0">
+                      {parents.map((p) => (
+                        <ConnectionRow
+                          key={p.id}
+                          card={p}
+                          onOpen={() => onOpenCard(p.id)}
+                        />
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                {children.length > 0 ? (
+                  <div>
+                    <div className="mb-1.5 font-mono text-[9.5px] uppercase tracking-[0.16em] text-fg-4">
+                      unlocks · {children.length}
+                    </div>
+                    <ul className="m-0 flex list-none flex-col gap-1 p-0">
+                      {children.map((c) => (
+                        <ConnectionRow
+                          key={c.id}
+                          card={c}
+                          onOpen={() => onOpenCard(c.id)}
+                        />
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+            </DrawerSection>
+          ) : null}
+
+          {events.length > 0 ? (
+            <DrawerSection label={`activity · ${events.length}`}>
+              <DrawerTimeline
+                events={events.map((e) => ({
+                  ts: tsStr(e.timestamp),
+                  who: e.actor ?? 'system',
+                  body: e.message ?? e.kind ?? '',
+                  kind: e.actor
+                    ? 'agent'
+                    : (e.kind ?? '').includes('autopilot')
+                      ? 'auto'
+                      : 'system',
+                }))}
+              />
+            </DrawerSection>
+          ) : null}
+        </div>
+      </div>
+
+      {/* Footer — operator actions */}
+      <footer className="relative z-10 flex flex-wrap items-center gap-2 border-t border-white/[0.06] bg-black/20 px-8 py-3.5">
+        <CardOperatorActions
+          card={card}
+          sessionId={sessionId}
+          autoDispatchEnabled={autoDispatchEnabled}
+          onCancel={async () => {
+            await cancelKanbanCard(sessionId, card.id)
+            showToast(`Cancelled ${card.id}`, 'info')
+          }}
+          onUnblock={async () => {
+            await unblockKanbanCard(sessionId, card.id)
+            showToast(`Unblocked ${card.id}`, 'info')
+          }}
+          onForceDispatch={async () => {
+            await forceDispatchKanbanCard(sessionId, card.id)
+            showToast(`Force-dispatched ${card.id}`, 'info')
+          }}
+          onReassign={async () => {
+            const current = card.assignee ?? ''
+            const next = window.prompt(
+              `Reassign ${card.id} agent_type (blank = unassigned):`,
+              current,
+            )
+            if (next == null) return
+            await reassignKanbanCard(sessionId, card.id, next)
+            showToast(
+              next.trim()
+                ? `Reassigned ${card.id} → ${next.trim()}`
+                : `Cleared assignee on ${card.id}`,
+              'info',
+            )
+          }}
+        />
+      </footer>
+    </section>
+  )
+}
+
+// A clickable connection row (dependency / child). Clicking re-focuses the
+// board on that card so the operator can walk the graph without leaving the
+// detail view. The glyph + colour mirror the card's board column.
+function ConnectionRow({
+  card,
+  onOpen,
+}: {
+  card: KanbanCardView
+  onOpen: () => void
+}) {
+  const col = columnForCard(card)
+  const glyph =
+    col === 'done' ? '✓' : col === 'blocked' ? '⊘' : col === 'flight' ? '▸' : col === 'review' ? '◇' : '○'
+  const glyphColor =
+    col === 'done'
+      ? 'text-ok'
+      : col === 'blocked'
+        ? 'text-warn'
+        : col === 'flight'
+          ? 'text-accent'
+          : 'text-fg-3'
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onOpen}
+        className="group flex w-full items-center gap-2 rounded-md border border-transparent px-2 py-1.5 text-left transition hover:border-white/[0.08] hover:bg-white/[0.03]"
+      >
+        <span className={`shrink-0 ${glyphColor}`}>{glyph}</span>
+        <span className="shrink-0 font-mono text-[10.5px] tabular-nums text-fg-3">
+          {card.id.replace(/^card_/, '#')}
+        </span>
+        <span className="truncate font-mono text-[11.5px] text-fg-1 group-hover:text-fg-0">
+          {card.title}
+        </span>
+        <span className="ml-auto shrink-0 font-mono text-[9.5px] uppercase tracking-[0.12em] text-fg-4 opacity-0 transition group-hover:opacity-100">
+          open →
+        </span>
+      </button>
+    </li>
+  )
+}
+
+// The card's ground-truth spec (Move D): definition_of_done checklist +
+// reference files / verify command / token budget.
+function SpecSection({ spec }: { spec: NonNullable<KanbanCardView['spec']> }) {
+  const dod = spec.definition_of_done ?? []
+  const files = spec.references?.files ?? []
+  if (
+    dod.length === 0 &&
+    files.length === 0 &&
+    !spec.verify_with &&
+    !spec.token_budget
+  ) {
+    return null
+  }
+  return (
+    <DrawerSection label="definition of done">
+      {dod.length > 0 ? (
+        <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
+          {dod.map((d, i) => (
+            <li
+              key={i}
+              className="flex gap-2 font-mono text-[12px] leading-[1.6] text-fg-1"
+            >
+              <span className="mt-0.5 shrink-0 text-fg-4">○</span>
+              <span>{d}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {files.length > 0 || spec.verify_with || spec.token_budget ? (
+        <div className="mt-1 flex flex-col gap-1.5 border-t border-white/[0.05] pt-2.5 font-mono text-[11px] text-fg-2">
+          {files.length > 0 ? (
+            <div>
+              <span className="text-fg-4">files · </span>
+              {files.join(', ')}
+            </div>
+          ) : null}
+          {spec.verify_with ? (
+            <div>
+              <span className="text-fg-4">verify · </span>
+              {spec.verify_with}
+            </div>
+          ) : null}
+          {spec.token_budget ? (
+            <div>
+              <span className="text-fg-4">budget · </span>
+              {spec.token_budget} tokens
+            </div>
+          ) : null}
         </div>
       ) : null}
-      <DrawerAssignment
-        agent={card.assignee ?? 'unassigned'}
-        age={
-          card.startedAt
-            ? `${Math.round((Date.now() - card.startedAt) / 60000)}m`
-            : undefined
-        }
-        current={card.summary}
-      />
-      {judgeHistory.length > 0 || card.judgeSessionId ? (
-        <DrawerSection
-          label={`judge · ${judgeHistory.length}/${KANBAN_MAX_REVIEW_ITERATIONS} iterations`}
-        >
-          <JudgeIterationMeter
-            card={card}
-            verdicts={judgeHistory}
-            inReview={(card.status ?? '').toLowerCase() === 'review'}
-            isBlocked={(card.status ?? '').toLowerCase() === 'blocked'}
-            judgeSessionId={card.judgeSessionId}
-            onOpenJudge={
-              card.judgeSessionId
-                ? () => onOpenAgent(card.judgeSessionId!)
-                : undefined
-            }
-          />
-          {judgeHistory.length > 0 ? (
-            <ul className="mt-2 flex list-none flex-col gap-1 p-0">
-              {judgeHistory.map((v) => (
-                <li
-                  key={v.iteration}
-                  className={`rounded-md border px-2.5 py-1.5 font-mono text-[11px] leading-[1.5] ${
-                    v.done
-                      ? 'border-ok/[0.24] bg-ok/[0.04] text-fg-1'
-                      : 'border-warn/[0.20] bg-warn/[0.04] text-fg-1'
-                  }`}
-                >
-                  <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.14em]">
-                    <span>
-                      iter {v.iteration} ·{' '}
-                      <span className={v.done ? 'text-ok' : 'text-warn'}>
-                        {v.done ? 'passed' : 'rejected'}
-                      </span>
-                    </span>
-                    <span className="tabular-nums text-fg-3">
-                      conf {v.confidence.toFixed(2)}
-                    </span>
-                  </div>
-                  {v.reason ? (
-                    <div className="mt-1 whitespace-pre-wrap text-fg-2">
-                      {truncate(v.reason, 320)}
-                    </div>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          ) : null}
-        </DrawerSection>
-      ) : null}
-      {card.body ? (
-        <DrawerSection label="brief">
-          <p className="m-0 whitespace-pre-wrap font-mono text-[12.5px] leading-[1.7] text-fg-1">
-            {card.body}
-          </p>
-        </DrawerSection>
-      ) : null}
-      {(card.artifacts?.length ?? 0) > 0 ? (
-        <DrawerSection label={`artifacts · ${card.artifacts!.length}`}>
-          <ul className="m-0 flex list-none flex-col gap-1 p-0">
-            {card.artifacts!.map((p) => (
-              <li
-                key={p}
-                className="truncate rounded border border-white/[0.05] bg-white/[0.015] px-2 py-1 font-mono text-[11px] text-fg-1"
-              >
-                {p}
-              </li>
-            ))}
-          </ul>
-        </DrawerSection>
-      ) : null}
-      {(deps.length > 0 || blocks.length > 0) ? (
-        <DrawerSection label="dependencies">
-          <DrawerDependencies
-            dependsOn={deps.map((d) => ({
-              text: d.title,
-              status: (d.status === 'done' ? 'done' : 'queued') as
-                | 'done'
-                | 'queued'
-                | 'blocked',
-              meta: d.assignee,
-            }))}
-            blocks={blocks.map((b) => ({
-              text: b.title,
-              status: 'queued' as const,
-            }))}
-          />
-        </DrawerSection>
-      ) : null}
-      {events.length > 0 ? (
-        <DrawerSection label={`activity · ${events.length} events`}>
-          <DrawerTimeline
-            events={events.map((e) => ({
-              ts: tsStr(e.timestamp),
-              who: e.actor ?? 'system',
-              body: e.message ?? e.kind ?? '',
-              kind: e.actor
-                ? 'agent'
-                : (e.kind ?? '').includes('autopilot')
-                  ? 'auto'
-                  : 'system',
-            }))}
-          />
-        </DrawerSection>
-      ) : null}
-    </>
+    </DrawerSection>
+  )
+}
+
+// Compact session-jump button used in the focus view's assignment block.
+function MiniJump({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="rounded-md border border-white/[0.08] bg-white/[0.02] px-2.5 py-1 font-mono text-[10px] tracking-[0.04em] text-fg-2 transition hover:border-accent/[0.30] hover:bg-accent/[0.05] hover:text-accent"
+    >
+      {label}
+    </button>
   )
 }
 
@@ -2409,6 +2698,18 @@ const TERMINAL_FAILURE_STATUSES = new Set<string>([
   'canceled',
 ])
 
+// Blocked-column statuses the operator can actually push back to READY.
+// `failed` and `cancelled` are absorbing terminal states in the bridge's
+// transition table (kanban_board.py ALLOWED_TRANSITIONS) — offering
+// "Unblock" on them is a dead action, so they're excluded here. Mirrors
+// the bridge's RETRY_ELIGIBLE_STATUSES.
+const UNBLOCKABLE_STATUSES = new Set<string>([
+  'blocked',
+  'crashed',
+  'timed_out',
+  'timeout',
+])
+
 // Human-readable subtitle per terminal status — surfaced by StatusPip
 // as the pip's label when the card is in blocked-via-error.
 export function terminalStatusLabel(status: string | undefined | null): string | null {
@@ -2421,6 +2722,20 @@ export function terminalStatusLabel(status: string | undefined | null): string |
   return null
 }
 
+// Single source of truth for status→column bucketing. Shared by
+// bucketCards (the board), the focus view, and ConnectionRow so a card's
+// column never disagrees across surfaces.
+function columnForCard(card: KanbanCardView): ColumnKey {
+  const s = (card.status ?? '').toLowerCase()
+  if (s === 'done' || s === 'complete' || s === 'completed' || s === 'sealed')
+    return 'done'
+  if (s === 'blocked' || TERMINAL_FAILURE_STATUSES.has(s)) return 'blocked'
+  if (s === 'review' || s === 'done_unverified') return 'review'
+  if (s === 'running' || s === 'in_progress' || s === 'in-progress')
+    return 'flight'
+  return 'ready'
+}
+
 function bucketCards(cards: KanbanCardView[]): Buckets {
   const buckets: Buckets = {
     ready: [],
@@ -2429,18 +2744,7 @@ function bucketCards(cards: KanbanCardView[]): Buckets {
     blocked: [],
     done: [],
   }
-  for (const c of cards) {
-    const s = (c.status ?? '').toLowerCase()
-    if (s === 'done' || s === 'complete' || s === 'completed' || s === 'sealed')
-      buckets.done.push(c)
-    else if (s === 'blocked') buckets.blocked.push(c)
-    else if (TERMINAL_FAILURE_STATUSES.has(s)) buckets.blocked.push(c)
-    else if (s === 'review') buckets.review.push(c)
-    else if (s === 'done_unverified') buckets.review.push(c)
-    else if (s === 'running' || s === 'in_progress' || s === 'in-progress')
-      buckets.flight.push(c)
-    else buckets.ready.push(c)
-  }
+  for (const c of cards) buckets[columnForCard(c)].push(c)
   return buckets
 }
 
@@ -2449,9 +2753,15 @@ function agentStations(
   cards: KanbanCardView[],
 ): Station[] {
   return agents.map((agent) => {
-    const card = cards.find((c) =>
-      c.agents?.some((a) => a.session.id === agent.session.id),
-    )
+    // Null-safe session id match — a malformed agent/card record with a
+    // missing `session` must not throw (`undefined.id`) and blow up the
+    // whole board render.
+    const agentSid = agent.session?.id
+    const card = agentSid
+      ? cards.find((c) =>
+          c.agents?.some((a) => a.session?.id === agentSid),
+        )
+      : undefined
     const ageMs = card?.startedAt ? Date.now() - card.startedAt : 0
     const lastEventMs =
       card?.events && card.events.length > 0
@@ -2478,23 +2788,6 @@ function dispatchEvents(events: TelemetryEventView[]): TelemetryEventView[] {
       k === 'agent_reclaim'
     )
   })
-}
-
-function cardStatusLabel(card: KanbanCardView): string {
-  const s = (card.status ?? '').toLowerCase()
-  if (s === 'done' || s === 'sealed') return 'done'
-  if (s === 'blocked') return 'blocked'
-  if (s === 'review' || s === 'done_unverified') {
-    const iter = card.reviewIteration
-    return iter ? `in review · iter ${iter}/5` : 'in review'
-  }
-  if (s === 'running' || s === 'in_progress') {
-    const age = card.startedAt
-      ? `${Math.round((Date.now() - card.startedAt) / 60000)}m`
-      : ''
-    return `in flight · ${age}`.trim()
-  }
-  return 'ready'
 }
 
 // Real progress only — `null` when the worker hasn't reported any.

@@ -183,7 +183,7 @@ def _build_worker_context(
     lines.append(f"Assignee:   {task.assignee or '(unassigned)'}")
     lines.append(f"Status:     {task.status}")
     if getattr(task, "review_iteration", 0):
-        lines.append(f"Review iter: {task.review_iteration} / 5")
+        lines.append(f"Review iter: {task.review_iteration} / 3")
     if task.priority is not None and task.priority != 2:
         lines.append(f"Priority:   {task.priority}")
     if task.artifacts:
@@ -347,7 +347,7 @@ class KanbanTask:
     # terminates, the card lands in `review`, the dispatcher spawns or
     # wakes the sticky judge subagent, and the verdict routes the card
     # forward. `review_iteration` increments on each entry to review;
-    # at MAX_REVIEW_ITERATIONS (5) a fail verdict routes to `blocked`
+    # at MAX_REVIEW_ITERATIONS (3) a fail verdict routes to `blocked`
     # instead of rewaking the worker.
     review_iteration: int = 0
     # Sticky session ids. Set once on first dispatch / first judge spawn
@@ -1089,6 +1089,14 @@ class SessionKanbanBoard:
         existing.event_count = merged.event_count
         existing.consecutive_failures = merged.consecutive_failures
         existing.requires_verification = merged.requires_verification
+        # Move R sticky bindings — without these, a bridge restart replays
+        # the card with empty worker/judge session ids + a reset review
+        # iteration, which trips _handle_kanban_verdict's "no worker
+        # session" path into an unbounded requeue→respawn→reject loop.
+        existing.review_iteration = merged.review_iteration
+        existing.worker_session_id = merged.worker_session_id
+        existing.judge_session_id = merged.judge_session_id
+        existing.worker_terminal_state = merged.worker_terminal_state
 
     def _apply_link(self, parent_id: str, child_id: str) -> None:
         parent = self._tasks.get(parent_id)
@@ -1258,18 +1266,14 @@ class KanbanTool:
                 "board. Use this in kanban coordination mode to decompose "
                 "a mission into cards, link dependency gates, assign work "
                 "to agent profiles, and leave durable handoffs.\n\n"
-                "VERIFICATION is OPT-IN per card. Set "
-                "`requires_verification=true` at create-time (or via "
-                "update) on cards whose `definition_of_done` is checkable "
-                "enough to be worth a second-pass review — typically code "
-                "changes with tests, schema migrations, or anything where "
-                "a wrong-but-plausible answer would cost more than the "
-                "extra spawn. LEAVE IT FALSE (the default) for quick web "
-                "lookups, image generation, exploratory bash, or tasks "
-                "whose success criteria are ambiguous. The worker's "
-                "`complete` call routes to `done_unverified` when the flag "
-                "is true (verifier picks up automatically) and to `done` "
-                "when it's false."
+                "REVIEW is default-on (Move R): every worker `complete` "
+                "routes the card to `review`, where a judge subagent checks "
+                "the deliverable against the card's `definition_of_done` and "
+                "either seals it to `done`, sends it back for rework, or "
+                "blocks it. You do not opt into this — all completions are "
+                "reviewed. `requires_verification` is an optional hint that "
+                "a card's success criteria are concretely checkable; it is "
+                "currently informational and does NOT change routing."
             )
         return ToolDefinition(
             name="kanban",
@@ -1308,12 +1312,12 @@ class KanbanTool:
                     "requires_verification": {
                         "type": "boolean",
                         "description": (
-                            "When True, the worker's `complete` action sends the card to "
-                            "`done_unverified` for a verifier sign-off pass instead of sealing "
-                            "directly to `done`. Set this on cards whose `definition_of_done` "
-                            "is checkable enough to be worth the extra spawn cost (e.g. code "
-                            "changes with tests). Leave False (default) for quick lookups, "
-                            "image generation, ambiguous tasks, or anything cheap to redo."
+                            "Optional hint that this card's `definition_of_done` is "
+                            "concretely checkable (e.g. code changes with tests, schema "
+                            "migrations) rather than ambiguous. Currently INFORMATIONAL "
+                            "only: under Move R every `complete` is routed to `review` for "
+                            "a judge pass regardless of this flag. Leave False (default) "
+                            "for quick lookups, image generation, or anything cheap to redo."
                         ),
                     },
                     "created_cards": {

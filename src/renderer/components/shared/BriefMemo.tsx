@@ -1,4 +1,5 @@
-import React, { useEffect } from 'react'
+import React from 'react'
+import { useEscapeClose } from '../../lib/useEscapeClose'
 
 interface BriefMemoProps {
   open: boolean
@@ -48,19 +49,13 @@ export function BriefMemo({
   children,
   preview,
 }: BriefMemoProps) {
-  // ESC closes — wired here so every brief surface gets it for free
-  // and the close button can advertise the keystroke.
-  useEffect(() => {
-    if (!open) return
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        onClose()
-      }
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [open, onClose])
+  // ESC closes — wired here so every brief surface gets it for free and
+  // the close button can advertise the keystroke. Uses the capture-first
+  // guard so Esc closes the brief instead of the whole dashboard (whose
+  // ancestor capture listener would otherwise win). Registered at mount
+  // (this component stays mounted while `open` toggles) so it precedes
+  // the dashboard listener in capture order.
+  useEscapeClose(open, onClose)
 
   if (!open) return null
   return (

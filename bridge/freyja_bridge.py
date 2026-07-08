@@ -263,7 +263,7 @@ def _format_verdict_as_critique(card: Any, verdict: Any) -> str:
 
     lines.append(
         f"This is rework iteration {card.review_iteration} of "
-        f"{getattr(_BridgeSession, 'KANBAN_MAX_REVIEW_ITERATIONS', 5)}. "
+        f"{getattr(_BridgeSession, 'KANBAN_MAX_REVIEW_ITERATIONS', 3)}. "
         "Finish your fix and call `kanban` action=complete on this card "
         "again when you're done. If you genuinely can't make progress "
         "on the gaps named above, call `kanban` action=block with a "
@@ -6067,7 +6067,7 @@ class _BridgeSession:
     # worker rewake and routes straight to blocked. Mirrored in
     # sub_agent_tool.py's `_mark_kanban_terminal` to short-circuit
     # review-entry past the cap as a defense in depth.
-    KANBAN_MAX_REVIEW_ITERATIONS = 5
+    KANBAN_MAX_REVIEW_ITERATIONS = 3
     # A running card with no `updated_at` activity for this long is
     # flagged via `kanban_stale`. The flag is informational — it
     # surfaces to the dashboard so the user can investigate.
@@ -6424,10 +6424,21 @@ class _BridgeSession:
                 )
                 capacity -= 1
                 continue
-            if card.status == "ready":
+            if card.status in ("ready", "crashed", "timed_out"):
                 # Skip the mission root — it's a container, not work.
                 if card.metadata.get("role") == "mission_root":
                     continue
+                # `crashed`/`timed_out` are retry-eligible reclaims: the
+                # stale sweep (or an ungraceful worker exit) parked them
+                # here after their worker left the registry, so re-dispatch
+                # to a fresh worker. This is bounded — the circuit breaker
+                # trips a card to `failed` after FAILURE_THRESHOLD
+                # consecutive crashed/timed_out transitions, so a card that
+                # keeps dying stops respawning instead of looping forever.
+                # (`blocked` is deliberately NOT auto-retried: it means the
+                # worker asked for human input — that's operator territory
+                # via the `unblock` action.)
+                #
                 # Cards without an explicit assignee fall back to the
                 # `general` agent type. This is the common case when
                 # the parent session has never spawned a subagent
@@ -6478,10 +6489,14 @@ class _BridgeSession:
 
         # Stale-card sweep. Runs every tick regardless of capacity, so a
         # saturated board still surfaces silent workers to the operator
-        # and can break ties when in-flight cards run too long.
-        await self._sweep_stale_kanban_cards(cards)
+        # and can break ties when in-flight cards run too long. `live` is
+        # passed so the sweep never reclaims a card whose worker is still
+        # in the registry.
+        await self._sweep_stale_kanban_cards(cards, live)
 
-    async def _sweep_stale_kanban_cards(self, cards: list[Any]) -> None:
+    async def _sweep_stale_kanban_cards(
+        self, cards: list[Any], live: set[str]
+    ) -> None:
         if self.kanban_board is None:
             return
         now = time.time()
@@ -6492,11 +6507,22 @@ class _BridgeSession:
             if card.metadata.get("role") == "mission_root":
                 continue
             age = now - card.updated_at
-            if age >= self.KANBAN_RECLAIM_SECONDS and kanban_tool is not None:
+            # Liveness gate: a card whose worker is still in the sub-agent
+            # registry is NOT crashed, even if it's been quiet past the
+            # reclaim threshold (a long tool call with no heartbeat). Flipping
+            # it to `crashed` would kill nothing and unfairly charge a
+            # circuit-breaker failure to a healthy worker — so only reclaim
+            # cards whose worker has actually left the registry.
+            worker_live = card.id in live
+            if (
+                age >= self.KANBAN_RECLAIM_SECONDS
+                and not worker_live
+                and kanban_tool is not None
+            ):
                 # Hand the card back to the dispatcher by flipping it to
-                # `crashed` — the circuit breaker accounting will catch
-                # cards that flap, and the next tick will pick it up as
-                # retry-eligible.
+                # `crashed`. The worker lane re-dispatches crashed/timed_out
+                # cards on the next tick, and the circuit breaker trips them
+                # to `failed` after FAILURE_THRESHOLD flaps.
                 try:
                     await kanban_tool.execute(
                         f"reclaim-{card.id}-{int(now * 1000):x}",
@@ -10876,10 +10902,18 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         return
 
     if ctype == "kanban_operator_unblock":
-        # Pop a card out of `blocked` (or one of the terminal failure
-        # statuses bucketed there) back into `ready` so autopilot can
-        # try again. board.unblock() handles the state transition;
-        # we just translate the IPC.
+        # Pop a card out of `blocked` (or one of the retry-eligible
+        # failure statuses bucketed there) back into `ready` so autopilot
+        # can try again. Two distinct cases share this button:
+        #   · triage child gated on a failed parent → board.unblock(),
+        #     which enforces the parent-state preconditions.
+        #   · blocked / crashed / timed_out card → a real status write to
+        #     `ready` (all legal transitions). The previous code funnelled
+        #     BOTH through board.unblock(), which early-returns for any
+        #     non-triage card, so the button was a silent no-op on every
+        #     blocked-column card while still emitting a success event.
+        # `failed` / `cancelled` are absorbing terminal states — nothing
+        # to unblock; the UI already hides the button for them.
         if not session_id:
             return
         card_id = str(cmd.get("cardId") or "").strip()
@@ -10888,10 +10922,39 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         sess = await state.ensure_session(session_id)
         if sess.kanban_board is None:
             return
+        task = await sess.kanban_board.get(card_id)
+        if task is None:
+            log("warn", f"kanban_operator_unblock: card {card_id} not found")
+            return
+        status = (task.status or "").lower()
+        moved = False
+        note = ""
         try:
-            await sess.kanban_board.unblock(card_id, actor="operator")
+            if status == "triage":
+                _, note = await sess.kanban_board.unblock(card_id, actor="operator")
+                moved = note == "unblocked"
+            elif status in {"blocked", "crashed", "timed_out"}:
+                updated = await sess.kanban_board.update(
+                    card_id,
+                    actor="operator",
+                    status="ready",
+                    comment="Operator unblocked — returned to the ready queue",
+                )
+                moved = updated is not None
+                note = "returned to ready"
+            else:
+                note = f"card is {status!r}; nothing to unblock"
         except Exception as exc:  # noqa: BLE001
             log("warn", f"kanban_operator_unblock failed for {card_id}: {exc}")
+            return
+        if not moved:
+            # Surface the no-op honestly instead of faking success.
+            log("info", f"kanban_operator_unblock no-op for {card_id}: {note}")
+            sess._emit_kanban_event(  # noqa: SLF001
+                "kanban_operator_unblock_failed",
+                f"Could not unblock {card_id}: {note}",
+                details={"cardId": card_id, "reason": note},
+            )
             return
         # Reset breaker bookkeeping: an unblocked card gets a fresh
         # chance, otherwise autopilot would skip it the moment it
