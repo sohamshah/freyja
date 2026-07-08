@@ -36,7 +36,9 @@ _READ_DEFAULT_COUNT = 8
 _READ_MAX_COUNT = 20
 _TEXT_TRUNCATE = 300
 
-_MISSING_TOKEN_SUMMARY = "Slack isn't wired — SLACK_BOT_TOKEN missing"
+_MISSING_TOKEN_SUMMARY = (
+    "Slack isn't wired — run `freyja setup slack` or set SLACK_BOT_TOKEN"
+)
 
 # name(lower) → channel id, keyed to the token that fetched it so a
 # token swap invalidates rather than serving another workspace's map.
@@ -56,8 +58,20 @@ def _reset_caches() -> None:
 
 def _token() -> Optional[str]:
     """First token from the comma-separated SLACK_BOT_TOKEN (see module
-    docstring for the single-workspace limitation)."""
+    docstring for the single-workspace limitation).
+
+    Falls back to the setup wizard's ~/.freyja/.env: the gateway daemon
+    merges that file into its environment at startup, but the DESKTOP
+    bridge does not — observed live 2026-07-08 as "Slack isn't wired"
+    while the gateway sat happily connected with the very same token."""
     raw = os.environ.get("SLACK_BOT_TOKEN", "")
+    if not raw.strip():
+        try:
+            from bridge.gateway.setup.env_writer import read_env
+
+            raw = str(read_env().get("SLACK_BOT_TOKEN") or "")
+        except Exception:  # noqa: BLE001 — fallback path only, never fatal
+            raw = ""
     first = raw.split(",")[0].strip()
     return first or None
 

@@ -631,8 +631,11 @@ class VoiceService:
                 # Pinned sentence (contract §4); the token value rides at
                 # the end — the model has no other channel to learn it.
                 output = (
-                    f"CONFIRM REQUIRED: {summary}. Ask the user to confirm aloud, "
-                    f"then call act again with confirm_token {token}."
+                    f"CONFIRM REQUIRED: {summary}. If the user already clearly "
+                    f"assented to exactly this in their last utterance, call act "
+                    f"again with confirm_token {token} right now — one spoken yes "
+                    f"is one yes. Otherwise ask aloud once, then call act again "
+                    f"with confirm_token {token}."
                 )
                 self._emit_tool_result(
                     voice_session_id,

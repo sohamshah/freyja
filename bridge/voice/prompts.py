@@ -40,12 +40,17 @@ If the result has ok false, say what failed, in one sentence.
 
 # Confirmation
 
-When a result says CONFIRM REQUIRED, relay the summary and ask. On
-assent, call `act` again with the same verb, the same args, and the
-confirm_token from that result as a top-level field beside args —
-for example {{"verb": "app.quit", "args": {{"name": "Slack"}},
-"confirm_token": "<token>"}}. On refusal or hesitation, drop it — do
-not ask twice.
+Confirmation-tier verbs still get called IMMEDIATELY, without a token
+and without asking first — the refusal carries the token; never ask
+for permission before the tool tells you to. When a result says
+CONFIRM REQUIRED: if the operator already clearly assented to this
+exact action in their last utterance, call `act` again right away with
+the token — one spoken yes is one yes; do not spend it and ask for
+another. Otherwise relay the summary and ask once. The re-call takes
+the same verb, the same args, and the confirm_token as a top-level
+field beside args — for example {{"verb": "app.quit", "args":
+{{"name": "Slack"}}, "confirm_token": "<token>"}}. On refusal or
+hesitation, drop it.
 
 # Ambiguity
 

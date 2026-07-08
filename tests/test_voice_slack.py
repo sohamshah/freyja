@@ -132,20 +132,42 @@ def calls_named(name):
 # ── token handling ────────────────────────────────────────────────────────
 
 
-async def test_read_without_token(reg, fake_client, monkeypatch):
+async def test_read_without_token(reg, fake_client, monkeypatch, tmp_path):
     monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+    # Point the ~/.freyja/.env fallback at an empty home too — the real
+    # machine's wizard-written token must not leak into the suite.
+    monkeypatch.setenv("FREYJA_HOME", str(tmp_path / "fh"))
     res = await reg.get("slack.read").run({"channel": "general"})
     assert not res.ok
-    assert res.summary == "Slack isn't wired — SLACK_BOT_TOKEN missing"
+    assert res.summary == (
+        "Slack isn't wired — run `freyja setup slack` or set SLACK_BOT_TOKEN"
+    )
     assert res.data == {"setup": "slack"}
     assert FakeSlackClient.calls == []
 
 
-async def test_send_without_token(reg, fake_client, monkeypatch):
+async def test_send_without_token(reg, fake_client, monkeypatch, tmp_path):
     monkeypatch.setenv("SLACK_BOT_TOKEN", "   ")
+    monkeypatch.setenv("FREYJA_HOME", str(tmp_path / "fh"))
     res = await reg.get("slack.send").run({"channel": "general", "text": "hi"})
     assert not res.ok
     assert res.data == {"setup": "slack"}
+
+
+async def test_token_falls_back_to_freyja_home_env(reg, fake_client, monkeypatch, tmp_path):
+    """The setup wizard writes SLACK_BOT_TOKEN to ~/.freyja/.env, which the
+    gateway daemon loads but the desktop bridge does not — the adapter must
+    read it there itself (live gap: 'Slack isn't wired' with a connected
+    gateway)."""
+    monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+    fh = tmp_path / "fh"
+    fh.mkdir()
+    (fh / ".env").write_text("SLACK_BOT_TOKEN=xoxb-from-wizard, xoxb-second\n")
+    monkeypatch.setenv("FREYJA_HOME", str(fh))
+    res = await reg.get("slack.read").run({"channel": "general"})
+    assert res.ok, res.summary
+    # And the comma rule still applies to the fallback source.
+    assert FakeSlackClient.tokens[0] == "xoxb-from-wizard"
 
 
 async def test_first_token_of_comma_list_is_used(reg, fake_client, token_env):

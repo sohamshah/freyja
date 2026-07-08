@@ -536,8 +536,11 @@ async def test_confirm_full_cycle(tmp_path):
     assert len(token) == 16  # secrets.token_hex(8)
     assert nc["summary"] == "Quit Safari"
     assert r1["output"] == (
-        f"CONFIRM REQUIRED: Quit Safari. Ask the user to confirm "
-        f"aloud, then call act again with confirm_token {token}."
+        f"CONFIRM REQUIRED: Quit Safari. If the user already clearly "
+        f"assented to exactly this in their last utterance, call act "
+        f"again with confirm_token {token} right now — one spoken yes "
+        f"is one yes. Otherwise ask aloud once, then call act again "
+        f"with confirm_token {token}."
     )
     (rc1,) = events_of(events, "voice_receipt")
     assert rc1["receipt"]["summary"] == "awaiting confirmation: Quit Safari"
