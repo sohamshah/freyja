@@ -508,13 +508,23 @@ class VoiceService:
             )
             return
         verb = str(parsed.get("verb") or "")
-        args = parsed.get("args") if isinstance(parsed.get("args"), dict) else {}
+        args = dict(parsed.get("args")) if isinstance(parsed.get("args"), dict) else {}
         confirm_token = parsed.get("confirm_token")
+        # The act schema puts confirm_token at top level, but the realtime
+        # model reliably tucks it INSIDE args instead (observed live
+        # 2026-07-08: a five-deep "awaiting confirmation" loop on app.quit —
+        # every re-call carried a valid token in args and validation never
+        # saw it). Accept both placements, and strip the key from args so
+        # the verb and the scope hash see the same args the token was
+        # issued against.
+        args_token = args.pop("confirm_token", None)
+        if not isinstance(confirm_token, str):
+            confirm_token = args_token if isinstance(args_token, str) else None
         lane = "mission" if verb == "mission.spawn" else "brain"
         await self._execute(
             verb=verb,
             args=args,
-            confirm_token=confirm_token if isinstance(confirm_token, str) else None,
+            confirm_token=confirm_token,
             lane=lane,
             heard=heard,
             call_id=call_id,
@@ -675,14 +685,22 @@ class VoiceService:
     ) -> bool:
         if not token:
             return False
-        # Pop up front — single-use even when the scope check fails.
-        entry = self._confirm_tokens.pop(token, None)
+        entry = self._confirm_tokens.get(token)
         if entry is None:
             return False
         entry_verb, entry_hash, deadline = entry
         if time.monotonic() > deadline:
+            self._confirm_tokens.pop(token, None)
             return False
-        return entry_verb == verb and entry_hash == _args_hash(args)
+        if entry_verb != verb or entry_hash != _args_hash(args):
+            # Scope mismatch does NOT burn the token: a model that mangles
+            # one re-call (wrong arg spelling, extra key) can still succeed
+            # on the next attempt within the TTL instead of forcing the
+            # operator through a fresh confirmation round.
+            return False
+        # Single-use: consumed only on successful validation.
+        self._confirm_tokens.pop(token, None)
+        return True
 
     # ── typed commands (floor) ───────────────────────────────────────────
 
@@ -730,29 +748,36 @@ class VoiceService:
         text = str(cmd.get("text") or "")
         final = bool(cmd.get("final"))
         if final and role in ("user", "assistant") and text.strip():
-            try:
-                self._transcripts_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(self._transcripts_path, "a", encoding="utf-8") as fh:
-                    fh.write(
-                        json.dumps(
-                            {
-                                "ts": int(time.time() * 1000),
-                                "voiceSessionId": voice_session_id,
-                                "role": role,
-                                "text": text,
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
-            except Exception as exc:  # noqa: BLE001
-                self._log("warn", f"voice transcript journal failed: {exc}")
+            self._journal_transcript_line(
+                {
+                    "voiceSessionId": voice_session_id,
+                    "role": role,
+                    "text": text,
+                }
+            )
         # Panic scans finals AND partials — a partial "stop" must cut the
         # assistant off mid-sentence, not after the transcript settles.
         if role == "user" and text.strip():
             matched = scan_for_panic(text)
             if matched:
                 self._emit_panic(voice_session_id, matched)
+
+    def _journal_transcript_line(self, entry: dict[str, Any]) -> None:
+        """Append one line to transcripts.jsonl — the single chronological
+        narrative of every voice session (user/assistant finals plus tool
+        executions), the file a later reviewer reads to reconstruct what
+        was said and what actually happened."""
+        try:
+            self._transcripts_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._transcripts_path, "a", encoding="utf-8") as fh:
+                fh.write(
+                    json.dumps(
+                        {"ts": int(time.time() * 1000), **entry}, ensure_ascii=False
+                    )
+                    + "\n"
+                )
+        except Exception as exc:  # noqa: BLE001
+            self._log("warn", f"voice transcript journal failed: {exc}")
 
     def _emit_panic(self, voice_session_id: str, matched: str) -> None:
         if voice_session_id:
@@ -922,6 +947,18 @@ class VoiceService:
             self._log("warn", f"voice receipt append failed: {exc}")
         if voice_session_id and voice_session_id == self._active_session_id:
             self._session_receipt_count += 1
+        # Interleave the execution into the transcript journal so one file
+        # reads as the full session: what was said AND what was done.
+        self._journal_transcript_line(
+            {
+                "voiceSessionId": voice_session_id or "",
+                "role": "tool",
+                "verb": verb,
+                "ok": ok,
+                "text": summary,
+                "lane": lane,
+            }
+        )
         self._emit({"type": "voice_receipt", "receipt": receipt.to_dict()})
         return receipt
 

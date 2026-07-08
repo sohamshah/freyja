@@ -554,6 +554,73 @@ async def test_confirm_full_cycle(tmp_path):
     assert r3["needsConfirm"]["token"] != token
 
 
+async def test_confirm_token_accepted_inside_args(tmp_path):
+    """Production repro (2026-07-08): the realtime model reliably re-calls
+    with the confirm_token tucked INSIDE args instead of top-level, which
+    looped 'awaiting confirmation' five deep. Both placements must
+    validate, and the stripped token must not reach the verb or poison
+    the scope hash."""
+    ran = []
+
+    async def run(args):
+        ran.append(args)
+        return FakeResult(ok=True, summary="quit Spotify")
+
+    svc, events = make_service(tmp_path, verbs=[FakeVerb("app.quit", run=run, tier="confirm")])
+
+    await svc.handle_tool_call(_act_cmd("voice-1", "c1", "app.quit", args={"name": "Spotify"}))
+    (r1,) = events_of(events, "voice_tool_result")
+    token = r1["needsConfirm"]["token"]
+
+    # Re-call with the token as an args key — exactly what the model sent.
+    events.clear()
+    await svc.handle_tool_call(
+        _act_cmd(
+            "voice-1",
+            "c2",
+            "app.quit",
+            args={"name": "Spotify", "confirm_token": token},
+        )
+    )
+    (r2,) = events_of(events, "voice_tool_result")
+    assert r2["ok"] is True, r2
+    # The verb saw clean args — no token leaked through.
+    assert ran == [{"name": "Spotify"}]
+
+
+async def test_confirm_token_survives_one_mangled_recall(tmp_path):
+    """A scope-mismatched attempt must NOT burn the pending token: the
+    model can mangle one re-call (extra key, changed arg) and still
+    succeed on the next attempt with the same token."""
+    ran = []
+
+    async def run(args):
+        ran.append(args)
+        return FakeResult(ok=True, summary="quit Spotify")
+
+    svc, events = make_service(tmp_path, verbs=[FakeVerb("app.quit", run=run, tier="confirm")])
+
+    await svc.handle_tool_call(_act_cmd("voice-1", "c1", "app.quit", args={"name": "Spotify"}))
+    (r1,) = events_of(events, "voice_tool_result")
+    token = r1["needsConfirm"]["token"]
+
+    # Mangled re-call: args drifted, so validation fails — but the token
+    # must survive for the follow-up.
+    events.clear()
+    await svc.handle_tool_call(
+        _act_cmd("voice-1", "c2", "app.quit", args={"name": "spotify.app"}, confirm_token=token)
+    )
+    assert ran == []
+
+    events.clear()
+    await svc.handle_tool_call(
+        _act_cmd("voice-1", "c3", "app.quit", args={"name": "Spotify"}, confirm_token=token)
+    )
+    (r3,) = events_of(events, "voice_tool_result")
+    assert r3["ok"] is True, r3
+    assert ran == [{"name": "Spotify"}]
+
+
 async def test_confirm_token_scoped_to_verb_and_args(tmp_path):
     ran = []
 

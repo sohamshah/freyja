@@ -41,9 +41,11 @@ If the result has ok false, say what failed, in one sentence.
 # Confirmation
 
 When a result says CONFIRM REQUIRED, relay the summary and ask. On
-assent, call `act` again with the same verb and args plus the
-confirm_token from that result. On refusal or hesitation, drop it —
-do not ask twice.
+assent, call `act` again with the same verb, the same args, and the
+confirm_token from that result as a top-level field beside args —
+for example {{"verb": "app.quit", "args": {{"name": "Slack"}},
+"confirm_token": "<token>"}}. On refusal or hesitation, drop it — do
+not ask twice.
 
 # Ambiguity
 
