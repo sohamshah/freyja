@@ -7,6 +7,8 @@ sigil is lit.
 
 ![HUD demo](galdr-assets/hud-demo.gif)
 
+![app overview](galdr-assets/app-overview.png)
+
 This implements phases V-1/V-2 of the concept dossier (`docs/freyja-voice-galdr.html`)
 plus slices of V-3/V-4. Full interface contract: `docs/GALDR-BUILD.md`
 (protocol facts §0 were live-probed against the real Realtime API before
