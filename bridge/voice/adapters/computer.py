@@ -59,6 +59,9 @@ from bridge.voice.verbs import Verb, VerbRegistry, VerbResult
 # ── module state (process-level; see docstring for why not per-session) ────
 
 _TOOLS: Optional[dict[str, Any]] = None
+# The shared ComputerToolSpec, kept so cancel_inflight() can trip its
+# cancel_event to interrupt a verb mid-action on panic.
+_SPEC: Optional[Any] = None
 _snapshot: Optional["_Snapshot"] = None
 _generation: int = 0
 _ref_seq: int = 0  # never resets — stale refs must stay detectable
@@ -132,7 +135,7 @@ def _ensure_tools() -> dict[str, Any]:
     minus the two session-bound fields; the spec is shared so the
     native/API coordinate-space cache persists across verb calls, same
     as it does across an agent session. Test seam: monkeypatched whole."""
-    global _TOOLS
+    global _TOOLS, _SPEC
     if _TOOLS is None:
         from bridge.tools.computer_tools import (
             ClickTool,
@@ -156,6 +159,7 @@ def _ensure_tools() -> dict[str, Any]:
             require_approval=False,
             owner="voice",
         )
+        _SPEC = spec
         _TOOLS = {
             tool.definition.name: tool
             for tool in (
@@ -171,8 +175,30 @@ def _ensure_tools() -> dict[str, Any]:
     return _TOOLS
 
 
+def cancel_inflight() -> None:
+    """Trip the shared cancel event so a computer verb in flight — a long
+    type_text, a click waiting on its highlight — aborts at its next
+    checkpoint. The service calls this on panic ("stop") so the brake
+    reaches mid-action, not just between verbs. Best-effort + idempotent;
+    the event is cleared again before the next verb runs."""
+    spec = _SPEC
+    if spec is not None:
+        try:
+            spec.cancel_event.set()
+        except Exception:  # noqa: BLE001 — a dead brake must never raise
+            pass
+
+
 async def _run_tool(name: str, args: dict[str, Any]) -> Any:
-    return await _ensure_tools()[name].execute(f"voice-{name}", dict(args))
+    tools = _ensure_tools()
+    # Clear any stale cancel from a prior panic so this fresh verb starts
+    # unblocked; cancel_inflight() re-sets it if a new "stop" lands.
+    if _SPEC is not None:
+        try:
+            _SPEC.cancel_event.clear()
+        except Exception:  # noqa: BLE001
+            pass
+    return await tools[name].execute(f"voice-{name}", dict(args))
 
 
 def _result_text(result: Any) -> str:

@@ -594,3 +594,36 @@ async def test_receipts_flow_through_service_execute(rig, tmp_path):
     # Persisted too — the receipts file is the audit trail.
     lines = (tmp_path / "voice" / "receipts.jsonl").read_text().strip().splitlines()
     assert json.loads(lines[-1])["verb"] == "computer.press"
+
+
+# ── panic interrupts an in-flight action ─────────────────────────────────
+
+
+async def test_cancel_inflight_trips_shared_cancel_event(rig, monkeypatch):
+    """On panic the service calls cancel_inflight(); it must set the spec's
+    cancel_event so a verb in flight aborts at its next checkpoint."""
+    import asyncio as _asyncio
+
+    fake_spec = SimpleNamespace(cancel_event=_asyncio.Event())
+    monkeypatch.setattr(computer, "_SPEC", fake_spec)
+    assert not fake_spec.cancel_event.is_set()
+    computer.cancel_inflight()
+    assert fake_spec.cancel_event.is_set()
+
+
+async def test_run_tool_clears_stale_cancel_before_next_verb(rig, monkeypatch):
+    """A fresh verb after a prior panic must start unblocked — _run_tool
+    clears the cancel event before executing."""
+    import asyncio as _asyncio
+
+    fake_spec = SimpleNamespace(cancel_event=_asyncio.Event())
+    fake_spec.cancel_event.set()  # stale trip from a previous panic
+    monkeypatch.setattr(computer, "_SPEC", fake_spec)
+    res = await _run(rig, "computer.press", {"key": "enter"})
+    assert res.ok
+    assert not fake_spec.cancel_event.is_set()  # cleared before the run
+
+
+async def test_cancel_inflight_no_spec_is_safe(monkeypatch):
+    monkeypatch.setattr(computer, "_SPEC", None)
+    computer.cancel_inflight()  # must not raise

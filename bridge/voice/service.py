@@ -817,6 +817,16 @@ class VoiceService:
             if voice_session_id in self._panicked_sessions:
                 return
             self._panicked_sessions.add(voice_session_id)
+        # Trip the computer adapter's cancel signal so a verb in flight
+        # (a long type_text, a click mid-highlight) aborts NOW — the brake
+        # reaches mid-action, not just between verbs. Best-effort: the
+        # adapter may not be loaded, and a dead brake must not block panic.
+        try:
+            from bridge.voice.adapters.computer import cancel_inflight
+
+            cancel_inflight()
+        except Exception:  # noqa: BLE001
+            pass
         self._emit(
             {
                 "type": "voice_panic",
