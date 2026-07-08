@@ -240,7 +240,7 @@ export function SettingsModal() {
 
           <Section
             title="voice · galdr"
-            description="Speak to the Mac. Sessions are push-to-talk; the mic is only live while the sigil is lit."
+            description="Speak to the Mac. ⌥Space opens an exchange; the mic is live only while the sigil is lit, and the session auto-closes after silence."
           >
             <VoiceSettings />
           </Section>

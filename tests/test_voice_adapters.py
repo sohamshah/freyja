@@ -102,10 +102,21 @@ async def test_spotify_transport_scripts(reg, osa):
 
 @pytest.mark.asyncio
 async def test_spotify_transport_failure_surfaces_error(reg, osa):
-    osa.replies = [(False, "Spotify got an error")]
-    res = await reg.get("spotify.pause").run({})
-    assert not res.ok
-    assert res.error == "Spotify got an error"
+    """Raw AppleScript stderr rides in error= (for the model); the human
+    summary stays terse — it lands verbatim in the HUD receipt row."""
+    stderr = "execution error: Not authorized to send Apple events to Spotify. (-1743)"
+    cases = [
+        ("spotify.pause", "couldn't pause"),
+        ("spotify.resume", "couldn't resume"),
+        ("spotify.next", "couldn't skip"),
+        ("spotify.previous", "couldn't go back"),
+    ]
+    for name, fail_summary in cases:
+        osa.replies = [(False, stderr)]
+        res = await reg.get(name).run({})
+        assert not res.ok
+        assert res.summary == fail_summary
+        assert res.error == stderr
 
 
 @pytest.mark.asyncio

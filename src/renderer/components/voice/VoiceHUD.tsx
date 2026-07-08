@@ -41,6 +41,18 @@ function VoiceHudBody() {
   const [typed, setTyped] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
+  // Take the keyboard deliberately on open. The InputDock textarea
+  // autofocuses on mount and keeps focus after a send, so in the app's
+  // default state every printable key would land in the chat draft —
+  // "type to command" would be dead and Enter would ship the floor
+  // command as a chat turn. Blurring whatever holds focus hands the
+  // keys to the listener below; re-focusing an editable after this is
+  // an explicit user act the listener still defers to.
+  useEffect(() => {
+    const el = document.activeElement
+    if (el instanceof HTMLElement) el.blur()
+  }, [])
+
   // Any printable key while the HUD is up (and no other field focused)
   // opens the typed-command input seeded with that character. This is
   // the FLOOR lane: the bridge parses it deterministically — no model.
@@ -101,7 +113,14 @@ function VoiceHudBody() {
             level={micLevel}
             className="shrink-0"
           />
-          <div ref={scrollRef} className="max-h-[76px] min-w-0 flex-1 overflow-y-auto">
+          {/* role=status/aria-live: the streaming transcript is the only
+              non-visual signal that the mic is hot and what was heard. */}
+          <div
+            ref={scrollRef}
+            role="status"
+            aria-live="polite"
+            className="max-h-[76px] min-w-0 flex-1 overflow-y-auto"
+          >
             {userLine ? (
               <div className="text-[13px] leading-[1.45] text-fg-0">
                 {userLine}
@@ -218,6 +237,7 @@ function VoiceHudBody() {
                 }
               }}
               placeholder="floor command — pause · next · volume 40 · mute"
+              aria-label="floor command"
               spellCheck={false}
               className="w-full bg-transparent font-mono text-[12px] text-fg-0 outline-none placeholder:text-fg-3"
             />

@@ -161,11 +161,15 @@ async def _now_playing(args: dict[str, Any]) -> VerbResult:
     )
 
 
-def _transport(script: str, summary: str) -> Any:
+def _transport(script: str, summary: str, fail_summary: str) -> Any:
+    # On failure the human summary stays terse (it lands in the HUD row
+    # and the spoken outcome); the raw osascript stderr — AppleScript
+    # permission/not-installed prose — rides in error= for the model,
+    # matching the _play/_volume pattern.
     async def run(args: dict[str, Any]) -> VerbResult:
         ok, out = await mac.run_osascript(script)
         if not ok:
-            return VerbResult(ok=False, summary=f"Spotify: {out}", error=out)
+            return VerbResult(ok=False, summary=fail_summary, error=out)
         return VerbResult(ok=True, summary=summary)
 
     return run
@@ -197,7 +201,7 @@ def register(registry: VerbRegistry) -> None:
             params={},
             required=[],
             tier="auto",
-            run=_transport('tell application "Spotify" to pause', "⏸ paused"),
+            run=_transport('tell application "Spotify" to pause', "⏸ paused", "couldn't pause"),
         )
     )
     registry.register(
@@ -207,7 +211,7 @@ def register(registry: VerbRegistry) -> None:
             params={},
             required=[],
             tier="auto",
-            run=_transport('tell application "Spotify" to play', "▶ resumed"),
+            run=_transport('tell application "Spotify" to play', "▶ resumed", "couldn't resume"),
         )
     )
     registry.register(
@@ -217,7 +221,9 @@ def register(registry: VerbRegistry) -> None:
             params={},
             required=[],
             tier="auto",
-            run=_transport('tell application "Spotify" to next track', "⏭ next track"),
+            run=_transport(
+                'tell application "Spotify" to next track', "⏭ next track", "couldn't skip"
+            ),
         )
     )
     registry.register(
@@ -227,7 +233,11 @@ def register(registry: VerbRegistry) -> None:
             params={},
             required=[],
             tier="auto",
-            run=_transport('tell application "Spotify" to previous track', "⏮ previous track"),
+            run=_transport(
+                'tell application "Spotify" to previous track',
+                "⏮ previous track",
+                "couldn't go back",
+            ),
         )
     )
     registry.register(

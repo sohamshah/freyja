@@ -71,6 +71,12 @@ export class VoiceEngine {
   private audioCtx: AudioContext | null = null
   private levelRaf: number | null = null
   private cancelMuteTimer: number | null = null
+  /** Start generation — bumped by every start() and stop() so an
+   *  in-flight start can detect it was superseded mid-await (stop()
+   *  during the mic-permission prompt, a re-entrant start) and release
+   *  what it acquired instead of resurrecting a dead session with a hot
+   *  mic nobody owns. */
+  private startGen = 0
 
   // ── Per-session protocol bookkeeping ──────────────────────────────
   /** function_call argument deltas accumulated per call_id until the
@@ -135,9 +141,15 @@ export class VoiceEngine {
     ) {
       throw new VoiceEngineUnavailableError()
     }
+    const gen = ++this.startGen
     // Defensive re-entrancy: a stray second start tears down the first
-    // connection rather than leaking a live mic track.
-    if (this.pc || this.micStream) await this.stop('restart')
+    // connection rather than leaking a live mic track. Plain teardown —
+    // NOT stop() — so no 'closed' event fires and the store can't
+    // mistake this internal restart for the whole exchange ending.
+    if (this.pc || this.micStream) {
+      await this.teardown()
+      if (gen !== this.startGen) return
+    }
 
     this.setState('connecting')
     try {
@@ -148,6 +160,18 @@ export class VoiceEngine {
           autoGainControl: true,
         },
       })
+      if (gen !== this.startGen) {
+        // stop() ran while the permission prompt was up — the exchange
+        // is over; don't let the just-granted mic go hot.
+        for (const track of mic.getTracks()) {
+          try {
+            track.stop()
+          } catch {
+            /* best effort */
+          }
+        }
+        return
+      }
       this.micStream = mic
 
       const pc = new RTCPeerConnection()
@@ -195,7 +219,12 @@ export class VoiceEngine {
       }
 
       const offer = await pc.createOffer()
+      // Past this point everything acquired is on this.* — a superseding
+      // start()/stop() bumped the generation AND ran teardown, so stale
+      // continuations just step aside; nothing of theirs is still live.
+      if (gen !== this.startGen) return
       await pc.setLocalDescription(offer)
+      if (gen !== this.startGen) return
 
       const res = await fetch(ready.webrtcUrl, {
         method: 'POST',
@@ -205,6 +234,7 @@ export class VoiceEngine {
         },
         body: offer.sdp ?? '',
       })
+      if (gen !== this.startGen) return
       if (!res.ok) {
         const detail = await res.text().catch(() => '')
         throw new Error(
@@ -212,22 +242,33 @@ export class VoiceEngine {
         )
       }
       const answerSdp = await res.text()
+      if (gen !== this.startGen) return
       await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp })
+      if (gen !== this.startGen) return
 
       this.startLevelMeter(mic)
       // connecting → listening happens on session.created over the data
       // channel (§7.1) — the DC being open is implied by receiving it.
     } catch (err) {
-      // Release everything acquired so far (esp. the live mic track),
-      // land in 'error', and rethrow — the store owns user-facing
-      // messaging, so no error event is emitted for the throw path.
-      await this.teardown()
-      this.setState('error')
+      // Release everything acquired so far (esp. the live mic track) and
+      // rethrow — the store owns user-facing failure state and messaging
+      // (it keeps the HUD open on the error row), so land in 'idle', not
+      // 'error': everything is genuinely released. Superseded starts were
+      // already torn down by whoever bumped the generation — don't
+      // destroy the successor's resources.
+      if (gen === this.startGen) {
+        await this.teardown()
+        if (gen === this.startGen) this.setState('idle')
+      }
       throw err
     }
   }
 
   async stop(reason: string): Promise<void> {
+    // Invalidate any in-flight start() FIRST — even when there's nothing
+    // to tear down yet (start may be parked at getUserMedia, holding
+    // nothing but about to acquire the mic).
+    this.startGen++
     if (this._state === 'idle' && !this.pc && !this.micStream) return
     this.setState('closing')
     await this.teardown()
@@ -308,7 +349,15 @@ export class VoiceEngine {
         output: outputJson,
       },
     })
-    this.sendEvent({ type: 'response.create' })
+    // One response may carry SEVERAL act calls (parallel tool calls are
+    // on by default). Responses are serial on a realtime session — a
+    // response.create while results are still owed gets rejected and the
+    // in-flight response never voices the later outcomes. Batch: only
+    // the LAST owed result kicks the follow-up response, which then sees
+    // every function_call_output at once.
+    if (this.pendingToolCalls.size === 0) {
+      this.sendEvent({ type: 'response.create' })
+    }
   }
 
   sendText(text: string): void {

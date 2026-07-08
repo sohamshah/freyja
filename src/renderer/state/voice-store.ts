@@ -55,6 +55,11 @@ let _engine: VoiceEngine | null = null
 let _demo: VoiceDemoHandle | null = null
 let _idleTimer: number | null = null
 let _sessionStartedAt = 0
+/** Exchange generation — bumped whenever an exchange starts or ends so
+ *  stale async continuations (the rejection handler of an engine.start
+ *  whose exchange was already toggled away) can detect they've been
+ *  superseded and stand down instead of mutating the new exchange. */
+let _sessionGen = 0
 /** Model-originated function-call ids awaiting a voice_tool_result.
  *  Typed-command / undo results reuse the voice_tool_result event but
  *  have no function_call in the realtime conversation to answer, so
@@ -117,6 +122,70 @@ function upsertReceipt(receipt: Receipt): void {
   })
 }
 
+/** Close a FAILED exchange out (engine start rejected, transport died
+ *  mid-session): stop the engine and end the bridge session like
+ *  endVoice, but PARK the HUD on the error row — hudOpen stays true with
+ *  engineState 'error' so VoiceHUD renders the message and the
+ *  "⌥space to retry" hint, mirroring the mint-failure path in
+ *  voice_error. Esc / ⌥Space dismisses via endVoice's inactive branch. */
+function failVoice(message?: string): void {
+  clearIdleTimer()
+  _sessionGen++
+  const s = useVoiceStore.getState()
+  const voiceSessionId = s.voiceSessionId
+  const seconds =
+    _sessionStartedAt > 0
+      ? Math.max(0, Math.round((Date.now() - _sessionStartedAt) / 1000))
+      : 0
+  _sessionStartedAt = 0
+  _pendingCallIds.clear()
+  // `active` flips BEFORE engine.stop so its closed event (checked
+  // against `active`) can't re-enter endVoice and unmount the HUD.
+  useVoiceStore.setState({
+    active: false,
+    voiceSessionId: null,
+    engineState: 'error',
+    micLevel: 0,
+    activity: null,
+    error: message ?? s.error ?? 'voice session failed',
+  })
+  if (_engine !== null) {
+    void _engine.stop('error').catch(() => {})
+  }
+  if (voiceSessionId && voiceSessionId !== 'voice-demo') {
+    _send({ type: 'voice_session_end', voiceSessionId, reason: 'error', stats: { seconds } })
+  }
+}
+
+/** Human message for engine.start() rejections. getUserMedia failures
+ *  arrive as DOMExceptions whose .name carries the story; everything
+ *  else (SDP exchange, WebRTC internals) already has a useful message. */
+function describeEngineStartError(err: unknown): string {
+  const name = err instanceof Error ? err.name : ''
+  if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+    return 'mic access denied — System Settings › Privacy & Security › Microphone'
+  }
+  if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+    return 'no microphone found'
+  }
+  return err instanceof Error ? err.message : String(err)
+}
+
+/** Pull the human `summary` out of a tool-result `output` payload (a
+ *  JSON string addressed to the model). */
+function outputSummary(output: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(output)
+    if (typeof parsed === 'object' && parsed !== null) {
+      const summary = (parsed as { summary?: unknown }).summary
+      if (typeof summary === 'string' && summary) return summary
+    }
+  } catch {
+    /* not JSON — nothing to surface */
+  }
+  return null
+}
+
 function startDemo(): void {
   if (_demo !== null) return
   _sessionStartedAt = Date.now()
@@ -139,12 +208,21 @@ function ensureEngine(): VoiceEngine {
   const engine = new VoiceEngine()
 
   engine.on('state', (s) => {
+    const st = useVoiceStore.getState()
+    // Once failVoice has parked the HUD on the error row, the engine's
+    // own closing→idle teardown must not clobber it — the error stays
+    // visible until the operator dismisses (Esc) or retries (⌥Space).
+    if (!st.active && st.engineState === 'error' && (s === 'closing' || s === 'idle')) {
+      return
+    }
     useVoiceStore.setState({ engineState: s })
-    // 'error' is only set on fatal transport failures (start failed,
-    // ICE gave up) — close the session out rather than hanging until
-    // the idle timer fires.
-    if (s === 'error' && useVoiceStore.getState().active) {
-      useVoiceStore.getState().endVoice('error')
+    // 'error' is only set on fatal mid-session transport failures (ICE
+    // gave up) — close the session out, but keep the HUD open showing
+    // what happened: a silent flash-and-vanish tells the operator
+    // nothing (start()-rejection failures route through failVoice via
+    // the .catch in voice_session_ready instead).
+    if (s === 'error' && st.active) {
+      failVoice()
     }
   })
 
@@ -241,6 +319,28 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
       s.endVoice('toggle')
       return
     }
+    // Alt+Space is registered unconditionally in main (contract §7.4 —
+    // "the renderer decides whether voice is enabled"), so THIS is where
+    // the Settings toggle is enforced: never open a live-mic exchange
+    // while voice is switched off or unmintable. The bridge refuses too
+    // (voice_disabled / no_api_key), but the operator gets immediate,
+    // visible feedback here instead of a silent hot mic.
+    if (s.config && (!s.config.enabled || !s.config.hasApiKey)) {
+      set({
+        active: false,
+        hudOpen: true,
+        engineState: 'error',
+        error: s.config.enabled
+          ? 'voice needs an OpenAI API key — set OPENAI_API_KEY for the bridge'
+          : 'voice is disabled — enable it in settings',
+        userLine: '',
+        assistantLine: '',
+        activity: null,
+        micLevel: 0,
+      })
+      return
+    }
+    _sessionGen++
     set({
       active: true,
       hudOpen: true,
@@ -275,10 +375,14 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
     clearIdleTimer()
     const s = get()
     if (!s.active) {
-      // e.g. HUD left open to show a mint error — just dismiss it.
-      if (s.hudOpen) set({ hudOpen: false })
+      // e.g. HUD left open to show a mint/engine error — dismiss it and
+      // clear the parked error state so the sigil returns to idle.
+      if (s.hudOpen || s.engineState === 'error') {
+        set({ hudOpen: false, engineState: 'idle', error: null })
+      }
       return
     }
+    _sessionGen++
     if (_demo !== null) {
       _demo.stop()
       _demo = null
@@ -357,9 +461,12 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
     switch (event.type) {
       case 'voice_session_ready': {
         const s = get()
-        if (!s.active) {
-          // Operator toggled off while the mint was in flight — close
-          // the bridge session it just opened for us.
+        if (!s.active || s.voiceSessionId !== null) {
+          // Operator toggled off while the mint was in flight, OR a
+          // second ready raced an exchange that already has its session
+          // (⌥Space mashing double-mints). Close the surplus bridge
+          // session — accepting it would start a second engine and leave
+          // one of the two mic tracks live with no owner.
           _send({
             type: 'voice_session_end',
             voiceSessionId: event.voiceSessionId,
@@ -371,6 +478,7 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
         set({ voiceSessionId: event.voiceSessionId })
         const engine = ensureEngine()
         resetIdleTimer()
+        const gen = _sessionGen
         void engine
           .start({
             clientSecret: event.clientSecret,
@@ -378,6 +486,9 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
             webrtcUrl: event.webrtcUrl,
           })
           .catch((err: unknown) => {
+            // The exchange this start belonged to is already over
+            // (toggled off / failed) — the rejection is stale news.
+            if (gen !== _sessionGen) return
             if (err instanceof VoiceEngineUnavailableError) {
               // No WebRTC surface (tests, plain browser): close the real
               // session and fall back to the scripted demo walk.
@@ -394,10 +505,10 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
               startDemo()
               return
             }
-            useVoiceStore.setState({
-              error: err instanceof Error ? err.message : String(err),
-            })
-            useVoiceStore.getState().endVoice('error')
+            // Mic denied / SDP exchange failed: keep the HUD open on the
+            // error row (never a silent flash-and-vanish) — same
+            // treatment as a mint failure.
+            failVoice(describeEngineStartError(err))
           })
         return
       }
@@ -412,17 +523,21 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
           _pendingCallIds.delete(event.callId)
           if (_engine !== null) _engine.sendToolResult(event.callId, event.output)
         }
-        const verb = event.receipt?.verb ?? get().activity?.verb ?? 'act'
+        // Typed floor commands the grammar refused come back receipt-less
+        // with the explanation ("typed commands are floor-only: …") in
+        // `output` — addressed to a model that never saw the call. Chip
+        // them as `floor` with that summary instead of repainting the
+        // PREVIOUS verb's chip as the failure.
+        let verb = event.receipt?.verb ?? get().activity?.verb ?? 'act'
+        let summary = event.receipt?.summary ?? event.say ?? ''
+        if (!event.receipt && event.callId.startsWith('typed-')) {
+          verb = 'floor'
+          summary = outputSummary(event.output) ?? summary
+        }
         if (event.needsConfirm) {
           set({ activity: { verb, status: 'confirm', summary: event.needsConfirm.summary } })
         } else {
-          set({
-            activity: {
-              verb,
-              status: event.ok ? 'ok' : 'fail',
-              summary: event.receipt?.summary ?? event.say ?? '',
-            },
-          })
+          set({ activity: { verb, status: event.ok ? 'ok' : 'fail', summary } })
         }
         if (event.receipt) upsertReceipt(event.receipt)
         return

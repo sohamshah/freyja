@@ -294,6 +294,76 @@ async def test_session_start_4xx_is_terminal_no_retry(tmp_path, monkeypatch):
     assert "401" in err["message"]
 
 
+async def test_session_start_refused_when_voice_disabled(tmp_path, monkeypatch):
+    """enabled=false must be enforced bridge-side — Alt+Space is
+    registered unconditionally, so this gate is what keeps a disabled
+    config from opening a live mic."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    svc, events = make_service(tmp_path)
+    await svc.start()
+    calls = install_fake_httpx(monkeypatch, [])
+    await svc.handle_set_config({"patch": {"enabled": False}})
+    events.clear()
+    await svc.handle_session_start({})
+    (err,) = events_of(events, "voice_error")
+    assert err["code"] == "voice_disabled"
+    assert not events_of(events, "voice_session_ready")
+    assert calls == []  # never even reached the mint
+
+
+async def test_session_start_supersedes_previous_active_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    svc, events = make_service(tmp_path)
+    install_fake_httpx(
+        monkeypatch,
+        [
+            FakeResponse(payload={"value": "ek_A", "expires_at": 1}),
+            FakeResponse(payload={"value": "ek_B", "expires_at": 2}),
+        ],
+    )
+    await svc.handle_session_start({})
+    (ready_a,) = events_of(events, "voice_session_ready")
+    events.clear()
+    await svc.handle_session_start({})
+    # the old session is closed as superseded BEFORE the new ready lands
+    (closed,) = events_of(events, "voice_session_closed")
+    assert closed["voiceSessionId"] == ready_a["voiceSessionId"]
+    assert closed["reason"] == "superseded"
+    (ready_b,) = events_of(events, "voice_session_ready")
+    assert ready_b["voiceSessionId"] != ready_a["voiceSessionId"]
+    assert events.index(closed) < events.index(ready_b)
+    assert svc._active_session_id == ready_b["voiceSessionId"]
+
+
+async def test_concurrent_session_starts_drop_stale_mint(tmp_path, monkeypatch):
+    """Two overlapping starts: the older mint finishing last must be
+    dropped, never emitted as a second ready or allowed to clobber the
+    newer session's bookkeeping."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    svc, events = make_service(tmp_path)
+    gate_a = asyncio.Event()
+    mint_calls = []
+
+    async def fake_mint(api_key, payload):
+        mint_calls.append(1)
+        if len(mint_calls) == 1:
+            await gate_a.wait()
+            return {"value": "ek_A", "expires_at": 1}
+        return {"value": "ek_B", "expires_at": 2}
+
+    monkeypatch.setattr(svc, "_mint", fake_mint)
+    task_a = asyncio.create_task(svc.handle_session_start({}))
+    await asyncio.sleep(0)  # A is parked on its mint await
+    await svc.handle_session_start({})  # B mints and completes first
+    gate_a.set()
+    await task_a
+    readies = events_of(events, "voice_session_ready")
+    assert [r["clientSecret"] for r in readies] == ["ek_B"]
+    assert svc._active_session_id == readies[0]["voiceSessionId"]
+    assert not events_of(events, "voice_session_closed")
+    assert not events_of(events, "voice_error")
+
+
 async def test_session_end_reports_stats(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     svc, events = make_service(
@@ -426,6 +496,18 @@ async def test_act_verb_exception_becomes_tool_error(tmp_path):
 # ── confirm tokens ────────────────────────────────────────────────────────
 
 
+def test_describe_human_templates_and_fallback():
+    """Confirm summaries read as prose for templated verbs, raw
+    verb+args otherwise — never a machine dump on the HUD confirm row."""
+    from bridge.voice.service import _describe
+
+    assert _describe("app.quit", {"name": "Slack"}) == "Quit Slack"
+    # template blows up on odd args → raw fallback, not a crash
+    assert _describe("app.quit", {}) == "app.quit"
+    assert _describe("custom.verb", {"a": 1}) == "custom.verb a=1"
+    assert _describe("custom.verb", {}) == "custom.verb"
+
+
 async def test_confirm_full_cycle(tmp_path):
     ran = []
 
@@ -443,13 +525,13 @@ async def test_confirm_full_cycle(tmp_path):
     nc = r1["needsConfirm"]
     token = nc["token"]
     assert len(token) == 16  # secrets.token_hex(8)
-    assert nc["summary"] == "app.quit name=Safari"
+    assert nc["summary"] == "Quit Safari"
     assert r1["output"] == (
-        f"CONFIRM REQUIRED: app.quit name=Safari. Ask the user to confirm "
+        f"CONFIRM REQUIRED: Quit Safari. Ask the user to confirm "
         f"aloud, then call act again with confirm_token {token}."
     )
     (rc1,) = events_of(events, "voice_receipt")
-    assert rc1["receipt"]["summary"] == "awaiting confirmation: app.quit name=Safari"
+    assert rc1["receipt"]["summary"] == "awaiting confirmation: Quit Safari"
 
     # 2. same verb+args with the token → runs
     events.clear()

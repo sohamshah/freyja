@@ -64,8 +64,25 @@ def _args_hash(args: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+# Human templates for confirm-tier verbs. The confirm summary is spoken
+# aloud by the model and shown verbatim in the HUD confirm row, so it
+# must read as prose ("Quit Slack"), not as a machine dump
+# ("app.quit name=Slack"). Verbs without a template (or whose template
+# raises on odd args) fall back to the raw form; the raw verb+args
+# always live on the receipt's args field regardless.
+_CONFIRM_SUMMARY_TEMPLATES: dict[str, Any] = {
+    "app.quit": lambda args: f"Quit {args['name']}",
+}
+
+
 def _describe(verb: str, args: dict[str, Any]) -> str:
-    """Human line for confirm prompts: `app.quit name=Safari`."""
+    """Human line for confirm prompts: `Quit Slack`."""
+    template = _CONFIRM_SUMMARY_TEMPLATES.get(verb)
+    if template is not None:
+        try:
+            return str(template(args or {}))
+        except Exception:  # noqa: BLE001 — fall back to the raw form
+            pass
     if not args:
         return verb
     parts = " ".join(f"{k}={v}" for k, v in args.items())
@@ -106,6 +123,10 @@ class VoiceService:
         self._active_session_id: Optional[str] = None
         self._session_started_at: float = 0.0
         self._session_receipt_count: int = 0
+        # Mint generation counter: a voice_session_start that finishes
+        # minting after a newer start began is stale — its result is
+        # dropped so the renderer never sees two competing ready events.
+        self._mint_generation: int = 0
         # Panic dedupe: one voice_panic per session — the renderer ends
         # the session on panic, so per-session ≡ per-utterance here.
         self._panicked_sessions: set[str] = set()
@@ -313,6 +334,21 @@ class VoiceService:
         raise last_exc if last_exc is not None else RuntimeError("mint failed")
 
     async def handle_session_start(self, cmd: dict[str, Any]) -> None:
+        if not self._config.get("enabled", True):
+            # The persisted disable is enforced HERE, not just in the UI:
+            # Alt+Space is registered unconditionally (contract §7.4), so
+            # without this gate a disabled config still opened a live mic.
+            self._emit(
+                {
+                    "type": "voice_error",
+                    "code": "voice_disabled",
+                    "message": (
+                        "voice is disabled in settings — enable it there "
+                        "before starting a session."
+                    ),
+                }
+            )
+            return
         api_key = os.environ.get("OPENAI_API_KEY", "").strip()
         if not api_key:
             self._emit(
@@ -338,9 +374,13 @@ class VoiceService:
                 }
             )
             return
+        self._mint_generation += 1
+        generation = self._mint_generation
         try:
             data = await self._mint(api_key, payload)
         except Exception as exc:  # noqa: BLE001
+            if generation != self._mint_generation:
+                return  # superseded mid-flight — the newer start owns the reply
             self._emit(
                 {
                     "type": "voice_error",
@@ -352,6 +392,11 @@ class VoiceService:
                 }
             )
             return
+        if generation != self._mint_generation:
+            # A newer voice_session_start superseded this mint while it
+            # was in flight — drop the stale secret on the floor rather
+            # than clobbering the newer session's bookkeeping.
+            return
         value = data.get("value")
         if not value:
             self._emit(
@@ -362,6 +407,23 @@ class VoiceService:
                 }
             )
             return
+        if self._active_session_id:
+            # A new session replaces the old one: tell the renderer the
+            # old id is dead so receipts/stats never split across two ids.
+            self._emit(
+                {
+                    "type": "voice_session_closed",
+                    "voiceSessionId": self._active_session_id,
+                    "reason": "superseded",
+                    "receiptsCount": self._session_receipt_count,
+                    "seconds": (
+                        round(time.time() - self._session_started_at, 1)
+                        if self._session_started_at
+                        else 0
+                    ),
+                }
+            )
+            self._panicked_sessions.discard(self._active_session_id)
         voice_session_id = f"voice-{uuid.uuid4().hex[:12]}"
         self._active_session_id = voice_session_id
         self._session_started_at = time.time()

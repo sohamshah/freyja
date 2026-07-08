@@ -249,6 +249,12 @@ function VoiceSigilControl() {
       type="button"
       onClick={() => toggleVoice()}
       title="voice · ⌥space"
+      // Mic-truth must be non-visual too: the canvas child is
+      // aria-hidden, so the button itself carries the live/off state.
+      aria-pressed={active}
+      aria-label={
+        active ? `voice session live — ${engineState}` : 'voice — off'
+      }
       className={`title-control title-control-button no-drag flex h-[28px] w-[32px] shrink-0 items-center justify-center ${
         active ? 'shadow-glow-accent' : ''
       }`}

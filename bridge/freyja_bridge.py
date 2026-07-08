@@ -96,6 +96,36 @@ _DEBUG_LOG_ENABLED = (
 # Everything else (text_delta in particular) gets clamped to 60 chars
 # so a streaming session doesn't bloat the file.
 _DEBUG_LOG_FULL_TEXT_TYPES = frozenset({"log", "error", "system_event"})
+# Live credentials must never be journaled: voice_session_ready carries
+# the ephemeral OpenAI realtime clientSecret (~10 min of billable
+# realtime access) and voice_tool_result carries single-use confirm
+# tokens. Keys are matched case-insensitively — any *secret*/*password*
+# key plus these exact names. Count-style fields ("inputTokens") are
+# deliberately NOT matched.
+_DEBUG_LOG_REDACTED = "<redacted>"
+_DEBUG_LOG_REDACT_EXACT_KEYS = frozenset({"token", "apikey", "api_key", "authorization"})
+
+
+def _redact_credentials(value: Any) -> Any:
+    """Deep-copy `value` with credential-bearing fields blanked for the
+    on-disk debug log. The stdout copy is untouched — the renderer needs
+    the real clientSecret in memory; the journal never does."""
+    if isinstance(value, dict):
+        out: dict[Any, Any] = {}
+        for key, item in value.items():
+            lowered = key.lower() if isinstance(key, str) else ""
+            if (
+                "secret" in lowered
+                or "password" in lowered
+                or lowered in _DEBUG_LOG_REDACT_EXACT_KEYS
+            ):
+                out[key] = _DEBUG_LOG_REDACTED
+            else:
+                out[key] = _redact_credentials(item)
+        return out
+    if isinstance(value, list):
+        return [_redact_credentials(item) for item in value]
+    return value
 
 SKILL_PRUNE_MIN_SKILLS = 5
 SKILL_PRUNE_MIN_SKILL_TOKENS = 5_000
@@ -135,7 +165,20 @@ def _write_debug_log(event: dict[str, Any]) -> None:
                     os.replace(_DEBUG_LOG_PATH, _DEBUG_LOG_PREV_PATH)
             except Exception:  # noqa: BLE001
                 pass
-        trimmed = dict(event)
+        trimmed = _redact_credentials(event)
+        # The confirm token also rides inside the human-readable
+        # `output` sentence of voice_tool_result ("…call act again with
+        # confirm_token <hex>.") — scrub the value there too.
+        needs_confirm = event.get("needsConfirm")
+        confirm_token = (
+            needs_confirm.get("token") if isinstance(needs_confirm, dict) else None
+        )
+        if (
+            isinstance(confirm_token, str)
+            and confirm_token
+            and isinstance(trimmed.get("output"), str)
+        ):
+            trimmed["output"] = trimmed["output"].replace(confirm_token, _DEBUG_LOG_REDACTED)
         if "pngBase64" in trimmed:
             trimmed["pngBase64"] = f"<{len(trimmed['pngBase64'])} b64 chars>"
         if "images" in trimmed and isinstance(trimmed["images"], list):

@@ -359,10 +359,16 @@ export function App() {
 
   // Screenshot / design-review rig: ?voicedemo=1 opens the voice HUD on
   // boot; voice-store detects the flag and runs the scripted demo walk
-  // instead of a real engine session.
+  // instead of a real engine session. Ran-once ref + active check keep
+  // this idempotent under StrictMode's dev-mode double effect run —
+  // a bare toggleVoice() would open the demo and instantly close it.
+  const voiceDemoBootedRef = useRef(false)
   useEffect(() => {
+    if (voiceDemoBootedRef.current) return
+    voiceDemoBootedRef.current = true
     if (new URLSearchParams(window.location.search).get('voicedemo') === '1') {
-      useVoiceStore.getState().toggleVoice()
+      const voice = useVoiceStore.getState()
+      if (!voice.active) voice.toggleVoice()
     }
   }, [])
 
@@ -620,9 +626,19 @@ export function App() {
         // Esc listeners that fire no matter what we do — while either
         // is up, let it own the keypress so one Esc doesn't both
         // dismiss the modal and kill the voice session.
+        // Skipped while a computer-use session is running: the agent's
+        // press_key("escape") is routed back into this very window by
+        // macOS (the same self-interference that forced cancelTurn onto
+        // ⌘Esc above), and an injected Esc must not kill a live voice
+        // exchange. The operator still has ⌥Space, the sigil, and the
+        // HUD itself to end the session while the agent works.
         const voice = useVoiceStore.getState()
+        const computerActive = Object.values(
+          useHarness.getState().computerSessions,
+        ).some((s) => s.status === 'running')
         if (
           voice.hudOpen &&
+          !computerActive &&
           !settingsOpen &&
           useHarness.getState().permissionQueue.length === 0
         ) {
