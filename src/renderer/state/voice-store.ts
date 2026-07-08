@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { BridgeCommand, BridgeEvent, Receipt, VoiceConfig } from '../../shared/events'
+import { useHarness } from './store'
 import {
   VoiceEngine,
   VoiceEngineUnavailableError,
@@ -65,6 +66,235 @@ let _sessionGen = 0
  *  have no function_call in the realtime conversation to answer, so
  *  only ids in this set get relayed back via sendToolResult. */
 const _pendingCallIds = new Set<string>()
+
+// ── Session projection (voice exchange → main harness store) ─────────
+// Every voice exchange is mirrored into the normal session graph so it
+// gets a sidebar row and opens in the regular Conversation view. We do
+// this by dispatching the SAME synthetic BridgeEvents a real session
+// uses, scoped to the voiceSessionId — which is never a chat sessionId,
+// so the bridge event router folds them straight into
+// sessionArchive[voiceSessionId] (it's non-active) WITHOUT stealing the
+// operator's pane. Recipe per exchange:
+//   register once  → session_spawned  (agentType 'voice', root row)
+//   user final     → message_appended (role user)
+//   turn opens on first assistant-side activity → turn_start
+//   verb tool call → tool_use_start (name = verb) + tool_input_end (args)
+//   verb result    → tool_result (preview = receipt summary, isError=!ok)
+//   assistant final→ text_delta (full text) then turn_complete
+// The projection is best-effort: any throw is swallowed so the live HUD
+// keeps working even if the store shape drifts.
+
+const VOICE_SESSION_MARKER = 'voice'
+
+/** Per-voice-session projection bookkeeping. Reset on every new voice
+ *  session; holds only what the state machine needs between events. */
+interface VoiceProjectionState {
+  sessionId: string
+  registered: boolean
+  /** A turn (assistant response) is currently open — its message is the
+   *  streaming target the tool chips attach to. */
+  turnOpen: boolean
+  turnSeq: number
+  /** callId → whether we've already emitted tool_use_start for it, so a
+   *  duplicate voice_tool_call (partial retries) doesn't double-chip. */
+  emittedCalls: Set<string>
+  /** Last assistant text we projected, so a growing full-string stream
+   *  only emits the delta suffix instead of re-appending the whole line. */
+  lastAssistantText: string
+}
+
+let _proj: VoiceProjectionState | null = null
+
+/** Dispatch a synthetic BridgeEvent into the main harness store,
+ *  scoped to the voice session id. Never throws into the voice path. */
+function projectEvent(ev: BridgeEvent): void {
+  try {
+    useHarness.getState().handleEvent(ev)
+  } catch (err) {
+    console.error('[voice-store] projection dispatch failed', err)
+  }
+}
+
+/** (Re)initialize projection for a voice session. Idempotent per id. */
+function projectionBegin(sessionId: string): void {
+  if (_proj && _proj.sessionId === sessionId) return
+  _proj = {
+    sessionId,
+    registered: false,
+    turnOpen: false,
+    turnSeq: 0,
+    emittedCalls: new Set(),
+    lastAssistantText: '',
+  }
+}
+
+/** First ~6 words of the opening utterance make the sidebar title. */
+function voiceTitleFrom(text: string): string {
+  const words = text.trim().split(/\s+/).filter(Boolean).slice(0, 6)
+  const title = words.join(' ')
+  if (!title) return 'Voice exchange'
+  return words.length >= 6 ? `${title}…` : title
+}
+
+/** Register the session row in the sidebar the first time we have
+ *  something to show. Background-only — session_spawned seeds the
+ *  archive slice and inserts a root snapshot without touching the
+ *  active pane. Titled from the opening utterance when we have one. */
+function projectRegister(firstUtterance?: string): void {
+  const p = _proj
+  if (!p || p.registered) return
+  p.registered = true
+  const cfg = useVoiceStore.getState().config
+  projectEvent({
+    type: 'session_spawned',
+    sessionId: p.sessionId,
+    // No real parent — a root row, operator-initiated (wokenBy 'operator').
+    parentSessionId: '',
+    title: firstUtterance ? voiceTitleFrom(firstUtterance) : 'Voice exchange',
+    model: cfg?.model || 'gpt-realtime',
+    // agentType is the sidebar's badge hook — SessionRow renders a small
+    // "voice" kicker on rows whose agentType is this marker.
+    agentType: VOICE_SESSION_MARKER,
+    task: '',
+    createdAt: Date.now(),
+  })
+}
+
+/** Open an assistant turn if none is live. Tool chips + assistant text
+ *  attach to the turn's streaming message. */
+function projectEnsureTurn(): void {
+  const p = _proj
+  if (!p || p.turnOpen) return
+  p.turnSeq += 1
+  p.turnOpen = true
+  p.lastAssistantText = ''
+  projectEvent({
+    type: 'turn_start',
+    sessionId: p.sessionId,
+    turnId: `${p.sessionId}-turn-${p.turnSeq}`,
+  })
+}
+
+/** Close the live turn (if any). */
+function projectCompleteTurn(): void {
+  const p = _proj
+  if (!p || !p.turnOpen) return
+  const turnId = `${p.sessionId}-turn-${p.turnSeq}`
+  p.turnOpen = false
+  p.lastAssistantText = ''
+  projectEvent({ type: 'turn_complete', sessionId: p.sessionId, turnId, success: true })
+}
+
+/** A user utterance finalized → its own user message. Registers the
+ *  session (titling from this line) and closes any straggling turn from
+ *  the previous exchange first so turns stay one-per-response. */
+function projectUserFinal(text: string): void {
+  const trimmed = text.trim()
+  if (!trimmed) return
+  projectionEnsure()
+  const p = _proj
+  if (!p) return
+  projectCompleteTurn()
+  projectRegister(trimmed)
+  projectEvent({
+    type: 'message_appended',
+    sessionId: p.sessionId,
+    role: 'user',
+    content: trimmed,
+  })
+}
+
+/** A verb tool call → a chip inside the current assistant turn. `verb`
+ *  is the surfaced tool name (e.g. "spotify.play"); `args` fills the
+ *  chip's argument view. Deduped per callId. */
+function projectToolCall(callId: string, verb: string, args: Record<string, unknown>): void {
+  projectionEnsure()
+  const p = _proj
+  if (!p) return
+  projectRegister()
+  projectEnsureTurn()
+  if (p.emittedCalls.has(callId)) return
+  p.emittedCalls.add(callId)
+  projectEvent({ type: 'tool_use_start', sessionId: p.sessionId, id: callId, name: verb })
+  projectEvent({ type: 'tool_input_end', sessionId: p.sessionId, id: callId, arguments: args })
+}
+
+/** A verb result → resolve its chip. `summary` is the human receipt line;
+ *  `ok` toggles success vs error styling. If we never saw the matching
+ *  tool_use_start (typed floor commands answered without a model call),
+ *  synthesize one so the receipt still renders as a chip. */
+function projectToolResult(callId: string, ok: boolean, summary: string, verb: string): void {
+  projectionEnsure()
+  const p = _proj
+  if (!p) return
+  if (!p.emittedCalls.has(callId)) {
+    projectRegister()
+    projectEnsureTurn()
+    p.emittedCalls.add(callId)
+    projectEvent({ type: 'tool_use_start', sessionId: p.sessionId, id: callId, name: verb })
+    projectEvent({ type: 'tool_input_end', sessionId: p.sessionId, id: callId, arguments: {} })
+  }
+  projectEvent({
+    type: 'tool_result',
+    sessionId: p.sessionId,
+    id: callId,
+    preview: summary || (ok ? 'done' : 'failed'),
+    isError: !ok,
+    durationMs: 0,
+  })
+}
+
+/** An assistant response finalized → stream its text into the turn, then
+ *  close the turn. Called only on the FINAL transcript (done=true); the
+ *  realtime engine hands us the full string, so we project the suffix we
+ *  haven't emitted yet as one text_delta. */
+function projectAssistantFinal(text: string): void {
+  projectionEnsure()
+  const p = _proj
+  if (!p) return
+  projectRegister()
+  projectEnsureTurn()
+  const full = text ?? ''
+  const suffix = full.startsWith(p.lastAssistantText)
+    ? full.slice(p.lastAssistantText.length)
+    : full
+  if (suffix) {
+    projectEvent({ type: 'text_delta', sessionId: p.sessionId, text: suffix })
+    p.lastAssistantText = full
+  }
+  projectCompleteTurn()
+}
+
+/** Persist the projected session to disk so it survives restart, then
+ *  clear projection bookkeeping. No-ops cleanly headless (no
+ *  window.harness → persistSession short-circuits). */
+function projectEnd(): void {
+  const p = _proj
+  if (!p) return
+  // Close any straggling turn BEFORE clearing state (projectCompleteTurn
+  // reads _proj), so a session that ended mid-response isn't left with an
+  // open streaming message.
+  projectCompleteTurn()
+  _proj = null
+  if (!p.registered) return
+  try {
+    const store = useHarness.getState()
+    void store.persistSession(p.sessionId).catch(() => {})
+    void store.persistSessionIndex().catch(() => {})
+  } catch (err) {
+    console.error('[voice-store] projection persist failed', err)
+  }
+}
+
+/** Guard: recreate projection state if a projector fires before
+ *  projectionBegin ran (defensive — begin runs at session start, but a
+ *  racing transcript shouldn't crash the HUD). Uses the store's current
+ *  voiceSessionId so events still land on the right id. */
+function projectionEnsure(): void {
+  if (_proj) return
+  const sid = useVoiceStore.getState().voiceSessionId
+  if (sid) projectionBegin(sid)
+}
 
 /** Mic level above which the operator counts as "still talking" for the
  *  idle timer. Sits above the breathing-room noise floor (~0.08 after
@@ -152,6 +382,8 @@ function failVoice(message?: string): void {
   if (_engine !== null) {
     void _engine.stop('error').catch(() => {})
   }
+  // Persist whatever the projected session accrued before the failure.
+  projectEnd()
   if (voiceSessionId && voiceSessionId !== 'voice-demo') {
     _send({ type: 'voice_session_end', voiceSessionId, reason: 'error', stats: { seconds } })
   }
@@ -190,6 +422,12 @@ function startDemo(): void {
   if (_demo !== null) return
   _sessionStartedAt = Date.now()
   useVoiceStore.setState({ voiceSessionId: 'voice-demo' })
+  // Mirror the scripted walk into the session graph too, so the headless
+  // screenshot proof shows a real voice session in the sidebar with its
+  // turns + verb chips. The demo drives the projection via explicit
+  // final/verb callbacks (its HUD hooks are incremental typing, unusable
+  // as turn boundaries).
+  projectionBegin('voice-demo')
   _demo = startVoiceDemo({
     setState: (s) => useVoiceStore.setState({ engineState: s }),
     setUserLine: (text) => useVoiceStore.setState({ userLine: text }),
@@ -197,6 +435,11 @@ function startDemo(): void {
     setLevel: (level) => useVoiceStore.setState({ micLevel: level }),
     setActivity: (activity) => useVoiceStore.setState({ activity }),
     addReceipt: (receipt) => upsertReceipt(receipt),
+    onUserFinal: (text) => projectUserFinal(text),
+    onVerb: (callId, verb, args) => projectToolCall(callId, verb, args),
+    onVerbResult: (callId, ok, summary, verb) =>
+      projectToolResult(callId, ok, summary, verb),
+    onAssistantFinal: (text) => projectAssistantFinal(text),
   })
 }
 
@@ -235,6 +478,8 @@ function ensureEngine(): VoiceEngine {
     if (voiceSessionId) {
       _send({ type: 'voice_transcript', voiceSessionId, role: 'user', text, final })
     }
+    // Project only the FINAL user utterance as one session message.
+    if (final) projectUserFinal(text)
   })
 
   engine.on('assistantTranscript', (text, done) => {
@@ -244,6 +489,8 @@ function ensureEngine(): VoiceEngine {
     if (voiceSessionId) {
       _send({ type: 'voice_transcript', voiceSessionId, role: 'assistant', text, final: done })
     }
+    // Project only the FINAL assistant text — closes the turn.
+    if (done) projectAssistantFinal(text)
   })
 
   engine.on('toolCall', (callId, name, argumentsJson) => {
@@ -252,19 +499,21 @@ function ensureEngine(): VoiceEngine {
     // The single `act` tool wraps every verb — surface the inner verb on
     // the HUD chip when the arguments parse, the tool name otherwise.
     let verb = name
+    let verbArgs: Record<string, unknown> = {}
     try {
       const parsed: unknown = JSON.parse(argumentsJson)
-      if (
-        typeof parsed === 'object' &&
-        parsed !== null &&
-        typeof (parsed as { verb?: unknown }).verb === 'string'
-      ) {
-        verb = (parsed as { verb: string }).verb
+      if (typeof parsed === 'object' && parsed !== null) {
+        verbArgs = parsed as Record<string, unknown>
+        if (typeof (parsed as { verb?: unknown }).verb === 'string') {
+          verb = (parsed as { verb: string }).verb
+        }
       }
     } catch {
       /* malformed args — the bridge will refuse; keep the tool name */
     }
     useVoiceStore.setState({ activity: { verb, status: 'running', summary: '' } })
+    // Project the verb as a tool-call chip on the session's live turn.
+    projectToolCall(callId, verb, verbArgs)
     const s = useVoiceStore.getState()
     if (s.voiceSessionId) {
       _send({
@@ -410,6 +659,8 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
     if (_engine !== null) {
       void _engine.stop(reason).catch(() => {})
     }
+    // Persist the projected session (real or demo) so it survives restart.
+    projectEnd()
     if (voiceSessionId && !wasDemo) {
       _send({ type: 'voice_session_end', voiceSessionId, reason, stats: { seconds } })
     }
@@ -476,6 +727,11 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
           return
         }
         set({ voiceSessionId: event.voiceSessionId })
+        // Begin mirroring this exchange into the session graph. The
+        // sidebar row isn't created until the first utterance (register
+        // is lazy inside the projectors), so an empty mint leaves no
+        // stray row behind.
+        projectionBegin(event.voiceSessionId)
         const engine = ensureEngine()
         resetIdleTimer()
         const gen = _sessionGen
@@ -536,8 +792,18 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
         }
         if (event.needsConfirm) {
           set({ activity: { verb, status: 'confirm', summary: event.needsConfirm.summary } })
+          // Confirm-required is not a terminal result — the verb hasn't
+          // run yet (the model re-calls `act` with the token on assent).
+          // Leave the projected chip 'running' until the real result lands.
         } else {
           set({ activity: { verb, status: event.ok ? 'ok' : 'fail', summary } })
+          // Resolve the projected tool-call chip with the receipt outcome.
+          projectToolResult(
+            event.callId,
+            event.ok,
+            summary || outputSummary(event.output) || '',
+            verb,
+          )
         }
         if (event.receipt) upsertReceipt(event.receipt)
         return

@@ -24,6 +24,17 @@ export interface VoiceDemoHooks {
     } | null,
   ): void
   addReceipt(receipt: Receipt): void
+  // ── Session-projection callbacks (optional) ──────────────────────
+  // The HUD hooks above are incremental (per-keystroke typing, ramping
+  // levels) — useless as turn boundaries. These fire at the semantic
+  // beats voice-store needs to mirror the walk into the session graph:
+  // a finalized user utterance, a verb call + its result, and the
+  // finalized assistant reply. All optional so the demo still runs when
+  // no projection is wired.
+  onUserFinal?(text: string): void
+  onVerb?(callId: string, verb: string, args: Record<string, unknown>): void
+  onVerbResult?(callId: string, ok: boolean, summary: string, verb: string): void
+  onAssistantFinal?(text: string): void
 }
 
 export interface VoiceDemoHandle {
@@ -84,6 +95,10 @@ export function startVoiceDemo(hooks: VoiceDemoHooks): VoiceDemoHandle {
   })
 
   const run = async (): Promise<void> => {
+    // Unique per-run call-id nonce so the forever-looping walk doesn't
+    // reuse tool-call ids across iterations (which would collide in the
+    // projected session's toolCalls map).
+    const nonce = `demo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
     // connect
     hooks.setState('connecting')
     await wait(600)
@@ -95,11 +110,13 @@ export function startVoiceDemo(hooks: VoiceDemoHooks): VoiceDemoHandle {
     // ── beat 1: spotify.play, auto tier ─────────────────────────────
     await typeUserLine('play vienna by billy joel on spotify')
     if (cancelled) return
+    hooks.onUserFinal?.('play vienna by billy joel on spotify')
     hooks.setState('thinking')
     await wait(650)
     if (cancelled) return
     hooks.setState('acting')
     hooks.setActivity({ verb: 'spotify.play', status: 'running', summary: '' })
+    hooks.onVerb?.(`${nonce}-call1`, 'spotify.play', { query: 'vienna billy joel' })
     await wait(950)
     if (cancelled) return
     hooks.setActivity({
@@ -107,6 +124,7 @@ export function startVoiceDemo(hooks: VoiceDemoHooks): VoiceDemoHandle {
       status: 'ok',
       summary: '▶ Vienna — Billy Joel',
     })
+    hooks.onVerbResult?.(`${nonce}-call1`, true, '▶ Vienna — Billy Joel', 'spotify.play')
     hooks.addReceipt(
       makeReceipt({
         heard: 'play vienna by billy joel on spotify',
@@ -118,6 +136,7 @@ export function startVoiceDemo(hooks: VoiceDemoHooks): VoiceDemoHandle {
     )
     hooks.setState('speaking')
     hooks.setAssistantLine('Playing Vienna.')
+    hooks.onAssistantFinal?.('Playing Vienna.')
     await wait(1400)
     if (cancelled) return
     hooks.setState('listening')
@@ -130,6 +149,7 @@ export function startVoiceDemo(hooks: VoiceDemoHooks): VoiceDemoHandle {
     hooks.setActivity(null)
     await typeUserLine('quit slack')
     if (cancelled) return
+    hooks.onUserFinal?.('quit slack')
     hooks.setState('thinking')
     await wait(600)
     if (cancelled) return
@@ -150,9 +170,12 @@ export function startVoiceDemo(hooks: VoiceDemoHooks): VoiceDemoHandle {
     hooks.setUserLine('go')
     hooks.setActivity({ verb: 'app.quit', status: 'running', summary: 'Quit Slack' })
     hooks.setState('acting')
+    // Confirm granted — the verb actually runs now; project it as a call.
+    hooks.onVerb?.(`${nonce}-call2`, 'app.quit', { name: 'Slack' })
     await wait(700)
     if (cancelled) return
     hooks.setActivity({ verb: 'app.quit', status: 'ok', summary: 'Quit Slack' })
+    hooks.onVerbResult?.(`${nonce}-call2`, true, 'Quit Slack', 'app.quit')
     hooks.addReceipt(
       makeReceipt({
         heard: 'quit slack',
@@ -164,6 +187,7 @@ export function startVoiceDemo(hooks: VoiceDemoHooks): VoiceDemoHandle {
     )
     hooks.setState('speaking')
     hooks.setAssistantLine('Done.')
+    hooks.onAssistantFinal?.('Done.')
     await wait(1000)
     if (cancelled) return
     hooks.setState('listening')
