@@ -676,7 +676,11 @@ class VoiceService:
         args_token = args.pop("confirm_token", None)
         if not isinstance(confirm_token, str):
             confirm_token = args_token if isinstance(args_token, str) else None
-        lane = "mission" if verb in ("mission.spawn", "mission.status", "computer.do") else "brain"
+        lane = (
+            "mission"
+            if verb in ("mission.spawn", "mission.status", "computer.do", "freyja.ask")
+            else "brain"
+        )
         await self._execute(
             verb=verb,
             args=args,
@@ -825,6 +829,13 @@ class VoiceService:
             output=json.dumps(body, ensure_ascii=False, default=str),
             receipt=receipt,
             say=getattr(result, "say", None),
+            # Visual computer control (contract §12.1): computer.* verbs
+            # attach a grid-overlaid api_dims screenshot; the renderer
+            # injects it back into the realtime conversation as an
+            # input_image so the model sees the effect of its last action.
+            image_b64=getattr(result, "image_b64", None),
+            image_w=getattr(result, "image_w", None),
+            image_h=getattr(result, "image_h", None),
         )
 
     # ── confirm tokens ───────────────────────────────────────────────────
@@ -1422,6 +1433,59 @@ class VoiceService:
                 run=_run_computer,
             )
         )
+
+        async def _run_ask(args: dict[str, Any]) -> Any:
+            question = str(args.get("question") or "").strip()
+            if not question:
+                return VerbResult(
+                    ok=False,
+                    summary="freyja.ask needs a question",
+                    error="missing_question",
+                )
+            home = os.environ.get("FREYJA_HOME") or os.path.expanduser("~/.freyja")
+            # Scope a real Freyja agent to the operator's OWN work: the
+            # session index, per-session working memory, and the latest
+            # briefing. It researches, then reports back through the
+            # existing mission report-back watcher.
+            prompt = (
+                "The operator asked, by voice, about their own ongoing work: "
+                f"{question!r}. Answer it by reading their Freyja state — do NOT "
+                "start new work or change anything. Sources under "
+                f"{home}: sessions/_index.json (their agent sessions, newest by "
+                "updatedAt), projects/<sessionId>/working_memory.json (each "
+                "session's overview + open threads), and the newest "
+                "briefing/<date>/briefing.json (the briefer's clustered "
+                "projects). Read what's relevant, then reply with a short, "
+                "direct answer in Freyja's terse letterpress voice — a few "
+                "sentences at most, citing the session titles or project names "
+                "that back it. If the state doesn't cover the question, say so "
+                "plainly rather than guessing."
+            )
+            title = f"ask: {service._derive_title(question)}"
+            session_id = await service._spawn_mission(prompt, title)
+            return VerbResult(
+                ok=True,
+                summary=f"looking into it: {service._derive_title(question)}",
+                say="looking into it",
+                data={"sessionId": session_id},
+            )
+
+        registry.register(
+            Verb(
+                name="freyja.ask",
+                description=(
+                    "Ask a question about the operator's own ongoing work; a "
+                    "Freyja agent researches their sessions/projects and reports "
+                    "back when done"
+                ),
+                params={
+                    "question": {"type": "string", "description": "what to find out"},
+                },
+                required=["question"],
+                tier="auto",
+                run=_run_ask,
+            )
+        )
         # Live computer verbs (rung 2 — see/click/type in the exchange).
         # Registered here, not in register_all, because their gate is the
         # same enablement signal agent sessions are built from:
@@ -1493,6 +1557,9 @@ class VoiceService:
         receipt: Optional[Receipt] = None,
         say: Optional[str] = None,
         needs_confirm: Optional[dict[str, Any]] = None,
+        image_b64: Optional[str] = None,
+        image_w: Optional[int] = None,
+        image_h: Optional[int] = None,
     ) -> None:
         event: dict[str, Any] = {
             "type": "voice_tool_result",
@@ -1508,4 +1575,13 @@ class VoiceService:
             event["receipt"] = receipt.to_dict()
         if needs_confirm is not None:
             event["needsConfirm"] = needs_confirm
+        # Contract §12.1: the grid-overlaid screenshot (api_dims PNG,
+        # base64) rides on the event only for computer.* results; the
+        # renderer injects it as an input_image and dedupes stale ones.
+        if image_b64:
+            event["imageB64"] = image_b64
+            if isinstance(image_w, int):
+                event["imageW"] = image_w
+            if isinstance(image_h, int):
+                event["imageH"] = image_h
         self._emit(event)

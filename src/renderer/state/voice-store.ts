@@ -897,7 +897,20 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
         // the conversation to answer (see _pendingCallIds).
         if (_pendingCallIds.has(event.callId)) {
           _pendingCallIds.delete(event.callId)
-          if (_engine !== null) _engine.sendToolResult(event.callId, event.output)
+          if (_engine !== null) {
+            // Visual computer control (§12.1): computer.* verbs return a
+            // screenshot for the realtime model to SEE. When present, hand
+            // it to the engine so it injects an input_image user item after
+            // the function_call_output (and prunes the stale one). The tool
+            // result is ALWAYS relayed, image or not.
+            const image =
+              event.imageB64 &&
+              typeof event.imageW === 'number' &&
+              typeof event.imageH === 'number'
+                ? { b64: event.imageB64, w: event.imageW, h: event.imageH }
+                : undefined
+            _engine.sendToolResult(event.callId, event.output, image)
+          }
         }
         // Typed floor commands the grammar refused come back receipt-less
         // with the explanation ("typed commands are floor-only: …") in

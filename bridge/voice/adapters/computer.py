@@ -2,17 +2,23 @@
 
 ``computer.do`` hands long jobs to a background mission; these verbs are
 the opposite — "click the compose button" happens *now*, inside the live
-exchange. The realtime voice model reads only text, so the loop is:
+exchange. The realtime voice model *sees* images (probed live 2026-07-09:
+gpt-realtime-2.1 and -mini both read text off a PNG and completed a full
+see→inject-image→click loop), so the loop is the SAME visual one Freyja's
+computer-use agent runs:
 
-    computer.see   → numbered interactive elements (refs) from the AX tree
-    computer.click → act by ref (coordinates never reach the model)
-    computer.see   → look again once the UI changed
+    computer.see   → a screenshot (api_dims PNG + coordinate grid) comes back
+    computer.click → click by pixel {x, y} in that image's coordinate space
+    (the click's own result screenshot) → look again, act again
 
 Reuse, not reinvention: every action funnels through the SAME atomic
 tool classes agent sessions use (``bridge.tools.computer_tools``), so
 coordinate translation (API↔native), the 200 ms pre-action highlight
 delay, permission preflights, and the capture/input proxy fallbacks
-behave identically to agent clicks. The one divergence is the
+behave identically to agent clicks. The image we hand the model is the
+api_dims PNG — the exact coordinate space ``ClickTool`` accepts — so a
+pixel the model reads off the grid feeds straight through with NO
+rescaling. The one divergence from agent sessions is the
 ``ComputerToolSpec`` construction: voice has no computer-session pane in
 the renderer, and contract §11 forbids session-scoped voice events, so
 the spec's ``emit_event`` is a documented no-op — the emission *code
@@ -21,15 +27,16 @@ cancel event is a fresh, never-set ``asyncio.Event``: voice's emergency
 stop is the panic word, which ends the exchange before another verb can
 run.
 
-Ref cache: ``Verb.run(args)`` carries no session identity, so instead of
-a per-session cache there is ONE process-level "last seen" snapshot.
-That is honest, not lazy — voice is a single-operator surface with one
-active exchange at a time; a superseding session's first ``see`` simply
-replaces the snapshot. Refs are numbered by a process-lifetime counter
-(``e1..e5`` then ``e6..e12``), never restarting per snapshot: that is
-what makes a ref minted by an older ``see`` *detectably* stale (absent
-from the current map) instead of silently re-pointing at whatever now
-occupies its slot.
+Ref cache: kept only to back the ``ref`` fallback on ``computer.click`` /
+``computer.scroll`` (the model's primary mode is pixel {x, y}). ``Verb.run(args)``
+carries no session identity, so instead of a per-session cache there is
+ONE process-level "last seen" snapshot — honest, not lazy: voice is a
+single-operator surface with one active exchange at a time; a superseding
+session's first ``see`` simply replaces the snapshot. Refs are numbered
+by a process-lifetime counter (``e1..e5`` then ``e6..e12``), never
+restarting per snapshot: that is what makes a ref minted by an older
+``see`` *detectably* stale (absent from the current map) instead of
+silently re-pointing at whatever now occupies its slot.
 
 Gating: every verb re-checks the same enablement signal agent sessions
 are built from (``state.computer_enabled``, threaded in by service.py as
@@ -71,7 +78,11 @@ _FRAMES_DIR = Path.home() / ".freyja" / "voice" / "frames"
 _FRAMES_KEEP = 10
 _MAX_ELEMENTS = 80
 _LABEL_MAX = 60
-_SPARSE_THRESHOLD = 3  # fewer AX elements than this = AX-opaque app
+
+# Coordinate grid overlaid on every screenshot before it goes to the
+# model. Thin lines every _GRID_STEP px with small labels at each line
+# aim the model's pixel clicks — measurably better than a bare image.
+_GRID_STEP = 100
 
 # Pinned to match computer.do's refusal so the model/HUD see one voice.
 _DISABLED_SUMMARY = "computer control is disabled — enable it in settings"
@@ -92,7 +103,9 @@ _SETUP_MARKERS = (
     "assistive access",
 )
 
-# AX roles worth the model's attention, with plain-English names.
+# AX roles worth resolving a ref for, with plain-English names. The ref
+# cache backs computer.click/scroll's `ref` fallback (the model's primary
+# mode is pixel {x, y}), so only these interactive roles are tracked.
 _INTERACTIVE_ROLES = {
     "AXButton": "button",
     "AXLink": "link",
@@ -117,8 +130,9 @@ _DIRECTIONS = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}
 
 @dataclass
 class _Snapshot:
-    """What the last computer.see saw. Coordinates live ONLY here —
-    the model gets refs; the adapter keeps the (API-space) centers."""
+    """What the last computer.see resolved for the `ref` fallback.
+    Coordinates live ONLY here — refs map to (API-space) centers that
+    ClickTool/ScrollTool accept directly."""
 
     generation: int
     app: str
@@ -261,6 +275,142 @@ def _gate(enabled_fn: Callable[[], bool]) -> Optional[VerbResult]:
     )
 
 
+# ── the grid overlay (aim aid for the model's pixel clicks) ─────────────────
+
+
+def _grid_overlay(png_bytes: bytes, w: int, h: int) -> bytes:
+    """Draw a light labeled coordinate grid onto the api_dims screenshot,
+    return PNG bytes. Thin lines every ~_GRID_STEP px with small coord
+    labels at each gridline. This is drawn on the SAME pixels the model
+    clicks in (api_dims), so a coordinate the model reads off a label is
+    exactly what ClickTool receives — no rescaling.
+
+    Best-effort by contract: any PIL failure returns the original bytes
+    (an un-gridded screenshot is still a usable screenshot). Runs
+    synchronously; callers wrap it in asyncio.to_thread."""
+    try:
+        from PIL import Image, ImageDraw  # lazy — keep import free of PIL at boot
+
+        with Image.open(_io.BytesIO(png_bytes)) as src:
+            img = src.convert("RGB")
+        width, height = img.width, img.height
+        draw = ImageDraw.Draw(img, "RGBA")
+        line = (255, 60, 60, 90)  # faint red, low alpha — visible, not obscuring
+        label_fill = (255, 60, 60, 200)
+        label_bg = (0, 0, 0, 130)
+        for x in range(_GRID_STEP, width, _GRID_STEP):
+            draw.line([(x, 0), (x, height)], fill=line, width=1)
+        for y in range(_GRID_STEP, height, _GRID_STEP):
+            draw.line([(0, y), (width, y)], fill=line, width=1)
+        # Coordinate labels at every grid intersection (skip the origin
+        # column/row to keep the top-left readable).
+        for x in range(_GRID_STEP, width, _GRID_STEP):
+            for y in range(_GRID_STEP, height, _GRID_STEP):
+                text = f"{x},{y}"
+                # A small dark plate behind the text so it reads on any
+                # background; ~5.5px/char at the default bitmap font.
+                pad = 1
+                tw = int(len(text) * 5.5) + 2 * pad
+                th = 9 + 2 * pad
+                draw.rectangle([x + 2, y + 2, x + 2 + tw, y + 2 + th], fill=label_bg)
+                draw.text((x + 2 + pad, y + 2 + pad), text, fill=label_fill)
+        buf = _io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:  # noqa: BLE001 — a bare screenshot beats no screenshot
+        return png_bytes
+
+
+def _save_frame(data: bytes, ext: str = "png") -> Optional[str]:
+    """Write a see/act screenshot under ~/.freyja/voice/frames (a receipt
+    the operator can open later) and prune to the newest _FRAMES_KEEP.
+    Names embed epoch-ns, so lexicographic order is capture order.
+    Best-effort — an unwritable frames dir must not fail the verb."""
+    try:
+        _FRAMES_DIR.mkdir(parents=True, exist_ok=True)
+        path = _FRAMES_DIR / f"see-{time.time_ns()}.{ext}"
+        path.write_bytes(data)
+    except OSError:
+        return None
+    try:
+        frames = sorted(p for p in _FRAMES_DIR.iterdir() if p.name.startswith("see-"))
+        for old in frames[: max(0, len(frames) - _FRAMES_KEEP)]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return str(path)
+
+
+@dataclass
+class _Frame:
+    """A captured, grid-overlaid screenshot ready to hand the model."""
+
+    b64: str
+    w: int
+    h: int
+    path: Optional[str]
+
+
+async def _capture_grid() -> tuple[Optional[_Frame], Optional[VerbResult]]:
+    """Screenshot through the SAME tool the agent uses, overlay the
+    coordinate grid, and return a _Frame. On a setup-shaped capture
+    failure (Screen Recording denied, native missing) return a
+    (None, VerbResult) pair so the caller can surface it; on any other
+    capture failure return (None, None) so the caller decides whether the
+    action still succeeded without a fresh screenshot.
+
+    api_dims (the coordinate space ClickTool accepts) is populated on the
+    spec by the screenshot call; we read the frame's own PNG dimensions
+    as the authority (they ARE api_dims by construction — see
+    computer_tools._emit_frame) and fall back to the spec / a default."""
+    shot = await _run_tool("screenshot", {})
+    if getattr(shot, "is_error", False):
+        text = _result_text(shot)
+        if _needs_setup(text):
+            return None, _tool_failure("see", text)
+        return None, None
+    image = _result_image(shot)
+    if image is None:
+        return None, None
+    raw, mime = image
+    # Read the true pixel dimensions of the frame — this is api_dims by
+    # construction. PIL failure falls back to the spec's api_dims.
+    w = h = 0
+    try:
+        from PIL import Image  # lazy
+
+        with Image.open(_io.BytesIO(raw)) as im:
+            w, h = im.width, im.height
+    except Exception:  # noqa: BLE001
+        dims = getattr(_SPEC, "api_dims", None) if _SPEC is not None else None
+        if isinstance(dims, tuple) and len(dims) == 2:
+            w, h = int(dims[0]), int(dims[1])
+    if w <= 0 or h <= 0:
+        return None, None
+    gridded = await asyncio.to_thread(_grid_overlay, raw, w, h)
+    path = _save_frame(gridded, "png")
+    b64 = base64.b64encode(gridded).decode("ascii")
+    return _Frame(b64=b64, w=w, h=h, path=path), None
+
+
+def _attach(result: VerbResult, frame: Optional[_Frame]) -> VerbResult:
+    """Copy a captured frame onto a VerbResult's image_* fields and record
+    its saved path in data.screenshotPath. A missing frame leaves the
+    result untouched (the action still happened; the model just doesn't
+    get a fresh look)."""
+    if frame is None:
+        return result
+    result.image_b64 = frame.b64
+    result.image_w = frame.w
+    result.image_h = frame.h
+    if frame.path:
+        result.data = {**(result.data or {}), "screenshotPath": frame.path}
+    return result
+
+
 # ── seeing ──────────────────────────────────────────────────────────────────
 
 
@@ -298,8 +448,8 @@ async def _resolve_app(app_name: str) -> tuple[str, Optional[int], str, str]:
 
 def _parse_ax_json(text: str) -> Any:
     """The JSON body of a read_ax_tree result (its first line is prose).
-    Truncated 40 KB+ trees fail the parse → we fall back to the vision
-    path rather than acting on half a tree."""
+    Truncated 40 KB+ trees fail the parse → the ref cache stays empty
+    rather than half-populated (the model can still click by pixel)."""
     idx = text.find("\n")
     if idx < 0:
         return None
@@ -348,7 +498,8 @@ def _condense_elements(tree: Any, window_title: str) -> list[tuple[str, str, int
     """(role, label, center-x, center-y) for every interactive element of
     the target window, in document order, capped at _MAX_ELEMENTS.
     Bounds are already API-space — ReadAxTreeTool translated them — so
-    the centers are directly what ClickTool expects."""
+    the centers are directly what ClickTool expects. Feeds the ref cache
+    that backs computer.click/scroll's `ref` fallback."""
     root = _window_subtree(tree, window_title) or tree
     found: list[tuple[str, str, int, int]] = []
     stack = [root]
@@ -379,99 +530,74 @@ def _condense_elements(tree: Any, window_title: str) -> list[tuple[str, str, int
     return found
 
 
-def _save_frame(data: bytes, mime: str) -> str:
-    """Write the see-screenshot under ~/.freyja/voice/frames (a receipt
-    the operator can open later) and prune to the newest _FRAMES_KEEP.
-    Names embed epoch-ns, so lexicographic order is capture order."""
-    _FRAMES_DIR.mkdir(parents=True, exist_ok=True)
-    ext = "jpg" if "jpeg" in (mime or "") else "png"
-    path = _FRAMES_DIR / f"see-{time.time_ns()}.{ext}"
-    path.write_bytes(data)
-    frames = sorted(p for p in _FRAMES_DIR.iterdir() if p.name.startswith("see-"))
-    for old in frames[: max(0, len(frames) - _FRAMES_KEEP)]:
-        try:
-            old.unlink()
-        except OSError:
-            pass
-    return str(path)
-
-
-async def _see(args: dict[str, Any]) -> VerbResult:
-    question = str(args.get("question") or "").strip()
-    app_arg = str(args.get("app") or "").strip()
+async def _refresh_snapshot(app_arg: str) -> tuple[str, Optional[int], str, Optional[VerbResult]]:
+    """Resolve the target app and (best-effort) rebuild the ref cache from
+    its AX tree, so a later computer.click {ref:"e3"} still works. Returns
+    (app, pid, window, setup_failure). The ref cache is a convenience
+    fallback — an AX-opaque app just yields an empty map and the model
+    clicks by pixel — so only a setup-shaped AX failure short-circuits."""
     app, pid, window, err = await _resolve_app(app_arg)
     if pid is None:
         target = app_arg or "the front app"
-        return VerbResult(ok=False, summary=f"couldn't see {target}: {err[:80]}", error=err)
+        return app, None, window, VerbResult(
+            ok=False, summary=f"couldn't see {target}: {err[:80]}", error=err
+        )
 
     elements: list[tuple[str, str, int, int]] = []
     ax_res = await _run_tool("read_ax_tree", {"pid": pid})
     ax_text = _result_text(ax_res)
     if getattr(ax_res, "is_error", False):
         if _needs_setup(ax_text):
-            return _tool_failure("see", ax_text)
-        # Non-setup AX failure = AX-opaque app; the vision path below covers it.
+            return app, pid, window, _tool_failure("see", ax_text)
+        # Non-setup AX failure = AX-opaque app; pixel clicking still works.
     else:
         tree = _parse_ax_json(ax_text)
         if tree is not None:
             elements = _condense_elements(tree, window)
 
-    # Screenshot regardless — the operator's inspectable receipt.
-    screenshot_path: Optional[str] = None
-    shot = await _run_tool("screenshot", {})
-    if getattr(shot, "is_error", False):
-        shot_text = _result_text(shot)
-        if _needs_setup(shot_text) and not elements:
-            # Blind AND capture-blocked: this is a setup problem, say so.
-            return _tool_failure("see", shot_text)
-    else:
-        image = _result_image(shot)
-        if image is not None:
-            try:
-                screenshot_path = _save_frame(*image)
-            except OSError:
-                screenshot_path = None
-
-    # Vision only when asked a question or the AX tree came back opaque.
-    caption: Optional[str] = None
-    if question or len(elements) < _SPARSE_THRESHOLD:
-        try:
-            look = await screen._look({"question": question} if question else {})
-            if getattr(look, "ok", False):
-                text = look.data.get("text")
-                if isinstance(text, str) and text.strip():
-                    caption = text
-        except Exception:  # noqa: BLE001 — vision is best-effort garnish
-            caption = None
-
     global _snapshot, _generation, _ref_seq
     _generation += 1
     refs: dict[str, tuple[int, int, str]] = {}
-    listing: list[dict[str, str]] = []
-    for role, label, cx, cy in elements:
+    for _role, label, cx, cy in elements:
         _ref_seq += 1
-        ref = f"e{_ref_seq}"
-        refs[ref] = (cx, cy, label)
-        listing.append({"ref": ref, "role": role, "label": label})
+        refs[f"e{_ref_seq}"] = (cx, cy, label)
     _snapshot = _Snapshot(
         generation=_generation, app=app, pid=pid, window=window, elements=refs
     )
+    return app, pid, window, None
 
-    data: dict[str, Any] = {"app": app, "window": window, "elements": listing}
-    if caption:
-        data["caption"] = caption
-    if screenshot_path:
-        data["screenshotPath"] = screenshot_path
-    if len(listing) < _SPARSE_THRESHOLD:
-        # AX-opaque app (Arc, Electron, canvas UIs): there are no refs to
-        # click by. Tell the model to switch strategy — click by target
-        # (vision) or use keyboard/menu — instead of inventing refs.
-        data["hint"] = (
-            "This app exposes few or no clickable refs. Do NOT invent refs. "
-            "Click by target (describe what you see) which uses vision, or use "
-            "keyboard shortcuts / computer.menu."
+
+async def _see(args: dict[str, Any]) -> VerbResult:
+    """The eyes: a grid-overlaid api_dims screenshot the model reads and
+    clicks against by pixel. Also (best-effort) refreshes the ref cache so
+    a `ref`-based click still works, but no AX listing or vision caption
+    reaches the model — it sees the pixels now (contract §12.2)."""
+    app_arg = str(args.get("app") or "").strip()
+    app, pid, window, setup_fail = await _refresh_snapshot(app_arg)
+    if setup_fail is not None and pid is None:
+        # App resolution failed — nothing to look at.
+        return setup_fail
+
+    frame, cap_fail = await _capture_grid()
+    if frame is None:
+        # No frame. If the AX step reported a setup problem, surface it;
+        # otherwise the capture itself is the setup problem.
+        if setup_fail is not None:
+            return setup_fail
+        if cap_fail is not None:
+            return cap_fail
+        return VerbResult(
+            ok=False,
+            summary="couldn't capture the screen",
+            error="screenshot returned no frame",
         )
-    return VerbResult(ok=True, summary=f"saw {app}: {len(listing)} elements", data=data)
+
+    result = VerbResult(
+        ok=True,
+        summary=f"saw {app}: {frame.w}x{frame.h}",
+        data={"app": app, "window": window, "screen": f"{frame.w}x{frame.h}"},
+    )
+    return _attach(result, frame)
 
 
 # ── acting ──────────────────────────────────────────────────────────────────
@@ -510,11 +636,11 @@ async def _locate_element(element: str) -> tuple[int, int] | VerbResult:
 
 
 async def _vision_locate(target: str) -> tuple[int, int] | VerbResult:
-    """Click point for a natural-language target via vision — the escape
-    hatch when the AX tree is empty (Arc, Electron, canvas UIs). Screenshot
-    through the same tool the refs come from, ask the vision model for
+    """Click point for a natural-language target via vision — a fallback
+    when the model would rather describe than read a pixel. Screenshot
+    through the same tool the frames come from, ask the vision model for
     normalized coordinates, scale into api-space (the space click accepts)
-    by the spec's api_dims, exactly like an AX ref."""
+    by the spec's api_dims."""
     shot = await _run_tool("screenshot", {})
     if getattr(shot, "is_error", False):
         return _tool_failure("click", _result_text(shot))
@@ -548,13 +674,21 @@ async def _vision_locate(target: str) -> tuple[int, int] | VerbResult:
 
 
 async def _click(args: dict[str, Any]) -> VerbResult:
+    """Click by pixel {x, y} (primary — a coordinate read off the grid in
+    the last screenshot's api_dims space), or by ref / element / target
+    fallbacks. Then screenshot the result and attach it (see→act→see in
+    one hop): the model always gets a fresh look at what the click did."""
     ref = str(args.get("ref") or "").strip()
     element = str(args.get("element") or "").strip()
     target = str(args.get("target") or "").strip()
     x = args.get("x")
     y = args.get("y")
     label = ""
-    if ref:
+    # Pixel {x, y} is the primary mode — it feeds ClickTool directly in
+    # the SAME coordinate space as the screenshot the model just read.
+    if isinstance(x, (int, float)) and not isinstance(x, bool) and isinstance(y, (int, float)) and not isinstance(y, bool):
+        cx, cy = int(x), int(y)
+    elif ref:
         resolved = _lookup_ref(ref)
         if isinstance(resolved, VerbResult):
             return resolved
@@ -566,19 +700,16 @@ async def _click(args: dict[str, Any]) -> VerbResult:
         cx, cy = located
         label = element
     elif target:
-        # Vision-grounded: click what you can SEE by describing it. The
-        # only path that works on accessibility-opaque apps.
+        # Vision-grounded: click what you can SEE by describing it.
         vloc = await _vision_locate(target)
         if isinstance(vloc, VerbResult):
             return vloc
         cx, cy = vloc
         label = target
-    elif isinstance(x, (int, float)) and isinstance(y, (int, float)):
-        cx, cy = int(x), int(y)
     else:
         return VerbResult(
             ok=False,
-            summary="click needs a ref, an element label, a target to look for, or x and y",
+            summary="click needs x and y, a ref, an element label, or a target to look for",
             error="missing_target",
         )
     res = await _run_tool(
@@ -587,7 +718,11 @@ async def _click(args: dict[str, Any]) -> VerbResult:
     )
     if getattr(res, "is_error", False):
         return _tool_failure("click", _result_text(res))
-    return VerbResult(ok=True, summary=f"clicked {label}" if label else f"clicked ({cx}, {cy})")
+    result = VerbResult(
+        ok=True, summary=f"clicked {label}" if label else f"clicked ({cx}, {cy})"
+    )
+    frame, _ = await _capture_grid()
+    return _attach(result, frame)
 
 
 def _short(text: str, limit: int = 40) -> str:
@@ -604,7 +739,9 @@ async def _type(args: dict[str, Any]) -> VerbResult:
         return _tool_failure("type", _result_text(res))
     # The receipt summary never carries long text verbatim (it is spoken
     # and journaled); the full text stays on the receipt's args.
-    return VerbResult(ok=True, summary=f'typed "{_short(text)}"')
+    result = VerbResult(ok=True, summary=f'typed "{_short(text)}"')
+    frame, _ = await _capture_grid()
+    return _attach(result, frame)
 
 
 async def _press(args: dict[str, Any]) -> VerbResult:
@@ -628,7 +765,9 @@ async def _press(args: dict[str, Any]) -> VerbResult:
     if getattr(res, "is_error", False):
         return _tool_failure("press", _result_text(res))
     combo = "+".join([*modifiers, key]) if modifiers else key
-    return VerbResult(ok=True, summary=f"pressed {combo}")
+    result = VerbResult(ok=True, summary=f"pressed {combo}")
+    frame, _ = await _capture_grid()
+    return _attach(result, frame)
 
 
 async def _scroll(args: dict[str, Any]) -> VerbResult:
@@ -654,12 +793,14 @@ async def _scroll(args: dict[str, Any]) -> VerbResult:
         if isinstance(resolved, VerbResult):
             return resolved
         tool_args["x"], tool_args["y"] = resolved[0], resolved[1]
-    elif isinstance(x, (int, float)) and isinstance(y, (int, float)):
+    elif isinstance(x, (int, float)) and not isinstance(x, bool) and isinstance(y, (int, float)) and not isinstance(y, bool):
         tool_args["x"], tool_args["y"] = int(x), int(y)
     res = await _run_tool("scroll", tool_args)
     if getattr(res, "is_error", False):
         return _tool_failure("scroll", _result_text(res))
-    return VerbResult(ok=True, summary=f"scrolled {direction}")
+    result = VerbResult(ok=True, summary=f"scrolled {direction}")
+    frame, _ = await _capture_grid()
+    return _attach(result, frame)
 
 
 async def _menu(args: dict[str, Any]) -> VerbResult:
@@ -700,7 +841,9 @@ async def _menu(args: dict[str, Any]) -> VerbResult:
         if _needs_setup(out):
             return _tool_failure("menu", out)
         return VerbResult(ok=False, summary=f"menu failed: {out[:80]}", error=out)
-    return VerbResult(ok=True, summary="menu: " + " → ".join(path))
+    result = VerbResult(ok=True, summary="menu: " + " → ".join(path))
+    frame, _ = await _capture_grid()
+    return _attach(result, frame)
 
 
 async def _open_url(args: dict[str, Any]) -> VerbResult:
@@ -741,14 +884,10 @@ def register(registry: VerbRegistry, *, enabled_fn: Callable[[], bool]) -> None:
         Verb(
             name="computer.see",
             description=(
-                "Look at the front (or named) app: numbered interactive elements "
-                "as refs (e.g. e3) to act on; add a question for a vision read"
+                "Look at the front (or named) app: returns a screenshot with a "
+                "coordinate grid. Read it, then click by the x,y you see"
             ),
             params={
-                "question": {
-                    "type": "string",
-                    "description": "what to look for; also triggers a vision read",
-                },
                 "app": {"type": "string", "description": "app name; omit for frontmost"},
             },
             required=[],
@@ -760,25 +899,23 @@ def register(registry: VerbRegistry, *, enabled_fn: Callable[[], bool]) -> None:
         Verb(
             name="computer.click",
             description=(
-                "Click by ref from the last computer.see, OR by target — a "
-                "natural-language description of what you SEE (vision-grounded, "
-                "the only thing that works when computer.see finds no refs, e.g. "
-                "in Arc or other apps with no accessibility tree). Also accepts a "
-                "visible label or raw x/y."
+                "Click at pixel x,y read off the last screenshot's grid (primary). "
+                "Also accepts a ref from computer.see, a visible label, or a "
+                "target described in plain words (vision-grounded). Returns a fresh "
+                "screenshot of the result"
             ),
             params={
+                "x": {"type": "integer", "description": "pixel x in the last screenshot"},
+                "y": {"type": "integer", "description": "pixel y in the last screenshot"},
                 "ref": {"type": "string", "description": "element ref from computer.see"},
                 "target": {
                     "type": "string",
                     "description": (
-                        "what to click, described plainly ('the Hacker News tab', "
-                        "'the blue Send button') — located by vision; use this when "
-                        "computer.see returned no refs"
+                        "what to click, described plainly ('the blue Send button') "
+                        "— located by vision if you'd rather not read a pixel"
                     ),
                 },
                 "element": {"type": "string", "description": "exact visible label to find live"},
-                "x": {"type": "integer"},
-                "y": {"type": "integer"},
             },
             required=[],
             tier="auto",
@@ -788,7 +925,7 @@ def register(registry: VerbRegistry, *, enabled_fn: Callable[[], bool]) -> None:
     registry.register(
         Verb(
             name="computer.type",
-            description="Type text into the focused field",
+            description="Type text into the focused field; returns a fresh screenshot",
             params={"text": {"type": "string"}},
             required=["text"],
             tier="auto",
@@ -798,7 +935,7 @@ def register(registry: VerbRegistry, *, enabled_fn: Callable[[], bool]) -> None:
     registry.register(
         Verb(
             name="computer.press",
-            description='Press a key or combo: "enter", "tab", "cmd+t"',
+            description='Press a key or combo ("enter", "tab", "cmd+t"); returns a screenshot',
             params={
                 "key": {"type": "string", "description": 'key name or combo like "cmd+t"'},
                 "modifiers": {
@@ -815,7 +952,7 @@ def register(registry: VerbRegistry, *, enabled_fn: Callable[[], bool]) -> None:
     registry.register(
         Verb(
             name="computer.scroll",
-            description="Scroll the front window (optionally at a ref or point)",
+            description="Scroll the front window (optionally at x,y or a ref); returns a screenshot",
             params={
                 "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
                 "amount": {"type": "integer", "description": "scroll clicks, default 8"},
@@ -833,7 +970,7 @@ def register(registry: VerbRegistry, *, enabled_fn: Callable[[], bool]) -> None:
             name="computer.menu",
             description=(
                 'Click a menu-bar command by path, e.g. ["File", "New Tab"] — '
-                "no coordinates needed"
+                "no coordinates needed; returns a screenshot"
             ),
             params={
                 "menu_path": {

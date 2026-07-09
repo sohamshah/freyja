@@ -1109,6 +1109,14 @@ export type BridgeEvent =
       say?: string
       receipt?: Receipt
       needsConfirm?: { token: string; summary: string }
+      /** Visual computer-control rework (docs/GALDR-BUILD.md §12.1): a
+       *  screenshot the realtime model should SEE. Set only by computer.*
+       *  verbs. The renderer injects it as an `input_image` user item after
+       *  the function_call_output text and prunes the previous one so only
+       *  the newest screenshot stays in the conversation. base64 PNG. */
+      imageB64?: string
+      imageW?: number
+      imageH?: number
     }
   | { type: 'voice_receipt'; receipt: Receipt }
   | { type: 'voice_receipts'; receipts: Receipt[] }

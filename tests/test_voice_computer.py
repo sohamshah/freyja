@@ -1,24 +1,35 @@
-"""Live computer verbs (bridge/voice/adapters/computer.py).
+"""Live computer verbs (bridge/voice/adapters/computer.py) — visual rework.
 
-Nothing here touches the real screen: the atomic computer tools are
-replaced wholesale via the ``computer._ensure_tools`` seam, System
-Events resolution via ``computer._resolve_app``, osascript/exec via the
-``mac`` module (same style as the other adapter suites), and the vision
-path via ``screen._look``.
+The realtime voice model SEES images, so these verbs return a
+grid-overlaid api_dims screenshot the model clicks against by pixel
+(contract §12.2). Nothing here touches the real screen: the atomic
+computer tools are replaced wholesale via the ``computer._ensure_tools``
+seam, System Events resolution via ``computer._resolve_app``,
+osascript/exec via the ``mac`` module (same style as the other adapter
+suites). The fake screenshot is a REAL PNG so the PIL grid overlay + the
+dimension read exercise the true code path.
 """
 
 from __future__ import annotations
 
 import base64
+import io
 import json
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from bridge.voice.adapters import computer, mac
 from bridge.voice.verbs import VerbRegistry
 
 # ── fakes ─────────────────────────────────────────────────────────────────
+
+
+def _png_bytes(w=1280, h=800):
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), (20, 20, 20)).save(buf, format="PNG")
+    return buf.getvalue()
 
 
 class FakeTool:
@@ -42,7 +53,8 @@ def _err_result(content):
     return SimpleNamespace(is_error=True, content=content)
 
 
-def _image_result(data=b"img-bytes", mime="image/jpeg"):
+def _image_result(data=None, mime="image/png"):
+    data = data if data is not None else _png_bytes()
     return SimpleNamespace(
         is_error=False,
         content=[
@@ -106,6 +118,7 @@ TOOL_NAMES = (
 def rig(monkeypatch, tmp_path):
     """Enabled registry + fake tool layer + fake System Events resolve."""
     monkeypatch.setattr(computer, "_TOOLS", None)
+    monkeypatch.setattr(computer, "_SPEC", SimpleNamespace(api_dims=(1280, 800)))
     monkeypatch.setattr(computer, "_snapshot", None)
     monkeypatch.setattr(computer, "_generation", 0)
     monkeypatch.setattr(computer, "_ref_seq", 0)
@@ -121,30 +134,29 @@ def rig(monkeypatch, tmp_path):
 
     monkeypatch.setattr(computer, "_resolve_app", fake_resolve)
 
-    look_calls = []
-
-    async def fake_look(args):
-        look_calls.append(dict(args))
-        return SimpleNamespace(ok=True, data={"text": "a mail window, compose top left"})
-
-    monkeypatch.setattr(computer.screen, "_look", fake_look)
-
     registry = VerbRegistry()
     computer.register(registry, enabled_fn=lambda: True)
-    return SimpleNamespace(
-        registry=registry, tools=tools, look_calls=look_calls, frames=tmp_path / "frames"
-    )
+    return SimpleNamespace(registry=registry, tools=tools, frames=tmp_path / "frames")
 
 
 async def _run(rig, verb, args=None):
     return await rig.registry.get(verb).run(dict(args or {}))
 
 
+def _assert_grid_frame(res, w=1280, h=800):
+    """Every computer.* action returns a grid-overlaid api_dims PNG."""
+    assert res.image_b64, "no image attached"
+    assert res.image_w == w and res.image_h == h
+    raw = base64.b64decode(res.image_b64)
+    with Image.open(io.BytesIO(raw)) as im:
+        assert (im.width, im.height) == (w, h)
+
+
 # ── gating ────────────────────────────────────────────────────────────────
 
 _GATE_ARGS = {
     "computer.see": {},
-    "computer.click": {"ref": "e1"},
+    "computer.click": {"x": 10, "y": 10},
     "computer.type": {"text": "hello"},
     "computer.press": {"key": "enter"},
     "computer.scroll": {"direction": "down"},
@@ -163,6 +175,8 @@ async def test_every_verb_gates_when_disabled(rig, monkeypatch):
         assert res.data == {"setup": "computer"}, name
         assert res.summary == "computer control is disabled — enable it in settings"
         assert "Settings → Computer Control" in res.error
+        # No screenshot leaks out of a gated (never-run) verb.
+        assert res.image_b64 is None, name
     # The gate fires before any tool is constructed or called.
     assert all(tool.calls == [] for tool in rig.tools.values())
 
@@ -179,100 +193,71 @@ async def test_gate_reads_the_signal_live(rig):
     assert res.ok is True
 
 
-# ── computer.see ──────────────────────────────────────────────────────────
+# ── computer.see (screenshot-only, grid overlay) ───────────────────────────
 
 
-async def test_see_condenses_interactive_elements(rig):
+async def test_see_returns_grid_screenshot(rig):
     res = await _run(rig, "computer.see")
     assert res.ok
-    assert res.summary == "saw Mail: 4 elements"
+    assert res.summary == "saw Mail: 1280x800"
     assert res.data["app"] == "Mail"
     assert res.data["window"] == "Inbox"
-    elements = res.data["elements"]
-    assert [e["ref"] for e in elements] == ["e1", "e2", "e3", "e4"]
-    assert elements[0] == {"ref": "e1", "role": "button", "label": "Compose"}
-    assert elements[1] == {"ref": "e2", "role": "text field", "label": "Search"}
-    assert elements[3] == {"ref": "e4", "role": "checkbox", "label": "Unread only"}
-    # Labels truncate at 60 with an ellipsis.
-    assert elements[2]["label"] == "L" * 59 + "…"
-    assert len(elements[2]["label"]) == 60
-    # No coordinates ever reach the model.
-    assert all(set(e) == {"ref", "role", "label"} for e in elements)
-    # The other window's elements are not listed.
-    assert "OtherWinButton" not in {e["label"] for e in elements}
-    # Coordinates live server-side in the snapshot (bounds centers).
+    assert res.data["screen"] == "1280x800"
+    # No AX element listing reaches the model — it sees the pixels now.
+    assert "elements" not in res.data
+    assert "caption" not in res.data
+    _assert_grid_frame(res)
+    # AX was still queried (to back the ref fallback), for the resolved pid.
+    assert rig.tools["read_ax_tree"].calls == [{"pid": 42}]
+    # …and the snapshot holds the resolved refs server-side (never sent).
     snap = computer._snapshot
     assert snap.app == "Mail" and snap.pid == 42 and snap.generation == 1
     assert snap.elements["e1"] == (130, 52, "Compose")
     assert snap.elements["e2"] == (400, 52, "Search")
-    # AX was queried for the resolved pid.
-    assert rig.tools["read_ax_tree"].calls == [{"pid": 42}]
-    # Rich AX + no question → the vision path never ran.
-    assert rig.look_calls == []
 
 
-async def test_see_generation_and_refs_advance(rig):
-    first = await _run(rig, "computer.see")
-    second = await _run(rig, "computer.see")
-    assert [e["ref"] for e in first.data["elements"]] == ["e1", "e2", "e3", "e4"]
-    # Refs never restart: an old ref stays detectably stale (see below).
-    assert [e["ref"] for e in second.data["elements"]] == ["e5", "e6", "e7", "e8"]
-    assert computer._snapshot.generation == 2
-    assert "e1" not in computer._snapshot.elements
-
-
-async def test_see_sparse_ax_triggers_vision(rig):
-    sparse = {
-        "role": "AXWindow",
-        "title": "Inbox",
-        "children": [{"role": "AXButton", "title": "Only", "bounds": [0, 0, 10, 10]}],
-    }
-    rig.tools["read_ax_tree"].result = _ax_result(sparse)
+async def test_see_grid_is_overlaid_not_bare(rig):
+    """The returned PNG differs from a bare capture — the grid was drawn."""
+    bare = _png_bytes()
     res = await _run(rig, "computer.see")
-    assert res.ok
-    assert res.data["caption"] == "a mail window, compose top left"
-    assert rig.look_calls == [{}]  # no question → screen.look's default
-
-
-async def test_see_question_triggers_vision_even_with_rich_ax(rig):
-    res = await _run(rig, "computer.see", {"question": "is there an unread badge?"})
-    assert res.ok
-    assert res.data["caption"] == "a mail window, compose top left"
-    assert rig.look_calls == [{"question": "is there an unread badge?"}]
-
-
-async def test_see_ax_error_falls_back_to_vision(rig):
-    rig.tools["read_ax_tree"].result = _err_result("read_ax_tree failed: boom")
-    res = await _run(rig, "computer.see")
-    assert res.ok
-    assert res.data["elements"] == []
-    assert res.data["caption"] == "a mail window, compose top left"
+    assert base64.b64decode(res.image_b64) != bare
 
 
 async def test_see_records_screenshot_and_prunes(rig):
     frames = rig.frames
     frames.mkdir(parents=True)
     for i in range(12):
-        (frames / f"see-{i:04d}.jpg").write_bytes(b"old")
+        (frames / f"see-{i:04d}.png").write_bytes(b"old")
     res = await _run(rig, "computer.see")
     path = res.data["screenshotPath"]
     assert path.startswith(str(frames))
-    with open(path, "rb") as fh:
-        assert fh.read() == b"img-bytes"
     remaining = sorted(p.name for p in frames.iterdir())
     assert len(remaining) == 10  # 12 old + 1 new, pruned to the newest 10
     assert path.endswith(remaining[-1])
-    assert "see-0000.jpg" not in remaining
+    assert "see-0000.png" not in remaining
+
+
+async def test_see_ax_opaque_app_still_returns_frame(rig):
+    """An app with no usable AX tree: no refs, but the model still gets a
+    screenshot to click by pixel."""
+    rig.tools["read_ax_tree"].result = _err_result("read_ax_tree failed: no tree")
+    res = await _run(rig, "computer.see")
+    assert res.ok
+    _assert_grid_frame(res)
+    assert computer._snapshot.elements == {}
 
 
 async def test_see_setup_failure_surfaces_when_blind(rig):
+    """AX AND screenshot both blocked by a setup problem → surface it."""
     rig.tools["read_ax_tree"].result = _err_result(
         "Error: freyja_native not available (no module)"
+    )
+    rig.tools["screenshot"].result = _err_result(
+        "screenshot: Screen Recording permission is missing"
     )
     res = await _run(rig, "computer.see")
     assert res.ok is False
     assert res.data == {"setup": "computer"}
-    assert "freyja_native" in res.error
 
 
 async def test_see_app_resolution_failure(rig, monkeypatch):
@@ -283,9 +268,27 @@ async def test_see_app_resolution_failure(rig, monkeypatch):
     res = await _run(rig, "computer.see", {"app": "Nope"})
     assert res.ok is False
     assert "couldn't see Nope" in res.summary
+    assert res.image_b64 is None
 
 
-# ── computer.click ────────────────────────────────────────────────────────
+# ── computer.click (pixel primary + fallbacks; result screenshot) ──────────
+
+
+async def test_click_by_pixel_is_primary(rig):
+    res = await _run(rig, "computer.click", {"x": 640, "y": 200})
+    assert res.ok
+    assert res.summary == "clicked (640, 200)"
+    (call,) = rig.tools["click"].calls
+    assert (call["x"], call["y"]) == (640, 200)
+    # …and the model gets a fresh look at what the click did.
+    _assert_grid_frame(res)
+
+
+async def test_click_pixel_zero_zero_is_valid(rig):
+    res = await _run(rig, "computer.click", {"x": 0, "y": 0})
+    assert res.ok
+    (call,) = rig.tools["click"].calls
+    assert (call["x"], call["y"]) == (0, 0)
 
 
 async def test_click_by_fresh_ref_uses_cached_coordinates(rig):
@@ -295,6 +298,7 @@ async def test_click_by_fresh_ref_uses_cached_coordinates(rig):
     assert res.summary == "clicked Compose"
     (call,) = rig.tools["click"].calls
     assert (call["x"], call["y"]) == (130, 52)
+    _assert_grid_frame(res)
 
 
 async def test_click_stale_generation_ref_refused(rig):
@@ -304,6 +308,7 @@ async def test_click_stale_generation_ref_refused(rig):
     assert res.ok is False
     assert "run computer.see first" in res.summary
     assert rig.tools["click"].calls == []
+    assert res.image_b64 is None
 
 
 async def test_click_ref_without_any_see_refused(rig):
@@ -324,6 +329,7 @@ async def test_click_by_element_label_queries_find_element(rig):
     assert rig.tools["find_element"].calls == [{"pid": 42, "label": "Compose"}]
     (call,) = rig.tools["click"].calls
     assert (call["x"], call["y"]) == (60, 40)
+    _assert_grid_frame(res)
 
 
 async def test_click_by_element_not_found(rig):
@@ -336,40 +342,35 @@ async def test_click_by_element_not_found(rig):
     assert rig.tools["click"].calls == []
 
 
-async def test_click_by_coordinates(rig):
-    res = await _run(rig, "computer.click", {"x": 5, "y": 6})
-    assert res.ok
-    assert res.summary == "clicked (5, 6)"
-    (call,) = rig.tools["click"].calls
-    assert (call["x"], call["y"]) == (5, 6)
-
-
 async def test_click_without_target_refused(rig):
     res = await _run(rig, "computer.click")
     assert res.ok is False
     assert rig.tools["click"].calls == []
+    assert res.image_b64 is None
 
 
 async def test_click_permission_error_maps_to_setup(rig):
-    await _run(rig, "computer.see")
     rig.tools["click"].result = _err_result(
         "click: Accessibility permission is NOT working. macOS is silently "
         "dropping CGEvent injection.\n\nFIX:\n  1. Open System Settings"
     )
-    res = await _run(rig, "computer.click", {"ref": "e1"})
+    res = await _run(rig, "computer.click", {"x": 5, "y": 6})
     assert res.ok is False
     assert res.data == {"setup": "computer"}
     assert "Accessibility" in res.error
+    # A failed action returns no screenshot — nothing changed to look at.
+    assert res.image_b64 is None
 
 
 # ── computer.type ─────────────────────────────────────────────────────────
 
 
-async def test_type_passes_full_text_to_tool(rig):
+async def test_type_passes_full_text_and_returns_frame(rig):
     res = await _run(rig, "computer.type", {"text": "hello there"})
     assert res.ok
     assert res.summary == 'typed "hello there"'
     assert rig.tools["type_text"].calls == [{"text": "hello there"}]
+    _assert_grid_frame(res)
 
 
 async def test_type_summary_truncates_long_text(rig):
@@ -387,6 +388,7 @@ async def test_type_requires_text(rig):
     res = await _run(rig, "computer.type", {"text": ""})
     assert res.ok is False
     assert rig.tools["type_text"].calls == []
+    assert res.image_b64 is None
 
 
 # ── computer.press ────────────────────────────────────────────────────────
@@ -396,6 +398,7 @@ async def test_press_plain_key(rig):
     res = await _run(rig, "computer.press", {"key": "enter"})
     assert res.ok and res.summary == "pressed enter"
     assert rig.tools["press_key"].calls == [{"key": "enter", "modifiers": []}]
+    _assert_grid_frame(res)
 
 
 async def test_press_with_modifiers(rig):
@@ -422,6 +425,7 @@ async def test_scroll_down_default_amount(rig):
     res = await _run(rig, "computer.scroll", {"direction": "down"})
     assert res.ok and res.summary == "scrolled down"
     assert rig.tools["scroll"].calls == [{"dx": 0, "dy": 8}]
+    _assert_grid_frame(res)
 
 
 async def test_scroll_directions_and_amount(rig):
@@ -442,6 +446,12 @@ async def test_scroll_at_ref_uses_cached_point(rig):
     assert rig.tools["scroll"].calls == [{"dx": 0, "dy": 8, "x": 400, "y": 52}]
 
 
+async def test_scroll_at_pixel(rig):
+    res = await _run(rig, "computer.scroll", {"direction": "up", "x": 100, "y": 200})
+    assert res.ok
+    assert rig.tools["scroll"].calls == [{"dx": 0, "dy": -8, "x": 100, "y": 200}]
+
+
 async def test_scroll_stale_ref_refused(rig):
     await _run(rig, "computer.see")
     await _run(rig, "computer.see")
@@ -449,6 +459,7 @@ async def test_scroll_stale_ref_refused(rig):
     assert res.ok is False
     assert "run computer.see first" in res.summary
     assert rig.tools["scroll"].calls == []
+    assert res.image_b64 is None
 
 
 async def test_scroll_bad_direction_refused(rig):
@@ -486,6 +497,8 @@ async def test_menu_frontmost_two_level_path(rig, monkeypatch):
         "end tell\n"
         "end tell"
     )
+    # menu returns a screenshot after (§12.2).
+    _assert_grid_frame(res)
 
 
 async def test_menu_named_app_nested_path_quotes_every_segment(rig, monkeypatch):
@@ -515,6 +528,7 @@ async def test_menu_needs_at_least_menu_and_item(rig, monkeypatch):
     res = await _run(rig, "computer.menu", {"menu_path": ["File"]})
     assert res.ok is False
     assert osa.scripts == []
+    assert res.image_b64 is None
 
 
 async def test_menu_assistive_access_denial_maps_to_setup(rig, monkeypatch):
@@ -525,7 +539,7 @@ async def test_menu_assistive_access_denial_maps_to_setup(rig, monkeypatch):
     assert res.data == {"setup": "computer"}
 
 
-# ── computer.open_url ─────────────────────────────────────────────────────
+# ── computer.open_url (no screenshot — it leaves this app) ────────────────
 
 
 class ExecRecorder:
@@ -560,10 +574,27 @@ async def test_open_url_rejects_non_http_schemes(rig, monkeypatch, url):
     assert execer.calls == []
 
 
-# ── receipts flow through the service unchanged ───────────────────────────
+# ── the grid overlay helper ──────────────────────────────────────────────
 
 
-async def test_receipts_flow_through_service_execute(rig, tmp_path):
+def test_grid_overlay_is_valid_png_of_same_size():
+    src = _png_bytes(300, 200)
+    out = computer._grid_overlay(src, 300, 200)
+    with Image.open(io.BytesIO(out)) as im:
+        assert (im.width, im.height) == (300, 200)
+    assert out != src  # lines/labels were drawn
+
+
+def test_grid_overlay_on_garbage_returns_input():
+    """A non-image byte blob must degrade to itself, never raise."""
+    garbage = b"not a png"
+    assert computer._grid_overlay(garbage, 10, 10) == garbage
+
+
+# ── receipts + image passthrough flow through the service ─────────────────
+
+
+async def test_receipts_and_image_flow_through_service_execute(rig, tmp_path):
     from bridge.voice.service import VoiceService
 
     events = []
@@ -584,6 +615,9 @@ async def test_receipts_flow_through_service_execute(rig, tmp_path):
     (result,) = [e for e in events if e["type"] == "voice_tool_result"]
     assert result["ok"] is True
     assert json.loads(result["output"])["summary"] == "pressed enter"
+    # The screenshot rode through onto the event (contract §12.1).
+    assert result["imageB64"]
+    assert result["imageW"] == 1280 and result["imageH"] == 800
     receipt = result["receipt"]
     assert receipt["verb"] == "computer.press"
     assert receipt["lane"] == "brain"
@@ -616,7 +650,7 @@ async def test_run_tool_clears_stale_cancel_before_next_verb(rig, monkeypatch):
     clears the cancel event before executing."""
     import asyncio as _asyncio
 
-    fake_spec = SimpleNamespace(cancel_event=_asyncio.Event())
+    fake_spec = SimpleNamespace(cancel_event=_asyncio.Event(), api_dims=(1280, 800))
     fake_spec.cancel_event.set()  # stale trip from a previous panic
     monkeypatch.setattr(computer, "_SPEC", fake_spec)
     res = await _run(rig, "computer.press", {"key": "enter"})
@@ -629,16 +663,12 @@ async def test_cancel_inflight_no_spec_is_safe(monkeypatch):
     computer.cancel_inflight()  # must not raise
 
 
-# ── vision-grounded click (the Arc / AX-opaque fix) ──────────────────────
+# ── vision-grounded click (the describe-what-you-see fallback) ────────────
 
 
 async def test_click_by_target_uses_vision_grounding(rig, monkeypatch):
-    """The Arc failure: no AX refs, so click by describing what you see.
-    Vision returns normalized coords; we scale by api_dims and click."""
-    from types import SimpleNamespace as NS
-
-    monkeypatch.setattr(computer, "_SPEC", NS(api_dims=(1280, 800)))
-
+    """No pixel and no ref — click by describing what you see. Vision
+    returns normalized coords; we scale by api_dims and click."""
     calls = []
 
     async def fake_locate(jpeg, target):
@@ -653,13 +683,10 @@ async def test_click_by_target_uses_vision_grounding(rig, monkeypatch):
     (call,) = rig.tools["click"].calls
     assert (call["x"], call["y"]) == (640, 200)  # 0.5*1280, 0.25*800
     assert calls and calls[0][1] == "the Hacker News tab"
+    _assert_grid_frame(res)
 
 
 async def test_click_by_target_not_found_asks(rig, monkeypatch):
-    from types import SimpleNamespace as NS
-
-    monkeypatch.setattr(computer, "_SPEC", NS(api_dims=(1280, 800)))
-
     async def fake_locate(jpeg, target):
         return None  # vision couldn't see it
 
@@ -668,40 +695,3 @@ async def test_click_by_target_not_found_asks(rig, monkeypatch):
     assert res.ok is False
     assert "unicorn" in res.summary
     assert rig.tools["click"].calls == []
-
-
-async def test_click_by_target_falls_back_to_image_dims(rig, monkeypatch):
-    """When api_dims isn't populated, grounding still works off the image's
-    own dimensions."""
-    from types import SimpleNamespace as NS
-
-    monkeypatch.setattr(computer, "_SPEC", NS(api_dims=None))
-
-    async def fake_locate(jpeg, target):
-        return (0.1, 0.2)
-
-    # 4x2 PNG so PIL reads width=4,height=2
-    import io as _io
-
-    from PIL import Image
-
-    buf = _io.BytesIO()
-    Image.new("RGB", (4, 2)).save(buf, format="PNG")
-    rig.tools["screenshot"].result = _image_result(data=buf.getvalue(), mime="image/png")
-    monkeypatch.setattr(computer.screen, "locate_in_image", fake_locate)
-
-    res = await _run(rig, "computer.click", {"target": "x"})
-    assert res.ok
-    (call,) = rig.tools["click"].calls
-    assert (call["x"], call["y"]) == (0, 0)  # round(0.1*4)=0, round(0.2*2)=0
-
-
-async def test_see_sparse_app_emits_hint(rig, monkeypatch):
-    """AX-opaque app: see must hand the model a hint to switch to target
-    clicking, not silently return an empty element list it might fake."""
-    rig.tools["read_ax_tree"].result = _err_result("read_ax_tree failed: no tree")
-    res = await _run(rig, "computer.see")
-    assert res.ok
-    assert res.data["elements"] == []
-    assert "hint" in res.data
-    assert "target" in res.data["hint"].lower()

@@ -19,6 +19,7 @@ from bridge.voice.adapters import (
     briefing,
     computer,
     files,
+    freyja_query,
     mac,
     screen,
     shortcuts,
@@ -36,13 +37,17 @@ def register_all(registry: VerbRegistry) -> None:
     spotify.register(registry)
     system.register(registry)
     timers.register(registry)
-    slack.register(registry)
+    # slack.* and web.read_page temporarily disabled — see GALDR-BUILD §12.3
+    # (the "indirect" API tools that caused the API-vs-UI category error;
+    # the imports stay so nothing breaks — just don't call their .register).
+    # slack.register(registry)
     screen.register(registry)
     apple.register(registry)
     shortcuts.register(registry)
     files.register(registry)
-    web.register(registry)
+    # web.register(registry)  # temporarily disabled — see GALDR-BUILD §12.3
     briefing.register(registry)
+    freyja_query.register(registry)
 
 
 __all__ = [
@@ -51,6 +56,7 @@ __all__ = [
     "briefing",
     "computer",
     "files",
+    "freyja_query",
     "mac",
     "register_all",
     "screen",

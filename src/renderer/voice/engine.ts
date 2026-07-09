@@ -111,6 +111,21 @@ export class VoiceEngine {
    *  remote element; cleared on the next response.created. */
   private muteUntilNextResponse = false
 
+  // ── Visual computer control (§12.1) ───────────────────────────────
+  /** Item id of the newest injected screenshot user message, or null if
+   *  none is live. The realtime API resends the whole conversation each
+   *  response and each screenshot is ~1–2k tokens, so we keep only the
+   *  latest: before injecting a new one we delete this, then track the
+   *  new id (captured from conversation.item.added below). */
+  private _lastImageItemId: string | null = null
+  /** Set while an injected image item's conversation.item.create is
+   *  in flight but its item.added hasn't arrived yet. The next
+   *  conversation.item.added we see that carries a message item is OURS —
+   *  we record its id and clear this marker. Realtime item ids are
+   *  server-assigned, so this pending-marker is the only way to correlate
+   *  the create with its id. */
+  private _pendingImageItem = false
+
   get state(): VoiceEngineState {
     return this._state
   }
@@ -350,11 +365,17 @@ export class VoiceEngine {
     this.assistantTranscriptBuf = ''
     this.sawAudioDeltaThisResponse = false
     this.muteUntilNextResponse = false
+    this._lastImageItemId = null
+    this._pendingImageItem = false
   }
 
   // ── Outbound (renderer → model) ───────────────────────────────────
 
-  sendToolResult(callId: string, outputJson: string): void {
+  sendToolResult(
+    callId: string,
+    outputJson: string,
+    image?: { b64: string; w: number; h: number },
+  ): void {
     this.pendingToolCalls.delete(callId)
     this.sendEvent({
       type: 'conversation.item.create',
@@ -364,15 +385,59 @@ export class VoiceEngine {
         output: outputJson,
       },
     })
+    // Visual computer control (§12.1): a computer.* verb returns a
+    // screenshot the realtime model should SEE. Inject it as an
+    // input_image user message AFTER the function_call_output text, and
+    // prune the previously-injected screenshot so only the newest one
+    // stays in the resent conversation (images are ~1–2k tokens each —
+    // unbounded = runaway cost/latency).
+    if (image) this.injectImage(image)
     // One response may carry SEVERAL act calls (parallel tool calls are
     // on by default). Responses are serial on a realtime session — a
     // response.create while results are still owed gets rejected and the
     // in-flight response never voices the later outcomes. Batch: only
     // the LAST owed result kicks the follow-up response, which then sees
-    // every function_call_output at once.
+    // every function_call_output — and any injected screenshot — at once.
     if (this.pendingToolCalls.size === 0) {
       this.sendEvent({ type: 'response.create' })
     }
+  }
+
+  /** Delete the previously-injected screenshot (if any), then create the
+   *  new one as an input_image user message. The created item's id is
+   *  captured from the conversation.item.added event (see
+   *  handleServerEvent) into `_lastImageItemId` for the NEXT prune. */
+  private injectImage(image: { b64: string; w: number; h: number }): void {
+    if (this._lastImageItemId !== null) {
+      // Defensive: if the id is already gone server-side the delete is a
+      // benign no-op (the realtime API answers with an error event, which
+      // handleServerEvent surfaces but doesn't act on).
+      this.sendEvent({
+        type: 'conversation.item.delete',
+        item_id: this._lastImageItemId,
+      })
+      this._lastImageItemId = null
+    }
+    // Mark that the next message item.added is the one we're about to
+    // create so we can record its server-assigned id.
+    this._pendingImageItem = true
+    this.sendEvent({
+      type: 'conversation.item.create',
+      item: {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_image',
+            image_url: `data:image/png;base64,${image.b64}`,
+          },
+          {
+            type: 'input_text',
+            text: `Current screen, ${image.w}x${image.h}px, (0,0) top-left.`,
+          },
+        ],
+      },
+    })
   }
 
   sendText(text: string): void {
@@ -568,6 +633,23 @@ export class VoiceEngine {
         // Back to listening unless a tool result is still owed — in that
         // case sendToolResult's response.create re-enters the cycle.
         if (this.pendingToolCalls.size === 0) this.setState('listening')
+        return
+      }
+
+      case 'conversation.item.added': {
+        // Capture the server-assigned id of the screenshot item we just
+        // injected (§12.1) so the NEXT injection can delete it. Only the
+        // item we created while _pendingImageItem was set is ours; other
+        // items.added (the model's own messages, audio items) are ignored.
+        if (!this._pendingImageItem) return
+        const item = ev.item as Record<string, unknown> | undefined
+        const itemId = typeof item?.id === 'string' ? item.id : ''
+        // Match on the user message we created — role/type guard so a
+        // racing non-image item.added can't steal the marker.
+        if (item?.type === 'message' && item.role === 'user' && itemId) {
+          this._lastImageItemId = itemId
+          this._pendingImageItem = false
+        }
         return
       }
 

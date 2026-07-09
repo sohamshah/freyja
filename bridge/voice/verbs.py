@@ -26,6 +26,15 @@ class VerbResult:
     data: dict[str, Any] = field(default_factory=dict)  # structured payload for the model
     undo: Optional[Callable[[], Awaitable["VerbResult"]]] = None  # closure that reverses it
     error: Optional[str] = None
+    # Visual computer control (contract §12.1): only computer.* verbs set
+    # these. The service copies them onto the voice_tool_result event so
+    # the renderer can inject the screenshot back into the realtime
+    # conversation as an input_image. The image is an api_dims PNG (the
+    # SAME coordinate space ClickTool accepts) with a light coordinate
+    # grid drawn on — the model looks, then clicks by pixel.
+    image_b64: Optional[str] = None  # base64 PNG (no data: prefix)
+    image_w: Optional[int] = None  # image width, px (== api_dims width)
+    image_h: Optional[int] = None  # image height, px
 
 
 @dataclass

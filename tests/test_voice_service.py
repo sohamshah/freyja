@@ -22,15 +22,30 @@ from bridge.voice.service import _MINT_URL, _WEBRTC_URL, VoiceService
 
 
 class FakeResult:
-    """Duck-types bridge.voice.verbs.VerbResult."""
+    """Duck-types bridge.voice.verbs.VerbResult (incl. the §12.1 image
+    fields computer.* verbs set)."""
 
-    def __init__(self, ok=True, summary="", say=None, data=None, undo=None, error=None):
+    def __init__(
+        self,
+        ok=True,
+        summary="",
+        say=None,
+        data=None,
+        undo=None,
+        error=None,
+        image_b64=None,
+        image_w=None,
+        image_h=None,
+    ):
         self.ok = ok
         self.summary = summary
         self.say = say
         self.data = data or {}
         self.undo = undo
         self.error = error
+        self.image_b64 = image_b64
+        self.image_w = image_w
+        self.image_h = image_h
 
 
 class FakeVerb:
@@ -441,6 +456,31 @@ async def test_act_happy_path(tmp_path):
     assert receipt["undoable"] is False
     stored = svc.receipts.recent(limit=1)
     assert stored[0].id == receipt["id"]
+
+
+async def test_act_image_fields_ride_onto_the_event(tmp_path):
+    """Contract §12.1: a computer.* result's grid screenshot is copied onto
+    the voice_tool_result event as imageB64/imageW/imageH; a result with no
+    image adds none of those keys."""
+
+    async def run(args):
+        return FakeResult(
+            ok=True, summary="clicked (5, 6)", image_b64="Zm9v", image_w=1280, image_h=800
+        )
+
+    svc, events = make_service(tmp_path, verbs=[FakeVerb("computer.click", run=run)])
+    await svc.handle_tool_call(_act_cmd("v1", "c1", "computer.click", args={"x": 5, "y": 6}))
+    (result,) = events_of(events, "voice_tool_result")
+    assert result["imageB64"] == "Zm9v"
+    assert result["imageW"] == 1280 and result["imageH"] == 800
+
+
+async def test_act_without_image_has_no_image_keys(tmp_path):
+    svc, events = make_service(tmp_path, verbs=[FakeVerb("spotify.play", run=_ok_run("ok"))])
+    await svc.handle_tool_call(_act_cmd("v1", "c1", "spotify.play", args={}))
+    (result,) = events_of(events, "voice_tool_result")
+    assert "imageB64" not in result
+    assert "imageW" not in result and "imageH" not in result
 
 
 async def test_act_unknown_verb(tmp_path):

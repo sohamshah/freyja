@@ -21,8 +21,9 @@ def _mk(name, tier="auto", params=None, required=None, description="does a thing
 
 
 # All verbs the adapters register (slice 1 + slice-2 reach + slice-3
-# native apps/Shortcuts + P2 files/clipboard/web); mission.spawn /
-# mission.status / computer.do are service-side.
+# native apps/Shortcuts + P2 files/clipboard + freyja.*); mission.spawn /
+# mission.status / computer.do / freyja.ask are service-side. slack.* and
+# web.read_page are temporarily disabled (GALDR-BUILD §12.3).
 EXPECTED_VERBS = {
     "spotify.play",
     "spotify.pause",
@@ -38,8 +39,6 @@ EXPECTED_VERBS = {
     "timer.set",
     "timer.list",
     "timer.cancel",
-    "slack.read",
-    "slack.send",
     "screen.look",
     "reminders.create",
     "reminders.list",
@@ -58,14 +57,15 @@ EXPECTED_VERBS = {
     "files.organize",
     "clipboard.read",
     "clipboard.write",
-    "web.read_page",
     "briefing.read",
+    "freyja.sessions",
+    "freyja.project_status",
 }
 
 # Confirm tier = outward/destructive actions: quitting an app, sending
-# a message someone else will read (Slack or iMessage), or moving files
-# on disk (files.organize).
-CONFIRM_VERBS = {"app.quit", "slack.send", "messages.send", "files.organize"}
+# an iMessage someone else will read, or moving files on disk
+# (files.organize). (slack.send was here too but slack.* is disabled.)
+CONFIRM_VERBS = {"app.quit", "messages.send", "files.organize"}
 
 
 def test_register_get_all():
