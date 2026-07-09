@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io as _io
 import json
 import re
 import time
@@ -461,6 +462,15 @@ async def _see(args: dict[str, Any]) -> VerbResult:
         data["caption"] = caption
     if screenshot_path:
         data["screenshotPath"] = screenshot_path
+    if len(listing) < _SPARSE_THRESHOLD:
+        # AX-opaque app (Arc, Electron, canvas UIs): there are no refs to
+        # click by. Tell the model to switch strategy — click by target
+        # (vision) or use keyboard/menu — instead of inventing refs.
+        data["hint"] = (
+            "This app exposes few or no clickable refs. Do NOT invent refs. "
+            "Click by target (describe what you see) which uses vision, or use "
+            "keyboard shortcuts / computer.menu."
+        )
     return VerbResult(ok=True, summary=f"saw {app}: {len(listing)} elements", data=data)
 
 
@@ -499,9 +509,48 @@ async def _locate_element(element: str) -> tuple[int, int] | VerbResult:
     return int(match.group(1)), int(match.group(2))
 
 
+async def _vision_locate(target: str) -> tuple[int, int] | VerbResult:
+    """Click point for a natural-language target via vision — the escape
+    hatch when the AX tree is empty (Arc, Electron, canvas UIs). Screenshot
+    through the same tool the refs come from, ask the vision model for
+    normalized coordinates, scale into api-space (the space click accepts)
+    by the spec's api_dims, exactly like an AX ref."""
+    shot = await _run_tool("screenshot", {})
+    if getattr(shot, "is_error", False):
+        return _tool_failure("click", _result_text(shot))
+    image = _result_image(shot)
+    if image is None:
+        return VerbResult(ok=False, summary="couldn't capture the screen to look", error="no_frame")
+    dims = getattr(_SPEC, "api_dims", None) if _SPEC is not None else None
+    if not (isinstance(dims, tuple) and len(dims) == 2):
+        # Screenshot populates api_dims; if it's still missing, read the
+        # image's own dimensions so grounding still works.
+        try:
+            from PIL import Image  # lazy
+
+            with Image.open(_io.BytesIO(image[0])) as im:
+                dims = (im.width, im.height)
+        except Exception:  # noqa: BLE001
+            return VerbResult(ok=False, summary="couldn't size the screen", error="no_dims")
+    try:
+        located = await screen.locate_in_image(image[0], target)
+    except Exception as exc:  # noqa: BLE001 — vision transport failure → words
+        err = str(exc).splitlines()[0][:120] if str(exc) else exc.__class__.__name__
+        return VerbResult(ok=False, summary=f"couldn't look for {target!r}: {err}", error=err)
+    if located is None:
+        return VerbResult(
+            ok=False,
+            summary=f"couldn't spot {target!r} on screen",
+            error="not_found — describe it differently, or say where it is",
+        )
+    fx, fy = located
+    return round(fx * dims[0]), round(fy * dims[1])
+
+
 async def _click(args: dict[str, Any]) -> VerbResult:
     ref = str(args.get("ref") or "").strip()
     element = str(args.get("element") or "").strip()
+    target = str(args.get("target") or "").strip()
     x = args.get("x")
     y = args.get("y")
     label = ""
@@ -516,12 +565,20 @@ async def _click(args: dict[str, Any]) -> VerbResult:
             return located
         cx, cy = located
         label = element
+    elif target:
+        # Vision-grounded: click what you can SEE by describing it. The
+        # only path that works on accessibility-opaque apps.
+        vloc = await _vision_locate(target)
+        if isinstance(vloc, VerbResult):
+            return vloc
+        cx, cy = vloc
+        label = target
     elif isinstance(x, (int, float)) and isinstance(y, (int, float)):
         cx, cy = int(x), int(y)
     else:
         return VerbResult(
             ok=False,
-            summary="click needs a ref, an element label, or x and y",
+            summary="click needs a ref, an element label, a target to look for, or x and y",
             error="missing_target",
         )
     res = await _run_tool(
@@ -703,12 +760,23 @@ def register(registry: VerbRegistry, *, enabled_fn: Callable[[], bool]) -> None:
         Verb(
             name="computer.click",
             description=(
-                "Click an element by ref from the last computer.see, by visible "
-                "label text, or at x/y as a last resort"
+                "Click by ref from the last computer.see, OR by target — a "
+                "natural-language description of what you SEE (vision-grounded, "
+                "the only thing that works when computer.see finds no refs, e.g. "
+                "in Arc or other apps with no accessibility tree). Also accepts a "
+                "visible label or raw x/y."
             ),
             params={
                 "ref": {"type": "string", "description": "element ref from computer.see"},
-                "element": {"type": "string", "description": "visible label to find live"},
+                "target": {
+                    "type": "string",
+                    "description": (
+                        "what to click, described plainly ('the Hacker News tab', "
+                        "'the blue Send button') — located by vision; use this when "
+                        "computer.see returned no refs"
+                    ),
+                },
+                "element": {"type": "string", "description": "exact visible label to find live"},
                 "x": {"type": "integer"},
                 "y": {"type": "integer"},
             },

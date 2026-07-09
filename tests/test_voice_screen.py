@@ -219,3 +219,45 @@ def test_downscale_resizes_and_recompresses(tmp_path):
     Image.new("RGB", (400, 300), (10, 20, 30)).save(small, format="PNG")
     out_small = Image.open(io.BytesIO(screen._downscale(str(small))))
     assert (out_small.width, out_small.height) == (400, 300)  # never upscaled
+
+
+# ── locate_in_image (vision grounding for AX-opaque clicking) ─────────────
+
+
+async def test_locate_in_image_parses_normalized_coords(monkeypatch, api_key):
+    fake = _FakeHttpx(
+        _FakeResponse(payload={"choices": [{"message": {"content": '{"found": true, "x": 0.42, "y": 0.6}'}}]})
+    )
+    monkeypatch.setattr(screen, "httpx", SimpleNamespace(AsyncClient=fake.AsyncClient))
+    loc = await screen.locate_in_image(b"jpeg-bytes", "the Send button")
+    assert loc == (0.42, 0.6)
+    # the target rode in the user text
+    assert "Send button" in fake.posts[0]["json"]["messages"][1]["content"][1]["text"]
+
+
+async def test_locate_in_image_not_found(monkeypatch, api_key):
+    fake = _FakeHttpx(_FakeResponse(payload={"choices": [{"message": {"content": '{"found": false}'}}]}))
+    monkeypatch.setattr(screen, "httpx", SimpleNamespace(AsyncClient=fake.AsyncClient))
+    assert await screen.locate_in_image(b"x", "a unicorn") is None
+
+
+async def test_locate_in_image_tolerates_code_fence(monkeypatch, api_key):
+    fake = _FakeHttpx(
+        _FakeResponse(payload={"choices": [{"message": {"content": '```json\n{"found":true,"x":0.1,"y":0.9}\n```'}}]})
+    )
+    monkeypatch.setattr(screen, "httpx", SimpleNamespace(AsyncClient=fake.AsyncClient))
+    loc = await screen.locate_in_image(b"x", "thing")
+    assert loc == (0.1, 0.9)
+
+
+async def test_locate_in_image_clamps_out_of_range(monkeypatch, api_key):
+    fake = _FakeHttpx(_FakeResponse(payload={"choices": [{"message": {"content": '{"found":true,"x":1.4,"y":-0.2}'}}]}))
+    monkeypatch.setattr(screen, "httpx", SimpleNamespace(AsyncClient=fake.AsyncClient))
+    assert await screen.locate_in_image(b"x", "thing") == (1.0, 0.0)
+
+
+async def test_locate_in_image_http_error_raises(monkeypatch, api_key):
+    fake = _FakeHttpx(_FakeResponse(status_code=429))
+    monkeypatch.setattr(screen, "httpx", SimpleNamespace(AsyncClient=fake.AsyncClient))
+    with pytest.raises(RuntimeError):
+        await screen.locate_in_image(b"x", "thing")

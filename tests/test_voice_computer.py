@@ -627,3 +627,81 @@ async def test_run_tool_clears_stale_cancel_before_next_verb(rig, monkeypatch):
 async def test_cancel_inflight_no_spec_is_safe(monkeypatch):
     monkeypatch.setattr(computer, "_SPEC", None)
     computer.cancel_inflight()  # must not raise
+
+
+# ── vision-grounded click (the Arc / AX-opaque fix) ──────────────────────
+
+
+async def test_click_by_target_uses_vision_grounding(rig, monkeypatch):
+    """The Arc failure: no AX refs, so click by describing what you see.
+    Vision returns normalized coords; we scale by api_dims and click."""
+    from types import SimpleNamespace as NS
+
+    monkeypatch.setattr(computer, "_SPEC", NS(api_dims=(1280, 800)))
+
+    calls = []
+
+    async def fake_locate(jpeg, target):
+        calls.append((jpeg, target))
+        return (0.5, 0.25)  # center-x, quarter-down
+
+    monkeypatch.setattr(computer.screen, "locate_in_image", fake_locate)
+
+    res = await _run(rig, "computer.click", {"target": "the Hacker News tab"})
+    assert res.ok, res.summary
+    assert res.summary == "clicked the Hacker News tab"
+    (call,) = rig.tools["click"].calls
+    assert (call["x"], call["y"]) == (640, 200)  # 0.5*1280, 0.25*800
+    assert calls and calls[0][1] == "the Hacker News tab"
+
+
+async def test_click_by_target_not_found_asks(rig, monkeypatch):
+    from types import SimpleNamespace as NS
+
+    monkeypatch.setattr(computer, "_SPEC", NS(api_dims=(1280, 800)))
+
+    async def fake_locate(jpeg, target):
+        return None  # vision couldn't see it
+
+    monkeypatch.setattr(computer.screen, "locate_in_image", fake_locate)
+    res = await _run(rig, "computer.click", {"target": "a unicorn"})
+    assert res.ok is False
+    assert "unicorn" in res.summary
+    assert rig.tools["click"].calls == []
+
+
+async def test_click_by_target_falls_back_to_image_dims(rig, monkeypatch):
+    """When api_dims isn't populated, grounding still works off the image's
+    own dimensions."""
+    from types import SimpleNamespace as NS
+
+    monkeypatch.setattr(computer, "_SPEC", NS(api_dims=None))
+
+    async def fake_locate(jpeg, target):
+        return (0.1, 0.2)
+
+    # 4x2 PNG so PIL reads width=4,height=2
+    import io as _io
+
+    from PIL import Image
+
+    buf = _io.BytesIO()
+    Image.new("RGB", (4, 2)).save(buf, format="PNG")
+    rig.tools["screenshot"].result = _image_result(data=buf.getvalue(), mime="image/png")
+    monkeypatch.setattr(computer.screen, "locate_in_image", fake_locate)
+
+    res = await _run(rig, "computer.click", {"target": "x"})
+    assert res.ok
+    (call,) = rig.tools["click"].calls
+    assert (call["x"], call["y"]) == (0, 0)  # round(0.1*4)=0, round(0.2*2)=0
+
+
+async def test_see_sparse_app_emits_hint(rig, monkeypatch):
+    """AX-opaque app: see must hand the model a hint to switch to target
+    clicking, not silently return an empty element list it might fake."""
+    rig.tools["read_ax_tree"].result = _err_result("read_ax_tree failed: no tree")
+    res = await _run(rig, "computer.see")
+    assert res.ok
+    assert res.data["elements"] == []
+    assert "hint" in res.data
+    assert "target" in res.data["hint"].lower()
