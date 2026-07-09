@@ -1223,3 +1223,332 @@ async def test_build_context_summary_keeps_recent_tail_when_long(tmp_path):
     assert s.startswith("…\n")
     assert len(s) <= 502
     assert "line 99" in s  # the tail is kept
+
+
+# ── proactive announcements ─────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "hour,quiet",
+    [
+        # Wrap-around window 22..8 (spans midnight): quiet at/after 22 or before 8.
+        (23, True),
+        (0, True),
+        (3, True),
+        (7, True),
+        (8, False),  # end is exclusive
+        (12, False),
+        (21, False),
+        (22, True),  # start is inclusive
+    ],
+)
+def test_in_quiet_hours_wraparound(tmp_path, hour, quiet):
+    svc, _ = make_service(tmp_path)
+    svc._config["quietHours"] = {"start": 22, "end": 8}
+    assert svc._in_quiet_hours(hour) is quiet
+
+
+@pytest.mark.parametrize(
+    "hour,quiet",
+    [
+        # Plain non-wrap window 1..5: quiet 1..4, not 5 (exclusive end) or 0.
+        (0, False),
+        (1, True),
+        (4, True),
+        (5, False),
+        (6, False),
+    ],
+)
+def test_in_quiet_hours_non_wrap(tmp_path, hour, quiet):
+    svc, _ = make_service(tmp_path)
+    svc._config["quietHours"] = {"start": 1, "end": 5}
+    assert svc._in_quiet_hours(hour) is quiet
+
+
+def test_in_quiet_hours_empty_window_is_never_quiet(tmp_path):
+    svc, _ = make_service(tmp_path)
+    svc._config["quietHours"] = {"start": 9, "end": 9}
+    assert all(svc._in_quiet_hours(h) is False for h in range(24))
+
+
+def test_in_quiet_hours_malformed_config_never_quiet(tmp_path):
+    svc, _ = make_service(tmp_path)
+    svc._config["quietHours"] = "nope"  # not a dict
+    assert svc._in_quiet_hours(3) is False
+    svc._config["quietHours"] = {"start": "x", "end": None}  # unparseable
+    assert svc._in_quiet_hours(3) is False
+
+
+async def test_config_roundtrip_persists_proactive_and_quiet_hours(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    svc, events = make_service(tmp_path)
+    await svc.start()
+    # defaults are OFF + 22..8
+    await svc.handle_get_config({})
+    cfg0 = events_of(events, "voice_config")[0]["config"]
+    assert cfg0["proactiveVoice"] is False
+    assert cfg0["quietHours"] == {"start": 22, "end": 8}
+    events.clear()
+
+    await svc.handle_set_config(
+        {"patch": {"proactiveVoice": True, "quietHours": {"start": 23, "end": 7}}}
+    )
+    (ev,) = events_of(events, "voice_config")
+    assert ev["config"]["proactiveVoice"] is True
+    assert ev["config"]["quietHours"] == {"start": 23, "end": 7}
+
+    # a fresh service over the same dir loads the persisted values
+    svc2, events2 = make_service(tmp_path)
+    await svc2.start()
+    await svc2.handle_get_config({})
+    (ev2,) = events_of(events2, "voice_config")
+    assert ev2["config"]["proactiveVoice"] is True
+    assert ev2["config"]["quietHours"] == {"start": 23, "end": 7}
+
+
+async def test_config_patch_validation_ignores_malformed_announce_keys(tmp_path):
+    svc, events = make_service(tmp_path)
+    await svc.start()
+    await svc.handle_set_config(
+        {
+            "patch": {
+                "proactiveVoice": "yes",  # not a bool — ignored
+                "quietHours": {"start": 99, "end": -4},  # clamped 0-23
+            }
+        }
+    )
+    (ev,) = events_of(events, "voice_config")
+    cfg = ev["config"]
+    assert cfg["proactiveVoice"] is False  # unchanged (default)
+    assert cfg["quietHours"] == {"start": 23, "end": 0}  # clamped
+
+    events.clear()
+    # a single bound patches in place; the other bound is untouched
+    await svc.handle_set_config({"patch": {"quietHours": {"start": 6}}})
+    (ev2,) = events_of(events, "voice_config")
+    assert ev2["config"]["quietHours"] == {"start": 6, "end": 0}
+
+    events.clear()
+    # a non-dict quietHours is ignored entirely
+    await svc.handle_set_config({"patch": {"quietHours": [1, 2]}})
+    (ev3,) = events_of(events, "voice_config")
+    assert ev3["config"]["quietHours"] == {"start": 6, "end": 0}
+
+
+def _fake_tts(monkeypatch, value="AAA"):
+    """Monkeypatch the TTS seam so no network is touched. Returns the
+    captured-calls list (each entry (text, voice))."""
+    calls = []
+
+    async def fake_synth(text, voice):
+        calls.append((text, voice))
+        return value
+
+    monkeypatch.setattr(voice_service_module, "_synthesize_speech", fake_synth)
+    return calls
+
+
+def _pin_hour(monkeypatch, hour):
+    """Freeze the local clock at ``hour`` so quiet-hours gating is
+    deterministic (the other struct_time fields are irrelevant here)."""
+    frozen = time.struct_time((2026, 7, 9, hour, 0, 0, 3, 190, -1))
+    monkeypatch.setattr(voice_service_module.time, "localtime", lambda *a: frozen)
+
+
+async def test_maybe_announce_fires_when_opted_in_no_session_not_quiet(tmp_path, monkeypatch):
+    svc, events = make_service(tmp_path)
+    calls = _fake_tts(monkeypatch, "AAA")
+    svc._config["proactiveVoice"] = True
+    svc._config["quietHours"] = {"start": 22, "end": 8}
+    svc._active_session_id = None
+    # pin the clock outside quiet hours
+    _pin_hour(monkeypatch, 12)
+
+    await svc._maybe_announce("voice-mission-1", "Deploy check")
+
+    (ann,) = events_of(events, "voice_announce")
+    assert ann["source"] == "mission"
+    assert ann["audioB64"] == "AAA"
+    assert ann["text"] == "Freyja: Deploy check is done."
+    assert calls  # TTS was invoked
+    # dedupe: a second call for the same mission does NOT re-announce
+    events.clear()
+    await svc._maybe_announce("voice-mission-1", "Deploy check")
+    assert not events_of(events, "voice_announce")
+
+
+async def test_maybe_announce_silent_when_disabled(tmp_path, monkeypatch):
+    svc, events = make_service(tmp_path)
+    calls = _fake_tts(monkeypatch)
+    svc._config["proactiveVoice"] = False
+    svc._active_session_id = None
+    _pin_hour(monkeypatch, 12)
+    await svc._maybe_announce("voice-mission-2", "anything")
+    assert not events_of(events, "voice_announce")
+    assert not calls  # never even synthesizes
+
+
+async def test_maybe_announce_silent_when_session_live(tmp_path, monkeypatch):
+    svc, events = make_service(tmp_path)
+    calls = _fake_tts(monkeypatch)
+    svc._config["proactiveVoice"] = True
+    svc._active_session_id = "voice-live"  # a live exchange already hears it
+    _pin_hour(monkeypatch, 12)
+    await svc._maybe_announce("voice-mission-3", "anything")
+    assert not events_of(events, "voice_announce")
+    assert not calls
+
+
+async def test_maybe_announce_silent_during_quiet_hours(tmp_path, monkeypatch):
+    svc, events = make_service(tmp_path)
+    calls = _fake_tts(monkeypatch)
+    svc._config["proactiveVoice"] = True
+    svc._config["quietHours"] = {"start": 22, "end": 8}
+    svc._active_session_id = None
+    # 3am — inside the wrap-around window
+    _pin_hour(monkeypatch, 3)
+    await svc._maybe_announce("voice-mission-4", "anything")
+    assert not events_of(events, "voice_announce")
+    assert not calls
+
+
+async def test_maybe_announce_no_event_when_tts_fails(tmp_path, monkeypatch):
+    svc, events = make_service(tmp_path)
+
+    async def dead_tts(text, voice):
+        return None  # synth failed
+
+    monkeypatch.setattr(voice_service_module, "_synthesize_speech", dead_tts)
+    svc._config["proactiveVoice"] = True
+    svc._active_session_id = None
+    _pin_hour(monkeypatch, 12)
+    await svc._maybe_announce("voice-mission-5", "title")
+    # No silent announce with a missing blob.
+    assert not events_of(events, "voice_announce")
+
+
+async def test_announce_line_caps_length(tmp_path):
+    svc, _ = make_service(tmp_path)
+    long_title = "x" * 400
+    line = svc._announce_line(long_title)
+    assert len(line) <= 180
+    assert line.endswith("…")
+
+
+async def test_watch_mission_announces_end_to_end(tmp_path, monkeypatch):
+    """The full report-back path fires voice_announce when opted in and no
+    live session — the announce is triggered from inside _watch_mission."""
+    svc, events, rig = _mission_rig(tmp_path, monkeypatch)
+    calls = _fake_tts(monkeypatch, "ZZZ")
+    svc._config["proactiveVoice"] = True
+    svc._config["quietHours"] = {"start": 22, "end": 8}
+    svc._active_session_id = None  # no live exchange
+    _pin_hour(monkeypatch, 12)
+    rig.final_text = "All green."
+
+    await svc.handle_tool_call(
+        _act_cmd("", "c1", "mission.spawn", args={"prompt": "run the checks"})
+    )
+    events.clear()
+    rig.gate.set()
+    await _drain_watchers(svc)
+
+    (update,) = events_of(events, "voice_mission_update")
+    assert update["voiceSessionId"] == ""  # no live session
+    (ann,) = events_of(events, "voice_announce")
+    assert ann["source"] == "mission"
+    assert ann["audioB64"] == "ZZZ"
+    assert "is done." in ann["text"]
+    assert calls  # TTS reached
+
+
+async def test_watch_mission_no_announce_with_live_session(tmp_path, monkeypatch):
+    """A live voice session hears the update inline — no proactive announce."""
+    svc, events, rig = _mission_rig(tmp_path, monkeypatch)
+    calls = _fake_tts(monkeypatch, "ZZZ")
+    svc._config["proactiveVoice"] = True
+    svc._active_session_id = "voice-live"
+    _pin_hour(monkeypatch, 12)
+
+    await svc.handle_tool_call(
+        _act_cmd("voice-live", "c1", "mission.spawn", args={"prompt": "run the checks"})
+    )
+    events.clear()
+    rig.gate.set()
+    await _drain_watchers(svc)
+
+    assert events_of(events, "voice_mission_update")  # inline path still fires
+    assert not events_of(events, "voice_announce")
+    assert not calls
+
+
+# ── TTS helper ──────────────────────────────────────────────────────────────
+
+
+async def test_synthesize_speech_returns_none_on_http_500(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    class Resp500:
+        status_code = 500
+        content = b""
+        text = "server error"
+
+        def json(self):
+            return {}
+
+    # Two 500s (helper retries once), then it must give up with None.
+    install_fake_httpx(monkeypatch, [Resp500(), Resp500()])
+    out = await voice_service_module._synthesize_speech("hello", "marin")
+    assert out is None
+
+
+async def test_synthesize_speech_returns_none_no_api_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    out = await voice_service_module._synthesize_speech("hello", "marin")
+    assert out is None
+
+
+async def test_synthesize_speech_never_raises_on_network_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    # Both attempts raise — helper must swallow and return None.
+    install_fake_httpx(monkeypatch, [ConnectionError("down"), ConnectionError("still down")])
+    out = await voice_service_module._synthesize_speech("hello", "marin")
+    assert out is None
+
+
+async def test_synthesize_speech_success_returns_base64(tmp_path, monkeypatch):
+    import base64 as _b64
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    class Resp200:
+        status_code = 200
+        content = b"\x00\x01\x02mp3bytes"
+        text = ""
+
+        def json(self):
+            return {}
+
+    calls = install_fake_httpx(monkeypatch, [Resp200()])
+    out = await voice_service_module._synthesize_speech("hi", "shimmer")
+    assert out == _b64.b64encode(b"\x00\x01\x02mp3bytes").decode("ascii")
+    # marin/cedar map to the default TTS voice; a real TTS voice passes through.
+    assert calls[0]["json"]["voice"] == "shimmer"
+    assert calls[0]["json"]["response_format"] == "mp3"
+
+
+async def test_synthesize_speech_maps_realtime_voice_to_tts_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.delenv("FREYJA_VOICE_TTS_VOICE", raising=False)
+
+    class Resp200:
+        status_code = 200
+        content = b"x"
+        text = ""
+
+        def json(self):
+            return {}
+
+    calls = install_fake_httpx(monkeypatch, [Resp200()])
+    await voice_service_module._synthesize_speech("hi", "marin")  # realtime-only voice
+    assert calls[0]["json"]["voice"] == "shimmer"  # default TTS voice

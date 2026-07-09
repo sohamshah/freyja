@@ -316,6 +316,13 @@ function VoiceSettings() {
     setIdleDraft(null)
   }
 
+  const setQuietHour = (which: 'start' | 'end', raw: string) => {
+    const n = Math.round(Number(raw))
+    if (!Number.isFinite(n)) return
+    const h = Math.max(0, Math.min(23, n))
+    patch({ quietHours: { ...config.quietHours, [which]: h } })
+  }
+
   // The active value always appears in its dropdown even if the bridge's
   // availability probe didn't list it (config.model is a free string —
   // reserved seats for future Grok/Gemini realtime models).
@@ -425,6 +432,68 @@ function VoiceSettings() {
           />
         </div>
       </div>
+
+      <button
+        onClick={() => patch({ proactiveVoice: !config.proactiveVoice })}
+        className={`group flex w-full items-start gap-3 rounded-lg px-3 py-3 text-left transition-colors ${
+          config.proactiveVoice
+            ? 'bg-accent/10 ring-1 ring-accent/30'
+            : 'hover:bg-white/[0.035] ring-hairline'
+        }`}
+      >
+        <div className="mt-[2px] flex h-4 w-4 shrink-0 items-center justify-center">
+          <div
+            className={`h-3 w-3 rounded-full ring-1 ${
+              config.proactiveVoice ? 'bg-accent/80 ring-accent' : 'bg-fg-3/30 ring-fg-3'
+            }`}
+          />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-[12px] text-fg-0">Speak up on their own</span>
+            <span
+              className={`font-mono text-[9.5px] uppercase tracking-[0.08em] ${
+                config.proactiveVoice ? 'text-accent' : 'text-fg-3'
+              }`}
+            >
+              {config.proactiveVoice ? 'ON' : 'OFF'}
+            </span>
+          </div>
+          <div className="mt-[3px] text-[11.5px] leading-[1.55] text-fg-2">
+            Let Freyja speak a line when a background task finishes. Off during quiet
+            hours; never while you&rsquo;re already talking.
+          </div>
+        </div>
+      </button>
+
+      {config.proactiveVoice && (
+        <div className="flex items-center gap-2 pl-3 text-[11px] text-fg-2">
+          <span className="label text-fg-3">quiet hours</span>
+          <input
+            type="number"
+            min={0}
+            max={23}
+            value={config.quietHours.start}
+            onChange={(e) => setQuietHour('start', e.target.value)}
+            aria-label="quiet hours start"
+            className="w-14 rounded border border-white/[0.10] bg-black/[0.30] px-1.5 py-1 text-center font-mono text-[11.5px] text-fg-0 focus:border-accent/[0.40] focus:outline-none"
+          />
+          <span className="font-mono text-fg-3">→</span>
+          <input
+            type="number"
+            min={0}
+            max={23}
+            value={config.quietHours.end}
+            onChange={(e) => setQuietHour('end', e.target.value)}
+            aria-label="quiet hours end"
+            className="w-14 rounded border border-white/[0.10] bg-black/[0.30] px-1.5 py-1 text-center font-mono text-[11.5px] text-fg-0 focus:border-accent/[0.40] focus:outline-none"
+          />
+          <span className="font-mono text-[10px] text-fg-3">
+            silent {String(config.quietHours.start).padStart(2, '0')}–
+            {String(config.quietHours.end).padStart(2, '0')} (local, 24h)
+          </span>
+        </div>
+      )}
 
       {!config.hasApiKey && (
         <div className="rounded-md bg-warn/[0.07] px-2.5 py-2 font-mono text-[10.5px] text-warn ring-1 ring-warn/20">

@@ -384,6 +384,13 @@ export type VoiceConfig = {
   voice: string
   vadMode: 'semantic_vad' | 'server_vad'
   idleTimeoutSec: number
+  /** Proactive spoken announcements: let Freyja speak up unprompted when a
+   *  background mission finishes. OFF by default; gated by quietHours and
+   *  never fires while a live voice session is open. */
+  proactiveVoice: boolean
+  /** No announcements while the local hour is in [start, end) — wrap-around
+   *  aware (22..8 spans midnight). 24h local hours. */
+  quietHours: { start: number; end: number }
   available: { models: string[]; voices: string[] }
   /** Capability flags for the UI. */
   hasApiKey: boolean
@@ -679,6 +686,8 @@ export type BridgeCommand =
         voice?: string
         vadMode?: 'semantic_vad' | 'server_vad'
         idleTimeoutSec?: number
+        proactiveVoice?: boolean
+        quietHours?: { start?: number; end?: number }
       }
     }
 
@@ -1123,6 +1132,20 @@ export type BridgeEvent =
       title: string
       /** Final assistant text, capped at 400 chars bridge-side. */
       text: string
+    }
+  | {
+      /** Proactive unprompted announcement — Freyja speaking up when a
+       *  background mission finished and NO live exchange was open. The
+       *  bridge already gated this (proactiveVoice on, not quiet hours,
+       *  no active session, deduped); the renderer re-checks proactiveVoice
+       *  and plays audioB64 through a dedicated short-lived audio element. */
+      type: 'voice_announce'
+      /** The spoken line (also shown in the subtle notice). */
+      text: string
+      /** base64 mp3 from the bridge's TTS; may be absent if synth failed. */
+      audioB64?: string
+      /** What triggered it — 'mission' for a finished background mission. */
+      source: 'mission'
     }
 
 // --- Channel names ---

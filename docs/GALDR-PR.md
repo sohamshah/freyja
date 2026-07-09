@@ -52,6 +52,17 @@ any code was written).
   answer lands as a receipt, a macOS notification, and — if a voice
   exchange is live — Freyja says it out loud. **mission.status** answers
   *"how are my missions doing?"* ("2 running, 1 done").
+- **Proactive speech** (opt-in). When a background mission finishes and
+  you're *not* already talking, Freyja can speak up unprompted — one short
+  line, synthesized bridge-side (`gpt-4o-mini-tts`, the owned key) and
+  emitted as `voice_announce {text, audioB64}`. Safety is the point:
+  **default OFF**, honored on both sides; a **quiet-hours** window
+  (default 22–8, wrap-around aware) silences it; it never fires while a
+  live exchange is open (that path already speaks the update inline) and
+  never announces the same mission twice; and the announcement is
+  **interruptible** — opening a session (⌥Space) cuts it off. A dead TTS
+  is best-effort (returns nothing) and never breaks the report-back. In
+  settings: a *"speak up on their own"* toggle plus the quiet-hours bounds.
 - **Slack, first-class** (slice 2). *"Read me #general"* → `slack.read`
   pulls the last messages (names resolved, cached) for a spoken digest;
   *"tell Ada I'm running late"* → `slack.send` posts to a channel or DMs
@@ -139,7 +150,12 @@ bridge**.
   verbs refuse with a spoken setup hint.
 - `FREYJA_VOICE_LOOK_MODEL` (optional, default `gpt-5-mini`) — the
   one-shot vision model behind screen.look.
-- `~/.freyja/voice/config.json` — model/voice/VAD/idle-timeout, bridge-owned.
+- `FREYJA_VOICE_TTS_MODEL` / `FREYJA_VOICE_TTS_VOICE` (optional, default
+  `gpt-4o-mini-tts` / `shimmer`) — the TTS behind proactive announcements
+  (the realtime marin/cedar voices aren't TTS voices, so a TTS-appropriate
+  voice is used).
+- `~/.freyja/voice/config.json` — model/voice/VAD/idle-timeout plus
+  `proactiveVoice` + `quietHours`, bridge-owned.
 
 ## Deliberately out of slice 1
 

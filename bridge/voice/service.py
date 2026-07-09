@@ -17,6 +17,7 @@ testable before/without the adapters landing.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -39,16 +40,51 @@ _WEBRTC_URL = "https://api.openai.com/v1/realtime/calls"
 _TRANSCRIPTION_MODEL = "gpt-realtime-whisper"
 _CONFIRM_TTL_SEC = 90.0
 
+# Proactive announcements are synthesized through the plain TTS endpoint,
+# NOT the realtime session (there's no live socket when Freyja speaks up
+# unprompted). The realtime voices (marin/cedar) aren't TTS voices, so
+# announcements use a TTS-appropriate voice — overridable via env.
+_TTS_URL = "https://api.openai.com/v1/audio/speech"
+_TTS_MODEL_DEFAULT = "gpt-4o-mini-tts"
+_TTS_VOICE_DEFAULT = "shimmer"
+# One announcement line, hard cap — a proactive interjection is one
+# sentence, never a paragraph read aloud at you.
+_ANNOUNCE_MAX_CHARS = 180
+
 # Persisted config keys — everything else in the VoiceConfig payload
 # (available/*, capability flags) is computed live, never written.
-_CONFIG_KEYS = ("enabled", "model", "voice", "vadMode", "idleTimeoutSec")
+_CONFIG_KEYS = (
+    "enabled",
+    "model",
+    "voice",
+    "vadMode",
+    "idleTimeoutSec",
+    "proactiveVoice",
+    "quietHours",
+)
 _CONFIG_DEFAULTS: dict[str, Any] = {
     "enabled": True,
     "model": "gpt-realtime-2.1-mini",
     "voice": "marin",
     "vadMode": "semantic_vad",
     "idleTimeoutSec": 25,
+    # Proactive spoken announcements (slice: proactive/ambient). OFF by
+    # default — unprompted audio is intrusive, so the operator must opt
+    # in. Honored on BOTH sides: the bridge gates _maybe_announce and the
+    # renderer re-checks before it plays.
+    "proactiveVoice": False,
+    # 24h local hours, no announcements while the local hour is in
+    # [start, end) treating wrap-around (22..8 spans midnight).
+    "quietHours": {"start": 22, "end": 8},
 }
+def _default_config() -> dict[str, Any]:
+    """Fresh defaults with the nested quietHours deep-copied so instances
+    (and a corrupt-file fallback) never share the same window object."""
+    cfg = dict(_CONFIG_DEFAULTS)
+    cfg["quietHours"] = dict(_CONFIG_DEFAULTS["quietHours"])
+    return cfg
+
+
 _AVAILABLE_MODELS = (
     "gpt-realtime-2.1-mini",
     "gpt-realtime-2.1",
@@ -119,6 +155,69 @@ async def _post_notification(title: str, text: str) -> tuple[bool, str]:
         return False, str(exc)
 
 
+async def _synthesize_speech(text: str, voice: str) -> Optional[str]:
+    """Text → base64 mp3 via OpenAI's TTS endpoint, using the OWNED
+    OPENAI_API_KEY (the audio never leaves the bridge as bytes — the
+    renderer only ever gets the base64 blob). Module-level so tests can
+    monkeypatch the whole seam.
+
+    Best-effort by contract: announcements must NEVER break the mission
+    report-back path, so ANY failure (no key, network, 4xx/5xx, decode)
+    returns None instead of raising, and one retry covers a transient
+    5xx / network blip. The key and the audio are never logged.
+
+    ``voice`` is the caller's realtime voice preference, mapped to a
+    TTS-appropriate voice below (marin/cedar aren't TTS voices)."""
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key or not text.strip():
+        return None
+    model = os.environ.get("FREYJA_VOICE_TTS_MODEL", "").strip() or _TTS_MODEL_DEFAULT
+    tts_voice = _tts_voice_for(voice)
+    payload = {
+        "model": model,
+        "voice": tts_voice,
+        "input": text,
+        "response_format": "mp3",
+    }
+    headers = {"Authorization": f"Bearer {api_key}"}
+    for _attempt in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(_TTS_URL, headers=headers, json=payload)
+        except Exception:  # noqa: BLE001 — network/timeout: retry once, then give up
+            continue
+        if resp.status_code >= 500:
+            continue  # transient server error — one retry
+        if resp.status_code >= 400:
+            return None  # 4xx won't fix on retry (bad key/params)
+        try:
+            return base64.b64encode(resp.content).decode("ascii")
+        except Exception:  # noqa: BLE001 — a torn body is a dead announcement, not a crash
+            return None
+    return None
+
+
+def _tts_voice_for(voice: str) -> str:
+    """Map the operator's realtime voice preference onto a TTS voice.
+    The realtime-only voices (marin, cedar) have no TTS equivalent, so
+    they fall through to the default; a voice the TTS endpoint knows
+    (shimmer, alloy, echo, coral, …) passes through. Overridable wholesale
+    via FREYJA_VOICE_TTS_VOICE."""
+    override = os.environ.get("FREYJA_VOICE_TTS_VOICE", "").strip()
+    if override:
+        return override
+    v = (voice or "").strip().lower()
+    if v in _TTS_VOICES:
+        return v
+    return _TTS_VOICE_DEFAULT
+
+
+# Voices the TTS endpoint accepts (the realtime marin/cedar are NOT here).
+_TTS_VOICES = frozenset(
+    {"alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"}
+)
+
+
 class VoiceService:
     """Process-level voice service, hung off ``_BridgeState.voice``.
 
@@ -144,7 +243,7 @@ class VoiceService:
         self.undo_ledger = UndoLedger(capacity=20)
         self._registry = registry
         self._emit_fn = emit_fn
-        self._config: dict[str, Any] = dict(_CONFIG_DEFAULTS)
+        self._config: dict[str, Any] = _default_config()
         # Strong refs — asyncio holds only weak refs to tasks, and a
         # GC'd task would silently drop a mid-flight verb execution.
         self._tasks: set[asyncio.Task] = set()
@@ -165,6 +264,9 @@ class VoiceService:
         # Process-lifetime, like the undo ledger — a bridge restart
         # orphans the watchers anyway.
         self._missions: dict[str, dict[str, Any]] = {}
+        # Proactive-announce dedupe: a missionSessionId announced once is
+        # never announced again — never speak the same thing twice.
+        self._announced_missions: set[str] = set()
 
     # ── plumbing ─────────────────────────────────────────────────────────
 
@@ -235,7 +337,7 @@ class VoiceService:
             self._config = self._load_config()
         except Exception as exc:  # noqa: BLE001
             self._log("warn", f"voice config load failed, using defaults: {exc}")
-            self._config = dict(_CONFIG_DEFAULTS)
+            self._config = _default_config()
         try:
             from bridge.voice.adapters import timers
 
@@ -253,7 +355,7 @@ class VoiceService:
     # ── config ───────────────────────────────────────────────────────────
 
     def _load_config(self) -> dict[str, Any]:
-        cfg = dict(_CONFIG_DEFAULTS)
+        cfg = _default_config()
         try:
             raw = json.loads(self._config_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
@@ -287,9 +389,28 @@ class VoiceService:
         timeout = patch.get("idleTimeoutSec")
         if isinstance(timeout, (int, float)) and not isinstance(timeout, bool):
             cfg["idleTimeoutSec"] = int(max(5, min(600, timeout)))
+        if isinstance(patch.get("proactiveVoice"), bool):
+            cfg["proactiveVoice"] = patch["proactiveVoice"]
+        # quietHours: a full {start,end} object OR either bound alone.
+        # Each hour is clamped to 0-23; a malformed bound is ignored (the
+        # prior value stands) rather than defaulting the whole window.
+        qh = patch.get("quietHours")
+        if isinstance(qh, dict):
+            current = cfg.get("quietHours")
+            merged = dict(current) if isinstance(current, dict) else {"start": 22, "end": 8}
+            for key in ("start", "end"):
+                val = qh.get(key)
+                if isinstance(val, (int, float)) and not isinstance(val, bool):
+                    merged[key] = int(max(0, min(23, val)))
+            cfg["quietHours"] = {"start": int(merged["start"]), "end": int(merged["end"])}
 
     def get_config(self) -> dict[str, Any]:
         cfg = {k: self._config[k] for k in _CONFIG_KEYS}
+        # Defensive copy of the nested window so a consumer can't mutate
+        # the live config through the payload.
+        qh = cfg.get("quietHours")
+        if isinstance(qh, dict):
+            cfg["quietHours"] = dict(qh)
         cfg["available"] = {
             "models": list(_AVAILABLE_MODELS),
             "voices": list(_AVAILABLE_VOICES),
@@ -1082,6 +1203,12 @@ class VoiceService:
                     "text": text[:400],
                 }
             )
+            # Proactive interjection — only when NO live exchange is open
+            # (a live one already hears the update inline above), the
+            # operator opted in, and it isn't quiet hours. Best-effort:
+            # a dead TTS returns None and simply doesn't announce; the
+            # report-back above already landed regardless.
+            await self._maybe_announce(session_id, title)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 — watcher must never crash anything
@@ -1102,6 +1229,88 @@ class VoiceService:
                 )
             except Exception:  # noqa: BLE001
                 pass
+
+    # ── proactive announcements (unprompted speech) ──────────────────────
+
+    def _in_quiet_hours(self, hour: int) -> bool:
+        """True when ``hour`` (0-23, local) falls inside the configured
+        quiet window, treating [start, end) with wrap-around: a window of
+        22..8 spans midnight (22, 23, 0..7 are quiet; 8 is not). A window
+        of 1..5 is the plain non-wrap case (1..4 quiet, 5 not). A window
+        of start == end is empty (never quiet). Pure — unit-tested
+        directly."""
+        qh = self._config.get("quietHours")
+        if not isinstance(qh, dict):
+            return False
+        try:
+            start = int(qh.get("start"))
+            end = int(qh.get("end"))
+        except (TypeError, ValueError):
+            return False
+        hour = int(hour) % 24
+        start %= 24
+        end %= 24
+        if start == end:
+            return False  # empty window
+        if start < end:
+            return start <= hour < end
+        # Wrap-around window (spans midnight): quiet when at/after start OR
+        # before end.
+        return hour >= start or hour < end
+
+    async def _maybe_announce(self, mission_session_id: str, title: str) -> None:
+        """Speak up unprompted when a background mission finishes — the
+        second half of the proactive/ambient feature.
+
+        Gate (ALL must hold, in this order):
+          1. proactiveVoice config is truthy — the operator opted in.
+          2. NO live voice exchange (self._active_session_id is None) — a
+             live one already hears the mission update inline, so a second
+             spoken line would double it.
+          3. Not quiet hours (local clock).
+          4. This missionSessionId hasn't already been announced.
+
+        On a clear gate: synthesize a SHORT one-sentence line and emit
+        voice_announce {text, audioB64, source:"mission"}. Best-effort —
+        a dead TTS (audioB64 None) is simply not announced; nothing here
+        raises into the watcher."""
+        if not self._config.get("proactiveVoice"):
+            return
+        if self._active_session_id is not None:
+            return
+        if self._in_quiet_hours(time.localtime().tm_hour):
+            return
+        if mission_session_id in self._announced_missions:
+            return
+        # Mark BEFORE the await so a re-entrant report for the same mission
+        # (shouldn't happen, but watchers are async) can't double-announce.
+        self._announced_missions.add(mission_session_id)
+        line = self._announce_line(title)
+        audio_b64 = await _synthesize_speech(line, str(self._config.get("voice") or ""))
+        if not audio_b64:
+            # TTS unavailable — don't emit a silent (audio-less) announce.
+            # The mission stays marked as announced: its watcher fires once,
+            # so there's nothing to retry, and the report-back (receipt +
+            # notification) already landed above regardless.
+            return
+        self._emit(
+            {
+                "type": "voice_announce",
+                "text": line,
+                "audioB64": audio_b64,
+                "source": "mission",
+            }
+        )
+
+    @staticmethod
+    def _announce_line(title: str) -> str:
+        """One short spoken sentence for a finished mission, capped so a
+        proactive interjection is never a paragraph read at you."""
+        title = (title or "a task").strip() or "a task"
+        line = f"Freyja: {title} is done."
+        if len(line) > _ANNOUNCE_MAX_CHARS:
+            line = line[: _ANNOUNCE_MAX_CHARS - 1].rstrip() + "…"
+        return line
 
     def _register_service_verbs(self, registry: Any) -> None:
         """mission.spawn / mission.status / computer.do — registered here

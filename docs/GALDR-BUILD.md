@@ -87,7 +87,7 @@ Renderer → bridge commands (all include `type`; ids are strings):
 | `voice_receipts_list` | `{limit?: number}` | `voice_receipts` |
 | `voice_undo` | `{receiptId}` | `voice_tool_result` + `voice_receipt` |
 | `voice_get_config` | `{}` | `voice_config` |
-| `voice_set_config` | `{patch: {enabled?, model?, voice?, vadMode?, idleTimeoutSec?}}` | `voice_config` |
+| `voice_set_config` | `{patch: {enabled?, model?, voice?, vadMode?, idleTimeoutSec?, proactiveVoice?, quietHours?: {start?, end?}}}` | `voice_config` |
 
 Bridge → renderer events:
 
@@ -103,6 +103,7 @@ Bridge → renderer events:
 | `voice_panic` | `{voiceSessionId, matched}` (floor detected stop-word in live transcript; renderer must `response.cancel`, pause playback, end session) |
 | `voice_timer_fired` | `{label, seconds}` |
 | `voice_mission_update` | `{voiceSessionId ("" if none live), missionSessionId, title, text (≤400)}` — slice 2: a spawned mission finished; a live voice session speaks it via `engine.sendText` |
+| `voice_announce` | `{text, audioB64?, source:"mission"}` — proactive/ambient: Freyja speaks up UNPROMPTED when a background mission finished and NO live exchange was open. Bridge gates it (`proactiveVoice` on, not quiet hours, `_active_session_id` is None, missionSessionId deduped) and synthesizes the line via TTS (`gpt-4o-mini-tts`, owned key); renderer re-checks `proactiveVoice` and plays `audioB64` through a dedicated short-lived, mic-less `<audio>` (interruptible — opening a session stops it) plus a subtle auto-dismissing toast |
 
 `Receipt` (shape shared by python dataclass and TS type):
 
@@ -122,6 +123,8 @@ type VoiceConfig = {
   enabled: boolean; model: string; voice: string;
   vadMode: "semantic_vad" | "server_vad";
   idleTimeoutSec: number;
+  proactiveVoice: boolean;                      // unprompted spoken announcements — default OFF
+  quietHours: { start: number; end: number };   // 24h local; no announce in [start,end), wrap-around
   available: { models: string[]; voices: string[] };
   hasApiKey: boolean; spotifySearch: boolean;  // capability flags for the UI
 }

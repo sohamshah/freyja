@@ -342,6 +342,8 @@ export function App() {
         voice: 'marin',
         vadMode: 'semantic_vad',
         idleTimeoutSec: 25,
+        proactiveVoice: false,
+        quietHours: { start: 22, end: 8 },
         available: {
           models: ['gpt-realtime-2.1', 'gpt-realtime-2.1-mini', 'gpt-realtime'],
           voices: ['marin', 'cedar', 'alloy', 'echo'],

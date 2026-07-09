@@ -352,6 +352,62 @@ function projectionEnsure(): void {
   if (sid) projectionBegin(sid)
 }
 
+// ── Proactive announcements (unprompted spoken interjections) ────────
+// A mic-less, separate audio path — NOT the VoiceEngine. The bridge
+// gates it (proactiveVoice on, not quiet hours, no live exchange,
+// deduped) and ships the audio as base64 mp3; the renderer is the final
+// say and re-checks proactiveVoice before playing. Only ever ONE
+// announcement plays at a time — a new one replaces the old — and it's
+// interruptible: opening a voice session stops it immediately.
+
+/** The single short-lived <audio> for the current announcement, or null. */
+let _announceAudio: HTMLAudioElement | null = null
+
+/** Stop and release any playing announcement audio. Idempotent. Called
+ *  when a new announcement arrives, when a voice session opens (barge-in),
+ *  and defensively on end. */
+function stopAnnouncement(): void {
+  const el = _announceAudio
+  _announceAudio = null
+  if (el === null) return
+  try {
+    el.pause()
+    el.onended = null
+    el.onerror = null
+    el.src = ''
+    el.remove()
+  } catch {
+    /* best effort — a half-torn element must not throw into the store */
+  }
+}
+
+/** Play a proactive announcement through a dedicated, short-lived audio
+ *  element. Replaces any currently-playing announcement (never queues).
+ *  Best-effort: autoplay refusal / decode error just leaves the visible
+ *  notice standing. */
+function playAnnouncement(audioB64: string): void {
+  stopAnnouncement()
+  if (typeof document === 'undefined' || typeof Audio === 'undefined') return
+  let el: HTMLAudioElement
+  try {
+    el = new Audio(`data:audio/mp3;base64,${audioB64}`)
+  } catch {
+    return
+  }
+  el.volume = 0.9
+  el.onended = () => {
+    if (_announceAudio === el) stopAnnouncement()
+  }
+  el.onerror = () => {
+    if (_announceAudio === el) stopAnnouncement()
+  }
+  _announceAudio = el
+  // play() rejects on autoplay policy — swallow; the notice still shows.
+  void el.play().catch(() => {
+    if (_announceAudio === el) stopAnnouncement()
+  })
+}
+
 /** Mic level above which the operator counts as "still talking" for the
  *  idle timer. Sits above the breathing-room noise floor (~0.08 after
  *  the engine's gain) but well below conversational speech. */
@@ -628,6 +684,9 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
       s.endVoice('toggle')
       return
     }
+    // Barge-in: opening an exchange stops any proactive announcement in
+    // flight so an unprompted line never plays over a live conversation.
+    stopAnnouncement()
     // Alt+Space is registered unconditionally in main (contract §7.4 —
     // "the renderer decides whether voice is enabled"), so THIS is where
     // the Settings toggle is enforced: never open a live-mic exchange
@@ -951,6 +1010,27 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
             summary: event.label ? `⏱ ${event.label}` : '⏱ timer done',
           },
         })
+        return
+      }
+
+      case 'voice_announce': {
+        // Proactive unprompted speech. The bridge already gated this, but
+        // the RENDERER is the final say — the operator may have toggled
+        // proactiveVoice off since, so re-check here (belt-and-suspenders).
+        const s = get()
+        if (!s.config?.proactiveVoice) return
+        // Never speak over a live exchange — it already heard the update
+        // inline. (The bridge won't emit voice_announce while a session is
+        // live, but a race between session-open and a report is possible.)
+        if (s.active) return
+        if (event.audioB64) playAnnouncement(event.audioB64)
+        // Subtle, auto-dismissing notice so the spoken line is also
+        // glanceable — a plain info toast (2.6s auto-dismiss).
+        try {
+          useHarness.getState().showToast(event.text, 'info')
+        } catch (err) {
+          console.error('[voice-store] announce toast failed', err)
+        }
         return
       }
 
