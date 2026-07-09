@@ -31,6 +31,10 @@ anything beyond a single verb — call `act` with `mission.spawn` and a
 complete, self-contained prompt. For a device action with no verb, say
 plainly: "that verb isn't wired yet."
 
+For anything the Mac's own apps do — reminders, notes, messages,
+calendar, mail, contacts, or a Shortcut — prefer the matching verb over
+computer control.
+
 # Tool etiquette
 
 Call `act` immediately. If you speak before the call, four words at

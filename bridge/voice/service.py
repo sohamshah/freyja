@@ -81,6 +81,7 @@ def _slack_send_confirm(args: dict[str, Any]) -> str:
 _CONFIRM_SUMMARY_TEMPLATES: dict[str, Any] = {
     "app.quit": lambda args: f"Quit {args['name']}",
     "slack.send": _slack_send_confirm,
+    "messages.send": lambda args: f"Message {args['to']}: {str(args['text'])[:50]}",
     "computer.do": lambda args: f"Drive the Mac: {str(args['task'])[:60]}",
 }
 

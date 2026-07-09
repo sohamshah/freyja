@@ -29,6 +29,12 @@ any code was written).
   `timer.set/list/cancel`, `mission.spawn`. Slice-2 reach: `slack.read`,
   `slack.send`, `screen.look`, `mission.status`, `computer.do`, and the
   live computer verbs `computer.see/click/type/press/scroll/menu/open_url`.
+  Slice-3 native apps + Shortcuts: `reminders.create/list`, `notes.append/create`,
+  `messages.send` (confirm), `contacts.find`, `calendar.today/next`,
+  `mail.unread`, and `shortcuts.list/run` — every apple.* verb degrades
+  cleanly when the Automation TCC grant is missing (`data.setup="automation"`),
+  and `shortcuts.run` inherits the operator's whole Shortcuts library
+  (App Intents) as voice verbs.
 - **Two-tier safety.** `auto` verbs run immediately; `confirm` verbs
   (quit an app) require a single-use, 90-second, args-scoped token — the
   model must relay the ask and re-call after you say yes, out loud.

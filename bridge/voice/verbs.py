@@ -97,7 +97,9 @@ class VerbRegistry:
 
 
 def build_default_registry() -> VerbRegistry:
-    """Registers spotify.*, system.*, app.*, timer.*, slack.*, screen.*.
+    """Registers spotify.*, system.*, app.*, timer.*, slack.*, screen.*,
+    reminders.*, notes.*, messages.*, contacts.*, calendar.*, mail.*,
+    shortcuts.*.
 
     `mission.spawn` / `mission.status` / `computer.do` are registered by
     service.py (they need bridge session access). Adapters are imported

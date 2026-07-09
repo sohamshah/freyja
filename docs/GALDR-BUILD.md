@@ -238,6 +238,30 @@ older see is detectably stale instead of silently re-pointing.
 | `computer.menu` | `{menu_path[], app?}` | auto | — | System Events UI scripting via `mac.run_osascript`: nested `click menu item … of menu … of menu bar 1` path for the frontmost (or named) process; every segment `as_quoted`; needs ≥2 path segments; zero coordinates |
 | `computer.open_url` | `{url}` | auto | — | scheme allowlist http/https only (javascript:/file: refused), then `run_exec(["open", url])` |
 
+### Slice 3 — native apps + Shortcuts (P1 reach: the Mac's own apps)
+
+`bridge/voice/adapters/apple.py` + `bridge/voice/adapters/shortcuts.py`.
+Apple-app AppleScript needs the macOS **Automation** TCC grant (the
+packaged bundle owns it; a bare dev shell does not) — every apple.* verb
+detects the denied case (`_automation_denied`: "Not authorized to send
+Apple events" / -1743 / "not allowed assistive access") and degrades to
+`ok=False` with a setup message + `data.setup="automation"`, never a hang
+or a raw stderr. The `shortcuts` CLI needs no TCC.
+
+| verb | args | tier | undo | notes |
+|---|---|---|---|---|
+| `reminders.create` | `{text, list?, due?}` | auto | ✓ (delete) | `make new reminder`; `due` is handed to AppleScript's own `date` coercion, dropped if unparseable; summary `⊕ reminder: <text[:40]>` |
+| `reminders.list` | `{list?, count?}` | auto | — | incomplete reminders, newest first, cap 10; `data.reminders [{text, due?}]` |
+| `notes.append` | `{text, note?}` | auto | — | append a timestamped line to a note by name (default "Freyja"), create if missing; summary `✎ noted` |
+| `notes.create` | `{title, body?}` | auto | — | new note; summary `✎ note: <title>` |
+| `messages.send` | `{to, text}` | **confirm** | — | iMessage; `to` a phone/handle sends directly, a bare name resolves through Contacts with unique-match-or-enumerate (ambiguous/unknown → ask with candidates, never guess); summary `→ <to>: <text[:40]>` |
+| `contacts.find` | `{name}` | auto | — | matched name + phones/emails; ambiguity → enumerate candidates; summary `<name>: <first phone/email>` |
+| `calendar.today` | `{}` | auto | — | today's events via a bounded `whose` query (15 s timeout, clean "couldn't read Calendar in time" on timeout); `data.events [{title, start HH:MM, end?}]` |
+| `calendar.next` | `{}` | auto | — | earliest event in the next 14 days (same bounded/timeout discipline) |
+| `mail.unread` | `{count?}` | auto | — | senders + subjects of the last N unread inbox messages (cap 8, 12 s timeout, graceful); never the body; `data.messages [{from, subject}]` |
+| `shortcuts.list` | `{}` | auto | — | `shortcuts list` via run_exec, names cached 60 s; `data.shortcuts [names]`; summary `N shortcuts` |
+| `shortcuts.run` | `{name, input?}` | auto | — | fuzzy-resolve `name` against the cached list (exact → unique-substring → ask on ambiguity), then `shortcuts run "<name>"`; `input` via a temp `--input-path` file; captures stdout; summary `▷ ran <name>`. Inherits the whole Shortcuts library (App Intents) as voice verbs |
+
 Mission report-back (service.py): every spawn registers a named watcher
 task that awaits the session's `pending_task` (the scheduler-runtime
 capture pattern), then extracts the final assistant text and surfaces the

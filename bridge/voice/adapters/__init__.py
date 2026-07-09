@@ -14,7 +14,17 @@ monkeypatched at each module's client attribute instead — no test ever
 touches real Slack, OpenAI, or the screen.
 """
 
-from bridge.voice.adapters import computer, mac, screen, slack, spotify, system, timers
+from bridge.voice.adapters import (
+    apple,
+    computer,
+    mac,
+    screen,
+    shortcuts,
+    slack,
+    spotify,
+    system,
+    timers,
+)
 from bridge.voice.adapters.timers import TimerManager, set_emitter
 from bridge.voice.verbs import VerbRegistry
 
@@ -25,15 +35,19 @@ def register_all(registry: VerbRegistry) -> None:
     timers.register(registry)
     slack.register(registry)
     screen.register(registry)
+    apple.register(registry)
+    shortcuts.register(registry)
 
 
 __all__ = [
     "TimerManager",
+    "apple",
     "computer",
     "mac",
     "register_all",
     "screen",
     "set_emitter",
+    "shortcuts",
     "slack",
     "spotify",
     "system",
