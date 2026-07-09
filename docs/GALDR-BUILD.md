@@ -511,3 +511,81 @@ seats (config keys reserved: `model` is a free string), spoken attention-queue r
   `.glass .glass-strong .glass-chip .hairline-b .ring-hairline(-strong) .cradle .animate-fade-in`.
 - **Build:** `npm run build` = `vite build` + esbuild main — esbuild does NOT typecheck;
   the typecheck gate is `npx tsc --noEmit` (run it).
+
+---
+
+## 12. Visual computer control rework (2026-07-09) — pinned contract
+
+**Why:** the realtime voice model CAN see images (probed live: gpt-realtime-2.1
+and -mini both read text off a PNG, and completed a full see→inject-image→click
+loop, clicking a button's center within tolerance). The original text-only
+`computer.see` (AX elements + caption) was built on a false "voice model is
+blind" assumption and caused the Arc/Slack failures. Rework to the SAME visual
+loop Freyja's computer-use agent uses: screenshot in, click by pixel coordinates.
+
+### 12.1 Image injection (the crux)
+- **VerbResult** gains optional `image_b64: str | None`, `image_w: int | None`,
+  `image_h: int | None`. Only computer.* verbs set them.
+- **voice_tool_result** event gains optional `imageB64`, `imageW`, `imageH`.
+  The service copies them from the VerbResult onto the event in `_emit_tool_result`.
+- **engine.sendToolResult(callId, outputJson, image?)**: send the
+  `function_call_output` (text) as today; THEN if `image` present:
+  1. delete the previously-injected screenshot item (keep only the latest — the
+     realtime API resends the whole conversation each response and images are
+     ~1–2k tokens each; stale screenshots are pure cost). Track its item id.
+  2. `conversation.item.create` a user message with
+     `[{type:"input_image", image_url:"data:image/png;base64,<b64>"},
+       {type:"input_text", text:"Current screen, <W>x<H>px, (0,0) top-left."}]`
+  3. `response.create`.
+  Capture the created image item's id (from `conversation.item.added`) for step 1
+  next time.
+- **voice-store**: on `voice_tool_result` with `imageB64`, pass it to
+  `engine.sendToolResult`.
+
+### 12.2 computer.* verbs (reworked)
+- **computer.see {}** — screenshot only. Returns image_b64 (api_dims PNG with a
+  light labeled coordinate grid every ~100px to aid the model's aim), image_w/h,
+  and a one-line text output (frontmost app + "screen WxH").
+- **computer.click / type / press / scroll** — do the action, THEN screenshot and
+  return it too (see→act→see in ONE hop; the model always sees the effect of its
+  last action). `computer.click` primary mode is `{x, y}` in the screenshot's
+  pixel space (api_dims — feeds ClickTool directly). Keep `target` (vision
+  grounding) and `ref` as fallbacks.
+- **computer.menu / open_url** — keep; menu returns a screenshot after.
+- Drop the AX-element condensation + the separate caption vision call from
+  computer.see (the model sees the pixels now). `_condense_elements`/ref cache may
+  stay only to back the `ref` fallback.
+- Grid overlay: draw on the api_dims screenshot before b64 (PIL), thin lines +
+  small coordinate labels at gridlines. This measurably improves click accuracy.
+
+### 12.3 Tool gating (temporary)
+- Do NOT register `slack.read`, `slack.send`, `web.read_page` — the "indirect"
+  API tools that caused the API-vs-UI category error. Comment the registrations
+  with a clear "temporarily disabled — see §12" note (easy to restore). KEEP:
+  spotify, system, app.*, apple (reminders/notes/messages/contacts/calendar/mail),
+  files, clipboard, timers, briefing, screen.look, shortcuts, computer.*, mission.*,
+  and the new freyja.* below.
+
+### 12.4 freyja.* verbs (talk to / query Freyja itself)
+- **freyja.sessions {limit?}** — recent Freyja agent sessions from
+  `~/.freyja/sessions/_index.json` (+ per-session working-memory preview where
+  cheap): [{title, updatedAt (relative), preview}]. "What are my agents working
+  on." Cap ~8.
+- **freyja.project_status {name}** — the briefer already clusters sessions into
+  named projects; read today's (or latest) briefing.json and return the matching
+  project's state + summary + related sessions. Fuzzy-match the name.
+- **freyja.ask {question}** — answer a question about ongoing work. Route to
+  `mission.spawn` with a prompt that scopes the agent to the operator's sessions/
+  projects/working-memory (a real Freyja agent researches + reports back via the
+  existing mission report-back). data.sessionId.
+- Read-only over the session index + working memory + briefing; no writes.
+
+### 12.5 System prompt rewrite (prompts.py)
+Reframe as "Freyja, the operator's voice — a powerful computer-controlling
+assistant." Center the visual loop (see → act by pixel coordinates → the result
+screenshot comes back → act again; never guess when you can look). Fold in the
+honesty guardrails the failures demand: after acting, report what the screenshot
+ACTUALLY shows — never claim an effect you can't see; if two actions don't
+progress the goal or the state regresses, STOP and tell the operator what you see
+instead of clicking more. Keep confirm/panic/ambiguity/discretion sections. Add
+that freyja.* answers questions about the operator's own projects/sessions.
