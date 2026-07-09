@@ -16,6 +16,7 @@ touches real Slack, OpenAI, or the screen.
 
 from bridge.voice.adapters import (
     apple,
+    briefing,
     computer,
     files,
     mac,
@@ -41,11 +42,13 @@ def register_all(registry: VerbRegistry) -> None:
     shortcuts.register(registry)
     files.register(registry)
     web.register(registry)
+    briefing.register(registry)
 
 
 __all__ = [
     "TimerManager",
     "apple",
+    "briefing",
     "computer",
     "files",
     "mac",

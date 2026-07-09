@@ -59,6 +59,7 @@ EXPECTED_VERBS = {
     "clipboard.read",
     "clipboard.write",
     "web.read_page",
+    "briefing.read",
 }
 
 # Confirm tier = outward/destructive actions: quitting an app, sending
