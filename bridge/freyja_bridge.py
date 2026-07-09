@@ -10544,6 +10544,48 @@ def _schedule_or_queue_turn(
     return True
 
 
+# A voice EXCHANGE session id is exactly "voice-" + 12 hex (uuid4 slice);
+# voice-mission-<ts> and desktop-<ts> do NOT match, so only a real voice
+# conversation gets seeded with its spoken context when continued by text.
+_VOICE_EXCHANGE_ID_RE = re.compile(r"^voice-[0-9a-f]{12}$")
+
+
+async def _inject_voice_context(sess: "_BridgeSession", summary: str) -> bool:
+    """Seed an empty runtime with the recap of a past VOICE exchange so the
+    operator can pick it up by typing and the agent knows what was said and
+    done aloud. Idempotent (no-ops once the session has any transcript)."""
+    if not summary:
+        return False
+    await sess.initialize()
+    if sess.session is None:
+        return False
+    try:
+        if len(sess.session.transcript) > 0:
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    sess.session.add_user_message(
+        "[This session began as a spoken (voice) exchange. The recap below "
+        "is what was said and done by voice — continue from here as if it "
+        "were part of this conversation.]\n\n" + summary
+    )
+    sess.session.add_assistant_message(
+        "Got it — I have the voice conversation above. What would you like next?"
+    )
+    sess._save_transcript()  # noqa: SLF001
+    log("info", f"seeded voice context for session {sess.id} ({len(summary)} chars)")
+    emit(
+        {
+            "type": "system_event",
+            "sessionId": sess.id,
+            "subtype": "voice_context_restored",
+            "message": f"Continued from the voice conversation ({len(summary)} chars)",
+            "details": {"summaryLength": len(summary)},
+        }
+    )
+    return True
+
+
 async def _inject_legacy_context_summary(
     sess: "_BridgeSession",
     summary: str,
@@ -11476,6 +11518,16 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         context_summary = cmd.get("contextSummary")
         if isinstance(context_summary, str) and context_summary:
             await _inject_legacy_context_summary(sess, context_summary)
+        elif _VOICE_EXCHANGE_ID_RE.match(sess.id) and getattr(state, "voice", None) is not None:
+            # Typing into a session that began as a voice exchange: seed it
+            # from the durable voice transcript so the agent continues with
+            # what was said and done aloud. No-ops if already seeded/nonempty.
+            try:
+                vsummary = state.voice.build_context_summary(sess.id)
+            except Exception:  # noqa: BLE001 — never block the turn on this
+                vsummary = ""
+            if vsummary:
+                await _inject_voice_context(sess, vsummary)
 
         _schedule_or_queue_turn(sess, content, attachments)
         return

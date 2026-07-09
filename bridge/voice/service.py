@@ -800,6 +800,47 @@ class VoiceService:
             if matched:
                 self._emit_panic(voice_session_id, matched)
 
+    def build_context_summary(self, voice_session_id: str, limit_chars: int = 4000) -> str:
+        """A readable recap of a past voice exchange — its turns and the
+        actions taken — so a session CONTINUED BY TEXT starts with the
+        context the spoken conversation built. Reads the durable transcript
+        journal (survives restart, independent of the renderer store), keeps
+        the most recent portion when long. Returns "" when there's nothing."""
+        if not voice_session_id:
+            return ""
+        lines: list[str] = []
+        try:
+            with open(self._transcripts_path, encoding="utf-8") as fh:
+                for raw in fh:
+                    try:
+                        e = json.loads(raw)
+                    except Exception:  # noqa: BLE001 — skip a torn line
+                        continue
+                    if e.get("voiceSessionId") != voice_session_id:
+                        continue
+                    text = str(e.get("text") or "").strip()
+                    if not text:
+                        continue
+                    role = e.get("role")
+                    if role == "user":
+                        lines.append(f"You said: {text}")
+                    elif role == "assistant":
+                        lines.append(f"Freyja said: {text}")
+                    elif role == "tool":
+                        mark = "" if e.get("ok") else " — failed"
+                        lines.append(f"[did {e.get('verb', 'action')}{mark}: {text}]")
+        except FileNotFoundError:
+            return ""
+        except Exception:  # noqa: BLE001 — a bad journal must not block the turn
+            return ""
+        if not lines:
+            return ""
+        body = "\n".join(lines)
+        # Keep the tail (most recent) when over budget.
+        if len(body) > limit_chars:
+            body = "…\n" + body[-limit_chars:]
+        return body
+
     def _journal_transcript_line(self, entry: dict[str, Any]) -> None:
         """Append one line to transcripts.jsonl — the single chronological
         narrative of every voice session (user/assistant finals plus tool

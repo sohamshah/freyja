@@ -1169,3 +1169,57 @@ async def test_computer_do_enabled_spawns_computer_mission(tmp_path, monkeypatch
     (update,) = events_of(events, "voice_mission_update")
     assert update["title"] == title
     assert update["missionSessionId"] == session_id
+
+
+# ── build_context_summary (continue a voice session by text) ─────────────
+
+
+async def test_build_context_summary_recaps_the_exchange(tmp_path):
+    svc, _ = make_service(tmp_path)
+    tp = svc._transcripts_path
+    tp.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {"ts": 1, "voiceSessionId": "voice-aaaaaaaaaaaa", "role": "user", "text": "play vienna"},
+        {"ts": 2, "voiceSessionId": "voice-aaaaaaaaaaaa", "role": "tool", "verb": "spotify.play", "ok": True, "text": "▶ Vienna"},
+        {"ts": 3, "voiceSessionId": "voice-aaaaaaaaaaaa", "role": "assistant", "text": "Playing."},
+        {"ts": 4, "voiceSessionId": "voice-bbbbbbbbbbbb", "role": "user", "text": "other session"},
+    ]
+    tp.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    s = svc.build_context_summary("voice-aaaaaaaaaaaa")
+    assert "You said: play vienna" in s
+    assert "[did spotify.play: ▶ Vienna]" in s
+    assert "Freyja said: Playing." in s
+    assert "other session" not in s  # scoped to the one session
+
+
+async def test_build_context_summary_marks_failures(tmp_path):
+    svc, _ = make_service(tmp_path)
+    tp = svc._transcripts_path
+    tp.parent.mkdir(parents=True, exist_ok=True)
+    tp.write_text(
+        json.dumps({"voiceSessionId": "voice-cccccccccccc", "role": "tool", "verb": "app.quit", "ok": False, "text": "couldn't quit"}) + "\n",
+        encoding="utf-8",
+    )
+    s = svc.build_context_summary("voice-cccccccccccc")
+    assert "[did app.quit — failed: couldn't quit]" in s
+
+
+async def test_build_context_summary_empty_and_missing(tmp_path):
+    svc, _ = make_service(tmp_path)
+    assert svc.build_context_summary("") == ""
+    assert svc.build_context_summary("voice-none") == ""  # no journal file yet
+
+
+async def test_build_context_summary_keeps_recent_tail_when_long(tmp_path):
+    svc, _ = make_service(tmp_path)
+    tp = svc._transcripts_path
+    tp.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {"voiceSessionId": "voice-dddddddddddd", "role": "user", "text": f"line {i} " + "x" * 100}
+        for i in range(100)
+    ]
+    tp.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    s = svc.build_context_summary("voice-dddddddddddd", limit_chars=500)
+    assert s.startswith("…\n")
+    assert len(s) <= 502
+    assert "line 99" in s  # the tail is kept
