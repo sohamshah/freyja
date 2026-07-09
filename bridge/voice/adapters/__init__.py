@@ -17,6 +17,7 @@ touches real Slack, OpenAI, or the screen.
 from bridge.voice.adapters import (
     apple,
     computer,
+    files,
     mac,
     screen,
     shortcuts,
@@ -24,6 +25,7 @@ from bridge.voice.adapters import (
     spotify,
     system,
     timers,
+    web,
 )
 from bridge.voice.adapters.timers import TimerManager, set_emitter
 from bridge.voice.verbs import VerbRegistry
@@ -37,12 +39,15 @@ def register_all(registry: VerbRegistry) -> None:
     screen.register(registry)
     apple.register(registry)
     shortcuts.register(registry)
+    files.register(registry)
+    web.register(registry)
 
 
 __all__ = [
     "TimerManager",
     "apple",
     "computer",
+    "files",
     "mac",
     "register_all",
     "screen",
@@ -52,4 +57,5 @@ __all__ = [
     "spotify",
     "system",
     "timers",
+    "web",
 ]

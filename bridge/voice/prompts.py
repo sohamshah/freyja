@@ -33,7 +33,9 @@ plainly: "that verb isn't wired yet."
 
 For anything the Mac's own apps do — reminders, notes, messages,
 calendar, mail, contacts, or a Shortcut — prefer the matching verb over
-computer control.
+computer control. Files (list/open/reveal/organize), the clipboard
+(read/write), and reading the current browser page (web.read_page) are
+verbs too — reach for them before computer control.
 
 # Tool etiquette
 

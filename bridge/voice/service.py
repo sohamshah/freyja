@@ -83,6 +83,10 @@ _CONFIRM_SUMMARY_TEMPLATES: dict[str, Any] = {
     "slack.send": _slack_send_confirm,
     "messages.send": lambda args: f"Message {args['to']}: {str(args['text'])[:50]}",
     "computer.do": lambda args: f"Drive the Mac: {str(args['task'])[:60]}",
+    # The screenshot count isn't known until the scan runs (post-confirm),
+    # so the prompt names only the folder — never an arg that can KeyError
+    # (``dir`` is optional; ``.get`` defaults to the spoken "Desktop").
+    "files.organize": lambda args: f"Organize {args.get('dir') or 'Desktop'} by date",
 }
 
 

@@ -77,3 +77,24 @@ async def run_exec(argv: list[str], timeout: float = 6.0) -> tuple[bool, str]:
 def as_quoted(s: str) -> str:
     """AppleScript string literal with quotes/backslashes escaped."""
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+# Substrings that mean "the Automation TCC grant is missing" across the
+# several shapes osascript uses (-1743 is the Apple-events auth code; the
+# assistive-access line is the System-Events UI-scripting variant). Shared
+# by every adapter that drives another app over AppleScript (apple.*, web.*)
+# so the denied case degrades identically — a setup message, never a hang or
+# a raw stderr. The Safari "Allow JavaScript from Apple Events" refusal is a
+# different, JS-specific error (handled where it occurs), not this grant.
+_AUTOMATION_DENIED_MARKERS = (
+    "not authorized to send apple events",
+    "-1743",
+    "not allowed assistive access",
+    "not permitted to send apple events",
+)
+
+
+def automation_denied(out: str) -> bool:
+    """True when an osascript failure is the missing-Automation-grant one."""
+    low = (out or "").lower()
+    return any(marker in low for marker in _AUTOMATION_DENIED_MARKERS)

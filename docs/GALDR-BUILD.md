@@ -262,6 +262,30 @@ or a raw stderr. The `shortcuts` CLI needs no TCC.
 | `shortcuts.list` | `{}` | auto | — | `shortcuts list` via run_exec, names cached 60 s; `data.shortcuts [names]`; summary `N shortcuts` |
 | `shortcuts.run` | `{name, input?}` | auto | — | fuzzy-resolve `name` against the cached list (exact → unique-substring → ask on ambiguity), then `shortcuts run "<name>"`; `input` via a temp `--input-path` file; captures stdout; summary `▷ ran <name>`. Inherits the whole Shortcuts library (App Intents) as voice verbs |
 
+### Slice 3b — files, clipboard, and the browser page (P2 reach)
+
+`bridge/voice/adapters/files.py` (files + clipboard) and
+`bridge/voice/adapters/web.py`. **Home-tree safety on every file op:**
+spoken dir names resolve to home folders (`downloads`→`~/Downloads`,
+`desktop`, `documents`, `home`→`~`, `trash`); anything else is a literal
+path expanded against `~` (bare relative names are home-relative — voice
+has no cwd), and any path resolving outside the home tree is refused. File
+reads/moves run in Python (`os.scandir` / `shutil` in a thread), NOT
+Finder AppleScript, so no Automation TCC is needed for listing or
+organizing. `web.read_page` is the only new AppleScript surface and shares
+apple.py's Automation-denied degradation (now factored into
+`mac.automation_denied`).
+
+| verb | args | tier | undo | notes |
+|---|---|---|---|---|
+| `files.list` | `{dir?}` | auto | — | `os.scandir` in a thread, newest-first, cap 25; `data {dir, entries:[{name, kind, when}]}`; summary `N items in <dir>` |
+| `files.open_latest` | `{dir?, kind?}` | auto | — | opens the most-recently-modified file via `run_exec(["open", path])`; optional `kind` filter (`pdf`/`image`/`doc`/`screenshot`); empty/no-match → clean refusal, no shell-out; summary `opened <name>` |
+| `files.reveal` | `{name?, dir?, path?}` | auto | — | `run_exec(["open", "-R", path])`; explicit `path` wins, else fuzzy-resolve `name` within `dir` (exact→prefix→substring, ask on ambiguity); summary `revealed <name>` |
+| `files.organize` | `{dir?, by?}` | **confirm** | ✓ (move back) | the "sort my screenshots into dated folders" ask; default dir Desktop → Downloads fallback, `by="date"` (each file's mtime `YYYY-MM-DD`), filter = screenshots (`Screenshot*.png` / `*Screen Shot*`); `shutil.move` in a thread into `<dir>/<date>/`, creating subfolders; NEVER overwrites an existing dest, never leaves the home tree; summary `moved N screenshots into dated folders` + `data {moved:[[src,dest],…]}`; undo moves each back. Confirm template (`_CONFIRM_SUMMARY_TEMPLATES`): `Organize <dir> by date` (count unknown pre-scan; no arg access that can KeyError) |
+| `clipboard.read` | `{}` | auto | — | `pbpaste` via run_exec; `data {text}`; summary `text[:60]` (the model reads it); empty → `clipboard is empty` |
+| `clipboard.write` | `{text}` | auto | — | `pbcopy` via a small asyncio-subprocess helper (stdin); summary `copied to clipboard` — never the copied text verbatim. Pasting is `computer.press cmd+v`, NOT a dedicated verb (keeps the keystroke behind the computer-control gate) |
+| `web.read_page` | `{question?}` | auto | — | reads the frontmost browser's active tab: Safari (`URL`/`name` of front document + `do JavaScript "document.body.innerText"`) and Chromium (Chrome/Arc/Brave/Edge: `execute … active tab javascript "document.body.innerText"`); frontmost browser detected via System Events, mapped to the right dialect; text capped ~6000 chars; `data {url, title, text}`, summary `read <title[:40]>`. On ANY extraction failure (non-browser frontmost, Safari JS-from-Apple-Events disabled, Arc opaque/empty) → falls back to `screen._look` vision → `data {caption, via:"vision"}`, never a dead-end. Automation-denied → the setup message (`data.setup="automation"`) |
+
 Mission report-back (service.py): every spawn registers a named watcher
 task that awaits the session's `pending_task` (the scheduler-runtime
 capture pattern), then extracts the final assistant text and surfaces the

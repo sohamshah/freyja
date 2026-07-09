@@ -21,8 +21,8 @@ def _mk(name, tier="auto", params=None, required=None, description="does a thing
 
 
 # All verbs the adapters register (slice 1 + slice-2 reach + slice-3
-# native apps/Shortcuts); mission.spawn / mission.status / computer.do
-# are service-side.
+# native apps/Shortcuts + P2 files/clipboard/web); mission.spawn /
+# mission.status / computer.do are service-side.
 EXPECTED_VERBS = {
     "spotify.play",
     "spotify.pause",
@@ -52,11 +52,19 @@ EXPECTED_VERBS = {
     "mail.unread",
     "shortcuts.list",
     "shortcuts.run",
+    "files.list",
+    "files.open_latest",
+    "files.reveal",
+    "files.organize",
+    "clipboard.read",
+    "clipboard.write",
+    "web.read_page",
 }
 
 # Confirm tier = outward/destructive actions: quitting an app, sending
-# a message someone else will read (Slack or iMessage).
-CONFIRM_VERBS = {"app.quit", "slack.send", "messages.send"}
+# a message someone else will read (Slack or iMessage), or moving files
+# on disk (files.organize).
+CONFIRM_VERBS = {"app.quit", "slack.send", "messages.send", "files.organize"}
 
 
 def test_register_get_all():

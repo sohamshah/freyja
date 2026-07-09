@@ -35,6 +35,9 @@ any code was written).
   cleanly when the Automation TCC grant is missing (`data.setup="automation"`),
   and `shortcuts.run` inherits the operator's whole Shortcuts library
   (App Intents) as voice verbs.
+  P2 files + clipboard + browser: `files.list/open_latest/reveal`,
+  `files.organize` (confirm, undoable), `clipboard.read/write`, and
+  `web.read_page`.
 - **Two-tier safety.** `auto` verbs run immediately; `confirm` verbs
   (quit an app) require a single-use, 90-second, args-scoped token — the
   model must relay the ask and re-call after you say yes, out loud.
@@ -61,6 +64,19 @@ any code was written).
   keyboard: spawns a computer-use mission ("computer: …") with the same
   report-back — refused with a setup hint while computer control is
   disabled in settings.
+- **Files, clipboard, and the browser page** (P2). *"What's in my
+  Downloads?"* → `files.list` (newest first); *"open the last
+  screenshot"* → `files.open_latest` (kind-filtered); *"show that in
+  Finder"* → `files.reveal`; *"sort my screenshots into dated folders"* →
+  `files.organize` (confirm-tier, undoable — moves back on undo). Every
+  file op is fenced to the home tree, and the listing/organizing run in
+  Python (`os.scandir`/`shutil`), so Finder's Automation grant is never
+  needed. *"What did I just copy?"* / *"copy this down"* →
+  `clipboard.read`/`write` (paste is `computer.press cmd+v`). *"Read me
+  this page"* → `web.read_page` pulls the frontmost browser tab (Safari or
+  any Chromium browser) and, when the page is opaque (Arc, JS-from-Apple-
+  Events off, or a non-browser is frontmost), falls back to `screen.look`
+  vision so it never dead-ends.
 - **Live computer control** (slice 2b). *"Click the compose button"*
   happens in the exchange, not in a background mission: `computer.see`
   condenses the front window's AX tree into numbered refs (coordinates

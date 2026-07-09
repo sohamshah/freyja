@@ -35,15 +35,10 @@ from bridge.voice.adapters import mac
 from bridge.voice.adapters.mac import as_quoted
 from bridge.voice.verbs import Verb, VerbRegistry, VerbResult
 
-# Substrings that mean "the Automation TCC grant is missing" across the
-# several shapes osascript uses (-1743 is the Apple-events auth code;
-# the assistive-access line is the System-Events UI-scripting variant).
-_AUTOMATION_DENIED_MARKERS = (
-    "not authorized to send apple events",
-    "-1743",
-    "not allowed assistive access",
-    "not permitted to send apple events",
-)
+# The missing-Automation-grant detection now lives in ``mac`` so web.* and
+# apple.* degrade identically (see mac.automation_denied); re-exported here
+# as ``_automation_denied`` for the callers and tests that reference it.
+_automation_denied = mac.automation_denied
 _AUTOMATION_SETUP = "automation"
 
 # Bare-string parse tokens the reminder-list/calendar scripts print
@@ -56,12 +51,6 @@ _CALENDAR_TIMEOUT_SEC = 15.0
 _MAIL_TIMEOUT_SEC = 12.0
 _MAIL_CAP = 8
 _DEFAULT_NOTE = "Freyja"
-
-
-def _automation_denied(out: str) -> bool:
-    """True when an osascript failure is the missing-Automation-grant one."""
-    low = (out or "").lower()
-    return any(marker in low for marker in _AUTOMATION_DENIED_MARKERS)
 
 
 def _denied_result(app: str, out: str) -> VerbResult:
