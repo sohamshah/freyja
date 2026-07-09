@@ -35,6 +35,15 @@ export interface VoiceDemoHooks {
   onVerb?(callId: string, verb: string, args: Record<string, unknown>): void
   onVerbResult?(callId: string, ok: boolean, summary: string, verb: string): void
   onAssistantFinal?(text: string): void
+  // Fake per-response usage so the HUD spend meter is reviewable headless.
+  onUsage?(u: {
+    inputText: number
+    inputAudio: number
+    inputCached: number
+    outputText: number
+    outputAudio: number
+    totalTokens: number
+  }): void
 }
 
 export interface VoiceDemoHandle {
@@ -125,6 +134,15 @@ export function startVoiceDemo(hooks: VoiceDemoHooks): VoiceDemoHandle {
       summary: '▶ Vienna — Billy Joel',
     })
     hooks.onVerbResult?.(`${nonce}-call1`, true, '▶ Vienna — Billy Joel', 'spotify.play')
+    // Representative realtime usage for one exchange (audio dominates).
+    hooks.onUsage?.({
+      inputText: 620,
+      inputAudio: 1400,
+      inputCached: 0,
+      outputText: 40,
+      outputAudio: 260,
+      totalTokens: 2320,
+    })
     hooks.addReceipt(
       makeReceipt({
         heard: 'play vienna by billy joel on spotify',

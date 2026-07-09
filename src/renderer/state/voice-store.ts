@@ -32,6 +32,7 @@ interface VoiceStore {
   micLevel: number
   error: string | null
   hudOpen: boolean
+  usage: VoiceUsage | null
 
   toggleVoice(): void
   endVoice(reason: string): void
@@ -47,6 +48,61 @@ interface VoiceStore {
   }): void
   hydrate(): void
   handleEvent(event: BridgeEvent): void
+}
+
+/** Running per-session token totals + a rough dollar estimate. Counts are
+ *  exact (straight from the API); the dollar figure is an ESTIMATE off the
+ *  rate table below and is shown with a ~ prefix. */
+export type VoiceUsage = {
+  inputText: number
+  inputAudio: number
+  inputCached: number
+  outputText: number
+  outputAudio: number
+  totalTokens: number
+  estCostUsd: number
+}
+
+// Approximate realtime pricing, USD per 1M tokens. Audio dwarfs text, which
+// is the whole point of showing it. These are best-effort (published
+// gpt-realtime-2 audio rates; mini estimated) — surfaced as "~$" so the
+// operator reads it as a gauge, not an invoice. Keyed by model, with a
+// default for anything unlisted.
+type Rate = { textIn: number; textOut: number; audioIn: number; audioOut: number; cached: number }
+const VOICE_RATES: Record<string, Rate> = {
+  'gpt-realtime-2.1': { textIn: 4, textOut: 16, audioIn: 32, audioOut: 64, cached: 0.4 },
+  'gpt-realtime': { textIn: 4, textOut: 16, audioIn: 32, audioOut: 64, cached: 0.4 },
+  'gpt-realtime-2.1-mini': { textIn: 0.6, textOut: 2.4, audioIn: 10, audioOut: 20, cached: 0.3 },
+  'gpt-realtime-mini': { textIn: 0.6, textOut: 2.4, audioIn: 10, audioOut: 20, cached: 0.3 },
+}
+const DEFAULT_RATE: Rate = VOICE_RATES['gpt-realtime-2.1-mini']
+
+function priceUsage(u: Omit<VoiceUsage, 'estCostUsd'>, model: string | undefined): number {
+  const r = (model && VOICE_RATES[model]) || DEFAULT_RATE
+  return (
+    (u.inputText * r.textIn +
+      u.inputAudio * r.audioIn +
+      u.inputCached * r.cached +
+      u.outputText * r.textOut +
+      u.outputAudio * r.audioOut) /
+    1_000_000
+  )
+}
+
+/** Fold one response's usage into the running session total and re-price.
+ *  Shared by the live engine and the demo driver. */
+function accrueUsage(u: Omit<VoiceUsage, 'estCostUsd'>): void {
+  const s = useVoiceStore.getState()
+  const p = s.usage
+  const next = {
+    inputText: (p?.inputText ?? 0) + u.inputText,
+    inputAudio: (p?.inputAudio ?? 0) + u.inputAudio,
+    inputCached: (p?.inputCached ?? 0) + u.inputCached,
+    outputText: (p?.outputText ?? 0) + u.outputText,
+    outputAudio: (p?.outputAudio ?? 0) + u.outputAudio,
+    totalTokens: (p?.totalTokens ?? 0) + u.totalTokens,
+  }
+  useVoiceStore.setState({ usage: { ...next, estCostUsd: priceUsage(next, s.config?.model) } })
 }
 
 // ── Module-level session machinery (not reactive state) ─────────────
@@ -440,6 +496,7 @@ function startDemo(): void {
     onVerbResult: (callId, ok, summary, verb) =>
       projectToolResult(callId, ok, summary, verb),
     onAssistantFinal: (text) => projectAssistantFinal(text),
+    onUsage: (u) => accrueUsage(u),
   })
 }
 
@@ -532,6 +589,8 @@ function ensureEngine(): VoiceEngine {
     if (rms > LEVEL_ACTIVITY_THRESHOLD) resetIdleTimer()
   })
 
+  engine.on('usage', accrueUsage)
+
   engine.on('closed', (reason) => {
     // Engine closed underneath us (endVoice flips `active` before it
     // calls engine.stop, so this only fires standalone on engine-side
@@ -561,6 +620,7 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
   micLevel: 0,
   error: null,
   hudOpen: false,
+  usage: null,
 
   toggleVoice() {
     const s = get()
@@ -598,6 +658,7 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
       assistantLine: '',
       activity: null,
       micLevel: 0,
+      usage: null,
     })
     // Headless review path: no Electron preload, or ?voicedemo=1 forces
     // the scripted walk even inside the app (screenshot rigs).

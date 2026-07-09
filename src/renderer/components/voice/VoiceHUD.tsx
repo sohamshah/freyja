@@ -33,6 +33,7 @@ function VoiceHudBody() {
   const receipts = useVoiceStore((s) => s.receipts)
   const voiceSessionId = useVoiceStore((s) => s.voiceSessionId)
   const error = useVoiceStore((s) => s.error)
+  const usage = useVoiceStore((s) => s.usage)
   const typedCommand = useVoiceStore((s) => s.typedCommand)
   const confirmPending = useVoiceStore((s) => s.confirmPending)
   const undo = useVoiceStore((s) => s.undo)
@@ -252,11 +253,26 @@ function VoiceHudBody() {
           <span className="font-mono text-[10px] text-fg-3">
             {typed !== null ? 'enter to run · esc to dismiss' : 'type to command'}
           </span>
-          <span className="font-mono text-[10px] text-fg-3">esc to end · ⌥space</span>
+          <div className="flex items-center gap-3">
+            {usage && usage.totalTokens > 0 && (
+              <span
+                className="font-mono text-[10px] tabular-nums text-fg-3"
+                title={`~$${usage.estCostUsd.toFixed(4)} estimated · ${usage.totalTokens.toLocaleString()} tokens (${usage.inputAudio + usage.outputAudio} audio) — realtime pricing is approximate`}
+              >
+                ~${usage.estCostUsd < 0.01 ? usage.estCostUsd.toFixed(4) : usage.estCostUsd.toFixed(2)}
+                <span className="text-fg-4"> · {formatTokens(usage.totalTokens)}</span>
+              </span>
+            )}
+            <span className="font-mono text-[10px] text-fg-3">esc to end · ⌥space</span>
+          </div>
         </div>
       </div>
     </div>
   )
+}
+
+function formatTokens(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k tok` : `${n} tok`
 }
 
 function statusLine(state: VoiceEngineState): string {

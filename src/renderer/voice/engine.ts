@@ -20,6 +20,18 @@ export type VoiceEngineState =
   | 'error'
   | 'closing'
 
+/** Per-response token usage, split by kind so the store can price it —
+ *  audio tokens cost ~8× text, so the split matters for the estimate.
+ *  Fields are the non-cached counts plus the cached input total. */
+export type UsageDelta = {
+  inputText: number
+  inputAudio: number
+  inputCached: number
+  outputText: number
+  outputAudio: number
+  totalTokens: number
+}
+
 export type EngineEvents = {
   state: (s: VoiceEngineState) => void
   userTranscript: (text: string, final: boolean) => void
@@ -28,6 +40,8 @@ export type EngineEvents = {
   toolCall: (callId: string, name: string, argumentsJson: string) => void
   /** Mic level 0..1, ~30 Hz, for the waveform/sigil. */
   level: (rms: number) => void
+  /** Token usage from each response.done — the store accrues + prices it. */
+  usage: (u: UsageDelta) => void
   closed: (reason: string) => void
   error: (code: string, message: string) => void
 }
@@ -60,6 +74,7 @@ export class VoiceEngine {
     assistantTranscript: new Set(),
     toolCall: new Set(),
     level: new Set(),
+    usage: new Set(),
     closed: new Set(),
     error: new Set(),
   }
@@ -528,6 +543,28 @@ export class VoiceEngine {
       }
 
       case 'response.done': {
+        // Pull usage off each completed response so the session can show a
+        // running spend — realtime audio is dear ($/M tokens), and it's the
+        // only cost the operator has no other window into.
+        const usage = (ev.response as Record<string, unknown> | undefined)?.usage as
+          | Record<string, unknown>
+          | undefined
+        if (usage) {
+          const inD = (usage.input_token_details ?? {}) as Record<string, unknown>
+          const outD = (usage.output_token_details ?? {}) as Record<string, unknown>
+          const num = (v: unknown): number => (typeof v === 'number' && v >= 0 ? v : 0)
+          const inCached = num(inD.cached_tokens)
+          // input_token_details totals include cached; subtract so we don't
+          // double-charge — cached tokens are billed at the discount rate.
+          this.emit('usage', {
+            inputText: Math.max(0, num(inD.text_tokens) - num((inD.cached_tokens_details as Record<string, unknown>)?.text_tokens)),
+            inputAudio: Math.max(0, num(inD.audio_tokens) - num((inD.cached_tokens_details as Record<string, unknown>)?.audio_tokens)),
+            inputCached: inCached,
+            outputText: num(outD.text_tokens),
+            outputAudio: num(outD.audio_tokens),
+            totalTokens: num(usage.total_tokens),
+          })
+        }
         // Back to listening unless a tool result is still owed — in that
         // case sendToolResult's response.create re-enters the cycle.
         if (this.pendingToolCalls.size === 0) this.setState('listening')
