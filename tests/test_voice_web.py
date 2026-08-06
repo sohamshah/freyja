@@ -9,7 +9,7 @@ paths; no test drives a real browser or takes a real screenshot.
 import pytest
 
 from bridge.voice.adapters import mac, screen, web
-from bridge.voice.verbs import VerbResult, build_default_registry
+from bridge.voice.verbs import VerbRegistry, VerbResult
 
 _DENIED_MINUS_1743 = (
     "execution error: Not authorized to send Apple events to Safari. (-1743)"
@@ -58,7 +58,12 @@ def look_calls(monkeypatch):
 
 @pytest.fixture
 def reg():
-    return build_default_registry()
+    # web.read_page is temporarily out of the default registry
+    # (GALDR-BUILD §12.3), so register the adapter directly — the
+    # extraction logic under test is unchanged and worth keeping green.
+    registry = VerbRegistry()
+    web.register(registry)
+    return registry
 
 
 def _frontmost(name):
