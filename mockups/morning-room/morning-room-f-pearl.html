@@ -1,0 +1,989 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Morning Room — F. Pearl</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#06070b; --bg-1:#0d0f15; --bg-2:#171a22;
+    --fg-0:#e8e8e8; --fg-1:#a8a8a8; --fg-2:#6e6e6e; --fg-3:#4a4a4a; --fg-4:#303030;
+    --accent:#a8d4fc; --accent-hi:#c4e0fc; --accent-lo:#7aafea;
+    --ok:#a8b0a8; --warn:#b8a078; --danger:#b48282;
+    --hairline:rgba(255,255,255,0.06);
+    --hairline-strong:rgba(255,255,255,0.16);
+    --mono:'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:12px; line-height:1.5;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+    font-feature-settings:'ss01' on, 'ss02' on, 'cv11' on, 'tnum' on;
+  }
+  /* WebGL fallback — paints a soft gradient if the canvas fails */
+  body.no-webgl::before {
+    content:""; position:fixed; inset:0; z-index:4;
+    background:
+      radial-gradient(120% 90% at 50% 60%, rgba(60,55,80,0.6), transparent 70%),
+      linear-gradient(180deg, #0a0c14 0%, #1a1322 70%, #4a2e22 100%);
+  }
+
+  /* === grain overlay (same family as C/D/E) === */
+  .grain {
+    position:fixed; inset:0; z-index:9000;
+    pointer-events:none; opacity:0.075;
+    mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.6 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    background-size:240px 240px;
+  }
+  /* Bespoke texture for pearl: a vertical halftone/scanline shimmer */
+  .shimmer {
+    position:fixed; inset:0; z-index:8999;
+    pointer-events:none; opacity:0.18;
+    mix-blend-mode:screen;
+    background-image:repeating-linear-gradient(180deg,
+      rgba(255,255,255,0.04) 0 1px,
+      transparent 1px 4px);
+    mask-image:radial-gradient(ellipse 110% 85% at 50% 55%, rgba(0,0,0,0.7), transparent 100%);
+    -webkit-mask-image:radial-gradient(ellipse 110% 85% at 50% 55%, rgba(0,0,0,0.7), transparent 100%);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .grain { opacity:0.04; }
+  }
+
+  /* WebGL canvas: full-bleed */
+  #pearl {
+    position:fixed; inset:0; z-index:5;
+    width:100%; height:100%; display:block;
+  }
+  /* Vignette — softened so it doesn't paint a dark mask over the pearl */
+  .vignette {
+    position:fixed; inset:0; z-index:6; pointer-events:none;
+    background:
+      radial-gradient(140% 100% at 50% 55%, transparent 55%, rgba(6,7,11,0.45) 92%, rgba(6,7,11,0.55) 100%),
+      linear-gradient(180deg, transparent 0%, transparent 80%, rgba(6,7,11,0.7) 100%);
+  }
+
+  /* SVG overlay for leader lines from anchor points to labels */
+  #leaders {
+    position:fixed; inset:0; z-index:10; pointer-events:none;
+    width:100%; height:100%;
+  }
+
+  /* ───── TOP CHROME ───── */
+  .top {
+    position:fixed; top:0; left:0; right:0; z-index:30;
+    display:grid; grid-template-columns:auto 1fr auto;
+    align-items:center; gap:20px;
+    padding:14px 26px;
+    background:linear-gradient(180deg, rgba(6,7,11,0.92) 0%, rgba(6,7,11,0.4) 70%, transparent 100%);
+    backdrop-filter:blur(14px) saturate(140%);
+  }
+  .top .brand {
+    display:flex; align-items:center; gap:14px;
+    color:var(--fg-2); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+  .top .brand .mark {
+    width:14px; height:14px; border-radius:3px;
+    background:linear-gradient(135deg, var(--accent-hi) 0%, var(--accent-lo) 100%);
+    box-shadow:0 0 12px rgba(168,212,252,0.55);
+  }
+  .top .brand .div { color:var(--fg-4); }
+  .top .brand .room { color:var(--fg-0); }
+  .top .center {
+    text-align:center;
+    color:var(--fg-3); font-size:9.5px; letter-spacing:0.32em; text-transform:uppercase;
+  }
+  .top .center .em { color:var(--accent); }
+  .top .right { display:flex; align-items:center; gap:8px; }
+  .top .view-switch {
+    display:inline-flex; padding:2px;
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline); border-radius:6px;
+  }
+  .top .view-switch button {
+    font-family:var(--mono); font-size:10px; letter-spacing:0.16em; text-transform:uppercase;
+    color:var(--fg-2); padding:5px 9px; border-radius:4px;
+    background:transparent; border:none; cursor:pointer;
+    transition:all 140ms ease;
+  }
+  .top .view-switch button.active {
+    color:var(--accent); background:rgba(168,212,252,0.1);
+  }
+
+  /* ───── EDITORIAL HERO ───── */
+  .hero {
+    position:fixed; top:62px; left:50%; transform:translateX(-50%); z-index:20;
+    text-align:center;
+    pointer-events:none;
+    max-width:880px;
+  }
+  .hero .date {
+    font-family:var(--mono);
+    color:var(--accent); font-size:10.5px; font-weight:500;
+    letter-spacing:0.36em; text-transform:uppercase;
+    margin-bottom:18px;
+    text-shadow:0 0 12px rgba(0,0,0,0.6);
+  }
+  .hero h1 {
+    font-family:var(--mono); font-weight:600; font-style:normal;
+    font-size:30px; line-height:1.22; letter-spacing:-0.005em;
+    color:var(--fg-0); margin:0;
+    text-shadow:0 0 14px rgba(0,0,0,0.6);
+    font-feature-settings:'ss01' on, 'ss02' on, 'cv11' on, 'tnum' on;
+  }
+  .hero h1 .n {
+    color:var(--accent); font-weight:600;
+    font-variant-numeric:tabular-nums;
+    text-shadow:0 0 16px rgba(168,212,252,0.55);
+  }
+  .hero .sub {
+    margin-top:16px;
+    color:var(--fg-2); font-size:10.5px; letter-spacing:0.12em;
+    text-shadow:0 0 10px rgba(0,0,0,0.7);
+    font-family:var(--mono);
+    font-variant-numeric:tabular-nums;
+  }
+  .hero .sub .div { color:var(--fg-4); margin:0 8px; }
+
+  /* ───── ANCHOR LABELS (leader-line callouts) ───── */
+  .anchor {
+    position:absolute; z-index:22;
+    transform:translate(0, -50%);
+    color:var(--fg-1);
+    font-size:10px; line-height:1.4;
+    text-shadow:0 0 10px rgba(0,0,0,0.85);
+    pointer-events:auto;
+    transition:transform 260ms ease;
+  }
+  .anchor:hover { transform:translate(0, calc(-50% - 2px)); }
+  .anchor .ts {
+    color:var(--fg-3); font-size:9px; letter-spacing:0.22em; text-transform:uppercase;
+  }
+  .anchor .ti {
+    color:var(--fg-0); font-size:11.5px; font-weight:500;
+    margin-top:2px;
+    letter-spacing:0.02em;
+  }
+  .anchor .ti .id { color:var(--accent); }
+  .anchor .sub {
+    color:var(--fg-2); font-size:10px;
+    margin-top:2px;
+    font-variant-numeric:tabular-nums;
+  }
+  .anchor.win .ti { color:var(--ok); }
+  .anchor.acc .ti { color:var(--accent); }
+  .anchor.dn .ti { color:var(--danger); }
+  .anchor.warn .ti { color:var(--warn); }
+  .anchor.right { transform:translate(-100%, -50%); text-align:right; }
+  .anchor.right:hover { transform:translate(-100%, calc(-50% - 2px)); }
+
+  /* ───── LEFT RAIL ───── */
+  .rail-left {
+    position:fixed; left:24px; top:210px; z-index:18;
+    width:240px;
+    padding:18px 18px 16px;
+    background:rgba(6,8,15,0.45);
+    backdrop-filter:blur(22px) saturate(140%);
+    border:1px solid var(--hairline);
+    border-radius:12px;
+    box-shadow:inset 0 0.5px 0 rgba(255,255,255,0.16), 0 16px 40px -14px rgba(0,0,0,0.7);
+  }
+  .rail-left .h {
+    font-family:var(--mono); font-weight:600; font-style:normal;
+    font-size:14px; color:var(--fg-0); margin:0 0 4px;
+    letter-spacing:0;
+    text-transform:uppercase; letter-spacing:0.10em;
+  }
+  .rail-left .sub {
+    color:var(--fg-3); font-size:9px; letter-spacing:0.24em; text-transform:uppercase;
+    margin-bottom:14px; padding-bottom:12px;
+    border-bottom:1px solid var(--hairline);
+  }
+  .rail-left .row {
+    display:flex; justify-content:space-between; align-items:center;
+    padding:5px 0; color:var(--fg-2); font-size:10.5px;
+    font-variant-numeric:tabular-nums;
+  }
+  .rail-left .row .k { color:var(--fg-3); letter-spacing:0.06em; }
+  .rail-left .row .v { color:var(--fg-0); }
+  .rail-left .row .v.acc { color:var(--accent); }
+  .rail-left .row .v.ok { color:var(--ok); }
+  .rail-left .footer {
+    margin-top:12px; padding-top:10px;
+    border-top:1px solid var(--hairline);
+    font-family:var(--mono); font-weight:400; font-style:normal;
+    color:var(--fg-2); font-size:10.5px; line-height:1.55; letter-spacing:0.02em;
+  }
+  .rail-left .footer em { color:var(--accent); font-style:normal; }
+
+  /* ───── RIGHT RAIL — NEEDS YOU ───── */
+  .rail-right {
+    position:fixed; right:24px; top:140px; z-index:18;
+    width:360px; max-height:calc(100vh - 280px);
+    overflow-y:auto;
+    padding:20px 22px 18px;
+    background:rgba(6,8,15,0.45);
+    backdrop-filter:blur(22px) saturate(140%);
+    border:1px solid var(--hairline);
+    border-radius:14px;
+    box-shadow:inset 0 0.5px 0 rgba(255,255,255,0.16), 0 16px 40px -14px rgba(0,0,0,0.7);
+  }
+  .rail-right h3 {
+    font-family:var(--mono); font-weight:600; font-style:normal;
+    font-size:14px; color:var(--fg-0); margin:0 0 4px;
+    text-transform:uppercase; letter-spacing:0.10em;
+  }
+  .rail-right h3 em { color:var(--accent); font-style:normal; font-weight:600; }
+  .rail-right .sub {
+    color:var(--fg-3); font-size:9px; letter-spacing:0.24em; text-transform:uppercase;
+    margin-bottom:14px; padding-bottom:12px;
+    border-bottom:1px solid var(--hairline);
+  }
+  .need {
+    padding:12px 0;
+    border-bottom:1px dashed rgba(255,255,255,0.06);
+  }
+  .need:last-child { border-bottom:none; }
+  .need .head {
+    display:flex; gap:8px; align-items:center; margin-bottom:6px;
+    font-size:9.5px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+  .need .head .pip {
+    width:6px; height:6px; border-radius:999px; background:var(--fg-3);
+  }
+  .need.dn .head { color:var(--danger); }
+  .need.dn .head .pip { background:var(--danger); box-shadow:0 0 7px rgba(180,130,130,0.5); }
+  .need.acc .head { color:var(--accent); }
+  .need.acc .head .pip { background:var(--accent); box-shadow:0 0 7px var(--accent); }
+  .need.warn .head { color:var(--warn); }
+  .need.warn .head .pip { background:var(--warn); }
+  .need .body {
+    color:var(--fg-0); font-size:11.5px; line-height:1.5; margin-bottom:6px;
+  }
+  .need .body .id { color:var(--accent); }
+  /* Pull-quote — kept distinct via lighter weight + accent border,
+     not italic (the whole surface is one mono family). */
+  .need .quote {
+    font-family:var(--mono); font-weight:300; font-style:normal;
+    color:var(--fg-1); font-size:11px; line-height:1.55;
+    padding-left:10px; border-left:2px solid rgba(168,212,252,0.32);
+    margin:6px 0 8px;
+  }
+  .need .acts { display:flex; gap:4px; flex-wrap:wrap; }
+  .need .acts .v {
+    font-family:var(--mono); font-size:10px; letter-spacing:0.04em;
+    padding:5px 9px; border-radius:4px;
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer; transition:all 140ms ease;
+  }
+  .need .acts .v.p { color:var(--accent); border-color:rgba(168,212,252,0.42); background:rgba(168,212,252,0.08); }
+  .need .acts .v:hover { color:var(--fg-0); border-color:var(--hairline-strong); }
+  .need .acts .v.p:hover { background:rgba(168,212,252,0.18); }
+  .need .acts .v.m { color:var(--fg-3); }
+
+  /* ───── TODAY ROW (along bottom) ───── */
+  .today {
+    position:fixed; bottom:84px; left:0; right:0; z-index:18;
+    pointer-events:none;
+  }
+  .today-inner {
+    display:grid; grid-template-columns:repeat(3, 1fr);
+    gap:14px; padding:0 36px;
+    max-width:1500px; margin:0 auto;
+  }
+  .rise {
+    pointer-events:auto;
+    padding:14px 18px 12px;
+    background:rgba(10,16,32,0.5);
+    backdrop-filter:blur(16px) saturate(140%);
+    border:1px solid rgba(168,212,252,0.18);
+    border-radius:10px;
+    box-shadow:inset 0 0.5px 0 rgba(255,255,255,0.16), 0 14px 30px -10px rgba(0,0,0,0.65);
+    display:grid; grid-template-columns:48px 1fr; gap:14px;
+    transition:all 220ms ease;
+  }
+  .rise:hover {
+    border-color:rgba(168,212,252,0.36);
+    transform:translateY(-3px);
+    box-shadow:inset 0 0.5px 0 rgba(255,255,255,0.18), 0 20px 36px -12px rgba(0,0,0,0.7), 0 0 32px -8px rgba(168,212,252,0.28);
+  }
+  .rise .num {
+    font-family:var(--mono); font-weight:500; font-style:normal;
+    font-size:30px; line-height:0.95; letter-spacing:0;
+    color:var(--accent);
+    text-align:center; padding-top:6px;
+    font-variant-numeric:tabular-nums;
+  }
+  .rise .right { display:flex; flex-direction:column; gap:5px; }
+  .rise .kicker {
+    font-family:var(--mono);
+    color:var(--accent); font-size:9.5px; font-weight:500;
+    letter-spacing:0.28em; text-transform:uppercase;
+  }
+  .rise .ti {
+    font-family:var(--mono); font-weight:600; font-style:normal;
+    color:var(--fg-0); font-size:13px; line-height:1.3;
+    letter-spacing:0;
+  }
+  .rise .ti em { color:var(--accent); font-style:normal; font-weight:600; }
+  .rise .meta {
+    color:var(--fg-2); font-size:10px; letter-spacing:0.06em;
+    margin-top:2px;
+    font-variant-numeric:tabular-nums;
+    font-family:var(--mono);
+  }
+  .rise .acts { display:flex; gap:4px; margin-top:6px; }
+  .rise .acts .v {
+    font-family:var(--mono); font-size:10px; letter-spacing:0.04em;
+    padding:4px 9px; border-radius:4px;
+    background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08);
+    color:var(--fg-1); cursor:pointer;
+  }
+  .rise .acts .v.p { color:var(--accent); border-color:rgba(168,212,252,0.42); background:rgba(168,212,252,0.08); }
+  .rise .acts .v.m { color:var(--fg-3); }
+
+  /* ───── COMMIT ZONE ───── */
+  .commit-zone {
+    position:fixed; left:0; right:0; bottom:0; z-index:20;
+    padding:14px 26px 18px;
+    background:linear-gradient(180deg, transparent 0%, rgba(6,7,11,0.55) 70%);
+    backdrop-filter:blur(12px);
+  }
+  .commit-zone .row {
+    display:grid; grid-template-columns:1fr auto;
+    align-items:center; gap:20px;
+    max-width:1600px; margin:0 auto;
+  }
+  .commit-zone .left {
+    font-family:var(--mono); font-weight:400; font-style:normal;
+    color:var(--fg-2); font-size:10.5px; letter-spacing:0.06em;
+  }
+  .commit-zone .left em { color:var(--accent); font-style:normal; }
+  .commit-zone .plans { display:flex; gap:8px; }
+  .commit-zone .plan {
+    font-family:var(--mono); font-size:11px; letter-spacing:0.04em;
+    padding:9px 16px; border-radius:6px;
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer; transition:all 160ms ease;
+  }
+  .commit-zone .plan:hover { color:var(--fg-0); border-color:var(--hairline-strong); }
+  .commit-zone .plan.primary {
+    color:var(--bg-0); border-color:var(--accent);
+    background:linear-gradient(180deg, var(--accent-hi) 0%, var(--accent) 100%);
+    box-shadow:0 0 26px rgba(168,212,252,0.4);
+    font-weight:500;
+  }
+  .commit-zone .plan.primary:hover {
+    background:linear-gradient(180deg, var(--accent-hi) 0%, var(--accent-hi) 100%);
+    box-shadow:0 0 36px rgba(168,212,252,0.6);
+  }
+  .commit-zone .plan .kbd { font-size:9.5px; margin-left:6px; opacity:0.7; }
+</style>
+</head>
+<body>
+
+<canvas id="pearl"></canvas>
+<div class="vignette"></div>
+<svg id="leaders" aria-hidden="true">
+  <defs>
+    <filter id="leader-glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="1.5"/>
+    </filter>
+  </defs>
+</svg>
+<div class="grain" aria-hidden="true"></div>
+<div class="shimmer" aria-hidden="true"></div>
+
+<!-- ───── TOP CHROME ───── -->
+<header class="top">
+  <div class="brand">
+    <span class="mark"></span>
+    <span>freyja</span>
+    <span class="div">/</span>
+    <span class="room">morning brief · pearl</span>
+  </div>
+  <div class="center">
+    <span>monday jun 02</span> · <span class="em">06:30 PDT</span> · <span>7h 12m since last brief</span>
+  </div>
+  <div class="right">
+    <div class="view-switch">
+      <button>memo</button>
+      <button>console</button>
+      <button>map</button>
+      <button>sky</button>
+      <button class="active">pearl</button>
+      <button>dial</button>
+      <button>grid</button>
+    </div>
+  </div>
+</header>
+
+<!-- ───── EDITORIAL HERO ───── -->
+<div class="hero">
+  <div class="date">monday · june 02 · 06:30</div>
+  <h1><span class="n">6</span> events overnight.<br/><span class="n">3</span> staged to surface today.</h1>
+  <div class="sub">card_017 22:34 <span class="div">·</span> drafter 03:14 <span class="div">·</span> card_042 04:14 <span class="div">·</span> goal 05:21 <span class="div">·</span> dawn 06:30</div>
+</div>
+
+<!-- ───── LEFT RAIL ───── -->
+<aside class="rail-left">
+  <h3 class="h">Overnight</h3>
+  <div class="sub">22:14 → 06:30 · 8h 16m</div>
+
+  <div class="row"><span class="k">events</span> <span class="v">6</span></div>
+  <div class="row"><span class="k">sessions</span> <span class="v">4</span></div>
+  <div class="row"><span class="k">spend</span> <span class="v acc">$4.82</span></div>
+  <div class="row"><span class="k">tokens out</span> <span class="v">327k</span></div>
+  <div class="row"><span class="k">longest run</span> <span class="v">3h17m</span></div>
+  <div class="row"><span class="k">top tool</span> <span class="v">web_fetch · 213</span></div>
+  <div class="row"><span class="k">judge pass (7d)</span> <span class="v ok">68% · 19/28</span></div>
+  <div class="row"><span class="k">coop share</span> <span class="v">82% / 18%</span></div>
+  <div class="row"><span class="k">skills (7d)</span> <span class="v">3 + 2 pending</span></div>
+  <div class="row"><span class="k">compactions</span> <span class="v">1 · 0 forced</span></div>
+
+  <div class="footer">
+    drafter watching <em>skill-learning</em> · <em>design-review-method</em>
+  </div>
+</aside>
+
+<!-- ───── RIGHT RAIL — Needs You ───── -->
+<aside class="rail-right">
+  <h3>Needs you · <em>3</em></h3>
+  <div class="sub">3 decisions · ~5 min</div>
+
+  <div class="need dn">
+    <div class="head"><span class="pip"></span> blocked · card_042</div>
+    <div class="body">Judge rejected at iter 5/5 — <span class="id">rework cap reached</span>.</div>
+    <div class="quote">"Complete coverage of city offices remains partial."</div>
+    <div class="acts">
+      <button class="v p">dispatch revision</button>
+      <button class="v">override</button>
+      <button class="v m">defer</button>
+    </div>
+  </div>
+
+  <div class="need acc">
+    <div class="head"><span class="pip"></span> drafter · skill candidate</div>
+    <div class="body"><span class="id">cooperative-compaction-helper</span> — caps tool-result size at the compaction band. Est <strong style="color:var(--fg-0); font-weight:400">12–18%</strong> token savings; pattern recurs ~8/week.</div>
+    <div class="acts">
+      <button class="v p">accept</button>
+      <button class="v">view diff</button>
+      <button class="v">edit</button>
+      <button class="v m">decline</button>
+    </div>
+  </div>
+
+  <div class="need warn">
+    <div class="head"><span class="pip"></span> goal · paused</div>
+    <div class="body"><span class="id">freyja-design-pass</span> · iter 4/12. Judge has 2 open questions on onboarding scope.</div>
+    <div class="acts">
+      <button class="v p">resume + answer</button>
+      <button class="v">rewrite</button>
+      <button class="v m">retire</button>
+    </div>
+  </div>
+</aside>
+
+<!-- ───── TODAY ───── -->
+<div class="today">
+  <div class="today-inner">
+    <div class="rise">
+      <div class="num">1</div>
+      <div class="right">
+        <div class="kicker">~09:00</div>
+        <div class="ti">Finish <em>card_042</em> rework.</div>
+        <div class="meta">code · gpt-5.5 · ctx 1m · kanban</div>
+        <div class="acts">
+          <button class="v p">stage</button>
+          <button class="v">run</button>
+          <button class="v m">skip</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="rise">
+      <div class="num">2</div>
+      <div class="right">
+        <div class="kicker">~11:00</div>
+        <div class="ti">Design pass on <em>input-dock</em>.</div>
+        <div class="meta">browser-qa · opus-4-8 · ctx 1m · isolated</div>
+        <div class="acts">
+          <button class="v p">stage</button>
+          <button class="v">run</button>
+          <button class="v m">skip</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="rise">
+      <div class="num">3</div>
+      <div class="right">
+        <div class="kicker">~14:00</div>
+        <div class="ti">Triage 4 stale kanban cards.</div>
+        <div class="meta">judge-deep · sonnet-4-6 · ctx 200k · kanban</div>
+        <div class="acts">
+          <button class="v p">stage</button>
+          <button class="v">run</button>
+          <button class="v m">skip</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ───── COMMIT ZONE ───── -->
+<div class="commit-zone">
+  <div class="row">
+    <div class="left">
+      Commit · 3 priorities staged · forecast <em>~$5.40</em> · ~340k tok.
+    </div>
+    <div class="plans">
+      <button class="plan">stage all <span class="kbd">S</span></button>
+      <button class="plan">run 1 first <span class="kbd">⌥⏎</span></button>
+      <button class="plan primary">run 1, 2, 3 in parallel <span class="kbd">⏎</span></button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ────────────────────────────────────────────────────────────
+  // The Pearl — WebGL fragment shader.
+  // A slowly-evolving height-mapped form with the overnight events
+  // embedded as bright peaks. Dawn glow from the bottom.
+  // ────────────────────────────────────────────────────────────
+
+  // Event positions in normalized [0,1] coords (matched to the
+  // anchor labels below — same data, different presentation).
+  const EVENTS = [
+    { id:'card_017', label:'card_017', sub:'judge passed · iter 2/5 · 0.94 conf', ts:'22:34',
+      x:0.30, y:0.42, intensity:1.25, kind:'win' },
+    { id:'fanout',   label:'explore-fast × 3', sub:'47 sources · 32m · $0.67', ts:'22:51',
+      x:0.41, y:0.32, intensity:0.55, kind:'acc' },
+    { id:'drafter',  label:'drafter', sub:'2 skill candidates saved', ts:'03:14',
+      x:0.50, y:0.55, intensity:0.95, kind:'acc' },
+    { id:'autopilot',label:'autopilot · 4 dispatched', sub:'3 done · 1 capped', ts:'04:02',
+      x:0.58, y:0.38, intensity:0.45, kind:'neutral' },
+    { id:'card_042', label:'card_042', sub:'BLOCKED · rework cap 5/5', ts:'04:14',
+      x:0.69, y:0.30, intensity:1.50, kind:'dn' },
+    { id:'goal',     label:'freyja-design-pass', sub:'paused · iter 4/12', ts:'05:21',
+      x:0.78, y:0.45, intensity:0.90, kind:'warn' },
+    { id:'sched',    label:'slack-morning-digest', sub:'06:00 · scheduler', ts:'06:00',
+      x:0.87, y:0.58, intensity:0.40, kind:'neutral' },
+  ];
+
+  const canvas = document.getElementById('pearl');
+  const leadersSvg = document.getElementById('leaders');
+  const LABELS = [
+    { event: EVENTS[0], side:'left',  labelTop: 0.40, labelEdgePx: 320, kind:'win'  },
+    { event: EVENTS[1], side:'left',  labelTop: 0.24, labelEdgePx: 320, kind:'acc'  },
+    { event: EVENTS[2], side:'left',  labelTop: 0.58, labelEdgePx: 320, kind:'acc'  },
+    { event: EVENTS[3], side:'right', labelTop: 0.32, labelEdgePx: 420, kind:'neutral' },
+    { event: EVENTS[4], side:'right', labelTop: 0.18, labelEdgePx: 420, kind:'dn'   },
+    { event: EVENTS[5], side:'right', labelTop: 0.46, labelEdgePx: 420, kind:'warn' },
+    { event: EVENTS[6], side:'right', labelTop: 0.62, labelEdgePx: 420, kind:'neutral' },
+  ];
+  const glAttrs = { antialias:true, premultipliedAlpha:false, alpha:false };
+  // WebGL1 only — the shader is fully WebGL1-compatible and this
+  // removes a whole class of driver fragility (Mesa/headless Chromium).
+  const gl = canvas.getContext('webgl', glAttrs) || canvas.getContext('experimental-webgl', glAttrs);
+
+  if (!gl) {
+    document.body.classList.add('no-webgl');
+    console.warn('WebGL not available — pearl falling back to CSS gradient.');
+  }
+
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // ─────────────── Shaders ───────────────
+  const VS = `
+    precision highp float;
+    attribute vec2 a_pos;
+    void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
+  `;
+  // Fragment shader — height field + lighting + dawn gradient.
+  // N_EVENTS is interpolated at script-build time so we can use a
+  // compile-time loop bound (required for strict GLSL ES 1.00 drivers).
+  const FS = `
+    precision highp float;
+    precision highp int;
+    #define N_EVENTS ${EVENTS.length}
+    uniform vec2 u_res;
+    uniform float u_t;
+    uniform vec3 u_event[${EVENTS.length}];      // (x, y, intensity)
+    uniform vec3 u_eventColor[${EVENTS.length}]; // rgb tint per event
+
+    // Hash bounded to keep sin() args inside highp range on mobile/Apple Silicon.
+    float hash(vec2 p) {
+      p = mod(p, 256.0);
+      return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+    }
+    float noise(vec2 p) {
+      vec2 i = floor(p);
+      vec2 f = fract(p);
+      vec2 u = f * f * (3.0 - 2.0 * f);
+      float a = hash(i);
+      float b = hash(i + vec2(1.0, 0.0));
+      float c = hash(i + vec2(0.0, 1.0));
+      float d = hash(i + vec2(1.0, 1.0));
+      return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+    }
+    float fbm(vec2 p) {
+      float v = 0.0;
+      float a = 0.5;
+      for (int i = 0; i < 5; i++) {
+        v += a * noise(p);
+        p *= 2.05;
+        a *= 0.52;
+      }
+      return v;
+    }
+
+    float height(vec2 uv) {
+      // Slow drift in the noise field
+      float h = 0.45 * fbm(uv * 2.4 + vec2(u_t * 0.018, u_t * 0.012));
+      h += 0.20 * fbm(uv * 5.5 + vec2(-u_t * 0.024, u_t * 0.016));
+
+      // Event peaks — wider falloff so each one reads as a visible bump,
+      // not a single hot pixel under the leader-line dot.
+      for (int i = 0; i < N_EVENTS; i++) {
+        vec2 epos = u_event[i].xy;
+        float intensity = u_event[i].z;
+        vec2 d = uv - epos;
+        float falloff = exp(-(d.x*d.x + d.y*d.y) * 16.0);
+        h += intensity * 0.55 * falloff;
+      }
+      return h;
+    }
+
+    vec3 sampleColor(vec2 uv, float h) {
+      // Pearl palette — cool slate above, subdued amber below.
+      // Calibrated to read sculptural, not radiant: the pearl is a
+      // specimen lit gently from above, not a supernova.
+      vec3 deep_top   = vec3(0.06, 0.08, 0.13);
+      vec3 indigo     = vec3(0.10, 0.12, 0.19);
+      vec3 mid_warm   = vec3(0.17, 0.16, 0.21);
+      vec3 dawn       = vec3(0.30, 0.24, 0.20);
+      vec3 dawn_warm  = vec3(0.45, 0.34, 0.24);
+
+      // Dawn lives below the sculpted form, in the bottom ~25%,
+      // so the .today cards still sit against a soft amber wash.
+      vec3 col;
+      if (uv.y < 0.35) {
+        col = mix(deep_top, indigo, smoothstep(0.0, 0.35, uv.y));
+      } else if (uv.y < 0.65) {
+        col = mix(indigo, mid_warm, smoothstep(0.35, 0.65, uv.y));
+      } else if (uv.y < 0.85) {
+        col = mix(mid_warm, dawn, smoothstep(0.65, 0.85, uv.y));
+      } else {
+        col = mix(dawn, dawn_warm, smoothstep(0.85, 0.97, uv.y));
+      }
+
+      // Surface tint from height — much lighter touch.
+      vec3 accent = vec3(0.55, 0.70, 0.85);
+      col += accent * h * 0.08;
+
+      // Per-event color emission — TIGHT points, not washes.
+      // High falloff (220) keeps each peak as a discrete bioluminescent
+      // dot rather than a glow blob that stacks into a central white-out.
+      for (int i = 0; i < N_EVENTS; i++) {
+        vec2 epos = u_event[i].xy;
+        vec2 d = uv - epos;
+        float r2 = d.x*d.x + d.y*d.y;
+        float glow = exp(-r2 * 220.0) * 0.42;
+        col += u_eventColor[i] * glow * u_event[i].z;
+      }
+      return col;
+    }
+
+    void main() {
+      vec2 uv = gl_FragCoord.xy / u_res;
+      uv.y = 1.0 - uv.y;
+
+      // Sample height + neighbors for finite-difference normal.
+      // Strong normal scale (80) so the form actually reads as sculpted.
+      float h  = height(uv);
+      float hx = height(uv + vec2(0.0028, 0.0));
+      float hy = height(uv + vec2(0.0, 0.0028));
+      vec3 normal = normalize(vec3((h - hx) * 80.0, (h - hy) * 80.0, 1.0));
+
+      // Light from above-left so there's a clear shadow side.
+      vec3 lightDir = normalize(vec3(-0.4, 0.6, 0.7));
+      float diffuse = max(0.0, dot(normal, lightDir));
+
+      // Specular highlight
+      vec3 viewDir = vec3(0.0, 0.0, 1.0);
+      vec3 reflectDir = reflect(-lightDir, normal);
+      float spec = pow(max(0.0, dot(reflectDir, viewDir)), 28.0);
+
+      // Base color
+      vec3 color = sampleColor(uv, h);
+
+      // Apply lighting — restrained, so the form reads sculpted
+      // rather than blown-out.
+      color += vec3(0.70, 0.78, 0.90) * diffuse * 0.18 * (0.3 + h * 0.5);
+      color += vec3(0.90, 0.92, 0.95) * spec * 0.22 * (0.4 + h * 0.5);
+
+      // Stronger vignette pulls the corners into the page background.
+      vec2 cv = uv - vec2(0.5);
+      float vignette = 1.0 - dot(cv * vec2(1.05, 1.15), cv) * 1.85;
+      color *= clamp(vignette, 0.25, 1.0);
+
+      // Gentle Reinhard tone-map — caps the highlights so peaks
+      // never blow to white, keeps the pearl in a calm exposure range.
+      color = color / (1.0 + color * 0.85);
+
+      // Light film grain via hash
+      float g = (hash(gl_FragCoord.xy + vec2(u_t * 0.13, 0.0)) - 0.5) * 0.024;
+      color += g;
+
+      gl_FragColor = vec4(color, 1.0);
+    }
+  `;
+
+  function compile(type, src) {
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+      const log = gl.getShaderInfoLog(sh);
+      console.error('Shader compile failure:\n' + log + '\n--- source ---\n' + src);
+      document.title = 'SHADER FAIL · Freyja Pearl';
+      document.body.classList.add('no-webgl');
+      gl.deleteShader(sh);
+      return null;
+    }
+    return sh;
+  }
+
+  let prog = null, u_res, u_t, u_event, u_eventColor;
+  const eventPacked = [];
+  const colorPacked = [];
+
+  function eventColor(kind) {
+    switch (kind) {
+      case 'win':  return [0.55, 0.85, 0.60];
+      case 'acc':  return [0.50, 0.85, 1.20];
+      case 'dn':   return [1.20, 0.45, 0.45];
+      case 'warn': return [0.95, 0.75, 0.40];
+      default:     return [0.55, 0.60, 0.70];
+    }
+  }
+  for (const e of EVENTS) {
+    eventPacked.push(e.x, e.y, e.intensity);
+    const c = eventColor(e.kind);
+    colorPacked.push(c[0], c[1], c[2]);
+  }
+
+  let glReady = false;
+  if (gl) {
+    const vs = compile(gl.VERTEX_SHADER, VS);
+    const fs = compile(gl.FRAGMENT_SHADER, FS);
+    if (vs && fs) {
+      prog = gl.createProgram();
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        console.error('Program link failure:\n' + gl.getProgramInfoLog(prog));
+        document.title = 'LINK FAIL · Freyja Pearl';
+        document.body.classList.add('no-webgl');
+      } else {
+        gl.useProgram(prog);
+
+        // Fullscreen triangle
+        const buf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+          -1, -1,  3, -1,  -1, 3
+        ]), gl.STATIC_DRAW);
+        const a_pos = gl.getAttribLocation(prog, 'a_pos');
+        gl.enableVertexAttribArray(a_pos);
+        gl.vertexAttribPointer(a_pos, 2, gl.FLOAT, false, 0, 0);
+
+        u_res = gl.getUniformLocation(prog, 'u_res');
+        u_t   = gl.getUniformLocation(prog, 'u_t');
+        // Array uniforms: query with `[0]` form (older ANGLE D3D9
+        // backends return null for the bare name).
+        u_event      = gl.getUniformLocation(prog, 'u_event[0]');
+        u_eventColor = gl.getUniformLocation(prog, 'u_eventColor[0]');
+
+        gl.clearColor(0.04, 0.05, 0.10, 1.0);
+        glReady = true;
+      }
+    }
+  }
+
+  function resize() {
+    if (!window.innerWidth || !window.innerHeight) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    if (glReady) {
+      canvas.width  = Math.floor(w * dpr);
+      canvas.height = Math.floor(h * dpr);
+      canvas.style.width  = w + 'px';
+      canvas.style.height = h + 'px';
+      gl.viewport(0, 0, canvas.width, canvas.height);
+    }
+    syncLeadersAndAnchors();
+  }
+  window.addEventListener('resize', resize);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      resize();
+      if (glReady) requestAnimationFrame(frame);
+    }
+  });
+  // Context loss/restore: keep the page sane if the GPU resets.
+  canvas.addEventListener('webglcontextlost', (e) => {
+    e.preventDefault();
+    document.body.classList.add('no-webgl');
+  });
+  canvas.addEventListener('webglcontextrestored', () => {
+    document.body.classList.remove('no-webgl');
+    // Best-effort: a reload is the cleanest restore path for a single-file mock.
+    location.reload();
+  });
+
+  let start = performance.now();
+  let frameCount = 0;
+  function frame() {
+    if (!glReady) return;
+    let t = (performance.now() - start) / 1000;
+    if (reducedMotion) t = 6.0; // freeze at a pleasant moment
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.uniform2f(u_res, canvas.width, canvas.height);
+    gl.uniform1f(u_t, t);
+    if (u_event)      gl.uniform3fv(u_event, eventPacked);
+    if (u_eventColor) gl.uniform3fv(u_eventColor, colorPacked);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    frameCount++;
+    // Always run a few RAF passes even in reduced-motion, so a backgrounded
+    // tab doesn't leave the canvas blank forever.
+    if (!reducedMotion || frameCount < 3) requestAnimationFrame(frame);
+  }
+
+  if (glReady) {
+    resize();
+    requestAnimationFrame(frame);
+  } else {
+    // No GL: still sync the leader-line overlay so the anchor labels
+    // render against the CSS fallback gradient.
+    syncLeadersAndAnchors();
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Anchor labels with leader lines
+  // (LABELS array hoisted to the top of the script so resize()
+  // can call syncLeadersAndAnchors() during GL init.)
+  // ────────────────────────────────────────────────────────────
+
+  function syncLeadersAndAnchors() {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    if (!w || !h) return;
+
+    // Clear previous label DOM + svg paths
+    document.querySelectorAll('.anchor').forEach(n => n.remove());
+    while (leadersSvg.children.length > 1) leadersSvg.removeChild(leadersSvg.lastChild);
+    leadersSvg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+
+    for (const lab of LABELS) {
+      const ax = lab.event.x * w;
+      const ay = lab.event.y * h;
+
+      const isLeft = lab.side === 'left';
+      // Clamp so labels never land behind the side rails at narrow widths.
+      const lx = isLeft
+        ? Math.max(24, Math.min(w * 0.42, lab.labelEdgePx))
+        : Math.max(w * 0.58, Math.min(w - 24, w - lab.labelEdgePx));
+      const ly = lab.labelTop * h;
+
+      // Create the label DOM
+      const d = document.createElement('div');
+      d.className = 'anchor ' + lab.kind + (isLeft ? '' : ' right');
+      d.style.left = lx + 'px';
+      d.style.top  = ly + 'px';
+      d.innerHTML = `
+        <div class="ts">${lab.event.ts}</div>
+        <div class="ti">${lab.event.label.includes('card_042') || lab.event.label.includes('card_017') || lab.event.label.includes('freyja-design-pass') ? `<span class="id">${lab.event.label}</span>` : lab.event.label}</div>
+        <div class="sub">${lab.event.sub}</div>
+      `;
+      document.body.appendChild(d);
+
+      // Leader line: a small dot at the peak, a ring around it, a hairline
+      // bending to the label corner.
+      const ns = 'http://www.w3.org/2000/svg';
+      const g = document.createElementNS(ns, 'g');
+      const dot = document.createElementNS(ns, 'circle');
+      dot.setAttribute('cx', ax);
+      dot.setAttribute('cy', ay);
+      dot.setAttribute('r', 3.2);
+      dot.setAttribute('fill', kindColor(lab.kind));
+      dot.setAttribute('opacity', 0.95);
+      dot.setAttribute('filter', 'url(#leader-glow)');
+      g.appendChild(dot);
+
+      const dotRing = document.createElementNS(ns, 'circle');
+      dotRing.setAttribute('cx', ax);
+      dotRing.setAttribute('cy', ay);
+      dotRing.setAttribute('r', 8);
+      dotRing.setAttribute('fill', 'none');
+      dotRing.setAttribute('stroke', kindColor(lab.kind));
+      dotRing.setAttribute('stroke-width', 0.9);
+      dotRing.setAttribute('opacity', 0.7);
+      g.appendChild(dotRing);
+
+      const bendX = isLeft ? (lx + 14) : (lx - 14);
+      const bendY = ly;
+      const labelCornerX = isLeft ? (lx - 8) : (lx + 8);
+      const labelCornerY = ly;
+      const path = document.createElementNS(ns, 'path');
+      path.setAttribute('d', `M ${ax} ${ay} L ${bendX} ${bendY} L ${labelCornerX} ${labelCornerY}`);
+      path.setAttribute('stroke', kindColor(lab.kind));
+      path.setAttribute('stroke-width', 1.1);
+      path.setAttribute('opacity', 0.85);
+      path.setAttribute('fill', 'none');
+      g.appendChild(path);
+
+      leadersSvg.appendChild(g);
+    }
+  }
+
+  function kindColor(kind) {
+    switch (kind) {
+      case 'win':  return '#a8b0a8';
+      case 'acc':  return '#a8d4fc';
+      case 'dn':   return '#b48282';
+      case 'warn': return '#b8a078';
+      default:     return '#a8a8a8';
+    }
+  }
+
+  // Initial sync if GL never came up
+  if (!glReady) syncLeadersAndAnchors();
+
+  // Keyboard
+  document.addEventListener('keydown', (e) => {
+    if (e.target.closest('input,textarea')) return;
+    let target = null;
+    if (e.key === 'Enter' && !e.altKey) target = document.querySelector('.commit-zone .plan.primary');
+    else if (e.key === 'Enter' && e.altKey) target = document.querySelectorAll('.commit-zone .plan')[1];
+    else if (e.key.toLowerCase() === 's' && !e.metaKey) target = document.querySelector('.commit-zone .plan');
+    if (target) {
+      const prev = target.style.boxShadow;
+      target.style.boxShadow = '0 0 0 3px rgba(168,212,252,0.6), 0 0 36px rgba(168,212,252,0.55)';
+      target.style.transform = 'translateY(-1px)';
+      setTimeout(() => {
+        target.style.boxShadow = prev;
+        target.style.transform = '';
+      }, 320);
+    }
+  });
+</script>
+
+</body>
+</html>

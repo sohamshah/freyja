@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Topographical Star Fabric</title>
+    <style>
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #030408; /* Deep ink black */
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+        
+        #webgl-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        /* Subtle analog vector display film grain */
+        .grain-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            pointer-events: none;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+            opacity: 0.038;
+            mix-blend-mode: screen;
+        }
+
+        /* Minimal UI hint */
+        .ui-container {
+            position: absolute;
+            bottom: 4rem;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 20;
+            text-align: center;
+            pointer-events: none; 
+            user-select: none;
+        }
+
+        .click-prompt {
+            font-size: 0.8rem;
+            color: #8c95a5;
+            letter-spacing: 0.25em;
+            text-transform: uppercase;
+            font-weight: 500;
+            margin: 0;
+            opacity: 0; /* Animated on load by GSAP */
+            transition: color 0.3s ease;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="grain-overlay"></div>
+    
+    <div class="ui-container">
+        <p class="click-prompt">Click anywhere to launch console</p>
+    </div>
+
+    <canvas id="webgl-canvas"></canvas>
+
+    <!-- External Libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+
+    <script>
+        /**
+         * 1. SCENE SETUP (Overview Camera Position)
+         */
+        const canvas = document.getElementById('webgl-canvas');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x030408, 0.024);
+
+        const sizes = { width: window.innerWidth, height: window.innerHeight };
+
+        const camera = new THREE.PerspectiveCamera(46, sizes.width / sizes.height, 0.1, 500);
+        camera.position.set(0, 11, 24); // High-angle Overview
+        camera.lookAt(0, 0, 0);
+        scene.add(camera);
+
+        const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: false });
+        renderer.setSize(sizes.width, sizes.height);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x030408, 1);
+
+        /**
+         * 2. ORGANIC RANDOM DUST GEOMETRY (150k Points - Zero Grid Lines)
+         */
+        const particleCount = 150000;
+        const positions = new Float32Array(particleCount * 3);
+        const randomSizes = new Float32Array(particleCount);
+
+        const width = 60.0;
+        const depth = 45.0;
+
+        for (let i = 0; i < particleCount; i++) {
+            const index = i * 3;
+
+            // Spawns coordinates purely randomly on the 2D plane. 
+            // This completely erases all synthetic lines and grid patterns, creating a natural star-fabric.
+            positions[index]     = (Math.random() - 0.5) * width;
+            positions[index + 1] = (Math.random() - 0.5) * 0.15; // Microscopic initial height variance                        
+            positions[index + 2] = (Math.random() - 0.5) * depth;
+
+            randomSizes[i] = 0.45 + Math.random() * 0.55;
+        }
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('aRandomSize', new THREE.BufferAttribute(randomSizes, 1));
+
+        /**
+         * 3. SHADERS (Razor-Sharp Ridges & Dense Contour Highlights)
+         */
+        const glslNoise = `
+            vec4 permute(vec4 x){return mod(((x*34.0)+1.0)*x, 289.0);}
+            vec4 taylorInvSqrt(vec4 r){return 1.79284291400159 - 0.85373472095314 * r;}
+            float snoise(vec3 v){ 
+                const vec2  C = vec2(1.0/6.0, 1.0/3.0) ;
+                const vec4  D = vec4(0.0, 0.5, 1.0, 2.0);
+                vec3 i  = floor(v + dot(v, C.yyy) );
+                vec3 x0 = v - i + dot(i, C.xxx) ;
+                vec3 g = step(x0.yzx, x0.xyz);
+                vec3 l = 1.0 - g;
+                vec3 i1 = min( g.xyz, l.zxy );
+                vec3 i2 = max( g.xyz, l.zxy );
+                vec3 x1 = x0 - i1 + 1.0 * C.xxx;
+                vec3 x2 = x0 - i2 + 2.0 * C.xxx;
+                vec3 x3 = x0 - 1.0 + 3.0 * C.xxx;
+                i = mod(i, 289.0 ); 
+                vec4 p = permute( permute( permute( 
+                            i.z + vec4(0.0, i1.z, i2.z, 1.0 ))
+                            + i.y + vec4(0.0, i1.y, i2.y, 1.0 )) 
+                            + i.x + vec4(0.0, i1.x, i2.x, 1.0 ));
+                float n_ = 1.0/7.0;
+                vec3  ns = n_ * D.wyz - D.xzx;
+                vec4 j = p - 49.0 * floor(p * ns.z *ns.z);
+                vec4 x_ = floor(j * ns.z);
+                vec4 y_ = floor(j - 7.0 * x_ );
+                vec4 x = x_ *ns.x + ns.yyyy;
+                vec4 y = y_ *ns.x + ns.yyyy;
+                vec4 h = 1.0 - abs(x) - abs(y);
+                vec4 b0 = vec4( x.xy, y.xy );
+                vec4 b1 = vec4( x.zw, y.zw );
+                vec4 s0 = floor(b0)*2.0 + 1.0;
+                vec4 s1 = floor(b1)*2.0 + 1.0;
+                vec4 sh = -step(h, vec4(0.0));
+                vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy ;
+                vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww ;
+                vec3 p0 = vec3(a0.xy,h.x);
+                vec3 p1 = vec3(a0.zw,h.y);
+                vec3 p2 = vec3(a1.xy,h.z);
+                vec3 p3 = vec3(a1.zw,h.w);
+                vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2, p2), dot(p3,p3)));
+                p0 *= norm.x;
+                p1 *= norm.y;
+                p2 *= norm.z;
+                p3 *= norm.w;
+                vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+                m = m * m;
+                return 42.0 * dot( m*m, vec4( dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3) ) );
+            }
+        `;
+
+        const vertexShader = `
+            ${glslNoise}
+            
+            attribute float aRandomSize;
+
+            uniform float uTime;
+            uniform float uIntroMultiplier;
+            uniform float uTransition; // Morph trigger: 0.0 (Mountains) to 1.0 (Flat Starfield)
+            uniform float uScanLine;    
+            
+            varying float vAlpha;
+            varying float vElevation;
+            varying float vScanGlow;
+
+            void main() {
+                vec3 pos = position;
+                
+                // Majestic slow motion speed
+                float t = uTime * 0.016;
+
+                // 1. RAZOR-SHARP RIDGE NOISE: 1.0 - abs(noise) raised to power of 4.0 
+                // flattens valleys and compresses mountain peaks into thin, sharp ridges.
+                vec3 coord1 = vec3(pos.x * 0.024 + t, pos.z * 0.024, t * 0.5);
+                vec3 coord2 = vec3(pos.x * 0.055 - t, pos.z * 0.055, t * 0.8);
+                
+                float n1 = 1.0 - abs(snoise(coord1));
+                float n2 = 1.0 - abs(snoise(coord2));
+                
+                float ridgeElevation = (pow(n1, 4.0) * 19.0) + (pow(n2, 3.0) * 4.5);
+                
+                // Interpolate height down to flat based on uTransition
+                float elevation = mix(ridgeElevation, 0.0, uTransition);
+                pos.y += elevation * uIntroMultiplier;
+
+                // 2. DIAGONAL SCANNER SWEEP (Transition flare)
+                float scanDist = abs(pos.x - uScanLine);
+                float scanGlow = smoothstep(6.0, 0.0, scanDist);
+
+                // Topographic Isobars: Traces razor-thin glowing vector lines along slopes
+                float contour = sin(pos.y * 0.8 - uTime * 0.1);
+                float isContour = smoothstep(0.045, 0.0, abs(contour)); // Razor-thin contour band
+
+                vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+
+                // Size boosts on contour isobars creates dense cluster bands visually
+                float sizeBoost = 1.0 + clamp(pos.y * 0.12, -0.4, 0.8) + (isContour * 0.8) + (scanGlow * 1.5);
+                gl_PointSize = max(2.5, (26.0 / -mvPosition.z) * sizeBoost * aRandomSize);
+
+                // High boundary fade prevents edge clipping
+                float ellipDist = length(pos.xz * vec2(0.58, 1.1));
+                float radialFade = smoothstep(34.0, 16.0, ellipDist);
+
+                // Baseline is dim, while isobars and scanner lines flare brightly
+                vAlpha = (0.07 + isContour * 0.65 + scanGlow * 0.3) * radialFade;
+                vElevation = pos.y;
+                vScanGlow = scanGlow;
+
+                gl_Position = projectionMatrix * mvPosition;
+            }
+        `;
+
+        const fragmentShader = `
+            varying float vAlpha;
+            varying float vElevation;
+            varying float vScanGlow;
+
+            void main() {
+                float dist = distance(gl_PointCoord, vec2(0.5));
+                if (dist > 0.5) discard;
+                
+                // Sharp core + glowing outer HUD flare
+                vec2 uv = gl_PointCoord - 0.5;
+                bool insideCore = abs(uv.x) < 0.15 && abs(uv.y) < 0.15;
+                
+                float core = insideCore ? 2.2 : 0.0;
+                float halo = smoothstep(0.5, 0.15, dist) * 0.55;
+                float alpha = (core + halo) * vAlpha;
+
+                // Slate gray in valleys, fading to brilliant pure silver-white on mountain peaks
+                vec3 baseSlate = vec3(0.24, 0.27, 0.33);
+                vec3 activeWhite = vec3(1.0);
+                vec3 scanGlowColor = vec3(0.9, 0.94, 1.0); 
+
+                vec3 finalColor = mix(baseSlate, activeWhite, clamp((vElevation + 2.0) / 11.0, 0.0, 1.0));
+                finalColor = mix(finalColor, scanGlowColor, vScanGlow);
+
+                gl_FragColor = vec4(finalColor, alpha);
+            }
+        `;
+
+        const material = new THREE.ShaderMaterial({
+            vertexShader,
+            fragmentShader,
+            transparent: true,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+            uniforms: {
+                uTime: { value: 0 },
+                uIntroMultiplier: { value: 0 },
+                uTransition: { value: 0.0 }, // Starts in Map overview mode
+                uScanLine: { value: -38.0 }
+            }
+        });
+
+        const points = new THREE.Points(geometry, material);
+        scene.add(points);
+
+        /**
+         * 4. APP LAUNCH / EXIT GSAP CHOREOGRAPHY
+         */
+        const cameraCtrl = {
+            radius: 24,
+            y: 11,
+            orbitProgress: 0.125
+        };
+
+        let isLaunched = false;
+        const promptEl = document.querySelector('.click-prompt');
+
+        window.addEventListener('click', () => {
+            if (!isLaunched) {
+                // LAUNCH SEQUENCE (EXIT MAP -> ENTER WARP SPEED TUNNEL)
+                const tl = gsap.timeline();
+                
+                promptEl.style.color = '#ffffff';
+                promptEl.innerText = "Initializing Core...";
+
+                // Swoop camera down low to center of coordinate lane
+                tl.to(cameraCtrl, {
+                    y: 1.8,
+                    radius: 18,
+                    duration: 2.5,
+                    ease: "power3.inOut"
+                }, 0);
+
+                // Flatten mountain topography down into processing matrix
+                tl.to(material.uniforms.uTransition, {
+                    value: 1.0,
+                    duration: 2.5,
+                    ease: "power3.inOut",
+                    onComplete: () => {
+                        promptEl.innerText = "Console Active. Click to return.";
+                    }
+                }, 0);
+
+                // Sweep the scanline dramatically across the grid
+                tl.fromTo(material.uniforms.uScanLine, 
+                    { value: -38.0 },
+                    { value: 38.0, duration: 2.0, ease: "power2.out" }, 
+                    0.5
+                );
+                
+                isLaunched = true;
+            } else {
+                // RESET SEQUENCE (EXIT TUNNEL -> RETURN TO OVERVIEW MAP)
+                const tl = gsap.timeline();
+                
+                promptEl.style.color = '#8c95a5';
+                promptEl.innerText = "Rebuilding Topography...";
+
+                // Float camera back up to overview altitude
+                tl.to(cameraCtrl, {
+                    y: 11.0,
+                    radius: 24,
+                    duration: 2.5,
+                    ease: "power3.inOut"
+                }, 0);
+
+                // Elevate mountain topography back up
+                tl.to(material.uniforms.uTransition, {
+                    value: 0.0,
+                    duration: 2.5,
+                    ease: "power3.inOut",
+                    onComplete: () => {
+                        promptEl.innerText = "Click anywhere to launch console";
+                    }
+                }, 0);
+                
+                isLaunched = false;
+            }
+        });
+
+        // Entrance scale timeline on load
+        const introTl = gsap.timeline();
+        introTl.to(material.uniforms.uIntroMultiplier, {
+            value: 1.0,
+            duration: 6.5,
+            ease: "power2.inOut"
+        }, 0);
+
+        introTl.fromTo(".click-prompt", 
+            { opacity: 0, y: 15 },
+            { opacity: 1, y: 0, duration: 1.5, ease: "power2.out" },
+            2.5
+        );
+
+        /**
+         * 5. ANIMATION LOOP
+         */
+        const clock = new THREE.Clock();
+
+        const tick = () => {
+            const elapsedTime = clock.getElapsedTime();
+
+            material.uniforms.uTime.value = elapsedTime;
+
+            // Slow, orbital camera sweep
+            // Camera position is determined dynamically by the GSAP controller values
+            cameraCtrl.orbitProgress += 0.00016; 
+            const angle = cameraCtrl.orbitProgress * Math.PI * 2;
+            
+            camera.position.x = Math.sin(angle) * cameraCtrl.radius;
+            camera.position.z = Math.cos(angle) * cameraCtrl.radius;
+            camera.position.y = cameraCtrl.y + Math.sin(elapsedTime * 0.04) * 0.8; 
+
+            camera.lookAt(0, 0.5, 0);
+
+            renderer.render(scene, camera);
+            window.requestAnimationFrame(tick);
+        };
+
+        tick();
+
+        /**
+         * 6. RESIZE HANDLER
+         */
+        window.addEventListener('resize', () => {
+            sizes.width = window.innerWidth;
+            sizes.height = window.innerHeight;
+
+            camera.aspect = sizes.width / sizes.height;
+            camera.updateProjectionMatrix();
+
+            renderer.setSize(sizes.width, sizes.height);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        });
+    </script>
+</body>
+</html>

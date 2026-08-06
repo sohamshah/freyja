@@ -1,0 +1,716 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Morning Room — H. Mosaic</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#06070b; --bg-1:#0c0e14; --bg-2:#11141c; --bg-3:#1a1e28;
+    --fg-0:#e8e8e8; --fg-1:#a8a8a8; --fg-2:#6e6e6e; --fg-3:#4a4a4a; --fg-4:#303030;
+    --accent:#a8d4fc; --accent-hi:#c4e0fc; --accent-lo:#7aafea;
+    --ok:#a8b0a8; --warn:#b8a078; --danger:#b48282;
+    --hairline:rgba(255,255,255,0.06);
+    --hairline-strong:rgba(255,255,255,0.16);
+    --rule:rgba(255,255,255,0.05);
+    --mono:'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { margin:0; min-height:100%; background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:11.5px; line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+    font-feature-settings:'ss01' on, 'ss02' on, 'cv11' on, 'tnum' on;
+  }
+  body::before {
+    content:""; position:fixed; inset:0; z-index:0; pointer-events:none;
+    background:
+      radial-gradient(1200px 800px at 20% -10%, rgba(168,212,252,0.03), transparent 70%),
+      radial-gradient(900px 700px at 100% 110%, rgba(184,160,120,0.025), transparent 70%);
+  }
+
+  /* === grain + matrix overlays === */
+  .grain {
+    position:fixed; inset:0; z-index:9000;
+    pointer-events:none; opacity:0.075;
+    mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.6 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    background-size:240px 240px;
+  }
+  /* Matrix dot pattern — barely-there registration marks */
+  .matrix {
+    position:fixed; inset:0; z-index:8998;
+    pointer-events:none; opacity:0.4;
+    background-image:
+      radial-gradient(rgba(255,255,255,0.05) 0.5px, transparent 0.6px);
+    background-size:24px 24px;
+    background-position:0 0;
+    mix-blend-mode:screen;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .grain { opacity:0.04; }
+  }
+
+  /* ───── TOP CHROME ───── */
+  .top {
+    position:sticky; top:0; z-index:30;
+    display:grid; grid-template-columns:auto 1fr auto;
+    align-items:center; gap:20px;
+    padding:14px 26px;
+    background:linear-gradient(180deg, rgba(6,7,11,0.94) 0%, rgba(6,7,11,0.55) 80%, transparent 100%);
+    backdrop-filter:blur(14px) saturate(140%);
+  }
+  .top .brand {
+    display:flex; align-items:center; gap:14px;
+    color:var(--fg-2); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+  .top .brand .mark {
+    width:14px; height:14px; border-radius:3px;
+    background:linear-gradient(135deg, var(--accent-hi) 0%, var(--accent-lo) 100%);
+    box-shadow:0 0 12px rgba(168,212,252,0.55);
+  }
+  .top .brand .div { color:var(--fg-4); }
+  .top .brand .room { color:var(--fg-0); }
+  .top .center {
+    text-align:center;
+    color:var(--fg-3); font-size:9.5px; letter-spacing:0.32em; text-transform:uppercase;
+  }
+  .top .center .em { color:var(--accent); }
+  .top .right { display:flex; align-items:center; gap:8px; }
+  .top .view-switch {
+    display:inline-flex; padding:2px;
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline); border-radius:6px;
+  }
+  .top .view-switch button {
+    font-family:var(--mono); font-size:10px; letter-spacing:0.16em; text-transform:uppercase;
+    color:var(--fg-2); padding:5px 9px; border-radius:4px;
+    background:transparent; border:none; cursor:pointer;
+    transition:all 140ms ease;
+  }
+  .top .view-switch button.active {
+    color:var(--accent); background:rgba(168,212,252,0.1);
+  }
+
+  /* ───── MOSAIC ─────
+     Grid: 14 columns × auto rows.
+     Each tile is grid-positioned explicitly so the composition reads top→bottom. */
+  main {
+    max-width:1500px;
+    margin:0 auto;
+    padding:24px 26px 100px;
+    position:relative; z-index:5;
+  }
+  .grid {
+    display:grid;
+    grid-template-columns:repeat(14, 1fr);
+    grid-auto-rows:80px;
+    gap:1px;                            /* The gap IS the rule — 1px hairlines between tiles */
+    background:var(--rule);             /* the gap shows through as the rule */
+    border:1px solid var(--rule);
+  }
+  .tile {
+    background:var(--bg-0);
+    padding:14px 16px;
+    position:relative;
+    overflow:hidden;
+    min-height:0;
+  }
+  .tile.dim { background:var(--bg-1); }
+  .tile.feat { background:#0a0d14; }
+  .tile.accent { background:linear-gradient(180deg, #0a0e16 0%, #060a14 100%); }
+  .tile.empty { background:var(--bg-0); }
+  .tile .lab {
+    color:var(--fg-3); font-size:9px; letter-spacing:0.28em; text-transform:uppercase;
+    margin-bottom:8px;
+  }
+  .tile .lab em { color:var(--accent); font-style:normal; }
+
+  /* Headline tile */
+  .h1 {
+    grid-column:1 / span 7;
+    grid-row:1 / span 3;
+    padding:22px 24px;
+    display:flex; flex-direction:column; justify-content:space-between;
+  }
+  .h1 .date {
+    color:var(--accent); font-size:9.5px; letter-spacing:0.42em; text-transform:uppercase;
+  }
+  .h1 h1 {
+    font-family:var(--serif); font-weight:300; font-style:italic;
+    font-size:48px; line-height:1.08; letter-spacing:-0.012em;
+    color:var(--fg-0); margin:0;
+  }
+  .h1 h1 em { color:var(--accent); font-style:italic; }
+  .h1 .sub {
+    color:var(--fg-2); font-size:11px; line-height:1.55;
+    max-width:90%;
+  }
+
+  /* Date / weather strip */
+  .ts {
+    grid-column:8 / span 3;
+    grid-row:1 / span 1;
+    display:flex; align-items:center; justify-content:space-between;
+  }
+  .ts .l { color:var(--fg-3); font-size:9px; letter-spacing:0.28em; text-transform:uppercase; }
+  .ts .v { color:var(--fg-0); font-size:13px; font-variant-numeric:tabular-nums; }
+
+  .last {
+    grid-column:11 / span 4;
+    grid-row:1 / span 1;
+    display:flex; align-items:center; justify-content:space-between;
+  }
+  .last .l { color:var(--fg-3); font-size:9px; letter-spacing:0.28em; text-transform:uppercase; }
+  .last .v { color:var(--fg-1); font-size:11.5px; }
+  .last .v em { color:var(--accent); font-style:normal; }
+
+  /* Needs-you decision tiles (across the right of headline area) */
+  .ny {
+    padding:14px 16px;
+    display:flex; flex-direction:column; justify-content:space-between;
+  }
+  .ny .head {
+    display:flex; gap:7px; align-items:center;
+    font-size:9px; letter-spacing:0.28em; text-transform:uppercase;
+    color:var(--fg-3);
+  }
+  .ny .head .pip { width:5px; height:5px; border-radius:999px; background:var(--fg-3); }
+  .ny.dn .head { color:var(--danger); }
+  .ny.dn .head .pip { background:var(--danger); box-shadow:0 0 7px rgba(180,130,130,0.5); }
+  .ny.acc .head { color:var(--accent); }
+  .ny.acc .head .pip { background:var(--accent); box-shadow:0 0 7px var(--accent); }
+  .ny.warn .head { color:var(--warn); }
+  .ny.warn .head .pip { background:var(--warn); }
+  .ny .body {
+    color:var(--fg-0); font-size:11.5px; line-height:1.4;
+    margin:6px 0;
+  }
+  .ny .body .id { color:var(--accent); }
+  .ny .acts {
+    display:flex; gap:4px; flex-wrap:wrap;
+  }
+  .ny .acts .v {
+    font-family:var(--mono); font-size:10px; letter-spacing:0.04em;
+    padding:5px 9px; border-radius:4px;
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer; transition:all 140ms ease;
+  }
+  .ny .acts .v.p { color:var(--accent); border-color:rgba(168,212,252,0.42); background:rgba(168,212,252,0.08); }
+  .ny .acts .v:hover { color:var(--fg-0); border-color:var(--hairline-strong); }
+  .ny .acts .v.p:hover { background:rgba(168,212,252,0.18); }
+
+  .ny-1 { grid-column:8 / span 7; grid-row:2 / span 2; padding:18px 22px; }
+  .ny-1 .body { font-size:14px; }
+  .ny-1 .quote {
+    font-family:var(--serif); font-weight:300; font-style:italic;
+    color:var(--fg-1); font-size:13px; line-height:1.5;
+    padding-left:10px; border-left:2px solid var(--hairline);
+    margin:6px 0 10px;
+  }
+
+  /* Statistics row */
+  .stat {
+    display:flex; flex-direction:column; justify-content:space-between;
+    padding:12px 14px;
+  }
+  .stat .l {
+    color:var(--fg-3); font-size:8.5px; letter-spacing:0.28em; text-transform:uppercase;
+  }
+  .stat .v {
+    font-size:24px; color:var(--fg-0); font-variant-numeric:tabular-nums;
+    font-weight:400; letter-spacing:-0.01em;
+  }
+  .stat .v.em { color:var(--accent); }
+  .stat .sub { color:var(--fg-3); font-size:9px; letter-spacing:0.04em; }
+
+  /* Sparkline tile */
+  .spark { padding:12px 14px; display:flex; flex-direction:column; gap:6px; }
+  .spark .head {
+    display:flex; justify-content:space-between; align-items:baseline;
+  }
+  .spark .l {
+    color:var(--fg-3); font-size:8.5px; letter-spacing:0.28em; text-transform:uppercase;
+  }
+  .spark .v {
+    font-size:13px; color:var(--fg-0); font-variant-numeric:tabular-nums;
+  }
+  .spark .v.em { color:var(--accent); }
+  .spark svg { width:100%; height:34px; display:block; }
+
+  /* Bar/distribution tile */
+  .bar { display:flex; flex-direction:column; justify-content:space-between; padding:12px 14px; }
+  .bar .head {
+    display:flex; justify-content:space-between; align-items:baseline;
+  }
+  .bar .l {
+    color:var(--fg-3); font-size:8.5px; letter-spacing:0.28em; text-transform:uppercase;
+  }
+  .bar .v {
+    font-size:13px; color:var(--fg-0); font-variant-numeric:tabular-nums;
+  }
+  .bar .v em { color:var(--accent); font-style:normal; }
+  .bar .track {
+    height:6px; background:rgba(255,255,255,0.04);
+    border-radius:2px; overflow:hidden;
+    margin-top:6px;
+    display:flex;
+  }
+  .bar .track .seg-a { background:var(--accent); height:100%; }
+  .bar .track .seg-b { background:rgba(168,212,252,0.18); height:100%; }
+  .bar .legend {
+    display:flex; gap:10px; margin-top:6px;
+    color:var(--fg-3); font-size:9.5px;
+  }
+  .bar .legend .sw {
+    display:inline-block; width:7px; height:7px; border-radius:1.5px; margin-right:5px;
+    vertical-align:middle;
+  }
+  .bar .legend .sw.a { background:var(--accent); }
+  .bar .legend .sw.b { background:rgba(168,212,252,0.4); }
+
+  /* Overnight timeline tile (wide, dense) */
+  .timeline {
+    padding:14px 18px;
+    display:flex; flex-direction:column; gap:8px;
+  }
+  .timeline .head {
+    display:flex; justify-content:space-between; align-items:baseline;
+  }
+  .timeline .l {
+    color:var(--fg-3); font-size:9px; letter-spacing:0.28em; text-transform:uppercase;
+  }
+  .timeline .l em { color:var(--accent); font-style:normal; }
+  .timeline .meta { color:var(--fg-2); font-size:10px; }
+  .timeline .meta em { color:var(--accent); font-style:normal; }
+  .timeline-rail {
+    position:relative;
+    height:50px;
+    margin-top:4px;
+  }
+  .timeline-rail svg { position:absolute; inset:0; width:100%; height:100%; }
+
+  /* Priority cards */
+  .prio {
+    padding:14px 16px;
+    display:flex; flex-direction:column; justify-content:space-between;
+    position:relative;
+  }
+  .prio .num {
+    font-family:var(--serif); font-weight:300; font-style:italic;
+    font-size:38px; line-height:1; color:var(--accent);
+    position:absolute; right:14px; top:10px;
+    opacity:0.4;
+  }
+  .prio .head {
+    display:flex; gap:8px; align-items:baseline;
+    color:var(--accent); font-size:10px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+  .prio .head .t { font-variant-numeric:tabular-nums; }
+  .prio .title {
+    color:var(--fg-0); font-size:14px; line-height:1.3; margin:8px 0 6px;
+  }
+  .prio .meta {
+    color:var(--fg-3); font-size:9.5px; letter-spacing:0.04em;
+  }
+  .prio .stage {
+    margin-top:8px;
+    font-family:var(--mono); font-size:10px; letter-spacing:0.04em;
+    padding:5px 9px; border-radius:4px;
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer; transition:all 140ms ease;
+    align-self:flex-start;
+  }
+  .prio:hover .stage { color:var(--accent); border-color:rgba(168,212,252,0.42); background:rgba(168,212,252,0.08); }
+
+  /* Quote tile */
+  .quote-tile {
+    padding:14px 16px;
+    display:flex; flex-direction:column; justify-content:space-between;
+  }
+  .quote-tile .q {
+    font-family:var(--serif); font-weight:300; font-style:italic;
+    color:var(--fg-1); font-size:14px; line-height:1.45;
+  }
+  .quote-tile .cite {
+    color:var(--fg-3); font-size:9.5px; letter-spacing:0.18em; text-transform:uppercase;
+    margin-top:8px;
+  }
+  .quote-tile .cite em { color:var(--accent); font-style:normal; }
+
+  /* Skill tile (tiny) */
+  .skill {
+    padding:12px 14px;
+    display:flex; flex-direction:column; justify-content:space-between;
+  }
+  .skill .l { color:var(--fg-3); font-size:9px; letter-spacing:0.28em; text-transform:uppercase; }
+  .skill .body { color:var(--fg-0); font-size:11px; line-height:1.4; margin-top:6px; }
+  .skill .body .id { color:var(--accent); }
+
+  /* Bottom telemetry row */
+  .telem {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:14px 16px;
+  }
+  .telem .l {
+    color:var(--fg-3); font-size:8.5px; letter-spacing:0.28em; text-transform:uppercase;
+  }
+  .telem .v {
+    color:var(--fg-0); font-size:16px; font-variant-numeric:tabular-nums;
+  }
+  .telem .v.em { color:var(--accent); }
+  .telem .delta { color:var(--fg-3); font-size:9.5px; }
+  .telem .delta.up { color:var(--ok); }
+  .telem .delta.dn { color:var(--danger); }
+
+  /* Blank breathing-room tile (gives the mosaic asymmetric whitespace) */
+  .blank {}
+
+  /* ───── COMMIT ZONE ───── */
+  .commit-zone {
+    position:fixed; left:0; right:0; bottom:0; z-index:20;
+    padding:14px 26px 18px;
+    background:linear-gradient(180deg, transparent 0%, rgba(6,7,11,0.94) 60%);
+    backdrop-filter:blur(12px);
+  }
+  .commit-zone .row {
+    display:grid; grid-template-columns:1fr auto;
+    align-items:center; gap:20px;
+    max-width:1500px; margin:0 auto;
+  }
+  .commit-zone .left {
+    color:var(--fg-2); font-size:11px; letter-spacing:0.04em;
+    font-style:italic; font-family:var(--serif); font-weight:300;
+  }
+  .commit-zone .left em { color:var(--accent); font-style:italic; }
+  .commit-zone .plans { display:flex; gap:8px; }
+  .commit-zone .plan {
+    font-family:var(--mono); font-size:11px; letter-spacing:0.04em;
+    padding:9px 16px; border-radius:6px;
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer; transition:all 160ms ease;
+  }
+  .commit-zone .plan:hover { color:var(--fg-0); border-color:var(--hairline-strong); }
+  .commit-zone .plan.primary {
+    color:var(--bg-0); border-color:var(--accent);
+    background:linear-gradient(180deg, var(--accent-hi) 0%, var(--accent) 100%);
+    box-shadow:0 0 26px rgba(168,212,252,0.4);
+    font-weight:500;
+  }
+  .commit-zone .plan.primary:hover {
+    background:linear-gradient(180deg, var(--accent-hi) 0%, var(--accent-hi) 100%);
+    box-shadow:0 0 36px rgba(168,212,252,0.6);
+  }
+  .commit-zone .plan .kbd { font-size:9.5px; margin-left:6px; opacity:0.7; }
+
+  /* Footer (under the grid before commit zone) */
+  .colophon {
+    margin-top:18px;
+    display:flex; justify-content:space-between;
+    color:var(--fg-3); font-size:9.5px; letter-spacing:0.18em; text-transform:uppercase;
+    padding:0 2px;
+  }
+  .colophon em { color:var(--fg-2); font-style:normal; }
+</style>
+</head>
+<body>
+
+<div class="grain" aria-hidden="true"></div>
+<div class="matrix" aria-hidden="true"></div>
+
+<!-- ───── TOP CHROME ───── -->
+<header class="top">
+  <div class="brand">
+    <span class="mark"></span>
+    <span>freyja</span>
+    <span class="div">/</span>
+    <span class="room">morning brief · grid</span>
+  </div>
+  <div class="center">
+    <span>monday jun 02</span> · <span class="em">06:30 PDT</span> · <span>7h 12m since last brief</span>
+  </div>
+  <div class="right">
+    <div class="view-switch">
+      <button>memo</button>
+      <button>console</button>
+      <button>map</button>
+      <button>sky</button>
+      <button>pearl</button>
+      <button>dial</button>
+      <button class="active">grid</button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="grid">
+
+    <!-- ROW 1–3 : headline, timestamps, primary needs-you -->
+    <div class="tile h1 feat">
+      <div class="date">monday · june 02 · 06:30</div>
+      <h1>6 marks since <em>22:14</em>.<br/>3 staged forward.</h1>
+      <div class="sub">overnight: 7 events, 4 dispatches, 2 skills, 1 block. day-ahead: 3 priorities forecast through 14:00.</div>
+    </div>
+
+    <div class="tile ts">
+      <span class="l">PDT</span><span class="v">06:30:14</span>
+    </div>
+    <div class="tile last">
+      <span class="l">since</span><span class="v"><em>7h 12m</em> · last brief 23:18</span>
+    </div>
+
+    <!-- Top-right needs-you, large -->
+    <div class="tile ny ny-1 dn">
+      <div class="head"><span class="pip"></span> blocked · needs you</div>
+      <div>
+        <div class="body"><span class="id">card_042</span> — judge rejected at iter 5/5. Rework cap reached overnight.</div>
+        <div class="quote">"Complete coverage of city offices remains partial; some sources are stale by &gt;90 days."</div>
+      </div>
+      <div class="acts">
+        <button class="v p">dispatch revision</button>
+        <button class="v">override · ship as-is</button>
+        <button class="v">view evidence</button>
+        <button class="v">defer · 24h</button>
+      </div>
+    </div>
+
+    <!-- ROW 4 : telemetry stats -->
+    <div class="tile stat" style="grid-column:1/span 2; grid-row:4/span 1;">
+      <div class="l">spend yest</div>
+      <div class="v em">$4.82</div>
+      <div class="sub">327k tok · 4 sessions</div>
+    </div>
+
+    <div class="tile stat" style="grid-column:3/span 2; grid-row:4/span 1;">
+      <div class="l">judge pass · 7d</div>
+      <div class="v">68%</div>
+      <div class="sub">19 of 28</div>
+    </div>
+
+    <div class="tile spark" style="grid-column:5/span 3; grid-row:4/span 1;">
+      <div class="head">
+        <span class="l">judge · 7d trend</span>
+        <span class="v em">↑4</span>
+      </div>
+      <svg viewBox="0 0 100 34" preserveAspectRatio="none">
+        <polyline points="0,22 14,18 28,24 42,14 56,16 70,10 85,12 100,8"
+          fill="none" stroke="#a8d4fc" stroke-width="1.4"/>
+        <line x1="0" y1="34" x2="100" y2="34" stroke="rgba(255,255,255,0.06)" stroke-width="0.5"/>
+        <circle cx="100" cy="8" r="2.2" fill="#a8d4fc"/>
+      </svg>
+    </div>
+
+    <div class="tile bar" style="grid-column:8/span 4; grid-row:4/span 1;">
+      <div class="head">
+        <span class="l">coop share · agent / runtime</span>
+        <span class="v"><em>82</em> / 18</span>
+      </div>
+      <div class="track">
+        <div class="seg-a" style="width:82%;"></div>
+        <div class="seg-b" style="width:18%;"></div>
+      </div>
+      <div class="legend"><span><span class="sw a"></span>agent</span><span><span class="sw b"></span>runtime</span></div>
+    </div>
+
+    <div class="tile stat" style="grid-column:12/span 3; grid-row:4/span 1;">
+      <div class="l">longest session</div>
+      <div class="v">3h 17m</div>
+      <div class="sub">backstop card_042 · 04:14 → 06:14</div>
+    </div>
+
+    <!-- ROW 5 : timeline + sub needs-you -->
+    <div class="tile timeline" style="grid-column:1/span 11; grid-row:5/span 1;">
+      <div class="head">
+        <span class="l">overnight · <em>6 events</em> · 22:14 → 06:30</span>
+        <span class="meta">judge <em>3</em> · drafter <em>2</em> · scheduler <em>1</em> · blocked <em>1</em></span>
+      </div>
+      <div class="timeline-rail">
+        <svg viewBox="0 0 1000 50" preserveAspectRatio="none">
+          <!-- baseline -->
+          <line x1="0" y1="36" x2="1000" y2="36" stroke="rgba(255,255,255,0.10)" stroke-width="0.5"/>
+          <!-- hour ticks every 1h between 22 and 7 = 9 hours visible -->
+          <g stroke="rgba(255,255,255,0.08)" stroke-width="0.5">
+            <line x1="0"    y1="32" x2="0"    y2="40"/>
+            <line x1="111"  y1="32" x2="111"  y2="40"/>
+            <line x1="222"  y1="32" x2="222"  y2="40"/>
+            <line x1="333"  y1="32" x2="333"  y2="40"/>
+            <line x1="444"  y1="32" x2="444"  y2="40"/>
+            <line x1="555"  y1="32" x2="555"  y2="40"/>
+            <line x1="666"  y1="32" x2="666"  y2="40"/>
+            <line x1="777"  y1="32" x2="777"  y2="40"/>
+            <line x1="888"  y1="32" x2="888"  y2="40"/>
+            <line x1="1000" y1="32" x2="1000" y2="40"/>
+          </g>
+          <!-- hour labels -->
+          <g fill="rgba(255,255,255,0.30)" font-family="Geist Mono" font-size="8" letter-spacing="1">
+            <text x="2"   y="49">22</text>
+            <text x="113" y="49">23</text>
+            <text x="224" y="49">00</text>
+            <text x="335" y="49">01</text>
+            <text x="446" y="49">02</text>
+            <text x="557" y="49">03</text>
+            <text x="668" y="49">04</text>
+            <text x="779" y="49">05</text>
+            <text x="890" y="49">06</text>
+          </g>
+          <!-- events: positioning 22:14 → 06:30 mapped 0 → 1000 -->
+          <!-- minutes from 22:14: 22:34=20min  22:51=37min  03:14=300min  04:02=348min  04:14=360min  05:21=427min  06:00=466min  06:30 = 496min total -->
+          <!-- x = (minOffset / 496) * 1000 -->
+          <!-- 22:34 → 40 -->
+          <circle cx="40"  cy="36" r="3.5" fill="#a8b0a8"/>
+          <line   x1="40"  y1="36" x2="40"  y2="14" stroke="rgba(168,176,168,0.5)" stroke-width="0.5"/>
+          <text   x="44"   y="11" fill="rgba(232,232,232,0.85)" font-family="Geist Mono" font-size="8.5">card_017 · pass</text>
+          <!-- 22:51 → 75 -->
+          <circle cx="75"  cy="36" r="3" fill="#a8d4fc"/>
+          <line   x1="75"  y1="36" x2="75"  y2="22" stroke="rgba(168,212,252,0.4)" stroke-width="0.5"/>
+          <text   x="79"   y="20" fill="rgba(168,168,168,0.75)" font-family="Geist Mono" font-size="8">fanout · 47 sources</text>
+          <!-- 03:14 → 605 -->
+          <circle cx="605" cy="36" r="3" fill="#a8d4fc"/>
+          <line   x1="605" y1="36" x2="605" y2="14" stroke="rgba(168,212,252,0.4)" stroke-width="0.5"/>
+          <text   x="609" y="11" fill="rgba(232,232,232,0.85)" font-family="Geist Mono" font-size="8.5">drafter · 2 candidates</text>
+          <!-- 04:02 → 701 -->
+          <circle cx="701" cy="36" r="2.5" fill="rgba(232,232,232,0.7)"/>
+          <line   x1="701" y1="36" x2="701" y2="24" stroke="rgba(255,255,255,0.18)" stroke-width="0.5"/>
+          <text   x="705" y="22" fill="rgba(168,168,168,0.7)" font-family="Geist Mono" font-size="8">autopilot · 4 disp</text>
+          <!-- 04:14 → 726 -->
+          <circle cx="726" cy="36" r="4" fill="#b48282"/>
+          <line   x1="726" y1="36" x2="726" y2="8"  stroke="rgba(180,130,130,0.55)" stroke-width="0.5"/>
+          <text   x="730" y="5"  fill="#b48282" font-family="Geist Mono" font-size="8.5" letter-spacing="0.6">card_042 · BLOCKED</text>
+          <!-- 05:21 → 861 -->
+          <circle cx="861" cy="36" r="3" fill="#b8a078"/>
+          <line   x1="861" y1="36" x2="861" y2="14" stroke="rgba(184,160,120,0.45)" stroke-width="0.5"/>
+          <text   x="811" y="11" fill="rgba(184,160,120,0.85)" font-family="Geist Mono" font-size="8.5">design-pass · paused</text>
+          <!-- 06:00 → 940 -->
+          <circle cx="940" cy="36" r="2.5" fill="rgba(232,232,232,0.7)"/>
+          <!-- now marker at 1000 -->
+          <line   x1="1000" y1="6" x2="1000" y2="44" stroke="#a8d4fc" stroke-width="1"/>
+          <circle cx="1000" cy="36" r="3.5" fill="#a8d4fc"/>
+          <text   x="970" y="4" fill="#a8d4fc" font-family="Geist Mono" font-size="8" letter-spacing="1">NOW</text>
+        </svg>
+      </div>
+    </div>
+
+    <!-- Sub needs-you stacked vertical on right of timeline -->
+    <div class="tile ny acc" style="grid-column:12/span 3; grid-row:5/span 1;">
+      <div class="head"><span class="pip"></span> skill candidate</div>
+      <div class="body"><span class="id">cooperative-compaction-helper</span> — 12–18% token est.</div>
+      <div class="acts">
+        <button class="v p">accept</button>
+        <button class="v">edit</button>
+      </div>
+    </div>
+
+    <!-- ROW 6 : Priorities (today) -->
+    <div class="tile prio" style="grid-column:1/span 4; grid-row:6/span 2;">
+      <div class="num">1</div>
+      <div>
+        <div class="head"><span>priority</span> · <span class="t">09:00</span></div>
+        <div class="title">card_042 — rework cycle restart</div>
+        <div class="meta">code · gpt-5.5 · ctx 1m · est 32m · $1.40</div>
+      </div>
+      <button class="stage">stage 09:00</button>
+    </div>
+
+    <div class="tile prio" style="grid-column:5/span 4; grid-row:6/span 2;">
+      <div class="num">2</div>
+      <div>
+        <div class="head"><span>priority</span> · <span class="t">11:00</span></div>
+        <div class="title">input-dock design pass</div>
+        <div class="meta">browser-qa · opus-4-8 · ctx 1m · est 1h · $2.10</div>
+      </div>
+      <button class="stage">stage 11:00</button>
+    </div>
+
+    <div class="tile prio" style="grid-column:9/span 3; grid-row:6/span 2;">
+      <div class="num">3</div>
+      <div>
+        <div class="head"><span>priority</span> · <span class="t">14:00</span></div>
+        <div class="title">triage 4 stale cards</div>
+        <div class="meta">judge-deep · sonnet-4-6 · ctx 200k · est 22m · $0.65</div>
+      </div>
+      <button class="stage">stage 14:00</button>
+    </div>
+
+    <!-- Right side: quote tile + last needs-you stacked -->
+    <div class="tile quote-tile" style="grid-column:12/span 3; grid-row:6/span 1;">
+      <div class="q">"Burns alone — no constellation."</div>
+      <div class="cite">judge · <em>card_042</em></div>
+    </div>
+
+    <div class="tile ny warn" style="grid-column:12/span 3; grid-row:7/span 1;">
+      <div class="head"><span class="pip"></span> goal · paused</div>
+      <div class="body"><span class="id">freyja-design-pass</span> · iter 4/12</div>
+      <div class="acts">
+        <button class="v p">resume</button>
+        <button class="v">retire</button>
+      </div>
+    </div>
+
+    <!-- ROW 8 : Bottom telemetry strip + skills + tools -->
+    <div class="tile telem" style="grid-column:1/span 2; grid-row:8/span 1;">
+      <div><div class="l">tokens</div><div class="v">327k</div></div>
+      <div class="delta dn">+12% wow</div>
+    </div>
+    <div class="tile telem" style="grid-column:3/span 2; grid-row:8/span 1;">
+      <div><div class="l">sessions</div><div class="v">4</div></div>
+      <div class="delta">avg 1h 48m</div>
+    </div>
+    <div class="tile telem" style="grid-column:5/span 3; grid-row:8/span 1;">
+      <div><div class="l">top tools · yest</div><div class="v">web_fetch <span style="color:var(--fg-3); font-size:11px;">213</span> · judge <span style="color:var(--fg-3); font-size:11px;">68</span></div></div>
+    </div>
+    <div class="tile skill" style="grid-column:8/span 4; grid-row:8/span 1;">
+      <div class="l">skill bank</div>
+      <div class="body"><span class="id">3 active</span> · 2 candidates pending review · 1 retired</div>
+    </div>
+    <div class="tile telem" style="grid-column:12/span 3; grid-row:8/span 1;">
+      <div><div class="l">scheduler · next fire</div><div class="v">slack-digest</div></div>
+      <div class="delta">07:00</div>
+    </div>
+
+  </div>
+
+  <div class="colophon">
+    <span>06:30 PDT · monday <em>2026-06-02</em></span>
+    <span>session · <em>4 active</em></span>
+    <span>memory · <em>72 entries</em> · 4 added overnight</span>
+    <span>git · <em>main</em> @ 15a3c4d</span>
+  </div>
+</main>
+
+<!-- ───── COMMIT ZONE ───── -->
+<div class="commit-zone">
+  <div class="row">
+    <div class="left">
+      Commit · 3 priorities staged · forecast <em>~$5.40</em> · ~340k tok.
+    </div>
+    <div class="plans">
+      <button class="plan">stage all <span class="kbd">S</span></button>
+      <button class="plan">run 1 first <span class="kbd">⌥⏎</span></button>
+      <button class="plan primary">run 1, 2, 3 in parallel <span class="kbd">⏎</span></button>
+    </div>
+  </div>
+</div>
+
+<script>
+  document.addEventListener('keydown', (e) => {
+    if (e.target.closest('input,textarea')) return;
+    let target = null;
+    if (e.key === 'Enter' && !e.altKey) target = document.querySelector('.commit-zone .plan.primary');
+    else if (e.key === 'Enter' && e.altKey) target = document.querySelectorAll('.commit-zone .plan')[1];
+    else if (e.key.toLowerCase() === 's' && !e.metaKey) target = document.querySelector('.commit-zone .plan');
+    if (target) {
+      const prev = target.style.boxShadow;
+      target.style.boxShadow = '0 0 0 3px rgba(168,212,252,0.6), 0 0 36px rgba(168,212,252,0.55)';
+      target.style.transform = 'translateY(-1px)';
+      setTimeout(() => {
+        target.style.boxShadow = prev;
+        target.style.transform = '';
+      }, 320);
+    }
+  });
+</script>
+
+</body>
+</html>

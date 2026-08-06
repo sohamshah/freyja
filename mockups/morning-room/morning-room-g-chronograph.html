@@ -1,0 +1,996 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Morning Room — G. Chronograph</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#06070b; --bg-1:#0c0e14; --bg-2:#11141c; --bg-3:#1a1e28;
+    --fg-0:#e8e8e8; --fg-1:#a8a8a8; --fg-2:#6e6e6e; --fg-3:#4a4a4a; --fg-4:#303030;
+    --accent:#a8d4fc; --accent-hi:#c4e0fc; --accent-lo:#7aafea;
+    --ok:#a8b0a8; --warn:#b8a078; --danger:#b48282;
+    --metal:#1a1d24;
+    --metal-hi:#2a2e38;
+    --metal-rim:#3a3f4a;
+    --hairline:rgba(255,255,255,0.06);
+    --hairline-strong:rgba(255,255,255,0.16);
+    --mono:'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:12px; line-height:1.5;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+    font-feature-settings:'ss01' on, 'ss02' on, 'cv11' on, 'tnum' on;
+  }
+
+  /* Ambient */
+  body::before {
+    content:""; position:fixed; inset:0; z-index:0; pointer-events:none;
+    background:
+      radial-gradient(1200px 800px at 50% 50%, rgba(168,212,252,0.045), transparent 65%),
+      radial-gradient(900px 600px at 12% 110%, rgba(184,160,120,0.025), transparent 70%),
+      linear-gradient(180deg, #06070b 0%, #08090f 100%);
+  }
+  body::after {
+    content:""; position:fixed; inset:0; z-index:0; pointer-events:none;
+    background-image: repeating-linear-gradient(0deg, rgba(255,255,255,0.006) 0 1px, transparent 1px 5px);
+    mask-image: radial-gradient(85% 95% at 50% 50%, black, transparent 100%);
+    opacity:0.5;
+  }
+
+  /* === grain + crosshatch overlays === */
+  .grain {
+    position:fixed; inset:0; z-index:9000;
+    pointer-events:none; opacity:0.07;
+    mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.6 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    background-size:240px 240px;
+  }
+  /* Crosshatch engraving — concentric ring-ish pattern over the dial */
+  .crosshatch {
+    position:fixed; inset:0; z-index:8999;
+    pointer-events:none; opacity:0.3;
+    mix-blend-mode:screen;
+    background-image:
+      repeating-linear-gradient(45deg, rgba(255,255,255,0.03) 0 1px, transparent 1px 4px),
+      repeating-linear-gradient(-45deg, rgba(255,255,255,0.025) 0 1px, transparent 1px 5px);
+    mask-image:radial-gradient(circle at 50% 50%, rgba(0,0,0,0.7) 25%, transparent 65%);
+    -webkit-mask-image:radial-gradient(circle at 50% 50%, rgba(0,0,0,0.7) 25%, transparent 65%);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .grain { opacity:0.04; }
+  }
+
+  /* ───── TOP CHROME ───── */
+  .top {
+    position:fixed; top:0; left:0; right:0; z-index:30;
+    display:grid; grid-template-columns:auto 1fr auto;
+    align-items:center; gap:20px;
+    padding:14px 26px;
+    background:linear-gradient(180deg, rgba(6,7,11,0.92) 0%, rgba(6,7,11,0.35) 70%, transparent 100%);
+    backdrop-filter:blur(14px) saturate(140%);
+  }
+  .top .brand {
+    display:flex; align-items:center; gap:14px;
+    color:var(--fg-2); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+  .top .brand .mark {
+    width:14px; height:14px; border-radius:3px;
+    background:linear-gradient(135deg, var(--accent-hi) 0%, var(--accent-lo) 100%);
+    box-shadow:0 0 12px rgba(168,212,252,0.55);
+  }
+  .top .brand .div { color:var(--fg-4); }
+  .top .brand .room { color:var(--fg-0); }
+  .top .center {
+    text-align:center;
+    color:var(--fg-3); font-size:9.5px; letter-spacing:0.32em; text-transform:uppercase;
+  }
+  .top .center .em { color:var(--accent); }
+  .top .right { display:flex; align-items:center; gap:8px; }
+  .top .view-switch {
+    display:inline-flex; padding:2px;
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline); border-radius:6px;
+  }
+  .top .view-switch button {
+    font-family:var(--mono); font-size:10px; letter-spacing:0.16em; text-transform:uppercase;
+    color:var(--fg-2); padding:5px 9px; border-radius:4px;
+    background:transparent; border:none; cursor:pointer;
+    transition:all 140ms ease;
+  }
+  .top .view-switch button.active {
+    color:var(--accent); background:rgba(168,212,252,0.1);
+  }
+
+  /* ───── EDITORIAL HERO (top-left corner) ───── */
+  .hero {
+    position:fixed; top:84px; left:48px; z-index:18;
+    max-width:340px;
+  }
+  .hero .date {
+    color:var(--accent); font-size:9.5px; letter-spacing:0.42em; text-transform:uppercase;
+    margin-bottom:10px;
+  }
+  .hero h1 {
+    font-family:var(--serif); font-weight:300; font-style:italic;
+    font-size:34px; line-height:1.15; letter-spacing:-0.005em;
+    color:var(--fg-0); margin:0 0 8px;
+  }
+  .hero h1 em { color:var(--accent); font-style:italic; }
+  .hero .sub {
+    color:var(--fg-2); font-size:11px; letter-spacing:0.04em; line-height:1.55;
+  }
+
+  /* ───── MAIN DIAL ───── */
+  .dial-wrap {
+    position:fixed; inset:0; z-index:5;
+    display:flex; align-items:center; justify-content:center;
+    pointer-events:none;
+  }
+  .dial-wrap svg {
+    width:min(78vh, 78vw, 820px);
+    height:min(78vh, 78vw, 820px);
+    pointer-events:auto;
+  }
+
+  /* Dial label callouts (HTML, positioned via JS) */
+  .dial-overlay {
+    position:fixed; inset:0; z-index:8; pointer-events:none;
+  }
+  .event-callout {
+    position:absolute; transform:translate(-50%, -50%);
+    text-align:center;
+    color:var(--fg-1);
+    font-size:9.5px; letter-spacing:0.06em;
+    pointer-events:none;
+    white-space:nowrap;
+    text-shadow:0 0 8px rgba(0,0,0,0.8);
+  }
+  .event-callout .name {
+    color:var(--fg-0); font-weight:500;
+    font-size:10.5px;
+  }
+  .event-callout .name .id { color:var(--accent); }
+  .event-callout .ts {
+    color:var(--fg-3); font-size:9px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+  .event-callout.win .name { color:var(--ok); }
+  .event-callout.acc .name { color:var(--accent); }
+  .event-callout.dn .name { color:var(--danger); }
+  .event-callout.warn .name { color:var(--warn); }
+
+  /* ───── RIGHT RAIL ───── */
+  .rail-right {
+    position:fixed; right:24px; top:84px; z-index:18;
+    width:340px; max-height:calc(100vh - 200px);
+    overflow-y:auto;
+    padding:18px 20px 16px;
+    background:rgba(8,10,16,0.7);
+    backdrop-filter:blur(22px) saturate(140%);
+    border:1px solid var(--hairline);
+    border-radius:12px;
+    box-shadow:inset 0 0.5px 0 rgba(255,255,255,0.16), 0 16px 40px -14px rgba(0,0,0,0.7);
+  }
+  .rail-right h3 {
+    font-family:var(--serif); font-weight:300; font-style:italic;
+    font-size:20px; color:var(--fg-0); margin:0 0 4px;
+    letter-spacing:-0.005em;
+  }
+  .rail-right h3 em { color:var(--accent); font-style:italic; }
+  .rail-right .sub {
+    color:var(--fg-3); font-size:9px; letter-spacing:0.24em; text-transform:uppercase;
+    margin-bottom:12px; padding-bottom:10px;
+    border-bottom:1px solid var(--hairline);
+  }
+  .need {
+    padding:11px 0;
+    border-bottom:1px dashed rgba(255,255,255,0.06);
+  }
+  .need:last-child { border-bottom:none; }
+  .need .head {
+    display:flex; gap:8px; align-items:center; margin-bottom:5px;
+    font-size:9.5px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+  .need .head .pip {
+    width:6px; height:6px; border-radius:999px; background:var(--fg-3);
+  }
+  .need.dn .head { color:var(--danger); }
+  .need.dn .head .pip { background:var(--danger); box-shadow:0 0 7px rgba(180,130,130,0.5); }
+  .need.acc .head { color:var(--accent); }
+  .need.acc .head .pip { background:var(--accent); box-shadow:0 0 7px var(--accent); }
+  .need.warn .head { color:var(--warn); }
+  .need.warn .head .pip { background:var(--warn); }
+  .need .body {
+    color:var(--fg-0); font-size:11px; line-height:1.5; margin-bottom:6px;
+  }
+  .need .body .id { color:var(--accent); }
+  .need .quote {
+    font-family:var(--serif); font-weight:300; font-style:italic;
+    color:var(--fg-1); font-size:11px; line-height:1.5;
+    padding-left:8px; border-left:2px solid var(--hairline);
+    margin:5px 0 7px;
+  }
+  .need .acts { display:flex; gap:4px; flex-wrap:wrap; }
+  .need .acts .v {
+    font-family:var(--mono); font-size:10px; letter-spacing:0.04em;
+    padding:5px 9px; border-radius:4px;
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer; transition:all 140ms ease;
+  }
+  .need .acts .v.p { color:var(--accent); border-color:rgba(168,212,252,0.42); background:rgba(168,212,252,0.08); }
+  .need .acts .v:hover { color:var(--fg-0); border-color:var(--hairline-strong); }
+  .need .acts .v.p:hover { background:rgba(168,212,252,0.18); }
+  .need .acts .v.m { color:var(--fg-3); }
+
+  /* ───── BOTTOM LEFT — Today list ───── */
+  .today {
+    position:fixed; bottom:84px; left:48px; z-index:18;
+    width:340px;
+    padding:14px 16px;
+    background:rgba(8,10,16,0.66);
+    backdrop-filter:blur(20px) saturate(140%);
+    border:1px solid var(--hairline);
+    border-radius:12px;
+    box-shadow:inset 0 0.5px 0 rgba(255,255,255,0.16), 0 14px 36px -12px rgba(0,0,0,0.7);
+  }
+  .today .h {
+    color:var(--fg-3); font-size:9.5px; letter-spacing:0.24em; text-transform:uppercase;
+    padding-bottom:8px; margin-bottom:10px;
+    border-bottom:1px solid var(--hairline);
+    display:flex; justify-content:space-between;
+  }
+  .today .h em { color:var(--accent); font-style:normal; }
+  .today-row {
+    display:grid; grid-template-columns:38px 1fr auto; gap:10px; align-items:center;
+    padding:8px 0;
+    border-bottom:1px dashed rgba(255,255,255,0.04);
+    cursor:pointer;
+  }
+  .today-row:last-child { border-bottom:none; }
+  .today-row .t {
+    color:var(--accent); font-size:10.5px; font-variant-numeric:tabular-nums;
+    letter-spacing:0.04em;
+  }
+  .today-row .ti {
+    color:var(--fg-0); font-size:11px; line-height:1.35;
+  }
+  .today-row .ti .m { color:var(--fg-3); font-size:9.5px; letter-spacing:0.04em; }
+  .today-row .v {
+    font-family:var(--mono); font-size:10px; letter-spacing:0.04em;
+    padding:4px 9px; border-radius:4px;
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline);
+    color:var(--fg-1);
+  }
+  .today-row:hover .v { color:var(--accent); border-color:rgba(168,212,252,0.36); background:rgba(168,212,252,0.08); }
+
+  /* ───── COMMIT ZONE ───── */
+  .commit-zone {
+    position:fixed; left:0; right:0; bottom:0; z-index:20;
+    padding:14px 26px 18px;
+    background:linear-gradient(180deg, transparent 0%, rgba(6,7,11,0.92) 60%);
+    backdrop-filter:blur(12px);
+  }
+  .commit-zone .row {
+    display:grid; grid-template-columns:1fr auto;
+    align-items:center; gap:20px;
+    max-width:1600px; margin:0 auto;
+  }
+  .commit-zone .left {
+    color:var(--fg-2); font-size:10.5px; letter-spacing:0.06em;
+    font-style:italic; font-family:var(--serif); font-weight:300;
+  }
+  .commit-zone .left em { color:var(--accent); font-style:italic; }
+  .commit-zone .plans { display:flex; gap:8px; }
+  .commit-zone .plan {
+    font-family:var(--mono); font-size:11px; letter-spacing:0.04em;
+    padding:9px 16px; border-radius:6px;
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer; transition:all 160ms ease;
+  }
+  .commit-zone .plan:hover { color:var(--fg-0); border-color:var(--hairline-strong); }
+  .commit-zone .plan.primary {
+    color:var(--bg-0); border-color:var(--accent);
+    background:linear-gradient(180deg, var(--accent-hi) 0%, var(--accent) 100%);
+    box-shadow:0 0 26px rgba(168,212,252,0.4);
+    font-weight:500;
+  }
+  .commit-zone .plan.primary:hover {
+    background:linear-gradient(180deg, var(--accent-hi) 0%, var(--accent-hi) 100%);
+    box-shadow:0 0 36px rgba(168,212,252,0.6);
+  }
+  .commit-zone .plan .kbd { font-size:9.5px; margin-left:6px; opacity:0.7; }
+
+  /* SVG element styles */
+  text.numeral {
+    font-family:var(--mono);
+    font-size:18px;
+    fill:var(--fg-1);
+    text-anchor:middle;
+    dominant-baseline:central;
+    letter-spacing:0.02em;
+  }
+  text.numeral.major {
+    fill:var(--fg-0); font-size:21px;
+    font-feature-settings:'ss01' on;
+  }
+  text.now-label {
+    font-family:var(--mono);
+    font-size:11px; fill:var(--accent);
+    text-anchor:middle; dominant-baseline:central;
+    letter-spacing:0.16em; text-transform:uppercase;
+  }
+  text.subdial-h {
+    font-family:var(--mono);
+    font-size:7.5px; fill:var(--fg-3);
+    text-anchor:middle; letter-spacing:0.22em;
+  }
+  text.subdial-v {
+    font-family:var(--mono);
+    font-size:13px; fill:var(--fg-0);
+    text-anchor:middle; dominant-baseline:central;
+    font-feature-settings:'tnum' on;
+  }
+  text.subdial-vsm {
+    font-family:var(--mono);
+    font-size:8.5px; fill:var(--fg-2);
+    text-anchor:middle;
+  }
+  text.subdial-em {
+    font-family:var(--mono);
+    font-size:13px; fill:var(--accent);
+    text-anchor:middle; dominant-baseline:central;
+    font-feature-settings:'tnum' on;
+  }
+</style>
+</head>
+<body>
+
+<!-- ───── DIAL ───── -->
+<div class="dial-wrap">
+  <svg id="dial" viewBox="-400 -400 800 800" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
+    <defs>
+      <radialGradient id="dial-face" cx="50%" cy="50%" r="50%">
+        <stop offset="0%" stop-color="#171a22"/>
+        <stop offset="55%" stop-color="#11141c"/>
+        <stop offset="100%" stop-color="#0a0c12"/>
+      </radialGradient>
+      <radialGradient id="dial-rim" cx="50%" cy="50%" r="50%">
+        <stop offset="92%" stop-color="rgba(255,255,255,0)"/>
+        <stop offset="96%" stop-color="rgba(255,255,255,0.18)"/>
+        <stop offset="100%" stop-color="rgba(255,255,255,0)"/>
+      </radialGradient>
+      <radialGradient id="dial-shadow" cx="50%" cy="50%" r="50%">
+        <stop offset="0%" stop-color="rgba(0,0,0,0)"/>
+        <stop offset="78%" stop-color="rgba(0,0,0,0)"/>
+        <stop offset="100%" stop-color="rgba(0,0,0,0.45)"/>
+      </radialGradient>
+      <filter id="now-glow" x="-50%" y="-50%" width="200%" height="200%">
+        <feGaussianBlur stdDeviation="2.4"/>
+      </filter>
+      <filter id="event-glow" x="-50%" y="-50%" width="200%" height="200%">
+        <feGaussianBlur stdDeviation="1.2"/>
+      </filter>
+    </defs>
+
+    <!-- Outer ring frame -->
+    <circle cx="0" cy="0" r="370" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>
+    <circle cx="0" cy="0" r="358" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="0.5"/>
+
+    <!-- Dial face -->
+    <circle cx="0" cy="0" r="352" fill="url(#dial-face)"/>
+    <circle cx="0" cy="0" r="352" fill="url(#dial-shadow)"/>
+
+    <!-- Rim highlight -->
+    <circle cx="0" cy="0" r="352" fill="none" stroke="url(#dial-rim)" stroke-width="2"/>
+
+    <!-- (Tick marks, numerals, sub-dials, event marks, hand all injected via JS) -->
+    <g id="ticks"></g>
+    <g id="numerals"></g>
+    <g id="past-arc"></g>
+    <g id="future-arc"></g>
+    <g id="event-marks"></g>
+    <g id="forecast-marks"></g>
+    <g id="subdials"></g>
+    <g id="hand"></g>
+
+    <!-- Center hub -->
+    <circle cx="0" cy="0" r="9" fill="var(--bg-0)" stroke="rgba(255,255,255,0.16)" stroke-width="0.5"/>
+    <circle cx="0" cy="0" r="3" fill="var(--accent)"/>
+  </svg>
+</div>
+
+<!-- Dial overlay — positioned HTML labels for event callouts -->
+<div class="dial-overlay" id="overlay"></div>
+
+<div class="grain" aria-hidden="true"></div>
+<div class="crosshatch" aria-hidden="true"></div>
+
+<!-- ───── TOP CHROME ───── -->
+<header class="top">
+  <div class="brand">
+    <span class="mark"></span>
+    <span>freyja</span>
+    <span class="div">/</span>
+    <span class="room">morning brief · dial</span>
+  </div>
+  <div class="center">
+    <span>monday jun 02</span> · <span class="em">06:30 PDT</span> · <span>7h 12m since last brief</span>
+  </div>
+  <div class="right">
+    <div class="view-switch">
+      <button>memo</button>
+      <button>console</button>
+      <button>map</button>
+      <button>sky</button>
+      <button>pearl</button>
+      <button class="active">dial</button>
+      <button>grid</button>
+    </div>
+  </div>
+</header>
+
+<!-- ───── EDITORIAL HERO ───── -->
+<div class="hero">
+  <div class="date">monday · june 02 · 06:30</div>
+  <h1>6 marks since <em>22:14</em>.<br/>3 staged forward.</h1>
+  <div class="sub">arc reads past at the top, dawn at 06, day at right, dusk at 18. now hand at 06:30.</div>
+</div>
+
+<!-- ───── BOTTOM-LEFT TODAY ───── -->
+<div class="today">
+  <div class="h"><span>Today</span><span><em>3</em> staged</span></div>
+  <div class="today-row">
+    <div class="t">09:00</div>
+    <div class="ti">card_042 rework <div class="m">code · gpt-5.5 · ctx 1m</div></div>
+    <div class="v">stage</div>
+  </div>
+  <div class="today-row">
+    <div class="t">11:00</div>
+    <div class="ti">input-dock design pass <div class="m">browser-qa · opus-4-8 · ctx 1m</div></div>
+    <div class="v">stage</div>
+  </div>
+  <div class="today-row">
+    <div class="t">14:00</div>
+    <div class="ti">triage 4 stale cards <div class="m">judge-deep · sonnet-4-6 · ctx 200k</div></div>
+    <div class="v">stage</div>
+  </div>
+</div>
+
+<!-- ───── RIGHT RAIL — Needs You ───── -->
+<aside class="rail-right">
+  <h3>Needs you · <em>3</em></h3>
+  <div class="sub">3 decisions · ~5 min</div>
+
+  <div class="need dn">
+    <div class="head"><span class="pip"></span> blocked · card_042</div>
+    <div class="body">Judge rejected at iter 5/5 — <span class="id">rework cap reached</span>.</div>
+    <div class="quote">"Complete coverage of city offices remains partial."</div>
+    <div class="acts">
+      <button class="v p">dispatch revision</button>
+      <button class="v">override</button>
+      <button class="v m">defer</button>
+    </div>
+  </div>
+
+  <div class="need acc">
+    <div class="head"><span class="pip"></span> drafter · skill candidate</div>
+    <div class="body"><span class="id">cooperative-compaction-helper</span> — caps tool-result size at the compaction band. Est <strong style="color:var(--fg-0); font-weight:400">12–18%</strong> token savings.</div>
+    <div class="acts">
+      <button class="v p">accept</button>
+      <button class="v">view diff</button>
+      <button class="v">edit</button>
+      <button class="v m">decline</button>
+    </div>
+  </div>
+
+  <div class="need warn">
+    <div class="head"><span class="pip"></span> goal · paused</div>
+    <div class="body"><span class="id">freyja-design-pass</span> · iter 4/12. Judge has 2 open questions.</div>
+    <div class="acts">
+      <button class="v p">resume + answer</button>
+      <button class="v">rewrite</button>
+      <button class="v m">retire</button>
+    </div>
+  </div>
+</aside>
+
+<!-- ───── COMMIT ZONE ───── -->
+<div class="commit-zone">
+  <div class="row">
+    <div class="left">
+      Commit · 3 priorities staged · forecast <em>~$5.40</em> · ~340k tok.
+    </div>
+    <div class="plans">
+      <button class="plan">stage all <span class="kbd">S</span></button>
+      <button class="plan">run 1 first <span class="kbd">⌥⏎</span></button>
+      <button class="plan primary">run 1, 2, 3 in parallel <span class="kbd">⏎</span></button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ────────────────────────────────────────────────────────────
+  // Chronograph dial — generated SVG content
+  //
+  // Time → angle: midnight = top (0°). Day reads clockwise.
+  //   angle(degrees from 3-o'clock, clockwise) = (mins / 1440) * 360 - 90
+  //
+  // We then convert to SVG with cx + r * cos(rad), cy + r * sin(rad).
+  // ────────────────────────────────────────────────────────────
+
+  const TICKS = document.getElementById('ticks');
+  const NUMERALS = document.getElementById('numerals');
+  const PAST_ARC = document.getElementById('past-arc');
+  const FUTURE_ARC = document.getElementById('future-arc');
+  const EVENT_MARKS = document.getElementById('event-marks');
+  const FORECAST_MARKS = document.getElementById('forecast-marks');
+  const SUBDIALS = document.getElementById('subdials');
+  const HAND = document.getElementById('hand');
+  const OVERLAY = document.getElementById('overlay');
+  const ns = 'http://www.w3.org/2000/svg';
+
+  function angleForMin(min) {
+    return (min / 1440) * 360 - 90;
+  }
+  function polar(angle, r) {
+    const a = angle * Math.PI / 180;
+    return [Math.cos(a) * r, Math.sin(a) * r];
+  }
+
+  // ────── Tick marks ──────
+  // 240 = every 6 min; we'll vary length by importance
+  for (let m = 0; m < 1440; m += 6) {
+    const angle = angleForMin(m);
+    const isHour = (m % 60) === 0;
+    const isQuarter = (m % 15) === 0;
+    const isSix = (m % 360) === 0; // every 6h
+
+    let r1, r2, stroke, opacity;
+    if (isSix) {
+      r1 = 330; r2 = 350; stroke = 'rgba(255,255,255,0.6)'; opacity = 1;
+    } else if (isHour) {
+      r1 = 338; r2 = 350; stroke = 'rgba(255,255,255,0.42)'; opacity = 1;
+    } else if (isQuarter) {
+      r1 = 344; r2 = 350; stroke = 'rgba(255,255,255,0.20)'; opacity = 1;
+    } else {
+      r1 = 347; r2 = 350; stroke = 'rgba(255,255,255,0.10)'; opacity = 0.7;
+    }
+    const [x1, y1] = polar(angle, r1);
+    const [x2, y2] = polar(angle, r2);
+    const tick = document.createElementNS(ns, 'line');
+    tick.setAttribute('x1', x1.toFixed(2));
+    tick.setAttribute('y1', y1.toFixed(2));
+    tick.setAttribute('x2', x2.toFixed(2));
+    tick.setAttribute('y2', y2.toFixed(2));
+    tick.setAttribute('stroke', stroke);
+    tick.setAttribute('stroke-width', isSix ? 1.4 : isHour ? 1 : 0.6);
+    tick.setAttribute('opacity', opacity);
+    TICKS.appendChild(tick);
+  }
+
+  // ────── Numerals — 24-hour ──────
+  // Major at 0/6/12/18; minor at 3/9/15/21; rest minor labels too
+  const NUM_R = 306;
+  for (let h = 0; h < 24; h++) {
+    const angle = angleForMin(h * 60);
+    const [x, y] = polar(angle, NUM_R);
+    const t = document.createElementNS(ns, 'text');
+    t.setAttribute('x', x);
+    t.setAttribute('y', y);
+    t.setAttribute('class', 'numeral' + ([0, 6, 12, 18].includes(h) ? ' major' : ''));
+    // Pad single digits
+    t.textContent = String(h).padStart(2, '0');
+    NUMERALS.appendChild(t);
+  }
+
+  // ────── Past arc / future arc ──────
+  // Past: 22:14 yesterday → 06:30 today (the "overnight" 8h16m)
+  // Future: 06:30 → 19:00 today (the day ahead with planned events)
+  function arcPath(startMin, endMin, r, cwShift = 0) {
+    // Time-wraps if needed
+    const a1 = angleForMin(startMin) * Math.PI / 180;
+    const a2 = angleForMin(endMin) * Math.PI / 180;
+    const x1 = Math.cos(a1) * r, y1 = Math.sin(a1) * r;
+    const x2 = Math.cos(a2) * r, y2 = Math.sin(a2) * r;
+    // Determine large-arc flag
+    let dMin = endMin - startMin;
+    while (dMin < 0) dMin += 1440;
+    const large = dMin > 720 ? 1 : 0;
+    return `M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`;
+  }
+
+  // Past arc — subtle accent band (the overnight)
+  const pastArc = document.createElementNS(ns, 'path');
+  pastArc.setAttribute('d', arcPath(22 * 60 + 14, 6 * 60 + 30, 318));
+  pastArc.setAttribute('fill', 'none');
+  pastArc.setAttribute('stroke', 'rgba(168,212,252,0.16)');
+  pastArc.setAttribute('stroke-width', 18);
+  pastArc.setAttribute('stroke-linecap', 'round');
+  PAST_ARC.appendChild(pastArc);
+
+  // A second thin highlight on top of past arc
+  const pastEdge = document.createElementNS(ns, 'path');
+  pastEdge.setAttribute('d', arcPath(22 * 60 + 14, 6 * 60 + 30, 308));
+  pastEdge.setAttribute('fill', 'none');
+  pastEdge.setAttribute('stroke', 'rgba(168,212,252,0.42)');
+  pastEdge.setAttribute('stroke-width', 0.6);
+  pastEdge.setAttribute('stroke-linecap', 'round');
+  PAST_ARC.appendChild(pastEdge);
+
+  // Future arc — dashed accent (the day ahead)
+  const futureArc = document.createElementNS(ns, 'path');
+  futureArc.setAttribute('d', arcPath(6 * 60 + 30, 19 * 60, 318));
+  futureArc.setAttribute('fill', 'none');
+  futureArc.setAttribute('stroke', 'rgba(168,212,252,0.10)');
+  futureArc.setAttribute('stroke-width', 18);
+  futureArc.setAttribute('stroke-linecap', 'round');
+  FUTURE_ARC.appendChild(futureArc);
+
+  const futureEdge = document.createElementNS(ns, 'path');
+  futureEdge.setAttribute('d', arcPath(6 * 60 + 30, 19 * 60, 308));
+  futureEdge.setAttribute('fill', 'none');
+  futureEdge.setAttribute('stroke', 'rgba(168,212,252,0.28)');
+  futureEdge.setAttribute('stroke-width', 0.5);
+  futureEdge.setAttribute('stroke-linecap', 'round');
+  futureEdge.setAttribute('stroke-dasharray', '2 4');
+  FUTURE_ARC.appendChild(futureEdge);
+
+  // ────── Event marks (overnight) ──────
+  const EVENTS = [
+    { mins: 22 * 60 + 34, kind:'win',  name:'card_017',           sub:'judge passed' },
+    { mins: 22 * 60 + 51, kind:'acc',  name:'explore-fast × 3',   sub:'47 sources · 32m' },
+    { mins:  3 * 60 + 14, kind:'acc',  name:'drafter',            sub:'2 skill candidates' },
+    { mins:  4 * 60 +  2, kind:'',     name:'autopilot · 4 disp.', sub:'3 done · 1 capped' },
+    { mins:  4 * 60 + 14, kind:'dn',   name:'card_042',           sub:'BLOCKED · iter 5/5' },
+    { mins:  5 * 60 + 21, kind:'warn', name:'freyja-design-pass', sub:'paused · iter 4/12' },
+    { mins:  6 * 60 +  0, kind:'',     name:'slack-morning-digest', sub:'scheduler · daily' },
+  ];
+
+  function kindColor(kind) {
+    switch (kind) {
+      case 'win':  return '#a8b0a8';
+      case 'acc':  return '#a8d4fc';
+      case 'dn':   return '#b48282';
+      case 'warn': return '#b8a078';
+      default:     return '#a8a8a8';
+    }
+  }
+
+  // Draw event marks: a notch + small dot at the rim, plus an inner tick
+  EVENTS.forEach(ev => {
+    const angle = angleForMin(ev.mins);
+    const color = kindColor(ev.kind);
+
+    // Outer notch line (slightly longer + brighter)
+    const [nx1, ny1] = polar(angle, 320);
+    const [nx2, ny2] = polar(angle, 352);
+    const notch = document.createElementNS(ns, 'line');
+    notch.setAttribute('x1', nx1.toFixed(2));
+    notch.setAttribute('y1', ny1.toFixed(2));
+    notch.setAttribute('x2', nx2.toFixed(2));
+    notch.setAttribute('y2', ny2.toFixed(2));
+    notch.setAttribute('stroke', color);
+    notch.setAttribute('stroke-width', 1.6);
+    notch.setAttribute('opacity', 0.95);
+    notch.setAttribute('filter', 'url(#event-glow)');
+    EVENT_MARKS.appendChild(notch);
+
+    // Bright dot at outer tip
+    const [dx, dy] = polar(angle, 320);
+    const dot = document.createElementNS(ns, 'circle');
+    dot.setAttribute('cx', dx.toFixed(2));
+    dot.setAttribute('cy', dy.toFixed(2));
+    dot.setAttribute('r', ev.kind === 'dn' || ev.kind === 'win' ? 3.4 : 2.6);
+    dot.setAttribute('fill', color);
+    dot.setAttribute('filter', 'url(#event-glow)');
+    EVENT_MARKS.appendChild(dot);
+
+    // Inner ring tick (an "engraving" toward the center)
+    const [ix1, iy1] = polar(angle, 270);
+    const [ix2, iy2] = polar(angle, 290);
+    const inner = document.createElementNS(ns, 'line');
+    inner.setAttribute('x1', ix1.toFixed(2));
+    inner.setAttribute('y1', iy1.toFixed(2));
+    inner.setAttribute('x2', ix2.toFixed(2));
+    inner.setAttribute('y2', iy2.toFixed(2));
+    inner.setAttribute('stroke', color);
+    inner.setAttribute('stroke-width', 0.5);
+    inner.setAttribute('opacity', 0.55);
+    EVENT_MARKS.appendChild(inner);
+  });
+
+  // ────── Forecast marks (today's priorities) ──────
+  const PRIORITIES = [
+    { mins:  9 * 60, name:'1', title:'card_042 rework' },
+    { mins: 11 * 60, name:'2', title:'input-dock design' },
+    { mins: 14 * 60, name:'3', title:'triage stales' },
+  ];
+  PRIORITIES.forEach(p => {
+    const angle = angleForMin(p.mins);
+    const [x1, y1] = polar(angle, 320);
+    const [x2, y2] = polar(angle, 352);
+    const notch = document.createElementNS(ns, 'line');
+    notch.setAttribute('x1', x1.toFixed(2));
+    notch.setAttribute('y1', y1.toFixed(2));
+    notch.setAttribute('x2', x2.toFixed(2));
+    notch.setAttribute('y2', y2.toFixed(2));
+    notch.setAttribute('stroke', '#a8d4fc');
+    notch.setAttribute('stroke-width', 1);
+    notch.setAttribute('opacity', 0.6);
+    notch.setAttribute('stroke-dasharray', '2 2');
+    FORECAST_MARKS.appendChild(notch);
+
+    // Numeral at outer rim
+    const [tx, ty] = polar(angle, 376);
+    const t = document.createElementNS(ns, 'text');
+    t.setAttribute('x', tx);
+    t.setAttribute('y', ty);
+    t.setAttribute('class', 'numeral');
+    t.setAttribute('font-size', 14);
+    t.setAttribute('fill', '#a8d4fc');
+    t.setAttribute('opacity', 0.8);
+    t.textContent = p.name;
+    FORECAST_MARKS.appendChild(t);
+
+    // hollow dot at the tip
+    const [dx, dy] = polar(angle, 320);
+    const dot = document.createElementNS(ns, 'circle');
+    dot.setAttribute('cx', dx.toFixed(2));
+    dot.setAttribute('cy', dy.toFixed(2));
+    dot.setAttribute('r', 2.4);
+    dot.setAttribute('fill', 'none');
+    dot.setAttribute('stroke', '#a8d4fc');
+    dot.setAttribute('stroke-width', 0.8);
+    dot.setAttribute('opacity', 0.7);
+    FORECAST_MARKS.appendChild(dot);
+  });
+
+  // ────── Sub-dials ──────
+  // Three small dials inside the main face.
+  // Positions: top (offset up), bottom-left, bottom-right
+  function makeSubdial({ cx, cy, r, label, value, em, smallLabel, fillRatio, fillColor }) {
+    const g = document.createElementNS(ns, 'g');
+
+    // Ring
+    const ring = document.createElementNS(ns, 'circle');
+    ring.setAttribute('cx', cx);
+    ring.setAttribute('cy', cy);
+    ring.setAttribute('r', r);
+    ring.setAttribute('fill', 'rgba(0,0,0,0.32)');
+    ring.setAttribute('stroke', 'rgba(255,255,255,0.10)');
+    ring.setAttribute('stroke-width', 0.5);
+    g.appendChild(ring);
+
+    // Faint inner shadow ring
+    const inner = document.createElementNS(ns, 'circle');
+    inner.setAttribute('cx', cx);
+    inner.setAttribute('cy', cy);
+    inner.setAttribute('r', r - 4);
+    inner.setAttribute('fill', 'none');
+    inner.setAttribute('stroke', 'rgba(255,255,255,0.04)');
+    inner.setAttribute('stroke-width', 0.5);
+    g.appendChild(inner);
+
+    // Tiny ticks every 30°
+    for (let a = 0; a < 360; a += 30) {
+      const isCard = a % 90 === 0;
+      const tr1 = r - 2;
+      const tr2 = r - (isCard ? 6 : 4);
+      const [tx1, ty1] = polar(a - 90, tr1);
+      const [tx2, ty2] = polar(a - 90, tr2);
+      const tk = document.createElementNS(ns, 'line');
+      tk.setAttribute('x1', cx + tx1);
+      tk.setAttribute('y1', cy + ty1);
+      tk.setAttribute('x2', cx + tx2);
+      tk.setAttribute('y2', cy + ty2);
+      tk.setAttribute('stroke', isCard ? 'rgba(255,255,255,0.34)' : 'rgba(255,255,255,0.16)');
+      tk.setAttribute('stroke-width', 0.5);
+      g.appendChild(tk);
+    }
+
+    // Filled arc indicating the value
+    if (fillRatio != null) {
+      const startAngle = -90;
+      const endAngle = startAngle + 360 * Math.max(0, Math.min(1, fillRatio));
+      const a1 = startAngle * Math.PI / 180;
+      const a2 = endAngle * Math.PI / 180;
+      const fr = r - 3;
+      const [ax1, ay1] = [Math.cos(a1) * fr, Math.sin(a1) * fr];
+      const [ax2, ay2] = [Math.cos(a2) * fr, Math.sin(a2) * fr];
+      const large = (endAngle - startAngle) > 180 ? 1 : 0;
+      const arc = document.createElementNS(ns, 'path');
+      arc.setAttribute('d', `M ${cx + ax1} ${cy + ay1} A ${fr} ${fr} 0 ${large} 1 ${cx + ax2} ${cy + ay2}`);
+      arc.setAttribute('fill', 'none');
+      arc.setAttribute('stroke', fillColor || '#a8d4fc');
+      arc.setAttribute('stroke-width', 2.5);
+      arc.setAttribute('stroke-linecap', 'round');
+      arc.setAttribute('opacity', 0.9);
+      g.appendChild(arc);
+    }
+
+    // Header label (top of sub-dial)
+    const labText = document.createElementNS(ns, 'text');
+    labText.setAttribute('x', cx);
+    labText.setAttribute('y', cy - r + 11);
+    labText.setAttribute('class', 'subdial-h');
+    labText.textContent = label;
+    g.appendChild(labText);
+
+    // Big value (center)
+    const valText = document.createElementNS(ns, 'text');
+    valText.setAttribute('x', cx);
+    valText.setAttribute('y', cy);
+    valText.setAttribute('class', em ? 'subdial-em' : 'subdial-v');
+    valText.textContent = value;
+    g.appendChild(valText);
+
+    // Small label (below value)
+    if (smallLabel) {
+      const sLab = document.createElementNS(ns, 'text');
+      sLab.setAttribute('x', cx);
+      sLab.setAttribute('y', cy + 15);
+      sLab.setAttribute('class', 'subdial-vsm');
+      sLab.textContent = smallLabel;
+      g.appendChild(sLab);
+    }
+    return g;
+  }
+
+  // Top sub-dial: judge pass rate
+  SUBDIALS.appendChild(makeSubdial({
+    cx: 0, cy: -160, r: 60,
+    label: 'judge pass · 7d',
+    value: '68%',
+    em: true,
+    smallLabel: '19 / 28',
+    fillRatio: 0.68,
+    fillColor: '#a8b0a8',
+  }));
+  // Bottom-left: spend yesterday
+  SUBDIALS.appendChild(makeSubdial({
+    cx: -120, cy: 130, r: 56,
+    label: 'spend yest',
+    value: '$4.82',
+    em: true,
+    smallLabel: '327k tok',
+    fillRatio: 0.32,
+    fillColor: '#a8d4fc',
+  }));
+  // Bottom-right: cooperation share
+  SUBDIALS.appendChild(makeSubdial({
+    cx: 120, cy: 130, r: 56,
+    label: 'coop share',
+    value: '82%',
+    em: false,
+    smallLabel: 'agent / runtime',
+    fillRatio: 0.82,
+    fillColor: '#a8d4fc',
+  }));
+
+  // ────── Now hand ──────
+  // 06:30 = 390 minutes
+  const nowAngle = angleForMin(6 * 60 + 30);
+  const [hx, hy] = polar(nowAngle, 295);
+  const handLine = document.createElementNS(ns, 'line');
+  handLine.setAttribute('x1', 0);
+  handLine.setAttribute('y1', 0);
+  handLine.setAttribute('x2', hx.toFixed(2));
+  handLine.setAttribute('y2', hy.toFixed(2));
+  handLine.setAttribute('stroke', '#a8d4fc');
+  handLine.setAttribute('stroke-width', 1.8);
+  handLine.setAttribute('stroke-linecap', 'round');
+  handLine.setAttribute('opacity', 0.95);
+  HAND.appendChild(handLine);
+
+  // Bright tip
+  const handTip = document.createElementNS(ns, 'circle');
+  handTip.setAttribute('cx', hx.toFixed(2));
+  handTip.setAttribute('cy', hy.toFixed(2));
+  handTip.setAttribute('r', 4.5);
+  handTip.setAttribute('fill', '#a8d4fc');
+  handTip.setAttribute('filter', 'url(#now-glow)');
+  HAND.appendChild(handTip);
+
+  // Subtle counterweight (a tail behind the center)
+  const [tx, ty] = polar(nowAngle + 180, 28);
+  const tail = document.createElementNS(ns, 'line');
+  tail.setAttribute('x1', 0);
+  tail.setAttribute('y1', 0);
+  tail.setAttribute('x2', tx.toFixed(2));
+  tail.setAttribute('y2', ty.toFixed(2));
+  tail.setAttribute('stroke', '#a8d4fc');
+  tail.setAttribute('stroke-width', 1.4);
+  tail.setAttribute('stroke-linecap', 'round');
+  tail.setAttribute('opacity', 0.55);
+  HAND.appendChild(tail);
+
+  // "now" label outside the dial
+  const [nlx, nly] = polar(nowAngle, 387);
+  const nowLab = document.createElementNS(ns, 'text');
+  nowLab.setAttribute('x', nlx);
+  nowLab.setAttribute('y', nly);
+  nowLab.setAttribute('class', 'now-label');
+  nowLab.textContent = 'now · 06:30';
+  HAND.appendChild(nowLab);
+
+  // ────── Event callouts (HTML labels around the dial) ──────
+  function syncCallouts() {
+    OVERLAY.innerHTML = '';
+    const dial = document.getElementById('dial');
+    const rect = dial.getBoundingClientRect();
+    // viewBox is 800x800. Convert SVG coords to viewport coords.
+    // SVG (0,0) is center, dial radius is 350.
+    const scale = rect.width / 800; // since width == height
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+
+    EVENTS.forEach(ev => {
+      const angle = angleForMin(ev.mins);
+      const labelR = 392; // beyond the dial edge
+      const [sx, sy] = polar(angle, labelR);
+      const px = cx + sx * scale;
+      const py = cy + sy * scale;
+
+      const d = document.createElement('div');
+      d.className = 'event-callout ' + (ev.kind || '');
+      d.style.left = px + 'px';
+      d.style.top = py + 'px';
+      // Heuristic: shift labels at left/right edges so they don't collide
+      let alignShiftX = 0;
+      const angleDeg = ((angle % 360) + 360) % 360;
+      // If we're on the upper-right or lower-right, push right; left side push left
+      if (angleDeg > 90 && angleDeg < 270) {
+        // left side
+        alignShiftX = -8;
+        d.style.transform = `translate(${alignShiftX}px, -50%) translateX(-50%)`;
+        d.style.textAlign = 'right';
+      } else {
+        alignShiftX = 8;
+        d.style.transform = `translate(${alignShiftX}px, -50%) translateX(-50%)`;
+      }
+      d.innerHTML = `
+        <div class="ts">${formatMins(ev.mins)}</div>
+        <div class="name">${ev.name.match(/^(card_\d+|freyja-\w+)/) ? `<span class="id">${ev.name}</span>` : ev.name}</div>
+      `;
+      OVERLAY.appendChild(d);
+    });
+  }
+
+  function formatMins(m) {
+    const h = Math.floor(m / 60) % 24;
+    const mm = m % 60;
+    return String(h).padStart(2,'0') + ':' + String(mm).padStart(2,'0');
+  }
+
+  syncCallouts();
+  let resizeT = null;
+  window.addEventListener('resize', () => {
+    if (resizeT) clearTimeout(resizeT);
+    resizeT = setTimeout(syncCallouts, 80);
+  });
+
+  // Keyboard
+  document.addEventListener('keydown', (e) => {
+    if (e.target.closest('input,textarea')) return;
+    let target = null;
+    if (e.key === 'Enter' && !e.altKey) target = document.querySelector('.commit-zone .plan.primary');
+    else if (e.key === 'Enter' && e.altKey) target = document.querySelectorAll('.commit-zone .plan')[1];
+    else if (e.key.toLowerCase() === 's' && !e.metaKey) target = document.querySelector('.commit-zone .plan');
+    if (target) {
+      const prev = target.style.boxShadow;
+      target.style.boxShadow = '0 0 0 3px rgba(168,212,252,0.6), 0 0 36px rgba(168,212,252,0.55)';
+      target.style.transform = 'translateY(-1px)';
+      setTimeout(() => {
+        target.style.boxShadow = prev;
+        target.style.transform = '';
+      }, 320);
+    }
+  });
+</script>
+
+</body>
+</html>

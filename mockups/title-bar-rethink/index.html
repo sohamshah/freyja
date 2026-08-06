@@ -1,0 +1,4990 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Freyja · TitleBar rethink — three approaches</title>
+<style>
+  :root {
+    --bg-0: #0a0a0a;
+    --bg-1: #121212;
+    --bg-2: #181818;
+    --bg-3: #1f1f1f;
+    --bg-4: #262626;
+    --fg-0: #ededed;
+    --fg-1: #bdbdbd;
+    --fg-2: #8a8a8a;
+    --fg-3: #5e5e5e;
+    --fg-4: #3a3a3a;
+    --accent: #a8d4fc;
+    --ok: #a8b0a8;
+    --warn: #b8a078;
+    --danger: #b48282;
+    --hair: rgba(255,255,255,0.06);
+    --hair-strong: rgba(255,255,255,0.12);
+    --raised: rgba(255,255,255,0.04);
+    --raised-hover: rgba(255,255,255,0.07);
+    --font-mono: 'Geist Mono', 'SF Mono', Menlo, Monaco, monospace;
+    --font-serif: 'Fraunces', Georgia, serif;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg-0); color: var(--fg-0);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── Chrome at the very top: variant picker + focus toggle ─── */
+  .picker {
+    position: sticky; top: 0; z-index: 100;
+    display: flex; align-items: center; gap: 16px;
+    padding: 14px 24px;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--hair);
+  }
+  .picker h1 {
+    margin: 0;
+    font-family: var(--font-serif);
+    font-size: 18px; font-weight: 300;
+    letter-spacing: -0.01em;
+  }
+  .picker .spacer { flex: 1; }
+  .picker button, .picker label {
+    background: var(--raised);
+    border: 1px solid var(--hair);
+    border-radius: 6px;
+    padding: 6px 12px;
+    color: var(--fg-1);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .picker button:hover { background: var(--raised-hover); color: var(--fg-0); }
+  .picker button.active {
+    background: rgba(168,212,252,0.10);
+    border-color: rgba(168,212,252,0.30);
+    color: var(--accent);
+  }
+  .picker label {
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .picker input[type=checkbox] { accent-color: var(--accent); }
+
+  /* ── App shell ─── */
+  .app {
+    display: flex; flex-direction: column;
+    height: calc(100vh - 60px);
+    background: var(--bg-0);
+  }
+
+  /* ── Shared bar primitives ─── */
+  .bar {
+    display: flex; align-items: center; gap: 8px;
+    height: 46px;
+    padding: 0 16px 0 88px;
+    border-bottom: 1px solid var(--hair);
+    background: var(--bg-1);
+    font-size: 12px;
+    color: var(--fg-1);
+  }
+  .strip {
+    display: flex; align-items: center; gap: 12px;
+    height: 38px;
+    padding: 0 16px 0 88px;
+    border-bottom: 1px solid var(--hair);
+    background: rgba(18,18,18,0.6);
+    font-size: 12px;
+    color: var(--fg-1);
+  }
+  .wordmark {
+    background: linear-gradient(180deg, #7ae6ff 0%, #a8d4fc 40%, #b4b0ff 80%, #c89aff 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    font-weight: 500;
+  }
+  .topo-mark {
+    display: inline-block;
+    width: 18px; height: 18px;
+    color: var(--accent);
+    opacity: 0.9;
+  }
+  .control, .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 28px;
+    padding: 0 10px;
+    background: var(--raised);
+    border: 1px solid var(--hair);
+    border-radius: 6px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--fg-1);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    user-select: none;
+  }
+  .control:hover, .pill:hover { background: var(--raised-hover); color: var(--fg-0); }
+  .control.active {
+    background: rgba(168,212,252,0.08);
+    border-color: rgba(168,212,252,0.22);
+    color: var(--accent);
+  }
+  .control.no-button {
+    cursor: default; background: transparent;
+    border: 1px solid var(--hair);
+  }
+  .control.no-button:hover { background: transparent; color: var(--fg-1); }
+  .dot {
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+  }
+  .dot-ok { background: var(--ok); }
+  .dot-warn { background: var(--warn); }
+  .dot-danger { background: var(--danger); }
+  .dot-accent { background: var(--accent); animation: pulse 2.4s infinite; }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.55; }
+    50% { opacity: 1; }
+  }
+  .divider {
+    width: 1px; height: 14px;
+    background: var(--hair-strong);
+  }
+  .control .kicker { color: var(--fg-3); margin-right: 4px; }
+  .control .val { color: var(--fg-0); text-transform: none; letter-spacing: 0; font-size: 11px; }
+  .spacer { flex: 1; }
+
+  /* ── Body fill ─── */
+  .body {
+    display: flex; flex: 1;
+    overflow: hidden;
+    background: var(--bg-0);
+  }
+  .sidebar {
+    width: 220px; flex-shrink: 0;
+    padding: 16px 12px;
+    background: rgba(12,12,12,0.7);
+    border-right: 1px solid var(--hair);
+    font-size: 11px;
+    color: var(--fg-3);
+  }
+  .sidebar .label {
+    text-transform: uppercase; letter-spacing: 0.14em;
+    color: var(--fg-3);
+    margin: 12px 0 6px;
+  }
+  .sidebar .session {
+    padding: 6px 8px; border-radius: 4px;
+    color: var(--fg-1);
+    margin-bottom: 2px;
+  }
+  .sidebar .session.active {
+    background: rgba(255,255,255,0.04);
+    color: var(--fg-0);
+  }
+  .convo {
+    flex: 1;
+    padding: 20px 32px;
+    overflow: auto;
+  }
+  .convo .msg {
+    margin-bottom: 18px;
+    line-height: 1.6;
+  }
+  .convo .msg .who {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--fg-3);
+    margin-bottom: 4px;
+  }
+  .convo .msg .body-text {
+    color: var(--fg-1);
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+  }
+  .convo .msg.assistant .body-text { color: var(--fg-0); }
+  .activity {
+    width: 280px; flex-shrink: 0;
+    padding: 16px;
+    background: rgba(12,12,12,0.5);
+    border-left: 1px solid var(--hair);
+    font-size: 11px;
+    color: var(--fg-3);
+  }
+
+  /* ── Approach 1 — Services well + session strip ─── */
+  .v1-strip {
+    /* a thin row immediately below title bar */
+  }
+  .v1-strip .session-title {
+    color: var(--fg-0);
+    font-family: var(--font-serif);
+    font-size: 15px;
+    font-weight: 300;
+    letter-spacing: -0.005em;
+    max-width: 36ch;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .v1-strip .readout {
+    display: inline-flex; align-items: baseline; gap: 6px;
+    font-size: 11px;
+    color: var(--fg-2);
+  }
+  .v1-strip .readout .key { color: var(--fg-3); text-transform: uppercase; letter-spacing: 0.10em; font-size: 9.5px; }
+  .v1-strip .readout .val { color: var(--fg-0); }
+  .v1-strip .cancel {
+    color: var(--danger);
+    border-color: rgba(180,130,130,0.30);
+    background: rgba(180,130,130,0.04);
+  }
+
+  /* services well popover */
+  .well { position: relative; }
+  .well-pop {
+    position: absolute; right: 0; top: 36px;
+    width: 280px;
+    background: rgba(18,18,18,0.96);
+    border: 1px solid var(--hair-strong);
+    border-radius: 10px;
+    box-shadow: 0 24px 48px rgba(0,0,0,0.6);
+    padding: 6px;
+    z-index: 50;
+    display: none;
+  }
+  .well.open .well-pop { display: block; }
+  .well-pop .group-label {
+    text-transform: uppercase; letter-spacing: 0.14em;
+    color: var(--fg-3);
+    font-size: 9.5px;
+    padding: 8px 10px 4px;
+  }
+  .well-pop .item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    color: var(--fg-1);
+    font-size: 11.5px;
+    cursor: pointer;
+  }
+  .well-pop .item:hover { background: var(--raised); color: var(--fg-0); }
+  .well-pop .item .key { color: var(--fg-0); }
+  .well-pop .item .meta { color: var(--fg-3); margin-left: auto; font-size: 10.5px; }
+  .well-pop .hair { height: 1px; background: var(--hair); margin: 4px 0; }
+
+  /* ── Approach 2 — visual grouping only ─── */
+  .v2-group {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding-right: 10px;
+    border-right: 1px solid var(--hair-strong);
+  }
+  .v2-group:last-of-type {
+    padding-right: 0; border-right: none;
+  }
+  .v2-group .group-kicker {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: var(--fg-4);
+    padding-right: 4px;
+  }
+
+  /* ── Approach 3 — breadcrumb + tray ─── */
+  .crumb {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 12px;
+    color: var(--fg-2);
+  }
+  .crumb .step { color: var(--fg-2); }
+  .crumb .step.head { color: var(--fg-0); font-family: var(--font-serif); font-size: 14px; font-weight: 300; }
+  .crumb .sep { color: var(--fg-4); }
+  .crumb .tail {
+    color: var(--accent); font-size: 10.5px;
+    background: rgba(168,212,252,0.08);
+    border: 1px solid rgba(168,212,252,0.18);
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+  .tray-pop {
+    position: absolute; right: 16px; top: 52px;
+    width: 320px;
+    background: rgba(18,18,18,0.96);
+    border: 1px solid var(--hair-strong);
+    border-radius: 10px;
+    box-shadow: 0 24px 48px rgba(0,0,0,0.6);
+    padding: 8px;
+    z-index: 50;
+    display: none;
+  }
+  .tray.open .tray-pop { display: block; }
+  .tray-pop .group-label {
+    text-transform: uppercase; letter-spacing: 0.14em;
+    color: var(--fg-3);
+    font-size: 9.5px;
+    padding: 8px 10px 4px;
+  }
+  .tray-pop .item {
+    display: flex; align-items: center; gap: 12px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    color: var(--fg-1);
+    font-size: 11.5px;
+    cursor: pointer;
+  }
+  .tray-pop .item:hover { background: var(--raised); color: var(--fg-0); }
+  .tray-pop .item .meta { color: var(--fg-3); margin-left: auto; font-size: 10.5px; }
+  .tray-pop .item .kbd { color: var(--fg-3); font-size: 10px; margin-left: auto; }
+  .tray-pop .hair { height: 1px; background: var(--hair); margin: 6px 0; }
+
+  /* ── Variant visibility ─── */
+  .variant { display: none; flex-direction: column; height: 100%; }
+  .variant.active { display: flex; }
+
+  /* legend strip beneath the variant header */
+  .legend {
+    padding: 14px 24px 12px;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--hair);
+    font-size: 12.5px;
+    color: var(--fg-1);
+    line-height: 1.6;
+  }
+  .legend strong {
+    font-family: var(--font-serif);
+    font-weight: 300;
+    color: var(--fg-0);
+    font-size: 16px;
+    display: block;
+    margin-bottom: 4px;
+  }
+  .legend .tag {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: rgba(255,255,255,0.04);
+    color: var(--fg-3);
+    margin-right: 6px;
+  }
+  .legend .tag.global { color: var(--accent); background: rgba(168,212,252,0.08); }
+  .legend .tag.session { color: var(--ok); background: rgba(168,176,168,0.08); }
+  .legend .tag.layout { color: var(--warn); background: rgba(184,160,120,0.08); }
+
+  /* focus-mode handling */
+  body.focus .v1-strip { display: none; }
+  body.focus .activity { display: none; }
+  body.focus .sidebar { display: none; }
+
+  /* ────────────────────────────────────────────────────────────── */
+  /*  APPROACH 4 — Pull-down HUD                                     */
+  /*  Resting: 28px ambient strip. Hold ⌥ → 110px HUD slides down.   */
+  /* ────────────────────────────────────────────────────────────── */
+  .hud-rest {
+    display: flex; align-items: center; gap: 14px;
+    height: 28px;
+    padding: 0 20px 0 88px;
+    border-bottom: 1px solid var(--hair);
+    background: var(--bg-0);
+    color: var(--fg-3);
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+  }
+  .hud-rest .wm {
+    color: var(--fg-1); font-family: var(--font-serif); font-weight: 300;
+    font-size: 13px; letter-spacing: -0.01em;
+  }
+  .hud-rest .breath {
+    width: 64px; height: 14px;
+  }
+  .hud-rest .kbd-hint {
+    margin-left: auto;
+    color: var(--fg-4); font-size: 9.5px;
+    text-transform: uppercase; letter-spacing: 0.18em;
+  }
+  .hud-drawer {
+    overflow: hidden;
+    transition: max-height 0.18s ease, opacity 0.16s ease;
+    max-height: 0;
+    opacity: 0;
+    background: rgba(18,18,18,0.96);
+    backdrop-filter: blur(28px);
+    border-bottom: 1px solid var(--hair-strong);
+  }
+  body.hud .hud-drawer { max-height: 200px; opacity: 1; }
+  .hud-drawer-inner {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 0;
+    padding: 14px 24px 16px 88px;
+  }
+  .hud-col { padding: 0 18px; border-right: 1px solid var(--hair); }
+  .hud-col:last-child { border-right: none; }
+  .hud-col .label {
+    font-size: 9.5px; text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: var(--fg-3);
+    margin-bottom: 8px;
+  }
+  .hud-col .row {
+    display: flex; align-items: baseline; gap: 8px;
+    padding: 3px 0;
+    font-size: 12px; color: var(--fg-1);
+  }
+  .hud-col .row .k { color: var(--fg-3); font-size: 10.5px; min-width: 7ch; }
+  .hud-col .row .v { color: var(--fg-0); }
+  .hud-col .row .kbd { margin-left: auto; color: var(--fg-3); font-size: 10px; }
+  .hud-col .row.danger .v { color: var(--danger); }
+
+  /* ────────────────────────────────────────────────────────────── */
+  /*  APPROACH 5 — Editorial status sentence                         */
+  /* ────────────────────────────────────────────────────────────── */
+  .editorial {
+    display: flex; align-items: center; gap: 20px;
+    height: 58px;
+    padding: 0 28px 0 88px;
+    border-bottom: 1px solid var(--hair);
+    background: var(--bg-0);
+  }
+  .editorial .sentence {
+    font-family: var(--font-serif);
+    font-weight: 300;
+    font-size: 18px;
+    letter-spacing: -0.005em;
+    color: var(--fg-2);
+    line-height: 1.3;
+    max-width: 86ch;
+  }
+  .editorial .sentence .verb { color: var(--fg-0); font-style: italic; }
+  .editorial .sentence .obj  { color: var(--fg-0); }
+  .editorial .sentence .meta { color: var(--fg-3); font-size: 14px; font-family: var(--font-mono); letter-spacing: 0; }
+  .editorial .sentence .live { color: var(--accent); }
+  .editorial .sentence .spend { color: var(--ok); font-family: var(--font-mono); font-size: 14px; }
+  .editorial .glyph {
+    color: var(--accent);
+    width: 28px; height: 28px;
+    flex-shrink: 0;
+  }
+  .editorial .end-hint {
+    margin-left: auto;
+    color: var(--fg-3); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.18em;
+  }
+
+  /* ────────────────────────────────────────────────────────────── */
+  /*  APPROACH 6 — Breath strip                                      */
+  /*  The bar IS the agent's heartbeat. No buttons. Ambient only.    */
+  /* ────────────────────────────────────────────────────────────── */
+  .breath-bar {
+    position: relative;
+    display: flex; align-items: center;
+    height: 32px;
+    padding: 0 20px 0 88px;
+    border-bottom: 1px solid var(--hair);
+    background: var(--bg-0);
+    overflow: hidden;
+  }
+  .breath-bar .wm {
+    color: var(--fg-1); font-family: var(--font-serif); font-weight: 300;
+    font-size: 13px; letter-spacing: -0.01em;
+    margin-right: 16px;
+  }
+  .breath-bar .wave {
+    flex: 1;
+    height: 100%;
+    position: relative;
+    overflow: hidden;
+  }
+  .breath-bar .wave svg {
+    position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+  }
+  .breath-bar .ambient-dots {
+    display: flex; align-items: center; gap: 10px;
+    margin-left: 16px;
+    color: var(--fg-3);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+  }
+  .breath-bar .ambient-dots .item {
+    display: inline-flex; align-items: center; gap: 4px;
+  }
+  .breath-bar .pressure-bg {
+    position: absolute; inset: 0;
+    background: linear-gradient(90deg,
+      rgba(168,212,252,0.0) 0%,
+      rgba(168,212,252,0.04) 60%,
+      rgba(184,160,120,0.08) 95%,
+      rgba(180,130,130,0.10) 100%);
+    pointer-events: none;
+    /* width set in JS via clip — for the mock we just show the gradient */
+  }
+
+  /* ────────────────────────────────────────────────────────────── */
+  /*  APPROACH 7 — Vertical spine                                    */
+  /*  Kill the horizontal bar. 30px rail on the left, top→bottom.    */
+  /* ────────────────────────────────────────────────────────────── */
+  .v7-shell { display: flex; height: 100%; }
+  .spine {
+    width: 30px;
+    flex-shrink: 0;
+    background: var(--bg-1);
+    border-right: 1px solid var(--hair);
+    display: flex; flex-direction: column;
+    align-items: center;
+    padding: 80px 0 12px;
+    gap: 10px;
+  }
+  .spine .glyph {
+    width: 24px; height: 24px;
+    border-radius: 5px;
+    background: var(--raised);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--fg-2);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    position: relative;
+    transition: all 0.12s;
+  }
+  .spine .glyph:hover { color: var(--fg-0); background: var(--raised-hover); }
+  .spine .glyph.active { background: rgba(168,212,252,0.12); color: var(--accent); border: 1px solid rgba(168,212,252,0.22); }
+  .spine .glyph .dot { position: absolute; top: -2px; right: -2px; }
+  .spine .gap { flex: 1; }
+  .spine .wm-glyph {
+    width: 22px; height: 22px;
+    margin-bottom: 12px;
+    color: var(--accent);
+  }
+  .spine .session-readout {
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    color: var(--fg-3);
+    font-size: 9.5px;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    padding: 8px 0;
+  }
+  .spine .session-readout .val { color: var(--fg-0); }
+
+  /* ────────────────────────────────────────────────────────────── */
+  /*  APPROACH 8 — Invisible chrome                                  */
+  /*  No bar at rest. Hover top edge → bar fades in. ⌘K elsewhere.   */
+  /* ────────────────────────────────────────────────────────────── */
+  .invis-trigger {
+    height: 4px;
+    background: transparent;
+    position: relative;
+    cursor: pointer;
+  }
+  .invis-trigger::after {
+    content: '';
+    position: absolute; left: 50%;
+    bottom: 0;
+    transform: translateX(-50%);
+    width: 40px; height: 3px;
+    background: var(--hair-strong);
+    border-radius: 2px;
+  }
+  .invis-bar {
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition: max-height 0.16s ease, opacity 0.14s ease;
+    background: rgba(18,18,18,0.94);
+    backdrop-filter: blur(24px);
+    border-bottom: 1px solid var(--hair-strong);
+  }
+  .invis-trigger:hover + .invis-bar,
+  .invis-bar:hover {
+    max-height: 56px;
+    opacity: 1;
+  }
+  .invis-bar .row {
+    display: flex; align-items: center; gap: 14px;
+    height: 46px;
+    padding: 0 24px 0 88px;
+    font-size: 11.5px;
+    color: var(--fg-1);
+  }
+  .invis-floating {
+    position: absolute;
+    top: 12px; right: 14px;
+    z-index: 20;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .invis-floating .badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    height: 22px;
+    padding: 0 7px;
+    border-radius: 11px;
+    background: rgba(18,18,18,0.7);
+    border: 1px solid var(--hair);
+    color: var(--fg-2);
+    font-size: 10px;
+    backdrop-filter: blur(10px);
+    cursor: pointer;
+  }
+  .invis-floating .badge:hover { color: var(--fg-0); border-color: var(--hair-strong); }
+  .invis-corner {
+    position: absolute;
+    left: 88px; top: 14px;
+    color: var(--fg-3);
+    font-size: 10.5px;
+    z-index: 20;
+    font-family: var(--font-serif);
+    font-style: italic;
+    font-weight: 300;
+  }
+  .invis-corner .verb { color: var(--fg-1); }
+  .invis-stage { position: relative; flex: 1; overflow: hidden; }
+
+  /* ────────────────────────────────────────────────────────────── */
+  /*  APPROACH 9 — THE LINE                                          */
+  /*  Two things on a calm 32px strip. Reads like a colleague        */
+  /*  describing what the agent is doing, peripherally felt          */
+  /*  through ambient gradient + a single layered status dot.        */
+  /* ────────────────────────────────────────────────────────────── */
+  .line-bar {
+    position: relative;
+    height: 38px;
+    padding: 0 18px 0 88px;
+    border-bottom: 1px solid var(--hair);
+    background: var(--bg-0);
+    overflow: hidden;
+    display: flex; align-items: center; gap: 18px;
+    isolation: isolate;
+  }
+
+  /* Streaming — a dot-matrix marquee that scrolls L→R in chunky
+     steps(). Reads like an old printer-feed or LED ticker.
+     The dots themselves are tiny halftone circles via radial-gradient,
+     repeating across the bar's full width. */
+  .line-bar .sweep {
+    position: absolute; inset: 0;
+    background-image:
+      radial-gradient(circle at 1.6px 1.6px,
+        rgba(168,212,252,0.22) 0.9px, transparent 1.4px);
+    background-size: 5px 5px;
+    background-position: 0 50%;
+    opacity: 0;
+    transition: opacity 0.5s ease;
+    pointer-events: none;
+    z-index: 0;
+    image-rendering: pixelated;
+  }
+  body.is-streaming .line-bar .sweep,
+  .line-bar.streaming .sweep {
+    opacity: 1;
+    animation: dots-march 2.4s steps(12, end) infinite;
+  }
+  .line-bar.streaming-fast .sweep { animation-duration: 1.0s; }
+  @keyframes dots-march {
+    from { background-position: 0 50%; }
+    to   { background-position: 60px 50%; }
+  }
+
+  /* Pressure tint is gone — peripheral animation around climbing ctx
+     proved noisy when compaction is the actual event. The static
+     ring on the dot is enough; the bar only changes when compaction
+     fires. (Legacy class kept as a no-op for the script controls.) */
+  .line-bar .pressure { display: none; }
+
+  /* Compaction — a halftone band scans L→R in chunky steps while
+     the bar desaturates in 4 discrete chips. Reads like a developing
+     photograph or a print-head pass. */
+  .line-bar .compaction-scan {
+    position: absolute; inset: 0;
+    background-image:
+      radial-gradient(circle at 5px 5px,
+        rgba(168,212,252,0.55) 1.8px, transparent 2.4px);
+    background-size: 10px 10px;
+    background-position: 0 50%;
+    opacity: 0;
+    pointer-events: none;
+    z-index: 1;
+    image-rendering: pixelated;
+    -webkit-mask-image: linear-gradient(90deg,
+      transparent 0%, transparent 40%,
+      black 48%, black 52%,
+      transparent 60%, transparent 100%);
+    mask-image: linear-gradient(90deg,
+      transparent 0%, transparent 40%,
+      black 48%, black 52%,
+      transparent 60%, transparent 100%);
+    -webkit-mask-size: 250% 100%;
+    mask-size: 250% 100%;
+    -webkit-mask-position: 0% 0;
+    mask-position: 0% 0;
+  }
+  .line-bar.compacting .compaction-scan {
+    opacity: 1;
+    animation: halftone-scan 1.4s steps(14, end) forwards;
+  }
+  .line-bar.compacting {
+    animation: pixel-desat 1.4s steps(6, end) both;
+  }
+  @keyframes halftone-scan {
+    from { -webkit-mask-position: 0% 0; mask-position: 0% 0; }
+    to   { -webkit-mask-position: 100% 0; mask-position: 100% 0; }
+  }
+  @keyframes pixel-desat {
+    0%   { filter: saturate(1) brightness(1); }
+    30%  { filter: saturate(0.55) brightness(0.92); }
+    55%  { filter: saturate(0.25) brightness(0.85); }
+    75%  { filter: saturate(0.55) brightness(0.92); }
+    100% { filter: saturate(1) brightness(1); }
+  }
+
+  /* Subtle error flash — used by the story when bridge hiccups. */
+  .line-bar .flash {
+    position: absolute; inset: 0;
+    background: linear-gradient(180deg, rgba(180,130,130,0.20), transparent 70%);
+    opacity: 0;
+    pointer-events: none;
+    z-index: 0;
+  }
+  .line-bar.error .flash { animation: flash 1.4s ease-out; }
+  @keyframes flash {
+    0% { opacity: 0; }
+    8% { opacity: 1; }
+    100% { opacity: 0; }
+  }
+
+  /* ── The editorial line ─────────────────────────────────── */
+  .line {
+    position: relative; z-index: 2;
+    display: flex; align-items: baseline; gap: 10px;
+    font-family: var(--font-serif);
+    font-size: 14.5px;
+    font-weight: 300;
+    letter-spacing: -0.003em;
+    line-height: 1;
+    color: var(--fg-2);
+    max-width: calc(100% - 240px);
+    min-width: 0;
+    -webkit-app-region: drag;
+  }
+  .line .wm {
+    color: var(--fg-1);
+    font-weight: 400;
+    flex-shrink: 0;
+  }
+  .line .sep {
+    color: var(--fg-4);
+    margin: 0 2px;
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+  .line .verb {
+    color: var(--fg-0);
+    font-style: italic;
+    transition: opacity 0.36s ease, color 0.36s ease;
+    will-change: opacity;
+  }
+  .line .verb.swap { opacity: 0; }
+  .line .obj {
+    color: var(--fg-1);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .line .tail {
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    letter-spacing: 0;
+    flex-shrink: 0;
+  }
+  .line .tail .pulse {
+    display: inline-block;
+    width: 4px; height: 4px; border-radius: 50%;
+    background: var(--accent);
+    vertical-align: middle;
+    margin-right: 4px;
+    animation: tiny-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes tiny-pulse {
+    0%, 100% { opacity: 0.45; transform: scale(1); }
+    50% { opacity: 1; transform: scale(1.35); }
+  }
+  .line .agents {
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    background: rgba(168,212,252,0.06);
+    border: 1px solid rgba(168,212,252,0.18);
+    padding: 1px 6px;
+    border-radius: 3px;
+    margin-left: 2px;
+  }
+
+  /* ── The dot — three layered SVG rings ─────────────────── */
+  .dot-host {
+    position: relative; z-index: 2;
+    margin-left: auto;
+    width: 26px; height: 26px;
+    flex-shrink: 0;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    -webkit-app-region: no-drag;
+  }
+  .dot-svg { width: 100%; height: 100%; overflow: visible; }
+  .dot-ring {
+    fill: none;
+    stroke-width: 1.2;
+    stroke-linecap: round;
+    transform-origin: center;
+    transform: rotate(-90deg);
+    transition: stroke 1.2s ease, stroke-dashoffset 1.6s cubic-bezier(0.4,0,0.2,1);
+    stroke: var(--ring-color, rgba(168,212,252,0.50));
+    stroke-dasharray: 50.27; /* 2π * 8 */
+    stroke-dashoffset: var(--ring-off, 50.27);
+  }
+  /* Halo is now a halftone ring of 8 dots that breathe outward in a
+     ripple. Each dot is offset by 0.18s so the pulse travels around
+     the core, not in unison. Idle = nearly invisible; streaming
+     reveals + cycles; streaming-fast halves the cycle. */
+  .dot-halo { display: none; }
+  .dot-halftone {
+    opacity: 0;
+    transition: opacity 0.5s ease;
+  }
+  body.is-streaming .dot-halftone,
+  .line-bar.streaming .dot-halftone {
+    opacity: 1;
+  }
+  .dot-halftone .hd {
+    fill: var(--halo-color, rgba(168,212,252,0.75));
+    transform-origin: 11px 11px;
+    opacity: 0;
+    transition: fill 0.6s ease;
+  }
+  body.is-streaming .dot-halftone .hd,
+  .line-bar.streaming .dot-halftone .hd {
+    animation: hd-pulse 1.6s steps(6, end) infinite;
+  }
+  .line-bar.streaming-fast .dot-halftone .hd { animation-duration: 0.9s; }
+  .dot-halftone .hd-0 { animation-delay: 0.00s; }
+  .dot-halftone .hd-1 { animation-delay: 0.20s; }
+  .dot-halftone .hd-2 { animation-delay: 0.40s; }
+  .dot-halftone .hd-3 { animation-delay: 0.60s; }
+  .dot-halftone .hd-4 { animation-delay: 0.80s; }
+  .dot-halftone .hd-5 { animation-delay: 1.00s; }
+  .dot-halftone .hd-6 { animation-delay: 1.20s; }
+  .dot-halftone .hd-7 { animation-delay: 1.40s; }
+  @keyframes hd-pulse {
+    0%   { opacity: 0; transform: scale(0.55); }
+    25%  { opacity: 1; transform: scale(1.0); }
+    100% { opacity: 0; transform: scale(0.55); }
+  }
+  .dot-core {
+    fill: var(--core-color, var(--fg-2));
+    transition: fill 0.8s ease;
+  }
+
+  /* dot color states */
+  .line-bar.bridge-ok      { --core-color: var(--accent);     --halo-color: rgba(168,212,252,0.65); --ring-color: rgba(168,212,252,0.55); }
+  .line-bar.bridge-degraded{ --core-color: var(--warn);       --halo-color: rgba(184,160,120,0.65); --ring-color: rgba(184,160,120,0.55); }
+  .line-bar.bridge-offline { --core-color: var(--danger);     --halo-color: rgba(180,130,130,0.55); --ring-color: rgba(180,130,130,0.45); }
+  .line-bar.ctx-mid        { --ring-off: 33.5; }     /* 33% → 67% remaining */
+  .line-bar.ctx-high       { --ring-off: 12.6; }     /* 75% */
+  .line-bar.ctx-critical   { --ring-off: 2.5;
+                             --ring-color: rgba(180,130,130,0.85); }
+
+  /* hover micro-readout — appears above the dot */
+  .dot-tip {
+    position: absolute;
+    right: 0; top: calc(100% + 8px);
+    background: rgba(16,16,16,0.96);
+    backdrop-filter: blur(20px);
+    border: 1px solid var(--hair-strong);
+    border-radius: 8px;
+    padding: 10px 12px;
+    min-width: 220px;
+    z-index: 60;
+    box-shadow: 0 12px 28px rgba(0,0,0,0.5);
+    opacity: 0; transform: translateY(-4px);
+    pointer-events: none;
+    transition: opacity 0.16s ease, transform 0.18s ease;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-1);
+  }
+  .dot-host:hover .dot-tip,
+  .dot-host.open .dot-tip { opacity: 1; transform: translateY(0); }
+  .dot-tip .row {
+    display: flex; align-items: baseline; gap: 8px;
+    padding: 2px 0;
+  }
+  .dot-tip .row .k { color: var(--fg-3); min-width: 7ch; text-transform: uppercase; letter-spacing: 0.10em; font-size: 9.5px; }
+  .dot-tip .row .v { color: var(--fg-0); }
+  .dot-tip .hair { height: 1px; background: var(--hair); margin: 6px 0; }
+  .dot-tip .footer { font-size: 9.5px; color: var(--fg-3); text-transform: uppercase; letter-spacing: 0.16em; margin-top: 4px; }
+
+  /* services well — opens on click */
+  .services-well {
+    position: absolute;
+    right: 0; top: calc(100% + 8px);
+    width: 320px;
+    background: rgba(16,16,16,0.97);
+    backdrop-filter: blur(24px);
+    border: 1px solid var(--hair-strong);
+    border-radius: 10px;
+    padding: 6px;
+    z-index: 80;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.6);
+    opacity: 0; transform: scale(0.98) translateY(-4px); transform-origin: 90% top;
+    pointer-events: none;
+    transition: opacity 0.16s ease, transform 0.18s ease;
+  }
+  .dot-host.open .services-well {
+    opacity: 1; transform: scale(1) translateY(0);
+    pointer-events: auto;
+  }
+  .dot-host.open .dot-tip { display: none; }
+  .services-well .group {
+    text-transform: uppercase; letter-spacing: 0.16em;
+    font-size: 9px;
+    color: var(--fg-3);
+    padding: 9px 11px 5px;
+  }
+  .services-well .item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 11px;
+    border-radius: 6px;
+    color: var(--fg-1);
+    font-size: 11.5px;
+    cursor: pointer;
+    font-family: var(--font-mono);
+  }
+  .services-well .item:hover { background: var(--raised); color: var(--fg-0); }
+  .services-well .item .label { color: var(--fg-0); }
+  .services-well .item .meta  { color: var(--fg-3); margin-left: auto; font-size: 10.5px; }
+  .services-well .item .kbd   { color: var(--fg-3); margin-left: auto; font-size: 10px; }
+  .services-well .hair { height: 1px; background: var(--hair); margin: 4px 0; }
+
+  /* focus mode: line disappears, dot moves to bottom-right corner */
+  body.focus .variant.active[data-variant="v9"] .line-bar {
+    height: 0; border: none; opacity: 0; pointer-events: none;
+  }
+  body.focus .variant.active[data-variant="v9"] .corner-dot {
+    opacity: 1; pointer-events: auto;
+  }
+  .corner-dot {
+    position: fixed;
+    right: 18px; bottom: 18px;
+    width: 22px; height: 22px;
+    opacity: 0;
+    transition: opacity 0.4s ease;
+    pointer-events: none;
+    z-index: 70;
+    cursor: pointer;
+  }
+
+  /* The state-demo panel — sticky controls beside the bar */
+  .v9-controls {
+    position: sticky;
+    top: 60px;
+    z-index: 30;
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 24px;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--hair);
+    font-size: 10.5px;
+    color: var(--fg-3);
+  }
+  .v9-controls .group-name {
+    text-transform: uppercase; letter-spacing: 0.16em;
+    color: var(--fg-3);
+    margin-right: 4px;
+  }
+  .v9-controls button {
+    background: var(--raised);
+    border: 1px solid var(--hair);
+    border-radius: 5px;
+    padding: 4px 9px;
+    color: var(--fg-2);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    cursor: pointer;
+    letter-spacing: 0.06em;
+    transition: all 0.12s;
+  }
+  .v9-controls button:hover { color: var(--fg-0); background: var(--raised-hover); }
+  .v9-controls button.on {
+    background: rgba(168,212,252,0.10);
+    border-color: rgba(168,212,252,0.30);
+    color: var(--accent);
+  }
+  .v9-controls .pipe { width: 1px; height: 16px; background: var(--hair-strong); margin: 0 6px; }
+  .v9-controls .play {
+    background: rgba(168,212,252,0.10);
+    border-color: rgba(168,212,252,0.30);
+    color: var(--accent);
+    padding: 4px 12px;
+  }
+
+  /* tiny story progress bar — fills as the scripted scene plays */
+  .v9-story {
+    position: relative;
+    height: 2px;
+    background: var(--bg-2);
+  }
+  .v9-story .fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, rgba(168,212,252,0.40), rgba(168,212,252,0.85));
+    transition: width 0.2s linear;
+  }
+  .v9-story .marker {
+    position: absolute;
+    top: -2px; height: 6px; width: 1px;
+    background: var(--fg-4);
+  }
+  .v9-story .marker[data-at="0"]   { left: 0%; }
+  .v9-story .marker[data-at="8"]   { left: 8%; }
+  .v9-story .marker[data-at="20"]  { left: 20%; }
+  .v9-story .marker[data-at="35"]  { left: 35%; }
+  .v9-story .marker[data-at="55"]  { left: 55%; }
+  .v9-story .marker[data-at="70"]  { left: 70%; }
+  .v9-story .marker[data-at="85"]  { left: 85%; }
+  .v9-story .marker[data-at="100"] { left: 99%; }
+  .v9-story .now {
+    position: absolute;
+    top: -12px;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--fg-3);
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    transform: translateX(-50%);
+    transition: left 0.2s linear;
+    pointer-events: none;
+  }
+
+  /* notes column at the bottom */
+  .v9-notes {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 24px;
+    padding: 18px 24px;
+    border-top: 1px solid var(--hair);
+    background: var(--bg-1);
+    font-size: 11.5px;
+    color: var(--fg-2);
+    line-height: 1.6;
+  }
+  .v9-notes h4 {
+    margin: 0 0 6px;
+    font-family: var(--font-serif);
+    font-weight: 300;
+    font-size: 14px;
+    color: var(--fg-0);
+    letter-spacing: -0.005em;
+  }
+  .v9-notes code {
+    background: var(--raised);
+    border-radius: 3px;
+    padding: 1px 4px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--fg-1);
+  }
+  .v9-notes em { color: var(--fg-1); font-style: normal; }
+
+  /* ────────────────────────────────────────────────────────────── */
+  /*  THE DRAWER — refined services well                             */
+  /*  Three sections: surfaces · gateways (collapsed) · session.     */
+  /*  Bounded forever — gateways row never grows.                    */
+  /* ────────────────────────────────────────────────────────────── */
+  .drawer {
+    width: 340px !important;
+    padding: 4px;
+  }
+  .drawer-glyph {
+    display: inline-flex;
+    align-items: center; justify-content: center;
+    width: 22px; height: 22px;
+    border-radius: 5px;
+    background: rgba(255,255,255,0.04);
+    color: var(--fg-2);
+    font-size: 11px;
+    font-family: var(--font-mono);
+    flex-shrink: 0;
+    transition: all 0.14s ease;
+  }
+  .drawer-item:hover .drawer-glyph {
+    background: rgba(168,212,252,0.10);
+    color: var(--accent);
+  }
+  .drawer-item {
+    padding: 6px 8px 6px 6px !important;
+  }
+  .drawer-palette {
+    background: rgba(168,212,252,0.04);
+  }
+  .drawer-palette .drawer-glyph {
+    background: rgba(168,212,252,0.10);
+    color: var(--accent);
+  }
+  .drawer-gateways {
+    cursor: pointer;
+    padding: 8px !important;
+  }
+  .drawer-gateways:hover { background: var(--raised); }
+  .drawer-gateways .label {
+    margin-left: 4px;
+    color: var(--fg-0);
+  }
+  .drawer-gateways .meta {
+    color: var(--fg-3);
+    font-size: 10px;
+  }
+  .avatar-stack {
+    display: inline-flex;
+    align-items: center;
+  }
+  .ava {
+    width: 22px; height: 22px;
+    border-radius: 5px;
+    display: inline-flex;
+    align-items: center; justify-content: center;
+    font-size: 10.5px;
+    font-family: var(--font-mono);
+    margin-left: -6px;
+    border: 1.5px solid var(--bg-1);
+    transition: transform 0.18s ease, margin 0.18s ease;
+  }
+  .ava:first-child { margin-left: 0; }
+  .drawer-gateways:hover .ava {
+    transform: translateY(-1px);
+    margin-left: -2px;
+  }
+  .drawer-gateways:hover .ava:first-child { margin-left: 0; }
+  .ava-more {
+    background: rgba(255,255,255,0.04);
+    color: var(--fg-3);
+    font-size: 9.5px;
+  }
+
+  /* ────────────────────────────────────────────────────────────── */
+  /*  GATEWAYS SURFACE — own modal; opens from drawer or palette     */
+  /*  Bounded inventory of input/output channels + model providers   */
+  /*  + tool servers (MCP). Three filter chips for the meta-types.   */
+  /* ────────────────────────────────────────────────────────────── */
+  .gw-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.42);
+    backdrop-filter: blur(6px);
+    z-index: 200;
+    display: none;
+    animation: fade-in 0.20s ease;
+  }
+  .gw-overlay.open { display: block; }
+  @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+  .gw-panel {
+    position: fixed;
+    top: 8vh;
+    left: 50%;
+    transform: translateX(-50%) scale(0.985);
+    opacity: 0;
+    width: min(1080px, 92vw);
+    max-height: 84vh;
+    background: rgba(14,14,14,0.96);
+    backdrop-filter: blur(40px);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 14px;
+    box-shadow: 0 36px 96px rgba(0,0,0,0.65);
+    z-index: 210;
+    overflow: hidden;
+    display: none;
+    flex-direction: column;
+    transition: opacity 0.22s ease, transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .gw-overlay.open + .gw-panel,
+  body.gw-open .gw-panel {
+    display: flex;
+    opacity: 1;
+    transform: translateX(-50%) scale(1);
+  }
+
+  .gw-header {
+    display: flex; align-items: flex-end; gap: 16px;
+    padding: 22px 28px 18px;
+    border-bottom: 1px solid var(--hair);
+  }
+  .gw-header h2 {
+    margin: 0;
+    font-family: var(--font-serif);
+    font-weight: 300;
+    font-size: 28px;
+    color: var(--fg-0);
+    letter-spacing: -0.01em;
+    line-height: 1;
+  }
+  .gw-header .sub {
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    padding-bottom: 4px;
+  }
+  .gw-header .filters {
+    display: flex; gap: 4px;
+    margin-left: 12px;
+    padding-bottom: 2px;
+  }
+  .gw-header .filter {
+    padding: 5px 11px;
+    border-radius: 5px;
+    border: 1px solid var(--hair);
+    background: var(--raised);
+    color: var(--fg-2);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.10em;
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .gw-header .filter:hover { color: var(--fg-0); background: var(--raised-hover); }
+  .gw-header .filter.on {
+    background: rgba(168,212,252,0.10);
+    border-color: rgba(168,212,252,0.30);
+    color: var(--accent);
+  }
+  .gw-header .spacer { flex: 1; }
+  .gw-header .add {
+    padding: 7px 12px;
+    border-radius: 6px;
+    border: 1px solid rgba(168,212,252,0.30);
+    background: rgba(168,212,252,0.08);
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    cursor: pointer;
+    transition: background 0.14s;
+  }
+  .gw-header .add:hover { background: rgba(168,212,252,0.14); }
+  .gw-header .close {
+    padding: 6px 10px;
+    border-radius: 5px;
+    border: 1px solid var(--hair);
+    background: transparent;
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    cursor: pointer;
+  }
+  .gw-header .close:hover { color: var(--fg-0); }
+
+  .gw-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 18px 28px 24px;
+  }
+
+  /* aggregate bar — live signal across all gateways */
+  .gw-summary {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    margin-bottom: 18px;
+  }
+  .gw-stat {
+    padding: 12px 14px;
+    border: 1px solid var(--hair);
+    border-radius: 8px;
+    background: rgba(255,255,255,0.02);
+  }
+  .gw-stat .k {
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    margin-bottom: 4px;
+  }
+  .gw-stat .v {
+    color: var(--fg-0);
+    font-family: var(--font-mono);
+    font-size: 17px;
+    letter-spacing: 0.01em;
+    font-variant-numeric: tabular-nums;
+  }
+  .gw-stat .delta { color: var(--fg-3); font-size: 10.5px; margin-left: 6px; }
+  .gw-stat .delta.up { color: var(--ok); }
+  .gw-stat .delta.warn { color: var(--warn); }
+
+  /* the grid of gateway cards */
+  .gw-section { margin: 22px 0 12px; }
+  .gw-section-title {
+    display: flex; align-items: baseline; gap: 10px;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: var(--fg-3);
+    margin-bottom: 8px;
+  }
+  .gw-section-title .count { color: var(--fg-2); }
+  .gw-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(228px, 1fr));
+    gap: 10px;
+  }
+  .gw-card {
+    position: relative;
+    padding: 14px;
+    border: 1px solid var(--hair);
+    border-radius: 8px;
+    background: rgba(255,255,255,0.02);
+    cursor: pointer;
+    transition: all 0.16s ease;
+    overflow: hidden;
+  }
+  .gw-card:hover {
+    border-color: rgba(255,255,255,0.14);
+    background: rgba(255,255,255,0.04);
+    transform: translateY(-1px);
+  }
+  .gw-card.unconfigured {
+    border: 1px dashed rgba(255,255,255,0.10);
+    background: transparent;
+    opacity: 0.7;
+  }
+  .gw-card.unconfigured:hover { opacity: 1; border-style: solid; }
+  .gw-card .top {
+    display: flex; align-items: flex-start; gap: 10px;
+    margin-bottom: 10px;
+  }
+  .gw-card .gw-logo {
+    width: 32px; height: 32px;
+    border-radius: 7px;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--font-mono);
+    font-size: 14px;
+    flex-shrink: 0;
+  }
+  .gw-card .gw-name {
+    flex: 1;
+    color: var(--fg-0);
+    font-family: var(--font-serif);
+    font-weight: 300;
+    font-size: 15px;
+    letter-spacing: -0.005em;
+    line-height: 1.25;
+    padding-top: 2px;
+  }
+  .gw-card .gw-name small {
+    display: block;
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    font-weight: 400;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    margin-top: 2px;
+  }
+  .gw-card .gw-state {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.10em;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: rgba(255,255,255,0.03);
+    color: var(--fg-2);
+    align-self: flex-start;
+  }
+  .gw-state.connected { color: var(--ok); background: rgba(168,176,168,0.08); }
+  .gw-state.live      { color: var(--accent); background: rgba(168,212,252,0.08); }
+  .gw-state.needs-auth{ color: var(--warn); background: rgba(184,160,120,0.10); }
+  .gw-state.error     { color: var(--danger); background: rgba(180,130,130,0.10); }
+  .gw-state.silent    { color: var(--fg-3); }
+
+  .gw-card .gw-meta {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 3px 10px;
+    color: var(--fg-2);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+  }
+  .gw-card .gw-meta .k { color: var(--fg-3); text-transform: uppercase; letter-spacing: 0.10em; font-size: 9px; padding-top: 2px; }
+  .gw-card .gw-meta .v { color: var(--fg-1); font-variant-numeric: tabular-nums; }
+
+  .gw-card .gw-bottom {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 11px;
+    padding-top: 9px;
+    border-top: 1px solid var(--hair);
+  }
+  .gw-card .gw-dir {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.10em;
+    color: var(--fg-3);
+  }
+  .gw-card .gw-dir .arrow {
+    color: var(--fg-2);
+    margin: 0 3px;
+  }
+  .gw-card .gw-cta {
+    margin-left: auto;
+    opacity: 0;
+    transform: translateX(2px);
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    transition: all 0.16s ease;
+  }
+  .gw-card:hover .gw-cta { opacity: 1; transform: translateX(0); }
+  .gw-card.unconfigured .gw-cta { opacity: 0.6; }
+
+  /* the breath-line under a connected gateway — last activity sparkline */
+  .gw-spark {
+    position: absolute;
+    left: 14px; right: 14px; bottom: 0;
+    height: 18px;
+    pointer-events: none;
+  }
+  .gw-spark svg { width: 100%; height: 100%; opacity: 0.35; }
+  .gw-card:hover .gw-spark svg { opacity: 0.65; }
+
+  /* ────────────────────────────────────────────────────────────── */
+  /*  COMMAND PALETTE — the canonical entry path                     */
+  /* ────────────────────────────────────────────────────────────── */
+  .palette-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.45);
+    backdrop-filter: blur(8px);
+    z-index: 300;
+    display: none;
+    animation: fade-in 0.16s ease;
+  }
+  .palette-overlay.open { display: block; }
+
+  .palette {
+    position: fixed;
+    top: 14vh;
+    left: 50%;
+    transform: translateX(-50%) scale(0.98) translateY(-8px);
+    opacity: 0;
+    width: min(620px, 92vw);
+    max-height: 70vh;
+    background: rgba(20,20,20,0.97);
+    backdrop-filter: blur(40px);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 14px;
+    box-shadow: 0 36px 96px rgba(0,0,0,0.65);
+    z-index: 310;
+    overflow: hidden;
+    display: none;
+    flex-direction: column;
+    transition: opacity 0.16s ease, transform 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  body.palette-open .palette {
+    display: flex;
+    opacity: 1;
+    transform: translateX(-50%) scale(1) translateY(0);
+  }
+
+  .palette-input {
+    display: flex; align-items: center; gap: 12px;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--hair);
+  }
+  .palette-input .glyph {
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 16px;
+  }
+  .palette-input input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--fg-0);
+    font-family: var(--font-serif);
+    font-weight: 300;
+    font-size: 18px;
+    letter-spacing: -0.01em;
+  }
+  .palette-input input::placeholder { color: var(--fg-3); }
+  .palette-input .hint {
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+  }
+
+  .palette-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+  }
+  .palette-group {
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    padding: 10px 14px 4px;
+  }
+  .palette-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 7px 12px;
+    border-radius: 6px;
+    color: var(--fg-1);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .palette-row:hover, .palette-row.cursor {
+    background: rgba(168,212,252,0.08);
+    color: var(--fg-0);
+  }
+  .palette-row .glyph {
+    width: 22px; height: 22px;
+    border-radius: 5px;
+    background: rgba(255,255,255,0.04);
+    color: var(--fg-2);
+    display: inline-flex;
+    align-items: center; justify-content: center;
+    font-size: 11px;
+    flex-shrink: 0;
+    transition: all 0.12s;
+  }
+  .palette-row:hover .glyph, .palette-row.cursor .glyph {
+    background: rgba(168,212,252,0.14);
+    color: var(--accent);
+  }
+  .palette-row .label { flex: 1; color: var(--fg-0); }
+  .palette-row .meta { color: var(--fg-3); font-size: 10.5px; }
+  .palette-row .kbd { color: var(--fg-3); font-size: 10px; }
+  .palette-footer {
+    display: flex; gap: 14px;
+    padding: 9px 16px;
+    border-top: 1px solid var(--hair);
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+  }
+  .palette-footer .kbd-mini {
+    color: var(--fg-2);
+    background: rgba(255,255,255,0.05);
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-right: 4px;
+  }
+  /* Context-aware palette: when on the new-session scene,
+     "session controls" (cancel turn, etc) make no sense; hide them.
+     Surface "start from" + "resume" groups instead. */
+  body:not(.scene-newsess) .palette-newsess { display: none; }
+  body.scene-newsess .palette-insess { display: none; }
+
+  /* ════════════════════════════════════════════════════════════ */
+  /*  SCENE PICKER — switches the body content within v9          */
+  /* ════════════════════════════════════════════════════════════ */
+  .scenes {
+    position: sticky;
+    top: 122px;
+    z-index: 28;
+    display: flex; align-items: center; gap: 6px;
+    padding: 10px 24px;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--hair);
+  }
+  .scenes .lbl {
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    margin-right: 8px;
+  }
+  .scenes button {
+    background: var(--raised);
+    border: 1px solid var(--hair);
+    border-radius: 5px;
+    padding: 5px 11px;
+    color: var(--fg-2);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .scenes button:hover { color: var(--fg-0); background: var(--raised-hover); }
+  .scenes button.on {
+    background: rgba(168,212,252,0.10);
+    border-color: rgba(168,212,252,0.30);
+    color: var(--accent);
+  }
+  .scene { display: none; flex: 1; min-height: 0; flex-direction: column; }
+  .scene.on {
+    display: flex;
+    animation: scene-resolve 0.5s steps(6, end) both;
+  }
+  @keyframes scene-resolve {
+    0%   { opacity: 0; filter: blur(4px) brightness(0.65) contrast(1.4); }
+    60%  { opacity: 0.85; filter: blur(1px) brightness(0.92) contrast(1.1); }
+    100% { opacity: 1; filter: blur(0) brightness(1) contrast(1); }
+  }
+
+  /* ════════════════════════════════════════════════════════════ */
+  /*  NEW SESSION VIEW — empty state with subtle config chips     */
+  /* ════════════════════════════════════════════════════════════ */
+  .ns {
+    flex: 1;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 80px 32px 48px;
+    background:
+      radial-gradient(ellipse at center 30%, rgba(168,212,252,0.04), transparent 65%),
+      var(--bg-0);
+  }
+  .ns .greeting {
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    margin-bottom: 22px;
+    animation: pixel-fade 0.5s steps(5, end) both;
+  }
+  .ns h1 {
+    margin: 0 0 14px;
+    font-family: var(--font-serif);
+    font-weight: 300;
+    font-size: 44px;
+    letter-spacing: -0.02em;
+    color: var(--fg-0);
+    line-height: 1.05;
+    animation: dither-resolve 0.7s 0.10s steps(8, end) both;
+  }
+  .ns h1 em { font-style: italic; color: var(--fg-1); font-weight: 300; }
+  .ns .sub {
+    color: var(--fg-2);
+    font-family: var(--font-serif);
+    font-weight: 300;
+    font-size: 17px;
+    margin-bottom: 36px;
+    letter-spacing: -0.005em;
+    animation: pixel-fade 0.6s 0.30s steps(6, end) both;
+  }
+  /* Pixel reveals: stepped animations so the resolve feels chunky,
+     not smooth — like a developing print or a low-rez decode. */
+  @keyframes pixel-fade {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes dither-resolve {
+    0%   { opacity: 0; filter: blur(6px) contrast(2) brightness(0.45); transform: translateY(10px); }
+    50%  { opacity: 0.7; filter: blur(2px) contrast(1.3) brightness(0.85); }
+    100% { opacity: 1; filter: blur(0) contrast(1) brightness(1); transform: translateY(0); }
+  }
+
+  /* config chips — subtle, before-first-message */
+  .ns-chips {
+    display: flex; gap: 8px;
+    margin-bottom: 22px;
+    animation: pixel-fade 0.55s 0.50s steps(5, end) both;
+  }
+  .ns-chip {
+    display: inline-flex; align-items: center; gap: 9px;
+    padding: 8px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--hair);
+    background: rgba(255,255,255,0.02);
+    cursor: pointer;
+    transition: all 0.14s;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--fg-2);
+  }
+  .ns-chip:hover {
+    background: rgba(255,255,255,0.045);
+    border-color: rgba(255,255,255,0.14);
+    color: var(--fg-0);
+  }
+  .ns-chip .k {
+    color: var(--fg-3);
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+  }
+  .ns-chip .v { color: var(--fg-0); }
+  .ns-chip .caret { color: var(--fg-3); margin-left: 2px; }
+  .ns-chip.locked {
+    border-style: dashed;
+    opacity: 0.7;
+  }
+  .ns-chip.locked .caret { display: none; }
+  .ns-chip .lock {
+    width: 9px; height: 9px;
+    opacity: 0.6;
+    margin-left: 2px;
+  }
+
+  /* the new-session composer */
+  .ns-composer {
+    width: 100%;
+    max-width: 620px;
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 12px;
+    background: rgba(255,255,255,0.025);
+    padding: 18px 20px 14px;
+    transition: border-color 0.18s;
+    animation: pixel-fade 0.65s 0.70s steps(7, end) both;
+  }
+  .ns-composer:focus-within {
+    border-color: rgba(168,212,252,0.30);
+    background: rgba(168,212,252,0.02);
+  }
+  .ns-composer textarea {
+    width: 100%;
+    background: transparent;
+    border: none;
+    outline: none;
+    resize: none;
+    color: var(--fg-0);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.55;
+    min-height: 78px;
+  }
+  .ns-composer textarea::placeholder { color: var(--fg-3); }
+  .ns-composer-foot {
+    display: flex; align-items: center; gap: 14px;
+    padding-top: 10px;
+    border-top: 1px solid var(--hair);
+    margin-top: 8px;
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+  }
+  .ns-composer-foot .kbd-mini {
+    color: var(--fg-2);
+    background: rgba(255,255,255,0.05);
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin: 0 4px 0 0;
+  }
+  .ns-composer-foot .send {
+    margin-left: auto;
+    color: var(--accent);
+    background: rgba(168,212,252,0.08);
+    padding: 4px 10px;
+    border-radius: 4px;
+    border: 1px solid rgba(168,212,252,0.22);
+    cursor: pointer;
+  }
+
+  .ns-tips {
+    margin-top: 36px;
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    animation: pixel-fade 0.5s 0.95s steps(4, end) both;
+  }
+  .ns-tips .kbd-mini {
+    background: rgba(255,255,255,0.05);
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: var(--fg-2);
+  }
+
+  /* config popover */
+  .ns-pop {
+    position: absolute;
+    background: rgba(18,18,18,0.97);
+    backdrop-filter: blur(24px);
+    border: 1px solid var(--hair-strong);
+    border-radius: 10px;
+    box-shadow: 0 24px 56px rgba(0,0,0,0.5);
+    padding: 6px;
+    min-width: 260px;
+    z-index: 200;
+    display: none;
+  }
+  .ns-pop.open { display: block; }
+  .ns-pop .head {
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    padding: 8px 10px 4px;
+  }
+  .ns-pop .opt {
+    display: flex; align-items: baseline; gap: 8px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    color: var(--fg-1);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    cursor: pointer;
+  }
+  .ns-pop .opt:hover { background: var(--raised); color: var(--fg-0); }
+  .ns-pop .opt.sel { background: rgba(168,212,252,0.08); color: var(--accent); }
+  .ns-pop .opt .label { color: var(--fg-0); }
+  .ns-pop .opt .desc { color: var(--fg-3); margin-left: auto; font-size: 10.5px; }
+
+  /* ════════════════════════════════════════════════════════════ */
+  /*  ACTIVITY JOURNAL — past-tense narrative of beats             */
+  /* ════════════════════════════════════════════════════════════ */
+  .journal {
+    width: 380px; flex-shrink: 0;
+    background: rgba(12,12,12,0.5);
+    border-left: 1px solid var(--hair);
+    display: flex; flex-direction: column;
+  }
+  .journal-head {
+    padding: 16px 18px 10px;
+    border-bottom: 1px solid var(--hair);
+    display: flex; align-items: baseline; gap: 8px;
+  }
+  .journal-head h3 {
+    margin: 0;
+    font-family: var(--font-serif);
+    font-weight: 300;
+    font-size: 16px;
+    color: var(--fg-0);
+    letter-spacing: -0.005em;
+  }
+  .journal-head .meta {
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+  }
+  .journal-body {
+    padding: 12px 18px 24px;
+    overflow-y: auto;
+    flex: 1;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+  }
+  .journ-beat {
+    display: flex; align-items: baseline; gap: 12px;
+    padding: 6px 0;
+    line-height: 1.45;
+    color: var(--fg-1);
+    border-bottom: 1px dotted rgba(255,255,255,0.05);
+  }
+  .journ-beat:last-child { border-bottom: none; }
+  .journ-time {
+    color: var(--fg-3);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    width: 56px;
+    flex-shrink: 0;
+  }
+  .journ-verb {
+    color: var(--fg-0);
+    font-family: var(--font-serif);
+    font-style: italic;
+    font-size: 12.5px;
+    font-weight: 300;
+    flex-shrink: 0;
+  }
+  .journ-obj {
+    flex: 1;
+    color: var(--fg-1);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .journ-dur {
+    color: var(--fg-3);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+  }
+  .journ-beat .count {
+    color: var(--fg-3);
+    font-size: 10px;
+    margin-left: 4px;
+  }
+  /* separator beats — subagent fires, scheduler runs, compactions */
+  .journ-sep {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 0;
+    color: var(--fg-3);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    border-bottom: none;
+  }
+  .journ-sep::before, .journ-sep::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--hair);
+  }
+  .journ-sep.subagent { color: var(--accent); }
+  .journ-sep.compaction { color: var(--fg-2); }
+  .journ-sep.scheduler { color: var(--ok); }
+
+  /* ════════════════════════════════════════════════════════════ */
+  /*  DIAGNOSTICS surface — promoted from DebugDrawer              */
+  /* ════════════════════════════════════════════════════════════ */
+  .diag {
+    flex: 1;
+    display: flex; flex-direction: column;
+    background: var(--bg-0);
+    min-height: 0;
+  }
+  .diag-head {
+    display: flex; align-items: flex-end; gap: 16px;
+    padding: 22px 28px 0 28px;
+  }
+  .diag-head h2 {
+    margin: 0;
+    font-family: var(--font-serif);
+    font-weight: 300;
+    font-size: 26px;
+    color: var(--fg-0);
+    letter-spacing: -0.01em;
+    line-height: 1;
+  }
+  .diag-head .sub {
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    padding-bottom: 4px;
+  }
+  .diag-tabs {
+    display: flex; gap: 0;
+    margin: 18px 0 0;
+    padding: 0 28px;
+    border-bottom: 1px solid var(--hair);
+  }
+  .diag-tab {
+    padding: 10px 14px;
+    color: var(--fg-2);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .diag-tab:hover { color: var(--fg-0); }
+  .diag-tab.on {
+    color: var(--accent);
+    border-bottom-color: rgba(168,212,252,0.5);
+  }
+  .diag-tab .badge {
+    color: var(--fg-3);
+    font-size: 10px;
+    margin-left: 4px;
+  }
+  .diag-tab.on .badge { color: var(--accent); }
+
+  .diag-body {
+    flex: 1;
+    overflow: auto;
+    padding: 12px 28px 24px;
+  }
+  .diag-event {
+    display: grid;
+    grid-template-columns: 88px max-content 1fr max-content;
+    gap: 12px;
+    align-items: baseline;
+    padding: 5px 0;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .diag-event .ts {
+    color: var(--fg-3);
+    font-variant-numeric: tabular-nums;
+    font-size: 10px;
+  }
+  .diag-event .lvl {
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: rgba(255,255,255,0.04);
+    color: var(--fg-2);
+  }
+  .diag-event .lvl.ok { background: rgba(168,176,168,0.10); color: var(--ok); }
+  .diag-event .lvl.warn { background: rgba(184,160,120,0.10); color: var(--warn); }
+  .diag-event .lvl.err { background: rgba(180,130,130,0.10); color: var(--danger); }
+  .diag-event .lvl.live { background: rgba(168,212,252,0.10); color: var(--accent); }
+  .diag-event .msg {
+    color: var(--fg-1);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .diag-event .msg .src { color: var(--fg-3); margin-right: 6px; }
+  .diag-event .src-tag {
+    color: var(--fg-3);
+    font-size: 10px;
+    text-align: right;
+  }
+  .diag-pause {
+    margin-left: auto;
+    padding: 4px 10px;
+    border: 1px solid var(--hair);
+    border-radius: 4px;
+    background: var(--raised);
+    color: var(--fg-2);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    cursor: pointer;
+  }
+
+  /* ════════════════════════════════════════════════════════════ */
+  /*  "NOT CHANGING" callout — honest about scope                  */
+  /* ════════════════════════════════════════════════════════════ */
+  .nc {
+    flex: 1;
+    padding: 32px 40px;
+    overflow-y: auto;
+  }
+  .nc h2 {
+    margin: 0 0 12px;
+    font-family: var(--font-serif);
+    font-weight: 300;
+    font-size: 26px;
+    color: var(--fg-0);
+    letter-spacing: -0.01em;
+  }
+  .nc p.intro {
+    color: var(--fg-2);
+    font-size: 13px;
+    line-height: 1.6;
+    max-width: 720px;
+    margin: 0 0 28px;
+  }
+  .nc .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+    max-width: 980px;
+  }
+  .nc .card {
+    border: 1px solid var(--hair);
+    border-radius: 8px;
+    padding: 16px 18px;
+    background: rgba(255,255,255,0.02);
+  }
+  .nc .card.keep { border-color: rgba(168,176,168,0.20); background: rgba(168,176,168,0.04); }
+  .nc .card.change { border-color: rgba(168,212,252,0.22); background: rgba(168,212,252,0.04); }
+  .nc .card h4 {
+    margin: 0 0 10px;
+    color: var(--fg-0);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+  }
+  .nc .card.keep h4 { color: var(--ok); }
+  .nc .card.change h4 { color: var(--accent); }
+  .nc .card ul { margin: 0; padding: 0; list-style: none; }
+  .nc .card li {
+    color: var(--fg-1);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    padding: 4px 0;
+    line-height: 1.55;
+  }
+  .nc .card li small {
+    display: block;
+    color: var(--fg-3);
+    font-size: 10.5px;
+  }
+
+  /* ════════════════════════════════════════════════════════════ */
+  /*  VARIANT 10 — SUBTRACT ONLY                                   */
+  /*  No redesign. Today's chrome minus the cold pills.            */
+  /*  Skills + Memory leave the right column for the palette.      */
+  /* ════════════════════════════════════════════════════════════ */
+  .v10-bar {
+    display: flex; align-items: center; gap: 8px;
+    height: 46px;
+    padding: 0 16px 0 88px;
+    border-bottom: 1px solid var(--hair);
+    background: var(--bg-1);
+    font-size: 12px;
+    color: var(--fg-1);
+    position: relative;
+  }
+  .v10-bar .wordmark {
+    font-family: 'Geist Mono', monospace;
+    font-weight: 500;
+    background: linear-gradient(180deg, #7ae6ff 0%, #a8d4fc 40%, #b4b0ff 80%, #c89aff 100%);
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .v10-bar .topo {
+    width: 20px; height: 20px; color: var(--accent);
+    flex-shrink: 0;
+  }
+  .v10-bar .ctrl {
+    display: inline-flex; align-items: center; gap: 5px;
+    height: 28px;
+    padding: 0 11px;
+    background: var(--raised);
+    border: 1px solid var(--hair);
+    border-radius: 6px;
+    color: var(--fg-1);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    cursor: pointer;
+    transition: all 0.14s;
+  }
+  .v10-bar .ctrl:hover {
+    background: var(--raised-hover);
+    color: var(--fg-0);
+  }
+  .v10-bar .ctrl.active {
+    background: rgba(168,212,252,0.08);
+    border-color: rgba(168,212,252,0.22);
+    color: var(--accent);
+  }
+  .v10-bar .ctrl.read {
+    cursor: default;
+    background: transparent;
+    border: 1px solid var(--hair);
+  }
+  .v10-bar .ctrl.read:hover { background: transparent; color: var(--fg-1); }
+  .v10-bar .ctrl .k { color: var(--fg-3); margin-right: 4px; }
+  .v10-bar .ctrl .v { color: var(--fg-0); text-transform: none; letter-spacing: 0; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .v10-bar .ctrl .effort {
+    color: var(--fg-3); font-size: 9.5px;
+    background: var(--raised);
+    border-radius: 3px;
+    padding: 1px 5px;
+    margin-left: 4px;
+  }
+  .v10-bar .ctrl .caret { color: var(--fg-3); margin-left: 4px; }
+  .v10-bar .div {
+    width: 1px; height: 14px;
+    background: var(--hair-strong);
+  }
+  .v10-bar .strategy {
+    display: flex; gap: 1px;
+    height: 28px;
+    background: var(--raised);
+    border: 1px solid var(--hair);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .v10-bar .strategy button {
+    background: transparent;
+    border: none;
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    padding: 0 10px;
+    cursor: pointer;
+    letter-spacing: 0.04em;
+  }
+  .v10-bar .strategy button:hover { color: var(--fg-1); background: var(--raised-hover); }
+  .v10-bar .strategy button.on { color: var(--accent); background: rgba(168,212,252,0.08); }
+  .v10-bar .progress {
+    display: inline-block;
+    width: 56px; height: 4px;
+    border-radius: 2px;
+    background: var(--bg-3);
+    overflow: hidden;
+    margin-left: 8px;
+    vertical-align: middle;
+  }
+  .v10-bar .progress > span {
+    display: block;
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), rgba(168,212,252,0.55));
+    transition: width 0.4s ease;
+  }
+  .v10-bar .spinner {
+    display: inline-flex; align-items: center; gap: 5px;
+    color: var(--accent); font-family: var(--font-mono); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.12em;
+  }
+  .v10-bar .spinner .dot {
+    width: 5px; height: 5px; border-radius: 50%;
+    background: var(--accent);
+    animation: tiny-pulse 1.4s ease-in-out infinite;
+  }
+  .v10-bar .cancel {
+    background: rgba(180,130,130,0.04);
+    border-color: rgba(180,130,130,0.30);
+    color: var(--danger);
+  }
+  .v10-bar .cancel:hover {
+    background: rgba(180,130,130,0.10);
+    color: var(--danger);
+  }
+  .v10-bar .session-id {
+    margin-left: auto;
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+  }
+
+  /* "Before" mode — when v10-before is checked, the removed pills
+     reappear, ghosted, with a tiny "removed" tag, so you can A/B. */
+  .v10-bar .removed {
+    opacity: 0.32;
+    position: relative;
+    transition: all 0.22s ease;
+    transform: scale(0.96);
+    pointer-events: none;
+    display: none;
+  }
+  body.v10-before .v10-bar .removed {
+    display: inline-flex;
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  body.v10-before .v10-bar .removed::after {
+    content: 'removed';
+    position: absolute;
+    top: -16px; left: 50%;
+    transform: translateX(-50%);
+    font-size: 8.5px;
+    color: var(--danger);
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    background: rgba(180,130,130,0.12);
+    padding: 1px 5px;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+
+  /* Annotation strip below the bar — shown when "before" is on. */
+  .v10-annotation {
+    display: none;
+    padding: 12px 16px 14px 88px;
+    background: rgba(180,130,130,0.04);
+    border-bottom: 1px solid rgba(180,130,130,0.14);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--fg-2);
+    line-height: 1.7;
+  }
+  body.v10-before .v10-annotation { display: block; }
+  .v10-annotation .arrow { color: var(--danger); margin: 0 6px; }
+  .v10-annotation .dest { color: var(--accent); }
+  .v10-annotation strong {
+    color: var(--fg-0);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 9.5px;
+    display: block;
+    margin-bottom: 6px;
+  }
+
+  /* Skills + memory removed from the activity panel — small hint
+     in their place that points users to ⌘K. */
+  .v10-activity-empty {
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid var(--hair);
+    color: var(--fg-3);
+    font-size: 10.5px;
+    line-height: 1.65;
+  }
+  .v10-activity-empty .kbd {
+    background: rgba(255,255,255,0.06);
+    color: var(--fg-1);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    margin: 0 3px;
+  }
+
+  /* Moved badge on palette rows that just relocated from chrome.
+     Subtle accent rim so the row reads as "newly here" without
+     screaming. */
+  .palette-row.moved {
+    background: linear-gradient(90deg,
+      rgba(168,212,252,0.02) 0%,
+      transparent 60%);
+    box-shadow: inset 2px 0 0 rgba(168,212,252,0.35);
+  }
+  .palette-row.moved .moved-tag {
+    margin-left: auto;
+    margin-right: 8px;
+    color: var(--accent);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    background: rgba(168,212,252,0.06);
+    border: 1px solid rgba(168,212,252,0.18);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  /* Persistent inline palette for v10. Rendered as its own flex
+     column inside .body so it's always visible alongside sidebar +
+     convo + activity. NOT absolutely positioned. */
+  .v10-palette-inline {
+    width: 340px;
+    flex-shrink: 0;
+    border-left: 1px solid var(--hair);
+    background: rgba(20,20,20,0.55);
+    backdrop-filter: blur(28px);
+    overflow: hidden;
+    display: flex; flex-direction: column;
+    transition: box-shadow 0.4s ease, background 0.4s ease;
+  }
+  body.v10-pulse .v10-palette-inline {
+    box-shadow: inset 0 0 0 1px rgba(168,212,252,0.45),
+                0 0 32px rgba(168,212,252,0.25);
+    background: rgba(20,20,20,0.85);
+  }
+  .v10-palette-inline .pulse-flag {
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    background: rgba(168,212,252,0.10);
+    border: 1px solid rgba(168,212,252,0.30);
+    padding: 1px 6px;
+    border-radius: 3px;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+  }
+  body.v10-pulse .v10-palette-inline .pulse-flag { opacity: 1; }
+  .v10-palette-inline .head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--hair);
+  }
+  .v10-palette-inline .head .gly {
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 14px;
+  }
+  .v10-palette-inline .head .title {
+    font-family: var(--font-serif);
+    font-weight: 300;
+    font-size: 14px;
+    color: var(--fg-0);
+    letter-spacing: -0.005em;
+  }
+  .v10-palette-inline .head .hint {
+    margin-left: auto;
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+  }
+  .v10-palette-inline .body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 6px;
+  }
+  .v10-palette-inline .pgroup {
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    padding: 9px 11px 5px;
+  }
+  .v10-palette-inline .prow {
+    display: flex; align-items: center; gap: 11px;
+    padding: 7px 11px;
+    border-radius: 6px;
+    color: var(--fg-1);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    cursor: default;
+    position: relative;
+  }
+  .v10-palette-inline .prow:hover { background: rgba(255,255,255,0.03); color: var(--fg-0); }
+  .v10-palette-inline .prow .gly {
+    width: 22px; height: 22px;
+    border-radius: 5px;
+    background: rgba(255,255,255,0.04);
+    color: var(--fg-2);
+    display: inline-flex;
+    align-items: center; justify-content: center;
+    font-size: 11px;
+    flex-shrink: 0;
+  }
+  .v10-palette-inline .prow .label { color: var(--fg-0); }
+  .v10-palette-inline .prow .meta { color: var(--fg-3); margin-left: auto; font-size: 10.5px; }
+  .v10-palette-inline .prow .kbd {
+    color: var(--fg-3); font-size: 9.5px;
+    background: rgba(255,255,255,0.04);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  .v10-palette-inline .prow.moved {
+    background: linear-gradient(90deg, rgba(168,212,252,0.04), transparent 60%);
+    box-shadow: inset 2px 0 0 rgba(168,212,252,0.40);
+  }
+  .v10-palette-inline .prow.moved .meta {
+    color: var(--accent);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    background: rgba(168,212,252,0.06);
+    border: 1px solid rgba(168,212,252,0.18);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  .v10-palette-inline .hair { height: 1px; background: var(--hair); margin: 4px 0; }
+  .v10-palette-inline .foot {
+    padding: 8px 14px;
+    border-top: 1px solid var(--hair);
+    color: var(--fg-3);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+  }
+
+  /* v10 makes the activity panel a touch narrower so the palette
+     column fits without horizontal scrolling on a 1440-class display. */
+  .variant.active[data-variant="v10"] .activity {
+    width: 220px;
+  }
+
+  /* v10 designer notes */
+  .v10-notes {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 20px;
+    padding: 22px 28px;
+    border-top: 1px solid var(--hair);
+    background: var(--bg-1);
+    font-size: 12px;
+    color: var(--fg-2);
+    line-height: 1.65;
+  }
+  .v10-notes h4 {
+    margin: 0 0 8px;
+    font-family: var(--font-serif);
+    font-weight: 300;
+    font-size: 16px;
+    color: var(--fg-0);
+    letter-spacing: -0.005em;
+  }
+  .v10-notes em { color: var(--fg-1); font-style: normal; }
+  .v10-notes code {
+    background: rgba(168,212,252,0.06);
+    color: var(--accent);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 10.5px;
+  }
+  .v10-notes .num {
+    font-family: var(--font-mono);
+    color: var(--fg-3);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    margin-bottom: 4px;
+  }
+  .v10-notes .num .big { color: var(--accent); font-size: 22px; font-family: var(--font-serif); }
+
+  /* WIRING DOC — small ascii state-machine for the verb derivation */
+  .wiring {
+    margin: 28px 0 0;
+    padding: 18px 20px;
+    background: rgba(0,0,0,0.30);
+    border: 1px solid var(--hair);
+    border-radius: 8px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--fg-1);
+    line-height: 1.7;
+    max-width: 920px;
+  }
+  .wiring h4 {
+    margin: 0 0 12px;
+    font-family: var(--font-serif);
+    font-weight: 300;
+    font-size: 15px;
+    letter-spacing: -0.005em;
+    color: var(--fg-0);
+  }
+  .wiring code {
+    color: var(--accent);
+    background: rgba(168,212,252,0.06);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  .wiring .ascii {
+    white-space: pre;
+    color: var(--fg-2);
+    margin: 10px 0;
+    font-size: 10.5px;
+    line-height: 1.45;
+  }
+
+</style>
+</head>
+<body>
+
+<div class="picker">
+  <h1>TitleBar rethink</h1>
+  <div class="spacer"></div>
+  <button data-variant="v1">1 · services well + strip</button>
+  <button data-variant="v2">2 · visual grouping</button>
+  <button data-variant="v3">3 · breadcrumb + tray</button>
+  <button data-variant="v4" class="active">4 · pull-down HUD</button>
+  <button data-variant="v5">5 · editorial sentence</button>
+  <button data-variant="v6">6 · breath strip</button>
+  <button data-variant="v7">7 · vertical spine</button>
+  <button data-variant="v8">8 · invisible chrome</button>
+  <button data-variant="v9">9 · the line</button>
+  <button data-variant="v10" class="active" style="border-color: rgba(168,212,252,0.45); background: rgba(168,212,252,0.06);">10 · subtract only</button>
+  <label><input type="checkbox" id="focus-toggle"> focus mode</label>
+  <label><input type="checkbox" id="hud-toggle"> ⌥ held</label>
+  <label><input type="checkbox" id="v10-before"> v10 · show "before"</label>
+</div>
+
+<!-- ════════════════ Approach 1 ════════════════ -->
+<div class="variant" data-variant="v1">
+  <div class="legend">
+    <strong>Approach 1 — Services well + session header strip</strong>
+    TitleBar carries only <span class="tag global">GLOBAL</span> services (collapsed into one chip) and <span class="tag layout">LAYOUT</span> toggles.
+    A thin session strip below carries <span class="tag session">SESSION</span> state (model · strategy · ctx · spend · streaming). The strip vanishes in focus mode.
+  </div>
+
+  <div class="app">
+    <!-- title bar -->
+    <div class="bar">
+      <span class="wordmark">freyja</span>
+      <div class="divider"></div>
+      <div class="control active">workspace</div>
+      <div class="control active">activity</div>
+      <div class="control">focus</div>
+      <div class="spacer"></div>
+      <div class="well" id="v1-well">
+        <div class="pill" onclick="toggleWell('v1-well')">
+          <span class="dot dot-ok"></span>
+          services
+          <span style="color: var(--fg-3); margin-left: 4px;">▾</span>
+        </div>
+        <div class="well-pop">
+          <div class="group-label">services</div>
+          <div class="item">
+            <span class="dot dot-ok"></span>
+            <span class="key">scheduler</span>
+            <span class="meta">6 jobs · next 1m</span>
+          </div>
+          <div class="item">
+            <span class="dot dot-ok"></span>
+            <span class="key">slack gateway</span>
+            <span class="meta">live</span>
+          </div>
+          <div class="item">
+            <span class="dot dot-ok"></span>
+            <span class="key">skills</span>
+            <span class="meta">12</span>
+          </div>
+          <div class="item">
+            <span class="dot dot-ok"></span>
+            <span class="key">memory</span>
+            <span class="meta">38</span>
+          </div>
+          <div class="hair"></div>
+          <div class="group-label">dashboards</div>
+          <div class="item"><span class="key">mission dashboard</span><span class="kbd">⌘⇧M</span></div>
+          <div class="item"><span class="key">metrics dashboard</span></div>
+          <div class="hair"></div>
+          <div class="item"><span class="key">settings</span><span class="kbd">⌘,</span></div>
+        </div>
+      </div>
+      <div class="control no-button" title="Command palette">
+        <span style="color: var(--fg-3); font-size: 10px;">⌘K</span>
+      </div>
+    </div>
+
+    <!-- session strip -->
+    <div class="strip v1-strip">
+      <span class="session-title">Quiver render timeout debug</span>
+      <div class="divider"></div>
+      <span class="readout"><span class="key">model</span><span class="val">opus-4.7</span></span>
+      <span class="readout"><span class="key">strategy</span><span class="val">bus</span></span>
+      <div class="divider"></div>
+      <span class="readout"><span class="key">ctx</span><span class="val">23.4k/200k</span></span>
+      <span class="readout"><span class="key">spend</span><span class="val">$1.42</span></span>
+      <div class="spacer"></div>
+      <span class="readout"><span class="dot dot-accent"></span><span class="val">streaming · 12s</span></span>
+      <div class="pill cancel">cancel ⌘⎋</div>
+    </div>
+
+    <!-- body fill -->
+    <div class="body">
+      <div class="sidebar">
+        <div class="label">workspace</div>
+        <div class="session">freyja</div>
+        <div class="label">sessions</div>
+        <div class="session active">Quiver render timeout debug</div>
+        <div class="session">HN agent posts</div>
+        <div class="session">grounded memory</div>
+      </div>
+      <div class="convo">
+        <div class="msg">
+          <div class="who">you</div>
+          <div class="body-text">the title bar is too busy. let's split global vs session.</div>
+        </div>
+        <div class="msg assistant">
+          <div class="who">opus-4.7</div>
+          <div class="body-text">I'll move the global services into a single chip and lift the session readouts into their own strip. Focus mode keeps just the conversation.</div>
+        </div>
+      </div>
+      <div class="activity">
+        <div style="text-transform: uppercase; letter-spacing: 0.14em; font-size: 10px; color: var(--fg-3); margin-bottom: 12px;">activity</div>
+        <div style="color: var(--fg-1); font-size: 11px; line-height: 1.7;">
+          tool · Read scheduler-store.ts<br>
+          tool · Grep "scheduler_response"<br>
+          tool · Edit ScheduledJobsDashboard.tsx
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════ Approach 2 ════════════════ -->
+<div class="variant" data-variant="v2">
+  <div class="legend">
+    <strong>Approach 2 — Visual grouping only (single bar)</strong>
+    Keep one TitleBar but introduce hairline dividers + small group kickers (SESSION · GLOBAL · LAYOUT).
+    Cheapest move; nothing collapses. Doesn't reduce element count — just makes the cluster scan as three groups instead of one mash.
+  </div>
+
+  <div class="app">
+    <div class="bar">
+      <span class="wordmark">freyja</span>
+      <div class="divider"></div>
+
+      <div class="v2-group">
+        <span class="group-kicker">session</span>
+        <div class="control"><span class="kicker">model</span><span class="val">opus-4.7</span> ▾</div>
+        <div class="control"><span class="kicker">strategy</span><span class="val">bus</span></div>
+        <div class="control no-button"><span class="kicker">ctx</span><span class="val">23.4k/200k</span></div>
+        <div class="control no-button"><span class="kicker">spend</span><span class="val">$1.42</span></div>
+        <div class="control no-button"><span class="dot dot-accent"></span><span class="val">streaming</span></div>
+      </div>
+
+      <div class="spacer"></div>
+
+      <div class="v2-group">
+        <span class="group-kicker">services</span>
+        <div class="pill"><span class="dot dot-ok"></span>sched 6</div>
+        <div class="pill"><span class="dot dot-ok"></span>slack</div>
+        <div class="control">dashboard</div>
+        <div class="control">metrics</div>
+      </div>
+
+      <div class="v2-group">
+        <span class="group-kicker">layout</span>
+        <div class="control active">ws</div>
+        <div class="control active">act</div>
+        <div class="control">focus</div>
+      </div>
+    </div>
+
+    <div class="body">
+      <div class="sidebar">
+        <div class="label">workspace</div>
+        <div class="session">freyja</div>
+        <div class="label">sessions</div>
+        <div class="session active">Quiver render timeout debug</div>
+        <div class="session">HN agent posts</div>
+        <div class="session">grounded memory</div>
+      </div>
+      <div class="convo">
+        <div class="msg">
+          <div class="who">you</div>
+          <div class="body-text">approach 2 — grouping only. nothing moves, just clearer.</div>
+        </div>
+        <div class="msg assistant">
+          <div class="who">opus-4.7</div>
+          <div class="body-text">Three semantic chunks separated by hairlines. Same number of elements as today; just easier to scan. Doesn't help focus mode.</div>
+        </div>
+      </div>
+      <div class="activity">
+        <div style="text-transform: uppercase; letter-spacing: 0.14em; font-size: 10px; color: var(--fg-3); margin-bottom: 12px;">activity</div>
+        <div style="color: var(--fg-1); font-size: 11px; line-height: 1.7;">
+          tool · Read scheduler-store.ts<br>
+          tool · Grep "scheduler_response"<br>
+          tool · Edit ScheduledJobsDashboard.tsx
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════ Approach 3 ════════════════ -->
+<div class="variant" data-variant="v3">
+  <div class="legend">
+    <strong>Approach 3 — Breadcrumb + system tray</strong>
+    Top-left: a breadcrumb of where you are (workspace › session › current tool). Top-right: one <code>⋯</code> tray button that collapses every <span class="tag global">GLOBAL</span> service, every <span class="tag layout">LAYOUT</span> toggle, and every <span class="tag session">SESSION</span> readout into a single menu. Very clean; everything is one click away instead of always visible.
+  </div>
+
+  <div class="app">
+    <div class="bar">
+      <span class="wordmark">freyja</span>
+      <div class="divider"></div>
+      <div class="crumb">
+        <span class="step">freyja</span>
+        <span class="sep">›</span>
+        <span class="step head">Quiver render timeout debug</span>
+        <span class="sep">›</span>
+        <span class="tail">Edit · ScheduledJobsDashboard.tsx</span>
+      </div>
+      <div class="spacer"></div>
+      <span class="readout" style="font-size: 11px; color: var(--fg-2);">
+        <span class="dot dot-accent"></span>
+        <span style="color: var(--fg-0);">12s</span>
+      </span>
+      <div class="control no-button" style="color: var(--fg-3); font-size: 10px;">⌘K</div>
+      <div class="tray" id="v3-tray" style="position: relative;">
+        <div class="control" onclick="toggleTray('v3-tray')" style="font-size: 14px; letter-spacing: 0;">⋯</div>
+        <div class="tray-pop">
+          <div class="group-label">session</div>
+          <div class="item"><span class="key">model</span><span class="meta">opus-4.7</span></div>
+          <div class="item"><span class="key">strategy</span><span class="meta">bus</span></div>
+          <div class="item"><span class="key">ctx</span><span class="meta">23.4k / 200k</span></div>
+          <div class="item"><span class="key">spend</span><span class="meta">$1.42</span></div>
+          <div class="item" style="color: var(--danger);"><span class="key">cancel turn</span><span class="kbd">⌘⎋</span></div>
+          <div class="hair"></div>
+          <div class="group-label">services</div>
+          <div class="item"><span class="dot dot-ok"></span><span class="key">scheduler</span><span class="meta">6 · next 1m</span></div>
+          <div class="item"><span class="dot dot-ok"></span><span class="key">slack</span><span class="meta">live</span></div>
+          <div class="item"><span class="key">mission dashboard</span><span class="kbd">⌘⇧M</span></div>
+          <div class="item"><span class="key">metrics dashboard</span></div>
+          <div class="hair"></div>
+          <div class="group-label">layout</div>
+          <div class="item"><span class="key">workspace</span><span class="kbd">⌘[</span></div>
+          <div class="item"><span class="key">activity</span><span class="kbd">⌘]</span></div>
+          <div class="item"><span class="key">focus mode</span><span class="kbd">⌘\</span></div>
+          <div class="hair"></div>
+          <div class="item"><span class="key">settings</span><span class="kbd">⌘,</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="body">
+      <div class="sidebar">
+        <div class="label">workspace</div>
+        <div class="session">freyja</div>
+        <div class="label">sessions</div>
+        <div class="session active">Quiver render timeout debug</div>
+        <div class="session">HN agent posts</div>
+        <div class="session">grounded memory</div>
+      </div>
+      <div class="convo">
+        <div class="msg">
+          <div class="who">you</div>
+          <div class="body-text">approach 3 — breadcrumb shows location, everything else hidden in ⋯</div>
+        </div>
+        <div class="msg assistant">
+          <div class="who">opus-4.7</div>
+          <div class="body-text">Cleanest visually. Tradeoff: layout toggles, session model, and live spend are no longer glanceable. ⌘B/⌘[/⌘] still work but you can't see them.</div>
+        </div>
+      </div>
+      <div class="activity">
+        <div style="text-transform: uppercase; letter-spacing: 0.14em; font-size: 10px; color: var(--fg-3); margin-bottom: 12px;">activity</div>
+        <div style="color: var(--fg-1); font-size: 11px; line-height: 1.7;">
+          tool · Read scheduler-store.ts<br>
+          tool · Grep "scheduler_response"<br>
+          tool · Edit ScheduledJobsDashboard.tsx
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════ Approach 4 — Pull-down HUD ════════════════ -->
+<div class="variant" data-variant="v4">
+  <div class="legend">
+    <strong>Approach 4 — Pull-down HUD (toggle “⌥ held” above)</strong>
+    At rest the chrome is a 28px ambient strip: wordmark · breath waveform · ⌥ to summon hint. Nothing else. Holding the modifier slides a 110px HUD down with everything categorized
+    (<span class="tag session">SESSION</span> · <span class="tag global">SERVICES</span> · <span class="tag layout">LAYOUT</span>). Release the key, HUD retracts. Operator-grade: glanceable density on demand, zero chrome cost otherwise.
+  </div>
+
+  <div class="app">
+    <div class="hud-rest">
+      <span class="wm">freyja</span>
+      <svg class="breath" viewBox="0 0 200 14" preserveAspectRatio="none">
+        <path d="M0 7 L20 7 L26 3 L32 11 L38 5 L44 9 L50 7 L80 7 L86 4 L92 10 L98 7 L200 7"
+              fill="none" stroke="rgba(168,212,252,0.55)" stroke-width="1.1"/>
+      </svg>
+      <span style="color: var(--fg-2);">opus-4.7 · streaming</span>
+      <span class="kbd-hint">hold ⌥ for HUD</span>
+    </div>
+
+    <div class="hud-drawer">
+      <div class="hud-drawer-inner">
+        <div class="hud-col">
+          <div class="label">session</div>
+          <div class="row"><span class="k">model</span><span class="v">opus-4.7</span><span class="kbd">⌘M</span></div>
+          <div class="row"><span class="k">strategy</span><span class="v">bus</span></div>
+          <div class="row"><span class="k">ctx</span><span class="v">23.4k / 200k · 12%</span></div>
+          <div class="row"><span class="k">spend</span><span class="v">$1.42</span></div>
+          <div class="row danger"><span class="k">cancel</span><span class="v">turn</span><span class="kbd">⌘⎋</span></div>
+        </div>
+        <div class="hud-col">
+          <div class="label">services</div>
+          <div class="row"><span class="k"><span class="dot dot-ok"></span></span><span class="v">scheduler</span><span class="kbd">6 · 1m</span></div>
+          <div class="row"><span class="k"><span class="dot dot-ok"></span></span><span class="v">slack gateway</span></div>
+          <div class="row"><span class="k">·</span><span class="v">mission dashboard</span><span class="kbd">⌘⇧M</span></div>
+          <div class="row"><span class="k">·</span><span class="v">metrics</span></div>
+          <div class="row"><span class="k">·</span><span class="v">settings</span><span class="kbd">⌘,</span></div>
+        </div>
+        <div class="hud-col">
+          <div class="label">layout</div>
+          <div class="row"><span class="k">⌘[</span><span class="v">workspace</span></div>
+          <div class="row"><span class="k">⌘]</span><span class="v">activity</span></div>
+          <div class="row"><span class="k">⌘\</span><span class="v">focus mode</span></div>
+          <div class="row"><span class="k">⌘K</span><span class="v">command palette</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="body">
+      <div class="sidebar">
+        <div class="label">workspace</div>
+        <div class="session">freyja</div>
+        <div class="label">sessions</div>
+        <div class="session active">Quiver render timeout debug</div>
+        <div class="session">HN agent posts</div>
+      </div>
+      <div class="convo">
+        <div class="msg"><div class="who">you</div><div class="body-text">the bar is too busy. zero buttons at rest, summon on hold.</div></div>
+        <div class="msg assistant"><div class="who">opus-4.7</div><div class="body-text">Resting state is contemplative — just a breath line and your active model. Hold ⌥ when you need readouts or actions; release it and the chrome disappears again.</div></div>
+      </div>
+      <div class="activity">
+        <div style="text-transform: uppercase; letter-spacing: 0.14em; font-size: 10px; color: var(--fg-3); margin-bottom: 12px;">activity</div>
+        <div style="color: var(--fg-1); font-size: 11px; line-height: 1.7;">tool · Read scheduler-store.ts<br>tool · Edit ScheduledJobsDashboard.tsx</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════ Approach 5 — Editorial sentence ════════════════ -->
+<div class="variant" data-variant="v5">
+  <div class="legend">
+    <strong>Approach 5 — Editorial status sentence</strong>
+    The TitleBar reads like a Granola/Things subtitle. State is composed into one calm Fraunces sentence — the same way you'd narrate what the agent is doing to a coworker. Live and slowly changing — verbs swap as the agent shifts work; spend ticks up;
+    “streaming 12s” pulses. <em>Brand-vibe-first.</em> Tradeoff: no buttons; every action is ⌘K or a slash command.
+  </div>
+
+  <div class="app">
+    <div class="editorial">
+      <svg class="glyph" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="1.6">
+        <circle cx="50" cy="50" r="8" />
+        <circle cx="50" cy="50" r="20" opacity="0.6" />
+        <circle cx="50" cy="50" r="32" opacity="0.32" />
+        <circle cx="50" cy="50" r="44" opacity="0.14" />
+      </svg>
+      <div class="sentence">
+        <span class="verb">debugging</span> <span class="obj">Quiver’s render timeout</span> with
+        <span class="meta">opus-4.7</span> · <span class="live">● streaming 12s</span> · <span class="spend">$1.42</span>
+        <span class="meta">· scheduler firing in 1m</span>
+      </div>
+      <span class="end-hint">⌘K for anything</span>
+    </div>
+
+    <div class="body">
+      <div class="sidebar">
+        <div class="label">workspace</div>
+        <div class="session">freyja</div>
+        <div class="label">sessions</div>
+        <div class="session active">Quiver render timeout debug</div>
+        <div class="session">HN agent posts</div>
+      </div>
+      <div class="convo">
+        <div class="msg"><div class="who">you</div><div class="body-text">approach 5 — bar reads like a sentence.</div></div>
+        <div class="msg assistant"><div class="who">opus-4.7</div><div class="body-text">Verb-first ("debugging" / "drafting" / "watching" / "waiting") swaps as I switch work. Idle: <em>"opus-4.7 · idle · 6 schedules · $0.04 today"</em>. Every action is in ⌘K, which is good operator etiquette anyway.</div></div>
+      </div>
+      <div class="activity">
+        <div style="text-transform: uppercase; letter-spacing: 0.14em; font-size: 10px; color: var(--fg-3); margin-bottom: 12px;">activity</div>
+        <div style="color: var(--fg-1); font-size: 11px; line-height: 1.7;">tool · Read scheduler-store.ts<br>tool · Edit ScheduledJobsDashboard.tsx</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════ Approach 6 — Breath strip ════════════════ -->
+<div class="variant" data-variant="v6">
+  <div class="legend">
+    <strong>Approach 6 — Breath strip (the bar IS the heartbeat)</strong>
+    A 32px ambient strip. The waveform IS the bridge/agent state — taller peaks = streaming, calm flatline = idle, red blip = error.
+    Background tint shifts cool → warm with ctx pressure (try focus mode + watch). Tiny status dots on the right (scheduler · slack · sub-agents).
+    No buttons. Click anywhere on the strip to summon ⌘K. Reads as <em>sound</em>, not chrome.
+  </div>
+
+  <div class="app">
+    <div class="breath-bar">
+      <div class="pressure-bg"></div>
+      <span class="wm">freyja</span>
+      <div class="wave">
+        <svg viewBox="0 0 600 32" preserveAspectRatio="none">
+          <path id="wave-path" fill="none" stroke="rgba(168,212,252,0.55)" stroke-width="1.2"
+                d="M0 16 L40 16 L48 6 L54 24 L62 10 L70 18 L78 16 L120 16 L128 4 L134 26 L142 12 L150 17 L158 16 L240 16 L248 10 L256 22 L264 8 L272 18 L280 16 L380 16 L388 14 L394 19 L402 16 L600 16"/>
+          <path fill="rgba(168,212,252,0.06)"
+                d="M0 16 L40 16 L48 6 L54 24 L62 10 L70 18 L78 16 L120 16 L128 4 L134 26 L142 12 L150 17 L158 16 L240 16 L248 10 L256 22 L264 8 L272 18 L280 16 L380 16 L388 14 L394 19 L402 16 L600 16 L600 32 L0 32 Z"/>
+        </svg>
+      </div>
+      <div class="ambient-dots">
+        <span class="item"><span class="dot dot-ok"></span>SCHED 6</span>
+        <span class="item"><span class="dot dot-ok"></span>SLACK</span>
+        <span class="item"><span class="dot dot-accent"></span>$1.42</span>
+      </div>
+    </div>
+
+    <div class="body">
+      <div class="sidebar">
+        <div class="label">workspace</div>
+        <div class="session">freyja</div>
+        <div class="label">sessions</div>
+        <div class="session active">Quiver render timeout debug</div>
+        <div class="session">HN agent posts</div>
+      </div>
+      <div class="convo">
+        <div class="msg"><div class="who">you</div><div class="body-text">approach 6 — chrome as ambient signal.</div></div>
+        <div class="msg assistant"><div class="who">opus-4.7</div><div class="body-text">No labels to read. The waveform tells you streaming/idle/erroring at a glance, the background tint signals ctx pressure, the dots tell you services. Click to summon ⌘K from anywhere on the strip. Pilots like cockpits like this for a reason.</div></div>
+      </div>
+      <div class="activity">
+        <div style="text-transform: uppercase; letter-spacing: 0.14em; font-size: 10px; color: var(--fg-3); margin-bottom: 12px;">activity</div>
+        <div style="color: var(--fg-1); font-size: 11px; line-height: 1.7;">tool · Read scheduler-store.ts<br>tool · Edit ScheduledJobsDashboard.tsx</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════ Approach 7 — Vertical spine ════════════════ -->
+<div class="variant" data-variant="v7">
+  <div class="legend">
+    <strong>Approach 7 — Vertical spine (kill the horizontal bar)</strong>
+    No horizontal bar at all. A 30px vertical rail on the left edge carries the wordmark glyph + service icons + layout toggles. Vertical session-readouts at the bottom (writing-mode rotated). Trades horizontal real estate (~30px) for vertical (~46px saved per row) — net gain since vertical is what conversations need. Familiar from Cursor / Linear / Slack. Borderline radical because the macOS traffic-light buffer disappears into the rail.
+  </div>
+
+  <div class="v7-shell">
+    <div class="spine">
+      <svg class="wm-glyph" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="50" cy="50" r="12"/>
+        <circle cx="50" cy="50" r="26" opacity="0.5"/>
+        <circle cx="50" cy="50" r="40" opacity="0.22"/>
+      </svg>
+      <div class="glyph active" title="workspace">WS</div>
+      <div class="glyph active" title="activity">AC</div>
+      <div class="glyph" title="focus">FO</div>
+      <div style="height: 12px;"></div>
+      <div class="glyph" title="scheduler (6 jobs · next 1m)">SC<span class="dot dot-ok" style="width:5px;height:5px;"></span></div>
+      <div class="glyph" title="slack gateway · live">SL<span class="dot dot-ok" style="width:5px;height:5px;"></span></div>
+      <div class="glyph" title="mission dashboard">MD</div>
+      <div class="glyph" title="metrics">MX</div>
+      <div class="glyph" title="settings">⚙</div>
+      <div class="gap"></div>
+      <div class="session-readout">opus-4.7 · <span class="val">23%</span> · <span class="val">$1.42</span></div>
+    </div>
+
+    <div class="body" style="flex: 1;">
+      <div class="sidebar">
+        <div class="label">workspace</div>
+        <div class="session">freyja</div>
+        <div class="label">sessions</div>
+        <div class="session active">Quiver render timeout debug</div>
+        <div class="session">HN agent posts</div>
+      </div>
+      <div class="convo">
+        <div class="msg"><div class="who">you</div><div class="body-text">approach 7 — kill the horizontal bar entirely.</div></div>
+        <div class="msg assistant"><div class="who">opus-4.7</div><div class="body-text">A 30px spine on the left replaces 46px of chrome on top. Net +16px of vertical for the conversation. Service icons with status dots; vertical readouts at the bottom. Doesn't match macOS conventions cleanly — the spine has to make room for traffic lights at the top.</div></div>
+      </div>
+      <div class="activity">
+        <div style="text-transform: uppercase; letter-spacing: 0.14em; font-size: 10px; color: var(--fg-3); margin-bottom: 12px;">activity</div>
+        <div style="color: var(--fg-1); font-size: 11px; line-height: 1.7;">tool · Read scheduler-store.ts<br>tool · Edit ScheduledJobsDashboard.tsx</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════ Approach 8 — Invisible chrome ════════════════ -->
+<div class="variant" data-variant="v8">
+  <div class="legend">
+    <strong>Approach 8 — Invisible chrome (no bar at rest)</strong>
+    Most radical. No bar at all most of the time. A 4px hover hint at the top edge; hover it to slide a chrome row down. An editorial whisper in the corner ("freyja · debugging…") gives identity + state without taking a row. Two floating badges in the top-right (live + ⌘K) glanceable always. Frees the entire vertical for the conversation. Feels like Things 3, Linear's command palette mode, or a modern reader.
+  </div>
+
+  <div class="app">
+    <div class="invis-stage">
+      <div class="invis-corner">
+        freyja · <span class="verb">debugging Quiver render timeout</span> · opus-4.7
+      </div>
+      <div class="invis-floating">
+        <span class="badge"><span class="dot dot-accent"></span>12s</span>
+        <span class="badge">⌘K</span>
+      </div>
+
+      <div class="invis-trigger" title="hover here to summon chrome"></div>
+      <div class="invis-bar">
+        <div class="row">
+          <span style="font-family: var(--font-serif); font-size: 14px; font-weight: 300; color: var(--fg-0);">freyja</span>
+          <div class="divider"></div>
+          <div class="control"><span class="kicker">model</span><span class="val">opus-4.7</span></div>
+          <div class="control"><span class="kicker">strategy</span><span class="val">bus</span></div>
+          <div class="control no-button"><span class="kicker">ctx</span><span class="val">23%</span></div>
+          <div class="control no-button"><span class="kicker">spend</span><span class="val">$1.42</span></div>
+          <div class="spacer"></div>
+          <div class="pill"><span class="dot dot-ok"></span>sched 6</div>
+          <div class="pill"><span class="dot dot-ok"></span>slack</div>
+          <div class="control">dashboard</div>
+          <div class="control">⋯</div>
+        </div>
+      </div>
+
+      <div class="body" style="height: calc(100% - 4px);">
+        <div class="sidebar">
+          <div class="label">workspace</div>
+          <div class="session">freyja</div>
+          <div class="label">sessions</div>
+          <div class="session active">Quiver render timeout debug</div>
+          <div class="session">HN agent posts</div>
+        </div>
+        <div class="convo">
+          <div class="msg"><div class="who">you</div><div class="body-text">approach 8 — no chrome unless you summon it.</div></div>
+          <div class="msg assistant"><div class="who">opus-4.7</div><div class="body-text">The whisper in the corner is identity. The two badges (live/cancel + ⌘K) are always available. The full chrome is summonable on hover — try hovering the 4px hint at the very top. The conversation gets the whole vertical otherwise.</div></div>
+        </div>
+        <div class="activity">
+          <div style="text-transform: uppercase; letter-spacing: 0.14em; font-size: 10px; color: var(--fg-3); margin-bottom: 12px;">activity</div>
+          <div style="color: var(--fg-1); font-size: 11px; line-height: 1.7;">tool · Read scheduler-store.ts<br>tool · Edit ScheduledJobsDashboard.tsx</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════ Approach 9 — THE LINE ════════════════ -->
+<div class="variant" data-variant="v9">
+  <div class="legend">
+    <strong>“the line”</strong> · halftone iteration · scene picker below
+  </div>
+
+  <!-- ── State controls so you can poke each dimension ── -->
+  <div class="v9-controls">
+    <span class="group-name">stream</span>
+    <button data-stream="idle"          class="on">idle</button>
+    <button data-stream="streaming">streaming</button>
+    <button data-stream="streaming-fast">fast</button>
+
+    <span class="pipe"></span>
+    <span class="group-name">bridge</span>
+    <button data-bridge="bridge-ok"      class="on">ok</button>
+    <button data-bridge="bridge-degraded">degraded</button>
+    <button data-bridge="bridge-offline">offline</button>
+
+    <span class="pipe"></span>
+    <span class="group-name">ctx ring</span>
+    <button data-ctx="ctx-low"       class="on">low</button>
+    <button data-ctx="ctx-mid">mid</button>
+    <button data-ctx="ctx-high">high</button>
+    <button data-ctx="ctx-critical">crit</button>
+
+    <span class="pipe"></span>
+    <button id="v9-compact">⤓ compact now</button>
+    <button id="v9-flash">flash error</button>
+
+    <span style="flex: 1;"></span>
+    <button class="play" id="v9-play">▶ play 90s scene</button>
+    <button id="v9-stop" style="display:none;">■ stop</button>
+  </div>
+
+  <!-- ── Scene picker — flips body content within v9 ── -->
+  <div class="scenes">
+    <span class="lbl">scene</span>
+    <button data-scene="conv" class="on">conversation</button>
+    <button data-scene="newsess">new session</button>
+    <button data-scene="journal">activity journal</button>
+    <button data-scene="diag">diagnostics</button>
+    <button data-scene="nc">not changing</button>
+  </div>
+
+  <!-- The story progress bar (visible during scene playback) -->
+  <div class="v9-story" id="v9-story-bar" style="display:none;">
+    <div class="fill"></div>
+    <div class="marker" data-at="0"></div>
+    <div class="marker" data-at="8"></div>
+    <div class="marker" data-at="20"></div>
+    <div class="marker" data-at="35"></div>
+    <div class="marker" data-at="55"></div>
+    <div class="marker" data-at="70"></div>
+    <div class="marker" data-at="85"></div>
+    <div class="marker" data-at="100"></div>
+    <div class="now"></div>
+  </div>
+
+  <div class="app">
+    <!-- THE LINE — shared across every v9 scene -->
+    <div class="line-bar bridge-ok ctx-low" id="line-bar">
+      <div class="sweep"></div>
+      <div class="pressure"></div>
+      <div class="flash"></div>
+      <div class="compaction-scan"></div>
+
+      <div class="line">
+        <span class="wm">freyja</span>
+        <span class="sep">·</span>
+        <span class="verb" id="line-verb">resting</span>
+        <span class="obj" id="line-obj"></span>
+        <span class="sep">·</span>
+        <span class="tail" id="line-tail">opus-4.7</span>
+        <span class="agents" id="line-agents" style="display:none;">+ <span id="agents-count">2</span> subagents</span>
+      </div>
+
+      <div class="dot-host" id="dot-host">
+        <svg class="dot-svg" viewBox="-2 -2 26 26" shape-rendering="crispEdges">
+          <circle class="dot-ring" cx="11" cy="11" r="8"></circle>
+          <!-- halftone halo: 8 dots ringed around the core; pulse out
+               in stagger so the breath ripples around, not in unison -->
+          <g class="dot-halftone">
+            <circle class="hd hd-0" cx="11"   cy="3.5"  r="0.95"/>
+            <circle class="hd hd-1" cx="16.3" cy="5.7"  r="0.95"/>
+            <circle class="hd hd-2" cx="18.5" cy="11"   r="0.95"/>
+            <circle class="hd hd-3" cx="16.3" cy="16.3" r="0.95"/>
+            <circle class="hd hd-4" cx="11"   cy="18.5" r="0.95"/>
+            <circle class="hd hd-5" cx="5.7"  cy="16.3" r="0.95"/>
+            <circle class="hd hd-6" cx="3.5"  cy="11"   r="0.95"/>
+            <circle class="hd hd-7" cx="5.7"  cy="5.7"  r="0.95"/>
+          </g>
+          <circle class="dot-halo" cx="11" cy="11" r="4.6"></circle>
+          <circle class="dot-core" cx="11" cy="11" r="2.4"></circle>
+        </svg>
+
+        <!-- hover readout -->
+        <div class="dot-tip" id="dot-tip">
+          <div class="row"><span class="k">bridge</span><span class="v" id="tip-bridge">live</span></div>
+          <div class="row"><span class="k">stream</span><span class="v" id="tip-stream">idle</span></div>
+          <div class="row"><span class="k">ctx</span><span class="v" id="tip-ctx">12% · 23.4k / 200k</span></div>
+          <div class="row"><span class="k">spend</span><span class="v" id="tip-spend">$1.42</span></div>
+          <div class="hair"></div>
+          <div class="row"><span class="k">sched</span><span class="v">6 · next 1m</span></div>
+          <div class="row"><span class="k">slack</span><span class="v">live</span></div>
+          <div class="footer">click for services</div>
+        </div>
+
+        <!-- click → the drawer (refined three-section taxonomy) -->
+        <div class="services-well drawer">
+          <!-- 1. surfaces — the finite, known set of windows into the system -->
+          <div class="group">surfaces</div>
+          <div class="item drawer-item" data-open="palette">
+            <span class="drawer-glyph">◍</span>
+            <span class="label">mission dashboard</span>
+            <span class="kbd">⌘⇧M</span>
+          </div>
+          <div class="item drawer-item" data-open="palette">
+            <span class="drawer-glyph">◉</span>
+            <span class="label">scheduled jobs</span>
+            <span class="kbd">⌘⇧S</span>
+          </div>
+          <div class="item drawer-item" data-open="palette">
+            <span class="drawer-glyph">▣</span>
+            <span class="label">metrics</span>
+          </div>
+          <div class="item drawer-item" data-open="palette">
+            <span class="drawer-glyph">✦</span>
+            <span class="label">skills</span>
+            <span class="meta">12</span>
+          </div>
+          <div class="item drawer-item" data-open="palette">
+            <span class="drawer-glyph">❍</span>
+            <span class="label">memory</span>
+            <span class="meta">38</span>
+          </div>
+          <div class="hair"></div>
+
+          <!-- 2. gateways — collapsed regardless of count; opens dedicated surface -->
+          <div class="group">gateways · 9 connected · <span style="color: var(--warn);">2 need attention</span></div>
+          <div class="item drawer-gateways" id="open-gateways">
+            <div class="avatar-stack">
+              <span class="ava" style="background: rgba(120,180,140,0.18); color: #b6d4be;">#</span>
+              <span class="ava" style="background: rgba(132,124,200,0.18); color: #b8b2e6;">D</span>
+              <span class="ava" style="background: rgba(200,140,90,0.18); color: #e0ae87;">@</span>
+              <span class="ava" style="background: rgba(168,212,252,0.18); color: var(--accent);">A</span>
+              <span class="ava" style="background: rgba(180,180,180,0.14); color: var(--fg-1);">{ }</span>
+              <span class="ava ava-more">+4</span>
+            </div>
+            <span class="label">manage gateways</span>
+            <span class="meta">last beat 2m</span>
+          </div>
+          <div class="hair"></div>
+
+          <!-- 3. session — quick controls on the current turn -->
+          <div class="group">session</div>
+          <div class="item drawer-item">
+            <span class="drawer-glyph">▤</span>
+            <span class="label">model</span>
+            <span class="meta">opus-4.7</span>
+          </div>
+          <div class="item drawer-item">
+            <span class="drawer-glyph">∴</span>
+            <span class="label">strategy</span>
+            <span class="meta">bus</span>
+          </div>
+          <div class="item drawer-item" style="color: var(--danger);">
+            <span class="drawer-glyph">×</span>
+            <span class="label">cancel turn</span>
+            <span class="kbd">⌘⎋</span>
+          </div>
+          <div class="hair"></div>
+
+          <!-- footer — the canonical entry path -->
+          <div class="item drawer-item drawer-palette" data-open="palette">
+            <span class="drawer-glyph">⌘</span>
+            <span class="label">command palette</span>
+            <span class="kbd">⌘K</span>
+          </div>
+          <div class="item drawer-item">
+            <span class="drawer-glyph">⚙</span>
+            <span class="label">settings</span>
+            <span class="kbd">⌘,</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═════ Scene 1: CONVERSATION (default) ═════ -->
+    <div class="scene on" data-scene="conv">
+      <div class="body">
+        <div class="sidebar">
+          <div class="label">workspace</div>
+          <div class="session">freyja</div>
+          <div class="label">sessions <span style="color: var(--fg-3);">· 3</span></div>
+          <div class="session active">
+            Quiver render timeout debug
+            <div style="color: var(--fg-3); font-size: 10px; margin-top: 2px; display: flex; align-items: center; gap: 5px;">
+              <span class="dot dot-accent" style="width: 5px; height: 5px;"></span>
+              streaming · opus-4.7
+            </div>
+          </div>
+          <div class="session">
+            HN agent posts
+            <div style="color: var(--fg-3); font-size: 10px; margin-top: 2px;">
+              <span style="background: rgba(120,180,140,0.18); color: #b6d4be; padding: 0 4px; border-radius: 2px; font-size: 9px;">#</span>
+              slack · 4h ago
+            </div>
+          </div>
+          <div class="session">
+            grounded memory
+            <div style="color: var(--fg-3); font-size: 10px; margin-top: 2px;">2d ago · sonnet</div>
+          </div>
+        </div>
+        <div class="convo">
+          <div class="msg">
+            <div class="who">you</div>
+            <div class="body-text">walk me through the redo.</div>
+          </div>
+          <div class="msg assistant">
+            <div class="who">opus-4.7</div>
+            <div class="body-text">
+              Reading the scheduler store. Editing the dashboard. Watching for run events.
+            </div>
+          </div>
+        </div>
+        <div class="activity">
+          <div style="text-transform: uppercase; letter-spacing: 0.14em; font-size: 10px; color: var(--fg-3); margin-bottom: 12px;">activity</div>
+          <div style="color: var(--fg-1); font-size: 11px; line-height: 1.7;">
+            tool · Read scheduler-store.ts<br>
+            tool · Grep "scheduler_response"<br>
+            tool · Edit ScheduledJobsDashboard.tsx
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═════ Scene 2: NEW SESSION ═════ -->
+    <div class="scene" data-scene="newsess">
+      <div class="ns" style="position: relative;">
+        <div class="greeting">freyja · 9:42 am</div>
+        <h1>What shall we <em>build</em>?</h1>
+        <div class="sub">debug · draft · set in motion.</div>
+
+        <div class="ns-chips">
+          <div class="ns-chip" id="chip-model">
+            <span class="k">model</span>
+            <span class="v" id="chip-model-val">opus-4.7</span>
+            <span class="caret">▾</span>
+          </div>
+          <div class="ns-chip" id="chip-strategy">
+            <span class="k">strategy</span>
+            <span class="v" id="chip-strategy-val">bus</span>
+            <span class="caret">▾</span>
+          </div>
+          <div class="ns-chip" id="chip-skills">
+            <span class="k">skills</span>
+            <span class="v">auto</span>
+            <span class="caret">▾</span>
+          </div>
+          <div class="ns-chip locked" title="permission tier locks at session start">
+            <span class="k">permission</span>
+            <span class="v">standard</span>
+            <svg class="lock" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4">
+              <rect x="2" y="5" width="8" height="6" rx="1"/>
+              <path d="M4 5 V3.5 a2 2 0 0 1 4 0 V5"/>
+            </svg>
+          </div>
+        </div>
+
+        <div class="ns-composer">
+          <textarea placeholder="what's on your mind?  describe a task, ask a question, paste a stack trace…"></textarea>
+          <div class="ns-composer-foot">
+            <span><span class="kbd-mini">⌘K</span> jump</span>
+            <span><span class="kbd-mini">/</span> command</span>
+            <span><span class="kbd-mini">@</span> session</span>
+            <span class="send"><span class="kbd-mini" style="background: rgba(168,212,252,0.18);">⌘↩</span> send</span>
+          </div>
+        </div>
+
+        <div class="ns-tips">
+          <span class="kbd-mini">⌘K</span> to pick a starting point · strategy locks at first send.
+        </div>
+
+        <!-- popovers for chip clicks -->
+        <div class="ns-pop" id="pop-model" style="left: 50%; transform: translateX(-340px); top: 322px;">
+          <div class="head">model · session-scoped</div>
+          <div class="opt sel" data-model="opus-4.7">
+            <span class="label">opus-4.7</span>
+            <span class="desc">primary · slowest · best</span>
+          </div>
+          <div class="opt" data-model="opus-4.8">
+            <span class="label">opus-4.8</span>
+            <span class="desc">latest</span>
+          </div>
+          <div class="opt" data-model="sonnet-4.6">
+            <span class="label">sonnet-4.6</span>
+            <span class="desc">balanced · faster</span>
+          </div>
+          <div class="opt" data-model="haiku-4.5">
+            <span class="label">haiku-4.5</span>
+            <span class="desc">small · cheap</span>
+          </div>
+          <div class="opt" data-model="local-llama">
+            <span class="label">ollama / llama-3.3</span>
+            <span class="desc" style="color: var(--danger);">offline</span>
+          </div>
+        </div>
+
+        <div class="ns-pop" id="pop-strategy" style="left: 50%; transform: translateX(-180px); top: 322px;">
+          <div class="head">coordination strategy · LOCKED after first message</div>
+          <div class="opt sel" data-strategy="bus">
+            <span class="label">bus</span>
+            <span class="desc">profile agents · shared findings</span>
+          </div>
+          <div class="opt" data-strategy="kanban">
+            <span class="label">board</span>
+            <span class="desc">cards · dependencies · handoff</span>
+          </div>
+          <div class="opt" data-strategy="goal">
+            <span class="label">goal</span>
+            <span class="desc">single objective · loop until done</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═════ Scene 3: ACTIVITY JOURNAL ═════ -->
+    <div class="scene" data-scene="journal">
+      <div class="body">
+        <div class="sidebar">
+          <div class="label">workspace</div>
+          <div class="session">freyja</div>
+          <div class="label">sessions</div>
+          <div class="session active">Quiver render timeout debug</div>
+          <div class="session">HN agent posts</div>
+        </div>
+        <div class="convo">
+          <div class="msg">
+            <div class="who">you</div>
+            <div class="body-text">show me the run.</div>
+          </div>
+          <div class="msg assistant">
+            <div class="who">opus-4.7</div>
+            <div class="body-text">
+              Journal to the right. Same data as today, narrated.
+            </div>
+          </div>
+        </div>
+        <div class="journal">
+          <div class="journal-head">
+            <h3>journal</h3>
+            <span class="meta" style="margin-left: auto;">turn · 1m48s · $0.42</span>
+          </div>
+          <div class="journal-body">
+            <div class="journ-beat">
+              <span class="journ-time">12:31:04</span>
+              <span class="journ-verb">reading</span>
+              <span class="journ-obj">your message</span>
+              <span class="journ-dur">2s</span>
+            </div>
+            <div class="journ-beat">
+              <span class="journ-time">12:31:06</span>
+              <span class="journ-verb">thinking</span>
+              <span class="journ-obj">—</span>
+              <span class="journ-dur">6s</span>
+            </div>
+            <div class="journ-beat">
+              <span class="journ-time">12:31:12</span>
+              <span class="journ-verb">reading</span>
+              <span class="journ-obj">scheduler-store.ts <span class="count">+ 3 more</span></span>
+              <span class="journ-dur">18s</span>
+            </div>
+            <div class="journ-beat">
+              <span class="journ-time">12:31:30</span>
+              <span class="journ-verb">searching</span>
+              <span class="journ-obj">"scheduler_response"</span>
+              <span class="journ-dur">3s</span>
+            </div>
+            <div class="journ-beat">
+              <span class="journ-time">12:31:33</span>
+              <span class="journ-verb">editing</span>
+              <span class="journ-obj">ScheduledJobsDashboard.tsx</span>
+              <span class="journ-dur">42s</span>
+            </div>
+
+            <div class="journ-sep subagent">⇣  subagent · reviewer · spawned</div>
+
+            <div class="journ-beat">
+              <span class="journ-time">12:32:37</span>
+              <span class="journ-verb">coordinating</span>
+              <span class="journ-obj">3 sub-agents</span>
+              <span class="journ-dur">34s</span>
+            </div>
+
+            <div class="journ-sep subagent">⇡  subagent · reviewer · returned 8.4s</div>
+
+            <div class="journ-sep compaction">⤓  compaction · 192k → 89k tokens</div>
+
+            <div class="journ-beat">
+              <span class="journ-time">12:33:21</span>
+              <span class="journ-verb">finalizing</span>
+              <span class="journ-obj">the answer</span>
+              <span class="journ-dur">14s</span>
+            </div>
+
+            <div class="journ-sep scheduler">◉  scheduler · "morning digest" fired — slack #ops</div>
+
+            <div class="journ-beat" style="opacity: 0.5;">
+              <span class="journ-time">12:33:51</span>
+              <span class="journ-verb">resting</span>
+              <span class="journ-obj">—</span>
+              <span class="journ-dur"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═════ Scene 4: DIAGNOSTICS surface ═════ -->
+    <div class="scene" data-scene="diag">
+      <div class="diag">
+        <div class="diag-head">
+          <h2>Diagnostics</h2>
+          <span class="sub">live bridge + log tail · errors · daemon · gateway traffic</span>
+          <span style="flex: 1;"></span>
+          <button class="diag-pause">⏸ pause tail</button>
+        </div>
+        <div class="diag-tabs">
+          <span class="diag-tab on">bridge events <span class="badge">live</span></span>
+          <span class="diag-tab">logs <span class="badge">freyja.log</span></span>
+          <span class="diag-tab">errors <span class="badge">3</span></span>
+          <span class="diag-tab">gateway traffic <span class="badge">9</span></span>
+          <span class="diag-tab">daemon <span class="badge">pid 4193</span></span>
+          <span class="diag-tab">system</span>
+        </div>
+        <div class="diag-body">
+          <div class="diag-event">
+            <span class="ts">12:33:51.214</span>
+            <span class="lvl ok">turn_complete</span>
+            <span class="msg"><span class="src">harness ›</span> session=local · cost=$0.42 · 1m48s · 12 tools</span>
+            <span class="src-tag">bridge</span>
+          </div>
+          <div class="diag-event">
+            <span class="ts">12:33:48.901</span>
+            <span class="lvl">tool_result</span>
+            <span class="msg"><span class="src">tool ›</span> Edit · ok · ScheduledJobsDashboard.tsx · 42 lines changed</span>
+            <span class="src-tag">bridge</span>
+          </div>
+          <div class="diag-event">
+            <span class="ts">12:33:35.140</span>
+            <span class="lvl live">scheduler_run</span>
+            <span class="msg"><span class="src">scheduler ›</span> "morning digest" fired · sink=slack #ops · 1.3s</span>
+            <span class="src-tag">bridge</span>
+          </div>
+          <div class="diag-event">
+            <span class="ts">12:33:21.890</span>
+            <span class="lvl">compaction</span>
+            <span class="msg"><span class="src">compactor ›</span> 192,114 → 89,402 tokens · 4 messages summarized · 2.1s</span>
+            <span class="src-tag">bridge</span>
+          </div>
+          <div class="diag-event">
+            <span class="ts">12:33:18.110</span>
+            <span class="lvl">subagent</span>
+            <span class="msg"><span class="src">subagent ›</span> reviewer · returned · 8.4s · 1,148 input / 482 output tokens</span>
+            <span class="src-tag">bridge</span>
+          </div>
+          <div class="diag-event">
+            <span class="ts">12:32:37.001</span>
+            <span class="lvl">subagent</span>
+            <span class="msg"><span class="src">subagent ›</span> reviewer · spawned with task "verify ScheduledJobsDashboard.tsx changes"</span>
+            <span class="src-tag">bridge</span>
+          </div>
+          <div class="diag-event">
+            <span class="ts">12:32:08.408</span>
+            <span class="lvl warn">gateway_warn</span>
+            <span class="msg"><span class="src">linear ›</span> token expired in 3h — needs reauth before next webhook</span>
+            <span class="src-tag">gateway</span>
+          </div>
+          <div class="diag-event">
+            <span class="ts">12:31:51.502</span>
+            <span class="lvl">tool_call</span>
+            <span class="msg"><span class="src">tool ›</span> Edit · ScheduledJobsDashboard.tsx · old_string ··· new_string ···</span>
+            <span class="src-tag">bridge</span>
+          </div>
+          <div class="diag-event">
+            <span class="ts">12:31:38.218</span>
+            <span class="lvl err">tool_err</span>
+            <span class="msg"><span class="src">tool ›</span> Grep · pattern empty — caller passed undefined; retrying with literal</span>
+            <span class="src-tag">bridge</span>
+          </div>
+          <div class="diag-event">
+            <span class="ts">12:31:30.901</span>
+            <span class="lvl">tool_call</span>
+            <span class="msg"><span class="src">tool ›</span> Grep · "scheduler_response" · path=src/renderer</span>
+            <span class="src-tag">bridge</span>
+          </div>
+          <div class="diag-event">
+            <span class="ts">12:31:12.402</span>
+            <span class="lvl">tool_call</span>
+            <span class="msg"><span class="src">tool ›</span> Read · src/renderer/state/scheduler-store.ts</span>
+            <span class="src-tag">bridge</span>
+          </div>
+          <div class="diag-event">
+            <span class="ts">12:31:06.140</span>
+            <span class="lvl live">agent_thinking</span>
+            <span class="msg"><span class="src">harness ›</span> session=local · streaming begun · model=opus-4.7</span>
+            <span class="src-tag">bridge</span>
+          </div>
+          <div class="diag-event">
+            <span class="ts">12:31:04.219</span>
+            <span class="lvl">turn_start</span>
+            <span class="msg"><span class="src">harness ›</span> user message · 64 input tokens · permission=standard</span>
+            <span class="src-tag">bridge</span>
+          </div>
+          <div class="diag-event">
+            <span class="ts">12:30:11.000</span>
+            <span class="lvl ok">scheduler_tick</span>
+            <span class="msg"><span class="src">scheduler ›</span> 6 jobs scanned · 0 fires due · next in 1m23s</span>
+            <span class="src-tag">scheduler</span>
+          </div>
+          <div class="diag-event">
+            <span class="ts">12:30:04.812</span>
+            <span class="lvl">gateway</span>
+            <span class="msg"><span class="src">slack ›</span> inbound · channel=ops · user=Yuki · "anyone seeing Quiver timeouts?"</span>
+            <span class="src-tag">gateway</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═════ Scene 5: NOT CHANGING — honest scope ═════ -->
+    <div class="scene" data-scene="nc">
+      <div class="nc">
+        <h2>Scope</h2>
+        <div class="grid">
+
+          <div class="card change">
+            <h4>changing</h4>
+            <ul>
+              <li>TitleBar</li>
+              <li>New session view</li>
+              <li>Activity panel</li>
+              <li>DebugDrawer → Diagnostics</li>
+              <li>Gateways (new surface)</li>
+              <li>Compaction beat</li>
+            </ul>
+          </div>
+
+          <div class="card keep">
+            <h4>staying</h4>
+            <ul>
+              <li>Conversation styling</li>
+              <li>Input dock</li>
+              <li>Sidebar <small>(gateway badge + streaming pip tweaks)</small></li>
+              <li>Scheduled Jobs modal</li>
+              <li>Kanban surface</li>
+              <li>Session pane split view</li>
+              <li>Mission dashboard internals</li>
+              <li>Settings modal</li>
+            </ul>
+          </div>
+
+        </div>
+
+        <div class="wiring">
+          <h4>verb sourcing</h4>
+          Derived from harness store · ~40 LoC selector · no new bridge messages.
+          <div class="ascii">  Read · Grep · Glob · WebFetch       →  reading
+  Edit · Write · NotebookEdit         →  editing
+  Bash                                →  running
+  WebSearch                           →  searching
+  Task · spawn-subagent               →  coordinating  (+ N)
+  pendingPermission                   →  waiting
+  compactionState                     →  compacting   ⤓
+  streaming &amp;&amp; no recent tool         →  thinking
+  idle                                →  resting</div>
+          object = <code>basename()</code> · <code>hostname()</code> · agent label · first bash arg. held 1.5s min or until <em>category</em> changes.
+        </div>
+
+      </div>
+    </div>
+
+    <!-- focus-mode fallback: a corner dot survives -->
+    <div class="corner-dot">
+      <svg class="dot-svg" viewBox="-2 -2 26 26">
+        <circle cx="11" cy="11" r="8" fill="none" stroke="rgba(168,212,252,0.55)" stroke-width="1.2"/>
+        <circle cx="11" cy="11" r="2.4" fill="var(--accent)"/>
+      </svg>
+    </div>
+  </div>
+
+  <!-- ═══ GATEWAYS PANEL — opens from the drawer or palette ═══ -->
+  <div class="gw-overlay" id="gw-overlay"></div>
+  <div class="gw-panel" id="gw-panel">
+    <div class="gw-header">
+      <h2>Gateways</h2>
+      <span class="sub">9 connected · 2 need attention · 24,612 events today</span>
+      <div class="filters">
+        <button class="filter on" data-gwf="all">all</button>
+        <button class="filter" data-gwf="channels">channels</button>
+        <button class="filter" data-gwf="models">models</button>
+        <button class="filter" data-gwf="tools">tools</button>
+      </div>
+      <div class="spacer"></div>
+      <button class="add">+ add gateway</button>
+      <button class="close" onclick="closeGateways()">esc · close</button>
+    </div>
+
+    <div class="gw-body">
+      <!-- aggregate row -->
+      <div class="gw-summary">
+        <div class="gw-stat">
+          <div class="k">events today</div>
+          <div class="v">24,612 <span class="delta up">▲ 18%</span></div>
+        </div>
+        <div class="gw-stat">
+          <div class="k">attention</div>
+          <div class="v" style="color: var(--warn);">2 <span class="delta warn">linear · notion</span></div>
+        </div>
+        <div class="gw-stat">
+          <div class="k">last beat</div>
+          <div class="v">2m</div>
+        </div>
+        <div class="gw-stat">
+          <div class="k">spend today</div>
+          <div class="v">$3.84 <span class="delta">opus + sonnet</span></div>
+        </div>
+      </div>
+
+      <!-- ── CHANNELS ── -->
+      <div class="gw-section" data-gwt="channels">
+        <div class="gw-section-title">channels <span class="count">— how Freyja receives messages and delivers responses</span></div>
+        <div class="gw-grid">
+
+          <!-- Slack — connected -->
+          <div class="gw-card">
+            <div class="top">
+              <div class="gw-logo" style="background: rgba(120,180,140,0.16); color: #b6d4be;">#</div>
+              <div class="gw-name">Slack <small>workspace · ema</small></div>
+              <span class="gw-state live">live</span>
+            </div>
+            <div class="gw-meta">
+              <span class="k">last</span><span class="v">2m · #ops</span>
+              <span class="k">24h</span><span class="v">142 events</span>
+            </div>
+            <div class="gw-bottom">
+              <span class="gw-dir">in <span class="arrow">⇄</span> out</span>
+              <span class="gw-cta">configure →</span>
+            </div>
+            <div class="gw-spark"><svg viewBox="0 0 200 18" preserveAspectRatio="none"><path d="M0 9 L20 9 L26 5 L32 12 L40 7 L60 9 L70 4 L80 11 L100 9 L120 9 L130 6 L140 10 L160 9 L180 7 L200 9" fill="none" stroke="rgba(168,212,252,0.7)" stroke-width="1"/></svg></div>
+          </div>
+
+          <!-- Discord — connected -->
+          <div class="gw-card">
+            <div class="top">
+              <div class="gw-logo" style="background: rgba(132,124,200,0.16); color: #b8b2e6;">D</div>
+              <div class="gw-name">Discord <small>3 servers</small></div>
+              <span class="gw-state live">live</span>
+            </div>
+            <div class="gw-meta">
+              <span class="k">last</span><span class="v">17m</span>
+              <span class="k">24h</span><span class="v">28 events</span>
+            </div>
+            <div class="gw-bottom">
+              <span class="gw-dir">in <span class="arrow">⇄</span> out</span>
+              <span class="gw-cta">configure →</span>
+            </div>
+          </div>
+
+          <!-- Email — connected -->
+          <div class="gw-card">
+            <div class="top">
+              <div class="gw-logo" style="background: rgba(200,140,90,0.16); color: #e0ae87;">@</div>
+              <div class="gw-name">Gmail <small>soham@ema.co</small></div>
+              <span class="gw-state live">live</span>
+            </div>
+            <div class="gw-meta">
+              <span class="k">last</span><span class="v">8m</span>
+              <span class="k">24h</span><span class="v">12 threads</span>
+            </div>
+            <div class="gw-bottom">
+              <span class="gw-dir">in <span class="arrow">⇄</span> out</span>
+              <span class="gw-cta">configure →</span>
+            </div>
+          </div>
+
+          <!-- Calendar — connected -->
+          <div class="gw-card">
+            <div class="top">
+              <div class="gw-logo" style="background: rgba(180,180,220,0.14); color: #c8cae0;">▢</div>
+              <div class="gw-name">Calendar <small>google · personal</small></div>
+              <span class="gw-state connected">connected</span>
+            </div>
+            <div class="gw-meta">
+              <span class="k">last</span><span class="v">4h</span>
+              <span class="k">24h</span><span class="v">3 triggers</span>
+            </div>
+            <div class="gw-bottom">
+              <span class="gw-dir">in <span class="arrow">→</span></span>
+              <span class="gw-cta">configure →</span>
+            </div>
+          </div>
+
+          <!-- Native Notifications — connected -->
+          <div class="gw-card">
+            <div class="top">
+              <div class="gw-logo" style="background: rgba(168,212,252,0.12); color: var(--accent);">◔</div>
+              <div class="gw-name">Notifications <small>macOS native</small></div>
+              <span class="gw-state connected">connected</span>
+            </div>
+            <div class="gw-meta">
+              <span class="k">last</span><span class="v">12m</span>
+              <span class="k">24h</span><span class="v">37 delivered</span>
+            </div>
+            <div class="gw-bottom">
+              <span class="gw-dir"><span class="arrow">→</span> out</span>
+              <span class="gw-cta">configure →</span>
+            </div>
+          </div>
+
+          <!-- Telegram — not configured -->
+          <div class="gw-card unconfigured">
+            <div class="top">
+              <div class="gw-logo" style="background: rgba(255,255,255,0.04); color: var(--fg-3);">✈</div>
+              <div class="gw-name">Telegram <small>not configured</small></div>
+              <span class="gw-state silent">setup</span>
+            </div>
+            <div class="gw-meta">
+              <span class="k">type</span><span class="v">bidirectional channel</span>
+            </div>
+            <div class="gw-bottom">
+              <span class="gw-dir">in <span class="arrow">⇄</span> out</span>
+              <span class="gw-cta">connect →</span>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ── MODELS ── -->
+      <div class="gw-section" data-gwt="models">
+        <div class="gw-section-title">models <span class="count">— LLM and reasoning providers Freyja calls</span></div>
+        <div class="gw-grid">
+
+          <!-- Anthropic — primary, live -->
+          <div class="gw-card">
+            <div class="top">
+              <div class="gw-logo" style="background: rgba(168,212,252,0.14); color: var(--accent);">A</div>
+              <div class="gw-name">Anthropic <small>primary · opus + sonnet</small></div>
+              <span class="gw-state live">live</span>
+            </div>
+            <div class="gw-meta">
+              <span class="k">last</span><span class="v">8s</span>
+              <span class="k">24h</span><span class="v">23,194 calls · $2.84</span>
+            </div>
+            <div class="gw-bottom">
+              <span class="gw-dir"><span class="arrow">→</span> out</span>
+              <span class="gw-cta">configure →</span>
+            </div>
+            <div class="gw-spark"><svg viewBox="0 0 200 18" preserveAspectRatio="none"><path d="M0 9 L8 7 L16 12 L24 6 L32 10 L40 8 L48 13 L56 7 L64 10 L72 9 L80 11 L88 6 L96 12 L104 9 L112 8 L120 10 L128 6 L136 11 L144 8 L152 9 L160 10 L168 7 L176 9 L184 11 L192 8 L200 9" fill="none" stroke="rgba(168,212,252,0.7)" stroke-width="1"/></svg></div>
+          </div>
+
+          <!-- OpenAI — fallback, idle -->
+          <div class="gw-card">
+            <div class="top">
+              <div class="gw-logo" style="background: rgba(110,180,150,0.14); color: #9ad4b7;">◐</div>
+              <div class="gw-name">OpenAI <small>fallback only</small></div>
+              <span class="gw-state connected">connected</span>
+            </div>
+            <div class="gw-meta">
+              <span class="k">last</span><span class="v">2d</span>
+              <span class="k">24h</span><span class="v">0 calls</span>
+            </div>
+            <div class="gw-bottom">
+              <span class="gw-dir"><span class="arrow">→</span> out</span>
+              <span class="gw-cta">configure →</span>
+            </div>
+          </div>
+
+          <!-- Gemini — not configured -->
+          <div class="gw-card unconfigured">
+            <div class="top">
+              <div class="gw-logo" style="background: rgba(255,255,255,0.04); color: var(--fg-3);">G</div>
+              <div class="gw-name">Gemini <small>not configured</small></div>
+              <span class="gw-state silent">setup</span>
+            </div>
+            <div class="gw-meta">
+              <span class="k">type</span><span class="v">model provider</span>
+            </div>
+            <div class="gw-bottom">
+              <span class="gw-dir"><span class="arrow">→</span> out</span>
+              <span class="gw-cta">connect →</span>
+            </div>
+          </div>
+
+          <!-- Ollama — local, errored -->
+          <div class="gw-card">
+            <div class="top">
+              <div class="gw-logo" style="background: rgba(180,130,130,0.10); color: var(--danger);">⌂</div>
+              <div class="gw-name">Ollama <small>local · llama-3.3-70b</small></div>
+              <span class="gw-state error">offline</span>
+            </div>
+            <div class="gw-meta">
+              <span class="k">err</span><span class="v" style="color: var(--danger);">connection refused</span>
+              <span class="k">last</span><span class="v">1h</span>
+            </div>
+            <div class="gw-bottom">
+              <span class="gw-dir"><span class="arrow">→</span> out</span>
+              <span class="gw-cta">retry →</span>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ── TOOLS ── -->
+      <div class="gw-section" data-gwt="tools">
+        <div class="gw-section-title">tools <span class="count">— external systems Freyja can act on, via MCP or native bridges</span></div>
+        <div class="gw-grid">
+
+          <!-- Computer Use — connected -->
+          <div class="gw-card">
+            <div class="top">
+              <div class="gw-logo" style="background: rgba(220,200,140,0.12); color: #e0d490;">⌥</div>
+              <div class="gw-name">Computer use <small>screenshot · click · keys</small></div>
+              <span class="gw-state live">live</span>
+            </div>
+            <div class="gw-meta">
+              <span class="k">last</span><span class="v">2m</span>
+              <span class="k">24h</span><span class="v">84 actions</span>
+            </div>
+            <div class="gw-bottom">
+              <span class="gw-dir"><span class="arrow">→</span> out</span>
+              <span class="gw-cta">configure →</span>
+            </div>
+          </div>
+
+          <!-- Browser MCP — connected -->
+          <div class="gw-card">
+            <div class="top">
+              <div class="gw-logo" style="background: rgba(155,190,225,0.14); color: #b4d2ea;">⊞</div>
+              <div class="gw-name">Browser <small>playwright · MCP</small></div>
+              <span class="gw-state live">live</span>
+            </div>
+            <div class="gw-meta">
+              <span class="k">last</span><span class="v">5m</span>
+              <span class="k">24h</span><span class="v">23 navigations</span>
+            </div>
+            <div class="gw-bottom">
+              <span class="gw-dir"><span class="arrow">→</span> out</span>
+              <span class="gw-cta">configure →</span>
+            </div>
+          </div>
+
+          <!-- GitHub — connected -->
+          <div class="gw-card">
+            <div class="top">
+              <div class="gw-logo" style="background: rgba(180,180,180,0.10); color: var(--fg-1);">{ }</div>
+              <div class="gw-name">GitHub <small>5 repos · webhooks</small></div>
+              <span class="gw-state connected">connected</span>
+            </div>
+            <div class="gw-meta">
+              <span class="k">last</span><span class="v">1h · PR opened</span>
+              <span class="k">24h</span><span class="v">5 events</span>
+            </div>
+            <div class="gw-bottom">
+              <span class="gw-dir">in <span class="arrow">⇄</span> out</span>
+              <span class="gw-cta">configure →</span>
+            </div>
+          </div>
+
+          <!-- Linear — NEEDS AUTH -->
+          <div class="gw-card">
+            <div class="top">
+              <div class="gw-logo" style="background: rgba(184,160,120,0.14); color: var(--warn);">◦</div>
+              <div class="gw-name">Linear <small>team · freyja</small></div>
+              <span class="gw-state needs-auth">reauth</span>
+            </div>
+            <div class="gw-meta">
+              <span class="k">err</span><span class="v" style="color: var(--warn);">token expired 3h ago</span>
+              <span class="k">24h</span><span class="v">— paused</span>
+            </div>
+            <div class="gw-bottom">
+              <span class="gw-dir">in <span class="arrow">⇄</span> out</span>
+              <span class="gw-cta">reconnect →</span>
+            </div>
+          </div>
+
+          <!-- Notion — ERROR -->
+          <div class="gw-card">
+            <div class="top">
+              <div class="gw-logo" style="background: rgba(180,130,130,0.10); color: var(--danger);">▣</div>
+              <div class="gw-name">Notion <small>workspace · freyja-docs</small></div>
+              <span class="gw-state error">rate-limited</span>
+            </div>
+            <div class="gw-meta">
+              <span class="k">err</span><span class="v" style="color: var(--danger);">429 · cooldown 5m</span>
+              <span class="k">24h</span><span class="v">3 events</span>
+            </div>
+            <div class="gw-bottom">
+              <span class="gw-dir"><span class="arrow">→</span> out</span>
+              <span class="gw-cta">retry →</span>
+            </div>
+          </div>
+
+          <!-- Filesystem — connected -->
+          <div class="gw-card">
+            <div class="top">
+              <div class="gw-logo" style="background: rgba(255,255,255,0.04); color: var(--fg-1);">/</div>
+              <div class="gw-name">Filesystem <small>~/personal/freyja</small></div>
+              <span class="gw-state live">live</span>
+            </div>
+            <div class="gw-meta">
+              <span class="k">last</span><span class="v">8s · write</span>
+              <span class="k">24h</span><span class="v">1,247 ops</span>
+            </div>
+            <div class="gw-bottom">
+              <span class="gw-dir">in <span class="arrow">⇄</span> out</span>
+              <span class="gw-cta">configure →</span>
+            </div>
+          </div>
+
+          <!-- Webhooks — unconfigured (custom) -->
+          <div class="gw-card unconfigured">
+            <div class="top">
+              <div class="gw-logo" style="background: rgba(255,255,255,0.04); color: var(--fg-3);">↯</div>
+              <div class="gw-name">Custom webhooks <small>any HTTP source</small></div>
+              <span class="gw-state silent">setup</span>
+            </div>
+            <div class="gw-meta">
+              <span class="k">type</span><span class="v">incoming · outgoing</span>
+            </div>
+            <div class="gw-bottom">
+              <span class="gw-dir">in <span class="arrow">⇄</span> out</span>
+              <span class="gw-cta">add →</span>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ COMMAND PALETTE — ⌘K canonical entry ═══ -->
+  <div class="palette-overlay" id="palette-overlay" onclick="closePalette()"></div>
+  <div class="palette" id="palette">
+    <div class="palette-input">
+      <span class="glyph">⌘</span>
+      <input id="palette-input" type="text" placeholder="jump to anything · search surfaces, gateways, sessions…" />
+      <span class="hint">↑↓ navigate · ↩ open · esc</span>
+    </div>
+    <div class="palette-body" id="palette-body">
+
+      <!-- NEW-SESSION-ONLY: start from / resume / preload -->
+      <div class="palette-group palette-newsess">start from</div>
+      <div class="palette-row palette-newsess" data-q="blank fresh empty new">
+        <span class="glyph">◌</span>
+        <span class="label">blank — fresh empty conversation</span>
+      </div>
+      <div class="palette-row palette-newsess" data-q="clipboard paste">
+        <span class="glyph">⊟</span>
+        <span class="label">paste from clipboard</span>
+        <span class="meta">2.4kb · last copied 18m ago</span>
+      </div>
+      <div class="palette-row palette-newsess" data-q="resume last session continue">
+        <span class="glyph">↺</span>
+        <span class="label">resume last · "Quiver render timeout debug"</span>
+        <span class="meta">4m ago</span>
+      </div>
+      <div class="palette-row palette-newsess" data-q="email inbox gmail">
+        <span class="glyph">@</span>
+        <span class="label">from latest email…</span>
+        <span class="meta">Gmail · soham@ema.co</span>
+      </div>
+      <div class="palette-row palette-newsess" data-q="url web fetch link">
+        <span class="glyph">↗</span>
+        <span class="label">from URL…</span>
+      </div>
+
+      <div class="palette-group palette-newsess">presets · permission + skills + tools pre-loaded</div>
+      <div class="palette-row palette-newsess" data-q="debug session bash read">
+        <span class="glyph">⌥</span>
+        <span class="label">debug session</span>
+        <span class="meta">Bash + Read + Grep · permission: standard</span>
+      </div>
+      <div class="palette-row palette-newsess" data-q="research websearch grep">
+        <span class="glyph">⌕</span>
+        <span class="label">research session</span>
+        <span class="meta">WebSearch + WebFetch · permission: read-only</span>
+      </div>
+      <div class="palette-row palette-newsess" data-q="draft compose writing">
+        <span class="glyph">✎</span>
+        <span class="label">draft session</span>
+        <span class="meta">no tools · for prose &amp; brainstorming</span>
+      </div>
+      <div class="palette-row palette-newsess" data-q="code review diff edit">
+        <span class="glyph">⇄</span>
+        <span class="label">code review session</span>
+        <span class="meta">Diff + Read · permission: read-only</span>
+      </div>
+
+      <div class="palette-group palette-newsess">recent sessions</div>
+      <div class="palette-row palette-newsess" data-q="quiver render timeout">
+        <span class="glyph">◍</span>
+        <span class="label">Quiver render timeout debug</span>
+        <span class="meta">opus-4.7 · 4m ago</span>
+      </div>
+      <div class="palette-row palette-newsess" data-q="hn agent posts">
+        <span class="glyph" style="background: rgba(120,180,140,0.16); color: #b6d4be;">#</span>
+        <span class="label">HN agent posts</span>
+        <span class="meta">slack · 4h ago</span>
+      </div>
+      <div class="palette-row palette-newsess" data-q="grounded memory">
+        <span class="glyph">◍</span>
+        <span class="label">grounded memory</span>
+        <span class="meta">sonnet · 2d ago</span>
+      </div>
+
+      <!-- IN-SESSION ONLY: recent surfaces (the live ones) -->
+      <div class="palette-group palette-insess">recent</div>
+      <div class="palette-row palette-insess" data-q="scheduled jobs schedules">
+        <span class="glyph">◉</span>
+        <span class="label">scheduled jobs</span>
+        <span class="meta">6 active · next in 1m</span>
+        <span class="kbd">⌘⇧S</span>
+      </div>
+      <div class="palette-row palette-insess" data-q="gateways integrations slack discord github">
+        <span class="glyph">⇄</span>
+        <span class="label">gateways</span>
+        <span class="meta">9 connected · 2 attention</span>
+      </div>
+      <div class="palette-row palette-insess" data-q="mission dashboard">
+        <span class="glyph">◍</span>
+        <span class="label">mission dashboard</span>
+        <span class="meta">overview · subagents · findings</span>
+        <span class="kbd">⌘⇧M</span>
+      </div>
+
+      <div class="palette-group">surfaces</div>
+      <div class="palette-row" data-q="metrics dashboard cost spend">
+        <span class="glyph">▣</span>
+        <span class="label">metrics</span>
+        <span class="meta">cross-session aggregates</span>
+      </div>
+      <div class="palette-row" data-q="skills">
+        <span class="glyph">✦</span>
+        <span class="label">skills</span>
+        <span class="meta">12 indexed</span>
+      </div>
+      <div class="palette-row" data-q="memory recall">
+        <span class="glyph">❍</span>
+        <span class="label">memory</span>
+        <span class="meta">38 entries</span>
+      </div>
+      <div class="palette-row" data-q="settings preferences">
+        <span class="glyph">⚙</span>
+        <span class="label">settings</span>
+        <span class="kbd">⌘,</span>
+      </div>
+
+      <div class="palette-group palette-insess">session controls</div>
+      <div class="palette-row palette-insess" data-q="model switch claude opus sonnet">
+        <span class="glyph">▤</span>
+        <span class="label">switch model</span>
+        <span class="meta">current · opus-4.7</span>
+      </div>
+      <div class="palette-row palette-insess" data-q="strategy coordination bus kanban goal">
+        <span class="glyph">∴</span>
+        <span class="label">coordination strategy</span>
+        <span class="meta">current · bus · locked</span>
+      </div>
+      <div class="palette-row" data-q="focus mode hide chrome">
+        <span class="glyph">▮</span>
+        <span class="label">focus mode</span>
+        <span class="kbd">⌘\</span>
+      </div>
+      <div class="palette-row palette-insess" data-q="cancel turn stop">
+        <span class="glyph" style="color: var(--danger);">×</span>
+        <span class="label" style="color: var(--danger);">cancel current turn</span>
+        <span class="kbd">⌘⎋</span>
+      </div>
+
+      <div class="palette-group">gateways · setup</div>
+      <div class="palette-row" data-q="slack setup gateway">
+        <span class="glyph" style="background: rgba(120,180,140,0.16); color: #b6d4be;">#</span>
+        <span class="label">configure Slack</span>
+        <span class="meta">live · workspace ema</span>
+      </div>
+      <div class="palette-row" data-q="discord setup">
+        <span class="glyph" style="background: rgba(132,124,200,0.16); color: #b8b2e6;">D</span>
+        <span class="label">configure Discord</span>
+      </div>
+      <div class="palette-row" data-q="github setup">
+        <span class="glyph" style="background: rgba(180,180,180,0.10); color: var(--fg-1);">{ }</span>
+        <span class="label">configure GitHub</span>
+        <span class="meta">5 repos</span>
+      </div>
+      <div class="palette-row" data-q="add gateway new integration connect">
+        <span class="glyph" style="color: var(--accent);">+</span>
+        <span class="label" style="color: var(--accent);">add a new gateway…</span>
+      </div>
+    </div>
+    <div class="palette-footer">
+      <span><span class="kbd-mini">↑↓</span> navigate</span>
+      <span><span class="kbd-mini">↩</span> open</span>
+      <span><span class="kbd-mini">⌘↩</span> open in new window</span>
+      <span><span class="kbd-mini">esc</span> close</span>
+      <span style="margin-left: auto;">tip: type <span class="kbd-mini">@</span> for sessions, <span class="kbd-mini">/</span> for slash commands</span>
+    </div>
+  </div>
+
+  <div class="v9-notes">
+    <div><h4>line</h4>verb + object · Fraunces · drag region · idle drops object.</div>
+    <div><h4>dot</h4>core = bridge · halftone halo = streaming breath · ring = ctx (static).</div>
+    <div><h4>ambience</h4>halftone dot-march on stream · halftone band + stepped desat on compaction · single red wash on error.</div>
+    <div><h4>drawer</h4>surfaces · gateways (collapsed row) · session · settings · palette. bounded forever.</div>
+    <div><h4>gateways</h4>channels · models · tools. one surface absorbs every integration.</div>
+    <div><h4>⌘K</h4>canonical entry. context-aware: new-session shows start-from + presets + resume; in-session shows recent + controls.</div>
+  </div>
+</div>
+
+<!-- ════════════════ Approach 10 — SUBTRACT ONLY ════════════════ -->
+<div class="variant active" data-variant="v10">
+  <div class="legend">
+    <strong>v10 · subtract only</strong> — today's chrome, minus the cold pills. Skills + memory leave the right column for the palette. No new visual language. Toggle <em>v10 · show "before"</em> in the top bar to see what's gone.
+  </div>
+
+  <div class="app" style="position: relative;">
+
+    <!-- THE BAR — today's chrome minus the cold pills.
+         Each "removed" element only renders when "before" is toggled. -->
+    <div class="v10-bar">
+      <!-- Identity -->
+      <svg class="topo" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="50" cy="50" r="12"/>
+        <circle cx="50" cy="50" r="26" opacity="0.5"/>
+        <circle cx="50" cy="50" r="40" opacity="0.22"/>
+      </svg>
+      <span class="wordmark">freyja</span>
+      <div class="div"></div>
+
+      <!-- REMOVED: bridge status (dropped entirely) -->
+      <span class="ctrl removed" title="bridge status"><span class="dot dot-ok"></span>live</span>
+
+      <!-- KEEP: layout toggles (teach the hotkey lives) -->
+      <span class="ctrl active">workspace</span>
+
+      <!-- REMOVED: dashboard button -->
+      <span class="ctrl removed">dashboard</span>
+
+      <!-- REMOVED: metrics button -->
+      <span class="ctrl removed">metrics</span>
+
+      <!-- KEEP: model picker (people swap mid-session) -->
+      <span class="ctrl">
+        <span class="k">model</span>
+        <span class="v">opus-4.7</span>
+        <span class="effort">medium</span>
+        <span class="caret">▾</span>
+      </span>
+
+      <!-- KEEP: strategy chips (visible because they LOCK at first send) -->
+      <span class="strategy">
+        <button class="on">bus</button>
+        <button>board</button>
+        <button>goal</button>
+      </span>
+
+      <!-- KEEP: focus -->
+      <span class="ctrl">focus</span>
+
+      <!-- KEEP: ctx readout (continuous read) -->
+      <span class="ctrl read">
+        <span class="k">ctx</span>
+        <span class="v">23.4k</span>
+        <span class="k" style="margin-left: 2px;">/200k</span>
+        <span class="progress"><span style="width: 12%;"></span></span>
+      </span>
+
+      <!-- KEEP: spend readout (continuous read) -->
+      <span class="ctrl read">
+        <span class="k">spend</span>
+        <span class="v">$1.42</span>
+      </span>
+
+      <!-- REMOVED: scheduler pill -->
+      <span class="ctrl removed"><span class="dot dot-ok"></span>sched 6 · 1m</span>
+
+      <!-- REMOVED: slack gateway pill -->
+      <span class="ctrl removed"><span class="dot dot-ok"></span>slack</span>
+
+      <!-- KEEP: streaming + cancel state -->
+      <span class="spinner">
+        <span class="dot"></span>
+        streaming
+      </span>
+
+      <!-- KEEP: session id (tiny, debug-friendly) -->
+      <span class="session-id">session-local · 12s</span>
+    </div>
+
+    <!-- Annotation strip — only shown in "before" mode -->
+    <div class="v10-annotation">
+      <strong>5 removed from the bar → where each went</strong>
+      <span style="color: var(--fg-0);">bridge status</span><span class="arrow">→</span><span class="dest">dropped</span> · always shows "live"<br>
+      <span style="color: var(--fg-0);">dashboard</span><span class="arrow">→</span><span class="dest">⌘K · "Mission Dashboard"</span> · still ⌘⇧M<br>
+      <span style="color: var(--fg-0);">metrics</span><span class="arrow">→</span><span class="dest">⌘K · "Metrics"</span><br>
+      <span style="color: var(--fg-0);">scheduler pill</span><span class="arrow">→</span><span class="dest">⌘K · "Scheduled Jobs"</span> · still ⌘⇧S<br>
+      <span style="color: var(--fg-0);">slack gateway</span><span class="arrow">→</span><span class="dest">⌘K · "Gateways"</span> · setup + status both lived in one tooltip
+    </div>
+
+    <!-- Body — sidebar + convo + activity (minus skills/memory) -->
+    <div class="body">
+      <div class="sidebar">
+        <div class="label">workspace</div>
+        <div class="session">freyja</div>
+        <div class="label">sessions</div>
+        <div class="session active">Quiver render timeout debug</div>
+        <div class="session">HN agent posts</div>
+        <div class="session">grounded memory</div>
+      </div>
+      <div class="convo">
+        <div class="msg">
+          <div class="who">you</div>
+          <div class="body-text">just remove the cold pills.</div>
+        </div>
+        <div class="msg assistant">
+          <div class="who">opus-4.7</div>
+          <div class="body-text">
+            Five pills removed from the top bar; two sections removed from the right column. Same shortcuts, same surfaces — they just live in ⌘K instead of taking permanent real estate. <code style="color: var(--accent);">⌘⇧M</code> still opens dashboard; <code style="color: var(--accent);">⌘⇧S</code> still opens schedules. The palette gains <em>moved</em> badges on relocated rows so first-time users see where things went.
+          </div>
+        </div>
+        <div class="msg">
+          <div class="who">you</div>
+          <div class="body-text">cost?</div>
+        </div>
+        <div class="msg assistant">
+          <div class="who">opus-4.7</div>
+          <div class="body-text">
+            Lose at-a-glance visibility of background services. Slack going down or the scheduler daemon dying no longer pings the chrome — you discover via a failed action or a ⌘K check. For services that hiccup once a year this is fine. For services that need real-time attention (computer-use, an in-flight scheduler run) consider a one-pixel ambient indicator next to <em>session-id</em>.
+          </div>
+        </div>
+      </div>
+
+      <!-- Activity panel: same as today, but skills + memory sections removed. -->
+      <div class="activity">
+        <div style="text-transform: uppercase; letter-spacing: 0.14em; font-size: 10px; color: var(--fg-3); margin-bottom: 12px;">activity</div>
+        <div style="color: var(--fg-1); font-size: 11px; line-height: 1.7;">
+          tool · Read scheduler-store.ts<br>
+          tool · Grep "scheduler_response"<br>
+          tool · Edit ScheduledJobsDashboard.tsx
+        </div>
+        <div style="margin-top: 18px; color: var(--fg-3); font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em;">findings</div>
+        <div style="color: var(--fg-1); font-size: 11px; line-height: 1.7; margin-top: 6px;">
+          · scheduler_response push events now flow to store<br>
+          · drop ctx pressure tint (compaction is the event)
+        </div>
+        <div style="margin-top: 18px; color: var(--fg-3); font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em;">file changes</div>
+        <div style="color: var(--fg-1); font-size: 11px; line-height: 1.7; margin-top: 6px;">
+          · ScheduledJobsDashboard.tsx <span style="color: var(--ok);">+42</span> <span style="color: var(--danger);">−18</span><br>
+          · scheduler-store.ts <span style="color: var(--ok);">+6</span>
+        </div>
+        <!-- The cut sections: a tiny "moved to ⌘K" note where they used to be -->
+        <div class="v10-activity-empty">
+          <span style="color: var(--fg-3);">— skills · memory now live in</span>
+          <span class="kbd">⌘K</span>
+          <span style="color: var(--fg-3);">— same browse surface, no rail clutter</span>
+        </div>
+      </div>
+
+      <!-- Always-open palette so the reader sees where things ended up -->
+      <div class="v10-palette-inline" id="v10-palette-inline">
+        <div class="head">
+          <span class="gly">⌘</span>
+          <span class="title">command palette</span>
+          <span class="pulse-flag">⌘K fired</span>
+          <span class="hint">⌘K</span>
+        </div>
+        <div class="body">
+          <div class="pgroup">recent</div>
+          <div class="prow">
+            <span class="gly">◍</span>
+            <span class="label">Quiver render timeout debug</span>
+            <span class="kbd">⌘1</span>
+          </div>
+
+          <div class="pgroup">moved from top bar</div>
+          <div class="prow moved">
+            <span class="gly">◍</span>
+            <span class="label">mission dashboard</span>
+            <span class="meta">moved</span>
+          </div>
+          <div class="prow moved">
+            <span class="gly">▣</span>
+            <span class="label">metrics</span>
+            <span class="meta">moved</span>
+          </div>
+          <div class="prow moved">
+            <span class="gly">◉</span>
+            <span class="label">scheduled jobs</span>
+            <span class="meta">moved</span>
+          </div>
+          <div class="prow moved">
+            <span class="gly">⇄</span>
+            <span class="label">gateways</span>
+            <span class="meta">moved</span>
+          </div>
+
+          <div class="pgroup">moved from right column</div>
+          <div class="prow moved">
+            <span class="gly">✦</span>
+            <span class="label">skills</span>
+            <span class="meta">moved</span>
+          </div>
+          <div class="prow moved">
+            <span class="gly">❍</span>
+            <span class="label">memory</span>
+            <span class="meta">moved</span>
+          </div>
+
+          <div class="pgroup">already in the palette</div>
+          <div class="prow">
+            <span class="gly">⌥</span>
+            <span class="label">diagnostics</span>
+            <span class="kbd">⌘D</span>
+          </div>
+          <div class="prow">
+            <span class="gly">▤</span>
+            <span class="label">switch model</span>
+            <span class="meta">opus-4.7</span>
+          </div>
+          <div class="prow">
+            <span class="gly">⚙</span>
+            <span class="label">settings</span>
+            <span class="kbd">⌘,</span>
+          </div>
+          <div class="prow" style="color: var(--danger);">
+            <span class="gly" style="color: var(--danger);">×</span>
+            <span class="label" style="color: var(--danger);">cancel current turn</span>
+            <span class="kbd">⌘⎋</span>
+          </div>
+        </div>
+        <div class="foot">14 → 8 bar elements · −2 right-rail sections</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="v10-notes">
+    <div>
+      <div class="num"><span class="big">14</span> → 8 elements</div>
+      <h4>chrome earned its place</h4>
+      Five pills left. The rule: a TitleBar element earns its slot only if it <em>changes</em> during normal work or <em>locks</em> at a moment of choice. Static "live" pills (slack, bridge, daemon) violate the rule — they're system metadata, not feedback to your action.
+    </div>
+    <div>
+      <div class="num">2 right-rail sections out</div>
+      <h4>activity = activity</h4>
+      Skills and memory ended up in the activity panel because we had no better home. They aren't activity — they're stable inventories. The palette opens a dedicated surface for each. The activity rail returns to its job: showing what the agent did <em>this turn</em>.
+    </div>
+    <div>
+      <div class="num">cost</div>
+      <h4>what you give up</h4>
+      Glanceability of background services. Slack going down is now a failed-action discovery, not a chrome tell. For services that need attention in real time (computer-use sessions, scheduler runs in flight), a single one-pixel ambient indicator next to <code>session-id</code> would carry the load — without re-introducing pills.
+    </div>
+  </div>
+</div>
+
+<script>
+  // variant switcher
+  document.querySelectorAll('.picker button[data-variant]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const v = btn.dataset.variant;
+      document.querySelectorAll('.picker button[data-variant]').forEach((b) =>
+        b.classList.toggle('active', b.dataset.variant === v));
+      document.querySelectorAll('.variant').forEach((el) =>
+        el.classList.toggle('active', el.dataset.variant === v));
+      // close any open popovers when switching
+      document.querySelectorAll('.well.open, .tray.open, #dot-host.open').forEach((e) => e.classList.remove('open'));
+      document.body.classList.remove('palette-open', 'gw-open', 'scene-newsess');
+      const gwo = document.getElementById('gw-overlay');
+      const po  = document.getElementById('palette-overlay');
+      if (gwo) gwo.classList.remove('open');
+      if (po)  po.classList.remove('open');
+    });
+  });
+
+  // focus toggle
+  document.getElementById('focus-toggle').addEventListener('change', (e) => {
+    document.body.classList.toggle('focus', e.target.checked);
+  });
+
+  // ⌥-held simulator for the pull-down HUD
+  document.getElementById('hud-toggle').addEventListener('change', (e) => {
+    document.body.classList.toggle('hud', e.target.checked);
+  });
+
+  // v10 "show before" — re-renders the removed pills as ghosts so you
+  // can A/B against today's bar in place.
+  const v10Before = document.getElementById('v10-before');
+  if (v10Before) {
+    v10Before.addEventListener('change', (e) => {
+      document.body.classList.toggle('v10-before', e.target.checked);
+    });
+  }
+  // real ⌥ key: also drives the HUD when v4 is visible
+  document.addEventListener('keydown', (e) => {
+    if (e.altKey && document.querySelector('.variant.active[data-variant="v4"]')) {
+      document.body.classList.add('hud');
+    }
+  });
+  document.addEventListener('keyup', (e) => {
+    if (!e.altKey) document.body.classList.remove('hud');
+  });
+
+  // ──────────────────────────────────────────────────────────
+  //  Approach 9 — The Line: state controls + story timeline
+  // ──────────────────────────────────────────────────────────
+  (function v9() {
+    const bar     = document.getElementById('line-bar');
+    if (!bar) return;
+    const verbEl  = document.getElementById('line-verb');
+    const objEl   = document.getElementById('line-obj');
+    const tailEl  = document.getElementById('line-tail');
+    const agentsEl= document.getElementById('line-agents');
+    const agentsCount = document.getElementById('agents-count');
+    const tipBridge = document.getElementById('tip-bridge');
+    const tipStream = document.getElementById('tip-stream');
+    const tipCtx    = document.getElementById('tip-ctx');
+    const tipSpend  = document.getElementById('tip-spend');
+    const dotHost   = document.getElementById('dot-host');
+
+    // Mutually-exclusive class swap on the bar.
+    function setClass(prefix, value) {
+      bar.classList.forEach((c) => {
+        if (c.startsWith(prefix)) bar.classList.remove(c);
+      });
+      if (value) bar.classList.add(value);
+    }
+    function activate(group, value) {
+      document.querySelectorAll(`[data-${group}]`).forEach((b) => {
+        b.classList.toggle('on', b.dataset[group] === value);
+      });
+    }
+
+    // Soft verb-swap: fade out → mutate → fade in. 360ms total.
+    function setVerb(verb, obj) {
+      verbEl.classList.add('swap');
+      setTimeout(() => {
+        verbEl.textContent = verb;
+        objEl.textContent  = obj ? ' ' + obj : '';
+        verbEl.classList.remove('swap');
+      }, 180);
+    }
+    function setTail(html) { tailEl.innerHTML = html; }
+    function setAgents(n) {
+      if (n > 0) {
+        agentsCount.textContent = n;
+        agentsEl.style.display = 'inline';
+      } else {
+        agentsEl.style.display = 'none';
+      }
+    }
+
+    // State controls
+    document.querySelectorAll('[data-stream]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const v = b.dataset.stream;
+        bar.classList.remove('streaming', 'streaming-fast');
+        if (v === 'streaming') bar.classList.add('streaming');
+        if (v === 'streaming-fast') bar.classList.add('streaming', 'streaming-fast');
+        activate('stream', v);
+        tipStream.textContent =
+          v === 'streaming-fast' ? 'streaming · fast' :
+          v === 'streaming' ? 'streaming' : 'idle';
+        if (v !== 'idle') setTail('<span class="pulse"></span>opus-4.7 · 12s');
+        else setTail('opus-4.7');
+      })
+    );
+    document.querySelectorAll('[data-bridge]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const v = b.dataset.bridge;
+        setClass('bridge-', v);
+        activate('bridge', v);
+        tipBridge.textContent =
+          v === 'bridge-ok' ? 'live' :
+          v === 'bridge-degraded' ? 'degraded' : 'offline';
+      })
+    );
+    document.querySelectorAll('[data-ctx]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const v = b.dataset.ctx;
+        setClass('ctx-', v);
+        activate('ctx', v);
+        const pct =
+          v === 'ctx-low' ? 12 :
+          v === 'ctx-mid' ? 58 :
+          v === 'ctx-high' ? 82 : 96;
+        tipCtx.textContent = `${pct}% · ${(pct*2).toFixed(1)}k / 200k`;
+      })
+    );
+    document.getElementById('v9-flash').addEventListener('click', () => {
+      bar.classList.remove('error');
+      void bar.offsetWidth; // restart animation
+      bar.classList.add('error');
+      setTimeout(() => bar.classList.remove('error'), 1500);
+    });
+
+    // Compaction — the only ctx event the bar visualizes
+    const compactBtn = document.getElementById('v9-compact');
+    if (compactBtn) compactBtn.addEventListener('click', triggerCompaction);
+    function triggerCompaction() {
+      const prevVerb = verbEl.textContent;
+      const prevObj  = objEl.textContent;
+      // hold previous stream state so we know what to restore to
+      const wasStreaming = bar.classList.contains('streaming');
+      setVerb('compacting', 'context');
+      bar.classList.add('compacting');
+      // brief scan + desaturation
+      setTimeout(() => {
+        bar.classList.remove('compacting');
+        // restore: if we were streaming, return to thinking; else resting
+        if (wasStreaming) setVerb('thinking', '');
+        else setVerb('resting', '');
+      }, 1400);
+    }
+
+    // ── Scene picker — flips body content within v9 ──
+    document.querySelectorAll('.scenes button').forEach((b) =>
+      b.addEventListener('click', () => {
+        const s = b.dataset.scene;
+        document.querySelectorAll('.scenes button').forEach((x) =>
+          x.classList.toggle('on', x.dataset.scene === s));
+        // re-trigger scene-resolve by toggling off → on
+        document.querySelectorAll('.variant.active[data-variant="v9"] .scene').forEach((sc) => {
+          sc.classList.remove('on');
+        });
+        void document.body.offsetWidth; // force reflow so animation restarts
+        document.querySelectorAll('.variant.active[data-variant="v9"] .scene').forEach((sc) =>
+          sc.classList.toggle('on', sc.dataset.scene === s));
+
+        // Mark body so the palette can swap its content for the
+        // new-session scene (no "session controls" make sense yet,
+        // surface start-from / resume / presets instead).
+        document.body.classList.toggle('scene-newsess', s === 'newsess');
+
+        // For the newsess scene: dial down the streaming sweep + halo
+        // since there's no active turn. Just for visual honesty.
+        if (s === 'newsess') {
+          bar.classList.remove('streaming', 'streaming-fast');
+          setVerb('resting', '');
+          setTail('idle · ready');
+        }
+      })
+    );
+
+    // ── New session chip popovers ──
+    const modelChip = document.getElementById('chip-model');
+    const stratChip = document.getElementById('chip-strategy');
+    const popModel  = document.getElementById('pop-model');
+    const popStrat  = document.getElementById('pop-strategy');
+    function togglePop(target, other) {
+      other?.classList.remove('open');
+      target?.classList.toggle('open');
+    }
+    modelChip?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      togglePop(popModel, popStrat);
+    });
+    stratChip?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      togglePop(popStrat, popModel);
+    });
+    document.querySelectorAll('#pop-model .opt').forEach((o) =>
+      o.addEventListener('click', () => {
+        document.querySelectorAll('#pop-model .opt').forEach((x) => x.classList.remove('sel'));
+        o.classList.add('sel');
+        document.getElementById('chip-model-val').textContent =
+          o.querySelector('.label').textContent;
+        popModel.classList.remove('open');
+      })
+    );
+    document.querySelectorAll('#pop-strategy .opt').forEach((o) =>
+      o.addEventListener('click', () => {
+        document.querySelectorAll('#pop-strategy .opt').forEach((x) => x.classList.remove('sel'));
+        o.classList.add('sel');
+        document.getElementById('chip-strategy-val').textContent =
+          o.querySelector('.label').textContent;
+        popStrat.classList.remove('open');
+      })
+    );
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.ns-chip') && !e.target.closest('.ns-pop')) {
+        popModel?.classList.remove('open');
+        popStrat?.classList.remove('open');
+      }
+    });
+
+    // Dot click → expand services well
+    dotHost.addEventListener('click', (e) => {
+      e.stopPropagation();
+      dotHost.classList.toggle('open');
+    });
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('#dot-host')) dotHost.classList.remove('open');
+    });
+
+    // ──────────────────────────────────────────────────────────
+    //  The 90-second scripted scene — a real working session
+    //  told as a sequence of state transitions on the bar.
+    // ──────────────────────────────────────────────────────────
+    const SCENE = [
+      // t (s), description shown above marker, action
+      { t: 0,  label: 'rest',     fn: () => {
+        setVerb('resting', '');
+        setTail('opus-4.7 · 6 schedules · $0.04 today');
+        bar.classList.remove('streaming','streaming-fast','error');
+        setClass('bridge-', 'bridge-ok');
+        setClass('ctx-', 'ctx-low');
+        setAgents(0);
+        tipStream.textContent = 'idle';
+        tipBridge.textContent = 'live';
+        tipCtx.textContent = '12% · 23.4k / 200k';
+        tipSpend.textContent = '$0.04';
+      }},
+      { t: 7,  label: 'msg',      fn: () => {
+        setVerb('reading', 'your message');
+        setTail('opus-4.7');
+      }},
+      { t: 12, label: 'think',    fn: () => {
+        setVerb('thinking');
+        bar.classList.add('streaming');
+        setTail('<span class="pulse"></span>opus-4.7 · 4s');
+        tipStream.textContent = 'streaming';
+      }},
+      { t: 22, label: 'reading',  fn: () => {
+        setVerb('reading', 'scheduler-store.ts');
+        setTail('<span class="pulse"></span>opus-4.7 · 14s');
+        tipSpend.textContent = '$0.12';
+      }},
+      { t: 30, label: 'editing',  fn: () => {
+        setVerb('editing', 'ScheduledJobsDashboard.tsx');
+        bar.classList.add('streaming-fast');
+        setTail('<span class="pulse"></span>opus-4.7 · 22s');
+        setClass('ctx-', 'ctx-mid');
+        tipCtx.textContent = '58% · 115.7k / 200k';
+        tipSpend.textContent = '$0.41';
+      }},
+      { t: 42, label: 'fan-out',  fn: () => {
+        setVerb('coordinating', '3 sub-agents');
+        setAgents(3);
+        setTail('<span class="pulse"></span>opus-4.7 · 34s');
+        tipSpend.textContent = '$0.78';
+      }},
+      { t: 55, label: 'pressure', fn: () => {
+        setVerb('synthesizing');
+        setClass('ctx-', 'ctx-high');
+        tipCtx.textContent = '82% · 164.1k / 200k';
+        tipSpend.textContent = '$1.06';
+      }},
+      { t: 64, label: 'bridge',   fn: () => {
+        // mid-scene the bridge hiccups — flash + degraded
+        bar.classList.remove('error'); void bar.offsetWidth; bar.classList.add('error');
+        setClass('bridge-', 'bridge-degraded');
+        tipBridge.textContent = 'degraded';
+        setTimeout(() => bar.classList.remove('error'), 1500);
+      }},
+      { t: 70, label: 'recover',  fn: () => {
+        setClass('bridge-', 'bridge-ok');
+        tipBridge.textContent = 'live';
+        setVerb('finalizing', 'the answer');
+        bar.classList.remove('streaming-fast');
+        setAgents(0);
+      }},
+      { t: 78, label: 'compact',  fn: () => {
+        // Now uses the real compaction beat — desaturate + scan + verb.
+        setClass('ctx-', 'ctx-critical');
+        tipCtx.textContent = '96% · 192.4k / 200k';
+        setVerb('compacting', 'context');
+        bar.classList.add('compacting');
+        setTimeout(() => bar.classList.remove('compacting'), 1400);
+      }},
+      { t: 82, label: 'relief',   fn: () => {
+        setClass('ctx-', 'ctx-mid');
+        tipCtx.textContent = '46% · 92.0k / 200k';
+        tipSpend.textContent = '$1.42';
+        setVerb('finalizing', 'the answer');
+      }},
+      { t: 88, label: 'rest',     fn: () => {
+        setVerb('resting', '');
+        bar.classList.remove('streaming','streaming-fast');
+        setTail('opus-4.7 · 6 schedules · $1.42 today');
+        setClass('ctx-', 'ctx-low');
+        tipStream.textContent = 'idle';
+        tipCtx.textContent = '12% · 23.4k / 200k';
+      }},
+    ];
+
+    let sceneTimer = null;
+    let sceneStartedAt = 0;
+    const DURATION = 92; // seconds
+    const playBtn = document.getElementById('v9-play');
+    const stopBtn = document.getElementById('v9-stop');
+    const storyBar = document.getElementById('v9-story-bar');
+    const fill = storyBar.querySelector('.fill');
+    const nowMark = storyBar.querySelector('.now');
+
+    function stopScene() {
+      if (sceneTimer) clearInterval(sceneTimer);
+      sceneTimer = null;
+      storyBar.style.display = 'none';
+      playBtn.style.display = '';
+      stopBtn.style.display = 'none';
+      SCENE[0].fn();
+    }
+
+    function playScene() {
+      stopScene();
+      storyBar.style.display = '';
+      playBtn.style.display = 'none';
+      stopBtn.style.display = '';
+      sceneStartedAt = performance.now();
+      let fired = new Set();
+      sceneTimer = setInterval(() => {
+        const elapsed = (performance.now() - sceneStartedAt) / 1000;
+        const pct = Math.min(100, (elapsed / DURATION) * 100);
+        fill.style.width = pct + '%';
+        nowMark.style.left = pct + '%';
+        nowMark.textContent = `${elapsed.toFixed(0)}s`;
+        SCENE.forEach((step, i) => {
+          if (elapsed >= step.t && !fired.has(i)) {
+            fired.add(i);
+            try { step.fn(); } catch (e) { /* */ }
+          }
+        });
+        if (elapsed >= DURATION) {
+          fill.style.width = '100%';
+          stopScene();
+        }
+      }, 80);
+    }
+
+    playBtn.addEventListener('click', playScene);
+    stopBtn.addEventListener('click', stopScene);
+
+    // initial seed
+    SCENE[0].fn();
+  })();
+
+  // ──────────────────────────────────────────────────────────
+  //  GATEWAYS panel — open from drawer, close via esc / button
+  // ──────────────────────────────────────────────────────────
+  function openGateways() {
+    document.body.classList.add('gw-open');
+    document.getElementById('gw-overlay').classList.add('open');
+    document.getElementById('dot-host').classList.remove('open');
+  }
+  function closeGateways() {
+    document.body.classList.remove('gw-open');
+    document.getElementById('gw-overlay').classList.remove('open');
+  }
+  document.addEventListener('DOMContentLoaded', () => {
+    const trig = document.getElementById('open-gateways');
+    if (trig) trig.addEventListener('click', openGateways);
+    const overlay = document.getElementById('gw-overlay');
+    if (overlay) overlay.addEventListener('click', closeGateways);
+
+    // gateway filter chips
+    document.querySelectorAll('[data-gwf]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('[data-gwf]').forEach((b) =>
+          b.classList.toggle('on', b === btn));
+        const t = btn.dataset.gwf;
+        document.querySelectorAll('[data-gwt]').forEach((sec) => {
+          sec.style.display = (t === 'all' || sec.dataset.gwt === t) ? '' : 'none';
+        });
+      });
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────
+  //  COMMAND PALETTE — ⌘K (or Ctrl+K) summons; esc closes
+  // ──────────────────────────────────────────────────────────
+  function openPalette() {
+    document.body.classList.add('palette-open');
+    document.getElementById('palette-overlay').classList.add('open');
+    const inp = document.getElementById('palette-input');
+    setTimeout(() => inp.focus(), 60);
+    document.getElementById('dot-host').classList.remove('open');
+  }
+  function closePalette() {
+    document.body.classList.remove('palette-open');
+    document.getElementById('palette-overlay').classList.remove('open');
+    const inp = document.getElementById('palette-input');
+    if (inp) inp.value = '';
+    filterPalette('');
+  }
+  function filterPalette(q) {
+    q = q.toLowerCase().trim();
+    let lastVisibleGroup = null;
+    document.querySelectorAll('.palette-body > *').forEach((el) => {
+      if (el.classList.contains('palette-group')) {
+        lastVisibleGroup = el;
+        el.style.display = 'none';
+        return;
+      }
+      if (!q) {
+        el.style.display = '';
+        if (lastVisibleGroup) lastVisibleGroup.style.display = '';
+        return;
+      }
+      const hay = (el.dataset.q || '') + ' ' + el.textContent.toLowerCase();
+      const hit = hay.includes(q);
+      el.style.display = hit ? '' : 'none';
+      if (hit && lastVisibleGroup) lastVisibleGroup.style.display = '';
+    });
+  }
+  document.addEventListener('DOMContentLoaded', () => {
+    const inp = document.getElementById('palette-input');
+    if (inp) inp.addEventListener('input', (e) => filterPalette(e.target.value));
+
+    // route drawer items that open the palette
+    document.querySelectorAll('[data-open="palette"]').forEach((el) =>
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        document.getElementById('dot-host').classList.remove('open');
+        // Most surfaces would route to their own modal — for the
+        // mock, we show the palette so the user can see where the
+        // entry path lives.
+        openPalette();
+        // pre-seed the search so the user lands on the row they clicked
+        const label = el.querySelector('.label')?.textContent?.trim() || '';
+        if (label) {
+          inp.value = label;
+          filterPalette(label);
+        }
+      })
+    );
+  });
+
+  // global ⌘K (or Ctrl+K) on v9 + v10
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      if (document.querySelector('.variant.active[data-variant="v9"]')) {
+        e.preventDefault();
+        if (document.body.classList.contains('palette-open')) closePalette();
+        else openPalette();
+      } else if (document.querySelector('.variant.active[data-variant="v10"]')) {
+        // The v10 palette is always rendered inline. ⌘K pulses it —
+        // a soft glow + "⌘K fired" flag — so the user sees the
+        // already-visible palette IS the palette they just summoned.
+        e.preventDefault();
+        document.body.classList.remove('v10-pulse');
+        void document.body.offsetWidth; // restart animation
+        document.body.classList.add('v10-pulse');
+        clearTimeout(window.__v10PulseT);
+        window.__v10PulseT = setTimeout(() =>
+          document.body.classList.remove('v10-pulse'), 1500);
+      }
+    }
+    if (e.key === 'Escape') {
+      if (document.body.classList.contains('palette-open')) closePalette();
+      else if (document.body.classList.contains('gw-open')) closeGateways();
+    }
+  });
+
+  // popover toggles
+  function toggleWell(id) {
+    document.getElementById(id).classList.toggle('open');
+    document.querySelectorAll('.tray.open').forEach((e) => e.classList.remove('open'));
+  }
+  function toggleTray(id) {
+    document.getElementById(id).classList.toggle('open');
+    document.querySelectorAll('.well.open').forEach((e) => e.classList.remove('open'));
+  }
+  // click-outside closes
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.well') && !e.target.closest('.tray')) {
+      document.querySelectorAll('.well.open, .tray.open').forEach((el) => el.classList.remove('open'));
+    }
+  });
+</script>
+
+</body>
+</html>

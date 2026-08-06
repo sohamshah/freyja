@@ -1,0 +1,805 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Morning Room — C. The Broadsheet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,700;9..144,900&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a; --bg-1:#121212; --bg-2:#181818; --bg-3:#1e1e1e;
+    --fg-0:#e8e8e8; --fg-1:#a8a8a8; --fg-2:#6e6e6e; --fg-3:#4a4a4a; --fg-4:#303030;
+    --accent:#a8d4fc; --accent-hi:#c4e0fc; --accent-lo:#7aafea;
+    --ok:#a8b0a8; --warn:#b8a078; --danger:#b48282;
+    --hairline:rgba(255,255,255,0.08);
+    --hairline-strong:rgba(255,255,255,0.18);
+    --ink:#e8e8e8; --ink-light:#a8a8a8; --ink-mid:#6e6e6e;
+    --rule-heavy:rgba(255,255,255,0.32);
+    --mono:'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { margin:0; min-height:100%; background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:12.5px; line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+    font-feature-settings:'ss01' on, 'ss02' on, 'cv11' on, 'tnum' on;
+  }
+
+  /* "Paper" texture — barely visible to suggest broadsheet without being skeuomorphic */
+  body::before {
+    content:""; position:fixed; inset:0; z-index:0; pointer-events:none;
+    background:
+      radial-gradient(1400px 900px at 50% -10%, rgba(168,212,252,0.035), transparent 60%),
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.008) 0 1px, transparent 1px 3px),
+      linear-gradient(180deg, rgba(255,255,255,0.014) 0%, transparent 30%);
+  }
+
+  /* === grain + halftone overlays === */
+  .grain {
+    position:fixed; inset:0; z-index:9000;
+    pointer-events:none; opacity:0.075;
+    mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.6 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    background-size:240px 240px;
+  }
+  /* Halftone behind masthead — newspaper rotogravure echo */
+  .halftone {
+    position:fixed; inset:0; z-index:8999;
+    pointer-events:none; opacity:0.34;
+    mix-blend-mode:screen;
+    background-image:radial-gradient(circle, rgba(255,255,255,0.085) 0.5px, transparent 1.2px);
+    background-size:3px 3px;
+    -webkit-mask-image:
+      radial-gradient(ellipse 760px 380px at 50% 9%, rgba(0,0,0,0.85), transparent 75%);
+    mask-image:
+      radial-gradient(ellipse 760px 380px at 50% 9%, rgba(0,0,0,0.85), transparent 75%);
+  }
+  /* Secondary halftone band behind every section rule */
+  .halftone-rule {
+    height:8px;
+    background-image:radial-gradient(circle, rgba(168,212,252,0.18) 0.55px, transparent 1.2px);
+    background-size:3.5px 3.5px;
+    opacity:0.55;
+    mask-image:linear-gradient(180deg, transparent 0%, rgba(0,0,0,1) 50%, transparent 100%);
+    -webkit-mask-image:linear-gradient(180deg, transparent 0%, rgba(0,0,0,1) 50%, transparent 100%);
+    margin:6px 0;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .grain { opacity:0.04; }
+  }
+
+  .page { position:relative; z-index:1; max-width:1320px; margin:0 auto; padding:36px 48px 64px; }
+
+  /* ───── MASTHEAD ───── */
+  .masthead {
+    border-bottom:3px solid var(--rule-heavy);
+    padding-bottom:18px;
+    margin-bottom:8px;
+    position:relative;
+  }
+  .masthead-pre {
+    display:flex; align-items:center; justify-content:space-between;
+    color:var(--fg-3); font-size:9.5px; letter-spacing:0.32em; text-transform:uppercase;
+    padding-bottom:14px; margin-bottom:18px;
+    border-bottom:1px solid var(--hairline);
+  }
+  .masthead-pre .l, .masthead-pre .r { display:flex; gap:24px; align-items:center; }
+  .masthead-pre .star { color:var(--accent); }
+  .masthead-pre .live {
+    display:inline-flex; align-items:center; gap:6px;
+  }
+  .masthead-pre .live .d {
+    width:5px; height:5px; border-radius:999px; background:var(--accent);
+    box-shadow:0 0 7px var(--accent); animation:beat 2.4s ease-in-out infinite;
+  }
+  @keyframes beat { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+
+  .masthead .title-row {
+    display:grid; grid-template-columns:1fr auto 1fr; align-items:end; gap:24px;
+    padding-bottom:8px;
+  }
+  .masthead .left-meta, .masthead .right-meta {
+    color:var(--fg-2); font-size:10.5px; line-height:1.7; letter-spacing:0.04em;
+  }
+  .masthead .left-meta { text-align:left; }
+  .masthead .right-meta { text-align:right; }
+  .masthead .left-meta strong, .masthead .right-meta strong { color:var(--fg-0); font-weight:400; }
+
+  .masthead h1.title {
+    font-family:var(--serif); font-weight:700; font-style:italic;
+    font-size:108px; line-height:0.9; letter-spacing:-0.04em;
+    color:var(--fg-0); margin:0; text-align:center;
+    text-rendering:optimizeLegibility;
+  }
+  .masthead h1.title .dot {
+    color:var(--accent); font-style:normal;
+  }
+
+  .masthead-post {
+    display:flex; align-items:center; justify-content:space-between;
+    padding-top:14px;
+    border-top:1px solid var(--hairline);
+    color:var(--fg-3); font-size:9.5px; letter-spacing:0.22em; text-transform:uppercase;
+  }
+  .masthead-post .epigraph {
+    font-family:var(--serif); font-weight:300; font-style:italic;
+    font-size:13.5px; letter-spacing:0; text-transform:none; color:var(--fg-1);
+  }
+
+  /* ───── ABOVE THE FOLD ───── */
+  .fold-1 {
+    display:grid;
+    grid-template-columns: 1fr 1fr 1fr 0.95fr;
+    gap:0;
+    border-bottom:2px solid var(--rule-heavy);
+    margin-top:24px;
+  }
+  .col { padding:22px 24px; border-right:1px solid var(--hairline); }
+  .col:last-child { border-right:none; }
+
+  /* LEAD STORY (spans 3 cols) */
+  .lead {
+    grid-column: span 3; padding:24px 30px 26px;
+    position:relative;
+  }
+  .lead .kicker {
+    color:var(--accent); font-size:10px; letter-spacing:0.32em; text-transform:uppercase;
+    margin-bottom:14px;
+    font-weight:500;
+  }
+  .lead .headline {
+    font-family:var(--serif); font-weight:300;
+    font-size:62px; line-height:1.02; letter-spacing:-0.02em;
+    color:var(--fg-0); margin:0 0 14px;
+    max-width:90%;
+  }
+  .lead .headline em { font-style:italic; font-weight:400; color:var(--accent); }
+  .lead .deck {
+    font-family:var(--serif); font-weight:300; font-style:italic;
+    font-size:18px; line-height:1.45; color:var(--fg-1);
+    margin:0 0 18px; max-width:88%;
+  }
+  .lead .byline {
+    color:var(--fg-3); font-size:10px; letter-spacing:0.18em; text-transform:uppercase;
+    margin-bottom:18px;
+    border-bottom:1px solid var(--hairline); padding-bottom:14px;
+  }
+  .lead .byline .b { color:var(--fg-1); }
+
+  .lead .body {
+    columns:2; column-gap:34px; column-rule:1px solid var(--hairline);
+    color:var(--fg-1); font-size:13.5px; line-height:1.65;
+  }
+  .lead .body p { margin:0 0 12px; break-inside:avoid; }
+  .lead .body p:first-child::first-letter {
+    font-family:var(--serif); font-weight:400;
+    float:left; font-size:46px; line-height:0.9;
+    padding:6px 8px 0 0; color:var(--accent);
+  }
+  .lead .body .sm { font-size:10.5px; color:var(--fg-3); letter-spacing:0.04em; }
+
+  .lead .specsheet {
+    margin-top:18px; padding:12px 14px;
+    border:1px solid var(--hairline); border-radius:6px;
+    background:rgba(255,255,255,0.022);
+    display:grid; grid-template-columns:repeat(4, 1fr); gap:10px 18px;
+  }
+  .lead .specsheet .r { font-size:10.5px; color:var(--fg-2); display:flex; flex-direction:column; gap:3px; }
+  .lead .specsheet .k { color:var(--fg-3); font-size:9.5px; letter-spacing:0.18em; text-transform:uppercase; }
+  .lead .specsheet .v { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+  .lead .specsheet .v.acc { color:var(--accent); }
+
+  .lead .actions {
+    margin-top:18px; padding-top:14px; border-top:1px solid var(--hairline);
+    display:flex; gap:8px; align-items:center;
+  }
+  .lead .actions .verb {
+    font-family:var(--mono); font-size:11px; letter-spacing:0.06em;
+    padding:8px 14px; border-radius:4px;
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer;
+    transition:all 140ms ease;
+  }
+  .lead .actions .verb.primary {
+    color:var(--accent); border-color:rgba(168,212,252,0.42);
+    background:rgba(168,212,252,0.08);
+  }
+  .lead .actions .verb:hover { color:var(--fg-0); border-color:var(--hairline-strong); }
+  .lead .actions .verb.primary:hover { background:rgba(168,212,252,0.16); }
+  .lead .actions .spacer { flex:1; }
+  .lead .actions .hint { color:var(--fg-3); font-size:10px; letter-spacing:0.16em; text-transform:uppercase; }
+
+  /* RIGHT GUTTER (overnight + pulse stack) */
+  .right-gutter {
+    grid-column: span 1;
+    padding:24px 22px;
+    background:rgba(255,255,255,0.012);
+    border-left:1px solid var(--hairline);
+  }
+  .gutter-h {
+    font-family:var(--serif); font-weight:400; font-style:italic;
+    font-size:18px; color:var(--fg-0);
+    margin:0 0 12px;
+    padding-bottom:8px;
+    border-bottom:2px solid var(--rule-heavy);
+  }
+  .briefs { display:flex; flex-direction:column; gap:11px; margin-bottom:24px; }
+  .brief {
+    display:grid; grid-template-columns:42px 1fr; gap:8px;
+    border-bottom:1px dashed rgba(255,255,255,0.06);
+    padding-bottom:10px;
+  }
+  .brief:last-child { border-bottom:none; }
+  .brief .ts {
+    font-family:var(--mono); color:var(--fg-3); font-size:10px;
+    letter-spacing:0.04em; font-variant-numeric:tabular-nums;
+    text-align:right; padding-top:1px;
+  }
+  .brief .body { font-size:11.5px; line-height:1.45; color:var(--fg-1); }
+  .brief .body .id { color:var(--accent); }
+  .brief .body .h { color:var(--fg-0); font-weight:500; }
+  .brief.flag .ts { color:var(--warn); }
+  .brief.flag .body .h { color:var(--warn); }
+  .brief.win .ts { color:var(--ok); }
+  .brief.win .body .h { color:var(--ok); }
+  .brief.acc .ts { color:var(--accent); }
+  .brief.acc .body .h { color:var(--accent); }
+
+  /* PULSE block inside gutter */
+  .pulse-h {
+    font-family:var(--serif); font-weight:400; font-style:italic;
+    font-size:14px; color:var(--fg-0);
+    margin:18px 0 8px;
+    padding-bottom:6px;
+    border-bottom:1px solid var(--hairline);
+  }
+  .pulse-block { color:var(--fg-1); font-size:11.5px; line-height:1.65; margin-bottom:12px; }
+  .pulse-block .v { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+  .pulse-block .v.acc { color:var(--accent); }
+  .micro-table {
+    font-size:10.5px; color:var(--fg-2);
+    display:grid; grid-template-columns:1fr auto; gap:4px 14px;
+  }
+  .micro-table .k { letter-spacing:0.04em; }
+  .micro-table .v { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+
+  /* ───── BELOW THE FOLD ───── */
+  .section-h {
+    margin:36px 0 18px;
+    padding-bottom:10px;
+    border-bottom:1px solid var(--hairline);
+    display:flex; align-items:baseline; justify-content:space-between;
+  }
+  .section-h .label {
+    font-family:var(--serif); font-weight:300; font-style:italic;
+    font-size:30px; color:var(--fg-0); letter-spacing:-0.005em;
+  }
+  .section-h .label em { color:var(--accent); font-style:italic; font-weight:400; }
+  .section-h .meta {
+    color:var(--fg-3); font-size:10px; letter-spacing:0.22em; text-transform:uppercase;
+  }
+
+  /* EDITORIAL ROW — three op-eds for Needs You */
+  .editorial {
+    display:grid; grid-template-columns:1.1fr 0.95fr 1fr; gap:1px;
+    background:var(--hairline);
+    border-top:1px solid var(--rule-heavy);
+    border-bottom:1px solid var(--rule-heavy);
+  }
+  .oped {
+    background:var(--bg-0); padding:22px 22px;
+  }
+  .oped .tag {
+    display:inline-flex; align-items:center; gap:6px;
+    color:var(--fg-3); font-size:9.5px; letter-spacing:0.24em; text-transform:uppercase;
+    margin-bottom:10px;
+    padding-bottom:8px;
+    border-bottom:1px solid var(--hairline);
+  }
+  .oped .tag .pin {
+    width:5px; height:5px; border-radius:999px; background:var(--fg-3);
+  }
+  .oped.dn .tag { color:var(--danger); }
+  .oped.dn .tag .pin { background:var(--danger); box-shadow:0 0 7px rgba(180,130,130,0.5); }
+  .oped.wn .tag { color:var(--warn); }
+  .oped.wn .tag .pin { background:var(--warn); box-shadow:0 0 7px rgba(184,160,120,0.45); }
+  .oped.ac .tag { color:var(--accent); }
+  .oped.ac .tag .pin { background:var(--accent); box-shadow:0 0 7px var(--accent); }
+  .oped .head {
+    font-family:var(--serif); font-weight:400;
+    font-size:24px; line-height:1.12; letter-spacing:-0.005em;
+    color:var(--fg-0); margin:0 0 10px;
+  }
+  .oped .head em { font-style:italic; color:var(--accent); }
+  .oped .quote {
+    font-family:var(--serif); font-weight:300; font-style:italic;
+    color:var(--fg-1); font-size:14px; line-height:1.5;
+    border-left:2px solid var(--hairline-strong); padding-left:12px;
+    margin:10px 0 12px;
+  }
+  .oped p { color:var(--fg-1); font-size:12px; line-height:1.6; margin:0 0 12px; }
+  .oped p em { color:var(--fg-0); font-style:normal; font-weight:500; }
+  .oped .signoff {
+    color:var(--fg-3); font-size:9.5px; letter-spacing:0.18em; text-transform:uppercase;
+    margin:14px 0 12px;
+    padding-top:10px; border-top:1px dashed rgba(255,255,255,0.06);
+  }
+  .oped .acts { display:flex; gap:6px; flex-wrap:wrap; }
+  .oped .verb {
+    font-family:var(--mono); font-size:10.5px; letter-spacing:0.04em;
+    padding:6px 11px; border-radius:4px;
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer;
+    transition:all 140ms ease;
+  }
+  .oped .verb.primary { color:var(--accent); border-color:rgba(168,212,252,0.42); background:rgba(168,212,252,0.08); }
+  .oped .verb:hover { color:var(--fg-0); border-color:var(--hairline-strong); }
+  .oped .verb.primary:hover { background:rgba(168,212,252,0.16); }
+  .oped .verb.muted { color:var(--fg-3); }
+
+  /* BELOW THE FOLD — also-running stories */
+  .also {
+    display:grid; grid-template-columns:1fr 1fr; gap:1px;
+    background:var(--hairline);
+    margin-top:24px;
+    border-top:1px solid var(--hairline);
+  }
+  .story {
+    background:var(--bg-0); padding:24px 26px;
+    display:grid; grid-template-columns:60px 1fr; gap:18px;
+  }
+  .story .num {
+    font-family:var(--serif); font-weight:300; font-style:italic;
+    font-size:54px; line-height:0.9; color:var(--fg-2);
+  }
+  .story .right { display:flex; flex-direction:column; gap:10px; }
+  .story .kicker {
+    color:var(--fg-3); font-size:9.5px; letter-spacing:0.24em; text-transform:uppercase;
+  }
+  .story .head {
+    font-family:var(--serif); font-weight:300; font-size:28px; line-height:1.1;
+    letter-spacing:-0.005em; color:var(--fg-0); margin:0;
+  }
+  .story .deck {
+    font-family:var(--serif); font-weight:300; font-style:italic;
+    color:var(--fg-1); font-size:14px; line-height:1.5;
+  }
+  .story .factbox {
+    display:grid; grid-template-columns:repeat(2,1fr); gap:6px 18px;
+    margin:8px 0; padding:10px 12px;
+    border-top:1px solid var(--hairline); border-bottom:1px solid var(--hairline);
+    background:rgba(255,255,255,0.018);
+    font-size:10.5px;
+  }
+  .story .factbox .k { color:var(--fg-3); letter-spacing:0.14em; text-transform:uppercase; font-size:9.5px; }
+  .story .factbox .v { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+  .story .factbox .v.acc { color:var(--accent); }
+  .story .acts { display:flex; gap:6px; }
+  .story .verb {
+    font-family:var(--mono); font-size:10.5px; letter-spacing:0.04em;
+    padding:5px 11px; border-radius:4px;
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer; transition:all 140ms ease;
+  }
+  .story .verb.primary { color:var(--accent); border-color:rgba(168,212,252,0.42); background:rgba(168,212,252,0.08); }
+  .story .verb:hover { color:var(--fg-0); }
+  .story .verb.muted { color:var(--fg-3); }
+
+  /* ───── FOOTER: TICKER + COMMIT ───── */
+  .ticker-rule { border-top:3px double var(--rule-heavy); margin-top:36px; padding-top:14px; }
+
+  .ticker {
+    overflow:hidden; white-space:nowrap;
+    border-bottom:1px solid var(--hairline);
+    padding:8px 0 14px;
+    color:var(--fg-2); font-size:10.5px; letter-spacing:0.06em;
+    font-variant-numeric:tabular-nums;
+    position:relative;
+  }
+  .ticker-track {
+    display:inline-flex; gap:28px; padding-left:100%;
+    animation:tick 38s linear infinite;
+  }
+  .ticker-item { display:inline-flex; gap:8px; align-items:center; }
+  .ticker-item .k { color:var(--fg-3); letter-spacing:0.18em; text-transform:uppercase; font-size:9.5px; }
+  .ticker-item .v { color:var(--fg-0); }
+  .ticker-item .v.acc { color:var(--accent); }
+  .ticker-item .v.up::after { content:" ▲"; color:var(--warn); }
+  .ticker-item .v.dn::after { content:" ▼"; color:var(--ok); }
+  .ticker-item .sep { color:var(--fg-4); }
+  @keyframes tick { from { transform:translateX(0); } to { transform:translateX(-100%); } }
+  @media (prefers-reduced-motion: reduce) {
+    .ticker-track { animation:none; padding-left:0; }
+  }
+
+  .colophon {
+    margin-top:24px; padding-top:22px;
+    border-top:2px solid var(--rule-heavy);
+    display:grid; grid-template-columns:1fr 1fr 1fr; gap:36px;
+    align-items:end;
+  }
+  .colophon .commit-h {
+    font-family:var(--serif); font-weight:300; font-style:italic;
+    font-size:22px; color:var(--fg-0); margin:0 0 6px;
+  }
+  .colophon .commit-sub { color:var(--fg-2); font-size:11px; line-height:1.6; }
+  .colophon .plans { display:flex; flex-direction:column; gap:8px; }
+  .colophon .plan {
+    display:grid; grid-template-columns:1fr auto; gap:12px;
+    padding:12px 14px;
+    border:1px solid var(--hairline); border-radius:4px;
+    background:rgba(255,255,255,0.018);
+    color:var(--fg-0); font-size:12px;
+    cursor:pointer; transition:all 160ms ease;
+  }
+  .colophon .plan:hover { border-color:var(--hairline-strong); background:rgba(255,255,255,0.03); }
+  .colophon .plan.primary {
+    color:var(--accent); border-color:rgba(168,212,252,0.42);
+    background:rgba(168,212,252,0.08);
+  }
+  .colophon .plan.primary:hover { background:rgba(168,212,252,0.16); }
+  .colophon .plan .mut { color:var(--fg-2); font-size:10.5px; }
+  .colophon .plan .kbd {
+    display:inline-flex; align-items:center; padding:3px 7px; border-radius:3px;
+    font-size:9.5px; color:var(--fg-2); letter-spacing:0.08em;
+    background:rgba(255,255,255,0.04); border:1px solid var(--hairline);
+  }
+  .colophon .signature {
+    color:var(--fg-3); font-size:10px; letter-spacing:0.18em; text-transform:uppercase;
+    text-align:right; line-height:1.7;
+  }
+  .colophon .signature .em { color:var(--fg-1); }
+
+  /* ornament: a small "freyja" colophon star */
+  .ornament {
+    color:var(--accent); font-size:14px; letter-spacing:0; text-align:center;
+    margin:8px 0;
+  }
+
+  /* keyboard hint flash */
+  .flash { animation:flash 480ms ease; }
+  @keyframes flash {
+    0% { box-shadow:0 0 0 0 rgba(168,212,252,0); }
+    30% { box-shadow:0 0 0 3px rgba(168,212,252,0.45), 0 0 24px rgba(168,212,252,0.28); }
+    100% { box-shadow:0 0 0 0 rgba(168,212,252,0); }
+  }
+</style>
+</head>
+<body>
+
+<div class="grain" aria-hidden="true"></div>
+<div class="halftone" aria-hidden="true"></div>
+
+<div class="page">
+
+  <!-- ───── MASTHEAD ───── -->
+  <header class="masthead">
+
+    <div class="masthead-pre">
+      <div class="l">
+        <span class="star">✦</span>
+        <span>morning brief</span>
+        <span>wf_4f3a7b</span>
+      </div>
+      <div class="r">
+        <span class="live"><span class="d"></span> autopilot live</span>
+        <span>pid 4742</span>
+        <span>06:30:14</span>
+      </div>
+    </div>
+
+    <div class="title-row">
+      <div class="left-meta">
+        <strong>Monday</strong>, June 2, 2026<br/>
+        <strong>7h 12m</strong> since you closed the workshop<br/>
+        4 sessions ran · 1 paused
+      </div>
+
+      <h1 class="title">freyja<span class="dot">.</span></h1>
+
+      <div class="right-meta">
+        3 priorities staged · 3 decisions open<br/>
+        forecast <strong>~$5.40</strong> · <strong>~340k</strong> tokens<br/>
+        next brief at 06:30 tomorrow
+      </div>
+    </div>
+
+    <div class="halftone-rule"></div>
+  </header>
+
+  <!-- ───── ABOVE THE FOLD ───── -->
+  <section class="fold-1">
+
+    <!-- LEAD STORY -->
+    <article class="lead">
+      <div class="kicker">today · 1 of 3</div>
+
+      <h2 class="headline">
+        <em>card_042</em> — rework cycle restart.
+      </h2>
+      <p class="deck">
+        Ballot-research card hit the five-iteration cap overnight on partial coverage of county supervisor seats. Pre-loaded context bundle ready; existing worker session waiting to be rewoken.
+      </p>
+      <div class="byline">
+        worker <span class="b">code · sub_19e851</span> · model <span class="b">gpt-5.5</span> · ctx <span class="b">1m</span> · coord <span class="b">kanban</span>
+      </div>
+
+      <div class="body">
+        <p>
+          Five judge cycles since Sunday afternoon. Total spend on this card: <strong style="color:var(--fg-0); font-weight:400;">$1.84</strong>. Third card in seven days to reach the rework cap on this workload. Last verdict scored 0.97 confidence in rejection with a specific demand: complete the city-offices list before any further round can pass.
+        </p>
+        <p>
+          Pre-loaded context bundle: full judge transcript (3,200 lines), prior <code>ballot_v3.md</code> artifact, and the <code>city-offices.csv</code> from a previous explore-fast fanout. Approach: rewake the existing worker session rather than spawn a fresh one — preserves accumulated context, costs less.
+        </p>
+        <p class="sm">
+          if this revision lands clean, autopilot stays on the rest of the day. if it bounces at iter 6, retire and ship coverage-as-is.
+        </p>
+      </div>
+
+      <div class="specsheet">
+        <div class="r"><span class="k">worker</span><span class="v">code · sub_19e851</span></div>
+        <div class="r"><span class="k">model</span><span class="v">gpt-5.5</span></div>
+        <div class="r"><span class="k">coord</span><span class="v acc">kanban</span></div>
+        <div class="r"><span class="k">ctx limit</span><span class="v">1,000,000</span></div>
+        <div class="r"><span class="k">est duration</span><span class="v">14–22m</span></div>
+        <div class="r"><span class="k">est spend</span><span class="v">$0.34–$0.52</span></div>
+        <div class="r"><span class="k">est judge cycles</span><span class="v">1–2</span></div>
+        <div class="r"><span class="k">attached files</span><span class="v">3</span></div>
+      </div>
+
+      <div class="actions">
+        <button class="verb primary">stage</button>
+        <button class="verb">run now</button>
+        <button class="verb">edit shape</button>
+        <button class="verb muted">skip today</button>
+        <span class="spacer"></span>
+        <span class="hint">press 1 to commit</span>
+      </div>
+    </article>
+
+    <!-- RIGHT GUTTER -->
+    <aside class="right-gutter">
+      <h3 class="gutter-h">Overnight</h3>
+      <div class="briefs">
+        <div class="brief win">
+          <div class="ts">22:34</div>
+          <div class="body"><span class="h">judge passed card_017</span> — ballot research v3, iter 2/5, conf 0.94. Sealed.</div>
+        </div>
+        <div class="brief acc">
+          <div class="ts">22:51</div>
+          <div class="body"><span class="h">explore-fast × 3 fanout</span> — 47 sources · 32 min · $0.67.</div>
+        </div>
+        <div class="brief win">
+          <div class="ts">03:14</div>
+          <div class="body"><span class="h">drafter saved 2 skill candidates</span> — pending review.</div>
+        </div>
+        <div class="brief flag">
+          <div class="ts">04:02</div>
+          <div class="body"><span class="h">autopilot dispatched 4 cards</span> — 3 done · 1 hit rework cap.</div>
+        </div>
+        <div class="brief flag">
+          <div class="ts">05:21</div>
+          <div class="body"><span class="h">goal freyja-design-pass paused</span> at iter 4 — 2 open questions.</div>
+        </div>
+        <div class="brief">
+          <div class="ts">06:00</div>
+          <div class="body"><span class="h">scheduler ran slack-morning-digest</span> — posted to #ema-news.</div>
+        </div>
+      </div>
+
+      <h3 class="pulse-h">By the numbers</h3>
+      <div class="pulse-block">
+        Yesterday: <span class="v acc">$4.82</span> across <span class="v">4 sessions</span>, <span class="v">327k</span> output tokens. Longest run was <span class="v">card_017</span> at <span class="v">3h17m</span> on autopilot.
+      </div>
+      <div class="micro-table">
+        <span class="k">judge pass rate (7d)</span><span class="v">68% · 19/28</span>
+        <span class="k">cooperation share</span><span class="v">82% / 18%</span>
+        <span class="k">top tool yesterday</span><span class="v">web_fetch · 213</span>
+        <span class="k">skills accepted (7d)</span><span class="v">3 + 2 pending</span>
+        <span class="k">context compactions</span><span class="v">1 · 0 forced</span>
+        <span class="k">scheduler load</span><span class="v">2d + 1w + 1h</span>
+      </div>
+    </aside>
+  </section>
+
+  <!-- ───── NEEDS YOU ───── -->
+  <div class="section-h">
+    <span class="label">Needs you</span>
+    <span class="meta">3 decisions</span>
+  </div>
+  <div class="halftone-rule"></div>
+
+  <div class="editorial">
+    <article class="oped dn">
+      <div class="tag"><span class="pin"></span> blocked · card_042</div>
+      <h4 class="head"><em>card_042</em> — judge rejected at iter 5/5.</h4>
+      <p class="quote">"Complete coverage of city offices remains partial."</p>
+      <p>
+        Five rework cycles, $1.84 spent. Dispatch a revision with the missing county-supervisor list, override on statewide coverage as-is, or defer.
+      </p>
+      <div class="acts">
+        <button class="verb primary">dispatch revision</button>
+        <button class="verb">override accept</button>
+        <button class="verb muted">defer 1d</button>
+      </div>
+    </article>
+
+    <article class="oped ac">
+      <div class="tag"><span class="pin"></span> drafter · skill candidate</div>
+      <h4 class="head"><em>cooperative-compaction-helper</em>.</h4>
+      <p>
+        Drafter watched 4 long research turns; proposes a skill that caps tool-result size at the compaction-trigger band rather than waiting for runtime fallback. Estimated <strong style="color:var(--fg-0); font-weight:400;">12–18% savings</strong> on token budget. Pattern recurs ~8 times/week.
+      </p>
+      <div class="acts">
+        <button class="verb primary">accept</button>
+        <button class="verb">view diff</button>
+        <button class="verb">edit</button>
+        <button class="verb muted">decline</button>
+      </div>
+    </article>
+
+    <article class="oped wn">
+      <div class="tag"><span class="pin"></span> goal · paused at iter 4/12</div>
+      <h4 class="head"><em>freyja-design-pass</em> — two open questions.</h4>
+      <p>
+        <strong style="color:var(--fg-0); font-weight:400;">Which onboarding surface owns the API-key flow?</strong> and <strong style="color:var(--fg-0); font-weight:400;">does the metrics dashboard subsume scheduler telemetry?</strong> Both want answers in conversation before the loop re-confidences above 0.7.
+      </p>
+      <div class="acts">
+        <button class="verb primary">resume + answer</button>
+        <button class="verb">rewrite goal</button>
+        <button class="verb muted">retire</button>
+      </div>
+    </article>
+  </div>
+
+  <!-- ───── REMAINING PRIORITIES ───── -->
+  <div class="section-h">
+    <span class="label">Today · 2 and 3</span>
+    <span class="meta">staged for dispatch</span>
+  </div>
+
+  <div class="also">
+    <article class="story">
+      <div class="num">2</div>
+      <div class="right">
+        <div class="kicker">today · design pass</div>
+        <h4 class="head">Design pass on <em>input-dock</em>.</h4>
+        <div class="deck">
+          Per yesterday's review (items S-1, S-3): drive the dev server in a real browser, capture screenshots into the activity rail, return a punch list.
+        </div>
+        <div class="factbox">
+          <span class="k">worker</span><span class="v">browser-qa</span>
+          <span class="k">model</span><span class="v">claude-opus-4-8</span>
+          <span class="k">ctx</span><span class="v">1m</span>
+          <span class="k">coord</span><span class="v acc">isolated</span>
+          <span class="k">attached</span><span class="v">DESIGN-REVIEW.md, InputDock.tsx</span>
+          <span class="k">est duration</span><span class="v">18–30m</span>
+        </div>
+        <div class="acts">
+          <button class="verb primary">stage</button>
+          <button class="verb">run</button>
+          <button class="verb muted">skip</button>
+        </div>
+      </div>
+    </article>
+
+    <article class="story">
+      <div class="num">3</div>
+      <div class="right">
+        <div class="kicker">today · cleanup</div>
+        <h4 class="head">Triage 4 stale kanban cards.</h4>
+        <div class="deck">
+          card_028, card_031, card_036, card_039 — last touched &gt;48h. Judge recommends keep, cancel, or requeue per card with reason.
+        </div>
+        <div class="factbox">
+          <span class="k">worker</span><span class="v">judge-deep</span>
+          <span class="k">model</span><span class="v">sonnet-4-6</span>
+          <span class="k">ctx</span><span class="v">200k</span>
+          <span class="k">coord</span><span class="v acc">kanban</span>
+          <span class="k">est duration</span><span class="v">8–12m</span>
+          <span class="k">est verdicts</span><span class="v">4</span>
+        </div>
+        <div class="acts">
+          <button class="verb primary">stage</button>
+          <button class="verb">run</button>
+          <button class="verb muted">skip</button>
+        </div>
+      </div>
+    </article>
+  </div>
+
+  <!-- ───── TICKER + COLOPHON ───── -->
+  <div class="ticker-rule"></div>
+
+  <div class="ticker" aria-hidden="true">
+    <div class="ticker-track">
+      <span class="ticker-item"><span class="k">spend yest</span> <span class="v up">$4.82</span></span>
+      <span class="sep">·</span>
+      <span class="ticker-item"><span class="k">tokens out</span> <span class="v">327k</span></span>
+      <span class="sep">·</span>
+      <span class="ticker-item"><span class="k">sessions</span> <span class="v">4</span></span>
+      <span class="sep">·</span>
+      <span class="ticker-item"><span class="k">longest</span> <span class="v">card_017 3h17m</span></span>
+      <span class="sep">·</span>
+      <span class="ticker-item"><span class="k">top tool</span> <span class="v">web_fetch 213</span></span>
+      <span class="sep">·</span>
+      <span class="ticker-item"><span class="k">judge 7d</span> <span class="v">68% pass</span></span>
+      <span class="sep">·</span>
+      <span class="ticker-item"><span class="k">coop share</span> <span class="v">82% agent</span></span>
+      <span class="sep">·</span>
+      <span class="ticker-item"><span class="k">skills</span> <span class="v">3+2</span></span>
+      <span class="sep">·</span>
+      <span class="ticker-item"><span class="k">cache hit</span> <span class="v dn">0.71</span></span>
+      <span class="sep">·</span>
+      <span class="ticker-item"><span class="k">scheduler</span> <span class="v">2d 1w 1h</span></span>
+      <span class="sep">·</span>
+      <span class="ticker-item"><span class="k">compactions</span> <span class="v">1</span></span>
+      <span class="sep">·</span>
+      <span class="ticker-item"><span class="k">forced compactions</span> <span class="v">0</span></span>
+      <span class="sep">·</span>
+      <span class="ticker-item"><span class="k">drafter watching</span> <span class="v">skill-learning · design-review-method</span></span>
+      <span class="sep">·</span>
+      <span class="ticker-item"><span class="k">refresh in</span> <span class="v">23h 59m</span></span>
+      <span class="sep">·</span>
+      <span class="ticker-item"><span class="k">spend yest</span> <span class="v up">$4.82</span></span>
+      <span class="sep">·</span>
+      <span class="ticker-item"><span class="k">tokens out</span> <span class="v">327k</span></span>
+      <span class="sep">·</span>
+      <span class="ticker-item"><span class="k">sessions</span> <span class="v">4</span></span>
+      <span class="sep">·</span>
+      <span class="ticker-item"><span class="k">longest</span> <span class="v">card_017 3h17m</span></span>
+    </div>
+  </div>
+
+  <div class="colophon">
+    <div>
+      <h4 class="commit-h">Commit.</h4>
+      <p class="commit-sub">
+        Three priorities staged · forecast ~$5.40 · ~340k tokens · next brief 06:30 tomorrow.
+      </p>
+    </div>
+
+    <div class="plans">
+      <button class="plan">
+        <span>Stage all, dispatch later</span>
+        <span class="kbd">S</span>
+      </button>
+      <button class="plan">
+        <span>Run 1 first, queue 2 + 3</span>
+        <span class="kbd">⌥⏎</span>
+      </button>
+      <button class="plan primary">
+        <span>Run 1, 2, 3 in parallel</span>
+        <span class="kbd">⏎</span>
+      </button>
+    </div>
+
+    <div class="signature">
+      <div>brief <span class="em">wf_4f3a7b</span></div>
+      <div>printed <span class="em">06:30:14</span></div>
+      <div><span class="em">re-runnable</span></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  document.addEventListener('keydown', (e) => {
+    if (e.target.closest('input,textarea')) return;
+    let target = null;
+    if (e.key === '1') target = document.querySelector('.lead .verb.primary');
+    else if (e.key === 'Enter' && !e.altKey) target = document.querySelector('.plan.primary');
+    else if (e.key === 'Enter' && e.altKey) target = document.querySelectorAll('.plan')[1];
+    else if (e.key.toLowerCase() === 's' && !e.metaKey) target = document.querySelector('.plan');
+
+    if (target) {
+      target.classList.add('flash');
+      setTimeout(() => target.classList.remove('flash'), 500);
+    }
+  });
+</script>
+
+</body>
+</html>

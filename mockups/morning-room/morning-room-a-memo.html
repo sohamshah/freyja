@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Morning Room — A. The Memo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    /* Freyja design tokens — pulled from tailwind.config.cjs + globals.css */
+    --bg-0:#0a0a0a; --bg-1:#121212; --bg-2:#181818; --bg-3:#1e1e1e; --bg-4:#262626;
+    --fg-0:#e8e8e8; --fg-1:#a8a8a8; --fg-2:#6e6e6e; --fg-3:#4a4a4a; --fg-4:#303030;
+    --accent:#a8d4fc; --accent-hi:#c4e0fc; --accent-lo:#7aafea;
+    --ok:#a8b0a8; --warn:#b8a078; --danger:#b48282;
+    --hairline:rgba(255,255,255,0.06);
+    --hairline-strong:rgba(255,255,255,0.12);
+    --inset-edge:rgba(255,255,255,0.18);
+    --mono:'Geist Mono', ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { margin:0; min-height:100%; background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:13px; line-height:1.55;
+    -webkit-font-smoothing:antialiased;
+    font-feature-settings:'ss01' on, 'ss02' on, 'cv11' on;
+  }
+
+  /* Ambient: barely-there radial wash + topographic hint */
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(1100px 800px at 12% -8%, rgba(168,212,252,0.045), transparent 60%),
+      radial-gradient(800px 600px at 88% 110%, rgba(168,212,252,0.025), transparent 60%),
+      linear-gradient(180deg, rgba(255,255,255,0.012) 0%, rgba(0,0,0,0) 40%, rgba(0,0,0,0.02) 100%);
+  }
+  .topo { position:fixed; inset:0; pointer-events:none; z-index:0; opacity:0.07; }
+  .topo svg { width:100%; height:100%; }
+
+  .wrap { position:relative; z-index:1; max-width:760px; margin:0 auto; padding:96px 32px 160px; }
+
+  /* Top status strip — quiet kicker */
+  .kicker {
+    display:flex; align-items:center; gap:12px;
+    color:var(--fg-2); font-size:9.5px; letter-spacing:0.18em; text-transform:uppercase;
+    margin-bottom:28px;
+  }
+  .kicker .dot { width:4px; height:4px; border-radius:999px; background:var(--accent);
+    box-shadow:0 0 7px var(--accent); animation:breathe 2.4s ease-in-out infinite; }
+  @keyframes breathe { 0%,100% { opacity:0.9; } 50% { opacity:0.45; } }
+  .kicker .spacer { flex:1; height:1px; background:var(--hairline); }
+  .kicker .meta { color:var(--fg-3); letter-spacing:0.16em; }
+
+  /* Hero — Fraunces editorial */
+  h1.hero {
+    font-family:var(--serif); font-weight:300;
+    font-size:38px; line-height:1.18; letter-spacing:-0.005em;
+    color:var(--fg-0); margin:0 0 12px;
+  }
+  .subhero {
+    font-size:11.5px; color:var(--fg-2); letter-spacing:0.04em;
+  }
+  .subhero a { color:var(--fg-1); text-decoration:none; border-bottom:1px solid var(--fg-3); padding-bottom:1px; }
+  .subhero a:hover { color:var(--accent); border-color:var(--accent); }
+  .subhero .sep { color:var(--fg-4); margin:0 8px; }
+
+  /* Section */
+  section.band { margin-top:56px; }
+  .band-head {
+    display:flex; align-items:baseline; gap:14px;
+    margin-bottom:18px;
+  }
+  .band-head .label {
+    color:var(--fg-1); font-size:10px; letter-spacing:0.22em; text-transform:uppercase;
+    font-weight:500;
+  }
+  .band-head .rule {
+    flex:1; height:1px;
+    background:linear-gradient(90deg, var(--hairline), transparent);
+  }
+  .band-head .count {
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.08em;
+    font-variant-numeric:tabular-nums;
+  }
+
+  /* OVERNIGHT — pip + line items */
+  .overnight { display:flex; flex-direction:column; gap:11px; }
+  .ev {
+    display:grid; grid-template-columns:auto auto 1fr auto; align-items:baseline;
+    gap:12px;
+    padding:8px 4px 8px 2px;
+    border-bottom:1px dashed rgba(255,255,255,0.04);
+    font-size:12.5px; line-height:1.5;
+  }
+  .ev:last-child { border-bottom:none; }
+  .ev .pip {
+    width:6px; height:6px; border-radius:999px; margin-top:6px;
+    background:var(--fg-3);
+  }
+  .ev.ok .pip { background:var(--ok); box-shadow:0 0 6px rgba(168,176,168,0.35); }
+  .ev.warn .pip { background:var(--warn); }
+  .ev.acc .pip { background:var(--accent); box-shadow:0 0 7px rgba(168,212,252,0.4); }
+  .ev .ts {
+    color:var(--fg-3); font-size:10.5px; letter-spacing:0.04em;
+    font-variant-numeric:tabular-nums; min-width:46px;
+  }
+  .ev .body { color:var(--fg-0); }
+  .ev .body .id { color:var(--accent); }
+  .ev .body .mut { color:var(--fg-2); }
+  .ev .ago {
+    color:var(--fg-3); font-size:10px; letter-spacing:0.04em;
+    font-variant-numeric:tabular-nums;
+  }
+
+  /* NEEDS YOU — slightly more chrome, inline action verbs */
+  .need {
+    border:1px solid var(--hairline);
+    border-radius:10px;
+    padding:14px 16px;
+    margin-bottom:10px;
+    background:rgba(255,255,255,0.018);
+    box-shadow:inset 0 0.5px 0 var(--inset-edge);
+    transition:border-color 220ms ease, transform 220ms ease;
+  }
+  .need:hover { border-color:var(--hairline-strong); }
+  .need .ti {
+    display:flex; align-items:center; gap:10px;
+    font-size:12.5px; color:var(--fg-0); margin-bottom:6px;
+  }
+  .need .ti .tag {
+    font-size:9.5px; letter-spacing:0.14em; text-transform:uppercase;
+    padding:2px 6px; border-radius:4px;
+    background:rgba(255,255,255,0.04); color:var(--fg-2);
+    border:1px solid var(--hairline);
+  }
+  .need .ti .tag.danger { color:var(--danger); border-color:rgba(180,130,130,0.35); background:rgba(180,130,130,0.07); }
+  .need .ti .tag.warn { color:var(--warn); border-color:rgba(184,160,120,0.35); background:rgba(184,160,120,0.06); }
+  .need .ti .tag.acc { color:var(--accent); border-color:rgba(168,212,252,0.35); background:rgba(168,212,252,0.06); }
+  .need .ti .id { color:var(--accent); }
+  .need .body { color:var(--fg-1); font-size:12px; line-height:1.55; margin-bottom:12px; padding-left:0; }
+  .need .body em { color:var(--fg-0); font-style:normal; }
+  .need .actions { display:flex; gap:6px; flex-wrap:wrap; }
+  .verb {
+    font-family:var(--mono); font-size:10.5px; letter-spacing:0.04em;
+    padding:5px 10px; border-radius:5px;
+    background:rgba(255,255,255,0.025);
+    border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer;
+    transition:all 140ms ease;
+  }
+  .verb:hover { color:var(--fg-0); background:rgba(168,212,252,0.06); border-color:rgba(168,212,252,0.3); }
+  .verb.primary { color:var(--accent); border-color:rgba(168,212,252,0.4); background:rgba(168,212,252,0.06); }
+  .verb.primary:hover { background:rgba(168,212,252,0.12); }
+  .verb.muted { color:var(--fg-3); }
+
+  /* TODAY — numbered priorities */
+  .today { display:flex; flex-direction:column; gap:14px; }
+  .prio {
+    display:grid; grid-template-columns:auto 1fr; gap:18px;
+    padding:18px 18px 16px;
+    border:1px solid var(--hairline);
+    border-radius:14px;
+    background:rgba(255,255,255,0.02);
+    box-shadow:inset 0 0.5px 0 var(--inset-edge),
+               0 4px 18px -8px rgba(0,0,0,0.4);
+    transition:border-color 220ms ease;
+  }
+  .prio:hover { border-color:var(--hairline-strong); }
+  .prio .num {
+    font-family:var(--serif); font-weight:300;
+    font-size:30px; line-height:1; color:var(--fg-2);
+    align-self:start; padding-top:2px;
+  }
+  .prio .right { display:flex; flex-direction:column; gap:10px; }
+  .prio .title {
+    font-size:13.5px; color:var(--fg-0); line-height:1.4;
+  }
+  .prio .shape {
+    display:flex; align-items:center; gap:8px;
+    color:var(--fg-2); font-size:10.5px; letter-spacing:0.04em;
+    font-variant-numeric:tabular-nums;
+    flex-wrap:wrap;
+  }
+  .prio .shape .chip {
+    padding:2px 7px; border-radius:4px;
+    background:rgba(255,255,255,0.025);
+    border:1px solid var(--hairline);
+    color:var(--fg-1);
+  }
+  .prio .shape .chip.acc { color:var(--accent); border-color:rgba(168,212,252,0.25); background:rgba(168,212,252,0.04); }
+  .prio .ctx {
+    color:var(--fg-2); font-size:11px; line-height:1.55;
+    padding-left:0;
+  }
+  .prio .ctx .att {
+    color:var(--fg-1); border-bottom:1px dotted var(--fg-3); padding-bottom:1px;
+  }
+  .prio .row-actions {
+    display:flex; gap:6px; padding-top:2px;
+  }
+
+  /* PULSE — quiet stats */
+  .pulse { color:var(--fg-1); font-size:12px; line-height:1.7; }
+  .pulse .lead { color:var(--fg-2); }
+  .pulse .stat { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+  .pulse-grid {
+    margin-top:14px;
+    display:grid; grid-template-columns:repeat(2, 1fr); gap:8px 32px;
+    color:var(--fg-2); font-size:10.5px;
+  }
+  .pulse-grid div { display:flex; justify-content:space-between; gap:14px;
+    padding:6px 0; border-bottom:1px dashed rgba(255,255,255,0.04); }
+  .pulse-grid .k { letter-spacing:0.08em; }
+  .pulse-grid .v { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+
+  /* COMMIT ZONE — quiet footer */
+  .commit {
+    margin-top:72px; padding-top:28px;
+    border-top:1px solid var(--hairline);
+  }
+  .commit .lead {
+    color:var(--fg-3); font-size:10px; letter-spacing:0.22em; text-transform:uppercase;
+    margin-bottom:18px;
+  }
+  .commit .options { display:flex; flex-direction:column; gap:6px; }
+  .opt {
+    display:grid; grid-template-columns:1fr auto;
+    align-items:center; gap:14px;
+    padding:14px 18px;
+    border:1px solid var(--hairline);
+    border-radius:10px;
+    background:rgba(255,255,255,0.018);
+    cursor:pointer;
+    transition:all 180ms ease;
+  }
+  .opt:hover { border-color:rgba(168,212,252,0.32); background:rgba(168,212,252,0.04); }
+  .opt .desc { color:var(--fg-0); font-size:12.5px; }
+  .opt .desc .mut { color:var(--fg-2); }
+  .opt .kbd {
+    display:inline-flex; align-items:center; gap:4px;
+    font-size:10px; color:var(--fg-2); letter-spacing:0.06em;
+    padding:3px 6px; border-radius:4px;
+    background:rgba(255,255,255,0.025); border:1px solid var(--hairline);
+  }
+  .opt.primary { border-color:rgba(168,212,252,0.4); background:rgba(168,212,252,0.06); }
+  .opt.primary .desc { color:var(--accent); }
+  .opt.primary:hover { background:rgba(168,212,252,0.12); }
+
+  /* Foot */
+  footer.foot {
+    margin-top:48px; color:var(--fg-3); font-size:10px; letter-spacing:0.18em;
+    text-transform:uppercase; display:flex; justify-content:space-between;
+  }
+  footer.foot a { color:var(--fg-2); text-decoration:none; }
+  footer.foot a:hover { color:var(--accent); }
+
+  /* Make the topographic backdrop quietly breathe */
+  @keyframes drift {
+    0% { transform:translateY(0); }
+    50% { transform:translateY(-10px); }
+    100% { transform:translateY(0); }
+  }
+  .topo svg { animation:drift 22s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) {
+    .kicker .dot { animation:none; opacity:0.6; }
+    .topo svg { animation:none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="ambient"></div>
+<div class="topo" aria-hidden="true">
+  <!-- Hand-drawn topographic hint — slow drift -->
+  <svg viewBox="0 0 1400 900" preserveAspectRatio="xMidYMid slice" fill="none" stroke="#a8d4fc" stroke-width="0.5">
+    <path d="M0,210 C220,180 360,260 520,230 C700,196 820,290 1000,250 C1180,212 1290,290 1400,240" />
+    <path d="M0,330 C190,310 340,400 520,360 C710,316 830,420 1000,380 C1170,342 1300,400 1400,360" />
+    <path d="M0,450 C220,420 340,520 520,490 C720,456 820,550 1000,510 C1180,470 1290,540 1400,500" />
+    <path d="M0,580 C220,560 340,640 520,610 C720,580 820,670 1000,640 C1170,610 1290,670 1400,630" />
+    <path d="M0,710 C220,700 340,770 520,740 C720,710 820,790 1000,760 C1180,730 1290,790 1400,760" />
+  </svg>
+</div>
+
+<div class="wrap">
+
+  <!-- Kicker — quiet -->
+  <div class="kicker" role="status">
+    <span class="dot" aria-hidden="true"></span>
+    <span>morning brief · 06:30:14</span>
+    <span class="spacer" aria-hidden="true"></span>
+    <span class="meta">pid 4742 · session 7h since last</span>
+  </div>
+
+  <!-- Editorial hero -->
+  <h1 class="hero">Monday, June 2 · 6 things since 22:14 yesterday.</h1>
+  <div class="subhero">
+    <a href="#">re-run brief</a>
+    <span class="sep">·</span>
+    <a href="#">open as session</a>
+    <span class="sep">·</span>
+    <span>read 2m</span>
+  </div>
+
+  <!-- OVERNIGHT -->
+  <section class="band">
+    <header class="band-head">
+      <span class="label">Overnight</span>
+      <span class="rule"></span>
+      <span class="count">6 events · 4 sessions · $4.82</span>
+    </header>
+    <div class="overnight">
+      <div class="ev ok">
+        <span class="pip" aria-hidden="true"></span>
+        <span class="ts">22:34</span>
+        <span class="body">judge passed <span class="id">card_017</span> <span class="mut">— ballot research v3, accepted on iter 2/5</span></span>
+        <span class="ago">8h ago</span>
+      </div>
+      <div class="ev acc">
+        <span class="pip" aria-hidden="true"></span>
+        <span class="ts">22:51</span>
+        <span class="body">explore-fast × 3 fanout <span class="mut">— 47 sources, 32min, $0.67</span></span>
+        <span class="ago">8h ago</span>
+      </div>
+      <div class="ev ok">
+        <span class="pip" aria-hidden="true"></span>
+        <span class="ts">03:14</span>
+        <span class="body">drafter saved <span class="id">2 skill candidates</span> <span class="mut">— pending your review</span></span>
+        <span class="ago">3h ago</span>
+      </div>
+      <div class="ev warn">
+        <span class="pip" aria-hidden="true"></span>
+        <span class="ts">04:02</span>
+        <span class="body">kanban autopilot dispatched 4 cards <span class="mut">— 3 done, 1 hit rework cap</span></span>
+        <span class="ago">2h ago</span>
+      </div>
+      <div class="ev warn">
+        <span class="pip" aria-hidden="true"></span>
+        <span class="ts">05:21</span>
+        <span class="body">goal <span class="id">freyja-design-pass</span> paused at iter 4 <span class="mut">— judge has open questions</span></span>
+        <span class="ago">1h ago</span>
+      </div>
+      <div class="ev">
+        <span class="pip" aria-hidden="true"></span>
+        <span class="ts">06:00</span>
+        <span class="body">scheduler ran <span class="id">slack-morning-digest</span> <span class="mut">— posted to #ema-news</span></span>
+        <span class="ago">30m ago</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- NEEDS YOU -->
+  <section class="band">
+    <header class="band-head">
+      <span class="label">Needs you</span>
+      <span class="rule"></span>
+      <span class="count">3 decisions</span>
+    </header>
+
+    <div class="need">
+      <div class="ti">
+        <span class="tag danger">blocked</span>
+        <span>card <span class="id">card_042</span> · judge rejected at iter 5/5 (cap reached)</span>
+      </div>
+      <div class="body">
+        <em>“Complete coverage of city offices remains partial.”</em>
+        The worker covered statewide ballot but left county supervisor seats placeholder; the judge wants a complete list before sealing.
+      </div>
+      <div class="actions">
+        <button class="verb primary">dispatch revision</button>
+        <button class="verb">override accept</button>
+        <button class="verb muted">defer</button>
+      </div>
+    </div>
+
+    <div class="need">
+      <div class="ti">
+        <span class="tag acc">drafter</span>
+        <span>skill candidate · <span class="id">cooperative-compaction-helper</span></span>
+      </div>
+      <div class="body">
+        Drafter watched 4 long research turns; proposes a skill that <em>caps tool-result size at the compaction-trigger band</em> instead of waiting for the runtime fallback. Save 12-18% on token budget across the pattern.
+      </div>
+      <div class="actions">
+        <button class="verb primary">accept</button>
+        <button class="verb">edit</button>
+        <button class="verb muted">decline</button>
+        <button class="verb muted">view diff</button>
+      </div>
+    </div>
+
+    <div class="need">
+      <div class="ti">
+        <span class="tag warn">goal</span>
+        <span>goal <span class="id">freyja-design-pass</span> · paused at iter 4/12</span>
+      </div>
+      <div class="body">
+        The judge has 2 unresolved open questions: <em>“which onboarding surface owns the API-key flow?”</em> and <em>“does the metrics dashboard subsume scheduler telemetry?”</em>. Resuming requires either an answer in conversation or a goal rewrite.
+      </div>
+      <div class="actions">
+        <button class="verb primary">resume + answer inline</button>
+        <button class="verb">rewrite goal</button>
+        <button class="verb muted">retire</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- TODAY -->
+  <section class="band">
+    <header class="band-head">
+      <span class="label">Today</span>
+      <span class="rule"></span>
+      <span class="count">3 priorities · 1 staged · 2 proposed</span>
+    </header>
+    <div class="today">
+
+      <div class="prio">
+        <div class="num">1</div>
+        <div class="right">
+          <div class="title">Finish ballot-research <span style="color:var(--accent)">card_042</span> rework — closes overnight blocker.</div>
+          <div class="shape">
+            <span class="chip">worker · code</span>
+            <span class="chip">model · gpt-5.5</span>
+            <span class="chip">ctx · 1m</span>
+            <span class="chip acc">coordination · kanban</span>
+          </div>
+          <div class="ctx">
+            Pre-loaded: judge critique transcript · prior artifacts (<span class="att">ballot_v3.md</span>, <span class="att">city-offices.csv</span>) · the existing worker session (will be rewoken, not freshly spawned).
+          </div>
+          <div class="row-actions">
+            <button class="verb primary">stage</button>
+            <button class="verb">run</button>
+            <button class="verb muted">skip</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="prio">
+        <div class="num">2</div>
+        <div class="right">
+          <div class="title">Design pass on input-dock — per yesterday's review (S-1, S-3).</div>
+          <div class="shape">
+            <span class="chip">worker · browser-qa</span>
+            <span class="chip">model · claude-opus-4-8</span>
+            <span class="chip">ctx · 1m</span>
+            <span class="chip acc">coordination · isolated</span>
+          </div>
+          <div class="ctx">
+            Attached: <span class="att">docs/DESIGN-REVIEW.md</span> (S-section), <span class="att">src/renderer/components/InputDock.tsx</span>. Spawns a worker that drives the dev server in a real browser; you'll see screenshots in the activity rail.
+          </div>
+          <div class="row-actions">
+            <button class="verb primary">stage</button>
+            <button class="verb">run</button>
+            <button class="verb muted">skip</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="prio">
+        <div class="num">3</div>
+        <div class="right">
+          <div class="title">Triage 4 stale kanban cards — last touched &gt;48h.</div>
+          <div class="shape">
+            <span class="chip">worker · judge-deep</span>
+            <span class="chip">model · claude-sonnet-4-6</span>
+            <span class="chip">ctx · 200k</span>
+            <span class="chip acc">coordination · kanban</span>
+          </div>
+          <div class="ctx">
+            Stale set: <span class="att">card_028</span>, <span class="att">card_031</span>, <span class="att">card_036</span>, <span class="att">card_039</span>. Judge will read each and recommend keep / cancel / requeue with reason.
+          </div>
+          <div class="row-actions">
+            <button class="verb primary">stage</button>
+            <button class="verb">run</button>
+            <button class="verb muted">skip</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PULSE -->
+  <section class="band">
+    <header class="band-head">
+      <span class="label">Pulse</span>
+      <span class="rule"></span>
+      <span class="count">last 24h</span>
+    </header>
+    <p class="pulse">
+      <span class="lead">Yesterday spent</span>
+      <span class="stat">$4.82</span>
+      across
+      <span class="stat">4 sessions</span>
+      and
+      <span class="stat">327k</span>
+      output tokens. Longest run was
+      <span class="stat">card_017</span>
+      at
+      <span class="stat">3h17m</span>
+      on autopilot. Most-used tool:
+      <span class="stat">web_fetch</span>
+      (213 calls).
+    </p>
+    <div class="pulse-grid">
+      <div><span class="k">drafter watching</span><span class="v">skill-learning · design-review-method</span></div>
+      <div><span class="k">context discipline</span><span class="v">1 compaction · 0 forced</span></div>
+      <div><span class="k">skills accepted (7d)</span><span class="v">3 · 2 pending</span></div>
+      <div><span class="k">judge pass rate (7d)</span><span class="v">68% · 19/28</span></div>
+      <div><span class="k">cooperation share (7d)</span><span class="v">82% agent · 18% runtime</span></div>
+      <div><span class="k">scheduler running</span><span class="v">2 daily · 1 weekly · 1 hourly</span></div>
+    </div>
+  </section>
+
+  <!-- COMMIT ZONE -->
+  <section class="commit">
+    <div class="lead">Commit the day</div>
+    <div class="options">
+      <button class="opt primary">
+        <span class="desc">Run priorities 1, 2, 3 in parallel — <span class="mut">3 panes will open, judges auto-route, you'll get a Slack ping if anything blocks.</span></span>
+        <span class="kbd">⏎</span>
+      </button>
+      <button class="opt">
+        <span class="desc">Run priority 1 first; queue 2 + 3 — <span class="mut">sequential, safer if card_042 needs your eye before the design pass.</span></span>
+        <span class="kbd">⌥⏎</span>
+      </button>
+      <button class="opt">
+        <span class="desc">Stage all, dispatch later — <span class="mut">sessions assembled and ready; you fire when you're ready.</span></span>
+        <span class="kbd">S</span>
+      </button>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <span>brief — wf_4f3a7b · re-runnable</span>
+    <span><a href="#">open transcript</a> · <a href="#">disable morning brief</a></span>
+  </footer>
+
+</div>
+
+<script>
+  // Subtle: number rows + status dot timing — gives the surface a hint of life
+  document.addEventListener('keydown', (e) => {
+    // Demo: Enter triggers the "primary" commit option visually
+    if (e.key === 'Enter' && !e.target.closest('input,textarea,button')) {
+      const opt = document.querySelector('.opt.primary');
+      if (opt) {
+        opt.style.background = 'rgba(168,212,252,0.18)';
+        opt.style.transform = 'scale(0.997)';
+        setTimeout(() => {
+          opt.style.background = '';
+          opt.style.transform = '';
+        }, 220);
+      }
+    }
+  });
+</script>
+
+</body>
+</html>
