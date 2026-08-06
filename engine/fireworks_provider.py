@@ -68,6 +68,8 @@ FIREWORKS_MODEL_MAP: dict[str, str] = {
     "qwen3.6-plus": "accounts/fireworks/models/qwen3p6-plus",
     "qwen3.7-plus": "accounts/fireworks/models/qwen3p7-plus",
     "kimi-k2.5": "accounts/fireworks/models/kimi-k2p5",
+    "kimi-k3": "accounts/fireworks/models/kimi-k3",
+    "kimi-k3-fast": "accounts/fireworks/routers/kimi-k3-fast",
 }
 
 FIREWORKS_CONTEXT_WINDOWS: dict[str, int] = {
@@ -91,6 +93,10 @@ FIREWORKS_CONTEXT_WINDOWS: dict[str, int] = {
     "accounts/fireworks/models/qwen3p7-plus": 262_144,
     "kimi-k2.5": 262_144,
     "accounts/fireworks/models/kimi-k2p5": 262_144,
+    "kimi-k3": 1_048_576,
+    "accounts/fireworks/models/kimi-k3": 1_048_576,
+    "kimi-k3-fast": 1_048_576,
+    "accounts/fireworks/routers/kimi-k3-fast": 1_048_576,
 }
 
 
@@ -108,6 +114,10 @@ FIREWORKS_VISION_MODELS: set[str] = {
     "accounts/fireworks/models/qwen3p7-plus",
     "kimi-k2.5",
     "accounts/fireworks/models/kimi-k2p5",
+    "kimi-k3",
+    "accounts/fireworks/models/kimi-k3",
+    "kimi-k3-fast",
+    "accounts/fireworks/routers/kimi-k3-fast",
 }
 
 FIREWORKS_REASONING_MODE: dict[str, str] = {
@@ -135,6 +145,10 @@ FIREWORKS_REASONING_MODE: dict[str, str] = {
     "accounts/fireworks/models/minimax-m2p7": "required",
     "minimax-m3": "required",
     "accounts/fireworks/models/minimax-m3": "required",
+    "kimi-k3": "effort",
+    "accounts/fireworks/models/kimi-k3": "effort",
+    "kimi-k3-fast": "effort",
+    "accounts/fireworks/routers/kimi-k3-fast": "effort",
 }
 
 FIREWORKS_REASONING_LEVELS: dict[str, tuple[str, ...]] = {
@@ -150,6 +164,10 @@ FIREWORKS_REASONING_LEVELS: dict[str, tuple[str, ...]] = {
     "accounts/fireworks/models/glm-5p2": ("none", "low", "medium", "high", "max"),
     "qwen3.7-plus": ("none", "low", "medium", "high", "max"),
     "accounts/fireworks/models/qwen3p7-plus": ("none", "low", "medium", "high", "max"),
+    "kimi-k3": ("none", "low", "medium", "high", "max"),
+    "accounts/fireworks/models/kimi-k3": ("none", "low", "medium", "high", "max"),
+    "kimi-k3-fast": ("none", "low", "medium", "high", "max"),
+    "accounts/fireworks/routers/kimi-k3-fast": ("none", "low", "medium", "high", "max"),
 }
 
 FIREWORKS_REASONING_HISTORY: dict[str, str] = {
@@ -167,6 +185,10 @@ FIREWORKS_REASONING_HISTORY: dict[str, str] = {
     "accounts/fireworks/models/minimax-m2p7": "interleaved",
     "minimax-m3": "interleaved",
     "accounts/fireworks/models/minimax-m3": "interleaved",
+    "kimi-k3": "preserved",
+    "accounts/fireworks/models/kimi-k3": "preserved",
+    "kimi-k3-fast": "preserved",
+    "accounts/fireworks/routers/kimi-k3-fast": "preserved",
 }
 
 

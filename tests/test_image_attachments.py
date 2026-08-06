@@ -370,6 +370,42 @@ def test_openai_normalization_yields_correct_cost_against_anthropic_semantics() 
     assert 0.09 < cost < 0.12, f"expected ~$0.10, got ${cost:.4f}"
 
 
+def test_gpt_5_6_family_cost_calc() -> None:
+    """GPT-5.6 (Sol/Terra/Luna) bill through the same OpenAI cache
+    normalization + compute_cost path. Sol's output rate is $30/M —
+    double GPT-5.5's $15 — so this pins the distinct per-tier rates and
+    guards against copy-pasting 5.5's tuple."""
+    from engine.openai_provider import _api_usage_from_response_usage
+    from engine.providers import compute_cost
+
+    class _InputDetails:
+        cached_tokens = 194_000
+
+    class _Usage:
+        input_tokens = 195_000  # 1k fresh after subtracting the cached slice
+        output_tokens = 1_000
+        input_tokens_details = _InputDetails()
+        output_tokens_details = None
+
+    usage = _api_usage_from_response_usage(_Usage())
+    assert usage.input_tokens == 1_000  # disjoint: cached slice removed
+    assert usage.cache_read_tokens == 194_000
+
+    # Sol: 1k*5 + 1k*30 + 194k*0.5 = 5000 + 30000 + 97000 = $0.132
+    sol_cost = compute_cost(
+        "gpt-5.6-sol",
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cache_read_tokens=usage.cache_read_tokens,
+    )
+    assert sol_cost is not None and abs(sol_cost - 0.132) < 1e-9, sol_cost
+
+    # Per-tier output rates are distinct and correct (pure 1M-output cost).
+    assert compute_cost("gpt-5.6-sol", output_tokens=1_000_000) == 30.0
+    assert compute_cost("gpt-5.6-terra", output_tokens=1_000_000) == 15.0
+    assert compute_cost("gpt-5.6-luna", output_tokens=1_000_000) == 6.0
+
+
 def test_iterative_compaction_extends_previous_summary() -> None:
     """Second compaction in a session takes the iterative update path.
 

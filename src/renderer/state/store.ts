@@ -767,6 +767,9 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   'claude-sonnet-4': 200_000,
   'claude-opus-4': 200_000,
   // OpenAI
+  'gpt-5.6-sol': 1_050_000,
+  'gpt-5.6-terra': 1_050_000,
+  'gpt-5.6-luna': 1_050_000,
   'gpt-5.5': 1_050_000,
   'gpt-5.4': 1_050_000,
   'gpt-5.4-pro': 1_050_000,
@@ -790,6 +793,8 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   'qwen3.6-plus': 1_000_000,
   'qwen3.7-plus': 262_144,
   'kimi-k2.5': 262_144,
+  'kimi-k3': 1_048_576,
+  'kimi-k3-fast': 1_048_576,
   // Google Gemini (keep in sync with engine/providers.py MODEL_REGISTRY).
   // These were missing here, so gemini-* sessions showed `ctx N/200k` while
   // the real window is ~1M — the dashboard denominator (not the provider /
@@ -820,6 +825,9 @@ const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel
   'claude-haiku-4-5': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
   'claude-opus-4-5': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
   'claude-sonnet-4-5': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
+  'gpt-5.6-sol': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
+  'gpt-5.6-terra': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },
+  'gpt-5.6-luna': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'low' },
   'gpt-5.5': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], defaultLevel: 'high' },
   'gpt-5.4': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], defaultLevel: 'high' },
   'gpt-5.4-mini': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], defaultLevel: 'medium' },
@@ -830,6 +838,8 @@ const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel
   'glm-5.2': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'high' },
   'kimi-k2.6': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
   'kimi-k2.7-code': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
+  'kimi-k3': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'high' },
+  'kimi-k3-fast': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'high' },
   'minimax-m2.7': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
   'minimax-m3': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
   'qwen3.6-plus': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'medium' },

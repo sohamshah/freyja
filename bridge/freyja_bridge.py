@@ -181,6 +181,12 @@ def _write_debug_log(event: dict[str, Any]) -> None:
             trimmed["output"] = trimmed["output"].replace(confirm_token, _DEBUG_LOG_REDACTED)
         if "pngBase64" in trimmed:
             trimmed["pngBase64"] = f"<{len(trimmed['pngBase64'])} b64 chars>"
+        # Visual computer control (§12.1): voice_tool_result carries a
+        # grid-overlaid screenshot as a top-level base64 PNG. Trim it like
+        # the other image payloads so the debug journal stays tail-able
+        # (a computer-use voice turn emits one per see/click/type/scroll).
+        if isinstance(trimmed.get("imageB64"), str):
+            trimmed["imageB64"] = f"<{len(trimmed['imageB64'])} b64 chars>"
         if "images" in trimmed and isinstance(trimmed["images"], list):
             light_images = []
             for image in trimmed["images"]:
@@ -1360,6 +1366,36 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
     },
     # ─── OpenAI (OPENAI_API_KEY) ───────────────────────────────────────
     {
+        "id": "gpt-5.6-sol",
+        "family": "openai",
+        "label": "GPT-5.6 Sol",
+        "tier": "max",
+        "contextWindow": 1_050_000,
+        "thinking": True,
+        "envVar": "OPENAI_API_KEY",
+        "description": "OpenAI's newest flagship (Sol). Best-in-class coding, reasoning, and computer use. 1.05M ctx.",
+    },
+    {
+        "id": "gpt-5.6-terra",
+        "family": "openai",
+        "label": "GPT-5.6 Terra",
+        "tier": "balanced",
+        "contextWindow": 1_050_000,
+        "thinking": True,
+        "envVar": "OPENAI_API_KEY",
+        "description": "Balanced GPT-5.6. Matches GPT-5.5 quality at roughly half the cost.",
+    },
+    {
+        "id": "gpt-5.6-luna",
+        "family": "openai",
+        "label": "GPT-5.6 Luna",
+        "tier": "fast",
+        "contextWindow": 1_050_000,
+        "thinking": True,
+        "envVar": "OPENAI_API_KEY",
+        "description": "Fastest, cheapest GPT-5.6. Great for fanout and high-volume subagents.",
+    },
+    {
         "id": "gpt-5.5",
         "family": "openai",
         "label": "GPT-5.5",
@@ -1367,7 +1403,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 1_050_000,
         "thinking": True,
         "envVar": "OPENAI_API_KEY",
-        "description": "OpenAI's newest frontier model. Best for complex coding, reasoning, and computer use.",
+        "description": "Previous OpenAI flagship. Strong coding, reasoning, vision, and computer use.",
     },
     {
         "id": "gpt-5.4",
@@ -1449,6 +1485,26 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "thinking": True,
         "envVar": "FIREWORKS_API_KEY",
         "description": "Moonshot's Kimi K2.7 Code via Fireworks. Coding-focused agentic model, vision + 262k ctx, ~30% fewer thinking tokens than K2.6.",
+    },
+    {
+        "id": "kimi-k3",
+        "family": "fireworks",
+        "label": "Kimi K3",
+        "tier": "max",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "FIREWORKS_API_KEY",
+        "description": "Moonshot's Kimi K3 flagship (2.8T MoE) via Fireworks. Native vision + 1M ctx.",
+    },
+    {
+        "id": "kimi-k3-fast",
+        "family": "fireworks",
+        "label": "Kimi K3 Fast",
+        "tier": "max",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "FIREWORKS_API_KEY",
+        "description": "Kimi K3 on Fireworks' Fast serving tier (~+50% cost, lower latency). Native vision + 1M ctx.",
     },
     {
         "id": "deepseek-v4-pro",
@@ -1638,6 +1694,21 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningLevels": ["none", "low", "medium", "high"],
         "reasoningDefault": "high",
     },
+    "gpt-5.6-sol": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "high",
+    },
+    "gpt-5.6-terra": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "medium",
+    },
+    "gpt-5.6-luna": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "low",
+    },
     "gpt-5.5": {
         "reasoningMode": "effort",
         "reasoningLevels": ["none", "minimal", "low", "medium", "high", "xhigh"],
@@ -1688,6 +1759,18 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
     "kimi-k2.7-code": {
         "reasoningMode": "effort",
         "reasoningLevels": ["none", "low", "medium", "high"],
+        "reasoningDefault": "high",
+        "reasoningHistory": ["preserved"],
+    },
+    "kimi-k3": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high", "max"],
+        "reasoningDefault": "high",
+        "reasoningHistory": ["preserved"],
+    },
+    "kimi-k3-fast": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high", "max"],
         "reasoningDefault": "high",
         "reasoningHistory": ["preserved"],
     },
