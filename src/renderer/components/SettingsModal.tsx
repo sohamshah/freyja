@@ -66,6 +66,7 @@ export function SettingsModal() {
   const settings = useHarness((s) => s.settings)
   const setPermissionTier = useHarness((s) => s.setPermissionTier)
   const setComputerEnabled = useHarness((s) => s.setComputerEnabled)
+  const voiceHotkey = useVoiceStore((s) => s.hotkeyLabel)
   const openWizard = useHarness((s) => s.openComputerWizard)
 
   useEffect(() => {
@@ -240,7 +241,7 @@ export function SettingsModal() {
 
           <Section
             title="voice · galdr"
-            description="Speak to the Mac. ⌥Space opens an exchange; the mic is live only while the sigil is lit, and the session auto-closes after silence."
+            description={`Speak to the Mac. ${voiceHotkey ? `${voiceHotkey} opens an exchange` : 'Click the title-bar sigil to open an exchange'}; the mic is live only while the sigil is lit, and the session auto-closes after silence.`}
           >
             <VoiceSettings />
           </Section>

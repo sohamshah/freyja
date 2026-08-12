@@ -33,6 +33,10 @@ interface VoiceStore {
   error: string | null
   hudOpen: boolean
   usage: VoiceUsage | null
+  /** Label for the global voice hotkey the main process actually got
+   *  (e.g. "⌥⇧space"), or null if every candidate was taken. Shown in
+   *  every UI hint so they can never advertise a dead shortcut. */
+  hotkeyLabel: string | null
 
   toggleVoice(): void
   endVoice(reason: string): void
@@ -677,6 +681,7 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
   error: null,
   hudOpen: false,
   usage: null,
+  hotkeyLabel: '⌥⇧space',
 
   toggleVoice() {
     const s = get()
@@ -1044,6 +1049,14 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
         } catch (err) {
           console.error('[voice-store] announce toast failed', err)
         }
+        return
+      }
+
+      case 'voice_hotkey': {
+        // Main tells us which global shortcut it actually won (the
+        // accelerator is a fallback chain — ⌥Space is usually taken by
+        // Raycast/Alfred). Every hint in the UI reads this.
+        set({ hotkeyLabel: event.label })
         return
       }
 

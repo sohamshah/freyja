@@ -287,6 +287,13 @@ function createWindow() {
     mainWindow?.focus()
   })
 
+  // Re-announce the voice hotkey on every load — a reload resets the
+  // renderer's copy but not the main-process registration, so without
+  // this the UI hints would fall back to the default label after ⌘R.
+  mainWindow.webContents.on('did-finish-load', () => {
+    announceVoiceHotkey()
+  })
+
   const withBackdrop = !!process.env.FREYJA_SCREENSHOT
   if (isDev) {
     mainWindow.loadURL(DEV_URL + (withBackdrop ? '?backdrop=1' : ''))
@@ -313,6 +320,75 @@ function forwardBridgeEvent(event: any): void {
   } else {
     earlyEvents.push(event)
   }
+}
+
+// ── Voice hotkey ────────────────────────────────────────────────────────
+// Candidates in preference order. ⌥Space is deliberately NOT here: it is
+// the default for Raycast/Alfred/Spotlight replacements, and a global
+// hotkey goes to whoever grabbed it first — so ours would silently do
+// nothing. ⌥⇧Space keeps the same finger position with one extra
+// modifier. ⌃⌥Space is the classic macOS "next input source" binding, so
+// it sits below the shift variants.
+const VOICE_HOTKEY_CANDIDATES = [
+  'Alt+Shift+Space',
+  'Control+Shift+Space',
+  'Control+Alt+Space',
+  'CommandOrControl+Alt+V',
+]
+
+let activeVoiceHotkey: string | null = null
+
+/** Pretty-print an Electron accelerator for UI hints: "⌥⇧space". */
+function hotkeyLabel(accelerator: string): string {
+  const parts = accelerator.split('+')
+  const key = parts[parts.length - 1]
+  const mods = parts
+    .slice(0, -1)
+    .map((m) =>
+      m === 'CommandOrControl' || m === 'Command' || m === 'Cmd'
+        ? '⌘'
+        : m === 'Alt' || m === 'Option'
+          ? '⌥'
+          : m === 'Shift'
+            ? '⇧'
+            : m === 'Control' || m === 'Ctrl'
+              ? '⌃'
+              : m,
+    )
+    .join('')
+  return mods + key.toLowerCase()
+}
+
+/** Register the first candidate the OS actually grants us. Returns the
+ *  winning accelerator, or null if every candidate was taken. */
+function registerVoiceHotkey(handler: () => void): string | null {
+  const override = (process.env.FREYJA_VOICE_HOTKEY || '').trim()
+  const candidates = override ? [override, ...VOICE_HOTKEY_CANDIDATES] : VOICE_HOTKEY_CANDIDATES
+  for (const accelerator of candidates) {
+    try {
+      // register() returns false when another app already owns the combo.
+      if (globalShortcut.register(accelerator, handler)) {
+        console.info(`[main] voice hotkey registered: ${accelerator}`)
+        return accelerator
+      }
+      console.warn(`[main] voice hotkey unavailable (taken): ${accelerator}`)
+    } catch (err) {
+      console.warn(`[main] voice hotkey rejected: ${accelerator}`, err)
+    }
+  }
+  console.warn('[main] no voice hotkey could be registered — use the title-bar sigil')
+  return null
+}
+
+/** Tell the renderer which hotkey actually took, so every hint in the UI
+ *  shows the truth. Buffered like any bridge event if the renderer hasn't
+ *  mounted yet, and re-sent on reload. */
+function announceVoiceHotkey(): void {
+  forwardBridgeEvent({
+    type: 'voice_hotkey',
+    accelerator: activeVoiceHotkey,
+    label: activeVoiceHotkey ? hotkeyLabel(activeVoiceHotkey) : null,
+  })
 }
 
 function initBridge() {
@@ -1045,22 +1121,26 @@ app.whenReady().then(async () => {
   } catch (err) {
     console.warn('[main] failed to register Cmd+Shift+K:', err)
   }
-  // ⌥Space — toggle the voice exchange (Galdr). Registered
-  // unconditionally: the renderer's voice-store decides whether voice is
-  // actually enabled/configured, so main stays policy-free. If the window
-  // is hidden or minimized, surface it first — the HUD is about to open
-  // and the mic-truth indicator must be visible while the mic is live.
-  try {
-    globalShortcut.register('Alt+Space', () => {
-      if (!mainWindow) return
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      if (!mainWindow.isVisible()) mainWindow.show()
-      mainWindow.focus()
-      mainWindow.webContents.send(IPC.voiceToggle)
-    })
-  } catch (err) {
-    console.warn('[main] failed to register Alt+Space:', err)
-  }
+  // Voice toggle (Galdr) — registered unconditionally: the renderer's
+  // voice-store decides whether voice is actually enabled/configured, so
+  // main stays policy-free. If the window is hidden or minimized, surface
+  // it first — the HUD is about to open and the mic-truth indicator must
+  // be visible while the mic is live.
+  //
+  // The accelerator is a CHAIN, not a constant: ⌥Space was the original
+  // pick but Raycast (and Alfred, and Spotlight replacements generally)
+  // claim it, and whoever registers first wins — silently. We walk the
+  // candidates until one registers, then tell the renderer which one
+  // actually took, so every hint in the UI shows the truth instead of a
+  // hardcoded lie. Override with FREYJA_VOICE_HOTKEY to pin your own.
+  activeVoiceHotkey = registerVoiceHotkey(() => {
+    if (!mainWindow) return
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    if (!mainWindow.isVisible()) mainWindow.show()
+    mainWindow.focus()
+    mainWindow.webContents.send(IPC.voiceToggle)
+  })
+  announceVoiceHotkey()
 
   if (SCREENSHOT_PATH && mainWindow) {
     const w = mainWindow
@@ -1162,7 +1242,7 @@ app.on('window-all-closed', () => {
 // before-quit handlers' window closing).
 app.on('will-quit', () => {
   try {
-    globalShortcut.unregister('Alt+Space')
+    if (activeVoiceHotkey) globalShortcut.unregister(activeVoiceHotkey)
   } catch {}
 })
 

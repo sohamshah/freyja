@@ -237,6 +237,7 @@ export function TitleBar() {
  */
 function VoiceSigilControl() {
   const engineState = useVoiceStore((s) => s.engineState)
+  const hotkeyLabel = useVoiceStore((s) => s.hotkeyLabel)
   const micLevel = useVoiceStore((s) => s.micLevel)
   const active = useVoiceStore((s) => s.active)
   const config = useVoiceStore((s) => s.config)
@@ -248,7 +249,7 @@ function VoiceSigilControl() {
     <button
       type="button"
       onClick={() => toggleVoice()}
-      title="voice · ⌥space"
+      title={hotkeyLabel ? `voice · ${hotkeyLabel}` : 'voice'}
       // Mic-truth must be non-visual too: the canvas child is
       // aria-hidden, so the button itself carries the live/off state.
       aria-pressed={active}

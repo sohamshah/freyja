@@ -2,7 +2,7 @@
 
 Speak to your Mac. Freyja opens a realtime voice exchange, the model calls
 verbs that run natively on the machine, and every action lands as an
-undoable receipt. Push-to-talk (⌥Space); the mic is live only while the
+undoable receipt. Push-to-talk (⌥⇧Space); the mic is live only while the
 sigil is lit.
 
 ![HUD demo](galdr-assets/hud-demo.gif)
@@ -16,7 +16,7 @@ any code was written).
 
 ## What it does
 
-- **⌥Space** (or the title-bar sigil) opens a voice exchange. Say *"play
+- **⌥⇧Space** (or the title-bar sigil) opens a voice exchange. Say *"play
   Vienna by Billy Joel on Spotify"*, *"quieter"*, *"quit Slack"*, *"set a
   timer for ten minutes"*, *"what's playing"*. The mic closes on silence
   (idle timeout) or Esc — it is never hot in the background.
@@ -60,7 +60,7 @@ any code was written).
   (default 22–8, wrap-around aware) silences it; it never fires while a
   live exchange is open (that path already speaks the update inline) and
   never announces the same mission twice; and the announcement is
-  **interruptible** — opening a session (⌥Space) cuts it off. A dead TTS
+  **interruptible** — opening a session (⌥⇧Space) cuts it off. A dead TTS
   is best-effort (returns nothing) and never breaks the report-back. In
   settings: a *"speak up on their own"* toggle plus the quiet-hours bounds.
 - **Slack, first-class** (slice 2). *"Read me #general"* → `slack.read`

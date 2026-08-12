@@ -1155,6 +1155,17 @@ export type BridgeEvent =
       /** What triggered it — 'mission' for a finished background mission. */
       source: 'mission'
     }
+  | {
+      /** Which global hotkey the MAIN process actually managed to
+       *  register for the voice toggle. Sent on every window load. The
+       *  accelerator is a fallback chain (⌥Space is commonly taken by
+       *  Raycast/Alfred), so the UI reads this instead of hardcoding a
+       *  label that might be a lie. Both fields are null when every
+       *  candidate was taken — the title-bar sigil still works. */
+      type: 'voice_hotkey'
+      accelerator: string | null
+      label: string | null
+    }
 
 // --- Channel names ---
 

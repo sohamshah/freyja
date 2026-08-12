@@ -15,6 +15,7 @@ const VISIBLE = 12
 export function VoiceReceiptsSection() {
   const receipts = useVoiceStore((s) => s.receipts)
   const undo = useVoiceStore((s) => s.undo)
+  const hotkeyLabel = useVoiceStore((s) => s.hotkeyLabel)
   const [expanded, setExpanded] = useState(true)
 
   const recent = receipts.slice(0, VISIBLE)
@@ -36,7 +37,7 @@ export function VoiceReceiptsSection() {
 
       {!expanded ? null : recent.length === 0 ? (
         <div className="px-4 pb-3 pt-1 text-[11px] italic text-fg-3">
-          No voice activity yet · ⌥space to speak
+          No voice activity yet{hotkeyLabel ? ` · ${hotkeyLabel} to speak` : ''}
         </div>
       ) : (
         <div className="space-y-1 px-4 pb-3 pt-1">

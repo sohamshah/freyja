@@ -34,6 +34,7 @@ function VoiceHudBody() {
   const voiceSessionId = useVoiceStore((s) => s.voiceSessionId)
   const error = useVoiceStore((s) => s.error)
   const usage = useVoiceStore((s) => s.usage)
+  const hotkeyLabel = useVoiceStore((s) => s.hotkeyLabel)
   const typedCommand = useVoiceStore((s) => s.typedCommand)
   const confirmPending = useVoiceStore((s) => s.confirmPending)
   const undo = useVoiceStore((s) => s.undo)
@@ -213,7 +214,7 @@ function VoiceHudBody() {
               {error}
             </span>
             <span className="shrink-0 font-mono text-[10px] text-fg-3">
-              ⌥space to retry
+              {hotkeyLabel ? `${hotkeyLabel} to retry` : 'click the sigil to retry'}
             </span>
           </div>
         )}
@@ -263,7 +264,7 @@ function VoiceHudBody() {
                 <span className="text-fg-4"> · {formatTokens(usage.totalTokens)}</span>
               </span>
             )}
-            <span className="font-mono text-[10px] text-fg-3">esc to end · ⌥space</span>
+            <span className="font-mono text-[10px] text-fg-3">{hotkeyLabel ? `esc to end · ${hotkeyLabel}` : 'esc to end'}</span>
           </div>
         </div>
       </div>

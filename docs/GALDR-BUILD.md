@@ -66,7 +66,7 @@ interface here conflicts with taste, the contract wins — renegotiate after int
 ```
 
 - **Exchange model:** mic is live only while a voice session is open (toggle via
-  ⌥Space global shortcut / Sigil click / HUD). Auto-close after `idleTimeoutSec`
+  ⌥⇧Space global shortcut / Sigil click / HUD). Auto-close after `idleTimeoutSec`
   (default 25) of no activity. No wake word in slice 1 → mic-truth is structural.
 - **Mission handoff:** verb `mission.spawn` creates a real Freyja agent session.
 - **Demo mode:** with no `window.harness` or `?voicedemo=1`, a scripted driver walks
@@ -414,13 +414,18 @@ Wiring rule: `voice_tool_result` → if `needsConfirm` set activity=confirm; ALW
 - `SettingsModal` voice group: enable toggle, model select (`available.models`), voice
   select, VAD select, idle timeout, capability hints (`hasApiKey`, `spotifySearch` off →
   one-line setup hint). Persists via `voice_set_config` (bridge owns the file).
-- `TitleBar` right cluster: Sigil(20) button; tooltip "voice · ⌥Space"; hidden when
+- `TitleBar` right cluster: Sigil(20) button; tooltip "voice · <active hotkey>"; hidden when
   `config.enabled === false` or no API key.
-- `App.tsx`: mount `<VoiceHUD/>`; ⌥Space handled by main-process globalShortcut →
+- `App.tsx`: mount `<VoiceHUD/>`; the voice hotkey handled by main-process globalShortcut →
   `voice:toggle` IPC → store `toggleVoice()`; also Esc-priority: HUD open swallows Esc.
 
 ### 7.4 Main process
-- Register `globalShortcut` **Alt+Space** on app-ready when voice enabled; emits
+- Register `globalShortcut` from a CANDIDATE CHAIN on app-ready (⌥Space is
+  commonly claimed by Raycast/Alfred, so the default is **Alt+Shift+Space**
+  with Control+Shift+Space / Control+Alt+Space / Cmd+Alt+V as fallbacks and
+  `FREYJA_VOICE_HOTKEY` as an override); main announces the winner to the
+  renderer via a `voice_hotkey` event so UI hints never advertise a dead
+  shortcut; emits
   `voice:toggle` to focused (or main) window via webContents.send; unregister on quit.
   If the window is hidden/minimized: show + focus first. Pattern-match existing
   native-proxy IPC conventions found in `src/main/`.
@@ -486,7 +491,7 @@ seats (config keys reserved: `model` is a free string), spoken attention-queue r
 - **preload** (`src/preload/preload.ts`): `sendCommand` is fully generic (`ipcRenderer.invoke(IPC.sendCommand, cmd)`)
   — new commands need NO preload change. Only addition: `onVoiceToggle(cb)` listener on new
   IPC channel `voiceToggle: 'voice:toggle'` (add to the `IPC` const in `src/shared/events.ts` ~line 1005).
-- **main** (`src/main/main.ts`): register `globalShortcut.register('Alt+Space', ...)` after window
+- **main** (`src/main/main.ts`): register the first available voice hotkey from the candidate chain after window
   ready; handler: if window hidden/minimized → show+focus; then `mainWindow.webContents.send(IPC.voiceToggle)`.
   Unregister on `will-quit`. Register unconditionally (renderer decides whether voice is enabled).
 - **events** (`src/shared/events.ts`): `BridgeEvent` is a discriminated union (~line 628) — append
