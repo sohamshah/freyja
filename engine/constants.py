@@ -71,7 +71,17 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "claude-sonnet-4-5": 1_000_000,
     "claude-opus-4-5": 200_000,
     # OpenAI
+    "gpt-5.6-sol": 1_050_000,
+    "gpt-5.6-terra": 1_050_000,
+    "gpt-5.6-luna": 1_050_000,
     "gpt-5.5": 1_050_000,
+    # 5.4 family was missing here — the bridge pressure-trigger path reads
+    # this dict and silently capped them at DEFAULT_CONTEXT_WINDOW (200k),
+    # the exact failure mode docs/ADDING-A-MODEL.md warns about.
+    "gpt-5.4": 1_050_000,
+    "gpt-5.4-pro": 1_050_000,
+    "gpt-5.4-mini": 400_000,
+    "gpt-5.4-nano": 400_000,
     "gpt-5.3-codex": 400_000,
     "gpt-4-turbo": 128_000,
     "gpt-4": 8_192,
@@ -87,6 +97,8 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "qwen3.6-plus": 1_000_000,
     "qwen3.7-plus": 262_144,
     "kimi-k2.5": 262_144,
+    "kimi-k3": 1_048_576,
+    "kimi-k3-fast": 1_048_576,
     # Google Gemini — keep in sync with engine/providers.py MODEL_REGISTRY.
     "gemini-3.1-pro-preview": 1_048_576,
     "gemini-3.5-flash": 1_048_576,

@@ -96,6 +96,36 @@ _DEBUG_LOG_ENABLED = (
 # Everything else (text_delta in particular) gets clamped to 60 chars
 # so a streaming session doesn't bloat the file.
 _DEBUG_LOG_FULL_TEXT_TYPES = frozenset({"log", "error", "system_event"})
+# Live credentials must never be journaled: voice_session_ready carries
+# the ephemeral OpenAI realtime clientSecret (~10 min of billable
+# realtime access) and voice_tool_result carries single-use confirm
+# tokens. Keys are matched case-insensitively — any *secret*/*password*
+# key plus these exact names. Count-style fields ("inputTokens") are
+# deliberately NOT matched.
+_DEBUG_LOG_REDACTED = "<redacted>"
+_DEBUG_LOG_REDACT_EXACT_KEYS = frozenset({"token", "apikey", "api_key", "authorization"})
+
+
+def _redact_credentials(value: Any) -> Any:
+    """Deep-copy `value` with credential-bearing fields blanked for the
+    on-disk debug log. The stdout copy is untouched — the renderer needs
+    the real clientSecret in memory; the journal never does."""
+    if isinstance(value, dict):
+        out: dict[Any, Any] = {}
+        for key, item in value.items():
+            lowered = key.lower() if isinstance(key, str) else ""
+            if (
+                "secret" in lowered
+                or "password" in lowered
+                or lowered in _DEBUG_LOG_REDACT_EXACT_KEYS
+            ):
+                out[key] = _DEBUG_LOG_REDACTED
+            else:
+                out[key] = _redact_credentials(item)
+        return out
+    if isinstance(value, list):
+        return [_redact_credentials(item) for item in value]
+    return value
 
 SKILL_PRUNE_MIN_SKILLS = 5
 SKILL_PRUNE_MIN_SKILL_TOKENS = 5_000
@@ -135,9 +165,28 @@ def _write_debug_log(event: dict[str, Any]) -> None:
                     os.replace(_DEBUG_LOG_PATH, _DEBUG_LOG_PREV_PATH)
             except Exception:  # noqa: BLE001
                 pass
-        trimmed = dict(event)
+        trimmed = _redact_credentials(event)
+        # The confirm token also rides inside the human-readable
+        # `output` sentence of voice_tool_result ("…call act again with
+        # confirm_token <hex>.") — scrub the value there too.
+        needs_confirm = event.get("needsConfirm")
+        confirm_token = (
+            needs_confirm.get("token") if isinstance(needs_confirm, dict) else None
+        )
+        if (
+            isinstance(confirm_token, str)
+            and confirm_token
+            and isinstance(trimmed.get("output"), str)
+        ):
+            trimmed["output"] = trimmed["output"].replace(confirm_token, _DEBUG_LOG_REDACTED)
         if "pngBase64" in trimmed:
             trimmed["pngBase64"] = f"<{len(trimmed['pngBase64'])} b64 chars>"
+        # Visual computer control (§12.1): voice_tool_result carries a
+        # grid-overlaid screenshot as a top-level base64 PNG. Trim it like
+        # the other image payloads so the debug journal stays tail-able
+        # (a computer-use voice turn emits one per see/click/type/scroll).
+        if isinstance(trimmed.get("imageB64"), str):
+            trimmed["imageB64"] = f"<{len(trimmed['imageB64'])} b64 chars>"
         if "images" in trimmed and isinstance(trimmed["images"], list):
             light_images = []
             for image in trimmed["images"]:
@@ -263,7 +312,7 @@ def _format_verdict_as_critique(card: Any, verdict: Any) -> str:
 
     lines.append(
         f"This is rework iteration {card.review_iteration} of "
-        f"{getattr(_BridgeSession, 'KANBAN_MAX_REVIEW_ITERATIONS', 5)}. "
+        f"{getattr(_BridgeSession, 'KANBAN_MAX_REVIEW_ITERATIONS', 3)}. "
         "Finish your fix and call `kanban` action=complete on this card "
         "again when you're done. If you genuinely can't make progress "
         "on the gaps named above, call `kanban` action=block with a "
@@ -1141,6 +1190,17 @@ async def _main() -> None:
             log("debug", f"daemon auto-install hook not wired: {exc}")
     except Exception as exc:  # noqa: BLE001
         log("warn", f"scheduler failed to start: {exc}")
+    # Galdr voice service — mints realtime client secrets, dispatches the
+    # `act` tool, owns receipts/undo/confirm tiers. start() is cheap and
+    # non-fatal by contract: no network happens until the first
+    # voice_session_start, so a broken voice stack can't block boot.
+    try:
+        from bridge.voice import VoiceService
+
+        state.voice = VoiceService(state)
+        await state.voice.start()
+    except Exception as exc:  # noqa: BLE001
+        log("warn", f"voice service failed to start: {exc}")
     # Offline working-memory backfill — hourly pass that summarizes idle
     # sessions whose working_memory.json is missing or older than the
     # transcript. This is the substrate the morning briefing reads; the
@@ -1306,6 +1366,36 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
     },
     # ─── OpenAI (OPENAI_API_KEY) ───────────────────────────────────────
     {
+        "id": "gpt-5.6-sol",
+        "family": "openai",
+        "label": "GPT-5.6 Sol",
+        "tier": "max",
+        "contextWindow": 1_050_000,
+        "thinking": True,
+        "envVar": "OPENAI_API_KEY",
+        "description": "OpenAI's newest flagship (Sol). Best-in-class coding, reasoning, and computer use. 1.05M ctx.",
+    },
+    {
+        "id": "gpt-5.6-terra",
+        "family": "openai",
+        "label": "GPT-5.6 Terra",
+        "tier": "balanced",
+        "contextWindow": 1_050_000,
+        "thinking": True,
+        "envVar": "OPENAI_API_KEY",
+        "description": "Balanced GPT-5.6. Matches GPT-5.5 quality at roughly half the cost.",
+    },
+    {
+        "id": "gpt-5.6-luna",
+        "family": "openai",
+        "label": "GPT-5.6 Luna",
+        "tier": "fast",
+        "contextWindow": 1_050_000,
+        "thinking": True,
+        "envVar": "OPENAI_API_KEY",
+        "description": "Fastest, cheapest GPT-5.6. Great for fanout and high-volume subagents.",
+    },
+    {
         "id": "gpt-5.5",
         "family": "openai",
         "label": "GPT-5.5",
@@ -1313,7 +1403,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 1_050_000,
         "thinking": True,
         "envVar": "OPENAI_API_KEY",
-        "description": "OpenAI's newest frontier model. Best for complex coding, reasoning, and computer use.",
+        "description": "Previous OpenAI flagship. Strong coding, reasoning, vision, and computer use.",
     },
     {
         "id": "gpt-5.4",
@@ -1395,6 +1485,26 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "thinking": True,
         "envVar": "FIREWORKS_API_KEY",
         "description": "Moonshot's Kimi K2.7 Code via Fireworks. Coding-focused agentic model, vision + 262k ctx, ~30% fewer thinking tokens than K2.6.",
+    },
+    {
+        "id": "kimi-k3",
+        "family": "fireworks",
+        "label": "Kimi K3",
+        "tier": "max",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "FIREWORKS_API_KEY",
+        "description": "Moonshot's Kimi K3 flagship (2.8T MoE) via Fireworks. Native vision + 1M ctx.",
+    },
+    {
+        "id": "kimi-k3-fast",
+        "family": "fireworks",
+        "label": "Kimi K3 Fast",
+        "tier": "max",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "FIREWORKS_API_KEY",
+        "description": "Kimi K3 on Fireworks' Fast serving tier (~+50% cost, lower latency). Native vision + 1M ctx.",
     },
     {
         "id": "deepseek-v4-pro",
@@ -1584,6 +1694,21 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningLevels": ["none", "low", "medium", "high"],
         "reasoningDefault": "high",
     },
+    "gpt-5.6-sol": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "high",
+    },
+    "gpt-5.6-terra": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "medium",
+    },
+    "gpt-5.6-luna": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "low",
+    },
     "gpt-5.5": {
         "reasoningMode": "effort",
         "reasoningLevels": ["none", "minimal", "low", "medium", "high", "xhigh"],
@@ -1634,6 +1759,18 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
     "kimi-k2.7-code": {
         "reasoningMode": "effort",
         "reasoningLevels": ["none", "low", "medium", "high"],
+        "reasoningDefault": "high",
+        "reasoningHistory": ["preserved"],
+    },
+    "kimi-k3": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high", "max"],
+        "reasoningDefault": "high",
+        "reasoningHistory": ["preserved"],
+    },
+    "kimi-k3-fast": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high", "max"],
         "reasoningDefault": "high",
         "reasoningHistory": ["preserved"],
     },
@@ -6067,7 +6204,7 @@ class _BridgeSession:
     # worker rewake and routes straight to blocked. Mirrored in
     # sub_agent_tool.py's `_mark_kanban_terminal` to short-circuit
     # review-entry past the cap as a defense in depth.
-    KANBAN_MAX_REVIEW_ITERATIONS = 5
+    KANBAN_MAX_REVIEW_ITERATIONS = 3
     # A running card with no `updated_at` activity for this long is
     # flagged via `kanban_stale`. The flag is informational — it
     # surfaces to the dashboard so the user can investigate.
@@ -6424,10 +6561,21 @@ class _BridgeSession:
                 )
                 capacity -= 1
                 continue
-            if card.status == "ready":
+            if card.status in ("ready", "crashed", "timed_out"):
                 # Skip the mission root — it's a container, not work.
                 if card.metadata.get("role") == "mission_root":
                     continue
+                # `crashed`/`timed_out` are retry-eligible reclaims: the
+                # stale sweep (or an ungraceful worker exit) parked them
+                # here after their worker left the registry, so re-dispatch
+                # to a fresh worker. This is bounded — the circuit breaker
+                # trips a card to `failed` after FAILURE_THRESHOLD
+                # consecutive crashed/timed_out transitions, so a card that
+                # keeps dying stops respawning instead of looping forever.
+                # (`blocked` is deliberately NOT auto-retried: it means the
+                # worker asked for human input — that's operator territory
+                # via the `unblock` action.)
+                #
                 # Cards without an explicit assignee fall back to the
                 # `general` agent type. This is the common case when
                 # the parent session has never spawned a subagent
@@ -6478,10 +6626,14 @@ class _BridgeSession:
 
         # Stale-card sweep. Runs every tick regardless of capacity, so a
         # saturated board still surfaces silent workers to the operator
-        # and can break ties when in-flight cards run too long.
-        await self._sweep_stale_kanban_cards(cards)
+        # and can break ties when in-flight cards run too long. `live` is
+        # passed so the sweep never reclaims a card whose worker is still
+        # in the registry.
+        await self._sweep_stale_kanban_cards(cards, live)
 
-    async def _sweep_stale_kanban_cards(self, cards: list[Any]) -> None:
+    async def _sweep_stale_kanban_cards(
+        self, cards: list[Any], live: set[str]
+    ) -> None:
         if self.kanban_board is None:
             return
         now = time.time()
@@ -6492,11 +6644,22 @@ class _BridgeSession:
             if card.metadata.get("role") == "mission_root":
                 continue
             age = now - card.updated_at
-            if age >= self.KANBAN_RECLAIM_SECONDS and kanban_tool is not None:
+            # Liveness gate: a card whose worker is still in the sub-agent
+            # registry is NOT crashed, even if it's been quiet past the
+            # reclaim threshold (a long tool call with no heartbeat). Flipping
+            # it to `crashed` would kill nothing and unfairly charge a
+            # circuit-breaker failure to a healthy worker — so only reclaim
+            # cards whose worker has actually left the registry.
+            worker_live = card.id in live
+            if (
+                age >= self.KANBAN_RECLAIM_SECONDS
+                and not worker_live
+                and kanban_tool is not None
+            ):
                 # Hand the card back to the dispatcher by flipping it to
-                # `crashed` — the circuit breaker accounting will catch
-                # cards that flap, and the next tick will pick it up as
-                # retry-eligible.
+                # `crashed`. The worker lane re-dispatches crashed/timed_out
+                # cards on the next tick, and the circuit breaker trips them
+                # to `failed` after FAILURE_THRESHOLD flaps.
                 try:
                     await kanban_tool.execute(
                         f"reclaim-{card.id}-{int(now * 1000):x}",
@@ -9839,6 +10002,10 @@ class _BridgeState:
         # Gateway runner reference (set by the gateway boot). Slack sink
         # falls back here when adapters list isn't populated yet.
         self.gateway_runner: Any = None
+        # Galdr voice service (bridge/voice). Set by _main after the
+        # scheduler boots; None in contexts that never speak (tests,
+        # headless gateway) — voice_* handlers guard on it.
+        self.voice: Any = None
 
     async def ensure_session(
         self,
@@ -10460,6 +10627,48 @@ def _schedule_or_queue_turn(
     return True
 
 
+# A voice EXCHANGE session id is exactly "voice-" + 12 hex (uuid4 slice);
+# voice-mission-<ts> and desktop-<ts> do NOT match, so only a real voice
+# conversation gets seeded with its spoken context when continued by text.
+_VOICE_EXCHANGE_ID_RE = re.compile(r"^voice-[0-9a-f]{12}$")
+
+
+async def _inject_voice_context(sess: "_BridgeSession", summary: str) -> bool:
+    """Seed an empty runtime with the recap of a past VOICE exchange so the
+    operator can pick it up by typing and the agent knows what was said and
+    done aloud. Idempotent (no-ops once the session has any transcript)."""
+    if not summary:
+        return False
+    await sess.initialize()
+    if sess.session is None:
+        return False
+    try:
+        if len(sess.session.transcript) > 0:
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    sess.session.add_user_message(
+        "[This session began as a spoken (voice) exchange. The recap below "
+        "is what was said and done by voice — continue from here as if it "
+        "were part of this conversation.]\n\n" + summary
+    )
+    sess.session.add_assistant_message(
+        "Got it — I have the voice conversation above. What would you like next?"
+    )
+    sess._save_transcript()  # noqa: SLF001
+    log("info", f"seeded voice context for session {sess.id} ({len(summary)} chars)")
+    emit(
+        {
+            "type": "system_event",
+            "sessionId": sess.id,
+            "subtype": "voice_context_restored",
+            "message": f"Continued from the voice conversation ({len(summary)} chars)",
+            "details": {"summaryLength": len(summary)},
+        }
+    )
+    return True
+
+
 async def _inject_legacy_context_summary(
     sess: "_BridgeSession",
     summary: str,
@@ -10876,10 +11085,18 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         return
 
     if ctype == "kanban_operator_unblock":
-        # Pop a card out of `blocked` (or one of the terminal failure
-        # statuses bucketed there) back into `ready` so autopilot can
-        # try again. board.unblock() handles the state transition;
-        # we just translate the IPC.
+        # Pop a card out of `blocked` (or one of the retry-eligible
+        # failure statuses bucketed there) back into `ready` so autopilot
+        # can try again. Two distinct cases share this button:
+        #   · triage child gated on a failed parent → board.unblock(),
+        #     which enforces the parent-state preconditions.
+        #   · blocked / crashed / timed_out card → a real status write to
+        #     `ready` (all legal transitions). The previous code funnelled
+        #     BOTH through board.unblock(), which early-returns for any
+        #     non-triage card, so the button was a silent no-op on every
+        #     blocked-column card while still emitting a success event.
+        # `failed` / `cancelled` are absorbing terminal states — nothing
+        # to unblock; the UI already hides the button for them.
         if not session_id:
             return
         card_id = str(cmd.get("cardId") or "").strip()
@@ -10888,10 +11105,39 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         sess = await state.ensure_session(session_id)
         if sess.kanban_board is None:
             return
+        task = await sess.kanban_board.get(card_id)
+        if task is None:
+            log("warn", f"kanban_operator_unblock: card {card_id} not found")
+            return
+        status = (task.status or "").lower()
+        moved = False
+        note = ""
         try:
-            await sess.kanban_board.unblock(card_id, actor="operator")
+            if status == "triage":
+                _, note = await sess.kanban_board.unblock(card_id, actor="operator")
+                moved = note == "unblocked"
+            elif status in {"blocked", "crashed", "timed_out"}:
+                updated = await sess.kanban_board.update(
+                    card_id,
+                    actor="operator",
+                    status="ready",
+                    comment="Operator unblocked — returned to the ready queue",
+                )
+                moved = updated is not None
+                note = "returned to ready"
+            else:
+                note = f"card is {status!r}; nothing to unblock"
         except Exception as exc:  # noqa: BLE001
             log("warn", f"kanban_operator_unblock failed for {card_id}: {exc}")
+            return
+        if not moved:
+            # Surface the no-op honestly instead of faking success.
+            log("info", f"kanban_operator_unblock no-op for {card_id}: {note}")
+            sess._emit_kanban_event(  # noqa: SLF001
+                "kanban_operator_unblock_failed",
+                f"Could not unblock {card_id}: {note}",
+                details={"cardId": card_id, "reason": note},
+            )
             return
         # Reset breaker bookkeeping: an unblocked card gets a fresh
         # chance, otherwise autopilot would skip it the moment it
@@ -11355,6 +11601,16 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         context_summary = cmd.get("contextSummary")
         if isinstance(context_summary, str) and context_summary:
             await _inject_legacy_context_summary(sess, context_summary)
+        elif _VOICE_EXCHANGE_ID_RE.match(sess.id) and getattr(state, "voice", None) is not None:
+            # Typing into a session that began as a voice exchange: seed it
+            # from the durable voice transcript so the agent continues with
+            # what was said and done aloud. No-ops if already seeded/nonempty.
+            try:
+                vsummary = state.voice.build_context_summary(sess.id)
+            except Exception:  # noqa: BLE001 — never block the turn on this
+                vsummary = ""
+            if vsummary:
+                await _inject_voice_context(sess, vsummary)
 
         _schedule_or_queue_turn(sess, content, attachments)
         return
@@ -12332,6 +12588,86 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         except Exception as exc:  # noqa: BLE001
             emit({"type": "scheduler_response", "requestId": cmd.get("id"),
                   "subtype": "preview_next_fires", "error": str(exc)})
+        return
+
+    # ── Voice (Galdr) ───────────────────────────────────────────────────
+    # Every voice_* command delegates to the process-level VoiceService
+    # (bridge/voice). Handlers spawn tasks — verb runs can shell out to
+    # osascript for seconds and the mint is a network round trip, so the
+    # command loop must never block behind them. Task-internal failures
+    # surface as voice_error from VoiceService.spawn's done-callback; the
+    # try/excepts here cover synchronous dispatch failures.
+    if isinstance(ctype, str) and ctype.startswith("voice_") and state.voice is None:
+        emit(
+            {
+                "type": "voice_error",
+                "code": "voice_unavailable",
+                "message": "voice service is not running in this bridge process",
+            }
+        )
+        return
+
+    if ctype == "voice_session_start":
+        try:
+            state.voice.spawn("session_start", state.voice.handle_session_start(cmd))
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "voice_error", "code": "voice_session_start_failed", "message": str(exc)})
+        return
+
+    if ctype == "voice_session_end":
+        try:
+            state.voice.spawn("session_end", state.voice.handle_session_end(cmd))
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "voice_error", "code": "voice_session_end_failed", "message": str(exc)})
+        return
+
+    if ctype == "voice_tool_call":
+        try:
+            state.voice.spawn("tool_call", state.voice.handle_tool_call(cmd))
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "voice_error", "code": "voice_tool_call_failed", "message": str(exc)})
+        return
+
+    if ctype == "voice_transcript":
+        try:
+            state.voice.spawn("transcript", state.voice.handle_transcript(cmd))
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "voice_error", "code": "voice_transcript_failed", "message": str(exc)})
+        return
+
+    if ctype == "voice_typed_command":
+        try:
+            state.voice.spawn("typed_command", state.voice.handle_typed_command(cmd))
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "voice_error", "code": "voice_typed_command_failed", "message": str(exc)})
+        return
+
+    if ctype == "voice_receipts_list":
+        try:
+            state.voice.spawn("receipts_list", state.voice.handle_receipts_list(cmd))
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "voice_error", "code": "voice_receipts_list_failed", "message": str(exc)})
+        return
+
+    if ctype == "voice_undo":
+        try:
+            state.voice.spawn("undo", state.voice.handle_undo(cmd))
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "voice_error", "code": "voice_undo_failed", "message": str(exc)})
+        return
+
+    if ctype == "voice_get_config":
+        try:
+            state.voice.spawn("get_config", state.voice.handle_get_config(cmd))
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "voice_error", "code": "voice_get_config_failed", "message": str(exc)})
+        return
+
+    if ctype == "voice_set_config":
+        try:
+            state.voice.spawn("set_config", state.voice.handle_set_config(cmd))
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "voice_error", "code": "voice_set_config_failed", "message": str(exc)})
         return
 
     if ctype == "computer.emergency_stop":

@@ -72,6 +72,9 @@ logger = logging.getLogger(__name__)
 # OpenAI-specific duplicate of engine/constants.py:MODEL_CONTEXT_WINDOWS.
 # See docs/ADDING-A-MODEL.md for the full per-model checklist.
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    "gpt-5.6-sol": 1_050_000,
+    "gpt-5.6-terra": 1_050_000,
+    "gpt-5.6-luna": 1_050_000,
     "gpt-5.5": 1_050_000,
     "gpt-5.4": 1_050_000,
     "gpt-5.4-pro": 1_050_000,
@@ -82,6 +85,9 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
 
 # Models that support the `reasoning` parameter.
 REASONING_MODELS: set[str] = {
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
     "gpt-5.5",
     "gpt-5.4",
     "gpt-5.4-pro",
@@ -91,6 +97,9 @@ REASONING_MODELS: set[str] = {
 }
 
 NATIVE_COMPUTER_MODELS: set[str] = {
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
     "gpt-5.5",
 }
 

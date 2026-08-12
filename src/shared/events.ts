@@ -355,6 +355,48 @@ export interface CommandAttachment {
   sizeBytes?: number
 }
 
+// ── Voice (Galdr) shared types ─────────────────────────────────────
+// Shape shared by the bridge's python dataclass and the renderer —
+// pinned in docs/GALDR-BUILD.md §2. One row per verb execution
+// (including refusals and undos); persisted bridge-side to
+// ~/.freyja/voice/receipts.jsonl.
+
+export type Receipt = {
+  id: string
+  ts: number // epoch ms
+  /** Best-known utterance text ("" if typed). */
+  heard: string
+  lane: 'floor' | 'brain' | 'mission' | 'undo'
+  /** e.g. "spotify.play" */
+  verb: string
+  args: Record<string, unknown>
+  ok: boolean
+  /** One-line human outcome, e.g. "▶ Vienna — Billy Joel". */
+  summary: string
+  undoable: boolean
+  undone?: boolean
+  voiceSessionId?: string
+}
+
+export type VoiceConfig = {
+  enabled: boolean
+  model: string
+  voice: string
+  vadMode: 'semantic_vad' | 'server_vad'
+  idleTimeoutSec: number
+  /** Proactive spoken announcements: let Freyja speak up unprompted when a
+   *  background mission finishes. OFF by default; gated by quietHours and
+   *  never fires while a live voice session is open. */
+  proactiveVoice: boolean
+  /** No announcements while the local hour is in [start, end) — wrap-around
+   *  aware (22..8 spans midnight). 24h local hours. */
+  quietHours: { start: number; end: number }
+  available: { models: string[]; voices: string[] }
+  /** Capability flags for the UI. */
+  hasApiKey: boolean
+  spotifySearch: boolean
+}
+
 // --- Commands sent from renderer to main (and by main to the bridge) ---
 
 export type BridgeCommand =
@@ -609,6 +651,45 @@ export type BridgeCommand =
   // ({started:true}); progress + final report arrive as
   // wm_backfill_complete system events.
   | { type: 'wm.backfill'; id?: string; limit?: number; dryRun?: boolean }
+  // ── Voice IPC (docs/GALDR-BUILD.md §2) ────────────────────────────
+  | { type: 'voice_session_start' }
+  | {
+      type: 'voice_session_end'
+      voiceSessionId: string
+      reason: string
+      stats?: { seconds: number; inputTokens?: number; outputTokens?: number }
+    }
+  | {
+      type: 'voice_tool_call'
+      voiceSessionId: string
+      callId: string
+      name: string
+      argumentsJson: string
+      heard?: string
+    }
+  | {
+      type: 'voice_transcript'
+      voiceSessionId: string
+      role: 'user' | 'assistant'
+      text: string
+      final: boolean
+    }
+  | { type: 'voice_typed_command'; text: string }
+  | { type: 'voice_receipts_list'; limit?: number }
+  | { type: 'voice_undo'; receiptId: string }
+  | { type: 'voice_get_config' }
+  | {
+      type: 'voice_set_config'
+      patch: {
+        enabled?: boolean
+        model?: string
+        voice?: string
+        vadMode?: 'semantic_vad' | 'server_vad'
+        idleTimeoutSec?: number
+        proactiveVoice?: boolean
+        quietHours?: { start?: number; end?: number }
+      }
+    }
 
 // --- Events produced by the bridge and forwarded to the renderer ---
 
@@ -999,6 +1080,81 @@ export type BridgeEvent =
       error?: string
     } & SessionId)
   | { type: 'emergency_stop'; reason?: string; stopped?: number }
+  // ── Voice events (docs/GALDR-BUILD.md §2) ─────────────────────────
+  // Deliberately NOT session-scoped: voice sessions are keyed by
+  // voiceSessionId, not by chat sessionId, so these skip the SessionId
+  // mixin and its per-session persistence side effects.
+  | {
+      type: 'voice_session_ready'
+      voiceSessionId: string
+      clientSecret: string
+      model: string
+      expiresAt: number
+      webrtcUrl: string
+    }
+  | {
+      type: 'voice_session_closed'
+      voiceSessionId: string
+      reason: string
+      receiptsCount: number
+      seconds: number
+    }
+  | {
+      type: 'voice_tool_result'
+      voiceSessionId?: string
+      callId: string
+      ok: boolean
+      /** JSON string for the model — relayed verbatim as function_call_output. */
+      output: string
+      say?: string
+      receipt?: Receipt
+      needsConfirm?: { token: string; summary: string }
+      /** Visual computer-control rework (docs/GALDR-BUILD.md §12.1): a
+       *  screenshot the realtime model should SEE. Set only by computer.*
+       *  verbs. The renderer injects it as an `input_image` user item after
+       *  the function_call_output text and prunes the previous one so only
+       *  the newest screenshot stays in the conversation. base64 PNG. */
+      imageB64?: string
+      imageW?: number
+      imageH?: number
+    }
+  | { type: 'voice_receipt'; receipt: Receipt }
+  | { type: 'voice_receipts'; receipts: Receipt[] }
+  | { type: 'voice_config'; config: VoiceConfig }
+  | { type: 'voice_error'; voiceSessionId?: string; code: string; message: string }
+  | {
+      /** Floor detected a stop-word in the live transcript. Renderer must
+       *  response.cancel, pause playback, and end the session. */
+      type: 'voice_panic'
+      voiceSessionId: string
+      matched: string
+    }
+  | { type: 'voice_timer_fired'; label: string; seconds: number }
+  | {
+      /** A spawned mission finished (report-back watcher). If a voice
+       *  session is live the renderer speaks it in-conversation. */
+      type: 'voice_mission_update'
+      /** Active voice session at report time, '' when none was live. */
+      voiceSessionId: string
+      missionSessionId: string
+      title: string
+      /** Final assistant text, capped at 400 chars bridge-side. */
+      text: string
+    }
+  | {
+      /** Proactive unprompted announcement — Freyja speaking up when a
+       *  background mission finished and NO live exchange was open. The
+       *  bridge already gated this (proactiveVoice on, not quiet hours,
+       *  no active session, deduped); the renderer re-checks proactiveVoice
+       *  and plays audioB64 through a dedicated short-lived audio element. */
+      type: 'voice_announce'
+      /** The spoken line (also shown in the subtle notice). */
+      text: string
+      /** base64 mp3 from the bridge's TTS; may be absent if synth failed. */
+      audioB64?: string
+      /** What triggered it — 'mission' for a finished background mission. */
+      source: 'mission'
+    }
 
 // --- Channel names ---
 
@@ -1048,6 +1204,8 @@ export const IPC = {
   skillCandidateDiff: 'skill:candidateDiff',
   fsCompletePath: 'fs:completePath',
   llmKeysProbe: 'llm:keys:probe',
+  // Voice: main-process ⌥Space globalShortcut → renderer toggleVoice().
+  voiceToggle: 'voice:toggle',
 } as const
 
 // ── Gateway IPC result types ────────────────────────────────────

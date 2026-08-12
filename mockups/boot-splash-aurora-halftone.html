@@ -1,0 +1,1083 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Freyja · Halftone Aurora Matrix Splash</title>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300&display=swap" rel="stylesheet">
+  
+  <style>
+    :root {
+      --bg-0: #020204;
+      --bg-1: #090a12;
+      --bg-2: #10121a;
+      --fg-0: #fbfcfe;
+      --fg-1: #b8c4d9;
+      --fg-2: #72859e;
+      --fg-3: #485870;
+      --fg-4: #2b394d;
+      --accent: #ffd79e; /* Warm Gold */
+      --accent-glow: rgba(255, 215, 158, 0.15);
+      --hairline: rgba(255, 255, 255, 0.05);
+      --mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+      --serif: 'Fraunces', Georgia, serif;
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background-color: var(--bg-0);
+      color: var(--fg-0);
+      font-family: var(--mono);
+      overflow: hidden;
+      user-select: none;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Vector display scan-line overlay */
+    .grain-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 10;
+      pointer-events: none;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+      opacity: 0.038;
+      mix-blend-mode: screen;
+    }
+
+    /* ── Splash Overlay Container */
+    .splash-root {
+      position: fixed;
+      inset: 0;
+      z-index: 10000;
+      overflow: hidden;
+      background-color: transparent;
+      transition: opacity 1200ms cubic-bezier(0.19, 1, 0.22, 1);
+    }
+
+    #webgl-canvas {
+      position: absolute;
+      inset: 0;
+      height: 100%;
+      width: 100%;
+    }
+
+    /* Centered Logo Overlay (Fades in Stage 2) */
+    .splash-icon {
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      color: var(--accent);
+      will-change: opacity, transform;
+      pointer-events: none;
+      z-index: 10001;
+      opacity: 0;
+    }
+
+    /* ── Welcome Screen (Behind the Splash) */
+    .welcome-root {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 40px;
+      z-index: 1;
+    }
+
+    .ambient {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      background:
+        radial-gradient(1000px 800px at 15% -15%, rgba(255, 215, 158, 0.06), transparent 60%),
+        radial-gradient(800px 600px at 85% 10%, rgba(136, 214, 127, 0.03), transparent 60%);
+    }
+
+    .welcome-icon-wrap {
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 2;
+    }
+
+    .welcome-bottom {
+      margin-top: auto;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 20px;
+      z-index: 3;
+      opacity: 0;
+      transform: translateY(20px);
+      transition: opacity 1400ms cubic-bezier(0.19, 1, 0.22, 1), transform 1400ms cubic-bezier(0.19, 1, 0.22, 1);
+    }
+
+    body:not(.splash-active) .welcome-bottom {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    body.splash-active [data-splash-target='hero-icon'] {
+      opacity: 0;
+    }
+
+    [data-splash-target='hero-icon'] {
+      opacity: 1;
+      transition: opacity 1200ms cubic-bezier(0.19, 1, 0.22, 1);
+    }
+
+    .welcome-bottom-container {
+      width: 100%;
+      max-width: 940px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .welcome-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 16px;
+    }
+    @media (min-width: 640px) {
+      .welcome-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+
+    .card {
+      background: rgba(255, 255, 255, 0.015);
+      border: 1px solid var(--hairline);
+      border-radius: 12px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .card-title {
+      font-size: 10px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--fg-2);
+    }
+
+    .card-content {
+      font-size: 13px;
+      color: var(--fg-0);
+    }
+
+    .card-subtitle {
+      font-size: 11px;
+      color: var(--fg-2);
+    }
+
+    .welcome-btn {
+      background: rgba(255, 215, 158, 0.08);
+      border: 1px solid rgba(255, 215, 158, 0.25);
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      align-self: flex-start;
+      transition: background 120ms ease;
+      margin-top: 4px;
+    }
+
+    .welcome-btn:hover {
+      background: rgba(255, 215, 158, 0.18);
+    }
+
+    .welcome-tip {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--fg-2);
+    }
+
+    .tip-dot {
+      display: inline-block;
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background-color: var(--accent);
+    }
+
+    .kbd {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 5px;
+      font-family: inherit;
+      font-size: 10px;
+      font-weight: 400;
+      color: #c4c4c4;
+      background: rgba(255, 255, 255, 0.05);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1), 0 1px 0 rgba(0, 0, 0, 0.35);
+      border-radius: 4px;
+      margin: 0 2px;
+    }
+
+    /* ── HUD control panel */
+    .hud-panel {
+      position: fixed;
+      top: 24px;
+      left: 24px;
+      z-index: 100000;
+      width: 320px;
+      background: rgba(2, 2, 4, 0.85);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--hairline);
+      border-radius: 12px;
+      padding: 18px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+      transition: transform 350ms cubic-bezier(0.19, 1, 0.22, 1), opacity 300ms ease;
+    }
+
+    .hud-panel.collapsed {
+      transform: translateX(-340px);
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .hud-toggle-btn {
+      position: fixed;
+      top: 24px;
+      left: 24px;
+      z-index: 100001;
+      background: rgba(2, 2, 4, 0.8);
+      backdrop-filter: blur(8px);
+      border: 1px solid var(--hairline);
+      border-radius: 8px;
+      padding: 8px 14px;
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 11px;
+      cursor: pointer;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+      transition: background 150ms ease, opacity 350ms ease;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .hud-toggle-btn.visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .hud-toggle-btn:hover {
+      background: rgba(255, 215, 158, 0.15);
+    }
+
+    .hud-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--hairline);
+    }
+
+    .hud-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-weight: 600;
+      color: var(--accent);
+    }
+
+    .hud-close {
+      background: none;
+      border: none;
+      color: var(--fg-2);
+      cursor: pointer;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    .hud-section-title {
+      font-size: 9px;
+      color: var(--fg-2);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin: 12px 0 6px 0;
+      font-weight: 600;
+    }
+
+    .hud-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      margin-bottom: 6px;
+    }
+
+    .hud-label {
+      color: var(--fg-1);
+    }
+
+    .hud-value {
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+      font-weight: 500;
+    }
+
+    .hud-btn-group {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .hud-btn {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--hairline);
+      border-radius: 6px;
+      color: var(--fg-0);
+      font-family: var(--mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 8px;
+      cursor: pointer;
+      transition: all 120ms ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+    }
+
+    .hud-btn:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .hud-btn.primary {
+      background: rgba(255, 215, 158, 0.1);
+      border-color: rgba(255, 215, 158, 0.3);
+      color: var(--accent);
+    }
+
+    .hud-btn.primary:hover {
+      background: rgba(255, 215, 158, 0.18);
+    }
+
+    .hud-slider {
+      -webkit-appearance: none;
+      width: 100%;
+      height: 4px;
+      border-radius: 2px;
+      background: rgba(255, 255, 255, 0.1);
+      outline: none;
+      margin: 4px 0 8px 0;
+    }
+
+    .hud-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--accent);
+      cursor: pointer;
+    }
+
+    .skip-prompt {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      font-size: 11px;
+      color: var(--fg-2);
+      letter-spacing: 0.05em;
+      z-index: 10002;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 800ms ease;
+    }
+
+    .skip-prompt.visible {
+      opacity: 1;
+    }
+
+    /* Start overlay */
+    .start-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 100002;
+      background: rgba(2, 2, 4, 0.94);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: opacity 800ms ease, visibility 800ms ease;
+    }
+
+    .start-overlay.fade-out {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    .start-content {
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .start-title {
+      font-family: var(--serif);
+      font-size: 46px;
+      font-weight: 300;
+      letter-spacing: 0.12em;
+      color: var(--accent);
+      margin: 0;
+      animation: pulse-title 2.5s infinite ease-in-out;
+    }
+
+    .start-subtitle {
+      font-size: 11px;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--fg-1);
+      margin: 0;
+    }
+
+    @keyframes pulse-title {
+      0%, 100% { opacity: 0.7; transform: scale(0.97); }
+      50% { opacity: 1; transform: scale(1.03); }
+    }
+  </style>
+</head>
+<body class="splash-active">
+
+  <!-- Click to Start Overlay -->
+  <div id="start-overlay" class="start-overlay" onclick="startTimeline()">
+    <div class="start-content">
+      <h1 class="start-title">AURORA MATRIX</h1>
+      <p class="start-subtitle">Click anywhere to start 2-stage halftone animation</p>
+    </div>
+  </div>
+
+  <div class="ambient"></div>
+  <div class="grain-overlay"></div>
+
+  <!-- HUD Control Panel -->
+  <button id="hud-toggle" class="hud-toggle-btn" onclick="toggleHUD(true)">⚙ INSPECTOR</button>
+  <div id="hud" class="hud-panel">
+    <div class="hud-header">
+      <div class="hud-title">Halftone Inspector</div>
+      <button class="hud-close" onclick="toggleHUD(false)">✕</button>
+    </div>
+    
+    <div class="hud-section-title">Timeline States</div>
+    <div class="hud-row">
+      <span class="hud-label">Current Phase</span>
+      <span id="hud-phase" class="hud-value" style="color: #ffd79e;">Initializing</span>
+    </div>
+    <div class="hud-row">
+      <span class="hud-label">Virtual Time</span>
+      <span id="hud-vtime" class="hud-value">0.00s</span>
+    </div>
+    
+    <div class="hud-section-title">Stage Parameters</div>
+    <div class="hud-row">
+      <span class="hud-label">Stage 1 (Halftone u_progress)</span>
+      <span id="hud-stage-1-progress" class="hud-value">0.0000</span>
+    </div>
+    <div class="hud-row">
+      <span class="hud-label">Stage 2 (Icon Bloom ep)</span>
+      <span id="hud-stage-2-ep" class="hud-value">0.0000</span>
+    </div>
+    <div class="hud-row">
+      <span class="hud-label">Logo Opacity</span>
+      <span id="hud-logo-opacity" class="hud-value">0.00%</span>
+    </div>
+    <div class="hud-row">
+      <span class="hud-label">Welcome bloom (ep)</span>
+      <span id="hud-welcome-ep" class="hud-value">0.0000</span>
+    </div>
+
+    <div class="hud-section-title">Controls</div>
+    <div class="hud-row">
+      <span class="hud-label">Speed Multiplier (<span id="speed-val">1.0</span>x)</span>
+    </div>
+    <input type="range" id="speed-slider" class="hud-slider" min="0" max="3" step="0.1" value="1" oninput="setSpeed(this.value)" />
+
+    <div class="hud-btn-group">
+      <button id="play-pause-btn" class="hud-btn" onclick="togglePlayPause()">Pause</button>
+      <button id="skip-btn" class="hud-btn" onclick="triggerSkip()">Trigger Stage 2</button>
+      <button class="hud-btn primary" style="grid-column: span 2;" onclick="triggerRestart()">Restart Sequence</button>
+    </div>
+  </div>
+
+  <!-- Welcome Screen -->
+  <div class="welcome-root">
+    <div class="welcome-icon-wrap" data-splash-target="hero-icon">
+      <svg id="welcome-topo-mark" width="190" height="190" viewBox="0 0 100 100" style="overflow: visible;" class="text-accent"></svg>
+    </div>
+
+    <div class="welcome-bottom">
+      <div class="welcome-bottom-container">
+        <div class="welcome-grid">
+          <div class="card">
+            <div class="card-title">Halftone Aurora Fluid Matrix</div>
+            <div class="card-content font-mono truncate">~/personal/freyja/halftone-matrix</div>
+            <div class="card-subtitle">4px Halftone Grid · Pixelating Scanline Dissolve · Clean Stage-2 Bloom</div>
+          </div>
+          <div class="card">
+            <div class="card-title">Clean 2-Stage Choreography</div>
+            <div class="card-content">Waving aurora matrix disintegrates completely, followed by a pristine concentric vector bloom.</div>
+            <button class="welcome-btn" onclick="triggerRestart()">Replay Halftone Aurora</button>
+          </div>
+        </div>
+
+        <div class="welcome-tip">
+          <span class="tip-dot"></span>
+          <span>Tip: Watch the scanline dither and pixelate Stage 1 away before Stage 2 fades in.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- WebGL Splash Overlay (Stage 1) -->
+  <div id="splash" class="splash-root">
+    <canvas id="webgl-canvas"></canvas>
+    
+    <!-- Centred Topographic Vector Mark (Stage 2) -->
+    <div id="splash-icon-wrap" class="splash-icon">
+      <svg id="splash-topo-mark" width="190" height="190" viewBox="0 0 100 100" style="overflow: visible;" class="text-accent"></svg>
+    </div>
+  </div>
+
+  <div id="skip-prompt" class="skip-prompt">Click / Press any key to skip</div>
+
+  <!-- External GSAP Library -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+
+  <script>
+    // Timing beats
+    const SEQUENCE_DURATION_MS = 14000;
+    const STAGE_1_DURATION_MS = 6500;   // Halftone Aurora Waving
+    const TRANSITION_DURATION_MS = 1500;// Pixelating Sweep Wiping
+    const STAGE_2_START_MS = 8000;      // Starts on a pure black background
+    const STAGE_2_DURATION_MS = 4500;   // Icon Bloom + Fade out into app
+    const SKIP_GUARD_MS = 600;
+
+    // ── WEBGL FLUID MATRIX VERTEX SHADER
+    const VERTEX_SRC = `
+      attribute vec4 a_position;
+      void main() { gl_Position = a_position; }
+    `;
+
+    // WebGL Fragment Shader creating a fine-grained dithered halftone matrix that pixelates on wipe
+    const FRAGMENT_SRC = `
+      precision highp float;
+      uniform vec2 u_resolution;
+      uniform float u_time;
+      uniform float u_progress; // 0.0 to 1.0 (Stage 1 timeline)
+
+      float hash(vec2 p) {
+          return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+      }
+
+      float noise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          return mix(mix(hash(i + vec2(0.0,0.0)), hash(i + vec2(1.0,0.0)), u.x),
+                     mix(hash(i + vec2(0.0,1.0)), hash(i + vec2(1.0,1.0)), u.x), u.y);
+      }
+
+      float fbm(vec2 p) {
+          float v = 0.0;
+          float a = 0.5;
+          for (int i = 0; i < 4; ++i) {
+              v += a * noise(p);
+              p = p * 2.0;
+              a *= 0.5;
+          }
+          return v;
+      }
+
+      // Simulated Aurora gas field
+      vec3 getAuroraColor(vec2 p, float t) {
+          float warp = fbm(p * 1.5 + vec2(t, -t * 0.5));
+          vec2 pWarped = p + vec2(sin(p.y * 2.5 + t) * 0.2, cos(p.x * 2.0 + t) * 0.12) * warp;
+          
+          float ribbon1 = abs(pWarped.y - sin(pWarped.x * 1.1 + t) * 0.3);
+          float glow1 = exp(-pow(ribbon1 / 0.15, 2.0));
+          vec3 col1 = vec3(0.0, 0.94, 0.68) * glow1; // emerald-cyan
+
+          float ribbon2 = abs(pWarped.y - cos(pWarped.x * 0.7 - t * 0.8) * 0.2 - 0.08);
+          float glow2 = exp(-pow(ribbon2 / 0.22, 2.0));
+          vec3 col2 = vec3(0.1, 0.52, 0.96) * glow2; // ice blue
+
+          float ribbon3 = abs(pWarped.y - sin(pWarped.x * 1.8 + t * 1.1) * 0.12 + 0.15);
+          float glow3 = exp(-pow(ribbon3 / 0.12, 2.0));
+          vec3 col3 = vec3(0.96, 0.42, 0.52) * glow3; // rose-water
+
+          return col1 + col2 + col3;
+      }
+
+      void main() {
+          vec2 uv = gl_FragCoord.xy / u_resolution.xy;
+          vec2 p = uv * 2.0 - 1.0;
+          p.x *= u_resolution.x / u_resolution.y;
+
+          float t = u_time * 0.15;
+          
+          // ── FINE-GRAINED HALFTONE MATRIX FILTER
+          // Cell size: fine-grained (4px) blockifying up to large chunky pixels (24px) during wipeout
+          float transitionFactor = smoothstep(0.4, 0.9, u_progress);
+          float cellSize = mix(4.0, 24.0, transitionFactor);
+          
+          vec2 gridCoord = gl_FragCoord.xy / cellSize;
+          vec2 cellCenter = (floor(gridCoord) + 0.5) * cellSize;
+          
+          // Sample color at cell center
+          vec2 sampleUV = cellCenter / u_resolution.xy;
+          vec2 sampleP = sampleUV * 2.0 - 1.0;
+          sampleP.x *= u_resolution.x / u_resolution.y;
+          vec3 sampledColor = getAuroraColor(sampleP, t);
+          
+          // Vignette & horizontal fade
+          float sampledVignette = length(sampleUV - 0.5) * 0.22;
+          sampledColor = max(vec3(0.0), sampledColor - sampledVignette);
+          sampledColor *= 0.5 + 0.5 * sin(sampleUV.x * 3.14159);
+
+          // Dot scale based on sampled brightness
+          float brightness = dot(sampledColor, vec3(0.299, 0.587, 0.114));
+          float dist = distance(gl_FragCoord.xy, cellCenter);
+          
+          float maxRadius = cellSize * 0.55;
+          float dotRadius = brightness * maxRadius;
+          
+          // Sharpen edges of matrix dots
+          float dither = smoothstep(dotRadius + 0.8, dotRadius - 0.8, dist);
+          vec3 finalColor = sampledColor * dither;
+
+          // ── VERTICAL PIXELATING SCANLINE WIPE OUT (Stage 1 Transition)
+          // Scanline sweeps down, pixelating and shattering columns behind it
+          float sweepLine = 1.0 - smoothstep(0.35, 1.0, u_progress); // sweep top-down
+          float sweepDist = uv.y - sweepLine;
+          
+          float alpha = 1.0;
+          if (sweepDist > 0.0) {
+              float ditherThreshold = smoothstep(0.0, 0.45, sweepDist);
+              float noiseVal = hash(floor(gridCoord));
+              if (noiseVal < ditherThreshold) {
+                  alpha = 0.0;
+              }
+          }
+          
+          // Total fade out at end of Stage 1
+          alpha *= 1.0 - smoothstep(0.9, 1.0, u_progress);
+          
+          // Initial fade in
+          alpha *= smoothstep(0.0, 0.05, u_progress);
+
+          gl_FragColor = vec4(finalColor, alpha);
+      }
+    `;
+
+    // ── VIRTUAL TIME AND TIMELINE MANAGEMENT
+    let isPaused = true;
+    let timelineStarted = false;
+    let playbackSpeed = 1.0;
+    let lastRealTime = performance.now();
+    let virtualTimeMs = 0;
+
+    let completed = false;
+    let welcomeStartVirtualMs = 0;
+    let splashActive = true;
+
+    // ── SVG CONCENTRIC VECTOR BLOOM (Stage 2)
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    const RINGS = 9;
+    const STEPS = 48;
+    const VB = 100;
+    const CENTER = VB / 2;
+
+    const splashPaths = [];
+    const welcomePaths = [];
+
+    function initPaths() {
+      const splashSvg = document.getElementById('splash-topo-mark');
+      const welcomeSvg = document.getElementById('welcome-topo-mark');
+      
+      splashSvg.innerHTML = '';
+      welcomeSvg.innerHTML = '';
+      splashPaths.length = 0;
+      welcomePaths.length = 0;
+
+      for (let i = 0; i < RINGS; i++) {
+        const pathS = document.createElementNS(SVG_NS, 'path');
+        pathS.setAttribute('fill', 'none');
+        pathS.setAttribute('stroke', 'currentColor');
+        pathS.setAttribute('stroke-width', '1.4');
+        pathS.setAttribute('stroke-linejoin', 'round');
+        pathS.setAttribute('stroke-opacity', (0.55 + ((RINGS - 1 - i) / (RINGS - 1)) * 0.45).toString());
+        splashSvg.appendChild(pathS);
+        splashPaths.push(pathS);
+
+        const pathW = document.createElementNS(SVG_NS, 'path');
+        pathW.setAttribute('fill', 'none');
+        pathW.setAttribute('stroke', 'currentColor');
+        pathW.setAttribute('stroke-width', '1.4');
+        pathW.setAttribute('stroke-linejoin', 'round');
+        pathW.setAttribute('stroke-opacity', (0.55 + ((RINGS - 1 - i) / (RINGS - 1)) * 0.45).toString());
+        welcomeSvg.appendChild(pathW);
+        welcomePaths.push(pathW);
+      }
+    }
+
+    const staticNoise = (angle, ring) =>
+      Math.sin(angle * 3 + ring * 0.088) * 0.09 +
+      Math.cos(angle * 2 + ring * 0.150 + 1.2) * 0.07 +
+      Math.sin(angle * 5 - ring * 0.050 + 0.8) * 0.04 +
+      Math.cos(angle + ring * 0.225 + 2.1) * 0.05;
+
+    const dynamicNoise = (angle, t) =>
+      Math.sin(angle * 2 + t * 0.7) * 0.025 +
+      Math.cos(angle * 3 - t * 0.5 + 1.2) * 0.015;
+
+    function drawTopoFrame(paths, t, gp, ep, intensity = 1) {
+      const breath = 1 + 0.018 * Math.sin(t * 0.5) * intensity;
+
+      for (let i = 0; i < RINGS; i++) {
+        const ringT = (i + 1) / RINGS;
+        const baseRadius = VB * 0.44 * ringT;
+        const pts = [];
+
+        for (let s = 0; s <= STEPS; s++) {
+          const angle = (s / STEPS) * Math.PI * 2;
+          const sBend = staticNoise(angle, i);
+          const dBend = dynamicNoise(angle, t) * intensity;
+          const r = baseRadius * breath * (1 + sBend + dBend);
+          
+          let x = CENTER + Math.cos(angle) * r;
+          let y = CENTER + Math.sin(angle) * r;
+
+          if (gp > 0) {
+            const threshold = ringT * 0.72;
+            const transitionWidth = 0.22;
+            const tx = Math.max(0, Math.min(1, (gp - threshold) / transitionWidth));
+            const activation = tx * tx * (3 - 2 * tx);
+            const compression = activation * 0.95;
+            const ratio = 1 - compression;
+            x = CENTER + (x - CENTER) * ratio;
+            y = CENTER + (y - CENTER) * ratio;
+          } else if (ep < 1) {
+            const threshold = ringT * 0.72;
+            const transitionWidth = 0.22;
+            const tx = Math.max(0, Math.min(1, (ep - threshold) / transitionWidth));
+            const activation = tx * tx * (3 - 2 * tx);
+            const compression = (1 - activation) * 0.95;
+            const ratio = 1 - compression;
+            x = CENTER + (x - CENTER) * ratio;
+            y = CENTER + (y - CENTER) * ratio;
+          }
+
+          pts.push(`${x.toFixed(2)},${y.toFixed(2)}`);
+        }
+        paths[i].setAttribute('d', `M${pts[0]} L${pts.slice(1).join(' L')} Z`)
+      }
+    }
+
+    // ── KICKOFF STAGE 2 TRANSITION
+    function beginReveal() {
+      if (completed) return;
+      completed = true;
+    }
+
+    // Click to start timeline
+    function startTimeline() {
+      if (timelineStarted) return;
+      timelineStarted = true;
+      
+      const overlay = document.getElementById('start-overlay');
+      if (overlay) overlay.classList.add('fade-out');
+      
+      isPaused = false;
+      lastRealTime = performance.now();
+    }
+
+    // Interactive skip triggers Stage 2 earlier
+    function triggerSkip() {
+      if (virtualTimeMs < SKIP_GUARD_MS) return;
+      if (virtualTimeMs < STAGE_2_START_MS) {
+        virtualTimeMs = STAGE_2_START_MS;
+      }
+      beginReveal();
+    }
+
+    // ── WEBGL BACKGROUND SETUP
+    let webglCanvas, gl, program, posBuf;
+    let uRes, uTime, uProgress;
+
+    function initWebGL() {
+      webglCanvas = document.getElementById('webgl-canvas');
+      gl = webglCanvas.getContext('webgl', {
+        alpha: true,
+        antialias: true,
+        premultipliedAlpha: false,
+      });
+
+      if (!gl) return;
+
+      const compile = (type, src) => {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, src);
+        gl.compileShader(shader);
+        return shader;
+      };
+
+      const vs = compile(gl.VERTEX_SHADER, VERTEX_SRC);
+      const fs = compile(gl.FRAGMENT_SHADER, FRAGMENT_SRC);
+
+      program = gl.createProgram();
+      gl.attachShader(program, vs);
+      gl.attachShader(program, fs);
+      gl.linkProgram(program);
+      gl.useProgram(program);
+
+      posBuf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
+
+      const posLoc = gl.getAttribLocation(program, 'a_position');
+      gl.enableVertexAttribArray(posLoc);
+      gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+      uRes = gl.getUniformLocation(program, 'u_resolution');
+      uTime = gl.getUniformLocation(program, 'u_time');
+      uProgress = gl.getUniformLocation(program, 'u_progress');
+
+      window.addEventListener('resize', resizeWebGL);
+      resizeWebGL();
+    }
+
+    function resizeWebGL() {
+      if (!webglCanvas || !gl) return;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      webglCanvas.width = window.innerWidth * dpr;
+      webglCanvas.height = window.innerHeight * dpr;
+      gl.viewport(0, 0, webglCanvas.width, webglCanvas.height);
+      gl.uniform2f(uRes, webglCanvas.width, webglCanvas.height);
+    }
+
+    // ── MAIN RENDER TICK
+    function tick(now) {
+      const realDt = now - lastRealTime;
+      lastRealTime = now;
+
+      if (!isPaused) {
+        virtualTimeMs += realDt * playbackSpeed;
+      }
+
+      const elapsed = virtualTimeMs * 0.001;
+      const elapsedMs = virtualTimeMs;
+
+      // ── TRIGGER AUTO STAGE 2
+      if (!completed && elapsedMs >= STAGE_2_START_MS) {
+        beginReveal();
+      }
+
+      // ── UNMOUNT SPLASH SCREEN AT END OF SEQUENCE
+      if (splashActive && elapsedMs >= SEQUENCE_DURATION_MS) {
+        splashActive = false;
+        document.body.classList.remove('splash-active');
+        document.getElementById('splash').style.opacity = '0';
+        setTimeout(() => {
+          document.getElementById('splash').style.display = 'none';
+        }, 1200);
+        welcomeStartVirtualMs = virtualTimeMs;
+      }
+
+      // Update Skip Prompt
+      if (elapsedMs >= SKIP_GUARD_MS && !completed) {
+        document.getElementById('skip-prompt').classList.add('visible');
+        document.getElementById('skip-prompt').textContent = "Click to trigger Stage 2 Logo";
+      } else {
+        document.getElementById('skip-prompt').classList.remove('visible');
+      }
+
+      // ── STAGE 1 CHOREOGRAPHY (Halftone Aurora Progress)
+      // Progress climbs 0.0 to 1.0 across STAGE_1_DURATION_MS + TRANSITION_DURATION_MS (8.0 seconds)
+      const uProgressValue = Math.max(0, Math.min(1.0, elapsedMs / (STAGE_1_DURATION_MS + TRANSITION_DURATION_MS)));
+
+      // ── STAGE 2 CHOREOGRAPHY (Centered Logo Bloom in Black Space)
+      let splashLogoEp = 0;
+      let splashLogoOpacity = 0;
+
+      if (elapsedMs >= STAGE_2_START_MS) {
+        // Starts on pure black background. We bloom the concentric rings
+        const bloomElapsed = elapsedMs - STAGE_2_START_MS;
+        
+        // Ep climbs 0.0 to 1.0 over 1800ms
+        const bloomT = Math.min(1.0, bloomElapsed / 1800);
+        splashLogoEp = 1 - Math.pow(1 - bloomT, 3); // easeOutCubic
+
+        // Opacity control: fade in over 500ms, hold, and then fade out cleanly into Welcome Screen
+        if (bloomElapsed < 500) {
+          splashLogoOpacity = bloomElapsed / 500;
+        } else if (elapsedMs < SEQUENCE_DURATION_MS - 800) {
+          splashLogoOpacity = 1.0;
+        } else {
+          // Fade out over final 800ms
+          const fadeOutT = Math.min(1.0, (SEQUENCE_DURATION_MS - elapsedMs) / 800);
+          splashLogoOpacity = fadeOutT;
+        }
+      }
+
+      // Update Stage 2 Logo container
+      const splashIconWrap = document.getElementById('splash-icon-wrap');
+      if (splashIconWrap) {
+        splashIconWrap.style.opacity = splashLogoOpacity;
+      }
+
+      // Welcome Screen bloom (ep)
+      let welcomeEp = 0;
+      if (welcomeStartVirtualMs > 0 && virtualTimeMs >= welcomeStartVirtualMs) {
+        const t = Math.min(1, (virtualTimeMs - welcomeStartVirtualMs) / 1800);
+        welcomeEp = 1 - Math.pow(1 - t, 3);
+      }
+
+      // Draw welcome SVG icon with bloom ep
+      if (!splashActive || welcomeEp > 0) {
+        drawTopoFrame(welcomePaths, elapsed, 0, welcomeEp);
+      }
+
+      // ── DRAW WEBGL HALFTONE AURORA
+      if (splashActive && gl) {
+        gl.uniform1f(uTime, elapsed);
+        gl.uniform1f(uProgress, uProgressValue);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+      }
+
+      // ── DRAW STAGE 2 TOPOGRAPHIC MARK
+      if (splashActive && splashLogoOpacity > 0) {
+        drawTopoFrame(splashPaths, elapsed, 0, splashLogoEp, 1);
+      }
+
+      // Update Inspector panel metrics
+      updateHUDMetrics({
+        vtime: elapsed,
+        progress: uProgressValue,
+        logoEp: splashLogoEp,
+        logoOpacity: splashLogoOpacity,
+        welcome_ep: welcomeEp,
+        elapsedMs
+      });
+
+      requestAnimationFrame(tick);
+    }
+
+    function updateHUDMetrics(data) {
+      document.getElementById('hud-vtime').textContent = data.vtime.toFixed(2) + 's';
+      document.getElementById('hud-stage-1-progress').textContent = data.progress.toFixed(4);
+      document.getElementById('hud-stage-2-ep').textContent = data.logoEp.toFixed(4);
+      document.getElementById('hud-logo-opacity').textContent = (data.logoOpacity * 100).toFixed(1) + '%';
+      document.getElementById('hud-welcome-ep').textContent = data.welcome_ep.toFixed(4);
+
+      const ms = data.elapsedMs;
+      let phase = "Stage 1: Aurora Matrix";
+      if (ms < 300) phase = "Starting up...";
+      else if (ms < STAGE_1_DURATION_MS) phase = "Stage 1: Waving Halftone Matrix";
+      else if (ms < STAGE_2_START_MS) phase = "Transition: Pixelating Wipeout";
+      else if (ms < STAGE_2_START_MS + 1800) phase = "Stage 2: Topographic Logo Bloom";
+      else if (splashActive) phase = "Stage 2: Settle & Fade Out";
+      else phase = "Animation Completed";
+
+      document.getElementById('hud-phase').textContent = phase;
+    }
+
+    function togglePlayPause() {
+      isPaused = !isPaused;
+      document.getElementById('play-pause-btn').textContent = isPaused ? "Play" : "Pause";
+      document.getElementById('play-pause-btn').className = isPaused ? "hud-btn primary" : "hud-btn";
+    }
+
+    function setSpeed(val) {
+      playbackSpeed = parseFloat(val);
+      document.getElementById('speed-val').textContent = playbackSpeed.toFixed(1);
+    }
+
+    function triggerRestart() {
+      document.body.classList.add('splash-active');
+      document.getElementById('splash').style.display = 'block';
+      document.getElementById('splash').style.opacity = '1';
+      document.getElementById('skip-prompt').classList.remove('visible');
+      
+      virtualTimeMs = 0;
+      completed = false;
+      welcomeStartVirtualMs = 0;
+      splashActive = true;
+
+      initPaths();
+    }
+
+    function toggleHUD(visible) {
+      const hud = document.getElementById('hud');
+      const toggleBtn = document.getElementById('hud-toggle');
+      if (visible) {
+        hud.classList.remove('collapsed');
+        toggleBtn.classList.remove('visible');
+      } else {
+        hud.classList.add('collapsed');
+        toggleBtn.classList.add('visible');
+      }
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === ' ' || e.key === 'Enter') {
+        if (!timelineStarted) {
+          startTimeline();
+        } else {
+          triggerSkip();
+        }
+      }
+    });
+
+    window.addEventListener('mousedown', (e) => {
+      if (e.target.closest('#hud') || e.target.closest('#hud-toggle') || e.target.closest('#start-overlay')) return;
+      
+      if (!timelineStarted) {
+        startTimeline();
+      } else {
+        triggerSkip();
+      }
+    });
+
+    // Initialize Page
+    initPaths();
+    initWebGL();
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>

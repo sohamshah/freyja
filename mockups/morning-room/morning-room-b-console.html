@@ -1,0 +1,683 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Morning Room — B. The Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#0a0a0a; --bg-1:#121212; --bg-2:#181818; --bg-3:#1e1e1e; --bg-4:#262626;
+    --fg-0:#e8e8e8; --fg-1:#a8a8a8; --fg-2:#6e6e6e; --fg-3:#4a4a4a; --fg-4:#303030;
+    --accent:#a8d4fc; --accent-hi:#c4e0fc; --accent-lo:#7aafea;
+    --ok:#a8b0a8; --warn:#b8a078; --danger:#b48282;
+    --hairline:rgba(255,255,255,0.06);
+    --hairline-strong:rgba(255,255,255,0.12);
+    --inset-edge:rgba(255,255,255,0.18);
+    --mono:'Geist Mono', ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { margin:0; min-height:100%; background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:12.5px; line-height:1.5;
+    -webkit-font-smoothing:antialiased; overflow-x:hidden;
+    font-feature-settings:'ss01' on, 'ss02' on, 'cv11' on, 'tnum' on;
+  }
+
+  /* Ambient — slightly denser than the editorial variant */
+  .ambient { position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(900px 700px at 12% -8%, rgba(168,212,252,0.05), transparent 60%),
+      radial-gradient(700px 500px at 92% 8%, rgba(168,212,252,0.03), transparent 60%),
+      radial-gradient(1200px 600px at 50% 110%, rgba(168,212,252,0.02), transparent 60%);
+  }
+  .ambient::after { content:""; position:absolute; inset:0;
+    background-image: repeating-linear-gradient(0deg, rgba(255,255,255,0.010) 0 1px, transparent 1px 4px);
+    mask-image: radial-gradient(85% 100% at 50% 50%, black, transparent 100%);
+    opacity:0.45;
+  }
+  .topo { position:fixed; inset:0; pointer-events:none; z-index:0; opacity:0.05; }
+
+  /* Header strip — chrome */
+  .chrome {
+    position:sticky; top:0; z-index:10;
+    display:grid; grid-template-columns:auto 1fr auto;
+    align-items:center; gap:20px;
+    padding:10px 20px;
+    background:rgba(10,10,10,0.85);
+    backdrop-filter:blur(24px) saturate(140%);
+    -webkit-backdrop-filter:blur(24px) saturate(140%);
+    border-bottom:1px solid var(--hairline);
+    box-shadow:inset 0 0.5px 0 var(--inset-edge);
+    height:46px;
+  }
+  .brand { display:flex; align-items:center; gap:10px; }
+  .brand .mark {
+    width:14px; height:14px; border-radius:3px;
+    background:linear-gradient(135deg, var(--accent) 0%, var(--accent-lo) 100%);
+    box-shadow:0 0 8px rgba(168,212,252,0.45);
+  }
+  .brand .name { color:var(--fg-0); font-size:11px; letter-spacing:0.08em; }
+  .brand .room { color:var(--fg-3); font-size:10px; letter-spacing:0.16em; text-transform:uppercase; }
+  .brand .room::before { content:"/"; color:var(--fg-4); margin:0 8px; }
+
+  .ticker {
+    display:flex; align-items:center; justify-content:center; gap:18px;
+    color:var(--fg-2); font-size:10.5px; letter-spacing:0.06em;
+    font-variant-numeric:tabular-nums;
+  }
+  .ticker .group { display:flex; align-items:center; gap:6px; }
+  .ticker .k { color:var(--fg-3); text-transform:uppercase; letter-spacing:0.16em; font-size:9.5px; }
+  .ticker .v { color:var(--fg-0); }
+  .ticker .v.acc { color:var(--accent); }
+  .ticker .v.ok { color:var(--ok); }
+  .ticker .v.warn { color:var(--warn); }
+  .ticker .sep { color:var(--fg-4); }
+
+  .chrome-right { display:flex; align-items:center; gap:8px; }
+  .chip-btn {
+    display:inline-flex; align-items:center; gap:6px;
+    padding:5px 10px; border-radius:6px;
+    background:rgba(255,255,255,0.025); border:1px solid var(--hairline);
+    color:var(--fg-1); font-size:10.5px; letter-spacing:0.06em; cursor:pointer;
+    transition:all 140ms ease;
+  }
+  .chip-btn:hover { color:var(--fg-0); border-color:var(--hairline-strong); background:rgba(255,255,255,0.04); }
+  .chip-btn .kbd { color:var(--fg-3); font-size:9.5px; }
+  .chip-btn.acc { color:var(--accent); border-color:rgba(168,212,252,0.32); background:rgba(168,212,252,0.06); }
+  .pulse-dot {
+    width:6px; height:6px; border-radius:999px; background:var(--accent);
+    box-shadow:0 0 7px var(--accent);
+    animation:breathe 2.4s ease-in-out infinite;
+  }
+  @keyframes breathe { 0%,100% { opacity:0.9; } 50% { opacity:0.4; } }
+  @media (prefers-reduced-motion: reduce) {
+    .pulse-dot { animation:none; opacity:0.7; }
+  }
+
+  /* Since-you-left banner */
+  .since {
+    position:relative; z-index:9;
+    display:flex; align-items:center; gap:12px;
+    padding:8px 22px;
+    background:linear-gradient(90deg, rgba(168,212,252,0.06), rgba(168,212,252,0.02));
+    border-bottom:1px solid var(--hairline);
+    color:var(--fg-1); font-size:10.5px; letter-spacing:0.06em;
+  }
+  .since .label { color:var(--accent); letter-spacing:0.14em; text-transform:uppercase; font-size:9.5px; }
+  .since .meta { color:var(--fg-2); margin-left:auto; font-variant-numeric:tabular-nums; }
+
+  /* Hero strip — Fraunces serif date over chrome */
+  .hero-strip {
+    position:relative; z-index:5;
+    padding:38px 22px 30px;
+    border-bottom:1px solid var(--hairline);
+  }
+  .hero-strip .eye {
+    color:var(--fg-3); font-size:10px; letter-spacing:0.22em; text-transform:uppercase;
+    margin-bottom:8px;
+  }
+  .hero-strip h1 {
+    font-family:var(--serif); font-weight:300;
+    font-size:32px; line-height:1.18; letter-spacing:-0.005em;
+    color:var(--fg-0); margin:0 0 12px;
+    max-width:1280px;
+  }
+  .hero-strip .sub {
+    display:flex; gap:10px; flex-wrap:wrap;
+    color:var(--fg-2); font-size:11px; letter-spacing:0.06em;
+    align-items:center;
+  }
+  .hero-strip .sub a { color:var(--fg-1); text-decoration:none; border-bottom:1px solid var(--fg-3); padding-bottom:1px; }
+  .hero-strip .sub a:hover { color:var(--accent); border-color:var(--accent); }
+  .hero-strip .sub .sep { color:var(--fg-4); }
+
+  /* Three-column main grid */
+  .grid {
+    position:relative; z-index:1;
+    display:grid; grid-template-columns:340px 1fr 360px;
+    gap:1px; background:var(--hairline);
+    min-height:calc(100vh - 240px);
+  }
+  .col {
+    background:var(--bg-0);
+    padding:24px 22px;
+    overflow-y:auto;
+  }
+
+  /* Section header (in column) */
+  .sh {
+    display:flex; align-items:baseline; gap:12px; margin-bottom:16px;
+  }
+  .sh .label { color:var(--fg-1); font-size:10px; letter-spacing:0.22em; text-transform:uppercase; font-weight:500; }
+  .sh .meta { color:var(--fg-3); font-size:10px; letter-spacing:0.06em; font-variant-numeric:tabular-nums; }
+  .sh .rule { flex:1; height:1px; background:var(--hairline); }
+  .sh .act { color:var(--fg-3); font-size:10px; letter-spacing:0.08em; cursor:pointer; padding:2px 4px; border-radius:3px; }
+  .sh .act:hover { color:var(--accent); background:rgba(168,212,252,0.04); }
+
+  /* OVERNIGHT — vertical timeline */
+  .timeline { display:flex; flex-direction:column; gap:0; }
+  .tl {
+    display:grid; grid-template-columns:48px 1fr; gap:10px;
+    padding:10px 0 10px 0;
+    border-bottom:1px dashed rgba(255,255,255,0.04);
+    position:relative;
+  }
+  .tl::before {
+    content:""; position:absolute; left:52px; top:0; bottom:0; width:1px;
+    background:linear-gradient(180deg, transparent, var(--hairline) 12%, var(--hairline) 88%, transparent);
+  }
+  .tl:last-child { border-bottom:none; }
+  .tl .ts {
+    color:var(--fg-3); font-size:10px; letter-spacing:0.04em;
+    font-variant-numeric:tabular-nums; padding-top:1px;
+    text-align:right; padding-right:8px;
+    position:relative;
+  }
+  .tl .ts::after {
+    content:""; position:absolute; right:-3px; top:6px; width:6px; height:6px; border-radius:999px;
+    background:var(--fg-3); border:2px solid var(--bg-0);
+  }
+  .tl.ok .ts::after { background:var(--ok); box-shadow:0 0 6px rgba(168,176,168,0.3); }
+  .tl.acc .ts::after { background:var(--accent); box-shadow:0 0 7px rgba(168,212,252,0.4); }
+  .tl.warn .ts::after { background:var(--warn); }
+  .tl .body { color:var(--fg-0); font-size:11.5px; line-height:1.5; padding-left:6px; }
+  .tl .body .id { color:var(--accent); }
+  .tl .body .mut { color:var(--fg-2); }
+  .tl .body .actor { color:var(--fg-3); font-size:10px; }
+
+  /* NEEDS YOU (center column) */
+  .needs-col { display:flex; flex-direction:column; gap:14px; }
+  .need {
+    position:relative;
+    border:1px solid var(--hairline);
+    border-radius:12px;
+    padding:16px 18px 14px;
+    background:rgba(255,255,255,0.022);
+    box-shadow:inset 0 0.5px 0 var(--inset-edge),
+               0 6px 24px -10px rgba(0,0,0,0.45);
+    transition:border-color 220ms ease;
+  }
+  .need:hover { border-color:var(--hairline-strong); }
+  .need.danger { border-color:rgba(180,130,130,0.32); background:rgba(180,130,130,0.025); }
+  .need.warn { border-color:rgba(184,160,120,0.32); background:rgba(184,160,120,0.025); }
+  .need.accent { border-color:rgba(168,212,252,0.28); background:rgba(168,212,252,0.04); }
+
+  .need .head { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+  .need .head .tag {
+    font-size:9.5px; letter-spacing:0.14em; text-transform:uppercase;
+    padding:3px 7px; border-radius:4px;
+    background:rgba(255,255,255,0.05); color:var(--fg-2);
+    border:1px solid var(--hairline);
+  }
+  .need.danger .head .tag { color:var(--danger); border-color:rgba(180,130,130,0.42); background:rgba(180,130,130,0.08); }
+  .need.warn .head .tag { color:var(--warn); border-color:rgba(184,160,120,0.42); background:rgba(184,160,120,0.08); }
+  .need.accent .head .tag { color:var(--accent); border-color:rgba(168,212,252,0.42); background:rgba(168,212,252,0.08); }
+  .need .head .ti { color:var(--fg-0); font-size:12.5px; }
+  .need .head .ti .id { color:var(--accent); }
+  .need .head .ts { color:var(--fg-3); font-size:10px; margin-left:auto; }
+
+  .need .body {
+    color:var(--fg-1); font-size:11.5px; line-height:1.55;
+    margin-bottom:12px;
+  }
+  .need .body em { color:var(--fg-0); font-style:normal; }
+  .need .meta {
+    display:flex; gap:10px; flex-wrap:wrap;
+    color:var(--fg-3); font-size:9.5px; letter-spacing:0.08em; text-transform:uppercase;
+    margin-bottom:12px;
+    padding-bottom:10px;
+    border-bottom:1px dashed rgba(255,255,255,0.05);
+  }
+  .need .meta .v { color:var(--fg-1); text-transform:none; letter-spacing:0.04em; font-variant-numeric:tabular-nums; }
+
+  .actions { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  .verb {
+    font-family:var(--mono); font-size:10.5px; letter-spacing:0.04em;
+    padding:6px 11px; border-radius:5px;
+    background:rgba(255,255,255,0.03);
+    border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer;
+    transition:all 140ms ease;
+  }
+  .verb:hover { color:var(--fg-0); background:rgba(168,212,252,0.06); border-color:rgba(168,212,252,0.3); }
+  .verb.primary { color:var(--accent); border-color:rgba(168,212,252,0.42); background:rgba(168,212,252,0.08); }
+  .verb.primary:hover { background:rgba(168,212,252,0.16); }
+  .verb.muted { color:var(--fg-3); }
+  .verb .kbd { color:var(--fg-3); font-size:9px; margin-left:6px; }
+
+  /* TODAY (right column) */
+  .today-col { display:flex; flex-direction:column; gap:14px; }
+  .prio {
+    border:1px solid var(--hairline);
+    border-radius:12px;
+    padding:14px 14px 12px;
+    background:rgba(255,255,255,0.018);
+    box-shadow:inset 0 0.5px 0 var(--inset-edge),
+               0 4px 14px -8px rgba(0,0,0,0.4);
+    transition:border-color 220ms ease;
+  }
+  .prio:hover { border-color:var(--hairline-strong); }
+  .prio.staged { border-color:rgba(168,212,252,0.32); background:rgba(168,212,252,0.04); }
+  .prio .head {
+    display:flex; align-items:baseline; gap:10px; margin-bottom:8px;
+  }
+  .prio .head .n {
+    font-family:var(--serif); font-weight:300; font-size:22px; line-height:1; color:var(--fg-1);
+  }
+  .prio.staged .head .n { color:var(--accent); }
+  .prio .head .ti { color:var(--fg-0); font-size:12px; line-height:1.4; }
+  .prio .head .ti .id { color:var(--accent); }
+  .prio .head .state {
+    margin-left:auto;
+    font-size:9px; letter-spacing:0.14em; text-transform:uppercase;
+    padding:2px 6px; border-radius:4px;
+    color:var(--fg-3); border:1px solid var(--hairline);
+  }
+  .prio.staged .head .state { color:var(--accent); border-color:rgba(168,212,252,0.32); background:rgba(168,212,252,0.06); }
+
+  .prio .shape-row {
+    display:grid; grid-template-columns:repeat(2, 1fr); gap:6px 12px;
+    color:var(--fg-2); font-size:10px; letter-spacing:0.06em;
+    margin-bottom:10px;
+    padding-bottom:10px;
+    border-bottom:1px dashed rgba(255,255,255,0.05);
+  }
+  .prio .shape-row .row { display:flex; gap:6px; align-items:center; }
+  .prio .shape-row .k { color:var(--fg-3); font-size:9.5px; letter-spacing:0.14em; text-transform:uppercase; }
+  .prio .shape-row .v { color:var(--fg-1); font-variant-numeric:tabular-nums; }
+  .prio .shape-row .v.acc { color:var(--accent); }
+
+  .prio .ctx { color:var(--fg-2); font-size:10.5px; line-height:1.55; margin-bottom:10px; }
+  .prio .ctx .att { color:var(--fg-1); border-bottom:1px dotted var(--fg-3); padding-bottom:1px; }
+  .prio .row-actions { display:flex; gap:6px; }
+  .prio .verb { padding:5px 9px; font-size:10px; }
+
+  /* PULSE — footer bar */
+  .pulse-bar {
+    position:sticky; bottom:0; z-index:8;
+    display:grid; grid-template-columns:1fr auto;
+    align-items:center; gap:24px;
+    padding:14px 22px;
+    background:rgba(10,10,10,0.92);
+    backdrop-filter:blur(28px) saturate(140%);
+    -webkit-backdrop-filter:blur(28px) saturate(140%);
+    border-top:1px solid var(--hairline);
+    box-shadow:inset 0 0.5px 0 var(--inset-edge);
+  }
+  .pulse-bar .left {
+    display:flex; gap:24px; align-items:center; flex-wrap:wrap;
+    color:var(--fg-2); font-size:10.5px; letter-spacing:0.06em;
+    font-variant-numeric:tabular-nums;
+  }
+  .pulse-bar .left .item { display:flex; align-items:center; gap:6px; }
+  .pulse-bar .left .k { color:var(--fg-3); text-transform:uppercase; letter-spacing:0.16em; font-size:9.5px; }
+  .pulse-bar .left .v { color:var(--fg-0); }
+  .pulse-bar .left .v.acc { color:var(--accent); }
+  .pulse-bar .left .v.ok { color:var(--ok); }
+
+  /* COMMIT plans on right side of pulse bar */
+  .commit-row { display:flex; gap:8px; }
+  .plan {
+    display:flex; align-items:center; gap:8px;
+    padding:8px 14px; border-radius:8px;
+    background:rgba(255,255,255,0.03);
+    border:1px solid var(--hairline);
+    color:var(--fg-1); font-size:11px; letter-spacing:0.04em;
+    cursor:pointer; transition:all 160ms ease;
+  }
+  .plan:hover { border-color:var(--hairline-strong); color:var(--fg-0); }
+  .plan.primary { color:var(--accent); border-color:rgba(168,212,252,0.42); background:rgba(168,212,252,0.08); }
+  .plan.primary:hover { background:rgba(168,212,252,0.18); }
+  .plan .kbd { color:var(--fg-3); font-size:9.5px; margin-left:4px; padding:2px 5px; border-radius:3px; background:rgba(255,255,255,0.04); }
+
+  /* Tiny "fired" rail for the timeline + autopilot pulse counter */
+  .running-rail {
+    margin-top:18px; padding:12px 14px;
+    border:1px dashed var(--hairline); border-radius:10px;
+    color:var(--fg-2); font-size:10.5px;
+    background:rgba(255,255,255,0.014);
+  }
+  .running-rail .k { color:var(--fg-3); letter-spacing:0.14em; text-transform:uppercase; font-size:9.5px; }
+  .running-rail .v { color:var(--fg-0); font-variant-numeric:tabular-nums; }
+  .running-rail .line { display:flex; justify-content:space-between; padding:4px 0; }
+
+  /* Scrollbar custom */
+  ::-webkit-scrollbar { width:10px; height:10px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.06); border-radius:10px; border:2px solid var(--bg-0); }
+  ::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,0.1); }
+</style>
+</head>
+<body>
+
+<div class="ambient"></div>
+<div class="topo" aria-hidden="true">
+  <svg viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" fill="none" stroke="#a8d4fc" stroke-width="0.5">
+    <path d="M0,240 C220,200 360,290 520,260 C700,222 820,320 1000,280 C1180,242 1290,330 1600,280" />
+    <path d="M0,380 C190,360 340,450 520,410 C710,366 830,470 1000,430 C1170,392 1300,460 1600,420" />
+    <path d="M0,520 C220,490 340,580 520,550 C720,516 820,610 1000,570 C1180,530 1290,600 1600,560" />
+    <path d="M0,660 C220,640 340,720 520,690 C720,660 820,750 1000,720 C1170,690 1300,750 1600,720" />
+    <path d="M0,800 C220,790 340,860 520,830 C720,800 820,880 1000,850 C1180,820 1290,880 1600,850" />
+  </svg>
+</div>
+
+<!-- Chrome strip -->
+<header class="chrome">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <span class="name">freyja</span>
+    <span class="room">morning room</span>
+  </div>
+
+  <div class="ticker">
+    <span class="group"><span class="k">monday</span><span class="v">jun 02</span><span class="v">06:30:14</span></span>
+    <span class="sep">·</span>
+    <span class="group"><span class="k">since last</span><span class="v">7h 12m</span></span>
+    <span class="sep">·</span>
+    <span class="group"><span class="k">scheduler</span><span class="v ok">2 daily + 1 weekly + 1 hourly</span></span>
+    <span class="sep">·</span>
+    <span class="group"><span class="k">spend today</span><span class="v acc">$0.00</span></span>
+    <span class="sep">·</span>
+    <span class="group"><span class="k">autopilot</span><span class="pulse-dot"></span><span class="v ok">live</span></span>
+  </div>
+
+  <div class="chrome-right">
+    <button class="chip-btn">re-run brief <span class="kbd">R</span></button>
+    <button class="chip-btn">open as session <span class="kbd">O</span></button>
+    <button class="chip-btn acc">commit day <span class="kbd">⏎</span></button>
+  </div>
+</header>
+
+<!-- Since-you-left -->
+<div class="since">
+  <span class="label">since you left</span>
+  <span>4 sessions completed · 1 paused · 2 skill candidates · 1 card blocked at iter cap · $4.82 spent overnight</span>
+  <span class="meta">last open 22:14 yesterday</span>
+</div>
+
+<!-- Hero strip -->
+<div class="hero-strip">
+  <div class="eye">brief · wf_4f3a7b · re-runnable</div>
+  <h1>Monday, June 2 · 6 things since 22:14 yesterday.</h1>
+  <div class="sub">
+    <span>3 decisions waiting</span>
+    <span class="sep">·</span>
+    <span>3 priorities staged</span>
+    <span class="sep">·</span>
+    <span>1 paused goal</span>
+    <span class="sep">·</span>
+    <a href="#">read brief transcript</a>
+  </div>
+</div>
+
+<!-- Three-column grid -->
+<div class="grid">
+
+  <!-- LEFT: Overnight timeline -->
+  <div class="col">
+    <div class="sh">
+      <span class="label">Overnight</span>
+      <span class="rule"></span>
+      <span class="meta">6 · 4 sessions</span>
+      <span class="act">filter</span>
+    </div>
+
+    <div class="timeline">
+      <div class="tl ok">
+        <div class="ts">22:34</div>
+        <div class="body">judge passed <span class="id">card_017</span> · ballot research v3<br/><span class="mut">accepted iter 2/5 · confidence 0.94</span><br/><span class="actor">— autopilot</span></div>
+      </div>
+      <div class="tl acc">
+        <div class="ts">22:51</div>
+        <div class="body">explore-fast × 3 fanout<br/><span class="mut">47 sources · 32min · $0.67</span><br/><span class="actor">— card_017 follow-up</span></div>
+      </div>
+      <div class="tl ok">
+        <div class="ts">03:14</div>
+        <div class="body">drafter saved <span class="id">2 skill candidates</span><br/><span class="mut">pending your review</span><br/><span class="actor">— drafter</span></div>
+      </div>
+      <div class="tl warn">
+        <div class="ts">04:02</div>
+        <div class="body">autopilot dispatched 4 cards<br/><span class="mut">3 done · 1 hit rework cap</span><br/><span class="actor">— kanban dispatcher</span></div>
+      </div>
+      <div class="tl warn">
+        <div class="ts">05:21</div>
+        <div class="body">goal <span class="id">freyja-design-pass</span> paused<br/><span class="mut">iter 4 · judge has 2 open questions</span><br/><span class="actor">— judge-deep</span></div>
+      </div>
+      <div class="tl">
+        <div class="ts">06:00</div>
+        <div class="body">scheduler ran <span class="id">slack-morning-digest</span><br/><span class="mut">posted to #ema-news</span><br/><span class="actor">— scheduler · daily 06:00</span></div>
+      </div>
+    </div>
+
+    <div class="running-rail">
+      <div class="line"><span class="k">currently running</span><span class="v">0 sessions</span></div>
+      <div class="line"><span class="k">autopilot next tick</span><span class="v">27s</span></div>
+      <div class="line"><span class="k">circuit breaker</span><span class="v">0 trips / threshold 3</span></div>
+      <div class="line"><span class="k">drafter watching</span><span class="v">skill-learning · design-review-method</span></div>
+    </div>
+  </div>
+
+  <!-- CENTER: Needs you -->
+  <div class="col">
+    <div class="sh">
+      <span class="label">Needs you</span>
+      <span class="rule"></span>
+      <span class="meta">3 decisions</span>
+      <span class="act">snooze all 1h</span>
+    </div>
+
+    <div class="needs-col">
+      <div class="need danger">
+        <div class="head">
+          <span class="tag">blocked</span>
+          <span class="ti">card <span class="id">card_042</span> · judge rejected at iter 5/5 (rework cap reached)</span>
+          <span class="ts">last touched 04:14</span>
+        </div>
+        <div class="body">
+          <em>"Complete coverage of city offices remains partial."</em>
+          The worker covered statewide ballot but left county supervisor seats as placeholder; the judge wants a complete list with stakes-and-options before sealing. This is the third card to hit the cap in 7 days on this workload.
+        </div>
+        <div class="meta">
+          <span><span class="k">worker</span> <span class="v">sub_19e851 (sealed)</span></span>
+          <span><span class="k">judge</span> <span class="v">sub_19e851c · 5 verdicts</span></span>
+          <span><span class="k">spend</span> <span class="v">$1.84 across 5 cycles</span></span>
+          <span><span class="k">artifacts</span> <span class="v">ballot_v3.md · city-offices.csv</span></span>
+        </div>
+        <div class="actions">
+          <button class="verb primary">dispatch revision <span class="kbd">1</span></button>
+          <button class="verb">override accept</button>
+          <button class="verb">view all verdicts</button>
+          <button class="verb muted">defer 1d</button>
+        </div>
+      </div>
+
+      <div class="need accent">
+        <div class="head">
+          <span class="tag">drafter</span>
+          <span class="ti">skill candidate · <span class="id">cooperative-compaction-helper</span></span>
+          <span class="ts">drafted 03:14</span>
+        </div>
+        <div class="body">
+          Drafter watched 4 long research turns; proposes a skill that <em>caps tool-result size at the compaction-trigger band</em> instead of waiting for the runtime fallback. Estimated 12-18% savings on token budget across the pattern. Saves to <em>~/.freyja/skills/accepted/</em> if accepted.
+        </div>
+        <div class="meta">
+          <span><span class="k">based on</span> <span class="v">4 sessions · 213 tool calls</span></span>
+          <span><span class="k">pattern frequency</span> <span class="v">8.4/week</span></span>
+          <span><span class="k">est savings</span> <span class="v">~38k tokens/week</span></span>
+        </div>
+        <div class="actions">
+          <button class="verb primary">accept <span class="kbd">2</span></button>
+          <button class="verb">edit</button>
+          <button class="verb">view diff</button>
+          <button class="verb muted">decline</button>
+        </div>
+      </div>
+
+      <div class="need warn">
+        <div class="head">
+          <span class="tag">goal</span>
+          <span class="ti">goal <span class="id">freyja-design-pass</span> · paused at iter 4/12</span>
+          <span class="ts">paused 05:21</span>
+        </div>
+        <div class="body">
+          The judge has 2 unresolved open questions:
+          <em>"which onboarding surface owns the API-key flow?"</em>
+          and
+          <em>"does the metrics dashboard subsume scheduler telemetry?"</em>.
+          Resuming requires either an answer in conversation or a goal rewrite. Current verdict confidence is 0.62 (below auto-resume threshold).
+        </div>
+        <div class="meta">
+          <span><span class="k">iterations</span> <span class="v">4/12 used</span></span>
+          <span><span class="k">verdict trend</span> <span class="v">0.41 → 0.58 → 0.62</span></span>
+          <span><span class="k">judge session</span> <span class="v">sub_19e852 (idle)</span></span>
+        </div>
+        <div class="actions">
+          <button class="verb primary">resume + answer inline <span class="kbd">3</span></button>
+          <button class="verb">rewrite goal</button>
+          <button class="verb">view full verdict</button>
+          <button class="verb muted">retire goal</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: Today -->
+  <div class="col">
+    <div class="sh">
+      <span class="label">Today</span>
+      <span class="rule"></span>
+      <span class="meta">3 · 1 staged</span>
+      <span class="act">add</span>
+    </div>
+
+    <div class="today-col">
+
+      <div class="prio staged">
+        <div class="head">
+          <span class="n">1</span>
+          <span class="ti">Finish ballot-research <span class="id">card_042</span> rework</span>
+          <span class="state">staged</span>
+        </div>
+        <div class="shape-row">
+          <div class="row"><span class="k">worker</span> <span class="v">code</span></div>
+          <div class="row"><span class="k">model</span> <span class="v">gpt-5.5</span></div>
+          <div class="row"><span class="k">ctx</span> <span class="v">1m</span></div>
+          <div class="row"><span class="k">coord</span> <span class="v acc">kanban</span></div>
+        </div>
+        <div class="ctx">
+          Pre-loaded: judge critique transcript · prior artifacts (<span class="att">ballot_v3.md</span>, <span class="att">city-offices.csv</span>). Rewakes the existing worker session.
+        </div>
+        <div class="row-actions">
+          <button class="verb primary">run now</button>
+          <button class="verb">unstage</button>
+          <button class="verb muted">edit shape</button>
+        </div>
+      </div>
+
+      <div class="prio">
+        <div class="head">
+          <span class="n">2</span>
+          <span class="ti">Design pass on input-dock<br/><span style="color:var(--fg-2);font-size:10.5px">(per yesterday's review S-1, S-3)</span></span>
+          <span class="state">proposed</span>
+        </div>
+        <div class="shape-row">
+          <div class="row"><span class="k">worker</span> <span class="v">browser-qa</span></div>
+          <div class="row"><span class="k">model</span> <span class="v">opus-4-8</span></div>
+          <div class="row"><span class="k">ctx</span> <span class="v">1m</span></div>
+          <div class="row"><span class="k">coord</span> <span class="v acc">isolated</span></div>
+        </div>
+        <div class="ctx">
+          Attached: <span class="att">docs/DESIGN-REVIEW.md</span>, <span class="att">InputDock.tsx</span>. Drives the dev server in a real browser; screenshots flow into the activity rail.
+        </div>
+        <div class="row-actions">
+          <button class="verb primary">stage</button>
+          <button class="verb">run</button>
+          <button class="verb muted">skip</button>
+        </div>
+      </div>
+
+      <div class="prio">
+        <div class="head">
+          <span class="n">3</span>
+          <span class="ti">Triage 4 stale kanban cards<br/><span style="color:var(--fg-2);font-size:10.5px">(last touched &gt;48h)</span></span>
+          <span class="state">proposed</span>
+        </div>
+        <div class="shape-row">
+          <div class="row"><span class="k">worker</span> <span class="v">judge-deep</span></div>
+          <div class="row"><span class="k">model</span> <span class="v">sonnet-4-6</span></div>
+          <div class="row"><span class="k">ctx</span> <span class="v">200k</span></div>
+          <div class="row"><span class="k">coord</span> <span class="v acc">kanban</span></div>
+        </div>
+        <div class="ctx">
+          Stale: <span class="att">card_028</span>, <span class="att">card_031</span>, <span class="att">card_036</span>, <span class="att">card_039</span>. Judge recommends keep / cancel / requeue with reason.
+        </div>
+        <div class="row-actions">
+          <button class="verb primary">stage</button>
+          <button class="verb">run</button>
+          <button class="verb muted">skip</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- Pulse bar (footer) -->
+<div class="pulse-bar">
+  <div class="left">
+    <div class="item"><span class="k">yest spend</span> <span class="v">$4.82</span></div>
+    <div class="item"><span class="k">tokens out</span> <span class="v">327k</span></div>
+    <div class="item"><span class="k">sessions</span> <span class="v">4</span></div>
+    <div class="item"><span class="k">longest run</span> <span class="v">card_017 · 3h17m</span></div>
+    <div class="item"><span class="k">top tool</span> <span class="v">web_fetch · 213</span></div>
+    <div class="item"><span class="k">judge pass rate (7d)</span> <span class="v ok">68% · 19/28</span></div>
+    <div class="item"><span class="k">cooperation share</span> <span class="v">82% agent · 18% runtime</span></div>
+    <div class="item"><span class="k">skills (7d)</span> <span class="v">3 accepted · 2 pending</span></div>
+  </div>
+  <div class="commit-row">
+    <button class="plan">stage all <span class="kbd">S</span></button>
+    <button class="plan">run 1 first, queue 2+3 <span class="kbd">⌥⏎</span></button>
+    <button class="plan primary">run 1, 2, 3 in parallel <span class="kbd">⏎</span></button>
+  </div>
+</div>
+
+<script>
+  // Keyboard wiring — hint at how the cockpit should respond
+  document.addEventListener('keydown', (e) => {
+    if (e.target.closest('input,textarea')) return;
+    let target = null;
+    if (e.key === '1') target = document.querySelector('.need.danger .verb.primary');
+    else if (e.key === '2') target = document.querySelector('.need.accent .verb.primary');
+    else if (e.key === '3') target = document.querySelector('.need.warn .verb.primary');
+    else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey || !e.altKey)) target = document.querySelector('.plan.primary');
+    else if (e.key === 'Enter' && e.altKey) target = document.querySelector('.commit-row .plan:nth-child(2)');
+    else if (e.key.toLowerCase() === 's' && !e.metaKey && !e.ctrlKey) target = document.querySelector('.commit-row .plan:first-child');
+    else if (e.key.toLowerCase() === 'r') target = document.querySelector('.chip-btn:nth-child(1)');
+    else if (e.key.toLowerCase() === 'o') target = document.querySelector('.chip-btn:nth-child(2)');
+
+    if (target) {
+      target.style.boxShadow = '0 0 0 2px rgba(168,212,252,0.45), 0 0 14px rgba(168,212,252,0.22)';
+      target.style.transform = 'translateY(-1px)';
+      setTimeout(() => {
+        target.style.boxShadow = '';
+        target.style.transform = '';
+      }, 240);
+    }
+  });
+
+  // Simulate "next tick" countdown for the running-rail
+  const tickEl = document.querySelector('.running-rail .line:nth-child(2) .v');
+  if (tickEl) {
+    let n = 27;
+    setInterval(() => {
+      n = n > 0 ? n - 1 : 30;
+      tickEl.textContent = n + 's';
+    }, 1000);
+  }
+</script>
+
+</body>
+</html>

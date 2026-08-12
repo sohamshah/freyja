@@ -1,0 +1,606 @@
+<meta charset="utf-8"/>
+<title>Freyja · Galdr — the voice concept</title>
+<style>
+  :root{
+    --bg:#0b0b0d; --panel:#141416; --panel2:#18181b;
+    --ink:#e8e8e8; --mut:#a8a8a8; --dim:#6e6e6e; --faint:#4a4a4a;
+    --acc:#a8d4fc; --acc-hi:#c4e0fc; --acc-lo:#7aafea;
+    --ok:#a8b0a8; --warn:#b8a078; --bad:#b48282;
+    --hair:rgba(255,255,255,.08); --hair2:rgba(255,255,255,.14);
+    --mono:ui-monospace,"SF Mono","Geist Mono",Menlo,Consolas,monospace;
+    --serif:"Iowan Old Style",Palatino,"Palatino Linotype",Georgia,serif;
+  }
+  html{background:var(--bg);}
+  body{
+    margin:0; color:var(--ink); background:
+      radial-gradient(1100px 520px at 22% -10%, rgba(168,212,252,.05), transparent 60%),
+      var(--bg);
+    font-family:var(--mono); font-size:13.5px; line-height:1.68;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:880px; margin:0 auto; padding:56px 28px 90px;}
+  a{color:var(--acc); text-decoration:none;}
+  a:hover{color:var(--acc-hi); text-decoration:underline;}
+  a:focus-visible{outline:1px solid var(--acc); outline-offset:2px;}
+  ::selection{background:rgba(168,212,252,.25);}
+
+  .kicker{font-size:10.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim);}
+  .kicker b{color:var(--acc); font-weight:500;}
+  h1{font-family:var(--serif); font-weight:500; font-size:44px; line-height:1.12;
+     letter-spacing:-.005em; margin:.5em 0 .35em; text-wrap:balance;}
+  .stand{color:var(--mut); max-width:66ch; margin:0 0 8px;}
+  .stand em{color:var(--ink); font-style:normal;}
+
+  .rule{border:0; border-top:1px solid var(--hair); margin:44px 0 0;}
+  section{padding-top:36px;}
+  .sec-k{display:flex; align-items:baseline; gap:14px; margin-bottom:6px;}
+  .sec-k .no{color:var(--faint); font-size:11px; letter-spacing:.12em;}
+  h2{font-family:var(--serif); font-weight:500; font-size:27px; line-height:1.2; margin:0 0 14px; text-wrap:balance;}
+  h3{font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--mut); margin:30px 0 10px; font-weight:600;}
+  p{max-width:70ch; margin:0 0 14px; color:var(--mut);}
+  p strong, li strong{color:var(--ink); font-weight:600;}
+  code{color:var(--acc); font-size:12.2px; background:rgba(168,212,252,.07);
+       padding:1px 5px; border-radius:3px; border:1px solid rgba(168,212,252,.12);}
+  ul{margin:0 0 14px; padding-left:1.1em; color:var(--mut); max-width:70ch;}
+  li{margin:0 0 7px;}
+  li::marker{color:var(--faint);}
+  .idx{display:flex; flex-wrap:wrap; gap:8px 22px; margin:26px 0 0; padding:14px 0 0;
+       border-top:1px solid var(--hair); font-size:11.5px;}
+  .idx a{color:var(--mut);} .idx a:hover{color:var(--acc-hi);}
+  .idx span{color:var(--faint); margin-right:6px;}
+
+  .sketch{border:1px solid var(--hair2); border-radius:10px; background:var(--panel);
+          padding:10px; margin:20px 0 6px;}
+  .sketch canvas, .sketch svg{display:block; width:100%; height:auto; border-radius:6px;}
+  .legend{font-size:11px; color:var(--dim); margin:10px 6px 4px; line-height:1.8;}
+  .legend i{color:var(--acc); font-style:normal;}
+
+  /* vignettes */
+  .vig{border-left:2px solid var(--hair2); padding:2px 0 2px 20px; margin:0 0 18px;}
+  .vig .vt{font-size:10.5px; letter-spacing:.13em; text-transform:uppercase; color:var(--acc-lo); margin-bottom:4px;}
+  .vig p{font-size:12.8px; margin-bottom:6px;}
+  .say{color:var(--acc-hi); font-style:normal;}
+  .rep{color:var(--ok);}
+
+  /* HUD demo */
+  .hudstage{position:relative; border-radius:10px; overflow:hidden;
+    background:
+      radial-gradient(700px 300px at 70% 0%, rgba(168,212,252,.05), transparent 60%),
+      linear-gradient(180deg,#101014, #0a0a0c);
+    border:1px solid var(--hair2); padding:120px 0 26px;}
+  .hud{width:min(620px, 88%); margin:0 auto; border-radius:14px; padding:14px 18px 12px;
+    background:linear-gradient(180deg, rgba(20,20,24,.92), rgba(12,12,15,.9));
+    border:1px solid rgba(255,255,255,.12);
+    box-shadow:0 24px 70px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.06);}
+  .hudrow{display:flex; align-items:center; gap:12px;}
+  .bars{display:flex; align-items:center; gap:2.5px; height:22px; min-width:44px;}
+  .bars span{width:3px; border-radius:2px; background:var(--acc); height:6px; opacity:.9;
+    animation:beq 1.1s ease-in-out infinite;}
+  .bars span:nth-child(2){animation-delay:.15s} .bars span:nth-child(3){animation-delay:.3s}
+  .bars span:nth-child(4){animation-delay:.45s} .bars span:nth-child(5){animation-delay:.6s}
+  .bars span:nth-child(6){animation-delay:.22s} .bars span:nth-child(7){animation-delay:.5s}
+  @keyframes beq{0%,100%{height:5px}50%{height:18px}}
+  .hud.idlebars .bars span{animation-play-state:paused; height:5px; background:var(--dim);}
+  .heard{flex:1; font-size:13.5px; color:var(--ink); min-height:22px;}
+  .heard .caret{display:inline-block; width:7px; height:14px; background:var(--acc); vertical-align:-2px;
+    animation:ck 1.1s steps(2) infinite;}
+  @keyframes ck{50%{opacity:0}}
+  .lane{font-size:9.5px; letter-spacing:.11em; padding:2px 8px; border-radius:99px; border:1px solid;
+    white-space:nowrap; opacity:0; transition:opacity .25s;}
+  .lane.show{opacity:1;}
+  .lane.reflex{color:var(--ok); border-color:rgba(168,176,168,.4);}
+  .lane.action{color:var(--acc); border-color:rgba(168,212,252,.4);}
+  .lane.mission{color:var(--warn); border-color:rgba(184,160,120,.45);}
+  .lane.cancel{color:var(--bad); border-color:rgba(180,130,130,.45);}
+  .result{border-top:1px dashed var(--hair); margin-top:11px; padding-top:9px; font-size:12px;
+    color:var(--mut); min-height:20px;}
+  .result b{color:var(--ok); font-weight:600;}
+  .result .mut{color:var(--dim);}
+  .hudhint{text-align:center; font-size:10.5px; color:var(--faint); letter-spacing:.08em; margin-top:14px;}
+
+  /* receipts */
+  .receipts{border:1px solid var(--hair); border-radius:10px; overflow:hidden; margin:18px 0 6px;}
+  .rrow{display:flex; gap:14px; padding:10px 16px; border-bottom:1px solid var(--hair);
+    font-size:12px; align-items:baseline; background:linear-gradient(180deg, var(--panel), transparent);}
+  .rrow:last-child{border-bottom:0;}
+  .rt{color:var(--faint); font-size:10.5px; white-space:nowrap; font-variant-numeric:tabular-nums;}
+  .rq{color:var(--ink); flex:1; min-width:200px;}
+  .rq i{font-style:normal; color:var(--dim);}
+  .ra{color:var(--mut); flex:1.2;}
+  .ra b{color:var(--ok); font-weight:600;}
+  .ra .undo{color:var(--acc); cursor:default; border-bottom:1px dotted rgba(168,212,252,.4);}
+  .rrow.refused .ra, .rrow.refused .rq{color:var(--bad);}
+  .rrow.refused .ra b{color:var(--bad);}
+
+  .tblwrap{overflow-x:auto; margin:16px 0 8px; border:1px solid var(--hair); border-radius:8px;}
+  table{border-collapse:collapse; width:100%; font-size:12px; min-width:560px;}
+  th{font-size:10.5px; letter-spacing:.11em; text-transform:uppercase; color:var(--dim);
+     text-align:left; padding:10px 14px; border-bottom:1px solid var(--hair2); background:var(--panel);}
+  td{padding:9px 14px; border-bottom:1px solid var(--hair); vertical-align:top; color:var(--mut);}
+  tr:last-child td{border-bottom:0;}
+  td:first-child{color:var(--ink); white-space:nowrap;}
+  .pill{display:inline-block; font-size:10px; letter-spacing:.09em; padding:1px 7px;
+        border-radius:99px; border:1px solid var(--hair2); color:var(--mut); white-space:nowrap;}
+  .pill.ok{color:var(--ok); border-color:rgba(168,176,168,.35);}
+  .pill.warn{color:var(--warn); border-color:rgba(184,160,120,.4);}
+
+  .verdict{border:1px solid rgba(168,212,252,.25);
+    background:linear-gradient(180deg, rgba(168,212,252,.06), transparent);
+    border-radius:12px; padding:22px 26px; margin:26px 0 4px;}
+  .verdict p{color:var(--ink); font-family:var(--serif); font-size:18px; line-height:1.5; margin:0; max-width:64ch;}
+
+  .colophon{margin-top:54px; padding-top:18px; border-top:1px solid var(--hair);
+    font-size:11px; color:var(--dim); display:flex; justify-content:space-between; gap:20px; flex-wrap:wrap;}
+  @media (max-width:640px){ h1{font-size:32px;} h2{font-size:22px;} .wrap{padding:36px 18px 70px;} }
+</style>
+
+<div class="wrap">
+
+<header>
+  <div class="kicker"><b>freyja</b> · concept dossier · companion to review № 3 · 2026-07-06 · rev 07-07 (realtime-stack research)</div>
+  <h1>Galdr — the computer answers to your voice.</h1>
+  <p class="stand"><em>Galdr</em>: Old Norse for chant — magic worked by voice alone. The concept: Freyja stops being an app you open and becomes <em>how you operate the Mac</em>. You say <span class="say">"play Vienna on Spotify"</span> and it's playing before your hand leaves the coffee mug; you say <span class="say">"find us a table for Thursday"</span> and a mission spawns, works, and speaks up when it has options. Not a chatbot with a microphone — a spoken operating layer with reflexes, receipts, and an emergency brake.</p>
+  <nav class="idx">
+    <a href="#g1"><span>01</span>The premise</a>
+    <a href="#g2"><span>02</span>How it feels</a>
+    <a href="#g3"><span>03</span>The interface</a>
+    <a href="#g4"><span>04</span>Three lanes</a>
+    <a href="#g5"><span>05</span>The actuator</a>
+    <a href="#g6"><span>06</span>Grammar &amp; safety</a>
+    <a href="#g7"><span>07</span>Built on existing organs</a>
+    <a href="#g8"><span>08</span>Build order</a>
+  </nav>
+</header>
+
+<hr class="rule"/>
+<section id="g1">
+  <div class="sec-k"><span class="no">01</span><h2>The premise: first controller, not just another input</h2></div>
+  <p>"Sole controller" is the provocative framing, and it's the right north star with one honest correction: the goal is <strong>first controller</strong>. Everything must be sayable; nothing should <em>require</em> the mouse — but you keep hands for the work where hands win. The division of labor that makes voice actually pleasant is the <strong>glance economy</strong>: voice carries <em>intent</em> in, the screen carries <em>evidence</em> back, and speech only comes back at you when a decision is needed or your eyes are elsewhere.</p>
+  <p>Why this is Freyja's fight to win, and not Siri's: Siri routes utterances to canned skills with no memory of you. Freyja already owns the three things a spoken OS needs — <strong>real control</strong> (the Rust native layer injects input, reads AX trees, manages windows today), <strong>real context</strong> (sessions, working memory, your projects, your morning briefing), and <strong>real accountability</strong> (permission tiers, receipts, undo — the trust machinery from review № 3). Siri takes requests. Freyja takes responsibility.</p>
+</section>
+
+<hr class="rule"/>
+<section id="g2">
+  <div class="sec-k"><span class="no">02</span><h2>How it feels — a day, spoken</h2></div>
+
+  <div class="vig"><div class="vt">07:40 · walking in with coffee</div>
+    <p><span class="say">"Morning."</span> The Morning Room wakes on the big display; Freyja reads the radio edition — projects in motion, one decision. <span class="rep">"Kanban shipped the migration overnight; the judge wants your call on the schema rename. Say 'queue it' or 'walk me through it.'"</span> <span class="say">"Queue it. Fire today's three runs."</span> Three earcons. Done before you sit down.</p>
+  </div>
+  <div class="vig"><div class="vt">10:15 · deep in the editor</div>
+    <p><span class="say">"Freyja, play the focus playlist, quieter than yesterday."</span> Local floor — playing in 400 ms, volume set from the receipt it kept yesterday. No window ever opened.</p>
+  </div>
+  <div class="vig"><div class="vt">14:30 · hands full of lunch</div>
+    <p><span class="say">"What did the browser QA run find?"</span> <span class="rep">"Two layout regressions, one flaky. Evidence is on your second display."</span> Screenshots tile up — voice answered, screen proved. <span class="say">"Spawn a fix mission on the first two."</span></p>
+  </div>
+  <div class="vig"><div class="vt">18:50 · leaving</div>
+    <p><span class="say">"Shut it down."</span> Windows close, the day's receipts file, a one-line spoken debrief, then the hall goes dark. The gateway keeps listening on Slack; the falcons keep flying.</p>
+  </div>
+</section>
+
+<hr class="rule"/>
+<section id="g3">
+  <div class="sec-k"><span class="no">03</span><h2>The interface: a sigil, a capsule, a wheel</h2></div>
+  <p>Voice UIs die by ambiguity — <em>is it listening? did it hear me? is it doing something?</em> Galdr's answer is one persistent, truthful presence: <strong>the Sigil</strong> — Freyja's contour mark, living in the menu bar (and floating large when driving). Its state is never decorative; each behavior below is bound to the actual pipeline state, in the same way every Falconry motion maps to telemetry:</p>
+
+  <div class="sketch">
+    <canvas id="sigil" width="1720" height="600" aria-label="Animated sigil cycling through its six states: asleep, wake, listening, routing, acting, speaking"></canvas>
+    <div class="legend">
+      <i>asleep</i> = rings still &amp; dim, mic hardware-off · <i>wake</i> = one bloom on "freyja" · <i>listening</i> = rings ripple with your amplitude ·
+      <i>routing</i> = rings tighten, lane badge resolves · <i>acting</i> = a sweep arc runs the ring while tools fire · <i>speaking</i> = pulses travel outward.
+      The mic state shown is the mic state. Always.
+    </div>
+  </div>
+
+  <h3>The capsule — what an utterance looks like</h3>
+  <p>On wake, a glass capsule surfaces bottom-center (the InputDock's sibling): live waveform, streaming transcript, the resolved lane, and the receipt. Watch the loop — including the moment you change your mind:</p>
+
+  <div class="hudstage" id="hudstage">
+    <div class="hud" id="hud">
+      <div class="hudrow">
+        <div class="bars" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+        <div class="heard"><span id="heardtx"></span><span class="caret" id="caret"></span></div>
+        <div class="lane" id="lane">FLOOR</div>
+      </div>
+      <div class="result" id="result"></div>
+    </div>
+    <div class="hudhint" id="hudhint">hold ƒn · or "freyja…" · barge-in any time: "stop" / "wait" / "undo that"</div>
+  </div>
+  <div class="legend">The capsule is also the repair surface: the transcript is visible <i>as it forms</i>, so a mishear dies at a glance — "no — <i>Vienna</i>" edits the intent instead of starting over.</div>
+
+  <h3>Conductor mode — when Freyja holds the wheel</h3>
+  <p>Full control is a <em>mode you can see from across the room</em>, extending the Bench's wheel language and the existing computer-use choreography: the screen edge carries a quiet accent vignette, the agent's cursor is a ghost with a narrated caption, and the brake is always painted on-screen. Presence is never ambiguous; neither is how to stop it.</p>
+
+  <div class="sketch" role="img" aria-label="Wireframe of conductor mode: desktop with vignette border, ghost cursor, caption bar and stop affordances">
+    <svg viewBox="0 0 880 360" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,monospace">
+      <rect x="10" y="10" width="860" height="340" rx="12" fill="#0d0d10" stroke="rgba(255,255,255,.12)"/>
+      <rect x="13" y="13" width="854" height="334" rx="10" fill="none" stroke="rgba(168,212,252,.5)" stroke-width="2" opacity=".65"/>
+      <rect x="10" y="10" width="860" height="24" rx="12" fill="#141418"/>
+      <circle cx="836" cy="22" r="7" fill="none" stroke="#a8d4fc"/>
+      <path d="M832 22 q4 -5 8 0" stroke="#a8d4fc" fill="none" stroke-width="1.2"/>
+      <text x="26" y="27" font-size="9.5" letter-spacing="1.5" fill="#6e6e6e">CONDUCTOR · FREYJA HAS THE WHEEL · your input pauses it instantly</text>
+      <!-- app windows -->
+      <rect x="48" y="60" width="360" height="220" rx="8" fill="#101014" stroke="rgba(255,255,255,.1)"/>
+      <rect x="48" y="60" width="360" height="22" rx="8" fill="#16161a"/>
+      <text x="62" y="75" font-size="9" fill="#6e6e6e">Spotify</text>
+      <rect x="66" y="102" width="150" height="9" rx="2" fill="rgba(255,255,255,.08)"/>
+      <rect x="66" y="122" width="220" height="9" rx="2" fill="rgba(255,255,255,.05)"/>
+      <rect x="66" y="142" width="190" height="9" rx="2" fill="rgba(255,255,255,.05)"/>
+      <rect x="66" y="196" width="90" height="22" rx="11" fill="none" stroke="rgba(168,212,252,.6)"/>
+      <text x="84" y="211" font-size="9" fill="#a8d4fc">▶ play</text>
+      <rect x="440" y="86" width="380" height="194" rx="8" fill="#101014" stroke="rgba(255,255,255,.1)"/>
+      <rect x="440" y="86" width="380" height="22" rx="8" fill="#16161a"/>
+      <text x="454" y="101" font-size="9" fill="#6e6e6e">Mail — re: Thursday</text>
+      <rect x="458" y="126" width="300" height="9" rx="2" fill="rgba(255,255,255,.06)"/>
+      <rect x="458" y="146" width="260" height="9" rx="2" fill="rgba(255,255,255,.06)"/>
+      <rect x="458" y="166" width="290" height="9" rx="2" fill="rgba(255,255,255,.04)"/>
+      <!-- ghost cursor path -->
+      <path d="M240 250 C 320 300, 420 300, 505 236" fill="none" stroke="rgba(168,212,252,.45)" stroke-dasharray="3 6" stroke-width="1.6"/>
+      <circle cx="505" cy="236" r="10" fill="none" stroke="#a8d4fc" stroke-width="1.6"/>
+      <circle cx="505" cy="236" r="2.6" fill="#a8d4fc"/>
+      <rect x="524" y="226" width="118" height="18" rx="9" fill="rgba(12,12,16,.9)" stroke="rgba(168,212,252,.35)"/>
+      <text x="534" y="238" font-size="9" fill="#c4e0fc">clicking Reply…</text>
+      <!-- caption bar -->
+      <rect x="216" y="300" width="448" height="26" rx="13" fill="rgba(12,12,16,.92)" stroke="rgba(255,255,255,.14)"/>
+      <text x="440" y="317" font-size="9.5" fill="#a8a8a8" text-anchor="middle">"replying to Dana: running ten late — send, or read it first?"</text>
+      <!-- stop chip -->
+      <rect x="688" y="300" width="164" height="26" rx="13" fill="none" stroke="rgba(180,130,130,.6)"/>
+      <text x="770" y="317" font-size="9.5" fill="#b48282" text-anchor="middle">"freyja stop" · ⌘⇧⎋</text>
+    </svg>
+    <div class="legend">Consequential acts narrate <i>before</i> they fire — the send waits for <i>"send it"</i>. Touch the mouse or keyboard and the wheel is instantly yours; Freyja finishes its sentence and yields.</div>
+  </div>
+</section>
+
+<hr class="rule"/>
+<section id="g4">
+  <div class="sec-k"><span class="no">04</span><h2>One brain, three lanes — recalibrated for the 2026 realtime stack</h2></div>
+  <p><strong>The spine is a realtime speech-to-speech session, not a hand-built router.</strong> The current generation — GPT-Realtime-2.1 (and its mini, shipped this week), Grok Voice, Gemini Live native audio — holds a full-duplex conversation at ~0.3–0.8 s to first word, fires <em>parallel tool calls mid-sentence</em>, and covers the gap with spoken preambles ("checking…"). At low reasoning effort, "play Vienna" through the model is under a second, action included. So the lanes survive as <em>behaviors with different guarantees</em>, not as separate systems — and the local lane's job changes from "be fast" to "be sovereign":</p>
+
+  <div class="sketch" role="img" aria-label="Diagram of the three lanes: reflex, action, mission, with latency budgets">
+    <svg viewBox="0 0 880 332" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,monospace">
+      <rect x="8" y="8" width="864" height="316" rx="10" fill="#101013" stroke="rgba(255,255,255,.1)"/>
+      <!-- input -->
+      <rect x="30" y="120" width="150" height="88" rx="9" fill="#141418" stroke="rgba(255,255,255,.14)"/>
+      <text x="105" y="152" font-size="11" fill="#e8e8e8" text-anchor="middle">wake + ASR</text>
+      <text x="105" y="170" font-size="9.5" fill="#6e6e6e" text-anchor="middle">on-device · streaming</text>
+      <text x="105" y="188" font-size="9.5" fill="#6e6e6e" text-anchor="middle">voice-print gate</text>
+      <!-- router -->
+      <rect x="222" y="132" width="112" height="64" rx="9" fill="#141418" stroke="rgba(168,212,252,.4)"/>
+      <text x="278" y="160" font-size="11" fill="#a8d4fc" text-anchor="middle">gate</text>
+      <text x="278" y="178" font-size="9" fill="#6e6e6e" text-anchor="middle">local · floor or brain</text>
+      <line x1="180" y1="164" x2="222" y2="164" stroke="rgba(255,255,255,.25)"/>
+      <!-- lanes -->
+      <line x1="334" y1="164" x2="392" y2="72" stroke="rgba(168,176,168,.5)"/>
+      <line x1="334" y1="164" x2="392" y2="164" stroke="rgba(168,212,252,.5)"/>
+      <line x1="334" y1="164" x2="392" y2="258" stroke="rgba(184,160,120,.5)"/>
+      <rect x="392" y="40" width="452" height="66" rx="9" fill="#12140f" stroke="rgba(168,176,168,.45)"/>
+      <text x="410" y="62" font-size="11" fill="#a8b0a8">LOCAL FLOOR · &lt;300 ms · no cloud, ever</text>
+      <text x="410" y="80" font-size="9.5" fill="#8b938b">small grammar → app adapters &amp; native layer · offline &amp; screen-locked</text>
+      <text x="410" y="95" font-size="9.5" fill="#6e6e6e">panic verbs ("stop") · media · volume · timers — sovereignty, not speed</text>
+      <rect x="392" y="130" width="452" height="66" rx="9" fill="#0f1319" stroke="rgba(168,212,252,.4)"/>
+      <text x="410" y="152" font-size="11" fill="#a8d4fc">THE BRAIN · realtime s2s session · 0.3–0.8 s to first word</text>
+      <text x="410" y="170" font-size="9.5" fill="#7f9dbd">gpt-realtime-2.1 low effort → a few meta-tools (act · ask_screen · mission)</text>
+      <text x="410" y="185" font-size="9.5" fill="#6e6e6e">"reply to Dana…" · "put Slack right" · anything conversational</text>
+      <rect x="392" y="222" width="452" height="66" rx="9" fill="#161310" stroke="rgba(184,160,120,.45)"/>
+      <text x="410" y="244" font-size="11" fill="#b8a078">MISSION · minutes–hours · full session</text>
+      <text x="410" y="262" font-size="9.5" fill="#9a8a6e">brain spawns it, narrates the handoff, stays conversational while it runs</text>
+      <text x="410" y="277" font-size="9.5" fill="#6e6e6e">"book the flights we discussed" · reports back by voice + attention queue</text>
+    </svg>
+    <div class="legend">The gate is no longer a latency trick — it's a sovereignty boundary. The floor catches what must work with the network down; everything else streams into a session that is already answering while it thinks.</div>
+  </div>
+
+  <p><strong>The Spotify path, two ways — both under a second:</strong> the <em>floor</em> path (wake → on-device ASR → grammar → Spotify AppleScript adapter, ~150 ms to execute) works offline and with the screen locked. The <em>brain</em> path streams your audio into the realtime session, which emits a <code>media.play</code> tool call mid-utterance and is saying "Vienna—" as the adapter fires. The interesting consequence of the brain being fast enough: adapters stop being a latency requirement and become a <em>reliability</em> choice — AppleScript beats pixel-driving because it can't miss, not because it's quicker than the model.</p>
+
+  <h3>The 2026 stack, measured — what the voice-brain seat looks like</h3>
+  <div class="tblwrap"><table>
+    <tr><th>Platform</th><th>Voice→voice</th><th>Tools</th><th>Fit for Galdr</th></tr>
+    <tr><td>GPT-Realtime-2.1 / -mini <span class="pill">jul 2026</span></td><td class="num">&lt;300 ms median first-token; ~0.8 s TTFA independent</td><td>parallel calls + spoken preambles; MCP; effort dial minimal→xhigh</td><td><span class="pill ok">default seat</span> · 128k ctx · $32/$64 per M audio tokens · WebRTC/WS/SIP</td></tr>
+    <tr><td>Grok Voice Agent API</td><td class="num">~0.78 s TTFA</td><td>dozens of tools; OpenAI-Realtime-compatible spec</td><td>drop-in alternate; flat $0.05/min is predictable for long sessions</td></tr>
+    <tr><td>Gemini Live (2.5 native audio)</td><td class="num">~0.63 s TTFA — fastest of the big three</td><td>function calling holds the socket; cancels pending calls on barge-in</td><td>cheapest at scale; 3.1 Live's thinking modes trade speed back</td></tr>
+    <tr><td>Chained: Deepgram/WhisperKit + any LLM + Cartesia/ElevenLabs</td><td class="num">~0.5–0.9 s achievable (Cartesia Sonic 3.5 ~80 ms TTFB; WhisperKit 0.46 s on-device)</td><td>most mature tool semantics — and the LLM can be Claude</td><td>the "Claude-brained" option; more moving parts to own</td></tr>
+    <tr><td>Moshi (Kyutai) · Step-Audio R1.1 · Voxtral Realtime</td><td class="num">~200 ms self-hosted · open-weights · 80 ms-configurable streaming</td><td>weak-to-none today</td><td>the fully-local future; watch, don't bet yet</td></tr>
+    <tr><td>Anthropic</td><td class="num" colspan="2">no realtime lane — Claude Code's /voice is push-to-talk dictation; consumer voice uses ElevenLabs TTS</td><td>missions keep Claude; the voice seat goes elsewhere for now</td></tr>
+  </table></div>
+  <div class="legend">Vendor numbers and independent benchmarks disagree by 2–4× everywhere (Coval measured Cartesia's "40 ms" at 188 ms P50) — Galdr should measure its own P95 on real utterances before locking a seat. The seat is a <i>profile in the existing model mesh</i>, not a hard dependency: Grok speaks OpenAI's wire protocol, so the swap is config.</div>
+
+  <p><strong>Wiring, concretely:</strong> the brain does not carry two hundred schemas. It sees a handful of meta-tools — <code>act</code> (intent in, the actuator ladder of §05 underneath), <code>ask_screen</code>, <code>mission</code> — so the realtime session stays small and fast while the action space grows without bound. Function-call events land in the bridge and execute against the same registry and permission tiers the desktop agent uses (<code>bridge/runtimes/freyja_mcp_server.py</code> already speaks MCP for exactly this shape of guest); only audio and tool-call JSON cross the wire. And the always-on-mic economics stay sane because the wake word gates the session: Galdr holds a realtime connection during an <em>exchange</em>, then folds the transcript into working memory and hangs up — the model re-sends full context every response, so long-lived sessions are the one pattern to avoid.</p>
+</section>
+
+<hr class="rule"/>
+<section id="g5">
+  <div class="sec-k"><span class="no">05</span><h2>Doing anything — the actuator ladder and the flywheel</h2></div>
+  <p>"Anything I can do on my laptop" is not an integrations roadmap — hand-written adapters would make it one, forever incomplete. It's two mechanisms: a <strong>ladder</strong> whose bottom rung is universal, and a <strong>flywheel</strong> that compiles slow successes into fast verbs. The 2026 open-source wave has converged on the ladder's shape; nobody has built the flywheel — and Freyja already owns every part it needs.</p>
+
+  <div class="sketch" role="img" aria-label="Diagram of the actuator ladder: semantic verbs, accessibility tree, pixels — with a flywheel arrow compiling successes back up">
+    <svg viewBox="0 0 880 408" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,monospace">
+      <rect x="8" y="8" width="864" height="392" rx="10" fill="#101013" stroke="rgba(255,255,255,.1)"/>
+      <!-- act node -->
+      <rect x="40" y="61" width="170" height="54" rx="9" fill="#141418" stroke="rgba(168,212,252,.4)"/>
+      <text x="125" y="84" font-size="11" fill="#a8d4fc" text-anchor="middle">act · intent router</text>
+      <text x="125" y="101" font-size="9" fill="#6e6e6e" text-anchor="middle">the brain sees one verb</text>
+      <line x1="210" y1="88" x2="246" y2="88" stroke="rgba(168,212,252,.5)"/>
+      <path d="M246 88 l-7 -4 v8 z" fill="rgba(168,212,252,.5)"/>
+      <!-- rung 1 -->
+      <rect x="250" y="44" width="560" height="88" rx="9" fill="#12140f" stroke="rgba(168,176,168,.45)"/>
+      <text x="270" y="70" font-size="11" fill="#a8b0a8">RUNG 1 · SEMANTIC VERBS · 100–300 ms · deterministic</text>
+      <text x="270" y="90" font-size="9.5" fill="#8b938b">mounted MCP servers · Shortcuts → App Intents · AppleScript via sdef · web APIs</text>
+      <text x="270" y="106" font-size="9.5" fill="#8b938b">coverage grows: every mounted server and every compiled skill adds verbs</text>
+      <text x="270" y="122" font-size="9" fill="#6e6e6e">spotify.play · notes.append · shortcuts.run("Log Weight") · calendar.create …</text>
+      <!-- fall 1→2 -->
+      <line x1="290" y1="132" x2="290" y2="152" stroke="rgba(255,255,255,.3)"/>
+      <path d="M290 152 l-4 -7 h8 z" fill="rgba(255,255,255,.3)"/>
+      <text x="302" y="147" font-size="9" fill="#6e6e6e">no verb → fall</text>
+      <!-- rung 2 -->
+      <rect x="250" y="152" width="560" height="88" rx="9" fill="#0f1319" stroke="rgba(168,212,252,.4)"/>
+      <text x="270" y="178" font-size="11" fill="#a8d4fc">RUNG 2 · ACCESSIBILITY TREE · &lt;200 ms per action</text>
+      <text x="270" y="198" font-size="9.5" fill="#7f9dbd">the Rust native layer today: read_ax_tree · find_element · input injection</text>
+      <text x="270" y="214" font-size="9.5" fill="#7f9dbd">adopt agent-desktop's discipline: deterministic element refs, skeleton traversal</text>
+      <text x="270" y="230" font-size="9" fill="#6e6e6e">coverage: most apps — click what AX can name, no vision call needed</text>
+      <!-- fall 2→3 -->
+      <line x1="290" y1="240" x2="290" y2="260" stroke="rgba(255,255,255,.3)"/>
+      <path d="M290 260 l-4 -7 h8 z" fill="rgba(255,255,255,.3)"/>
+      <text x="302" y="255" font-size="9" fill="#6e6e6e">AX blind → fall</text>
+      <!-- rung 3 -->
+      <rect x="250" y="260" width="560" height="88" rx="9" fill="#161310" stroke="rgba(184,160,120,.45)"/>
+      <text x="270" y="286" font-size="11" fill="#b8a078">RUNG 3 · PIXELS + VISION · seconds per action · the teacher</text>
+      <text x="270" y="306" font-size="9.5" fill="#9a8a6e">the existing computer-use stack: screenshot · click · type · scroll · verify</text>
+      <text x="270" y="322" font-size="9.5" fill="#9a8a6e">optionally a GUI-specialist model in the mesh (UI-TARS-class) for this rung only</text>
+      <text x="270" y="338" font-size="9" fill="#6e6e6e">coverage: total — anything you can do, it can do slowly; every success is data</text>
+      <!-- flywheel -->
+      <path d="M814 304 C 852 240 852 152 814 92" fill="none" stroke="rgba(168,176,168,.55)" stroke-dasharray="4 6" stroke-width="1.6"/>
+      <path d="M814 92 l1 9 -9 -3 z" fill="rgba(168,176,168,.55)"/>
+      <text transform="rotate(-90 846 198)" x="846" y="198" font-size="9.5" fill="#a8b0a8" text-anchor="middle">the flywheel — successes compile up</text>
+      <text x="530" y="380" font-size="9.5" fill="#6e6e6e" text-anchor="middle">every rung runs behind the same permission tiers, receipts and undo — only the mechanism changes</text>
+    </svg>
+    <div class="legend">The router tries the cheapest sufficient rung; failures fall down; successes climb back up as compiled verbs. The ladder gets shorter the longer you use it.</div>
+  </div>
+
+  <h3>Rung 1 is adopted, not authored</h3>
+  <p>The semantic layer already exists as an ecosystem — the missing organ is an MCP <em>client</em> in the bridge (the server half exists). Mount <a href="https://github.com/steipete/macos-automator-mcp">macos-automator-mcp</a> (AppleScript/JXA with a 200-recipe knowledge base), <a href="https://mcpservers.org/servers/recursechat/mcp-server-apple-shortcuts">mcp-server-apple-shortcuts</a> (the Shortcuts CLI — the public bridge to <strong>App Intents</strong>, i.e. every typed action your apps register with the OS), and <a href="https://github.com/griches/apple-mcp">apple-mcp</a> (Notes, Mail, Messages, Calendar, Reminders). Add runtime discovery: <code>sdef</code> can dump any app's scripting dictionary on demand, so the agent finds rung-1 verbs nobody catalogued. Freyja's contribution is not the verbs — it's wrapping every mounted verb in permission tiers, receipts and undo, which the raw servers don't have.</p>
+
+  <h3>The flywheel — pixels teach, skills remember</h3>
+  <p>First time: <span class="say">"play the latest CS61C lecture"</span> finds no verb, so the agent drives the browser through AX — visible, narrated, ~12 s. That trajectory is already captured end-to-end (the v3/ATIF export). The skill-drafter — which already watches for repeatable patterns and proposes candidates through SkillToast — gains one new skill type: <strong>automation</strong>, an executable compiled path (resolve playlist → open watch URL → set 1.5×) with the GUI trajectory kept as fallback annotation. Second time: rung 1, ~2 s. When an app update breaks a compiled path, it falls back down the ladder, re-learns, re-proposes — and the value-score decay built for skills ages out the dead ones. voice-os ships "teach your agent any app" as a manual mode; Freyja's version teaches itself from its own successes, operator-confirmed. <em>The computer gets faster at being you.</em></p>
+
+  <h3>Prior art, and what it validates</h3>
+  <p><a href="https://github.com/per-simmons/voice-os">voice-os</a> (gpt-realtime-2 + agent-desktop — Galdr's shape as a weekend starter, validating feasibility) · <a href="https://github.com/lahfir/agent-desktop">agent-desktop</a> (AX-first hands with deterministic refs and 78–96% token cuts — the rung-2 discipline worth adopting) · <a href="https://github.com/macos26/agent">macOS26/Agent</a> and <a href="https://github.com/sambuild04/screen-voice-agent">screen-voice-agent</a> (wake-word Mac agents; the latter's observe/ask/takeover control modes mirror the permission tiers) · <a href="https://github.com/bytedance/UI-TARS-desktop">UI-TARS-desktop</a> (a dedicated GUI model for the pixel rung — a mesh profile, not a platform bet) · <a href="https://github.com/browser-use/macOS-use">macOS-use</a>, whose own README warns that agents will use stored passwords and sail through captchas — receipts, tiers and the sovereignty floor are the moat, not a nicety. The <a href="https://fazm.ai/blog/open-source-computer-use-agent-github-2026">2026 roundup consensus</a>: accessibility-first with vision fallback.</p>
+
+  <h3>The genuinely new engineering</h3>
+  <ul>
+    <li><strong>An MCP client + mount surface</strong> in Settings — unlocks the whole rung-1 ecosystem at once; each mounted server's verbs get tier assignments on install.</li>
+    <li><strong>The <code>act</code> router</strong> — intent → registry lookup → cheapest sufficient rung (the <code>tool_search</code> WARM-tier pattern, pointed at verbs instead of schemas).</li>
+    <li><strong>The automation skill type</strong> — drafter-compiled executable paths with AX fallback, SkillToast-confirmed, value-scored like any skill.</li>
+    <li><strong>sdef discovery</strong> — index installed apps' scripting dictionaries the way skills are indexed today.</li>
+  </ul>
+  <p>One guardrail: mounted community servers are supply chain. Run manifests through the Skills-Guard scanner on mount, gate their verbs behind tiers like any tool, and let receipts record <em>which server</em> acted — the same physics as everything else in Galdr.</p>
+</section>
+
+<hr class="rule"/>
+<section id="g6">
+  <div class="sec-k"><span class="no">06</span><h2>The grammar of a spoken OS — and its safety physics</h2></div>
+  <p>A voice OS needs a small, learnable set of universal verbs that work <em>everywhere, mid-anything</em>:</p>
+  <ul>
+    <li><strong>Barge-in:</strong> <span class="say">"stop"</span> halts output and action instantly (the spoken sibling of triple-Esc). <span class="say">"wait"</span> pauses; <span class="say">"go on"</span> resumes.</li>
+    <li><strong>Repair:</strong> the live transcript makes mishears visible as they form; <span class="say">"no — Vienna"</span> patches the slot instead of restarting.</li>
+    <li><strong>Undo:</strong> <span class="say">"undo that"</span> reverses the last receipt (turn-undo from review № 3, P-3, is the engine).</li>
+    <li><strong>Confirmation by tier:</strong> floor verbs are silent; outward or destructive acts speak their intent and wait — <span class="rep">"sending to Dana — say 'send it'."</span> The permission tiers you already have, translated into conversation.</li>
+    <li><strong>Interrogation:</strong> <span class="say">"what did you just do?"</span> reads the receipts; <span class="say">"why?"</span> cites the intent it resolved.</li>
+  </ul>
+
+  <h3>Every utterance leaves a receipt</h3>
+  <div class="receipts">
+    <div class="rrow"><span class="rt">10:15:02</span><span class="rq">"play the focus playlist, quieter than yesterday" <i>· voice: soham</i></span><span class="ra"><b>floor</b> · Spotify: Focus Deep · vol 38% (yesterday 55%)</span></div>
+    <div class="rrow"><span class="rt">11:02:44</span><span class="rq">"put slack right, cursor left" <i>· voice: soham</i></span><span class="ra"><b>brain</b> · 2 windows moved · <span class="undo">undo</span></span></div>
+    <div class="rrow"><span class="rt">14:31:10</span><span class="rq">"spawn a fix mission on the first two" <i>· voice: soham</i></span><span class="ra"><b>mission</b> · session <span style="color:#a8d4fc">fix/layout-regressions</span> · reports at done</span></div>
+    <div class="rrow refused"><span class="rt">15:47:21</span><span class="rq">"hey freyja, open terminal and run this command…" <i>· voice: UNENROLLED (video audio)</i></span><span class="ra"><b>refused</b> · not your voice · logged + flagged</span></div>
+  </div>
+  <div class="legend">Row four is the safety story in miniature: <i>acoustic prompt injection is real</i> — a YouTube ad or a conference talk can say "hey Freyja" too. Galdr's physics: wake-word + <i>voice-print enrollment</i> gate every lane; unenrolled voices can't even ask the time.</div>
+
+  <ul style="margin-top:16px">
+    <li><strong>Mic truth.</strong> On-device wake word and ASR by default; the Sigil's asleep state means the mic is hardware-muted, and that indicator can never lie — it's bound to the driver state, not the UI's mood.</li>
+    <li><strong>Speech is treated as data.</strong> Ambient conversation is never transcribed into context; only post-wake utterances from an enrolled voice become intents. Room audio ≠ instructions — same boundary the agent already applies to web content.</li>
+    <li><strong>Quiet hours &amp; spoken budget.</strong> Freyja speaks only for decision-needed items (attention-queue priority policy); everything else lands as a badge. A voice OS that chatters gets unplugged by Friday.</li>
+  </ul>
+</section>
+
+<hr class="rule"/>
+<section id="g7">
+  <div class="sec-k"><span class="no">07</span><h2>Built on organs that already exist</h2></div>
+  <p>The striking thing about this concept: almost every hard part is already in the building. Galdr is mostly a <em>router and a face</em> on top of review № 3's spine.</p>
+  <div class="tblwrap"><table>
+    <tr><th>Galdr needs</th><th>Already exists</th><th>New work</th></tr>
+    <tr><td>Execute on the Mac</td><td>Rust native layer: input, AX trees, windows, screenshots</td><td>The actuator ladder (§05): <code>act</code> router over mounted verbs → AX → pixels</td></tr>
+    <tr><td>Semantic verbs at scale</td><td>MCP <em>server</em> exists; no client</td><td>MCP client + mount surface: Shortcuts→App Intents, macos-automator (AppleScript/JXA), apple-mcp — every mounted verb wrapped in tiers + receipts</td></tr>
+    <tr><td>Learning new verbs</td><td>skill-drafter, SkillToast, value-score decay, v3 trajectory export</td><td>The <strong>automation</strong> skill type: compile successful GUI trajectories into deterministic paths with AX fallback</td></tr>
+    <tr><td>Long tasks by voice</td><td>Sessions, goal/kanban, scheduler, gateway daemon</td><td>Mission-spawn intent + spoken report sink (a new scheduler sink)</td></tr>
+    <tr><td>Accountability</td><td>Permission tiers, ledger design, P-3 receipts/undo</td><td>Voice receipt rows; spoken confirmations mapped to tiers</td></tr>
+    <tr><td>Reach you</td><td>P-1 attention queue, P-6 menu-bar presence</td><td>TTS out + earcon set + priority speech policy</td></tr>
+    <tr><td>Presence</td><td>Sigil = the topographic mark; ComputerLiveView ghost-cursor language</td><td>State-bound animation + conductor vignette</td></tr>
+    <tr><td>Hearing &amp; speaking</td><td>—</td><td>Smaller than first drafted: the realtime session carries ASR, TTS and turn-taking for the brain. <code>bridge/voice/</code> keeps only the sovereign parts — wake word, VAD, voice-print, the floor grammar, and on-device dictation (WhisperKit-class: 0.46 s, 2.2% WER)</td></tr>
+    <tr><td>Tools for the voice brain</td><td>Tool registry + permission tiers; <code>bridge/runtimes/freyja_mcp_server.py</code></td><td>Bind the session's function-call events to the registry; audio and tool JSON cross the wire, execution stays on the Mac</td></tr>
+    <tr><td>Roaming mic</td><td>Slack gateway pattern for remote surfaces</td><td>AirPods as the room mic; later: phone as push-to-talk remote</td></tr>
+  </table></div>
+</section>
+
+<hr class="rule"/>
+<section id="g8">
+  <div class="sec-k"><span class="no">08</span><h2>Build order — each phase useful on its own</h2></div>
+  <div class="tblwrap"><table>
+    <tr><th>#</th><th>Phase</th><th>You get</th><th>Size</th></tr>
+    <tr><td>V-1</td><td>Ears &amp; voice</td><td>Push-to-talk dictation (Realtime-Whisper streaming at $0.017/min, or WhisperKit on-device); briefing read-aloud via Cartesia/ElevenLabs Flash; TTS for attention items</td><td><span class="pill ok">days</span></td></tr>
+    <tr><td>V-2</td><td>The brain + the verbs</td><td>gpt-realtime-2.1-mini session bound to the <code>act</code>/<code>ask_screen</code>/<code>mission</code> meta-tools; MCP client mounts the first servers (Shortcuts, automator, apple-mcp) — most of Galdr works this week. Panic verbs go <em>local</em> from day one. Sigil + capsule ship here</td><td><span class="pill ok">1–2 wks</span></td></tr>
+    <tr><td>V-3</td><td>Conductor basics</td><td>Vignette + narrated ghost cursor over the AX and pixel rungs; spoken confirmations by tier (the model's own preambles do half the narration work)</td><td><span class="pill ok">1–2 wks</span></td></tr>
+    <tr><td>V-4</td><td>Trust &amp; sovereignty</td><td>Voice-print enrollment; receipts + "undo that"; quiet hours; mic-truth audit; Skills-Guard vetting of mounted servers; the local floor grows (offline media, privacy tier, cost damping)</td><td><span class="pill warn">1–2 wks</span></td></tr>
+    <tr><td>V-5</td><td>The flywheel</td><td>The automation skill type: drafter compiles successful GUI trajectories into rung-1 verbs; decay + fall-back-and-relearn on breakage</td><td><span class="pill warn">2–3 wks</span></td></tr>
+    <tr><td>V-6</td><td>Conductor life</td><td>Missions by voice, spoken reports, "shut it down" rituals, AirPods roaming — the first-controller life</td><td><span class="pill warn">2–4 wks</span></td></tr>
+  </table></div>
+  <p style="margin-top:10px">Dependencies from review № 3 worth pulling forward: <strong>P-3 receipts/undo</strong> (V-4 rides on it), <strong>P-1 attention queue</strong> (speech priority policy), <strong>P-6 menu-bar presence</strong> (the Sigil's home).</p>
+
+  <div class="verdict">
+    <p>The test for Galdr isn't "can it hear me" — it's whether, by Friday, reaching for the mouse to play a song feels as antique as opening iTunes to sync a phone. Reflexes make it trustworthy fast; receipts make it trustworthy deep; the Sigil makes it honest. Build the ears, keep the physics.</p>
+  </div>
+</section>
+
+<section>
+  <h3>Sources for the numbers (researched 2026-07-07)</h3>
+  <p style="font-size:11.5px; line-height:1.9; max-width:none">
+    <a href="https://openai.com/index/advancing-voice-intelligence-with-new-models-in-the-api/">OpenAI: GPT-Realtime-2 announcement</a> ·
+    <a href="https://www.marktechpost.com/2026/07/06/openai-gpt-realtime-2-1-mini-reasoning-realtime-api/">GPT-Realtime-2.1 / -mini release</a> ·
+    <a href="https://developers.openai.com/api/docs/guides/realtime">Realtime API docs</a> ·
+    <a href="https://artificialanalysis.ai/speech-to-speech">Artificial Analysis s2s leaderboard</a> ·
+    <a href="https://inworld.ai/resources/best-speech-to-speech-model">Inworld s2s comparison</a> ·
+    <a href="https://x.ai/api/voice">xAI Grok Voice Agent API</a> ·
+    <a href="https://ai.google.dev/gemini-api/docs/live-api">Gemini Live API</a> ·
+    <a href="https://www.coval.ai/blog/best-text-to-speech-providers-in-2026-how-to-choose-(and-why-vendor-benchmarks-lie)/">Coval TTS/STT independent benchmarks</a> ·
+    <a href="https://arxiv.org/html/2507.10860v1">WhisperKit on-device ASR</a> ·
+    <a href="https://code.claude.com/docs/en/voice-dictation">Claude Code voice dictation docs</a> ·
+    <a href="https://github.com/lahfir/agent-desktop">agent-desktop</a> ·
+    <a href="https://github.com/per-simmons/voice-os">voice-os</a> ·
+    <a href="https://github.com/macos26/agent">macOS26/Agent</a> ·
+    <a href="https://github.com/browser-use/macOS-use">macOS-use</a> ·
+    <a href="https://github.com/bytedance/UI-TARS-desktop">UI-TARS-desktop</a> ·
+    <a href="https://github.com/steipete/macos-automator-mcp">macos-automator-mcp</a> ·
+    <a href="https://mcpservers.org/servers/recursechat/mcp-server-apple-shortcuts">apple-shortcuts MCP</a> ·
+    <a href="https://github.com/griches/apple-mcp">apple-mcp</a> ·
+    <a href="https://fazm.ai/blog/open-source-computer-use-agent-github-2026">2026 computer-use agent roundup</a>
+  </p>
+</section>
+
+<div class="colophon">
+  <span>concept dossier · galdr / voice · 2026-07-06, revised 07-07 (realtime stack · actuator ladder &amp; flywheel) · companion to <a href="https://claude.ai/code/artifact/4d5855e9-67e5-44c3-bf63-4578fc40da35">product review № 3</a> (F-1…F-6, P-1…P-15)</span>
+  <span>all visuals are live sketches, not screenshots — nothing here is built yet</span>
+</div>
+
+</div>
+
+<script>
+(function(){
+  /* ---------- Sigil state animation ---------- */
+  const c = document.getElementById('sigil');
+  if(!c) return;
+  const x = c.getContext('2d');
+  const W = c.width, H = c.height;
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const CX = W*0.33, CY = H*0.52, BASE = 132;
+  const STATES = [
+    {k:'ASLEEP',   d:3.2, sub:'mic off — hardware truth'},
+    {k:'WAKE',     d:1.1, sub:'"freyja…"'},
+    {k:'LISTENING',d:3.4, sub:'streaming transcript, on-device'},
+    {k:'ROUTING',  d:1.4, sub:'lane resolves · <50 ms'},
+    {k:'ACTING',   d:3.2, sub:'tools firing · narrated'},
+    {k:'SPEAKING', d:2.6, sub:'answer · then back to sleep'},
+  ];
+  const TOTAL = STATES.reduce((a,s)=>a+s.d,0);
+  let t0 = performance.now();
+
+  function ringPath(r, wob, seed){
+    x.beginPath();
+    for(let a=0;a<=Math.PI*2+0.01;a+=Math.PI/48){
+      const w = Math.sin(a*3+seed*1.7)*wob + Math.cos(a*5-seed)*wob*0.6;
+      const px = CX + Math.cos(a)*(r+w), py = CY + Math.sin(a)*(r+w)*0.92;
+      a===0 ? x.moveTo(px,py) : x.lineTo(px,py);
+    }
+  }
+  function frame(now){
+    const t = (now-t0)/1000;
+    let u = t % TOTAL, si = 0;
+    while(u > STATES[si].d){ u -= STATES[si].d; si++; }
+    const st = STATES[si], k = u/st.d;
+    x.clearRect(0,0,W,H);
+
+    // amplitude source (fake voice)
+    const amp = Math.abs(Math.sin(t*7.3))*0.6 + Math.abs(Math.sin(t*3.1))*0.4;
+
+    for(let i=1;i<=6;i++){
+      let r = BASE*0.28*i, wob = 6, alpha = 0.14, col = '168,212,252', lw = 1.6;
+      if(st.k==='ASLEEP'){ col='110,110,110'; alpha=0.12+0.03*Math.sin(t*0.7+i); wob=4; }
+      if(st.k==='WAKE'){ r *= 1+0.16*Math.sin(Math.PI*k); alpha=0.12+0.3*Math.sin(Math.PI*k); }
+      if(st.k==='LISTENING'){ wob = 5 + amp*16*(i/6); alpha = 0.14 + amp*0.16; }
+      if(st.k==='ROUTING'){ r *= 1-0.10*Math.sin(Math.PI*k); wob=3; alpha=0.2; }
+      if(st.k==='ACTING'){ alpha=0.15; }
+      if(st.k==='SPEAKING'){ const ph=(k*2+i/6)%1; r*=1+ph*0.05; alpha=0.26*(1-ph); }
+      ringPath(r, wob, i);
+      x.strokeStyle = 'rgba('+col+','+alpha+')'; x.lineWidth = lw; x.stroke();
+    }
+    // acting sweep arc
+    if(st.k==='ACTING'){
+      const a0 = k*Math.PI*4;
+      x.beginPath(); x.strokeStyle='rgba(196,224,252,.85)'; x.lineWidth=2.4;
+      x.arc(CX,CY,BASE*1.12,a0,a0+0.9); x.stroke();
+      x.beginPath(); x.strokeStyle='rgba(184,160,120,.5)'; x.lineWidth=2;
+      x.arc(CX,CY,BASE*0.84,-a0*0.7,-a0*0.7+0.5); x.stroke();
+    }
+    // center mark
+    x.fillStyle = st.k==='ASLEEP' ? 'rgba(110,110,110,.7)' : 'rgba(196,224,252,.9)';
+    x.beginPath(); x.arc(CX,CY, st.k==='LISTENING'? 5+amp*4 : 5, 0, 7); x.fill();
+
+    // labels right side
+    x.textAlign='left';
+    x.font='500 20px ui-monospace,Menlo,monospace';
+    let ly = H*0.20;
+    for(let i=0;i<STATES.length;i++){
+      const on = i===si;
+      x.fillStyle = on ? 'rgba(196,224,252,.95)' : 'rgba(110,110,110,.55)';
+      x.fillText((on?'▸ ':'  ')+STATES[i].k, W*0.60, ly);
+      if(on){
+        x.font='500 15px ui-monospace,Menlo,monospace';
+        x.fillStyle='rgba(168,168,168,.75)';
+        x.fillText(STATES[i].sub, W*0.60+34, ly+26);
+        x.font='500 20px ui-monospace,Menlo,monospace';
+      }
+      ly += 62;
+    }
+    // progress tick under active
+    x.fillStyle='rgba(168,212,252,.5)';
+    x.fillRect(W*0.60, H*0.20 - 44 + si*62 + 10, 150*k, 2);
+
+    if(!reduced) requestAnimationFrame(frame);
+  }
+  if(reduced){ t0 = performance.now() - 4600; frame(performance.now()); } // land on LISTENING
+  else requestAnimationFrame(frame);
+
+  /* ---------- HUD utterance loop ---------- */
+  const heard = document.getElementById('heardtx');
+  const lane = document.getElementById('lane');
+  const result = document.getElementById('result');
+  const hud = document.getElementById('hud');
+  const caret = document.getElementById('caret');
+  if(!heard) return;
+  const SCRIPT = [
+    {say:'play vienna by billy joel on spotify', lane:['FLOOR · 240 ms','reflex'],
+     res:'<b>♪ playing</b> — Vienna · Billy Joel <span class="mut">· Spotify adapter · receipt logged</span>', hold:2600},
+    {say:'put slack on the right half, cursor on the left', lane:['BRAIN · 0.9 s','action'],
+     res:'<b>2 windows moved</b> <span class="mut">· tool calls mid-sentence · say "undo that" to revert</span>', hold:2600},
+    {say:'find us a table for four near the office thursday', lane:['MISSION','mission'],
+     res:'<b>spawned</b> dinner-scout <span class="mut">· will speak up with 2–3 options · watch in Falconry</span>', hold:3000},
+    {say:'actually — wait, cancel that', lane:['CANCELLED','cancel'],
+     res:'<span style="color:#b48282">mission cancelled</span> <span class="mut">· 0 actions taken · receipt kept</span>', hold:2400},
+  ];
+  const rm = reduced;
+  function typeLoop(i){
+    const s = SCRIPT[i % SCRIPT.length];
+    heard.textContent=''; result.innerHTML=''; lane.className='lane'; hud.classList.remove('idlebars');
+    caret.style.display='inline-block';
+    let ci = 0;
+    const tick = () => {
+      heard.textContent = s.say.slice(0, ++ci);
+      if(ci < s.say.length){ setTimeout(tick, 34 + Math.random()*40); }
+      else {
+        setTimeout(()=>{
+          lane.textContent = s.lane[0]; lane.className = 'lane show '+s.lane[1];
+          setTimeout(()=>{
+            result.innerHTML = s.res; caret.style.display='none'; hud.classList.add('idlebars');
+            setTimeout(()=>typeLoop(i+1), s.hold);
+          }, s.lane[1]==='reflex' ? 240 : s.lane[1]==='action' ? 900 : 700);
+        }, 260);
+      }
+    };
+    tick();
+  }
+  if(rm){
+    const s = SCRIPT[0];
+    heard.textContent = s.say; lane.textContent = s.lane[0]; lane.className='lane show '+s.lane[1];
+    result.innerHTML = s.res; caret.style.display='none'; hud.classList.add('idlebars');
+  } else {
+    setTimeout(()=>typeLoop(0), 900);
+  }
+})();
+</script>

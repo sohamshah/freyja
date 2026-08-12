@@ -12,6 +12,7 @@ import { TopoBackdrop } from './TopoBackdrop'
 import { StickyHeader } from './StickyHeader'
 import { DrafterRunsPanel } from './DrafterRunsPanel'
 import { SkillCandidatesPanel } from './SkillCandidatesPanel'
+import { VoiceReceiptsSection } from './voice/VoiceReceiptsSection'
 
 export function ActivityPanel() {
   const systemEvents = useHarness((s) => s.systemEvents)
@@ -225,6 +226,9 @@ export function ActivityPanel() {
 
         {/* ── File changes ───────────────────────────────── */}
         <ChangesSection />
+
+        {/* ── Voice receipts (Galdr verb executions) ─────── */}
+        <VoiceReceiptsSection />
 
         {/* ── Artifacts ─────────────────────────────────── */}
         <ArtifactsSection />

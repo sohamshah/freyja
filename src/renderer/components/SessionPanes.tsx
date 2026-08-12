@@ -6,6 +6,7 @@ import { formatDuration, formatTokens } from '../lib/format'
 import { Conversation } from './Conversation'
 import { ToolCallChip } from './ToolCallChip'
 import { Widget } from './Widget'
+import { ScopedErrorBoundary } from './ScopedErrorBoundary'
 import type { Message, MessagePart, SessionSnapshot, SubagentRecord } from '@shared/events'
 
 export function SessionPanes() {
@@ -21,7 +22,11 @@ export function SessionPanes() {
     : [{ id: 'pane-main', sessionId: activeSessionId, createdAt: Date.now() }]
 
   if (visiblePanes.length === 1 && visiblePanes[0].sessionId === activeSessionId) {
-    return <Conversation />
+    return (
+      <ScopedErrorBoundary label="conversation" resetKey={activeSessionId}>
+        <Conversation />
+      </ScopedErrorBoundary>
+    )
   }
 
   const handlePaneFocus = (paneId: string, sessionId: string) => {
@@ -83,11 +88,17 @@ function SessionPane({
         paneCount={paneCount}
         onClose={onClose}
       />
-      <PaneTranscript
-        snapshot={snapshot}
-        slice={slice}
-        writable={writable}
-      />
+      {/* Contain transcript-render crashes to THIS pane instead of letting
+          them reach the app-root boundary (which blanks the whole window —
+          losing the mission dashboard + activity). Keyed on sessionId so
+          switching the pane's session clears a stuck error. */}
+      <ScopedErrorBoundary label="session transcript" resetKey={sessionId}>
+        <PaneTranscript
+          snapshot={snapshot}
+          slice={slice}
+          writable={writable}
+        />
+      </ScopedErrorBoundary>
       <PaneChatbox sessionId={sessionId} writable={writable} onFocus={onFocus} />
     </section>
   )

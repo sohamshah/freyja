@@ -1,4 +1,5 @@
-import React, { useEffect } from 'react'
+import React from 'react'
+import { useEscapeClose } from '../../lib/useEscapeClose'
 
 interface DetailDrawerProps {
   open: boolean
@@ -38,14 +39,10 @@ export function DetailDrawer({
   footer,
   backdrop,
 }: DetailDrawerProps) {
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
+  // Capture-first Esc so closing a detail panel that lives inside the
+  // mission dashboard doesn't fall through to the dashboard's own Esc
+  // (which would close the entire dashboard). See useEscapeClose.
+  useEscapeClose(open, onClose)
 
   if (!open) return null
 

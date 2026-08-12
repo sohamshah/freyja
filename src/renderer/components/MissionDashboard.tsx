@@ -19,6 +19,7 @@ import { BusFlowView } from './views/BusFlowView'
 import { JudgeBrief } from './views/JudgeBrief'
 import { DispatcherBrief } from './views/DispatcherBrief'
 import { ActivityView } from './views/ActivityView'
+import { ScopedErrorBoundary } from './ScopedErrorBoundary'
 
 // 'swarm' / 'findings' / 'telemetry' kept for legacy callers; they all
 // redirect to the corresponding live tab below.
@@ -600,6 +601,15 @@ export function MissionDashboard() {
           'output_truncation',
         ].includes(event.subtype),
       )
+    // The kanban board view consumes the *full* system-event stream
+    // (kanban_tick / kanban_stale / kanban_judge_verdict / dispatch
+    // events), NOT the compaction-only `telemetryEvents` whitelist above
+    // — that whitelist strips every kanban_* event, which would blank the
+    // tick countdown, stale halos, judge meters and the activity feed.
+    // Ascending chronological order: the board's scanners treat the tail
+    // of the array as the newest event (findLatestTickInfo walks from the
+    // end; the activity feed does slice(-30).reverse()).
+    const kanbanEvents = [...systemEventViews].sort((a, b) => a.at - b.at)
     // Durable per-card snapshots from every slice we're aggregating.
     // Pre-seed the collector with these so cards from earlier in a
     // long session don't vanish once their original kanban_* event
@@ -648,6 +658,7 @@ export function MissionDashboard() {
       readEvents: busEvents.filter((event) => event.topic === 'read'),
       inboxEvents: inboxEventsAggregated,
       telemetryEvents,
+      kanbanEvents,
       kanbanCards,
       goalState,
       taskCards,
@@ -790,6 +801,10 @@ export function MissionDashboard() {
           })}
         </nav>
 
+        {/* Contain a crash in one tab's content to that tab — keeps the
+            dashboard chrome + other tabs alive instead of the whole app
+            dropping to the root recovery screen. Resets on tab switch. */}
+        <ScopedErrorBoundary label="dashboard" resetKey={tab}>
         {tab === 'overview' && (
           <OverviewTab
             sessionId={dashboard.missionSessionId}
@@ -807,6 +822,7 @@ export function MissionDashboard() {
             toolsCount={dashboard.toolCalls.length}
             screenshotFrames={dashboard.screenshotFrames}
             telemetryEvents={dashboard.telemetryEvents}
+            kanbanEvents={dashboard.kanbanEvents}
             kanbanCards={dashboard.kanbanCards}
             goalState={dashboard.goalState}
             taskCards={dashboard.taskCards}
@@ -842,6 +858,7 @@ export function MissionDashboard() {
           />
         )}
         {tab === 'profiles' && <ProfilesTab />}
+        </ScopedErrorBoundary>
       </div>
     </div>
   )
@@ -863,6 +880,7 @@ function OverviewTab({
   toolsCount,
   screenshotFrames,
   telemetryEvents,
+  kanbanEvents,
   kanbanCards,
   goalState,
   taskCards,
@@ -892,6 +910,10 @@ function OverviewTab({
   toolsCount: number
   screenshotFrames: number
   telemetryEvents: TelemetryEventView[]
+  /** Full system-event stream (ascending) for the kanban board view —
+   *  carries the kanban_* + dispatch events that `telemetryEvents`
+   *  deliberately strips. */
+  kanbanEvents: TelemetryEventView[]
   kanbanCards: KanbanCardView[]
   goalState: GoalStateView | null
   taskCards: TaskCardView[]
@@ -916,7 +938,7 @@ function OverviewTab({
           objective={objective}
           cards={kanbanCards}
           agents={agents}
-          telemetryEvents={telemetryEvents}
+          telemetryEvents={kanbanEvents}
           contextPct={contextPct}
           cost={cost}
           autoDispatchEnabled={autoDispatchEnabled}
@@ -1410,19 +1432,23 @@ function HiveMindGraph({
 
   // Edges
   const round1 = rounds[0]?.agents ?? []
-  const delegationEdges = round1.map((agent) => {
-    const tgt = agentPos.get(agent.session.id)!
-    return {
-      from: { x: orchPos.x + orchPos.w, y: orchPos.y + orchPos.h / 2 },
-      to: { x: tgt.x, y: tgt.y + tgt.h / 2 },
-    }
-  })
+  const delegationEdges = round1
+    .map((agent) => {
+      const tgt = agentPos.get(agent.session?.id ?? '')
+      if (!tgt) return null
+      return {
+        from: { x: orchPos.x + orchPos.w, y: orchPos.y + orchPos.h / 2 },
+        to: { x: tgt.x, y: tgt.y + tgt.h / 2 },
+      }
+    })
+    .filter((e): e is NonNullable<typeof e> => Boolean(e))
 
   // Reuse the cross-agent collaboration inference. Compat-shape positions
   // for the helper which expects {x, y, cx, topY, bottomY, ...}.
   const compatPositions = new Map<string, GraphAgentNode>()
   for (const [id, p] of agentPos) {
-    const agent = sortedAgents.find((a) => a.session.id === id)!
+    const agent = sortedAgents.find((a) => a.session?.id === id)
+    if (!agent) continue
     compatPositions.set(id, {
       agent,
       x: p.x + p.w / 2,
@@ -1445,9 +1471,9 @@ function HiveMindGraph({
   // Artifact edges
   const artifactEdges = placedArtifacts
     .map((fc) => {
-      const idx = toolToAgent.get(fc.toolCallId)!
-      const agent = sortedAgents[idx]
-      const from = agentPos.get(agent.session.id)
+      const idx = toolToAgent.get(fc.toolCallId)
+      const agent = idx == null ? undefined : sortedAgents[idx]
+      const from = agent ? agentPos.get(agent.session?.id ?? '') : undefined
       const to = artifactPos.get(fc.id)
       if (!from || !to) return null
       return {

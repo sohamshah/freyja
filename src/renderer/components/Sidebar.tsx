@@ -2012,6 +2012,16 @@ function SessionRow({
                 slack
               </span>
             )}
+            {s.agentType === 'voice' && (
+              <span
+                title="This session came from a Galdr voice exchange"
+                className="inline-flex items-center gap-0.5 rounded px-1 py-px font-mono text-[9px] uppercase tracking-[0.10em] text-accent/90 bg-accent/[0.07] ring-1 ring-accent/[0.18]"
+              >
+                {/* Galdr sigil — same accent vocabulary as the slack kicker */}
+                <span aria-hidden className="text-[10px] leading-none">ᚷ</span>
+                voice
+              </span>
+            )}
             {s.coordinationStrategy ? (
               <StrategyChip strategy={s.coordinationStrategy} />
             ) : null}

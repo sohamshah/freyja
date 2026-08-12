@@ -1,6 +1,7 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useHarness } from '../state/store'
-import type { PermissionTier } from '@shared/events'
+import { useVoiceStore } from '../state/voice-store'
+import type { PermissionTier, VoiceConfig } from '@shared/events'
 
 interface PermissionOption {
   tier: PermissionTier
@@ -238,6 +239,13 @@ export function SettingsModal() {
           </Section>
 
           <Section
+            title="voice · galdr"
+            description="Speak to the Mac. ⌥Space opens an exchange; the mic is live only while the sigil is lit, and the session auto-closes after silence."
+          >
+            <VoiceSettings />
+          </Section>
+
+          <Section
             title="about"
             description="Stored on this machine only. No telemetry, no sync."
           >
@@ -267,6 +275,236 @@ export function SettingsModal() {
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+/**
+ * Voice (Galdr) settings group. The bridge owns the file
+ * (~/.freyja/voice/config.json) and echoes the merged config back as a
+ * voice_config event — we patch the store optimistically so the toggle
+ * doesn't lag a bridge round-trip, then let the echo settle it.
+ */
+function VoiceSettings() {
+  const config = useVoiceStore((s) => s.config)
+  const setConfigPatch = useVoiceStore((s) => s.setConfigPatch)
+  // Idle timeout edits buffer locally so mid-typing values ("4" en
+  // route to "40") aren't clamped and persisted; commit on blur/Enter.
+  const [idleDraft, setIdleDraft] = useState<string | null>(null)
+
+  if (!config) {
+    return (
+      <div className="text-[11px] italic text-fg-3">
+        Voice service unavailable — bridge offline or still starting.
+      </div>
+    )
+  }
+
+  const patch = (p: Partial<Omit<VoiceConfig, 'available' | 'hasApiKey' | 'spotifySearch'>>) => {
+    useVoiceStore.setState((s) => ({
+      config: s.config ? { ...s.config, ...p } : s.config,
+    }))
+    setConfigPatch(p)
+  }
+
+  const commitIdle = () => {
+    if (idleDraft === null) return
+    const n = Math.round(Number(idleDraft))
+    if (Number.isFinite(n)) {
+      patch({ idleTimeoutSec: Math.max(10, Math.min(120, n)) })
+    }
+    setIdleDraft(null)
+  }
+
+  const setQuietHour = (which: 'start' | 'end', raw: string) => {
+    const n = Math.round(Number(raw))
+    if (!Number.isFinite(n)) return
+    const h = Math.max(0, Math.min(23, n))
+    patch({ quietHours: { ...config.quietHours, [which]: h } })
+  }
+
+  // The active value always appears in its dropdown even if the bridge's
+  // availability probe didn't list it (config.model is a free string —
+  // reserved seats for future Grok/Gemini realtime models).
+  const models = config.available.models.includes(config.model)
+    ? config.available.models
+    : [config.model, ...config.available.models]
+  const voices = config.available.voices.includes(config.voice)
+    ? config.available.voices
+    : [config.voice, ...config.available.voices]
+
+  const selectClass =
+    'w-full rounded border border-white/[0.10] bg-black/[0.30] px-2 py-1.5 font-mono text-[11.5px] text-fg-0 focus:border-accent/[0.40] focus:outline-none'
+
+  return (
+    <div className="space-y-3">
+      <button
+        onClick={() => patch({ enabled: !config.enabled })}
+        className={`group flex w-full items-start gap-3 rounded-lg px-3 py-3 text-left transition-colors ${
+          config.enabled
+            ? 'bg-accent/10 ring-1 ring-accent/30'
+            : 'hover:bg-white/[0.035] ring-hairline'
+        }`}
+      >
+        <div className="mt-[2px] flex h-4 w-4 shrink-0 items-center justify-center">
+          <div
+            className={`h-3 w-3 rounded-full ring-1 ${
+              config.enabled ? 'bg-accent/80 ring-accent' : 'bg-fg-3/30 ring-fg-3'
+            }`}
+          />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-[12px] text-fg-0">
+              {config.enabled ? 'Voice is ENABLED' : 'Voice is DISABLED'}
+            </span>
+            <span
+              className={`font-mono text-[9.5px] uppercase tracking-[0.08em] ${
+                config.enabled ? 'text-accent' : 'text-fg-3'
+              }`}
+            >
+              {config.enabled ? 'ON' : 'OFF'}
+            </span>
+          </div>
+          <div className="mt-[3px] text-[11.5px] leading-[1.55] text-fg-2">
+            {config.enabled
+              ? '⌥Space or the title-bar sigil opens an exchange. Auto-closes after silence; every verb leaves a receipt.'
+              : 'Enable to talk to the Mac — Spotify, volume, apps, timers, missions.'}
+          </div>
+        </div>
+      </button>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <div className="mb-1 label">model</div>
+          <select
+            value={config.model}
+            onChange={(e) => patch({ model: e.target.value })}
+            className={selectClass}
+          >
+            {models.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <div className="mb-1 label">voice</div>
+          <select
+            value={config.voice}
+            onChange={(e) => patch({ voice: e.target.value })}
+            className={selectClass}
+          >
+            {voices.map((v) => (
+              <option key={v} value={v}>
+                {v}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <div className="mb-1 label">turn detection</div>
+          <select
+            value={config.vadMode}
+            onChange={(e) =>
+              patch({ vadMode: e.target.value as VoiceConfig['vadMode'] })
+            }
+            className={selectClass}
+          >
+            <option value="semantic_vad">semantic — natural turn-taking</option>
+            <option value="server_vad">server — silence-based</option>
+          </select>
+        </div>
+        <div>
+          <div className="mb-1 label">idle timeout (s)</div>
+          <input
+            type="number"
+            min={10}
+            max={120}
+            value={idleDraft ?? String(config.idleTimeoutSec)}
+            onChange={(e) => setIdleDraft(e.target.value)}
+            onBlur={commitIdle}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commitIdle()
+            }}
+            className={selectClass}
+          />
+        </div>
+      </div>
+
+      <button
+        onClick={() => patch({ proactiveVoice: !config.proactiveVoice })}
+        className={`group flex w-full items-start gap-3 rounded-lg px-3 py-3 text-left transition-colors ${
+          config.proactiveVoice
+            ? 'bg-accent/10 ring-1 ring-accent/30'
+            : 'hover:bg-white/[0.035] ring-hairline'
+        }`}
+      >
+        <div className="mt-[2px] flex h-4 w-4 shrink-0 items-center justify-center">
+          <div
+            className={`h-3 w-3 rounded-full ring-1 ${
+              config.proactiveVoice ? 'bg-accent/80 ring-accent' : 'bg-fg-3/30 ring-fg-3'
+            }`}
+          />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-[12px] text-fg-0">Speak up on their own</span>
+            <span
+              className={`font-mono text-[9.5px] uppercase tracking-[0.08em] ${
+                config.proactiveVoice ? 'text-accent' : 'text-fg-3'
+              }`}
+            >
+              {config.proactiveVoice ? 'ON' : 'OFF'}
+            </span>
+          </div>
+          <div className="mt-[3px] text-[11.5px] leading-[1.55] text-fg-2">
+            Let Freyja speak a line when a background task finishes. Off during quiet
+            hours; never while you&rsquo;re already talking.
+          </div>
+        </div>
+      </button>
+
+      {config.proactiveVoice && (
+        <div className="flex items-center gap-2 pl-3 text-[11px] text-fg-2">
+          <span className="label text-fg-3">quiet hours</span>
+          <input
+            type="number"
+            min={0}
+            max={23}
+            value={config.quietHours.start}
+            onChange={(e) => setQuietHour('start', e.target.value)}
+            aria-label="quiet hours start"
+            className="w-14 rounded border border-white/[0.10] bg-black/[0.30] px-1.5 py-1 text-center font-mono text-[11.5px] text-fg-0 focus:border-accent/[0.40] focus:outline-none"
+          />
+          <span className="font-mono text-fg-3">→</span>
+          <input
+            type="number"
+            min={0}
+            max={23}
+            value={config.quietHours.end}
+            onChange={(e) => setQuietHour('end', e.target.value)}
+            aria-label="quiet hours end"
+            className="w-14 rounded border border-white/[0.10] bg-black/[0.30] px-1.5 py-1 text-center font-mono text-[11.5px] text-fg-0 focus:border-accent/[0.40] focus:outline-none"
+          />
+          <span className="font-mono text-[10px] text-fg-3">
+            silent {String(config.quietHours.start).padStart(2, '0')}–
+            {String(config.quietHours.end).padStart(2, '0')} (local, 24h)
+          </span>
+        </div>
+      )}
+
+      {!config.hasApiKey && (
+        <div className="rounded-md bg-warn/[0.07] px-2.5 py-2 font-mono text-[10.5px] text-warn ring-1 ring-warn/20">
+          OPENAI_API_KEY missing — voice disabled
+        </div>
+      )}
+      {!config.spotifySearch && (
+        <div className="text-[10.5px] leading-[1.5] text-fg-3">
+          Spotify play-by-name needs SPOTIFY_CLIENT_ID/SECRET in .env
+        </div>
+      )}
     </div>
   )
 }

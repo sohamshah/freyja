@@ -523,6 +523,9 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
     "claude-sonnet-4-5": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-opus-4-5": {"provider": "anthropic", "context_window": 200_000, "thinking": True},
     # OpenAI models (Responses API)
+    "gpt-5.6-sol": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
+    "gpt-5.6-terra": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
+    "gpt-5.6-luna": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
     "gpt-5.5": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
     "gpt-5.4": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
     "gpt-5.4-pro": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
@@ -605,6 +608,22 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
         "reasoning_default": "medium",
     },
     "kimi-k2.5": {"provider": "fireworks", "context_window": 262_144, "thinking": False, "reasoning_mode": "none"},
+    "kimi-k3": {
+        "provider": "fireworks",
+        "context_window": 1_048_576,
+        "thinking": True,
+        "reasoning_mode": "effort",
+        "reasoning_levels": ("none", "low", "medium", "high", "max"),
+        "reasoning_default": "high",
+    },
+    "kimi-k3-fast": {
+        "provider": "fireworks",
+        "context_window": 1_048_576,
+        "thinking": True,
+        "reasoning_mode": "effort",
+        "reasoning_levels": ("none", "low", "medium", "high", "max"),
+        "reasoning_default": "high",
+    },
     # Google Gemini (GEMINI_API_KEY)
     "gemini-3.1-pro-preview": {
         "provider": "google",
@@ -660,7 +679,7 @@ MODEL_SPEED_TIERS = {
     "fast": "claude-haiku-4-5",
     "medium": "claude-sonnet-4-6",
     "slow": "claude-opus-4-7",   # latest Opus; 4-6 stays in registry as fallback target
-    "openai": "gpt-5.5",         # OpenAI flagship
+    "openai": "gpt-5.6-sol",     # OpenAI flagship (GPT-5.6 Sol)
     "codex": "gpt-5.3-codex",    # agentic coding specialist
     "cerebras": "zai-glm-4.7",
     "kimi": "kimi-k2.6",
@@ -692,7 +711,12 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, 
     "claude-sonnet-4-6": (3.0, 15.0, 0.30),
     "claude-sonnet-4-5": (3.0, 15.0, 0.30),
     "claude-haiku-4-5": (0.80, 4.0, 0.08),
-    # OpenAI Responses API
+    # OpenAI Responses API. GPT-5.6 (Sol/Terra/Luna): cache_read is 10% of
+    # input; cache_write defaults to 1.25× input (OpenAI's stated markup).
+    # Sol output is $30/M — double GPT-5.5's $15 — so don't copy 5.5's tuple.
+    "gpt-5.6-sol": (5.0, 30.0, 0.50),
+    "gpt-5.6-terra": (2.5, 15.0, 0.25),
+    "gpt-5.6-luna": (1.0, 6.0, 0.10),
     "gpt-5.5": (5.0, 15.0, 0.50),
     "gpt-5.4": (3.0, 12.0, 0.30),
     "gpt-5.4-pro": (5.0, 20.0, 0.50),
@@ -708,6 +732,8 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, 
     "kimi-k2.6": (0.55, 1.20, 0.0),
     "kimi-k2.7-code": (0.95, 4.00, 0.19),
     "kimi-k2.5": (0.55, 1.20, 0.0),
+    "kimi-k3": (3.00, 15.00, 0.30),
+    "kimi-k3-fast": (4.50, 22.50, 0.45),
     "minimax-m2.7": (0.30, 1.20, 0.0),
     "minimax-m3": (0.30, 1.20, 0.06),
     "qwen3.6-plus": (0.40, 1.40, 0.0),
@@ -756,6 +782,9 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     "claude-opus-4-6": ["kimi-k2.6", "deepseek-v4-pro"],
     "claude-haiku-4-5": ["kimi-k2.6", "kimi-k2.5"],
     "zai-glm-4.7": ["kimi-k2.6", "kimi-k2.5"],
+    "gpt-5.6-sol": ["gpt-5.6-terra", "gpt-5.6-luna"],
+    "gpt-5.6-terra": ["gpt-5.6-luna"],
+    "gpt-5.6-luna": ["gpt-5.6-terra"],
     "gpt-5.5": ["gpt-5.4", "gpt-5.4-mini"],
     "gpt-5.4": ["gpt-5.4-mini"],
     "gpt-5.4-pro": ["gpt-5.4", "gpt-5.4-mini"],
@@ -772,6 +801,8 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     "qwen3.6-plus": ["kimi-k2.6", "glm-5.1"],
     "qwen3.7-plus": ["qwen3.6-plus", "kimi-k2.6", "glm-5.1"],
     "kimi-k2.5": ["kimi-k2.6", "minimax-m2.7"],
+    "kimi-k3": ["kimi-k3-fast", "kimi-k2.6", "deepseek-v4-pro"],
+    "kimi-k3-fast": ["kimi-k3", "kimi-k2.6", "deepseek-v4-pro"],
     "gemini-3.1-pro-preview": ["gemini-3.5-flash", "gemini-3.1-flash"],
     "gemini-3.5-flash": ["gemini-3.1-flash", "gemini-3.1-flash-lite"],
     "gemini-3.1-flash": ["gemini-3.5-flash", "gemini-3.1-flash-lite"],

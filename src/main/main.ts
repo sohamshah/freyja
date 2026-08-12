@@ -1045,6 +1045,22 @@ app.whenReady().then(async () => {
   } catch (err) {
     console.warn('[main] failed to register Cmd+Shift+K:', err)
   }
+  // ⌥Space — toggle the voice exchange (Galdr). Registered
+  // unconditionally: the renderer's voice-store decides whether voice is
+  // actually enabled/configured, so main stays policy-free. If the window
+  // is hidden or minimized, surface it first — the HUD is about to open
+  // and the mic-truth indicator must be visible while the mic is live.
+  try {
+    globalShortcut.register('Alt+Space', () => {
+      if (!mainWindow) return
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      if (!mainWindow.isVisible()) mainWindow.show()
+      mainWindow.focus()
+      mainWindow.webContents.send(IPC.voiceToggle)
+    })
+  } catch (err) {
+    console.warn('[main] failed to register Alt+Space:', err)
+  }
 
   if (SCREENSHOT_PATH && mainWindow) {
     const w = mainWindow
@@ -1138,6 +1154,16 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+// Release ⌥Space back to the OS as early as possible in teardown —
+// before-quit's unregisterAll also covers it, but will-quit fires on
+// every quit path (incl. autoUpdater-style relaunches that skip
+// before-quit handlers' window closing).
+app.on('will-quit', () => {
+  try {
+    globalShortcut.unregister('Alt+Space')
+  } catch {}
 })
 
 app.on('before-quit', () => {

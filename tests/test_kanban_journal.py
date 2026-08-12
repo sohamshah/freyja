@@ -149,3 +149,43 @@ async def test_journal_survives_malformed_line(tmp_path) -> None:
     # The two valid lines came through; the broken middle line was
     # skipped without raising.
     assert [e.get("task", {}).get("id") for e in events] == ["card_001", "card_002"]
+
+
+@pytest.mark.asyncio
+async def test_replay_preserves_sticky_worker_and_judge_bindings(tmp_path) -> None:
+    """Move R sticky bindings — worker/judge session ids, review iteration,
+    and worker terminal state — must survive a journal replay. Without
+    them a bridge restart rebuilds the card with empty ids + a reset
+    iteration, which trips `_handle_kanban_verdict` into an unbounded
+    requeue→respawn→reject loop."""
+    journal_one = KanbanJournal(tmp_path / "kanban.jsonl")
+    live = SessionKanbanBoard(journal=journal_one)
+    tool = KanbanTool(live, actor_id="parent", actor_label="parent")
+    create = await tool.execute("c1", {"action": "create", "title": "work"})
+    card_id = json.loads(create.content)["task"]["id"]
+    # Stamp the sticky bindings the way the spawn hook + judge path do.
+    await live.update(
+        card_id,
+        actor="worker",
+        status="running",
+        worker_session_id="worker-sess-1",
+    )
+    await live.update(
+        card_id,
+        actor="kanban-judge",
+        status="review",
+        judge_session_id="judge-sess-1",
+        review_iteration=2,
+        worker_terminal_state="done",
+    )
+
+    journal_two = KanbanJournal(tmp_path / "kanban.jsonl")
+    restored = SessionKanbanBoard(journal=journal_two)
+    restored.replay_events(journal_two.read_all())
+
+    card = await restored.get(card_id)
+    assert card is not None
+    assert card.worker_session_id == "worker-sess-1"
+    assert card.judge_session_id == "judge-sess-1"
+    assert card.review_iteration == 2
+    assert card.worker_terminal_state == "done"

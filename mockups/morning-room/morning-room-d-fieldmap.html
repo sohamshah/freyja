@@ -1,0 +1,927 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Morning Room — D. Field Map of the Night</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600&family=Fraunces:opsz,wght@9..144,300;9..144,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0:#070708; --bg-1:#0e0e10; --bg-2:#161618;
+    --fg-0:#e8e8e8; --fg-1:#a8a8a8; --fg-2:#6e6e6e; --fg-3:#4a4a4a; --fg-4:#303030;
+    --accent:#a8d4fc; --accent-hi:#c4e0fc; --accent-lo:#7aafea;
+    --ok:#a8b0a8; --warn:#b8a078; --danger:#b48282;
+    --hairline:rgba(255,255,255,0.06);
+    --hairline-strong:rgba(255,255,255,0.16);
+    --mono:'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    --serif:'Fraunces', Georgia, serif;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:12px; line-height:1.45;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+    font-feature-settings:'ss01' on, 'ss02' on, 'cv11' on, 'tnum' on;
+  }
+
+  /* Ambient — pre-dawn sky tone */
+  body::before {
+    content:""; position:fixed; inset:0; z-index:0; pointer-events:none;
+    background:
+      radial-gradient(900px 600px at 50% 100%, rgba(168,212,252,0.07), transparent 70%),
+      radial-gradient(1400px 1200px at 50% 50%, rgba(168,212,252,0.025), transparent 70%),
+      linear-gradient(180deg, #07070a 0%, #0a0a0d 60%, #0d0e12 90%, #14141c 100%);
+  }
+  body::after {
+    content:""; position:fixed; inset:0; z-index:0; pointer-events:none;
+    background-image: repeating-linear-gradient(0deg, rgba(255,255,255,0.008) 0 1px, transparent 1px 5px);
+    mask-image: radial-gradient(80% 90% at 50% 50%, black, transparent 100%);
+    opacity:0.5;
+  }
+
+  /* === grain + stipple overlays === */
+  .grain {
+    position:fixed; inset:0; z-index:9000;
+    pointer-events:none; opacity:0.085;
+    mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.6 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    background-size:240px 240px;
+  }
+  /* Stipple — geological-survey dot pattern over the map */
+  .stipple {
+    position:fixed; inset:0; z-index:8999;
+    pointer-events:none; opacity:0.42;
+    mix-blend-mode:screen;
+    background-image:radial-gradient(circle, rgba(255,255,255,0.05) 0.4px, transparent 0.9px);
+    background-size:2.4px 2.4px;
+    mask-image:radial-gradient(ellipse 130% 90% at 50% 55%, rgba(0,0,0,0.7), transparent 100%);
+    -webkit-mask-image:radial-gradient(ellipse 130% 90% at 50% 55%, rgba(0,0,0,0.7), transparent 100%);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .grain { opacity:0.04; }
+  }
+
+  /* ───── TOP STRIP ───── */
+  .top {
+    position:fixed; top:0; left:0; right:0; z-index:30;
+    display:grid; grid-template-columns:auto 1fr auto;
+    align-items:center; gap:20px;
+    padding:14px 24px;
+    background:linear-gradient(180deg, rgba(7,7,8,0.92) 0%, rgba(7,7,8,0.5) 70%, transparent 100%);
+    backdrop-filter:blur(12px) saturate(140%);
+  }
+  .top .brand {
+    display:flex; align-items:center; gap:14px;
+    color:var(--fg-2); font-size:10.5px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+  .top .brand .sextant {
+    color:var(--accent); font-size:14px;
+  }
+  .top .brand .div { color:var(--fg-4); }
+  .top .brand .room { color:var(--fg-0); }
+  .top .center {
+    text-align:center;
+    color:var(--fg-3); font-size:9.5px; letter-spacing:0.32em; text-transform:uppercase;
+  }
+  .top .center .map-name { color:var(--fg-1); }
+  .top .right {
+    display:flex; align-items:center; gap:8px;
+  }
+  .top .view-switch {
+    display:inline-flex; padding:2px;
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline); border-radius:6px;
+  }
+  .top .view-switch button {
+    font-family:var(--mono); font-size:10px; letter-spacing:0.16em; text-transform:uppercase;
+    color:var(--fg-2); padding:5px 10px; border-radius:4px;
+    background:transparent; border:none; cursor:pointer;
+    transition:all 140ms ease;
+  }
+  .top .view-switch button.active {
+    color:var(--accent); background:rgba(168,212,252,0.1);
+  }
+  .top .commit {
+    font-family:var(--mono); font-size:11px; letter-spacing:0.06em;
+    color:var(--accent); padding:7px 14px; border-radius:6px;
+    background:rgba(168,212,252,0.08); border:1px solid rgba(168,212,252,0.32);
+    cursor:pointer; transition:all 160ms ease;
+  }
+  .top .commit:hover { background:rgba(168,212,252,0.18); }
+  .top .commit .kbd { color:var(--fg-3); font-size:9.5px; margin-left:6px; }
+
+  /* ───── MAP CANVAS ───── */
+  #map {
+    position:fixed; inset:0; z-index:5;
+    width:100vw; height:100vh;
+  }
+
+  /* Overlay layer for peak labels + tooltips + horizon UI */
+  #overlay {
+    position:fixed; inset:0; z-index:10;
+    pointer-events:none;
+  }
+  #overlay > * { pointer-events:auto; }
+
+  /* Peak label */
+  .peak-label {
+    position:absolute; transform:translate(-50%, -100%);
+    color:var(--fg-0); white-space:nowrap;
+    font-size:10.5px; letter-spacing:0.04em; line-height:1.3;
+    text-align:center; cursor:pointer;
+    transition:opacity 200ms ease;
+  }
+  .peak-label .name {
+    color:var(--fg-0); font-weight:500;
+    text-shadow:0 0 8px rgba(0,0,0,0.8);
+  }
+  .peak-label .ts {
+    color:var(--fg-3); font-size:9.5px;
+    letter-spacing:0.16em; text-transform:uppercase;
+    margin-top:1px;
+  }
+  .peak-label .sub {
+    color:var(--fg-2); font-size:10px; margin-top:3px;
+    border-top:1px solid var(--hairline); padding-top:4px;
+  }
+  .peak-label.win .name { color:var(--ok); }
+  .peak-label.acc .name { color:var(--accent); }
+  .peak-label.warn .name { color:var(--warn); }
+  .peak-label.dn .name { color:var(--danger); }
+
+  /* "you are here" sextant marker */
+  .here {
+    position:absolute; transform:translate(-50%, -50%);
+    width:46px; height:46px;
+    pointer-events:none;
+  }
+  .here .ring1 {
+    position:absolute; inset:0; border-radius:999px;
+    border:1px solid rgba(168,212,252,0.42);
+    animation:pulse 3.2s ease-in-out infinite;
+  }
+  .here .ring2 {
+    position:absolute; inset:8px; border-radius:999px;
+    border:1px solid rgba(168,212,252,0.65);
+  }
+  .here .ring3 {
+    position:absolute; inset:18px; border-radius:999px;
+    background:var(--accent);
+    box-shadow:0 0 16px rgba(168,212,252,0.6), 0 0 32px rgba(168,212,252,0.25);
+  }
+  .here .label {
+    position:absolute; left:54px; top:50%; transform:translateY(-50%);
+    color:var(--accent); font-size:10px; letter-spacing:0.24em; text-transform:uppercase;
+    white-space:nowrap;
+  }
+  .here .label .t { color:var(--fg-0); font-size:11px; letter-spacing:0.04em;
+    text-transform:none; display:block; margin-top:2px; }
+  @keyframes pulse {
+    0%,100% { transform:scale(1); opacity:0.6; }
+    50% { transform:scale(1.18); opacity:0.2; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .here .ring1 { animation:none; opacity:0.4; }
+  }
+
+  /* Horizon label */
+  .horizon-label {
+    position:absolute; left:24px;
+    color:var(--accent); font-size:9.5px; letter-spacing:0.32em; text-transform:uppercase;
+    background:rgba(7,7,8,0.7); padding:4px 8px; border-radius:3px;
+    backdrop-filter:blur(8px);
+  }
+  .horizon-label.right { left:auto; right:24px; }
+
+  /* ───── COMPASS ROSE (top-right floating) ───── */
+  .compass {
+    position:fixed; top:80px; right:24px; z-index:15;
+    width:180px;
+    padding:14px 16px;
+    background:rgba(14,14,16,0.78);
+    backdrop-filter:blur(16px) saturate(140%);
+    border:1px solid var(--hairline);
+    border-radius:10px;
+    box-shadow:inset 0 0.5px 0 rgba(255,255,255,0.14), 0 12px 30px -10px rgba(0,0,0,0.6);
+  }
+  .compass .h {
+    color:var(--fg-3); font-size:9.5px; letter-spacing:0.24em; text-transform:uppercase;
+    padding-bottom:8px; border-bottom:1px solid var(--hairline); margin-bottom:10px;
+  }
+  .compass .rose {
+    position:relative; width:100%; aspect-ratio:1;
+    display:flex; align-items:center; justify-content:center;
+    margin-bottom:10px;
+  }
+  .compass .rose svg { width:100%; height:100%; }
+  .compass .dir {
+    position:absolute; color:var(--fg-3); font-size:9px; letter-spacing:0.2em; text-transform:uppercase;
+  }
+  .compass .dir.n { top:0; left:50%; transform:translate(-50%, 0); }
+  .compass .dir.s { bottom:0; left:50%; transform:translate(-50%, 0); color:var(--accent); }
+  .compass .dir.e { right:0; top:50%; transform:translate(0, -50%); }
+  .compass .dir.w { left:0; top:50%; transform:translate(0, -50%); }
+  .compass .nums {
+    color:var(--fg-2); font-size:10px; line-height:1.6;
+    font-variant-numeric:tabular-nums;
+  }
+  .compass .nums .row { display:flex; justify-content:space-between; }
+  .compass .nums .k { color:var(--fg-3); letter-spacing:0.06em; }
+  .compass .nums .v { color:var(--fg-0); }
+  .compass .nums .v.acc { color:var(--accent); }
+
+  /* ───── LEGEND (top-left, but offset under top strip) ───── */
+  .legend {
+    position:fixed; top:80px; left:24px; z-index:15;
+    width:210px;
+    padding:14px 16px;
+    background:rgba(14,14,16,0.78);
+    backdrop-filter:blur(16px) saturate(140%);
+    border:1px solid var(--hairline);
+    border-radius:10px;
+    box-shadow:inset 0 0.5px 0 rgba(255,255,255,0.14), 0 12px 30px -10px rgba(0,0,0,0.6);
+  }
+  .legend .h {
+    color:var(--fg-3); font-size:9.5px; letter-spacing:0.24em; text-transform:uppercase;
+    padding-bottom:8px; border-bottom:1px solid var(--hairline); margin-bottom:10px;
+  }
+  .legend .item {
+    display:grid; grid-template-columns:18px 1fr auto; gap:8px;
+    align-items:center; padding:4px 0;
+    font-size:10.5px; color:var(--fg-1);
+  }
+  .legend .item .marker { width:14px; height:14px; }
+  .legend .item .marker svg { width:100%; height:100%; }
+  .legend .item .ct { color:var(--fg-3); font-size:9.5px; font-variant-numeric:tabular-nums; }
+  .legend .ledger {
+    margin-top:10px; padding-top:8px;
+    border-top:1px solid var(--hairline);
+    color:var(--fg-2); font-size:10px; line-height:1.5;
+  }
+  .legend .ledger em {
+    color:var(--accent); font-style:normal;
+  }
+
+  /* ───── PRIORITY PINS (below horizon) ───── */
+  .pin {
+    position:absolute; transform:translate(-50%, 0);
+    width:260px;
+    padding:12px 14px;
+    background:rgba(14,14,18,0.78);
+    backdrop-filter:blur(16px) saturate(140%);
+    border:1px solid var(--hairline);
+    border-radius:8px;
+    box-shadow:inset 0 0.5px 0 rgba(255,255,255,0.14), 0 8px 22px -8px rgba(0,0,0,0.6);
+    cursor:pointer;
+    transition:all 220ms ease;
+  }
+  .pin:hover { border-color:rgba(168,212,252,0.32); transform:translate(-50%, -2px); }
+  .pin .num {
+    font-family:var(--serif); font-weight:300; font-style:italic;
+    font-size:18px; color:var(--accent); line-height:1;
+    margin-bottom:4px;
+  }
+  .pin .ti {
+    color:var(--fg-0); font-size:11.5px; line-height:1.4;
+    margin-bottom:6px;
+  }
+  .pin .meta {
+    color:var(--fg-2); font-size:9.5px; letter-spacing:0.12em; text-transform:uppercase;
+    margin-bottom:8px;
+    padding-bottom:6px; border-bottom:1px dashed rgba(255,255,255,0.05);
+    font-variant-numeric:tabular-nums;
+  }
+  .pin .acts { display:flex; gap:4px; }
+  .pin .acts .v {
+    font-family:var(--mono); font-size:10px; letter-spacing:0.04em;
+    padding:4px 9px; border-radius:4px;
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer; transition:all 140ms ease;
+  }
+  .pin .acts .v.p { color:var(--accent); border-color:rgba(168,212,252,0.42); background:rgba(168,212,252,0.08); }
+  .pin .acts .v:hover { color:var(--fg-0); border-color:var(--hairline-strong); }
+  .pin .acts .v.p:hover { background:rgba(168,212,252,0.18); }
+
+  /* line from pin up to its future peak */
+  .pin::before {
+    content:""; position:absolute; left:50%; bottom:100%;
+    width:1px; height:36px;
+    background:linear-gradient(180deg, transparent, var(--hairline));
+  }
+
+  /* ───── NEEDS-YOU DOCK (right side floating panel) ───── */
+  .dock {
+    position:fixed; top:80px; right:228px; z-index:15;
+    width:340px;
+    padding:18px 20px;
+    background:rgba(14,14,18,0.82);
+    backdrop-filter:blur(20px) saturate(140%);
+    border:1px solid var(--hairline);
+    border-radius:12px;
+    box-shadow:inset 0 0.5px 0 rgba(255,255,255,0.16), 0 16px 40px -14px rgba(0,0,0,0.7);
+    max-height:calc(100vh - 200px);
+    overflow-y:auto;
+  }
+  .dock h3 {
+    font-family:var(--serif); font-weight:300; font-style:italic;
+    font-size:18px; color:var(--fg-0); margin:0 0 4px;
+    letter-spacing:-0.005em;
+  }
+  .dock .sub {
+    color:var(--fg-3); font-size:9.5px; letter-spacing:0.24em; text-transform:uppercase;
+    margin-bottom:14px; padding-bottom:12px;
+    border-bottom:1px solid var(--hairline);
+  }
+  .dock .need {
+    padding:12px 0;
+    border-bottom:1px dashed rgba(255,255,255,0.06);
+  }
+  .dock .need:last-child { border-bottom:none; }
+  .dock .need .head {
+    display:flex; gap:8px; align-items:center; margin-bottom:6px;
+    color:var(--fg-3); font-size:9.5px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+  .dock .need .head .pip {
+    width:6px; height:6px; border-radius:999px; background:var(--fg-3);
+  }
+  .dock .need.dn .head .pip { background:var(--danger); box-shadow:0 0 7px rgba(180,130,130,0.5); }
+  .dock .need.dn .head { color:var(--danger); }
+  .dock .need.warn .head .pip { background:var(--warn); }
+  .dock .need.warn .head { color:var(--warn); }
+  .dock .need.acc .head .pip { background:var(--accent); box-shadow:0 0 7px var(--accent); }
+  .dock .need.acc .head { color:var(--accent); }
+  .dock .need .body {
+    color:var(--fg-0); font-size:11.5px; line-height:1.45; margin-bottom:6px;
+  }
+  .dock .need .body .id { color:var(--accent); }
+  .dock .need .quote {
+    font-family:var(--serif); font-weight:300; font-style:italic;
+    color:var(--fg-1); font-size:11px; line-height:1.5;
+    padding-left:8px; border-left:2px solid var(--hairline);
+    margin:6px 0 8px;
+  }
+  .dock .need .acts { display:flex; gap:4px; flex-wrap:wrap; }
+  .dock .need .acts .v {
+    font-family:var(--mono); font-size:10px; letter-spacing:0.04em;
+    padding:4px 9px; border-radius:4px;
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer; transition:all 140ms ease;
+  }
+  .dock .need .acts .v.p {
+    color:var(--accent); border-color:rgba(168,212,252,0.42); background:rgba(168,212,252,0.08);
+  }
+  .dock .need .acts .v:hover { color:var(--fg-0); border-color:var(--hairline-strong); }
+  .dock .need .acts .v.p:hover { background:rgba(168,212,252,0.18); }
+  .dock .need .acts .v.m { color:var(--fg-3); }
+
+  /* ───── HORIZON STRIP / COMMIT ZONE (bottom) ───── */
+  .commit-zone {
+    position:fixed; left:0; right:0; bottom:0; z-index:20;
+    padding:18px 24px 20px;
+    background:linear-gradient(180deg, transparent 0%, rgba(7,7,8,0.92) 35%);
+    backdrop-filter:blur(8px) saturate(140%);
+  }
+  .commit-zone .row {
+    display:grid; grid-template-columns:1fr auto;
+    align-items:center; gap:20px;
+    max-width:1600px; margin:0 auto;
+  }
+  .commit-zone .pulse {
+    display:flex; gap:18px; align-items:center; flex-wrap:wrap;
+    color:var(--fg-2); font-size:10.5px; letter-spacing:0.06em;
+    font-variant-numeric:tabular-nums;
+  }
+  .commit-zone .pulse .item { display:flex; gap:6px; align-items:center; }
+  .commit-zone .pulse .k { color:var(--fg-3); letter-spacing:0.16em; text-transform:uppercase; font-size:9.5px; }
+  .commit-zone .pulse .v { color:var(--fg-0); }
+  .commit-zone .pulse .v.acc { color:var(--accent); }
+  .commit-zone .plans { display:flex; gap:6px; }
+  .commit-zone .plan {
+    font-family:var(--mono); font-size:11px; letter-spacing:0.04em;
+    padding:9px 16px; border-radius:6px;
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer; transition:all 160ms ease;
+  }
+  .commit-zone .plan:hover { color:var(--fg-0); border-color:var(--hairline-strong); }
+  .commit-zone .plan.primary {
+    color:var(--accent); border-color:rgba(168,212,252,0.42); background:rgba(168,212,252,0.1);
+    box-shadow:0 0 18px rgba(168,212,252,0.18);
+  }
+  .commit-zone .plan.primary:hover { background:rgba(168,212,252,0.2); }
+  .commit-zone .plan .kbd { color:var(--fg-3); font-size:9.5px; margin-left:6px; }
+
+  /* Subtle vignette so the map fades into the chrome */
+  .vignette {
+    position:fixed; inset:0; z-index:1; pointer-events:none;
+    background:
+      radial-gradient(140% 100% at 50% 60%, transparent 45%, rgba(7,7,8,0.5) 90%, var(--bg-0) 100%),
+      linear-gradient(180deg, rgba(7,7,8,0.7) 0%, transparent 12%, transparent 80%, rgba(7,7,8,0.85) 100%);
+  }
+
+  /* Hide top-strip-overlapping items at small heights */
+  @media (max-height:780px) {
+    .legend { top:72px; }
+    .compass { top:72px; }
+  }
+</style>
+</head>
+<body>
+
+<canvas id="map"></canvas>
+<div class="vignette"></div>
+<div class="grain" aria-hidden="true"></div>
+<div class="stipple" aria-hidden="true"></div>
+
+<!-- Overlay layer for absolute-positioned annotations -->
+<div id="overlay"></div>
+
+<!-- ───── TOP STRIP ───── -->
+<header class="top">
+  <div class="brand">
+    <span class="sextant">⟁</span>
+    <span>freyja</span>
+    <span class="div">/</span>
+    <span class="room">morning brief · map</span>
+  </div>
+
+  <div class="center">
+    <span>monday jun 02</span> · <span class="map-name">06:30</span> · <span>7h 12m since last brief</span>
+  </div>
+
+  <div class="right">
+    <div class="view-switch">
+      <button>memo</button>
+      <button>console</button>
+      <button class="active">map</button>
+      <button>sky</button>
+    </div>
+    <button class="commit">commit <span class="kbd">⏎</span></button>
+  </div>
+</header>
+
+<!-- ───── LEGEND ───── -->
+<div class="legend">
+  <div class="h">legend</div>
+  <div class="item">
+    <span class="marker">
+      <svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="2" fill="none" stroke="#a8b0a8" stroke-width="1"/><circle cx="7" cy="7" r="4.5" fill="none" stroke="#a8b0a8" stroke-width="0.6" opacity="0.6"/></svg>
+    </span>
+    <span>judge wins</span>
+    <span class="ct">1</span>
+  </div>
+  <div class="item">
+    <span class="marker">
+      <svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="2" fill="none" stroke="#b48282" stroke-width="1"/><circle cx="7" cy="7" r="4.5" fill="none" stroke="#b48282" stroke-width="0.6" opacity="0.6"/><circle cx="7" cy="7" r="6.5" fill="none" stroke="#b48282" stroke-width="0.4" opacity="0.4"/></svg>
+    </span>
+    <span>blocked / rework cap</span>
+    <span class="ct">1</span>
+  </div>
+  <div class="item">
+    <span class="marker">
+      <svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="2" fill="none" stroke="#a8d4fc" stroke-width="1"/><circle cx="7" cy="7" r="4.5" fill="none" stroke="#a8d4fc" stroke-width="0.6" opacity="0.6"/></svg>
+    </span>
+    <span>skill candidates</span>
+    <span class="ct">2</span>
+  </div>
+  <div class="item">
+    <span class="marker">
+      <svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="2" fill="none" stroke="#b8a078" stroke-width="1"/><circle cx="7" cy="7" r="4.5" fill="none" stroke="#b8a078" stroke-width="0.6" opacity="0.6"/></svg>
+    </span>
+    <span>goal paused</span>
+    <span class="ct">1</span>
+  </div>
+  <div class="item">
+    <span class="marker">
+      <svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="2" fill="none" stroke="#6e6e6e" stroke-width="1" stroke-dasharray="1 1"/><circle cx="7" cy="7" r="4.5" fill="none" stroke="#6e6e6e" stroke-width="0.6" opacity="0.5" stroke-dasharray="1 1"/></svg>
+    </span>
+    <span>scheduled / planned</span>
+    <span class="ct">3</span>
+  </div>
+  <div class="ledger">
+    since <em>22:14 yesterday</em><br/>
+    surveyed by <em>drafter</em>
+  </div>
+</div>
+
+<!-- ───── COMPASS / PULSE PANEL ───── -->
+<div class="compass">
+  <div class="h">last 24h</div>
+  <div class="rose">
+    <svg viewBox="0 0 100 100" fill="none" stroke="#a8a8a8" stroke-width="0.5">
+      <circle cx="50" cy="50" r="42" stroke-opacity="0.4"/>
+      <circle cx="50" cy="50" r="32" stroke-opacity="0.25"/>
+      <circle cx="50" cy="50" r="22" stroke-opacity="0.15"/>
+      <line x1="50" y1="6" x2="50" y2="94" stroke-opacity="0.3"/>
+      <line x1="6" y1="50" x2="94" y2="50" stroke-opacity="0.3"/>
+      <!-- Needle pointing down to "now" -->
+      <line x1="50" y1="20" x2="50" y2="80" stroke="#a8d4fc" stroke-width="1.5" stroke-linecap="round"/>
+      <circle cx="50" cy="80" r="4" fill="#a8d4fc"/>
+      <circle cx="50" cy="20" r="2" fill="#6e6e6e"/>
+      <g stroke-opacity="0.35">
+        <line x1="50" y1="6" x2="50" y2="12"/>
+        <line x1="50" y1="88" x2="50" y2="94"/>
+        <line x1="6" y1="50" x2="12" y2="50"/>
+        <line x1="88" y1="50" x2="94" y2="50"/>
+      </g>
+    </svg>
+  </div>
+  <div class="nums">
+    <div class="row"><span class="k">spend yest</span> <span class="v acc">$4.82</span></div>
+    <div class="row"><span class="k">tokens out</span> <span class="v">327k</span></div>
+    <div class="row"><span class="k">sessions</span> <span class="v">4</span></div>
+    <div class="row"><span class="k">longest</span> <span class="v">3h17m</span></div>
+    <div class="row"><span class="k">judge 7d</span> <span class="v">68% pass</span></div>
+    <div class="row"><span class="k">coop share</span> <span class="v">82% / 18%</span></div>
+  </div>
+</div>
+
+<!-- ───── NEEDS-YOU DOCK ───── -->
+<div class="dock">
+  <h3>Needs you · 3</h3>
+  <div class="sub">3 decisions · ~5 min</div>
+
+  <div class="need dn">
+    <div class="head"><span class="pip"></span> blocked · card_042</div>
+    <div class="body">Judge rejected at iter 5/5 — <span class="id">rework cap reached</span>.</div>
+    <div class="quote">"Complete coverage of city offices remains partial."</div>
+    <div class="acts">
+      <button class="v p">dispatch revision</button>
+      <button class="v">override</button>
+      <button class="v m">defer</button>
+    </div>
+  </div>
+
+  <div class="need acc">
+    <div class="head"><span class="pip"></span> drafter · skill candidate</div>
+    <div class="body"><span class="id">cooperative-compaction-helper</span> — cap tool-result size at the compaction band. Est 12–18% token savings; pattern recurs ~8/week.</div>
+    <div class="acts">
+      <button class="v p">accept</button>
+      <button class="v">view diff</button>
+      <button class="v">edit</button>
+      <button class="v m">decline</button>
+    </div>
+  </div>
+
+  <div class="need warn">
+    <div class="head"><span class="pip"></span> goal · paused</div>
+    <div class="body"><span class="id">freyja-design-pass</span> at iter 4/12. Judge has 2 open questions on onboarding scope.</div>
+    <div class="acts">
+      <button class="v p">resume + answer</button>
+      <button class="v">rewrite</button>
+      <button class="v m">retire</button>
+    </div>
+  </div>
+</div>
+
+<!-- ───── COMMIT ZONE / PULSE STRIP ───── -->
+<div class="commit-zone">
+  <div class="row">
+    <div class="pulse">
+      <div class="item"><span class="k">since you left</span> <span class="v">7h 12m</span></div>
+      <div class="item"><span class="k">surveyed</span> <span class="v">6 events</span></div>
+      <div class="item"><span class="k">map age</span> <span class="v">14s</span></div>
+      <div class="item"><span class="k">re-survey</span> <span class="v acc">06:30 daily</span></div>
+      <div class="item"><span class="k">autopilot</span> <span class="v">live · 27s</span></div>
+    </div>
+    <div class="plans">
+      <button class="plan">stage all <span class="kbd">S</span></button>
+      <button class="plan">run 1 first <span class="kbd">⌥⏎</span></button>
+      <button class="plan primary">run 1, 2, 3 in parallel <span class="kbd">⏎</span></button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ────────────────────────────────────────────────────────────
+  // Generate a topographic field map of the night.
+  // Height field = sum of Gaussians at "event" positions.
+  // Contour lines via marching squares.
+  // ────────────────────────────────────────────────────────────
+
+  const canvas = document.getElementById('map');
+  const ctx = canvas.getContext('2d');
+  const overlay = document.getElementById('overlay');
+
+  // Configuration
+  const PEAKS_PAST = [
+    // y position: above HORIZON (which is at 0.62 of viewport height)
+    { id:'card_017', label:'card_017 — judge passed', sub:'ballot research v3 · 0.94 conf', ts:'22:34', x:0.20, y:0.38, height:1.0, sigma:0.06, type:'win', interactive:true },
+    { id:'fanout',   label:'explore-fast × 3',         sub:'47 sources · 32m · $0.67',     ts:'22:51', x:0.31, y:0.28, height:0.6, sigma:0.05, type:'acc' },
+    { id:'drafter',  label:'drafter · 2 skill candidates', sub:'pending your review',     ts:'03:14', x:0.46, y:0.45, height:0.85, sigma:0.055, type:'acc', interactive:true },
+    { id:'card_042', label:'card_042 — BLOCKED',       sub:'rework cap 5/5',               ts:'04:14', x:0.62, y:0.22, height:1.35, sigma:0.07, type:'dn', interactive:true },
+    { id:'autopilot',label:'autopilot · 4 dispatched', sub:'3 done · 1 capped',            ts:'04:02', x:0.74, y:0.38, height:0.55, sigma:0.07, type:'neutral' },
+    { id:'goal',     label:'goal paused · freyja-design-pass', sub:'iter 4/12 · 2 open Qs', ts:'05:21', x:0.85, y:0.30, height:0.9, sigma:0.055, type:'warn', interactive:true },
+    { id:'sched',    label:'scheduler · slack-morning-digest', sub:'posted #ema-news',     ts:'06:00', x:0.93, y:0.46, height:0.4, sigma:0.04, type:'neutral' },
+  ];
+
+  const PEAKS_FUTURE = [
+    // below horizon — planned today, sketchy contours
+    { id:'p1', label:'priority 1 — card_042 rework',  sub:'gpt-5.5 code · kanban',         ts:'~09:00', x:0.22, y:0.86, height:1.0,  sigma:0.07, type:'planned', planned:true,
+      pin:{ ti:'Finish ballot-research <span class="id">card_042</span> rework — closes overnight blocker.', meta:'worker · code · gpt-5.5 · ctx 1m · kanban' } },
+    { id:'p2', label:'priority 2 — input-dock design', sub:'browser-qa · opus-4-8',         ts:'~11:00', x:0.5,  y:0.88, height:0.85, sigma:0.07, type:'planned', planned:true,
+      pin:{ ti:'Design pass on input-dock — per yesterday\'s review.',                       meta:'worker · browser-qa · opus-4-8 · ctx 1m · isolated' } },
+    { id:'p3', label:'priority 3 — triage stales',     sub:'judge-deep · sonnet-4-6',       ts:'~14:00', x:0.78, y:0.85, height:0.75, sigma:0.07, type:'planned', planned:true,
+      pin:{ ti:'Triage 4 stale kanban cards (last touched &gt;48h).',                        meta:'worker · judge-deep · sonnet-4-6 · ctx 200k · kanban' } },
+  ];
+
+  const HORIZON_Y = 0.62;
+  const NOW = { x:0.52, y:HORIZON_Y };
+
+  // Color per type
+  const COLORS = {
+    win:      'rgba(168,176,168,0.62)',   // muted sage (ok)
+    acc:      'rgba(168,212,252,0.72)',   // accent
+    dn:       'rgba(180,130,130,0.72)',   // danger
+    warn:     'rgba(184,160,120,0.62)',   // warn
+    neutral:  'rgba(168,168,168,0.32)',   // grey
+    planned:  'rgba(168,212,252,0.38)',   // accent (lighter, dashed)
+  };
+
+  let W, H, DPR;
+  let allPeaks = PEAKS_PAST.concat(PEAKS_FUTURE);
+
+  // 2D height field
+  function gauss(x, y, cx, cy, h, sigma) {
+    const dx = (x - cx);
+    const dy = (y - cy);
+    return h * Math.exp(-(dx*dx + dy*dy) / (2 * sigma * sigma));
+  }
+
+  // Light "FBM-ish" noise so the contours don't look like pure circles
+  function fbm(x, y, octaves) {
+    let total = 0;
+    let amp = 1;
+    let freq = 1;
+    for (let i = 0; i < octaves; i++) {
+      total += amp * Math.sin(x * freq * 6.28 + i * 1.7) * Math.cos(y * freq * 6.28 + i * 2.3);
+      amp *= 0.5;
+      freq *= 2.1;
+    }
+    return total;
+  }
+
+  // Build field — returns Float32Array width × height
+  function buildField(gridW, gridH) {
+    const field = new Float32Array(gridW * gridH);
+    for (let y = 0; y < gridH; y++) {
+      const ny = y / (gridH - 1);
+      for (let x = 0; x < gridW; x++) {
+        const nx = x / (gridW - 1);
+        let v = 0;
+        for (const p of allPeaks) {
+          v += gauss(nx, ny, p.x, p.y, p.height, p.sigma);
+        }
+        // light FBM perturbation for organic feel
+        v += 0.04 * fbm(nx, ny, 4);
+        // gentle gradient: slight rise toward horizon to suggest landscape
+        v += 0.02 * Math.sin(ny * Math.PI);
+        field[y * gridW + x] = v;
+      }
+    }
+    return field;
+  }
+
+  // Marching squares: emit line segments for one contour level
+  // Returns array of [[x1,y1],[x2,y2]]
+  function marchingSquares(field, w, h, level) {
+    const segs = [];
+    function interp(a, b, va, vb) { return (level - va) / (vb - va); }
+
+    for (let y = 0; y < h - 1; y++) {
+      for (let x = 0; x < w - 1; x++) {
+        const tl = field[y * w + x];
+        const tr = field[y * w + (x + 1)];
+        const br = field[(y + 1) * w + (x + 1)];
+        const bl = field[(y + 1) * w + x];
+        let idx = 0;
+        if (tl > level) idx |= 1;
+        if (tr > level) idx |= 2;
+        if (br > level) idx |= 4;
+        if (bl > level) idx |= 8;
+        if (idx === 0 || idx === 15) continue;
+
+        const top    = () => [x + interp(tl, tr, tl, tr), y];
+        const right  = () => [x + 1, y + interp(tr, br, tr, br)];
+        const bottom = () => [x + interp(bl, br, bl, br), y + 1];
+        const left   = () => [x, y + interp(tl, bl, tl, bl)];
+
+        switch (idx) {
+          case 1:  case 14: segs.push([left(), top()]); break;
+          case 2:  case 13: segs.push([top(), right()]); break;
+          case 4:  case 11: segs.push([right(), bottom()]); break;
+          case 8:  case 7:  segs.push([bottom(), left()]); break;
+          case 3:  case 12: segs.push([left(), right()]); break;
+          case 6:  case 9:  segs.push([top(), bottom()]); break;
+          case 5: segs.push([left(), top()]); segs.push([right(), bottom()]); break;
+          case 10: segs.push([top(), right()]); segs.push([bottom(), left()]); break;
+        }
+      }
+    }
+    return segs;
+  }
+
+  // Convert grid-space segment to canvas pixels
+  function toCanvas(seg, gridW, gridH) {
+    return [
+      [seg[0][0] / (gridW - 1) * W, seg[0][1] / (gridH - 1) * H],
+      [seg[1][0] / (gridW - 1) * W, seg[1][1] / (gridH - 1) * H],
+    ];
+  }
+
+  // For coloring contour lines by nearest peak type
+  function nearestPeakType(nx, ny) {
+    let best = null;
+    let bestD = Infinity;
+    for (const p of allPeaks) {
+      const dx = nx - p.x, dy = ny - p.y;
+      const d2 = dx*dx + dy*dy;
+      if (d2 < bestD) {
+        bestD = d2;
+        best = p;
+      }
+    }
+    return best ? best.type : 'neutral';
+  }
+
+  function render() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = W * DPR;
+    canvas.height = H * DPR;
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    // Build field on a moderate grid for speed
+    const gridW = Math.max(120, Math.floor(W / 8));
+    const gridH = Math.max(80, Math.floor(H / 8));
+    const field = buildField(gridW, gridH);
+
+    // Determine min/max for level spread
+    let minV = Infinity, maxV = -Infinity;
+    for (let i = 0; i < field.length; i++) {
+      const v = field[i];
+      if (v < minV) minV = v;
+      if (v > maxV) maxV = v;
+    }
+
+    // Render contour bands
+    const N_LEVELS = 28;
+    ctx.clearRect(0, 0, W, H);
+
+    for (let k = 1; k < N_LEVELS; k++) {
+      const t = k / N_LEVELS;
+      const level = minV + (maxV - minV) * t;
+      const segs = marchingSquares(field, gridW, gridH, level);
+
+      // Determine color: per-segment, by nearest peak type
+      // Group segments by midpoint type for batch styling — but for simplicity,
+      // iterate per-segment.
+      for (const seg of segs) {
+        const [A, B] = seg;
+        const midX = (A[0] + B[0]) / 2 / (gridW - 1);
+        const midY = (A[1] + B[1]) / 2 / (gridH - 1);
+
+        // Below horizon = planned
+        const planned = midY > HORIZON_Y;
+        const type = planned ? 'planned' : nearestPeakType(midX, midY);
+
+        ctx.strokeStyle = COLORS[type] || COLORS.neutral;
+        // Lower elevation bands are dimmer; higher (closer to peak) are brighter
+        const elevAlpha = 0.25 + 0.75 * t;
+        ctx.globalAlpha = elevAlpha * (planned ? 0.55 : 1.0);
+        ctx.lineWidth = (planned ? 0.5 : 0.75) + 0.4 * t;
+        ctx.setLineDash(planned ? [3, 5] : []);
+        ctx.lineCap = 'round';
+
+        const [seg1, seg2] = toCanvas(seg, gridW, gridH);
+        ctx.beginPath();
+        ctx.moveTo(seg1[0], seg1[1]);
+        ctx.lineTo(seg2[0], seg2[1]);
+        ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
+    ctx.setLineDash([]);
+
+    // Draw horizon line (subtle, accent)
+    const hy = HORIZON_Y * H;
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(168,212,252,0.32)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([8, 6]);
+    ctx.moveTo(0, hy);
+    ctx.lineTo(W, hy);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Draw subtle gradient strip just below horizon (dawn)
+    const grad = ctx.createLinearGradient(0, hy, 0, hy + 80);
+    grad.addColorStop(0, 'rgba(168,212,252,0.10)');
+    grad.addColorStop(1, 'rgba(168,212,252,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, hy, W, 80);
+
+    // Update overlay (peak labels + here-marker + future pins)
+    renderOverlay();
+  }
+
+  function renderOverlay() {
+    overlay.innerHTML = '';
+    const hy = HORIZON_Y * H;
+
+    // Peak labels (past)
+    for (const p of PEAKS_PAST) {
+      const lab = document.createElement('div');
+      lab.className = 'peak-label ' + p.type;
+      // Place a bit above the peak (which is at p.y)
+      const px = p.x * W;
+      const py = p.y * H - 18;
+      lab.style.left = px + 'px';
+      lab.style.top = py + 'px';
+      lab.innerHTML = `
+        <div class="ts">${p.ts}</div>
+        <div class="name">${p.label}</div>
+        <div class="sub">${p.sub}</div>
+      `;
+      overlay.appendChild(lab);
+    }
+
+    // Horizon labels
+    const hL = document.createElement('div');
+    hL.className = 'horizon-label';
+    hL.style.top = (hy - 14) + 'px';
+    hL.textContent = 'horizon · 06:30';
+    overlay.appendChild(hL);
+
+    const hR = document.createElement('div');
+    hR.className = 'horizon-label right';
+    hR.style.top = (hy - 14) + 'px';
+    hR.textContent = 'forecast · $5.40 · 340k tok';
+    overlay.appendChild(hR);
+
+    // "You are here" marker on the horizon
+    const here = document.createElement('div');
+    here.className = 'here';
+    here.style.left = (NOW.x * W) + 'px';
+    here.style.top  = hy + 'px';
+    here.innerHTML = `
+      <div class="ring1"></div>
+      <div class="ring2"></div>
+      <div class="ring3"></div>
+      <div class="label">now<span class="t">06:30 mon</span></div>
+    `;
+    overlay.appendChild(here);
+
+    // Future priority pins (below horizon)
+    for (const p of PEAKS_FUTURE) {
+      const pin = document.createElement('div');
+      pin.className = 'pin';
+      const px = p.x * W;
+      const py = p.y * H + 30;
+      pin.style.left = px + 'px';
+      pin.style.top = py + 'px';
+      pin.innerHTML = `
+        <div class="num">${p.id.replace('p','priority ')}</div>
+        <div class="ti">${p.pin.ti}</div>
+        <div class="meta">${p.pin.meta} · est ${p.ts}</div>
+        <div class="acts">
+          <button class="v p">stage</button>
+          <button class="v">run</button>
+          <button class="v m">skip</button>
+        </div>
+      `;
+      overlay.appendChild(pin);
+    }
+  }
+
+  // Initial + resize
+  let resizeTimer = null;
+  function scheduleRender() {
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(render, 90);
+  }
+  window.addEventListener('resize', scheduleRender);
+  render();
+
+  // Keyboard
+  document.addEventListener('keydown', (e) => {
+    if (e.target.closest('input,textarea')) return;
+    let target = null;
+    if (e.key === 'Enter' && !e.altKey) target = document.querySelector('.commit-zone .plan.primary');
+    else if (e.key === 'Enter' && e.altKey) target = document.querySelectorAll('.commit-zone .plan')[1];
+    else if (e.key.toLowerCase() === 's' && !e.metaKey) target = document.querySelector('.commit-zone .plan');
+    if (target) {
+      const prev = target.style.boxShadow;
+      target.style.boxShadow = '0 0 0 3px rgba(168,212,252,0.45), 0 0 24px rgba(168,212,252,0.28)';
+      target.style.transform = 'translateY(-1px)';
+      setTimeout(() => {
+        target.style.boxShadow = prev;
+        target.style.transform = '';
+      }, 300);
+    }
+  });
+</script>
+</body>
+</html>

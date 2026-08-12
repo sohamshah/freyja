@@ -2072,7 +2072,7 @@ Parameters:
         # the card to the operator. Matches the constant the bridge
         # uses in its verdict-routing logic; duplicated here to avoid
         # a circular import with freyja_bridge.
-        MAX_REVIEW_ITERATIONS = 5
+        MAX_REVIEW_ITERATIONS = 3
 
         task_id = getattr(record, "kanban_task_id", "")
         if (

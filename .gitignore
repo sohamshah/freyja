@@ -11,6 +11,8 @@ python-bundle/
 # Stray copy of the main bundle that occasionally drops at repo root
 # during ad-hoc esbuild runs.
 /main.cjs
+# Stray hashed renderer bundle that drops at repo root during ad-hoc vite builds.
+/index-*.js
 
 # Native extension build artifacts
 native/freyja_native/target/
@@ -52,6 +54,9 @@ bridge-diagnose.txt
 # Local profiling / throwaway visual traces
 trace-*.png
 5layer-partnership-ai-defense.png
+
+# Claude Code local trace logs (can grow to many GB)
+.claude-trace/
 
 # Electron builder
 *.dmg

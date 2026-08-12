@@ -1,0 +1,1556 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Freyja · Morning Room — N. Briefing · Flow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600;700&family=Noto+Sans+Runic&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<style>
+  /* Departure Mono — pixel-grid monospace by Helena Zhang.
+     The closest "Geist Pixel" — same operator/instrument feel as Geist Mono
+     but bitmap-rendered. Used as the locked-state font for the hero heading
+     so the descrambler resolves from generic mono → pixel. */
+  @font-face {
+    font-family: 'Departure Mono';
+    src: url('https://cdn.jsdelivr.net/gh/rektdeckard/departure-mono@main/public/assets/DepartureMono-Regular.woff2') format('woff2');
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+  }
+  :root {
+    --bg-0:#06070b; --bg-1:#0c0e14; --bg-2:#11141c; --bg-3:#1a1e28; --bg-4:#222732;
+    --fg-0:#e8e8e8; --fg-1:#a8a8a8; --fg-2:#6e6e6e; --fg-3:#4a4a4a; --fg-4:#2a2a2a;
+    --accent:#a8d4fc; --accent-hi:#c4e0fc; --accent-lo:#7aafea; --accent-dim:rgba(168,212,252,0.18);
+    --ok:#a8b0a8; --warn:#b8a078; --danger:#b48282;
+    --hairline:rgba(255,255,255,0.06);
+    --hairline-strong:rgba(255,255,255,0.14);
+    --rule:rgba(255,255,255,0.04);
+    --mono:'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html, body {
+    margin:0; min-height:100%;
+    background:var(--bg-0); color:var(--fg-0);
+    font-family:var(--mono); font-size:12px; line-height:1.55;
+    -webkit-font-smoothing:antialiased;
+    font-feature-settings:'ss01' on, 'ss02' on, 'cv11' on, 'tnum' on;
+  }
+  body { padding-bottom:100px; }
+
+  /* === wisp backdrop (Three.js particle system — sparser, drift-only) === */
+  #wisp {
+    position:fixed; inset:0; z-index:0; pointer-events:none;
+    width:100%; height:100%;
+    display:block;
+    background:#06070b;
+  }
+  /* Subtle corner vignette — keeps text edges legible against bright smoke crests */
+  body::before {
+    content:""; position:fixed; inset:0; z-index:1; pointer-events:none;
+    background:radial-gradient(ellipse 110% 130% at 50% 50%, transparent 35%, rgba(6,7,11,0.40) 100%);
+  }
+  /* Film grain — subtle, fine, screen-blended.
+     screen blend so bright noise pixels add subtly to dark bg.
+     Larger tile (560px) keeps the SVG repetition imperceptible. */
+  .grain {
+    position:fixed; inset:0; z-index:9000; pointer-events:none;
+    opacity:0.16; mix-blend-mode:screen;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='560' height='560'><filter id='n' x='0' y='0'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='1' stitchTiles='stitch' seed='3'/><feColorMatrix values='1.5 0 0 0 -0.45  0 1.5 0 0 -0.45  0 0 1.5 0 -0.45  0 0 0 1 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    background-size:560px 560px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .grain { opacity:0.14; }
+  }
+
+  /* ───── BLOOMBERG CHROME STRIP ───── */
+  .chrome {
+    position:sticky; top:0; z-index:30;
+    background:linear-gradient(180deg, rgba(6,7,11,0.96) 0%, rgba(6,7,11,0.82) 100%);
+    backdrop-filter:blur(16px) saturate(140%);
+    border-bottom:1px solid var(--hairline);
+  }
+  .chrome .row {
+    display:grid; grid-template-columns:auto 1fr;
+    align-items:center; gap:18px;
+    padding:10px 20px;
+    font-size:10.5px;
+    color:var(--fg-2);
+  }
+  .chrome .ws { justify-self:end; }
+  .chrome .brand {
+    display:flex; align-items:center; gap:10px;
+    text-transform:uppercase; letter-spacing:0.18em; font-size:10px;
+  }
+  .chrome .brand .mark {
+    width:12px; height:12px; border-radius:2px;
+    background:linear-gradient(135deg, var(--accent-hi) 0%, var(--accent-lo) 100%);
+    box-shadow:0 0 10px rgba(168,212,252,0.55);
+  }
+  .chrome .brand .name { color:var(--fg-2); }
+  .chrome .brand .div { color:var(--fg-4); }
+  .chrome .brand .room { color:var(--fg-0); }
+  .chrome .sep { width:1px; height:14px; background:var(--hairline); }
+  .chrome .ws,
+  .chrome .run,
+  .chrome .tel {
+    display:flex; align-items:center; gap:8px;
+    font-variant-numeric:tabular-nums;
+  }
+  .chrome .k {
+    color:var(--fg-3); text-transform:uppercase; letter-spacing:0.16em; font-size:9px;
+  }
+  .chrome .v { color:var(--fg-0); }
+  .chrome .v.acc { color:var(--accent); }
+  .chrome .v.warn { color:var(--warn); }
+  .chrome .v.dim { color:var(--fg-3); }
+  .chrome .sha {
+    color:var(--fg-3); font-variant-numeric:tabular-nums;
+    padding:1px 6px; border:1px solid var(--hairline); border-radius:3px;
+  }
+  .chrome .spacer { width:1px; height:14px; background:var(--hairline); margin:0 2px; }
+  .chrome .rt { display:flex; align-items:center; gap:10px; }
+  .chrome .gw {
+    display:inline-flex; align-items:center; gap:6px;
+    padding:4px 8px; border:1px solid var(--hairline); border-radius:4px;
+    color:var(--fg-2); font-size:9.5px; letter-spacing:0.12em; text-transform:uppercase;
+  }
+  .chrome .gw .dot {
+    width:5px; height:5px; border-radius:999px; background:var(--ok);
+    box-shadow:0 0 6px rgba(168,176,168,0.7);
+  }
+  .chrome .view-switch {
+    display:inline-flex; padding:2px;
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline); border-radius:5px;
+  }
+  .chrome .view-switch button {
+    font-family:var(--mono); font-size:9.5px; letter-spacing:0.14em; text-transform:uppercase;
+    color:var(--fg-3); padding:4px 7px; border-radius:3px;
+    background:transparent; border:none; cursor:pointer;
+    transition:color 120ms ease, background 120ms ease;
+  }
+  .chrome .view-switch button:hover { color:var(--fg-1); }
+  .chrome .view-switch button.active {
+    color:var(--accent); background:rgba(168,212,252,0.1);
+  }
+
+  /* ───── BRIEF COLUMN ───── */
+  main.brief {
+    position:relative; z-index:5;
+    max-width:760px;
+    margin:0 auto;
+    padding:38px 32px 40px;
+  }
+
+  /* hero */
+  .hero { margin-bottom:32px; }
+  .hero .kicker {
+    display:flex; align-items:center; gap:10px;
+    font-size:10px; letter-spacing:0.30em; text-transform:uppercase;
+    color:var(--fg-3);
+    margin-bottom:14px;
+    font-variant-numeric:tabular-nums;
+  }
+  .hero .kicker .em { color:var(--accent); }
+  .hero .kicker .pulse-dot {
+    width:6px; height:6px; border-radius:999px; background:var(--accent);
+    box-shadow:0 0 8px var(--accent);
+    margin-right:4px;
+    animation:pulse 2.4s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+  @media (prefers-reduced-motion: reduce) {
+    .hero .kicker .pulse-dot { animation:none; }
+  }
+  .hero h1 {
+    /* Final font for the heading — Departure Mono (pixel/bitmap mono).
+       During scramble, .ch:not(.locked) overrides to Geist Mono so the
+       font reveal itself is part of the decryption: chars cycle in
+       generic mono, lock into pixel. */
+    font-family:'Departure Mono', var(--mono);
+    font-weight:400; font-style:normal;
+    font-size:34px; line-height:1.25; letter-spacing:0;
+    color:var(--fg-0); margin:0;
+    text-wrap:balance;
+  }
+  .hero h1 .n {
+    color:var(--accent); font-weight:600;
+    font-variant-numeric:tabular-nums;
+    text-shadow:0 0 18px rgba(168,212,252,0.45);
+  }
+
+  /* Descrambler reveal — each glyph wrapped in .ch by JS on page load.
+     During scramble: subtle blur + per-frame pixel jitter (transform).
+     On lock: brief brightness/glow pulse that fades. */
+  .hero h1 .ch {
+    display:inline-block;
+    transform: translate(var(--jx, 0px), var(--jy, 0px));
+    transition: filter 240ms ease-out, text-shadow 320ms ease-out;
+    will-change: transform, filter;
+    /* Parent .hero is pointer-events:none — re-enable per char so hover
+       triggers rescramble without making the whole hero block click-eat. */
+    pointer-events: auto;
+  }
+  .hero h1 .ch:not(.locked) {
+    filter: blur(0.35px) brightness(1.10);
+  }
+  .hero h1 .ch[data-runic="1"]:not(.locked) {
+    /* Authentic runic shapes from Noto Sans Runic — only while scrambling.
+       Once locked the char returns to "6" in Geist Mono via inheritance. */
+    font-family: 'Noto Sans Runic', 'Geist Mono', monospace;
+    font-size: 1.06em;       /* small bump so runes feel solid */
+    letter-spacing: -0.02em; /* tighten so they don't widen the headline */
+    /* Stronger flicker for the rune-cycling accent digits */
+    filter: blur(0.45px) brightness(1.25);
+    text-shadow: 0 0 6px rgba(168,212,252,0.55);
+  }
+  .hero h1 .ch.locked {
+    animation: ch-lock-pulse 380ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  }
+  @keyframes ch-lock-pulse {
+    0%   { filter: brightness(1.55) blur(0px); text-shadow: 0 0 10px currentColor; }
+    100% { filter: brightness(1.0)  blur(0px); text-shadow: none; }
+  }
+  .hero h1 .ch[data-runic="1"].locked {
+    /* The accent digits keep their permanent text-shadow after locking */
+    animation: ch-lock-pulse-accent 380ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  }
+  @keyframes ch-lock-pulse-accent {
+    0%   { filter: brightness(1.7) blur(0px); text-shadow: 0 0 16px rgba(168,212,252,0.9); }
+    100% { filter: brightness(1.0) blur(0px); text-shadow: 0 0 18px rgba(168,212,252,0.45); }
+  }
+  .hero h1 .ts {
+    color:var(--fg-2); font-variant-numeric:tabular-nums;
+  }
+  .hero .summary {
+    margin-top:14px;
+    color:var(--fg-2); font-size:11.5px; line-height:1.6;
+    max-width:90%;
+  }
+  .hero .summary em { color:var(--fg-1); font-style:normal; }
+  .hero .summary .id { color:var(--accent); font-style:normal; }
+
+  /* ───── SECTION LABEL (▌ + uppercase tracked + count) ───── */
+  .section { margin-bottom:36px; }
+  .section-label {
+    display:flex; align-items:baseline; gap:12px;
+    padding-bottom:14px;
+    border-bottom:1px solid var(--hairline);
+    margin-bottom:14px;
+  }
+  .section-label .bar {
+    color:var(--accent); font-size:13px; line-height:1;
+  }
+  .section-label .lbl {
+    font-size:10.5px; font-weight:600;
+    letter-spacing:0.22em; text-transform:uppercase;
+    color:var(--fg-2);
+  }
+  .section-label .count {
+    margin-left:auto;
+    font-size:10px; letter-spacing:0.10em; text-transform:uppercase;
+    color:var(--fg-3); font-variant-numeric:tabular-nums;
+  }
+  .section-label .count em { color:var(--accent); font-style:normal; }
+
+  /* ───── OVERNIGHT — log entries ───── */
+  .log-row {
+    display:grid; grid-template-columns:54px 64px 1fr auto;
+    gap:14px;
+    padding:8px 0;
+    align-items:baseline;
+    font-size:11.5px;
+    border-bottom:1px dashed rgba(255,255,255,0.035);
+    cursor:default;
+  }
+  .log-row:last-child { border-bottom:none; }
+  .log-row .ts {
+    color:var(--accent); font-variant-numeric:tabular-nums;
+    font-size:11px;
+  }
+  .log-row .actor {
+    color:var(--fg-3); text-transform:uppercase;
+    letter-spacing:0.18em; font-size:9.5px; font-weight:500;
+  }
+  .log-row .event { color:var(--fg-0); line-height:1.45; }
+  .log-row .event .id { color:var(--accent); }
+  .log-row .event .tag { color:var(--danger); font-weight:600; letter-spacing:0.10em; }
+  .log-row .event .tag.warn { color:var(--warn); }
+  .log-row .event .tag.ok { color:var(--ok); }
+  .log-row .meta {
+    color:var(--fg-3); font-size:10.5px; font-variant-numeric:tabular-nums;
+    letter-spacing:0.02em;
+  }
+  .log-row.blocked .actor { color:var(--danger); }
+  .log-row.paused .actor { color:var(--warn); }
+
+  /* ───── NEEDS YOU — instrument cards ───── */
+  .needs {
+    margin-bottom:14px;
+    padding:14px 16px 13px;
+    background:rgba(10,12,18,0.65);
+    backdrop-filter:blur(14px) saturate(140%);
+    border:1px solid var(--hairline);
+    border-left:2px solid var(--fg-3);
+    border-radius:5px;
+    box-shadow:inset 0 0.5px 0 rgba(255,255,255,0.10);
+  }
+  .needs:last-child { margin-bottom:0; }
+  .needs.dn   { border-left-color:var(--danger); }
+  .needs.acc  { border-left-color:var(--accent); }
+  .needs.warn { border-left-color:var(--warn); }
+
+  .needs .head {
+    display:flex; align-items:center; gap:8px;
+    font-size:10px; letter-spacing:0.20em; text-transform:uppercase;
+    margin-bottom:8px;
+    color:var(--fg-3);
+  }
+  .needs .head .pip {
+    width:6px; height:6px; border-radius:999px; background:var(--fg-3);
+  }
+  .needs.dn   .head .pip { background:var(--danger); box-shadow:0 0 8px rgba(180,130,130,0.55); }
+  .needs.acc  .head .pip { background:var(--accent); box-shadow:0 0 8px var(--accent); }
+  .needs.warn .head .pip { background:var(--warn); box-shadow:0 0 7px rgba(184,160,120,0.50); }
+  .needs.dn   .head .kind { color:var(--danger); font-weight:600; }
+  .needs.acc  .head .kind { color:var(--accent); font-weight:600; }
+  .needs.warn .head .kind { color:var(--warn); font-weight:600; }
+  .needs .head .ref { color:var(--accent); letter-spacing:0.04em; text-transform:none; }
+  .needs .head .meta {
+    margin-left:auto; color:var(--fg-3); font-size:9.5px;
+    letter-spacing:0.08em; font-variant-numeric:tabular-nums;
+  }
+
+  .needs .body {
+    color:var(--fg-0); font-size:12px; line-height:1.55;
+    margin-bottom:8px;
+  }
+  .needs .body .id { color:var(--accent); }
+  .needs .body .num { color:var(--accent); font-variant-numeric:tabular-nums; }
+  .needs .body strong { color:var(--fg-0); font-weight:500; }
+
+  .needs .evidence {
+    color:var(--fg-2); font-size:11px; line-height:1.55;
+    padding:8px 12px;
+    background:rgba(255,255,255,0.018);
+    border-left:2px solid var(--accent-dim);
+    margin:8px 0 10px;
+    font-weight:300;
+  }
+  .needs .evidence .cite {
+    display:block;
+    color:var(--fg-4); font-size:9.5px; letter-spacing:0.18em; text-transform:uppercase;
+    margin-top:6px;
+  }
+  .needs .evidence .cite em { color:var(--fg-2); font-style:normal; }
+
+  .needs .criteria {
+    display:grid; gap:4px;
+    margin:6px 0 10px;
+    font-size:10.5px;
+  }
+  .needs .criteria .crit {
+    display:grid; grid-template-columns:18px 1fr auto;
+    gap:8px; align-items:baseline;
+    color:var(--fg-1);
+  }
+  .needs .criteria .crit .glyph { color:var(--fg-3); font-weight:600; text-align:center; }
+  .needs .criteria .crit.pass .glyph { color:var(--ok); }
+  .needs .criteria .crit.fail .glyph { color:var(--danger); }
+  .needs .criteria .crit .v { color:var(--fg-3); font-size:9.5px; }
+
+  .needs .acts {
+    display:flex; gap:5px; flex-wrap:wrap;
+    margin-top:4px;
+  }
+  .needs .acts .v {
+    font-family:var(--mono); font-size:10.5px; letter-spacing:0.02em;
+    padding:6px 11px; border-radius:4px;
+    background:rgba(255,255,255,0.025); border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer;
+    transition:all 120ms ease;
+  }
+  .needs .acts .v:hover { color:var(--fg-0); border-color:var(--hairline-strong); background:rgba(255,255,255,0.05); }
+  .needs .acts .v.p {
+    color:var(--accent); border-color:rgba(168,212,252,0.42);
+    background:rgba(168,212,252,0.08);
+  }
+  .needs .acts .v.p:hover {
+    background:rgba(168,212,252,0.18);
+    border-color:rgba(168,212,252,0.6);
+  }
+  .needs .acts .v.danger {
+    color:var(--danger); border-color:rgba(180,130,130,0.32);
+  }
+  .needs .acts .v.danger:hover { background:rgba(180,130,130,0.10); }
+  .needs .acts .v.m { color:var(--fg-3); }
+  .needs .acts .kbd {
+    margin-left:6px; opacity:0.6; font-size:9px;
+  }
+
+  /* ───── TODAY — staged session shape cards ───── */
+  .prio {
+    margin-bottom:12px;
+    padding:13px 16px 12px;
+    background:rgba(10,12,18,0.55);
+    backdrop-filter:blur(14px) saturate(140%);
+    border:1px solid var(--hairline);
+    border-radius:5px;
+    box-shadow:inset 0 0.5px 0 rgba(255,255,255,0.10);
+    transition:border-color 160ms ease, background 160ms ease;
+  }
+  .prio:hover {
+    border-color:rgba(168,212,252,0.26);
+    background:rgba(10,12,18,0.7);
+  }
+  .prio:last-child { margin-bottom:0; }
+
+  .prio .head {
+    display:grid; grid-template-columns:24px 1fr auto;
+    gap:14px; align-items:baseline;
+    margin-bottom:6px;
+  }
+  .prio .head .num {
+    color:var(--accent); font-size:18px; font-weight:600;
+    font-variant-numeric:tabular-nums;
+    line-height:1;
+  }
+  .prio .head .title {
+    color:var(--fg-0); font-size:13.5px; font-weight:500; letter-spacing:-0.005em;
+  }
+  .prio .head .title .id { color:var(--accent); }
+  .prio .head .when {
+    color:var(--fg-2); font-size:10px; letter-spacing:0.20em; text-transform:uppercase;
+    font-variant-numeric:tabular-nums;
+  }
+  .prio .head .when em { color:var(--accent); font-style:normal; }
+
+  .prio .why {
+    margin-left:38px;
+    color:var(--fg-2); font-size:10.5px;
+    margin-bottom:8px;
+  }
+  .prio .why em { color:var(--fg-1); font-style:normal; }
+
+  .prio .shape {
+    margin-left:38px;
+    display:flex; flex-wrap:wrap; gap:6px;
+    margin-bottom:8px;
+  }
+  .prio .shape .b {
+    display:inline-flex; align-items:baseline; gap:5px;
+    padding:3px 8px; border-radius:3px;
+    background:rgba(255,255,255,0.025);
+    border:1px solid var(--hairline);
+    font-size:10px; color:var(--fg-1);
+    letter-spacing:0.02em;
+    font-variant-numeric:tabular-nums;
+  }
+  .prio .shape .b .k {
+    color:var(--fg-3); font-size:8.5px; letter-spacing:0.18em; text-transform:uppercase;
+  }
+  .prio .shape .b.acc { border-color:rgba(168,212,252,0.22); }
+  .prio .shape .b.acc .v { color:var(--accent); }
+
+  .prio .firstmsg {
+    margin-left:38px;
+    color:var(--fg-2); font-size:10.5px; line-height:1.5;
+    margin-bottom:10px;
+    font-weight:300;
+  }
+  .prio .firstmsg .bar { color:var(--accent); margin-right:6px; }
+  .prio .firstmsg em { color:var(--fg-1); font-style:normal; }
+
+  .prio .acts {
+    margin-left:38px;
+    display:flex; gap:5px; flex-wrap:wrap;
+  }
+  .prio .acts .v {
+    font-family:var(--mono); font-size:10.5px; letter-spacing:0.02em;
+    padding:6px 11px; border-radius:4px;
+    background:rgba(255,255,255,0.025); border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer;
+    transition:all 120ms ease;
+  }
+  .prio .acts .v:hover { color:var(--fg-0); border-color:var(--hairline-strong); }
+  .prio .acts .v.p {
+    color:var(--accent); border-color:rgba(168,212,252,0.42);
+    background:rgba(168,212,252,0.08);
+  }
+  .prio .acts .v.p:hover { background:rgba(168,212,252,0.18); }
+  .prio .acts .v.m { color:var(--fg-3); }
+
+  /* ───── PULSE — one paragraph, no graphs ───── */
+  .pulse-p {
+    color:var(--fg-1); font-size:12px; line-height:1.75;
+    font-variant-numeric:tabular-nums;
+    max-width:100%;
+  }
+  .pulse-p .k {
+    color:var(--fg-3); text-transform:uppercase; letter-spacing:0.16em; font-size:10px;
+    margin-right:2px;
+  }
+  .pulse-p .v { color:var(--fg-0); }
+  .pulse-p .v.acc { color:var(--accent); }
+  .pulse-p .v.ok { color:var(--ok); }
+  .pulse-p .v.warn { color:var(--warn); }
+  .pulse-p .id { color:var(--accent); }
+  .pulse-p .sep { color:var(--fg-4); margin:0 6px; }
+
+  /* ───── PROJECTS — per-project status rows ───── */
+  .proj {
+    margin-bottom:10px;
+    padding:12px 16px 11px;
+    background:rgba(10,12,18,0.55);
+    backdrop-filter:blur(14px) saturate(140%);
+    border:1px solid var(--hairline);
+    border-left:2px solid var(--fg-3);
+    border-radius:5px;
+    box-shadow:inset 0 0.5px 0 rgba(255,255,255,0.08);
+    display:grid; grid-template-columns:1fr auto; gap:14px; align-items:start;
+  }
+  .proj:last-child { margin-bottom:0; }
+  .proj.active   { border-left-color:var(--accent); }
+  .proj.ready    { border-left-color:var(--ok); }
+  .proj.blocked  { border-left-color:var(--danger); }
+  .proj.quiet    { border-left-color:var(--fg-3); }
+  .proj .head {
+    display:flex; align-items:baseline; gap:10px;
+  }
+  .proj .head .pip {
+    width:7px; height:7px; border-radius:999px; background:var(--fg-3); flex:0 0 7px;
+    transform:translateY(-1px);
+  }
+  .proj.active  .head .pip { background:var(--accent); box-shadow:0 0 8px var(--accent); }
+  .proj.ready   .head .pip { background:var(--ok);     box-shadow:0 0 6px rgba(168,176,168,0.55); }
+  .proj.blocked .head .pip { background:var(--danger); box-shadow:0 0 7px rgba(180,130,130,0.55); }
+  .proj.quiet   .head .pip { background:var(--fg-3); }
+  .proj .head .name {
+    color:var(--fg-0); font-size:13px; font-weight:500; letter-spacing:0;
+  }
+  .proj .head .stat {
+    font-size:9.5px; letter-spacing:0.22em; text-transform:uppercase;
+    color:var(--fg-3);
+  }
+  .proj.active  .head .stat { color:var(--accent); }
+  .proj.ready   .head .stat { color:var(--ok); }
+  .proj.blocked .head .stat { color:var(--danger); }
+  .proj.quiet   .head .stat { color:var(--fg-3); }
+  .proj .head .meta {
+    margin-left:auto; color:var(--fg-3); font-size:9.5px;
+    font-variant-numeric:tabular-nums; letter-spacing:0.04em;
+  }
+  .proj .body {
+    color:var(--fg-1); font-size:11.5px; line-height:1.5;
+    margin-top:5px;
+  }
+  .proj .body .id  { color:var(--accent); }
+  .proj .body em   { color:var(--fg-0); font-style:normal; font-weight:500; }
+  .proj .body .ok  { color:var(--ok); }
+  .proj .body .dn  { color:var(--danger); }
+  .proj .body .wn  { color:var(--warn); }
+  .proj .row-stats {
+    display:flex; flex-wrap:wrap; gap:14px; margin-top:7px;
+    font-size:10px; color:var(--fg-2); font-variant-numeric:tabular-nums;
+  }
+  .proj .row-stats .k {
+    color:var(--fg-4); letter-spacing:0.18em; text-transform:uppercase; font-size:9px;
+    margin-right:4px;
+  }
+  .proj .acts {
+    display:flex; flex-direction:column; gap:5px;
+    align-self:start; padding-top:2px;
+  }
+  .proj .acts .v {
+    font-family:var(--mono); font-size:10px; letter-spacing:0.02em;
+    padding:5px 10px; border-radius:4px;
+    background:rgba(255,255,255,0.025); border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer; transition:all 120ms ease;
+    text-align:center;
+  }
+  .proj .acts .v:hover { color:var(--fg-0); border-color:var(--hairline-strong); }
+  .proj .acts .v.p {
+    color:var(--accent); border-color:rgba(168,212,252,0.42); background:rgba(168,212,252,0.08);
+  }
+  .proj .acts .v.p:hover { background:rgba(168,212,252,0.18); }
+
+  /* ───── ARTIFACTS — produced overnight, ready for an action ───── */
+  .artifact {
+    display:grid; grid-template-columns:54px 1fr auto auto;
+    gap:14px; align-items:baseline;
+    padding:10px 4px;
+    border-bottom:1px dashed rgba(255,255,255,0.035);
+    font-size:11.5px;
+  }
+  .artifact:last-child { border-bottom:none; }
+  .artifact .glyph {
+    color:var(--fg-3); font-size:9px; letter-spacing:0.20em; text-transform:uppercase;
+    text-align:left; padding-top:2px;
+  }
+  .artifact .name {
+    color:var(--fg-0); line-height:1.4;
+  }
+  .artifact .name .id   { color:var(--accent); }
+  .artifact .name .proj-tag {
+    color:var(--fg-3); font-size:10px; letter-spacing:0.04em;
+    margin-left:6px;
+  }
+  .artifact .name .submeta {
+    display:block;
+    color:var(--fg-3); font-size:10px; font-variant-numeric:tabular-nums;
+    margin-top:3px; letter-spacing:0.02em;
+  }
+  .artifact .status {
+    color:var(--fg-2); font-size:9.5px; letter-spacing:0.18em; text-transform:uppercase;
+    white-space:nowrap;
+    font-variant-numeric:tabular-nums;
+  }
+  .artifact .status.ok    { color:var(--ok); }
+  .artifact .status.warn  { color:var(--warn); }
+  .artifact .status.acc   { color:var(--accent); }
+  .artifact .status.dn    { color:var(--danger); }
+  .artifact .open {
+    font-family:var(--mono); font-size:10px; letter-spacing:0.04em;
+    padding:5px 10px; border-radius:4px;
+    background:rgba(255,255,255,0.025); border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer; transition:all 120ms ease;
+  }
+  .artifact .open:hover {
+    color:var(--accent); border-color:rgba(168,212,252,0.42); background:rgba(168,212,252,0.08);
+  }
+
+  /* ───── LEARNINGS — skill pipeline ───── */
+  .learning {
+    margin-bottom:10px;
+    padding:12px 14px 11px;
+    background:rgba(10,12,18,0.55);
+    backdrop-filter:blur(14px) saturate(140%);
+    border:1px solid var(--hairline);
+    border-left:2px solid var(--fg-3);
+    border-radius:5px;
+    box-shadow:inset 0 0.5px 0 rgba(255,255,255,0.08);
+  }
+  .learning:last-child { margin-bottom:0; }
+  .learning.new       { border-left-color:var(--accent); }
+  .learning.promote   { border-left-color:var(--ok); }
+  .learning.deprecate { border-left-color:var(--fg-3); }
+  .learning.drop      { border-left-color:var(--warn); }
+  .learning .head {
+    display:flex; gap:8px; align-items:baseline;
+    font-size:9.5px; letter-spacing:0.22em; text-transform:uppercase;
+    color:var(--fg-3); margin-bottom:6px;
+  }
+  .learning.new       .head .kind { color:var(--accent); font-weight:600; }
+  .learning.promote   .head .kind { color:var(--ok);     font-weight:600; }
+  .learning.deprecate .head .kind { color:var(--fg-2);   font-weight:600; }
+  .learning.drop      .head .kind { color:var(--warn);   font-weight:600; }
+  .learning .head .ref {
+    color:var(--accent); letter-spacing:0.04em; text-transform:none;
+  }
+  .learning .head .meta {
+    margin-left:auto; color:var(--fg-3); font-size:9px;
+    letter-spacing:0.08em; font-variant-numeric:tabular-nums;
+  }
+  .learning .body {
+    color:var(--fg-0); font-size:12px; line-height:1.5;
+    margin-bottom:7px;
+  }
+  .learning .body em   { color:var(--fg-0); font-style:normal; font-weight:500; }
+  .learning .body .id  { color:var(--accent); }
+  .learning .body .ok  { color:var(--ok); }
+  .learning .body .wn  { color:var(--warn); }
+  .learning .body .dn  { color:var(--danger); }
+  .learning .stats {
+    display:flex; flex-wrap:wrap; gap:14px;
+    font-size:10px; color:var(--fg-2);
+    margin-bottom:8px; font-variant-numeric:tabular-nums;
+  }
+  .learning .stats .k {
+    color:var(--fg-4); letter-spacing:0.18em; text-transform:uppercase; font-size:9px;
+    margin-right:4px;
+  }
+  .learning .acts {
+    display:flex; gap:5px; flex-wrap:wrap;
+  }
+  .learning .acts .v {
+    font-family:var(--mono); font-size:10px; letter-spacing:0.02em;
+    padding:5px 10px; border-radius:4px;
+    background:rgba(255,255,255,0.025); border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer; transition:all 120ms ease;
+  }
+  .learning .acts .v:hover { color:var(--fg-0); border-color:var(--hairline-strong); }
+  .learning .acts .v.p {
+    color:var(--accent); border-color:rgba(168,212,252,0.42); background:rgba(168,212,252,0.08);
+  }
+  .learning .acts .v.p:hover { background:rgba(168,212,252,0.18); }
+  .learning .acts .v.m { color:var(--fg-3); }
+
+  /* ───── PROJECT TAG — used inline in priority cards, needs-you, etc. ───── */
+  .proj-tag {
+    color:var(--fg-2); font-size:10px; letter-spacing:0.04em;
+    padding:1px 6px 1px 5px; margin-right:6px;
+    border-radius:2px; background:rgba(255,255,255,0.025);
+    border-left:1.5px solid var(--fg-3);
+    font-variant-numeric:tabular-nums;
+  }
+  .proj-tag.active   { border-left-color:var(--accent); color:var(--accent); }
+  .proj-tag.ready    { border-left-color:var(--ok);     color:var(--ok); }
+  .proj-tag.blocked  { border-left-color:var(--danger); color:var(--danger); }
+  .proj-tag.quiet    { border-left-color:var(--fg-3);   color:var(--fg-2); }
+
+  /* ───── FLOW — compact 1-line variants for the simplified brief ───── */
+
+  /* Compact project rows — pip + name + status + 1-line summary + open chip */
+  .proj-line {
+    display:grid;
+    grid-template-columns:14px minmax(180px, auto) 100px 1fr auto;
+    gap:14px;
+    padding:11px 4px;
+    align-items:baseline;
+    border-bottom:1px dashed rgba(255,255,255,0.04);
+    font-size:12px;
+  }
+  .proj-line:last-child { border-bottom:none; }
+  .proj-line .pip {
+    width:8px; height:8px; border-radius:999px; background:var(--fg-3);
+    align-self:center;
+  }
+  .proj-line.active  .pip { background:var(--accent); box-shadow:0 0 8px var(--accent); }
+  .proj-line.ready   .pip { background:var(--ok);     box-shadow:0 0 6px rgba(168,176,168,0.55); }
+  .proj-line.blocked .pip { background:var(--danger); box-shadow:0 0 7px rgba(180,130,130,0.55); }
+  .proj-line.quiet   .pip { background:var(--fg-3); }
+  .proj-line .name {
+    color:var(--fg-0); font-weight:500;
+  }
+  .proj-line .stat {
+    font-size:9.5px; letter-spacing:0.22em; text-transform:uppercase;
+    color:var(--fg-3);
+  }
+  .proj-line.active  .stat { color:var(--accent); }
+  .proj-line.ready   .stat { color:var(--ok); }
+  .proj-line.blocked .stat { color:var(--danger); }
+  .proj-line.quiet   .stat { color:var(--fg-3); }
+  .proj-line .summary {
+    color:var(--fg-1); line-height:1.4;
+  }
+  .proj-line .summary em { color:var(--fg-0); font-style:normal; font-weight:500; }
+  .proj-line .summary .id { color:var(--accent); }
+  .proj-line .summary .dn { color:var(--danger); }
+  .proj-line .summary .ok { color:var(--ok); }
+  .proj-line .open {
+    font-family:var(--mono); font-size:10px; letter-spacing:0.02em;
+    padding:4px 9px; border-radius:4px;
+    background:rgba(255,255,255,0.025); border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer; transition:all 120ms ease;
+  }
+  .proj-line .open:hover {
+    color:var(--accent); border-color:rgba(168,212,252,0.42);
+    background:rgba(168,212,252,0.08);
+  }
+
+  /* Compact today rows — number · time · project · action · duration · run */
+  .today-line {
+    display:grid;
+    grid-template-columns:22px 56px 200px 1fr auto auto;
+    gap:14px;
+    padding:10px 4px;
+    align-items:baseline;
+    border-bottom:1px dashed rgba(255,255,255,0.04);
+    font-size:12px;
+  }
+  .today-line:last-child { border-bottom:none; }
+  .today-line .num {
+    color:var(--accent); font-weight:600; font-variant-numeric:tabular-nums;
+    font-size:13px;
+  }
+  .today-line .when {
+    color:var(--accent); font-size:11px; font-variant-numeric:tabular-nums;
+    letter-spacing:0.04em;
+  }
+  .today-line .what {
+    color:var(--fg-0); line-height:1.4;
+  }
+  .today-line .what em { color:var(--fg-0); font-weight:500; font-style:normal; }
+  .today-line .what .id { color:var(--accent); }
+  .today-line .dur {
+    color:var(--fg-3); font-size:10.5px; font-variant-numeric:tabular-nums;
+    letter-spacing:0.02em;
+  }
+  .today-line .run {
+    font-family:var(--mono); font-size:10px; letter-spacing:0.02em;
+    padding:4px 9px; border-radius:4px;
+    background:rgba(168,212,252,0.08); border:1px solid rgba(168,212,252,0.42);
+    color:var(--accent); cursor:pointer; transition:all 120ms ease;
+  }
+  .today-line .run:hover { background:rgba(168,212,252,0.18); }
+
+  /* Single-line weekly review banner */
+  .review-banner {
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    padding:12px 16px;
+    background:rgba(10,12,18,0.55);
+    backdrop-filter:blur(14px) saturate(140%);
+    border:1px solid var(--hairline);
+    border-radius:5px;
+    font-size:11.5px;
+    color:var(--fg-2);
+  }
+  .review-banner .lbl {
+    color:var(--fg-3); font-size:9.5px; letter-spacing:0.22em; text-transform:uppercase;
+    margin-right:4px;
+  }
+  .review-banner .item {
+    font-variant-numeric:tabular-nums; letter-spacing:0.02em;
+  }
+  .review-banner .item em {
+    font-style:normal; color:var(--fg-0); margin-right:3px;
+  }
+  .review-banner .item.new      em { color:var(--accent); }
+  .review-banner .item.promote  em { color:var(--ok); }
+  .review-banner .item.drop     em { color:var(--warn); }
+  .review-banner .item.retire   em { color:var(--fg-2); }
+  .review-banner .sep { color:var(--fg-4); }
+  .review-banner .open {
+    margin-left:auto;
+    font-family:var(--mono); font-size:10px; letter-spacing:0.02em;
+    padding:5px 11px; border-radius:4px;
+    background:rgba(255,255,255,0.025); border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer; transition:all 120ms ease;
+  }
+  .review-banner .open:hover {
+    color:var(--accent); border-color:rgba(168,212,252,0.42);
+    background:rgba(168,212,252,0.08);
+  }
+
+  /* ───── COMMIT ZONE (sticky bottom) ───── */
+  .commit-zone {
+    position:fixed; left:0; right:0; bottom:0; z-index:25;
+    padding:14px 24px 18px;
+    background:linear-gradient(180deg, transparent 0%, rgba(6,7,11,0.92) 35%, rgba(6,7,11,0.96) 100%);
+    backdrop-filter:blur(18px) saturate(140%);
+    border-top:1px solid var(--hairline);
+  }
+  .commit-zone .row {
+    max-width:760px; margin:0 auto;
+    display:grid; grid-template-columns:1fr auto;
+    align-items:center; gap:16px;
+  }
+  .commit-zone .left {
+    color:var(--fg-2); font-size:10.5px; letter-spacing:0.04em;
+    font-variant-numeric:tabular-nums;
+  }
+  .commit-zone .left em { color:var(--accent); font-style:normal; }
+  .commit-zone .left .k {
+    color:var(--fg-3); text-transform:uppercase; letter-spacing:0.18em; font-size:9.5px;
+  }
+  .commit-zone .plans { display:flex; gap:6px; }
+  .commit-zone .plan {
+    font-family:var(--mono); font-size:11px; letter-spacing:0.02em;
+    padding:8px 14px; border-radius:5px;
+    background:rgba(255,255,255,0.03); border:1px solid var(--hairline);
+    color:var(--fg-1); cursor:pointer; transition:all 140ms ease;
+  }
+  .commit-zone .plan:hover { color:var(--fg-0); border-color:var(--hairline-strong); }
+  .commit-zone .plan.primary {
+    color:var(--bg-0); border-color:var(--accent);
+    background:linear-gradient(180deg, var(--accent-hi) 0%, var(--accent) 100%);
+    box-shadow:0 0 26px rgba(168,212,252,0.35);
+    font-weight:500;
+  }
+  .commit-zone .plan.primary:hover {
+    background:linear-gradient(180deg, var(--accent-hi) 0%, var(--accent-hi) 100%);
+    box-shadow:0 0 36px rgba(168,212,252,0.55);
+  }
+  .commit-zone .plan .kbd { font-size:9.5px; margin-left:6px; opacity:0.65; }
+
+  /* ───── COLOPHON (after pulse, before commit) ───── */
+  .colophon {
+    margin-top:32px;
+    padding-top:14px;
+    border-top:1px dashed var(--hairline);
+    display:flex; justify-content:space-between; align-items:baseline;
+    font-size:9.5px; letter-spacing:0.18em; text-transform:uppercase;
+    color:var(--fg-3);
+    font-variant-numeric:tabular-nums;
+  }
+  .colophon em { color:var(--fg-2); font-style:normal; }
+  .colophon .id { color:var(--accent); font-style:normal; }
+</style>
+</head>
+<body>
+
+<canvas id="wisp"></canvas>
+<div class="grain" aria-hidden="true"></div>
+
+<!-- ───── CHROME — tightened to the 4 signals that earn their place ───── -->
+<header class="chrome">
+  <div class="row">
+    <div class="brand">
+      <span class="mark"></span>
+      <span class="name">freyja</span>
+      <span class="div">·</span>
+      <span class="room">acme</span>
+    </div>
+
+    <div class="ws">
+      <span class="v acc">3 decisions waiting</span>
+    </div>
+  </div>
+</header>
+
+<main class="brief">
+
+  <!-- ───── HERO — date + h1, no summary paragraph ───── -->
+  <div class="hero">
+    <div class="kicker">
+      <span class="pulse-dot"></span>
+      <span>monday · june 03</span>
+      <span>·</span>
+      <span class="em">06:30 PDT</span>
+    </div>
+    <h1><span class="n">4</span> projects in motion. <span class="ts">9</span> things since 22:14 yesterday.</h1>
+  </div>
+
+  <!-- ───── PROJECTS — 4 single-line rows · fleet status at a glance ───── -->
+  <section class="section">
+    <div class="section-label">
+      <span class="bar">▌</span>
+      <span class="lbl">Projects</span>
+      <span class="count"><em>2</em> shifted overnight</span>
+    </div>
+
+    <div class="proj-line ready">
+      <span class="pip"></span>
+      <span class="name">June board meeting</span>
+      <span class="stat">ready</span>
+      <span class="summary">Memo v3 + 14-slide deck <span class="ok">in your inbox</span> · board reads 09:00.</span>
+      <button class="open">open</button>
+    </div>
+
+    <div class="proj-line active">
+      <span class="pip"></span>
+      <span class="name">VP of Sales hire</span>
+      <span class="stat">in motion</span>
+      <span class="summary"><em>Sarah Cohen</em> references cleared · ready for the final round.</span>
+      <button class="open">open</button>
+    </div>
+
+    <div class="proj-line blocked">
+      <span class="pip"></span>
+      <span class="name">Q2 investor update</span>
+      <span class="stat">blocked</span>
+      <span class="summary">Draft v2 ready · <span class="dn">CAC definition needs your call</span>.</span>
+      <button class="open">open</button>
+    </div>
+
+    <div class="proj-line quiet">
+      <span class="pip"></span>
+      <span class="name">All-hands · Friday</span>
+      <span class="stat">on track</span>
+      <span class="summary">Agenda + founder talking points + Q&A themes ready.</span>
+      <button class="open">open</button>
+    </div>
+  </section>
+
+  <!-- ───── NEEDS YOU — 3 cards, tightened ───── -->
+  <section class="section">
+    <div class="section-label">
+      <span class="bar">▌</span>
+      <span class="lbl">Needs you</span>
+      <span class="count"><em>3</em> decisions · ~5 min</span>
+    </div>
+
+    <div class="needs acc">
+      <div class="head">
+        <span class="pip"></span>
+        <span class="kind">approve</span>
+        <span>·</span>
+        <span><span class="proj-tag ready">June board meeting</span>memo v3 + deck</span>
+        <span class="meta">in your inbox · board reads 09:00</span>
+      </div>
+      <div class="body">
+        Memo + deck assembled overnight. Last month's <em>NRR-prominence</em> and <em>tighter product update</em> feedback both addressed in v3. You have ~2 hours.
+      </div>
+      <div class="acts">
+        <button class="v p">approve · send to board <span class="kbd">A</span></button>
+        <button class="v">send to CEO first</button>
+      </div>
+    </div>
+
+    <div class="needs warn">
+      <div class="head">
+        <span class="pip"></span>
+        <span class="kind">confirm slot</span>
+        <span>·</span>
+        <span><span class="proj-tag active">VP of Sales hire</span>Sarah Cohen · final round</span>
+        <span class="meta">3/4 refs in · panel ready thursday</span>
+      </div>
+      <div class="body">
+        Panel (CEO + CRO + Head of Finance) available <em>Thursday 2–3:30pm</em>. Sarah free then or Monday morning. Default: book Thursday before the panel slot is taken.
+      </div>
+      <div class="acts">
+        <button class="v p">book Thursday 2pm <span class="kbd">T</span></button>
+        <button class="v">book Monday alt</button>
+      </div>
+    </div>
+
+    <div class="needs dn">
+      <div class="head">
+        <span class="pip"></span>
+        <span class="kind">resolve</span>
+        <span>·</span>
+        <span><span class="proj-tag blocked">Q2 investor update</span>CAC definition</span>
+        <span class="meta">blocking the may letter</span>
+      </div>
+      <div class="body">
+        Q1 letter used <em>blended CAC</em> ($210). Finance reports <em>paid</em> ($340). Investors compare letters — pick one and footnote it.
+      </div>
+      <div class="acts">
+        <button class="v p">use blended · matches Q1 <span class="kbd">B</span></button>
+        <button class="v">use paid · matches finance</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───── TODAY — 4 single-line priorities ───── -->
+  <section class="section">
+    <div class="section-label">
+      <span class="bar">▌</span>
+      <span class="lbl">Today</span>
+      <span class="count"><em>4</em> staged · 1 per project · ~2h 30m</span>
+    </div>
+
+    <div class="today-line">
+      <span class="num">1</span>
+      <span class="when">09:00</span>
+      <span class="proj-tag ready">June board meeting</span>
+      <span class="what">finalize memo + <em>send to board</em> after CEO sign-off</span>
+      <span class="dur">~30m</span>
+      <button class="run">run</button>
+    </div>
+
+    <div class="today-line">
+      <span class="num">2</span>
+      <span class="when">11:00</span>
+      <span class="proj-tag active">VP of Sales hire</span>
+      <span class="what">book Sarah's final round + <em>send prep kit</em></span>
+      <span class="dur">~22m</span>
+      <button class="run">run</button>
+    </div>
+
+    <div class="today-line">
+      <span class="num">3</span>
+      <span class="when">13:00</span>
+      <span class="proj-tag blocked">Q2 investor update</span>
+      <span class="what">revise CAC section + <em>send draft to CEO</em></span>
+      <span class="dur">~45m</span>
+      <button class="run">run</button>
+    </div>
+
+    <div class="today-line">
+      <span class="num">4</span>
+      <span class="when">15:00</span>
+      <span class="proj-tag quiet">All-hands · Friday</span>
+      <span class="what">polish founder talking points + <em>send prep packet</em></span>
+      <span class="dur">~25m</span>
+      <button class="run">run</button>
+    </div>
+  </section>
+
+  <!-- ───── WEEKLY REVIEW — one-line banner, defers detail ───── -->
+  <section class="section">
+    <div class="review-banner">
+      <span class="lbl">weekly review</span>
+      <span class="item new"><em>1</em> new shortcut</span>
+      <span class="sep">·</span>
+      <span class="item promote"><em>1</em> ready for default</span>
+      <span class="sep">·</span>
+      <span class="item drop"><em>1</em> confidence drop</span>
+      <span class="sep">·</span>
+      <span class="item retire"><em>1</em> ready to retire</span>
+      <button class="open">open · ~5 min</button>
+    </div>
+  </section>
+
+</main>
+
+<!-- ───── COMMIT ZONE — 2 buttons ───── -->
+<div class="commit-zone">
+  <div class="row">
+    <div class="left">
+      <em>4</em> staged for today
+    </div>
+    <div class="plans">
+      <button class="plan">stage all · review later <span class="kbd">S</span></button>
+      <button class="plan primary">run all 4 in parallel <span class="kbd">⏎</span></button>
+    </div>
+  </div>
+</div>
+
+
+
+
+<script>
+  // ────────────────────────────────────────────────────────────
+  // Wisp backdrop — Three.js particle field driven by domain-warped
+  // Simplex noise, in the calmer "Ethereal Wisp Drift" register:
+  //   - 96k particles instead of 160k (sparser, more delicate)
+  //   - Diagonal wind drift (left→right + slight vertical), not rising
+  //   - Wider domain warp (× 0.9) so wisps are broad and slow
+  //   - Ultra-slow camera sway (half the smoke's frequencies)
+  //   - No mouse interaction at all
+  //   - Softer creamy bokeh profile (smaller core, wider halo)
+  // Visibility boosted ~2× from the inspiration's whisper levels so
+  // the wisps actually register against the editorial column.
+  // ────────────────────────────────────────────────────────────
+
+  (function buildWisp() {
+    const cvs = document.getElementById('wisp');
+    if (!window.THREE) {
+      console.warn('Wisp backdrop: Three.js not loaded; background stays solid.');
+      return;
+    }
+    const THREE = window.THREE;
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    // ───── Scene ─────
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x06070b, 0.026);
+
+    const sizes = { width: window.innerWidth, height: window.innerHeight };
+    const camera = new THREE.PerspectiveCamera(45, sizes.width / sizes.height, 0.1, 500);
+    camera.position.set(0, 2, 21);
+    camera.lookAt(0, 0, 0);
+    scene.add(camera);
+
+    const renderer = new THREE.WebGLRenderer({ canvas: cvs, antialias: true, alpha: false });
+    renderer.setSize(sizes.width, sizes.height);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setClearColor(0x06070b, 1);
+
+    // ───── Geometry — 400×240 = 96k particles, spaced wider ─────
+    const gridX = 400;
+    const gridY = 240;
+    const particleCount = gridX * gridY;
+    const spacingX = 0.12;   // wider spacing = lighter, more delicate feel
+    const spacingY = 0.15;
+
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(particleCount * 3);
+    const randomSizes = new Float32Array(particleCount);
+
+    for (let i = 0; i < gridX; i++) {
+      for (let j = 0; j < gridY; j++) {
+        const index = (i * gridY + j) * 3;
+        const jitterX = (Math.random() - 0.5) * spacingX * 0.95;
+        const jitterY = (Math.random() - 0.5) * spacingY * 0.95;
+        const jitterZ = (Math.random() - 0.5) * 0.2;
+        positions[index]     = (i - gridX / 2) * spacingX + jitterX;
+        positions[index + 1] = (j - gridY / 2) * spacingY + jitterY;
+        positions[index + 2] = jitterZ;
+        randomSizes[i * gridY + j] = 0.4 + Math.random() * 0.6;
+      }
+    }
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('aRandomSize', new THREE.BufferAttribute(randomSizes, 1));
+
+    // ───── GLSL — Simplex noise + wisp shaders ─────
+    const glslNoise = `
+      vec4 permute(vec4 x){return mod(((x*34.0)+1.0)*x, 289.0);}
+      vec4 taylorInvSqrt(vec4 r){return 1.79284291400159 - 0.85373472095314 * r;}
+      float snoise(vec3 v){
+        const vec2  C = vec2(1.0/6.0, 1.0/3.0);
+        const vec4  D = vec4(0.0, 0.5, 1.0, 2.0);
+        vec3 i  = floor(v + dot(v, C.yyy));
+        vec3 x0 = v - i + dot(i, C.xxx);
+        vec3 g = step(x0.yzx, x0.xyz);
+        vec3 l = 1.0 - g;
+        vec3 i1 = min(g.xyz, l.zxy);
+        vec3 i2 = max(g.xyz, l.zxy);
+        vec3 x1 = x0 - i1 + 1.0 * C.xxx;
+        vec3 x2 = x0 - i2 + 2.0 * C.xxx;
+        vec3 x3 = x0 - 1.0 + 3.0 * C.xxx;
+        i = mod(i, 289.0);
+        vec4 p = permute(permute(permute(
+                    i.z + vec4(0.0, i1.z, i2.z, 1.0))
+                  + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+                  + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+        float n_ = 1.0/7.0;
+        vec3  ns = n_ * D.wyz - D.xzx;
+        vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+        vec4 x_ = floor(j * ns.z);
+        vec4 y_ = floor(j - 7.0 * x_);
+        vec4 x = x_ * ns.x + ns.yyyy;
+        vec4 y = y_ * ns.x + ns.yyyy;
+        vec4 h = 1.0 - abs(x) - abs(y);
+        vec4 b0 = vec4(x.xy, y.xy);
+        vec4 b1 = vec4(x.zw, y.zw);
+        vec4 s0 = floor(b0)*2.0 + 1.0;
+        vec4 s1 = floor(b1)*2.0 + 1.0;
+        vec4 sh = -step(h, vec4(0.0));
+        vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy;
+        vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww;
+        vec3 p0 = vec3(a0.xy, h.x);
+        vec3 p1 = vec3(a0.zw, h.y);
+        vec3 p2 = vec3(a1.xy, h.z);
+        vec3 p3 = vec3(a1.zw, h.w);
+        vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+        p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+        vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+        m = m * m;
+        return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+      }
+    `;
+
+    const vertexShader = `
+      ${glslNoise}
+      attribute float aRandomSize;
+      uniform float uTime;
+      uniform float uIntroMultiplier;
+      varying float vAlpha;
+      varying float vElevation;
+
+      void main() {
+        vec3 pos = position;
+
+        // Ultra-slow time progression for the warp octave
+        float tSlow = uTime * 0.015;
+
+        // DIAGONAL WIND DRIFT — coordinate offset shifts the noise field
+        // left→right and slightly downward, so the wisps drift across the
+        // viewport instead of rising. Scale 0.022 → very large features.
+        vec3 coord = vec3(
+          (pos.x - uTime * 0.5) * 0.022,
+          (pos.y - uTime * 0.3) * 0.022,
+          pos.z * 0.022
+        );
+
+        // First octave
+        vec3 q = vec3(
+          snoise(coord),
+          snoise(coord + vec3(4.1, 1.2, 1.9)),
+          snoise(coord + vec3(1.9, 4.1, 7.3))
+        );
+
+        // Domain-warped octave — warp multiplier 0.9 (vs the smoke's 1.6)
+        // gives wider, calmer wisps with smoother boundaries.
+        vec3 r = vec3(
+          snoise(coord + q * 0.9 + vec3(1.2, tSlow,       3.1)),
+          snoise(coord + q * 0.9 + vec3(6.3, tSlow * 1.1, 1.9)),
+          snoise(coord + q * 0.9 + vec3(1.9, tSlow * 0.9, 5.2))
+        );
+
+        // Broader displacement → elegant sweeping curves
+        pos += r * 10.0 * uIntroMultiplier;
+
+        // No mouse interaction in this style — purely ambient drift.
+
+        vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+        gl_Position = projectionMatrix * mvPosition;
+
+        // Vaporous sizing — slightly larger base, softer halos
+        float smokeDensity = length(r);
+        float sizeBoost = 1.05 + clamp(smokeDensity * 0.2, -0.4, 1.2);
+        gl_PointSize = max(3.0, (30.0 / -mvPosition.z) * sizeBoost * aRandomSize);
+
+        // Elliptical boundary fade
+        float ellipDist = length(pos.xy * vec2(0.68, 1.15));
+        float radialFade = smoothstep(34.0, 16.0, ellipDist);
+
+        // VISIBILITY BOOST — was (0.04 + density × 0.12), now (0.08 + density × 0.24).
+        // Roughly doubles the inspiration's whisper-faint levels so the wisps
+        // register against the editorial column, while preserving the calmer
+        // overall feel relative to the smoke version.
+        vAlpha = (0.08 + smokeDensity * 0.24) * radialFade;
+        vElevation = pos.y;
+      }
+    `;
+
+    const fragmentShader = `
+      varying float vAlpha;
+      varying float vElevation;
+
+      void main() {
+        float dist = distance(gl_PointCoord, vec2(0.5));
+        if (dist > 0.5) discard;
+
+        // Creamy, highly diffused bokeh — narrower bright core, wider soft halo.
+        // (vs smoke: core × 2.2 / halo × 0.55 — wisp is much softer.)
+        float core = smoothstep(0.06, 0.0, dist) * 1.5;
+        float halo = smoothstep(0.5, 0.06, dist) * 0.75;
+        float alpha = (core + halo) * vAlpha;
+
+        // Freyja palette — same cool accent-leaning tones as the smoke version.
+        vec3 hotBase = vec3(0.84, 0.92, 1.00);
+        vec3 coolTop = vec3(0.42, 0.50, 0.62);
+        float factor = clamp((vElevation + 12.0) / 24.0, 0.0, 1.0);
+        vec3 finalColor = mix(hotBase, coolTop, factor);
+
+        gl_FragColor = vec4(finalColor, alpha);
+      }
+    `;
+
+    const material = new THREE.ShaderMaterial({
+      vertexShader,
+      fragmentShader,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      uniforms: {
+        uTime: { value: 0 },
+        uIntroMultiplier: { value: 0 }
+      }
+    });
+
+    const points = new THREE.Points(geometry, material);
+    scene.add(points);
+
+    // ───── Entrance ramp ─────
+    if (window.gsap) {
+      gsap.to(material.uniforms.uIntroMultiplier, {
+        value: 1.0, duration: 7.0, ease: 'power2.inOut'
+      });
+    } else {
+      const t0 = performance.now();
+      const ramp = () => {
+        const t = Math.min(1, (performance.now() - t0) / 7000);
+        material.uniforms.uIntroMultiplier.value = t * t * (3 - 2 * t);
+        if (t < 1) requestAnimationFrame(ramp);
+      };
+      requestAnimationFrame(ramp);
+    }
+
+    // ───── Resize ─────
+    window.addEventListener('resize', () => {
+      sizes.width = window.innerWidth;
+      sizes.height = window.innerHeight;
+      camera.aspect = sizes.width / sizes.height;
+      camera.updateProjectionMatrix();
+      renderer.setSize(sizes.width, sizes.height);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    });
+
+    // ───── Render loop — ultra-slow camera sway ─────
+    // Camera frequencies roughly halved from the smoke version
+    // (0.035 / 0.025 / 0.02 vs 0.08 / 0.06 / 0.05) for a slow-motion
+    // floating-lens feeling.
+    const clock = new THREE.Clock();
+    function tick() {
+      const t = clock.getElapsedTime();
+      material.uniforms.uTime.value = t;
+
+      camera.position.x = Math.sin(t * 0.035) * 2.5;
+      camera.position.y = 1.5 + Math.cos(t * 0.025) * 1.0;
+      camera.position.z = 21.0 + Math.sin(t * 0.02) * 1.5;
+      camera.lookAt(0, 0, 0);
+
+      renderer.render(scene, camera);
+      if (!reducedMotion) requestAnimationFrame(tick);
+    }
+    tick();
+    if (reducedMotion) {
+      let n = 0;
+      const settle = () => {
+        if (n++ < 60) { tick(); requestAnimationFrame(settle); }
+      };
+      requestAnimationFrame(settle);
+    }
+  })();
+
+  // ────────────────────────────────────────────────────────────
+  // Hero descrambler — each glyph cycles through a random pool
+  // until it locks to its final value. Accent-blue digits (the
+  // .n spans) cycle through Elder Futhark runes; the rest cycle
+  // through ASCII matching their character class. Pixel jitter
+  // applied per-frame via CSS custom props for a "decrypting" feel.
+  // ────────────────────────────────────────────────────────────
+  (async function heroDescramble() {
+    const h1 = document.querySelector('.hero h1');
+    if (!h1) return;
+
+    // Skip entirely for reduced-motion users.
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+    // Force-load Noto Sans Runic before starting the scramble so the
+    // rune glyphs render with their authentic shapes instead of the
+    // system fallback. Google Fonts uses font-display:swap which only
+    // loads on-demand — without this pre-load, the 55ms swap interval
+    // is faster than the font fetch and the runes never render right.
+    try {
+      if (document.fonts && document.fonts.load) {
+        await document.fonts.load('1em "Noto Sans Runic"');
+      }
+    } catch (e) {
+      console.warn('Noto Sans Runic pre-load failed:', e);
+    }
+
+    // Elder Futhark + a few Anglo-Saxon Futhorc additions.
+    const RUNES  = 'ᚠᚢᚦᚨᚱᚲᚷᚹᚺᚾᛁᛃᛇᛈᛉᛋᛏᛒᛖᛗᛚᛜᛞᛟᛤᛦᚺᚷ';
+    const UPPER  = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+    const LOWER  = 'abcdefghjkmnpqrstuvwxyz';
+    const DIGITS = '0123456789';
+    const SYMS   = '@#$%&*+=/<>?';
+    const pick   = (s) => s[Math.floor(Math.random() * s.length)];
+
+    function pickGlyph(finalCh, isRunic) {
+      if (isRunic) return pick(RUNES);
+      if (/[A-Z]/.test(finalCh)) return pick(UPPER);
+      if (/[a-z]/.test(finalCh)) return pick(LOWER);
+      if (/[0-9]/.test(finalCh)) return pick(DIGITS + SYMS);
+      // Periods, commas, colons — keep as-is to avoid chaotic punctuation
+      return finalCh;
+    }
+
+    // Preserve final text for screen readers.
+    h1.setAttribute('aria-label', h1.textContent.trim());
+
+    // Walk the DOM and split text into per-character spans, preserving
+    // the existing .n / .ts wrappers (so accent colour still cascades).
+    const spans = [];
+    function splitChars(rootEl, isRunic) {
+      const kids = Array.from(rootEl.childNodes);
+      const out = [];
+      for (const node of kids) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          for (const ch of node.textContent) {
+            if (ch === ' ' || ch === '\n' || ch === '\t') {
+              out.push(document.createTextNode(ch));
+            } else {
+              const span = document.createElement('span');
+              span.className = 'ch';
+              span.textContent = ch;
+              span.dataset.final = ch;
+              if (isRunic) span.dataset.runic = '1';
+              span.setAttribute('aria-hidden', 'true');
+              spans.push(span);
+              out.push(span);
+            }
+          }
+        } else if (node.nodeType === Node.ELEMENT_NODE) {
+          const childRunic = isRunic || node.classList.contains('n');
+          splitChars(node, childRunic);
+          out.push(node);
+        }
+      }
+      rootEl.replaceChildren(...out);
+    }
+    splitChars(h1, false);
+
+    // Initialize each span to a scrambled glyph and stagger its lock time.
+    // Stagger: ~30ms per char left→right with ±80ms randomness so it
+    // doesn't feel like a marching wave.
+    const INITIAL_DELAY = 300;
+    const PER_CHAR      = 30;
+    const RAND_JITTER   = 160;
+    spans.forEach((span, i) => {
+      span.dataset.lockAt = String(INITIAL_DELAY + i * PER_CHAR + Math.random() * RAND_JITTER);
+      span.dataset.locked = '0';
+      span.textContent = pickGlyph(span.dataset.final, span.dataset.runic === '1');
+    });
+
+    // Hover-rescramble — a shorter version of the descrambler plays
+    // whenever the mouse enters a char. Only fires once that char's
+    // initial scramble has settled, and won't restart on top of itself.
+    const RESCRAMBLE_MS = 320;
+    function rescramble(span) {
+      if (span.dataset.locked !== '1') return;        // initial scramble still going
+      if (span.dataset.rescrambling === '1') return;  // already rescrambling
+      span.dataset.rescrambling = '1';
+      const isRunic = span.dataset.runic === '1';
+      // Force-reflow trick so the lock-pulse animation can re-trigger when
+      // .locked is re-added at the end of this rescramble.
+      span.classList.remove('locked');
+      // Read offsetWidth to flush style (forces reflow)
+      void span.offsetWidth;
+      const r0 = performance.now();
+      let rlast = r0;
+      function rtick(now) {
+        const elapsed = now - r0;
+        if (elapsed >= RESCRAMBLE_MS) {
+          span.textContent = span.dataset.final;
+          span.style.removeProperty('--jx');
+          span.style.removeProperty('--jy');
+          span.dataset.rescrambling = '0';
+          span.classList.add('locked');
+          return;
+        }
+        if (now - rlast > 50) {
+          rlast = now;
+          span.textContent = pickGlyph(span.dataset.final, isRunic);
+        }
+        span.style.setProperty('--jx', (Math.random() * 1.5 - 0.75).toFixed(2) + 'px');
+        span.style.setProperty('--jy', (Math.random() * 1.5 - 0.75).toFixed(2) + 'px');
+        requestAnimationFrame(rtick);
+      }
+      requestAnimationFrame(rtick);
+    }
+    for (const span of spans) {
+      span.addEventListener('mouseenter', () => rescramble(span));
+    }
+
+    const startT = performance.now();
+    let lastSwap = startT;
+    const SWAP_MS = 55;
+
+    function tick(now) {
+      const elapsed = now - startT;
+      const doSwap = (now - lastSwap) > SWAP_MS;
+
+      if (doSwap) lastSwap = now;
+
+      let stillScrambling = false;
+      for (const span of spans) {
+        if (span.dataset.locked === '1') continue;
+
+        const lockAt = parseFloat(span.dataset.lockAt);
+        if (elapsed >= lockAt) {
+          // Lock to final glyph + drop the jitter transform
+          span.textContent = span.dataset.final;
+          span.style.removeProperty('--jx');
+          span.style.removeProperty('--jy');
+          span.dataset.locked = '1';
+          span.classList.add('locked');
+          continue;
+        }
+
+        stillScrambling = true;
+
+        if (doSwap) {
+          span.textContent = pickGlyph(span.dataset.final, span.dataset.runic === '1');
+        }
+        // Per-frame pixel jitter via CSS custom props
+        span.style.setProperty('--jx', (Math.random() * 1.5 - 0.75).toFixed(2) + 'px');
+        span.style.setProperty('--jy', (Math.random() * 1.5 - 0.75).toFixed(2) + 'px');
+      }
+
+      if (stillScrambling) {
+        requestAnimationFrame(tick);
+      }
+    }
+    requestAnimationFrame(tick);
+  })();
+
+  // Keyboard
+  document.addEventListener('keydown', (e) => {
+    if (e.target.closest('input,textarea')) return;
+    let target = null;
+    if (e.key === 'Enter' && !e.altKey) target = document.querySelector('.commit-zone .plan.primary');
+    else if (e.key === 'Enter' && e.altKey) target = document.querySelectorAll('.commit-zone .plan')[1];
+    else if (e.key.toLowerCase() === 's' && !e.metaKey) target = document.querySelector('.commit-zone .plan');
+    if (target) {
+      const prev = target.style.boxShadow;
+      target.style.boxShadow = '0 0 0 3px rgba(168,212,252,0.6), 0 0 36px rgba(168,212,252,0.55)';
+      target.style.transform = 'translateY(-1px)';
+      setTimeout(() => {
+        target.style.boxShadow = prev;
+        target.style.transform = '';
+      }, 320);
+    }
+  });
+</script>
+
+</body>
+</html>

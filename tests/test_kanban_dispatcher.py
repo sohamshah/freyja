@@ -62,7 +62,12 @@ def _make_session(*, board: SessionKanbanBoard, sub_tool: _StubSubAgentTool) -> 
     session.subagent_registry = _StubSubagentRegistry()
     session.queued_messages = []
     session._kanban_dispatched = set()
+    session._kanban_judge_pending = set()
     session._kanban_dispatcher_task = None
+    # Tick-coalesce bookkeeping (added with the double-fire guard). __init__
+    # seeds this to 0; the stub bypasses __init__, so set it explicitly or
+    # the very first tick raises AttributeError on the coalesce check.
+    session._last_kanban_tick_ms = 0
     return session
 
 
@@ -86,9 +91,10 @@ async def test_dispatcher_skips_triage_cards_with_unsatisfied_parents() -> None:
     await session._kanban_tick(source="test")
 
     spawn_targets = [call.get("kanban_task_id") for call in sub_tool.calls]
-    # Parent IS in `ready`, but it has no assignee — also skipped.
-    # Child stays in triage because its parent isn't done.
-    assert parent_id not in spawn_targets
+    # The child stays in triage because its parent isn't done — it must
+    # not be dispatched. (The parent itself is a ready card with no
+    # assignee, so it dispatches under the `general` default; that's
+    # expected and not what this test guards.)
     assert child_id not in spawn_targets
 
 
@@ -159,8 +165,8 @@ async def test_dispatcher_spawns_verify_for_done_unverified_cards() -> None:
 @pytest.mark.asyncio
 async def test_dispatcher_spawns_assignee_for_ready_card() -> None:
     """A `ready` card with an `assignee` becomes a spawn for that
-    agent type. Cards without an assignee are skipped (the parent
-    is still planning)."""
+    agent type. Cards without an assignee default to the `general`
+    agent type (they're still real work that needs to land on someone)."""
     board = SessionKanbanBoard()
     tool = KanbanTool(board, actor_id="parent", actor_label="parent")
     assigned = await tool.execute(
@@ -176,8 +182,13 @@ async def test_dispatcher_spawns_assignee_for_ready_card() -> None:
     targets = {call["kanban_task_id"]: call["agent_type"] for call in sub_tool.calls}
     assert assigned_id in targets
     assert targets[assigned_id] == "code"
-    # The unassigned ready card was not spawned for.
-    assert len(targets) == 1
+    # An unassigned ready card is still real work — the dispatcher defaults
+    # it to the `general` agent type rather than silently skipping it (which
+    # made autopilot look dead on fresh sessions that hadn't spawned any
+    # subagent yet).
+    assert len(targets) == 2
+    unassigned_id = next(k for k in targets if k != assigned_id)
+    assert targets[unassigned_id] == "general"
 
 
 @pytest.mark.asyncio
@@ -366,3 +377,70 @@ async def test_heartbeat_refreshes_card_updated_at() -> None:
     refreshed = await board.get(card_id)
     assert refreshed is not None
     assert _time.time() - refreshed.updated_at < 1.0
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_redispatches_crashed_card() -> None:
+    """A `crashed` card (reclaimed after its worker vanished) is
+    retry-eligible: the worker lane re-dispatches it to a fresh worker on
+    the next tick. Bounded by the circuit breaker, which trips the card to
+    `failed` after repeated flaps — so this can't loop forever."""
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    create = await tool.execute(
+        "c1", {"action": "create", "title": "flaky", "assignee": "code"},
+    )
+    card_id = json.loads(create.content)["task"]["id"]
+    await tool.execute(
+        "u1", {"action": "update", "task_id": card_id, "status": "running"},
+    )
+    await tool.execute(
+        "u2", {"action": "update", "task_id": card_id, "status": "crashed"},
+    )
+
+    sub_tool = _StubSubAgentTool()
+    session = _make_session(board=board, sub_tool=sub_tool)
+    await session._kanban_tick(source="test")
+
+    targets = {call["kanban_task_id"]: call["agent_type"] for call in sub_tool.calls}
+    assert card_id in targets
+    assert targets[card_id] == "code"
+
+
+@pytest.mark.asyncio
+async def test_sweep_skips_reclaim_when_worker_still_live() -> None:
+    """A running card quiet past the reclaim window is NOT flipped to
+    `crashed` while its worker is still in the sub-agent registry —
+    reclaiming a live-but-quiet worker (mid long tool call, no heartbeat)
+    would kill nothing and unfairly charge it a circuit-breaker failure."""
+    import time as _time
+
+    board = SessionKanbanBoard()
+    tool = KanbanTool(board, actor_id="parent", actor_label="parent")
+    create = await tool.execute(
+        "c1", {"action": "create", "title": "slow", "assignee": "code"},
+    )
+    card_id = json.loads(create.content)["task"]["id"]
+    await tool.execute(
+        "u1", {"action": "update", "task_id": card_id, "status": "running"},
+    )
+    card = await board.get(card_id)
+    assert card is not None
+    card.updated_at = _time.time() - (_BridgeSession.KANBAN_RECLAIM_SECONDS + 60)
+
+    sub_tool = _StubSubAgentTool()
+    session = _make_session(board=board, sub_tool=sub_tool)
+    session.tool_registry._tools["kanban"] = KanbanTool(
+        board, actor_id="parent", actor_label="parent"
+    )
+    # The worker is still live in the registry for this card.
+    session.subagent_registry.records = [
+        _StubRecord(is_running=True, kanban_task_id=card_id)
+    ]
+    await session._kanban_tick(source="test")
+
+    refreshed = await board.get(card_id)
+    assert refreshed is not None
+    # Not reclaimed — still running, no breaker charge.
+    assert refreshed.status == "running"
+    assert refreshed.consecutive_failures == 0

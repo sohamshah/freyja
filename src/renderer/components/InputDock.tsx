@@ -2,9 +2,18 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useHarness } from '../state/store'
 import { matchSlash, type SlashCommand } from '../lib/slash'
 
-/** Auto-grow a textarea to fit its content, up to a max height in px. */
+/** Auto-grow a textarea to fit its content, up to a max height in px.
+ *
+ * Collapse to 0 BEFORE reading scrollHeight, not 'auto'. In a flex row the
+ * textarea can be cross-axis-stretched to the row's height; `scrollHeight`
+ * then returns that stretched clientHeight (never below the padding box),
+ * which — since the row height is driven BY the textarea — is a feedback
+ * loop that locks the field open at maxPx and can never shrink back
+ * (observed 2026-07-09). Forcing height to 0 makes scrollHeight report the
+ * true content height, so the field always collapses correctly. Paired with
+ * `self-start` on the element so nothing stretches it in the first place. */
 function resizeTextarea(el: HTMLTextAreaElement, maxPx: number) {
-  el.style.height = 'auto'
+  el.style.height = '0px'
   const next = Math.min(maxPx, el.scrollHeight)
   el.style.height = `${next}px`
   el.style.overflowY = el.scrollHeight > maxPx ? 'auto' : 'hidden'
@@ -705,7 +714,7 @@ export function InputDock() {
                       ? 'Type @ to mention files, / for commands, ~/ for paths, paste images or videos to attach'
                       : 'Type @ to mention files, / for commands, ~/ for paths, paste images to attach'
                 }
-                className="min-h-[22px] flex-1 resize-none bg-transparent text-[12.5px] text-fg-0 placeholder:text-fg-2 focus:outline-none"
+                className="min-h-[22px] flex-1 self-start resize-none bg-transparent text-[12.5px] text-fg-0 placeholder:text-fg-2 focus:outline-none"
                 style={{ lineHeight: 1.55, maxHeight: `${MAX_PX}px` }}
               />
             </div>
