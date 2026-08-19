@@ -13,6 +13,13 @@ import { SearchQueryContext } from './searchContext'
 import { Spinner } from '../lib/spinner'
 import { highlightHtml, highlightRuns } from '../lib/searchHighlight'
 import { MessageContextMenu, type MessageMenuAction } from './MessageContextMenu'
+import {
+  messageToMarkdown,
+  selectionIntersects,
+  selectionToMarkdown,
+  writeClipboard,
+} from '../lib/copyMarkdown'
+import { formatDuration } from '../lib/format'
 import { BranchSessionDialog } from './BranchSessionDialog'
 import { CalibrationCard } from './shared/CalibrationCard'
 import { InlineForgetting, InlineCompactionReceipt } from './MemorySystemCards'
@@ -61,6 +68,24 @@ export const SystemEventLookupContext = createContext<Map<string, SystemEventRec
   new Map(),
 )
 
+/** Copy markdown to the clipboard and say so. Shared by the context menu,
+ *  the per-message hover button and the ⌘⇧C chord so all three report the
+ *  same way. `label` names what was copied when it isn't a selection. */
+async function copyWithToast(markdown: string, label = 'Selection'): Promise<boolean> {
+  const toast = useHarness.getState().showToast
+  if (!markdown.trim()) {
+    toast('Nothing to copy', 'warn')
+    return false
+  }
+  const ok = await writeClipboard(markdown)
+  const lines = markdown.split('\n').length
+  toast(
+    ok ? `${label} copied as markdown · ${lines} line${lines === 1 ? '' : 's'}` : 'Clipboard unavailable',
+    ok ? 'ok' : 'warn',
+  )
+  return ok
+}
+
 interface MessageActionsValue {
   openMenu: (e: React.MouseEvent, message: Message) => void
   editingId: string | null
@@ -103,7 +128,16 @@ export function Conversation() {
 
   // ── Message context menu, edit mode, branch dialog state ──────
   const [menuState, setMenuState] = useState<
-    | { messageId: string; role: Message['role']; x: number; y: number }
+    | {
+        messageId: string
+        role: Message['role']
+        x: number
+        y: number
+        /** Markdown for whatever was selected inside this message when the
+         *  menu opened. Snapshotted here because picking a menu item blurs
+         *  the document and can drop the live selection. */
+        selectionMd: string
+      }
     | null
   >(null)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -116,11 +150,16 @@ export function Conversation() {
       const target = e.target as HTMLElement
       if (target.closest('a[href], input, textarea, [contenteditable="true"]')) return
       e.preventDefault()
+      const selection = window.getSelection()
+      const selectionMd = selectionIntersects(selection, e.currentTarget)
+        ? selectionToMarkdown(selection)
+        : ''
       setMenuState({
         messageId: message.id,
         role: message.role,
         x: e.clientX,
         y: e.clientY,
+        selectionMd,
       })
     },
     [],
@@ -131,7 +170,16 @@ export function Conversation() {
     (action: MessageMenuAction) => {
       if (!menuState) return
       const id = menuState.messageId
-      if (action === 'edit') {
+      if (action === 'copy' || action === 'copy-selection') {
+        const target = messages.find((m) => m.id === id)
+        void copyWithToast(
+          action === 'copy-selection'
+            ? menuState.selectionMd
+            : target
+              ? messageToMarkdown(target)
+              : '',
+        )
+      } else if (action === 'edit') {
         setEditingId(id)
       } else if (action === 'rerun') {
         void rerunUserMessage(id)
@@ -145,7 +193,7 @@ export function Conversation() {
         void toggleEntryPin(id, false)
       }
     },
-    [menuState, rerunUserMessage, deleteMessagesFrom, toggleEntryPin],
+    [menuState, messages, rerunUserMessage, deleteMessagesFrom, toggleEntryPin],
   )
 
   const beginEdit = useCallback((id: string) => setEditingId(id), [])
@@ -208,6 +256,46 @@ export function Conversation() {
         setSearchOpen(true)
         setSearchFocusNonce((n) => n + 1)
       }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  // ⌘C over a rendered answer should yield markdown, not the DOM's
+  // flattened text (which loses fences, `#`, and turns tables into tab
+  // soup). Scoped to the conversation scroller so copying from the
+  // sidebar / activity panel keeps its native behaviour. Only text/plain
+  // is rewritten — deliberately no text/html, so the paste target sees
+  // markdown source rather than re-rendering it as rich text.
+  const onCopy = useCallback((e: React.ClipboardEvent) => {
+    // The inline user-message editor lives inside the scroller; its
+    // selection belongs to the textarea, not the document, so leave it be.
+    const target = e.target as HTMLElement | null
+    if (target?.closest?.('input, textarea, [contenteditable="true"]')) return
+    const md = selectionToMarkdown(window.getSelection())
+    if (!md) return
+    e.clipboardData.setData('text/plain', md)
+    e.preventDefault()
+  }, [])
+
+  // ⌘⇧C — copy without reaching for the mouse: the current selection if
+  // there is one, otherwise the whole last assistant message.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey
+      if (!mod || !e.shiftKey || (e.key !== 'c' && e.key !== 'C')) return
+      const active = document.activeElement as HTMLElement | null
+      if (active && active.closest('input, textarea, [contenteditable="true"]')) return
+      e.preventDefault()
+      const selected = selectionToMarkdown(window.getSelection())
+      if (selected) {
+        void copyWithToast(selected)
+        return
+      }
+      const last = [...useHarness.getState().messages]
+        .reverse()
+        .find((m) => m.role === 'assistant')
+      void copyWithToast(last ? messageToMarkdown(last) : '', 'Last answer')
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -451,7 +539,11 @@ export function Conversation() {
       )}
       <SearchQueryContext.Provider value={searchQuery}>
         <MessageActionsContext.Provider value={messageActionsValue}>
-          <div ref={scrollerRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden">
+          <div
+            ref={scrollerRef}
+            onCopy={onCopy}
+            className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden"
+          >
             <ChildSessionBreadcrumb />
             <div className="mx-auto w-full max-w-[1200px] px-8 py-6">
               {systemPrompt && systemPrompt.trim() && (
@@ -487,6 +579,7 @@ export function Conversation() {
           isPinned={Boolean(
             messages.find((m) => m.id === menuState.messageId)?.pinned,
           )}
+          hasSelection={Boolean(menuState.selectionMd)}
           onPick={handlePick}
           onClose={closeMenu}
         />
@@ -1026,13 +1119,18 @@ const MessageView = memo(function MessageView({ message }: { message: Message })
   const groups = useMemo(() => groupParts(message.parts), [message.parts])
 
   return (
+    // `group/msg` is deliberately named: a bare `group` would also drive
+    // the `group-hover:` rules inside inline memory cards further down
+    // this subtree.
     <div
       onContextMenu={onContextMenu}
-      className={`${isStreamingMessage ? '' : 'render-cached '}animate-fade-in mb-6`}
+      className={`group/msg ${isStreamingMessage ? '' : 'render-cached '}animate-fade-in mb-6`}
     >
       <div className="mb-1.5 flex items-center gap-2 label">
         <span className="inline-block h-1.5 w-1.5 rounded-full bg-accent" />
         assistant
+        <span className="flex-1" />
+        <CopyMessageButton message={message} />
       </div>
       <div className="space-y-2.5 pl-0">
         {groups.map((group, idx) => (
@@ -1043,9 +1141,114 @@ const MessageView = memo(function MessageView({ message }: { message: Message })
           />
         ))}
       </div>
+      <TurnMeter
+        startedAt={message.createdAt}
+        completedAt={message.completedAt}
+        toolCount={countTools(message.parts)}
+        live={isStreamingMessage}
+      />
     </div>
   )
 })
+
+/** Hover affordance in the assistant header row. Copies the message's raw
+ *  markdown — the part text as the model wrote it, not the rendered DOM —
+ *  so it pastes into an editor or another chat unchanged. */
+function CopyMessageButton({ message }: { message: Message }) {
+  const [copied, setCopied] = useState(false)
+  const onClick = useCallback(
+    async (e: React.MouseEvent) => {
+      e.stopPropagation()
+      if (!(await copyWithToast(messageToMarkdown(message), 'Answer'))) return
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1400)
+    },
+    [message],
+  )
+  return (
+    <button
+      type="button"
+      data-copy-skip=""
+      onClick={onClick}
+      title="Copy this answer as raw markdown (⌘⇧C)"
+      className={`rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-[0.12em] transition ${
+        copied
+          ? 'text-accent opacity-100'
+          : 'text-fg-3 opacity-0 hover:bg-white/[0.06] hover:text-fg-1 focus-visible:opacity-100 group-hover/msg:opacity-100'
+      }`}
+    >
+      {copied ? '✓ copied' : 'copy md'}
+    </button>
+  )
+}
+
+function countTools(parts: MessagePart[]): number {
+  let n = 0
+  for (const part of parts) {
+    if (part.type === 'tool_call' && part.toolCallId) n += 1
+  }
+  return n
+}
+
+/** Wall-clock receipt under a finished turn: how long the whole thing took
+ *  (model + tools + sub-agents), and how many tools it burned getting
+ *  there. Ticks live while the turn runs so a long crunch reads as
+ *  progress rather than a hang. Renders nothing for turns with no span —
+ *  user messages, transcripts reconstructed cold, turns interrupted by a
+ *  quit. */
+function TurnMeter({
+  startedAt,
+  completedAt,
+  toolCount,
+  live,
+}: {
+  startedAt: number
+  completedAt?: number
+  toolCount: number
+  live: boolean
+}) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!live) return
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [live])
+
+  const end = live ? now : completedAt
+  if (!startedAt || !end) return null
+  const ms = Math.max(0, end - startedAt)
+
+  return (
+    <div
+      data-copy-skip=""
+      title={
+        live
+          ? `Started ${new Date(startedAt).toLocaleTimeString()} — still running`
+          : `${new Date(startedAt).toLocaleTimeString()} → ${new Date(end).toLocaleTimeString()}`
+      }
+      className="mt-2 flex w-fit items-center gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-fg-3"
+    >
+      {/* Echoes the accent dot on the `assistant` header — a glyph at 10px
+          in Departure Mono all but disappears. */}
+      <span
+        className={`inline-block h-1 w-1 rounded-full ${
+          live ? 'animate-pulse bg-accent' : 'bg-fg-2'
+        }`}
+      />
+      <span>{live ? 'crunching' : 'crunched for'}</span>
+      <span className="normal-case tabular-nums text-fg-2">{formatDuration(ms)}</span>
+      {toolCount > 0 && (
+        <>
+          <span className="text-fg-3/40">·</span>
+          <span className="normal-case tabular-nums">
+            {toolCount} {toolCount === 1 ? 'tool' : 'tools'}
+          </span>
+        </>
+      )}
+    </div>
+  )
+}
 
 type PartGroup =
   | { kind: 'subagents'; ids: string[] }

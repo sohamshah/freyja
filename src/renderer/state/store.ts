@@ -1838,17 +1838,29 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
       return next
     }
 
-    case 'turn_complete':
+    case 'turn_complete': {
       // Only clear streaming state if this is the CURRENT turn. A stale
       // turn_complete from a cancelled turn must not clobber a newer
       // turn that's already streaming — that race causes the UI to go
       // blank while the agent keeps working in the background.
       if (!slice.currentTurnId || ev.turnId === slice.currentTurnId) {
+        // Stamp the turn's end on the message it produced. Paired with
+        // the `createdAt` written at turn_start, this is the wall-clock
+        // span the conversation footer reads back. Never overwritten, so
+        // a duplicate turn_complete can't stretch the reported duration.
+        const streamingId = slice.currentStreamingMessageId
+        if (streamingId) {
+          const endedAt = Date.now()
+          next.messages = slice.messages.map((m) =>
+            m.id === streamingId && !m.completedAt ? { ...m, completedAt: endedAt } : m,
+          )
+        }
         next.currentStreamingMessageId = null
         next.currentTurnId = null
         next.isStreaming = false
       }
       return next
+    }
 
     case 'message_appended': {
       // Hard-append a fully-formed message. Used by the bridge to

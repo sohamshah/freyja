@@ -9,9 +9,16 @@ export function formatDuration(ms: number): string {
   if (!isFinite(ms)) return '—'
   if (ms < 1000) return `${ms}ms`
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
-  const m = Math.floor(ms / 60_000)
-  const s = Math.floor((ms % 60_000) / 1000)
-  return `${m}m ${s}s`
+  if (ms < 3_600_000) {
+    const m = Math.floor(ms / 60_000)
+    const s = Math.floor((ms % 60_000) / 1000)
+    return `${m}m ${s}s`
+  }
+  // Long agent turns are common enough that "94m 12s" is harder to read
+  // at a glance than "1h 34m".
+  const h = Math.floor(ms / 3_600_000)
+  const m = Math.floor((ms % 3_600_000) / 60_000)
+  return `${h}h ${String(m).padStart(2, '0')}m`
 }
 
 export function formatCost(dollars: number): string {

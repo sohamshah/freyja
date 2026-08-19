@@ -252,6 +252,12 @@ export interface Message {
   role: 'user' | 'assistant' | 'system'
   parts: MessagePart[]
   createdAt: number
+  /** Wall-clock ms at which the turn that produced this message finished.
+   *  Set on `turn_complete`, so `completedAt - createdAt` is the turn's
+   *  full duration (model + tools + sub-agents). Absent on user messages,
+   *  on turns that never completed (app quit mid-stream), and on messages
+   *  reconstructed from a bridge transcript, which carries no turn spans. */
+  completedAt?: number
   inputTokens?: number
   outputTokens?: number
   cacheReadTokens?: number

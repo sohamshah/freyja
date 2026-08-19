@@ -2,6 +2,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
 export type MessageMenuAction =
+  | 'copy'
+  | 'copy-selection'
   | 'edit'
   | 'rerun'
   | 'delete'
@@ -21,6 +23,9 @@ interface MessageContextMenuProps {
   busy?: boolean
   /** True when this message is currently pinned (compaction_excluded). */
   isPinned?: boolean
+  /** True when text inside this message was selected when the menu opened,
+   *  which swaps the copy row for a selection-scoped one. */
+  hasSelection?: boolean
   onPick: (action: MessageMenuAction) => void
   onClose: () => void
 }
@@ -37,6 +42,7 @@ export function MessageContextMenu({
   isUserMessage,
   busy,
   isPinned,
+  hasSelection,
   onPick,
   onClose,
 }: MessageContextMenuProps) {
@@ -87,8 +93,27 @@ export function MessageContextMenu({
     label: string
     hint?: string
     disabled?: boolean
+    /** Draw a hairline above this row. */
+    separator?: boolean
   }> = [
+    // Copy sits at the top and is never blocked by a streaming turn —
+    // reading out what's already on screen is always safe.
+    ...(hasSelection
+      ? [
+          {
+            action: 'copy-selection' as const,
+            label: 'copy selection',
+            hint: 'as markdown',
+          },
+        ]
+      : []),
     {
+      action: 'copy',
+      label: hasSelection ? 'copy message' : 'copy',
+      hint: 'as markdown',
+    },
+    {
+      separator: true,
       action: 'edit',
       label: 'edit',
       hint: 'rewrite + rerun',
@@ -101,6 +126,7 @@ export function MessageContextMenu({
       disabled: !isUserMessage || busy,
     },
     {
+      separator: true,
       action: isPinned ? 'unpin' : 'pin',
       label: isPinned ? 'unpin' : 'pin',
       hint: isPinned ? 'allow compaction again' : 'keep through compactions',
@@ -128,7 +154,7 @@ export function MessageContextMenu({
       className="fixed z-[60] min-w-[176px] rounded-md menu-opaque p-1 ring-hairline-strong shadow-2xl"
       style={{ left: pos.left, top: pos.top }}
     >
-      {items.map((item, i) => (
+      {items.map((item) => (
         <button
           key={item.action}
           role="menuitem"
@@ -143,7 +169,7 @@ export function MessageContextMenu({
             item.disabled
               ? 'cursor-default text-fg-3/60'
               : 'text-fg-1 hover:bg-white/[0.06] hover:text-fg-0'
-          } ${i === 2 ? 'mt-0.5 hairline-t pt-2' : ''}`}
+          } ${item.separator ? 'mt-0.5 hairline-t pt-2' : ''}`}
         >
           <span>{item.label}</span>
           {item.hint && (
