@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useHarness } from '../state/store'
 import { matchSlash, type SlashCommand } from '../lib/slash'
+import { couldRecall, stepHistory, type HistoryCursor } from '../lib/composerHistory'
 
 /** Auto-grow a textarea to fit its content, up to a max height in px.
  *
@@ -128,6 +129,14 @@ export function InputDock() {
     Array<{ name: string; path: string; isDir: boolean }>
   >([])
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  // ── Shell-style history recall ──────────────────────────────────
+  // `history` is null while composing, otherwise a cursor into this
+  // session's sent messages (index 0 = most recent). `stashedDraft` holds
+  // whatever was in the composer when we stepped into history, so pressing
+  // ↓ past the newest entry hands the unsent draft back instead of
+  // dropping it.
+  const [history, setHistory] = useState<HistoryCursor | null>(null)
+  const stashedDraftRef = useRef('')
 
   const MAX_PX = 260
 
@@ -211,9 +220,52 @@ export function InputDock() {
     inputRef.current?.focus()
   }, [])
 
+  // Switching sessions switches the history the arrows walk, so any
+  // in-flight recall (and the draft stashed behind it) is stale.
+  useEffect(() => {
+    setHistory(null)
+    stashedDraftRef.current = ''
+  }, [activeSessionId])
+
+  /** This session's sent messages, newest first. Read from the store on
+   *  demand rather than subscribed — `messages` churns on every streaming
+   *  delta and the composer must not re-render with it. */
+  const readHistory = (): string[] => {
+    const out: string[] = []
+    for (const m of useHarness.getState().messages) {
+      if (m.role !== 'user') continue
+      const text = m.parts
+        .filter((p) => p.type === 'text')
+        .map((p) => p.text ?? '')
+        .join('')
+        .trim()
+      // Attachment-only messages have no text to recall.
+      if (text) out.push(text)
+    }
+    return out.reverse()
+  }
+
+  /** Swap the composer's contents and park the caret at the edge the
+   *  operator is travelling toward, so a run of ↑ (or ↓) keeps stepping
+   *  through history instead of stalling inside the recalled text. */
+  const recall = (text: string, caretAt: 'start' | 'end') => {
+    setDraft(text)
+    requestAnimationFrame(() => {
+      const el = inputRef.current
+      if (!el) return
+      el.focus()
+      const pos = caretAt === 'start' ? 0 : text.length
+      el.selectionStart = el.selectionEnd = pos
+      el.scrollTop = caretAt === 'start' ? 0 : el.scrollHeight
+      setCaret(pos)
+    })
+  }
+
   const submit = async () => {
     const content = draft.trim()
     if (!content && pendingAttachments.length === 0) return
+    setHistory(null)
+    stashedDraftRef.current = ''
     if (content.startsWith('/')) {
       const space = content.indexOf(' ')
       const name = space === -1 ? content : content.slice(0, space)
@@ -430,6 +482,39 @@ export function InputDock() {
         // floating; otherwise just move caret past the token.
         setSelectedSuggestion(0)
         setCaret(-1)
+        return
+      }
+    }
+    // History recall — see lib/composerHistory for the caret rules. Runs
+    // after the autocomplete popups, which own the arrows while open.
+    if (
+      (e.key === 'ArrowUp' || e.key === 'ArrowDown') &&
+      !e.metaKey &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      !e.shiftKey
+    ) {
+      const el = e.currentTarget
+      const at = el.selectionStart ?? 0
+      const end = el.selectionEnd ?? at
+      // Guard before readHistory() so the many presses that only move the
+      // caret through a long draft don't walk the message list.
+      const step = couldRecall(at, end, el.value.length)
+        ? stepHistory({
+            key: e.key,
+            caret: at,
+            selectionEnd: end,
+            value: el.value,
+            entries: readHistory(),
+            cursor: history,
+            stashedDraft: stashedDraftRef.current,
+          })
+        : null
+      if (step) {
+        e.preventDefault()
+        if (step.stash) stashedDraftRef.current = el.value
+        setHistory(step.cursor)
+        recall(step.text, step.caretAt)
         return
       }
     }
@@ -699,6 +784,12 @@ export function InputDock() {
                 onChange={(e) => {
                   setDraft(e.target.value)
                   setCaret(e.target.selectionStart ?? e.target.value.length)
+                  // Typing over a recalled message makes it the operator's
+                  // own text again. Only fires for real input — the
+                  // programmatic setDraft inside `recall` does not.
+                  // The stash survives, so the next ↑↓ round trip still
+                  // returns whatever is in the composer right now.
+                  setHistory(null)
                 }}
                 onFocus={() => setFocused(true)}
                 onBlur={() => setFocused(false)}
@@ -726,19 +817,36 @@ export function InputDock() {
                     : 'pointer-events-none opacity-0'
                 }`}
               >
-                <span>
-                  <kbd className="kbd">⌘</kbd>
-                  <kbd className="kbd ml-1">K</kbd> palette
-                </span>
-                <span>
-                  <kbd className="kbd">/</kbd> commands
-                </span>
-                <span>
-                  <kbd className="kbd">@</kbd> files
-                </span>
-                <span>
-                  <kbd className="kbd">~/</kbd> paths
-                </span>
+                {history ? (
+                  <>
+                    <span className="text-accent">
+                      history {history.index + 1}/{history.total}
+                    </span>
+                    <span>
+                      <kbd className="kbd">↑</kbd>
+                      <kbd className="kbd ml-1">↓</kbd> browse
+                    </span>
+                    <span className="truncate">
+                      <kbd className="kbd">↓</kbd> at the end restores your draft
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span>
+                      <kbd className="kbd">⌘</kbd>
+                      <kbd className="kbd ml-1">K</kbd> palette
+                    </span>
+                    <span>
+                      <kbd className="kbd">/</kbd> commands
+                    </span>
+                    <span>
+                      <kbd className="kbd">@</kbd> files
+                    </span>
+                    <span>
+                      <kbd className="kbd">~/</kbd> paths
+                    </span>
+                  </>
+                )}
               </div>
               <div className="ml-auto flex min-w-0 items-center">
                 {isStreaming ? (
