@@ -665,6 +665,33 @@ function costForSessionId(state: HarnessState, sessionId: string): number {
   return snapshot?.totalCost ?? 0
 }
 
+/** Per-session cost rows for a session tree: the session itself first,
+ *  then every descendant sub-agent session with its own tracked spend.
+ *  Used by the session receipt to show total-first-then-breakdown. */
+export function sessionCostBreakdown(
+  state: HarnessState,
+  sessionId: string,
+): Array<{ id: string; title: string; cost: number; isRoot: boolean }> {
+  const rows = [
+    {
+      id: sessionId,
+      title: 'this session',
+      cost: costForSessionId(state, sessionId),
+      isRoot: true,
+    },
+  ]
+  for (const id of collectDescendantSessionIds(state.sessions, sessionId)) {
+    const snap = state.sessions.find((s) => s.id === id)
+    rows.push({
+      id,
+      title: snap?.title || id,
+      cost: costForSessionId(state, id),
+      isRoot: false,
+    })
+  }
+  return rows
+}
+
 /** Sum a session's own cost with the cost of every descendant subagent.
  *  Used by the activity panel so the "session spend" for a parent
  *  reflects total work (parent + spawned agents + nested subagents). */
@@ -1086,6 +1113,7 @@ type PersistedSessionMetaPayload = {
   totalInputTokens: number
   totalOutputTokens: number
   cacheReadTokens: number
+  totalCost?: number
   parentSessionId?: string
   childSessionIds?: string[]
   task?: string
@@ -1143,6 +1171,7 @@ function persistedMetaFromSession(
     totalInputTokens: usage?.totalInputTokens ?? session.totalInputTokens ?? 0,
     totalOutputTokens: usage?.totalOutputTokens ?? session.totalOutputTokens ?? 0,
     cacheReadTokens: usage?.totalCacheReadTokens ?? session.cacheReadTokens ?? 0,
+    totalCost: usage?.totalCost ?? session.totalCost ?? 0,
     parentSessionId: session.parentSessionId,
     childSessionIds: session.childSessionIds,
     task: session.task,
@@ -3831,6 +3860,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         totalInputTokens: s.totalInputTokens ?? 0,
         totalOutputTokens: s.totalOutputTokens ?? 0,
         cacheReadTokens: s.cacheReadTokens ?? 0,
+        totalCost: typeof s.totalCost === 'number' ? s.totalCost : undefined,
         parentSessionId: s.parentSessionId,
         childSessionIds: s.childSessionIds,
         task: s.task,
@@ -3888,6 +3918,26 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         sessions: active ? [active, ...rest] : rest,
       }
     })
+
+    // Sessions persisted before totalCost round-tripped hydrate with no
+    // spend, which zeroes them out of the title bar's cost roll-up.
+    // Backfill the ACTIVE session's descendants from their slice files
+    // (bounded — a session tree is small); loading the archive also
+    // repairs the snapshot row, so the next index write is permanent.
+    {
+      const state = useHarness.getState()
+      const pending = state.sessions
+        .filter(
+          (row) =>
+            row.parentSessionId === state.activeSessionId &&
+            row.totalCost == null &&
+            !state.sessionArchive[row.id],
+        )
+        .slice(0, 16)
+      for (const row of pending) {
+        void state.loadPersistedSessionIntoArchive(row.id)
+      }
+    }
   },
 
   async persistSession(sessionId) {
@@ -3958,6 +4008,14 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         ...prev.sessionArchive,
         [sessionId]: slice,
       },
+      // Repair the snapshot row while we're here: rows hydrated from a
+      // pre-totalCost index have no spend, which zeroes this session out
+      // of every parent's cost roll-up.
+      sessions: prev.sessions.map((row) =>
+        row.id === sessionId && slice.usage?.totalCost != null
+          ? { ...row, totalCost: slice.usage.totalCost }
+          : row,
+      ),
     }))
     return true
   },

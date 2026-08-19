@@ -79,6 +79,10 @@ export interface PersistedSession {
   totalInputTokens: number
   totalOutputTokens: number
   cacheReadTokens: number
+  /** Cumulative USD spend for this session alone. Older files predate
+   *  this field — loaders backfill it from `slice.usage.totalCost`,
+   *  which was always persisted inside the slice. */
+  totalCost?: number
   // Sub-agent lineage. Without these, the "swarm" panel in the
   // sidebar is empty after app restart: `childSessions` is derived
   // from `parentSessionId` on each row, and if we don't round-trip
@@ -235,6 +239,11 @@ export function listSessions(): PersistedSessionMeta[] {
         const raw = fs.readFileSync(path.join(SESSIONS_DIR, f), 'utf8')
         const parsed = JSON.parse(raw) as PersistedSession
         if (!parsed || parsed.version !== 1) continue
+        if (parsed.totalCost == null) {
+          const sliceCost = (parsed.slice as { usage?: { totalCost?: number } } | undefined)
+            ?.usage?.totalCost
+          if (typeof sliceCost === 'number') parsed.totalCost = sliceCost
+        }
         // Return only the metadata fields (not the heavy slice)
         rows.push(toMeta(parsed))
       } catch {
@@ -383,6 +392,11 @@ export function loadSession(id: string): PersistedSession | null {
     const raw = fs.readFileSync(sessionFile(id), 'utf8')
     const parsed = JSON.parse(raw) as PersistedSession
     if (!parsed || parsed.version !== 1) return null
+    if (parsed.totalCost == null) {
+      const sliceCost = (parsed.slice as { usage?: { totalCost?: number } } | undefined)
+        ?.usage?.totalCost
+      if (typeof sliceCost === 'number') parsed.totalCost = sliceCost
+    }
     return parsed
   } catch {
     // Fall back to synthesizing a read-only PersistedSession from the

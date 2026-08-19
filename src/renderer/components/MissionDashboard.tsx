@@ -19,6 +19,7 @@ import { BusFlowView } from './views/BusFlowView'
 import { JudgeBrief } from './views/JudgeBrief'
 import { DispatcherBrief } from './views/DispatcherBrief'
 import { ActivityView } from './views/ActivityView'
+import { SessionActivityTab } from './views/SessionReceiptView'
 import { ScopedErrorBoundary } from './ScopedErrorBoundary'
 
 // 'swarm' / 'findings' / 'telemetry' kept for legacy callers; they all
@@ -835,7 +836,26 @@ export function MissionDashboard() {
             onCopyFinding={(event) => copyFinding(event, showToast)}
           />
         )}
-        {(tab === 'activity' || tab === 'findings' || tab === 'telemetry') && (
+        {/* The activity tab leads with the session receipt (thread braid +
+            metrics); the classic event log stays behind a toggle. The
+            findings/telemetry aliases keep jumping straight to the log
+            view, since they exist to deep-link specific event rows. */}
+        {tab === 'activity' && (
+          <SessionActivityTab
+            renderLog={() => (
+              <ActivityView
+                findings={dashboard.findings}
+                readEvents={dashboard.readEvents}
+                telemetryEvents={dashboard.telemetryEvents}
+                agents={dashboard.agents}
+                sessions={dashboard.sessions}
+                inboxEvents={dashboard.inboxEvents}
+                onCopyFinding={(event) => copyFinding(event, showToast)}
+              />
+            )}
+          />
+        )}
+        {(tab === 'findings' || tab === 'telemetry') && (
           <ActivityView
             findings={dashboard.findings}
             readEvents={dashboard.readEvents}
