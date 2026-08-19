@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Core — the session as a drill log</title>
+<style>
+@font-face{font-family:'Geist Mono';src:url('../src/renderer/assets/fonts/GeistMono-Variable.woff2') format('woff2');font-weight:100 900;font-display:swap}
+@font-face{font-family:'Departure Mono';src:url('../src/renderer/assets/fonts/DepartureMono-Regular.woff2') format('woff2');font-weight:400;font-display:swap}
+
+/* ── Freyja blackbox ─────────────────────────────────────────────────────
+   The other two mocks are wide. This one is 320px because that is what the
+   Activity rail actually is — a narrow vertical column beside the
+   conversation. Time runs DOWN, the way the rail already scrolls, so this
+   can replace the event list rather than needing a new pane.
+
+   One hue throughout (the ice ramp validated as an ordinal ramp against
+   #0a0a0a). Density is encoded as bar length off a spine, never as a
+   colour ramp over nominal categories. */
+:root{
+  --void:#060607; --panel:#0a0a0b; --panel-2:#101012;
+  --ice-0:#a8d4fc; --ice-1:#7aafea; --ice-2:#5b8fcf; --ice-3:#3f6da8; --ice-4:#2a4d78;
+  --ink-0:#e8e8e8; --ink-1:#a8a8a8; --ink-2:#6e6e6e; --ink-3:#4a4a4a; --ink-4:#303030;
+  --rule:rgba(255,255,255,.055); --rule-2:rgba(255,255,255,.026);
+  --warn:#b8a078;
+}
+*{box-sizing:border-box}
+html{background:#000}
+body{margin:0;background:var(--void);color:var(--ink-1);
+  font-family:'Geist Mono',ui-monospace,'SF Mono',Menlo,monospace;
+  font-size:12px;line-height:1.55;padding:30px 26px 60px;
+  -webkit-font-smoothing:antialiased;cursor:crosshair}
+body::before{content:'';position:fixed;inset:0;z-index:99;pointer-events:none;opacity:.30;
+  mix-blend-mode:overlay;
+  background:repeating-linear-gradient(0deg,rgba(255,255,255,.026) 0 1px,transparent 1px 4px),
+             radial-gradient(circle at 50% 45%,transparent 42%,rgba(0,0,0,.6))}
+body::after{content:'';position:fixed;inset:0;z-index:98;pointer-events:none;opacity:.055;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.82' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E")}
+
+.page{max-width:1180px;margin:0 auto;position:relative;z-index:1;
+  display:grid;grid-template-columns:1fr 320px;gap:38px;align-items:start}
+@media(max-width:900px){.page{grid-template-columns:1fr}}
+
+h1{font-family:'Departure Mono','Geist Mono',monospace;font-size:13px;letter-spacing:.30em;
+  text-transform:uppercase;color:var(--ink-0);margin:0 0 5px;font-weight:400}
+.sid{font-size:10px;color:var(--ink-3);word-break:break-all}
+.essay{font-size:11.5px;color:var(--ink-2);max-width:56ch;margin-top:26px}
+.essay p{margin:0 0 13px}
+.essay b{color:var(--ink-1);font-weight:400}
+.essay .kv{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;margin-top:20px;
+  padding-top:16px;border-top:1px solid var(--rule);font-size:10.5px}
+.essay .kv dt{font-family:'Departure Mono','Geist Mono',monospace;font-size:9.5px;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);white-space:nowrap}
+.essay .kv dd{margin:0;color:var(--ink-1)}
+
+/* ── the rail ──────────────────────────────────────────────────────── */
+.rail{background:var(--panel);border:1px solid var(--rule);border-radius:7px;
+  padding:0 0 14px;overflow:hidden}
+.railhead{padding:13px 15px 11px;border-bottom:1px solid var(--rule-2)}
+.railhead .t{font-family:'Departure Mono','Geist Mono',monospace;font-size:9.5px;
+  letter-spacing:.18em;text-transform:uppercase;color:var(--ink-2);
+  display:flex;justify-content:space-between;align-items:baseline}
+.railhead .t em{font-style:normal;color:var(--ink-4);letter-spacing:.1em}
+.railhead .sum{display:flex;gap:16px;margin-top:9px}
+.railhead .sum div .k{font-family:'Departure Mono','Geist Mono',monospace;font-size:8.5px;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--ink-4);display:block}
+.railhead .sum div .v{font-size:13px;color:var(--ink-0)}
+.railhead .sum div .v.warn{color:var(--warn)}
+
+.core{position:relative;padding:14px 0 4px}
+/* the spine everything hangs off */
+.spine{position:absolute;left:118px;top:0;bottom:0;width:1px;background:var(--rule)}
+
+/* Ticks own the far-left strip; density bars own the strip beside the
+   spine. They never share pixels, so a busy minute can't cross a label. */
+.tick{position:absolute;left:0;width:36px;text-align:right;font-size:9px;color:var(--ink-4);
+  font-variant-numeric:tabular-nums;transform:translateY(-50%)}
+.tick::after{content:'';position:absolute;right:-8px;top:50%;width:5px;height:1px;background:var(--rule-2)}
+
+/* activity: a bar to the LEFT of the spine, length = calls that minute */
+.den{position:absolute;right:calc(100% - 118px);height:2px;background:var(--ice-1);border-radius:1px}
+/* sub-agents: rules to the RIGHT of the spine */
+.agent{position:absolute;left:124px;width:3px;border-radius:2px;background:var(--ice-3);
+  box-shadow:inset 0 0 0 1px var(--ice-2)}
+.agent:hover{background:var(--ice-0)}
+.wv{position:absolute;left:136px;font-size:9.5px;color:var(--ink-2);white-space:nowrap;
+  transform:translateY(-50%)}
+.wv b{font-weight:400;color:var(--ink-1)}
+.wv span{color:var(--ink-4)}
+
+/* markers pinned on the spine */
+.pin{position:absolute;left:118px;width:7px;height:7px;margin-left:-3.5px;margin-top:-3.5px;
+  border-radius:50%;background:var(--ink-3);box-shadow:0 0 0 2.5px var(--panel)}
+.pin.user{background:var(--ice-0);border-radius:1px;transform:rotate(45deg);
+  box-shadow:0 0 0 2.5px var(--panel),0 0 9px rgba(168,212,252,.6)}
+.pin.reply{background:transparent;box-shadow:inset 0 0 0 1.5px var(--ice-3),0 0 0 2.5px var(--panel)}
+.pin.artifact{background:var(--ice-2)}
+.pin.error{background:var(--warn)}
+
+/* the void — drawn as an actual break in the core */
+.void{position:absolute;left:0;right:0;pointer-events:none;
+  background:repeating-linear-gradient(135deg,rgba(184,160,120,.07) 0 4px,transparent 4px 9px);
+  border-top:1px solid rgba(184,160,120,.30);border-bottom:1px solid rgba(184,160,120,.30)}
+.void .lab{position:absolute;left:136px;top:50%;transform:translateY(-50%);
+  font-family:'Departure Mono','Geist Mono',monospace;font-size:9.5px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--warn);white-space:nowrap}
+.void .lab small{display:block;letter-spacing:.1em;font-size:9px;color:var(--ink-3);
+  text-transform:none;margin-top:3px}
+
+.railfoot{padding:12px 15px 0;margin-top:10px;border-top:1px solid var(--rule-2);
+  font-size:9.5px;color:var(--ink-4);display:flex;flex-wrap:wrap;gap:11px}
+.railfoot i{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:5px;vertical-align:0}
+
+.readout{position:fixed;z-index:120;pointer-events:none;opacity:0;transition:opacity .1s;
+  background:var(--panel-2);border:1px solid var(--rule);border-radius:3px;padding:8px 11px;
+  font-size:10.5px;color:var(--ink-0);white-space:nowrap;box-shadow:0 10px 30px rgba(0,0,0,.75)}
+.readout .k{color:var(--ink-3)}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div>
+    <h1>Core</h1>
+    <div class="sid" id="sid"></div>
+    <div class="essay">
+      <p>The other two mocks are wide, and the Activity rail is not. This is the same
+        session read as a <b>drill log</b>: time runs downward at a fixed scale, activity
+        hangs off a spine to the left, sub-agents to the right.</p>
+      <p>Because the scale is fixed, <b>a quiet hour takes up an hour of column</b>.
+        The stall is not a label you have to read — it is a physical void in the core,
+        and it is the largest single thing on the page.</p>
+      <p>That is the argument for replacing the event list here. A list of 28 events
+        renders the same height whether they happened over four minutes or four hours.
+        This does not.</p>
+      <dl class="kv" id="kv"></dl>
+    </div>
+  </div>
+
+  <div class="rail">
+    <div class="railhead">
+      <div class="t"><span>activity</span><em id="railScale"></em></div>
+      <div class="sum" id="railSum"></div>
+    </div>
+    <div class="core" id="core"></div>
+    <div class="railfoot">
+      <span><i style="background:var(--ice-0);border-radius:1px"></i>you</span>
+      <span><i style="background:transparent;box-shadow:inset 0 0 0 1.5px var(--ice-3)"></i>reply</span>
+      <span><i style="background:var(--ice-2)"></i>artifact</span>
+      <span><i style="background:var(--warn)"></i>failed</span>
+      <span><i style="background:var(--ice-3)"></i>agent</span>
+    </div>
+  </div>
+
+</div>
+<div class="readout" id="ro"></div>
+
+<script id="data" type="application/json">{"comOrder":["read / search","orchestrate","write / edit","shell","deliver","browser"],"com":{"read / search":56.5,"shell":114.0,"write / edit":113.5,"browser":174.7,"orchestrate":74.5,"deliver":129.3},"phases":[{"a":0,"b":43,"dom":"read / search","share":0.34},{"a":49,"b":93,"dom":"write / edit","share":0.5},{"a":230,"b":253,"dom":"write / edit","share":0.32},{"a":284,"b":296,"dom":"shell","share":0.51}],"longCalls":[{"name":"subagents","start":10.47,"dur":7.73},{"name":"subagents","start":30.37,"dur":11.78},{"name":"subagents","start":53.49,"dur":4.5},{"name":"edit_file","start":60.13,"dur":32.85},{"name":"subagents","start":60.13,"dur":3.03},{"name":"bash","start":234.17,"dur":10.0},{"name":"subagents","start":244.76,"dur":1.2},{"name":"subagents","start":246.66,"dur":3.04}],"meta":{"id":"freyja:slack:T04RBR2J4JC:channel:C0AJF21GSE8:1786645306.443119","title":"slack:T04RBR2J4JC:channel:C0AJF21GSE8:1786645306.443119","model":"claude-opus-4-8","workspace":"/Users/sohamshah","spanMin":295.4,"messages":8,"usage":{"currentContextTokens":236342,"totalInputTokens":4526829,"totalOutputTokens":22023,"totalCacheReadTokens":766430,"totalCacheWriteTokens":18951,"totalCost":177.8675135,"lastTurnInputTokens":236342,"lastTurnOutputTokens":22023,"contextWindow":1000000,"systemPromptTokens":12057,"toolTokens":23925,"transcriptTokens":22585,"toolCount":38},"t0":1786647348844},"span":295.4,"N":296,"chTool":[14,8,7,5,5,2,2,1,0,0,6,0,0,0,0,0,3,2,1,0,5,0,0,0,0,0,0,0,0,0,11,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,32,0,0,0,0,0,0,32,0,11,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,2,3,2,0,0,0,0,0,0,0,0,0,3,0,8,0,0,3,7,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,3,0,1,2,0,0,0,22,0,0,0],"chSwarm":[0,0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,1,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,2,2,2,0,0,0,2,2,2,2,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,2,2,2,1,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0],"chFlight":[14,8,7,5,5,3,2,1,0,0,6,1,1,1,1,1,4,3,2,0,5,1,0,0,0,0,0,0,0,0,11,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,32,1,1,1,1,0,0,32,2,13,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,2,3,2,1,1,1,1,1,1,1,1,1,4,1,8,1,1,4,7,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,3,0,1,2,0,0,0,22,0,0,0],"ridgeOrder":["read / search","shell","write / edit","browser","orchestrate","deliver"],"ridge":{"read / search":[4.7969,4.0123,3.1874,2.3923,1.6888,1.1168,0.6889,0.4016,0.229,0.144,0.1278,0.1672,0.2503,0.3562,0.4697,0.5629,0.6132,0.6073,0.5467,0.4474,0.3329,0.2323,0.1549,0.1117,0.104,0.1288,0.1765,0.2417,0.3085,0.3572,0.3751,0.3572,0.3085,0.2417,0.1717,0.1107,0.0647,0.0343,0.0165,0.0072,0.0,0.0,0.0,0.0,0.0216,0.0494,0.1028,0.194,0.332,0.5152,0.7251,0.9256,1.0716,1.1253,1.0716,0.9256,0.7251,0.5152,0.332,0.194,0.1028,0.0494,0.0216,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0024,0.0055,0.0114,0.0216,0.0369,0.0572,0.0806,0.1028,0.1191,0.125,0.1191,0.1028,0.0806,0.0572,0.0369,0.0216,0.0162,0.0165,0.0252,0.0503,0.0926,0.1543,0.2372,0.3379,0.4468,0.549,0.6272,0.6657,0.6553,0.5967,0.5014,0.3877,0.2751,0.1789,0.1063,0.0558,0.0279,0.0127,0.0024,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],"shell":[2.6272,2.6759,2.6157,2.4245,2.1111,1.7145,1.2918,0.8992,0.5763,0.3389,0.1822,0.0904,0.0401,0.0234,0.0216,0.0369,0.0572,0.0806,0.1028,0.1191,0.125,0.1287,0.1248,0.1263,0.1435,0.1844,0.2505,0.3337,0.4169,0.4787,0.5001,0.4763,0.4114,0.3223,0.229,0.1475,0.0862,0.0457,0.022,0.0096,0.0,0.0,0.0,0.0,0.024,0.0549,0.1143,0.2156,0.3689,0.5724,0.8057,1.0285,1.1907,1.2527,1.1962,1.0399,0.8272,0.6093,0.4261,0.2961,0.2171,0.174,0.149,0.1191,0.1028,0.0806,0.0572,0.0369,0.0216,0.0114,0.0055,0.0024,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0048,0.0134,0.0283,0.0545,0.0953,0.1514,0.2184,0.2863,0.341,0.3691,0.3632,0.3248,0.264,0.1951,0.131,0.08,0.0444,0.0248,0.0158,0.0162,0.0271,0.0483,0.0788,0.1175,0.1601,0.1996,0.2279,0.2381,0.2279,0.1996,0.1601,0.1175,0.0788,0.0483,0.0271,0.0138,0.0055,0.0024,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0024,0.0103,0.0224,0.0468,0.0903,0.1534,0.2395,0.344,0.4773,0.6077,0.736,0.8598,0.9814,1.1027,1.2175,1.3072,1.3446,1.305,1.1803,0.9849,0.7535],"write / edit":[0.0584,0.0941,0.1378,0.1834,0.2219,0.2441,0.2441,0.2219,0.1834,0.1402,0.0996,0.0699,0.0545,0.0538,0.0651,0.083,0.1028,0.1191,0.125,0.1191,0.1028,0.0806,0.0572,0.0369,0.0216,0.0114,0.0055,0.0024,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0216,0.0494,0.1028,0.194,0.332,0.5152,0.7251,0.9831,1.2035,1.4091,1.611,1.8566,2.1852,2.5963,3.0292,3.374,3.5149,3.3834,2.99,2.4099,1.7852,1.2075,0.7464,0.4218,0.2181,0.1032,0.022,0.0096,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0024,0.0103,0.0248,0.0499,0.0914,0.1526,0.2319,0.3212,0.4053,0.466,0.4882,0.466,0.4053,0.3212,0.2319,0.1598,0.1079,0.0842,0.0895,0.1305,0.1961,0.2874,0.3948,0.5048,0.6041,0.6795,0.7199,0.718,0.6718,0.5869,0.4761,0.3565,0.2454,0.1547,0.0862,0.0457,0.022,0.0096,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0144,0.033,0.0686,0.1293,0.2213,0.3435,0.4834,0.6171,0.7144,0.7502,0.7144,0.6171,0.4834],"browser":[0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0072,0.0165,0.0415,0.0812,0.1449,0.2364,0.3524,0.4803,0.5989,0.6836,0.7144,0.6836,0.5989,0.4803,0.3524,0.2364,0.1449,0.0812,0.0415,0.0165,0.0072,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0024,0.0055,0.0114,0.0216,0.0369,0.0572,0.0806,0.1028,0.1191,0.125,0.1191,0.1028,0.0806,0.0572,0.0369,0.0216,0.0114,0.0055,0.0024,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0144,0.033,0.0686,0.1293,0.2213,0.3435,0.4834,0.6171,0.7144,0.7502,0.7144,0.6171,0.4834],"orchestrate":[2.8824,2.3151,1.7942,1.3756,1.0853,0.9202,0.8537,0.8464,0.8562,0.848,0.7998,0.7182,0.6006,0.4756,0.3702,0.303,0.2819,0.2988,0.336,0.3692,0.3751,0.3668,0.3305,0.2874,0.258,0.2582,0.2936,0.3565,0.4279,0.4835,0.5001,0.4763,0.4114,0.3223,0.229,0.1475,0.0862,0.0457,0.022,0.0096,0.0,0.0,0.0,0.0,0.0096,0.022,0.0457,0.0862,0.1475,0.229,0.3223,0.4234,0.5037,0.562,0.5951,0.6187,0.6516,0.7056,0.7763,0.8427,0.8765,0.8555,0.7739,0.641,0.4919,0.3456,0.2223,0.1309,0.0706,0.0348,0.011,0.0048,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0024,0.0055,0.0114,0.0216,0.0369,0.0572,0.0806,0.1028,0.1191,0.125,0.1263,0.1193,0.122,0.1384,0.1818,0.258,0.3662,0.496,0.6237,0.728,0.7944,0.8146,0.794,0.7442,0.6771,0.5996,0.5141,0.4221,0.3277,0.2349,0.1586,0.0953,0.0545,0.0283,0.0134,0.0048,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],"deliver":[0.0,0.0024,0.0055,0.0114,0.0216,0.0369,0.0572,0.0806,0.1028,0.1191,0.125,0.1215,0.1083,0.092,0.0788,0.0738,0.0788,0.092,0.1083,0.1215,0.125,0.1191,0.1028,0.0806,0.0572,0.0369,0.0216,0.0114,0.0055,0.0024,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0024,0.0055,0.0114,0.0216,0.0369,0.0572,0.0806,0.1028,0.1191,0.125,0.1191,0.1028,0.0806,0.0572,0.0369,0.0216,0.0114,0.0055,0.0024,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0024,0.0055,0.0114,0.0216,0.0369,0.0572,0.0806,0.1052,0.1246,0.1365,0.1406,0.1397,0.1378,0.1378,0.1397,0.1406,0.1365,0.1246,0.1052,0.0806]},"ridgeCounts":{"read / search":39,"shell":55,"write / edit":57,"browser":13,"orchestrate":41,"deliver":5},"gaps":[[43,49],[93,230],[253,284]],"waves":[{"at":8.8,"n":3,"labels":["research-arxiv","research-blogs","research-hn-x"],"dur":7.8,"tok":2148452},{"at":21.8,"n":1,"labels":["research-niche-blogs"],"dur":13.1,"tok":1432098},{"at":49.0,"n":2,"labels":["qa-visual","qa-prose"],"dur":4.6,"tok":503999},{"at":57.3,"n":2,"labels":["qa-visual-r2","qa-prose-r2"],"dur":3.1,"tok":233026},{"at":62.2,"n":1,"labels":["Skill drafter"],"dur":0.0,"tok":0},{"at":244.7,"n":2,"labels":["Prose review \u2014 tool-invocation-report","Visual review \u2014 tool-invocation-report"],"dur":1.2,"tok":78739},{"at":246.6,"n":2,"labels":["Prose review R2 \u2014 tool-invocation-report","Visual review R2 \u2014 tool-invocation-report"],"dur":3.1,"tok":67392},{"at":251.2,"n":2,"labels":["Prose review R3 \u2014 tool-invocation-report","Visual review R3 \u2014 tool-invocation-report"],"dur":0.8,"tok":46847},{"at":292.9,"n":1,"labels":["Skill drafter"],"dur":0.0,"tok":0}],"markers":[{"at":-0.13,"kind":"reply","text":"I'll start by exploring the codebase to ground the problem statement, then draft the report, then extend with external research. Setting up the task l"},{"at":5.49,"kind":"artifact","text":"session_notes_invoke_tool.md"},{"at":20.94,"kind":"artifact","text":"tool-invocation-report.md"},{"at":30.37,"kind":"reply","text":"On it: refreshing the blog research (2026-only, niche startups) in the background while I set up the HTML build with the right style skills.Compacted."},{"at":30.37,"kind":"prune","text":"compaction start"},{"at":30.37,"kind":"prune","text":"context pruning"},{"at":53.49,"kind":"artifact","text":"serve.py"},{"at":53.49,"kind":"prune","text":"context pruning"},{"at":53.49,"kind":"prune","text":"context pruning"},{"at":53.491,"kind":"error","text":"bash failed"},{"at":60.131,"kind":"error","text":"edit_file failed"},{"at":62.172,"kind":"error","text":"browser_execute_js failed"},{"at":92.94,"kind":"user","text":"this file /Users/sohamshah/.freyja/projects/freyja-slack-T04RBR2J4JC-channel-C0AJF21GSE8-1786645306.443119/tool-invocation-report.html originally from"},{"at":92.94,"kind":"reply","text":""},{"at":92.98,"kind":"prune","text":"turn cancelled"},{"at":230.45,"kind":"user","text":"The current report is far too verbose, repetitive, roundabout, and difficult to read. Do not create another parallel report. Replace the existing HTML"},{"at":230.46,"kind":"reply","text":"I'll read the existing report and the style guide, then rewrite in place.Acknowledged. I have the full existing report and all the substance I need. R"},{"at":284.63,"kind":"reply","text":"The 16:06 version on disk is the shortened rewrite (2,957 words, 6 sections, 3 figures, refs intact). Quick integrity check, then sharing.Shortened do"},{"at":286.59,"kind":"reply","text":"Let me look at what the current shortened version kept, and what recovery material exists for the findings.Full picture clear. The memo kept internal "},{"at":288.01,"kind":"prune","text":"context pruning"},{"at":288.01,"kind":"prune","text":"context pruning"},{"at":292.92,"kind":"artifact","text":"tool-invocation-report.html"},{"at":292.921,"kind":"error","text":"bash failed"},{"at":292.922,"kind":"error","text":"browser_execute_js failed"},{"at":292.923,"kind":"error","text":"browser_execute_js failed"},{"at":292.923,"kind":"error","text":"browser_execute_js failed"},{"at":292.93,"kind":"prune","text":"context pruning"},{"at":292.93,"kind":"prune","text":"context pruning"}],"subs":[{"id":"sub_19ffc8314af_1","label":"research-arxiv","agentType":"explore","model":"claude-sonnet-4-6","state":"done","start":8.8,"dur":6.55,"tokensIn":561346,"tokensOut":15180,"files":2},{"id":"sub_19ffc8314c5_2","label":"research-blogs","agentType":"explore","model":"claude-sonnet-4-6","state":"done","start":8.8,"dur":6.93,"tokensIn":853766,"tokensOut":16923,"files":2},{"id":"sub_19ffc8314da_3","label":"research-hn-x","agentType":"explore","model":"claude-sonnet-4-6","state":"done","start":8.8,"dur":7.83,"tokensIn":733340,"tokensOut":16897,"files":2},{"id":"sub_19ffc8ef515_4","label":"research-niche-blogs","agentType":"explore","model":"claude-sonnet-4-6","state":"done","start":21.77,"dur":13.08,"tokensIn":1432098,"tokensOut":25741,"files":2},{"id":"sub_19ffca7e27b_5","label":"qa-visual","agentType":"browser-qa","model":"claude-fable-5","state":"done","start":49.0,"dur":4.63,"tokensIn":378201,"tokensOut":12199,"files":1},{"id":"sub_19ffca7e28c_6","label":"qa-prose","agentType":"review","model":"gpt-5.5","state":"done","start":49.0,"dur":4.46,"tokensIn":125798,"tokensOut":13836,"files":1},{"id":"sub_19ffcaf7f26_7","label":"qa-visual-r2","agentType":"browser-qa","model":"claude-fable-5","state":"done","start":57.31,"dur":3.11,"tokensIn":134985,"tokensOut":8228,"files":1},{"id":"sub_19ffcaf7f3c_8","label":"qa-prose-r2","agentType":"review","model":"gpt-5.5","state":"done","start":57.31,"dur":2.81,"tokensIn":98041,"tokensOut":8871,"files":1},{"id":"sub_19ffcb3f1d3_9","label":"Skill drafter","agentType":"skill-drafter","model":"claude-opus-4-8","state":"cancelled","start":62.17,"dur":0.0,"tokensIn":0,"tokensOut":0,"files":0},{"id":"sub_19ffd5b1283_1","label":"Prose review \u2014 tool-invocation-report","agentType":"review","model":"gpt-5.5","state":"done","start":244.72,"dur":1.02,"tokensIn":36990,"tokensOut":4153,"files":1},{"id":"sub_19ffd5b129e_2","label":"Visual review \u2014 tool-invocation-report","agentType":"browser-qa","model":"claude-opus-4-8","state":"done","start":244.72,"dur":1.25,"tokensIn":41749,"tokensOut":3014,"files":1},{"id":"sub_19ffd5cd1de_3","label":"Prose review R2 \u2014 tool-invocation-report","agentType":"review","model":"gpt-5.5","state":"done","start":246.63,"dur":1.67,"tokensIn":40067,"tokensOut":6425,"files":1},{"id":"sub_19ffd5cd1fb_4","label":"Visual review R2 \u2014 tool-invocation-report","agentType":"browser-qa","model":"claude-opus-4-8","state":"done","start":246.63,"dur":3.07,"tokensIn":27325,"tokensOut":3977,"files":1},{"id":"sub_19ffd60fc94_5","label":"Prose review R3 \u2014 tool-invocation-report","agentType":"review","model":"gpt-5.5","state":"done","start":251.18,"dur":0.68,"tokensIn":28447,"tokensOut":3468,"files":1},{"id":"sub_19ffd60fcb2_6","label":"Visual review R3 \u2014 tool-invocation-report","agentType":"browser-qa","model":"claude-opus-4-8","state":"done","start":251.18,"dur":0.79,"tokensIn":18400,"tokensOut":2109,"files":1},{"id":"sub_19ffd8730be_10","label":"Skill drafter","agentType":"skill-drafter","model":"claude-opus-4-8","state":"running","start":292.91,"dur":0.0,"tokensIn":0,"tokensOut":0,"files":0}],"toolAgg":[{"name":"edit_file","n":53,"sec":1973.1399999999987,"err":1},{"name":"subagents","n":7,"sec":1921.8999999999999,"err":0},{"name":"bash","n":55,"sec":644.4299999999998,"err":2},{"name":"send_attachment","n":5,"sec":10.11,"err":0},{"name":"web_fetch","n":10,"sec":9.450000000000001,"err":0},{"name":"grep","n":10,"sec":1.5000000000000002,"err":0},{"name":"browser_execute_js","n":10,"sec":1.45,"err":4},{"name":"browser_screenshot","n":3,"sec":1.0999999999999999,"err":0},{"name":"read_file","n":18,"sec":0.12,"err":0},{"name":"summarize_context","n":1,"sec":0.06,"err":0},{"name":"load_skill","n":3,"sec":0.05,"err":0},{"name":"write_file","n":4,"sec":0.03,"err":0},{"name":"tasks","n":12,"sec":0.0,"err":0},{"name":"sub_agent","n":14,"sec":0.0,"err":0},{"name":"tool_search","n":1,"sec":0.0,"err":0},{"name":"artifacts","n":4,"sec":0.0,"err":0}],"activeMin":114}</script>
+<script>
+const D = JSON.parse(document.getElementById('data').textContent);
+const N = D.N;
+const hm = m => { const h = Math.floor(m/60), mm = Math.round(m%60);
+                  return h ? `${h}h ${String(mm).padStart(2,'0')}m` : `${mm}m`; };
+document.getElementById('sid').textContent = D.meta.id;
+
+/* Fixed vertical scale: px per minute. This is the whole idea — an idle
+   hour must cost as much column as a busy one. */
+const PPM = 2.6;
+const H = N * PPM;
+const y = m => m * PPM;
+
+const idleMin = D.gaps.reduce((a,g) => a + (g[1]-g[0]), 0);
+const big = D.gaps.reduce((a,g) => (g[1]-g[0]) > (a[1]-a[0]) ? g : a, D.gaps[0]);
+document.getElementById('railScale').textContent = PPM.toFixed(1) + 'px / min';
+document.getElementById('railSum').innerHTML = [
+  { k:'elapsed', v:hm(D.span) },
+  { k:'live',    v:Math.round(100*D.activeMin/N)+'%' },
+  { k:'silent',  v:hm(idleMin), warn:true },
+].map(s => `<div><span class="k">${s.k}</span><span class="v${s.warn?' warn':''}">${s.v}</span></div>`).join('');
+
+const maxD = Math.max(...D.chTool);
+let html = `<div class="spine"></div>`;
+
+// half-hour ticks, in h:mm so they fit the 36px strip
+const clock = m => `${Math.floor(m/60)}:${String(Math.round(m%60)).padStart(2,'0')}`;
+for (let m = 0; m <= N; m += 30) html += `<div class="tick" style="top:${y(m)}px">${clock(m)}</div>`;
+
+// voids first, behind everything
+D.gaps.filter(g => (g[1]-g[0]) >= 5).forEach(g => {
+  const span = g[1]-g[0];
+  html += `<div class="void" style="top:${y(g[0])}px;height:${y(span)}px">
+    ${span > 25 ? `<div class="lab">void &middot; ${hm(span)}
+      <small>${span === (big[1]-big[0]) ? 'your question waiting' : 'no calls, no agents'}</small></div>` : ''}
+  </div>`;
+});
+
+// activity density, hanging left off the spine
+D.chTool.forEach((n, m) => {
+  if (!n) return;
+  html += `<div class="den" style="top:${y(m)}px;width:${5 + (n/maxD)*55}px"
+    data-ro="<b>+${hm(m)}</b><br>${n} tool call${n===1?'':'s'}"></div>`;
+});
+
+// sub-agent runs, hanging right; lanes assigned so overlaps never collide
+const lanes = [];
+D.subs.slice().sort((a,b) => a.start - b.start).forEach(s => {
+  let li = lanes.findIndex(end => end <= s.start);
+  if (li === -1) { li = lanes.length; lanes.push(0); }
+  lanes[li] = s.start + Math.max(s.dur, 1.2);
+  html += `<div class="agent" style="top:${y(s.start)}px;height:${Math.max(y(s.dur),3)}px;left:${124 + li*7}px"
+    data-ro="<b>${s.label}</b><br><span class='k'>${s.agentType} &middot; ${s.model}</span><br>
+      ran ${hm(s.dur)} &middot; ${(s.tokensIn/1e3).toFixed(0)}k in &middot; ${s.state}"></div>`;
+});
+
+// Wave labels sit right of the widest lane. Waves can land minutes apart —
+// nudge each one down until it clears the previous label instead of letting
+// them overprint.
+const laneW = 124 + lanes.length * 7 + 8;
+let lastLabelY = -Infinity;
+D.waves.forEach(w => {
+  const ly = Math.max(y(w.at), lastLabelY + 13);
+  lastLabelY = ly;
+  html += `<div class="wv" style="top:${ly}px;left:${laneW}px"
+    data-ro="<b>wave &middot; +${hm(w.at)}</b><br>${w.labels.map(l => l.replace(/</g,'&lt;')).join('<br>')}">
+    <b>${w.n} agent${w.n===1?'':'s'}</b> <span>&middot; ${hm(w.dur)} &middot; ${(w.tok/1e3).toFixed(0)}k</span></div>`;
+});
+
+// event pins on the spine
+D.markers.forEach(m => {
+  html += `<div class="pin ${m.kind}" style="top:${y(m.at)}px"
+    data-ro="<b>+${hm(m.at)}</b> <span class='k'>${m.kind}</span><br>${m.text.replace(/</g,'&lt;').slice(0,80)}"></div>`;
+});
+
+const core = document.getElementById('core');
+core.style.height = (H + 20) + 'px';
+core.innerHTML = html;
+
+document.getElementById('kv').innerHTML = [
+  ['column height', `${Math.round(H)}px for ${hm(D.span)} — fixed at ${PPM}px per minute`],
+  ['the void', `${hm(big[1]-big[0])} = ${Math.round(y(big[1]-big[0]))}px, ${Math.round(100*(big[1]-big[0])/N)}% of the whole column`],
+  ['event list today', `${D.markers.length} rows, identical height either way`],
+  ['agent lanes', `${lanes.length} concurrent at the widest point`],
+].map(([k,v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+
+/* hover */
+const ro = document.getElementById('ro');
+document.addEventListener('mousemove', e => {
+  const el = e.target.closest('[data-ro]');
+  if (!el) { ro.style.opacity = 0; return; }
+  ro.innerHTML = el.dataset.ro; ro.style.opacity = 1;
+  const r = ro.getBoundingClientRect();
+  ro.style.left = Math.min(e.clientX + 15, innerWidth - r.width - 12) + 'px';
+  ro.style.top  = Math.min(e.clientY + 17, innerHeight - r.height - 12) + 'px';
+});
+</script>
+</body>
+</html>

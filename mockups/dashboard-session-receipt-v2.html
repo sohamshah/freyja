@@ -1,0 +1,540 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Session Receipt v2 — dashboard view mock</title>
+<style>
+@font-face{font-family:'Geist Mono';src:url('../src/renderer/assets/fonts/GeistMono-Variable.woff2') format('woff2');font-weight:100 900;font-display:swap}
+@font-face{font-family:'Departure Mono';src:url('../src/renderer/assets/fonts/DepartureMono-Regular.woff2') format('woff2');font-weight:400;font-display:swap}
+
+/* ── Freyja blackbox ─────────────────────────────────────────────────────
+   Same information architecture as v1; the palette, type and surfaces are
+   Freyja's own. One ice hue does all the work. Every ramp below was run
+   through the dataviz skill's validate_palette.js against the #0b0b0d panel:
+
+     funnel 3-step  #a8d4fc #5b8fcf #2a4d78   → ordinal, ALL PASS
+     model  2-step  #a8d4fc #3f6da8           → ordinal, ALL PASS
+     sand   #b8a078 (status only)             → 7.81:1 on panel
+
+   The stacked bars are funnels — tokens read → tokens written, spend by
+   share — so an ordered lightness ramp is the right encoding rather than
+   a categorical one. Ranked bars stay a single step, because tool names
+   have no order and length already carries the magnitude. */
+:root{
+  --void:#060607; --panel:#0b0b0d; --panel-2:#101014; --well:#08080a;
+  --ice-0:#a8d4fc; --ice-1:#7aafea; --ice-2:#5b8fcf; --ice-3:#3f6da8; --ice-4:#2a4d78;
+  --ink-0:#e8e8e8; --ink-1:#a8a8a8; --ink-2:#6e6e6e; --ink-3:#4a4a4a; --ink-4:#303030;
+  --rule:rgba(255,255,255,.055); --rule-2:rgba(255,255,255,.026);
+  --sand:#b8a078;
+  --mono:'Geist Mono',ui-monospace,'SF Mono',Menlo,monospace;
+  --caps:'Departure Mono','Geist Mono',monospace;
+}
+*{box-sizing:border-box}
+html{background:#000}
+body{margin:0;background:var(--void);color:var(--ink-1);font-family:var(--mono);
+  font-size:12px;line-height:1.55;padding:30px 26px 70px;
+  -webkit-font-smoothing:antialiased;cursor:crosshair}
+body::before{content:'';position:fixed;inset:0;z-index:99;pointer-events:none;opacity:.30;
+  mix-blend-mode:overlay;
+  background:repeating-linear-gradient(0deg,rgba(255,255,255,.026) 0 1px,transparent 1px 4px),
+             radial-gradient(circle at 50% 42%,transparent 44%,rgba(0,0,0,.62))}
+body::after{content:'';position:fixed;inset:0;z-index:98;pointer-events:none;opacity:.055;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.82' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E")}
+.wrap{max-width:1300px;margin:0 auto;position:relative;z-index:1}
+
+/* ── type ──────────────────────────────────────────────────────────── */
+.caps{font-family:var(--caps);font-size:9.5px;letter-spacing:.18em;text-transform:uppercase}
+h1{font-family:var(--caps);font-size:13px;letter-spacing:.30em;text-transform:uppercase;
+  color:var(--ink-0);margin:0;font-weight:400}
+.sid{font-size:10px;color:var(--ink-3);margin-top:5px;word-break:break-all}
+
+header{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;flex-wrap:wrap;
+  padding-bottom:13px;margin-bottom:16px;border-bottom:1px solid var(--rule)}
+header .coord{text-align:right;color:var(--ink-4);font-size:9.5px;line-height:1.7;white-space:nowrap}
+header .coord b{color:var(--ink-2);font-weight:400}
+
+/* ── cards ─────────────────────────────────────────────────────────── */
+.card{position:relative;background:var(--panel);border:1px solid var(--rule);border-radius:8px;
+  padding:18px 20px 20px;margin-bottom:13px;overflow:hidden}
+.card > *{position:relative;z-index:1}
+.card h2{font-family:var(--caps);font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--ink-2);margin:0 0 3px;font-weight:400;display:flex;justify-content:space-between;align-items:baseline}
+.card h2 em{font-style:normal;color:var(--ink-4);letter-spacing:.1em}
+.card .sub{font-size:11px;color:var(--ink-3);margin:0 0 17px;max-width:92ch}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:13px}
+@media(max-width:1000px){.grid2{grid-template-columns:1fr}}
+
+/* ── hero, on its own terrain ──────────────────────────────────────── */
+.hero{padding:26px 24px 20px;min-height:326px}
+#terrain{position:absolute;inset:0;z-index:0;pointer-events:none;
+  -webkit-mask-image:linear-gradient(95deg,transparent 2%,rgba(0,0,0,.45) 17%,#000 40%);
+  mask-image:linear-gradient(95deg,transparent 2%,rgba(0,0,0,.45) 17%,#000 40%)}
+.heroTop{display:flex;align-items:baseline;gap:22px;flex-wrap:wrap}
+.fig{font-size:60px;line-height:1;letter-spacing:-.025em;color:var(--ink-0);font-weight:300}
+.fig .cur{font-size:30px;color:var(--ink-2);margin-right:2px;vertical-align:.28em}
+.heroCap{font-size:11px;color:var(--ink-3);max-width:40ch}
+.heroCap b{color:var(--ink-1);font-weight:400}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(146px,1fr));gap:1px;
+  margin-top:26px;background:var(--rule-2);border-top:1px solid var(--rule)}
+.tile{background:var(--panel);padding:13px 14px 2px}
+.tile .k{font-family:var(--caps);font-size:8.5px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--ink-4);display:block}
+.tile .v{font-size:20px;color:var(--ink-0);margin-top:5px;font-weight:350}
+.tile .v.sand{color:var(--sand)}
+.tile .n{font-size:10px;color:var(--ink-3)}
+
+/* ── funnel bars ───────────────────────────────────────────────────── */
+.funnel{display:flex;height:30px;gap:2px;border-radius:3px;overflow:hidden}
+.funnel div{height:100%;position:relative}
+.keys{display:flex;flex-wrap:wrap;gap:18px;margin-top:13px;font-size:10.5px;color:var(--ink-1)}
+.keys .sw{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:7px;vertical-align:0}
+.keys .n{color:var(--ink-4)}
+.note{font-size:10.5px;color:var(--ink-3);margin-top:15px;padding-top:13px;
+  border-top:1px solid var(--rule-2);max-width:94ch}
+.note b{color:var(--ink-1);font-weight:400}
+.note .sand{color:var(--sand)}
+
+/* ── ranked bars, on a map-scale track ─────────────────────────────── */
+.rank{display:grid;grid-template-columns:128px 1fr 66px 104px;align-items:center;gap:12px;
+  padding:6px 0;font-size:11px}
+.rank + .rank{border-top:1px solid var(--rule-2)}
+.rank .nm{color:var(--ink-1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rank .tr{position:relative;height:10px;
+  background:repeating-linear-gradient(90deg,var(--rule-2) 0 1px,transparent 1px 7px);
+  border-bottom:1px solid var(--rule-2)}
+.rank .fl{position:absolute;left:0;top:0;height:100%;background:var(--ice-3);border-radius:0 2px 2px 0;
+  box-shadow:inset 0 0 0 1px var(--ice-2);min-width:2px}
+.rank:hover .fl{background:var(--ice-1)}
+.rank .vv{text-align:right;color:var(--ink-0);font-variant-numeric:tabular-nums}
+.rank .er{font-size:9.5px;color:var(--ink-4);white-space:nowrap}
+.rank .er.bad{color:var(--sand)}
+
+/* ── receipt ───────────────────────────────────────────────────────── */
+.rcpt{font-size:11px}
+.rcpt .row{display:flex;justify-content:space-between;gap:14px;padding:7px 0;
+  border-bottom:1px solid var(--rule-2)}
+.rcpt .row .l{color:var(--ink-1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rcpt .row .r{color:var(--ink-2);font-variant-numeric:tabular-nums;white-space:nowrap}
+.rcpt .tot{display:flex;justify-content:space-between;gap:14px;margin-top:12px;padding-top:13px;
+  border-top:1px solid var(--rule);font-size:12px}
+.rcpt .tot .l{color:var(--ink-1)} .rcpt .tot .r{color:var(--ice-0);font-variant-numeric:tabular-nums}
+
+/* ── contour rule between sections ─────────────────────────────────── */
+.contourRule{height:22px;margin:2px 0 12px}
+.contourRule svg{display:block;width:100%;height:100%;overflow:visible}
+
+/* ── controls / table twin ─────────────────────────────────────────── */
+button.tgl{font:inherit;font-family:var(--caps);font-size:9px;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--ink-3);background:transparent;border:1px solid var(--rule);
+  border-radius:3px;padding:4px 10px;cursor:crosshair}
+button.tgl[aria-pressed=true]{color:var(--void);background:var(--ice-0);border-color:var(--ice-0)}
+table{border-collapse:collapse;width:100%;font-size:10.5px;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:5px 12px 5px 0;border-bottom:1px solid var(--rule-2)}
+th{font-family:var(--caps);font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--ink-4);font-weight:400}
+td.n,th.n{text-align:right;padding-right:20px}
+.hidden{display:none}
+
+.readout{position:fixed;z-index:120;pointer-events:none;opacity:0;transition:opacity .1s;
+  background:var(--panel-2);border:1px solid var(--rule);border-radius:3px;padding:8px 11px;
+  font-size:10.5px;color:var(--ink-0);white-space:nowrap;box-shadow:0 10px 30px rgba(0,0,0,.75)}
+.readout .k{color:var(--ink-3)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div>
+    <h1>Session receipt</h1>
+    <div class="sid" id="sid"></div>
+  </div>
+  <div class="coord" id="coord"></div>
+</header>
+
+<!-- ── hero ────────────────────────────────────────────────────────── -->
+<div class="card hero">
+  <svg id="terrain"></svg>
+  <div class="heroTop">
+    <div class="fig"><span class="cur">$</span><span id="figCost"></span></div>
+    <div class="heroCap">billed to this one Slack thread across <b id="figCalls"></b> model calls.
+      The relief behind this number is the session's own tool-call density over
+      <b id="figSpan"></b> <span id="figRelief"></span></div>
+  </div>
+  <div class="tiles" id="tiles"></div>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h2>Read amplification <em>funnel</em></h2>
+    <p class="sub">Tokens in, tokens out. One hue stepped along the funnel rather than a set of
+       categories &mdash; and stepped so the sliver you would otherwise miss is the bright end.</p>
+    <div class="funnel" id="tokBar"></div>
+    <div class="keys" id="tokKeys"></div>
+    <p class="note" id="tokNote"></p>
+  </div>
+
+  <div class="card">
+    <h2>Cost by model <em>share of spend</em></h2>
+    <p class="sub">Which model the parent agent actually spent on. Two ran; one is almost the
+       entire bill.</p>
+    <div class="funnel" id="costBar"></div>
+    <div class="keys" id="costKeys"></div>
+    <p class="note" id="costNote"></p>
+  </div>
+</div>
+
+<!-- ── wall clock ──────────────────────────────────────────────────── -->
+<div class="card">
+  <h2>Where the wall clock went
+    <em><button class="tgl" id="btnT" aria-pressed="false">table</button></em></h2>
+  <p class="sub">Total time inside each tool. One step of the ramp for every bar &mdash; tool names
+     have no order, so length carries the whole message. Failures ride their own column.</p>
+  <div class="contourRule" id="rule1"></div>
+  <div id="toolChart"></div>
+  <div id="toolTable" class="hidden"></div>
+  <p class="note" id="toolNote"></p>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h2>What the swarm read <em id="swarmCount"></em></h2>
+    <p class="sub">Input tokens per sub-agent. The parent is a thin coordinator; the reading
+       happens out here.</p>
+    <div class="contourRule" id="rule2"></div>
+    <div id="swarmChart"></div>
+    <p class="note" id="swarmNote"></p>
+  </div>
+
+  <div class="card">
+    <h2>What came out <em>on disk</em></h2>
+    <p class="sub">Everything the session left behind, and what each unit of it cost.</p>
+    <div class="contourRule" id="rule3"></div>
+    <div class="rcpt" id="rcpt"></div>
+  </div>
+</div>
+
+</div>
+<div class="readout" id="ro"></div>
+
+<script id="data" type="application/json">{"meta":{"id":"freyja:slack:T04RBR2J4JC:channel:C0AJF21GSE8:1786645306.443119","title":"slack:T04RBR2J4JC:channel:C0AJF21GSE8:1786645306.443119","model":"claude-opus-4-8","workspace":"/Users/sohamshah","spanMin":295.4,"messages":8,"usage":{"currentContextTokens":236342,"totalInputTokens":4526829,"totalOutputTokens":22023,"totalCacheReadTokens":766430,"totalCacheWriteTokens":18951,"totalCost":177.8675135,"lastTurnInputTokens":236342,"lastTurnOutputTokens":22023,"contextWindow":1000000,"systemPromptTokens":12057,"toolTokens":23925,"transcriptTokens":22585,"toolCount":38},"t0":1786647348844},"totalCost":189.12,"calls":150,"modelMin":47.8,"spanMin":295.4,"models":[{"model":"claude-fable-5","cost":177.87,"calls":125,"min":41.1},{"model":"claude-opus-4-8","cost":11.25,"calls":25,"min":6.7}],"tokens":{"freshIn":18260546,"cacheRead":4940409,"cacheWrite":285885,"out":185050},"ratio":125,"stops":[["tool_use",146],["end_turn",4]],"toolAgg":[{"name":"edit_file","n":53,"sec":1973.1399999999987,"err":1,"maxSec":1971.2,"concSec":0.999},{"name":"subagents","n":7,"sec":1921.8999999999999,"err":0,"maxSec":706.6,"concSec":0.368},{"name":"bash","n":55,"sec":644.4299999999998,"err":2,"maxSec":600.0,"concSec":0.931},{"name":"send_attachment","n":5,"sec":10.11,"err":0,"maxSec":4.3,"concSec":0.425},{"name":"web_fetch","n":10,"sec":9.450000000000001,"err":0,"maxSec":1.1,"concSec":0.116},{"name":"grep","n":10,"sec":1.5000000000000002,"err":0,"maxSec":0.6,"concSec":0.4},{"name":"browser_execute_js","n":10,"sec":1.45,"err":4,"maxSec":1.2,"concSec":0.828},{"name":"browser_screenshot","n":3,"sec":1.0999999999999999,"err":0,"maxSec":0.7,"concSec":0.636},{"name":"read_file","n":18,"sec":0.12,"err":0,"maxSec":0.0,"concSec":0.0},{"name":"summarize_context","n":1,"sec":0.06,"err":0,"maxSec":0.1,"concSec":1.667},{"name":"load_skill","n":3,"sec":0.05,"err":0,"maxSec":0.0,"concSec":0.0},{"name":"write_file","n":4,"sec":0.03,"err":0,"maxSec":0.0,"concSec":0.0},{"name":"tasks","n":12,"sec":0.0,"err":0,"maxSec":0.0,"concSec":0},{"name":"sub_agent","n":14,"sec":0.0,"err":0,"maxSec":0.0,"concSec":0},{"name":"tool_search","n":1,"sec":0.0,"err":0,"maxSec":0.0,"concSec":0},{"name":"artifacts","n":4,"sec":0.0,"err":0,"maxSec":0.0,"concSec":0}],"swarm":[{"label":"research-niche-blogs","model":"claude-sonnet-4-6","agentType":"explore","tokensIn":1432098,"tokensOut":25741,"min":13.1,"state":"done"},{"label":"research-blogs","model":"claude-sonnet-4-6","agentType":"explore","tokensIn":853766,"tokensOut":16923,"min":6.9,"state":"done"},{"label":"research-hn-x","model":"claude-sonnet-4-6","agentType":"explore","tokensIn":733340,"tokensOut":16897,"min":7.8,"state":"done"},{"label":"research-arxiv","model":"claude-sonnet-4-6","agentType":"explore","tokensIn":561346,"tokensOut":15180,"min":6.5,"state":"done"},{"label":"qa-visual","model":"claude-fable-5","agentType":"browser-qa","tokensIn":378201,"tokensOut":12199,"min":4.6,"state":"done"},{"label":"qa-visual-r2","model":"claude-fable-5","agentType":"browser-qa","tokensIn":134985,"tokensOut":8228,"min":3.1,"state":"done"},{"label":"qa-prose","model":"gpt-5.5","agentType":"review","tokensIn":125798,"tokensOut":13836,"min":4.5,"state":"done"},{"label":"qa-prose-r2","model":"gpt-5.5","agentType":"review","tokensIn":98041,"tokensOut":8871,"min":2.8,"state":"done"},{"label":"Visual review \u2014 tool-invocation-report","model":"claude-opus-4-8","agentType":"browser-qa","tokensIn":41749,"tokensOut":3014,"min":1.2,"state":"done"},{"label":"Prose review R2 \u2014 tool-invocation-report","model":"gpt-5.5","agentType":"review","tokensIn":40067,"tokensOut":6425,"min":1.7,"state":"done"},{"label":"Prose review \u2014 tool-invocation-report","model":"gpt-5.5","agentType":"review","tokensIn":36990,"tokensOut":4153,"min":1.0,"state":"done"},{"label":"Prose review R3 \u2014 tool-invocation-report","model":"gpt-5.5","agentType":"review","tokensIn":28447,"tokensOut":3468,"min":0.7,"state":"done"},{"label":"Visual review R2 \u2014 tool-invocation-report","model":"claude-opus-4-8","agentType":"browser-qa","tokensIn":27325,"tokensOut":3977,"min":3.1,"state":"done"},{"label":"Visual review R3 \u2014 tool-invocation-report","model":"claude-opus-4-8","agentType":"browser-qa","tokensIn":18400,"tokensOut":2109,"min":0.8,"state":"done"},{"label":"Skill drafter","model":"claude-opus-4-8","agentType":"skill-drafter","tokensIn":0,"tokensOut":0,"min":0.0,"state":"cancelled"},{"label":"Skill drafter","model":"claude-opus-4-8","agentType":"skill-drafter","tokensIn":0,"tokensOut":0,"min":0.0,"state":"running"}],"swarmTokIn":4510553,"swarmTokOut":141021,"swarmMin":57.9,"artifacts":[{"filename":"session_notes_invoke_tool.md","at":5.49,"op":"create","adds":29,"dels":0,"type":"md","creator":"Main agent"},{"filename":"tool-invocation-report.md","at":20.94,"op":"update","adds":89,"dels":2,"type":"md","creator":"Main agent"},{"filename":"tool-invocation-report.html","at":292.92,"op":"update","adds":1,"dels":1,"type":"html","creator":"Main agent"},{"filename":"serve.py","at":53.49,"op":"create","adds":12,"dels":0,"type":"py","creator":"Main agent"}],"subReports":6,"fileChangeSets":56,"fcAdds":6363,"fcDels":1202,"terrain":[1.0,0.891,0.7762,0.6611,0.5516,0.452,0.3656,0.2936,0.2366,0.1928,0.1605,0.1379,0.1231,0.1146,0.111,0.1103,0.1109,0.1108,0.1099,0.106,0.0997,0.0921,0.0848,0.0792,0.0778,0.0806,0.0873,0.0964,0.1052,0.1112,0.1125,0.1079,0.0978,0.0832,0.0668,0.0504,0.0358,0.0238,0.0149,0.0088,0.0048,0.0061,0.0085,0.0141,0.0255,0.0434,0.0693,0.104,0.1503,0.2017,0.2572,0.3108,0.3588,0.3986,0.4296,0.4534,0.4721,0.4867,0.4964,0.4978,0.487,0.4608,0.4185,0.3628,0.2989,0.2335,0.1709,0.1197,0.0791,0.0493,0.029,0.0161,0.0084,0.0025,0.0012,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0001,0.0003,0.0009,0.002,0.0039,0.0069,0.0114,0.0178,0.0264,0.0369,0.0488,0.0611,0.0722,0.0808,0.0857,0.086,0.0827,0.0759,0.0679,0.0611,0.058,0.0596,0.0673,0.081,0.0999,0.1223,0.1461,0.1687,0.1877,0.2011,0.2072,0.205,0.1947,0.1771,0.1541,0.128,0.1012,0.0762,0.0544,0.0367,0.0236,0.0139,0.0081,0.0044,0.0021,0.0007,0.0002,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0001,0.0006,0.0011,0.0022,0.0042,0.0071,0.0114,0.0173,0.0272,0.0384,0.0523,0.069,0.0887,0.1114,0.1369,0.1644,0.1921,0.2174,0.2367,0.2467,0.2449,0.2308,0.2059,0.1736],"gaps":[[43,49],[93,230],[253,284]],"activeMin":114,"N":296,"waves":9}</script>
+<script>
+const D = JSON.parse(document.getElementById('data').textContent);
+const usd = n => n.toFixed(2);
+const tok = n => n >= 1e6 ? (n/1e6).toFixed(2)+'M' : n >= 1e3 ? Math.round(n/1e3)+'k' : String(n);
+const hm  = m => { const h = Math.floor(m/60), mm = Math.round(m%60);
+                   return h ? `${h}h ${String(mm).padStart(2,'0')}m` : `${mm}m`; };
+
+document.getElementById('sid').textContent = D.meta.id;
+document.getElementById('figCost').textContent = usd(D.totalCost);
+document.getElementById('figCalls').textContent = D.calls;
+document.getElementById('figSpan').textContent = hm(D.spanMin);
+
+const idle = D.gaps.reduce((a,g) => a + (g[1]-g[0]), 0);
+
+// Where the biggest void sits across the card, so the caption describes the
+// relief the reader is actually looking at rather than a guess.
+const big = D.gaps.reduce((a,g) => (g[1]-g[0]) > (a[1]-a[0]) ? g : a, D.gaps[0]);
+const mid = ((big[0] + big[1]) / 2) / D.N;
+const where = mid < 0.34 ? 'the left' : mid > 0.66 ? 'the right' : 'the middle';
+document.getElementById('figRelief').innerHTML =
+  `&mdash; the plain across <b>${where}</b> is the ${hm(big[1]-big[0])} stall,
+   ${Math.round(100*(big[1]-big[0])/D.N)}% of the session.`;
+document.getElementById('coord').innerHTML =
+  `<b>${hm(D.spanMin)}</b> elapsed &nbsp;·&nbsp; <b>${Math.round(100*D.activeMin/D.N)}%</b> live<br>
+   <b>${D.swarm.length}</b> sub-agents in <b>${D.waves}</b> waves &nbsp;·&nbsp; <b>${hm(idle)}</b> silent`;
+
+/* ═══ topographic relief, driven by the session itself ══════════════════
+   Not wallpaper: elevation at x is the smoothed tool-call density at that
+   minute, so the ridges are the bursts and the plain on the right is the
+   137-minute stall. Marching squares + Chaikin + a light hash-noise
+   perturbation, the same pipeline as topo-mock-v2.html. */
+function hash2d(ix, iy, s){ let n = (ix*1619 + iy*31337 + s*6971)|0;
+  n = (n<<13) ^ n; n = ((n*(n*n*15731 + 789221) + 1376312589) & 0x7fffffff); return n/0x7fffffff; }
+function vnoise(x, y, s){
+  const ix = Math.floor(x), iy = Math.floor(y), fx = x-ix, fy = y-iy;
+  const u = fx*fx*fx*(fx*(fx*6-15)+10), v = fy*fy*fy*(fy*(fy*6-15)+10);
+  const a = hash2d(ix,iy,s), b = hash2d(ix+1,iy,s), c = hash2d(ix,iy+1,s), d = hash2d(ix+1,iy+1,s);
+  return ((a*(1-u)+b*u)*(1-v) + (c*(1-u)+d*u)*v)*2 - 1;
+}
+function fbm(x, y, s, oct){ let sum=0, amp=1, f=1, max=0;
+  for (let o=0;o<oct;o++){ sum += vnoise(x*f, y*f, s+o*5381)*amp; max+=amp; amp*=.5; f*=2.1; }
+  return sum/max; }
+
+function march(data, cols, rows, cell, level){
+  const segs=[], lerp=(a,b)=> Math.abs(b-a)<1e-9 ? .5 : (level-a)/(b-a);
+  for (let y=0;y<rows-1;y++) for (let x=0;x<cols-1;x++){
+    const tl=data[y*cols+x], tr=data[y*cols+x+1], br=data[(y+1)*cols+x+1], bl=data[(y+1)*cols+x];
+    let c=0; if(tl>level)c|=1; if(tr>level)c|=2; if(br>level)c|=4; if(bl>level)c|=8;
+    if(c===0||c===15) continue;
+    const tX=(x+lerp(tl,tr))*cell, tY=y*cell, rX=(x+1)*cell, rY=(y+lerp(tr,br))*cell,
+          bX=(x+lerp(bl,br))*cell, bY=(y+1)*cell, lX=x*cell, lY=(y+lerp(tl,bl))*cell;
+    switch(c){
+      case 1: case 14: segs.push([lX,lY,tX,tY]); break;
+      case 2: case 13: segs.push([tX,tY,rX,rY]); break;
+      case 3: case 12: segs.push([lX,lY,rX,rY]); break;
+      case 4: case 11: segs.push([rX,rY,bX,bY]); break;
+      case 6: case 9:  segs.push([tX,tY,bX,bY]); break;
+      case 7: case 8:  segs.push([lX,lY,bX,bY]); break;
+      case 5:  segs.push([lX,lY,tX,tY]); segs.push([rX,rY,bX,bY]); break;
+      case 10: segs.push([tX,tY,rX,rY]); segs.push([lX,lY,bX,bY]); break;
+    }
+  }
+  return segs;
+}
+function stitch(segs){
+  const P=100, key=(x,y)=>`${Math.round(x*P)},${Math.round(y*P)}`, map=new Map();
+  segs.forEach((s,i)=>{ for(const k of [key(s[0],s[1]),key(s[2],s[3])]){
+    if(!map.has(k)) map.set(k,[]); map.get(k).push(i); } });
+  const seen=new Uint8Array(segs.length), out=[];
+  for(let i=0;i<segs.length;i++){
+    if(seen[i]) continue; seen[i]=1;
+    const s=segs[i], pts=[s[0],s[1],s[2],s[3]];
+    for(const fwd of [true,false]){
+      let cur = fwd ? key(s[2],s[3]) : key(s[0],s[1]);
+      for(;;){
+        const cands = map.get(cur)||[]; let nx=-1;
+        for(const j of cands) if(!seen[j]){ nx=j; break; }
+        if(nx<0) break;
+        seen[nx]=1; const g=segs[nx];
+        const same = Math.abs(g[0]*P-Math.round(g[0]*P))<1 && key(g[0],g[1])===cur;
+        const px = same ? g[2] : g[0], py = same ? g[3] : g[1];
+        if(fwd) pts.push(px,py); else pts.unshift(px,py);
+        cur = key(px,py);
+      }
+    }
+    out.push(pts);
+  }
+  return out;
+}
+function chaikin(p, iters){
+  let cur=p;
+  for(let it=0; it<iters; it++){
+    if(cur.length < 6) return cur;
+    const o=[cur[0],cur[1]];
+    for(let k=0;k<cur.length/2-1;k++){
+      const x1=cur[k*2],y1=cur[k*2+1],x2=cur[k*2+2],y2=cur[k*2+3];
+      o.push(.75*x1+.25*x2, .75*y1+.25*y2, .25*x1+.75*x2, .25*y1+.75*y2);
+    }
+    o.push(cur[cur.length-2], cur[cur.length-1]); cur=o;
+  }
+  return cur;
+}
+function toD(p, perturb){
+  if(p.length<4) return '';
+  let d='';
+  for(let i=0;i<p.length;i+=2){
+    let x=p[i], y=p[i+1];
+    if(perturb){
+      const sx=x*.02, sy=y*.02;
+      x += fbm(sx, sy, 811, 3)*2.6; y += fbm(sx, sy, 977, 3)*2.0;
+    }
+    d += (i?'L':'M') + x.toFixed(1) + ' ' + y.toFixed(1);
+  }
+  return d;
+}
+
+function drawTerrain(){
+  const svg = document.getElementById('terrain');
+  const card = svg.parentElement;
+  const W = card.clientWidth, H = card.clientHeight;
+  if (W < 40 || H < 40) return;
+  const CELL = 6, cols = Math.ceil(W/CELL)+1, rows = Math.ceil(H/CELL)+1;
+  const prof = D.terrain, PN = prof.length;
+  const data = new Float32Array(cols*rows);
+
+  for(let y=0;y<rows;y++) for(let x=0;x<cols;x++){
+    const px=x*CELL, py=y*CELL;
+    const t = px / W;                                  // time across the card
+    const a = prof[Math.min(PN-1, Math.round(t*(PN-1)))];
+    // The profile is a ridge: tallest at the baseline, falling off upward.
+    const yn = py / H;
+    const ridge = a * Math.exp(-Math.pow((yn - 1.02)/0.50, 2));
+    const detail = fbm(px*0.010, py*0.014, 1337, 4) * 0.085;
+    data[y*cols+x] = ridge + detail + (1 - yn) * 0.012;
+  }
+
+  let lo=Infinity, hi=-Infinity;
+  for(const v of data){ if(v<lo)lo=v; if(v>hi)hi=v; }
+  const LEVELS = 21, parts=[];
+  for(let i=0;i<LEVELS;i++){
+    const t = i/(LEVELS-1);
+    const level = lo + (hi-lo)*(0.05 + t*0.9);
+    for(const poly of stitch(march(data, cols, rows, CELL, level))){
+      if(poly.length < 14) continue;
+      const d = toD(chaikin(poly, 2), true);
+      if(!d) continue;
+      // Higher contours read brighter — the ridges catch the light.
+      parts.push(`<path d="${d}" fill="none" stroke="#a8d4fc" stroke-width="${(0.6 + t*0.55).toFixed(2)}"
+        opacity="${(0.10 + t*0.34).toFixed(3)}"/>`);
+    }
+  }
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('preserveAspectRatio', 'none');
+  svg.style.width = '100%'; svg.style.height = '100%';
+  svg.innerHTML = `<g stroke-linejoin="round" stroke-linecap="round">${parts.join('')}</g>`;
+}
+
+/* A single contour, reused as a section rule instead of a straight hairline. */
+function contourRule(el, seed){
+  // 2px cells: at 4px the box was only five rows deep and every contour came
+  // out a straight line, which defeats the point of using contours at all.
+  const W = el.clientWidth || 600, H = 22;
+  const CELL = 2, cols = Math.ceil(W/CELL)+1, rows = Math.ceil(H/CELL)+1;
+  const data = new Float32Array(cols*rows);
+  for(let y=0;y<rows;y++) for(let x=0;x<cols;x++)
+    data[y*cols+x] = (1 - (y*CELL)/H) + fbm(x*CELL*0.012, y*CELL*0.03, seed, 4)*0.52;
+  const parts=[];
+  [0.34, 0.52, 0.70].forEach((lv, i) => {
+    for(const poly of stitch(march(data, cols, rows, CELL, lv))){
+      if(poly.length < 10) continue;
+      const d = toD(chaikin(poly, 2), false);
+      if(d) parts.push(`<path d="${d}" fill="none" stroke="#a8d4fc"
+        stroke-width="${[1.0,0.75,0.6][i]}" opacity="${[0.30,0.19,0.12][i]}"/>`);
+    }
+  });
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${parts.join('')}</svg>`;
+}
+
+/* ═══ tiles ══════════════════════════════════════════════════════════ */
+const readTot = D.tokens.freshIn + D.tokens.cacheRead;
+document.getElementById('tiles').innerHTML = [
+  { k:'model time',    v:hm(D.modelMin),      n:`of ${hm(D.spanMin)} wall clock` },
+  { k:'tokens read',   v:tok(readTot),        n:'fresh input + cache reads' },
+  { k:'tokens written',v:tok(D.tokens.out),   n:'everything it said or did' },
+  { k:'per call',      v:'$'+usd(D.totalCost/D.calls), n:`${D.stops[0][1]} of ${D.calls} ended in a tool call` },
+  { k:'swarm reading', v:tok(D.swarmTokIn),   n:`across ${D.swarm.length} sub-agents` },
+  { k:'silent',        v:hm(idle),            n:'no calls, no agents', sand:true },
+].map(t => `<div class="tile"><span class="k">${t.k}</span>
+  <div class="v${t.sand?' sand':''}">${t.v}</div><div class="n">${t.n}</div></div>`).join('');
+
+/* ═══ funnels ════════════════════════════════════════════════════════ */
+function funnel(barEl, keyEl, rows, total, fmt){
+  barEl.innerHTML = rows.map(r =>
+    `<div style="background:${r.c};width:${(r.v/total)*100}%"
+      data-ro="<b>${r.k}</b><br>${fmt(r.v)} &middot; ${((r.v/total)*100).toFixed(1)}%"></div>`).join('');
+  keyEl.innerHTML = rows.map(r =>
+    `<span><span class="sw" style="background:${r.c}"></span>${r.k}
+     <span class="n">${fmt(r.v)} &middot; ${((r.v/total)*100).toFixed(1)}%</span></span>`).join('');
+}
+// The ramp runs dark→light ALONG the funnel, so the 0.8% output sliver is
+// the brightest thing on the bar and the 78% input block recedes. Same three
+// validated steps; reversing which end of the funnel gets which keeps the
+// lightness monotone while putting the emphasis on the value you'd otherwise
+// never see.
+const tkRows = [
+  { k:'fresh input', v:D.tokens.freshIn,   c:'var(--ice-4)' },
+  { k:'cache read',  v:D.tokens.cacheRead, c:'var(--ice-2)' },
+  { k:'output',      v:D.tokens.out,       c:'var(--ice-0)' },
+];
+const tkTot = tkRows.reduce((a,r) => a+r.v, 0);
+funnel(document.getElementById('tokBar'), document.getElementById('tokKeys'), tkRows, tkTot,
+       v => v.toLocaleString() + ' tok');
+document.getElementById('tokNote').innerHTML =
+  `<b>${D.ratio} tokens read for every 1 written.</b> Re-reading the transcript is the product here,
+   and only ${((D.tokens.cacheRead/readTot)*100).toFixed(0)}% of those reads hit cache &mdash; the rest
+   billed at full input rate. Cache-hit ratio is the number worth trending on this card.`;
+
+// Same move on spend: the 94% block sits back, the 6% remainder reads bright.
+const RAMP2 = ['var(--ice-4)','var(--ice-0)'];
+funnel(document.getElementById('costBar'), document.getElementById('costKeys'),
+       D.models.map((m,i) => ({ k:m.model, v:m.cost, c:RAMP2[i] })), D.totalCost, v => '$'+usd(v));
+const lead = D.models[0], rest = D.models[1];
+document.getElementById('costNote').innerHTML =
+  `<b>${lead.model} took ${((lead.cost/D.totalCost)*100).toFixed(0)}% of the bill</b> on ${lead.calls} calls
+   ($${usd(lead.cost/lead.calls)} each) against $${usd(rest.cost/rest.calls)} each for ${rest.model}.
+   The swarm added ${tok(D.swarmTokIn)} of reading on four more models, billed to their own
+   sessions &mdash; this card should roll that up, and today nothing does.`;
+
+/* ═══ ranked bars ════════════════════════════════════════════════════ */
+function ranked(el, rows, maxV, fmt){
+  el.innerHTML = rows.map(r => `
+    <div class="rank">
+      <div class="nm" title="${r.name}">${r.name}</div>
+      <div class="tr"><div class="fl" style="width:${Math.max((r.v/maxV)*100,.7)}%"
+        data-ro="<b>${r.name}</b><br>${r.tip}"></div></div>
+      <div class="vv">${fmt(r.v)}</div>
+      <div class="er ${r.bad?'bad':''}">${r.er}</div>
+    </div>`).join('');
+}
+const tools = D.toolAgg.filter(t => t.sec > 0.5 || t.err > 0);
+ranked(document.getElementById('toolChart'),
+  tools.map(t => {
+    const rate = t.err / t.n;
+    return { name:t.name, v:t.sec/60,
+      tip:`${t.n} calls &middot; ${(t.sec/60).toFixed(1)} min total &middot; longest ${(t.maxSec/60).toFixed(1)} min` +
+          (t.err ? `<br>${t.err} failed (${Math.round(rate*100)}%)` : ''),
+      er: t.err ? `${rate >= .25 ? '▲' : '△'} ${t.err}/${t.n} failed` : `${t.n} calls`,
+      bad: rate >= .25 };
+  }),
+  Math.max(...tools.map(t => t.sec/60)), v => v >= 1 ? v.toFixed(1)+'m' : Math.round(v*60)+'s');
+
+document.getElementById('toolTable').innerHTML =
+  `<table><thead><tr><th>tool</th><th class="n">calls</th><th class="n">total</th>
+   <th class="n">longest</th><th class="n">failed</th></tr></thead><tbody>` +
+  D.toolAgg.map(t => `<tr><td>${t.name}</td><td class="n">${t.n}</td>
+    <td class="n">${(t.sec/60).toFixed(1)}m</td><td class="n">${(t.maxSec/60).toFixed(1)}m</td>
+    <td class="n">${t.err}</td></tr>`).join('') + '</tbody></table>';
+const bT = document.getElementById('btnT');
+bT.onclick = () => {
+  const on = bT.getAttribute('aria-pressed') !== 'true';
+  bT.setAttribute('aria-pressed', String(on));
+  document.getElementById('toolChart').classList.toggle('hidden', on);
+  document.getElementById('toolTable').classList.toggle('hidden', !on);
+};
+const worst = D.toolAgg.filter(t => t.n >= 5).sort((a,b) => (b.err/b.n) - (a.err/a.n))[0];
+const slow  = D.toolAgg[0];
+document.getElementById('toolNote').innerHTML =
+  `<b>${slow.name} is the sink &mdash; and it is one call.</b> ${slow.n} calls totalling
+   ${(slow.sec/60).toFixed(0)} minutes, but the longest single one ran ${(slow.maxSec/60).toFixed(0)} minutes
+   &mdash; ${(slow.concSec*100).toFixed(1)}% of the tool's whole wall clock in one invocation, the other
+   ${slow.n-1} finishing in about ${Math.max(1, Math.round(slow.sec - slow.maxSec))}s between them.
+   A mean of ${(slow.sec/slow.n).toFixed(0)}s hides that completely.
+   Separately, <span class="sand">${worst.name} failed ${Math.round(100*worst.err/worst.n)}% of the time</span>
+   (${worst.err} of ${worst.n}) with nothing in the UI ever saying so.`;
+
+/* ═══ swarm ══════════════════════════════════════════════════════════ */
+const sw = D.swarm.filter(s => s.tokensIn > 0);
+document.getElementById('swarmCount').textContent = sw.length + ' agents';
+ranked(document.getElementById('swarmChart'),
+  sw.map(s => ({ name:s.label, v:s.tokensIn,
+    tip:`${s.agentType} &middot; ${s.model}<br>${s.tokensIn.toLocaleString()} in / ${s.tokensOut.toLocaleString()} out<br>ran ${hm(s.min)} &middot; ${s.state}`,
+    er:`${hm(s.min)} · ${s.model.replace('claude-','')}` })),
+  Math.max(...sw.map(s => s.tokensIn)), tok);
+document.getElementById('swarmNote').innerHTML =
+  `The swarm read <b>${tok(D.swarmTokIn)}</b> to return <b>${tok(D.swarmTokOut)}</b>, over
+   ${hm(D.swarmMin)} of summed agent time inside a ${hm(D.spanMin)} session &mdash; so the fan-out was
+   real parallelism, not a queue.`;
+
+/* ═══ receipt ════════════════════════════════════════════════════════ */
+document.getElementById('rcpt').innerHTML =
+  D.artifacts.map(a => `<div class="row"><span class="l">${a.filename}</span>
+    <span class="r">${a.op} &nbsp;+${a.adds}/&minus;${a.dels}</span></div>`).join('') +
+  `<div class="row"><span class="l">sub-agent reports</span><span class="r">${D.subReports} files</span></div>
+   <div class="row"><span class="l">file change sets</span><span class="r">${D.fileChangeSets} &nbsp;+${D.fcAdds}/&minus;${D.fcDels}</span></div>
+   <div class="tot"><span class="l">cost per line written</span>
+     <span class="r">$${(D.totalCost/D.fcAdds).toFixed(3)} &times; ${D.fcAdds} lines</span></div>`;
+
+/* ═══ draw + hover ═══════════════════════════════════════════════════ */
+function paint(){
+  drawTerrain();
+  contourRule(document.getElementById('rule1'), 21);
+  contourRule(document.getElementById('rule2'), 57);
+  contourRule(document.getElementById('rule3'), 93);
+}
+paint();
+let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(paint, 140); });
+
+const ro = document.getElementById('ro');
+document.addEventListener('mousemove', e => {
+  const el = e.target.closest('[data-ro]');
+  if (!el) { ro.style.opacity = 0; return; }
+  ro.innerHTML = el.dataset.ro; ro.style.opacity = 1;
+  const r = ro.getBoundingClientRect();
+  ro.style.left = Math.min(e.clientX + 15, innerWidth - r.width - 12) + 'px';
+  ro.style.top  = Math.min(e.clientY + 17, innerHeight - r.height - 12) + 'px';
+});
+</script>
+</body>
+</html>

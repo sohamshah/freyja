@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Session Receipt — dashboard view mock</title>
+<style>
+@font-face{font-family:'Geist Mono';src:url('../src/renderer/assets/fonts/GeistMono-Variable.woff2') format('woff2');font-weight:100 900;font-display:swap}
+
+/* ── Freyja tokens + validated chart slots ───────────────────────────────
+   Palettes checked with the dataviz skill's validate_palette.js against the
+   #121212 chart surface:
+     categorical 3 (all-pairs)  #3987e5 #d95926 #199e70   → ALL PASS
+     ordinal blue (5 step)      #184f95 … #b7d3f6         → ALL PASS
+   Ranked bars are ONE hue (magnitude) — the categories are nominal, so no
+   value-ramp across them. Error rate rides its own status column with an
+   icon + label, never a second axis. */
+.viz-root{
+  color-scheme:dark;
+  --surface-0:#0a0a0a; --surface-1:#121212; --surface-2:#181818; --surface-3:#1e1e1e;
+  --ink-0:#e8e8e8; --ink-1:#a8a8a8; --ink-2:#6e6e6e; --ink-3:#4a4a4a;
+  --grid:#232323; --hairline:rgba(255,255,255,.07);
+  --accent:#a8d4fc;
+  --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70;
+  --status-good:#0ca30c; --status-warning:#fab219;
+  --status-serious:#ec835a; --status-critical:#d03b3b;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--surface-0)}
+body{font-family:'Geist Mono',ui-monospace,'SF Mono',Menlo,monospace;color:var(--ink-0);
+  font-size:12.5px;line-height:1.55;padding:28px 22px 60px}
+.wrap{max-width:1320px;margin:0 auto}
+h1{font-size:15px;letter-spacing:.06em;text-transform:uppercase;margin:0 0 4px;font-weight:500}
+.id{font-size:11px;color:var(--ink-2);word-break:break-all;margin-bottom:18px}
+.card{background:var(--surface-1);border-radius:8px;box-shadow:inset 0 0 0 1px var(--hairline);
+  padding:18px 20px;margin-bottom:14px}
+.card h2{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-1);margin:0 0 2px}
+.card .sub{font-size:11px;color:var(--ink-2);margin:0 0 16px;max-width:92ch}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:980px){.grid2{grid-template-columns:1fr}}
+
+/* hero — proportional figures, same sans as everything else */
+.hero{display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;margin-bottom:6px}
+.hero .fig{font-size:56px;line-height:1;font-weight:400;letter-spacing:-.02em}
+.hero .cap{font-size:11.5px;color:var(--ink-2);max-width:44ch}
+.statrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:18px}
+.stat{padding:11px 0 0;box-shadow:inset 0 1px 0 var(--hairline)}
+.stat .k{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-2)}
+.stat .v{font-size:19px;margin-top:4px}
+.stat .n{font-size:10.5px;color:var(--ink-2)}
+
+/* stacked part-to-whole — 2px surface gap between segments */
+.stack{display:flex;height:26px;border-radius:4px;overflow:hidden;gap:2px;background:var(--surface-1)}
+.stack div{height:100%}
+.seg1{background:var(--series-1)} .seg2{background:var(--series-2)} .seg3{background:var(--series-3)}
+.keys{display:flex;flex-wrap:wrap;gap:16px;margin-top:11px;font-size:10.5px;color:var(--ink-1)}
+.keys .sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+.keys .n{color:var(--ink-2)}
+
+/* ranked bars */
+.rank{display:grid;grid-template-columns:132px 1fr 74px 96px;align-items:center;gap:10px;
+  padding:5px 0;font-size:11px}
+.rank + .rank{box-shadow:inset 0 1px 0 var(--grid)}
+.rank .nm{color:var(--ink-0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rank .tr{position:relative;height:11px;background:var(--surface-3);border-radius:3px}
+.rank .fl{position:absolute;left:0;top:0;height:100%;background:var(--series-1);border-radius:3px;min-width:2px}
+.rank .vv{text-align:right;color:var(--ink-1);font-variant-numeric:tabular-nums}
+.rank .er{font-size:10px;color:var(--ink-3);white-space:nowrap}
+.rank .er.bad{color:var(--status-critical)}
+.rank .er.warn{color:var(--status-serious)}
+
+/* receipt list */
+.rcpt{font-size:11.5px}
+.rcpt .row{display:flex;justify-content:space-between;gap:14px;padding:6px 0;box-shadow:inset 0 -1px 0 var(--grid)}
+.rcpt .row:last-child{box-shadow:none}
+.rcpt .row .l{color:var(--ink-1)}
+.rcpt .row .r{color:var(--ink-0);font-variant-numeric:tabular-nums;white-space:nowrap}
+.rcpt .tot{margin-top:10px;padding-top:11px;box-shadow:inset 0 1px 0 var(--hairline);
+  display:flex;justify-content:space-between;font-size:12.5px}
+.rcpt .tot .r{color:var(--accent)}
+
+.note{font-size:10.5px;color:var(--ink-2);margin-top:12px;max-width:92ch}
+.note b{color:var(--ink-1);font-weight:400}
+
+button.tgl{font:inherit;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-1);
+  background:transparent;border:0;box-shadow:inset 0 0 0 1px var(--hairline);border-radius:5px;
+  padding:5px 10px;cursor:pointer;margin-bottom:12px}
+button.tgl[aria-pressed=true]{color:var(--surface-0);background:var(--accent)}
+table{border-collapse:collapse;width:100%;font-size:11px;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:5px 10px 5px 0;border-bottom:1px solid var(--grid)}
+th{font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2);font-weight:400}
+td.num,th.num{text-align:right;padding-right:16px}
+.hidden{display:none}
+#tip{position:fixed;z-index:50;pointer-events:none;opacity:0;transition:opacity .09s;
+  background:var(--surface-3);box-shadow:inset 0 0 0 1px var(--hairline),0 8px 24px rgba(0,0,0,.6);
+  border-radius:6px;padding:8px 11px;font-size:10.5px;max-width:300px}
+</style>
+</head>
+<body class="viz-root">
+<div class="wrap">
+
+<h1>Session receipt</h1>
+<div class="id" id="sessId"></div>
+
+<!-- ── hero ─────────────────────────────────────────────────────────── -->
+<div class="card">
+  <div class="hero">
+    <div class="fig" id="heroCost"></div>
+    <div class="cap">billed to this one Slack thread, across <span id="heroCalls"></span> model calls.
+      Sub-agents bill to their own sessions and are counted separately below.</div>
+  </div>
+  <div class="statrow" id="statrow"></div>
+</div>
+
+<div class="grid2">
+  <!-- ── read amplification ─────────────────────────────────────────── -->
+  <div class="card">
+    <h2>Read amplification</h2>
+    <p class="sub">Tokens the parent agent read versus tokens it wrote. The output slice is real,
+       not a rounding error &mdash; it is 0.8% of the bar.</p>
+    <div class="stack" id="tokStack"></div>
+    <div class="keys" id="tokKeys"></div>
+    <p class="note" id="tokNote"></p>
+  </div>
+
+  <!-- ── cost by model ──────────────────────────────────────────────── -->
+  <div class="card">
+    <h2>Cost by model</h2>
+    <p class="sub">Which model the parent agent actually spent on. Two models ran; one of them
+       is nearly the whole bill.</p>
+    <div class="stack" id="costStack"></div>
+    <div class="keys" id="costKeys"></div>
+    <p class="note" id="costNote"></p>
+  </div>
+</div>
+
+<!-- ── wall clock by tool ───────────────────────────────────────────── -->
+<div class="card">
+  <h2>Where the wall clock went</h2>
+  <p class="sub">Total time inside each tool. Bars are one hue because the tool names have no natural
+     order &mdash; length is the whole message. Failure rate sits in its own column so it can never be
+     mistaken for magnitude.</p>
+  <button class="tgl" id="btnT1" aria-pressed="false">table</button>
+  <div id="toolChart"></div>
+  <div id="toolTable" class="hidden"></div>
+  <p class="note" id="toolNote"></p>
+</div>
+
+<div class="grid2">
+  <!-- ── swarm ──────────────────────────────────────────────────────── -->
+  <div class="card">
+    <h2>What the swarm read</h2>
+    <p class="sub">Input tokens per sub-agent. The parent is a thin coordinator; the reading happens out here.</p>
+    <div id="swarmChart"></div>
+    <p class="note" id="swarmNote"></p>
+  </div>
+
+  <!-- ── output ─────────────────────────────────────────────────────── -->
+  <div class="card">
+    <h2>What came out</h2>
+    <p class="sub">Everything this session left on disk, and what each unit of it cost.</p>
+    <div class="rcpt" id="rcpt"></div>
+  </div>
+</div>
+
+</div>
+<div id="tip" role="status" aria-live="polite"></div>
+
+<script id="data" type="application/json">{"meta":{"id":"freyja:slack:T04RBR2J4JC:channel:C0AJF21GSE8:1786645306.443119","title":"slack:T04RBR2J4JC:channel:C0AJF21GSE8:1786645306.443119","model":"claude-opus-4-8","workspace":"/Users/sohamshah","spanMin":295.4,"messages":8,"usage":{"currentContextTokens":236342,"totalInputTokens":4526829,"totalOutputTokens":22023,"totalCacheReadTokens":766430,"totalCacheWriteTokens":18951,"totalCost":177.8675135,"lastTurnInputTokens":236342,"lastTurnOutputTokens":22023,"contextWindow":1000000,"systemPromptTokens":12057,"toolTokens":23925,"transcriptTokens":22585,"toolCount":38},"t0":1786647348844},"totalCost":189.12,"calls":150,"modelMin":47.8,"spanMin":295.4,"models":[{"model":"claude-fable-5","cost":177.87,"calls":125,"min":41.1},{"model":"claude-opus-4-8","cost":11.25,"calls":25,"min":6.7}],"tokens":{"freshIn":18260546,"cacheRead":4940409,"cacheWrite":285885,"out":185050},"ratio":125,"stops":[["tool_use",146],["end_turn",4]],"toolAgg":[{"name":"edit_file","n":53,"sec":1973.1399999999987,"err":1,"maxSec":1971.2,"concSec":0.999},{"name":"subagents","n":7,"sec":1921.8999999999999,"err":0,"maxSec":706.6,"concSec":0.368},{"name":"bash","n":55,"sec":644.4299999999998,"err":2,"maxSec":600.0,"concSec":0.931},{"name":"send_attachment","n":5,"sec":10.11,"err":0,"maxSec":4.3,"concSec":0.425},{"name":"web_fetch","n":10,"sec":9.450000000000001,"err":0,"maxSec":1.1,"concSec":0.116},{"name":"grep","n":10,"sec":1.5000000000000002,"err":0,"maxSec":0.6,"concSec":0.4},{"name":"browser_execute_js","n":10,"sec":1.45,"err":4,"maxSec":1.2,"concSec":0.828},{"name":"browser_screenshot","n":3,"sec":1.0999999999999999,"err":0,"maxSec":0.7,"concSec":0.636},{"name":"read_file","n":18,"sec":0.12,"err":0,"maxSec":0.0,"concSec":0.0},{"name":"summarize_context","n":1,"sec":0.06,"err":0,"maxSec":0.1,"concSec":1.667},{"name":"load_skill","n":3,"sec":0.05,"err":0,"maxSec":0.0,"concSec":0.0},{"name":"write_file","n":4,"sec":0.03,"err":0,"maxSec":0.0,"concSec":0.0},{"name":"tasks","n":12,"sec":0.0,"err":0,"maxSec":0.0,"concSec":0},{"name":"sub_agent","n":14,"sec":0.0,"err":0,"maxSec":0.0,"concSec":0},{"name":"tool_search","n":1,"sec":0.0,"err":0,"maxSec":0.0,"concSec":0},{"name":"artifacts","n":4,"sec":0.0,"err":0,"maxSec":0.0,"concSec":0}],"swarm":[{"label":"research-niche-blogs","model":"claude-sonnet-4-6","agentType":"explore","tokensIn":1432098,"tokensOut":25741,"min":13.1,"state":"done"},{"label":"research-blogs","model":"claude-sonnet-4-6","agentType":"explore","tokensIn":853766,"tokensOut":16923,"min":6.9,"state":"done"},{"label":"research-hn-x","model":"claude-sonnet-4-6","agentType":"explore","tokensIn":733340,"tokensOut":16897,"min":7.8,"state":"done"},{"label":"research-arxiv","model":"claude-sonnet-4-6","agentType":"explore","tokensIn":561346,"tokensOut":15180,"min":6.5,"state":"done"},{"label":"qa-visual","model":"claude-fable-5","agentType":"browser-qa","tokensIn":378201,"tokensOut":12199,"min":4.6,"state":"done"},{"label":"qa-visual-r2","model":"claude-fable-5","agentType":"browser-qa","tokensIn":134985,"tokensOut":8228,"min":3.1,"state":"done"},{"label":"qa-prose","model":"gpt-5.5","agentType":"review","tokensIn":125798,"tokensOut":13836,"min":4.5,"state":"done"},{"label":"qa-prose-r2","model":"gpt-5.5","agentType":"review","tokensIn":98041,"tokensOut":8871,"min":2.8,"state":"done"},{"label":"Visual review \u2014 tool-invocation-report","model":"claude-opus-4-8","agentType":"browser-qa","tokensIn":41749,"tokensOut":3014,"min":1.2,"state":"done"},{"label":"Prose review R2 \u2014 tool-invocation-report","model":"gpt-5.5","agentType":"review","tokensIn":40067,"tokensOut":6425,"min":1.7,"state":"done"},{"label":"Prose review \u2014 tool-invocation-report","model":"gpt-5.5","agentType":"review","tokensIn":36990,"tokensOut":4153,"min":1.0,"state":"done"},{"label":"Prose review R3 \u2014 tool-invocation-report","model":"gpt-5.5","agentType":"review","tokensIn":28447,"tokensOut":3468,"min":0.7,"state":"done"},{"label":"Visual review R2 \u2014 tool-invocation-report","model":"claude-opus-4-8","agentType":"browser-qa","tokensIn":27325,"tokensOut":3977,"min":3.1,"state":"done"},{"label":"Visual review R3 \u2014 tool-invocation-report","model":"claude-opus-4-8","agentType":"browser-qa","tokensIn":18400,"tokensOut":2109,"min":0.8,"state":"done"},{"label":"Skill drafter","model":"claude-opus-4-8","agentType":"skill-drafter","tokensIn":0,"tokensOut":0,"min":0.0,"state":"cancelled"},{"label":"Skill drafter","model":"claude-opus-4-8","agentType":"skill-drafter","tokensIn":0,"tokensOut":0,"min":0.0,"state":"running"}],"swarmTokIn":4510553,"swarmTokOut":141021,"swarmMin":57.9,"artifacts":[{"filename":"session_notes_invoke_tool.md","at":5.49,"op":"create","adds":29,"dels":0,"type":"md","creator":"Main agent"},{"filename":"tool-invocation-report.md","at":20.94,"op":"update","adds":89,"dels":2,"type":"md","creator":"Main agent"},{"filename":"tool-invocation-report.html","at":292.92,"op":"update","adds":1,"dels":1,"type":"html","creator":"Main agent"},{"filename":"serve.py","at":53.49,"op":"create","adds":12,"dels":0,"type":"py","creator":"Main agent"}],"subReports":6,"fileChangeSets":56,"fcAdds":6363,"fcDels":1202}</script>
+<script>
+const D = JSON.parse(document.getElementById('data').textContent);
+const usd  = n => '$' + n.toFixed(2);
+const tok  = n => n >= 1e6 ? (n/1e6).toFixed(2)+'M' : n >= 1e3 ? Math.round(n/1e3)+'k' : String(n);
+const mins = m => { const h = Math.floor(m/60), mm = Math.round(m%60);
+                    return h ? `${h}h ${String(mm).padStart(2,'0')}m` : `${mm}m`; };
+
+document.getElementById('sessId').textContent = D.meta.id;
+document.getElementById('heroCost').textContent = usd(D.totalCost);
+document.getElementById('heroCalls').textContent = D.calls;
+
+const readTot = D.tokens.freshIn + D.tokens.cacheRead;
+document.getElementById('statrow').innerHTML = [
+  { k:'model time',   v:mins(D.modelMin), n:`of ${mins(D.spanMin)} wall clock` },
+  { k:'tokens read',  v:tok(readTot),     n:'fresh input + cache reads' },
+  { k:'tokens written', v:tok(D.tokens.out), n:'everything the agent said or did' },
+  { k:'cost per call', v:usd(D.totalCost/D.calls), n:`${D.calls} calls, ${D.stops[0][1]} ended in a tool call` },
+  { k:'swarm reading', v:tok(D.swarmTokIn), n:`across ${D.swarm.length} sub-agents` },
+].map(s => `<div class="stat"><div class="k">${s.k}</div><div class="v">${s.v}</div><div class="n">${s.n}</div></div>`).join('');
+
+/* ── read amplification: 3 validated categorical slots ───────────────── */
+const tk = [
+  { k:'fresh input', v:D.tokens.freshIn,  c:'seg1', sw:'var(--series-1)' },
+  { k:'cache read',  v:D.tokens.cacheRead,c:'seg2', sw:'var(--series-2)' },
+  { k:'output',      v:D.tokens.out,      c:'seg3', sw:'var(--series-3)' },
+];
+const tkTot = tk.reduce((a,s) => a + s.v, 0);
+document.getElementById('tokStack').innerHTML = tk.map(s =>
+  `<div class="${s.c}" style="width:${(s.v/tkTot)*100}%"
+     data-tip="<b>${s.k}</b><br>${s.v.toLocaleString()} tokens &middot; ${((s.v/tkTot)*100).toFixed(1)}%"></div>`).join('');
+document.getElementById('tokKeys').innerHTML = tk.map(s =>
+  `<span><span class="sw" style="background:${s.sw}"></span>${s.k}
+   <span class="n">${tok(s.v)} &middot; ${((s.v/tkTot)*100).toFixed(1)}%</span></span>`).join('');
+document.getElementById('tokNote').innerHTML =
+  `<b>${D.ratio} tokens read for every 1 written.</b> Re-reading the transcript is the product here, and
+   only ${((D.tokens.cacheRead/readTot)*100).toFixed(0)}% of those reads hit cache &mdash; the rest were
+   billed at full input rate. A cache-hit ratio on this chart is the number worth watching over time.`;
+
+/* ── cost by model ───────────────────────────────────────────────────── */
+const mc = ['var(--series-1)','var(--series-2)','var(--series-3)'];
+document.getElementById('costStack').innerHTML = D.models.map((m,i) =>
+  `<div style="background:${mc[i]};width:${(m.cost/D.totalCost)*100}%"
+     data-tip="<b>${m.model}</b><br>${usd(m.cost)} &middot; ${m.calls} calls &middot; ${m.min}m of model time"></div>`).join('');
+document.getElementById('costKeys').innerHTML = D.models.map((m,i) =>
+  `<span><span class="sw" style="background:${mc[i]}"></span>${m.model}
+   <span class="n">${usd(m.cost)} &middot; ${((m.cost/D.totalCost)*100).toFixed(0)}% &middot; ${m.calls} calls</span></span>`).join('');
+// NB: `top` is a read-only window global — a top-level `const top` throws.
+const lead = D.models[0], rest = D.models[1];
+document.getElementById('costNote').innerHTML =
+  `<b>${lead.model} took ${((lead.cost/D.totalCost)*100).toFixed(0)}% of the bill</b> on ${lead.calls} calls
+   (${usd(lead.cost/lead.calls)} each) against ${usd(rest.cost/rest.calls)} each for ${rest.model}.
+   The swarm added ${tok(D.swarmTokIn)} of reading on four more models, billed to their own sessions —
+   this dashboard should roll that up, and today nothing does.`;
+
+/* ── ranked bars, one hue ────────────────────────────────────────────── */
+function ranked(el, rows, maxV, fmt) {
+  el.innerHTML = rows.map(r => `
+    <div class="rank">
+      <div class="nm" title="${r.name}">${r.name}</div>
+      <div class="tr"><div class="fl" style="width:${Math.max((r.v/maxV)*100, 0.6)}%"
+        data-tip="<b>${r.name}</b><br>${r.tip}"></div></div>
+      <div class="vv">${fmt(r.v)}</div>
+      <div class="er ${r.erCls||''}">${r.er||''}</div>
+    </div>`).join('');
+}
+const tools = D.toolAgg.filter(t => t.sec > 0.5 || t.err > 0);
+ranked(document.getElementById('toolChart'),
+  tools.map(t => {
+    const rate = t.err / t.n;
+    return { name:t.name, v:t.sec/60,
+      tip:`${t.n} calls &middot; ${(t.sec/60).toFixed(1)} min total &middot; ${(t.sec/t.n).toFixed(1)}s mean` +
+          (t.err ? `<br>${t.err} failed (${Math.round(rate*100)}%)` : ''),
+      er: t.err ? `${rate >= .25 ? '▲' : '○'} ${t.err}/${t.n} failed` : `${t.n} calls`,
+      erCls: rate >= .25 ? 'bad' : t.err ? 'warn' : '' };
+  }),
+  Math.max(...tools.map(t => t.sec/60)), v => v >= 1 ? v.toFixed(1)+'m' : Math.round(v*60)+'s');
+
+document.getElementById('toolTable').innerHTML =
+  `<table><thead><tr><th>tool</th><th class="num">calls</th><th class="num">total</th>
+   <th class="num">mean</th><th class="num">failed</th></tr></thead><tbody>` +
+  D.toolAgg.map(t => `<tr><td>${t.name}</td><td class="num">${t.n}</td>
+    <td class="num">${(t.sec/60).toFixed(1)}m</td><td class="num">${(t.sec/t.n).toFixed(1)}s</td>
+    <td class="num">${t.err}</td></tr>`).join('') + '</tbody></table>';
+const b1 = document.getElementById('btnT1');
+b1.onclick = () => {
+  const on = b1.getAttribute('aria-pressed') !== 'true';
+  b1.setAttribute('aria-pressed', String(on));
+  document.getElementById('toolChart').classList.toggle('hidden', on);
+  document.getElementById('toolTable').classList.toggle('hidden', !on);
+};
+const worst = D.toolAgg.filter(t => t.n >= 5).sort((a,b) => (b.err/b.n) - (a.err/a.n))[0];
+const slow  = D.toolAgg[0];
+// The mean is a lie for this session: one edit_file call is 99.9% of
+// edit_file's total. Report the concentration, not the average.
+document.getElementById('toolNote').innerHTML =
+  `<b>${slow.name} is the sink — and it is one call.</b> ${slow.n} calls totalling
+   ${(slow.sec/60).toFixed(0)} minutes, but the longest single one ran
+   ${(slow.maxSec/60).toFixed(0)} minutes: ${Math.round(slow.concSec*100)}% of the tool's whole
+   wall clock in one invocation, with the other ${slow.n-1} finishing in about
+   ${Math.max(1, Math.round(slow.sec - slow.maxSec))}s between them. A mean of
+   ${(slow.sec/slow.n).toFixed(0)}s would have hidden that completely.
+   Separately, <b>${worst.name} failed ${Math.round(100*worst.err/worst.n)}% of the time</b>
+   (${worst.err} of ${worst.n}) without anything in the UI ever saying so.`;
+
+/* ── swarm reading ───────────────────────────────────────────────────── */
+const sw = D.swarm.filter(s => s.tokensIn > 0);
+ranked(document.getElementById('swarmChart'),
+  sw.map(s => ({ name:s.label, v:s.tokensIn,
+    tip:`${s.agentType} &middot; ${s.model}<br>${s.tokensIn.toLocaleString()} in / ${s.tokensOut.toLocaleString()} out<br>ran ${mins(s.min)} &middot; ${s.state}`,
+    er:`${mins(s.min)} · ${s.model.replace('claude-','')}` })),
+  Math.max(...sw.map(s => s.tokensIn)), tok);
+document.getElementById('swarmNote').innerHTML =
+  `The swarm read <b>${tok(D.swarmTokIn)}</b> to return <b>${tok(D.swarmTokOut)}</b>, over
+   ${mins(D.swarmMin)} of summed agent time inside a ${mins(D.spanMin)} session — so the fan-out was real
+   parallelism, not a queue.`;
+
+/* ── what came out ───────────────────────────────────────────────────── */
+const arts = D.artifacts;
+document.getElementById('rcpt').innerHTML =
+  arts.map(a => `<div class="row"><span class="l">${a.filename}</span>
+    <span class="r">${a.op} &nbsp;+${a.adds}/&minus;${a.dels}</span></div>`).join('') +
+  `<div class="row"><span class="l">sub-agent reports</span><span class="r">${D.subReports} files</span></div>
+   <div class="row"><span class="l">file change sets</span><span class="r">${D.fileChangeSets} &nbsp;+${D.fcAdds}/&minus;${D.fcDels}</span></div>
+   <div class="tot"><span class="l">cost per line written</span>
+     <span class="r">${usd(D.totalCost / D.fcAdds)} &times; ${D.fcAdds} lines</span></div>`;
+
+/* ── hover layer ─────────────────────────────────────────────────────── */
+const tip = document.getElementById('tip');
+document.addEventListener('mousemove', e => {
+  const el = e.target.closest('[data-tip]');
+  if (!el) { tip.style.opacity = 0; return; }
+  tip.innerHTML = el.dataset.tip; tip.style.opacity = 1;
+  const r = tip.getBoundingClientRect();
+  tip.style.left = Math.min(e.clientX + 14, innerWidth - r.width - 10) + 'px';
+  tip.style.top  = Math.min(e.clientY + 16, innerHeight - r.height - 10) + 'px';
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Vitals — session strip chart</title>
+<style>
+@font-face{font-family:'Geist Mono';src:url('../src/renderer/assets/fonts/GeistMono-Variable.woff2') format('woff2');font-weight:100 900;font-display:swap}
+@font-face{font-family:'Departure Mono';src:url('../src/renderer/assets/fonts/DepartureMono-Regular.woff2') format('woff2');font-weight:400;font-display:swap}
+
+/* ── Freyja blackbox ─────────────────────────────────────────────────────
+   Monochrome + one ice accent, which is the whole palette. The ice ramp
+   below was validated with the dataviz skill's validate_palette.js as an
+   ORDINAL ramp against the #0a0a0a surface — monotone lightness, ΔL ≥ .06
+   between steps, 9° hue spread, light end 2.29:1. Every channel here is a
+   single series, so no categorical palette is in play at all: identity is
+   carried by the channel label, magnitude by the trace. */
+:root{
+  --void:#060607; --panel:#0a0a0b; --panel-2:#101012;
+  --ice-0:#a8d4fc; --ice-1:#7aafea; --ice-2:#5b8fcf; --ice-3:#3f6da8; --ice-4:#2a4d78;
+  --ink-0:#e8e8e8; --ink-1:#a8a8a8; --ink-2:#6e6e6e; --ink-3:#4a4a4a; --ink-4:#303030;
+  --rule:rgba(255,255,255,.055); --rule-2:rgba(255,255,255,.028);
+  --warn:#b8a078;
+}
+*{box-sizing:border-box}
+html{background:#000}
+body{
+  margin:0;background:var(--void);color:var(--ink-1);
+  font-family:'Geist Mono',ui-monospace,'SF Mono',Menlo,monospace;
+  font-size:12px;line-height:1.55;padding:30px 26px 64px;
+  -webkit-font-smoothing:antialiased;cursor:crosshair;overflow-x:hidden;
+}
+/* scanlines + vignette, then film grain — the blackbox house treatment */
+body::before{content:'';position:fixed;inset:0;z-index:99;pointer-events:none;opacity:.30;
+  mix-blend-mode:overlay;
+  background:repeating-linear-gradient(0deg,rgba(255,255,255,.026) 0 1px,transparent 1px 4px),
+             radial-gradient(circle at 50% 45%,transparent 42%,rgba(0,0,0,.6))}
+body::after{content:'';position:fixed;inset:0;z-index:98;pointer-events:none;opacity:.055;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.82' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E")}
+.wrap{max-width:1340px;margin:0 auto;position:relative;z-index:1}
+
+/* ── instrument chrome ─────────────────────────────────────────────── */
+.micro{font-family:'Departure Mono','Geist Mono',monospace;font-size:9.5px;
+  letter-spacing:.18em;text-transform:uppercase;color:var(--ink-3)}
+header{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;
+  padding-bottom:12px;border-bottom:1px solid var(--rule);margin-bottom:2px;flex-wrap:wrap}
+h1{font-family:'Departure Mono','Geist Mono',monospace;font-size:13px;letter-spacing:.30em;
+  text-transform:uppercase;color:var(--ink-0);margin:0;font-weight:400}
+header .sid{font-size:10px;color:var(--ink-3);margin-top:5px;word-break:break-all;max-width:560px}
+header .rt{text-align:right;display:flex;gap:26px}
+header .rt div .k{display:block}
+header .rt div .v{font-size:15px;color:var(--ink-0);letter-spacing:.02em}
+header .rt div .v.warn{color:var(--warn)}
+
+/* ── the recorder ──────────────────────────────────────────────────── */
+.recorder{position:relative;margin-top:20px}
+.chan{position:relative;display:grid;grid-template-columns:104px 1fr;gap:14px;
+  padding:12px 0;border-bottom:1px solid var(--rule-2)}
+.chan .meta{padding-top:2px}
+.chan .meta .nm{font-family:'Departure Mono','Geist Mono',monospace;font-size:9.5px;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--ink-2)}
+.chan .meta .pk{font-size:10px;color:var(--ink-4);margin-top:3px}
+.chan .plot{position:relative}
+.chan svg{display:block;width:100%;overflow:visible}
+
+.axis{display:grid;grid-template-columns:104px 1fr;gap:14px;margin-top:8px}
+.axis .ticks{position:relative;height:16px}
+.axis .t{position:absolute;font-size:9.5px;color:var(--ink-3);transform:translateX(-50%);
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+
+/* the silence bracket */
+.silence{position:absolute;top:0;bottom:0;pointer-events:none;
+  border-left:1px solid rgba(184,160,120,.30);border-right:1px solid rgba(184,160,120,.30);
+  background:linear-gradient(180deg,rgba(184,160,120,.045),rgba(184,160,120,.012))}
+.silence .cap{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);text-align:center;
+  white-space:nowrap;font-family:'Departure Mono','Geist Mono',monospace;font-size:10px;
+  letter-spacing:.22em;text-transform:uppercase;color:var(--warn)}
+.silence .cap small{display:block;letter-spacing:.14em;font-size:9px;color:var(--ink-3);margin-top:4px}
+
+/* blocking-call strip */
+.blkrail{position:relative;height:54px}
+.blk{position:absolute;top:9px;height:9px;background:var(--ice-4);border-radius:2px;
+  box-shadow:inset 0 0 0 1px var(--ice-3)}
+.blk.hero{background:var(--ice-2);box-shadow:inset 0 0 0 1px var(--ice-0),0 0 14px rgba(168,212,252,.28)}
+.blk:hover{background:var(--ice-1)}
+.blk .bl{position:absolute;left:0;font-size:9.5px;color:var(--ink-3);white-space:nowrap}
+.blk.hero .bl{color:var(--ink-1)}
+
+/* markers */
+.mrail{position:relative;height:30px}
+.mk{position:absolute;top:9px;width:1px;height:12px;background:var(--ink-4);margin-left:-.5px}
+.mk i{position:absolute;left:50%;top:-4px;width:7px;height:7px;margin-left:-3.5px;
+  border-radius:50%;background:var(--ink-3);box-shadow:0 0 0 2.5px var(--void)}
+.mk.user i{background:var(--ice-0);border-radius:1px;transform:rotate(45deg);
+  box-shadow:0 0 0 2.5px var(--void),0 0 9px rgba(168,212,252,.55)}
+.mk.reply i{background:transparent;box-shadow:inset 0 0 0 1.5px var(--ice-3),0 0 0 2.5px var(--void)}
+.mk.artifact i{background:var(--ice-2)}
+.mk.error i{background:var(--warn)}
+.mk.prune i{background:var(--ink-4)}
+
+/* footer strip */
+.legend{display:flex;flex-wrap:wrap;gap:20px;margin-top:16px;padding-top:13px;
+  border-top:1px solid var(--rule);font-size:10px;color:var(--ink-3)}
+.legend b{font-weight:400;color:var(--ink-2)}
+.legend i{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;vertical-align:0}
+
+.readout{position:fixed;z-index:120;pointer-events:none;opacity:0;transition:opacity .1s;
+  background:var(--panel-2);border:1px solid var(--rule);border-radius:3px;padding:8px 11px;
+  font-size:10.5px;color:var(--ink-0);white-space:nowrap;
+  box-shadow:0 10px 30px rgba(0,0,0,.75)}
+.readout .k{color:var(--ink-3)}
+
+/* table twin */
+.tools{display:flex;gap:9px;align-items:center;margin:22px 0 0}
+button.tgl{font:inherit;font-family:'Departure Mono','Geist Mono',monospace;font-size:9.5px;
+  letter-spacing:.18em;text-transform:uppercase;color:var(--ink-2);background:transparent;
+  border:1px solid var(--rule);border-radius:3px;padding:5px 11px;cursor:crosshair}
+button.tgl[aria-pressed=true]{color:var(--void);background:var(--ice-0);border-color:var(--ice-0)}
+table{border-collapse:collapse;width:100%;font-size:10.5px;font-variant-numeric:tabular-nums;margin-top:14px}
+th,td{text-align:left;padding:5px 12px 5px 0;border-bottom:1px solid var(--rule-2)}
+th{font-family:'Departure Mono','Geist Mono',monospace;font-size:9px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--ink-3);font-weight:400}
+td.n,th.n{text-align:right;padding-right:20px}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div>
+    <h1>Vitals</h1>
+    <div class="sid" id="sid"></div>
+  </div>
+  <div class="rt" id="hstats"></div>
+</header>
+
+<div class="tools">
+  <button class="tgl" id="bChart" aria-pressed="true">trace</button>
+  <button class="tgl" id="bTable" aria-pressed="false">values</button>
+</div>
+
+<div id="chartView">
+  <div class="recorder" id="rec"></div>
+  <div class="axis"><div></div><div class="ticks" id="ticks"></div></div>
+  <div class="legend" id="legend"></div>
+</div>
+
+<div id="tableView" class="hidden">
+  <table><thead><tr><th>minute</th><th class="n">tool calls</th><th class="n">agents live</th><th>state</th></tr></thead>
+  <tbody id="tb"></tbody></table>
+</div>
+
+</div>
+<div class="readout" id="ro"></div>
+
+<script id="data" type="application/json">{"comOrder":["read / search","orchestrate","write / edit","shell","deliver","browser"],"com":{"read / search":56.5,"shell":114.0,"write / edit":113.5,"browser":174.7,"orchestrate":74.5,"deliver":129.3},"phases":[{"a":0,"b":43,"dom":"read / search","share":0.34},{"a":49,"b":93,"dom":"write / edit","share":0.5},{"a":230,"b":253,"dom":"write / edit","share":0.32},{"a":284,"b":296,"dom":"shell","share":0.51}],"longCalls":[{"name":"subagents","start":10.47,"dur":7.73},{"name":"subagents","start":30.37,"dur":11.78},{"name":"subagents","start":53.49,"dur":4.5},{"name":"edit_file","start":60.13,"dur":32.85},{"name":"subagents","start":60.13,"dur":3.03},{"name":"bash","start":234.17,"dur":10.0},{"name":"subagents","start":244.76,"dur":1.2},{"name":"subagents","start":246.66,"dur":3.04}],"meta":{"id":"freyja:slack:T04RBR2J4JC:channel:C0AJF21GSE8:1786645306.443119","title":"slack:T04RBR2J4JC:channel:C0AJF21GSE8:1786645306.443119","model":"claude-opus-4-8","workspace":"/Users/sohamshah","spanMin":295.4,"messages":8,"usage":{"currentContextTokens":236342,"totalInputTokens":4526829,"totalOutputTokens":22023,"totalCacheReadTokens":766430,"totalCacheWriteTokens":18951,"totalCost":177.8675135,"lastTurnInputTokens":236342,"lastTurnOutputTokens":22023,"contextWindow":1000000,"systemPromptTokens":12057,"toolTokens":23925,"transcriptTokens":22585,"toolCount":38},"t0":1786647348844},"span":295.4,"N":296,"chTool":[14,8,7,5,5,2,2,1,0,0,6,0,0,0,0,0,3,2,1,0,5,0,0,0,0,0,0,0,0,0,11,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,32,0,0,0,0,0,0,32,0,11,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,2,3,2,0,0,0,0,0,0,0,0,0,3,0,8,0,0,3,7,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,3,0,1,2,0,0,0,22,0,0,0],"chSwarm":[0,0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,1,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,2,2,2,0,0,0,2,2,2,2,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,2,2,2,1,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0],"chFlight":[14,8,7,5,5,3,2,1,0,0,6,1,1,1,1,1,4,3,2,0,5,1,0,0,0,0,0,0,0,0,11,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,32,1,1,1,1,0,0,32,2,13,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,2,3,2,1,1,1,1,1,1,1,1,1,4,1,8,1,1,4,7,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,3,0,1,2,0,0,0,22,0,0,0],"ridgeOrder":["read / search","shell","write / edit","browser","orchestrate","deliver"],"ridge":{"read / search":[4.7969,4.0123,3.1874,2.3923,1.6888,1.1168,0.6889,0.4016,0.229,0.144,0.1278,0.1672,0.2503,0.3562,0.4697,0.5629,0.6132,0.6073,0.5467,0.4474,0.3329,0.2323,0.1549,0.1117,0.104,0.1288,0.1765,0.2417,0.3085,0.3572,0.3751,0.3572,0.3085,0.2417,0.1717,0.1107,0.0647,0.0343,0.0165,0.0072,0.0,0.0,0.0,0.0,0.0216,0.0494,0.1028,0.194,0.332,0.5152,0.7251,0.9256,1.0716,1.1253,1.0716,0.9256,0.7251,0.5152,0.332,0.194,0.1028,0.0494,0.0216,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0024,0.0055,0.0114,0.0216,0.0369,0.0572,0.0806,0.1028,0.1191,0.125,0.1191,0.1028,0.0806,0.0572,0.0369,0.0216,0.0162,0.0165,0.0252,0.0503,0.0926,0.1543,0.2372,0.3379,0.4468,0.549,0.6272,0.6657,0.6553,0.5967,0.5014,0.3877,0.2751,0.1789,0.1063,0.0558,0.0279,0.0127,0.0024,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],"shell":[2.6272,2.6759,2.6157,2.4245,2.1111,1.7145,1.2918,0.8992,0.5763,0.3389,0.1822,0.0904,0.0401,0.0234,0.0216,0.0369,0.0572,0.0806,0.1028,0.1191,0.125,0.1287,0.1248,0.1263,0.1435,0.1844,0.2505,0.3337,0.4169,0.4787,0.5001,0.4763,0.4114,0.3223,0.229,0.1475,0.0862,0.0457,0.022,0.0096,0.0,0.0,0.0,0.0,0.024,0.0549,0.1143,0.2156,0.3689,0.5724,0.8057,1.0285,1.1907,1.2527,1.1962,1.0399,0.8272,0.6093,0.4261,0.2961,0.2171,0.174,0.149,0.1191,0.1028,0.0806,0.0572,0.0369,0.0216,0.0114,0.0055,0.0024,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0048,0.0134,0.0283,0.0545,0.0953,0.1514,0.2184,0.2863,0.341,0.3691,0.3632,0.3248,0.264,0.1951,0.131,0.08,0.0444,0.0248,0.0158,0.0162,0.0271,0.0483,0.0788,0.1175,0.1601,0.1996,0.2279,0.2381,0.2279,0.1996,0.1601,0.1175,0.0788,0.0483,0.0271,0.0138,0.0055,0.0024,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0024,0.0103,0.0224,0.0468,0.0903,0.1534,0.2395,0.344,0.4773,0.6077,0.736,0.8598,0.9814,1.1027,1.2175,1.3072,1.3446,1.305,1.1803,0.9849,0.7535],"write / edit":[0.0584,0.0941,0.1378,0.1834,0.2219,0.2441,0.2441,0.2219,0.1834,0.1402,0.0996,0.0699,0.0545,0.0538,0.0651,0.083,0.1028,0.1191,0.125,0.1191,0.1028,0.0806,0.0572,0.0369,0.0216,0.0114,0.0055,0.0024,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0216,0.0494,0.1028,0.194,0.332,0.5152,0.7251,0.9831,1.2035,1.4091,1.611,1.8566,2.1852,2.5963,3.0292,3.374,3.5149,3.3834,2.99,2.4099,1.7852,1.2075,0.7464,0.4218,0.2181,0.1032,0.022,0.0096,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0024,0.0103,0.0248,0.0499,0.0914,0.1526,0.2319,0.3212,0.4053,0.466,0.4882,0.466,0.4053,0.3212,0.2319,0.1598,0.1079,0.0842,0.0895,0.1305,0.1961,0.2874,0.3948,0.5048,0.6041,0.6795,0.7199,0.718,0.6718,0.5869,0.4761,0.3565,0.2454,0.1547,0.0862,0.0457,0.022,0.0096,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0144,0.033,0.0686,0.1293,0.2213,0.3435,0.4834,0.6171,0.7144,0.7502,0.7144,0.6171,0.4834],"browser":[0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0072,0.0165,0.0415,0.0812,0.1449,0.2364,0.3524,0.4803,0.5989,0.6836,0.7144,0.6836,0.5989,0.4803,0.3524,0.2364,0.1449,0.0812,0.0415,0.0165,0.0072,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0024,0.0055,0.0114,0.0216,0.0369,0.0572,0.0806,0.1028,0.1191,0.125,0.1191,0.1028,0.0806,0.0572,0.0369,0.0216,0.0114,0.0055,0.0024,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0144,0.033,0.0686,0.1293,0.2213,0.3435,0.4834,0.6171,0.7144,0.7502,0.7144,0.6171,0.4834],"orchestrate":[2.8824,2.3151,1.7942,1.3756,1.0853,0.9202,0.8537,0.8464,0.8562,0.848,0.7998,0.7182,0.6006,0.4756,0.3702,0.303,0.2819,0.2988,0.336,0.3692,0.3751,0.3668,0.3305,0.2874,0.258,0.2582,0.2936,0.3565,0.4279,0.4835,0.5001,0.4763,0.4114,0.3223,0.229,0.1475,0.0862,0.0457,0.022,0.0096,0.0,0.0,0.0,0.0,0.0096,0.022,0.0457,0.0862,0.1475,0.229,0.3223,0.4234,0.5037,0.562,0.5951,0.6187,0.6516,0.7056,0.7763,0.8427,0.8765,0.8555,0.7739,0.641,0.4919,0.3456,0.2223,0.1309,0.0706,0.0348,0.011,0.0048,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0024,0.0055,0.0114,0.0216,0.0369,0.0572,0.0806,0.1028,0.1191,0.125,0.1263,0.1193,0.122,0.1384,0.1818,0.258,0.3662,0.496,0.6237,0.728,0.7944,0.8146,0.794,0.7442,0.6771,0.5996,0.5141,0.4221,0.3277,0.2349,0.1586,0.0953,0.0545,0.0283,0.0134,0.0048,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],"deliver":[0.0,0.0024,0.0055,0.0114,0.0216,0.0369,0.0572,0.0806,0.1028,0.1191,0.125,0.1215,0.1083,0.092,0.0788,0.0738,0.0788,0.092,0.1083,0.1215,0.125,0.1191,0.1028,0.0806,0.0572,0.0369,0.0216,0.0114,0.0055,0.0024,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0024,0.0055,0.0114,0.0216,0.0369,0.0572,0.0806,0.1028,0.1191,0.125,0.1191,0.1028,0.0806,0.0572,0.0369,0.0216,0.0114,0.0055,0.0024,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0024,0.0055,0.0114,0.0216,0.0369,0.0572,0.0806,0.1052,0.1246,0.1365,0.1406,0.1397,0.1378,0.1378,0.1397,0.1406,0.1365,0.1246,0.1052,0.0806]},"ridgeCounts":{"read / search":39,"shell":55,"write / edit":57,"browser":13,"orchestrate":41,"deliver":5},"gaps":[[43,49],[93,230],[253,284]],"waves":[{"at":8.8,"n":3,"labels":["research-arxiv","research-blogs","research-hn-x"],"dur":7.8,"tok":2148452},{"at":21.8,"n":1,"labels":["research-niche-blogs"],"dur":13.1,"tok":1432098},{"at":49.0,"n":2,"labels":["qa-visual","qa-prose"],"dur":4.6,"tok":503999},{"at":57.3,"n":2,"labels":["qa-visual-r2","qa-prose-r2"],"dur":3.1,"tok":233026},{"at":62.2,"n":1,"labels":["Skill drafter"],"dur":0.0,"tok":0},{"at":244.7,"n":2,"labels":["Prose review \u2014 tool-invocation-report","Visual review \u2014 tool-invocation-report"],"dur":1.2,"tok":78739},{"at":246.6,"n":2,"labels":["Prose review R2 \u2014 tool-invocation-report","Visual review R2 \u2014 tool-invocation-report"],"dur":3.1,"tok":67392},{"at":251.2,"n":2,"labels":["Prose review R3 \u2014 tool-invocation-report","Visual review R3 \u2014 tool-invocation-report"],"dur":0.8,"tok":46847},{"at":292.9,"n":1,"labels":["Skill drafter"],"dur":0.0,"tok":0}],"markers":[{"at":-0.13,"kind":"reply","text":"I'll start by exploring the codebase to ground the problem statement, then draft the report, then extend with external research. Setting up the task l"},{"at":5.49,"kind":"artifact","text":"session_notes_invoke_tool.md"},{"at":20.94,"kind":"artifact","text":"tool-invocation-report.md"},{"at":30.37,"kind":"reply","text":"On it: refreshing the blog research (2026-only, niche startups) in the background while I set up the HTML build with the right style skills.Compacted."},{"at":30.37,"kind":"prune","text":"compaction start"},{"at":30.37,"kind":"prune","text":"context pruning"},{"at":53.49,"kind":"artifact","text":"serve.py"},{"at":53.49,"kind":"prune","text":"context pruning"},{"at":53.49,"kind":"prune","text":"context pruning"},{"at":53.491,"kind":"error","text":"bash failed"},{"at":60.131,"kind":"error","text":"edit_file failed"},{"at":62.172,"kind":"error","text":"browser_execute_js failed"},{"at":92.94,"kind":"user","text":"this file /Users/sohamshah/.freyja/projects/freyja-slack-T04RBR2J4JC-channel-C0AJF21GSE8-1786645306.443119/tool-invocation-report.html originally from"},{"at":92.94,"kind":"reply","text":""},{"at":92.98,"kind":"prune","text":"turn cancelled"},{"at":230.45,"kind":"user","text":"The current report is far too verbose, repetitive, roundabout, and difficult to read. Do not create another parallel report. Replace the existing HTML"},{"at":230.46,"kind":"reply","text":"I'll read the existing report and the style guide, then rewrite in place.Acknowledged. I have the full existing report and all the substance I need. R"},{"at":284.63,"kind":"reply","text":"The 16:06 version on disk is the shortened rewrite (2,957 words, 6 sections, 3 figures, refs intact). Quick integrity check, then sharing.Shortened do"},{"at":286.59,"kind":"reply","text":"Let me look at what the current shortened version kept, and what recovery material exists for the findings.Full picture clear. The memo kept internal "},{"at":288.01,"kind":"prune","text":"context pruning"},{"at":288.01,"kind":"prune","text":"context pruning"},{"at":292.92,"kind":"artifact","text":"tool-invocation-report.html"},{"at":292.921,"kind":"error","text":"bash failed"},{"at":292.922,"kind":"error","text":"browser_execute_js failed"},{"at":292.923,"kind":"error","text":"browser_execute_js failed"},{"at":292.923,"kind":"error","text":"browser_execute_js failed"},{"at":292.93,"kind":"prune","text":"context pruning"},{"at":292.93,"kind":"prune","text":"context pruning"}],"subs":[{"id":"sub_19ffc8314af_1","label":"research-arxiv","agentType":"explore","model":"claude-sonnet-4-6","state":"done","start":8.8,"dur":6.55,"tokensIn":561346,"tokensOut":15180,"files":2},{"id":"sub_19ffc8314c5_2","label":"research-blogs","agentType":"explore","model":"claude-sonnet-4-6","state":"done","start":8.8,"dur":6.93,"tokensIn":853766,"tokensOut":16923,"files":2},{"id":"sub_19ffc8314da_3","label":"research-hn-x","agentType":"explore","model":"claude-sonnet-4-6","state":"done","start":8.8,"dur":7.83,"tokensIn":733340,"tokensOut":16897,"files":2},{"id":"sub_19ffc8ef515_4","label":"research-niche-blogs","agentType":"explore","model":"claude-sonnet-4-6","state":"done","start":21.77,"dur":13.08,"tokensIn":1432098,"tokensOut":25741,"files":2},{"id":"sub_19ffca7e27b_5","label":"qa-visual","agentType":"browser-qa","model":"claude-fable-5","state":"done","start":49.0,"dur":4.63,"tokensIn":378201,"tokensOut":12199,"files":1},{"id":"sub_19ffca7e28c_6","label":"qa-prose","agentType":"review","model":"gpt-5.5","state":"done","start":49.0,"dur":4.46,"tokensIn":125798,"tokensOut":13836,"files":1},{"id":"sub_19ffcaf7f26_7","label":"qa-visual-r2","agentType":"browser-qa","model":"claude-fable-5","state":"done","start":57.31,"dur":3.11,"tokensIn":134985,"tokensOut":8228,"files":1},{"id":"sub_19ffcaf7f3c_8","label":"qa-prose-r2","agentType":"review","model":"gpt-5.5","state":"done","start":57.31,"dur":2.81,"tokensIn":98041,"tokensOut":8871,"files":1},{"id":"sub_19ffcb3f1d3_9","label":"Skill drafter","agentType":"skill-drafter","model":"claude-opus-4-8","state":"cancelled","start":62.17,"dur":0.0,"tokensIn":0,"tokensOut":0,"files":0},{"id":"sub_19ffd5b1283_1","label":"Prose review \u2014 tool-invocation-report","agentType":"review","model":"gpt-5.5","state":"done","start":244.72,"dur":1.02,"tokensIn":36990,"tokensOut":4153,"files":1},{"id":"sub_19ffd5b129e_2","label":"Visual review \u2014 tool-invocation-report","agentType":"browser-qa","model":"claude-opus-4-8","state":"done","start":244.72,"dur":1.25,"tokensIn":41749,"tokensOut":3014,"files":1},{"id":"sub_19ffd5cd1de_3","label":"Prose review R2 \u2014 tool-invocation-report","agentType":"review","model":"gpt-5.5","state":"done","start":246.63,"dur":1.67,"tokensIn":40067,"tokensOut":6425,"files":1},{"id":"sub_19ffd5cd1fb_4","label":"Visual review R2 \u2014 tool-invocation-report","agentType":"browser-qa","model":"claude-opus-4-8","state":"done","start":246.63,"dur":3.07,"tokensIn":27325,"tokensOut":3977,"files":1},{"id":"sub_19ffd60fc94_5","label":"Prose review R3 \u2014 tool-invocation-report","agentType":"review","model":"gpt-5.5","state":"done","start":251.18,"dur":0.68,"tokensIn":28447,"tokensOut":3468,"files":1},{"id":"sub_19ffd60fcb2_6","label":"Visual review R3 \u2014 tool-invocation-report","agentType":"browser-qa","model":"claude-opus-4-8","state":"done","start":251.18,"dur":0.79,"tokensIn":18400,"tokensOut":2109,"files":1},{"id":"sub_19ffd8730be_10","label":"Skill drafter","agentType":"skill-drafter","model":"claude-opus-4-8","state":"running","start":292.91,"dur":0.0,"tokensIn":0,"tokensOut":0,"files":0}],"toolAgg":[{"name":"edit_file","n":53,"sec":1973.1399999999987,"err":1},{"name":"subagents","n":7,"sec":1921.8999999999999,"err":0},{"name":"bash","n":55,"sec":644.4299999999998,"err":2},{"name":"send_attachment","n":5,"sec":10.11,"err":0},{"name":"web_fetch","n":10,"sec":9.450000000000001,"err":0},{"name":"grep","n":10,"sec":1.5000000000000002,"err":0},{"name":"browser_execute_js","n":10,"sec":1.45,"err":4},{"name":"browser_screenshot","n":3,"sec":1.0999999999999999,"err":0},{"name":"read_file","n":18,"sec":0.12,"err":0},{"name":"summarize_context","n":1,"sec":0.06,"err":0},{"name":"load_skill","n":3,"sec":0.05,"err":0},{"name":"write_file","n":4,"sec":0.03,"err":0},{"name":"tasks","n":12,"sec":0.0,"err":0},{"name":"sub_agent","n":14,"sec":0.0,"err":0},{"name":"tool_search","n":1,"sec":0.0,"err":0},{"name":"artifacts","n":4,"sec":0.0,"err":0}],"activeMin":114}</script>
+<script>
+const D = JSON.parse(document.getElementById('data').textContent);
+const N = D.N, SPAN = D.span;
+const pc = m => (m / N) * 100;
+const hm = m => { const h = Math.floor(m/60), mm = Math.round(m%60);
+                  return h ? `${h}h ${String(mm).padStart(2,'0')}m` : `${mm}m`; };
+document.getElementById('sid').textContent = D.meta.id;
+
+const big = D.gaps.reduce((a,g) => (g[1]-g[0]) > (a[1]-a[0]) ? g : a, D.gaps[0]);
+const idleMin = D.gaps.reduce((a,g) => a + (g[1]-g[0]), 0);
+document.getElementById('hstats').innerHTML = [
+  { k:'elapsed', v:hm(SPAN) },
+  { k:'live',    v:Math.round(100*D.activeMin/N) + '%' },
+  { k:'silent',  v:hm(idleMin), warn:true },
+  { k:'agents',  v:D.subs.length },
+].map(s => `<div><span class="k micro">${s.k}</span><span class="v${s.warn?' warn':''}">${s.v}</span></div>`).join('');
+
+/* ── one channel = one series, drawn as its own strip (never a 2nd y-scale) ── */
+const W = 1000; // viewBox width; the svg scales to the column
+function channel(name, unit, series, h, opts = {}) {
+  const peak = Math.max(...series, 1);
+  const step = W / (N - 1);
+  const y = v => h - (v / peak) * (h - 3);
+  let dLine = '', dArea = `M0,${h} `;
+  series.forEach((v, i) => {
+    const x = (i * step).toFixed(2), yy = y(v).toFixed(2);
+    if (opts.step && i) { dLine += `L${x},${y(series[i-1]).toFixed(2)} `; dArea += `L${x},${y(series[i-1]).toFixed(2)} `; }
+    dLine += (i ? 'L' : 'M') + x + ',' + yy + ' ';
+    dArea += `L${x},${yy} `;
+  });
+  dArea += `L${W},${h} Z`;
+
+  // hairline grid at 1/2 and full scale — solid, one shade off the surface
+  const grid = [0.5, 1].map(f =>
+    `<line x1="0" y1="${(h-(h-3)*f).toFixed(1)}" x2="${W}" y2="${(h-(h-3)*f).toFixed(1)}"
+       stroke="rgba(255,255,255,.028)" stroke-width="1" vector-effect="non-scaling-stroke"/>`).join('');
+
+  // silence bands sit under the trace
+  const bands = D.gaps.map(g => {
+    const major = (g[1]-g[0]) > 60;
+    return `<rect x="${(g[0]/(N-1))*W}" y="0" width="${((g[1]-g[0])/(N-1))*W}" height="${h}"
+      fill="${major ? 'rgba(184,160,120,.05)' : 'rgba(255,255,255,.014)'}"/>`;
+  }).join('');
+
+  return `<div class="chan">
+    <div class="meta"><div class="nm">${name}</div><div class="pk">peak ${peak} ${unit}</div></div>
+    <div class="plot">
+      <svg viewBox="0 0 ${W} ${h}" preserveAspectRatio="none" style="height:${h}px">
+        <defs>
+          <linearGradient id="fill${opts.id}" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="${opts.hue}" stop-opacity=".22"/>
+            <stop offset="1" stop-color="${opts.hue}" stop-opacity="0"/>
+          </linearGradient>
+          <filter id="glow${opts.id}" x="-2%" y="-40%" width="104%" height="180%">
+            <feGaussianBlur stdDeviation="2.2" result="b"/>
+            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+        ${grid}${bands}
+        <path d="${dArea}" fill="url(#fill${opts.id})"/>
+        <path d="${dLine}" fill="none" stroke="${opts.hue}" stroke-width="${opts.w||1.4}"
+              stroke-linejoin="round" stroke-linecap="round"
+              vector-effect="non-scaling-stroke" filter="url(#glow${opts.id})" opacity=".95"/>
+      </svg>
+    </div></div>`;
+}
+
+/* Channel 2 is a strip of the calls that BLOCKED — a count trace would top
+   out at 2 and hide the point, which is that one edit_file held the agent
+   for 33 minutes and handed straight over to the silence. */
+function blockingStrip() {
+  // Label only the calls long enough to matter, on two staggered rows so
+  // neighbours can never overprint each other. The rest keep their tooltip.
+  let lane = 0;
+  const rows = D.longCalls.map(c => {
+    const worth = c.dur >= 4;
+    const lbl = worth
+      ? `<span class="bl" style="top:${13 + (lane++ % 2) * 13}px">${c.name} &middot; ${hm(c.dur)}</span>`
+      : '';
+    return `<div class="blk${c.dur >= 20 ? ' hero' : ''}" style="left:${pc(c.start)}%;width:${Math.max(pc(c.dur),.3)}%"
+        data-ro="<b>${c.name}</b> blocked ${hm(c.dur)}<br><span class='k'>+${hm(c.start)} &rarr; +${hm(c.start+c.dur)}</span>">${lbl}</div>`;
+  }).join('');
+  return `<div class="chan"><div class="meta"><div class="nm">blocking</div>
+      <div class="pk">${D.longCalls.length} calls over 60s</div></div>
+    <div class="plot"><div class="blkrail">${rows}</div></div></div>`;
+}
+
+const rec = document.getElementById('rec');
+rec.innerHTML =
+  channel('tool calls', 'per min', D.chTool, 96,  { id:'a', hue:'var(--ice-0)', w:1.4 }) +
+  blockingStrip() +
+  channel('swarm',      'agents live', D.chSwarm, 46, { id:'c', hue:'var(--ice-3)', w:1.3, step:true }) +
+  `<div class="chan"><div class="meta"><div class="nm">events</div>
+     <div class="pk">${D.markers.length} logged</div></div>
+   <div class="plot"><div class="mrail" id="mrail"></div></div></div>`;
+
+/* the silence bracket spans every channel, anchored to the plot column */
+const plotCol = document.createElement('div');
+Object.assign(plotCol.style, { position:'absolute', left:'118px', right:'0', top:'0', bottom:'0', pointerEvents:'none' });
+plotCol.innerHTML = D.gaps.filter(g => (g[1]-g[0]) > 25).map(g => `
+  <div class="silence" style="left:${pc(g[0])}%;width:${pc(g[1]-g[0])}%">
+    ${(g[1]-g[0]) > 60 ? `<div class="cap">no signal &middot; ${hm(g[1]-g[0])}<small>question waiting since +${hm(big[0])}</small></div>` : ''}
+  </div>`).join('');
+rec.appendChild(plotCol);
+
+document.getElementById('mrail').innerHTML = D.markers.map(m =>
+  `<div class="mk ${m.kind}" style="left:${pc(m.at)}%"
+     data-ro="<b>+${hm(m.at)}</b> <span class='k'>${m.kind}</span><br>${m.text.replace(/</g,'&lt;').slice(0,90)}"><i></i></div>`).join('');
+
+document.getElementById('ticks').innerHTML = Array.from({length:9}, (_, i) => {
+  const m = (SPAN/8) * i;
+  return `<div class="t" style="left:${(i/8)*100}%">${hm(m)}</div>`;
+}).join('');
+
+document.getElementById('legend').innerHTML = `
+  <span><i style="background:var(--ice-0);border-radius:1px;transform:rotate(45deg)"></i><b>your message</b></span>
+  <span><i style="background:transparent;box-shadow:inset 0 0 0 1.5px var(--ice-3)"></i><b>freyja reply</b></span>
+  <span><i style="background:var(--ice-2)"></i><b>artifact written</b></span>
+  <span><i style="background:var(--warn)"></i><b>tool failed</b></span>
+  <span><i style="background:var(--ink-4)"></i><b>context pruned</b></span>
+  <span style="color:var(--ink-4)">each channel keeps its own scale &mdash; three strips, never two axes on one plot</span>`;
+
+/* table twin */
+document.getElementById('tb').innerHTML = Array.from({length:N}, (_, i) => {
+  if (!D.chTool[i] && !D.chSwarm[i] && !D.chFlight[i] && !D.gaps.some(g => i === g[0])) return '';
+  const idle = D.gaps.some(g => i >= g[0] && i < g[1]);
+  return `<tr><td>+${hm(i)}</td><td class="n">${D.chTool[i]}</td><td class="n">${D.chSwarm[i]}</td>
+    <td style="color:${idle?'var(--warn)':'var(--ink-3)'}">${idle ? 'silent' : 'live'}</td></tr>`;
+}).join('');
+const bc = document.getElementById('bChart'), bt = document.getElementById('bTable');
+const view = t => { bc.setAttribute('aria-pressed', String(!t)); bt.setAttribute('aria-pressed', String(t));
+  document.getElementById('chartView').classList.toggle('hidden', t);
+  document.getElementById('tableView').classList.toggle('hidden', !t); };
+bc.onclick = () => view(false); bt.onclick = () => view(true);
+
+/* ── crosshair readout across all channels ─────────────────────────── */
+const ro = document.getElementById('ro');
+const cursor = document.createElement('div');
+Object.assign(cursor.style, { position:'absolute', top:'0', bottom:'0', width:'1px',
+  background:'rgba(168,212,252,.34)', pointerEvents:'none', opacity:'0' });
+plotCol.appendChild(cursor);
+
+rec.addEventListener('mousemove', e => {
+  const mk = e.target.closest('[data-ro]');
+  const box = plotCol.getBoundingClientRect();
+  const f = (e.clientX - box.left) / box.width;
+  if (f < 0 || f > 1) { ro.style.opacity = 0; cursor.style.opacity = 0; return; }
+  const i = Math.min(N - 1, Math.max(0, Math.round(f * (N - 1))));
+  cursor.style.left = (f * 100) + '%'; cursor.style.opacity = 1;
+  const idle = D.gaps.some(g => i >= g[0] && i < g[1]);
+  ro.innerHTML = mk ? mk.dataset.ro
+    : `<b>+${hm(i)}</b>${idle ? ' <span style="color:var(--warn)">silent</span>' : ''}<br>
+       <span class="k">tool calls</span> ${D.chTool[i]} &nbsp;
+       <span class="k">in flight</span> ${D.chFlight[i]} &nbsp;
+       <span class="k">agents</span> ${D.chSwarm[i]}`;
+  ro.style.opacity = 1;
+  const r = ro.getBoundingClientRect();
+  ro.style.left = Math.min(e.clientX + 16, innerWidth - r.width - 12) + 'px';
+  ro.style.top  = Math.min(e.clientY + 18, innerHeight - r.height - 12) + 'px';
+});
+rec.addEventListener('mouseleave', () => { ro.style.opacity = 0; cursor.style.opacity = 0; });
+</script>
+</body>
+</html>

@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Session Anatomy — activity view mock</title>
+<style>
+@font-face{font-family:'Geist Mono';src:url('../src/renderer/assets/fonts/GeistMono-Variable.woff2') format('woff2');font-weight:100 900;font-display:swap}
+
+/* ── Freyja design tokens ────────────────────────────────────────────────
+   Chart palette slots below were validated with the dataviz skill's
+   validate_palette.js against the #121212 chart surface:
+     ordinal blue ramp  #184f95 #256abf #3987e5 #6da7ec #b7d3f6  → ALL PASS
+     categorical 3      #3987e5 #d95926 #199e70               → ALL PASS (all-pairs)
+   Series colour is used for ONE thing here (an agent run); bar LENGTH
+   carries duration. No value-ramp on the nominal agent names. */
+.viz-root{
+  color-scheme:dark;
+  --surface-0:#0a0a0a; --surface-1:#121212; --surface-2:#181818; --surface-3:#1e1e1e;
+  --ink-0:#e8e8e8; --ink-1:#a8a8a8; --ink-2:#6e6e6e; --ink-3:#4a4a4a;
+  --grid:#232323; --axis:#2e2e2e; --hairline:rgba(255,255,255,.07);
+  --accent:#a8d4fc;
+  --series-1:#3987e5;              /* the only series hue on this page */
+  --series-1-dim:#256abf;
+  --status-good:#0ca30c; --status-warning:#fab219;
+  --status-serious:#ec835a; --status-critical:#d03b3b;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--surface-0)}
+body{
+  font-family:'Geist Mono',ui-monospace,'SF Mono',Menlo,monospace;
+  color:var(--ink-0);font-size:12.5px;line-height:1.55;
+  padding:28px 22px 60px;
+}
+.wrap{max-width:1320px;margin:0 auto}
+
+/* ── chrome ─────────────────────────────────────────────────────────── */
+.label{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-2)}
+.card{background:var(--surface-1);border-radius:8px;box-shadow:inset 0 0 0 1px var(--hairline);padding:18px 20px;margin-bottom:14px}
+.card h2{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-1);margin:0 0 2px}
+.card .sub{font-size:11px;color:var(--ink-2);margin:0 0 16px}
+
+header.top{display:flex;align-items:flex-start;gap:16px;margin-bottom:18px;flex-wrap:wrap}
+header.top .id{font-size:11px;color:var(--ink-2);word-break:break-all;max-width:640px}
+h1{font-size:15px;letter-spacing:.06em;text-transform:uppercase;margin:0 0 4px;font-weight:500}
+
+/* ── KPI row ────────────────────────────────────────────────────────── */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:10px;margin-bottom:14px}
+.kpi{background:var(--surface-1);border-radius:8px;box-shadow:inset 0 0 0 1px var(--hairline);padding:13px 15px}
+.kpi .k{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-2)}
+.kpi .v{font-size:25px;line-height:1.15;margin-top:6px;color:var(--ink-0);font-weight:450}
+.kpi .n{font-size:10.5px;color:var(--ink-2);margin-top:3px}
+.kpi.flag{box-shadow:inset 0 0 0 1px rgba(250,178,25,.32)}
+.kpi.flag .v{color:var(--status-warning)}
+
+/* ── ribbon ─────────────────────────────────────────────────────────── */
+.plot{position:relative;width:100%}
+.gridline{position:absolute;left:0;right:0;height:1px;background:var(--grid)}
+.idle{position:absolute;top:0;bottom:0;background:repeating-linear-gradient(135deg,rgba(255,255,255,.028) 0 5px,transparent 5px 10px);pointer-events:none}
+.idle.major{background:repeating-linear-gradient(135deg,rgba(250,178,25,.10) 0 5px,transparent 5px 10px);box-shadow:inset 1px 0 0 rgba(250,178,25,.28),inset -1px 0 0 rgba(250,178,25,.28)}
+.col{position:absolute;bottom:0;background:var(--series-1);border-radius:3px 3px 0 0}
+.col:hover{background:var(--accent)}
+
+.axis{position:relative;height:20px;margin-top:6px;box-shadow:inset 0 1px 0 var(--axis)}
+.tick{position:absolute;top:4px;font-size:9.5px;color:var(--ink-2);transform:translateX(-50%);font-variant-numeric:tabular-nums;white-space:nowrap}
+
+.rail{position:relative;height:26px;margin-top:2px}
+.mk{position:absolute;top:6px;width:9px;height:9px;margin-left:-4.5px;border-radius:50%;box-shadow:0 0 0 2px var(--surface-1)}
+.mk.user{background:var(--accent);border-radius:1px;transform:rotate(45deg)}
+.mk.artifact{background:var(--ink-1)}
+.mk.error{background:var(--status-critical)}
+.mk.context_pruning,.mk.compaction_start{background:var(--ink-3)}
+.mk.turn_cancelled,.mk.message_queued,.mk.task_stale_reminder_fired{background:var(--status-serious)}
+.mk.assistant{background:transparent;box-shadow:inset 0 0 0 1.5px var(--ink-3),0 0 0 2px var(--surface-1)}
+
+/* ── swimlanes ──────────────────────────────────────────────────────── */
+.lanes{position:relative}
+.wave{display:flex;align-items:center;gap:8px;margin:14px 0 5px}
+.wave .wl{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-2);white-space:nowrap}
+.wave .rule{flex:1;height:1px;background:var(--grid)}
+.lane{position:relative;height:22px;display:flex;align-items:center}
+.lane .track{position:absolute;left:0;right:0;top:10px;height:1px;background:var(--grid)}
+.bar{position:absolute;height:11px;top:5px;background:var(--series-1);border-radius:3px;min-width:3px}
+.bar:hover{background:var(--accent)}
+.bar.cancelled{background:transparent;box-shadow:inset 0 0 0 1.5px var(--status-serious)}
+.bar.running{background:repeating-linear-gradient(45deg,var(--series-1-dim) 0 4px,transparent 4px 8px);box-shadow:inset 0 0 0 1px var(--series-1-dim)}
+.lbl{position:absolute;font-size:10px;color:var(--ink-1);white-space:nowrap;top:3px}
+.lbl .dim{color:var(--ink-3)}
+
+/* ── stall callout ──────────────────────────────────────────────────── */
+.stall{background:var(--surface-1);border-radius:8px;box-shadow:inset 0 0 0 1px rgba(250,178,25,.30);padding:16px 18px;margin-bottom:14px;display:flex;gap:14px;align-items:flex-start}
+.stall .glyph{flex:none;width:22px;height:22px;border-radius:50%;box-shadow:inset 0 0 0 1.5px var(--status-warning);color:var(--status-warning);display:flex;align-items:center;justify-content:center;font-size:12px;margin-top:1px}
+.stall h3{margin:0 0 5px;font-size:12px;color:var(--status-warning);letter-spacing:.04em}
+.stall p{margin:0 0 6px;color:var(--ink-1);font-size:11.5px;max-width:88ch}
+.stall code{background:var(--surface-3);padding:1px 5px;border-radius:3px;color:var(--ink-0);font-size:10.5px}
+
+/* ── legend / toggle / table ────────────────────────────────────────── */
+.legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:14px;font-size:10px;color:var(--ink-2)}
+.legend span.sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.bartools{display:flex;gap:8px;align-items:center;margin-bottom:12px}
+button.tgl{font:inherit;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-1);background:transparent;border:0;box-shadow:inset 0 0 0 1px var(--hairline);border-radius:5px;padding:5px 10px;cursor:pointer}
+button.tgl[aria-pressed=true]{color:var(--surface-0);background:var(--accent)}
+table{border-collapse:collapse;width:100%;font-size:11px;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:5px 10px 5px 0;border-bottom:1px solid var(--grid)}
+th{font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2);font-weight:400}
+td.num,th.num{text-align:right;padding-right:16px}
+.hidden{display:none}
+
+/* ── tooltip ────────────────────────────────────────────────────────── */
+#tip{position:fixed;z-index:50;pointer-events:none;opacity:0;transition:opacity .09s;background:var(--surface-3);box-shadow:inset 0 0 0 1px var(--hairline),0 8px 24px rgba(0,0,0,.6);border-radius:6px;padding:8px 11px;font-size:10.5px;max-width:320px;color:var(--ink-0)}
+#tip b{font-weight:500}
+#tip .t2{color:var(--ink-2)}
+</style>
+</head>
+<body class="viz-root">
+<div class="wrap">
+
+<header class="top">
+  <div>
+    <h1>Session anatomy</h1>
+    <div class="id" id="sessId"></div>
+  </div>
+</header>
+
+<div class="kpis" id="kpis"></div>
+
+<!-- ── the stall, stated in words before the chart ──────────────────── -->
+<div class="stall">
+  <div class="glyph" aria-hidden="true">!</div>
+  <div>
+    <h3>Stalled 2h 17m with a question waiting</h3>
+    <p id="stallText"></p>
+    <p class="t2" style="color:var(--ink-2)">Nothing in the current activity view surfaces this. The event log shows
+      the two messages 137 minutes apart, in adjacent rows, with no sense of the gap between them.</p>
+  </div>
+</div>
+
+<!-- ── ribbon ───────────────────────────────────────────────────────── -->
+<div class="card">
+  <h2>Wall clock</h2>
+  <p class="sub">Tool calls per 2&frac12;-minute bucket across the session. Hatched bands are minutes with no
+     tool call and no sub-agent running.</p>
+  <div class="bartools">
+    <button class="tgl" id="btnChart" aria-pressed="true">chart</button>
+    <button class="tgl" id="btnTable" aria-pressed="false">table</button>
+  </div>
+
+  <div id="chartView">
+    <!-- gutter keeps the y-axis ticks off the first columns -->
+    <div style="margin-left:34px">
+      <div class="plot" id="ribbon" style="height:132px"></div>
+      <div class="axis" id="axis"></div>
+      <div class="rail" id="rail"></div>
+    </div>
+    <div class="legend">
+      <span><span class="sw" style="background:var(--series-1)"></span>tool calls</span>
+      <span><span class="sw" style="background:var(--accent);border-radius:1px;transform:rotate(45deg)"></span>your message</span>
+      <span><span class="sw" style="background:transparent;box-shadow:inset 0 0 0 1.5px var(--ink-3)"></span>freyja reply</span>
+      <span><span class="sw" style="background:var(--ink-1)"></span>artifact written</span>
+      <span><span class="sw" style="background:var(--ink-3)"></span>context pruned / compacted</span>
+      <span><span class="sw" style="background:var(--status-critical)"></span>tool error</span>
+      <span><span class="sw" style="background:repeating-linear-gradient(135deg,rgba(250,178,25,.5) 0 3px,transparent 3px 6px)"></span>idle</span>
+    </div>
+  </div>
+
+  <div id="tableView" class="hidden">
+    <table><thead><tr>
+      <th>from</th><th>to</th><th class="num">tool calls</th><th>state</th>
+    </tr></thead><tbody id="tblBody"></tbody></table>
+  </div>
+</div>
+
+<!-- ── swarm ────────────────────────────────────────────────────────── -->
+<div class="card">
+  <h2>Swarm</h2>
+  <p class="sub">Every sub-agent on the same clock. Bar length is how long it ran; the row name carries identity,
+     so colour is free to mean one thing only.</p>
+  <div class="lanes" id="lanes"></div>
+  <div class="legend">
+    <span><span class="sw" style="background:var(--series-1)"></span>agent run &mdash; finished</span>
+    <span><span class="sw" style="background:transparent;box-shadow:inset 0 0 0 1.5px var(--status-serious)"></span>&#9633; cancelled</span>
+    <span><span class="sw" style="background:repeating-linear-gradient(45deg,var(--series-1-dim) 0 3px,transparent 3px 6px)"></span>&#9678; still running</span>
+  </div>
+</div>
+
+</div>
+<div id="tip" role="status" aria-live="polite"></div>
+
+<script id="data" type="application/json">{"meta":{"id":"freyja:slack:T04RBR2J4JC:channel:C0AJF21GSE8:1786645306.443119","title":"slack:T04RBR2J4JC:channel:C0AJF21GSE8:1786645306.443119","model":"claude-opus-4-8","workspace":"/Users/sohamshah","spanMin":295.4,"messages":8,"usage":{"currentContextTokens":236342,"totalInputTokens":4526829,"totalOutputTokens":22023,"totalCacheReadTokens":766430,"totalCacheWriteTokens":18951,"totalCost":177.8675135,"lastTurnInputTokens":236342,"lastTurnOutputTokens":22023,"contextWindow":1000000,"systemPromptTokens":12057,"toolTokens":23925,"transcriptTokens":22585,"toolCount":38},"t0":1786647348844},"span":295.4,"density":[[0.0,27],[2.5,12],[5.0,4],[7.5,1],[10.0,6],[12.5,0],[15.0,5],[17.5,1],[20.0,5],[22.5,0],[25.0,0],[27.5,0],[30.0,11],[32.5,0],[35.0,0],[37.5,0],[40.0,0],[42.5,0],[45.0,0],[47.5,0],[50.0,0],[52.5,32],[55.0,0],[57.5,0],[60.0,43],[62.5,0],[65.0,0],[67.5,0],[70.0,0],[72.5,0],[75.0,0],[77.5,0],[80.0,0],[82.5,0],[85.0,0],[87.5,0],[90.0,0],[92.5,0],[95.0,0],[97.5,0],[100.0,0],[102.5,0],[105.0,0],[107.5,0],[110.0,0],[112.5,0],[115.0,0],[117.5,0],[120.0,0],[122.5,0],[125.0,0],[127.5,0],[130.0,0],[132.5,0],[135.0,0],[137.5,0],[140.0,0],[142.5,0],[145.0,0],[147.5,0],[150.0,0],[152.5,0],[155.0,0],[157.5,0],[160.0,0],[162.5,0],[165.0,0],[167.5,0],[170.0,0],[172.5,0],[175.0,0],[177.5,0],[180.0,0],[182.5,0],[185.0,0],[187.5,0],[190.0,0],[192.5,0],[195.0,0],[197.5,0],[200.0,0],[202.5,0],[205.0,0],[207.5,0],[210.0,0],[212.5,0],[215.0,0],[217.5,0],[220.0,0],[222.5,0],[225.0,0],[227.5,0],[230.0,4],[232.5,5],[235.0,0],[237.5,0],[240.0,0],[242.5,3],[245.0,8],[247.5,3],[250.0,11],[252.5,0],[255.0,0],[257.5,0],[260.0,0],[262.5,0],[265.0,0],[267.5,0],[270.0,0],[272.5,0],[275.0,0],[277.5,0],[280.0,0],[282.5,1],[285.0,4],[287.5,2],[290.0,0],[292.5,22],[295.0,0]],"bucket":2.5,"gaps":[[43,49],[93,230],[253,284]],"subs":[{"id":"sub_19ffc8314af_1","label":"research-arxiv","agentType":"explore","model":"claude-sonnet-4-6","state":"done","start":8.8,"dur":6.55,"tokensIn":561346,"tokensOut":15180,"files":2},{"id":"sub_19ffc8314c5_2","label":"research-blogs","agentType":"explore","model":"claude-sonnet-4-6","state":"done","start":8.8,"dur":6.93,"tokensIn":853766,"tokensOut":16923,"files":2},{"id":"sub_19ffc8314da_3","label":"research-hn-x","agentType":"explore","model":"claude-sonnet-4-6","state":"done","start":8.8,"dur":7.83,"tokensIn":733340,"tokensOut":16897,"files":2},{"id":"sub_19ffc8ef515_4","label":"research-niche-blogs","agentType":"explore","model":"claude-sonnet-4-6","state":"done","start":21.77,"dur":13.08,"tokensIn":1432098,"tokensOut":25741,"files":2},{"id":"sub_19ffca7e27b_5","label":"qa-visual","agentType":"browser-qa","model":"claude-fable-5","state":"done","start":49.0,"dur":4.63,"tokensIn":378201,"tokensOut":12199,"files":1},{"id":"sub_19ffca7e28c_6","label":"qa-prose","agentType":"review","model":"gpt-5.5","state":"done","start":49.0,"dur":4.46,"tokensIn":125798,"tokensOut":13836,"files":1},{"id":"sub_19ffcaf7f26_7","label":"qa-visual-r2","agentType":"browser-qa","model":"claude-fable-5","state":"done","start":57.31,"dur":3.11,"tokensIn":134985,"tokensOut":8228,"files":1},{"id":"sub_19ffcaf7f3c_8","label":"qa-prose-r2","agentType":"review","model":"gpt-5.5","state":"done","start":57.31,"dur":2.81,"tokensIn":98041,"tokensOut":8871,"files":1},{"id":"sub_19ffcb3f1d3_9","label":"Skill drafter","agentType":"skill-drafter","model":"claude-opus-4-8","state":"cancelled","start":62.17,"dur":0.0,"tokensIn":0,"tokensOut":0,"files":0},{"id":"sub_19ffd5b1283_1","label":"Prose review \u2014 tool-invocation-report","agentType":"review","model":"gpt-5.5","state":"done","start":244.72,"dur":1.02,"tokensIn":36990,"tokensOut":4153,"files":1},{"id":"sub_19ffd5b129e_2","label":"Visual review \u2014 tool-invocation-report","agentType":"browser-qa","model":"claude-opus-4-8","state":"done","start":244.72,"dur":1.25,"tokensIn":41749,"tokensOut":3014,"files":1},{"id":"sub_19ffd5cd1de_3","label":"Prose review R2 \u2014 tool-invocation-report","agentType":"review","model":"gpt-5.5","state":"done","start":246.63,"dur":1.67,"tokensIn":40067,"tokensOut":6425,"files":1},{"id":"sub_19ffd5cd1fb_4","label":"Visual review R2 \u2014 tool-invocation-report","agentType":"browser-qa","model":"claude-opus-4-8","state":"done","start":246.63,"dur":3.07,"tokensIn":27325,"tokensOut":3977,"files":1},{"id":"sub_19ffd60fc94_5","label":"Prose review R3 \u2014 tool-invocation-report","agentType":"review","model":"gpt-5.5","state":"done","start":251.18,"dur":0.68,"tokensIn":28447,"tokensOut":3468,"files":1},{"id":"sub_19ffd60fcb2_6","label":"Visual review R3 \u2014 tool-invocation-report","agentType":"browser-qa","model":"claude-opus-4-8","state":"done","start":251.18,"dur":0.79,"tokensIn":18400,"tokensOut":2109,"files":1},{"id":"sub_19ffd8730be_10","label":"Skill drafter","agentType":"skill-drafter","model":"claude-opus-4-8","state":"running","start":292.91,"dur":0.0,"tokensIn":0,"tokensOut":0,"files":0}],"waves":[{"at":8.8,"ids":["sub_19ffc8314af_1","sub_19ffc8314c5_2","sub_19ffc8314da_3"]},{"at":21.8,"ids":["sub_19ffc8ef515_4"]},{"at":49.0,"ids":["sub_19ffca7e27b_5","sub_19ffca7e28c_6"]},{"at":57.3,"ids":["sub_19ffcaf7f26_7","sub_19ffcaf7f3c_8"]},{"at":62.2,"ids":["sub_19ffcb3f1d3_9"]},{"at":244.7,"ids":["sub_19ffd5b1283_1","sub_19ffd5b129e_2"]},{"at":246.6,"ids":["sub_19ffd5cd1de_3","sub_19ffd5cd1fb_4"]},{"at":251.2,"ids":["sub_19ffd60fc94_5","sub_19ffd60fcb2_6"]},{"at":292.9,"ids":["sub_19ffd8730be_10"]}],"markers":[{"at":-0.13,"kind":"assistant","label":"freyja","text":"I'll start by exploring the codebase to ground the problem statement, then draft the report, then extend with external research. Setting up the task ledger firs"},{"at":5.49,"kind":"artifact","label":"session_notes_invoke_tool.md","text":"create +29/-0"},{"at":10.47,"kind":"task_stale_reminder_fired","label":"task stale reminder fired","text":"Stale-task reminder for 1 task(s)"},{"at":18.53,"kind":"message_queued","label":"message queued","text":"Message queued \u2014 will send after current turn (1 in queue)"},{"at":20.94,"kind":"artifact","label":"tool-invocation-report.md","text":"update +89/-2"},{"at":30.37,"kind":"assistant","label":"freyja","text":"On it: refreshing the blog research (2026-only, niche startups) in the background while I set up the HTML build with the right style skills.Compacted. Now loadi"},{"at":30.37,"kind":"compaction_start","label":"compaction start","text":"Agent-driven compaction started (scope=exploration_only, 66,571 tokens before)"},{"at":30.37,"kind":"context_pruning","label":"context pruning","text":"Agent-driven compaction complete (66,571 \u2192 20,380 tokens; scope=exploration_only)"},{"at":53.49,"kind":"artifact","label":"serve.py","text":"create +12/-0"},{"at":53.49,"kind":"context_pruning","label":"context pruning","text":"Context pressure (25%): halved 36 old tool results"},{"at":53.49,"kind":"context_pruning","label":"context pruning","text":"Pre-request pressure (25%): halved 29 old tool results"},{"at":53.491,"kind":"error","label":"bash","text":"tool call failed"},{"at":60.131,"kind":"error","label":"edit_file","text":"tool call failed"},{"at":62.172,"kind":"error","label":"browser_execute_js","text":"tool call failed"},{"at":92.94,"kind":"user","label":"you","text":"this file /Users/sohamshah/.freyja/projects/freyja-slack-T04RBR2J4JC-channel-C0AJF21GSE8-1786645306.443119/tool-invocation-report.html originally from the sessi"},{"at":92.94,"kind":"assistant","label":"freyja","text":""},{"at":92.98,"kind":"turn_cancelled","label":"turn cancelled","text":"Cancelled 2 in-flight operation(s)"},{"at":230.45,"kind":"user","label":"you","text":"The current report is far too verbose, repetitive, roundabout, and difficult to read. Do not create another parallel report. Replace the existing HTML file.\n\nWh"},{"at":230.46,"kind":"assistant","label":"freyja","text":"I'll read the existing report and the style guide, then rewrite in place.Acknowledged. I have the full existing report and all the substance I need. Rewriting t"},{"at":284.63,"kind":"assistant","label":"freyja","text":"The 16:06 version on disk is the shortened rewrite (2,957 words, 6 sections, 3 figures, refs intact). Quick integrity check, then sharing.Shortened doc shared \u2014"},{"at":286.59,"kind":"assistant","label":"freyja","text":"Let me look at what the current shortened version kept, and what recovery material exists for the findings.Full picture clear. The memo kept internal mechanics "},{"at":288.01,"kind":"context_pruning","label":"context pruning","text":"Context pressure (25%): halved 30 old tool results"},{"at":288.01,"kind":"context_pruning","label":"context pruning","text":"Pre-request pressure (25%): halved 16 old tool results"},{"at":292.92,"kind":"artifact","label":"tool-invocation-report.html","text":"update +1/-1"},{"at":292.921,"kind":"error","label":"bash","text":"tool call failed"},{"at":292.922,"kind":"error","label":"browser_execute_js","text":"tool call failed"},{"at":292.923,"kind":"error","label":"browser_execute_js","text":"tool call failed"},{"at":292.923,"kind":"error","label":"browser_execute_js","text":"tool call failed"},{"at":292.93,"kind":"context_pruning","label":"context pruning","text":"Context pressure (25%): halved 16 old tool results"},{"at":292.93,"kind":"context_pruning","label":"context pruning","text":"Pre-request pressure (25%): halved 9 old tool results"}],"toolAgg":[{"name":"edit_file","n":53,"sec":1973.1399999999987,"err":1},{"name":"subagents","n":7,"sec":1921.8999999999999,"err":0},{"name":"bash","n":55,"sec":644.4299999999998,"err":2},{"name":"send_attachment","n":5,"sec":10.11,"err":0},{"name":"web_fetch","n":10,"sec":9.450000000000001,"err":0},{"name":"grep","n":10,"sec":1.5000000000000002,"err":0},{"name":"browser_execute_js","n":10,"sec":1.45,"err":4},{"name":"browser_screenshot","n":3,"sec":1.0999999999999999,"err":0},{"name":"read_file","n":18,"sec":0.12,"err":0},{"name":"summarize_context","n":1,"sec":0.06,"err":0},{"name":"load_skill","n":3,"sec":0.05,"err":0},{"name":"write_file","n":4,"sec":0.03,"err":0},{"name":"tasks","n":12,"sec":0.0,"err":0},{"name":"sub_agent","n":14,"sec":0.0,"err":0},{"name":"tool_search","n":1,"sec":0.0,"err":0},{"name":"artifacts","n":4,"sec":0.0,"err":0}],"llm":[{"turn":"turn-1","model":"claude-fable-5","dur":18.01,"inTok":3047,"outTok":1120,"cacheR":0,"cacheW":33607,"cost":0.5065575,"stop":"tool_use","toolCalls":4},{"turn":"turn-1","model":"claude-fable-5","dur":7.318,"inTok":4810,"outTok":350,"cacheR":33607,"cacheW":0,"cost":0.099207,"stop":"tool_use","toolCalls":3},{"turn":"turn-1","model":"claude-fable-5","dur":7.476,"inTok":8407,"outTok":249,"cacheR":33607,"cacheW":0,"cost":0.130127,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":7.213,"inTok":9367,"outTok":86,"cacheR":33607,"cacheW":0,"cost":0.131577,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":8.26,"inTok":16372,"outTok":399,"cacheR":33607,"cacheW":0,"cost":0.217277,"stop":"tool_use","toolCalls":2},{"turn":"turn-1","model":"claude-fable-5","dur":6.725,"inTok":18503,"outTok":122,"cacheR":33607,"cacheW":0,"cost":0.224737,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":9.968,"inTok":23946,"outTok":570,"cacheR":33607,"cacheW":0,"cost":0.301567,"stop":"tool_use","toolCalls":2},{"turn":"turn-1","model":"claude-fable-5","dur":9.474,"inTok":26402,"outTok":493,"cacheR":33607,"cacheW":0,"cost":0.322277,"stop":"tool_use","toolCalls":2},{"turn":"turn-1","model":"claude-fable-5","dur":6.481,"inTok":27821,"outTok":246,"cacheR":33607,"cacheW":0,"cost":0.324117,"stop":"tool_use","toolCalls":2},{"turn":"turn-1","model":"claude-fable-5","dur":8.389,"inTok":31045,"outTok":382,"cacheR":33607,"cacheW":0,"cost":0.363157,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":7.723,"inTok":32847,"outTok":244,"cacheR":33607,"cacheW":0,"cost":0.374277,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":5.329,"inTok":33191,"outTok":190,"cacheR":33607,"cacheW":0,"cost":0.375017,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":7.322,"inTok":33635,"outTok":169,"cacheR":33607,"cacheW":0,"cost":0.378407,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":10.141,"inTok":35273,"outTok":436,"cacheR":33607,"cacheW":0,"cost":0.408137,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":6.271,"inTok":37786,"outTok":132,"cacheR":33607,"cacheW":0,"cost":0.418067,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":10.752,"inTok":41580,"outTok":500,"cacheR":33607,"cacheW":0,"cost":0.474407,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":6.119,"inTok":42180,"outTok":201,"cacheR":33607,"cacheW":0,"cost":0.465457,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":10.143,"inTok":43383,"outTok":322,"cacheR":33607,"cacheW":0,"cost":0.483537,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":8.465,"inTok":48626,"outTok":295,"cacheR":33607,"cacheW":0,"cost":0.534617,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":5.641,"inTok":49659,"outTok":172,"cacheR":33607,"cacheW":0,"cost":0.538797,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":16.596,"inTok":51490,"outTok":887,"cacheR":33607,"cacheW":0,"cost":0.592857,"stop":"tool_use","toolCalls":2},{"turn":"turn-1","model":"claude-fable-5","dur":8.364,"inTok":54547,"outTok":246,"cacheR":33607,"cacheW":0,"cost":0.591377,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":5.785,"inTok":54869,"outTok":169,"cacheR":33607,"cacheW":0,"cost":0.590747,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":7.362,"inTok":55059,"outTok":310,"cacheR":33607,"cacheW":0,"cost":0.599697,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":13.13,"inTok":56816,"outTok":559,"cacheR":33607,"cacheW":0,"cost":0.629717,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":10.089,"inTok":58717,"outTok":478,"cacheR":33607,"cacheW":0,"cost":0.644677,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":14.784,"inTok":60071,"outTok":634,"cacheR":33607,"cacheW":0,"cost":0.666017,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":7.194,"inTok":60992,"outTok":242,"cacheR":33607,"cacheW":0,"cost":0.655627,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":5.715,"inTok":61255,"outTok":188,"cacheR":33607,"cacheW":0,"cost":0.655557,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":59.168,"inTok":61584,"outTok":3968,"cacheR":33607,"cacheW":0,"cost":0.847847,"stop":"tool_use","toolCalls":2},{"turn":"turn-1","model":"claude-fable-5","dur":135.261,"inTok":65924,"outTok":8474,"cacheR":33607,"cacheW":0,"cost":1.116547,"stop":"tool_use","toolCalls":2},{"turn":"turn-1","model":"claude-fable-5","dur":18.83,"inTok":74695,"outTok":965,"cacheR":33607,"cacheW":0,"cost":0.828807,"stop":"tool_use","toolCalls":2},{"turn":"turn-1","model":"claude-fable-5","dur":43.461,"inTok":76027,"outTok":2916,"cacheR":33607,"cacheW":0,"cost":0.939677,"stop":"tool_use","toolCalls":4},{"turn":"turn-1","model":"claude-fable-5","dur":6.079,"inTok":79464,"outTok":101,"cacheR":33607,"cacheW":0,"cost":0.833297,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":6.673,"inTok":81412,"outTok":201,"cacheR":0,"cacheW":33607,"cost":1.2442575,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":7.545,"inTok":93844,"outTok":74,"cacheR":33607,"cacheW":0,"cost":0.975747,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":4.778,"inTok":107051,"outTok":75,"cacheR":33607,"cacheW":0,"cost":1.107867,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":23.732,"inTok":117942,"outTok":1323,"cacheR":33607,"cacheW":0,"cost":1.279177,"stop":"tool_use","toolCalls":2},{"turn":"turn-1","model":"claude-fable-5","dur":148.73,"inTok":122978,"outTok":9319,"cacheR":33607,"cacheW":0,"cost":1.729337,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":7.287,"inTok":132408,"outTok":276,"cacheR":33607,"cacheW":0,"cost":1.371487,"stop":"tool_use","toolCalls":2},{"turn":"turn-1","model":"claude-fable-5","dur":12.646,"inTok":133099,"outTok":380,"cacheR":33607,"cacheW":0,"cost":1.383597,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":17.595,"inTok":134397,"outTok":1000,"cacheR":33607,"cacheW":0,"cost":1.427577,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":6.019,"inTok":135454,"outTok":192,"cacheR":33607,"cacheW":0,"cost":1.397747,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-fable-5","dur":16.864,"inTok":135822,"outTok":744,"cacheR":33607,"cacheW":0,"cost":1.429027,"stop":"end_turn","toolCalls":0},{"turn":"turn-2","model":"claude-fable-5","dur":50.321,"inTok":140347,"outTok":2865,"cacheR":14247,"cacheW":19370,"cost":1.803092,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":7.138,"inTok":143298,"outTok":127,"cacheR":33617,"cacheW":0,"cost":1.472947,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":11.107,"inTok":143470,"outTok":340,"cacheR":0,"cacheW":34566,"cost":1.883775,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":9.676,"inTok":75904,"outTok":373,"cacheR":34566,"cacheW":0,"cost":0.812256,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":5.643,"inTok":77458,"outTok":145,"cacheR":34566,"cacheW":0,"cost":0.816396,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":4.477,"inTok":77701,"outTok":72,"cacheR":34566,"cacheW":0,"cost":0.815176,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":7.382,"inTok":84014,"outTok":294,"cacheR":34566,"cacheW":0,"cost":0.889406,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":6.937,"inTok":84404,"outTok":130,"cacheR":34566,"cacheW":0,"cost":0.885106,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":8.05,"inTok":106288,"outTok":317,"cacheR":34566,"cacheW":0,"cost":1.113296,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":9.958,"inTok":112367,"outTok":424,"cacheR":34566,"cacheW":0,"cost":1.179436,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":7.16,"inTok":114052,"outTok":158,"cacheR":34566,"cacheW":0,"cost":1.182986,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":12.197,"inTok":115493,"outTok":77,"cacheR":0,"cacheW":34566,"cost":1.590855,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":74.997,"inTok":132417,"outTok":4825,"cacheR":34566,"cacheW":0,"cost":1.599986,"stop":"tool_use","toolCalls":4},{"turn":"turn-2","model":"claude-fable-5","dur":9.199,"inTok":140150,"outTok":641,"cacheR":34566,"cacheW":0,"cost":1.468116,"stop":"tool_use","toolCalls":4},{"turn":"turn-2","model":"claude-fable-5","dur":10.425,"inTok":143656,"outTok":424,"cacheR":34566,"cacheW":0,"cost":1.492326,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":103.274,"inTok":145436,"outTok":10598,"cacheR":34566,"cacheW":0,"cost":2.018826,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":93.845,"inTok":156128,"outTok":8218,"cacheR":34566,"cacheW":0,"cost":2.006746,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":54.298,"inTok":164439,"outTok":4621,"cacheR":34566,"cacheW":0,"cost":1.910006,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":95.911,"inTok":169153,"outTok":7871,"cacheR":34566,"cacheW":0,"cost":2.119646,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":61.818,"inTok":177117,"outTok":4884,"cacheR":34566,"cacheW":0,"cost":2.049936,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":138.432,"inTok":182094,"outTok":13301,"cacheR":34566,"cacheW":0,"cost":2.520556,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":16.411,"inTok":195488,"outTok":834,"cacheR":34566,"cacheW":0,"cost":2.031146,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":26.441,"inTok":196517,"outTok":1500,"cacheR":34566,"cacheW":0,"cost":2.074736,"stop":"tool_use","toolCalls":3},{"turn":"turn-2","model":"claude-fable-5","dur":8.132,"inTok":199961,"outTok":369,"cacheR":34566,"cacheW":0,"cost":2.052626,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":5.54,"inTok":200351,"outTok":282,"cacheR":34566,"cacheW":0,"cost":2.052176,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":9.48,"inTok":200662,"outTok":487,"cacheR":34566,"cacheW":0,"cost":2.065536,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":9.598,"inTok":201187,"outTok":228,"cacheR":34566,"cacheW":0,"cost":2.057836,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":6.398,"inTok":201455,"outTok":245,"cacheR":34566,"cacheW":0,"cost":2.061366,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":11.961,"inTok":202388,"outTok":580,"cacheR":34566,"cacheW":0,"cost":2.087446,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":9.053,"inTok":140058,"outTok":311,"cacheR":34566,"cacheW":0,"cost":1.450696,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":10.543,"inTok":140402,"outTok":525,"cacheR":34566,"cacheW":0,"cost":1.464836,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":5.633,"inTok":141033,"outTok":229,"cacheR":34566,"cacheW":0,"cost":1.456346,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":47.4,"inTok":141327,"outTok":2966,"cacheR":34566,"cacheW":0,"cost":1.596136,"stop":"tool_use","toolCalls":2},{"turn":"turn-2","model":"claude-fable-5","dur":7.61,"inTok":144503,"outTok":50,"cacheR":34566,"cacheW":0,"cost":1.482096,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":6.306,"inTok":145722,"outTok":165,"cacheR":34566,"cacheW":0,"cost":1.500036,"stop":"tool_use","toolCalls":2},{"turn":"turn-2","model":"claude-fable-5","dur":96.062,"inTok":152282,"outTok":7368,"cacheR":34566,"cacheW":0,"cost":1.925786,"stop":"tool_use","toolCalls":6},{"turn":"turn-2","model":"claude-fable-5","dur":17.043,"inTok":160340,"outTok":1610,"cacheR":34566,"cacheW":0,"cost":1.718466,"stop":"tool_use","toolCalls":6},{"turn":"turn-2","model":"claude-fable-5","dur":17.795,"inTok":162640,"outTok":1583,"cacheR":34566,"cacheW":0,"cost":1.740116,"stop":"tool_use","toolCalls":6},{"turn":"turn-2","model":"claude-fable-5","dur":19.948,"inTok":164913,"outTok":1453,"cacheR":34566,"cacheW":0,"cost":1.756346,"stop":"tool_use","toolCalls":4},{"turn":"turn-2","model":"claude-fable-5","dur":12.819,"inTok":166828,"outTok":825,"cacheR":34566,"cacheW":0,"cost":1.744096,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":6.649,"inTok":167731,"outTok":146,"cacheR":34566,"cacheW":0,"cost":1.719176,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":8.016,"inTok":167885,"outTok":589,"cacheR":34566,"cacheW":0,"cost":1.742866,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":8.184,"inTok":168503,"outTok":345,"cacheR":34566,"cacheW":0,"cost":1.736846,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":23.531,"inTok":168941,"outTok":1621,"cacheR":34566,"cacheW":0,"cost":1.805026,"stop":"tool_use","toolCalls":2},{"turn":"turn-2","model":"claude-fable-5","dur":4.913,"inTok":170781,"outTok":50,"cacheR":34566,"cacheW":0,"cost":1.744876,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":7.299,"inTok":172005,"outTok":214,"cacheR":34566,"cacheW":0,"cost":1.765316,"stop":"tool_use","toolCalls":2},{"turn":"turn-2","model":"claude-fable-5","dur":21.18,"inTok":174693,"outTok":1634,"cacheR":34566,"cacheW":0,"cost":1.863196,"stop":"tool_use","toolCalls":4},{"turn":"turn-2","model":"claude-fable-5","dur":10.477,"inTok":176789,"outTok":559,"cacheR":34566,"cacheW":0,"cost":1.830406,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":7.417,"inTok":177372,"outTok":530,"cacheR":34566,"cacheW":0,"cost":1.834786,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":7.685,"inTok":177923,"outTok":220,"cacheR":34566,"cacheW":0,"cost":1.824796,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":13.957,"inTok":180015,"outTok":613,"cacheR":34566,"cacheW":0,"cost":1.865366,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":16.022,"inTok":180655,"outTok":766,"cacheR":34566,"cacheW":0,"cost":1.879416,"stop":"tool_use","toolCalls":1},{"turn":"turn-2","model":"claude-fable-5","dur":16.541,"inTok":181463,"outTok":675,"cacheR":34566,"cacheW":0,"cost":1.882946,"stop":"end_turn","toolCalls":0},{"turn":"turn-1","model":"claude-opus-4-8","dur":4.555,"inTok":7799,"outTok":169,"cacheR":0,"cacheW":38401,"cost":0.28322625,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-opus-4-8","dur":85.915,"inTok":53641,"outTok":5946,"cacheR":38401,"cacheW":0,"cost":0.4360555,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-opus-4-8","dur":5.116,"inTok":59690,"outTok":421,"cacheR":38401,"cacheW":0,"cost":0.3281755,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-opus-4-8","dur":87.854,"inTok":60214,"outTok":8236,"cacheR":38401,"cacheW":0,"cost":0.5261705,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-opus-4-8","dur":10.918,"inTok":68562,"outTok":731,"cacheR":38401,"cacheW":0,"cost":0.3802855,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-opus-4-8","dur":8.872,"inTok":69403,"outTok":647,"cacheR":38401,"cacheW":0,"cost":0.3823905,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-opus-4-8","dur":11.309,"inTok":70109,"outTok":860,"cacheR":38401,"cacheW":0,"cost":0.3912455,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-opus-4-8","dur":2.915,"inTok":71291,"outTok":134,"cacheR":38401,"cacheW":0,"cost":0.3790055,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-opus-4-8","dur":7.611,"inTok":73114,"outTok":388,"cacheR":38401,"cacheW":0,"cost":0.3944705,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-opus-4-8","dur":29.836,"inTok":73550,"outTok":2090,"cacheR":0,"cacheW":38401,"cost":0.66000625,"stop":"tool_use","toolCalls":2},{"turn":"turn-1","model":"claude-opus-4-8","dur":2.83,"inTok":75868,"outTok":50,"cacheR":38401,"cacheW":0,"cost":0.3997905,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-opus-4-8","dur":3.523,"inTok":76952,"outTok":264,"cacheR":38401,"cacheW":0,"cost":0.4105605,"stop":"tool_use","toolCalls":2},{"turn":"turn-1","model":"claude-opus-4-8","dur":16.68,"inTok":80364,"outTok":1334,"cacheR":38401,"cacheW":0,"cost":0.4543705,"stop":"tool_use","toolCalls":3},{"turn":"turn-1","model":"claude-opus-4-8","dur":18.982,"inTok":82046,"outTok":1491,"cacheR":38401,"cacheW":0,"cost":0.4667055,"stop":"tool_use","toolCalls":2},{"turn":"turn-1","model":"claude-opus-4-8","dur":2.041,"inTok":83774,"outTok":50,"cacheR":38401,"cacheW":0,"cost":0.4393205,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-opus-4-8","dur":4.204,"inTok":84946,"outTok":294,"cacheR":38401,"cacheW":0,"cost":0.4512805,"stop":"tool_use","toolCalls":2},{"turn":"turn-1","model":"claude-opus-4-8","dur":2.892,"inTok":86033,"outTok":149,"cacheR":38401,"cacheW":0,"cost":0.4530905,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-opus-4-8","dur":20.308,"inTok":86519,"outTok":1406,"cacheR":38401,"cacheW":0,"cost":0.4869455,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-opus-4-8","dur":17.126,"inTok":89724,"outTok":1080,"cacheR":38401,"cacheW":0,"cost":0.4948205,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-opus-4-8","dur":9.277,"inTok":90907,"outTok":861,"cacheR":38401,"cacheW":0,"cost":0.4952605,"stop":"tool_use","toolCalls":3},{"turn":"turn-1","model":"claude-opus-4-8","dur":13.453,"inTok":92116,"outTok":968,"cacheR":38401,"cacheW":0,"cost":0.5039805,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-opus-4-8","dur":20.908,"inTok":93143,"outTok":1546,"cacheR":38401,"cacheW":0,"cost":0.5235655,"stop":"tool_use","toolCalls":2},{"turn":"turn-1","model":"claude-opus-4-8","dur":1.842,"inTok":94924,"outTok":50,"cacheR":38401,"cacheW":0,"cost":0.4950705,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-opus-4-8","dur":4.308,"inTok":95754,"outTok":256,"cacheR":38401,"cacheW":0,"cost":0.5043705,"stop":"tool_use","toolCalls":1},{"turn":"turn-1","model":"claude-opus-4-8","dur":8.844,"inTok":96099,"outTok":494,"cacheR":38401,"cacheW":0,"cost":0.5120455,"stop":"tool_use","toolCalls":1},{"turn":"turn-3","model":"claude-fable-5","dur":18.825,"inTok":193004,"outTok":826,"cacheR":0,"cacheW":34416,"cost":2.40154,"stop":"tool_use","toolCalls":1},{"turn":"turn-3","model":"claude-fable-5","dur":13.422,"inTok":194577,"outTok":670,"cacheR":34416,"cacheW":0,"cost":2.013686,"stop":"tool_use","toolCalls":1},{"turn":"turn-3","model":"claude-fable-5","dur":9.041,"inTok":195336,"outTok":570,"cacheR":34416,"cacheW":0,"cost":2.016276,"stop":"tool_use","toolCalls":1},{"turn":"turn-3","model":"claude-fable-5","dur":6.169,"inTok":195973,"outTok":285,"cacheR":34416,"cacheW":0,"cost":2.008396,"stop":"tool_use","toolCalls":1},{"turn":"turn-3","model":"claude-fable-5","dur":3.947,"inTok":196289,"outTok":85,"cacheR":34416,"cacheW":0,"cost":2.001556,"stop":"end_turn","toolCalls":0},{"turn":"turn-4","model":"claude-fable-5","dur":34.419,"inTok":197477,"outTok":1835,"cacheR":15196,"cacheW":18951,"cost":2.3186035,"stop":"tool_use","toolCalls":1},{"turn":"turn-4","model":"claude-fable-5","dur":31.09,"inTok":199479,"outTok":1589,"cacheR":34147,"cacheW":0,"cost":2.108387,"stop":"tool_use","toolCalls":1},{"turn":"turn-4","model":"claude-fable-5","dur":7.733,"inTok":204008,"outTok":380,"cacheR":34147,"cacheW":0,"cost":2.093227,"stop":"tool_use","toolCalls":1},{"turn":"turn-4","model":"claude-fable-5","dur":38.678,"inTok":183519,"outTok":2028,"cacheR":34147,"cacheW":0,"cost":1.970737,"stop":"tool_use","toolCalls":1},{"turn":"turn-4","model":"claude-fable-5","dur":9.472,"inTok":185825,"outTok":465,"cacheR":34147,"cacheW":0,"cost":1.915647,"stop":"tool_use","toolCalls":2},{"turn":"turn-4","model":"claude-fable-5","dur":19.341,"inTok":186524,"outTok":1049,"cacheR":34147,"cacheW":0,"cost":1.951837,"stop":"tool_use","toolCalls":1},{"turn":"turn-4","model":"claude-fable-5","dur":77.334,"inTok":187822,"outTok":6574,"cacheR":34147,"cacheW":0,"cost":2.241067,"stop":"tool_use","toolCalls":1},{"turn":"turn-4","model":"claude-fable-5","dur":6.757,"inTok":194489,"outTok":456,"cacheR":34147,"cacheW":0,"cost":2.001837,"stop":"tool_use","toolCalls":2},{"turn":"turn-4","model":"claude-fable-5","dur":12.506,"inTok":195179,"outTok":836,"cacheR":34147,"cacheW":0,"cost":2.027737,"stop":"tool_use","toolCalls":1},{"turn":"turn-4","model":"claude-fable-5","dur":9.755,"inTok":196074,"outTok":700,"cacheR":34147,"cacheW":0,"cost":2.029887,"stop":"tool_use","toolCalls":1},{"turn":"turn-4","model":"claude-fable-5","dur":6.88,"inTok":197383,"outTok":467,"cacheR":34147,"cacheW":0,"cost":2.031327,"stop":"tool_use","toolCalls":2},{"turn":"turn-4","model":"claude-fable-5","dur":6.46,"inTok":198056,"outTok":358,"cacheR":34147,"cacheW":0,"cost":2.032607,"stop":"tool_use","toolCalls":1},{"turn":"turn-4","model":"claude-fable-5","dur":4.878,"inTok":198445,"outTok":254,"cacheR":34147,"cacheW":0,"cost":2.031297,"stop":"tool_use","toolCalls":1},{"turn":"turn-4","model":"claude-fable-5","dur":4.92,"inTok":198792,"outTok":300,"cacheR":34147,"cacheW":0,"cost":2.037067,"stop":"tool_use","toolCalls":1},{"turn":"turn-4","model":"claude-fable-5","dur":9.394,"inTok":199123,"outTok":582,"cacheR":34147,"cacheW":0,"cost":2.054477,"stop":"tool_use","toolCalls":1},{"turn":"turn-4","model":"claude-fable-5","dur":5.314,"inTok":199743,"outTok":265,"cacheR":34147,"cacheW":0,"cost":2.044827,"stop":"tool_use","toolCalls":1},{"turn":"turn-4","model":"claude-fable-5","dur":15.518,"inTok":200665,"outTok":850,"cacheR":34147,"cacheW":0,"cost":2.083297,"stop":"tool_use","toolCalls":1},{"turn":"turn-4","model":"claude-fable-5","dur":4.906,"inTok":201696,"outTok":291,"cacheR":34147,"cacheW":0,"cost":2.065657,"stop":"tool_use","toolCalls":1},{"turn":"turn-4","model":"claude-fable-5","dur":21.98,"inTok":202107,"outTok":1398,"cacheR":34147,"cacheW":0,"cost":2.125117,"stop":"tool_use","toolCalls":1},{"turn":"turn-4","model":"claude-fable-5","dur":6.524,"inTok":195871,"outTok":58,"cacheR":34147,"cacheW":0,"cost":1.995757,"stop":"tool_use","toolCalls":1},{"turn":"turn-4","model":"claude-fable-5","dur":17.998,"inTok":200849,"outTok":769,"cacheR":34147,"cacheW":0,"cost":2.081087,"stop":"tool_use","toolCalls":1},{"turn":"turn-4","model":"claude-fable-5","dur":9.407,"inTok":201645,"outTok":382,"cacheR":34147,"cacheW":0,"cost":2.069697,"stop":"tool_use","toolCalls":1},{"turn":"turn-4","model":"claude-fable-5","dur":5.373,"inTok":202058,"outTok":137,"cacheR":34147,"cacheW":0,"cost":2.061577,"stop":"end_turn","toolCalls":0}],"artifacts":[{"filename":"session_notes_invoke_tool.md","at":5.49,"op":"create","adds":29,"dels":0,"type":"md","creator":"Main agent"},{"filename":"tool-invocation-report.md","at":20.94,"op":"update","adds":89,"dels":2,"type":"md","creator":"Main agent"},{"filename":"tool-invocation-report.html","at":292.92,"op":"update","adds":1,"dels":1,"type":"html","creator":"Main agent"},{"filename":"serve.py","at":53.49,"op":"create","adds":12,"dels":0,"type":"py","creator":"Main agent"},{"filename":"sub_19ffd5b1283_1.md","at":245.74,"op":"subagent_artifact","adds":0,"dels":0,"type":"md","creator":"Prose review \u2014 tool-invocation-report"},{"filename":"sub_19ffd5b129e_2.md","at":245.97,"op":"subagent_artifact","adds":0,"dels":0,"type":"md","creator":"Visual review \u2014 tool-invocation-report"},{"filename":"sub_19ffd5cd1de_3.md","at":248.3,"op":"subagent_artifact","adds":0,"dels":0,"type":"md","creator":"Prose review R2 \u2014 tool-invocation-report"},{"filename":"sub_19ffd5cd1fb_4.md","at":249.7,"op":"subagent_artifact","adds":0,"dels":0,"type":"md","creator":"Visual review R2 \u2014 tool-invocation-report"},{"filename":"sub_19ffd60fc94_5.md","at":251.86,"op":"subagent_artifact","adds":0,"dels":0,"type":"md","creator":"Prose review R3 \u2014 tool-invocation-report"},{"filename":"sub_19ffd60fcb2_6.md","at":251.98,"op":"subagent_artifact","adds":0,"dels":0,"type":"md","creator":"Visual review R3 \u2014 tool-invocation-report"}],"activeMin":114,"totalMin":297}</script>
+<script>
+const D = JSON.parse(document.getElementById('data').textContent);
+const SPAN = D.span;
+const pct = m => (m / SPAN) * 100;
+const fmtMin = m => {
+  const h = Math.floor(m / 60), mm = Math.round(m % 60);
+  return h ? `${h}h ${String(mm).padStart(2,'0')}m` : `${mm}m`;
+};
+const fmtTok = n => n >= 1e6 ? (n/1e6).toFixed(2)+'M' : n >= 1e3 ? Math.round(n/1e3)+'k' : String(n);
+
+document.getElementById('sessId').textContent = D.meta.id;
+
+/* ── KPI row ─────────────────────────────────────────────────────────── */
+const occupancy = Math.round(100 * D.activeMin / D.totalMin);
+const longest   = D.gaps.reduce((a,g) => Math.max(a, g[1]-g[0]), 0);
+const errCount  = D.toolAgg.reduce((a,t) => a + t.err, 0);
+const toolCount = D.toolAgg.reduce((a,t) => a + t.n, 0);
+const kpis = [
+  { k:'wall clock',  v:fmtMin(SPAN),        n:`${D.meta.messages} messages exchanged` },
+  { k:'occupancy',   v:occupancy+'%',       n:`${D.activeMin} of ${D.totalMin} minutes doing something`, flag:true },
+  { k:'longest stall', v:fmtMin(longest),   n:'while your question sat unanswered', flag:true },
+  { k:'sub-agents',  v:D.subs.length,       n:`spawned in ${D.waves.length} waves` },
+  { k:'tool calls',  v:toolCount,           n:`${errCount} failed` },
+];
+document.getElementById('kpis').innerHTML = kpis.map(t => `
+  <div class="kpi${t.flag?' flag':''}"><div class="k">${t.k}</div>
+  <div class="v">${t.v}</div><div class="n">${t.n}</div></div>`).join('');
+
+/* ── stall sentence, built from the real markers ─────────────────────── */
+const big = D.gaps.reduce((a,g) => (g[1]-g[0]) > (a[1]-a[0]) ? g : a, D.gaps[0]);
+const asked = D.markers.filter(m => m.kind === 'user' && m.at <= big[0] + 1).pop();
+const woke  = D.markers.filter(m => m.at >= big[1] - 1).shift();
+document.getElementById('stallText').innerHTML =
+  `You sent a message at <code>+${fmtMin(asked.at)}</code>. The next tool call did not fire until ` +
+  `<code>+${fmtMin(big[1])}</code> &mdash; <b>${fmtMin(big[1]-big[0])}</b> of nothing at all, ` +
+  `broken only when you followed up. Across the whole session the agent was idle ` +
+  `${100-occupancy}% of the time.`;
+
+/* ── ribbon ──────────────────────────────────────────────────────────── */
+const ribbon = document.getElementById('ribbon');
+const H = 132, maxD = Math.max(...D.density.map(d => d[1]));
+let html = '';
+for (let i = 0; i <= 4; i++) {
+  const v = Math.round(maxD * i / 4);
+  html += `<div class="gridline" style="bottom:${(i/4)*(H-14)}px"></div>`;
+  // Ticks live in the gutter to the left of the plot, never over a column.
+  if (i % 2 === 0) html += `<div style="position:absolute;left:-34px;width:28px;text-align:right;bottom:${(i/4)*(H-14)-4}px;
+    font-size:9px;color:var(--ink-3);font-variant-numeric:tabular-nums">${v}</div>`;
+}
+D.gaps.forEach(g => {
+  const major = (g[1]-g[0]) > 60;
+  html += `<div class="idle${major?' major':''}" style="left:${pct(g[0])}%;width:${pct(g[1]-g[0])}%"></div>`;
+});
+// 2px surface gap between adjacent columns, per the mark spec.
+const colW = 100 / D.density.length;
+D.density.forEach(([at, n]) => {
+  if (!n) return;
+  const h = Math.max(3, (n / maxD) * (H - 14));
+  html += `<div class="col" data-tip="<b>+${fmtMin(at)} – +${fmtMin(at + D.bucket)}</b><br>${n} tool call${n===1?'':'s'}"
+            style="left:calc(${pct(at)}% + 1px);width:calc(${colW}% - 2px);height:${h}px"></div>`;
+});
+// Direct-label the two tallest bursts only — never a number on every column.
+[...D.density].sort((a,b) => b[1]-a[1]).slice(0,2).forEach(([at,n]) => {
+  const h = (n / maxD) * (H - 14);
+  html += `<div style="position:absolute;left:${pct(at + D.bucket/2)}%;bottom:${h+4}px;transform:translateX(-50%);
+           font-size:9.5px;color:var(--ink-1);font-variant-numeric:tabular-nums;white-space:nowrap">${n}</div>`;
+});
+// The big stall gets its span written on it.
+html += `<div style="position:absolute;left:${pct((big[0]+big[1])/2)}%;top:44%;transform:translateX(-50%);
+         font-size:10px;color:var(--status-warning);white-space:nowrap;text-align:center">
+         &#9888; ${fmtMin(big[1]-big[0])} idle<br><span style="color:var(--ink-2);font-size:9.5px">question waiting</span></div>`;
+ribbon.innerHTML = html;
+
+/* axis + marker rail */
+document.getElementById('axis').innerHTML = Array.from({length: 7}, (_, i) => {
+  const m = (SPAN/6) * i;
+  return `<div class="tick" style="left:${pct(m)}%">${fmtMin(m)}</div>`;
+}).join('');
+document.getElementById('rail').innerHTML = D.markers.map(m =>
+  `<div class="mk ${m.kind}" style="left:${pct(m.at)}%"
+     data-tip="<b>${m.label}</b> &middot; +${fmtMin(m.at)}<br><span class='t2'>${(m.text||'').replace(/</g,'&lt;').slice(0,150)}</span>"></div>`
+).join('');
+
+/* ── table twin ──────────────────────────────────────────────────────── */
+document.getElementById('tblBody').innerHTML = D.density.map(([at,n]) => {
+  const idle = D.gaps.some(g => at >= g[0] && at < g[1]);
+  return `<tr><td>+${fmtMin(at)}</td><td>+${fmtMin(at+D.bucket)}</td>
+    <td class="num">${n}</td><td style="color:${idle?'var(--status-warning)':'var(--ink-2)'}">${idle?'idle':(n?'active':'—')}</td></tr>`;
+}).join('');
+const bc = document.getElementById('btnChart'), bt = document.getElementById('btnTable');
+const setView = t => {
+  bc.setAttribute('aria-pressed', String(!t)); bt.setAttribute('aria-pressed', String(t));
+  document.getElementById('chartView').classList.toggle('hidden', t);
+  document.getElementById('tableView').classList.toggle('hidden', !t);
+};
+bc.onclick = () => setView(false); bt.onclick = () => setView(true);
+
+/* ── swimlanes, grouped by spawn wave ────────────────────────────────── */
+const byId = Object.fromEntries(D.subs.map(s => [s.id, s]));
+document.getElementById('lanes').innerHTML = D.waves.map((w, i) => {
+  const rows = w.ids.map(id => {
+    const s = byId[id];
+    const cls = s.state === 'cancelled' ? ' cancelled' : s.state === 'running' ? ' running' : '';
+    const wpc = Math.max(pct(s.dur), 0.45);
+    const left = pct(s.start);
+    // Keep the name outside the bar so it can never be clipped by a short one.
+    const labelRight = left > 62;
+    return `<div class="lane"><div class="track"></div>
+      <div class="bar${cls}" style="left:${left}%;width:${wpc}%"
+        data-tip="<b>${s.label}</b><br><span class='t2'>${s.agentType} &middot; ${s.model}</span><br>
+          +${fmtMin(s.start)} &rarr; +${fmtMin(s.start+s.dur)} &middot; ran ${fmtMin(s.dur)}<br>
+          ${fmtTok(s.tokensIn)} in / ${fmtTok(s.tokensOut)} out &middot; ${s.files} file${s.files===1?'':'s'} &middot; ${s.state}"></div>
+      <div class="lbl" style="${labelRight
+          ? `right:${100-left}%;padding-right:9px;text-align:right`
+          : `left:calc(${left}% + ${wpc}%);padding-left:9px`}">
+        ${s.label} <span class="dim">${s.model.replace('claude-','')}</span>
+        <span class="dim">&middot; ${fmtMin(s.dur)} &middot; ${fmtTok(s.tokensIn)}</span>
+        ${s.state !== 'done' ? `<span style="color:var(--status-serious)">&middot; ${s.state}</span>` : ''}
+      </div></div>`;
+  }).join('');
+  return `<div class="wave"><span class="wl">wave ${i+1} &middot; +${fmtMin(w.at)} &middot; ${w.ids.length} agent${w.ids.length===1?'':'s'}</span><span class="rule"></span></div>${rows}`;
+}).join('');
+
+/* ── hover layer ─────────────────────────────────────────────────────── */
+const tip = document.getElementById('tip');
+document.addEventListener('mousemove', e => {
+  const el = e.target.closest('[data-tip]');
+  if (!el) { tip.style.opacity = 0; return; }
+  tip.innerHTML = el.dataset.tip;
+  tip.style.opacity = 1;
+  const r = tip.getBoundingClientRect();
+  tip.style.left = Math.min(e.clientX + 14, innerWidth - r.width - 10) + 'px';
+  tip.style.top  = Math.min(e.clientY + 16, innerHeight - r.height - 10) + 'px';
+});
+</script>
+</body>
+</html>
