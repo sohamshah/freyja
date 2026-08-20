@@ -499,6 +499,16 @@ class GatewayDaemon:
             logger.exception("failed to route inbound message")
             return
 
+        # Give the session a talk-wake hook so talk() deliveries from
+        # other agents can wake it with output routed to this thread.
+        # The hook reads gateway_source at invoke time, so one install
+        # per session lifetime is enough.
+        if getattr(session, "talk_wake_hook", None) is None:
+            try:
+                session.talk_wake_hook = self._talk_wake_hook_factory(session)
+            except Exception:  # noqa: BLE001
+                logger.debug("talk wake hook install failed", exc_info=True)
+
         # If the session's transcript is large, surface a quick
         # "catching up" notice in Slack so the operator doesn't stare
         # at an empty typing indicator while the bridge sanitizes the
@@ -1990,6 +2000,11 @@ class GatewayDaemon:
             "bridge state ready (workspace=%s, model=%s, reasoning=%s)",
             workspace, default_model, cfg.default_reasoning_level,
         )
+        # Talk-wake output routing: lets wake_for_inbox stream a
+        # talk-triggered turn's output into the owning Slack thread —
+        # including for sessions cold-loaded by a cross-process
+        # talk_deliver (see freyja_bridge._install_talk_wake_hook).
+        self.state.talk_wake_hook_factory = self._talk_wake_hook_factory
 
         # Start the scheduler. Under the stateless design every process
         # races for the owner_lock — only one wins and runs the tick
@@ -2127,13 +2142,102 @@ class GatewayDaemon:
             )
 
     async def _start_control_channel(self) -> None:
+        # EXACTLY ONE process may tail commands.jsonl — the readers share
+        # a single offset file, so a second reader silently steals
+        # commands. Observed failure: the scheduler-only headless daemon
+        # (which also boots a GatewayDaemon) consumed
+        # skill_candidate_resolve commands meant for the real gateway
+        # and failed them with not_found. Only the gateway PID-lock
+        # owner (or a process starting where no gateway runs) reads.
+        try:
+            from bridge.gateway.pid import get_running_pid
+
+            owner = get_running_pid()
+        except Exception:  # noqa: BLE001
+            owner = None
+        if owner is not None and owner != os.getpid():
+            logger.info(
+                "control channel NOT started — gateway pid %d owns "
+                "commands.jsonl (this instance is a co-resident daemon)",
+                owner,
+            )
+            return
         reader = ControlChannelReader()
         reader.register("permission_response", self._on_permission_response)
         reader.register("set_permission_policy", self._on_set_permission_policy)
         reader.register("skill_candidate_resolve", self._on_skill_candidate_resolve)
         reader.register("skill_learn_this", self._on_skill_learn_this)
+        reader.register("talk_deliver", self._on_talk_deliver)
         await reader.start()
         self.control_channel = reader
+
+    async def _on_talk_deliver(self, cmd: dict[str, Any]) -> None:
+        """Cross-process talk() delivery (desktop bridge → this daemon).
+        Pushes the message into the owning session's inbox and wakes it;
+        cold sessions are loaded from disk first so the Slack thread
+        gets a response now instead of at the next user message."""
+        if self.state is None:
+            return
+        from bridge.freyja_bridge import _handle_talk_deliver_command
+
+        await _handle_talk_deliver_command(self.state, cmd)
+
+    def _talk_wake_hook_factory(self, session: Any) -> Any:
+        """Build the on_turn_start hook wake_for_inbox uses for this
+        session: stamp gateway_source and register a fresh
+        SlackStreamConsumer so a talk-triggered wake turn streams its
+        output into the owning Slack thread (mirrors _on_inbound's
+        per-turn consumer setup, minus the inbound-message framing)."""
+
+        def _hook() -> None:
+            from bridge.freyja_bridge import (
+                register_session_listener,
+                unregister_session_listener,
+            )
+            from bridge.gateway.session_router import (
+                normalize_verbosity,
+                source_from_session_key,
+            )
+
+            source = getattr(session, "gateway_source", None)
+            if source is None:
+                source = source_from_session_key(session.id)
+            if source is None:
+                logger.warning(
+                    "talk wake: no Slack source derivable for %s — output "
+                    "stays in the transcript only",
+                    session.id,
+                )
+                return
+            adapter = self._adapter_for_platform(source.platform)
+            if adapter is None:
+                logger.warning(
+                    "talk wake: no adapter for platform %s", source.platform
+                )
+                return
+            session.gateway_source = source
+            key = session.id
+            holder: dict[str, Any] = {}
+
+            def _unregister() -> None:
+                cb = holder.get("on_event")
+                if cb is not None:
+                    unregister_session_listener(key, cb)
+
+            consumer = SlackStreamConsumer(
+                adapter,  # type: ignore[arg-type]
+                source,
+                session_key=key,
+                raw_hint=None,
+                on_complete=_unregister,
+                verbosity=normalize_verbosity(
+                    getattr(session, "verbosity", None)
+                ),
+            )
+            holder["on_event"] = consumer.on_event
+            register_session_listener(key, consumer.on_event)
+
+        return _hook
 
     async def _on_skill_candidate_resolve(self, cmd: dict[str, Any]) -> None:
         """Promote or discard a drafter candidate authored in a Slack

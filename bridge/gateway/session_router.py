@@ -348,6 +348,51 @@ def session_key_for(
     return ":".join(parts)
 
 
+# Slack thread timestamps look like "1786645306.443119"; Slack user ids
+# look like "U0123ABCD" / "W0123ABCD". Used to disambiguate the optional
+# trailing key segments when parsing a key back into a MessageSource.
+_THREAD_TS_RE = re.compile(r"^\d+\.\d+$")
+_USER_ID_RE = re.compile(r"^[UW][A-Z0-9]{4,}$")
+
+
+def source_from_session_key(key: str) -> MessageSource | None:
+    """Best-effort inverse of ``session_key_for``.
+
+    Lets the daemon reconstruct enough of a MessageSource to route a
+    proactive turn (e.g. a cross-process ``talk_deliver`` wake) into
+    the right Slack chat/thread after a restart, when no live
+    ``gateway_source`` is stashed on the session. Returns None when the
+    key isn't gateway-shaped or lacks a chat id to send to.
+    """
+    from bridge.gateway.platforms.base import Platform
+
+    parts = (key or "").split(":")
+    if len(parts) < 5 or parts[0] != "freyja":
+        return None
+    try:
+        platform = Platform(parts[1])
+    except ValueError:
+        return None
+    workspace, chat_type, chat_id = parts[2], parts[3], parts[4]
+    if not chat_id:
+        return None
+    thread_id: str | None = None
+    user_id: str | None = None
+    for extra in parts[5:]:
+        if _THREAD_TS_RE.match(extra):
+            thread_id = extra
+        elif _USER_ID_RE.match(extra):
+            user_id = extra
+    return MessageSource(
+        platform=platform,
+        workspace_id=workspace,
+        chat_type=chat_type,
+        chat_id=chat_id,
+        user_id=user_id,
+        thread_id=thread_id,
+    )
+
+
 def gateway_source_block(source: MessageSource) -> str:
     """Render a one-paragraph block describing the gateway context.
 

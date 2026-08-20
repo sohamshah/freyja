@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -33,6 +34,76 @@ from bridge.inbox import InboxMessage, new_message_id
 DEFAULT_REPLY_TIMEOUT_S = 60
 # Cap on the wait_for_reply timeout to prevent unbounded blocking.
 MAX_REPLY_TIMEOUT_S = 600
+
+
+def _is_gateway_session_id(session_id: str) -> bool:
+    """``freyja:<platform>:…`` ids are owned by the gateway daemon (the
+    process holding the gateway PID lock), NOT by whatever local mirror
+    this process may have open. Mirrors freyja_bridge's check; kept
+    local to avoid importing the heavy bridge module at call time."""
+    if not session_id.startswith("freyja:"):
+        return False
+    rest = session_id[len("freyja:") :]
+    return ":" in rest and len(rest.split(":", 1)[0]) > 0
+
+
+def _gateway_owner_pid() -> int | None:
+    """PID of the live gateway daemon, or None when none is running."""
+    try:
+        from bridge.gateway.pid import get_running_pid
+
+        return get_running_pid()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _session_exists_on_disk(session_id: str) -> bool:
+    """True when a persisted transcript or inbox sidecar exists for the
+    session — i.e. it has actually run somewhere and can be resumed."""
+    try:
+        from bridge.transcript_persistence import (
+            _inbox_path,
+            _transcript_path,
+        )
+
+        return _transcript_path(session_id).exists() or _inbox_path(
+            session_id
+        ).exists()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def queue_to_inbox_sidecar(session_id: str, msg: InboxMessage) -> str:
+    """Persist a message into a session's on-disk inbox sidecar.
+
+    Used when no process currently has the recipient loaded — the
+    sidecar is rehydrated by try_restore_transcript (Step 2c) the next
+    time the session loads, and the pre-iteration drain delivers the
+    message on its first turn.
+    """
+    try:
+        from bridge.transcript_persistence import (
+            load_inbox_state,
+            save_inbox_state,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return f"sidecar queue failed: {exc}"
+    data = load_inbox_state(session_id) or {
+        "sessionId": session_id,
+        "unread": [],
+        "delivered": [],
+    }
+    unread = list(data.get("unread") or [])
+    unread.append(msg.to_dict())
+    data["unread"] = unread
+    try:
+        save_inbox_state(session_id, data)
+    except Exception as exc:  # noqa: BLE001
+        return f"sidecar queue failed: {exc}"
+    return (
+        "queued to inbox sidecar — recipient isn't loaded anywhere right "
+        "now; it will see the message when it next runs"
+    )
 
 
 @dataclass
@@ -69,6 +140,10 @@ class TalkRouter:
         # message via its inbox. Called by talk() when the recipient
         # has no live runner.
         self._wake_archived_sub = wake_archived_sub
+
+    @property
+    def bridge_state(self) -> Any:
+        return self._bridge_state
 
     # ------ Sub-agent lookup -----------------------------------------
 
@@ -174,6 +249,116 @@ class TalkRouter:
             return r.id, None, r, None
         return "", None, None, None
 
+    # ------ Cross-process routing ------------------------------------
+
+    def forward_cross_process(
+        self,
+        target_id: str,
+        msg: InboxMessage,
+        *,
+        live_local: bool,
+        archived_state: dict[str, Any] | None,
+    ) -> str | None:
+        """Route the message to the process that actually owns the
+        recipient, when that isn't us. Returns a status string when the
+        message was handed off (or queued), None when local delivery
+        should proceed.
+
+        Ownership rules:
+          · ``freyja:<platform>:…`` gateway ids belong to the process
+            holding the gateway PID lock. A desktop-side mirror of a
+            Slack session is NOT authoritative — pushing into it is how
+            the 2026-08-13 rewrite brief silently missed the live Slack
+            agent for 2h14m.
+          · Archived sub-agents belong to the process that hosts their
+            parent: gateway-shaped parent → daemon, else → desktop.
+          · Everything else resolvable locally is local.
+        """
+        owner = _gateway_owner_pid()
+        am_owner = owner is not None and owner == os.getpid()
+
+        if _is_gateway_session_id(target_id):
+            if am_owner:
+                return None  # we are the authority — deliver locally
+            if owner is not None:
+                try:
+                    from bridge.gateway.control_channel import append_command
+
+                    append_command({
+                        "type": "talk_deliver",
+                        "to": target_id,
+                        "message": msg.to_dict(),
+                        "origin_pid": os.getpid(),
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    return f"forward to gateway daemon failed: {exc}"
+                return (
+                    f"forwarded to the gateway daemon (pid {owner}) which "
+                    "owns this session — it will deliver and wake the "
+                    "recipient"
+                )
+            # No live gateway daemon. A live local mirror (desktop-only
+            # deployment where the operator continued the thread in the
+            # app) is the best available surface; otherwise persist.
+            if live_local:
+                return None
+            return queue_to_inbox_sidecar(target_id, msg)
+
+        # Non-gateway recipient. If we're the gateway daemon and can't
+        # serve it live, it lives in the desktop bridge — forward there.
+        # Archived sub-agents route by their parent's shape.
+        if archived_state is not None and not live_local:
+            parent_id = str(archived_state.get("parentSessionId") or "")
+            parent_is_gateway = _is_gateway_session_id(parent_id)
+            if parent_is_gateway and not am_owner and owner is not None:
+                return self._forward_to_daemon(target_id, msg, owner)
+            if not parent_is_gateway and am_owner:
+                return self._forward_to_desktop(target_id, msg)
+            return None  # local re-wake is the right call
+
+        if am_owner and not live_local:
+            return self._forward_to_desktop(target_id, msg)
+        return None
+
+    def _forward_to_daemon(
+        self, target_id: str, msg: InboxMessage, owner: int
+    ) -> str:
+        try:
+            from bridge.gateway.control_channel import append_command
+
+            append_command({
+                "type": "talk_deliver",
+                "to": target_id,
+                "message": msg.to_dict(),
+                "origin_pid": os.getpid(),
+            })
+        except Exception as exc:  # noqa: BLE001
+            return f"forward to gateway daemon failed: {exc}"
+        return f"forwarded to the gateway daemon (pid {owner}) which hosts it"
+
+    def _forward_to_desktop(self, target_id: str, msg: InboxMessage) -> str:
+        try:
+            from bridge.gateway.control_channel import (
+                append_command,
+                desktop_commands_path,
+            )
+
+            append_command(
+                {
+                    "type": "talk_deliver",
+                    "to": target_id,
+                    "message": msg.to_dict(),
+                    "origin_pid": os.getpid(),
+                },
+                path=desktop_commands_path(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return f"forward to desktop bridge failed: {exc}"
+        return (
+            "forwarded to the desktop bridge — the recipient session lives "
+            "there (delivery happens when the desktop app is running)"
+        )
+
     # ------ Delivery -------------------------------------------------
 
     async def deliver(
@@ -196,7 +381,20 @@ class TalkRouter:
                 # mid-stream interruption on the root we'd need a
                 # bridge-level cancel — Phase 3 task.
                 pass
-            return "delivered to root session"
+            # An IDLE root session never drains its inbox on its own —
+            # the pre-iteration drain only runs during an active turn.
+            # wake_for_inbox schedules a synthetic turn so the message
+            # is processed now instead of at the next operator poke.
+            wake_status = ""
+            wake = getattr(live_root, "wake_for_inbox", None)
+            if callable(wake):
+                try:
+                    wake_status = wake() or ""
+                except Exception:  # noqa: BLE001
+                    wake_status = ""
+            return "delivered to root session" + (
+                f" ({wake_status})" if wake_status else ""
+            )
 
         if sub_record is not None and getattr(sub_record, "inbox", None) is not None:
             # Terminal sub-agents stay in the registry post-completion so
@@ -281,10 +479,20 @@ class TalkTool:
                 "Addressing:\n"
                 "  - 'parent' — your spawning session (root agent or another sub-agent)\n"
                 "  - 'main' / 'operator' — the root operator session\n"
-                "  - '<session_id>' — any session you have a concrete id for\n"
+                "  - '<session_id>' — any session you have a concrete id for "
+                "(gateway ids like 'freyja:slack:…' work with or without the "
+                "'freyja:' prefix)\n"
                 "  - '<label>' — a sibling or child by display label (unique only)\n"
                 "  - or a list of any of the above for multi-cast\n\n"
                 "Use `list_agent_sessions` first to see who is addressable.\n\n"
+                "Delivery: idle recipients are WOKEN — a delivery turn runs "
+                "immediately so the message is processed now, not at the "
+                "recipient's next operator poke. Sessions owned by another "
+                "Freyja process (e.g. Slack threads served by the gateway "
+                "daemon) are forwarded there automatically; the tool result "
+                "states exactly how the message was delivered. A result "
+                "saying 'queued' or 'sidecar' means the recipient has NOT "
+                "seen it yet.\n\n"
                 "Flags:\n"
                 "  - force=true: interrupts the recipient mid-operation. The "
                 "recipient's current LLM stream / tool call is cancelled, "
@@ -292,9 +500,11 @@ class TalkTool:
                 "message, then they exit. Use sparingly — for stop signals "
                 "or critical redirects, not routine FYI.\n"
                 "  - wait_for_reply=true: blocks YOUR turn until the "
-                "recipient sends a reply tagged to this message. Times out "
-                "after reply_timeout_s seconds (default 60). Use when you "
-                "genuinely cannot proceed without an answer.\n\n"
+                "recipient sends a reply tagged to this message (they must "
+                "call talk with reply_to=<your message id>, which they see "
+                "in the delivered header). Times out after reply_timeout_s "
+                "seconds (default 60). A timeout does NOT mean failure — "
+                "the message stays queued; don't repeat it blindly.\n\n"
                 "Messages to non-running sub-agents will RE-WAKE them — "
                 "the recipient picks up where it left off with your "
                 "message prepended."
@@ -379,15 +589,43 @@ class TalkTool:
 
         msg_id = new_message_id()
         results: list[str] = []
-        delivered_sessions: list[tuple[Any, InboxMessage]] = []
+        # Messages that plausibly reached a recipient (locally or via a
+        # cross-process forward) — a reply to any of them can land in
+        # our inbox, so wait_for_reply is meaningful for all of these.
+        awaitable: list[InboxMessage] = []
 
         for ref in recipients:
+            ref_clean = (ref or "").strip()
             resolved_id, live_root, sub_rec, archived = self._router.resolve_ref(
-                ref, self._ctx
+                ref_clean, self._ctx
             )
-            if not resolved_id:
-                results.append(f"'{ref}': unresolved")
+            # Gateway ids are routinely written without the "freyja:"
+            # prefix (Slack surfaces them as "slack:T…:channel:…").
+            # Normalize so both spellings address the same session.
+            target_id = resolved_id
+            if not target_id and ref_clean:
+                cand = (
+                    ref_clean
+                    if ref_clean.startswith("freyja:")
+                    else f"freyja:{ref_clean}"
+                )
+                if _is_gateway_session_id(cand):
+                    resolved_id, live_root, sub_rec, archived = (
+                        self._router.resolve_ref(cand, self._ctx)
+                    )
+                    target_id = resolved_id or cand
+                else:
+                    # Unresolved non-gateway ref — it may still be a real
+                    # but closed session; the on-disk existence gate in
+                    # the cold-delivery branch below decides.
+                    target_id = ref_clean
+            if not target_id:
+                results.append(
+                    f"'{ref}': unresolved — use list_agent_sessions to find "
+                    "addressable ids/labels"
+                )
                 continue
+
             msg = InboxMessage(
                 id=msg_id if len(recipients) == 1 else new_message_id(),
                 from_session=self._ctx.caller_session_id,
@@ -397,36 +635,82 @@ class TalkTool:
                 force=force,
                 reply_to=(str(reply_to) if reply_to else None),
             )
-            status = await self._router.deliver(
-                resolved_id, live_root, sub_rec, archived, msg
+
+            # Cross-process routing first: a local mirror of a session
+            # owned by another process must NOT swallow the message.
+            fwd = self._router.forward_cross_process(
+                target_id,
+                msg,
+                live_local=(live_root is not None or sub_rec is not None),
+                archived_state=archived,
             )
-            results.append(f"'{ref}' ({resolved_id[:8]}): {status}")
-            # Track live deliveries for wait_for_reply correlation
-            if live_root is not None or sub_rec is not None:
-                delivered_sessions.append((live_root or sub_rec, msg))
+            if fwd is not None:
+                results.append(f"'{ref}' → {target_id}: {fwd}")
+                if "failed" not in fwd:
+                    awaitable.append(msg)
+                continue
+
+            if live_root is None and sub_rec is None and archived is None:
+                # Nothing loaded locally. Deliver cold ONLY when the
+                # session verifiably exists on disk (gateway session
+                # after a daemon restart, or a closed desktop session).
+                # A typo'd id must stay a hard "unresolved", not a
+                # sidecar file for a session that will never run.
+                if not _session_exists_on_disk(target_id):
+                    results.append(
+                        f"'{ref}': unresolved — no such session; use "
+                        "list_agent_sessions to find addressable ids/labels"
+                    )
+                    continue
+                try:
+                    from bridge.freyja_bridge import (
+                        deliver_talk_message_locally,
+                    )
+
+                    status = await deliver_talk_message_locally(
+                        self._router.bridge_state, target_id, msg
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    status = f"delivery failed: {exc}"
+                results.append(f"'{ref}' → {target_id}: {status}")
+                if "failed" not in status:
+                    awaitable.append(msg)
+                continue
+
+            status = await self._router.deliver(
+                target_id, live_root, sub_rec, archived, msg
+            )
+            results.append(f"'{ref}' ({target_id[:24]}): {status}")
+            if "not found" not in status and "failed" not in status:
+                awaitable.append(msg)
 
         # Handle wait_for_reply (single-recipient case enforced above)
-        if wait_for_reply and len(delivered_sessions) == 1:
-            _recipient, sent_msg = delivered_sessions[0]
+        if wait_for_reply and len(awaitable) == 1:
+            sent_msg = awaitable[0]
             timeout = max(1, min(int(reply_timeout_s), MAX_REPLY_TIMEOUT_S))
             reply = await self._await_reply(
                 source_msg_id=sent_msg.id,
                 timeout_s=timeout,
             )
+            delivery_note = results[0] if results else "sent"
             if reply is None:
                 return ToolResult(
                     call_id=call_id,
                     content=(
-                        f"Sent (id={sent_msg.id}). No reply within {timeout}s — "
-                        "proceed without."
+                        f"Sent (id={sent_msg.id}); delivery: {delivery_note}. "
+                        f"No reply within {timeout}s. The message stays in "
+                        "the recipient's inbox and will be read on its next "
+                        "turn — but nothing was acknowledged, so do NOT "
+                        "assume it acted. Check back later, or watch for "
+                        "its reply arriving as a \"[message from …]\" block."
                     ),
                     is_error=False,
                 )
             return ToolResult(
                 call_id=call_id,
                 content=(
-                    f"Sent (id={sent_msg.id}). Reply from {reply.from_label}: "
-                    f"{reply.content}"
+                    f"Sent (id={sent_msg.id}); delivery: {delivery_note}. "
+                    f"Reply from {reply.from_label}: {reply.content}"
                 ),
                 is_error=False,
             )
@@ -461,10 +745,12 @@ class TalkTool:
         if inbox is None:
             return None
 
-        # First, check if a reply has already arrived (race)
-        for m in inbox.peek_unread():
-            if m.reply_to == source_msg_id:
-                return m
+        # take_reply (not peek) — the reply's content is returned inline
+        # in this tool result, so it must leave the unread queue or the
+        # next pre-iteration drain would deliver the same content twice.
+        got = inbox.take_reply(source_msg_id)
+        if got is not None:
+            return got
 
         event = asyncio.Event()
         inbox.add_reply_waiter(source_msg_id, event)
@@ -473,11 +759,7 @@ class TalkTool:
                 await asyncio.wait_for(event.wait(), timeout=timeout_s)
             except asyncio.TimeoutError:
                 return None
-            # Reply arrived — scan unread for the matching message
-            for m in inbox.peek_unread():
-                if m.reply_to == source_msg_id:
-                    return m
-            return None
+            return inbox.take_reply(source_msg_id)
         finally:
             inbox.remove_reply_waiter(source_msg_id)
 
@@ -511,7 +793,11 @@ class ListAgentSessionsTool:
                 "see every session known to the bridge.\n\n"
                 "Each entry includes the session id, display label, agent "
                 "profile, relationship to you, status, and a short task "
-                "preview so you can disambiguate similar-looking siblings."
+                "preview so you can disambiguate similar-looking siblings.\n\n"
+                "The full directory can run to hundreds of archived "
+                "sessions — pass `query` (case-insensitive substring over "
+                "id, label, and task preview) and/or `limit` instead of "
+                "paging through everything."
             ),
             parameters={
                 "type": "object",
@@ -526,6 +812,15 @@ class ListAgentSessionsTool:
                         "default": True,
                         "description": "Include sub-agents that have completed but are still re-wakeable via talk().",
                     },
+                    "query": {
+                        "type": "string",
+                        "description": "Case-insensitive substring filter over id, label, and task preview.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 40,
+                        "description": "Max entries returned (running sessions sort first). Use with query to find one session cheaply.",
+                    },
                 },
             },
         )
@@ -533,10 +828,38 @@ class ListAgentSessionsTool:
     async def execute(self, call_id: str, arguments: dict[str, Any]) -> ToolResult:
         connected = bool(arguments.get("connected", True))
         include_archived = bool(arguments.get("include_archived", True))
+        query = str(arguments.get("query") or "").strip().lower()
+        try:
+            limit = max(1, int(arguments.get("limit") or 40))
+        except (TypeError, ValueError):
+            limit = 40
         entries = self._enumerate(connected=connected, include_archived=include_archived)
+        if query:
+            entries = [
+                e for e in entries
+                if query in str(e.get("id", "")).lower()
+                or query in str(e.get("label", "")).lower()
+                or query in str(e.get("task_preview", "")).lower()
+            ]
+        total = len(entries)
+        if total > limit:
+            # Running sessions are almost always what the caller wants;
+            # keep them ahead of archived ones before cutting.
+            entries.sort(key=lambda e: 0 if e.get("status") == "running" else 1)
+            entries = entries[:limit]
+        payload: dict[str, Any] = {
+            "sessions": entries,
+            "count": total,
+            "shown": len(entries),
+        }
+        if total > len(entries):
+            payload["note"] = (
+                f"{total - len(entries)} more matched — narrow with `query` "
+                "or raise `limit`."
+            )
         return ToolResult(
             call_id=call_id,
-            content=json.dumps({"sessions": entries, "count": len(entries)}, indent=2),
+            content=json.dumps(payload, indent=2),
             is_error=False,
         )
 

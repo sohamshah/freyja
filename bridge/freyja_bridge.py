@@ -647,6 +647,20 @@ def _sanitize_auto_title(raw: str) -> str:
     return t[:48]
 
 
+# Synthetic user text for a wake turn scheduled by wake_for_inbox().
+# The turn itself carries no content — the runner's pre-iteration drain
+# injects the actual inbox message(s) as attributed "[message from …]"
+# blocks in the same turn, right after this nudge.
+TALK_WAKE_PROMPT = (
+    "[system] One or more inter-agent messages were just delivered to "
+    "your inbox — they appear in this turn as \"[message from …]\" "
+    "blocks. Read them and act on them now. If the sender asked for an "
+    "acknowledgment or an answer, reply with the talk tool (pass "
+    "reply_to=<their message id> if one was given). If a message is a "
+    "work request, do the work."
+)
+
+
 def _resolve_archived_subagent(session_id: str) -> dict[str, Any] | None:
     """Lookup helper used by TalkRouter to find a saved sub-agent
     sidecar by session id. Phase 4 (T11) populates these sidecars on
@@ -656,6 +670,138 @@ def _resolve_archived_subagent(session_id: str) -> dict[str, Any] | None:
     except Exception:
         return None
     return load_subagent_state(session_id)
+
+
+def _install_talk_wake_hook(state: "_BridgeState", sess: "_BridgeSession") -> None:
+    """Give ``sess`` an output-routing hook for talk-triggered wake
+    turns, if the hosting process registered a factory (the gateway
+    daemon does — its hooks register a fresh SlackStreamConsumer so the
+    wake turn streams into the right Slack thread)."""
+    factory = getattr(state, "talk_wake_hook_factory", None)
+    if factory is None or getattr(sess, "talk_wake_hook", None) is not None:
+        return
+    try:
+        sess.talk_wake_hook = factory(sess)
+    except Exception as exc:  # noqa: BLE001
+        log("warn", f"talk wake hook install failed for {sess.id}: {exc}")
+
+
+async def deliver_talk_message_locally(
+    state: "_BridgeState", sid: str, msg: Any
+) -> str:
+    """Deliver an InboxMessage to a session owned by THIS process.
+
+    Strictly local — never re-forwards to another process (the sender
+    already decided this process is the owner; bouncing would loop).
+    Order of preference: live root session (push + wake), live
+    sub-agent record, cold gateway session we own (load from disk,
+    then push + wake), inbox sidecar (delivered on next load).
+    Returns a short status string for logs / tool results.
+    """
+    sess = state.sessions.get(sid)
+
+    if sess is None and _is_gateway_session_id(sid) and _process_owns_gateway():
+        # Cold gateway session in the owner process (daemon restarted
+        # since the thread's last message). Load it so the message is
+        # processed now instead of waiting for the next Slack inbound.
+        try:
+            sess = await state.ensure_session(sid)
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"talk deliver: cold load of {sid} failed: {exc}")
+            sess = None
+
+    if sess is not None and getattr(sess, "inbox", None) is not None:
+        _install_talk_wake_hook(state, sess)
+        sess.inbox.push(msg)
+        return sess.wake_for_inbox()
+
+    # Sub-agent hosted by one of this process's roots? Terminal records
+    # keep their (dead) inbox for the renderer — pushing there swallows
+    # the message, so terminal falls through to the re-wake path.
+    for root in list(state.sessions.values()):
+        reg = getattr(root, "subagent_registry", None)
+        if reg is None:
+            continue
+        try:
+            rec = reg.get(sid)
+        except Exception:  # noqa: BLE001
+            rec = None
+        if rec is not None and getattr(rec, "inbox", None) is not None:
+            from bridge.tools.sub_agent_registry import SubAgentState
+
+            if rec.state not in (
+                SubAgentState.DONE,
+                SubAgentState.FAILED,
+                SubAgentState.CANCELLED,
+            ):
+                rec.inbox.push(msg)
+                return "delivered to sub-agent"
+            break
+
+    # Archived / terminal sub-agent — re-wake from its sidecar.
+    archived = _resolve_archived_subagent(sid)
+    if archived is not None:
+        try:
+            await _wake_archived_subagent(state, sid, msg)
+        except Exception as exc:  # noqa: BLE001
+            return f"re-wake failed: {exc}"
+        return "queued for re-wake (recipient archived)"
+
+    # Cold session — persist to the inbox sidecar; the next
+    # load/restore (Step 2c in try_restore_transcript) delivers it.
+    from bridge.tools.talk_tool import queue_to_inbox_sidecar
+
+    return queue_to_inbox_sidecar(sid, msg)
+
+
+def _process_owns_gateway() -> bool:
+    """True when THIS process holds the gateway PID lock — i.e. it is
+    the authoritative host for ``freyja:<platform>:…`` sessions."""
+    try:
+        from bridge.gateway.pid import get_running_pid
+
+        return get_running_pid() == os.getpid()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def _handle_talk_deliver_command(state: "_BridgeState", cmd: dict[str, Any]) -> None:
+    """Control-channel handler for cross-process talk delivery."""
+    from bridge.inbox import InboxMessage
+
+    sid = str(cmd.get("to") or "")
+    msg = InboxMessage.from_dict(cmd.get("message"))
+    if not sid or msg is None or not msg.content:
+        log("warn", "talk_deliver: malformed command dropped")
+        return
+    status = await deliver_talk_message_locally(state, sid, msg)
+    log("info", f"talk_deliver: {msg.id[:8]} → {sid} ({status})")
+
+
+async def _start_desktop_control_reader(state: "_BridgeState") -> Any | None:
+    """Tail ``control/desktop-commands.jsonl`` (daemon → desktop
+    direction) so gateway-side agents can talk() to desktop sessions.
+    Reverse of the daemon's reader on ``commands.jsonl``."""
+    try:
+        from bridge.gateway.control_channel import (
+            ControlChannelReader,
+            desktop_commands_path,
+            desktop_commands_offset_path,
+        )
+
+        reader = ControlChannelReader(
+            commands_file=desktop_commands_path(),
+            offset_file=desktop_commands_offset_path(),
+        )
+        reader.register(
+            "talk_deliver",
+            lambda cmd: _handle_talk_deliver_command(state, cmd),
+        )
+        await reader.start()
+        return reader
+    except Exception as exc:  # noqa: BLE001
+        log("warn", f"desktop control reader failed to start: {exc}")
+        return None
 
 
 async def _wake_archived_subagent(state: Any, session_id: str, msg: Any) -> None:
@@ -1201,6 +1347,11 @@ async def _main() -> None:
         await state.voice.start()
     except Exception as exc:  # noqa: BLE001
         log("warn", f"voice service failed to start: {exc}")
+    # Daemon → desktop control channel: lets gateway-side agents talk()
+    # to sessions living in this process (reply correlation for
+    # cross-process wait_for_reply depends on it). Reference held on
+    # state so the reader task isn't GC'd.
+    state._desktop_control_reader = await _start_desktop_control_reader(state)  # noqa: SLF001
     # Offline working-memory backfill — hourly pass that summarizes idle
     # sessions whose working_memory.json is missing or older than the
     # transcript. This is the substrate the morning briefing reads; the
@@ -3180,6 +3331,12 @@ class _BridgeSession:
         from bridge.inbox import SessionInbox
         self.inbox: SessionInbox = SessionInbox(session_id=self.id)
         self.inbox.on_change = self._on_inbox_change
+        # Optional zero-arg on_turn_start hook installed by whoever owns
+        # this session's output surface (the gateway daemon installs one
+        # that registers a fresh SlackStreamConsumer). Used by
+        # wake_for_inbox() so a talk-triggered turn streams its output
+        # to the right place instead of only into the transcript.
+        self.talk_wake_hook: Any | None = None
         # Profile identity: set when this session was spawned as a
         # subagent. Root sessions leave both fields at None and the
         # dashboard renders them under a synthetic "root" profile.
@@ -4546,6 +4703,42 @@ class _BridgeSession:
             self._save_inbox()
         except Exception:
             pass
+
+    def wake_for_inbox(self) -> str:
+        """Ensure a just-pushed inbox message actually gets processed.
+
+        Root sessions only drain their inbox at iteration boundaries of
+        an ACTIVE turn. An idle root session (a Slack thread waiting for
+        its next user message, a desktop session nobody is typing into)
+        would otherwise sit on the message indefinitely — the exact
+        failure observed on 2026-08-13 when a rewrite brief sent via
+        talk() to the idle Slack session
+        freyja:slack:…:1786645306.443119 was only delivered 2h14m later
+        when the operator happened to poke the session by hand.
+
+        Busy sessions need nothing: the pre-iteration drain picks the
+        message up within one iteration. Idle sessions get a synthetic
+        turn whose only job is to carry the drain. Returns a short
+        human-readable status for the sender's tool result.
+        """
+        if self.inbox is None or not self.inbox.has_unread():
+            return "no unread messages"
+        pending = self.pending_task
+        if pending is not None and not pending.done():
+            return "recipient busy — will process at its next iteration boundary"
+        try:
+            scheduled = _schedule_or_queue_turn(
+                self,
+                TALK_WAKE_PROMPT,
+                None,
+                on_turn_start=self.talk_wake_hook,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"wake_for_inbox failed for {self.id}: {exc}")
+            return f"wake failed ({exc}) — message queued for next turn"
+        if scheduled:
+            return "recipient was idle — woke it to process the message now"
+        return "recipient busy — wake queued behind the in-flight turn"
 
     def _on_inbox_change(self, action: str, msg: Any) -> None:
         """Bridge hook fired by SessionInbox on every push/drain/drop.
@@ -10002,6 +10195,11 @@ class _BridgeState:
         # Gateway runner reference (set by the gateway boot). Slack sink
         # falls back here when adapters list isn't populated yet.
         self.gateway_runner: Any = None
+        # Optional callable(session) -> zero-arg on_turn_start hook,
+        # registered by the gateway daemon so talk-triggered wake turns
+        # on its sessions stream output to the owning Slack thread.
+        # See _install_talk_wake_hook / _BridgeSession.wake_for_inbox.
+        self.talk_wake_hook_factory: Any = None
         # Galdr voice service (bridge/voice). Set by _main after the
         # scheduler boots; None in contexts that never speak (tests,
         # headless gateway) — voice_* handlers guard on it.
@@ -11659,12 +11857,33 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         )
         resolved_id, live_root, sub_rec, archived = router.resolve_ref(target_id, ctx)
         if not resolved_id:
-            log("warn", f"operator_talk: unresolved recipient '{target_id}'")
-            return
+            if _is_gateway_session_id(target_id):
+                # Not loaded here — still routable to its owner process.
+                resolved_id = target_id
+            else:
+                log("warn", f"operator_talk: unresolved recipient '{target_id}'")
+                return
         try:
-            result = await router.deliver(
-                resolved_id, live_root, sub_rec, archived, msg
+            # Same routing as agent talk(): a session owned by another
+            # process (gateway daemon) must not be served by a local
+            # mirror push the owner never sees.
+            fwd = router.forward_cross_process(
+                resolved_id,
+                msg,
+                live_local=(live_root is not None or sub_rec is not None),
+                archived_state=archived,
             )
+            if fwd is not None:
+                log("info", f"operator_talk → {resolved_id[:24]}: {fwd}")
+                return
+            if live_root is None and sub_rec is None and archived is None:
+                result = await deliver_talk_message_locally(
+                    state, resolved_id, msg
+                )
+            else:
+                result = await router.deliver(
+                    resolved_id, live_root, sub_rec, archived, msg
+                )
             log("info", f"operator_talk → {resolved_id[:8]}: {result}")
         except Exception as exc:  # noqa: BLE001
             log("warn", f"operator_talk delivery failed: {exc}")

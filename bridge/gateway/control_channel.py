@@ -1,4 +1,4 @@
-"""Desktop → daemon control channel.
+"""Desktop ↔ daemon control channels.
 
 The desktop renderer needs to send commands *to* the gateway daemon —
 most urgently, ``permission_response`` so the operator can approve or
@@ -15,9 +15,20 @@ write path:
     ``~/.freyja/control/commands.offset`` so a daemon restart picks up
     exactly where it left off (no replay, no skipped commands).
 
-Initial command type: ``permission_response``. The dispatch table is a
-plain dict so adding ``cancel_turn``, ``set_permission_policy``, etc.
-later is one line each.
+Each file has EXACTLY ONE reader. ``commands.jsonl`` is read by the
+process that owns the gateway PID lock (see ``gateway/pid.py``) —
+a second reader sharing the offset file silently steals commands
+(observed: the scheduler daemon consuming ``skill_candidate_resolve``
+commands meant for the gateway and failing with ``not_found``).
+
+``desktop-commands.jsonl`` is the reverse direction: daemon → desktop
+bridge. The desktop bridge process tails it (its own offset file) so
+gateway-side agents can push ``talk_deliver`` messages to sessions
+that live in the desktop process.
+
+Command types today: ``permission_response``, ``set_permission_policy``,
+``skill_candidate_resolve``, ``skill_learn_this``, ``talk_deliver``.
+The dispatch table is a plain dict so adding more is one line each.
 """
 
 from __future__ import annotations
@@ -47,6 +58,29 @@ def commands_offset_path() -> Path:
     return control_dir() / "commands.offset"
 
 
+def desktop_commands_path() -> Path:
+    """Daemon → desktop direction. Read only by the desktop bridge."""
+    return control_dir() / "desktop-commands.jsonl"
+
+
+def desktop_commands_offset_path() -> Path:
+    return control_dir() / "desktop-commands.offset"
+
+
+def append_command(cmd: dict[str, Any], *, path: Path | None = None) -> None:
+    """Append one command line to a control file.
+
+    Single ``write()`` of a full line on an O_APPEND handle — atomic for
+    the line sizes we send. Any process may write; only the file's one
+    designated reader consumes.
+    """
+    dest = path or commands_path()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(cmd, ensure_ascii=False)
+    with dest.open("a", encoding="utf-8") as fp:
+        fp.write(line + "\n")
+
+
 CommandHandler = Callable[[dict[str, Any]], Any]
 
 
@@ -68,10 +102,20 @@ class ControlChannelReader:
 
     POLL_INTERVAL_SEC: float = 0.25
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        commands_file: Path | None = None,
+        offset_file: Path | None = None,
+    ) -> None:
         self._handlers: dict[str, CommandHandler] = {}
         self._task: asyncio.Task | None = None
         self._stop_event: asyncio.Event = asyncio.Event()
+        # Which file pair this reader tails. Defaults to the desktop →
+        # daemon direction; the desktop bridge passes the
+        # desktop-commands pair for the reverse direction.
+        self._commands_file: Path = commands_file or commands_path()
+        self._offset_file: Path = offset_file or commands_offset_path()
         # In-memory offset cache. Synced to disk after each successful
         # batch read so a crash mid-batch replays at worst the current
         # batch, never older state.
@@ -84,7 +128,8 @@ class ControlChannelReader:
         # Ensure the file exists so the first read doesn't trip on
         # FileNotFoundError. Touch + chmod 0600 since this is a local
         # IPC channel that shouldn't be world-readable.
-        path = commands_path()
+        path = self._commands_file
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.touch(exist_ok=True)
         try:
             os.chmod(path, 0o600)
@@ -92,7 +137,7 @@ class ControlChannelReader:
             pass
         # Restore persisted offset (or jump to current EOF on first run
         # so we don't replay history from a long-lived control file).
-        offset_path = commands_offset_path()
+        offset_path = self._offset_file
         if offset_path.exists():
             try:
                 self._offset = int(offset_path.read_text().strip() or "0")
@@ -130,8 +175,8 @@ class ControlChannelReader:
         logger.info("control channel stopped")
 
     async def _run_loop(self) -> None:
-        path = commands_path()
-        offset_path = commands_offset_path()
+        path = self._commands_file
+        offset_path = self._offset_file
         try:
             while not self._stop_event.is_set():
                 try:

@@ -100,15 +100,21 @@ class InboxMessage:
     def attribution_prefix(self) -> str:
         """Header line prepended when the message is injected into the
         recipient's transcript. Keeps the attribution legible to the
-        receiving LLM without bloating context."""
+        receiving LLM without bloating context.
+
+        The FULL message id is included so the recipient can reply with
+        talk(reply_to=<id>) — reply correlation matches on the exact id,
+        and without it in the header the recipient has no way to
+        construct a reply the sender's wait_for_reply can see.
+        """
         role_tag = (
             "operator"
             if self.from_role == "operator"
             else f"agent · {self.from_label}"
         )
         urgency = " · FORCE" if self.force else ""
-        reply = f" · reply to {self.reply_to[:8]}" if self.reply_to else ""
-        return f"[message from {role_tag}{urgency}{reply}]"
+        reply = f" · reply to {self.reply_to}" if self.reply_to else ""
+        return f"[message from {role_tag} · id {self.id}{urgency}{reply}]"
 
     def as_user_block(self) -> str:
         """Full transcript-ready block."""
@@ -173,6 +179,26 @@ class SessionInbox:
 
     def peek_unread(self) -> list[InboxMessage]:
         return list(self.unread)
+
+    def take_reply(self, source_msg_id: str) -> Optional[InboxMessage]:
+        """Remove and return the unread reply tagged reply_to=source_msg_id.
+
+        Used by talk(wait_for_reply=True): the reply's content is
+        returned inline in the tool result, so leaving it in `unread`
+        would double-deliver it — the next pre-iteration drain would
+        inject the same content again as a user block. Marks the
+        message delivered and moves it to history like drain() does.
+        """
+        for i, m in enumerate(self.unread):
+            if m.reply_to == source_msg_id:
+                self.unread.pop(i)
+                m.delivered_at = time.time()
+                self.delivered.append(m)
+                if len(self.delivered) > RECENT_DELIVERED_KEEP:
+                    self.delivered = self.delivered[-RECENT_DELIVERED_KEEP:]
+                self._fire("delivered", m)
+                return m
+        return None
 
     def has_unread(self) -> bool:
         return bool(self.unread)
