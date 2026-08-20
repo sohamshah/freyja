@@ -827,7 +827,10 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // the real window is ~1M — the dashboard denominator (not the provider /
   // compaction, which read the registry) was wrong.
   'gemini-3.1-pro-preview': 1_048_576,
+  'gemini-3.7-flash': 1_048_576,
+  'gemini-3.6-flash': 1_048_576,
   'gemini-3.5-flash': 1_048_576,
+  'gemini-3.5-flash-lite': 1_048_576,
   'gemini-3.1-flash': 1_048_576,
   'gemini-3.1-flash-lite': 1_048_576,
   'gemini-2.5-pro': 1_048_576,
@@ -871,6 +874,16 @@ const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel
   'minimax-m3': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
   'qwen3.6-plus': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'medium' },
   'qwen3.7-plus': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'medium' },
+  // Google Gemini (keep in sync with bridge MODEL_REASONING_META).
+  'gemini-3.1-pro-preview': { levels: ['minimal', 'low', 'medium', 'high'], defaultLevel: 'high' },
+  'gemini-3.7-flash': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
+  'gemini-3.6-flash': { levels: ['minimal', 'low', 'medium', 'high'], defaultLevel: 'medium' },
+  'gemini-3.5-flash': { levels: ['minimal', 'low', 'medium', 'high'], defaultLevel: 'medium' },
+  'gemini-3.5-flash-lite': { levels: ['minimal', 'low', 'medium', 'high'], defaultLevel: 'low' },
+  'gemini-3.1-flash': { levels: ['minimal', 'low', 'medium', 'high'], defaultLevel: 'medium' },
+  'gemini-3.1-flash-lite': { levels: ['minimal', 'low', 'medium', 'high'], defaultLevel: 'low' },
+  'gemini-2.5-pro': { levels: ['minimal', 'low', 'medium', 'high'], defaultLevel: 'high' },
+  'gemini-2.5-flash': { levels: ['minimal', 'low', 'medium', 'high'], defaultLevel: 'medium' },
 }
 
 function modelChoiceFor(model: string, models: ModelChoice[] = []): ModelChoice | undefined {

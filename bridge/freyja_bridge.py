@@ -1739,6 +1739,26 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "description": "Google's frontier Gemini. Ties Claude Opus 4.7 on AA intelligence at <½ price. 1M ctx, native multimodal.",
     },
     {
+        "id": "gemini-3.7-flash",
+        "family": "google",
+        "label": "Gemini 3.7 Flash",
+        "tier": "balanced",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "GEMINI_API_KEY",
+        "description": "Newest workhorse Flash (Aug 2026). Big agentic/coding jump over 3.6. 1M ctx, 64k out. Intro $0.75/$3.75 through 2026. Best fanout slot.",
+    },
+    {
+        "id": "gemini-3.6-flash",
+        "family": "google",
+        "label": "Gemini 3.6 Flash",
+        "tier": "balanced",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "GEMINI_API_KEY",
+        "description": "Token-efficient Flash (Jul 2026). Same intro pricing as 3.7 — prefer 3.7 unless matching earlier runs.",
+    },
+    {
         "id": "gemini-3.5-flash",
         "family": "google",
         "label": "Gemini 3.5 Flash",
@@ -1746,7 +1766,17 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 1_048_576,
         "thinking": True,
         "envVar": "GEMINI_API_KEY",
-        "description": "Fast Gemini at the 50+ intelligence tier (~200 tok/s). 1M ctx. Best fanout slot.",
+        "description": "Older Flash gen (~200 tok/s). 1M ctx. Now pricier ($1.50/$9) than 3.7 Flash intro.",
+    },
+    {
+        "id": "gemini-3.5-flash-lite",
+        "family": "google",
+        "label": "Gemini 3.5 Flash Lite",
+        "tier": "fast",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "GEMINI_API_KEY",
+        "description": "Low-latency Lite tier (Jul 2026). High-volume subagents and quick lookups.",
     },
     {
         "id": "gemini-3.1-flash",
@@ -1957,10 +1987,26 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningLevels": ["minimal", "low", "medium", "high"],
         "reasoningDefault": "high",
     },
+    # 3.7-flash has no MINIMAL tier (400s) — lowest is LOW.
+    "gemini-3.7-flash": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["low", "medium", "high"],
+        "reasoningDefault": "medium",
+    },
+    "gemini-3.6-flash": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["minimal", "low", "medium", "high"],
+        "reasoningDefault": "medium",
+    },
     "gemini-3.5-flash": {
         "reasoningMode": "effort",
         "reasoningLevels": ["minimal", "low", "medium", "high"],
         "reasoningDefault": "medium",
+    },
+    "gemini-3.5-flash-lite": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["minimal", "low", "medium", "high"],
+        "reasoningDefault": "low",
     },
     "gemini-3.1-flash": {
         "reasoningMode": "effort",

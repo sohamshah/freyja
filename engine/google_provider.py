@@ -85,8 +85,12 @@ _EFFORT_TO_THINKING_LEVEL: dict[str, str] = {
 # "disable thinking" / structured-output intent onto each model's lowest
 # SUPPORTED tier, so e.g. the kanban/goal judge synthesis (structured output
 # with thinking off) doesn't 400 when the cross-provider ensemble picks one.
+# gemini-3.7-flash: per its model page (2026-08), "minimal is not supported
+# and returns an error" — lowest tier is LOW. 3.6-flash and 3.5-flash-lite
+# still accept MINIMAL per the thinking docs' level table.
 _MINIMAL_UNSUPPORTED_MODELS: tuple[str, ...] = (
     "gemini-3.1-pro-preview",
+    "gemini-3.7-flash",
 )
 
 

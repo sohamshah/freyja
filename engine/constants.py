@@ -101,7 +101,10 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "kimi-k3-fast": 1_048_576,
     # Google Gemini — keep in sync with engine/providers.py MODEL_REGISTRY.
     "gemini-3.1-pro-preview": 1_048_576,
+    "gemini-3.7-flash": 1_048_576,
+    "gemini-3.6-flash": 1_048_576,
     "gemini-3.5-flash": 1_048_576,
+    "gemini-3.5-flash-lite": 1_048_576,
     "gemini-3.1-flash": 1_048_576,
     "gemini-3.1-flash-lite": 1_048_576,
     "gemini-2.5-pro": 1_048_576,

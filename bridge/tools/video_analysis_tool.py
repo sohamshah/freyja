@@ -8,9 +8,10 @@ Local files go through Gemini's Files API: the tool uploads the file, polls
 ``generate_content``. YouTube URLs are passed directly via ``Part.from_uri``
 (public videos only — no download needed).
 
-Default model is ``gemini-3-flash-preview``: per the official video-understanding
-docs it's the canonical choice for video, with ``gemini-3.1-pro-preview`` as the
-"best quality" option. Both can be overridden per-call.
+Default model is ``gemini-3.7-flash``: as of Aug 2026 it's the model every
+example in the official video-understanding docs uses, with
+``gemini-3.1-pro-preview`` as the "best quality" option. Both can be
+overridden per-call.
 """
 
 from __future__ import annotations
@@ -28,16 +29,19 @@ from bridge.tools.base import TextBlock, ToolDefinition, ToolResult, ToolTier
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_VIDEO_MODEL = "gemini-3-flash-preview"
+DEFAULT_VIDEO_MODEL = "gemini-3.7-flash"
 
 # Acceptable model ids the user can pass — anything not on this list is still
 # accepted but emits a heads-up so the agent gets feedback if it picks a stale
-# id (e.g. the now-shut-down `gemini-3-pro-preview`).
+# id (e.g. the now-shut-down `gemini-3-pro-preview` or
+# `gemini-3.1-flash-lite-preview`).
 RECOMMENDED_MODELS = {
-    "gemini-3-flash-preview",          # default per docs
+    "gemini-3.7-flash",                # default per docs
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
     "gemini-3.1-flash",
     "gemini-3.1-flash-lite",
-    "gemini-3.1-flash-lite-preview",
     "gemini-3.1-pro-preview",          # highest quality
     "gemini-2.5-flash",                 # cheaper fallback
     "gemini-2.5-pro",
@@ -65,9 +69,11 @@ VIDEO_MIME_BY_EXT = {
     ".3gpp": "video/3gpp",
 }
 
-# Files API hard cap from the Gemini docs is 2 GB per file. We block earlier
-# than that with a friendly message instead of letting the upload fail late.
-FILES_API_MAX_BYTES = 2 * 1024 * 1024 * 1024
+# Files API cap from the Gemini video docs (2026-08): 20 GB on the paid tier,
+# 2 GB on the free tier. We block past the paid cap with a friendly message
+# instead of letting the upload fail late; free-tier keys still get the API's
+# own error between 2 and 20 GB.
+FILES_API_MAX_BYTES = 20 * 1024 * 1024 * 1024
 
 YOUTUBE_HOST_PATTERN = re.compile(
     r"^(https?://)?(www\.|m\.)?(youtube\.com|youtu\.be)/", re.IGNORECASE
@@ -336,7 +342,8 @@ Guidelines:
             raise _UserVisibleError(f"video_path is empty: {path}")
         if size > FILES_API_MAX_BYTES:
             raise _UserVisibleError(
-                f"video file is {size / (1024 ** 3):.2f} GB; Gemini Files API caps at 2 GB."
+                f"video file is {size / (1024 ** 3):.2f} GB; Gemini Files API caps at "
+                "20 GB (2 GB on the free tier)."
             )
 
         mime = _mime_for_path(path)

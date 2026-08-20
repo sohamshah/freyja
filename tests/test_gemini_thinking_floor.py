@@ -19,6 +19,9 @@ from engine.types import ThinkingConfig
 def test_floor_thinking_level_detection():
     assert _floor_thinking_level("gemini-3.1-pro-preview") == "LOW"
     assert _floor_thinking_level("gemini-3.1-pro-preview-20260601") == "LOW"  # suffix-tolerant
+    # 3.7-flash rejects MINIMAL per its model page (2026-08); 3.6 still accepts.
+    assert _floor_thinking_level("gemini-3.7-flash") == "LOW"
+    assert _floor_thinking_level("gemini-3.6-flash") == "MINIMAL"
     assert _floor_thinking_level("gemini-3.5-flash") == "MINIMAL"
     assert _floor_thinking_level("gemini-2.5-flash") == "MINIMAL"
     assert _floor_thinking_level("") == "MINIMAL"
