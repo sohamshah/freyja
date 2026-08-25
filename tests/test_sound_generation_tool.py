@@ -112,7 +112,14 @@ class TestSoundGenerationTool(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(audio_files[0].read_bytes(), mock_audio)
 
                 # Verify artifact store recording
-                mock_artifact_store.record_file.assert_called_once()
+                # The tool must NOT record the artifact itself. It used to try,
+            # with `await` on a synchronous method and two required keyword
+            # arguments missing — a TypeError swallowed by a bare except, so
+            # generated sound effects never reached manifest.jsonl. An
+            # AsyncMock accepts any signature, which is exactly why the old
+            # assertion passed while the real call could not work. The bridge
+            # writes the row now; see _handle_tool_result in freyja_bridge.
+            mock_artifact_store.record_file.assert_not_called()
 
     async def test_sound_effect_custom_save_path(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -193,3 +200,85 @@ class TestSoundGenerationTool(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMediaArtifactRecording(unittest.IsolatedAsyncioTestCase):
+    """The scrape that puts generated media into the artifact manifest.
+
+    generate_image and generate_sound_effect only report their output path in
+    the human-readable result text, so the bridge's tool-result hook parses it
+    back out to write the manifest row. That join is prose-to-regex and breaks
+    silently: an artifact that never reaches manifest.jsonl never appears in
+    the session library or the artifact browser, and nothing errors.
+    """
+
+    def test_path_is_scraped_from_both_result_formats(self):
+        from bridge.freyja_bridge import MEDIA_ARTIFACT_PATH_RE
+
+        image = MEDIA_ARTIFACT_PATH_RE.search("File saved to `/tmp/img.png`")
+        self.assertIsNotNone(image)
+        self.assertEqual(image.group(1), "/tmp/img.png")
+
+        # What generate_sound_effect actually emits — an indented bullet.
+        sfx = MEDIA_ARTIFACT_PATH_RE.search("  · File: `/tmp/audio/sfx_boom.mp3`")
+        self.assertIsNotNone(sfx)
+        self.assertEqual(sfx.group(1), "/tmp/audio/sfx_boom.mp3")
+
+    def test_no_path_is_not_a_match(self):
+        from bridge.freyja_bridge import MEDIA_ARTIFACT_PATH_RE
+
+        self.assertIsNone(MEDIA_ARTIFACT_PATH_RE.search("Error: out of credits"))
+        self.assertIsNone(MEDIA_ARTIFACT_PATH_RE.search(""))
+
+    def test_both_generators_are_covered(self):
+        from bridge.freyja_bridge import MEDIA_ARTIFACT_TOOLS
+
+        self.assertIn("generate_image", MEDIA_ARTIFACT_TOOLS)
+        self.assertIn("generate_sound_effect", MEDIA_ARTIFACT_TOOLS)
+
+    def test_the_success_message_still_matches_the_scrape(self):
+        # Pins the tool's prose to the regex. If the success text is reworded
+        # without updating MEDIA_ARTIFACT_PATH_RE, this fails here rather than
+        # silently dropping every future sound effect from the manifest.
+        import inspect
+
+        from bridge.freyja_bridge import MEDIA_ARTIFACT_PATH_RE
+        from bridge.tools import sound_generation_tool
+
+        source = inspect.getsource(sound_generation_tool)
+        self.assertIn('f"  · File: `{target_path}`\\n"', source)
+        rendered = "  · File: `/tmp/out.mp3`\n"
+        self.assertEqual(MEDIA_ARTIFACT_PATH_RE.search(rendered).group(1), "/tmp/out.mp3")
+
+    async def test_the_real_store_accepts_the_bridge_call(self):
+        # The tool used to record the artifact itself with `await` on a
+        # synchronous method and two required keyword arguments missing. The
+        # test mock was an AsyncMock, which accepts any signature, so the
+        # broken call looked fine. This drives the REAL store.
+        import tempfile
+        from pathlib import Path
+
+        from bridge.artifact_store import SessionArtifactStore
+
+        project = Path(tempfile.mkdtemp())
+        store = SessionArtifactStore(session_id="s1", project_dir=project)
+        store.ensure()
+        target = project / "audio" / "sfx_boom.mp3"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"audio")
+
+        store.record_file(
+            target,
+            creator_id="s1",
+            creator_label="Main agent",
+            operation="create",
+            source="generate_sound_effect",
+            tool_call_id="call_1",
+            metadata={"tool": "generate_sound_effect"},
+        )
+
+        rows = store.list()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["source"], "generate_sound_effect")
+        self.assertEqual(rows[0]["fileType"], "mp3")
+        self.assertTrue(rows[0]["exists"])

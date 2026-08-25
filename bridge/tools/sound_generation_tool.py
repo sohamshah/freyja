@@ -306,16 +306,10 @@ Requires the ELEVENLABS_API_KEY environment variable or configured in ~/.freyja/
 
             size_kb = len(audio_bytes) / 1024.0
 
-            # Record in artifact store if present
-            if self._artifact_store is not None:
-                try:
-                    await self._artifact_store.record_file(
-                        path=target_path,
-                        creator_id="elevenlabs_sound_generation",
-                        operation="create",
-                    )
-                except Exception as exc:
-                    logger.debug("Failed to record artifact for sound generation: %s", exc)
+            # The artifact manifest row is written by the bridge's tool-result
+            # hook, not here — same as generate_image. That hook knows which
+            # session (or sub-agent) is emitting, which is what `creatorId`
+            # means; a tool has no way to know it and would have to invent one.
 
             loop_str = " (seamless loop)" if loop else ""
             dur_str = f"{duration_seconds}s" if duration_seconds is not None else "auto"

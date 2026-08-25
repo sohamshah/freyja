@@ -2804,6 +2804,21 @@ class DesktopPermissionHandler:
         return HumanResponse(approved=True, response="")
 
 
+#: Media generators whose output path only exists in the human-readable result
+#: text, so the artifact manifest row has to be scraped back out of it.
+MEDIA_ARTIFACT_TOOLS: frozenset[str] = frozenset({
+    "generate_image",
+    "generate_sound_effect",
+})
+
+#: Matches both forms those tools emit: generate_image's "File saved to `…`"
+#: and generate_sound_effect's "· File: `…`". Kept module-level and tested
+#: (tests/test_sound_generation_tool.py) because it is the fragile join
+#: between a tool's prose and the manifest — reword the tool's success message
+#: and artifacts silently stop being recorded.
+MEDIA_ARTIFACT_PATH_RE = re.compile(r"File(?: saved to)?:?\s*`([^`]+)`")
+
+
 def _is_gateway_session_id(session_id: str) -> bool:
     """True when ``session_id`` was minted by a chat-gateway platform
     (Slack, Telegram, Discord, ...). The canonical id shape for those is
@@ -3347,8 +3362,14 @@ def _new_tracing_registry(
                         )
                     except Exception as exc:  # noqa: BLE001
                         log("debug", f"artifact manifest record failed: {exc}")
-            if tool_name == "generate_image":
-                match = re.search(r"File saved to `([^`]+)`", str(preview or ""))
+            # Generated media: the path is only in the human-readable result
+            # text, so it gets scraped back out. generate_image says "File
+            # saved to `…`"; generate_sound_effect says "· File: `…`". Both
+            # forms, one branch — a sound effect that never reaches the
+            # manifest never shows up in the session library or the artifact
+            # browser either.
+            if tool_name in MEDIA_ARTIFACT_TOOLS:
+                match = MEDIA_ARTIFACT_PATH_RE.search(str(preview or ""))
                 if match:
                     try:
                         creator_label = (
@@ -3361,12 +3382,12 @@ def _new_tracing_registry(
                             creator_id=session_id,
                             creator_label=creator_label,
                             operation="create",
-                            source="generate_image",
+                            source=tool_name,
                             tool_call_id=tool_id,
                             metadata={"tool": tool_name},
                         )
                     except Exception as exc:  # noqa: BLE001
-                        log("debug", f"image artifact manifest record failed: {exc}")
+                        log("debug", f"media artifact manifest record failed: {exc}")
         # Session action ledger — runtime-authored ground truth of what the
         # agent did (effects) and looked at (observations). Independent of the
         # artifact manifest: covers bash effects + observations and drives the
