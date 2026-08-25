@@ -74,8 +74,11 @@ export function SwarmMonitor({
           App root) clears the macOS traffic light buttons at any zoom level
           (hiddenInset title bar with trafficLightPosition y:16). */}
       <div
-        className="drag flex items-center justify-between border-b border-white/[0.06] pr-5 py-2.5"
-        style={{ paddingLeft: 'var(--titlebar-inset, 82px)' }}
+        className="drag flex items-center justify-between border-b border-white/[0.06] pr-5"
+        style={{
+          paddingLeft: 'var(--titlebar-inset, 82px)',
+          minHeight: 'var(--titlebar-height, 46px)',
+        }}
       >
         <div className="no-drag flex items-center gap-3">
           <span className="font-mono text-[11px] uppercase tracking-[0.1em] text-accent">

@@ -743,7 +743,14 @@ export function MissionDashboard() {
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-bg-0">
-      <header className="relative flex shrink-0 items-center gap-5 border-b border-white/[0.06] py-3 pl-[88px] pr-5">
+      <header
+        className="relative flex shrink-0 items-center gap-5 border-b border-white/[0.06] pr-5"
+        style={{
+          // zoom-compensated: clears the native traffic lights at any zoom
+          paddingLeft: 'calc(var(--titlebar-inset, 82px) + 6px)',
+          minHeight: 'var(--titlebar-height, 46px)',
+        }}
+      >
         <div className="flex min-w-0 items-center gap-3 font-mono text-[10.5px] uppercase tracking-[0.14em] text-fg-3">
           <span className="text-fg-1">mission dashboard</span>
           <span className="h-3 w-px bg-white/[0.10]" />

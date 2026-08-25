@@ -687,12 +687,11 @@ const STYLES = `
 .mroom-chrome {
   position: sticky; top: 0; z-index: 30;
   display: flex; justify-content: space-between; align-items: center;
-  /* Left inset clears the macOS traffic lights (OS-drawn at ~0-78px);
-     88px matches the app's other full-screen modals (MissionDashboard,
-     ScheduledJobsDashboard pl-[88px]). 46px height matches the real
-     title bar so the takeover lines up with the window frame. */
-  height: 46px;
-  padding: 0 16px 0 88px;
+  /* Left inset + height ride the zoom-compensated vars set at the App
+     root, so the takeover stays clear of (and centered on) the native
+     traffic lights at any zoom — same as the other header bars. */
+  min-height: var(--titlebar-height, 46px);
+  padding: 0 16px 0 calc(var(--titlebar-inset, 82px) + 6px);
   background: linear-gradient(180deg, rgba(6,7,11,0.96), rgba(6,7,11,0.82));
   backdrop-filter: blur(16px) saturate(140%);
   border-bottom: 1px solid rgba(255,255,255,0.06);

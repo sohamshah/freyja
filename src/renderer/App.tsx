@@ -190,14 +190,20 @@ export function App() {
   // A `resize` fires on every zoom change (zoom alters the CSS-px viewport).
   useEffect(() => {
     const BASE_INSET = 82
+    // Traffic lights render at native y:16 with ~14px buttons, so their
+    // centerline sits ≈23 native px down — a 46px bar at zoom 1. Counter-
+    // scale the bar height alongside the inset: at zoom-out the CSS bar
+    // would otherwise shrink on screen while the buttons stay put, leaving
+    // them hanging below the header row (and at heavy zoom-out, overlapping
+    // the content underneath).
+    const BASE_HEIGHT = 46
     const apply = () => {
       const api = (window as { harness?: { getZoomFactor?: () => number } }).harness
       const z = typeof api?.getZoomFactor === 'function' ? api.getZoomFactor() : 1
       const zoom = Number.isFinite(z) && z > 0 ? z : 1
-      document.documentElement.style.setProperty(
-        '--titlebar-inset',
-        `${BASE_INSET / zoom}px`,
-      )
+      const root = document.documentElement.style
+      root.setProperty('--titlebar-inset', `${BASE_INSET / zoom}px`)
+      root.setProperty('--titlebar-height', `${BASE_HEIGHT / zoom}px`)
     }
     apply()
     window.addEventListener('resize', apply)

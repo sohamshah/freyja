@@ -113,7 +113,14 @@ export function ScheduledJobsDashboard() {
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-bg-0/[0.96] backdrop-blur-[24px]">
       {/* Header strip */}
-      <header className="relative flex shrink-0 items-center gap-4 border-b border-white/[0.06] py-4 pl-[88px] pr-5">
+      <header
+        className="relative flex shrink-0 items-center gap-4 border-b border-white/[0.06] pr-5"
+        style={{
+          // zoom-compensated: clears the native traffic lights at any zoom
+          paddingLeft: 'calc(var(--titlebar-inset, 82px) + 6px)',
+          minHeight: 'var(--titlebar-height, 46px)',
+        }}
+      >
         <div className="flex min-w-0 flex-col gap-0.5">
           <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-fg-3">
             schedules · past runs · daemon

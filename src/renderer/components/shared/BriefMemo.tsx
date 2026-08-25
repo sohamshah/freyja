@@ -66,8 +66,11 @@ export function BriefMemo({
           top of the window content under hiddenInset titleBarStyle).
           no-drag on the close button so the OS doesn't intercept clicks. */}
       <div
-        className="flex items-center gap-4 border-b border-white/[0.06] bg-bg-0/95 py-3 pr-4 backdrop-blur-[10px]"
-        style={{ paddingLeft: 'var(--titlebar-inset, 82px)' }}
+        className="flex items-center gap-4 border-b border-white/[0.06] bg-bg-0/95 pr-4 backdrop-blur-[10px]"
+        style={{
+          paddingLeft: 'var(--titlebar-inset, 82px)',
+          minHeight: 'var(--titlebar-height, 46px)',
+        }}
       >
         <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-fg-3">
           {to}

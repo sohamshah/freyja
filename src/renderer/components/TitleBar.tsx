@@ -77,8 +77,14 @@ export function TitleBar() {
     <div
       // paddingLeft clears the macOS traffic lights; the var is zoom-counter-
       // scaled at the App root so it holds a constant distance at any zoom.
-      className="app-header drag hairline-b flex h-[46px] shrink-0 items-center gap-2 pr-4 text-[12px] text-fg-1"
-      style={{ paddingLeft: 'var(--titlebar-inset, 82px)' }}
+      className="app-header drag hairline-b flex shrink-0 items-center gap-2 pr-4 text-[12px] text-fg-1"
+      style={{
+        paddingLeft: 'var(--titlebar-inset, 82px)',
+        // min-height (not height) so zoomed-IN content can still grow; the
+        // zoom-compensated floor keeps the row's centerline on the native
+        // traffic-light centerline when zoomed out.
+        minHeight: 'var(--titlebar-height, 46px)',
+      }}
     >
       <div className="flex items-center gap-2 text-fg-0">
         <TopographicMark />
