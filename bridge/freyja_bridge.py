@@ -2511,7 +2511,7 @@ _TOOL_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "list_displays", "list_windows", "focus_window",
         "find_element", "read_ax_tree", "computer", "computer_use", "wait",
     )),
-    ("Media", ("generate_image", "generate_svg", "analyze_video")),
+    ("Media", ("generate_image", "generate_svg", "generate_sound_effect", "analyze_video")),
     ("Knowledge", (
         "list_skills", "search_skills", "load_skill",
         "memory", "session_memory", "record_user_preference",

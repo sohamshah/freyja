@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 # MUTATING_FILE_TOOL_NAMES; the rest extend coverage to image generation and
 # (via classify_bash_command) mutating shell commands.
 EFFECT_FILE_TOOLS = frozenset({"write_file", "edit_file", "edit_json"})
-EFFECT_OTHER_TOOLS = frozenset({"generate_image"})
+EFFECT_OTHER_TOOLS = frozenset({"generate_image", "generate_svg", "generate_sound_effect"})
 
 # Tools that look around but don't change the world.
 OBSERVATION_TOOLS = frozenset({
@@ -573,14 +573,15 @@ class SessionLedger:
         creator_id: str | None = None,
         extra: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        if tool_name == "generate_image":
-            m = re.search(r"File saved to `([^`]+)`", result_text or "")
-            path = m.group(1) if m else (tool_args.get("path") or "")
-            name = _short_path(path) or "image"
+        if tool_name in ("generate_image", "generate_svg", "generate_sound_effect"):
+            m = re.search(r"File(?: saved to)?:\s*`([^`]+)`|File saved to `([^`]+)`", result_text or "")
+            path = (m.group(1) or m.group(2)) if m else (tool_args.get("path") or tool_args.get("save_path") or "")
+            label = tool_name.replace("generate_", "")
+            name = _short_path(path) or label
             return self.record_effect(
-                kind="generate_image",
+                kind=tool_name,
                 operation="create",
-                summary=f"generated image {name}",
+                summary=f"generated {label} {name}",
                 path=path or None,
                 tool_call_id=tool_call_id,
                 creator_id=creator_id,

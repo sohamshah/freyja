@@ -23,6 +23,7 @@ from bridge.tools.registry import build_desktop_registry
 from bridge.tools.search_tools import GlobTool, GrepTool
 from bridge.tools.skill_tools import ListSkillsTool, LoadSkillTool, SearchSkillsTool
 from bridge.tools.quiver_tools import GenerateSvgTool
+from bridge.tools.sound_generation_tool import GenerateSoundEffectTool
 
 __all__ = [
     "AnalyzeVideoTool",
@@ -34,6 +35,7 @@ __all__ = [
     "GlobTool",
     "GrepTool",
     "GenerateImageTool",
+    "GenerateSoundEffectTool",
     "GenerateSvgTool",
     "KanbanTool",
     "ListDirectoryTool",

@@ -28,6 +28,7 @@ from bridge.tools.image_generation_tool import GenerateImageTool
 from bridge.tools.kanban_board import KanbanTool
 from bridge.tools.memory_tools import MemoryTool, RecordUserPreferenceTool
 from bridge.tools.quiver_tools import GenerateSvgTool
+from bridge.tools.sound_generation_tool import GenerateSoundEffectTool
 from bridge.tools.recall_tool import RecallTool
 from bridge.tools.search_tools import GlobTool, GrepTool
 from bridge.tools.session_memory_tool import SessionMemoryTool
@@ -258,6 +259,12 @@ def build_desktop_registry(
         GenerateSvgTool(
             image_store=image_store,
             project_output_dir=project_output_dir,
+        )
+    )
+    tools.append(
+        GenerateSoundEffectTool(
+            project_output_dir=project_output_dir,
+            artifact_store=artifact_store,
         )
     )
 
