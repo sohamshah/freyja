@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useHarness } from '../state/store'
 import { useSchedulerStore } from '../state/scheduler-store'
 import { SLASH_COMMANDS } from '../lib/slash'
+import { scrollToReveal, stepSelection } from '../lib/listNavigation'
 
 interface PaletteItem {
   id: string
@@ -10,6 +11,11 @@ interface PaletteItem {
   group: 'Command' | 'Skill' | 'Subagent' | 'Session'
   action: () => void
 }
+
+/** Breathing room kept between the selected row and the scroll viewport edge. */
+const SCROLL_PAD = 8
+/** Rows a PageUp/PageDown jumps by. */
+const PAGE_STEP = 8
 
 export function CommandPalette() {
   const close = useHarness((s) => s.toggleCommandPalette)
@@ -27,6 +33,11 @@ export function CommandPalette() {
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  // Keyboard scrolling slides rows underneath a stationary cursor, which fires
+  // mouseenter and yanks the selection back. Ignore hover until the pointer
+  // actually moves again.
+  const suppressHover = useRef(false)
 
   useEffect(() => {
     inputRef.current?.focus()
@@ -182,18 +193,75 @@ export function CommandPalette() {
     })
   }, [items, query])
 
-  useEffect(() => {
-    setSelected(0)
+  // Group items for display while keeping each row's index into `filtered`, so
+  // the render pass never has to do an O(n) indexOf per row.
+  const groups = useMemo(() => {
+    type Group = { group: string; rows: { item: PaletteItem; index: number }[] }
+    const out: Group[] = []
+    const byGroup = new Map<string, Group>()
+    filtered.forEach((item, index) => {
+      let bucket = byGroup.get(item.group)
+      if (!bucket) {
+        bucket = { group: item.group, rows: [] }
+        byGroup.set(item.group, bucket)
+        out.push(bucket)
+      }
+      bucket.rows.push({ item, index })
+    })
+    return out
   }, [filtered])
 
+  // A new query starts over at the top. A list that merely grew or shrank
+  // underneath us (live sessions, subagents) keeps the selection, clamped.
+  useEffect(() => {
+    setSelected(0)
+    if (listRef.current) listRef.current.scrollTop = 0
+  }, [query])
+
+  useEffect(() => {
+    setSelected((i) => Math.min(i, Math.max(0, filtered.length - 1)))
+  }, [filtered.length])
+
+  // Keep the highlighted row inside the scroll viewport. Layout effect so the
+  // scroll lands in the same frame as the highlight — no visible lag.
+  useLayoutEffect(() => {
+    const container = listRef.current
+    if (!container) return
+    const row = container.querySelector<HTMLElement>(`[data-palette-row="${selected}"]`)
+    if (!row) return
+    // Arrowing into the first row of a group should reveal that group's label
+    // too, otherwise the header stays clipped above the fold. Both the row and
+    // the label measure against the scroll container, which is `relative` and
+    // therefore their shared offsetParent.
+    const label =
+      row.dataset.paletteGroupFirst === '1'
+        ? (row.parentElement?.firstElementChild as HTMLElement | null)
+        : null
+    const next = scrollToReveal({
+      scrollTop: container.scrollTop,
+      viewportHeight: container.clientHeight,
+      rowTop: row.offsetTop,
+      rowHeight: row.offsetHeight,
+      anchorTop: label ? Math.min(label.offsetTop, row.offsetTop) : undefined,
+      pad: SCROLL_PAD,
+      contentHeight: container.scrollHeight,
+    })
+    if (next != null) container.scrollTop = next
+  }, [selected, filtered])
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'ArrowDown') {
+    const next = stepSelection(e, {
+      selected,
+      count: filtered.length,
+      pageStep: PAGE_STEP,
+    })
+    if (next != null) {
       e.preventDefault()
-      setSelected((i) => Math.min(filtered.length - 1, i + 1))
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      setSelected((i) => Math.max(0, i - 1))
-    } else if (e.key === 'Enter') {
+      suppressHover.current = true
+      setSelected(next)
+      return
+    }
+    if (e.key === 'Enter') {
       e.preventDefault()
       filtered[selected]?.action()
     } else if (e.key === 'Escape') {
@@ -201,17 +269,20 @@ export function CommandPalette() {
     }
   }
 
-  // Group items by section for display
-  const groups = useMemo(() => {
-    const g: Record<string, PaletteItem[]> = {}
-    for (const item of filtered) {
-      ;(g[item.group] = g[item.group] || []).push(item)
-    }
-    return g
-  }, [filtered])
+  const onHoverRow = useCallback((index: number) => {
+    if (suppressHover.current) return
+    setSelected(index)
+  }, [])
+
+  const onPointerMove = useCallback(() => {
+    suppressHover.current = false
+  }, [])
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[14vh]">
+    // z-[60]: above the full-screen views (z-50) and the Artifacts browser
+    // (z-[55]). ⌘K is the app-wide switcher — it has to be reachable from
+    // inside whatever is open, and visible when it is.
+    <div className="fixed inset-0 z-[60] flex items-start justify-center pt-[14vh]">
       <div
         className="absolute inset-0 bg-black/40 backdrop-blur-[1px]"
         onClick={() => close(false)}
@@ -232,36 +303,29 @@ export function CommandPalette() {
           />
           <kbd className="kbd">esc</kbd>
         </div>
-        <div className="max-h-[360px] overflow-y-auto p-1">
+        <div
+          ref={listRef}
+          onMouseMove={onPointerMove}
+          className="relative max-h-[360px] overflow-y-auto p-1"
+        >
           {filtered.length === 0 && (
             <div className="py-8 text-center text-[12px] italic text-fg-3">No results</div>
           )}
-          {Object.entries(groups).map(([group, items]) => (
+          {groups.map(({ group, rows }) => (
             <div key={group}>
               <div className="px-3 pb-1 pt-3 text-[9.5px] uppercase tracking-[0.16em] text-fg-3">
                 {group}
               </div>
-              {items.map((item) => {
-                const globalIdx = filtered.indexOf(item)
-                const isActive = globalIdx === selected
-                return (
-                  <button
-                    key={item.id}
-                    onClick={() => item.action()}
-                    onMouseEnter={() => setSelected(globalIdx)}
-                    className={`flex w-full items-start gap-3 rounded-md px-3 py-2 text-left text-[12.5px] ${
-                      isActive ? 'bg-accent/15 text-fg-0' : 'text-fg-1 hover:bg-white/[0.03]'
-                    }`}
-                  >
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate">{item.title}</span>
-                      {item.subtitle && (
-                        <span className="block truncate text-[11px] text-fg-2">{item.subtitle}</span>
-                      )}
-                    </span>
-                  </button>
-                )
-              })}
+              {rows.map(({ item, index }, positionInGroup) => (
+                <PaletteRow
+                  key={item.id}
+                  item={item}
+                  index={index}
+                  firstInGroup={positionInGroup === 0}
+                  active={index === selected}
+                  onHover={onHoverRow}
+                />
+              ))}
             </div>
           ))}
         </div>
@@ -270,12 +334,59 @@ export function CommandPalette() {
             <kbd className="kbd">↑</kbd>
             <kbd className="kbd">↓</kbd>
             <span>navigate</span>
+            <kbd className="kbd ml-2">⇞</kbd>
+            <kbd className="kbd">⇟</kbd>
+            <span>page</span>
             <kbd className="kbd ml-2">↵</kbd>
             <span>select</span>
           </div>
-          <span>{filtered.length} results</span>
+          <span>
+            {filtered.length > 0 && (
+              <span className="mr-2 text-fg-3">
+                {selected + 1}/{filtered.length}
+              </span>
+            )}
+            {filtered.length} results
+          </span>
         </div>
       </div>
     </div>
   )
 }
+
+/**
+ * One palette row. Memoized so arrowing through a 1000+ result list only
+ * re-renders the two rows whose highlight actually changed.
+ */
+const PaletteRow = memo(function PaletteRow({
+  item,
+  index,
+  active,
+  firstInGroup,
+  onHover,
+}: {
+  item: PaletteItem
+  index: number
+  active: boolean
+  firstInGroup: boolean
+  onHover: (index: number) => void
+}) {
+  return (
+    <button
+      data-palette-row={index}
+      data-palette-group-first={firstInGroup ? '1' : undefined}
+      onClick={() => item.action()}
+      onMouseEnter={() => onHover(index)}
+      className={`flex w-full items-start gap-3 rounded-md px-3 py-2 text-left text-[12.5px] ${
+        active ? 'bg-accent/15 text-fg-0' : 'text-fg-1 hover:bg-white/[0.03]'
+      }`}
+    >
+      <span className="min-w-0 flex-1">
+        <span className="block truncate">{item.title}</span>
+        {item.subtitle && (
+          <span className="block truncate text-[11px] text-fg-2">{item.subtitle}</span>
+        )}
+      </span>
+    </button>
+  )
+})
