@@ -12,6 +12,37 @@ import type { ArtifactReadResult } from '@shared/events'
  * externally". Plain text fallback catches everything else.
  */
 
+/**
+ * Resolve an artifact to a URL on the main process's local preview origin.
+ *
+ * Returns `undefined` while resolving and `null` if the origin is unavailable,
+ * so callers can tell "not yet" from "fall back to a static preview".
+ */
+function useServedUrl(path: string): string | null | undefined {
+  const [url, setUrl] = useState<string | null | undefined>(undefined)
+  useEffect(() => {
+    let cancelled = false
+    const api = (window as any).harness
+    if (!api?.artifactServeUrl) {
+      setUrl(null)
+      return
+    }
+    setUrl(undefined)
+    api
+      .artifactServeUrl(path)
+      .then((r: { ok: boolean; url?: string }) => {
+        if (!cancelled) setUrl(r?.ok && r.url ? r.url : null)
+      })
+      .catch(() => {
+        if (!cancelled) setUrl(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [path])
+  return url
+}
+
 export function ArtifactPreview({
   path,
   fileType,
@@ -56,7 +87,23 @@ export function ArtifactPreview({
   const { result } = state
   const ft = fileType.toLowerCase()
 
-  // Binary types — images
+  // Binary types. Video, audio and PDF are streamed from the local preview
+  // origin rather than carried as base64 through IPC — a base64 blob cannot
+  // seek, and moving a whole video through the renderer's memory to play it
+  // from the start is the wrong trade.
+  // Streamed types first: these arrive with no payload at all — main returns
+  // type + size and the player pulls the bytes from the local origin, so a
+  // 400 MB video never touches the renderer's memory.
+  if (result.mimeType.startsWith('video/')) {
+    return <VideoRenderer path={path} mimeType={result.mimeType} size={result.size} />
+  }
+  if (result.mimeType.startsWith('audio/')) {
+    return <AudioRenderer path={path} mimeType={result.mimeType} size={result.size} />
+  }
+  if (result.mimeType === 'application/pdf') {
+    return <PdfRenderer path={path} size={result.size} />
+  }
+
   if (result.binary) {
     if (result.mimeType.startsWith('image/')) {
       return (
@@ -75,7 +122,7 @@ export function ArtifactPreview({
 
   // Route to specialized renderer by file type
   if (ft === 'md' || ft === 'markdown') return <MarkdownRenderer content={content} />
-  if (ft === 'svg') return <SvgRenderer content={content} />
+  if (ft === 'svg') return <SvgRenderer content={content} path={path} />
   if (ft === 'json') return <JsonRenderer content={content} />
   if (ft === 'csv' || ft === 'tsv') return <CsvRenderer content={content} separator={ft === 'tsv' ? '\t' : ','} />
   if (ft === 'html' || ft === 'htm') return <HtmlRenderer path={path} />
@@ -155,9 +202,154 @@ function MarkdownRenderer({ content }: { content: string }) {
   )
 }
 
+/** A thin strip above a preview explaining what it is or why it is degraded. */
+function PreviewNotice({
+  children,
+  tone = 'info',
+}: {
+  children: React.ReactNode
+  tone?: 'info' | 'warn'
+}) {
+  return (
+    <div
+      className={`shrink-0 px-4 py-1 font-mono text-[9.5px] uppercase tracking-[0.08em] ${
+        tone === 'warn' ? 'bg-warn/10 text-warn' : 'bg-white/[0.03] text-fg-3'
+      }`}
+    >
+      {children}
+    </div>
+  )
+}
+
+// ─── Video / audio / PDF ────────────────────────────────────────────
+//
+// All three stream from the local preview origin. The alternative — the
+// base64 payload `artifact:read` already returns — cannot seek, and would
+// carry the entire file through the renderer's memory to play it.
+
+function MediaUnavailable({ path, size, what }: { path: string; size: number; what: string }) {
+  return (
+    <div className="flex h-full items-center justify-center p-8 text-center">
+      <div className="max-w-[440px]">
+        <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.1em] text-fg-3">
+          {what} preview unavailable
+        </div>
+        <div className="mb-3 font-prose text-[12px] leading-relaxed text-fg-3">
+          The preview server isn't running, so this can't be streamed in place.
+        </div>
+        <div className="mb-3 break-all font-mono text-[10px] text-fg-3">{path}</div>
+        <button
+          onClick={() => (window as any).harness?.openExternal?.(`file://${path}`)}
+          className="rounded bg-white/[0.05] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.08em] text-fg-1 ring-hairline hover:bg-white/[0.1]"
+        >
+          open externally ↗ · {formatBytes(size)}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function VideoRenderer({
+  path,
+  mimeType,
+  size,
+}: {
+  path: string
+  mimeType: string
+  size: number
+}) {
+  const served = useServedUrl(path)
+  if (served === undefined) return <LoadingPane />
+  if (!served) return <MediaUnavailable path={path} size={size} what="Video" />
+  return (
+    <div className="flex h-full flex-col bg-black">
+      <div className="flex min-h-0 flex-1 items-center justify-center">
+        {/* Served with Range support, so the scrubber actually seeks. */}
+        <video
+          key={served}
+          src={served}
+          controls
+          playsInline
+          className="max-h-full max-w-full"
+        />
+      </div>
+      <div className="shrink-0 bg-[#0a0a0e] px-4 py-1.5 font-mono text-[9.5px] text-fg-3">
+        {mimeType} · {formatBytes(size)}
+      </div>
+    </div>
+  )
+}
+
+function AudioRenderer({
+  path,
+  mimeType,
+  size,
+}: {
+  path: string
+  mimeType: string
+  size: number
+}) {
+  const served = useServedUrl(path)
+  if (served === undefined) return <LoadingPane />
+  if (!served) return <MediaUnavailable path={path} size={size} what="Audio" />
+  return (
+    <div className="flex h-full items-center justify-center p-8">
+      <div className="w-full max-w-[520px]">
+        <div className="mb-3 truncate font-mono text-[11px] text-fg-1">
+          {path.split('/').pop()}
+        </div>
+        <audio key={served} src={served} controls className="w-full" />
+        <div className="mt-2 font-mono text-[9.5px] text-fg-3">
+          {mimeType} · {formatBytes(size)}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PdfRenderer({ path, size }: { path: string; size: number }) {
+  const served = useServedUrl(path)
+  if (served === undefined) return <LoadingPane />
+  if (!served) return <MediaUnavailable path={path} size={size} what="PDF" />
+  return (
+    <iframe
+      // Chromium's built-in PDF viewer — pages, search, zoom, print.
+      src={served}
+      className="h-full w-full border-0 bg-[#525659]"
+      title="PDF preview"
+    />
+  )
+}
+
 // ─── SVG ────────────────────────────────────────────────────────────
 
-function SvgRenderer({ content }: { content: string }) {
+function SvgRenderer({ content, path }: { content: string; path: string }) {
+  // A <script> inserted through innerHTML never executes, so a generated SVG
+  // that draws itself in JS renders as a blank frame. Those get a real
+  // document via the preview origin; static SVGs stay inline, where they
+  // inherit the pane's layout and scale to it.
+  const scripted = /<script[\s>]/i.test(content)
+  const served = useServedUrl(path)
+
+  if (scripted) {
+    if (served === undefined) return <LoadingPane />
+    if (served) {
+      return (
+        <div className="flex h-full flex-col bg-[#fafafa]">
+          <PreviewNotice>
+            live SVG — scripts run in a sandboxed frame
+          </PreviewNotice>
+          <iframe
+            src={served}
+            className="min-h-0 flex-1 border-0 bg-white"
+            sandbox="allow-scripts"
+            title="SVG preview"
+          />
+        </div>
+      )
+    }
+  }
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex-1 overflow-auto bg-[#fafafa] p-8">
@@ -337,13 +529,49 @@ function parseCsv(src: string, sep: string): string[][] {
 // ─── HTML ───────────────────────────────────────────────────────────
 
 function HtmlRenderer({ path }: { path: string }) {
+  const served = useServedUrl(path)
+
+  if (served === undefined) return <LoadingPane />
+
+  if (served) {
+    return (
+      <iframe
+        src={served}
+        className="h-full w-full border-0 bg-white"
+        // `allow-scripts` WITHOUT `allow-same-origin`, deliberately.
+        //
+        // The page previously had `allow-same-origin` and no `allow-scripts`,
+        // which is the exact inverse of what a preview wants: it could read
+        // its own origin but could not run a line of JS, so every generated
+        // page with a canvas, a chart or an animation rendered as an empty
+        // box. Granting both would run the scripts but is the combination the
+        // HTML spec warns about — the framed document can reach up and remove
+        // its own sandbox attribute — and agent-authored HTML is untrusted.
+        //
+        // Serving over the local origin instead of file:// is what makes
+        // `allow-scripts` alone sufficient: the frame gets an opaque origin it
+        // cannot escape, while its own assets still load as ordinary HTTP
+        // subresources, including the root-absolute paths (`/styles.css`) that
+        // file:// resolves to the filesystem root and 404s.
+        sandbox="allow-scripts"
+        title="HTML preview"
+      />
+    )
+  }
+
+  // No preview origin — fall back to the static frame rather than nothing.
   return (
-    <iframe
-      src={`file://${path}`}
-      className="h-full w-full border-0 bg-white"
-      sandbox="allow-same-origin"
-      title="HTML preview"
-    />
+    <div className="flex h-full flex-col">
+      <PreviewNotice tone="warn">
+        preview server unavailable — scripts and linked assets are disabled
+      </PreviewNotice>
+      <iframe
+        src={`file://${path}`}
+        className="min-h-0 flex-1 border-0 bg-white"
+        sandbox=""
+        title="HTML preview (static)"
+      />
+    </div>
   )
 }
 

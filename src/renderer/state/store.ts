@@ -338,6 +338,13 @@ export interface HarnessState extends SessionSlice {
     | 'scheduler'
   /** Cross-session compaction metrics dashboard (header button toggle). */
   metricsDashboardOpen: boolean
+  /** Global artifact browser (⌘⇧A) — every file every session ever produced,
+   *  read from the main-process artifact index rather than from `artifacts`,
+   *  which only ever holds the ACTIVE session's slice. */
+  artifactsBrowserOpen: boolean
+  /** Artifact path the browser should select on open. Set when something
+   *  deep-links into a specific file (a session library row, a note). */
+  artifactsBrowserFocusPath: string | null
   /** Morning Room — the daily briefing landing view (⌘⇧B). Opens
    *  automatically on the first launch of a day that has a briefing. */
   morningRoomOpen: boolean
@@ -435,6 +442,7 @@ export interface HarnessActions {
     tab?: HarnessState['missionDashboardTab'],
   ): void
   toggleMetricsDashboard(open?: boolean): void
+  toggleArtifactsBrowser(open?: boolean, focusPath?: string | null): void
   toggleMorningRoom(open?: boolean): void
   /** Open/close the Grounded Memory recall drawer; `query` seeds the
    *  search field (omit to open on the recent-dispatches timeline). */
@@ -1022,6 +1030,8 @@ function emptyState(): HarnessState {
     missionDashboardOpen: false,
     missionDashboardTab: 'overview',
     metricsDashboardOpen: false,
+    artifactsBrowserOpen: false,
+    artifactsBrowserFocusPath: null,
     morningRoomOpen: false,
     recallDrawer: { open: false, query: '' },
     modelPickerOpen: false,
@@ -3243,6 +3253,18 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     set((prev) => ({ metricsDashboardOpen: open ?? !prev.metricsDashboardOpen }))
   },
 
+  toggleArtifactsBrowser(open, focusPath) {
+    set((prev) => {
+      const next = open ?? !prev.artifactsBrowserOpen
+      return {
+        artifactsBrowserOpen: next,
+        // Only carry a focus path INTO an open; clear it on close so
+        // reopening from the title bar doesn't jump to a stale selection.
+        artifactsBrowserFocusPath: next ? focusPath ?? prev.artifactsBrowserFocusPath : null,
+      }
+    })
+  },
+
   toggleMorningRoom(open) {
     set((prev) => ({ morningRoomOpen: open ?? !prev.morningRoomOpen }))
   },
@@ -4893,6 +4915,10 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       case '/sessions':
         state.setFocusedPanel('sidebar')
         show(`${state.sessions.length} session(s)`, 'info')
+        return true
+      case '/artifacts':
+      case '/files':
+        state.toggleArtifactsBrowser(true)
         return true
       case '/skills':
         state.setFocusedPanel('sidebar')

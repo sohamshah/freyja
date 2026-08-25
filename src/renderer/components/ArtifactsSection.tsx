@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useHarness } from '../state/store'
 import type { ArtifactRecord } from '@shared/events'
 import { relativeTime } from '../lib/format'
-import { ArtifactWorkspace } from './ArtifactWorkspace'
+import { ArtifactLibrary } from './ArtifactLibrary'
 import { StickyHeader } from './StickyHeader'
 
 /**
@@ -36,7 +36,7 @@ function getTypeMeta(ext: string) {
 export function ArtifactsSection() {
   const artifacts = useHarness((s) => s.artifacts)
   const [expanded, setExpanded] = useState(true)
-  const [workspaceOpen, setWorkspaceOpen] = useState(false)
+  const [libraryOpen, setLibraryOpen] = useState(false)
 
   // Group by creator
   const groups = useMemo(() => {
@@ -68,7 +68,7 @@ export function ArtifactsSection() {
 
   return (
     <div className="hairline-b">
-      {workspaceOpen && <ArtifactWorkspace onClose={() => setWorkspaceOpen(false)} />}
+      {libraryOpen && <ArtifactLibrary onClose={() => setLibraryOpen(false)} />}
       <StickyHeader>
         <div className="flex w-full items-baseline justify-between gap-2 px-4 py-2">
           <button
@@ -81,10 +81,10 @@ export function ArtifactsSection() {
           </button>
           {artifacts.length > 0 && (
             <button
-              onClick={() => setWorkspaceOpen(true)}
+              onClick={() => setLibraryOpen(true)}
               className="rounded bg-white/[0.04] px-1.5 py-[2px] font-mono text-[9px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
             >
-              workspace ↗
+              library ↗
             </button>
           )}
         </div>

@@ -14,13 +14,16 @@ import {
   handleSlackSetAllowlist,
   handleSlackVerifyTokens,
 } from './gatewayBridge.js'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { HarnessBridge } from './bridge.js'
 import { startCaptureProxy, type CaptureProxy } from './captureProxy.js'
+import { startArtifactServer, type ArtifactServer } from './artifactServer.js'
 import { startInputProxy, type InputProxy } from './inputProxy.js'
 import { IPC, type AppInfo, type BridgeCommand } from '../shared/events.js'
+import { isBinaryType, isStreamableType, mimeTypeForPath } from '../shared/mime.js'
 import {
   deleteSession as persistDeleteSession,
   exportSessionToFile as persistExportSession,
@@ -43,6 +46,20 @@ import {
 } from './settings.js'
 import { GatewayLogTailer } from './gatewayLogTail.js'
 import { sendControlCommand } from './controlChannel.js'
+import {
+  ingest as artifactIndexIngest,
+  query as artifactIndexQuery,
+  revisions as artifactIndexRevisions,
+  recordUserEdit as artifactIndexRecordUserEdit,
+  stats as artifactIndexStats,
+} from './artifactIndex.js'
+import {
+  createNote as createArtifactNote,
+  listNotes as listArtifactNotes,
+  markDelivered as markArtifactNoteDelivered,
+  openNoteCounts as artifactOpenNoteCounts,
+  resolveNote as resolveArtifactNote,
+} from './artifactNotes.js'
 
 // Persistent crash sink for the Electron main process. Mirrors the
 // bridge-side log so a hard crash of either the Python subprocess OR
@@ -123,6 +140,39 @@ const HARNESS_ROOT = app.isPackaged
 const FREYJA_HOME =
   process.env.FREYJA_HOME ?? path.join(os.homedir(), '.freyja')
 const SKILLS_ROOT = path.join(FREYJA_HOME, 'skills')
+
+/**
+ * Resolve a path and confirm it really is inside the user's home directory.
+ *
+ * A bare `resolved.startsWith(home)` is not a containment check: it also
+ * accepts a sibling whose name merely begins with the home path (`/Users/sam`
+ * vs `/Users/sam-backup`), and it compares the un-followed path, so a symlink
+ * inside home pointing anywhere on disk passes. Returns the REAL path when it
+ * is genuinely contained, and null otherwise.
+ */
+function resolveUnderHome(filePath: string): string | null {
+  try {
+    const home = fs.realpathSync(os.homedir())
+    const resolved = path.resolve(filePath)
+    // realpath only works on something that exists; fall back to the lexical
+    // path so a write to a not-yet-created file still resolves.
+    let real: string
+    try {
+      real = fs.realpathSync(resolved)
+    } catch {
+      real = path.resolve(path.dirname(resolved)) + path.sep + path.basename(resolved)
+      try {
+        real = fs.realpathSync(path.dirname(resolved)) + path.sep + path.basename(resolved)
+      } catch {
+        /* parent doesn't exist either — the lexical path is all we have */
+      }
+    }
+    if (real === home) return real
+    return real.startsWith(home + path.sep) ? real : null
+  } catch {
+    return null
+  }
+}
 
 /** Sanitize an operator-supplied skill name so it cannot escape SKILLS_ROOT.
  *  Mirrors the Python guard in confirmation.promote (C6 fix). Returns null
@@ -236,6 +286,7 @@ const USER_WORKSPACE = resolveUserWorkspace()
 let mainWindow: BrowserWindow | null = null
 let bridge: HarnessBridge | null = null
 let captureProxy: CaptureProxy | null = null
+let artifactServer: ArtifactServer | null = null
 let inputProxy: InputProxy | null = null
 let gatewayLogTailer: GatewayLogTailer | null = null
 // Buffer bridge events that fire before the renderer is ready.
@@ -555,11 +606,10 @@ function setupIpc() {
   // binary (images, etc).
   ipcMain.handle(IPC.artifactRead, async (_event, filePath: string) => {
     try {
-      const resolved = path.resolve(filePath)
-      const home = os.homedir()
+      const resolved = resolveUnderHome(filePath)
       // Permissive but sanity-checked — artifacts can live in ~/.freyja
       // or anywhere under the user's home (since agents write to workspace).
-      if (!resolved.startsWith(home)) {
+      if (!resolved) {
         return {
           ok: false,
           content: null,
@@ -580,41 +630,39 @@ function setupIpc() {
           error: 'Not a regular file',
         }
       }
-      // 5MB cap — don't try to load giant files in the preview pane.
+      // One shared table (src/shared/mime.ts) rather than a second copy here.
+      // The copy this replaces had no pdf / mp4 / mov / wav / mp3 entries, so
+      // every media artifact came back as `text/plain` — which is why the
+      // preview's `mimeType.startsWith('video/')` checks could never fire and
+      // a generated video showed as an opaque "binary file" card.
+      //
+      // Unknown extensions still fall back to text, as before: a `.foo` file
+      // full of prose should read as prose, not as bytes.
+      const mimeType = mimeTypeForPath(resolved, 'text/plain')
+
+      // Streamed types are never read here. The preview plays them from the
+      // local artifact origin, which supports Range — base64-ing a video
+      // through IPC cannot seek, and would move the whole file through the
+      // renderer's memory to play it from the start. So they also skip the
+      // size cap below, which exists for things we actually load.
+      if (isStreamableType(mimeType) || mimeType === 'application/pdf') {
+        return { ok: true, content: null, binary: null, mimeType, size: stat.size }
+      }
+
+      // 5MB cap — don't try to load giant files into the preview pane.
       const MAX = 5 * 1024 * 1024
       if (stat.size > MAX) {
         return {
           ok: false,
           content: null,
           binary: null,
-          mimeType: '',
+          mimeType,
           size: stat.size,
           error: `File too large (${Math.round(stat.size / 1024 / 1024)}MB > 5MB)`,
         }
       }
-      const ext = path.extname(resolved).toLowerCase().replace('.', '')
-      const binaryExts = new Set([
-        'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico',
-        'pdf', 'zip', 'tar', 'gz', 'mp3', 'mp4', 'mov', 'wav',
-      ])
-      const mimeMap: Record<string, string> = {
-        md: 'text/markdown', markdown: 'text/markdown',
-        html: 'text/html', htm: 'text/html',
-        json: 'application/json', yaml: 'application/yaml', yml: 'application/yaml',
-        toml: 'application/toml', csv: 'text/csv', tsv: 'text/tab-separated-values',
-        xml: 'application/xml', svg: 'image/svg+xml',
-        js: 'text/javascript', ts: 'text/typescript', tsx: 'text/typescript',
-        jsx: 'text/javascript', py: 'text/x-python', rs: 'text/x-rust',
-        go: 'text/x-go', java: 'text/x-java', c: 'text/x-c', h: 'text/x-c',
-        cpp: 'text/x-c++', css: 'text/css', scss: 'text/scss',
-        sh: 'text/x-shellscript', bash: 'text/x-shellscript', zsh: 'text/x-shellscript',
-        sql: 'text/x-sql', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
-        gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', ico: 'image/x-icon',
-        txt: 'text/plain', log: 'text/plain',
-      }
-      const mimeType = mimeMap[ext] ?? 'text/plain'
 
-      if (binaryExts.has(ext)) {
+      if (isBinaryType(mimeType)) {
         const buf = fs.readFileSync(resolved)
         return {
           ok: true,
@@ -622,6 +670,7 @@ function setupIpc() {
           binary: buf.toString('base64'),
           mimeType,
           size: stat.size,
+          sha256: crypto.createHash('sha256').update(buf).digest('hex'),
         }
       }
       const content = fs.readFileSync(resolved, 'utf8')
@@ -631,6 +680,9 @@ function setupIpc() {
         binary: null,
         mimeType,
         size: stat.size,
+        // The editor sends this back on save so a write that would clobber an
+        // agent's concurrent change is refused instead of silently winning.
+        sha256: crypto.createHash('sha256').update(content, 'utf8').digest('hex'),
       }
     } catch (err) {
       return {
@@ -645,15 +697,211 @@ function setupIpc() {
   })
 
   // Write an artifact file — sandboxed the same way as read.
-  ipcMain.handle(IPC.artifactWrite, async (_event, filePath: string, content: string) => {
-    try {
-      const resolved = path.resolve(filePath)
-      const home = os.homedir()
-      if (!resolved.startsWith(home)) {
-        return { ok: false, error: 'Path outside user home directory' }
+  //
+  // An operator edit is a real revision, so it gets a manifest row like any
+  // agent write. Without one, the manifest keeps serving the pre-edit
+  // bytes/lines/sha256 and the index keeps serving the pre-edit excerpt
+  // forever. `expectedSha256` is the optimistic-concurrency guard: the browser
+  // sends the hash it read, and a mismatch means the file moved underneath the
+  // editor (an agent wrote to it mid-edit) so we refuse rather than clobber.
+  ipcMain.handle(
+    IPC.artifactWrite,
+    async (
+      _event,
+      filePath: string,
+      content: string,
+      expectedSha256?: string | null,
+    ) => {
+      try {
+        const resolved = resolveUnderHome(filePath)
+        if (!resolved) {
+          return { ok: false, error: 'Path outside user home directory' }
+        }
+        if (expectedSha256) {
+          // Hash the DECODED string, matching artifactRead. Hashing raw bytes
+          // here would never agree for a file that isn't valid UTF-8: the read
+          // hands the editor a string with replacement characters and hashes
+          // that, so a byte-hash comparison rejects every save of such a file
+          // as "changed on disk".
+          let current: string | null = null
+          try {
+            current = crypto
+              .createHash('sha256')
+              .update(fs.readFileSync(resolved, 'utf8'), 'utf8')
+              .digest('hex')
+          } catch {
+            current = null
+          }
+          if (current && current !== expectedSha256) {
+            return {
+              ok: false,
+              stale: true,
+              error: 'File changed on disk since it was opened — reload before saving',
+            }
+          }
+        }
+        fs.writeFileSync(resolved, content, 'utf8')
+        const bytes = Buffer.byteLength(content, 'utf8')
+        const sha256 = crypto.createHash('sha256').update(content, 'utf8').digest('hex')
+        const lines = content.length === 0
+          ? 0
+          : content.split('\n').length - (content.endsWith('\n') ? 1 : 0)
+        await artifactIndexRecordUserEdit(resolved, { bytes, sha256, lines })
+        return { ok: true, bytes, sha256, lines }
+      } catch (err) {
+        return { ok: false, error: String(err) }
       }
-      fs.writeFileSync(resolved, content, 'utf8')
-      return { ok: true }
+    },
+  )
+
+  // ── Global artifact index ─────────────────────────────────────
+  ipcMain.handle(IPC.artifactIndexQuery, async (_event, q) => {
+    try {
+      const result = await artifactIndexQuery(q ?? {})
+      // Note badges are cheap to join here and save the renderer a second
+      // round trip for every page it draws.
+      const counts = artifactOpenNoteCounts()
+      if (counts.size > 0) {
+        for (const row of result.rows) {
+          const n = counts.get(row.path)
+          if (n) row.noteCount = n
+        }
+      }
+      return result
+    } catch (err) {
+      return {
+        ok: false,
+        rows: [],
+        total: 0,
+        facets: { types: [], sessions: [], creators: [] },
+        stats: {
+          artifacts: 0,
+          revisions: 0,
+          sessions: 0,
+          projects: 0,
+          missing: 0,
+          builtAt: 0,
+        },
+        error: String(err),
+      }
+    }
+  })
+
+  // Resolve an artifact to a URL on the local preview origin. Null when the
+  // server didn't start or the path isn't under the home directory — callers
+  // fall back to a static, script-free preview.
+  ipcMain.handle(IPC.artifactServeUrl, async (_event, filePath: string) => {
+    try {
+      if (!artifactServer) return { ok: false, error: 'preview server unavailable' }
+      const served = artifactServer.serve(String(filePath || ''))
+      if (!served) return { ok: false, error: 'Path outside user home directory' }
+      return { ok: true, url: served.url }
+    } catch (err) {
+      return { ok: false, error: String(err) }
+    }
+  })
+
+  ipcMain.handle(IPC.artifactIndexStats, async () => {
+    try {
+      await artifactIndexIngest()
+      return { ok: true, stats: artifactIndexStats() }
+    } catch (err) {
+      return { ok: false, error: String(err) }
+    }
+  })
+
+  ipcMain.handle(IPC.artifactIndexRevisions, async (_event, filePath: string) => {
+    try {
+      return { ok: true, rows: await artifactIndexRevisions(String(filePath || '')) }
+    } catch (err) {
+      return { ok: false, rows: [], error: String(err) }
+    }
+  })
+
+  // ── Artifact notes ────────────────────────────────────────────
+  ipcMain.handle(IPC.artifactNoteList, async (_event, filePath?: string) => {
+    try {
+      return { ok: true, notes: listArtifactNotes(filePath || undefined) }
+    } catch (err) {
+      return { ok: false, notes: [], error: String(err) }
+    }
+  })
+
+  ipcMain.handle(
+    IPC.artifactNoteCreate,
+    async (
+      _event,
+      input: {
+        artifactPath: string
+        body: string
+        anchor: { startLine: number; endLine: number; quote: string } | null
+        targetSessionId?: string
+      },
+    ) => {
+      try {
+        const body = String(input?.body || '').trim()
+        const artifactPath = String(input?.artifactPath || '')
+        if (!body) return { ok: false, error: 'Comment is empty' }
+        if (!artifactPath) return { ok: false, error: 'No artifact selected' }
+
+        const note = await createArtifactNote({
+          artifactPath,
+          body,
+          anchor: input?.anchor ?? null,
+          targetSessionId: input?.targetSessionId,
+        })
+
+        if (!note.targetSessionId) {
+          const updated = await markArtifactNoteDelivered(note.id, {
+            ok: false,
+            error: 'No session is recorded as having produced this artifact',
+          })
+          return { ok: true, note: updated ?? note, delivery: 'none' }
+        }
+
+        // Same ownership split as sendCommand: a Slack-owned session lives in
+        // the daemon process, so its note goes down the control channel.
+        const daemonOwned =
+          gatewayLogTailer?.isDaemonOwned(note.targetSessionId) ?? false
+        const payload = {
+          type: 'artifact_note' as const,
+          sessionId: note.targetSessionId,
+          noteId: note.id,
+          artifactPath: note.artifactPath,
+          artifactFilename: note.artifactFilename,
+          body: note.body,
+          anchor: note.anchor,
+        }
+        let sent: { ok: boolean; error?: string }
+        if (daemonOwned) {
+          sent = sendControlCommand(payload)
+        } else if (!bridge) {
+          sent = { ok: false, error: 'bridge not ready' }
+        } else {
+          try {
+            await bridge.sendCommand(payload)
+            sent = { ok: true }
+          } catch (err) {
+            sent = { ok: false, error: String(err) }
+          }
+        }
+        const updated = await markArtifactNoteDelivered(note.id, sent)
+        return {
+          ok: true,
+          note: updated ?? note,
+          delivery: sent.ok ? 'live' : 'queued',
+          error: sent.ok ? undefined : sent.error,
+        }
+      } catch (err) {
+        return { ok: false, error: String(err) }
+      }
+    },
+  )
+
+  ipcMain.handle(IPC.artifactNoteResolve, async (_event, id: string) => {
+    try {
+      const note = await resolveArtifactNote(String(id || ''))
+      return note ? { ok: true, note } : { ok: false, error: 'Note not found' }
     } catch (err) {
       return { ok: false, error: String(err) }
     }
@@ -1081,6 +1329,14 @@ app.whenReady().then(async () => {
   // the Python side will fall back to its native capture path.
   try {
     captureProxy = await startCaptureProxy()
+    try {
+      artifactServer = await startArtifactServer(os.homedir())
+      console.log(`[artifactServer] listening at ${artifactServer.url}`)
+    } catch (err) {
+      // Previews fall back to file:// (static only) rather than breaking.
+      console.warn('[artifactServer] failed to start', err)
+      artifactServer = null
+    }
   } catch (err) {
     console.warn('[main] capture proxy failed to start:', err)
   }
@@ -1253,5 +1509,6 @@ app.on('before-quit', () => {
   gatewayLogTailer?.stop()
   bridge?.stop().catch(() => {})
   captureProxy?.close()
+  artifactServer?.close()
   inputProxy?.close()
 })

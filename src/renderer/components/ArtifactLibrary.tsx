@@ -8,10 +8,15 @@ import { relativeTime } from '../lib/format'
 import { FileChangeCard } from './FileChangeCard'
 
 /**
- * Artifact Workspace — a "library" view for files and file changes.
+ * Session library — the files and file changes produced by ONE session.
  * Multiple view modes (cards / list / details / changes), persistent left
  * filter rail, and lazy-loaded content excerpts so cards show real
  * titles + first paragraphs instead of opaque hash filenames.
+ *
+ * Named "library", not "workspace": the shell already spends that word on the
+ * left sidebar panel and on the session's cwd. For everything ever produced
+ * across every session, see ArtifactsBrowser (⌘⇧A), which is backed by the
+ * main-process artifact index rather than the active session's store slice.
  *
  * Keyboard:
  *   esc       — close (or back out of preview)
@@ -64,7 +69,7 @@ function agentTypeColor(t: string | undefined): string {
   return AGENT_TYPE_COLORS[t] ?? '#888'
 }
 
-export function ArtifactWorkspace({
+export function ArtifactLibrary({
   onClose,
   initialView = 'cards',
 }: {
@@ -88,6 +93,11 @@ export function ArtifactWorkspace({
   // ── Keyboard ──────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // The global Artifacts browser is the same shape of overlay and claims
+      // the same ⌘1..⌘4 view-mode chords. When it is open it is on top, so it
+      // owns the keyboard; this session-scoped viewer stands down rather than
+      // both of them switching views on one keypress.
+      if (useHarness.getState().artifactsBrowserOpen) return
       if (e.key === 'Escape') {
         if (previewPath) setPreviewPath(null)
         else onClose()
@@ -292,7 +302,7 @@ export function ArtifactWorkspace({
           />
           <div className="flex flex-1 min-w-0">
             {view === 'changes' ? (
-              <ChangesWorkspaceView
+              <SessionChangesView
                 changeSets={filteredChangeSets}
                 hasAnyChanges={fileChanges.length > 0}
                 hasActiveFilters={hasActiveFilters}
@@ -370,11 +380,16 @@ function Header({
   onClearFilters: () => void
   changeSetCount: number
 }) {
-  const title = view === 'changes' ? 'changes workspace' : 'artifact workspace'
+  // "workspace" is already three-way overloaded in the shell (the left panel,
+  // the session cwd, and this viewer), so this one is the library.
+  const title = view === 'changes' ? 'session changes' : 'session library'
   return (
     <div
-      className="drag flex items-center gap-3 border-b border-white/[0.06] bg-[#0a0a0e]/60 pr-3 py-2.5"
-      style={{ paddingLeft: 'var(--titlebar-inset, 82px)' }}
+      className="drag flex items-center gap-3 border-b border-white/[0.06] bg-[#0a0a0e]/60 pr-3"
+      style={{
+        paddingLeft: 'var(--titlebar-inset, 82px)',
+        minHeight: 'var(--titlebar-height, 46px)',
+      }}
     >
       {/* Title + count */}
       <div className="no-drag flex items-center gap-2">
@@ -427,6 +442,18 @@ function Header({
       <ViewToggle view={view} onView={onView} />
 
       <span className="h-3 w-px bg-white/10" />
+
+      {/* This view is one session's output. The global index is the rest. */}
+      <button
+        onClick={() => {
+          onClose()
+          useHarness.getState().toggleArtifactsBrowser(true)
+        }}
+        title="Browse artifacts from every session (⌘⇧A)"
+        className="no-drag rounded-md px-2 py-1 font-mono text-[10px] text-fg-2 ring-hairline hover:bg-white/[0.06] hover:text-fg-0"
+      >
+        all sessions ↗
+      </button>
 
       <button
         onClick={onClose}
@@ -943,7 +970,7 @@ function DetailsView({
 // Changes view: grouped diffs with transcript navigation
 // ──────────────────────────────────────────────────────────────────
 
-function ChangesWorkspaceView({
+function SessionChangesView({
   changeSets,
   hasAnyChanges,
   hasActiveFilters,

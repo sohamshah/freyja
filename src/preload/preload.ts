@@ -6,6 +6,13 @@ import {
   type AppInfo,
   type BridgeMode,
   type ArtifactReadResult,
+  type ArtifactIndexStats,
+  type ArtifactNote,
+  type ArtifactNoteCreateResult,
+  type ArtifactNoteListResult,
+  type ArtifactQuery,
+  type ArtifactQueryResult,
+  type ArtifactRevisionRow,
   type GatewayStatus,
   type SlackVerifyResult,
   type SlackManifestResult,
@@ -141,8 +148,56 @@ const api = {
   async artifactWrite(
     filePath: string,
     content: string,
-  ): Promise<{ ok: boolean; error?: string }> {
-    return ipcRenderer.invoke(IPC.artifactWrite, filePath, content)
+    /** Hash the editor read. A mismatch means an agent wrote to the file
+     *  mid-edit, and the save is refused rather than clobbering it. */
+    expectedSha256?: string | null,
+  ): Promise<{
+    ok: boolean
+    stale?: boolean
+    bytes?: number
+    sha256?: string
+    lines?: number
+    error?: string
+  }> {
+    return ipcRenderer.invoke(IPC.artifactWrite, filePath, content, expectedSha256)
+  },
+  async artifactServeUrl(
+    filePath: string,
+  ): Promise<{ ok: boolean; url?: string; error?: string }> {
+    return ipcRenderer.invoke(IPC.artifactServeUrl, filePath)
+  },
+  // ── Global artifact index ─────────────────────────────────
+  async artifactIndexQuery(query: ArtifactQuery): Promise<ArtifactQueryResult> {
+    return ipcRenderer.invoke(IPC.artifactIndexQuery, query)
+  },
+  async artifactIndexStats(): Promise<{
+    ok: boolean
+    stats?: ArtifactIndexStats
+    error?: string
+  }> {
+    return ipcRenderer.invoke(IPC.artifactIndexStats)
+  },
+  async artifactIndexRevisions(
+    filePath: string,
+  ): Promise<{ ok: boolean; rows: ArtifactRevisionRow[]; error?: string }> {
+    return ipcRenderer.invoke(IPC.artifactIndexRevisions, filePath)
+  },
+  // ── Artifact notes ────────────────────────────────────────
+  async artifactNoteList(filePath?: string): Promise<ArtifactNoteListResult> {
+    return ipcRenderer.invoke(IPC.artifactNoteList, filePath)
+  },
+  async artifactNoteCreate(input: {
+    artifactPath: string
+    body: string
+    anchor: { startLine: number; endLine: number; quote: string } | null
+    targetSessionId?: string
+  }): Promise<ArtifactNoteCreateResult> {
+    return ipcRenderer.invoke(IPC.artifactNoteCreate, input)
+  },
+  async artifactNoteResolve(
+    id: string,
+  ): Promise<{ ok: boolean; note?: ArtifactNote; error?: string }> {
+    return ipcRenderer.invoke(IPC.artifactNoteResolve, id)
   },
   // ── Gateway / Slack setup ─────────────────────────────────
   async gatewayStatus(): Promise<GatewayStatus> {

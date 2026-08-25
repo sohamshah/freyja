@@ -25,6 +25,8 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/schedules', description: 'Alias for /schedule', hidden: true },
   { name: '/jobs', description: 'Alias for /schedule', hidden: true },
   { name: '/cron', description: 'Alias for /schedule', hidden: true },
+  { name: '/artifacts', description: 'Browse every artifact from every session', keys: 'Cmd+Shift+A' },
+  { name: '/files', description: 'Alias for /artifacts', hidden: true },
   { name: '/skills', description: 'Browse the skills index' },
   { name: '/learn-this', description: 'Force the skill drafter to run on this conversation' },
   { name: '/memory', description: 'Show persistent memory notes' },

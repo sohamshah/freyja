@@ -2168,6 +2168,7 @@ class GatewayDaemon:
         reader.register("skill_candidate_resolve", self._on_skill_candidate_resolve)
         reader.register("skill_learn_this", self._on_skill_learn_this)
         reader.register("talk_deliver", self._on_talk_deliver)
+        reader.register("artifact_note", self._on_artifact_note)
         await reader.start()
         self.control_channel = reader
 
@@ -2181,6 +2182,17 @@ class GatewayDaemon:
         from bridge.freyja_bridge import _handle_talk_deliver_command
 
         await _handle_talk_deliver_command(self.state, cmd)
+
+    async def _on_artifact_note(self, cmd: dict[str, Any]) -> None:
+        """Operator comment on an artifact, addressed to a session this daemon
+        owns (a Slack thread, or a sub-agent beneath one). Same delivery path
+        as talk, including the cold-load so the thread acts on it now rather
+        than at its next inbound message."""
+        if self.state is None:
+            return
+        from bridge.freyja_bridge import _handle_artifact_note_command
+
+        await _handle_artifact_note_command(self.state, cmd)
 
     def _talk_wake_hook_factory(self, session: Any) -> Any:
         """Build the on_turn_start hook wake_for_inbox uses for this

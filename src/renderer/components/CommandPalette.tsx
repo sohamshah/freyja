@@ -24,6 +24,7 @@ export function CommandPalette() {
   const sessions = useHarness((s) => s.sessions)
   const openSubagent = useHarness((s) => s.openSubagent)
   const toggleMissionDashboard = useHarness((s) => s.toggleMissionDashboard)
+  const toggleArtifactsBrowser = useHarness((s) => s.toggleArtifactsBrowser)
   const openScheduler = useSchedulerStore((s) => s.openDashboard)
   const schedulerJobCount = useSchedulerStore((s) => s.jobs.length)
   const openSessionPane = useHarness((s) => s.openSessionPane)
@@ -107,6 +108,16 @@ export function CommandPalette() {
         },
       },
       {
+        id: 'artifacts:browse',
+        title: 'Artifacts',
+        subtitle: 'Every file every session ever produced — search, read, edit, comment (⌘⇧A)',
+        group: 'Command',
+        action: () => {
+          toggleArtifactsBrowser(true)
+          close(false)
+        },
+      },
+      {
         id: 'scheduler:open',
         title: 'Scheduled Jobs',
         subtitle: schedulerJobCount > 0
@@ -179,7 +190,7 @@ export function CommandPalette() {
       })
     }
     return out
-  }, [skills, subagents, sessions, setDraft, close, openSubagent, burst, toggleMissionDashboard, openSessionPane, openScheduler, schedulerJobCount])
+  }, [skills, subagents, sessions, setDraft, close, openSubagent, burst, toggleMissionDashboard, toggleArtifactsBrowser, openSessionPane, openScheduler, schedulerJobCount])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()

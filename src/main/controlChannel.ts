@@ -63,6 +63,20 @@ export type ControlCommand =
       sessionId: string
       guidance?: string
     }
+  | {
+      // An operator comment on a slice of an artifact, addressed to the
+      // session that most recently wrote that file. Reaches the daemon when
+      // that session is gateway-owned (a Slack thread, or a sub-agent
+      // beneath one); locally-owned sessions get the identical payload down
+      // the bridge's stdin instead.
+      type: 'artifact_note'
+      sessionId: string
+      noteId: string
+      artifactPath: string
+      artifactFilename: string
+      body: string
+      anchor?: { startLine: number; endLine: number; quote: string } | null
+    }
   // Add new commands here as `| { type: 'cancel_turn'; ... }` etc.
 
 function ensureDir(): void {

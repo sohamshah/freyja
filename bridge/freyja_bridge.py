@@ -754,6 +754,94 @@ async def deliver_talk_message_locally(
     return queue_to_inbox_sidecar(sid, msg)
 
 
+def _drafter_model_override() -> str | None:
+    """An explicitly-set ``FREYJA_DRAFTER_MODEL``, or None.
+
+    The sub-agent drafter pins a quality tier through its AgentType. The fork
+    deliberately does not — Anthropic's cache is per-model, so switching throws
+    away the prefix the fork exists to reuse. Setting the env var is the
+    operator opting back into the pinned tier, cache miss and all.
+    """
+    from bridge.knowledge.learning.constants import (
+        DRAFTER_DEFAULT_MODEL,
+        DRAFTER_MODEL_ENV_VAR,
+    )
+
+    override = (os.environ.get(DRAFTER_MODEL_ENV_VAR) or "").strip()
+    if not override or override == DRAFTER_DEFAULT_MODEL:
+        return None
+    return override
+
+
+async def deliver_artifact_note(
+    state: "_BridgeState", sid: str, msg: Any
+) -> str:
+    """Deliver an operator's artifact comment, cold-loading if we have to.
+
+    Talk delivery ends at the inbox sidecar for a session that is not running,
+    which is the right answer for agent-to-agent chatter: the recipient reads
+    it whenever it next wakes. It is the wrong answer here. The artifacts worth
+    commenting on are usually old, so their sessions are almost always cold,
+    and a note that sits in a sidecar until the operator happens to reopen that
+    session never produces the change they asked for.
+
+    So for a cold session that still has a transcript on disk we load it and
+    wake it, which is exactly what switching to it in the UI would do. Gateway
+    sessions and archived sub-agents already have their own handling inside
+    ``deliver_talk_message_locally``, so those go straight through.
+    """
+    from bridge.transcript_persistence import load_transcript
+
+    if (
+        sid in state.sessions
+        or _is_gateway_session_id(sid)
+        or _resolve_archived_subagent(sid) is not None
+    ):
+        return await deliver_talk_message_locally(state, sid, msg)
+
+    persisted: dict[str, Any] | None
+    try:
+        persisted = load_transcript(sid)
+    except Exception:  # noqa: BLE001
+        persisted = None
+    if persisted is None:
+        # Nothing to wake — fall back to the sidecar so the note is delivered
+        # if that session is ever created.
+        return await deliver_talk_message_locally(state, sid, msg)
+
+    # ensure_session makes whatever it loads the active session. The operator
+    # commented on a file; they did not ask to be switched into another
+    # conversation, so put the view back afterwards.
+    # Cold-load on the session's OWN model and reasoning level. Letting
+    # ensure_session fall back to the process default would restore a Gemini or
+    # GPT session under Anthropic, and try_restore_transcript strips every
+    # thinking block on a provider-family change — permanently, on the
+    # operator's real session, because the operator left a comment.
+    meta = persisted.get("metadata") if isinstance(persisted, dict) else None
+    meta = meta if isinstance(meta, dict) else {}
+    model_id = str(meta.get("model_id") or "") or None
+    reasoning_level = str(meta.get("reasoning_level") or "") or None
+
+    previous_active = state.active_session_id
+    try:
+        sess = await state.ensure_session(
+            sid, model_id=model_id, reasoning_level=reasoning_level,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log("warn", f"artifact note: cold load of {sid} failed: {exc}")
+        return await deliver_talk_message_locally(state, sid, msg)
+    finally:
+        if previous_active and state.active_session_id != previous_active:
+            state.active_session_id = previous_active
+
+    inbox = getattr(sess, "inbox", None)
+    if inbox is None:
+        return await deliver_talk_message_locally(state, sid, msg)
+    _install_talk_wake_hook(state, sess)
+    inbox.push(msg)
+    return sess.wake_for_inbox()
+
+
 def _process_owns_gateway() -> bool:
     """True when THIS process holds the gateway PID lock — i.e. it is
     the authoritative host for ``freyja:<platform>:…`` sessions."""
@@ -778,6 +866,71 @@ async def _handle_talk_deliver_command(state: "_BridgeState", cmd: dict[str, Any
     log("info", f"talk_deliver: {msg.id[:8]} → {sid} ({status})")
 
 
+async def _handle_artifact_note_command(
+    state: "_BridgeState", cmd: dict[str, Any]
+) -> None:
+    """Route an operator's artifact comment to the session that produced it.
+
+    Reached two ways, same as talk delivery: the desktop bridge's stdin
+    command loop for a locally-owned session, and the daemon's control channel
+    for a gateway-owned one.
+
+    Never raises. The desktop already persisted the note to
+    ``~/.freyja/artifact-notes.jsonl`` before sending this command, so a
+    failure here loses the delivery, not the comment.
+    """
+    from bridge.artifact_notes import NoteAnchor, note_label, render_note_message
+    from bridge.inbox import InboxMessage
+
+    target = str(cmd.get("sessionId") or "").strip()
+    body = str(cmd.get("body") or "").strip()
+    artifact_path = str(cmd.get("artifactPath") or "").strip()
+    filename = str(cmd.get("artifactFilename") or "").strip()
+    note_id = str(cmd.get("noteId") or "")
+    if not target or not body or not artifact_path:
+        log("warn", "artifact_note: malformed command dropped")
+        return
+
+    try:
+        content = render_note_message(
+            artifact_path=artifact_path,
+            body=body,
+            anchor=NoteAnchor.from_payload(cmd.get("anchor")),
+            filename=filename,
+        )
+        msg = InboxMessage(
+            id=note_id or uuid.uuid4().hex,
+            from_session="operator",
+            from_label=note_label(filename),
+            from_role="operator",
+            content=content,
+        )
+        status = await deliver_artifact_note(state, target, msg)
+    except Exception as exc:  # noqa: BLE001
+        log("warn", f"artifact_note: delivery to {target} failed: {exc}")
+        status = f"failed: {type(exc).__name__}"
+
+    log("info", f"artifact_note: {artifact_path} -> {target} ({status})")
+    try:
+        emit(
+            {
+                "type": "system_event",
+                "sessionId": target,
+                "subtype": "artifact_note",
+                "message": (
+                    f"Operator comment on {filename or artifact_path} ({status})"
+                ),
+                "details": {
+                    "noteId": note_id,
+                    "artifactPath": artifact_path,
+                    "status": status,
+                },
+            }
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def _start_desktop_control_reader(state: "_BridgeState") -> Any | None:
     """Tail ``control/desktop-commands.jsonl`` (daemon → desktop
     direction) so gateway-side agents can talk() to desktop sessions.
@@ -796,6 +949,10 @@ async def _start_desktop_control_reader(state: "_BridgeState") -> Any | None:
         reader.register(
             "talk_deliver",
             lambda cmd: _handle_talk_deliver_command(state, cmd),
+        )
+        reader.register(
+            "artifact_note",
+            lambda cmd: _handle_artifact_note_command(state, cmd),
         )
         await reader.start()
         return reader
@@ -12428,6 +12585,10 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             )
         except Exception:  # noqa: BLE001
             log("warn", f"skill_learn_this failed for {session_id}")
+        return
+
+    if ctype == "artifact_note":
+        await _handle_artifact_note_command(state, cmd)
         return
 
     if ctype == "list_files":

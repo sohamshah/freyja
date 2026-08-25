@@ -23,6 +23,7 @@ import { MissionDashboard } from './components/MissionDashboard'
 import { ScheduledJobsDashboard } from './components/ScheduledJobsDashboard'
 import { SlackSetupWizard } from './components/SlackSetupWizard'
 import { MetricsDashboard } from './components/MetricsDashboard'
+import { ArtifactsBrowser } from './components/ArtifactsBrowser'
 import { MorningRoom } from './components/MorningRoom'
 import { RecallPanel } from './components/RecallPanel'
 import { SplashScreen } from './components/SplashScreen'
@@ -84,6 +85,7 @@ export function App() {
   const toggleCommandPalette = useHarness((s) => s.toggleCommandPalette)
   const commandPaletteOpen = useHarness((s) => s.commandPaletteOpen)
   const missionDashboardOpen = useHarness((s) => s.missionDashboardOpen)
+  const toggleArtifactsBrowser = useHarness((s) => s.toggleArtifactsBrowser)
   const morningRoomOpen = useHarness((s) => s.morningRoomOpen)
   const toggleMissionDashboard = useHarness((s) => s.toggleMissionDashboard)
   const recallDrawer = useHarness((s) => s.recallDrawer)
@@ -541,6 +543,12 @@ export function App() {
         toggleMissionDashboard()
         return
       }
+      // ⌘⇧A — Artifacts: every file every session ever produced.
+      if (mod && e.shiftKey && (e.key === 'a' || e.key === 'A')) {
+        e.preventDefault()
+        toggleArtifactsBrowser()
+        return
+      }
       // ⌘⇧S — open the scheduled jobs modal (idempotent — second press
       // is a no-op so users can mash it without flicker; Esc closes).
       if (mod && e.shiftKey && (e.key === 's' || e.key === 'S')) {
@@ -674,6 +682,7 @@ export function App() {
     commandPaletteOpen,
     missionDashboardOpen,
     toggleMissionDashboard,
+    toggleArtifactsBrowser,
     activeSubagentId,
     openSubagent,
     isStreaming,
@@ -728,6 +737,10 @@ export function App() {
           onClose={() => toggleSlackSetup(false)}
         />
         <MetricsDashboard />
+        {/* Always mounted so useEscapeClose registers its capture-phase
+            listener before the ancestor handlers — see the hook's doc. It
+            self-gates on `artifactsBrowserOpen`. */}
+        <ArtifactsBrowser />
         <RecallPanel
           open={recallDrawer.open}
           onClose={closeRecallDrawer}

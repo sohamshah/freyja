@@ -680,6 +680,20 @@ export type BridgeCommand =
       text: string
       final: boolean
     }
+  | {
+      /** An operator comment on a slice of an artifact, routed to whichever
+       *  session most recently touched that file. The bridge delivers it the
+       *  same way `talk` does — live inbox + wake, cross-process hand-off, or
+       *  an inbox sidecar for a session that isn't running — so a note left on
+       *  a months-old artifact still reaches the agent that built it. */
+      type: 'artifact_note'
+      sessionId: string
+      noteId: string
+      artifactPath: string
+      artifactFilename: string
+      body: string
+      anchor?: { startLine: number; endLine: number; quote: string } | null
+    }
   | { type: 'voice_typed_command'; text: string }
   | { type: 'voice_receipts_list'; limit?: number }
   | { type: 'voice_undo'; receiptId: string }
@@ -1193,6 +1207,19 @@ export const IPC = {
   settingsUpdate: 'settings:update',
   artifactRead: 'artifact:read',
   artifactWrite: 'artifact:write',
+  // Global artifact index — every file every session ever produced. Backed by
+  // the main-process scan of ~/.freyja/projects/*/manifest.jsonl, NOT by the
+  // renderer's session-scoped `artifacts` slice.
+  /** Resolve an artifact path to a URL on the local preview origin, so the
+   *  preview iframe gets a real HTTP document with working asset paths and
+   *  Range support instead of a script-less file:// frame. */
+  artifactServeUrl: 'artifact:serveUrl',
+  artifactIndexQuery: 'artifact:index:query',
+  artifactIndexStats: 'artifact:index:stats',
+  artifactIndexRevisions: 'artifact:index:revisions',
+  artifactNoteList: 'artifact:notes:list',
+  artifactNoteCreate: 'artifact:notes:create',
+  artifactNoteResolve: 'artifact:notes:resolve',
   compactionMetrics: 'compaction:metrics',
   getActionLedger: 'session:actionLedger',
   getWorkingMemory: 'session:workingMemory',
@@ -1625,7 +1652,173 @@ export interface ArtifactReadResult {
   mimeType: string
   /** Size in bytes. */
   size: number
+  /** Hash of exactly what was returned. The editor sends it back on save as
+   *  an optimistic-concurrency guard. */
+  sha256?: string
   /** Error message if ok=false. */
+  error?: string
+}
+
+// ── Global artifact index ───────────────────────────────────────
+//
+// These mirror python's manifest row shape (`creatorId`/`sessionId`), NOT the
+// renderer's session-scoped `ArtifactRecord` (whose field is `creator`). The
+// two records describe the same facts and routinely disagree — the manifest is
+// the durable one. Don't feed one into code expecting the other without
+// mapping the field names.
+
+/** One artifact — the newest revision of one path, with the rest folded in. */
+export interface ArtifactIndexRow {
+  /** Stable across re-ingests: derived from the path. */
+  id: string
+  path: string
+  filename: string
+  /** Lowercased extension, no dot. Empty for extensionless files. */
+  fileType: string
+  /** Session whose project dir owns the manifest this came from. */
+  sessionId: string
+  /** Human title for that session, joined from the session index. */
+  sessionTitle?: string
+  /** Directory name under ~/.freyja/projects (the sanitized session id). */
+  projectId: string
+  /** Who wrote the newest revision — 'parent' or a sub-agent session id. */
+  creatorId: string
+  creatorLabel: string
+  /** Operation on the newest revision: write | edit | create | update |
+   *  subagent_artifact | user_edit. */
+  operation: string
+  source: string
+  /** Newest revision timestamp — "last touched". */
+  createdAt: number
+  /** Oldest revision timestamp — "first produced". */
+  firstSeenAt: number
+  /** How many manifest rows exist for this path. */
+  revisions: number
+  bytes: number
+  lines: number | null
+  sha256: string | null
+  /** Re-stat'ed at ingest, not trusted from the manifest — ~6 % of indexed
+   *  paths no longer exist on disk. */
+  exists: boolean
+  /** File mtime when last ingested, present only when the file still exists. */
+  modifiedAt?: number
+  /** Precomputed at ingest so rendering a page costs zero file reads. */
+  title: string
+  excerpt: string
+  agentType?: string
+  task?: string
+  toolCallId?: string | null
+  /** Open notes attached to this artifact. */
+  noteCount?: number
+}
+
+export interface ArtifactIndexFacets {
+  types: Array<{ key: string; count: number }>
+  sessions: Array<{ id: string; title: string; count: number }>
+  creators: Array<{ id: string; label: string; count: number }>
+}
+
+export interface ArtifactIndexStats {
+  artifacts: number
+  revisions: number
+  sessions: number
+  projects: number
+  /** Indexed paths that no longer exist on disk. */
+  missing: number
+  builtAt: number
+}
+
+export type ArtifactSortKey =
+  | 'newest'
+  | 'oldest'
+  | 'name'
+  | 'title'
+  | 'size'
+  | 'revisions'
+  | 'session'
+
+export interface ArtifactQuery {
+  text?: string
+  types?: string[]
+  sessionIds?: string[]
+  creators?: string[]
+  onlyExisting?: boolean
+  sort?: ArtifactSortKey
+  offset?: number
+  limit?: number
+  /** Skip the ingest min-interval guard (the explicit refresh button). */
+  forceRefresh?: boolean
+}
+
+export interface ArtifactQueryResult {
+  ok: boolean
+  rows: ArtifactIndexRow[]
+  /** Matches before paging. */
+  total: number
+  /** Computed over the WHOLE index, so the filter rail doesn't collapse to
+   *  whatever the current search already narrowed to. */
+  facets: ArtifactIndexFacets
+  stats: ArtifactIndexStats
+  /** Set when the match set is larger than one query can return. Rows past
+   *  this cannot be reached by scrolling — the operator has to filter. */
+  cappedAt?: number
+  error?: string
+}
+
+/** One manifest row for a path, as shown in the revision history. */
+export interface ArtifactRevisionRow {
+  id: string
+  createdAt: number
+  operation: string
+  source: string
+  creatorId: string
+  creatorLabel: string
+  bytes: number
+  lines: number | null
+  sha256: string | null
+  toolCallId?: string | null
+  additions?: number | null
+  deletions?: number | null
+}
+
+/**
+ * A comment the operator attached to a slice of an artifact.
+ *
+ * Notes are how a review turns back into work: writing one routes the comment
+ * to whichever session most recently touched the artifact, so the agent that
+ * built the thing is the one asked to change it.
+ */
+export interface ArtifactNote {
+  id: string
+  artifactPath: string
+  artifactFilename: string
+  createdAt: number
+  /** The highlighted region, captured at write time. Null for a whole-file
+   *  note. `quote` lets the anchor survive edits that move line numbers. */
+  anchor: { startLine: number; endLine: number; quote: string } | null
+  body: string
+  /** Session the note was routed to — the artifact's most recent writer. */
+  targetSessionId: string
+  targetSessionTitle?: string
+  status: 'pending' | 'delivered' | 'failed' | 'resolved'
+  deliveredAt?: number
+  resolvedAt?: number
+  error?: string
+  /** Artifact hash when the note was written, so a stale anchor is detectable. */
+  artifactSha256?: string | null
+}
+
+export interface ArtifactNoteListResult {
+  ok: boolean
+  notes: ArtifactNote[]
+  error?: string
+}
+
+export interface ArtifactNoteCreateResult {
+  ok: boolean
+  note?: ArtifactNote
+  /** How the note reached the session: 'live' | 'queued' | 'none'. */
+  delivery?: string
   error?: string
 }
 

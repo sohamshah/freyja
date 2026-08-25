@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useHarness } from '../state/store'
 import type { FileChangeSet } from '@shared/events'
 import { relativeTime } from '../lib/format'
-import { ArtifactWorkspace } from './ArtifactWorkspace'
+import { ArtifactLibrary } from './ArtifactLibrary'
 import { FileChangeCard } from './FileChangeCard'
 import { StickyHeader } from './StickyHeader'
 
@@ -10,7 +10,7 @@ export function ChangesSection() {
   const changeSets = useHarness((s) => s.fileChanges)
   const focusToolCall = useHarness((s) => s.focusToolCall)
   const [expanded, setExpanded] = useState(true)
-  const [workspaceOpen, setWorkspaceOpen] = useState(false)
+  const [libraryOpen, setLibraryOpen] = useState(false)
 
   const openExternal = (path: string) => {
     const api = (window as any).harness
@@ -37,10 +37,10 @@ export function ChangesSection() {
 
   return (
     <div className="hairline-b">
-      {workspaceOpen && (
-        <ArtifactWorkspace
+      {libraryOpen && (
+        <ArtifactLibrary
           initialView="changes"
-          onClose={() => setWorkspaceOpen(false)}
+          onClose={() => setLibraryOpen(false)}
         />
       )}
       <StickyHeader>
@@ -61,7 +61,7 @@ export function ChangesSection() {
           </button>
           {changeSets.length > 0 && (
             <button
-              onClick={() => setWorkspaceOpen(true)}
+              onClick={() => setLibraryOpen(true)}
               className="rounded bg-white/[0.04] px-1.5 py-[2px] font-mono text-[9px] uppercase tracking-[0.08em] text-fg-2 ring-hairline hover:bg-white/[0.08] hover:text-fg-0"
             >
               diff view ↗
@@ -84,7 +84,7 @@ export function ChangesSection() {
           ))}
           {ordered.length > 8 && (
             <button
-              onClick={() => setWorkspaceOpen(true)}
+              onClick={() => setLibraryOpen(true)}
               className="w-full rounded-md bg-white/[0.025] px-2 py-1.5 text-left font-mono text-[9.5px] text-fg-3 ring-hairline hover:bg-white/[0.05] hover:text-fg-1"
             >
               {ordered.length - 8} more change set{ordered.length - 8 === 1 ? '' : 's'} in diff view

@@ -55,7 +55,9 @@ export function TitleBar() {
   const morningRoomOpen = useHarness((s) => s.morningRoomOpen)
   const toggleMorningRoom = useHarness((s) => s.toggleMorningRoom)
   const metricsDashboardOpen = useHarness((s) => s.metricsDashboardOpen)
+  const artifactsBrowserOpen = useHarness((s) => s.artifactsBrowserOpen)
   const toggleMetricsDashboard = useHarness((s) => s.toggleMetricsDashboard)
+  const toggleArtifactsBrowser = useHarness((s) => s.toggleArtifactsBrowser)
   const sidebarCollapsed = useHarness((s) => s.sidebarCollapsed)
   const activityPanelCollapsed = useHarness((s) => s.activityPanelCollapsed)
   const focusMode = useHarness((s) => s.focusMode)
@@ -126,6 +128,14 @@ export function TitleBar() {
         active={missionDashboardOpen}
       >
         <span className="font-mono uppercase">dashboard</span>
+      </TitleControl>
+      <TitleControl
+        className="no-drag hidden h-[28px] px-2.5 text-[10px] xl:inline-flex"
+        onClick={() => toggleArtifactsBrowser(true)}
+        title="Browse every artifact from every session (⌘⇧A)"
+        active={artifactsBrowserOpen}
+      >
+        <span className="font-mono uppercase">artifacts</span>
       </TitleControl>
       <TitleControl
         className="no-drag hidden h-[28px] px-2.5 text-[10px] xl:inline-flex"
