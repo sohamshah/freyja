@@ -661,6 +661,49 @@ AGENT_TYPES: dict[str, AgentType] = {
         system_prompt=build_agentic_drafter_system_prompt(),
         max_iterations=iteration_cap("skill-drafter", 15),
     ),
+    "skill-drafter-fork": AgentType(
+        name="skill-drafter-fork",
+        description=(
+            "The skill drafter, run as a FORK of the session under review "
+            "rather than as a fresh sub-agent. Inherits the parent's system "
+            "prompt, tool array and full transcript; the drafting "
+            "instructions arrive as an injected user message at the tail."
+        ),
+        usage_hint=(
+            "Not spawnable by an agent — the bridge fires this from the "
+            "cadence counter and from operator /learn-this. See "
+            "SubAgentTool.spawn_fork."
+        ),
+        # Inherit the parent's model, deliberately, even though the
+        # sub-agent drafter pins Opus.
+        #
+        # Two reasons. First, Anthropic's cache is per-model: a fork that
+        # switches models gets no cache hit, which throws away the entire
+        # reason to fork. Second, the quality argument has changed shape. The
+        # sub-agent drafter was pinned to Opus because it reviewed a thin
+        # excerpt — every message truncated to its first 1 000 chars — so it
+        # needed a strong model to reconstruct what had happened. A fork reads
+        # the real conversation, tool results included. Full context on the
+        # parent's model beats a truncated excerpt on a bigger one.
+        #
+        # FREYJA_DRAFTER_MODEL still overrides when an operator wants the
+        # pinned tier and will pay the cache miss for it.
+        model="parent",
+        thinking_effort="medium",
+        model_policy="inherit",
+        # Ignored on the fork path (the parent's prompt is used verbatim), but
+        # kept valid so a direct spawn of this profile still behaves.
+        tool_include=frozenset({
+            "read_file", "list_directory", "glob", "grep",
+            "list_skills", "search_skills", "load_skill",
+            "propose_skill",
+        }),
+        system_prompt=build_agentic_drafter_system_prompt(),
+        # Far below the sub-agent's 15. Every iteration re-sends the whole
+        # transcript, and a fork with the full conversation in front of it
+        # should not need many passes: read a skill or two, decide, emit.
+        max_iterations=iteration_cap("skill-drafter-fork", 6),
+    ),
     "plan": AgentType(
         name="plan",
         description="Read-only implementation planning agent",

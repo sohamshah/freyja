@@ -1777,10 +1777,17 @@ class AsyncAgentRunner:
             # practice the loop only sends after a user/tool_result is
             # appended, so this guard rarely fires.
             return messages
+        # Always land the reminders in their OWN trailing block, even when the
+        # message's content is a plain string. The provider marks the last
+        # non-reminder block of the tail message as a cache breakpoint, which
+        # it can only find if the volatile suffix is separable from the stable
+        # text. Concatenating into the string would fuse the two and give up
+        # conversation-tail caching entirely.
+        from engine.types import TextBlock as _TextBlock
+
         if isinstance(last.content, str):
-            new_content: Any = last.content + combined
+            new_content: Any = [_TextBlock(text=last.content), _TextBlock(text=combined)]
         elif isinstance(last.content, list):
-            from engine.types import TextBlock as _TextBlock
             new_content = list(last.content) + [_TextBlock(text=combined)]
         else:
             return messages

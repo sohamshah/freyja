@@ -181,7 +181,14 @@ def test_anthropic_provider_formats_image_blocks_for_claude_messages_api() -> No
     params = provider._build_request([Message(role="user", content=content)])
 
     content_blocks = params["messages"][0]["content"]
-    assert content_blocks == [
+    # The last block of the tail message also carries the conversation
+    # cache breakpoint (see tests/test_prompt_cache_breakpoints.py). That is
+    # orthogonal to image formatting, so strip it before comparing shapes.
+    normalized = [
+        {k: v for k, v in block.items() if k != "cache_control"}
+        for block in content_blocks
+    ]
+    assert normalized == [
         {
             "type": "image",
             "source": {
@@ -192,6 +199,7 @@ def test_anthropic_provider_formats_image_blocks_for_claude_messages_api() -> No
         },
         {"type": "text", "text": "what is in this image?"},
     ]
+    assert content_blocks[-1]["cache_control"] == {"type": "ephemeral"}
 
 
 def test_anthropic_provider_classifies_oversized_image_as_image_too_large() -> None:
@@ -692,6 +700,9 @@ def test_channel2_pressure_note_attaches_to_last_user_message_not_system() -> No
     runner.config = _StubConfig()
     runner.usage = _StubUsage()
     runner._turn_start_pressure_band = None  # noqa: SLF001
+    # The bridge wires this producer at construction; a bare __new__ runner
+    # has no attribute for _gather_extra_reminders to read.
+    runner.get_extra_system_reminders = None
 
     base_system = "You are a helpful assistant. " + ("x" * 500)
     messages = [
@@ -747,6 +758,9 @@ def test_channel2_no_op_below_soft_band() -> None:
     runner.config = _StubConfig()
     runner.usage = _StubUsage()
     runner._turn_start_pressure_band = None  # noqa: SLF001
+    # The bridge wires this producer at construction; a bare __new__ runner
+    # has no attribute for _gather_extra_reminders to read.
+    runner.get_extra_system_reminders = None
 
     messages = [Message(role="user", content="hi")]
     augmented = runner._augment_messages_with_pressure_note(messages)

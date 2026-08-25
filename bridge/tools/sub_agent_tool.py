@@ -684,6 +684,8 @@ Parameters:
         max_iterations_override: int | None = None,
         mode: str = "foreground",
         model_override: str | None = None,
+        fork_context: dict[str, Any] | None = None,
+        transcript_snapshot: dict[str, Any] | None = None,
     ) -> tuple[SubAgentRecord, str | None, Exception | None]:
         """Spawn a sub-agent from internal bridge code (not via a model
         tool call). Same machinery as `execute()` — same record, same
@@ -800,6 +802,13 @@ Parameters:
             record.tool_filter_override = tool_filter  # type: ignore[attr-defined]
         if max_iterations_override is not None:
             record.max_iterations_override = max_iterations_override  # type: ignore[attr-defined]
+        # Fork payload — see spawn_fork. _run_child branches on this to
+        # inherit the parent's system prompt, tool array, and transcript
+        # instead of building fresh ones.
+        if fork_context is not None:
+            record.fork_context = fork_context  # type: ignore[attr-defined]
+        if transcript_snapshot is not None:
+            record.restored_transcript = transcript_snapshot  # type: ignore[attr-defined]
 
         # Inbox so this spawn participates in the talk system on day 1.
         try:
@@ -877,6 +886,60 @@ Parameters:
             )
             await _emit_update(self._spec, record)
             return record, None, exc
+
+    async def spawn_fork(
+        self,
+        *,
+        agent_type_name: str,
+        label: str,
+        injected_message: str,
+        transcript_snapshot: dict[str, Any],
+        system_prompt: str,
+        source_session_id: str,
+        title: str | None = None,
+        also_allow: frozenset[str] = frozenset(),
+        max_iterations_override: int | None = None,
+        model_override: str | None = None,
+        thinking_effort: str = "",
+    ) -> tuple[SubAgentRecord, str | None, Exception | None]:
+        """Fork a session and hand the copy one injected user message.
+
+        A fork is a sub-agent in every operational sense — its own record,
+        transcript, streaming, inbox, cancel, and pane in the subagents panel
+        — but it starts from the PARENT's state instead of from nothing:
+
+          · ``system_prompt`` is the parent's, verbatim.
+          · The tool array is the parent's, verbatim, with mutating tools
+            refused at execution time rather than removed (see
+            ``bridge.tools.fork_registry``).
+          · ``transcript_snapshot`` is the parent's serialized transcript.
+          · ``injected_message`` is appended as the next user turn.
+
+        The verbatim-ness is the point. Anthropic caches by prefix in the
+        order tools then system then messages, so a fork that changes nothing
+        before the injected message reads the parent's conversation out of
+        cache instead of re-sending it at full input rate. For the skill
+        drafter — which runs every few user turns against the whole
+        transcript — that is the difference between viable and not.
+
+        Same return shape as ``spawn_programmatically``:
+        ``(record, response_text, error_or_None)``.
+        """
+        return await self.spawn_programmatically(
+            agent_type_name=agent_type_name,
+            label=label,
+            task=injected_message,
+            title=title,
+            max_iterations_override=max_iterations_override,
+            model_override=model_override,
+            fork_context={
+                "system_prompt": system_prompt,
+                "also_allow": tuple(sorted(also_allow)),
+                "source_session_id": source_session_id,
+                "thinking_effort": thinking_effort,
+            },
+            transcript_snapshot=transcript_snapshot,
+        )
 
     async def _run_foreground(
         self, call_id: str, record: SubAgentRecord
@@ -960,6 +1023,18 @@ Parameters:
             if name in parent_tools:
                 allowed = allowed | {name}
 
+        fork_context = getattr(record, "fork_context", None)
+        # A fork must match the parent's thinking config, not the agent
+        # type's. Anthropic invalidates a cached prefix when the thinking
+        # budget changes, so a fork that reuses the parent's tools, system
+        # prompt and transcript but switches effort still pays full input
+        # rate for all of it — measured: 33 371 cache-write tokens and zero
+        # cache reads on an otherwise byte-identical prefix.
+        thinking_effort = agent_type.thinking_effort
+        if fork_context is not None:
+            thinking_effort = (
+                str(fork_context.get("thinking_effort") or "") or thinking_effort
+            )
         child_registry = ToolRegistry()
         for name in sorted(allowed):
             tool = parent_tools.get(name)
@@ -1073,9 +1148,41 @@ Parameters:
                 )
             )
 
+        if fork_context is not None:
+            # Everything above may have added tools to the child registry
+            # (talk, widgets, message bus, kanban, task board). A fork must not
+            # carry any of them: it runs on the parent's EXACT request prefix
+            # so the parent's prompt cache hits, and Anthropic caches
+            # tools → system → messages in order — a tools array that differs
+            # by one entry, by ordering, or by a schema-visibility flag the
+            # session had flipped via tool_search invalidates the entire
+            # conversation behind it, which is the thing the fork exists to
+            # reuse.
+            #
+            # So: replace the child registry with a verbatim mirror of the
+            # parent's, and enforce read-only at EXECUTION time rather than by
+            # filtering the list. Rebuilt here, in one place, rather than
+            # guarding each registration above — a block added later would
+            # otherwise silently cost the cache hit.
+            from bridge.tools.fork_registry import build_read_only_fork_registry
+
+            child_registry = build_read_only_fork_registry(
+                self._spec.parent_registry,
+                also_allow=frozenset(fork_context.get("also_allow") or ()),
+            )
+
         # Build system prompt: use agent type's specialized prompt if provided,
         # otherwise fall back to default sub-agent prompt with tool list.
-        if agent_type.system_prompt:
+        if fork_context is not None:
+            # Verbatim from the parent. Same reason as the registry: the system
+            # block is the second element of Anthropic's cached prefix, so
+            # appending even a "Profile metadata:" footer to it would cost the
+            # conversation cache. The fork's instructions arrive as the
+            # injected user message at the tail instead, which is also where
+            # they belong — recency wins over a system prompt that spent 20 KB
+            # telling the model to be the operator's assistant.
+            system_prompt = str(fork_context.get("system_prompt") or "")
+        elif agent_type.system_prompt:
             from bridge.tools.coordination import current_datetime_block
             tool_lines = "\n".join(
                 f"- `{name}` — {tool.definition.summary}"
@@ -1113,14 +1220,15 @@ Parameters:
             )
             system_prompt += self._coordination_guidance(record)
 
-        system_prompt += (
-            "\nProfile metadata:\n"
-            f"- type: {agent_type.name}\n"
-            f"- model: {child_model}\n"
-            f"- thinking: {agent_type.thinking_effort}\n"
-            f"- max iterations: {agent_type.max_iterations}\n"
-            f"- source: {agent_type.source}\n"
-        )
+        if fork_context is None:
+            system_prompt += (
+                "\nProfile metadata:\n"
+                f"- type: {agent_type.name}\n"
+                f"- model: {child_model}\n"
+                f"- thinking: {agent_type.thinking_effort}\n"
+                f"- max iterations: {agent_type.max_iterations}\n"
+                f"- source: {agent_type.source}\n"
+            )
 
         # Gateway context: when the parent is running under a gateway
         # (Slack today), tell the child agent so it knows files it
@@ -1134,6 +1242,10 @@ Parameters:
             gw_getter = self._spec.parent_gateway_source_getter
             gw_source = gw_getter() if gw_getter is not None else None
         except Exception:  # noqa: BLE001
+            gw_source = None
+        # A fork already inherited whatever gateway framing the parent's own
+        # system prompt carries, and must not append anything to it.
+        if fork_context is not None:
             gw_source = None
         if gw_source is not None:
             platform = getattr(
@@ -1164,7 +1276,11 @@ Parameters:
             r for r in self._spec.registry.list_all()
             if r.id != record.id and r.is_running
         ]
-        if siblings and self._spec.coordination_strategy == STRATEGY_BUS:
+        if (
+            fork_context is None
+            and siblings
+            and self._spec.coordination_strategy == STRATEGY_BUS
+        ):
             sibling_lines = "\n".join(
                 f"- {s.label} [{s.agent_type_name}]: {s.task[:120]}"
                 for s in siblings
@@ -1199,7 +1315,7 @@ Parameters:
             child_registry = self._spec.wrap_registry(child_registry, record.id)
 
         # Build provider with agent type's model and thinking config
-        provider = self._spec.build_provider(child_model, agent_type.thinking_effort)
+        provider = self._spec.build_provider(child_model, thinking_effort)
         session = Session.create(
             system_prompt=system_prompt,
             tools=list(child_registry._tools.values()),  # noqa: SLF001
@@ -1221,13 +1337,42 @@ Parameters:
         # incoming inbox message (also pre-loaded onto record.inbox)
         # will be drained by the runner's pre-iteration hook and
         # appear as the next user turn.
-        if getattr(record, "resume_mode", False) and getattr(record, "restored_transcript", None):
+        _snapshot = getattr(record, "restored_transcript", None)
+        if _snapshot and (
+            getattr(record, "resume_mode", False) or fork_context is not None
+        ):
             try:
-                session.restore_transcript(record.restored_transcript)
-                logger.info("Restored transcript onto resumed sub-agent %s", record.id)
+                session.restore_transcript(_snapshot)
+                if fork_context is not None:
+                    # restore_transcript replaces metadata wholesale with the
+                    # source session's, which would leave the fork claiming to
+                    # be its parent. Put the fork's own identity back — the
+                    # transcript is inherited, the identity is not.
+                    session.metadata.update(
+                        {
+                            "model_id": child_model,
+                            "reasoning_level": thinking_effort,
+                            "parent_session_id": self._spec.parent_session_id,
+                            "project_session_id": self._spec.parent_session_id,
+                            "subagent_id": record.id,
+                            "subagent_label": record.label,
+                            "agent_type": agent_type.name,
+                            "forked_from": fork_context.get("source_session_id") or "",
+                        }
+                    )
+                    logger.info(
+                        "Forked %s entries from %s onto %s",
+                        len((_snapshot.get("transcript") or {}).get("entries") or []),
+                        fork_context.get("source_session_id") or "?",
+                        record.id,
+                    )
+                else:
+                    logger.info(
+                        "Restored transcript onto resumed sub-agent %s", record.id
+                    )
             except Exception:
                 logger.exception(
-                    "failed to restore transcript on resumed sub-agent %s", record.id
+                    "failed to restore transcript on sub-agent %s", record.id
                 )
 
         await self._mark_kanban_running(record)
@@ -1312,7 +1457,7 @@ Parameters:
         # Build thinking config for the child runner
         from engine.types import ThinkingConfig
         child_thinking = ThinkingConfig()
-        effort = agent_type.thinking_effort
+        effort = thinking_effort
         if effort not in ("off", "none", ""):
             if effort == "auto":
                 # Import the auto-resolver from the bridge
@@ -1468,12 +1613,18 @@ Parameters:
         # references to child_registry (and the system_prompt that
         # already listed the tools by name) stay valid. Mutating the
         # private map keeps the registration order from registry build.
-        if "summarize_context" in child_registry._tools:  # noqa: SLF001
-            child_registry._tools["summarize_context"] = sub_summarize_tool  # noqa: SLF001
-        if "session_memory" in child_registry._tools:  # noqa: SLF001
-            child_registry._tools["session_memory"] = SessionMemoryTool(
-                session_id=record.id,
-            )  # noqa: SLF001
+        #
+        # NOT for a fork. A fork's registry is a read-only mirror in which both
+        # of these are RefusedTool stubs; swapping live instances back in here
+        # would hand a reviewer the ability to compact a transcript and write
+        # to session memory — the exact mutations the mirror exists to refuse.
+        if fork_context is None:
+            if "summarize_context" in child_registry._tools:  # noqa: SLF001
+                child_registry._tools["summarize_context"] = sub_summarize_tool  # noqa: SLF001
+            if "session_memory" in child_registry._tools:  # noqa: SLF001
+                child_registry._tools["session_memory"] = SessionMemoryTool(
+                    session_id=record.id,
+                )  # noqa: SLF001
 
         # Pre-iteration hook: drain this sub-agent's inbox and prepend
         # incoming messages as attributed user turns before each LLM
@@ -1788,10 +1939,19 @@ Parameters:
                 if produced_before_final
                 else "(no verified files recorded before final summary)"
             )
+            # The task line is a one-line header, not the payload. A forked
+            # drafter's task is a 17 KB instruction block; pasting it whole put
+            # more boilerplate than content in every artifact — and, since
+            # artifacts are indexed, made every drafter run search-match on the
+            # instructions rather than on what it decided.
+            task_line = record.task.strip().replace("\n", " ")
+            if len(task_line) > 400:
+                task_line = task_line[:400] + " …[truncated]"
+
             artifact_file.write_text(
                 f"# {record.label}\n\n"
                 f"**Agent type:** {agent_type.name}\n"
-                f"**Task:** {record.task}\n"
+                f"**Task:** {task_line}\n"
                 f"**Model:** {child_model}\n"
                 f"**Model policy:** {model_policy}\n"
                 f"**Tokens:** {record.input_tokens} in / {record.output_tokens} out\n"

@@ -44,6 +44,16 @@ CADENCE_THRESHOLD_ENV_VAR = "FREYJA_SKILL_NUDGE_INTERVAL"
 DRAFTER_DEFAULT_MODEL = "claude-opus-4-8"
 DRAFTER_MODEL_ENV_VAR = "FREYJA_DRAFTER_MODEL"
 
+# Which drafter shape runs. "fork" (default) reviews a copy of the
+# session under review, with the drafting instructions injected as a
+# user message at the tail — it sees the real transcript and rides the
+# parent's prompt cache. "subagent" is the previous shape: a fresh
+# sub-agent handed a rendered excerpt with every message truncated to
+# 1 000 chars. Kept as an escape hatch for a session whose context is
+# large enough that reviewing a copy of it is the wrong trade.
+DRAFTER_MODE_ENV_VAR = "FREYJA_DRAFTER_MODE"
+DRAFTER_MODE_DEFAULT = "fork"
+
 # Outcome classifier model. Same shape: default + env override.
 OUTCOME_CLASSIFIER_DEFAULT_MODEL = "claude-opus-4-8"
 OUTCOME_CLASSIFIER_MODEL_ENV_VAR = "FREYJA_OUTCOME_CLASSIFIER_MODEL"

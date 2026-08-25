@@ -786,7 +786,12 @@ async def _run_drafter_inner(
         # ~120 lines replacing a 404-line skill; without this badge the
         # operator had no way to spot the 65% content loss until after
         # promotion deleted it from disk.
-        existing_stats = _compute_existing_skill_diff_stats(name, body)
+        # One argument, not two: the helper renders the candidate the way
+        # promote will (frontmatter assembled from the dataclass fields)
+        # before diffing. Passing (name, body) raised a TypeError that the
+        # surrounding `except Exception` swallowed, so this path's
+        # `skill_candidate` emit never fired at all.
+        existing_stats = _compute_existing_skill_diff_stats(candidate)
         emit(
             {
                 "type": "skill_candidate",

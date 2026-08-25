@@ -980,7 +980,12 @@ class Session:
             "last_activity": self.last_activity,
             "compaction_count": self.compaction_count,
             "tool_tokens": self.tool_tokens,
-            "metadata": self.metadata,
+            # A COPY. restore_transcript assigns this dict straight onto the
+            # restored session, so handing out the live reference means a
+            # session restored from a snapshot shares its metadata with the
+            # session the snapshot came from — and any write by one silently
+            # rewrites the other's model id, reasoning level and project dir.
+            "metadata": dict(self.metadata),
             "transcript": self.transcript.to_dict(),
         }
 
@@ -997,7 +1002,12 @@ class Session:
         self.last_activity = data.get("last_activity", self.last_activity)
         self.compaction_count = data.get("compaction_count", 0)
         self.tool_tokens = data.get("tool_tokens", self.tool_tokens)
-        self.metadata = data.get("metadata", {})
+        # Copy on the way IN as well as on the way out. Restoring is how two
+        # sessions come to share a metadata dict, and the restoring session
+        # then stamps its own identity into it — so a shared reference here
+        # rewrites the source session's model, agent type and project dir.
+        restored_metadata = data.get("metadata")
+        self.metadata = dict(restored_metadata) if isinstance(restored_metadata, dict) else {}
         transcript_d = data.get("transcript")
         if transcript_d:
             self.transcript = TranscriptManager.from_dict(transcript_d)

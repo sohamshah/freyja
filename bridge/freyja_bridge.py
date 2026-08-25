@@ -4380,9 +4380,14 @@ class _BridgeSession:
             memory_store=self.memory_store,
             skill_store=self.skill_store,
         )
-        from bridge.tools.coordination import current_datetime_block
+        # Day-resolution, deliberately: the system block is Anthropic's first
+        # cache breakpoint and a minute-resolution clock here invalidated it —
+        # and everything cached behind it — on nearly every turn. The precise
+        # time rides the per-request reminder tail instead
+        # (_build_extra_system_reminders).
+        from bridge.tools.coordination import current_date_block
         system_prompt = (
-            current_datetime_block() + "\n\n"
+            current_date_block() + "\n\n"
             + self._base_system_prompt
             + ("\n\n" + knowledge_prompt if knowledge_prompt else "")
         )
@@ -5619,9 +5624,12 @@ class _BridgeSession:
                 skill_store=self.skill_store,
                 query=query,
             )
-            from bridge.tools.coordination import current_datetime_block
+            # Day-resolution — see the note at the sibling assembly in
+            # initialize(). This runs on EVERY turn, so a volatile value here
+            # is the single most expensive thing that can go in the prompt.
+            from bridge.tools.coordination import current_date_block
             system_prompt = (
-                current_datetime_block() + "\n\n"
+                current_date_block() + "\n\n"
                 + self._base_system_prompt
                 + ("\n\n" + knowledge_prompt if knowledge_prompt else "")
             )
@@ -5840,12 +5848,46 @@ class _BridgeSession:
             )
         except Exception:  # noqa: BLE001
             return
+        # Publish where the counter stands so DrafterActivityStrip can show
+        # "next review in N turns". The event and its reducer have existed
+        # since the strip was built; nothing ever emitted it, so the strip's
+        # countdown was permanently blank.
+        self._emit_cadence_state()
         if not tripped:
             return
+        try:
+            from bridge.knowledge.learning import events as _events
+
+            _events.append_drafter_trip(self.id, turn_id=self.current_turn_id)
+        except Exception:  # noqa: BLE001
+            pass
         try:
             self._spawn_drafter_review(trigger="cadence")
         except Exception:  # noqa: BLE001
             pass
+
+    def _emit_cadence_state(self) -> None:
+        """Best-effort snapshot of the workspace-global cadence counter."""
+        try:
+            from bridge.knowledge.learning.constants import (
+                CADENCE_DEFAULT_THRESHOLD,
+            )
+            from bridge.knowledge.learning.review_scheduler import read_cadence_state
+
+            state = read_cadence_state()
+            since = int(state.get("turns_since_last_review") or 0)
+            threshold = int(state.get("threshold") or CADENCE_DEFAULT_THRESHOLD)
+            emit({
+                "type": "cadence_state",
+                "sessionId": self.id,
+                "turnsSinceLastReview": since,
+                "turnsUntilTrip": max(0, threshold - since),
+                # Already epoch MILLIseconds — review_scheduler writes it
+                # with _now_ms(). Do not scale it again.
+                "lastTrippedAt": int(state.get("last_trip_ts") or 0),
+            })
+        except Exception:  # noqa: BLE001
+            log("debug", "cadence_state emit failed")
 
     def _spawn_drafter_review(
         self,
@@ -5895,10 +5937,23 @@ class _BridgeSession:
         # near-simultaneous runs (cadence trip racing with /learn-this)
         # would smear in the activity feed.
         run_id = _uuid.uuid4().hex[:12]
-        drafter_model_id = ""
+        # What will actually run. The fork inherits this session's model —
+        # Anthropic's cache is per-model, so switching would throw away the
+        # cached prefix the fork exists to reuse. Only the legacy sub-agent
+        # shape uses the pinned FREYJA_DRAFTER_MODEL tier.
+        drafter_model_id = str(self.model_id or "")
         try:
+            from bridge.knowledge.learning.constants import (
+                DRAFTER_MODE_DEFAULT,
+                DRAFTER_MODE_ENV_VAR,
+            )
             from bridge.knowledge.learning.drafter import _drafter_model
-            drafter_model_id = _drafter_model()
+
+            mode = (
+                os.environ.get(DRAFTER_MODE_ENV_VAR) or DRAFTER_MODE_DEFAULT
+            ).strip().lower()
+            if mode == "subagent":
+                drafter_model_id = _drafter_model()
         except Exception:  # noqa: BLE001
             pass
 
@@ -5955,32 +6010,305 @@ class _BridgeSession:
         except Exception:  # noqa: BLE001
             pass
 
-        # Spawn the skill-drafter sub-agent. The sub-agent owns the
-        # decision: it reads existing skills, optionally inspects files
-        # the conversation references, then calls `propose_skill` to
-        # publish a candidate (operator sees a SkillToast) — or finishes
-        # with a plain-text rationale when there's nothing worth
-        # capturing. Same pattern as _run_judge_calibrator.
+        # Run the drafter. It owns the decision: it reads existing skills,
+        # optionally inspects files the conversation references, then either
+        # emits a candidate (operator sees a SkillToast) or explains why
+        # nothing here was worth capturing.
         #
-        # We don't await here — the spawn is fire-and-forget so the user
-        # turn loop returns immediately. The sub-agent runs in the
-        # background, streaming its transcript like any other sub-agent,
-        # and the operator can navigate into it via the subagents panel
-        # (or the DrafterRunsPanel row, once that links are wired).
+        # We don't await — the spawn is fire-and-forget so the user's turn loop
+        # returns immediately. The drafter runs in the background, streaming
+        # its transcript like any other sub-agent, and the operator can
+        # navigate into it from the subagents panel or the DrafterRunsPanel row.
+        #
+        # ``conversation`` is only used by the legacy sub-agent shape. The fork
+        # shape reads the real transcript instead — see _run_drafter_fork.
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(
-                self._run_drafter_subagent(
-                    run_id=run_id,
-                    conversation_excerpt=conversation,
-                    loaded_skill_names=loaded,
-                    all_skill_names=all_skills,
-                    operator_guidance=operator_guidance,
-                    trigger=trigger,
+                self._run_drafter(
+                    run_id,
+                    conversation,
+                    loaded,
+                    all_skills,
+                    operator_guidance,
+                    trigger,
                 )
             )
         except RuntimeError:
-            log("warn", "drafter: no running loop, sub-agent spawn skipped")
+            log("warn", "drafter: no running loop, drafter spawn skipped")
+
+    async def _run_drafter(
+        self,
+        run_id: str,
+        conversation_excerpt: str,
+        loaded_skill_names: list[str],
+        all_skill_names: list[str],
+        operator_guidance: str,
+        trigger: str,
+    ) -> None:
+        """Dispatch to whichever drafter shape is configured.
+
+        ``fork`` (default) reviews a copy of THIS session with the drafting
+        instructions injected as a user message. ``subagent`` is the previous
+        shape: a fresh sub-agent handed a truncated excerpt. The escape hatch
+        exists because the fork inherits the parent's whole transcript, so a
+        pathological session (enormous context, a model with no cache) is
+        cheaper to review from an excerpt.
+        """
+        from bridge.knowledge.learning.constants import (
+            DRAFTER_MODE_DEFAULT,
+            DRAFTER_MODE_ENV_VAR,
+        )
+
+        mode = (
+            os.environ.get(DRAFTER_MODE_ENV_VAR) or DRAFTER_MODE_DEFAULT
+        ).strip().lower()
+        if mode == "subagent":
+            await self._run_drafter_subagent(
+                run_id=run_id,
+                conversation_excerpt=conversation_excerpt,
+                loaded_skill_names=loaded_skill_names,
+                all_skill_names=all_skill_names,
+                operator_guidance=operator_guidance,
+                trigger=trigger,
+            )
+            return
+        try:
+            await self._run_drafter_fork(
+                run_id=run_id,
+                loaded_skill_names=loaded_skill_names,
+                all_skill_names=all_skill_names,
+                operator_guidance=operator_guidance,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"drafter fork failed ({type(exc).__name__}: {exc}) — falling back to sub-agent")
+            self._emit_drafter_pass(
+                run_id=run_id,
+                decision="error",
+                rationale=f"fork failed: {type(exc).__name__}: {str(exc)[:200]}",
+            )
+
+    async def _run_drafter_fork(
+        self,
+        *,
+        run_id: str,
+        loaded_skill_names: list[str],
+        all_skill_names: list[str],
+        operator_guidance: str,
+    ) -> None:
+        """Review this session by forking it and injecting a user message.
+
+        What changed and why
+        ────────────────────
+        The previous drafter spawned a fresh sub-agent and handed it a
+        rendered excerpt of the conversation — every message truncated to its
+        first 1 000 chars, the whole thing capped at 120 KB. It therefore saw
+        what each turn set out to do and almost never what it concluded, which
+        is precisely backwards: the durable knowledge in a session lives in the
+        corrections and the thing that finally worked.
+
+        A fork carries the real transcript, tool results included, and the
+        skills that were genuinely loaded are genuinely in context. It is also
+        much cheaper than it sounds: the fork's request prefix is byte-
+        identical to the parent's — same tools, same system prompt, same
+        messages — so Anthropic serves the conversation from cache instead of
+        re-reading it. That identity is fragile, which is why the fork path in
+        SubAgentTool goes to such lengths to change nothing before the
+        injected message.
+
+        Safety, which the sub-agent path only ever claimed: the fork inherits
+        the parent's full tool array for cache fidelity, but every mutating
+        tool refuses at execution time (bridge/tools/fork_registry). The old
+        drafter had ``bash`` on its whitelist and a system prompt asking it
+        nicely to stay read-only.
+        """
+        from bridge.knowledge.learning.drafter_prompt import (
+            build_forked_drafter_injection,
+        )
+        from bridge.knowledge.learning.fork_output import parse_fork_decision
+
+        sub_tool = self.tool_registry._tools.get("sub_agent") if self.tool_registry else None  # noqa: SLF001
+        if sub_tool is None or self.session is None:
+            log("warn", "drafter: cannot fork — sub_agent tool or session missing")
+            self._emit_drafter_pass(
+                run_id=run_id, decision="error", rationale="fork prerequisites missing",
+            )
+            return
+
+        try:
+            from bridge.knowledge.learning import candidates as _candidates
+
+            negative_excerpt = _candidates.negative_library_excerpt()
+        except Exception:  # noqa: BLE001
+            negative_excerpt = ""
+
+        injected = build_forked_drafter_injection(
+            loaded_skill_names=loaded_skill_names,
+            all_skill_names=all_skill_names,
+            negative_library_excerpt=negative_excerpt,
+            operator_guidance=operator_guidance,
+        )
+
+        # Snapshot under no lock: the drafter fires from the post-turn hook, so
+        # the transcript is at a turn boundary and quiescent.
+        #
+        # Round-tripped through JSON so the fork shares NO mutable structure
+        # with the live session. The same trick transcript_persistence uses in
+        # clone_transcript, and for the same reason: the fork restores this
+        # dict onto its own Session and then stamps its own identity into it.
+        snapshot = json.loads(json.dumps(self.session.serialize_transcript()))
+        source_turn_id = self.current_turn_id or ""
+
+        record, response_text, error = await sub_tool.spawn_fork(
+            agent_type_name="skill-drafter-fork",
+            label="Skill drafter (fork)",
+            injected_message=injected,
+            transcript_snapshot=snapshot,
+            system_prompt=self.session.system_prompt,
+            source_session_id=self.id,
+            # propose_skill is WARM in the parent, so it is not in the request
+            # until the model promotes it through tool_search. Allowing it here
+            # only means that if the model DOES take that route, the publish
+            # works rather than being refused. The fenced decision block stays
+            # the primary path precisely because it costs no tools change.
+            also_allow=frozenset({"propose_skill"}),
+            # Match the parent's reasoning level so the cached prefix survives
+            # — Anthropic invalidates it when the thinking budget changes.
+            thinking_effort=str(self.reasoning_level or ""),
+            # An explicit FREYJA_DRAFTER_MODEL is the operator saying "I want
+            # the pinned quality tier and I'll pay the cache miss for it".
+            # Unset (the default) inherits the parent's model, which is what
+            # makes the cached prefix reusable at all.
+            model_override=_drafter_model_override(),
+        )
+
+        try:
+            emit({
+                "type": "skill_drafter_run_linked",
+                "sessionId": self.id,
+                "runId": run_id,
+                "subagentSessionId": getattr(record, "id", ""),
+            })
+        except Exception:  # noqa: BLE001
+            pass
+
+        drafter_model = str(getattr(record, "child_model", "") or "")
+
+        if error is not None:
+            self._emit_drafter_pass(
+                run_id=run_id,
+                decision="error",
+                rationale=f"runner: {type(error).__name__}: {str(error)[:200]}",
+                model=drafter_model,
+            )
+            self._append_drafter_decision("error", rationale=str(error)[:200])
+            return
+
+        decision = parse_fork_decision(response_text or "")
+
+        if decision is None:
+            # No block. Either the drafter promoted propose_skill and published
+            # through it (in which case the candidate already exists and its
+            # own event fired), or it wandered off. Report skip and let the
+            # skill_candidate event be the source of truth for the former —
+            # unlike the old keyword scan of the final text, this does not
+            # claim to know which.
+            rationale = (response_text or "").strip()[:240] or "no decision block emitted"
+            self._emit_drafter_pass(
+                run_id=run_id, decision="skip", rationale=rationale, model=drafter_model,
+            )
+            self._append_drafter_decision("skip", rationale=rationale)
+            return
+
+        if decision.error:
+            self._emit_drafter_pass(
+                run_id=run_id,
+                decision="error",
+                rationale=decision.error,
+                model=drafter_model,
+            )
+            self._append_drafter_decision("error", rationale=decision.error)
+            return
+
+        if not decision.is_save:
+            self._emit_drafter_pass(
+                run_id=run_id,
+                decision="skip",
+                rationale=decision.rationale or "nothing cleared the bar",
+                model=drafter_model,
+            )
+            self._append_drafter_decision("skip", rationale=decision.rationale)
+            return
+
+        from bridge.knowledge.learning.publish import publish_candidate
+
+        candidate_id, verdict, publish_error = publish_candidate(
+            name=decision.name,
+            description=decision.description,
+            body=decision.body,
+            skill_type=decision.skill_type,
+            triggers=decision.triggers,
+            tags=decision.tags,
+            rationale=decision.rationale,
+            source_session_id=self.id,
+            source_turn_id=source_turn_id,
+            drafter_model=drafter_model,
+            emit_fn=emit,
+        )
+
+        if publish_error and not candidate_id:
+            self._emit_drafter_pass(
+                run_id=run_id,
+                decision="error",
+                rationale=f"publish refused: {publish_error}",
+                model=drafter_model,
+            )
+            self._append_drafter_decision("error", rationale=str(publish_error)[:200])
+            return
+
+        log(
+            "info",
+            f"drafter fork: candidate {decision.name!r} published "
+            f"(id={candidate_id} guard={verdict})",
+        )
+        self._emit_drafter_pass(
+            run_id=run_id,
+            decision="save",
+            rationale=decision.rationale or f"saved {decision.name}",
+            model=drafter_model,
+            name=decision.name,
+            candidate_id=candidate_id,
+        )
+        self._append_drafter_decision(
+            "candidate", rationale=f"saved {decision.name}", candidate_id=candidate_id,
+        )
+
+    def _append_drafter_decision(
+        self,
+        result: str,
+        *,
+        rationale: str = "",
+        candidate_id: str | None = None,
+    ) -> None:
+        """Write the unified decision row to ``.events.jsonl``.
+
+        This audit trail existed and was dead: its only writers were
+        review_worker and the single-call drafter, neither of which is
+        reachable in production, so ``.events.jsonl`` could never distinguish
+        "the drafter never ran" from "it ran and skipped".
+        """
+        try:
+            from bridge.knowledge.learning import events as _events
+
+            _events.append_drafter_decision(
+                self.id,
+                turn_id=self.current_turn_id,
+                result=result,
+                rationale=rationale or "",
+                candidate_id=candidate_id or "",
+            )
+        except Exception:  # noqa: BLE001
+            log("debug", "drafter: decision event append failed")
 
     async def _run_drafter_subagent(
         self,
@@ -6099,19 +6427,34 @@ class _BridgeSession:
         run_id: str,
         decision: str,
         rationale: str,
+        model: str = "",
+        name: str = "",
+        candidate_id: str | None = None,
     ) -> None:
         """Single-site for the ``skill_drafter_pass`` emit so the run-
-        termination cases share one shape."""
+        termination cases share one shape.
+
+        ``model`` / ``name`` / ``candidateId`` used to be hardcoded empty here,
+        which left three renderer branches permanently dead:
+        DrafterRunsPanel's "→ <candidateName>", DrafterActivityStrip's
+        "save (<name>)", and the model row in the expanded run detail. They
+        are real fields; fill them.
+        """
+        payload: dict[str, Any] = {
+            "type": "skill_drafter_pass",
+            "sessionId": self.id,
+            "decision": decision,
+            "rationale": rationale,
+            "model": model,
+            "ranAt": int(time.time() * 1000),
+            "runId": run_id,
+        }
+        if name:
+            payload["name"] = name
+        if candidate_id:
+            payload["candidateId"] = candidate_id
         try:
-            emit({
-                "type": "skill_drafter_pass",
-                "sessionId": self.id,
-                "decision": decision,
-                "rationale": rationale,
-                "model": "",
-                "ranAt": int(time.time() * 1000),
-                "runId": run_id,
-            })
+            emit(payload)
         except Exception:  # noqa: BLE001
             log("warn", "drafter: emit(skill_drafter_pass) failed")
 
@@ -9582,6 +9925,14 @@ class _BridgeSession:
         reminder. All ride the same cache-friendly tail-append seam.
         """
         blocks: list[str] = []
+        # The clock. Lives here rather than in the system prompt so the cached
+        # prefix stays stable across turns — see current_date_block's docstring.
+        try:
+            from bridge.tools.coordination import current_time_reminder
+
+            blocks.append(current_time_reminder())
+        except Exception:
+            log("debug", "time reminder failed")
         try:
             corr = self._build_forgetting_correction()
             if corr:

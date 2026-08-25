@@ -7,14 +7,23 @@ from datetime import datetime, timezone
 
 
 def current_datetime_block() -> str:
-    """Return a one-line "current date and time" block for inclusion in
-    every agent system prompt.
+    """A one-line "current date and time" block, to minute resolution.
 
     Models behave very differently when they don't know the current
     date — they fall back to their training cutoff, refuse temporal
     questions, or hallucinate. Includes both ISO-8601 UTC (machine-
     readable) and a local-tz human format (the local time the operator
     sees on their machine).
+
+    DO NOT put this in a long-lived session's system prompt. The system
+    block is Anthropic's FIRST cache breakpoint, so a value that changes
+    every minute invalidates it — and, because caching is prefix-ordered
+    (tools → system → messages), every later breakpoint with it. Use
+    :func:`current_date_block` there and let :func:`current_time_reminder`
+    carry the clock on the per-request tail-append seam instead.
+
+    Still correct for one-shot calls that have no prefix worth keeping:
+    compaction, summarizers, sub-agent prompts built once per spawn.
     """
     now_local = datetime.now().astimezone()
     iso_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -22,6 +31,41 @@ def current_datetime_block() -> str:
     return (
         f"The current date and time is: {human} "
         f"(ISO-8601 UTC: {iso_utc})."
+    )
+
+
+def current_date_block() -> str:
+    """Day-stable date line for a long-lived session's system prompt.
+
+    Same purpose as :func:`current_datetime_block` — tell the model what
+    day it is — without the minute-resolution clock that made the system
+    block, and therefore the entire cached prefix behind it, miss on
+    essentially every turn.
+    """
+    now_local = datetime.now().astimezone()
+    return (
+        f"Today's date is {now_local.strftime('%A %B %d, %Y')} "
+        f"(ISO-8601 {now_local.strftime('%Y-%m-%d')}, "
+        f"local timezone {now_local.strftime('%Z %z')})."
+    )
+
+
+def current_time_reminder() -> str:
+    """Precise wall-clock time, for the per-request reminder tail.
+
+    The runner appends these to a CLONE of the last user message rather
+    than to the system prompt, precisely so dynamic guidance costs a few
+    hundred re-processed tokens instead of invalidating a ~30k-token
+    cached prefix. The clock belongs here for the same reason.
+    """
+    now_local = datetime.now().astimezone()
+    iso_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (
+        "<system-reminder>\n"
+        f"Current time: {now_local.strftime('%A %B %d, %Y at %H:%M %Z')} "
+        f"(ISO-8601 UTC {iso_utc}). The date line in your system prompt is "
+        "day-resolution; this is the precise time.\n"
+        "</system-reminder>"
     )
 
 

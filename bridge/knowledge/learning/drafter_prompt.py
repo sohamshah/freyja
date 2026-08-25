@@ -569,3 +569,216 @@ def build_agentic_drafter_system_prompt() -> str:
         + SKILL_CRAFT_BLOCK
         + FREYJA_EMISSION_BAR
     )
+
+
+# ── Forked drafter injection ──────────────────────────────────────────
+#
+# The third and current drafter shape. Instead of spawning a fresh
+# sub-agent and handing it a truncated transcript excerpt, the bridge
+# FORKS the parent session — same system prompt, same tools, same
+# transcript — and appends the instructions below as a user message.
+#
+# Two things that buys, both of which the excerpt-based drafter could
+# not have:
+#
+#   1. Prompt cache. The fork's request prefix is byte-identical to the
+#      parent's, so the conversation is a cache read rather than a full-
+#      rate re-send. That is only true if we change NOTHING before the
+#      injected message — no extra tool definitions, no system prompt
+#      edits. It is why the output contract below is a fenced block
+#      rather than a new tool.
+#   2. The real conversation. The excerpt path truncated every message
+#      to its first 1 000 chars before a 120 KB cap, so the drafter saw
+#      openings and never conclusions — it reviewed what the agent set
+#      out to do rather than what it actually learned. The fork sees the
+#      whole thing, including tool results and the skills that were
+#      genuinely loaded.
+#
+# The reused blocks (Hermes review, craft, emission bar) are shared
+# verbatim with the sub-agent prompt. The context and operating blocks
+# are rewritten, because every claim in AGENTIC_FREYJA_CONTEXT — "you
+# are a sub-agent", "the conversation is in the excerpt below",
+# "everything else is read-only because your whitelist says so" — is
+# either false or differently true in a fork.
+#
+# Note the Hermes block opens "Review the conversation ABOVE". In the
+# excerpt path that was simply wrong, since the conversation arrived
+# BELOW in the user message. In a fork it is finally accurate.
+
+
+FORK_DRAFTER_CONTEXT = (
+    "─── MODE SWITCH: you are now the Freyja skill drafter ───\n\n"
+    "Everything above this message is a real working session — yours. "
+    "This is a fork of it, made specifically to review that work. The "
+    "operator is not reading this turn and is not waiting on an answer "
+    "to whatever was being discussed; do not continue the previous "
+    "task, do not address the operator conversationally, and do not "
+    "pick up any pending TODO from the transcript. Your only job for "
+    "this turn is the review described below.\n\n"
+    "What the fork means concretely:\n"
+    "  · The conversation above is the material under review, in full — "
+    "not a summary and not an excerpt. Tool calls, tool results, the "
+    "dead ends, and the corrections are all there. Use them: the "
+    "corrections are usually where the durable knowledge is.\n"
+    "  · Any skills loaded above are genuinely loaded in your context. "
+    "You can read what they actually say instead of guessing from a "
+    "name in a list.\n"
+    "  · Nothing you do in this fork touches the original session. It "
+    "keeps running with its own history; this branch ends when you "
+    "finish.\n\n"
+    "Runtime contract:\n"
+    "  · You have the parent session's tools, but this fork is READ-"
+    "ONLY and that is enforced, not merely requested. Any tool that "
+    "writes files, runs mutating commands, spawns sub-agents, messages "
+    "other sessions, or edits memory will refuse with an error if you "
+    "call it. Reading — ``read_file``, ``grep``, ``glob``, "
+    "``list_directory``, ``load_skill``, ``search_skills``, "
+    "``list_skills`` — works normally.\n"
+    "  · Verify claims when verification is cheap. The operator pays "
+    "for sloppy guidance baked into a skill on every future session; "
+    "they pay for one extra ``read_file`` once.\n"
+    "  · Be brief in your visible reasoning. The transcript is "
+    "reviewable, but the decision block at the end is the only thing "
+    "that is acted on.\n\n"
+)
+
+
+FORK_OPERATING_BLOCK = (
+    "\n─── How to run this review ───\n\n"
+    "1. Look at what the session actually DID, not what it set out to "
+    "do. The last third of the conversation — corrections, "
+    "verification, the thing that finally worked — carries more signal "
+    "than the opening plan.\n"
+    "2. If a candidate would share a name with an existing skill, call "
+    "``load_skill('<name>')`` and read the current SKILL.md BEFORE "
+    "deciding. Never propose a full-body replacement from memory: the "
+    "body you emit REPLACES the file verbatim on approval, so a "
+    "rewrite-from-memory silently deletes most of the existing skill. "
+    "Read it, weave your additions into the real text, emit the whole "
+    "amended body.\n"
+    "3. If you are unsure whether a class-level skill already covers "
+    "the genre, call ``search_skills`` or ``list_skills``.\n"
+    "4. Emit exactly one decision block (format below). One candidate "
+    "per review — if two genuinely distinct skills are warranted, pick "
+    "the stronger one and mention the other in your rationale.\n\n"
+    "AMEND vs. REPLACE: a candidate that deletes 100+ lines or half of "
+    "an existing skill is flagged ``destructive`` to the operator and "
+    "needs a double-tap confirm. Avoid that unless the existing skill "
+    "is wrong end to end.\n"
+)
+
+
+FORK_OUTPUT_CONTRACT = (
+    "\n─── Output contract (this is the part that is acted on) ───\n\n"
+    "End your reply with ONE fenced block, opened with FOUR backticks "
+    "and labelled ``skill-candidate``. Four, not three, so a SKILL.md "
+    "body containing ordinary ``` code fences does not terminate the "
+    "block early. The block contains a single JSON object.\n\n"
+    "To save a candidate:\n\n"
+    "````skill-candidate\n"
+    "{\n"
+    '  "decision": "save",\n'
+    '  "rationale": "1-3 sentences: what this session taught that '
+    'justifies a durable skill.",\n'
+    '  "name": "kebab-case-name",\n'
+    '  "description": "When this applies. This IS the trigger — it is '
+    'the only part always in context for future sessions.",\n'
+    '  "skill_type": "build",\n'
+    '  "triggers": ["error string", "tool name", "file pattern"],\n'
+    '  "tags": ["deploy"],\n'
+    '  "body": "Full SKILL.md body as a JSON string, newlines escaped."\n'
+    "}\n"
+    "````\n\n"
+    "To skip:\n\n"
+    "````skill-candidate\n"
+    '{"decision": "skip", "rationale": "One line on why nothing here '
+    'clears the bar."}\n'
+    "````\n\n"
+    "Rules:\n"
+    "  · ``skill_type`` is one of build / guard / reference / workflow.\n"
+    "  · ``name`` is lowercase letters, digits, hyphens; 3-60 chars.\n"
+    "  · ``body`` is the complete SKILL.md body — it replaces the file "
+    "verbatim on approval. Do not abbreviate it or leave placeholders.\n"
+    "  · The block must be valid JSON. Escape newlines and quotes "
+    "inside ``body``.\n"
+    "  · Emit the block even when skipping. A reply with no block is "
+    "read as a failed run, not as a decision.\n"
+    "  · Say what you have to say BEFORE the block. Nothing after it "
+    "is read.\n"
+)
+
+
+def build_forked_drafter_injection(
+    *,
+    loaded_skill_names: list[str],
+    all_skill_names: list[str],
+    negative_library_excerpt: str = "",
+    operator_guidance: str = "",
+) -> str:
+    """The single user message injected at the end of a forked session.
+
+    Carries everything the old sub-agent got from its system prompt plus
+    the data sections the old user message carried — minus
+    ``[CONVERSATION]``, which the fork has natively and in full.
+
+    Order matters. The mode switch comes first because it has to win
+    against a system prompt that spent 20 KB telling the model to be the
+    operator's assistant; the output contract comes last because it is
+    what the model is holding in mind as it starts writing.
+    """
+    from bridge.knowledge.learning.constants import DRAFTER_MAX_LISTED_SKILLS
+
+    listed_all = all_skill_names[:DRAFTER_MAX_LISTED_SKILLS]
+    all_block = (
+        "\n".join(f"  - {name}" for name in listed_all) if listed_all else "  (none yet)"
+    )
+    if len(all_skill_names) > DRAFTER_MAX_LISTED_SKILLS:
+        all_block += (
+            f"\n  … {len(all_skill_names) - DRAFTER_MAX_LISTED_SKILLS} more not shown"
+        )
+
+    loaded_block = (
+        "\n".join(f"  - {name}" for name in loaded_skill_names)
+        if loaded_skill_names
+        else "  (none — no skill was loaded in this session)"
+    )
+
+    neg_block = (negative_library_excerpt or "").strip() or "(no recent rejections)"
+
+    guidance = (operator_guidance or "").strip()
+    guidance_block = (
+        "\n[OPERATOR GUIDANCE]\n"
+        "The operator invoked /learn-this with this hint. Take it as a "
+        "steer, not a hard constraint — still skip if the conversation "
+        "doesn't support a real skill:\n"
+        f"{guidance}\n"
+        if guidance
+        else ""
+    )
+
+    # The fork inherits the parent's system prompt, whose date line is
+    # day-resolution (see current_date_block), and sub-agent runners carry no
+    # per-request reminder producer — so without this the drafter has no clock
+    # at all. It rides the injected message, which is past every cache
+    # breakpoint and therefore costs nothing.
+    from bridge.tools.coordination import current_datetime_block
+
+    return (
+        FORK_DRAFTER_CONTEXT
+        + f"\n{current_datetime_block()}\n\n"
+        + HERMES_SKILL_REVIEW_PROMPT
+        + FORK_OPERATING_BLOCK
+        + SKILL_CRAFT_BLOCK
+        + FREYJA_EMISSION_BAR
+        + "\n\n─── Reference data ───\n\n"
+        "[SKILLS ON DISK]\n"
+        f"{all_block}\n\n"
+        "[LOADED IN THIS SESSION]\n"
+        f"{loaded_block}\n\n"
+        "[RECENTLY REJECTED — do not re-propose these shapes]\n"
+        f"{neg_block}\n"
+        f"{guidance_block}"
+        + FORK_OUTPUT_CONTRACT
+        + "\n[TASK]\nReview the conversation above against the rules in "
+        "this message and emit exactly one decision block.\n"
+    )

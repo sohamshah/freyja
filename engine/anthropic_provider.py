@@ -852,9 +852,15 @@ class AnthropicProvider:
         # which point the cache reset is unavoidable anyway), so adding
         # a third ephemeral breakpoint here lets long-lived sessions
         # keep cache reuse going past the system + tools prefix.
-        # Anthropic allows up to 4 cache_control markers per request;
-        # we still have one in reserve for future use.
+        # Anthropic allows up to 4 cache_control markers per request.
         _try_cache_compaction_summary(anthropic_messages)
+
+        # Fourth (and last) breakpoint: the conversation tail. Without it the
+        # message history after the compaction summary was never written to
+        # the cache, so every turn re-processed the entire transcript at full
+        # input rate — by far the largest recurring cost in a long session, and
+        # the reason a forked session couldn't reuse its parent's prefix.
+        _try_cache_conversation_tail(anthropic_messages)
 
         # Anthropic format: {"type": "tool", "name": "..."}
         if tool_choice:
@@ -1359,7 +1365,7 @@ def _try_cache_compaction_summary(anthropic_messages: list[dict[str, Any]]) -> N
     present.
 
     Caps to one cache_control per call to stay under Anthropic's 4-marker
-    limit (system + last tool + here = 3 markers, leaving headroom).
+    limit (system + last tool + here + conversation tail = 4).
     """
     for msg in reversed(anthropic_messages):
         if msg.get("role") != "user":
@@ -1383,6 +1389,94 @@ def _try_cache_compaction_summary(anthropic_messages: list[dict[str, Any]]) -> N
                 if block.get("type") == "text" and _COMPACTION_SUMMARY_MARKER in (block.get("text") or ""):
                     block["cache_control"] = {"type": "ephemeral"}
                     return
+
+
+#: Marker for the per-request guidance the runner tail-appends to a clone of
+#: the last user message (pressure notes, write-ledger ground truth, the
+#: clock). These blocks change on every request by design, so the conversation
+#: breakpoint must sit BEFORE them or it would write a cache entry that can
+#: never be hit.
+_EPHEMERAL_REMINDER_MARKER = "<system-reminder>"
+
+#: Anthropic's hard cap. system + last tool + compaction summary + tail.
+MAX_CACHE_BREAKPOINTS = 4
+
+
+def _count_cache_breakpoints(anthropic_messages: list[dict[str, Any]]) -> int:
+    n = 0
+    for msg in anthropic_messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("cache_control"):
+                n += 1
+    return n
+
+
+def _try_cache_conversation_tail(anthropic_messages: list[dict[str, Any]]) -> None:
+    """Mark the end of the STABLE conversation as a cache breakpoint.
+
+    Why this is worth a marker
+    ──────────────────────────
+    The other three breakpoints cover tools, the system prompt, and the latest
+    compaction summary. Everything after the summary — which in a long-running
+    session is the great majority of the transcript — was never written to the
+    cache at all, so every turn paid full input rate to re-send history that
+    had not changed since the previous turn. Marking the tail turns each turn's
+    prefix into the next turn's cache hit, which is the standard incremental
+    conversation pattern.
+
+    Why the LAST NON-REMINDER block, not simply the last block
+    ─────────────────────────────────────────────────────────
+    ``AsyncAgentRunner._augment_messages_with_pressure_note`` appends
+    ``<system-reminder>`` blocks to a clone of the tail user message on every
+    request. Those change every time. A breakpoint placed on or after them
+    would write a cache entry whose prefix can never recur — pure cache-write
+    cost with no hit. Placing it on the last block that is NOT a reminder
+    caches everything durable and re-processes only the few hundred tokens of
+    per-request guidance, which is exactly the cost shape the tail-append seam
+    was designed for.
+
+    No-ops when the tail message already carries a marker (it IS the compaction
+    summary), when there is no marker budget left, or when the tail has no
+    stable block to attach to.
+    """
+    if not anthropic_messages:
+        return
+    if _count_cache_breakpoints(anthropic_messages) >= MAX_CACHE_BREAKPOINTS - 2:
+        # -2 accounts for the system block and the last tool definition, which
+        # are marked outside the messages list and so aren't counted here.
+        return
+
+    last = anthropic_messages[-1]
+    content = last.get("content")
+
+    if isinstance(content, str):
+        # No reminders were appended (or they were fused in, which the runner
+        # no longer does). The whole message is stable.
+        if not content or _EPHEMERAL_REMINDER_MARKER in content:
+            return
+        last["content"] = [
+            {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+        ]
+        return
+
+    if not isinstance(content, list) or not content:
+        return
+
+    for block in reversed(content):
+        if not isinstance(block, dict):
+            continue
+        if block.get("cache_control"):
+            # Already the compaction-summary breakpoint — one is enough.
+            return
+        if block.get("type") == "text" and _EPHEMERAL_REMINDER_MARKER in (
+            block.get("text") or ""
+        ):
+            continue
+        block["cache_control"] = {"type": "ephemeral"}
+        return
 
 
 def create_anthropic_provider(
