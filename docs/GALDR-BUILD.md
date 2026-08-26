@@ -594,3 +594,103 @@ ACTUALLY shows — never claim an effect you can't see; if two actions don't
 progress the goal or the state regresses, STOP and tell the operator what you see
 instead of clicking more. Keep confirm/panic/ambiguity/discretion sections. Add
 that freyja.* answers questions about the operator's own projects/sessions.
+
+---
+
+## 13. Voice routines — the lite learning loop (2026-08-05) — pinned contract
+
+**Thesis:** compile repeated work into named verbs by *operator teaching*, not
+background mining ("do it once, then say **remember that as 'morning'**").
+Voice usage since July is zero receipts, so there is no corpus for an automatic
+detector — the operator IS the detector. Full auto-lift/verify stays deferred;
+this slice produces the corpus that would justify it.
+
+### 13.1 Storage — `bridge/voice/routines.py`
+`~/.freyja/voice/routines/<slug>.yaml` (slug = name lowercased, spaces→`-`,
+`[a-z0-9-]` only). YAML (pyyaml is a dep; gateway/config.py precedent), safe_load,
+atomic tmp+rename writes, tolerant loader (a corrupt file is skipped with a log,
+never fatal). Schema:
+```yaml
+name: morning                  # display form, as spoken
+description: open cmux and start a session
+created_ts: 1780000000000      # epoch ms
+updated_ts: 1780000000000
+steps:
+  - verb: app.focus
+    args: {name: cmux}
+  - verb: computer.press
+    args: {key: cmd+n}
+    wait_ms: 500               # optional post-step settle override
+stats: {runs: 0, ok: 0, fail: 0, last_run_ts: null}
+```
+`RoutineStore`: `load_all()`, `get(name)` (normalized), `save(routine)`,
+`delete(name) -> parsed routine | None` (for undo restore), `names_md()`
+(compact prompt listing).
+
+### 13.2 Verbs (registered in `_register_service_verbs`, closures over service;
+lane stays `"brain"` — do NOT touch the hard-coded lane tuple or the TS Receipt
+lane union)
+- **routine.save {name!, description?, steps?}** — tier **confirm** (the spoken
+  confirm IS the loop's approval gate). Steps validation (BEFORE anything runs):
+  each step's verb exists in the registry, is tier `auto` (confirm-tier verbs
+  rejected naming the offender — "app.quit needs a spoken yes each time, so it
+  can't go in a routine"), is not `routine.*` (no recursion), args is an object.
+  **steps omitted → derive from this exchange's receipts**: `receipts.recent(200)`
+  filtered to `voice_session_id == _active_session_id`, chronological, `ok` only,
+  lane in (brain, floor), excluding `INFO_VERBS` (pinned set of query/read verbs:
+  computer.see, screen.look, app.frontmost, spotify.now_playing, clipboard.read,
+  calendar.today, calendar.next, mail.unread, reminders.list, files.list,
+  timer.list, shortcuts.list, contacts.find, briefing.read, freyja.sessions,
+  freyja.project_status, mission.status, routine.*) — plus a test asserting every
+  INFO_VERBS name exists in the full registry (drift guard). Zero derived steps →
+  ok=False "nothing to save — no actions in this exchange". Existing name →
+  overwrite, confirm summary says "replacing". Confirm summary must show the real
+  steps even when derived: service registers a bound callable into
+  `_CONFIRM_SUMMARY_TEMPLATES["routine.save"]` that (sync) derives when steps are
+  absent — `Save routine 'morning': app.focus → computer.press (2 steps)`,
+  ~90-char cap. Run-time derivation happens again in `_run` (drift between
+  confirm and yes is bounded by the confirm receipt itself being ok=False/excluded;
+  documented).
+- **routine.run {name!}** — tier auto. Exact/normalized name match; miss →
+  suggestions from close names. Executor: per step — registry.get (missing →
+  "step N uses verb X which no longer exists"), re-check tier==auto, panic guard
+  (`voice_session_id in _panicked_sessions` → abort "stopped"), `await
+  vb.run(dict(args))`, per-step receipt via `_record` (heard =
+  `(routine <name> · step N)`), collect undo closures; default 400 ms settle
+  after computer.*/app.* steps, `wait_ms` overrides. Stop on first failure with
+  step index + error. ONE tool result for the whole run (no per-step
+  _emit_tool_result): summary `▷ ran 'morning' (2 steps)` / `routine 'morning'
+  failed at step 2/3 (computer.press): <err>`; data.steps = [{verb, ok, summary}];
+  **propagate the LAST step's image_b64/w/h onto the routine result** so the
+  model sees the end state (computer verbs already return screenshots). Routine
+  undo = collected step undos run in reverse (best-effort). Update stats + save.
+- **routine.list {}** — tier auto; data.routines = [{name, description, steps,
+  runs, ok}], summary "N routines".
+- **routine.forget {name!}** — tier auto, UNDOABLE (delete returns the routine;
+  undo re-saves it).
+
+### 13.3 Prompt + mint
+`build_instructions(verb_catalog_md, routines_md="")` — new optional param
+(default keeps every existing callsite/test working). Service passes
+`RoutineStore.names_md()` at mint. New `# Routines` template section (after
+"# Your own work"): when the operator says "remember that (as X)", call
+routine.save — prefer deterministic steps (app verbs, computer.press shortcuts)
+over pixel clicks when proposing; when an utterance names a saved routine, run
+it; routines hold only auto-tier verbs.
+
+### 13.4 Tests — `tests/test_voice_routines.py` (+ small service-test additions)
+Store round-trip/atomicity/normalize/corrupt-file tolerance; save validation
+matrix (unknown/confirm-tier/recursive verbs, empty name, overwrite); derive
+filter correctness (info verbs, failures, other sessions excluded; chronological;
+empty refusal); confirm template shows derived steps; run happy path + order +
+stop-on-fail + tier re-check + wait_ms (monkeypatched sleep) + settle default +
+image propagation + stats + reverse undo + panic abort + unknown-name
+suggestions; list/forget/forget-undo; prompt section + names baked;
+INFO_VERBS-exists-in-registry drift guard. Follow the make_service/FakeRegistry
+seams; registry injected in tests → call `_register_service_verbs` manually
+(existing convention).
+
+**Non-goals (deferred, unchanged):** background repetition detection, the
+lifting mission, screenshot-judge verification, probation/decay beyond the
+stats counters, renderer changes (none needed — receipts/HUD render routine
+activity as ordinary verbs).
