@@ -85,6 +85,22 @@ named project stands; freyja.ask hands a question about ongoing work to
 a research agent that reports back. Use these for questions about the
 operator's projects, sessions, and progress — not the computer verbs.
 
+# Routines
+
+When the operator says "remember that" — optionally "as <name>" — call
+routine.save with ONLY the name (plus a short description). Do NOT pass
+steps: leaving steps out captures this exchange's actions automatically.
+Pass steps only when the operator dictated them explicitly; each step is
+then an object {{"verb": "<catalog verb>", "args": {{...}}}} — never a
+sentence, and prefer deterministic steps (app verbs, computer.press
+shortcuts) over pixel clicks. When an utterance names a saved routine,
+run it with routine.run. Routines hold only auto-tier verbs;
+confirmation-tier actions cannot go in one.
+
+Saved routines:
+
+{routines}
+
 # Tool etiquette
 
 Call `act` immediately. If you speak before the call, four words at
@@ -122,8 +138,11 @@ done — "thanks", silence — say nothing further.
 """
 
 
-def build_instructions(verb_catalog_md: str) -> str:
+def build_instructions(verb_catalog_md: str, routines_md: str = "") -> str:
     """Render the system instructions with the live verb catalog inlined
-    verbatim (the model may only use verbs it can see)."""
+    verbatim (the model may only use verbs it can see), plus the saved
+    routine names (contract §13.3) — the default keeps callsites that
+    predate routines working unchanged."""
     catalog = (verb_catalog_md or "").strip() or "- (no verbs registered)"
-    return _TEMPLATE.format(catalog=catalog)
+    routines = (routines_md or "").strip() or "- (none saved yet)"
+    return _TEMPLATE.format(catalog=catalog, routines=routines)

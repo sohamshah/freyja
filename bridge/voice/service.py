@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import difflib
 import hashlib
 import json
 import os
@@ -34,11 +35,23 @@ from bridge.voice.floor import parse as floor_parse
 from bridge.voice.floor import scan_for_panic
 from bridge.voice.prompts import build_instructions
 from bridge.voice.receipts import Receipt, ReceiptStore, UndoLedger
+from bridge.voice.routines import INFO_VERBS, Routine, RoutineStep, RoutineStore, slugify
 
 _MINT_URL = "https://api.openai.com/v1/realtime/client_secrets"
 _WEBRTC_URL = "https://api.openai.com/v1/realtime/calls"
 _TRANSCRIPTION_MODEL = "gpt-realtime-whisper"
 _CONFIRM_TTL_SEC = 90.0
+
+# Post-step settle for routine.run (contract §13.2): GUI verbs
+# (computer.*/app.*) need the screen to catch up before the next step
+# lands; a step's wait_ms overrides the default for any verb.
+_ROUTINE_SETTLE_MS = 400
+
+
+async def _routine_settle(ms: int) -> None:
+    """Module-level seam so routine tests never really sleep."""
+    if ms > 0:
+        await asyncio.sleep(ms / 1000.0)
 
 # Proactive announcements are synthesized through the plain TTS endpoint,
 # NOT the realtime session (there's no live socket when Freyja speaks up
@@ -241,6 +254,7 @@ class VoiceService:
         self._transcripts_path = self._base / "transcripts.jsonl"
         self.receipts = ReceiptStore(self._base / "receipts.jsonl")
         self.undo_ledger = UndoLedger(capacity=20)
+        self.routines = RoutineStore(self._base / "routines")
         self._registry = registry
         self._emit_fn = emit_fn
         self._config: dict[str, Any] = _default_config()
@@ -450,7 +464,9 @@ class VoiceService:
         return {
             "type": "realtime",
             "model": str(self._config["model"]),
-            "instructions": build_instructions(registry.catalog_markdown()),
+            "instructions": build_instructions(
+                registry.catalog_markdown(), routines_md=self.routines.names_md()
+            ),
             "output_modalities": ["audio"],
             "audio": {
                 "input": {
@@ -1323,10 +1339,41 @@ class VoiceService:
             line = line[: _ANNOUNCE_MAX_CHARS - 1].rstrip() + "…"
         return line
 
+    # ── routines (contract §13) ──────────────────────────────────────────
+
+    def _derive_routine_steps(self) -> list[dict[str, Any]]:
+        """Steps for routine.save when the model omits them: this
+        exchange's receipts, chronological, ok-only, brain/floor lanes,
+        INFO_VERBS excluded (contract §13.2 — a lookup is not an action
+        worth replaying). Synchronous on purpose: the confirm-summary
+        template calls it too, so the spoken confirm line names the REAL
+        steps. Derivation runs again post-confirm inside routine.save's
+        run; drift between the two reads is bounded because the confirm
+        refusal's own receipt is ok=False and routine.save is itself in
+        INFO_VERBS — awaiting confirmation can never add a step."""
+        session_id = self._active_session_id
+        if not session_id:
+            return []
+        try:
+            recent = self.receipts.recent(200)
+        except Exception:  # noqa: BLE001 — an unreadable store derives nothing
+            return []
+        steps: list[dict[str, Any]] = []
+        for receipt in reversed(recent):  # recent() is newest-first → flip to chronological
+            if receipt.voice_session_id != session_id or not receipt.ok:
+                continue
+            if receipt.lane not in ("brain", "floor"):
+                continue
+            if receipt.verb in INFO_VERBS:
+                continue
+            steps.append({"verb": receipt.verb, "args": dict(receipt.args)})
+        return steps
+
     def _register_service_verbs(self, registry: Any) -> None:
-        """mission.spawn / mission.status / computer.do — registered here
-        rather than in the adapters because they need bridge session
-        access (ensure_session, computer_enabled) through self._state."""
+        """mission.spawn / mission.status / computer.do / freyja.ask /
+        routine.* — registered here rather than in the adapters because
+        they need bridge/service state (ensure_session, computer_enabled,
+        the receipt + routine stores) through self."""
         from bridge.voice.verbs import Verb, VerbResult
 
         service = self
@@ -1486,6 +1533,414 @@ class VoiceService:
                 run=_run_ask,
             )
         )
+
+        # ── routine.* (contract §13.2) — the lite learning loop ──────────
+
+        async def _run_routine_save(args: dict[str, Any]) -> Any:
+            name = str(args.get("name") or "").strip()
+            if not slugify(name):
+                return VerbResult(
+                    ok=False, summary="a routine needs a name", error="missing_name"
+                )
+            raw_steps = args.get("steps")
+            if raw_steps is not None and not isinstance(raw_steps, list):
+                return VerbResult(
+                    ok=False,
+                    summary="steps must be a list of {verb, args} objects",
+                    error="bad_steps",
+                )
+            derived = not raw_steps  # omitted (or explicitly empty) → derive
+            if derived:
+                step_dicts = service._derive_routine_steps()
+                if not step_dicts:
+                    return VerbResult(
+                        ok=False,
+                        summary="nothing to save — no actions in this exchange",
+                        error="no_steps",
+                    )
+            else:
+                step_dicts = raw_steps
+            # Validation (BEFORE anything is written), provided and derived
+            # steps alike: a routine may hold only existing, auto-tier,
+            # non-routine verbs — the spoken confirm on save is the ONLY
+            # approval gate its future runs get.
+            registry_now = service._ensure_registry()
+            steps: list[RoutineStep] = []
+            for idx, raw in enumerate(step_dicts, start=1):
+                if not isinstance(raw, dict):
+                    return VerbResult(
+                        ok=False,
+                        summary=f"step {idx} must be an object with a verb",
+                        error="bad_steps",
+                    )
+                verb_name = str(raw.get("verb") or "").strip()
+                if verb_name.startswith("routine."):
+                    return VerbResult(
+                        ok=False,
+                        summary=(
+                            f"step {idx}: a routine can't contain {verb_name} — "
+                            "no routines inside routines"
+                        ),
+                        error="recursive_step",
+                    )
+                step_verb = registry_now.get(verb_name) if verb_name else None
+                if step_verb is None:
+                    return VerbResult(
+                        ok=False,
+                        summary=f"step {idx} uses unknown verb {verb_name or '(empty)'}",
+                        error="unknown_step_verb",
+                    )
+                if getattr(step_verb, "tier", "auto") != "auto":
+                    return VerbResult(
+                        ok=False,
+                        summary=(
+                            f"{verb_name} needs a spoken yes each time, so it "
+                            "can't go in a routine"
+                        ),
+                        error="confirm_step",
+                    )
+                step_args = raw.get("args")
+                if step_args is None:
+                    step_args = {}
+                if not isinstance(step_args, dict):
+                    return VerbResult(
+                        ok=False,
+                        summary=f"step {idx} ({verb_name}): args must be an object",
+                        error="bad_step_args",
+                    )
+                step_args = dict(step_args)
+                # The model reliably flattens verb arguments to the step's
+                # top level ({"verb": "notes.create", "title": ...}) —
+                # observed in the live gate. Same lesson as confirm_token
+                # placement: fold, don't fight. Explicit args win collisions.
+                for key, value in raw.items():
+                    if key not in ("verb", "args", "wait_ms") and key not in step_args:
+                        step_args[key] = value
+                wait_ms = raw.get("wait_ms")
+                if wait_ms is not None and (
+                    isinstance(wait_ms, bool) or not isinstance(wait_ms, int) or wait_ms < 0
+                ):
+                    return VerbResult(
+                        ok=False,
+                        summary=(
+                            f"step {idx} ({verb_name}): wait_ms must be a "
+                            "non-negative integer"
+                        ),
+                        error="bad_step_wait",
+                    )
+                steps.append(RoutineStep(verb=verb_name, args=dict(step_args), wait_ms=wait_ms))
+            existing = service.routines.get(name)
+            now = int(time.time() * 1000)
+            routine = Routine(
+                name=name,
+                description=str(args.get("description") or "").strip(),
+                created_ts=existing.created_ts if existing is not None else now,
+                updated_ts=now,
+                steps=steps,
+                # stats stay fresh even on overwrite: the steps changed,
+                # so runs of the old definition say nothing about this one.
+            )
+            service.routines.save(routine)
+            n = len(steps)
+            chain = " → ".join(s.verb for s in steps)
+            summary = (
+                f"{'replaced' if existing is not None else 'saved'} routine "
+                f"'{name}' ({n} step{'s' if n != 1 else ''}: {chain})"
+            )
+            if len(summary) > 120:
+                summary = summary[:119].rstrip() + "…"
+            return VerbResult(
+                ok=True,
+                summary=summary,
+                data={
+                    "name": name,
+                    "replaced": existing is not None,
+                    "derived": derived,
+                    "steps": [s.to_dict() for s in steps],
+                },
+            )
+
+        async def _run_routine_run(args: dict[str, Any]) -> Any:
+            name = str(args.get("name") or "").strip()
+            routine = service.routines.get(name) if name else None
+            if routine is None:
+                known = {r.name.lower(): r.name for r in service.routines.load_all()}
+                close = difflib.get_close_matches(name.lower(), list(known), n=2, cutoff=0.5)
+                hint = (
+                    f" — did you mean {' or '.join(repr(known[c]) for c in close)}?"
+                    if close
+                    else ""
+                )
+                return VerbResult(
+                    ok=False,
+                    summary=f"no routine named '{name or '(empty)'}'{hint}",
+                    error="unknown_routine",
+                )
+            registry_now = service._ensure_registry()
+            session_id = service._active_session_id
+            total = len(routine.steps)
+            step_rows: list[dict[str, Any]] = []
+            undo_receipt_ids: list[str] = []
+            fail_summary: Optional[str] = None
+            fail_error: Optional[str] = None
+            # Strict end-state image: only the FINAL executed step's
+            # screenshot propagates (an earlier one is not the end state).
+            image_b64: Optional[str] = None
+            image_w: Optional[int] = None
+            image_h: Optional[int] = None
+            for idx, step in enumerate(routine.steps, start=1):
+                # Panic brake between steps — a "stop" mid-routine aborts
+                # before the next step fires, not after the routine ends.
+                if session_id and session_id in service._panicked_sessions:
+                    fail_summary = f"routine '{routine.name}' stopped"
+                    fail_error = "stopped"
+                    break
+                step_err: Optional[str] = None
+                result: Any = None
+                vb_step = registry_now.get(step.verb)
+                if vb_step is None:
+                    step_err = f"step {idx} uses verb {step.verb} which no longer exists"
+                elif getattr(vb_step, "tier", "auto") != "auto":
+                    # Tier re-check at run time: a verb promoted to
+                    # confirm since the save must not ride the old grant.
+                    step_err = (
+                        f"{step.verb} now needs a spoken yes each time, so it "
+                        "can't run in a routine"
+                    )
+                else:
+                    try:
+                        result = await vb_step.run(dict(step.args))
+                    except Exception as exc:  # noqa: BLE001 — adapter bug = step failure
+                        step_err = f"{step.verb} failed: {exc}"
+                if result is not None:
+                    step_ok = bool(getattr(result, "ok", False))
+                    step_summary = str(getattr(result, "summary", "") or "")
+                    if not step_ok:
+                        step_err = str(
+                            getattr(result, "error", None) or step_summary or "failed"
+                        )
+                else:
+                    step_ok = False
+                    step_summary = step_err or "failed"
+                receipt = service._record(
+                    voice_session_id=session_id,
+                    heard=f"(routine {routine.name} · step {idx})",
+                    lane="brain",
+                    verb=step.verb,
+                    args=dict(step.args),
+                    ok=step_ok,
+                    summary=step_summary,
+                    undoable=result is not None and getattr(result, "undo", None) is not None,
+                )
+                if result is not None and getattr(result, "undo", None) is not None:
+                    # Step undos live in the ledger keyed by their step
+                    # receipt (individually undoable from the HUD); the
+                    # routine-level undo below pops from the same ledger,
+                    # so a step can never be double-undone.
+                    service.undo_ledger.remember(receipt.id, result.undo)
+                    undo_receipt_ids.append(receipt.id)
+                step_rows.append({"verb": step.verb, "ok": step_ok, "summary": step_summary})
+                image_b64 = getattr(result, "image_b64", None) if result is not None else None
+                image_w = getattr(result, "image_w", None) if result is not None else None
+                image_h = getattr(result, "image_h", None) if result is not None else None
+                if not step_ok:
+                    fail_summary = (
+                        f"routine '{routine.name}' failed at step {idx}/{total} "
+                        f"({step.verb}): {step_err}"
+                    )
+                    fail_error = step_err
+                    break
+                settle_ms = (
+                    step.wait_ms
+                    if step.wait_ms is not None
+                    else (
+                        _ROUTINE_SETTLE_MS
+                        if step.verb.startswith(("computer.", "app."))
+                        else 0
+                    )
+                )
+                if settle_ms:
+                    await _routine_settle(settle_ms)
+            ran_ok = fail_summary is None
+            routine.stats["runs"] = int(routine.stats.get("runs", 0)) + 1
+            outcome_key = "ok" if ran_ok else "fail"
+            routine.stats[outcome_key] = int(routine.stats.get(outcome_key, 0)) + 1
+            routine.stats["last_run_ts"] = int(time.time() * 1000)
+            try:
+                service.routines.save(routine)
+            except Exception as exc:  # noqa: BLE001 — stats loss must not fail the run
+                service._log("warn", f"routine stats save failed: {exc}")
+            undo_closure = None
+            if undo_receipt_ids:
+                ids = list(undo_receipt_ids)
+
+                async def _undo_routine() -> Any:
+                    """Collected step undos, run in reverse — best-effort:
+                    an evicted/spent/failing step undo is skipped, never
+                    fatal to the rest."""
+                    undone = 0
+                    for rid in reversed(ids):
+                        closure = service.undo_ledger.take(rid)
+                        if closure is None:
+                            continue
+                        try:
+                            res = await closure()
+                        except Exception:  # noqa: BLE001
+                            continue
+                        if not bool(getattr(res, "ok", False)):
+                            continue
+                        undone += 1
+                        try:
+                            original = service.receipts.mark_undone(rid)
+                            if original is not None:
+                                service._emit(
+                                    {"type": "voice_receipt", "receipt": original.to_dict()}
+                                )
+                        except Exception as exc:  # noqa: BLE001
+                            service._log("warn", f"routine step mark_undone failed: {exc}")
+                    if undone == 0:
+                        return VerbResult(
+                            ok=False, summary=f"nothing left to undo for '{routine.name}'"
+                        )
+                    return VerbResult(
+                        ok=True,
+                        summary=f"undid {undone}/{len(ids)} steps of '{routine.name}'",
+                    )
+
+                undo_closure = _undo_routine
+            if ran_ok:
+                summary = f"▷ ran '{routine.name}' ({total} step{'s' if total != 1 else ''})"
+            else:
+                summary = fail_summary
+            return VerbResult(
+                ok=ran_ok,
+                summary=summary,
+                error=fail_error,
+                data={"steps": step_rows},
+                undo=undo_closure,
+                image_b64=image_b64,
+                image_w=image_w,
+                image_h=image_h,
+            )
+
+        async def _run_routine_list(args: dict[str, Any]) -> Any:
+            rows = [
+                {
+                    "name": r.name,
+                    "description": r.description,
+                    "steps": len(r.steps),
+                    "runs": int(r.stats.get("runs", 0)),
+                    "ok": int(r.stats.get("ok", 0)),
+                }
+                for r in service.routines.load_all()
+            ]
+            n = len(rows)
+            summary = "no routines yet" if n == 0 else f"{n} routine{'s' if n != 1 else ''}"
+            return VerbResult(ok=True, summary=summary, data={"routines": rows})
+
+        async def _run_routine_forget(args: dict[str, Any]) -> Any:
+            name = str(args.get("name") or "").strip()
+            routine = service.routines.delete(name) if name else None
+            if routine is None:
+                return VerbResult(
+                    ok=False,
+                    summary=f"no routine named '{name or '(empty)'}'",
+                    error="unknown_routine",
+                )
+
+            async def _undo_forget() -> Any:
+                service.routines.save(routine)
+                return VerbResult(ok=True, summary=f"restored routine '{routine.name}'")
+
+            return VerbResult(
+                ok=True, summary=f"forgot routine '{routine.name}'", undo=_undo_forget
+            )
+
+        registry.register(
+            Verb(
+                name="routine.save",
+                description=(
+                    "Save this exchange's actions (or explicit steps) as a "
+                    'named routine — "remember that as morning"'
+                ),
+                params={
+                    "name": {"type": "string", "description": "routine name, as spoken"},
+                    "description": {"type": "string", "description": "one-line purpose"},
+                    "steps": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "description": (
+                            "explicit steps [{verb, args, wait_ms?}]; omit to "
+                            "capture this exchange's actions"
+                        ),
+                    },
+                },
+                required=["name"],
+                tier="confirm",
+                run=_run_routine_save,
+            )
+        )
+        registry.register(
+            Verb(
+                name="routine.run",
+                description="Run a saved routine by name, step by step",
+                params={"name": {"type": "string"}},
+                required=["name"],
+                tier="auto",
+                run=_run_routine_run,
+            )
+        )
+        registry.register(
+            Verb(
+                name="routine.list",
+                description="List saved routines",
+                params={},
+                required=[],
+                tier="auto",
+                run=_run_routine_list,
+            )
+        )
+        registry.register(
+            Verb(
+                name="routine.forget",
+                description="Delete a saved routine (undoable)",
+                params={"name": {"type": "string"}},
+                required=["name"],
+                tier="auto",
+                run=_run_routine_forget,
+            )
+        )
+
+        def _routine_save_confirm(args: dict[str, Any]) -> str:
+            """Spoken confirm line for routine.save — derives (sync) when
+            steps are omitted so the operator hears the REAL steps before
+            saying yes, and says "replacing" when the name already exists."""
+            name = str(args.get("name") or "").strip() or "?"
+            raw = args.get("steps")
+            if isinstance(raw, list) and raw:
+                verbs = [
+                    (str(s.get("verb") or "?").strip() or "?") if isinstance(s, dict) else "?"
+                    for s in raw
+                ]
+            else:
+                verbs = [s["verb"] for s in service._derive_routine_steps()]
+            replacing = " (replacing)" if service.routines.get(name) is not None else ""
+            if verbs:
+                n = len(verbs)
+                line = (
+                    f"Save routine '{name}'{replacing}: {' → '.join(verbs)} "
+                    f"({n} step{'s' if n != 1 else ''})"
+                )
+            else:
+                line = f"Save routine '{name}'{replacing}: no actions captured this exchange"
+            if len(line) > 90:
+                line = line[:89].rstrip() + "…"
+            return line
+
+        # Bound per-service (not a module-level lambda) because an accurate
+        # confirm line needs THIS service's receipt + routine stores.
+        _CONFIRM_SUMMARY_TEMPLATES["routine.save"] = _routine_save_confirm
+
         # Live computer verbs (rung 2 — see/click/type in the exchange).
         # Registered here, not in register_all, because their gate is the
         # same enablement signal agent sessions are built from:

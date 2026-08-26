@@ -63,10 +63,12 @@ any code was written).
   **interruptible** — opening a session (⌥⇧Space) cuts it off. A dead TTS
   is best-effort (returns nothing) and never breaks the report-back. In
   settings: a *"speak up on their own"* toggle plus the quiet-hours bounds.
-- **Slack, first-class** (slice 2). *"Read me #general"* → `slack.read`
-  pulls the last messages (names resolved, cached) for a spoken digest;
-  *"tell Ada I'm running late"* → `slack.send` posts to a channel or DMs
-  a person by name — confirm-tier, since a sent message is sent.
+- **Slack, first-class** (slice 2 — **temporarily disabled**, see
+  GALDR-BUILD §12.3). `slack.read`/`slack.send` exist and are tested, but
+  their registration is commented out: the API-based reach caused the
+  model to confuse API permissions with the Slack app's UI. One-line
+  restore in `adapters/__init__.py` when wanted. `web.read_page` is
+  parked the same way.
 - **screen.look** (slice 2) gives the voice its eyes: *"check this out"*
   captures the screen (`screencapture`, packaged-app TCC), downscales it,
   and asks a one-shot vision model (`FREYJA_VOICE_LOOK_MODEL`, default
@@ -88,17 +90,30 @@ any code was written).
   any Chromium browser) and, when the page is opaque (Arc, JS-from-Apple-
   Events off, or a non-browser is frontmost), falls back to `screen.look`
   vision so it never dead-ends.
-- **Live computer control** (slice 2b). *"Click the compose button"*
-  happens in the exchange, not in a background mission: `computer.see`
-  condenses the front window's AX tree into numbered refs (coordinates
-  never reach the model — they're cached bridge-side), `computer.click /
-  type / press / scroll` act by ref through the same atomic tools agent
-  sessions use (identical highlight, coordinate translation, permission
-  preflights), `computer.menu` clicks menu-bar paths by name, and
-  `computer.open_url` opens http(s) links. Every `see` drops a screenshot
-  receipt under `~/.freyja/voice/frames/` (last 10 kept); refs go stale
-  the moment the screen changes and the verbs refuse them. All gated on
-  the same computer-control setting, with spoken setup hints.
+- **Routines — the lite learning loop** (§13). Do it once, then say
+  *"remember that as 'morning'"* → `routine.save` (confirm-tier — the
+  spoken yes IS the approval gate) captures the exchange's actions as a
+  named macro under `~/.freyja/voice/routines/<slug>.yaml`; the confirm
+  line reads back the real derived steps before you agree. *"morning"* →
+  `routine.run` replays them step by step (per-step receipts, panic
+  brake between steps, 400 ms GUI settle with per-step `wait_ms`
+  override, the final screenshot fed back to the model) and the whole
+  run is undoable in reverse. `routine.list` / `routine.forget`
+  (undoable) round it out; saved names are baked into the prompt at
+  mint. Routines hold only auto-tier verbs — confirm-tier actions are
+  refused by name at save time.
+- **Live computer control — the visual loop** (§12). The realtime model
+  SEES the screen: `computer.see` returns a grid-overlaid screenshot
+  injected straight into the live session as an image, and the model
+  clicks by pixel coordinates it reads off the grid. Every `click / type /
+  press / scroll` performs the action and returns a fresh screenshot, so
+  the model always sees the effect of its last move (only the newest
+  screenshot is kept in-conversation — stale ones are pruned for cost).
+  `target` (vision-grounded description) and AX `ref` remain as fallbacks;
+  `computer.menu` clicks menu-bar paths by name; `computer.open_url`
+  opens http(s) links. Screenshot receipts land under
+  `~/.freyja/voice/frames/` (last 10 kept). All gated on the same
+  computer-control setting, with spoken setup hints.
 
 ## Architecture
 
