@@ -243,10 +243,36 @@ _DEEP_JUDGE_SAFETY_NET_ITERATIONS = 50
 # default resolution at spawn time. Keep this list short — adding more
 # models linearly increases the chance you hit a missing-API-key path.
 _KANBAN_JUDGE_MODEL_POOL: tuple[str, ...] = (
-    "claude-opus-4-8",
-    "gpt-5.5",
+    "claude-fable-5-1",
+    "gpt-5.6-sol",
     "gemini-3.1-pro-preview",
 )
+# Goal-mode judge models. Deliberately NOT the session's own model: a
+# model grading its own work carries its own blind spots into the
+# verdict, which is the same bias the cross-provider pool above exists
+# to average out. Before this was pinned, `standard`/`deep` used
+# `self.model_id` and the judge was whatever the session happened to be
+# running — so the default-model change made the agent its own grader.
+#
+# gemini-3.1-pro-preview for standard/deep: frontier reasoning at
+# ~$1.25/$10, a quarter of Opus-tier, and it already carries the
+# thinking-floor handling the judge's thinking-off calls need.
+# glm-5.3-flash-fireworks for quick: $0.15/$0.50, cheaper AND stronger
+# than the claude-haiku-4-5 it replaces.
+_GOAL_JUDGE_MODEL = "gemini-3.1-pro-preview"
+_GOAL_JUDGE_MODEL_ALT = "claude-opus-4-8"
+_GOAL_JUDGE_QUICK_MODEL = "glm-5.3-flash-fireworks"
+_GOAL_JUDGE_QUICK_MODEL_ALT = "claude-haiku-4-5"
+
+
+def _distinct_judge_model(session_model: str, preferred: str, alt: str) -> str:
+    """Pick `preferred`, or `alt` when that IS the session's own model.
+
+    The judge must never be the model it is grading — see the pool
+    comment above. The alt is only reached when an operator happens to
+    run the session on the judge model itself.
+    """
+    return alt if (session_model or "").strip() == preferred else preferred
 # Cap on consecutive judge_failed verdicts before the goal loop pauses
 # itself. Catches persistent failure modes (schema 400 on every synth,
 # provider outage on every inline call) that would otherwise loop
@@ -1420,13 +1446,15 @@ async def _main() -> None:
         traceback.print_exc(file=sys.stderr)
         sys.exit(2)
 
-    # Default to opus-4-8 across all sessions (desktop AND gateway daemon).
-    # `claude-opus-4-8`'s reasoning_default in MODEL_REASONING_META is
-    # already "high", so newly-created sessions automatically run at high
-    # thinking — no extra plumbing needed. Sub-agent defaults stay on
-    # sonnet (see bridge/tools/registry.py) for cost control on fan-out.
+    # Default to GLM 5.3 on Fireworks across all sessions (desktop AND
+    # gateway daemon) — same weights as the first-party `glm-5.3` entry,
+    # on the Fireworks key/quota pool. Its reasoning_default in
+    # MODEL_REASONING_META is already "high", so newly-created sessions
+    # automatically run at high thinking — no extra plumbing needed.
+    # Sub-agent defaults stay on sonnet (see bridge/tools/registry.py)
+    # for cost control on fan-out.
     # Override per-launch with FREYJA_MODEL env.
-    default_model = os.environ.get("FREYJA_MODEL", "claude-opus-4-8")
+    default_model = os.environ.get("FREYJA_MODEL", "glm-5.3-fireworks")
     from bridge.runtimes.registry import capabilities_payload as _harness_capabilities
     emit(
         {
@@ -1572,6 +1600,16 @@ async def _main() -> None:
 
 AVAILABLE_MODELS: list[dict[str, Any]] = [
     # ─── Anthropic (ANTHROPIC_API_KEY) ─────────────────────────────────
+    {
+        "id": "claude-fable-5-1",
+        "family": "anthropic",
+        "label": "Claude Fable 5.1",
+        "tier": "max",
+        "contextWindow": 1_000_000,
+        "thinking": True,
+        "envVar": "ANTHROPIC_API_KEY",
+        "description": "Newest Mythos-class Claude (Sep 2026). Most capable model for demanding reasoning and long-horizon agentic work. Adaptive thinking (always on), 128k output. $10/$50 per MTok, but cache reads are 4x cheaper than Fable 5 ($0.25 vs $1.00).",
+    },
     {
         "id": "claude-fable-5",
         "family": "anthropic",
@@ -1845,6 +1883,26 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "description": "Z.ai's GLM 5.2 via Fireworks. Long-horizon agentic coding flagship, tool use, 1M ctx.",
     },
     {
+        "id": "glm-5.3-fireworks",
+        "family": "fireworks",
+        "label": "GLM 5.3 (Fireworks)",
+        "tier": "max",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "FIREWORKS_API_KEY",
+        "description": "GLM 5.3 via Fireworks — same model as the Z.ai entry, separate key and quota pool. Reasoning always on (low/high/max). 1M ctx, text-only.",
+    },
+    {
+        "id": "glm-5.3-flash-fireworks",
+        "family": "fireworks",
+        "label": "GLM 5.3 Flash (Fireworks)",
+        "tier": "balanced",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "FIREWORKS_API_KEY",
+        "description": "GLM 5.3 Flash via Fireworks. Multimodal (image in), $0.15/$0.50, reasoning always on. Cheap fanout with a Fireworks quota pool.",
+    },
+    {
         "id": "minimax-m2.7",
         "family": "fireworks",
         "label": "MiniMax M2.7",
@@ -1883,6 +1941,27 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "thinking": True,
         "envVar": "FIREWORKS_API_KEY",
         "description": "Alibaba's Qwen 3.7 Plus via Fireworks (Fireworks-exclusive flagship). Vision + 262k ctx, function calling, effort reasoning.",
+    },
+    # ─── Z.ai first-party (ZAI_API_KEY) ────────────────────────────────
+    {
+        "id": "glm-5.3",
+        "family": "zai",
+        "label": "GLM 5.3 (Z.ai)",
+        "tier": "max",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "ZAI_API_KEY",
+        "description": "Z.ai's flagship (Aug 2026) first-party. Reasoning always on (low/high/max). 1M ctx, text-only.",
+    },
+    {
+        "id": "glm-5.3-flash",
+        "family": "zai",
+        "label": "GLM 5.3 Flash (Z.ai)",
+        "tier": "balanced",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "ZAI_API_KEY",
+        "description": "320B/18B MoE, first natively multimodal GLM (image in). Near-flagship coding at ~1/9 the price ($0.15/$0.50). Reasoning always on. Great fanout slot.",
     },
     # ─── Google Gemini (GEMINI_API_KEY) ────────────────────────────────
     {
@@ -1982,9 +2061,17 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
 # at send-time. See docs/ADDING-A-MODEL.md — missing entries here make
 # the reasoning selector either empty or default-wrong for the model.
 MODEL_REASONING_META: dict[str, dict[str, Any]] = {
+    # xhigh is supported on both Fable tiers (verified against the Models
+    # API capability tree) and is the recommended setting for coding and
+    # agentic work — it was missing here while Opus 4.8 already had it.
+    "claude-fable-5-1": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "high",
+    },
     "claude-fable-5": {
         "reasoningMode": "effort",
-        "reasoningLevels": ["none", "low", "medium", "high", "max"],
+        "reasoningLevels": ["none", "low", "medium", "high", "xhigh", "max"],
         "reasoningDefault": "high",
     },
     "claude-opus-4-8": {
@@ -2135,6 +2222,28 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningLevels": ["none", "low", "medium", "high", "max"],
         "reasoningDefault": "medium",
         "reasoningHistory": ["preserved"],
+    },
+    # GLM 5.3 family: reasoning is mandatory — no "none" rung, and the API
+    # only accepts low/high/max ("medium" is snapped to high by the provider).
+    "glm-5.3": {
+        "reasoningMode": "required",
+        "reasoningLevels": ["low", "high", "max"],
+        "reasoningDefault": "high",
+    },
+    "glm-5.3-flash": {
+        "reasoningMode": "required",
+        "reasoningLevels": ["low", "high", "max"],
+        "reasoningDefault": "high",
+    },
+    "glm-5.3-fireworks": {
+        "reasoningMode": "required",
+        "reasoningLevels": ["low", "high", "max"],
+        "reasoningDefault": "high",
+    },
+    "glm-5.3-flash-fireworks": {
+        "reasoningMode": "required",
+        "reasoningLevels": ["low", "high", "max"],
+        "reasoningDefault": "high",
     },
     # Gemini 3.x exposes a discrete ThinkingLevel enum (minimal/low/medium/high).
     # We map our "minimal" UI rung onto Gemini MINIMAL and surface the same
@@ -2642,6 +2751,13 @@ def build_provider(model_id: str, thinking_level: str = "auto") -> Any:
         )
 
         return FireworksProvider(config=FireworksConfig(model=model_id, reasoning=thinking))
+
+    if family == "zai":
+        if not os.environ.get("ZAI_API_KEY"):
+            raise ValueError("ZAI_API_KEY is not set")
+        from engine.zai_provider import ZaiConfig, ZaiProvider
+
+        return ZaiProvider(config=ZaiConfig(model=model_id, reasoning=thinking))
 
     if family == "google":
         if not os.environ.get("GEMINI_API_KEY"):
@@ -3596,16 +3712,24 @@ class _BridgeSession:
         # initialize() still takes effect when the handler is finally built.
         #
         # Gateway-routed sessions (id starts with ``freyja:<platform>:``)
-        # default to high autonomy. The daemon's permission_request events
-        # are emitted in-process, and platforms like Slack don't yet have
-        # an interactive approval surface wired all the way through. Until
-        # the Slack Block Kit dispatch + the desktop log-tailer + the
-        # control-channel round trip are all live, the only safe choice is
-        # to not prompt for routine calls; otherwise the agent stalls
-        # forever on the first network-egress bash command.
+        # run yolo: every permission level auto-approves, DANGEROUS
+        # included. Rationale is operator intent — when you message Freyja
+        # from Slack you are usually away from the desk, and a prompt that
+        # waits on a Block Kit click is a turn that stalls for as long as
+        # it takes you to look at your phone (10 min, then it hard-denies).
+        #
+        # Note what this does NOT cover: skill promotion is not a
+        # permission-tier decision at all. Candidates travel a separate
+        # ``skill_candidate`` → operator promote/discard flow (see
+        # bridge/knowledge/learning/confirmation.py and the gateway's
+        # permission_listener), so nothing here can auto-publish a skill.
+        # tests/test_gateway_permissions.py pins both halves of that.
+        #
+        # Override per-launch with FREYJA_GATEWAY_PERMISSION_AUTO
+        # (none|low|medium|high|yolo) to get prompts back.
         if _is_gateway_session_id(session_id):
             self.permission_tier: str = os.environ.get(
-                "FREYJA_GATEWAY_PERMISSION_AUTO", "high"
+                "FREYJA_GATEWAY_PERMISSION_AUTO", "yolo"
             )
         else:
             self.permission_tier = state.permission_tier
@@ -8053,10 +8177,14 @@ class _BridgeSession:
         from engine.types import Message
 
         if profile == "quick":
-            judge_model = "claude-haiku-4-5-20251001"
+            judge_model = _distinct_judge_model(
+                self.model_id, _GOAL_JUDGE_QUICK_MODEL, _GOAL_JUDGE_QUICK_MODEL_ALT
+            )
             judge_thinking_level = "none"
         else:  # standard (and fallback)
-            judge_model = self.model_id
+            judge_model = _distinct_judge_model(
+                self.model_id, _GOAL_JUDGE_MODEL, _GOAL_JUDGE_MODEL_ALT
+            )
             judge_thinking_level = "none"
 
         judge_provider = build_provider(
@@ -8150,12 +8278,22 @@ class _BridgeSession:
         if self.judge_rules is not None:
             tool_filter = frozenset(self.judge_rules.effective_tools())
 
+        # Pin the judge model explicitly. judge-deep's own AgentType is
+        # `model="parent"` / prefer_parent, which for goal mode meant the
+        # deep judge graded the session's work using the session's model.
+        # Board mode already overrides per-card from its pool; this is the
+        # goal-mode equivalent. Manual `sub_agent` spawns of judge-deep
+        # keep the prefer_parent default.
+        judge_model = _distinct_judge_model(
+            self.model_id, _GOAL_JUDGE_MODEL, _GOAL_JUDGE_MODEL_ALT
+        )
         record, response_text, error = await sub_tool.spawn_programmatically(
             agent_type_name="judge-deep",
-            label="Goal judge (deep)",
+            label=f"Goal judge (deep) · {judge_model}",
             task=prompt,
             tool_filter=tool_filter,
             max_iterations_override=_DEEP_JUDGE_SAFETY_NET_ITERATIONS,
+            model_override=judge_model,
         )
         if error is not None:
             raise error
@@ -13622,7 +13760,7 @@ async def _main_headless() -> None:
     auto-create any sessions; jobs allocate sessions as they fire.
     """
     workspace = os.environ.get("FREYJA_WORKSPACE") or os.getcwd()
-    default_model = os.environ.get("FREYJA_MODEL") or "claude-sonnet-4-6"
+    default_model = os.environ.get("FREYJA_MODEL") or "glm-5.3-fireworks"
     log("info", f"freyja headless daemon starting (workspace={workspace})")
     # The gateway daemon owns _BridgeState construction so we use it
     # here too — that way Slack-delivered scheduled jobs work

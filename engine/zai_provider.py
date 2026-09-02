@@ -1,9 +1,28 @@
 """
-Fireworks AI provider implementation using the OpenAI-compatible API.
+Z.ai (Zhipu) first-party provider using the OpenAI-compatible API.
 
-Supports models hosted on Fireworks: Kimi K2.x, GLM 5.x, DeepSeek V4,
-MiniMax M2.x, Qwen 3.6, etc.
-Uses the OpenAI Python SDK pointed at Fireworks' API endpoint.
+Serves the GLM-5.3 family first-party: ``glm-5.3`` and the natively
+multimodal ``glm-5.3-flash``. Both are also available third-party via
+Fireworks (see fireworks_provider) — keeping both routes gives us a
+second quota pool to fall back to. Uses the OpenAI Python SDK pointed at
+Z.ai's PAAS endpoint.
+
+GLM-5.3-family quirks this provider encodes (per docs.z.ai, 2026-08):
+- Reasoning is MANDATORY. ``thinking.type: "disabled"`` returns HTTP 400
+  code 1210. Requests always send ``thinking: {"type": "enabled"}`` plus a
+  ``reasoning_effort`` from the model's ladder.
+- The effort ladder is low/high/max only (no "none", no "medium"; Z.ai's
+  default is max). Freyja's "medium" maps to "high"; disabled/minimal
+  intent maps to "low" — the documented migration path for apps that used
+  to disable thinking.
+- Structured output supports ``response_format: {"type": "json_object"}``
+  only (no strict json_schema); the schema is injected into the system
+  prompt and validated by the caller.
+- ``glm-5.3`` is text-only; ``glm-5.3-flash`` accepts images.
+
+Subscribers on the GLM Coding Plan can point ``ZAI_BASE_URL`` at
+``https://api.z.ai/api/coding/paas/v4`` to bill against plan credits
+instead of pay-as-you-go.
 """
 
 from __future__ import annotations
@@ -14,7 +33,7 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable, Awaitable
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 try:
     import openai
@@ -54,171 +73,24 @@ from engine.types import (
 
 logger = logging.getLogger(__name__)
 
-FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1"
+ZAI_DEFAULT_BASE_URL = "https://api.z.ai/api/paas/v4"
 
-# Map short model names to Fireworks model IDs
-FIREWORKS_MODEL_MAP: dict[str, str] = {
-    "deepseek-v4-pro": "accounts/fireworks/models/deepseek-v4-pro",
-    "glm-5.1": "accounts/fireworks/models/glm-5p1",
-    "glm-5.2": "accounts/fireworks/models/glm-5p2",
-    # GLM 5.3 family — same models Z.ai serves first-party (see
-    # zai_provider); the `-fireworks` ids pick the Fireworks route.
-    "glm-5.3-fireworks": "accounts/fireworks/models/glm-5p3",
-    "glm-5.3-flash-fireworks": "accounts/fireworks/models/glm-5p3-flash",
-    "kimi-k2.6": "accounts/fireworks/models/kimi-k2p6",
-    "kimi-k2.7-code": "accounts/fireworks/models/kimi-k2p7-code",
-    "minimax-m2.7": "accounts/fireworks/models/minimax-m2p7",
-    "minimax-m3": "accounts/fireworks/models/minimax-m3",
-    "qwen3.6-plus": "accounts/fireworks/models/qwen3p6-plus",
-    "qwen3.7-plus": "accounts/fireworks/models/qwen3p7-plus",
-    "kimi-k2.5": "accounts/fireworks/models/kimi-k2p5",
-    "kimi-k3": "accounts/fireworks/models/kimi-k3",
-    "kimi-k3-fast": "accounts/fireworks/routers/kimi-k3-fast",
+ZAI_CONTEXT_WINDOWS: dict[str, int] = {
+    "glm-5.3": 1_048_576,
+    "glm-5.3-flash": 1_048_576,
 }
 
-FIREWORKS_CONTEXT_WINDOWS: dict[str, int] = {
-    "deepseek-v4-pro": 1_048_576,
-    "accounts/fireworks/models/deepseek-v4-pro": 1_048_576,
-    "glm-5.1": 202_752,
-    "accounts/fireworks/models/glm-5p1": 202_752,
-    "glm-5.2": 1_048_576,
-    "accounts/fireworks/models/glm-5p2": 1_048_576,
-    "glm-5.3-fireworks": 1_048_576,
-    "accounts/fireworks/models/glm-5p3": 1_048_576,
-    "glm-5.3-flash-fireworks": 1_048_576,
-    "accounts/fireworks/models/glm-5p3-flash": 1_048_576,
-    "kimi-k2.6": 262_144,
-    "accounts/fireworks/models/kimi-k2p6": 262_144,
-    "kimi-k2.7-code": 262_144,
-    "accounts/fireworks/models/kimi-k2p7-code": 262_144,
-    "minimax-m2.7": 196_608,
-    "accounts/fireworks/models/minimax-m2p7": 196_608,
-    "minimax-m3": 524_288,
-    "accounts/fireworks/models/minimax-m3": 524_288,
-    "qwen3.6-plus": 1_000_000,
-    "accounts/fireworks/models/qwen3p6-plus": 1_000_000,
-    "qwen3.7-plus": 262_144,
-    "accounts/fireworks/models/qwen3p7-plus": 262_144,
-    "kimi-k2.5": 262_144,
-    "accounts/fireworks/models/kimi-k2p5": 262_144,
-    "kimi-k3": 1_048_576,
-    "accounts/fireworks/models/kimi-k3": 1_048_576,
-    "kimi-k3-fast": 1_048_576,
-    "accounts/fireworks/routers/kimi-k3-fast": 1_048_576,
+# effort ladder per model. Both GLM-5.3 and 5.3-Flash: low/high/max,
+# reasoning always on, Z.ai's own default is max (we default to high —
+# see MODEL_REGISTRY — since max is markedly more verbose/expensive).
+ZAI_REASONING_LEVELS: dict[str, tuple[str, ...]] = {
+    "glm-5.3": ("low", "high", "max"),
+    "glm-5.3-flash": ("low", "high", "max"),
 }
 
-
-# Models that support vision (image_url content blocks)
-FIREWORKS_VISION_MODELS: set[str] = {
-    "kimi-k2.6",
-    "accounts/fireworks/models/kimi-k2p6",
-    "kimi-k2.7-code",
-    "accounts/fireworks/models/kimi-k2p7-code",
-    "minimax-m3",
-    "accounts/fireworks/models/minimax-m3",
-    "qwen3.6-plus",
-    "accounts/fireworks/models/qwen3p6-plus",
-    "qwen3.7-plus",
-    "accounts/fireworks/models/qwen3p7-plus",
-    "kimi-k2.5",
-    "accounts/fireworks/models/kimi-k2p5",
-    # GLM 5.3 Flash is natively multimodal; plain GLM 5.3 is text-only.
-    "glm-5.3-flash-fireworks",
-    "accounts/fireworks/models/glm-5p3-flash",
-    "kimi-k3",
-    "accounts/fireworks/models/kimi-k3",
-    "kimi-k3-fast",
-    "accounts/fireworks/routers/kimi-k3-fast",
-}
-
-FIREWORKS_REASONING_MODE: dict[str, str] = {
-    # Fireworks API docs: DeepSeek V4 supports none/low/medium/high/max
-    # and defaults to high. Low/medium are promoted to high by Fireworks.
-    "deepseek-v4-pro": "effort",
-    "accounts/fireworks/models/deepseek-v4-pro": "effort",
-    # GLM 5.1 exposes reasoning/tool calling in Fireworks model metadata.
-    "glm-5.1": "effort",
-    "accounts/fireworks/models/glm-5p1": "effort",
-    "glm-5.2": "effort",
-    "accounts/fireworks/models/glm-5p2": "effort",
-    # GLM 5.3 family reasoning is MANDATORY (Z.ai error 1210 on the
-    # first-party API) — "required" makes the resolver omit
-    # reasoning_effort instead of sending "none" when thinking is off.
-    "glm-5.3-fireworks": "required",
-    "accounts/fireworks/models/glm-5p3": "required",
-    "glm-5.3-flash-fireworks": "required",
-    "accounts/fireworks/models/glm-5p3-flash": "required",
-    # Kimi K2.6 / Qwen 3.6 use Fireworks reasoning fields and support
-    # preserved reasoning history in model-specific prompt formatting.
-    "kimi-k2.6": "effort",
-    "accounts/fireworks/models/kimi-k2p6": "effort",
-    "kimi-k2.7-code": "effort",
-    "accounts/fireworks/models/kimi-k2p7-code": "effort",
-    "qwen3.6-plus": "effort",
-    "accounts/fireworks/models/qwen3p6-plus": "effort",
-    "qwen3.7-plus": "effort",
-    "accounts/fireworks/models/qwen3p7-plus": "effort",
-    # Fireworks docs list MiniMax M2 reasoning as required/on by default.
-    "minimax-m2.7": "required",
-    "accounts/fireworks/models/minimax-m2p7": "required",
-    "minimax-m3": "required",
-    "accounts/fireworks/models/minimax-m3": "required",
-    "kimi-k3": "effort",
-    "accounts/fireworks/models/kimi-k3": "effort",
-    "kimi-k3-fast": "effort",
-    "accounts/fireworks/routers/kimi-k3-fast": "effort",
-}
-
-FIREWORKS_REASONING_LEVELS: dict[str, tuple[str, ...]] = {
-    "deepseek-v4-pro": ("none", "low", "medium", "high", "max"),
-    "accounts/fireworks/models/deepseek-v4-pro": ("none", "low", "medium", "high", "max"),
-    "kimi-k2.7-code": ("none", "low", "medium", "high"),
-    "accounts/fireworks/models/kimi-k2p7-code": ("none", "low", "medium", "high"),
-    "minimax-m2.7": ("low", "medium", "high"),
-    "accounts/fireworks/models/minimax-m2p7": ("low", "medium", "high"),
-    "minimax-m3": ("low", "medium", "high"),
-    "accounts/fireworks/models/minimax-m3": ("low", "medium", "high"),
-    "glm-5.2": ("none", "low", "medium", "high", "max"),
-    "accounts/fireworks/models/glm-5p2": ("none", "low", "medium", "high", "max"),
-    # GLM 5.3 family ladder is low/high/max — there is no "medium" rung
-    # and no way to turn thinking off.
-    "glm-5.3-fireworks": ("low", "high", "max"),
-    "accounts/fireworks/models/glm-5p3": ("low", "high", "max"),
-    "glm-5.3-flash-fireworks": ("low", "high", "max"),
-    "accounts/fireworks/models/glm-5p3-flash": ("low", "high", "max"),
-    "qwen3.7-plus": ("none", "low", "medium", "high", "max"),
-    "accounts/fireworks/models/qwen3p7-plus": ("none", "low", "medium", "high", "max"),
-    "kimi-k3": ("none", "low", "medium", "high", "max"),
-    "accounts/fireworks/models/kimi-k3": ("none", "low", "medium", "high", "max"),
-    "kimi-k3-fast": ("none", "low", "medium", "high", "max"),
-    "accounts/fireworks/routers/kimi-k3-fast": ("none", "low", "medium", "high", "max"),
-}
-
-FIREWORKS_REASONING_HISTORY: dict[str, str] = {
-    "deepseek-v4-pro": "interleaved",
-    "accounts/fireworks/models/deepseek-v4-pro": "interleaved",
-    "qwen3.6-plus": "preserved",
-    "accounts/fireworks/models/qwen3p6-plus": "preserved",
-    "qwen3.7-plus": "preserved",
-    "accounts/fireworks/models/qwen3p7-plus": "preserved",
-    "kimi-k2.6": "preserved",
-    "accounts/fireworks/models/kimi-k2p6": "preserved",
-    "kimi-k2.7-code": "preserved",
-    "accounts/fireworks/models/kimi-k2p7-code": "preserved",
-    "minimax-m2.7": "interleaved",
-    "accounts/fireworks/models/minimax-m2p7": "interleaved",
-    "minimax-m3": "interleaved",
-    "accounts/fireworks/models/minimax-m3": "interleaved",
-    "kimi-k3": "preserved",
-    "accounts/fireworks/models/kimi-k3": "preserved",
-    "kimi-k3-fast": "preserved",
-    "accounts/fireworks/routers/kimi-k3-fast": "preserved",
-}
-
-
-def resolve_fireworks_model(model: str) -> str:
-    """Resolve a short model name to the full Fireworks model ID."""
-    return FIREWORKS_MODEL_MAP.get(model, model)
+# Models accepting `image_url` content parts. GLM-5.3-Flash is the first
+# natively multimodal model in the GLM-5 line; plain 5.3 is text-only.
+ZAI_VISION_MODELS: frozenset[str] = frozenset({"glm-5.3-flash"})
 
 
 def _content_blocks_to_openai(
@@ -226,8 +98,9 @@ def _content_blocks_to_openai(
 ) -> str | list[dict[str, Any]]:
     """Convert content blocks to OpenAI chat format.
 
-    When *vision* is True, ImageBlocks are converted to ``image_url``
-    content parts.  Otherwise falls back to ``content_blocks_to_text``.
+    When *vision* is True, ImageBlocks become ``image_url`` parts (Z.ai
+    accepts both plain URLs and base64 data URLs). Otherwise everything
+    flattens to text.
     """
     if isinstance(content, str):
         return content
@@ -245,22 +118,35 @@ def _content_blocks_to_openai(
                 data_uri = f"data:{block.media_type};base64,{block.data}"
                 parts.append({"type": "image_url", "image_url": {"url": data_uri}})
         else:
-            # DocumentBlock and others — include as text description
             text = content_blocks_to_text([block])
             if text:
                 parts.append({"type": "text", "text": text})
     return parts if parts else ""
 
 
+def _map_effort_to_zai(effort: str, levels: tuple[str, ...]) -> str:
+    """Snap a Freyja effort level onto the model's supported ladder."""
+    if effort in levels:
+        return effort
+    # Freyja rungs Z.ai doesn't have: none/minimal → lowest, medium → high,
+    # anything unknown → high (Z.ai's own coding recommendation is max, but
+    # high is the sane default for interactive use).
+    if effort in ("none", "minimal", "low"):
+        return levels[0]
+    if "high" in levels:
+        return "high"
+    return levels[-1]
+
+
 @dataclass
-class FireworksConfig:
-    """Configuration for the Fireworks provider."""
+class ZaiConfig:
+    """Configuration for the Z.ai provider."""
 
     api_key: str | None = None
-    """API key (defaults to FIREWORKS_API_KEY env var)."""
+    """API key (defaults to ZAI_API_KEY env var)."""
 
-    model: str = "kimi-k2.5"
-    """Model identifier (short name or full Fireworks model ID)."""
+    model: str = "glm-5.3"
+    """Model identifier as Z.ai names it."""
 
     max_tokens: int = 8192
     """Default max tokens per request."""
@@ -268,53 +154,54 @@ class FireworksConfig:
     timeout: float = 120.0
     """Request timeout in seconds."""
 
-    base_url: str = FIREWORKS_BASE_URL
-    """API base URL."""
+    base_url: str | None = None
+    """API base URL. Defaults to ZAI_BASE_URL env var, then the PAAS URL."""
 
-    context_window: int = 131072
+    context_window: int = 1_048_576
     """Context window size in tokens."""
 
     reasoning: ThinkingConfig = field(default_factory=ThinkingConfig)
-    """Fireworks reasoning configuration. Mapped to reasoning_effort."""
+    """Reasoning configuration. Mapped to reasoning_effort (always sent)."""
 
 
-# Type aliases for callbacks
 StreamCallback = Callable[[StreamEvent], None]
 AsyncStreamCallback = Callable[[StreamEvent], Awaitable[None]]
 
 
-class FireworksProvider:
+class ZaiProvider:
     """
-    Fireworks AI LLM provider using OpenAI-compatible API.
+    Z.ai first-party LLM provider using the OpenAI-compatible API.
 
     Implements the ModelProvider protocol with complete, complete_async,
     stream, and stream_to_response methods.
     """
 
-    def __init__(self, config: FireworksConfig | None = None):
-        self._config = config or FireworksConfig()
-        api_key = self._config.api_key or os.environ.get("FIREWORKS_API_KEY")
+    def __init__(self, config: ZaiConfig | None = None):
+        self._config = config or ZaiConfig()
+        api_key = self._config.api_key or os.environ.get("ZAI_API_KEY")
         if not api_key:
             raise AuthenticationError(
-                "FIREWORKS_API_KEY not set. Provide api_key in config or set the env var."
+                "ZAI_API_KEY not set. Provide api_key in config or set the env var."
             )
 
-        self._model = resolve_fireworks_model(self._config.model)
-        self._short_model = self._config.model
+        self._model = self._config.model
         self._context_window = (
-            FIREWORKS_CONTEXT_WINDOWS.get(self._short_model)
-            or FIREWORKS_CONTEXT_WINDOWS.get(self._model)
-            or self._config.context_window
+            ZAI_CONTEXT_WINDOWS.get(self._model) or self._config.context_window
+        )
+        base_url = (
+            self._config.base_url
+            or os.environ.get("ZAI_BASE_URL", "").strip()
+            or ZAI_DEFAULT_BASE_URL
         )
         # max_retries=0: let 429s propagate to runner fallback chain
         self._client = openai.OpenAI(
-            base_url=self._config.base_url,
+            base_url=base_url,
             api_key=api_key,
             timeout=self._config.timeout,
             max_retries=0,
         )
         self._async_client = openai.AsyncOpenAI(
-            base_url=self._config.base_url,
+            base_url=base_url,
             api_key=api_key,
             timeout=self._config.timeout,
             max_retries=0,
@@ -324,11 +211,11 @@ class FireworksProvider:
 
     @property
     def name(self) -> str:
-        return "fireworks"
+        return "zai"
 
     @property
     def model_id(self) -> str:
-        return self._short_model
+        return self._model
 
     @property
     def context_window(self) -> int:
@@ -341,6 +228,7 @@ class FireworksProvider:
         tools: list[ToolDefinition] | None = None,
         system_prompt: str | None = None,
         max_tokens: int | None = None,
+        thinking: Any = None,
     ) -> ProviderResponse:
         """Send a synchronous completion request."""
         request_kwargs = self._build_request(
@@ -409,23 +297,31 @@ class FireworksProvider:
         """
         Generate a structured JSON response matching the given schema.
 
-        Uses Fireworks' response_format with json_schema. Note that Kimi K2.5
-        and other Fireworks models have mixed support for strict structured
-        output; the schema is passed and enforcement is best-effort.
+        Z.ai supports response_format json_object only (no strict
+        json_schema), so the schema rides in the system prompt and the
+        result is parsed client-side. Reasoning cannot be disabled on
+        GLM-5.3 — it is pinned to the lowest effort tier instead.
         """
         from engine.providers import StructuredResponse
 
-        openai_messages = self._convert_messages(messages, system_prompt)
+        schema_instruction = (
+            "Respond ONLY with a JSON object conforming to this JSON Schema "
+            f"(no prose, no code fences):\n{json.dumps(schema)}"
+        )
+        combined_system = (
+            f"{system_prompt}\n\n{schema_instruction}" if system_prompt else schema_instruction
+        )
+        openai_messages = self._convert_messages(messages, combined_system)
         effective_max_tokens = max_tokens or self._config.max_tokens
 
+        levels = ZAI_REASONING_LEVELS.get(self._model, ("low", "high", "max"))
         request_kwargs: dict[str, Any] = {
             "model": self._model,
             "max_completion_tokens": effective_max_tokens,
             "messages": openai_messages,
-            "response_format": {
-                "type": "json_object",
-                "schema": schema,
-            },
+            "response_format": {"type": "json_object"},
+            "reasoning_effort": levels[0],
+            "extra_body": {"thinking": {"type": "enabled"}},
         }
 
         self._log_request(request_kwargs, "complete_structured")
@@ -448,7 +344,7 @@ class FireworksProvider:
         )
 
         logger.info(
-            "complete_structured RAW \u2190 %s | schema=%s | stop=%s | content_len=%d | in=%d out=%d | preview=%.300s",
+            "complete_structured RAW ← %s | schema=%s | stop=%s | content_len=%d | in=%d out=%d | preview=%.300s",
             self._model,
             schema_name,
             stop_reason,
@@ -518,6 +414,7 @@ class FireworksProvider:
             tools=tools,
             system_prompt=system_prompt,
             max_tokens=max_tokens,
+            thinking=thinking,
         )
         self._log_request(request_kwargs, "stream")
         request_kwargs["stream"] = True
@@ -661,7 +558,6 @@ class FireworksProvider:
                         if asyncio.iscoroutine(result):
                             await result
 
-            # Build tool call responses
             tool_call_responses = None
             if tool_calls_in_progress:
                 tool_call_responses = []
@@ -691,7 +587,7 @@ class FireworksProvider:
                 thinking_blocks=[
                     ThinkingBlock(thinking="".join(thinking_parts))
                 ] if thinking_parts else None,
-                model=self._short_model,
+                model=self._model,
             )
 
         except OpenAIAuthError as e:
@@ -756,6 +652,9 @@ class FireworksProvider:
             "model": self._model,
             "max_completion_tokens": effective_max_tokens,
             "messages": openai_messages,
+            # Thinking is mandatory on GLM-5.3 — "disabled" 400s (code 1210).
+            "reasoning_effort": self._resolve_reasoning_effort(thinking),
+            "extra_body": {"thinking": {"type": "enabled"}},
         }
 
         if tools:
@@ -765,87 +664,33 @@ class FireworksProvider:
         if tool_choice:
             request_kwargs["tool_choice"] = tool_choice
 
-        reasoning_effort = self._resolve_reasoning_effort(thinking)
-        if reasoning_effort is not None:
-            request_kwargs["reasoning_effort"] = reasoning_effort
-
-        reasoning_history = self._reasoning_history()
-        if reasoning_history:
-            request_kwargs.setdefault("extra_body", {})["reasoning_history"] = reasoning_history
-
         return request_kwargs
 
-    def _reasoning_mode(self) -> str:
-        return (
-            FIREWORKS_REASONING_MODE.get(self._short_model)
-            or FIREWORKS_REASONING_MODE.get(self._model)
-            or "none"
-        )
+    def _resolve_reasoning_effort(self, thinking: Any = None) -> str:
+        """Map Freyja's ThinkingConfig onto Z.ai's effort ladder.
 
-    def _reasoning_history(self) -> str | None:
-        return (
-            FIREWORKS_REASONING_HISTORY.get(self._short_model)
-            or FIREWORKS_REASONING_HISTORY.get(self._model)
-        )
-
-    def _resolve_reasoning_effort(self, thinking: Any = None) -> str | None:
-        """Map Freyja's ThinkingConfig to Fireworks reasoning_effort.
-
-        Fireworks' chat completions endpoint has model-specific behavior:
-        DeepSeek V4 supports explicit effort levels, and MiniMax M2-family
-        reasoning is mandatory.
+        Always returns a level — reasoning cannot be turned off, so
+        "disabled" intent becomes the lowest supported tier.
         """
-        mode = self._reasoning_mode()
-        if mode == "none":
-            return None
-
+        levels = ZAI_REASONING_LEVELS.get(self._model, ("low", "high", "max"))
         config = thinking if thinking is not None else self._config.reasoning
         enabled = bool(getattr(config, "enabled", False))
         effort = str(getattr(config, "effort", "high") or "high")
 
         if not enabled:
-            if mode == "required":
-                return None
-            return "none"
-
-        if mode == "binary":
-            return "high"
-
-        if mode == "required":
-            # Respect the model's declared ladder rather than a fixed
-            # low/medium/high triple: MiniMax is low/medium/high, but the
-            # GLM 5.3 family is low/high/max with no "medium" rung, so a
-            # hardcoded triple silently downgraded "max" to "medium".
-            required_levels = (
-                FIREWORKS_REASONING_LEVELS.get(self._short_model)
-                or FIREWORKS_REASONING_LEVELS.get(self._model)
-                or ("low", "medium", "high")
-            )
-            if effort in required_levels and effort != "none":
-                return effort
-            if "medium" in required_levels:
-                return "medium"
-            return "high" if "high" in required_levels else required_levels[0]
-
-        levels = (
-            FIREWORKS_REASONING_LEVELS.get(self._short_model)
-            or FIREWORKS_REASONING_LEVELS.get(self._model)
-            or ("none", "low", "medium", "high")
-        )
-        if effort in levels and effort != "none":
-            return effort
-        if "high" in levels:
-            return "high"
-        return next((level for level in levels if level != "none"), None)
+            return levels[0]
+        return _map_effort_to_zai(effort, levels)
 
     def _convert_messages(
         self, messages: list[Message], system_prompt: str | None = None
     ) -> list[dict[str, Any]]:
-        """Convert internal Message format to OpenAI chat format."""
-        vision = (
-            self._short_model in FIREWORKS_VISION_MODELS
-            or self._model in FIREWORKS_VISION_MODELS
-        )
+        """Convert internal Message format to OpenAI chat format.
+
+        Vision models (GLM-5.3-Flash) get ``image_url`` parts; on
+        text-only models (GLM-5.3) image/document blocks flatten to their
+        text description via content_blocks_to_text.
+        """
+        vision = self._model in ZAI_VISION_MODELS
         result: list[dict[str, Any]] = []
 
         if system_prompt:
@@ -856,8 +701,10 @@ class FireworksProvider:
                 result.append({"role": "system", "content": content_blocks_to_text(msg.content)})
 
             elif msg.role == "user":
-                content = _content_blocks_to_openai(msg.content, vision=vision)
-                result.append({"role": "user", "content": content})
+                result.append({
+                    "role": "user",
+                    "content": _content_blocks_to_openai(msg.content, vision=vision),
+                })
 
             elif msg.role == "assistant":
                 entry: dict[str, Any] = {"role": "assistant"}
@@ -898,12 +745,7 @@ class FireworksProvider:
         return result
 
     def _convert_tool(self, tool: ToolDefinition) -> dict[str, Any]:
-        """Convert internal ToolDefinition to OpenAI function format.
-
-        Fireworks does not document strict mode support. We include the flag
-        when set — Fireworks will silently ignore it if unsupported. Validates
-        the tool name against the portable OpenAI-compat pattern.
-        """
+        """Convert internal ToolDefinition to OpenAI function format."""
         from engine.cerebras_provider import _validate_tool_name
         _validate_tool_name(tool.name)
         fn: dict[str, Any] = {
@@ -911,8 +753,6 @@ class FireworksProvider:
             "description": tool.description,
             "parameters": tool.parameters,
         }
-        if tool.strict:
-            fn["strict"] = True
         return {"type": "function", "function": fn}
 
     def _parse_response(self, response: Any) -> ProviderResponse:
@@ -967,7 +807,7 @@ class FireworksProvider:
             thinking_blocks=[
                 ThinkingBlock(thinking=reasoning_content)
             ] if reasoning_content else None,
-            model=self._short_model,
+            model=self._model,
         )
 
     def _convert_api_error(self, error: APIStatusError) -> ProviderError:
@@ -980,6 +820,13 @@ class FireworksProvider:
         elif status == 402:
             return BillingError(message)
         elif status == 429:
+            # Z.ai returns 429 for BOTH real rate limits and "insufficient
+            # balance or no resource package" (code 1113). The latter is
+            # permanent — reporting it as a retryable rate limit burns a
+            # backoff before the fallback chain takes over.
+            lower = message.lower()
+            if "1113" in message or "insufficient balance" in lower or "recharge" in lower:
+                return BillingError(message)
             return RateLimitError(message, retry_after=5.0)
         elif status == 404:
             return ModelNotFoundError(message)
@@ -992,3 +839,12 @@ class FireworksProvider:
             return ProviderError(message, status=status, retryable=True)
         else:
             return ProviderError(message, status=status, retryable=False)
+
+
+def create_zai_provider(
+    api_key: str | None = None,
+    model: str = "glm-5.3",
+    **kwargs: Any,
+) -> ZaiProvider:
+    """Convenience constructor for the Z.ai provider."""
+    return ZaiProvider(ZaiConfig(api_key=api_key, model=model, **kwargs))

@@ -105,10 +105,17 @@ Copy `.env.example` to `.env` and fill in what you need.
 
 | Variable | Provider | Notes |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Anthropic | Claude Opus / Sonnet / Haiku. Default model is `claude-sonnet-4-6`. |
+| `ANTHROPIC_API_KEY` | Anthropic | Claude Opus / Sonnet / Haiku |
 | `OPENAI_API_KEY` | OpenAI | GPT-5.x family |
 | `CEREBRAS_API_KEY` | Cerebras / Z.ai | `zai-glm-4.7` |
-| `FIREWORKS_API_KEY` | Fireworks | Kimi K2, DeepSeek V4 Pro, MiniMax M2, GLM 5, Qwen 3.6 |
+| `FIREWORKS_API_KEY` | Fireworks | Kimi K2/K3, DeepSeek V4 Pro, MiniMax M2/M3, GLM 5 (incl. `glm-5.3-fireworks`, `glm-5.3-flash-fireworks`), Qwen 3.6/3.7 |
+| `ZAI_API_KEY` | Z.ai (first-party) | `glm-5.3` — the default model for new sessions (override with `FREYJA_MODEL`) — and `glm-5.3-flash`. Optional `ZAI_BASE_URL` switches to the GLM Coding Plan endpoint. |
+
+The GLM 5.3 family is reachable through **two providers**: the `-fireworks`
+ids run the same weights on Fireworks with a separate key and quota pool, and
+each route is the other's first fallback. Reasoning is mandatory on all four
+(ladder `low`/`high`/`max`, no off). `glm-5.3-flash` is natively multimodal
+(image input); plain `glm-5.3` is text-only.
 | `GEMINI_API_KEY` | Google | Gemini 2.5 / 3.x; also required for the `analyze_video` tool |
 
 ### Tools
@@ -131,9 +138,10 @@ See [Slack gateway setup](#slack-gateway) below for the guided wizard.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `FREYJA_MODEL` | `claude-sonnet-4-6` | Default model for new sessions |
+| `FREYJA_MODEL` | `glm-5.3-fireworks` | Default model for new sessions |
 | `FREYJA_WORKSPACE` | `~` | Root workspace directory |
-| `FREYJA_PERMISSION_AUTO` | `low` | Auto-approval tier: `low` (read-only auto), `medium`, `high`, `yolo` |
+| `FREYJA_PERMISSION_AUTO` | `low` | Auto-approval tier for desktop sessions: `low` (read-only auto), `medium`, `high`, `yolo` |
+| `FREYJA_GATEWAY_PERMISSION_AUTO` | `yolo` | Auto-approval tier for chat-gateway (Slack/Telegram) sessions. Defaults to `yolo` because a prompt there stalls the turn until you tap a Block Kit button — and hard-denies after `FREYJA_PERMISSION_TIMEOUT_SEC`. Set to `high` to prompt for `rm -rf`/`sudo`-class commands. Skill promotion is unaffected: it never runs through the permission tier. |
 | `FREYJA_DEBUG_LOG` | `0` | Set to `1` for verbose bridge logging |
 | `FREYJA_COMPUTER_ENABLED` | `0` | Set to `1` to enable computer-use tools |
 | `FREYJA_IMAGE_MODEL` | _(provider default)_ | Model used for `generate_image` calls |

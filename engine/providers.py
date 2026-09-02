@@ -512,6 +512,7 @@ class ModelFallbackChain:
 # provider routing + context window + thinking flag.
 MODEL_REGISTRY: dict[str, dict[str, object]] = {
     # Anthropic models
+    "claude-fable-5-1": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-fable-5": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-opus-4-8": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-opus-4-8-fast": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
@@ -549,6 +550,22 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
         "thinking": True,
         "reasoning_mode": "effort",
         "reasoning_levels": ("none", "low", "medium", "high"),
+        "reasoning_default": "high",
+    },
+    "glm-5.3-fireworks": {
+        "provider": "fireworks",
+        "context_window": 1_048_576,
+        "thinking": True,
+        "reasoning_mode": "required",
+        "reasoning_levels": ("low", "high", "max"),
+        "reasoning_default": "high",
+    },
+    "glm-5.3-flash-fireworks": {
+        "provider": "fireworks",
+        "context_window": 1_048_576,
+        "thinking": True,
+        "reasoning_mode": "required",
+        "reasoning_levels": ("low", "high", "max"),
         "reasoning_default": "high",
     },
     "glm-5.2": {
@@ -622,6 +639,25 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
         "thinking": True,
         "reasoning_mode": "effort",
         "reasoning_levels": ("none", "low", "medium", "high", "max"),
+        "reasoning_default": "high",
+    },
+    # Z.ai first-party (ZAI_API_KEY). Reasoning is mandatory across the
+    # GLM 5.3 family: ladder is low/high/max, no off. The same two models
+    # are also reachable via Fireworks below — separate key + quota pool.
+    "glm-5.3": {
+        "provider": "zai",
+        "context_window": 1_048_576,
+        "thinking": True,
+        "reasoning_mode": "required",
+        "reasoning_levels": ("low", "high", "max"),
+        "reasoning_default": "high",
+    },
+    "glm-5.3-flash": {
+        "provider": "zai",
+        "context_window": 1_048_576,
+        "thinking": True,
+        "reasoning_mode": "required",
+        "reasoning_levels": ("low", "high", "max"),
         "reasoning_default": "high",
     },
     # Google Gemini (GEMINI_API_KEY)
@@ -726,6 +762,10 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, 
     # (the migration guide for 4.7 says "at the same $5/$25 per MTok pricing"
     # as 4.6; 4.5 keeps the legacy $15/$75 tier). Cache_read = 10% of input.
     # Fable 5 is a premium $10/$50 tier (cache_read $1, cache_write $12.50).
+    # Fable 5.1 is the same $10/$50 tier as Fable 5, but cache reads bill at
+    # 0.025x input ($0.25/MTok) instead of the usual 0.1x — the only models
+    # with that multiplier. Cache write is unchanged at 1.25x ($12.50).
+    "claude-fable-5-1": (10.0, 50.0, 0.25, 12.5),
     "claude-fable-5": (10.0, 50.0, 1.0, 12.5),
     "claude-opus-4-8": (5.0, 25.0, 0.50),
     "claude-opus-4-8-fast": (10.0, 50.0, 1.0),  # fast-mode multiplier on 4.8
@@ -763,6 +803,15 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, 
     "minimax-m3": (0.30, 1.20, 0.06),
     "qwen3.6-plus": (0.40, 1.40, 0.0),
     "qwen3.7-plus": (0.40, 1.60, 0.08),
+    # Z.ai first-party (same sticker as Fireworks' GLM 5.2).
+    # glm-5.3-flash: STANDARD rates. Z.ai ran a launch promo at half
+    # these ($0.075/$0.25) that expires 2026-09-09 — too short-lived to
+    # encode, and under-reporting spend after it lapses is the worse bug.
+    "glm-5.3": (1.40, 4.40, 0.26),
+    "glm-5.3-flash": (0.15, 0.50, 0.015),
+    # Same two models via Fireworks (cache-read rates differ from Z.ai's)
+    "glm-5.3-fireworks": (1.40, 4.40, 0.26),
+    "glm-5.3-flash-fireworks": (0.15, 0.50, 0.03),
     # Google Gemini (USD per 1M tokens — input/output/cache_read).
     # Cache write defaults to 1.25× input.
     "gemini-3.1-pro-preview": (1.25, 10.0, 0.31),
@@ -803,6 +852,7 @@ def compute_cost(
 # See docs/ADDING-A-MODEL.md — fallback chain for graceful degradation
 # when a primary model 503s or hits its rate limit.
 FALLBACK_CHAINS: dict[str, list[str]] = {
+    "claude-fable-5-1": ["claude-fable-5", "claude-opus-4-8", "kimi-k2.6"],
     "claude-fable-5": ["claude-opus-4-8", "claude-opus-4-7", "kimi-k2.6"],
     "claude-opus-4-8": ["claude-opus-4-7", "kimi-k2.6", "deepseek-v4-pro"],
     "claude-opus-4-8-fast": ["claude-opus-4-8", "claude-opus-4-7"],
@@ -824,6 +874,12 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     "deepseek-v4-pro": ["glm-5.1", "kimi-k2.6"],
     "glm-5.1": ["glm-5.2", "deepseek-v4-pro", "kimi-k2.6"],
     "glm-5.2": ["glm-5.1", "deepseek-v4-pro", "kimi-k2.6"],
+    # The GLM 5.3 family falls back across providers first — same weights,
+    # different key and quota pool — then down to GLM 5.2 on Fireworks.
+    "glm-5.3": ["glm-5.3-fireworks", "glm-5.2", "kimi-k2.6"],
+    "glm-5.3-fireworks": ["glm-5.3", "glm-5.2", "kimi-k2.6"],
+    "glm-5.3-flash": ["glm-5.3-flash-fireworks", "glm-5.3", "glm-5.2"],
+    "glm-5.3-flash-fireworks": ["glm-5.3-flash", "glm-5.3-fireworks", "glm-5.2"],
     "kimi-k2.6": ["deepseek-v4-pro", "glm-5.1", "kimi-k2.5"],
     "kimi-k2.7-code": ["kimi-k2.6", "deepseek-v4-pro"],
     "minimax-m2.7": ["kimi-k2.6", "glm-5.1"],
@@ -906,6 +962,14 @@ def _create_single_provider(
         from engine.fireworks_provider import FireworksConfig, FireworksProvider
 
         return FireworksProvider(FireworksConfig(
+            model=model,
+            max_tokens=max_tokens,
+            reasoning=thinking,
+        ))
+    elif provider_name == "zai":
+        from engine.zai_provider import ZaiConfig, ZaiProvider
+
+        return ZaiProvider(ZaiConfig(
             model=model,
             max_tokens=max_tokens,
             reasoning=thinking,

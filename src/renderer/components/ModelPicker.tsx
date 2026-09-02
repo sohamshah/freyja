@@ -1,8 +1,9 @@
-import { useMemo } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useHarness } from '../state/store'
 import type { ModelChoice } from '../state/store'
 import type { HarnessChoice, SessionRuntime } from '@shared/events'
 import { formatTokens } from '../lib/format'
+import { scrollToReveal, stepSelection } from '../lib/listNavigation'
 
 // Renderer-side hardcoded catalog used by the picker when the bridge's
 // AVAILABLE_MODELS hasn't loaded yet (first paint, gateway disconnect,
@@ -10,7 +11,8 @@ import { formatTokens } from '../lib/format'
 // docs/ADDING-A-MODEL.md for the full per-model checklist.
 const FALLBACK_MODELS: ModelChoice[] = [
   // Anthropic
-  { id: 'claude-fable-5', family: 'anthropic', label: 'Claude Fable 5', tier: 'max', contextWindow: 1_000_000, thinking: true, reasoningMode: 'effort', reasoningLevels: ['none', 'low', 'medium', 'high', 'max'], reasoningDefault: 'high', envVar: 'ANTHROPIC_API_KEY', description: 'Mythos-class model made safe for general use. Most capable widely-released Claude. Adaptive thinking (always on), 128k output. Premium $10/$50 per MTok.' },
+  { id: 'claude-fable-5-1', family: 'anthropic', label: 'Claude Fable 5.1', tier: 'max', contextWindow: 1_000_000, thinking: true, reasoningMode: 'effort', reasoningLevels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], reasoningDefault: 'high', envVar: 'ANTHROPIC_API_KEY', description: 'Newest Mythos-class Claude (Sep 2026). Most capable model for demanding reasoning and long-horizon agentic work. Adaptive thinking (always on), 128k output. $10/$50 per MTok, cache reads 4x cheaper than Fable 5.' },
+  { id: 'claude-fable-5', family: 'anthropic', label: 'Claude Fable 5', tier: 'max', contextWindow: 1_000_000, thinking: true, reasoningMode: 'effort', reasoningLevels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], reasoningDefault: 'high', envVar: 'ANTHROPIC_API_KEY', description: 'Mythos-class model made safe for general use. Most capable widely-released Claude. Adaptive thinking (always on), 128k output. Premium $10/$50 per MTok.' },
   { id: 'claude-opus-4-8', family: 'anthropic', label: 'Claude Opus 4.8', tier: 'max', contextWindow: 1_000_000, thinking: true, reasoningMode: 'effort', reasoningLevels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], reasoningDefault: 'high', envVar: 'ANTHROPIC_API_KEY', description: 'Latest Opus. Long-horizon coding, mid-conversation system messages, ~4x fewer code flaws than 4.7. Adaptive thinking, 128k output.' },
   { id: 'claude-opus-4-8-fast', family: 'anthropic', label: 'Claude Opus 4.8 (Fast)', tier: 'max', contextWindow: 1_000_000, thinking: true, reasoningMode: 'effort', reasoningLevels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], reasoningDefault: 'high', envVar: 'ANTHROPIC_API_KEY', description: 'Opus 4.8 with fast mode enabled (research preview): same weights, ~2.5x output tokens/sec at premium pricing.' },
   { id: 'claude-opus-4-7', family: 'anthropic', label: 'Claude Opus 4.7', tier: 'max', contextWindow: 1_000_000, thinking: false, reasoningMode: 'adaptive', reasoningLevels: ['auto'], reasoningDefault: 'auto', envVar: 'ANTHROPIC_API_KEY', description: 'Latest Opus. Best for hard coding and agentic tasks. Adaptive thinking, 128k output.' },
@@ -44,6 +46,11 @@ const FALLBACK_MODELS: ModelChoice[] = [
   { id: 'qwen3.6-plus', family: 'fireworks', label: 'Qwen3.6 Plus', tier: 'balanced', contextWindow: 1_000_000, thinking: true, reasoningMode: 'effort', reasoningLevels: ['none', 'low', 'medium', 'high'], reasoningDefault: 'medium', reasoningHistory: ['preserved'], envVar: 'FIREWORKS_API_KEY', description: "Alibaba's Qwen3.6 Plus via Fireworks. Vision, function calling, preserved reasoning, 1M ctx." },
   { id: 'qwen3.7-plus', family: 'fireworks', label: 'Qwen 3.7 Plus', tier: 'balanced', contextWindow: 262_144, thinking: true, reasoningMode: 'effort', reasoningLevels: ['none', 'low', 'medium', 'high', 'max'], reasoningDefault: 'medium', reasoningHistory: ['preserved'], envVar: 'FIREWORKS_API_KEY', description: "Alibaba's Qwen 3.7 Plus via Fireworks (Fireworks-exclusive flagship). Vision + 262k ctx, function calling, effort reasoning." },
   { id: 'kimi-k2.5', family: 'fireworks', label: 'Kimi K2.5', tier: 'balanced', contextWindow: 262_144, thinking: false, reasoningMode: 'none', envVar: 'FIREWORKS_API_KEY', description: "Moonshot's Kimi K2.5 via Fireworks. Vision + 262k ctx." },
+  // Z.ai first-party
+  { id: 'glm-5.3', family: 'zai', label: 'GLM 5.3 (Z.ai)', tier: 'max', contextWindow: 1_048_576, thinking: true, reasoningMode: 'required', reasoningLevels: ['low', 'high', 'max'], reasoningDefault: 'high', envVar: 'ZAI_API_KEY', description: "Z.ai's flagship (Aug 2026) first-party. Reasoning always on (low/high/max). 1M ctx, text-only." },
+  { id: 'glm-5.3-flash', family: 'zai', label: 'GLM 5.3 Flash (Z.ai)', tier: 'balanced', contextWindow: 1_048_576, thinking: true, reasoningMode: 'required', reasoningLevels: ['low', 'high', 'max'], reasoningDefault: 'high', envVar: 'ZAI_API_KEY', description: '320B/18B MoE, first natively multimodal GLM (image in). Near-flagship coding at ~1/9 the price ($0.15/$0.50). Reasoning always on. Great fanout slot.' },
+  { id: 'glm-5.3-fireworks', family: 'fireworks', label: 'GLM 5.3 (Fireworks)', tier: 'max', contextWindow: 1_048_576, thinking: true, reasoningMode: 'required', reasoningLevels: ['low', 'high', 'max'], reasoningDefault: 'high', envVar: 'FIREWORKS_API_KEY', description: 'GLM 5.3 via Fireworks — same model as the Z.ai entry, separate key and quota pool. Reasoning always on (low/high/max). 1M ctx, text-only.' },
+  { id: 'glm-5.3-flash-fireworks', family: 'fireworks', label: 'GLM 5.3 Flash (Fireworks)', tier: 'balanced', contextWindow: 1_048_576, thinking: true, reasoningMode: 'required', reasoningLevels: ['low', 'high', 'max'], reasoningDefault: 'high', envVar: 'FIREWORKS_API_KEY', description: 'GLM 5.3 Flash via Fireworks. Multimodal (image in), $0.15/$0.50, reasoning always on. Cheap fanout with a Fireworks quota pool.' },
   // Google Gemini (keep in sync with bridge/freyja_bridge.py:AVAILABLE_MODELS)
   { id: 'gemini-3.1-pro-preview', family: 'google', label: 'Gemini 3.1 Pro', tier: 'max', contextWindow: 1_048_576, thinking: true, reasoningMode: 'effort', reasoningLevels: ['minimal', 'low', 'medium', 'high'], reasoningDefault: 'high', envVar: 'GEMINI_API_KEY', description: "Google's frontier Gemini. Ties Claude Opus 4.7 on AA intelligence at <½ price. 1M ctx, native multimodal." },
   { id: 'gemini-3.7-flash', family: 'google', label: 'Gemini 3.7 Flash', tier: 'balanced', contextWindow: 1_048_576, thinking: true, reasoningMode: 'effort', reasoningLevels: ['low', 'medium', 'high'], reasoningDefault: 'medium', envVar: 'GEMINI_API_KEY', description: 'Newest workhorse Flash (Aug 2026). Big agentic/coding jump over 3.6. 1M ctx, 64k out. Intro $0.75/$3.75 through 2026. Best fanout slot.' },
@@ -137,6 +144,15 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
     [available],
   )
 
+  // Search — same mechanics as the ⌘K palette: query filters the list,
+  // arrows/PageUp/PageDown move a highlight, Enter activates, Escape
+  // clears the query first and closes on a second press.
+  const [query, setQuery] = useState('')
+  const [selected, setSelected] = useState(0)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const suppressHover = useRef(false)
+
   // Harnesses surface the non-native runtimes. Native isn't shown here —
   // picking a raw model in the list below already lands you in native.
   //
@@ -169,6 +185,58 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
     ]
   }, [harnesses])
 
+  const filteredHarnesses = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return harnessChoices
+    return harnessChoices.filter((h) =>
+      `${h.label} ${h.command} ${h.description ?? ''} harness`.toLowerCase().includes(q),
+    )
+  }, [harnessChoices, query])
+
+  const filteredModels = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return models
+    return models.filter((m) =>
+      `${m.label} ${m.id} ${m.family} ${m.tier} ${m.description ?? ''}`.toLowerCase().includes(q),
+    )
+  }, [models, query])
+
+  // One flat index space over harness rows then model rows, so the
+  // keyboard highlight walks the whole visible list.
+  const rowCount = filteredHarnesses.length + filteredModels.length
+
+  useEffect(() => {
+    if (!inline) inputRef.current?.focus()
+  }, [inline])
+
+  // A new query starts over at the top; a list that merely changed size
+  // keeps the selection, clamped.
+  useEffect(() => {
+    setSelected(0)
+    if (listRef.current) listRef.current.scrollTop = 0
+  }, [query])
+
+  useEffect(() => {
+    setSelected((i) => Math.min(i, Math.max(0, rowCount - 1)))
+  }, [rowCount])
+
+  // Keep the highlighted row inside the scroll viewport (palette pattern).
+  useLayoutEffect(() => {
+    const container = listRef.current
+    if (!container) return
+    const row = container.querySelector<HTMLElement>(`[data-picker-row="${selected}"]`)
+    if (!row) return
+    const next = scrollToReveal({
+      scrollTop: container.scrollTop,
+      viewportHeight: container.clientHeight,
+      rowTop: row.offsetTop,
+      rowHeight: row.offsetHeight,
+      pad: 8,
+      contentHeight: container.scrollHeight,
+    })
+    if (next != null) container.scrollTop = next
+  }, [selected, filteredHarnesses, filteredModels])
+
   const onPick = (id: string, reasoningLevel?: string, close = true) => {
     const picked = models.find((m) => m.id === id)
     setModel(id, picked ? normalizeLevel(picked, reasoningLevel) : reasoningLevel)
@@ -192,6 +260,53 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
     if (!inline) toggle(false)
   }
 
+  const activateModel = (m: ModelChoice) => {
+    if (m.available === false) {
+      useHarness.getState().showToast(`${m.envVar || 'API key'} is not set`, 'warn')
+      return
+    }
+    const levels = m.reasoningLevels ?? []
+    const needsReasoningChoice =
+      levels.length > 1 && (m.reasoningMode ?? 'none') !== 'none'
+    onPick(m.id, undefined, !needsReasoningChoice)
+  }
+
+  const activateRow = (index: number) => {
+    if (index < filteredHarnesses.length) {
+      onPickHarness(filteredHarnesses[index])
+      return
+    }
+    const model = filteredModels[index - filteredHarnesses.length]
+    if (model) activateModel(model)
+  }
+
+  const onSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    const next = stepSelection(e, { selected, count: rowCount, pageStep: 8 })
+    if (next != null) {
+      e.preventDefault()
+      suppressHover.current = true
+      setSelected(next)
+      return
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      activateRow(selected)
+    } else if (e.key === 'Escape') {
+      if (query) {
+        // First Escape clears the filter; keep the picker open.
+        e.stopPropagation()
+        setQuery('')
+      } else if (!inline) {
+        toggle(false)
+      }
+    }
+  }
+
+  const onHoverRow = (index: number) => {
+    if (suppressHover.current) return
+    setSelected(index)
+  }
+
   const content = (
     <div className={inline ? '' : 'p-2'}>
       <div className="px-3 pb-2 pt-1 label flex items-center justify-between">
@@ -205,22 +320,60 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
           </button>
         )}
       </div>
+      <div className="mx-1 mb-1 flex items-center gap-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+        <svg width="14" height="14" viewBox="0 0 14 14">
+          <circle cx="6" cy="6" r="4" stroke="#a8d4fc" strokeWidth="1.2" fill="none" />
+          <line x1="9" y1="9" x2="12" y2="12" stroke="#a8d4fc" strokeWidth="1.2" strokeLinecap="round" />
+        </svg>
+        <input
+          ref={inputRef}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={onSearchKeyDown}
+          placeholder="Search models — name, provider, tier…"
+          className="flex-1 bg-transparent text-[12.5px] text-fg-0 placeholder:text-fg-3 focus:outline-none"
+        />
+        {query && (
+          <button
+            onClick={() => {
+              setQuery('')
+              inputRef.current?.focus()
+            }}
+            className="font-mono text-[10px] text-fg-3 hover:text-fg-0"
+            title="Clear filter"
+          >
+            ✕
+          </button>
+        )}
+      </div>
       <div
-        className={`space-y-1 ${
+        ref={listRef}
+        onMouseMove={() => {
+          suppressHover.current = false
+        }}
+        className={`relative space-y-1 ${
           inline ? '' : 'max-h-[min(60vh,520px)] overflow-y-auto pr-1'
         }`}
       >
-        {harnessChoices.length > 0 && (
+        {rowCount === 0 && (
+          <div className="py-8 text-center text-[12px] italic text-fg-3">
+            No models match “{query}”
+          </div>
+        )}
+        {filteredHarnesses.length > 0 && (
           <>
             <div className="px-3 pb-1 pt-2 label text-fg-3">harnesses</div>
-            {harnessChoices.map((h) => {
+            {filteredHarnesses.map((h, index) => {
               const isActive = activeRuntime === h.id
               const unavailable = !h.available
+              const highlighted = selected === index
               return (
                 <div
                   key={h.id}
                   role="button"
                   tabIndex={0}
+                  data-picker-row={index}
+                  onMouseEnter={() => onHoverRow(index)}
                   onClick={() => onPickHarness(h)}
                   onKeyDown={(e) => {
                     if (e.key !== 'Enter' && e.key !== ' ') return
@@ -233,7 +386,7 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
                       : unavailable
                         ? 'border-transparent text-fg-3 hover:bg-white/[0.02]'
                         : 'border-transparent text-fg-1 hover:border-white/10 hover:bg-white/[0.04]'
-                  }`}
+                  }${highlighted ? ' ring-1 ring-inset ring-accent/35 bg-white/[0.04]' : ''}`}
                   title={unavailable ? h.unavailableReason : undefined}
                 >
                   <div className="mt-[3px] flex h-4 w-4 shrink-0 items-center justify-center">
@@ -276,41 +429,30 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
             <div className="px-3 pb-1 pt-3 label text-fg-3">models</div>
           </>
         )}
-        {models.map((m) => {
+        {filteredModels.map((m, modelIndex) => {
+          const index = filteredHarnesses.length + modelIndex
           const isActive = m.id === activeModel
           const tierColor = TIER_COLOR[m.tier] ?? 'text-fg-2'
           const unavailable = m.available === false
+          const highlighted = selected === index
           const levels = m.reasoningLevels ?? []
           const activeLevel = normalizeLevel(m, isActive ? activeReasoningLevel : undefined)
           const hasReasoningControls =
             !unavailable &&
             levels.length > 0 &&
             (m.reasoningMode ?? 'none') !== 'none'
-          const needsReasoningChoice = hasReasoningControls && levels.length > 1
           return (
             <div
               key={m.id}
               role="button"
               tabIndex={0}
-              onClick={() => {
-                if (unavailable) {
-                  useHarness
-                    .getState()
-                    .showToast(`${m.envVar || 'API key'} is not set`, 'warn')
-                  return
-                }
-                onPick(m.id, undefined, !needsReasoningChoice)
-              }}
+              data-picker-row={index}
+              onMouseEnter={() => onHoverRow(index)}
+              onClick={() => activateModel(m)}
               onKeyDown={(e) => {
                 if (e.key !== 'Enter' && e.key !== ' ') return
                 e.preventDefault()
-                if (unavailable) {
-                  useHarness
-                    .getState()
-                    .showToast(`${m.envVar || 'API key'} is not set`, 'warn')
-                  return
-                }
-                onPick(m.id, undefined, !needsReasoningChoice)
+                activateModel(m)
               }}
               className={`group flex w-full items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors ${
                 isActive
@@ -318,7 +460,7 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
                   : unavailable
                     ? 'border-transparent text-fg-3 hover:bg-white/[0.02]'
                     : 'border-transparent text-fg-1 hover:border-white/10 hover:bg-white/[0.04]'
-              }`}
+              }${highlighted ? ' ring-1 ring-inset ring-accent/35 bg-white/[0.04]' : ''}`}
             >
               <div className="mt-[3px] flex h-4 w-4 shrink-0 items-center justify-center">
                 {isActive ? (
@@ -428,8 +570,9 @@ export function ModelPicker({ onSelect, inline = false, dense = false }: ModelPi
       </div>
       {!inline && (
         <div className="hairline-t mt-2 px-3 pb-1 pt-2 text-[10px] text-fg-3">
-          <span className="font-mono">⏎</span> preview · effort chip selects ·{' '}
-          <span className="font-mono">esc</span> close
+          type to filter · <span className="font-mono">↑↓</span> navigate ·{' '}
+          <span className="font-mono">⏎</span> select · effort chip selects ·{' '}
+          <span className="font-mono">esc</span> clear / close
         </div>
       )}
     </div>

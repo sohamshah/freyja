@@ -784,6 +784,7 @@ async function downscaleImageForLLM(
 // the wrong denominator on cold start.
 const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // Fable 5
+  'claude-fable-5-1': 1_000_000,
   'claude-fable-5': 1_000_000,
   // Claude 4.8
   'claude-opus-4-8': 1_000_000,
@@ -830,6 +831,11 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   'kimi-k2.5': 262_144,
   'kimi-k3': 1_048_576,
   'kimi-k3-fast': 1_048_576,
+  // Z.ai first-party (+ the same models via Fireworks)
+  'glm-5.3': 1_048_576,
+  'glm-5.3-flash': 1_048_576,
+  'glm-5.3-fireworks': 1_048_576,
+  'glm-5.3-flash-fireworks': 1_048_576,
   // Google Gemini (keep in sync with engine/providers.py MODEL_REGISTRY).
   // These were missing here, so gemini-* sessions showed `ctx N/200k` while
   // the real window is ~1M — the dashboard denominator (not the provider /
@@ -853,7 +859,8 @@ function contextWindowFor(model: string): number {
 // hasn't sent its `ready` event yet. See docs/ADDING-A-MODEL.md —
 // keep in sync with bridge/freyja_bridge.py:MODEL_REASONING_META.
 const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel: string }> = {
-  'claude-fable-5': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'high' },
+  'claude-fable-5-1': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
+  'claude-fable-5': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'claude-opus-4-8': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'claude-opus-4-8-fast': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'claude-opus-4-7': { levels: ['auto'], defaultLevel: 'auto' },
@@ -882,6 +889,12 @@ const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel
   'minimax-m3': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
   'qwen3.6-plus': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'medium' },
   'qwen3.7-plus': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'medium' },
+  // GLM 5.3 family — reasoning is mandatory (no 'none' rung), on both
+  // the Z.ai and Fireworks routes.
+  'glm-5.3': { levels: ['low', 'high', 'max'], defaultLevel: 'high' },
+  'glm-5.3-flash': { levels: ['low', 'high', 'max'], defaultLevel: 'high' },
+  'glm-5.3-fireworks': { levels: ['low', 'high', 'max'], defaultLevel: 'high' },
+  'glm-5.3-flash-fireworks': { levels: ['low', 'high', 'max'], defaultLevel: 'high' },
   // Google Gemini (keep in sync with bridge MODEL_REASONING_META).
   'gemini-3.1-pro-preview': { levels: ['minimal', 'low', 'medium', 'high'], defaultLevel: 'high' },
   'gemini-3.7-flash': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
@@ -936,7 +949,7 @@ function normalizeCoordinationStrategy(value?: string | null): CoordinationStrat
 }
 
 function emptySlice(
-  model: string = 'claude-sonnet-4-6',
+  model: string = 'glm-5.3-fireworks',
   reasoningLevel?: string,
   models: ModelChoice[] = [],
   coordinationStrategy: CoordinationStrategy = 'bus',
@@ -992,8 +1005,8 @@ function emptyState(): HarnessState {
         id: bootId,
         title: 'Current session',
         workspace: '',
-        model: 'claude-sonnet-4-6',
-        reasoningLevel: defaultReasoningFor('claude-sonnet-4-6'),
+        model: 'glm-5.3-fireworks',
+        reasoningLevel: defaultReasoningFor('glm-5.3-fireworks'),
         coordinationStrategy: 'bus',
         createdAt: Date.now(),
         updatedAt: Date.now(),

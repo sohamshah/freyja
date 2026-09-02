@@ -173,13 +173,36 @@ def _model_available(model: str, parent_model: str) -> tuple[bool, str]:
     return True, "available"
 
 
+_PROVIDER_ENV_VARS = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "cerebras": "CEREBRAS_API_KEY",
+    "fireworks": "FIREWORKS_API_KEY",
+    "google": "GEMINI_API_KEY",
+    "zai": "ZAI_API_KEY",
+}
+
+
 def _env_var_for_model(model: str) -> str:
+    # Registry first — prefix rules can't tell same-named models apart
+    # across providers (glm-5.3 is Z.ai, glm-5.3-fireworks is Fireworks),
+    # and they silently miss families entirely (gemini-* had no rule, so
+    # Gemini sub-agents read as available with no GEMINI_API_KEY set).
+    from engine.providers import MODEL_REGISTRY
+
+    entry = MODEL_REGISTRY.get(model)
+    if entry:
+        return _PROVIDER_ENV_VARS.get(str(entry["provider"]), "")
+
+    # Heuristics for ids the registry doesn't carry.
     if model.startswith("claude-"):
         return "ANTHROPIC_API_KEY"
     if model.startswith("gpt-") or model.startswith("o"):
         return "OPENAI_API_KEY"
     if model.startswith("zai-") or model.startswith("cerebras-"):
         return "CEREBRAS_API_KEY"
+    if model.startswith("gemini-"):
+        return "GEMINI_API_KEY"
     if (
         model.startswith("kimi-")
         or model.startswith("glm")

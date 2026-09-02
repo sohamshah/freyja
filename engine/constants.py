@@ -53,6 +53,7 @@ is 50k so 32k is well within reach."""
 # learned about it.
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     # Fable 5 (Mythos-class, GA 2026-06-09)
+    "claude-fable-5-1": 1_000_000,
     "claude-fable-5": 1_000_000,
     # Claude 4.8
     "claude-opus-4-8": 1_000_000,
@@ -100,6 +101,10 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "kimi-k3": 1_048_576,
     "kimi-k3-fast": 1_048_576,
     # Google Gemini — keep in sync with engine/providers.py MODEL_REGISTRY.
+    "glm-5.3": 1_048_576,
+    "glm-5.3-flash": 1_048_576,
+    "glm-5.3-fireworks": 1_048_576,
+    "glm-5.3-flash-fireworks": 1_048_576,
     "gemini-3.1-pro-preview": 1_048_576,
     "gemini-3.7-flash": 1_048_576,
     "gemini-3.6-flash": 1_048_576,

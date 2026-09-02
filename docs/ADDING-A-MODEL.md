@@ -150,6 +150,34 @@ grep -rn "claude-opus-4-7" \
 You should see roughly 14 hits. The new id should land in the same
 positions.
 
+## Adding a whole new PROVIDER (not just a model)
+
+A new provider (e.g. `engine/zai_provider.py`, added 2026-08 for GLM-5.3)
+touches everything above **plus** these provider-level codepoints:
+
+1. `engine/<name>_provider.py` — the provider class. Copy the closest
+   OpenAI-compatible sibling (fireworks/cerebras) and adjust base URL,
+   env var, and reasoning parameter shape.
+2. `engine/providers.py` — `_create_single_provider` needs an
+   `elif provider_name == "<name>"` branch, and every MODEL_REGISTRY
+   entry uses that provider string.
+3. `bridge/tools/agent_types.py` — `_env_var_for_model` maps model-id
+   prefixes to env vars for sub-agent availability checks. A new
+   provider's models must match BEFORE any overlapping prefix rule
+   (glm-5.3 → ZAI_API_KEY had to precede the `glm*` → FIREWORKS rule).
+4. `bridge/freyja_bridge.py` — `build_provider` is the BRIDGE's own
+   family-dispatch factory (separate from the engine's
+   `_create_single_provider`!). A family advertised in AVAILABLE_MODELS
+   with no branch here raises "Unknown model family" the moment the
+   user sends a message — this exact miss shipped with GLM-5.3.
+   `tests/test_build_provider_coverage.py` now guards it: add the new
+   family's env var to its `_FAKE_KEYS`.
+5. `src/main/gatewayBridge.ts` — `LLM_PROVIDER_KEYS` is the allowlist
+   of env vars propagated to the launchd gateway daemon's
+   `~/.freyja/.env`. Missing entry → model works in the desktop app but
+   the daemon replies "KEY is not set" to Slack messages.
+5. `.env.example` and the README provider-keys table.
+
 ## Why no single registry?
 
 Three boundaries (engine ↔ bridge ↔ renderer) and three failure modes

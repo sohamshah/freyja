@@ -97,6 +97,7 @@ ADAPTIVE_THINKING_MODELS = {
     "claude-opus-4-7",
     "claude-opus-4-8",
     "claude-fable-5",
+    "claude-fable-5-1",
 }
 LEGACY_THINKING_MODELS = {
     "claude-sonnet-4-5",
