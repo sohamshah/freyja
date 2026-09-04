@@ -322,6 +322,11 @@ class SlackAdapter:
         self._bot_message_ts: set[str] = set()        # ts values we sent
         self._mentioned_threads: set[str] = set()     # thread_ts the bot joined
         self._dedup: dict[str, float] = {}            # event_ts → seen-at monotonic
+        # Latest `app_context_changed` entities per (team_id, user_id) —
+        # what the operator was last looking at. Bounded because it is a
+        # convenience cache, not state anything depends on.
+        self._app_context: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self._APP_CONTEXT_MAX = 500
         # Deferred app_mention tasks awaiting a possible message.channels
         # twin. When a user @mentions the bot in a channel WITH a file
         # attachment, Slack delivers two events: app_mention (no files)
@@ -538,15 +543,42 @@ class SlackAdapter:
         async def _ack_file_change(event, say):  # noqa: ARG001
             pass
 
-        # Slack Assistant lifecycle events — just ack for now. Future:
-        # we could use these to surface a typing-equivalent status.
-        @self._app.event("assistant_thread_started")
-        async def _ack_assistant_started(event, say):  # noqa: ARG001
-            pass
-
-        @self._app.event("assistant_thread_context_changed")
-        async def _ack_assistant_changed(event, say):  # noqa: ARG001
-            pass
+        # Agent-experience context tracking. Slack fires this whenever the
+        # user switches what they're looking at (channel, DM, thread,
+        # canvas, list) while our app is open. `entities` is ordered by
+        # relevance; an empty `context` object means "nothing focused".
+        #
+        # The subscription earns its keep even though this handler only
+        # records: being subscribed is what makes Slack attach `app_context`
+        # to subsequent `message.im` events, so the DM handler can see what
+        # the operator was looking at when they typed. Feeding that into the
+        # prompt is a follow-up — we stash it here so the data exists first.
+        #
+        # Replaces the Assistant-era `assistant_thread_started` /
+        # `assistant_thread_context_changed` pair, which Slack no longer
+        # sends now that the app is on agent_view.
+        @self._app.event("app_context_changed")
+        async def _on_app_context_changed(event, say):  # noqa: ARG001
+            try:
+                context = (event or {}).get("context") or {}
+                entities = context.get("entities") or []
+                team_id = (event or {}).get("team_id") or self._bot_user_id or "_"
+                user_id = (event or {}).get("user") or "_"
+                if entities:
+                    if (
+                        len(self._app_context) >= self._APP_CONTEXT_MAX
+                        and (team_id, user_id) not in self._app_context
+                    ):
+                        # Bounded cache: this runs for the life of the
+                        # daemon, so evict rather than grow forever.
+                        self._app_context.pop(next(iter(self._app_context)), None)
+                    self._app_context[(team_id, user_id)] = entities
+                else:
+                    # Empty context == user focused nothing we can name.
+                    # Drop the stale entry rather than keep a lie around.
+                    self._app_context.pop((team_id, user_id), None)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[slack] app_context_changed ignored: %s", exc)
 
         # Slash command dispatch: register one regex that matches every
         # known slash so the manifest's set is the source of truth.
@@ -1505,11 +1537,24 @@ class SlackAdapter:
         """Slack-native typing indicator via ``assistant.threads.setStatus``.
 
         Renders next to the bot's name as ``Bot is thinking…``.
-        Works in DM threads and Assistant-context threads; in regular
+        Works in DM threads and agent-session threads; in regular
         channels Slack silently ignores it. Requires the
         ``assistant:write`` scope (which our manifest already requests).
         We swallow API errors here — a missing or expired status is a
         cosmetic loss, never a correctness issue.
+
+        Still the legacy method after the agent_view migration, and that
+        is deliberate. Slack keeps it working through a compatibility
+        bridge, and the legacy contract is the one we want: a status
+        clears when you send an empty string (see ``stop_typing``), and
+        posting a message also clears it.
+
+        Do NOT swap this for ``agents.sessions.setStatus`` as a rename.
+        The replacement is a different contract: ``status="processing"``
+        does not clear when the app posts, so every call site would also
+        need an explicit ``status="active"`` on completion AND on every
+        error path, or the session sits "thinking" until it times out an
+        hour later. Migrate deliberately, with the teardown wired first.
         """
         if not self._app or not thread_id:
             # No thread_ts → no surface to render status on.

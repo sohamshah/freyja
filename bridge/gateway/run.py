@@ -751,12 +751,15 @@ class GatewayDaemon:
     # Thresholds for the "catching up" notice. Tuned so we stay quiet
     # on routine threads (no notice when the LLM call will be quick)
     # but speak up before chewing through a large transcript. Below
-    # 100k tokens / 50 messages the startup gap is short enough that
-    # a notice would just add noise; above 500k tokens we explicitly
-    # mention compaction since the runner is likely to summarize.
+    # 100k tokens the startup gap is short enough that a notice would
+    # just add noise; above 500k tokens we explicitly mention
+    # compaction since the runner is likely to summarize.
+    #
+    # Message count is deliberately NOT a trigger — see the gate in
+    # _maybe_send_catching_up_notice. It fired on ordinary busy threads
+    # and told the operator nothing they could act on.
     _CATCHING_UP_TOKEN_THRESHOLD = 100_000
     _CATCHING_UP_BIG_TOKEN_THRESHOLD = 500_000
-    _CATCHING_UP_MSG_THRESHOLD = 50
 
     async def _maybe_send_catching_up_notice(
         self,
@@ -788,26 +791,58 @@ class GatewayDaemon:
                 return
             entries = list(getattr(transcript, "entries", []) or [])
             n_msgs = sum(1 for e in entries if getattr(e, "message", None) is not None)
-            # Token estimate — peak input_tokens across all assistant
+            # Token estimate — peak PROMPT SIZE across all assistant
             # turns. Each turn's input already includes its full prior
             # history, so the MAX across turns is the best lower bound
             # on how big the *next* prompt will be. The last turn alone
             # can be misleading right after a compaction (the kept tail
             # is tiny so input_tokens drops) even though the conversation
             # itself is still long.
+            #
+            # `input_tokens` alone is NOT the prompt size: on providers
+            # with prompt caching it counts only the uncached remainder,
+            # so a long conversation with a warm cache reports a couple
+            # hundred tokens. That is what produced nonsense like
+            # "84 prior messages (~94 tokens)". Real size is
+            # input + cache_read + cache_write.
             est_tokens = 0
             for e in entries:
                 msg = getattr(e, "message", None)
                 if msg is None:
                     continue
-                in_tok = int(getattr(msg, "input_tokens", 0) or 0)
-                if in_tok > est_tokens:
-                    est_tokens = in_tok
+                turn_tokens = (
+                    int(getattr(msg, "input_tokens", 0) or 0)
+                    + int(getattr(msg, "cache_read_tokens", 0) or 0)
+                    + int(getattr(msg, "cache_write_tokens", 0) or 0)
+                )
+                if turn_tokens > est_tokens:
+                    est_tokens = turn_tokens
 
-            if (
-                n_msgs < self._CATCHING_UP_MSG_THRESHOLD
-                and est_tokens < self._CATCHING_UP_TOKEN_THRESHOLD
-            ):
+            if est_tokens == 0:
+                # No assistant turn has reported usage yet — the common
+                # case being the first reply in a thread we just hydrated
+                # from Slack history. Those messages are real prompt
+                # weight even though no API call has measured them, so
+                # fall back to a cheap chars/4 estimate rather than
+                # staying silent on a genuinely huge thread.
+                chars = 0
+                for e in entries:
+                    msg = getattr(e, "message", None)
+                    if msg is None:
+                        continue
+                    try:
+                        chars += len(msg.get_text() or "")
+                    except Exception:  # noqa: BLE001
+                        continue
+                est_tokens = chars // 4
+
+            # Gate on context size alone. Message count used to trigger
+            # this too, but it is a bad proxy for "this reply will be
+            # slow": 50 short Slack messages are cheap, and pairing it
+            # with a token figure that read ~0 meant the notice fired on
+            # essentially every busy thread. Tokens are the thing that
+            # actually costs time.
+            if est_tokens < self._CATCHING_UP_TOKEN_THRESHOLD:
                 return
 
             # Format the count compactly.

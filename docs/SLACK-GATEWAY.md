@@ -562,8 +562,8 @@ features:
       description: Show session info (model, mode, spend)
     - command: /perms
       description: Show and adjust the agent's tool permissions
-  assistant_view:
-    assistant_description: Chat with Freyja in DMs or @mention me in channels.
+  agent_view:
+    agent_description: Chat with Freyja in DMs or @mention me in channels.
 oauth_config:
   scopes:
     bot:
@@ -584,9 +584,8 @@ oauth_config:
 settings:
   event_subscriptions:
     bot_events:
+      - app_context_changed
       - app_mention
-      - assistant_thread_started
-      - assistant_thread_context_changed
       - message.channels
       - message.groups
       - message.im

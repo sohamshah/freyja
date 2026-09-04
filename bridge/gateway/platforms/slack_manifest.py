@@ -145,13 +145,19 @@ USER_SCOPES_OPTIONAL: list[str] = [
 # Bot events the adapter subscribes to via Socket Mode.
 # See: https://api.slack.com/events
 BOT_EVENTS: list[str] = [
+    "app_context_changed",                  # what the user is looking at
     "app_mention",                          # @bot in any channel
-    "assistant_thread_context_changed",     # Slack AI Assistant lifecycle
-    "assistant_thread_started",
     "message.channels",                     # public channel messages
     "message.groups",                       # private channel messages
     "message.im",                           # DM messages
 ]
+# Removed with the agent_view migration: `assistant_thread_started` and
+# `assistant_thread_context_changed` are Assistant-era lifecycle events
+# that Slack stops sending once the app is on the Agent experience. Their
+# replacements are `app_home_opened` (tab == "messages") for "user opened
+# the DM" and `app_context_changed` for "user switched what they're
+# viewing". We subscribe to the latter but not the former: Freyja has no
+# welcome/onboarding flow that needs to fire on open.
 
 
 def build_manifest(
@@ -160,7 +166,7 @@ def build_manifest(
     description: str = "Your Freyja agent on Slack",
     bot_display_name: str = "Freyja",
     background_color: str = "#2b3d39",
-    assistant_description: str = (
+    agent_description: str = (
         "Chat with Freyja in threads and DMs."
     ),
 ) -> dict[str, Any]:
@@ -191,8 +197,16 @@ def build_manifest(
                 "always_online": True,
             },
             "slash_commands": list(SLASH_COMMANDS),
-            "assistant_view": {
-                "assistant_description": assistant_description,
+            # `agent_view` is the Agent messaging experience: conversations
+            # live in the Messages tab with threads in a timeline above the
+            # composer. It replaces `assistant_view` (separate Chat/History
+            # tabs), which is deprecated and unavailable to new apps.
+            # Migrating an app from assistant_view to agent_view is a
+            # ONE-WAY change on Slack's side, so pasting an assistant_view
+            # manifest back over an upgraded app is the thing to avoid.
+            # agent_description is required, max 300 chars.
+            "agent_view": {
+                "agent_description": agent_description,
                 "suggested_prompts": [],
             },
         },
