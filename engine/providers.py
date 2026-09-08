@@ -669,6 +669,15 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
         "reasoning_levels": ("minimal", "low", "medium", "high"),
         "reasoning_default": "high",
     },
+    "gemini-3.8-flash": {
+        "provider": "google",
+        "context_window": 1_048_576,
+        "thinking": True,
+        "reasoning_mode": "effort",
+        # Same ladder as 3.7-flash: no "minimal" rung (400s on MINIMAL).
+        "reasoning_levels": ("low", "medium", "high"),
+        "reasoning_default": "medium",
+    },
     "gemini-3.7-flash": {
         "provider": "google",
         "context_window": 1_048_576,
@@ -817,6 +826,7 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, 
     "gemini-3.1-pro-preview": (1.25, 10.0, 0.31),
     # 3.7/3.6 Flash: introductory pricing through Dec 31, 2026 — doubles to
     # (1.50, 7.50, 0.15) on Jan 1, 2027 (per ai.google.dev pricing page).
+    "gemini-3.8-flash": (0.75, 3.75, 0.075),
     "gemini-3.7-flash": (0.75, 3.75, 0.075),
     "gemini-3.6-flash": (0.75, 3.75, 0.075),
     "gemini-3.5-flash": (1.50, 9.0, 0.15),
@@ -889,15 +899,16 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     "kimi-k2.5": ["kimi-k2.6", "minimax-m2.7"],
     "kimi-k3": ["kimi-k3-fast", "kimi-k2.6", "deepseek-v4-pro"],
     "kimi-k3-fast": ["kimi-k3", "kimi-k2.6", "deepseek-v4-pro"],
-    "gemini-3.1-pro-preview": ["gemini-3.7-flash", "gemini-3.6-flash"],
-    "gemini-3.7-flash": ["gemini-3.6-flash", "gemini-3.5-flash"],
-    "gemini-3.6-flash": ["gemini-3.7-flash", "gemini-3.5-flash"],
+    "gemini-3.1-pro-preview": ["gemini-3.8-flash", "gemini-3.7-flash"],
+    "gemini-3.8-flash": ["gemini-3.7-flash", "gemini-3.6-flash"],
+    "gemini-3.7-flash": ["gemini-3.8-flash", "gemini-3.6-flash"],
+    "gemini-3.6-flash": ["gemini-3.8-flash", "gemini-3.7-flash"],
     "gemini-3.5-flash": ["gemini-3.6-flash", "gemini-3.1-flash"],
     "gemini-3.5-flash-lite": ["gemini-3.1-flash-lite", "gemini-3.6-flash"],
     "gemini-3.1-flash": ["gemini-3.6-flash", "gemini-3.1-flash-lite"],
     "gemini-3.1-flash-lite": ["gemini-3.5-flash-lite", "gemini-3.1-flash"],
     "gemini-2.5-pro": ["gemini-3.1-pro-preview", "gemini-2.5-flash"],
-    "gemini-2.5-flash": ["gemini-3.7-flash", "gemini-3.6-flash"],
+    "gemini-2.5-flash": ["gemini-3.8-flash", "gemini-3.7-flash"],
 }
 
 

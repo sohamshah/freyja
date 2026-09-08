@@ -8,7 +8,7 @@ Local files go through Gemini's Files API: the tool uploads the file, polls
 ``generate_content``. YouTube URLs are passed directly via ``Part.from_uri``
 (public videos only — no download needed).
 
-Default model is ``gemini-3.7-flash``: as of Aug 2026 it's the model every
+Default model is ``gemini-3.8-flash``: as of Sep 2026 it's the model every
 example in the official video-understanding docs uses, with
 ``gemini-3.1-pro-preview`` as the "best quality" option. Both can be
 overridden per-call.
@@ -29,14 +29,15 @@ from bridge.tools.base import TextBlock, ToolDefinition, ToolResult, ToolTier
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_VIDEO_MODEL = "gemini-3.7-flash"
+DEFAULT_VIDEO_MODEL = "gemini-3.8-flash"
 
 # Acceptable model ids the user can pass — anything not on this list is still
 # accepted but emits a heads-up so the agent gets feedback if it picks a stale
 # id (e.g. the now-shut-down `gemini-3-pro-preview` or
 # `gemini-3.1-flash-lite-preview`).
 RECOMMENDED_MODELS = {
-    "gemini-3.7-flash",                # default per docs
+    "gemini-3.8-flash",                # default per docs
+    "gemini-3.7-flash",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
     "gemini-3.5-flash-lite",

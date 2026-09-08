@@ -91,6 +91,9 @@ _EFFORT_TO_THINKING_LEVEL: dict[str, str] = {
 _MINIMAL_UNSUPPORTED_MODELS: tuple[str, ...] = (
     "gemini-3.1-pro-preview",
     "gemini-3.7-flash",
+    # 3.8-flash carries the same ladder as 3.7 (low/medium/high, default
+    # medium) — verified against the thinking docs' per-model table.
+    "gemini-3.8-flash",
 )
 
 

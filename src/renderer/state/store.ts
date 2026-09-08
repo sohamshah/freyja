@@ -934,6 +934,7 @@ function normalizeReasoningFor(
   const levels = reasoningLevelsFor(model, models)
   if (levels.length === 0) return 'none'
   const normalized = (reasoningLevel || defaultReasoningFor(model, models)).toLowerCase()
+  'gemini-3.8-flash': 1_048_576,
   if (normalized === 'off' && levels.includes('none')) return 'none'
   if (levels.includes(normalized)) return normalized
   return defaultReasoningFor(model, models)
@@ -968,6 +969,7 @@ function emptySlice(
     subagents: {},
     subagentOrder: [],
     usage: {
+  'gpt-5.4-pro': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], defaultLevel: 'high' },
       currentContextTokens: 0,
       totalInputTokens: 0,
       totalOutputTokens: 0,
@@ -990,6 +992,7 @@ function emptySlice(
     coordinationStrategy: normalizeCoordinationStrategy(coordinationStrategy),
     runtime,
   }
+  'gemini-3.8-flash': { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
 }
 
 function emptyState(): HarnessState {

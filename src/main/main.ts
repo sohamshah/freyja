@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, nativeImage, shell, nativeTheme } from 'electron'
 import {
   configureGatewayBridge,
+  syncProviderKeysToDaemonEnv,
   handleGatewayInstall,
   handleGatewayStart,
   handleGatewayStatus,
@@ -1086,6 +1087,18 @@ function setupIpc() {
   // Configure the helper module with our harness root so it can find
   // the bundled Python + the freyja CLI script.
   configureGatewayBridge({ harnessRoot: HARNESS_ROOT })
+
+  // Keep the gateway daemon's key file in step with the desktop's env.
+  // The daemon doesn't inherit our environment — it reads
+  // ~/.freyja/.env — and before this ran only the Slack wizard ever
+  // wrote that file, so a key added to the project .env afterwards
+  // never reached Slack sessions. Fire and forget: the sync merges,
+  // never blanks a key, and must not delay window creation.
+  void syncProviderKeysToDaemonEnv().then((keys) => {
+    if (keys.length > 0) {
+      console.log(`[gateway] synced ${keys.length} provider key(s) to ~/.freyja/.env`)
+    }
+  })
 
   ipcMain.handle(IPC.gatewayStatus, async () => handleGatewayStatus())
   ipcMain.handle(IPC.gatewayInstall, async () => handleGatewayInstall())

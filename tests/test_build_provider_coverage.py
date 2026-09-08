@@ -38,3 +38,42 @@ def test_catalog_env_vars_are_covered_by_fake_keys():
     build_provider) rather than letting the param test fail obscurely."""
     advertised = {m["envVar"] for m in AVAILABLE_MODELS}
     assert advertised <= set(_FAKE_KEYS), advertised - set(_FAKE_KEYS)
+
+
+def test_every_registered_model_is_selectable():
+    """The other direction of drift: a model can be fully wired in the
+    engine (registry + pricing + fallbacks) yet missing from the bridge
+    catalog, which makes it runnable but invisible in the picker.
+
+    gpt-5.4-pro sat in exactly that state — registered, priced, with a
+    fallback chain, and unselectable — because the parametrized test
+    above iterates the CATALOG, so a model absent from it is simply
+    never checked.
+    """
+    from engine.providers import MODEL_REGISTRY
+
+    catalog = {m["id"] for m in AVAILABLE_MODELS}
+    missing = sorted(set(MODEL_REGISTRY) - catalog)
+    assert not missing, (
+        f"registered but not in AVAILABLE_MODELS (invisible in the picker): {missing}"
+    )
+
+
+def test_catalog_models_are_all_registered():
+    """And the inverse: advertising a model the engine cannot resolve
+    gives the operator a picker entry that fails at send time."""
+    from engine.providers import MODEL_REGISTRY
+
+    catalog = {m["id"] for m in AVAILABLE_MODELS}
+    unknown = sorted(catalog - set(MODEL_REGISTRY))
+    assert not unknown, f"advertised but unregistered: {unknown}"
+
+
+def test_every_catalog_model_has_reasoning_metadata():
+    """Missing metadata leaves the reasoning selector empty or wrong —
+    gpt-5.4-pro was missing this too."""
+    from bridge.freyja_bridge import MODEL_REASONING_META
+
+    thinking_models = {m["id"] for m in AVAILABLE_MODELS if m.get("thinking")}
+    missing = sorted(thinking_models - set(MODEL_REASONING_META))
+    assert not missing, f"thinking models with no reasoning metadata: {missing}"

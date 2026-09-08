@@ -1078,6 +1078,20 @@ class GatewayDaemon:
                 refs_str = " ".join(refs)
                 text = f"{text} {refs_str}" if text else refs_str
             lines.append(f"{role_label}: {text}")
+        # What the operator currently has open, if the adapter tracked it
+        # from `app_context_changed`. Cheap and often decisive: "summarize
+        # this" or "who owns this?" is ambiguous without knowing which
+        # channel or canvas they're looking at while they type.
+        describe = getattr(adapter, "describe_app_context", None)
+        if callable(describe):
+            try:
+                focus = describe(source.workspace_id, source.user_id or "")
+            except Exception:  # noqa: BLE001
+                focus = ""
+            if focus:
+                lines.append("")
+                lines.append(f"[operator is currently viewing: {focus}]")
+
         return "\n".join(lines), prior_attachments
 
     async def _handle_slash_in_gateway(

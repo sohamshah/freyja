@@ -106,6 +106,7 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "glm-5.3-fireworks": 1_048_576,
     "glm-5.3-flash-fireworks": 1_048_576,
     "gemini-3.1-pro-preview": 1_048_576,
+    "gemini-3.8-flash": 1_048_576,
     "gemini-3.7-flash": 1_048_576,
     "gemini-3.6-flash": 1_048_576,
     "gemini-3.5-flash": 1_048_576,

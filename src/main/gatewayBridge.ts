@@ -504,6 +504,53 @@ export async function handleLlmKeysProbe(): Promise<import('../shared/events.js'
   }
 }
 
+/** Push any provider keys the desktop has into `~/.freyja/.env`.
+ *
+ *  The launchd gateway daemon does NOT inherit the desktop's env — it
+ *  reads that file. Until now the only thing that wrote it was the Slack
+ *  setup wizard (`handleSlackSaveTokens` below), so the file was frozen
+ *  at whatever the last wizard run happened to have in scope. Add a key
+ *  to your project `.env` months later and the daemon never sees it: the
+ *  model is selectable, the turn fails with "<X>_API_KEY is not set",
+ *  and from Slack the bot just goes quiet. That is exactly how a thread
+ *  pinned to a Gemini model sat dead while GEMINI_API_KEY was present in
+ *  the project `.env` the whole time.
+ *
+ *  `save_env_values` merges — keys already on disk that we don't have in
+ *  process.env are preserved, so this can never blank out a key someone
+ *  set by hand. We also never write empty values, so an unset variable
+ *  won't overwrite a good one.
+ *
+ *  Returns the keys actually written, for logging. Never throws: a
+ *  failure here must not block app startup.
+ */
+export async function syncProviderKeysToDaemonEnv(): Promise<string[]> {
+  const valuesToSave: Record<string, string> = {}
+  for (const k of LLM_PROVIDER_KEYS) {
+    const v = process.env[k]
+    if (v && v.length > 0) valuesToSave[k] = v
+  }
+  const keys = Object.keys(valuesToSave)
+  if (keys.length === 0) return []
+  try {
+    const { bin } = resolvePythonCli(ctx().harnessRoot)
+    const script = `
+import json, os
+from bridge.gateway.setup.env_writer import save_env_values
+save_env_values(json.loads(os.environ['_PAYLOAD']))
+print('ok')
+`
+    await execFileP(bin, ['-c', script], {
+      timeout: 10_000,
+      cwd: ctx().harnessRoot,
+      env: pythonSpawnEnv({ _PAYLOAD: JSON.stringify(valuesToSave) }),
+    })
+    return keys
+  } catch {
+    return []
+  }
+}
+
 export async function handleSlackSaveTokens(
   botToken: string,
   appToken: string,

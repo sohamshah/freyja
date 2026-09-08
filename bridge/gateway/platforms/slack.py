@@ -327,6 +327,11 @@ class SlackAdapter:
         # convenience cache, not state anything depends on.
         self._app_context: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self._APP_CONTEXT_MAX = 500
+        # app_ids seen posting under a human identity (user-token posts).
+        # Diagnostic only — logged once each so the payload shape gets
+        # captured the first time it happens. Tiny and self-limiting:
+        # a workspace has a handful of apps, not thousands.
+        self._seen_app_authors: set[str] = set()
         # Deferred app_mention tasks awaiting a possible message.channels
         # twin. When a user @mentions the bot in a channel WITH a file
         # attachment, Slack delivers two events: app_mention (no files)
@@ -838,6 +843,33 @@ class SlackAdapter:
                 known_bot_ids.add(self._bot_user_id)
             if user_id in known_bot_ids:
                 return
+
+        # App-authored messages that are NOT bot messages: something
+        # posted this under a human's identity using a user token (a
+        # user-scoped MCP server, an integration acting as the operator).
+        # Those bypass the bot filter above — they carry the human's
+        # user id and no bot_id — so they re-enter as fresh input and
+        # cost a turn. We do NOT drop them: Slack's message-event
+        # reference doesn't document this payload, and an `app_id` here
+        # can equally belong to a legitimate integration the operator
+        # deliberately routes into a thread. Dropping on a guess would
+        # silently swallow real messages, which is worse than the echo.
+        #
+        # So: capture the shape once per app so the next occurrence is
+        # self-explanatory, and leave the routing decision to whoever
+        # reads it. See FREYJA_LOG_APP_AUTHORED to force it on.
+        app_id = event.get("app_id")
+        if app_id and app_id not in self._seen_app_authors:
+            self._seen_app_authors.add(app_id)
+            logger.info(
+                "[slack] first message from app_id=%s posted as user=%s "
+                "(no bot_id) — an app is posting under a human identity. "
+                "subtype=%r keys=%s",
+                app_id,
+                user_id or "?",
+                subtype,
+                sorted(event.keys()),
+            )
         # Skip non-content messages (edits, deletes).
         if subtype in {"message_changed", "message_deleted"}:
             return
@@ -1174,6 +1206,14 @@ class SlackAdapter:
                     excess = list(self._bot_message_ts)[: self._BOT_TS_MAX // 2]
                     for t in excess:
                         self._bot_message_ts.discard(t)
+            # A proactive DM (no thread_id) ROOTS a new thread under the
+            # agent experience, where every DM is a thread shown in the
+            # Messages-tab timeline. Untitled, they all read "Freyja" and
+            # the operator cannot tell a build notification from a
+            # scheduled briefing without opening each one. Title it from
+            # the message itself.
+            if sent_ts and not thread_id and chat_id.startswith("D"):
+                await self._title_thread(client, chat_id, str(sent_ts), content)
             return SendResult(
                 ok=True,
                 message_id=str(sent_ts) if sent_ts else None,
@@ -1526,6 +1566,63 @@ class SlackAdapter:
             message_id=first_message_id,
             error=first_error if first_message_id is None else None,
         )
+
+    # Longest thread title we set. Slack truncates in the UI well before
+    # this; the cap is about not shipping a whole paragraph as a "title".
+    _THREAD_TITLE_MAX = 70
+
+    async def _title_thread(
+        self, client: Any, chat_id: str, thread_ts: str, content: str
+    ) -> None:
+        """Give a freshly-rooted DM thread a human-readable title.
+
+        Uses the legacy ``assistant.threads.setTitle`` rather than
+        ``agents.sessions.rename`` for two reasons: Slack keeps it
+        working through the same compatibility bridge that carries
+        ``setStatus`` (which we also deliberately stayed on), and the
+        installed slack_sdk exposes no binding for the new method — it
+        would have to be a hand-rolled ``api_call``. Revisit together
+        with the setStatus migration, not separately.
+
+        Best-effort: a missing title is cosmetic, never a correctness
+        issue, so every failure here is swallowed at debug level.
+        """
+        title = " ".join((content or "").split())
+        # Strip leading markdown/emoji chrome so the title starts on a word.
+        title = title.lstrip("*_`>#-:  ").strip()
+        if not title:
+            return
+        if len(title) > self._THREAD_TITLE_MAX:
+            title = title[: self._THREAD_TITLE_MAX - 1].rstrip() + "…"
+        try:
+            await client.assistant_threads_setTitle(
+                channel_id=chat_id, thread_ts=thread_ts, title=title
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[slack] setTitle skipped: %s", exc)
+
+    def describe_app_context(self, team_id: str, user_id: str) -> str:
+        """Render what this operator last had open, for the prompt.
+
+        Fed by the `app_context_changed` subscription. Entities arrive
+        ordered by relevance, so the first few are the useful ones.
+        Returns "" when we have nothing — the caller omits the line
+        entirely rather than telling the model "unknown", which would
+        just burn tokens asserting ignorance.
+        """
+        entities = self._app_context.get((team_id or "_", user_id or "_")) or []
+        parts: list[str] = []
+        for ent in entities[:3]:
+            if not isinstance(ent, dict):
+                continue
+            value = str(ent.get("value") or "").strip()
+            if not value:
+                continue
+            # "slack#/types/channel_id" → "channel"
+            kind = str(ent.get("type") or "").rsplit("/", 1)[-1]
+            kind = kind.removesuffix("_id") or "item"
+            parts.append(f"{kind} {value}")
+        return ", ".join(parts)
 
     async def send_typing(
         self,
