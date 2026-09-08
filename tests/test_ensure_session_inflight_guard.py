@@ -60,6 +60,8 @@ def _make_existing(pending_task) -> SimpleNamespace:
         runtime="native",
         harness_session_id="harness-abc",
         harness_adapter=None,
+        # Where a mid-turn config request is parked until the turn ends.
+        pending_config=None,
         reset=lambda: flags.__setitem__("reset", True),
         try_restore_transcript=_try_restore,
         _restore_persisted_transcript_if_empty=_restore_if_empty,
@@ -103,6 +105,17 @@ def test_inflight_turn_blocks_reset_and_restore():
     assert existing.runtime == "native"
     # ...but the session still becomes the active view.
     assert state.active_session_id == existing.id
+    # Deferred no longer means discarded: the request is parked so
+    # _apply_pending_config can land it once the turn ends. Previously it
+    # was logged and dropped, so `/model X` mid-turn silently did nothing.
+    assert existing.pending_config == {
+        "model_id": "claude-sonnet-4-6",
+        "reasoning_level": "max",
+        "coordination_strategy": "kanban",
+    }
+    # Runtime swaps are deliberately NOT parked — replaying one after the
+    # turn would retire the harness adapter out from under the operator.
+    assert "runtime" not in existing.pending_config
 
 
 def test_no_inflight_turn_still_resets_on_real_change():

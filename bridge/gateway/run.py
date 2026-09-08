@@ -1274,8 +1274,30 @@ class GatewayDaemon:
             )
             return True
 
-        key = session_key_for(message.source)
-        if self.state is None:
+        # Validate before touching the session. An unknown id used to be
+        # accepted verbatim: the command reported success, then the NEXT
+        # message failed at the provider with a 404, because the model
+        # string only gets resolved at request time. Reject here instead,
+        # where we can say what went wrong and suggest the near miss.
+        from engine.providers import MODEL_REGISTRY
+
+        if target not in MODEL_REGISTRY:
+            import difflib
+
+            close = difflib.get_close_matches(target, list(MODEL_REGISTRY), n=3, cutoff=0.4)
+            hint = (
+                "\nDid you mean: " + ", ".join(f"`{c}`" for c in close)
+                if close else
+                "\nRun `/models` to see what's available."
+            )
+            await adapter.send(  # type: ignore[attr-defined]
+                message.source.chat_id,
+                f"Unknown model `{target}` — leaving the session on its "
+                f"current model.{hint}",
+                thread_id=message.source.thread_id,
+                ephemeral_user_id=message.source.user_id,
+                raw_hint=message.raw,
+            )
             return True
         session = await self.state.ensure_session(
             session_id=key,
@@ -1313,7 +1335,8 @@ class GatewayDaemon:
                 message.source.chat_id,
                 (
                     f"Current model: `{current}`\nUsage: `/model <id>` "
-                    "(e.g. `claude-opus-4-7`, `claude-sonnet-4-6`, `gpt-5.5`)"
+                    "(e.g. `kimi-k3-fast`, `glm-5.3-fireworks`, "
+                    "`claude-fable-5-1`, `gpt-5.6-sol`)"
                     if current else
                     "No active session. Usage: `/model <id>`"
                 ),
@@ -2017,6 +2040,36 @@ class GatewayDaemon:
         lines.append(f"• queued messages: {queued}")
         return "\n".join(lines)
 
+    # How often to check the stdout log's size. The log grows fast
+    # during a turn (every streaming delta is a line) and not at all
+    # when idle, so a coarse interval is fine — this only needs to
+    # catch runaway growth, not trim precisely at the cap.
+    _LOG_ROTATE_INTERVAL_SEC = 300
+
+    async def _rotate_logs_periodically(self) -> None:
+        """Copytruncate gateway.log / gateway.err when they get large."""
+        from bridge.gateway.pid import (
+            gateway_err_path,
+            gateway_log_path,
+            rotate_log_if_large,
+        )
+
+        while True:
+            try:
+                await asyncio.sleep(self._LOG_ROTATE_INTERVAL_SEC)
+                for path in (gateway_log_path(), gateway_err_path()):
+                    # to_thread: reading and truncating a multi-hundred-MB
+                    # file must not block the event loop mid-turn.
+                    rotated = await asyncio.to_thread(rotate_log_if_large, path)
+                    if rotated:
+                        logger.info(
+                            "rotated %s (kept tail in %s.1)", path.name, path.name
+                        )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.debug("log rotation cycle failed", exc_info=True)
+
     async def start(self) -> None:
         """Stand up the bridge state + connect all configured adapters."""
         from bridge.freyja_bridge import _BridgeState
@@ -2084,6 +2137,13 @@ class GatewayDaemon:
                 "no platform adapters connected — gateway running idle. "
                 "Configure at least one adapter to receive messages."
             )
+
+        # Keep the launchd-captured stdout log bounded. Nothing else
+        # rotates it: launchd owns the descriptor, so this has to be a
+        # copytruncate from inside the daemon (see pid.rotate_log_if_large).
+        self._log_rotate_task = asyncio.create_task(
+            self._rotate_logs_periodically(), name="gateway-log-rotate"
+        )
 
         # Bring up the desktop → daemon control channel last so it's
         # only servicing commands once the bridge state and adapters are

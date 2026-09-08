@@ -3771,6 +3771,14 @@ class _BridgeSession:
         # (e.g. an operator forcing a /skill before the first message).
         self._turn_message_cursors: dict[int, int] = {0: 0}
         self.pending_task: asyncio.Task | None = None
+        # Config change requested while a turn was in flight. ensure_session
+        # refuses to reconcile mid-turn (it would reset() the live
+        # transcript), so the request is parked here and applied by
+        # _apply_pending_config once the turn finishes. Before this
+        # existed the request was logged as "deferred" and then silently
+        # dropped, so `/model X` during a running turn did nothing while
+        # reporting success.
+        self.pending_config: dict[str, Any] | None = None
         self.tool_start_at: dict[str, float] = {}
         # Skill-learning loop: per-session cadence counter (Hermes-style)
         # decides when to spawn a drafter review. Outcome watcher classifies
@@ -10960,15 +10968,31 @@ class _BridgeState:
             # on this same condition — this guard extends the same protection
             # to the reset/restore path.
             if existing.pending_task is not None and not existing.pending_task.done():
-                if any(
-                    v is not None
-                    for v in (model_id, reasoning_level, coordination_strategy, runtime)
-                ):
+                requested = {
+                    "model_id": model_id,
+                    "reasoning_level": reasoning_level,
+                    "coordination_strategy": coordination_strategy,
+                }
+                requested = {k: v for k, v in requested.items() if v is not None}
+                if requested or runtime is not None:
+                    # Park the request rather than dropping it. Runtime
+                    # swaps stay excluded: they retire the harness adapter
+                    # out from under a live turn, and re-issuing one after
+                    # the fact is not obviously what the operator wanted.
+                    if requested:
+                        # getattr: ensure_session runs on every session
+                        # switch, so it must not raise on a session object
+                        # that predates this field.
+                        existing.pending_config = {
+                            **(getattr(existing, "pending_config", None) or {}),
+                            **requested,
+                        }
                     log(
                         "info",
                         f"ensure_session: turn in flight on {session_id} — "
-                        "deferring config reconciliation (would clobber the "
-                        "live transcript); treating switch as view-only",
+                        f"parked {sorted(requested) or 'nothing'} for after the "
+                        "turn (reconciling now would clobber the live "
+                        "transcript); treating switch as view-only",
                     )
                 self.active_session_id = session_id
                 return existing
@@ -11451,6 +11475,121 @@ def _run_pre_turn_hook(hook: Any, sess: "_BridgeSession") -> None:
         log("warn", f"pre-turn hook raised on session={sess.id}: {exc}")
 
 
+def _emit_turn_failed(sess: "_BridgeSession", exc: BaseException) -> None:
+    """Emit a SESSION-SCOPED failure event so chat surfaces can show it.
+
+    ``emit_error`` publishes ``{"type": "error", ...}`` with no
+    ``sessionId``, and emit()'s listener fan-out is keyed on exactly
+    that field — so those errors reach no gateway listener and die in
+    the log. The operator's experience is the bot going quiet: the
+    incident that surfaced this was a session pinned to a Gemini model
+    on a daemon whose env had no GEMINI_API_KEY, which failed every
+    turn in that thread while saying nothing in Slack.
+
+    Kept deliberately narrow: this reports that the turn died, it does
+    not try to recover it.
+    """
+    detail = str(exc).strip() or exc.__class__.__name__
+    hint = ""
+    # The single most common cause, and the least guessable from silence.
+    if "_API_KEY" in detail and "not set" in detail:
+        key = next(
+            (w.strip("`'\",") for w in detail.split() if "_API_KEY" in w),
+            "the provider key",
+        )
+        hint = (
+            f"\n\nThe gateway daemon reads its keys from `~/.freyja/.env`, "
+            f"which is separate from the project `.env`. Add `{key}` there "
+            f"and restart the gateway, or switch this thread to another "
+            f"model with `/model <id>`."
+        )
+    try:
+        emit(
+            {
+                "type": "turn_failed",
+                "sessionId": sess.id,
+                "message": detail,
+                "hint": hint,
+                "model": getattr(sess, "model_id", None),
+            }
+        )
+    except Exception:  # noqa: BLE001
+        # Reporting a failure must never manufacture a second one.
+        pass
+
+
+async def _apply_pending_config(sess: "_BridgeSession") -> None:
+    """Apply a config change that arrived mid-turn.
+
+    ``ensure_session`` parks model / reasoning / strategy changes in
+    ``sess.pending_config`` when a turn is in flight, because applying
+    them there would ``reset()`` the transcript the running turn is
+    still writing to. This is the drain: it runs once the turn is done,
+    before any queued messages are dispatched, so the next message uses
+    the model the operator actually asked for.
+
+    Best-effort by construction — a failure here must not take down the
+    turn loop or swallow the queued messages behind it.
+    """
+    requested = sess.pending_config
+    if not requested:
+        return
+    sess.pending_config = None
+    try:
+        from bridge.tools.coordination import normalize_coordination_strategy
+
+        changed = False
+        model_id = requested.get("model_id")
+        if model_id and model_id != sess.model_id:
+            sess.model_id = model_id
+            sess.reasoning_level = _normalize_reasoning_level(model_id, "auto")
+            sess.reasoning_level_explicit = False
+            changed = True
+        reasoning_level = requested.get("reasoning_level")
+        if reasoning_level is not None:
+            next_reasoning = _normalize_reasoning_level(sess.model_id, reasoning_level)
+            if next_reasoning != sess.reasoning_level:
+                sess.reasoning_level = next_reasoning
+                sess.reasoning_level_explicit = True
+                changed = True
+        strategy = requested.get("coordination_strategy")
+        if strategy is not None:
+            next_strategy = normalize_coordination_strategy(strategy)
+            if next_strategy != sess.coordination_strategy:
+                sess.coordination_strategy = next_strategy
+                changed = True
+
+        if not changed:
+            return
+        sess.reset()
+        await sess.try_restore_transcript()
+        log(
+            "info",
+            f"applied deferred config on session={sess.id}: "
+            f"model={sess.model_id} reasoning={sess.reasoning_level} "
+            f"strategy={sess.coordination_strategy}",
+        )
+        emit(
+            {
+                "type": "system_event",
+                "sessionId": sess.id,
+                "subtype": "config_applied",
+                "message": (
+                    f"Model is now `{sess.model_id}` "
+                    f"(reasoning {sess.reasoning_level}) — the change you "
+                    "made during the last turn is in effect."
+                ),
+                "details": {
+                    "model": sess.model_id,
+                    "reasoningLevel": sess.reasoning_level,
+                    "coordinationStrategy": sess.coordination_strategy,
+                },
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        log("error", f"applying deferred config failed (session={sess.id}): {exc}")
+
+
 async def _run_turn_queue(
     sess: "_BridgeSession",
     content: str,
@@ -11462,6 +11601,12 @@ async def _run_turn_queue(
         log("info", f"turn cancelled (session={sess.id})")
     except Exception as exc:  # noqa: BLE001
         log("error", f"turn failed (session={sess.id}): {exc}")
+        _emit_turn_failed(sess, exc)
+
+    # The turn is over, so a parked config change is now safe to apply.
+    # Do this BEFORE draining the queue so messages the operator sent
+    # after `/model X` run on X rather than on the old model.
+    await _apply_pending_config(sess)
 
     # Drain the queue: process any messages the user sent while this
     # turn was running. Goal-loop continuation checks the same queue
@@ -11487,6 +11632,10 @@ async def _run_turn_queue(
             f"processing queued message on session={sess.id} "
             f"({len(sess.queued_messages)} remaining)",
         )
+        # Each queued turn is its own turn, so drain again here: a
+        # `/model X` sent while a QUEUED message was running parks the
+        # same way, and this loop never returns to the call site above.
+        await _apply_pending_config(sess)
         _run_pre_turn_hook(q_hook, sess)
         try:
             await sess.run_turn(q_content, q_attachments)
@@ -11495,6 +11644,7 @@ async def _run_turn_queue(
             break
         except Exception as exc:  # noqa: BLE001
             log("error", f"queued turn failed (session={sess.id}): {exc}")
+            _emit_turn_failed(sess, exc)
 
 
 def _schedule_or_queue_turn(

@@ -86,7 +86,13 @@ class SlackConfig:
 class GatewayConfig:
     """Top-level gateway config."""
 
-    default_model: str = "claude-opus-4-8"
+    # Chat-gateway (Slack/Telegram) default. Deliberately separate from
+    # the desktop bridge's FREYJA_MODEL default: gateway turns are
+    # latency-sensitive (someone is watching a thread) and get a fast
+    # frontier model, while the desktop can sit on a slower one.
+    # Resolution order is FREYJA_MODEL env → ~/.freyja/gateway.yaml →
+    # this constant, so this only bites a fresh install with no yaml.
+    default_model: str = "kimi-k3-fast"
     default_reasoning_level: str | None = None
     default_strategy: str = "bus"
     slack: SlackConfig = field(default_factory=SlackConfig)
@@ -123,7 +129,7 @@ class GatewayConfig:
         )
         return cls(
             default_model=str(
-                defaults.get("model") or "claude-opus-4-8"
+                defaults.get("model") or cls.default_model
             ),
             default_reasoning_level=(
                 str(defaults["reasoning_level"])

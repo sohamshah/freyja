@@ -512,6 +512,38 @@ class SlackStreamConsumer:
             await self._handle_tool_result(event)
         elif etype == "turn_complete":
             await self.finalize()
+        elif etype == "turn_failed":
+            await self._handle_turn_failed(event)
+
+    async def _handle_turn_failed(self, event: dict) -> None:
+        """Tell the operator the turn died, then close the stream.
+
+        Without this the failure is invisible: the bridge logs it and
+        emits a session-scoped event, but nothing reaches Slack, so the
+        bot simply stops answering. A thread pinned to a model whose API
+        key the daemon lacks fails this way on EVERY message, which
+        reads as the gateway being down rather than as one bad setting.
+        """
+        detail = str(event.get("message") or "").strip() or "unknown error"
+        hint = str(event.get("hint") or "")
+        model = event.get("model")
+        where = f" on `{model}`" if model else ""
+        text = f":warning: That turn failed{where}: {detail}{hint}"
+        try:
+            await self.adapter.send(
+                self.source.chat_id,
+                text,
+                thread_id=self._reply_thread_id,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("[slack] could not post turn failure", exc_info=True)
+        # Always finalize: the stream card is open and no turn_complete
+        # is coming, so without this it stays spinning until the stale
+        # consumer teardown notices on the NEXT message.
+        try:
+            await self.finalize()
+        except Exception:  # noqa: BLE001
+            logger.debug("finalize after turn failure failed", exc_info=True)
 
     # ── stream lifecycle ──
 

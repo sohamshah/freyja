@@ -56,6 +56,55 @@ def gateway_err_path() -> Path:
     return logs_dir() / "gateway.err"
 
 
+# Cap for gateway.log / gateway.err. The gateway's stdout IS the log:
+# launchd redirects it via StandardOutPath, and bridge.emit() writes
+# every session event there (the desktop tails the file to mirror
+# gateway-owned sessions). Streaming events dominate the volume —
+# tool_input_delta alone was ~34% of lines in a 560 MB sample — so
+# without a cap the file grows without bound.
+GATEWAY_LOG_MAX_BYTES = 64 * 1024 * 1024
+# How much of the tail to preserve into the `.1` archive on rotation.
+GATEWAY_LOG_KEEP_BYTES = 8 * 1024 * 1024
+
+
+def rotate_log_if_large(
+    path: Path,
+    *,
+    max_bytes: int = GATEWAY_LOG_MAX_BYTES,
+    keep_bytes: int = GATEWAY_LOG_KEEP_BYTES,
+) -> bool:
+    """Copytruncate ``path`` when it exceeds ``max_bytes``.
+
+    Truncation in place is the only rotation that works here. launchd
+    opened this file itself and holds the descriptor for the daemon's
+    lifetime, so renaming it would leave every subsequent write going
+    to the renamed inode and the fresh file would stay empty forever.
+    Truncating keeps that descriptor valid: the redirect is O_APPEND,
+    so the next write lands at the new end of file rather than leaving
+    a sparse hole.
+
+    The last ``keep_bytes`` are copied to ``<name>.1`` first, so a crash
+    right before rotation is still diagnosable. Returns True if it
+    rotated.
+    """
+    try:
+        if not path.exists() or path.stat().st_size <= max_bytes:
+            return False
+        archive = path.with_suffix(path.suffix + ".1")
+        with path.open("rb") as src:
+            size = path.stat().st_size
+            src.seek(max(0, size - keep_bytes))
+            # Drop a partial first line so the archive starts clean.
+            src.readline()
+            tail = src.read()
+        archive.write_bytes(tail)
+        os.truncate(path, 0)
+        return True
+    except Exception:  # noqa: BLE001
+        # Log hygiene must never take the daemon down.
+        return False
+
+
 def _process_alive(pid: int) -> bool:
     """Check whether ``pid`` is a live process we can signal."""
     if pid <= 0:
