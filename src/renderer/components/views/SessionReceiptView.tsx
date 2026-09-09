@@ -102,8 +102,10 @@ function deriveAnatomy(
   }
   for (const t of tools) mark(t.startedAt, t.startedAt + Math.max(t.durationMs ?? 0, 1))
   for (const s of subs) {
-    const end = s.state === 'running' ? now : s.startedAt + (s.elapsedMs ?? 0)
-    mark(s.startedAt, end)
+    // elapsedMs updates live while an agent genuinely runs, so it is the
+    // honest end for running threads too — trusting `now` instead lets a
+    // stale crashed "running" record paint days of dead tail as live.
+    mark(s.startedAt, s.startedAt + Math.max(s.elapsedMs ?? 0, 30_000))
   }
 
   const gaps: Array<[number, number]> = []
@@ -201,9 +203,26 @@ interface BraidLabel {
   right?: number
   y: number
   dim?: boolean
+  /** thread this label belongs to, for hover-highlight coupling */
+  threadId?: string
+}
+
+interface BranchPath {
+  id: string
+  d: string
+  width: number
+  dash?: string
+  color: string
+  opacity: number
+  /** tooltip lines for the hover layer */
+  tipTitle: string
+  tipMeta: string
 }
 
 interface BraidLayout {
+  /** computed stage height — grows with lane depth, clamped */
+  height: number
+  branches: BranchPath[]
   paths: Array<{ d: string; stroke: string; width: number; dash?: string; opacity?: number }>
   dots: Array<{ cx: number; cy: number; r: number; fill: string }>
   crosses: Array<{ x: number; y: number }>
@@ -215,10 +234,12 @@ interface BraidLayout {
   X1: number
   /** solid main-thread spans and compressed idle blocks, in x-space */
   mainSegs: Array<{ x0: number; x1: number; gap: boolean }>
-  idles: Array<{ xa: number; xb: number; label: string; sub: string | null }>
+  idles: Array<{ xa: number; xb: number; plateY: number; label: string; sub: string | null }>
   /** minutes between ruler ticks, for the footer caption */
   tickStepMin: number
   labels: BraidLabel[]
+  /** branches whose labels didn't fit — discoverable via hover */
+  unlabelled: number
 }
 
 interface Box { x0: number; y0: number; x1: number; y1: number }
@@ -226,18 +247,12 @@ interface Box { x0: number; y0: number; x1: number; y1: number }
 function layoutBraid(
   anatomy: Anatomy,
   W: number,
-  H: number,
 ): BraidLayout {
   const { spanMin, waves, userMarks, artifactMarks } = anatomy
   const X0 = 30
   const X1 = W - 30
-  const mainY = H * 0.52
 
   // ── piecewise time axis: idle gaps compress to fixed blocks ──────────
-  // A 20-hour stall would otherwise own 95% of the x-axis and crush every
-  // branch into the margins. Active stretches share the width
-  // proportionally; each big gap gets a constant-width block labelled
-  // with its true duration.
   const COMPRESS_MIN = 10
   const bigGaps = anatomy.gaps.filter((g) => g[1] - g[0] >= COMPRESS_MIN)
   const gapTotal = bigGaps.reduce((a, g) => a + (g[1] - g[0]), 0)
@@ -279,34 +294,9 @@ function layoutBraid(
     return X1
   }
 
-  const PITCH = 24
-  const BASE = 34
-
-  // idle plates are known up front — labels must dodge them
-  const allMargins: Box[] = []
-  const idles: BraidLayout['idles'] = []
-  for (const seg of segs) {
-    if (!seg.gap) continue
-    const gm = seg.m1 - seg.m0
-    // was the agent waiting on the user? (a user message ended the gap)
-    const waiting = userMarks.some((m) => m >= seg.m1 - 3 && m <= seg.m1 + 3)
-    const cxm = (seg.x0 + seg.x1) / 2
-    idles.push({
-      xa: seg.x0,
-      xb: seg.x1,
-      label: `idle ${hm(gm).replace(/\s0s$/, '')}`,
-      sub: waiting ? 'waiting on your reply' : null,
-    })
-    allMargins.push({ x0: cxm - 78, y0: mainY - (waiting ? 58 : 46), x1: cxm + 78, y1: mainY - 18 })
-  }
-  const hits = (x0: number, y0: number, x1: number, y1: number) =>
-    allMargins.some((m) => x0 < m.x1 && x1 > m.x0 && y0 < m.y1 && y1 > m.y0)
-
-  const laneY = (side: 1 | -1, j: number) => mainY + side * (BASE + j * PITCH)
-  // Lane occupancy is tracked in PIXELS, not minutes: with idle blocks
-  // compressed, two waves 20 hours apart can sit 84px apart on screen —
-  // a minute-domain cooldown would happily reuse the lane and overprint
-  // the earlier wave's label.
+  // ── lane allocation, UNBOUNDED — height is derived from depth after ──
+  // Occupancy is tracked in pixels (idle compression can put waves hours
+  // apart only 84px apart on screen).
   const laneEnds: Record<string, number[]> = { '1': [], '-1': [] }
   const alloc = (side: 1 | -1, count: number, atPx: number) => {
     const ends = laneEnds[String(side)]
@@ -321,106 +311,208 @@ function layoutBraid(
     }
   }
 
-  const out: BraidLayout = {
-    paths: [], dots: [], crosses: [], squares: [], diamonds: [],
-    ticks: [], mainY, X0, X1,
-    mainSegs: segs.map((seg) => ({ x0: seg.x0, x1: seg.x1, gap: seg.gap })),
-    idles, tickStepMin: 30, labels: [],
+  interface Placed {
+    t: ThreadView
+    side: 1 | -1
+    lane: number
+    xs: number
+    xe: number
+    waveX: number
   }
-
-  const wTok = (tk: number) => Math.max(1.2, Math.min(3.4, 0.7 + Math.log10(1 + tk / 2e4)))
+  const placed: Placed[] = []
+  const maxLane: Record<string, number> = { '1': 0, '-1': 0 }
 
   waves.forEach((wave, i) => {
-    // Preferred side alternates; reject a side whose strands or labels
-    // would land on an idle plate or run out of vertical room.
-    const prefs: Array<1 | -1> = i % 2 ? [-1, 1] : [1, -1]
     const waveX = tx(wave.at)
-    const candidates = prefs.map((side) => {
-      const j0 = alloc(side, wave.threads.length, waveX)
-      let ok = true
-      wave.threads.forEach((t, k) => {
-        const y = laneY(side, j0 + k)
-        const xs = tx(t.start)
-        const xe = Math.max(tx(t.start + t.dur), xs + 26)
-        if (y < 16 || y > H - 24) ok = false
-        if (hits(xs - 4, Math.min(y, mainY) - 16, xe + 186, Math.max(y, mainY) + 16)) ok = false
-      })
-      return { side, j0, ok }
-    })
-    const { side, j0 } = candidates.find((c) => c.ok) ?? candidates[0]
+    // Prefer alternating sides, but take whichever is shallower at this
+    // point — a run of same-shape waves otherwise digs one side deep
+    // while the other sits empty.
+    const a = alloc(1, wave.threads.length, waveX)
+    const b = alloc(-1, wave.threads.length, waveX)
+    let side: 1 | -1
+    if (Math.abs(a - b) > 1) side = a < b ? 1 : -1
+    else side = i % 2 ? -1 : 1
+    const j0 = side === 1 ? a : b
+
     const ends = laneEnds[String(side)]
     wave.threads.forEach((t, k) => {
-      // Reserve through the bar's end plus one label width, in px, so
-      // whatever wave lands on this lane next can't overprint the label.
-      const endPx = Math.max(tx(t.start + t.dur), tx(t.start) + 26) + 160
-      ends[j0 + k] = Math.max(ends[j0 + k] ?? -Infinity, endPx)
-    })
-
-    out.dots.push({ cx: tx(wave.at), cy: mainY, r: 2.2, fill: ICE_0 })
-
-    wave.threads.forEach((t, k) => {
-      const y = laneY(side, j0 + k)
-      const sgn = side
       const xs = tx(t.start)
       const xe = Math.max(tx(t.start + t.dur), xs + 26)
-      const rr = Math.min(10, Math.abs(y - mainY) / 2, (xe - xs) / 2)
-      const branch =
-        `M ${xs} ${mainY} L ${xs} ${y - sgn * rr} Q ${xs} ${y} ${xs + rr} ${y}` +
-        ` L ${xe - rr} ${y} Q ${xe} ${y} ${xe} ${y - sgn * rr} L ${xe} ${mainY}`
-      const name = t.label.replace(/\s+—.*$/, '').toLowerCase()
-
-      if (t.state === 'cancelled' || t.state === 'failed') {
-        const cy = mainY + sgn * 16
-        out.paths.push({ d: `M ${xs} ${mainY} L ${xs} ${cy}`, stroke: SAND, width: 1, opacity: 0.6 })
-        out.crosses.push({ x: xs, y: cy + sgn * 5 })
-        const flip = xs > W - 240
-        out.labels.push({
-          key: t.id, text: '', bold: name,
-          suffix: { text: t.state, warn: true },
-          ...(flip ? { right: W - xs + 8 } : { x: xs + 10 }),
-          y: cy + sgn * 5 - 7,
-        })
-        return
-      }
-      if (t.state === 'running' || t.state === 'pending') {
-        out.paths.push({
-          d: `M ${xs} ${mainY} L ${xs} ${y - sgn * rr} Q ${xs} ${y} ${xs + rr} ${y} L ${xe} ${y}`,
-          stroke: ICE_2, width: 1.2,
-        })
-        out.paths.push({
-          d: `M ${xe} ${y} L ${Math.min(xe + 26, X1)} ${y}`,
-          stroke: ICE_2, width: 1.2, dash: '2 4',
-        })
-        out.labels.push({
-          key: t.id, text: '', bold: name,
-          suffix: { text: t.state === 'pending' ? 'starting' : 'still running' },
-          right: W - xs + 8, y: y - 7, dim: true,
-        })
-        return
-      }
-
-      out.paths.push({ d: branch, stroke: ICE_2, width: wTok(t.tokensIn), opacity: 0.85 })
-      out.dots.push({ cx: xe, cy: mainY, r: 1.8, fill: ICE_2 })
-
-      const meta = `· ${hm(t.dur)} · ${tok(t.tokensIn)}`
-      const label: BraidLabel = { key: t.id, text: meta, bold: name, y: y - 7 }
-      if (xe - xs >= 100) {
-        label.x = xs + rr + 4
-        label.y = sgn < 0 ? y - 16 : y + 4
-      } else if (xs > W - 240) {
-        label.right = W - xs + 8
-      } else {
-        label.x = xe + 8
-      }
-      out.labels.push(label)
+      // Reserve through the bar plus one label width so the next wave on
+      // this lane can't overprint the label.
+      ends[j0 + k] = Math.max(ends[j0 + k] ?? -Infinity, xe + 160)
+      placed.push({ t, side, lane: j0 + k, xs, xe, waveX })
+      maxLane[String(side)] = Math.max(maxLane[String(side)], j0 + k)
     })
   })
+
+  // ── vertical scale: pitch adapts, height grows (within bounds) ───────
+  const TOP = 22
+  const RULER = 34
+  const BASE = 34
+  const LANES = maxLane['1'] + maxLane['-1'] + 2
+  const MAX_H = 620
+  let pitch = 24
+  const fixed = TOP + RULER + 2 * BASE + 36 // 36 = label headroom both sides
+  if (fixed + LANES * pitch > MAX_H) {
+    pitch = Math.max(15, Math.floor((MAX_H - fixed) / Math.max(1, LANES)))
+  }
+  const aboveExtent = BASE + maxLane['-1'] * pitch + 18
+  const belowExtent = BASE + maxLane['1'] * pitch + 18
+  let mainY = TOP + aboveExtent
+  let height = mainY + belowExtent + RULER
+  if (height < 300) {
+    mainY += Math.round((300 - height) * 0.48)
+    height = 300
+  }
+  const laneY = (side: 1 | -1, j: number) => mainY + side * (BASE + j * pitch)
+
+  const out: BraidLayout = {
+    height,
+    branches: [], paths: [], dots: [], crosses: [], squares: [], diamonds: [],
+    ticks: [], mainY, X0, X1,
+    mainSegs: segs.map((seg) => ({ x0: seg.x0, x1: seg.x1, gap: seg.gap })),
+    idles: [], tickStepMin: 30, labels: [], unlabelled: 0,
+  }
+
+  // ── label collision resolver ─────────────────────────────────────────
+  // Everything that wants ink registers a box; boxes are accepted in
+  // priority order and later candidates try fallback positions before
+  // degrading to hover-only. Nothing ever overprints.
+  const taken: Box[] = []
+  const estWidth = (text: string) => text.length * 5.7 + 16
+  const collides = (b: Box) =>
+    b.y0 < 2 || b.y1 > height - RULER + 6 || b.x0 < 4 || b.x1 > W - 4 ||
+    taken.some((o) => b.x0 < o.x1 && b.x1 > o.x0 && b.y0 < o.y1 && b.y1 > o.y0)
+  const accept = (b: Box) => { taken.push(b) }
+
+  // idle plates first — highest priority, staggered when adjacent
+  for (const seg of segs) {
+    if (!seg.gap) continue
+    const gm = seg.m1 - seg.m0
+    const waiting = userMarks.some((m) => m >= seg.m1 - 3 && m <= seg.m1 + 3)
+    const label = `idle ${hm(gm).replace(/\s0s$/, '')}`
+    const sub = waiting ? 'waiting on your reply' : null
+    const w = Math.max(estWidth(label) + 12, sub ? estWidth(sub) : 0)
+    const h = sub ? 34 : 22
+    const cxm = (seg.x0 + seg.x1) / 2
+    let plateY = mainY - (sub ? 56 : 44)
+    // stagger upward until clear of earlier plates
+    for (let guard = 0; guard < 6; guard++) {
+      const box = { x0: cxm - w / 2 - 4, y0: plateY - 2, x1: cxm + w / 2 + 4, y1: plateY + h + 2 }
+      if (!collides(box)) { accept(box); break }
+      plateY -= h + 8
+    }
+    out.idles.push({ xa: seg.x0, xb: seg.x1, plateY, label, sub })
+  }
+
+  // threads, most important first: non-done states, then by tokens read
+  const wTok = (tk: number) => Math.max(1.2, Math.min(3.4, 0.7 + Math.log10(1 + tk / 2e4)))
+  const prio = (t: ThreadView) =>
+    (t.state === 'running' || t.state === 'pending' ? 2e12 : t.state !== 'done' ? 1e12 : 0) +
+    t.tokensIn
+  const ordered = [...placed].sort((p1, p2) => prio(p2.t) - prio(p1.t))
+
+  for (const pl of ordered) {
+    const { t, side, lane, xs, xe } = pl
+    const y = laneY(side, lane)
+    const sgn = side
+    const rr = Math.min(10, Math.abs(y - mainY) / 2, (xe - xs) / 2)
+    const name = t.label.replace(/\s+—.*$/, '').toLowerCase()
+
+    if (t.state === 'cancelled' || t.state === 'failed') {
+      const cy = mainY + sgn * 16
+      out.paths.push({ d: `M ${xs} ${mainY} L ${xs} ${cy}`, stroke: SAND, width: 1, opacity: 0.6 })
+      out.crosses.push({ x: xs, y: cy + sgn * 5 })
+      const text = `${name} · ${t.state}`
+      const wpx = estWidth(text)
+      const ly = cy + sgn * 5 - 7
+      const cands: Array<{ x?: number; right?: number; box: Box }> = [
+        { x: xs + 10, box: { x0: xs + 8, y0: ly, x1: xs + 8 + wpx, y1: ly + 15 } },
+        { right: W - xs + 8, box: { x0: xs - 8 - wpx, y0: ly, x1: xs - 8, y1: ly + 15 } },
+      ]
+      const hit = cands.find((c) => !collides(c.box))
+      if (hit) {
+        accept(hit.box)
+        out.labels.push({
+          key: t.id, text: '', bold: name, threadId: t.id,
+          suffix: { text: t.state, warn: true },
+          ...(hit.x != null ? { x: hit.x } : { right: hit.right }), y: ly,
+        })
+      } else out.unlabelled++
+      // cancelled stubs still need a hover surface
+      out.branches.push({
+        id: t.id, d: `M ${xs} ${mainY} L ${xs} ${cy + sgn * 8}`, width: 1,
+        color: SAND, opacity: 0, dash: undefined,
+        tipTitle: name, tipMeta: `${t.agentType || 'agent'} · ${t.state}`,
+      })
+      continue
+    }
+
+    const running = t.state === 'running' || t.state === 'pending'
+    const branchD = running
+      ? `M ${xs} ${mainY} L ${xs} ${y - sgn * rr} Q ${xs} ${y} ${xs + rr} ${y} L ${xe} ${y}`
+      : `M ${xs} ${mainY} L ${xs} ${y - sgn * rr} Q ${xs} ${y} ${xs + rr} ${y}` +
+        ` L ${xe - rr} ${y} Q ${xe} ${y} ${xe} ${y - sgn * rr} L ${xe} ${mainY}`
+
+    out.branches.push({
+      id: t.id, d: branchD, width: running ? 1.2 : wTok(t.tokensIn),
+      color: ICE_2, opacity: running ? 0.8 : 0.85, dash: undefined,
+      tipTitle: name,
+      tipMeta: `${t.agentType || 'agent'} · ${hm(t.dur)} · ${tok(t.tokensIn)} in / ${tok(t.tokensOut)} out${running ? ` · ${t.state}` : ''}`,
+    })
+    if (running) {
+      out.paths.push({
+        d: `M ${xe} ${y} L ${Math.min(xe + 26, X1)} ${y}`,
+        stroke: ICE_2, width: 1.2, dash: '2 4',
+      })
+    } else {
+      out.dots.push({ cx: xe, cy: mainY, r: 1.8, fill: ICE_2 })
+    }
+
+    const text = running
+      ? `${name} · ${t.state === 'pending' ? 'starting' : 'still running'}`
+      : `${name} · ${hm(t.dur)} · ${tok(t.tokensIn)}`
+    const wpx = estWidth(text)
+    const besideY = y - 7
+    const onBarY = sgn < 0 ? y - 16 : y + 4
+    const cands: Array<{ x?: number; right?: number; y: number; box: Box }> = []
+    if (!running && xe - xs >= 100) {
+      cands.push({ x: xs + rr + 4, y: onBarY, box: { x0: xs + rr + 2, y0: onBarY, x1: xs + rr + 2 + wpx, y1: onBarY + 15 } })
+    }
+    if (running || xs > W - 240) {
+      cands.push({ right: W - xs + 8, y: besideY, box: { x0: xs - 8 - wpx, y0: besideY, x1: xs - 8, y1: besideY + 15 } })
+    }
+    cands.push({ x: xe + 8, y: besideY, box: { x0: xe + 6, y0: besideY, x1: xe + 6 + wpx, y1: besideY + 15 } })
+    cands.push({ right: W - xs + 8, y: besideY, box: { x0: xs - 8 - wpx, y0: besideY, x1: xs - 8, y1: besideY + 15 } })
+    // last resort: the far side of the bar
+    cands.push({ x: xs + rr + 4, y: sgn < 0 ? y + 4 : y - 16, box: { x0: xs + rr + 2, y0: sgn < 0 ? y + 4 : y - 16, x1: xs + rr + 2 + wpx, y1: (sgn < 0 ? y + 4 : y - 16) + 15 } })
+
+    const hit = cands.find((c) => !collides(c.box))
+    if (hit) {
+      accept(hit.box)
+      out.labels.push({
+        key: t.id, threadId: t.id,
+        text: running ? '' : `· ${hm(t.dur)} · ${tok(t.tokensIn)}`,
+        bold: name,
+        suffix: running ? { text: t.state === 'pending' ? 'starting' : 'still running' } : undefined,
+        dim: running,
+        ...(hit.x != null ? { x: hit.x } : { right: hit.right }), y: hit.y,
+      })
+    } else {
+      out.unlabelled++
+    }
+  }
+
+  // wave fork dots (drawn after so they sit above branch roots)
+  for (const wave of waves) {
+    out.dots.push({ cx: tx(wave.at), cy: mainY, r: 2.2, fill: ICE_0 })
+  }
 
   for (const m of artifactMarks) out.squares.push({ x: tx(m), y: mainY })
   for (const m of userMarks) out.diamonds.push({ x: tx(m), y: mainY })
 
-  // Ruler ticks live on ACTIVE stretches only, spaced by the active
-  // scale (aim ≈70px apart). Ticks inside a compressed block would lie.
+  // ruler ticks on active stretches only
   const NICE = [1, 2, 5, 10, 15, 30, 60, 120, 240, 480]
   const step = NICE.find((n) => n * scale >= 70) ?? 480
   out.tickStepMin = step
@@ -436,19 +528,22 @@ function layoutBraid(
 
 // ── the braid card ──────────────────────────────────────────────────────
 
-function SessionBraid({ anatomy }: { anatomy: Anatomy }) {
+function SessionBraid({ anatomy, tip }: { anatomy: Anatomy; tip: TipBind }) {
   const stageRef = useRef<HTMLDivElement | null>(null)
-  const [size, setSize] = useState<{ w: number; h: number } | null>(null)
+  const [width, setWidth] = useState<number | null>(null)
+  const [hovered, setHovered] = useState<string | null>(null)
+  // comet easter egg: double-click the stage and a spark rides the main
+  // thread end to end. cometX is null when idle.
+  const [cometX, setCometX] = useState<number | null>(null)
+  const cometRaf = useRef(0)
 
   useEffect(() => {
     const el = stageRef.current
     if (!el) return
     let pending = 0
     const measure = () => {
-      const r = el.getBoundingClientRect()
-      const w = Math.max(1, Math.round(r.width))
-      const h = Math.max(1, Math.round(r.height))
-      setSize((prev) => (prev && prev.w === w && prev.h === h ? prev : { w, h }))
+      const w = Math.max(1, Math.round(el.getBoundingClientRect().width))
+      setWidth((prev) => (prev === w ? prev : w))
     }
     measure()
     const ro = new ResizeObserver(() => {
@@ -463,13 +558,38 @@ function SessionBraid({ anatomy }: { anatomy: Anatomy }) {
   }, [])
 
   const layout = useMemo(
-    () => (size ? layoutBraid(anatomy, size.w, size.h) : null),
-    [anatomy, size],
+    () => (width ? layoutBraid(anatomy, width) : null),
+    [anatomy, width],
   )
+
+  useEffect(() => () => cancelAnimationFrame(cometRaf.current), [])
+  const launchComet = () => {
+    if (!layout) return
+    cancelAnimationFrame(cometRaf.current)
+    const t0 = performance.now()
+    const DUR = 1600
+    const run = (now: number) => {
+      const f = (now - t0) / DUR
+      if (f >= 1) { setCometX(null); return }
+      // ease-in-out so it lingers mid-flight
+      const e = f < 0.5 ? 2 * f * f : 1 - Math.pow(-2 * f + 2, 2) / 2
+      setCometX(layout.X0 + e * (layout.X1 - layout.X0))
+      cometRaf.current = requestAnimationFrame(run)
+    }
+    cometRaf.current = requestAnimationFrame(run)
+  }
+
+  const H = layout?.height ?? 300
 
   return (
     <div className="relative overflow-hidden rounded-lg border border-white/[0.06] bg-bg-1">
-      <div ref={stageRef} className="relative h-[300px]">
+      <div
+        ref={stageRef}
+        className="relative"
+        style={{ height: H }}
+        onDoubleClick={launchComet}
+        title=""
+      >
         {/* corner registration marks */}
         {(['tl', 'tr', 'bl', 'br'] as const).map((c) => (
           <span
@@ -488,31 +608,16 @@ function SessionBraid({ anatomy }: { anatomy: Anatomy }) {
           />
         ))}
 
-        {layout && size && (
+        {layout && width && (
           <svg
             className="absolute inset-0"
             width="100%"
             height="100%"
-            viewBox={`0 0 ${size.w} ${size.h}`}
+            viewBox={`0 0 ${width} ${H}`}
             preserveAspectRatio="none"
           >
             <g strokeLinejoin="round" strokeLinecap="round">
-              {layout.paths.map((p, i) => (
-                <path
-                  key={i}
-                  d={p.d}
-                  fill="none"
-                  stroke={p.stroke}
-                  strokeWidth={p.width}
-                  strokeDasharray={p.dash}
-                  opacity={p.opacity ?? 1}
-                />
-              ))}
-
-              {/* main thread — solid on active stretches, dashed sand
-                  across compressed idle blocks, with hairline block edges.
-                  Two-layer stroke, never a bbox filter (a blur filter on a
-                  zero-height line collapses to nothing). */}
+              {/* main thread first so branches sit above it */}
               {layout.mainSegs.map((seg, i) =>
                 seg.gap ? (
                   <g key={i}>
@@ -535,6 +640,62 @@ function SessionBraid({ anatomy }: { anatomy: Anatomy }) {
                   </g>
                 ),
               )}
+
+              {/* branches + generous invisible hit paths for hover */}
+              {layout.branches.map((b) => (
+                <g key={b.id}>
+                  <path
+                    d={b.d}
+                    fill="none"
+                    stroke={hovered === b.id ? ICE_0 : b.color}
+                    strokeWidth={hovered === b.id ? b.width + 0.6 : b.width}
+                    strokeDasharray={b.dash}
+                    opacity={
+                      b.opacity === 0
+                        ? 0
+                        : hovered
+                          ? hovered === b.id ? 1 : 0.22
+                          : b.opacity
+                    }
+                  />
+                  {(() => {
+                    const tp = tip(
+                      <span>
+                        <span className="text-fg-1">{b.tipTitle}</span>{' '}
+                        <span className="text-fg-2">· {b.tipMeta}</span>
+                      </span>,
+                    )
+                    return (
+                      <path
+                        d={b.d}
+                        fill="none"
+                        stroke="#fff"
+                        strokeOpacity={0}
+                        strokeWidth={11}
+                        style={{ pointerEvents: 'stroke', cursor: 'crosshair' }}
+                        onMouseMove={tp.onMouseMove}
+                        onMouseEnter={() => setHovered(b.id)}
+                        onMouseLeave={() => {
+                          tp.onMouseLeave()
+                          setHovered(null)
+                        }}
+                      />
+                    )
+                  })()}
+                </g>
+              ))}
+
+              {layout.paths.map((p, i) => (
+                <path
+                  key={i}
+                  d={p.d}
+                  fill="none"
+                  stroke={p.stroke}
+                  strokeWidth={p.width}
+                  strokeDasharray={p.dash}
+                  opacity={hovered ? (p.opacity ?? 1) * 0.4 : p.opacity ?? 1}
+                />
+              ))}
 
               {layout.dots.map((d, i) => (
                 <circle key={i} cx={d.cx} cy={d.cy} r={d.r} fill={d.fill} opacity={0.9} />
@@ -563,26 +724,42 @@ function SessionBraid({ anatomy }: { anatomy: Anatomy }) {
 
               {/* time ruler — ticks on active stretches only */}
               <line
-                x1={layout.X0} y1={size.h - 14} x2={layout.X1} y2={size.h - 14}
+                x1={layout.X0} y1={H - 14} x2={layout.X1} y2={H - 14}
                 stroke="rgba(168,212,252,.14)" strokeWidth={1}
               />
               {layout.ticks.map((t, i) => (
                 <line
                   key={i}
-                  x1={t.x} y1={size.h - 14} x2={t.x} y2={size.h - 14 - (t.major ? 7 : 4)}
+                  x1={t.x} y1={H - 14} x2={t.x} y2={H - 14 - (t.major ? 7 : 4)}
                   stroke={`rgba(168,212,252,${t.major ? 0.28 : 0.14})`}
                   strokeWidth={1}
                 />
               ))}
+
+              {/* the comet */}
+              {cometX != null && (
+                <g>
+                  {[0, 1, 2, 3].map((k) => (
+                    <circle
+                      key={k}
+                      cx={cometX - k * 9}
+                      cy={layout.mainY}
+                      r={3.4 - k * 0.7}
+                      fill={ICE_0}
+                      opacity={0.9 - k * 0.22}
+                    />
+                  ))}
+                </g>
+              )}
             </g>
           </svg>
         )}
 
-        {/* branch labels — plated so later fork lines can't strike through */}
+        {/* branch labels — plated; only non-colliding survivors render */}
         {layout?.labels.map((l) => (
           <div
             key={l.key}
-            className="pointer-events-none absolute whitespace-nowrap rounded-sm px-1.5 py-px font-mono text-[9px] tracking-[0.02em]"
+            className="pointer-events-none absolute whitespace-nowrap rounded-sm px-1.5 py-px font-mono text-[9px] tracking-[0.02em] transition-opacity"
             style={{
               left: l.x,
               right: l.right,
@@ -590,9 +767,12 @@ function SessionBraid({ anatomy }: { anatomy: Anatomy }) {
               textAlign: l.right != null ? 'right' : undefined,
               background: 'rgba(5,5,6,.85)',
               color: l.dim ? '#4a4a4a' : '#6e6e6e',
+              opacity: hovered && l.threadId !== hovered ? 0.25 : 1,
             }}
           >
-            <span className="text-fg-1">{l.bold}</span>
+            <span className={hovered && l.threadId === hovered ? 'text-accent' : 'text-fg-1'}>
+              {l.bold}
+            </span>
             {l.text && <span> {l.text}</span>}
             {l.suffix && (
               <span style={{ color: l.suffix.warn ? SAND : undefined }}> · {l.suffix.text}</span>
@@ -600,16 +780,17 @@ function SessionBraid({ anatomy }: { anatomy: Anatomy }) {
           </div>
         ))}
 
-        {/* one compact plate per compressed idle block */}
+        {/* one compact plate per compressed idle block — pre-staggered */}
         {layout?.idles.map((idle, i) => (
           <div
             key={i}
-            className="pointer-events-none absolute -translate-x-1/2 whitespace-nowrap rounded-sm border px-2.5 py-1 text-center"
+            className="pointer-events-none absolute -translate-x-1/2 whitespace-nowrap rounded-sm border px-2.5 py-1 text-center transition-opacity"
             style={{
               left: (idle.xa + idle.xb) / 2,
-              top: layout.mainY - (idle.sub ? 52 : 40),
+              top: idle.plateY,
               background: 'rgba(5,5,6,.84)',
               borderColor: 'rgba(184,160,120,.22)',
+              opacity: hovered ? 0.3 : 1,
             }}
           >
             <div className="font-mono text-[9.5px] uppercase tracking-[0.18em]" style={{ color: SAND }}>
@@ -632,6 +813,9 @@ function SessionBraid({ anatomy }: { anatomy: Anatomy }) {
               : `${layout.tickStepMin}m`
             : '—'}
           {layout && layout.idles.length > 0 ? ' · idle compressed to blocks' : ''}
+          {layout && layout.unlabelled > 0
+            ? ` · ${layout.unlabelled} unlabelled — hover the branches`
+            : ''}
         </span>
         <div className="flex items-center gap-4 whitespace-nowrap font-mono text-[9px] text-fg-3">
           <span className="flex items-center gap-1.5">
@@ -761,9 +945,11 @@ function Funnel({
 function RankedBars({
   rows,
   tip,
+  onRow,
 }: {
   rows: Array<{ id: string; name: string; v: number; vLabel: string; note: string; bad?: boolean }>
   tip: TipBind
+  onRow?: (id: string) => void
 }) {
   const max = Math.max(...rows.map((r) => r.v), 1)
   return (
@@ -775,9 +961,13 @@ function RankedBars({
             <span>
               <span className="text-fg-1">{r.name}</span> · {r.vLabel} ·{' '}
               <span className="text-fg-2">{r.note}</span>
+              {onRow && <span className="text-fg-3"> · click to open</span>}
             </span>,
           )}
-          className="grid grid-cols-[120px_1fr_60px_100px] items-center gap-3 border-t border-white/[0.03] py-1.5 text-[11px] first:border-t-0"
+          onClick={onRow ? () => onRow(r.id) : undefined}
+          className={`grid grid-cols-[120px_1fr_60px_100px] items-center gap-3 border-t border-white/[0.03] py-1.5 text-[11px] first:border-t-0 ${
+            onRow ? 'cursor-pointer rounded-sm hover:bg-white/[0.03]' : ''
+          }`}
         >
           <div className="truncate font-mono text-fg-1">{r.name}</div>
           <div
@@ -1078,7 +1268,7 @@ export function SessionReceiptView() {
         </div>
 
         {/* ── the braid ─────────────────────────────────────────────── */}
-        <SessionBraid anatomy={anatomy} />
+        <SessionBraid anatomy={anatomy} tip={tip.bind} />
 
         {/* ── tiles ─────────────────────────────────────────────────── */}
         <div
@@ -1116,6 +1306,11 @@ export function SessionReceiptView() {
             <Card title="spend by session" hint={`${spend.children.length + 1} sessions`}>
               <RankedBars
                 tip={tip.bind}
+                onRow={(id) => {
+                  const st = useHarness.getState()
+                  if (id === activeSessionId) return
+                  void st.openSessionPane(id, 'replace').then(() => st.toggleMissionDashboard(false))
+                }}
                 rows={[
                   {
                     id: activeSessionId,
@@ -1155,12 +1350,15 @@ export function SessionReceiptView() {
                   {Math.round(readTotal / usage.totalOutputTokens)} tokens read for every 1
                   written.
                 </span>{' '}
-                {readTotal > 0 && (
-                  <>
-                    {Math.round((usage.totalCacheReadTokens / readTotal) * 100)}% of the reads
-                    hit cache — the rest billed at full input rate.
-                  </>
-                )}
+                {readTotal > 0 &&
+                  (usage.totalCacheReadTokens / readTotal >= 0.995 ? (
+                    <>Essentially every read hit cache.</>
+                  ) : (
+                    <>
+                      {Math.round((usage.totalCacheReadTokens / readTotal) * 100)}% of the reads
+                      hit cache — the rest billed at full input rate.
+                    </>
+                  ))}
               </p>
             )}
           </Card>
