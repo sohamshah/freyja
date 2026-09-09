@@ -341,6 +341,7 @@ class FireworksProvider:
         tools: list[ToolDefinition] | None = None,
         system_prompt: str | None = None,
         max_tokens: int | None = None,
+        thinking: Any = None,
     ) -> ProviderResponse:
         """Send a synchronous completion request."""
         request_kwargs = self._build_request(
