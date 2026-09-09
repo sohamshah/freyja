@@ -292,6 +292,12 @@ class _StreamState:
     # reject MarkdownTextChunk), so there's no need for live streaming,
     # throttling, or a separate text_buffer / fallback_committed split.
     body_buffer: str = ""
+    # A non-text event (tool call, thinking) fired since the last body
+    # append. The model's next text block is a NEW paragraph — the raw
+    # deltas carry no separator between blocks, so without this flag a
+    # multi-phase turn renders as one run-on line ("…checks.Now let me
+    # see…"). _append_text inserts a blank line when the flag is set.
+    body_break_pending: bool = False
 
     # Thinking-card accumulator. `thinking_buffer` is the FULL cumulative
     # reasoning text; `thinking_sent` tracks the prefix already emitted
@@ -481,6 +487,9 @@ class SlackStreamConsumer:
                 )
             except Exception:  # noqa: BLE001
                 logger.debug("send_typing failed (non-fatal)", exc_info=True)
+
+        if etype in {"thinking_delta", "tool_use_start", "tool_input_end", "tool_result"}:
+            self._state.body_break_pending = True
 
         if etype == "text_delta":
             text = str(event.get("text") or "")
@@ -684,6 +693,10 @@ class SlackStreamConsumer:
         branching is needed — there's exactly one delivery path.
         """
         async with self._lock:
+            if self._state.body_break_pending:
+                self._state.body_break_pending = False
+                if self._state.body_buffer and not self._state.body_buffer.endswith("\n"):
+                    self._state.body_buffer += "\n\n"
             self._state.body_buffer += text
 
     # ── thinking card (TaskUpdateChunk) ──
@@ -1070,6 +1083,49 @@ class SlackStreamConsumer:
         return result.message_id
 
     # ── finalize ──
+
+    @property
+    def finalized(self) -> bool:
+        return self._state.finalized
+
+    def abort(self) -> None:
+        """Neutralize an orphaned consumer WITHOUT delivering its body.
+
+        finalize() only runs on turn_complete. A turn that dies before
+        emitting it (provider init failure, cancellation) leaves its
+        consumer registered forever, and every event of every later turn
+        then fans out to BOTH consumers — duplicate thinking streams and
+        the whole body posted twice. The gateway calls this when it
+        tears a stale consumer down at the next turn's registration.
+
+        Sets the finalized gate synchronously (on_event drops everything
+        from here on) and best-effort seals any open stream + typing
+        indicator. Buffered prose is discarded — it belongs to a turn
+        that never completed.
+        """
+        if self._state.finalized:
+            return
+        self._state.finalized = True
+
+        async def _seal() -> None:
+            if self._state.stream_ts and not self._state.cards_disabled:
+                try:
+                    await self.adapter.stop_stream(
+                        self.source.chat_id, self._state.stream_ts
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug("[slack] abort stop_stream failed", exc_info=True)
+            try:
+                await self.adapter.stop_typing(
+                    self.source.chat_id, thread_id=self._reply_thread_id
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("abort stop_typing failed", exc_info=True)
+
+        try:
+            asyncio.run_coroutine_threadsafe(_seal(), self._loop)
+        except RuntimeError:
+            pass
 
     async def finalize(self) -> None:
         """Close the card stream, deliver the body as a postMessage."""

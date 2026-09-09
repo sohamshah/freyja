@@ -79,6 +79,51 @@ def _scheduler_help_card() -> str:
     )
 
 
+def _attach_turn_consumer(session: object, key: str, consumer: SlackStreamConsumer) -> None:
+    """Register ``consumer`` as THE live stream consumer for this session.
+
+    At most one stream consumer may be listening per session key.
+    Normally the previous turn's consumer unregisters itself via
+    finalize() on turn_complete — but a turn that dies before emitting
+    turn_complete (provider init failure, cancellation) leaves its
+    consumer registered forever, and every event of every subsequent
+    turn then fans out to BOTH consumers: duplicate thinking streams
+    and the whole body posted twice. Tear down any stale predecessor
+    before registering the new one.
+    """
+    from bridge.freyja_bridge import (
+        register_session_listener,
+        unregister_session_listener,
+    )
+
+    prev = getattr(session, "_active_stream_consumer", None)
+    prev_cb = getattr(session, "_active_stream_consumer_cb", None)
+    if prev is not None and prev is not consumer:
+        if prev_cb is not None:
+            unregister_session_listener(key, prev_cb)
+        if not getattr(prev, "finalized", True):
+            logger.warning(
+                "stale stream consumer torn down on session=%s "
+                "(prior turn never emitted turn_complete)",
+                key,
+            )
+            prev.abort()
+    setattr(session, "_active_stream_consumer", consumer)
+    setattr(session, "_active_stream_consumer_cb", consumer.on_event)
+    register_session_listener(key, consumer.on_event)
+
+
+def _detach_turn_consumer(session: object, cb: object) -> None:
+    """Clear the active-consumer slot if ``cb`` still owns it.
+
+    Bound-method objects are recreated per attribute access, so compare
+    with ``==`` (same instance + same function), never ``is``.
+    """
+    if getattr(session, "_active_stream_consumer_cb", None) == cb:
+        setattr(session, "_active_stream_consumer", None)
+        setattr(session, "_active_stream_consumer_cb", None)
+
+
 def _arg_value(body: str, flag: str) -> str | None:
     """Pluck the value of a `--flag <val>` pair out of free-form text.
     Handles `--flag val`, `--flag=val`. Returns None if absent."""
@@ -577,6 +622,7 @@ class GatewayDaemon:
             cb = consumer_holder.get("on_event")
             if cb is not None:
                 unregister_session_listener(key, cb)
+                _detach_turn_consumer(session, cb)
 
         # Permission-prompt dispatcher: registered once per session and
         # left in place for the daemon's lifetime so background-mode
@@ -630,7 +676,7 @@ class GatewayDaemon:
             # turn — the per-turn tool resolvers (SendAttachmentTool,
             # destructive gate) read this attribute at call time.
             _turn_session.gateway_source = _turn_source
-            register_session_listener(key, _turn_consumer.on_event)
+            _attach_turn_consumer(_turn_session, key, _turn_consumer)
 
         # Pull prior thread / DM context from the platform so the
         # agent sees what was said before it was triggered. Critical
@@ -1087,6 +1133,7 @@ class GatewayDaemon:
                 refs_str = " ".join(refs)
                 text = f"{text} {refs_str}" if text else refs_str
             lines.append(f"{role_label}: {text}")
+
         # What the operator currently has open, if the adapter tracked it
         # from `app_context_changed`. Cheap and often decisive: "summarize
         # this" or "who owns this?" is ambiguous without knowing which
@@ -2424,10 +2471,7 @@ class GatewayDaemon:
         per-turn consumer setup, minus the inbound-message framing)."""
 
         def _hook() -> None:
-            from bridge.freyja_bridge import (
-                register_session_listener,
-                unregister_session_listener,
-            )
+            from bridge.freyja_bridge import unregister_session_listener
             from bridge.gateway.session_router import (
                 normalize_verbosity,
                 source_from_session_key,
@@ -2457,6 +2501,7 @@ class GatewayDaemon:
                 cb = holder.get("on_event")
                 if cb is not None:
                     unregister_session_listener(key, cb)
+                    _detach_turn_consumer(session, cb)
 
             consumer = SlackStreamConsumer(
                 adapter,  # type: ignore[arg-type]
@@ -2469,7 +2514,7 @@ class GatewayDaemon:
                 ),
             )
             holder["on_event"] = consumer.on_event
-            register_session_listener(key, consumer.on_event)
+            _attach_turn_consumer(session, key, consumer)
 
         return _hook
 

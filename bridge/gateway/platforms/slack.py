@@ -781,10 +781,80 @@ class SlackAdapter:
         # the (possibly slow) handle_message call can't accidentally
         # cancel an unrelated future task that reused this ts.
         self._pending_app_mention.pop(event_ts, None)
+
+        # The twin didn't arrive inside the defer window — but for
+        # mentions WITH attachments Slack can delay the file-carrying
+        # ``message.channels`` event by tens of seconds (file
+        # processing), long past any reasonable defer. Processing the
+        # fileless app_mention now and the rich twin later means TWO
+        # agent turns for one message. So: ask the Web API for the
+        # authoritative message, graft any files onto this event, and
+        # stamp BOTH richness dedup keys so the late twin (and any
+        # fileless redelivery) drops instead of re-triggering.
+        fetched_ok = False
+        if not event.get("files"):
+            channel = str(event.get("channel") or "")
+            if channel:
+                try:
+                    files = await self._fetch_message_files(
+                        channel, event_ts, team_id=event.get("team")
+                    )
+                    fetched_ok = True
+                    if files:
+                        event = dict(event)
+                        event["files"] = files
+                        logger.info(
+                            "[slack] app_mention ts=%s enriched with %d "
+                            "file(s) fetched from the authoritative message",
+                            event_ts,
+                            len(files),
+                        )
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "[slack] app_mention file fetch failed for ts=%s",
+                        event_ts,
+                        exc_info=True,
+                    )
         try:
             await self._handle_message(event)
         except Exception:  # noqa: BLE001
             logger.exception("deferred app_mention handler raised")
+        # _handle_message stamped the key matching THIS event's
+        # richness; stamp the other variant too so the twin can't pass
+        # dedup as a "new" invocation. Skip when the authoritative
+        # fetch failed — in that degraded case a late files twin is
+        # still the only way the agent ever sees the attachments, so
+        # keep the old double-invocation behavior as the fallback.
+        if event_ts and (fetched_ok or event.get("files")):
+            other_key = (
+                event_ts if event.get("files") else f"{event_ts}|f"
+            )
+            self._dedup.setdefault(other_key, time.monotonic())
+
+    async def _fetch_message_files(
+        self,
+        channel: str,
+        ts: str,
+        *,
+        team_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Fetch the ``files`` array of one message by ts.
+
+        ``conversations.replies`` accepts either a thread parent or any
+        message inside a thread, and for an unthreaded message returns
+        just that message — so it covers every placement a mention can
+        have. Returns [] when the message carries no files.
+        """
+        client = self._get_client(channel, team_id=str(team_id or "") or None)
+        if client is None:
+            return []
+        resp = await client.conversations_replies(
+            channel=channel, ts=ts, limit=1, inclusive=True
+        )
+        for m in resp.get("messages") or []:
+            if str(m.get("ts") or "") == ts:
+                return list(m.get("files") or [])
+        return []
 
     async def _handle_message(self, event: dict[str, Any]) -> None:
         # Dedup: Socket Mode can redeliver after reconnect, AND Slack
