@@ -2240,6 +2240,21 @@ class GatewayDaemon:
 
         from bridge.gateway.config import GatewayConfig
 
+        # Provider keys + platform tokens live in ~/.freyja/.env, not the
+        # LaunchAgent plist. `_async_main` loads them, but it is not the
+        # only way in: the scheduler LaunchAgent runs
+        # `freyja_bridge.py --headless --scheduler-only`, which builds a
+        # GatewayDaemon directly and never touches `_async_main`. That
+        # daemon came up with an empty keyring — "SLACK_BOT_TOKEN not set",
+        # then ValueError("ANTHROPIC_API_KEY is not set") the moment a
+        # scheduled job tried to build a provider.
+        #
+        # Loading here covers every caller, since nothing reaches an
+        # adapter or a provider without going through start(). The call is
+        # idempotent (existing os.environ always wins), so `_async_main`
+        # doing it earlier remains a no-op rather than a conflict.
+        _load_env_into_os_environ()
+
         cfg = GatewayConfig.load()
         workspace = os.environ.get("FREYJA_WORKSPACE") or str(Path.home())
         default_model = os.environ.get("FREYJA_MODEL") or cfg.default_model

@@ -14109,9 +14109,14 @@ async def _main_headless() -> None:
     Slack-delivered scheduled jobs can post their output. We don't
     auto-create any sessions; jobs allocate sessions as they fire.
     """
-    workspace = os.environ.get("FREYJA_WORKSPACE") or os.getcwd()
-    default_model = os.environ.get("FREYJA_MODEL") or "glm-5.3-fireworks"
-    log("info", f"freyja headless daemon starting (workspace={workspace})")
+    # Deliberately no workspace/model line here. This used to log
+    # `os.getcwd()`, which the LaunchAgent launcher sets to the app bundle
+    # (the cd is load-bearing for the bundled Python's relative pyvenv
+    # home). GatewayDaemon.start() actually uses Path.home(), so the line
+    # reported a directory the daemon never ran in — it reads as a
+    # misconfigured daemon and sent one investigation down the wrong path.
+    # start() logs the real values a moment later as "bridge state ready".
+    log("info", f"freyja headless daemon starting (pid={os.getpid()})")
     # The gateway daemon owns _BridgeState construction so we use it
     # here too — that way Slack-delivered scheduled jobs work
     # identically to interactive Slack turns. start() also brings up
