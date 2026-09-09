@@ -560,6 +560,7 @@ def _format_user_facing_runner_failure(
     reason: str,
     message: str,
     already_streamed: bool,
+    code: str = "",
 ) -> str:
     """Build a short, operator-facing message for a runner give-up.
 
@@ -596,6 +597,25 @@ def _format_user_facing_runner_failure(
             f"(stop_reason=refusal). {cut_off_note}Details: {detail}. "
             "Rephrasing usually helps; `/model claude-opus-4-8` sidesteps "
             "the Fable-class classifiers entirely."
+        )
+    if code == "max_iterations":
+        # Like refusal, this one shows even when prose already streamed —
+        # for the same reason. The agent's last message is typically a
+        # statement of what it is ABOUT to do ("posting the comments
+        # now"), and the ceiling cuts the run before it happens. Staying
+        # silent here reads as the agent finishing and simply not doing
+        # what it said, which is the most confusing failure we can hand
+        # an operator. The remedy is one word from the user, so say it.
+        prefix = "\n\n---\n" if already_streamed else ""
+        # message is "Reached maximum iterations (100)" — pull the count out
+        # rather than embedding the sentence inside another sentence.
+        m = re.search(r"\((\d+)\)", message or "")
+        limit = f" ({m.group(1)} steps)" if m else ""
+        return (
+            f"{prefix}⚠️ I hit my per-turn step limit{limit} and stopped "
+            "before finishing. Anything I said I was about to do did NOT "
+            "happen. Reply \"keep going\" to continue — the findings so far "
+            "are still in context."
         )
     if already_streamed:
         return ""
@@ -9120,6 +9140,7 @@ class _BridgeSession:
                     reason=reason,
                     message=err_msg,
                     already_streamed=already_streamed,
+                    code=str(getattr(err, "code", "") or ""),
                 )
                 if user_facing:
                     emit({

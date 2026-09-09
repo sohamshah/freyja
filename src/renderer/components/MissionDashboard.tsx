@@ -600,6 +600,7 @@ export function MissionDashboard() {
           'context_pruning',
           'tool_truncation',
           'output_truncation',
+          'iteration_limit',
         ].includes(event.subtype),
       )
     // The kanban board view consumes the *full* system-event stream

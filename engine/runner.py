@@ -528,7 +528,14 @@ class AgentRunner:
                     )
 
                 if stop.should_stop(response, ctx.iteration, max_iterations):
+                    # The iteration ceiling is a truncation, not a finish.
+                    # Leave ctx.state RUNNING and break so the post-loop
+                    # `elif ctx.iteration >= max_iterations` branch builds
+                    # the max_iterations result — keeping `final_response`
+                    # so the partial work still reaches the caller.
                     final_response = response.content
+                    if ctx.iteration >= max_iterations:
+                        break
                     ctx.state = RunnerState.COMPLETED
                     break
 
@@ -1341,6 +1348,25 @@ class AsyncAgentRunner:
                         ))
                         final_response = response.content
                         ctx.state = RunnerState.COMPLETED
+                        break
+
+                    # The iteration ceiling is a truncation, not a finish.
+                    # Break with ctx.state still RUNNING so the post-loop
+                    # `elif ctx.iteration >= max_iterations` branch reports
+                    # success=False / code="max_iterations". Without this the
+                    # run is indistinguishable from the model choosing to
+                    # stop, and the operator sees the agent announce a plan
+                    # and then go silent with no explanation.
+                    if ctx.iteration >= max_iterations:
+                        final_response = response.content
+                        await self._emit_system_event(SystemEvent(
+                            type="iteration_limit",
+                            message=(
+                                f"Stopped at the step limit ({max_iterations} "
+                                "iterations) — the task was not finished"
+                            ),
+                            details={"iterations": ctx.iteration},
+                        ))
                         break
 
                     # Turn verification before ending

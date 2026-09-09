@@ -652,6 +652,10 @@ SystemEventType = Literal[
     "media_pruning",
     "tool_truncation",
     "output_truncation",
+    # The agent loop hit its step ceiling with work still outstanding.
+    # Distinct from output_truncation, which is a single response being
+    # cut off by max_tokens.
+    "iteration_limit",
 ]
 
 

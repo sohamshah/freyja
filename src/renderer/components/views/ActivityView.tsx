@@ -842,6 +842,7 @@ function mapTelemetrySubtype(subtype: string): Category | null {
   if (subtype === 'compaction_complete' || subtype === 'context_pruning') return 'summary'
   if (subtype === 'media_pruning') return 'media'
   if (subtype === 'tool_truncation' || subtype === 'output_truncation') return 'truncation'
+  if (subtype === 'iteration_limit') return 'truncation'
   return null
 }
 
