@@ -1303,30 +1303,8 @@ class GatewayDaemon:
             )
             return True
 
-        # Validate before touching the session. An unknown id used to be
-        # accepted verbatim: the command reported success, then the NEXT
-        # message failed at the provider with a 404, because the model
-        # string only gets resolved at request time. Reject here instead,
-        # where we can say what went wrong and suggest the near miss.
-        from engine.providers import MODEL_REGISTRY
-
-        if target not in MODEL_REGISTRY:
-            import difflib
-
-            close = difflib.get_close_matches(target, list(MODEL_REGISTRY), n=3, cutoff=0.4)
-            hint = (
-                "\nDid you mean: " + ", ".join(f"`{c}`" for c in close)
-                if close else
-                "\nRun `/models` to see what's available."
-            )
-            await adapter.send(  # type: ignore[attr-defined]
-                message.source.chat_id,
-                f"Unknown model `{target}` — leaving the session on its "
-                f"current model.{hint}",
-                thread_id=message.source.thread_id,
-                ephemeral_user_id=message.source.user_id,
-                raw_hint=message.raw,
-            )
+        key = session_key_for(message.source)
+        if self.state is None:
             return True
         session = await self.state.ensure_session(
             session_id=key,
@@ -1375,16 +1353,55 @@ class GatewayDaemon:
             )
             return True
 
+        # Validate before touching the session. An unknown id used to be
+        # accepted verbatim: the command reported success, then the NEXT
+        # message failed at the provider with a 404, because the model
+        # string only gets resolved at request time. Reject here instead,
+        # where we can say what went wrong and suggest the near miss.
+        from engine.providers import MODEL_REGISTRY
+
+        if target not in MODEL_REGISTRY:
+            import difflib
+
+            close = difflib.get_close_matches(target, list(MODEL_REGISTRY), n=3, cutoff=0.4)
+            hint = (
+                "\nDid you mean: " + ", ".join(f"`{c}`" for c in close)
+                if close else
+                "\nRun `/models` to see what's available."
+            )
+            await adapter.send(  # type: ignore[attr-defined]
+                message.source.chat_id,
+                f"Unknown model `{target}` — leaving the session on its "
+                f"current model.{hint}",
+                thread_id=message.source.thread_id,
+                ephemeral_user_id=message.source.user_id,
+                raw_hint=message.raw,
+            )
+            return True
+
         key = session_key_for(message.source)
         if self.state is None:
             return True
         session = await self.state.ensure_session(
             session_id=key, model_id=target,
         )
-        applied = getattr(session, "model_id", target)
+        # A turn in flight means ensure_session parked the change instead
+        # of applying it (reconciling mid-turn would clobber the live
+        # transcript). Say so, rather than reporting the OLD model back
+        # as though the switch had happened.
+        parked = (getattr(session, "pending_config", None) or {}).get("model_id")
+        if parked == target:
+            text = (
+                f"Model will switch to `{target}` when the current turn "
+                "finishes — a turn is running right now, and swapping "
+                "mid-flight would lose it."
+            )
+        else:
+            applied = getattr(session, "model_id", target)
+            text = f"Model set to `{applied}`."
         await adapter.send(  # type: ignore[attr-defined]
             message.source.chat_id,
-            f"Model set to `{applied}`.",
+            text,
             thread_id=message.source.thread_id,
             ephemeral_user_id=message.source.user_id,
             raw_hint=message.raw,
