@@ -1,0 +1,31 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Adapted from hermes-agent optional-mcps/asana/manifest.yaml
+# (Copyright (c) 2025 Nous Research, MIT License). URL/pins re-verified for
+# Freyja on the `verified` date below.
+manifest_version: 1
+
+name: asana
+description: Tasks, projects, and goals from your Asana workspace.
+homepage: https://developers.asana.com/docs/using-asanas-mcp-server
+license: proprietary
+verified: 2026-09-03
+tags: [tasks, project-management, remote, oauth]
+
+# Streamable HTTP endpoint (hermes pinned the legacy /sse). Verified live:
+# 401 + realm="Asana MCP", resource_metadata=
+# https://mcp.asana.com/.well-known/oauth-protected-resource/v2
+transport:
+  type: http
+  url: https://mcp.asana.com/v2/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords: [asana]
+  hosts: [asana.com]
+
+post_install: |
+  On first connection Freyja opens a browser to authorize with Asana
+  (or run `/mcp login asana`). Approve access, then `/mcp enable asana`
+  (or `/mcp reload` if already enabled) so the tools load.

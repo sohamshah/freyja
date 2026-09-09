@@ -14,6 +14,8 @@ import { Toast } from './components/Toast'
 import { DebugDrawer } from './components/DebugDrawer'
 import { ModelPicker } from './components/ModelPicker'
 import { PermissionPrompt } from './components/PermissionPrompt'
+import { McpElicitationPrompt } from './components/mcp/McpElicitationPrompt'
+import { McpOAuthNotices } from './components/mcp/McpOAuthNotice'
 import { SkillToast } from './components/SkillToast'
 import { SettingsModal } from './components/SettingsModal'
 import { EmergencyPanic } from './components/EmergencyPanic'
@@ -753,12 +755,15 @@ export function App() {
         <SettingsModal />
         {/* Voice capsule — z-40, above the shell, below PermissionPrompt. */}
         <VoiceHUD />
+        {/* MCP elicitation sits one layer under PermissionPrompt (z-49). */}
+        <McpElicitationPrompt />
         <PermissionPrompt />
         <SkillToast />
         <ComputerPermissionWizard />
         <ComputerHotkeyOverlay />
         <EmergencyPanic />
         <Toast />
+        <McpOAuthNotices />
         <DebugDrawer />
         {!splashShowing && <IdleSleep />}
       </div>

@@ -1,0 +1,32 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Adapted from hermes-agent optional-mcps/context7/manifest.yaml
+# (Copyright (c) 2025 Nous Research, MIT License). URL/pins re-verified for
+# Freyja on the `verified` date below.
+manifest_version: 1
+
+name: context7
+description: Up-to-date, version-specific library docs and code examples.
+homepage: https://context7.com/docs/resources/all-clients
+license: MIT
+verified: 2026-09-03
+tags: [docs, reference, remote, no-auth]
+
+# Verified live: anonymous POST initialize -> 200, serverInfo Context7 4.0.4.
+# (A WWW-Authenticate header is advertised for optional API keys.)
+transport:
+  type: http
+  url: https://mcp.context7.com/mcp
+
+auth:
+  type: none
+
+suggest:
+  keywords: [context7, library docs]
+  hosts: [context7.com]
+
+post_install: |
+  No account needed — `/mcp enable context7` and the tools are live.
+
+  Higher rate limits: create an API key at https://context7.com/dashboard,
+  set CONTEXT7_API_KEY in ~/.freyja/.env and add to the mcp.json entry:
+    "headers": {"CONTEXT7_API_KEY": "${CONTEXT7_API_KEY}"}

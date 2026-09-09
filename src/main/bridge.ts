@@ -161,10 +161,14 @@ export class HarnessBridge {
 
     // Load the .env so ANTHROPIC_API_KEY etc. reach the bridge.
     // In dev it's in the project root; packaged app checks both the
-    // resources dir (harnessRoot) and the source project root.
+    // resources dir (harnessRoot) and the source project root. The
+    // operator-managed ~/.freyja/.env (written by `freyja setup slack`,
+    // the only file the gateway daemon reads, and where MCP `${VAR}`
+    // hints send people) is layered on top so both processes agree.
     const harnessEnv = {
       ...readDotEnv(path.join(sourceRoot, '.env')),
       ...readDotEnv(path.join(this.opts.harnessRoot, '.env')),
+      ...readDotEnv(path.join(os.homedir(), '.freyja', '.env')),
     }
 
     // PYTHONPATH: the bridge does `from engine.X` and `from bridge.tools.X`.

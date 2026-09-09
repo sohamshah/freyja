@@ -1,0 +1,40 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Schema follows hermes-agent's optional-mcps manifest.yaml (Nous Research,
+# MIT) with Freyja additions: homepage, license, tags, verified.
+manifest_version: 1
+
+name: postgres
+description: >-
+  Postgres MCP Pro — schema exploration, safe SQL execution, index tuning
+  and health checks against any PostgreSQL database.
+homepage: https://github.com/crystaldba/postgres-mcp
+license: MIT
+verified: 2026-09-03
+tags: [database, postgres, sql, local, api-key]
+
+# postgres-mcp 0.3.0 published 2025-05-16 (pypi.org; repo active, last push
+# 2026-08-17; verified 2026-09-03). --access-mode=restricted enforces
+# read-only transactions + statement timeouts; switch to unrestricted in
+# mcp.json args if you really want writes.
+transport:
+  type: stdio
+  command: uvx
+  args: ["postgres-mcp==0.3.0", "--access-mode=restricted"]
+  package: postgres-mcp
+  version: "0.3.0"
+
+auth:
+  type: api_key
+  env:
+    - name: DATABASE_URI
+      description: "postgresql://user:password@host:5432/dbname connection string"
+      required: true
+      secret: true
+
+suggest:
+  keywords: [postgres, postgresql, sql]
+
+post_install: |
+  Set DATABASE_URI=postgresql://... in ~/.freyja/.env (it contains the
+  password, so never put it in mcp.json), then `/mcp enable postgres`.
+  Optional extensions for tuning tools: pg_statements, hypopg.

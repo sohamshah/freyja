@@ -230,6 +230,9 @@ export interface MessagePart {
    *  buffer AND a quit/rebuild/reopen — the message stream is what gets
    *  persisted and reconstructed, so the durable copy lives here. */
   systemSummaryText?: string
+  /** For `systemSubtype === 'mcp_result' | 'mcp_error'`: the /mcp
+   *  subcommand (status, tools, catalog, …) that produced this block. */
+  mcpAction?: string
 }
 
 export interface MessageAttachmentRef {
@@ -403,6 +406,74 @@ export type VoiceConfig = {
   spotifySearch: boolean
 }
 
+// --- MCP v2 management contract (renderer <-> bridge) ---
+
+export type McpCommandAction =
+  | 'status'
+  | 'enable'
+  | 'disable'
+  | 'reload'
+  | 'login'
+  | 'logout'
+  | 'reauth'
+  | 'add'
+  | 'remove'
+  | 'test'
+  | 'tools'
+  | 'catalog'
+  | 'call'
+  | 'approve'
+
+/** One row of `mcp_status.servers` / `mcp_command_result.servers`. The
+ *  bridge sends snake_case keys inside rows today (tool_count,
+ *  last_error, …) while the contract is camelCase — readers must accept
+ *  both, hence the index signature. */
+export interface McpServerRow {
+  server: string
+  state: string
+  enabled?: boolean
+  transport?: string
+  transportInUse?: string
+  toolCount?: number
+  reason?: string
+  needsAuth?: boolean
+  tokenExpiresAt?: number | string | null
+  quarantined?: number
+  lastError?: string
+  restartCount?: number
+  lastLatencyMs?: number | null
+  schemaChars?: number
+  since?: number | null
+  [key: string]: unknown
+}
+
+/** JSON-Schema-ish object the bridge forwards from an MCP server's
+ *  `elicitation/create` request. Only the flat-object subset is rendered
+ *  (string / number / integer / boolean / enum properties). */
+export interface McpElicitationSchema {
+  type?: string
+  title?: string
+  description?: string
+  properties?: Record<string, McpElicitationProperty>
+  required?: string[]
+  [key: string]: unknown
+}
+
+export interface McpElicitationProperty {
+  type?: string | string[]
+  title?: string
+  description?: string
+  enum?: Array<string | number>
+  enumNames?: string[]
+  default?: unknown
+  format?: string
+  minimum?: number
+  maximum?: number
+  minLength?: number
+  maxLength?: number
+  [key: string]: unknown
+}
+
 // --- Commands sent from renderer to main (and by main to the bridge) ---
 
 export type BridgeCommand =
@@ -441,6 +512,31 @@ export type BridgeCommand =
   | { type: 'list_skills'; sessionId?: string }
   | { type: 'list_subagents'; sessionId?: string }
   | { type: 'list_tools'; sessionId?: string }
+  | {
+      type: 'mcp_command'
+      action: McpCommandAction
+      server?: string
+      /** Remaining free tokens after `<action> [server]` — e.g. for
+       *  `add <url> --name x --enable`, `catalog search <query…>`,
+       *  `reauth <server> [scopes…]`. */
+      args?: string[]
+      tool?: string
+      arguments?: Record<string, unknown>
+      requestId?: string
+    }
+  | {
+      type: 'mcp_elicitation_response'
+      requestId: string
+      action: 'accept' | 'decline' | 'cancel'
+      content?: Record<string, unknown>
+    }
+  | {
+      type: 'plugin_command'
+      action: 'list' | 'install' | 'remove'
+      source?: string
+      name?: string
+      requestId?: string
+    }
   | {
       type: 'new_session'
       sessionId?: string
@@ -753,6 +849,73 @@ export type BridgeEvent =
     } & SessionId)
   | ({ type: 'file_change_set'; changeSet: FileChangeSet } & SessionId)
   | { type: 'tool_catalog_entry'; tool: ToolCatalogEntry }
+  | {
+      type: 'mcp_status'
+      /** v2 contract: full snapshot, one row per configured server. */
+      servers?: McpServerRow[]
+      /** v1 (still emitted by the bridge on every state transition): a
+       *  single flat row. Readers treat a bare `server` as a one-row
+       *  upsert. Keys may be snake_case or camelCase. */
+      server?: string
+      transport?: string
+      state?: string
+      reason?: string
+      since?: number
+      tool_count?: number
+      restart_count?: number
+      last_latency_ms?: number | null
+      enabled?: boolean
+      schema_chars?: number
+      [key: string]: unknown
+    }
+  | {
+      type: 'mcp_command_result'
+      ok: boolean
+      action?: string
+      message?: string
+      servers?: Array<Record<string, unknown>>
+      /** Tabular payload for `tools` / `catalog` / `test` (row shape is
+       *  action-specific; readers must be lenient). */
+      rows?: Array<Record<string, unknown>>
+      /** Free-form structured payload (e.g. a test report). */
+      data?: unknown
+      requestId?: string
+    }
+  | {
+      type: 'mcp_oauth_url'
+      server: string
+      url: string
+      redirectUri?: string
+      expiresInS?: number
+      /** True when the bridge already launched the system browser. */
+      opened?: boolean
+    }
+  | {
+      type: 'mcp_oauth_result'
+      server: string
+      ok: boolean
+      error?: string
+      expiresAt?: number | string | null
+      scopes?: string[]
+    }
+  | {
+      type: 'mcp_elicitation'
+      requestId: string
+      server: string
+      message: string
+      mode: 'form' | 'url'
+      requestedSchema?: McpElicitationSchema
+      url?: string
+      timeoutS?: number
+    }
+  | {
+      type: 'plugin_command_result'
+      ok: boolean
+      action?: string
+      message?: string
+      plugins?: Array<Record<string, unknown>>
+      requestId?: string
+    }
   | ({
       type: 'system_event'
       subtype: string

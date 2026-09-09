@@ -1,0 +1,29 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Schema follows hermes-agent's optional-mcps manifest.yaml (Nous Research,
+# MIT) with Freyja additions: homepage, license, tags, verified.
+manifest_version: 1
+
+name: railway
+description: Railway projects, services, deployments and logs via the hosted MCP.
+homepage: https://docs.railway.com/reference/mcp-server
+license: proprietary
+verified: 2026-09-03
+tags: [hosting, deploy, infra, remote, oauth]
+
+# Verified live: 401 + resource_metadata=
+# https://mcp.railway.com/.well-known/oauth-protected-resource/mcp
+transport:
+  type: http
+  url: https://mcp.railway.com/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords: [railway]
+  hosts: [railway.com, railway.app]
+
+post_install: |
+  On first connection Freyja opens a browser to authorize with Railway
+  (or run `/mcp login railway`). Approve access, then `/mcp enable railway`
+  (or `/mcp reload` if already enabled) so the tools load.

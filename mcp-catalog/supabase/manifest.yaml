@@ -1,0 +1,32 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Adapted from hermes-agent optional-mcps/supabase/manifest.yaml
+# (Copyright (c) 2025 Nous Research, MIT License). URL/pins re-verified for
+# Freyja on the `verified` date below.
+manifest_version: 1
+
+name: supabase
+description: Database, auth, and storage from your Supabase projects.
+homepage: https://supabase.com/docs/guides/ai-tools/mcp
+license: proprietary
+verified: 2026-09-03
+tags: [database, postgres, backend, remote, oauth]
+
+# Official hosted remote MCP, native OAuth 2.1 + DCR. Verified live: 401 +
+# resource_metadata=https://mcp.supabase.com/.well-known/oauth-protected-resource/mcp
+transport:
+  type: http
+  url: https://mcp.supabase.com/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords: [supabase]
+  hosts: [supabase.com, supabase.co]
+
+post_install: |
+  On first connection Freyja opens a browser to authorize with Supabase
+  (or run `/mcp login supabase`). Approve access, then `/mcp enable supabase`.
+
+  Scope it down: append `?read_only=true&project_ref=<ref>` to the url in
+  mcp.json to pin the server to one project in read-only mode.

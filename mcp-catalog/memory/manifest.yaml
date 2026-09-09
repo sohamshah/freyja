@@ -1,0 +1,35 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Schema follows hermes-agent's optional-mcps manifest.yaml (Nous Research,
+# MIT) with Freyja additions: homepage, license, tags, verified.
+manifest_version: 1
+
+name: memory
+description: Knowledge-graph memory (entities, relations, observations) persisted to a local file.
+homepage: https://github.com/modelcontextprotocol/servers/tree/main/src/memory
+license: MIT
+verified: 2026-09-03
+tags: [memory, knowledge-graph, local, reference-server]
+
+# @modelcontextprotocol/server-memory 2026.7.4 published 2026-07-04
+# (registry.npmjs.org, verified 2026-09-03).
+transport:
+  type: stdio
+  command: npx
+  args: ["-y", "@modelcontextprotocol/server-memory@2026.7.4"]
+  package: "@modelcontextprotocol/server-memory"
+  version: "2026.7.4"
+
+auth:
+  type: none
+  env:
+    - name: MEMORY_FILE_PATH
+      description: Absolute path of the JSONL memory file (defaults to the package dir when unset).
+      required: false
+      secret: false
+
+suggest:
+  keywords: [memory graph]
+
+post_install: |
+  Optional: set MEMORY_FILE_PATH=/absolute/path/memory.jsonl in ~/.freyja/.env
+  so the graph survives npx cache clears. Then `/mcp enable memory`.

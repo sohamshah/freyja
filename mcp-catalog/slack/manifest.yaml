@@ -1,0 +1,37 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Schema follows hermes-agent's optional-mcps manifest.yaml (Nous Research,
+# MIT) with Freyja additions: homepage, license, tags, verified.
+manifest_version: 1
+
+name: slack
+description: >-
+  Slack channels, messages, search, canvases and users via Slack's official
+  hosted remote MCP (OAuth, per-user scopes).
+homepage: https://docs.slack.dev/ai/mcp-server/
+license: proprietary
+verified: 2026-09-03
+tags: [chat, collaboration, remote, oauth]
+
+# Official vendor-hosted remote MCP. Verified live: POST initialize -> 401 with
+# WWW-Authenticate: Bearer resource_metadata="https://mcp.slack.com/.well-known/oauth-protected-resource"
+# (RFC 9728). authorization_servers = https://mcp.slack.com; scopes_supported
+# include channels:history/read/write, chat:write, search:read.*, users:read,
+# canvases:*, lists:*, reactions:*, files:*.
+transport:
+  type: http
+  url: https://mcp.slack.com/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords: [slack, channel, dm, thread]
+  hosts: [slack.com]
+
+post_install: |
+  On first connection Freyja opens a browser to authorize with Slack
+  (or run `/mcp login slack`). Pick the workspace and approve the scopes,
+  then `/mcp enable slack` so the tools load.
+
+  Prefer a user token instead of OAuth (headless / CI)? Install the
+  `slack-stdio` entry, which runs a local server against ${SLACK_MCP_XOXP_TOKEN}.

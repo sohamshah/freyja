@@ -179,10 +179,14 @@ class ToolRegistry:
         logger.debug("Registered tool: %s (tier=%s)", name, resolved_tier.value)
 
     def unregister(self, name: str) -> bool:
-        """Unregister a tool by name. Returns True if it existed."""
-        if name in self._tools:
-            del self._tools[name]
-            self._catalog.pop(name, None)
+        """Unregister a tool by name. Returns True if anything was removed.
+
+        Removes both the tool object and its catalog entry (design doc 1.6).
+        Safe to call for never-registered names.
+        """
+        removed_tool = self._tools.pop(name, None) is not None
+        removed_entry = self._catalog.pop(name, None) is not None
+        if removed_tool or removed_entry:
             logger.debug(f"Unregistered tool: {name}")
             return True
         return False

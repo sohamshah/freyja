@@ -1,0 +1,27 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Adapted from hermes-agent optional-mcps/deepwiki/manifest.yaml
+# (Copyright (c) 2025 Nous Research, MIT License). URL/pins re-verified for
+# Freyja on the `verified` date below.
+manifest_version: 1
+
+name: deepwiki
+description: Ask questions about any public GitHub repo (Devin's DeepWiki).
+homepage: https://docs.devin.ai/work-with-devin/deepwiki-mcp
+license: proprietary
+verified: 2026-09-03
+tags: [docs, code, research, remote, no-auth]
+
+# Verified live: anonymous POST initialize -> 200, serverInfo DeepWiki 2.14.3.
+transport:
+  type: http
+  url: https://mcp.deepwiki.com/mcp
+
+auth:
+  type: none
+
+suggest:
+  keywords: [deepwiki, repo wiki]
+  hosts: [deepwiki.com]
+
+post_install: |
+  No account needed — `/mcp enable deepwiki` and the tools are live.

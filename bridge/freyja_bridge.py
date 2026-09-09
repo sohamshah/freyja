@@ -45,6 +45,10 @@ _BRIDGE_DIR = Path(__file__).resolve().parent
 _DESKTOP_DIR = _BRIDGE_DIR.parent
 if str(_DESKTOP_DIR) not in sys.path:
     sys.path.insert(0, str(_DESKTOP_DIR))
+# Drop the auto-added script dir: with bridge/ on sys.path, its packages
+# shadow same-named pip modules (bridge/mcp hides the `mcp` SDK). Nothing
+# imports bridge-local modules bare; everything goes through `bridge.*`.
+sys.path[:] = [p for p in sys.path if p and Path(p).resolve() != _BRIDGE_DIR]
 
 from engine.compaction import SummaryCompaction
 from bridge.artifact_store import (
@@ -1486,6 +1490,36 @@ async def _main() -> None:
     )
 
     state = _BridgeState(workspace=workspace, default_model=default_model)
+    # External MCP servers (~/.freyja/mcp.json). A missing/empty catalog is
+    # a silent no-op: no manager task, no behavior change.
+    try:
+        from bridge.mcp import McpManager
+        from bridge.mcp.commands import manager_hooks as _mcp_manager_hooks
+
+        def _emit_mcp_status(event: dict[str, Any]) -> None:
+            # mcp_status transitions -> stdout event stream (design 4.4).
+            emit({"type": "mcp_status", **event})
+
+        # v2 (card_019): auth_factory builds the OAuth httpx auth NON-
+        # interactively (missing token -> needs-auth, never a surprise
+        # browser; /mcp login is the only interactive path) and the
+        # approval_handler is the ElicitationBridge that emits
+        # mcp_elicitation and is settled by mcp_elicitation_response.
+        _mcp_manager = McpManager.load(
+            Path.home() / ".freyja" / "mcp.json",
+            run_dir=Path.home() / ".freyja" / "mcp-run",
+            status_listener=_emit_mcp_status,
+            **_mcp_manager_hooks(emit),
+        )
+        # Always kept on state so mcp_command status/reload works even
+        # with an empty catalog; the connect task only runs when there
+        # is at least one server (missing mcp.json => zero behavior
+        # change, exactly as v0).
+        state.mcp_manager = _mcp_manager
+        if _mcp_manager.server_count > 0:
+            asyncio.create_task(_mcp_manager.start())
+    except Exception as exc:  # noqa: BLE001
+        log("warning", f"mcp manager init failed: {exc}")
     await state.ensure_session(boot_session_id)
     # Boot the scheduler service. Loads persisted jobs from disk,
     # recomputes next_fire_at for everyone, starts the run loop.
@@ -4260,6 +4294,8 @@ class _BridgeSession:
 
         registry = build_desktop_registry(
             workspace=Path(self.workspace),
+            # Process-level MCP manager (None when no mcp.json).
+            mcp_manager=getattr(self.state, "mcp_manager", None),
             subagent_registry=sub_registry,
             subagent_provider_factory=_provider_factory,
             subagent_model=self.model_id,
@@ -10957,6 +10993,10 @@ class _BridgeState:
         # scheduler boots; None in contexts that never speak (tests,
         # headless gateway) — voice_* handlers guard on it.
         self.voice: Any = None
+        # External MCP server manager (bridge/mcp). Set by _main() when
+        # ~/.freyja/mcp.json exists; None means zero MCP servers and the
+        # registry build path behaves exactly as before.
+        self.mcp_manager: Any = None
 
     async def ensure_session(
         self,
@@ -11833,6 +11873,113 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                     "details": {"fired": fired, "kind": ctype},
                 }
             )
+        return
+
+    if ctype == "mcp_command":
+        # MCP management IPC (design 4.4/4.5, v2 card_019): status/
+        # enable/disable/reload/login/logout/reauth/add/remove/test/
+        # tools/catalog/call. Shared handler with the gateway's /mcp
+        # command lives in bridge/mcp/commands.py; replies go out as a
+        # single mcp_command_result event (requestId passthrough).
+        # Actions that may block on a network round-trip or a browser
+        # (login can wait 300s) run as a background task so the stdin
+        # loop keeps draining (permission/elicitation responses must
+        # still arrive while they run).
+        from bridge.mcp.commands import (
+            BACKGROUND_ACTIONS,
+            handle_mcp_command,
+            manager_hooks,
+            spawn_background,
+        )
+
+        mcp_manager = getattr(state, "mcp_manager", None)
+        if mcp_manager is None:
+            # mcp.json may have appeared after boot; build lazily.
+            try:
+                from bridge.mcp import McpManager
+                mcp_manager = McpManager.load(
+                    Path.home() / ".freyja" / "mcp.json",
+                    run_dir=Path.home() / ".freyja" / "mcp-run",
+                    **manager_hooks(emit),
+                )
+                state.mcp_manager = mcp_manager
+            except Exception as exc:  # noqa: BLE001
+                emit({
+                    "type": "mcp_command_result",
+                    "ok": False,
+                    "action": cmd.get("action"),
+                    "message": f"MCP unavailable: {exc}",
+                    "requestId": cmd.get("requestId"),
+                })
+                return
+
+        async def _run_mcp_command() -> None:
+            try:
+                result = await handle_mcp_command(
+                    mcp_manager, cmd, surface="desktop", emit=emit,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log("warn", f"mcp_command {cmd.get('action')!r} failed: {exc}")
+                result = {
+                    "ok": False,
+                    "action": cmd.get("action"),
+                    "message": str(exc) or type(exc).__name__,
+                }
+            result.setdefault("requestId", cmd.get("requestId"))
+            emit({"type": "mcp_command_result", **result})
+
+        if str(cmd.get("action") or "").lower() in BACKGROUND_ACTIONS:
+            spawn_background(_run_mcp_command(), name=f"mcp-{cmd.get('action')}")
+        else:
+            await _run_mcp_command()
+        return
+
+    if ctype == "mcp_elicitation_response":
+        # UI answer to an mcp_elicitation event (card_019). Matched by
+        # requestId inside the ElicitationBridge wired as the manager's
+        # approval_handler; unknown/stale ids are ignored (the request
+        # already timed out -> cancel).
+        from bridge.mcp.commands import resolve_elicitation_response
+
+        if not resolve_elicitation_response(getattr(state, "mcp_manager", None), cmd):
+            log(
+                "info",
+                f"mcp_elicitation_response for unknown request "
+                f"{cmd.get('requestId')!r} ignored",
+            )
+        return
+
+    if ctype == "plugin_command":
+        # Plugin management IPC (design section 5): list/install/remove.
+        # Shared handler with the gateway's /plugin command lives in
+        # bridge/plugins/commands.py; replies go out as a single
+        # plugin_command_result event (requestId passthrough). After
+        # install/remove the handler refreshes every live session's
+        # SkillStore and reloads the MCP manager when the plugin
+        # carried servers (they land disabled in mcp.json).
+        from bridge.plugins.commands import handle_plugin_command
+
+        skill_stores = [
+            sess.skill_store
+            for sess in state.sessions.values()
+            if getattr(sess, "skill_store", None) is not None
+        ]
+        try:
+            result = await handle_plugin_command(
+                cmd,
+                plugins_root=getattr(state, "plugins_root", None),
+                skill_stores=skill_stores,
+                mcp_manager=getattr(state, "mcp_manager", None),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"plugin_command {cmd.get('action')!r} failed: {exc}")
+            result = {
+                "ok": False,
+                "action": cmd.get("action"),
+                "message": str(exc) or type(exc).__name__,
+            }
+        result.setdefault("requestId", cmd.get("requestId"))
+        emit({"type": "plugin_command_result", **result})
         return
 
     if ctype == "diagnose":

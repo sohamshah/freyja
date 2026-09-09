@@ -483,6 +483,21 @@ def gateway_source_block(source: MessageSource) -> str:
             "constraints that don't exist. The desktop app and the Slack gateway are "
             "the same agent with the same tools — only the chat surface differs."
         )
+    # Slack sessions also get a capability card: which Slack tokens exist,
+    # who each acts as, and read-vs-write guidance. Without it the agent
+    # burns a turn grepping ~/.freyja/.env + mcp.json to discover its own
+    # access and then mis-describes which endpoints work. Never allowed to
+    # break prompt construction — any failure just omits the card.
+    from bridge.gateway.platforms.base import Platform
+    if source.platform == Platform.SLACK:
+        try:
+            from bridge.gateway.slack_capabilities import slack_capability_block
+            card = slack_capability_block()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("gateway: slack capability block failed (%s)", type(exc).__name__)
+            card = ""
+        if card:
+            lines.append(card)
     return "\n".join(lines)
 
 

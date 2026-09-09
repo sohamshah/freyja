@@ -1,0 +1,35 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Adapted from hermes-agent optional-mcps/hugging_face/manifest.yaml
+# (Copyright (c) 2025 Nous Research, MIT License). URL/pins re-verified for
+# Freyja on the `verified` date below.
+manifest_version: 1
+
+name: hugging-face
+description: Models, datasets, Spaces, and papers from the Hugging Face Hub.
+homepage: https://huggingface.co/docs/hub/agents-mcp
+license: proprietary
+verified: 2026-09-03
+tags: [ml, models, datasets, remote, no-auth]
+
+# Verified live: anonymous POST initialize -> 200, serverInfo huggingface.co/mcp
+# 0.4.15 — public Hub search works without a token. (hermes marks this oauth;
+# the anonymous surface is enough for search, so Freyja ships it credential-free
+# and documents the token upgrade below.)
+transport:
+  type: http
+  url: https://huggingface.co/mcp
+
+auth:
+  type: none
+
+suggest:
+  keywords: [hugging face, huggingface]
+  hosts: [huggingface.co, hf.co]
+
+post_install: |
+  No account needed for public Hub search — `/mcp enable hugging-face`.
+
+  For private repos / Spaces tools, create a token at
+  https://huggingface.co/settings/tokens, set HF_TOKEN in ~/.freyja/.env
+  and add to the mcp.json entry:
+    "headers": {"Authorization": "Bearer ${HF_TOKEN}"}

@@ -1,0 +1,31 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Schema follows hermes-agent's optional-mcps manifest.yaml (Nous Research,
+# MIT) with Freyja additions: homepage, license, tags, verified.
+manifest_version: 1
+
+name: playwright
+description: Browser automation via Playwright — navigate, click, fill, screenshot, extract.
+homepage: https://github.com/microsoft/playwright-mcp
+license: Apache-2.0
+verified: 2026-09-03
+tags: [browser, automation, testing, local, no-auth]
+
+# @playwright/mcp 0.0.79 published 2026-08-06 (registry.npmjs.org, verified
+# 2026-09-03; 0.0.80 is 2026-09-01 and too fresh for the 2-week pin rule).
+transport:
+  type: stdio
+  command: npx
+  args: ["-y", "@playwright/mcp@0.0.79"]
+  package: "@playwright/mcp"
+  version: "0.0.79"
+
+auth:
+  type: none
+
+suggest:
+  keywords: [playwright, browser, screenshot]
+
+post_install: |
+  Requires Node.js 18+. First run downloads Playwright's Chromium build.
+  `/mcp enable playwright` to load the tools. Add "--headless" or
+  "--browser", "firefox" to args in mcp.json to change the default browser.

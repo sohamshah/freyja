@@ -1,0 +1,26 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Schema follows hermes-agent's optional-mcps manifest.yaml (Nous Research,
+# MIT) with Freyja additions: homepage, license, tags, verified.
+manifest_version: 1
+
+name: cloudflare-docs
+description: Search Cloudflare developer documentation (no account needed).
+homepage: https://developers.cloudflare.com/agents/model-context-protocol/mcp-servers-for-cloudflare/
+license: Apache-2.0
+verified: 2026-09-03
+tags: [docs, cloudflare, remote, no-auth]
+
+# Verified live: anonymous POST initialize -> 200, serverInfo docs-ai-search 0.4.13.
+transport:
+  type: http
+  url: https://docs.mcp.cloudflare.com/mcp
+
+auth:
+  type: none
+
+suggest:
+  keywords: [cloudflare docs, workers docs]
+  hosts: [developers.cloudflare.com]
+
+post_install: |
+  No account needed — `/mcp enable cloudflare-docs` and the tools are live.

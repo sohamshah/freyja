@@ -1,0 +1,49 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Adapted from hermes-agent optional-mcps/figma/manifest.yaml
+# (Copyright (c) 2025 Nous Research, MIT License). URL/pins re-verified for
+# Freyja on the `verified` date below.
+manifest_version: 1
+
+name: figma
+description: >-
+  Official Figma remote MCP — design context, Code Connect, and
+  write-to-canvas (OAuth).
+homepage: https://developers.figma.com/docs/figma-mcp-server/remote-server-installation/
+license: proprietary
+verified: 2026-09-03
+tags: [design, remote, oauth]
+
+# Verified live: 401 + resource_metadata=https://mcp.figma.com/.well-known/oauth-protected-resource,
+# scopes_supported=["mcp:connect"], authorization_servers=["https://api.figma.com"].
+#
+# Figma's DCR endpoint allowlists *exact* client_name strings ("Claude Code"
+# and "Codex" succeed; arbitrary names 403). The oauth hints below are copied
+# into the mcp.json `oauth` block so Freyja's OAuth layer registers under an
+# accepted name. Override oauth.client_name in mcp.json if you prefer Codex.
+transport:
+  type: http
+  url: https://mcp.figma.com/mcp
+
+auth:
+  type: oauth
+  oauth:
+    client_name: "Claude Code"
+    scope: "mcp:connect"
+
+suggest:
+  keywords: [figma, mockup, wireframe]
+  hosts: [figma.com]
+
+post_install: |
+  On first connection Freyja opens a browser to authorize with Figma
+  (or run `/mcp login figma`). Approve access, then `/mcp enable figma`.
+
+  Figma gates OAuth DCR by exact client_name; this entry registers as
+  "Claude Code" so registration is not 403'd — no client_id to paste.
+
+  Prompt with a frame/file link:
+    implement this design: https://www.figma.com/design/<fileKey>/...
+
+  Desktop alternative (no OAuth, local only): enable Dev Mode MCP in the
+  Figma desktop app (Shift+D → Inspect → Enable desktop MCP server) and
+  point url at http://127.0.0.1:3845/mcp instead.

@@ -1,0 +1,29 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Schema follows hermes-agent's optional-mcps manifest.yaml (Nous Research,
+# MIT) with Freyja additions: homepage, license, tags, verified.
+manifest_version: 1
+
+name: fetch
+description: Fetch a URL and convert the page to markdown for the model.
+homepage: https://github.com/modelcontextprotocol/servers/tree/main/src/fetch
+license: MIT
+verified: 2026-09-03
+tags: [web, http, local, reference-server]
+
+# mcp-server-fetch 2026.8.18 published 2026-08-18 (pypi.org, verified 2026-09-03).
+transport:
+  type: stdio
+  command: uvx
+  args: ["mcp-server-fetch==2026.8.18"]
+  package: mcp-server-fetch
+  version: "2026.8.18"
+
+auth:
+  type: none
+
+suggest:
+  keywords: [fetch url, scrape]
+
+post_install: |
+  Requires uv (https://docs.astral.sh/uv/). `/mcp enable fetch`.
+  Add "--ignore-robots-txt" to args in mcp.json only if you accept that risk.

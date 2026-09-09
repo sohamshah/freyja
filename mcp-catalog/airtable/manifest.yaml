@@ -1,0 +1,29 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Adapted from hermes-agent optional-mcps/airtable/manifest.yaml
+# (Copyright (c) 2025 Nous Research, MIT License). URL/pins re-verified for
+# Freyja on the `verified` date below.
+manifest_version: 1
+
+name: airtable
+description: Bases, tables, and records from your Airtable workspace.
+homepage: https://support.airtable.com/articles/9897799762-using-the-airtable-mcp-server
+license: proprietary
+verified: 2026-09-03
+tags: [database, spreadsheet, remote, oauth]
+
+# Verified live: 401 + resource_metadata=https://mcp.airtable.com/.well-known/oauth-protected-resource
+transport:
+  type: http
+  url: https://mcp.airtable.com/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords: [airtable]
+  hosts: [airtable.com]
+
+post_install: |
+  On first connection Freyja opens a browser to authorize with Airtable
+  (or run `/mcp login airtable`). Approve access, then `/mcp enable airtable`
+  (or `/mcp reload` if already enabled) so the tools load.

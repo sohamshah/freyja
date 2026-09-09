@@ -1,0 +1,29 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Schema follows hermes-agent's optional-mcps manifest.yaml (Nous Research,
+# MIT) with Freyja additions: homepage, license, tags, verified.
+manifest_version: 1
+
+name: monday
+description: monday.com boards, items and updates via the hosted MCP.
+homepage: https://developer.monday.com/apps/docs/mondaycom-mcp-integration
+license: proprietary
+verified: 2026-09-03
+tags: [project-management, tasks, remote, oauth]
+
+# Verified live: 401 + resource_metadata=
+# https://mcp.monday.com/.well-known/oauth-protected-resource/mcp
+transport:
+  type: http
+  url: https://mcp.monday.com/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords: [monday.com, monday board]
+  hosts: [monday.com]
+
+post_install: |
+  On first connection Freyja opens a browser to authorize with monday.com
+  (or run `/mcp login monday`). Approve access, then `/mcp enable monday`
+  (or `/mcp reload` if already enabled) so the tools load.

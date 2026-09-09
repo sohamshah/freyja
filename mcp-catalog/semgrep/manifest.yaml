@@ -1,0 +1,35 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Adapted from hermes-agent optional-mcps/semgrep/manifest.yaml
+# (Copyright (c) 2025 Nous Research, MIT License). URL/pins re-verified for
+# Freyja on the `verified` date below.
+manifest_version: 1
+
+name: semgrep
+description: Scan code for security vulnerabilities with Semgrep.
+homepage: https://semgrep.dev/docs/mcp
+license: proprietary
+verified: 2026-09-03
+tags: [security, static-analysis, remote, oauth]
+
+# Verified live: 401 + resource_metadata=https://mcp.semgrep.ai/.well-known/oauth-protected-resource
+transport:
+  type: http
+  url: https://mcp.semgrep.ai/mcp
+
+auth:
+  type: oauth
+
+tools:
+  default_excluded:
+    - security_check
+    - supported_languages
+    - semgrep_rule_schema
+
+suggest:
+  keywords: [semgrep, static analysis]
+  hosts: [semgrep.dev]
+
+post_install: |
+  On first connection Freyja opens a browser to authorize with Semgrep
+  (or run `/mcp login semgrep`). Approve access, then `/mcp enable semgrep`
+  (or `/mcp reload` if already enabled) so the tools load.

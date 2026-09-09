@@ -1,0 +1,30 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Adapted from hermes-agent optional-mcps/notion/manifest.yaml
+# (Copyright (c) 2025 Nous Research, MIT License). URL/pins re-verified for
+# Freyja on the `verified` date below.
+manifest_version: 1
+
+name: notion
+description: Pages and databases from your Notion workspace.
+homepage: https://developers.notion.com/docs/mcp
+license: proprietary
+verified: 2026-09-03
+tags: [docs, wiki, notes, remote, oauth]
+
+# Official hosted remote MCP, native OAuth 2.1 + DCR. Verified live: 401 +
+# resource_metadata=https://mcp.notion.com/.well-known/oauth-protected-resource/mcp
+transport:
+  type: http
+  url: https://mcp.notion.com/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords: [notion]
+  hosts: [notion.so, notion.site]
+
+post_install: |
+  On first connection Freyja opens a browser to authorize with Notion
+  (or run `/mcp login notion`). Approve access, then `/mcp enable notion`
+  (or `/mcp reload` if already enabled) so the tools load.

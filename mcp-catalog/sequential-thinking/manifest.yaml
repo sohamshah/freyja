@@ -1,0 +1,28 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Schema follows hermes-agent's optional-mcps manifest.yaml (Nous Research,
+# MIT) with Freyja additions: homepage, license, tags, verified.
+manifest_version: 1
+
+name: sequential-thinking
+description: Structured step-by-step reasoning scratchpad tool.
+homepage: https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking
+license: MIT
+verified: 2026-09-03
+tags: [reasoning, local, reference-server]
+
+# @modelcontextprotocol/server-sequential-thinking 2026.7.4 published
+# 2026-07-04 (registry.npmjs.org, verified 2026-09-03).
+transport:
+  type: stdio
+  command: npx
+  args: ["-y", "@modelcontextprotocol/server-sequential-thinking@2026.7.4"]
+  package: "@modelcontextprotocol/server-sequential-thinking"
+  version: "2026.7.4"
+  env:
+    DISABLE_THOUGHT_LOGGING: "true"
+
+auth:
+  type: none
+
+post_install: |
+  `/mcp enable sequential-thinking`. No configuration required.

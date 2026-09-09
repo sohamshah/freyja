@@ -1,0 +1,29 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Schema follows hermes-agent's optional-mcps manifest.yaml (Nous Research,
+# MIT) with Freyja additions: homepage, license, tags, verified.
+manifest_version: 1
+
+name: netlify
+description: Netlify sites, deploys, env vars and extensions via the hosted MCP.
+homepage: https://docs.netlify.com/build/build-with-ai/netlify-mcp-server/
+license: proprietary
+verified: 2026-09-03
+tags: [hosting, deploy, remote, oauth]
+
+# Verified live: 401 + resource_metadata=
+# https://netlify-mcp.netlify.app/.well-known/oauth-protected-resource/mcp
+transport:
+  type: http
+  url: https://netlify-mcp.netlify.app/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords: [netlify]
+  hosts: [netlify.com, netlify.app]
+
+post_install: |
+  On first connection Freyja opens a browser to authorize with Netlify
+  (or run `/mcp login netlify`). Approve access, then `/mcp enable netlify`
+  (or `/mcp reload` if already enabled) so the tools load.

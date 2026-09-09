@@ -130,6 +130,11 @@ def build_desktop_registry(
     talk_caller_label: str = "",
     talk_caller_role: str = "agent",
     talk_parent_session_id: str | None = None,
+    # bridge.mcp.McpManager (or None). When present, proxy tools for
+    # currently-active MCP servers join the registration loop below and
+    # the manager keeps a weakref to the registry so later server
+    # connects/disconnects register()/unregister() live.
+    mcp_manager: Any | None = None,
 ) -> ToolRegistry:
     """Construct a ToolRegistry containing all desktop tools.
 
@@ -489,6 +494,12 @@ def build_desktop_registry(
             )
         )
 
+    if mcp_manager is not None:
+        try:
+            tools.extend(mcp_manager.proxy_tools())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mcp proxy tools unavailable: %s", exc)
+
     registered: list[str] = []
     for tool in tools:
         name = tool.definition.name
@@ -505,6 +516,12 @@ def build_desktop_registry(
         len(registered),
         ", ".join(sorted(registered)),
     )
+    if mcp_manager is not None:
+        try:
+            mcp_manager.attach(registry)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mcp manager attach failed: %s", exc)
+
     # Attach the sub-agent registry for callers that need it
     registry.subagent_registry = sub_registry  # type: ignore[attr-defined]
     return registry

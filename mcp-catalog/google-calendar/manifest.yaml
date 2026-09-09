@@ -1,0 +1,51 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Schema follows hermes-agent's optional-mcps manifest.yaml (Nous Research,
+# MIT) with Freyja additions: homepage, license, tags, verified.
+manifest_version: 1
+
+name: google-calendar
+description: Google Calendar events — list, search, create, update, free/busy — via your own OAuth client.
+homepage: https://github.com/nspady/google-calendar-mcp
+license: MIT
+verified: 2026-09-03
+tags: [calendar, google, productivity, local, env]
+
+# @cocal/google-calendar-mcp 2.6.2 published 2026-06-01 (registry.npmjs.org,
+# verified 2026-09-03). Uses Google's installed-app OAuth flow with a client
+# credentials JSON you create in Google Cloud Console; tokens are cached by
+# the server, not by Freyja.
+transport:
+  type: stdio
+  command: npx
+  args: ["-y", "@cocal/google-calendar-mcp@2.6.2"]
+  package: "@cocal/google-calendar-mcp"
+  version: "2.6.2"
+
+# auth.type none: the server does Google's own installed-app OAuth itself
+# (browser on first tool call, refresh token cached on disk). Freyja only
+# needs to know WHERE the client credentials file lives.
+auth:
+  type: none
+  provider: google
+  scopes: ["https://www.googleapis.com/auth/calendar"]
+  env:
+    - name: GOOGLE_OAUTH_CREDENTIALS
+      description: >-
+        Absolute path to the OAuth client credentials JSON (Desktop app type)
+        downloaded from Google Cloud Console.
+      required: true
+      secret: false
+    - name: GOOGLE_CALENDAR_MCP_TOKEN_PATH
+      description: Optional absolute path for the cached refresh token file.
+      required: false
+      secret: false
+
+suggest:
+  keywords: [google calendar, gcal]
+  hosts: [calendar.google.com]
+
+post_install: |
+  1. Google Cloud Console → enable the Calendar API → create an OAuth client
+     (Desktop app) → download the JSON.
+  2. Set GOOGLE_OAUTH_CREDENTIALS=/abs/path/gcp-oauth.keys.json in ~/.freyja/.env.
+  3. `/mcp enable google-calendar`; the first tool call opens a browser to grant access.

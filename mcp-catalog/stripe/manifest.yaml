@@ -1,0 +1,30 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Adapted from hermes-agent optional-mcps/stripe/manifest.yaml
+# (Copyright (c) 2025 Nous Research, MIT License). URL/pins re-verified for
+# Freyja on the `verified` date below.
+manifest_version: 1
+
+name: stripe
+description: Payments, customers, and invoices via Stripe's hosted MCP.
+homepage: https://docs.stripe.com/mcp
+license: proprietary
+verified: 2026-09-03
+tags: [payments, billing, remote, oauth]
+
+# Official hosted remote MCP, native OAuth 2.1 + DCR. Verified live: 401 +
+# resource_metadata=https://mcp.stripe.com/.well-known/oauth-protected-resource
+transport:
+  type: http
+  url: https://mcp.stripe.com
+
+auth:
+  type: oauth
+
+suggest:
+  keywords: [stripe]
+  hosts: [dashboard.stripe.com]
+
+post_install: |
+  On first connection Freyja opens a browser to authorize with Stripe
+  (or run `/mcp login stripe`). Approve access, then `/mcp enable stripe`
+  (or `/mcp reload` if already enabled) so the tools load.

@@ -1,0 +1,29 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Schema follows hermes-agent's optional-mcps manifest.yaml (Nous Research,
+# MIT) with Freyja additions: homepage, license, tags, verified.
+manifest_version: 1
+
+name: git
+description: Read, search and manipulate local git repositories (status, diff, log, commit).
+homepage: https://github.com/modelcontextprotocol/servers/tree/main/src/git
+license: MIT
+verified: 2026-09-03
+tags: [git, code, local, reference-server]
+
+# mcp-server-git 2026.8.18 published 2026-08-18 (pypi.org, verified 2026-09-03).
+transport:
+  type: stdio
+  command: uvx
+  args: ["mcp-server-git==2026.8.18"]
+  package: mcp-server-git
+  version: "2026.8.18"
+
+auth:
+  type: none
+
+suggest:
+  keywords: [git log, git diff]
+
+post_install: |
+  Requires uv. `/mcp enable git`. Tools take a repo_path argument; to pin
+  one repo add "--repository", "/abs/path" to args in mcp.json.

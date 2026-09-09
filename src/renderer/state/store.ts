@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type {
+  BridgeCommand,
   BridgeEvent,
   BridgeMode,
   CoordinationStrategy,
@@ -25,6 +26,72 @@ import {
   type FrameRef,
 } from '../lib/frameMedia'
 import { extractConversationSummary } from '../lib/conversationSummary'
+import {
+  mcpMessageIsOneLiner,
+  normalizeMcpRow,
+  parseMcpSlash,
+  upsertMcpRows,
+} from '../lib/mcp'
+import type {
+  McpCommandAction,
+  McpElicitationSchema,
+  McpServerRow,
+} from '@shared/events'
+
+/** A single `mcp_command_result`, kept by requestId so the Settings panel
+ *  can pick up replies to the requests it issued. */
+export interface McpCommandResultRecord {
+  requestId: string
+  ok: boolean
+  action?: string
+  message: string
+  servers?: McpServerRow[]
+  rows?: Array<Record<string, unknown>>
+  data?: unknown
+  at: number
+}
+
+/** OAuth flow notice for one server — persists until the result lands
+ *  (then shows success/failure) or the operator dismisses it. */
+export interface McpPendingLogin {
+  server: string
+  status: 'waiting' | 'ok' | 'failed'
+  url?: string
+  redirectUri?: string
+  /** Wall-clock ms at which the authorization URL stops being valid. */
+  expiresAt?: number
+  /** Bridge already launched the system browser. */
+  opened?: boolean
+  error?: string
+  scopes?: string[]
+  tokenExpiresAt?: number | string | null
+  updatedAt: number
+}
+
+export interface McpElicitationRecord {
+  requestId: string
+  server: string
+  message: string
+  mode: 'form' | 'url'
+  requestedSchema?: McpElicitationSchema
+  url?: string
+  timeoutS: number
+  /** Wall-clock ms when the request was received (countdown anchor). */
+  receivedAt: number
+}
+
+export interface McpSliceState {
+  /** Latest snapshot rows, normalized to camelCase. */
+  servers: McpServerRow[]
+  /** Replies keyed by requestId (bounded; oldest evicted). */
+  lastResults: Record<string, McpCommandResultRecord>
+  /** In-flight / just-finished OAuth flows keyed by server. */
+  pendingLogins: Record<string, McpPendingLogin>
+  /** FIFO of server-initiated elicitation prompts. Head is displayed. */
+  elicitations: McpElicitationRecord[]
+  /** Last time we received a full status snapshot (ms), 0 = never. */
+  statusAt: number
+}
 
 /** Per-computer-session live state: latest screenshot frame, planned
  *  action (for the highlight ring), and action history. */
@@ -388,10 +455,36 @@ export interface HarnessState extends SessionSlice {
   computerActive: boolean
   /** Wizard state for the permission setup flow. */
   computerWizardOpen: boolean
+  /** MCP v2 management surface (servers, request/reply matching, OAuth
+   *  notices, elicitation queue). */
+  mcp: McpSliceState
 }
 
 export interface HarnessActions {
   handleEvent(ev: BridgeEvent): void
+  /** Send an `mcp_command`. `surface: 'panel'` tags the requestId so the
+   *  reply is routed to `mcp.lastResults` only (Settings panel) instead of
+   *  being posted into the conversation. Returns the requestId. */
+  sendMcpCommand(
+    action: McpCommandAction,
+    opts?: {
+      server?: string
+      args?: string[]
+      tool?: string
+      arguments?: Record<string, unknown>
+      surface?: 'conversation' | 'panel'
+    },
+  ): string
+  /** Reply to a server-initiated elicitation and pop it from the queue. */
+  answerMcpElicitation(
+    requestId: string,
+    action: 'accept' | 'decline' | 'cancel',
+    content?: Record<string, unknown>,
+  ): Promise<void>
+  /** Remove an OAuth notice (finished or abandoned) for a server. */
+  dismissMcpLogin(server: string): void
+  /** Drop a reply the panel has consumed. */
+  clearMcpResult(requestId: string): void
   setInputDraft(v: string): void
   sendMessage(content: string): Promise<void>
   /** Operator-typed message into any agent session's inbox. Routes
@@ -1105,6 +1198,13 @@ function emptyState(): HarnessState {
     computerSessions: {},
     computerActive: false,
     computerWizardOpen: false,
+    mcp: {
+      servers: [],
+      lastResults: {},
+      pendingLogins: {},
+      elicitations: [],
+      statusAt: 0,
+    },
   }
 }
 
@@ -2015,6 +2115,227 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           ...prev,
           logs: [...prev.logs.slice(-200), { level: ev.level, message: ev.message, at: Date.now() }],
         }
+      }
+      if (ev.type === 'mcp_status') {
+        // v2: `servers` carries a full snapshot → replace. v1 (still
+        // emitted per state transition): a bare flat row → upsert. Rows
+        // may be snake_case or camelCase; normalize both.
+        if (Array.isArray(ev.servers)) {
+          const rows = (ev.servers as unknown[])
+            .filter((r): r is Record<string, unknown> => !!r && typeof r === 'object')
+            .map(normalizeMcpRow)
+          return {
+            ...prev,
+            mcp: { ...prev.mcp, servers: rows, statusAt: Date.now() },
+          }
+        }
+        if (typeof ev.server === 'string' && ev.server) {
+          const { type: _t, ...rest } = ev
+          const row = normalizeMcpRow(rest as Record<string, unknown>)
+          // Only surface states that need operator attention; boot-time
+          // connecting/active transitions would be toast noise. Toast via
+          // showToast (outside this reducer) so id/auto-clear are handled.
+          if (row.state === 'needs-auth' || row.state === 'failed') {
+            const msg = `MCP ${row.server}: ${row.state}${row.reason ? ` — ${row.reason}` : ''}`
+            queueMicrotask(() => useHarness.getState().showToast(msg, 'warn'))
+          }
+          return {
+            ...prev,
+            mcp: { ...prev.mcp, servers: upsertMcpRows(prev.mcp.servers, [row]) },
+          }
+        }
+        return prev
+      }
+      if (ev.type === 'mcp_command_result') {
+        const action = ev.action || ''
+        const rows = Array.isArray(ev.servers)
+          ? ev.servers
+              .filter((r): r is Record<string, unknown> => !!r && typeof r === 'object')
+              .map(normalizeMcpRow)
+          : undefined
+        let message = ev.message || ''
+        if (!message && rows) {
+          message = rows.length === 0
+            ? 'no MCP servers configured (~/.freyja/mcp.json)'
+            : rows
+                .map((s) => `${s.server}: ${s.state}${s.state === 'active' && s.toolCount != null ? ` (${s.toolCount} tools)` : ''}`)
+                .join('\n')
+        }
+        if (!message) message = ev.ok ? 'ok' : 'failed'
+
+        // Snapshot bookkeeping: status/reload replace the table; any other
+        // reply that carries rows (enable/disable/add/remove/test) upserts.
+        let servers = prev.mcp.servers
+        let statusAt = prev.mcp.statusAt
+        if (rows) {
+          if (action === 'status' || action === 'reload') {
+            servers = rows
+            statusAt = Date.now()
+          } else {
+            servers = upsertMcpRows(servers, rows)
+          }
+        }
+        if (action === 'remove' && ev.ok && (ev as any).server) {
+          servers = servers.filter((r) => r.server !== (ev as any).server)
+        }
+        // add/remove change the configured set; if the reply didn't carry a
+        // fresh snapshot, ask for one (panel-scoped so it stays quiet).
+        if (ev.ok && (action === 'add' || action === 'remove') && !rows) {
+          queueMicrotask(() => useHarness.getState().sendMcpCommand('status', { surface: 'panel' }))
+        }
+
+        const requestId = ev.requestId || `anon-${Date.now()}`
+        const record: McpCommandResultRecord = {
+          requestId,
+          ok: ev.ok,
+          action: ev.action,
+          message,
+          servers: rows,
+          rows: Array.isArray(ev.rows) ? ev.rows : undefined,
+          data: ev.data,
+          at: Date.now(),
+        }
+        // Bound lastResults to the 40 most recent replies.
+        const entries = Object.values(prev.mcp.lastResults)
+          .sort((a, b) => a.at - b.at)
+          .slice(-39)
+        const lastResults: Record<string, McpCommandResultRecord> = {}
+        for (const r of entries) lastResults[r.requestId] = r
+        lastResults[requestId] = record
+
+        const panelSurface = requestId.startsWith('panel-')
+        const tone = ev.ok ? 'info' as const : 'danger' as const
+        if (!panelSurface) {
+          // Conversation surface: always drop a block into the transcript
+          // (multi-line replies are unreadable as a 2.6 s toast) and keep a
+          // short toast for one-liners.
+          if (mcpMessageIsOneLiner(message)) {
+            queueMicrotask(() => useHarness.getState().showToast(`mcp — ${message}`, tone))
+          } else if (!ev.ok) {
+            queueMicrotask(() => useHarness.getState().showToast(`mcp ${action || ''} failed`.trim(), tone))
+          }
+        } else if (!ev.ok) {
+          queueMicrotask(() => useHarness.getState().showToast(`mcp ${action || ''} failed`.trim(), tone))
+        }
+
+        let messages = prev.messages
+        if (!panelSurface) {
+          const part: MessagePart = {
+            type: 'system',
+            text: message,
+            systemSubtype: ev.ok ? 'mcp_result' : 'mcp_error',
+            mcpAction: action || undefined,
+          }
+          if (prev.currentStreamingMessageId) {
+            messages = prev.messages.map((m) =>
+              m.id === prev.currentStreamingMessageId ? { ...m, parts: [...m.parts, part] } : m,
+            )
+          } else {
+            messages = [
+              ...prev.messages,
+              { id: nextId('msg'), role: 'assistant', parts: [part], createdAt: Date.now() },
+            ]
+          }
+        }
+        return {
+          ...prev,
+          messages,
+          mcp: { ...prev.mcp, servers, statusAt, lastResults },
+        }
+      }
+      if (ev.type === 'mcp_oauth_url') {
+        const expiresInS = typeof ev.expiresInS === 'number' && ev.expiresInS > 0 ? ev.expiresInS : undefined
+        const pending: McpPendingLogin = {
+          server: ev.server,
+          status: 'waiting',
+          url: ev.url,
+          redirectUri: ev.redirectUri,
+          expiresAt: expiresInS ? Date.now() + expiresInS * 1000 : undefined,
+          opened: !!ev.opened,
+          updatedAt: Date.now(),
+        }
+        return {
+          ...prev,
+          mcp: {
+            ...prev.mcp,
+            pendingLogins: { ...prev.mcp.pendingLogins, [ev.server]: pending },
+          },
+        }
+      }
+      if (ev.type === 'mcp_oauth_result') {
+        // Replace the waiting notice (or create one if the result arrived
+        // without a preceding mcp_oauth_url, e.g. a cached-token refresh).
+        const existing = prev.mcp.pendingLogins[ev.server]
+        const done: McpPendingLogin = {
+          server: ev.server,
+          status: ev.ok ? 'ok' : 'failed',
+          url: existing?.url,
+          redirectUri: existing?.redirectUri,
+          opened: existing?.opened,
+          error: ev.ok ? undefined : ev.error || 'authorization failed',
+          scopes: Array.isArray(ev.scopes) ? ev.scopes : undefined,
+          tokenExpiresAt: ev.expiresAt ?? undefined,
+          updatedAt: Date.now(),
+        }
+        const toastMsg = ev.ok
+          ? `MCP ${ev.server}: authorized`
+          : `MCP ${ev.server}: authorization failed${ev.error ? ` — ${ev.error}` : ''}`
+        queueMicrotask(() => useHarness.getState().showToast(toastMsg, ev.ok ? 'ok' : 'danger'))
+        // A successful login clears any needs-auth flag on the row so the
+        // table is right even before the next mcp_status snapshot.
+        const servers = ev.ok
+          ? prev.mcp.servers.map((r) =>
+              r.server === ev.server
+                ? { ...r, needsAuth: false, tokenExpiresAt: ev.expiresAt ?? r.tokenExpiresAt }
+                : r,
+            )
+          : prev.mcp.servers
+        return {
+          ...prev,
+          mcp: {
+            ...prev.mcp,
+            servers,
+            pendingLogins: { ...prev.mcp.pendingLogins, [ev.server]: done },
+          },
+        }
+      }
+      if (ev.type === 'mcp_elicitation') {
+        if (!ev.requestId) return prev
+        const rec: McpElicitationRecord = {
+          requestId: ev.requestId,
+          server: ev.server,
+          message: ev.message ?? '',
+          mode: ev.mode === 'url' ? 'url' : 'form',
+          requestedSchema: ev.requestedSchema,
+          url: ev.url,
+          timeoutS: typeof ev.timeoutS === 'number' && ev.timeoutS > 0 ? ev.timeoutS : 300,
+          receivedAt: Date.now(),
+        }
+        return {
+          ...prev,
+          mcp: {
+            ...prev.mcp,
+            // FIFO: concurrent elicitations queue behind the current head.
+            elicitations: [
+              ...prev.mcp.elicitations.filter((e) => e.requestId !== rec.requestId),
+              rec,
+            ],
+          },
+        }
+      }
+      if (ev.type === 'plugin_command_result') {
+        let message = ev.message || ''
+        if (!message && Array.isArray(ev.plugins)) {
+          message = ev.plugins.length === 0
+            ? 'no plugins installed'
+            : ev.plugins
+                .map((p) => `${p.name}@${p.version ?? '?'} (${p.skills ?? 0} skills, ${p.commands ?? 0} commands, ${p.servers ?? 0} servers)`)
+                .join(' · ')
+        }
+        const msg = `plugin — ${message || (ev.ok ? 'ok' : 'failed')}`
+        const tone = ev.ok ? 'info' as const : 'warn' as const
+        queueMicrotask(() => useHarness.getState().showToast(msg, tone))
+        return prev
       }
       if (ev.type === 'error') {
         let messages = prev.messages
@@ -4677,6 +4998,63 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     if (api) await api.sendCommand({ type: 'list_tools' })
   },
 
+  sendMcpCommand(action, opts = {}) {
+    const surface = opts.surface ?? 'conversation'
+    const requestId = `${surface === 'panel' ? 'panel' : 'ui'}-${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2, 7)}`
+    const api = (window as any).harness
+    if (!api?.sendCommand) {
+      useHarness.getState().showToast('no bridge', 'warn')
+      return requestId
+    }
+    const cmd: BridgeCommand = {
+      type: 'mcp_command',
+      action,
+      requestId,
+      ...(opts.server ? { server: opts.server } : {}),
+      ...(opts.args && opts.args.length ? { args: opts.args } : {}),
+      ...(opts.tool ? { tool: opts.tool } : {}),
+      ...(opts.arguments ? { arguments: opts.arguments } : {}),
+    }
+    void api.sendCommand(cmd)
+    return requestId
+  },
+
+  async answerMcpElicitation(requestId, action, content) {
+    set((prev) => ({
+      mcp: {
+        ...prev.mcp,
+        elicitations: prev.mcp.elicitations.filter((e) => e.requestId !== requestId),
+      },
+    }))
+    const api = (window as any).harness
+    if (!api?.sendCommand) return
+    const cmd: BridgeCommand = {
+      type: 'mcp_elicitation_response',
+      requestId,
+      action,
+      ...(action === 'accept' && content ? { content } : {}),
+    }
+    await api.sendCommand(cmd)
+  },
+
+  dismissMcpLogin(server) {
+    set((prev) => {
+      if (!prev.mcp.pendingLogins[server]) return prev
+      const { [server]: _drop, ...rest } = prev.mcp.pendingLogins
+      return { mcp: { ...prev.mcp, pendingLogins: rest } }
+    })
+  },
+
+  clearMcpResult(requestId) {
+    set((prev) => {
+      if (!prev.mcp.lastResults[requestId]) return prev
+      const { [requestId]: _drop, ...rest } = prev.mcp.lastResults
+      return { mcp: { ...prev.mcp, lastResults: rest } }
+    })
+  },
+
   async updateMemory(id, patch) {
     const api = (window as any).harness
     if (!api) return
@@ -5124,6 +5502,55 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           'diagnose requested -- check ~/.freyja/bridge-diagnose.txt',
           'info',
         )
+        return true
+      }
+      case '/mcp': {
+        // Grammar: /mcp <status|enable|disable|reload|login|logout|reauth|
+        //   add|remove|test|tools|catalog> [server] [args…]
+        // See parseMcpSlash for the per-subcommand positional rules.
+        const api = (window as any).harness
+        if (!api?.sendCommand) {
+          show('no bridge', 'warn')
+          return true
+        }
+        const parsed = parseMcpSlash(args)
+        if (!parsed.ok) {
+          show(parsed.usage, 'info')
+          return true
+        }
+        state.sendMcpCommand(parsed.action, {
+          server: parsed.server,
+          args: parsed.args,
+          tool: parsed.tool,
+          arguments: parsed.arguments,
+          surface: 'conversation',
+        })
+        return true
+      }
+      case '/plugin':
+      case '/plugins': {
+        const api = (window as any).harness
+        if (!api?.sendCommand) {
+          show('no bridge', 'warn')
+          return true
+        }
+        const parts = (args ?? '').trim().split(/\s+/).filter(Boolean)
+        const action = (parts[0] || 'list') as 'list' | 'install' | 'remove'
+        if (!['list', 'install', 'remove'].includes(action)) {
+          show('usage: /plugin [list|install <src>|remove <name>]', 'info')
+          return true
+        }
+        if (action !== 'list' && !parts[1]) {
+          show(`usage: /plugin ${action} <${action === 'install' ? 'path-or-git-url' : 'name'}>`, 'info')
+          return true
+        }
+        api.sendCommand({
+          type: 'plugin_command',
+          action,
+          source: action === 'install' ? parts[1] : undefined,
+          name: action === 'remove' ? parts[1] : undefined,
+          requestId: `ui-${Date.now()}`,
+        })
         return true
       }
       case '/restart-bridge':

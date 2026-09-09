@@ -253,6 +253,9 @@ def _help_card_text() -> str:
         "• `/goal <obj>`     — arm a goal loop\n"
         "• `/mode <s>`       — switch coordination (bus / goal / kanban)\n"
         "• `/model <id>`     — switch the agent model\n"
+        "• `/mcp status|enable|disable|reload|login|logout|reauth` — MCP servers\n"
+        "• `/mcp add|remove|test|tools|catalog|call|answer` — see `/mcp help`\n"
+        "• `/plugin [list|install <src>|remove <name>]` — manage plugins\n"
         "• `/stop`           — interrupt the current turn\n"
         "• `/reset`          — start a fresh conversation\n"
         "• `/perms`          — show tool permissions\n"
@@ -439,6 +442,12 @@ class GatewayDaemon:
         # agent path and reply directly. Anything not handled here
         # falls through to the agent as a regular text turn (the
         # framed text below carries the literal slash command).
+        # A threaded `/mcp answer <id> ...` reply to an MCP elicitation
+        # prompt is promoted to the /mcp router (Slack slash commands do
+        # not fire inside threads) — see bridge/gateway/mcp_slack.py.
+        from bridge.gateway.mcp_slack import promote_inline_mcp_answer
+
+        promote_inline_mcp_answer(message)
         if message.is_slash_command:
             handled = await self._handle_slash_in_gateway(message, adapter)
             if handled:
@@ -1261,6 +1270,12 @@ class GatewayDaemon:
         if cmd == "perms":
             return await self._handle_perms_command(message, adapter)
 
+        if cmd == "mcp":
+            return await self._handle_mcp_command(message, adapter)
+
+        if cmd == "plugin":
+            return await self._handle_plugin_command(message, adapter)
+
         logger.info(
             "[gateway] slash router fell through: cmd=/%s — passing to agent",
             cmd,
@@ -1370,6 +1385,77 @@ class GatewayDaemon:
         await adapter.send(  # type: ignore[attr-defined]
             message.source.chat_id,
             f"Model set to `{applied}`.",
+            thread_id=message.source.thread_id,
+            ephemeral_user_id=message.source.user_id,
+            raw_hint=message.raw,
+        )
+        return True
+
+    async def _handle_mcp_command(
+        self,
+        message: IncomingMessage,
+        adapter: object,
+    ) -> bool:
+        """`/mcp <action> ...` — full MCP management from chat (card_019):
+        status/enable/disable/reload/login/logout/reauth/add/remove/test/
+        tools/catalog/call/answer, same grammar and shared handler as the
+        desktop ``mcp_command`` IPC. Slack-specific parsing, formatting,
+        OAuth hand-off posts and elicitation routing live in
+        bridge/gateway/mcp_slack.py."""
+        from bridge.gateway.mcp_slack import handle_mcp_slash
+
+        return await handle_mcp_slash(self, message, adapter)
+
+    async def _handle_plugin_command(
+        self,
+        message: IncomingMessage,
+        adapter: object,
+    ) -> bool:
+        """`/plugin [list|install <src>|remove <name>]` — manage Claude
+        Code-style plugins from chat (design doc section 5). Install and
+        remove refresh every live session's SkillStore and reload the
+        MCP manager when the plugin carries servers (merged disabled)."""
+        from bridge.plugins.commands import (
+            format_plugin_table,
+            handle_plugin_command,
+            parse_plugin_args,
+        )
+
+        action, arg = parse_plugin_args(message.slash_command_args or "")
+        if self.state is None:
+            text = "Gateway state not ready yet — try again in a moment."
+        else:
+            skill_stores = [
+                sess.skill_store
+                for sess in getattr(self.state, "sessions", {}).values()
+                if getattr(sess, "skill_store", None) is not None
+            ]
+            try:
+                result = await handle_plugin_command(
+                    {"action": action, "source": arg},
+                    plugins_root=getattr(self.state, "plugins_root", None),
+                    skill_stores=skill_stores,
+                    mcp_manager=getattr(self.state, "mcp_manager", None),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("/plugin %s failed", action)
+                result = {"ok": False, "message": f"/plugin {action} errored: {exc}"}
+            lines: list[str] = []
+            if result.get("message"):
+                lines.append(str(result["message"]))
+            plugins = result.get("plugins")
+            if plugins is not None:
+                if plugins:
+                    lines.append("```\n" + format_plugin_table(plugins) + "\n```")
+                else:
+                    lines.append(
+                        "No plugins installed. "
+                        "`/plugin install <path-or-git-url>` to add one."
+                    )
+            text = "\n".join(lines) or ("Done." if result.get("ok") else "Failed.")
+        await adapter.send(  # type: ignore[attr-defined]
+            message.source.chat_id,
+            text,
             thread_id=message.source.thread_id,
             ephemeral_user_id=message.source.user_id,
             raw_hint=message.raw,
@@ -2123,6 +2209,16 @@ class GatewayDaemon:
                 "(jobs created here will not fire from this process)",
                 exc,
             )
+
+        # MCP servers must be connecting before the first inbound message
+        # builds a session registry; otherwise Slack sessions have no
+        # mcp__* tools until someone runs /mcp in a channel.
+        try:
+            from bridge.gateway.mcp_slack import ensure_manager
+            manager = ensure_manager(self)
+            logger.info("mcp manager ready (%d server(s) configured)", manager.server_count)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mcp manager boot failed: %s (sessions lack MCP tools until /mcp)", exc)
 
         # Slack adapter is the only one in v1. Future: read
         # ~/.freyja/gateway.yaml to enable/disable adapters.

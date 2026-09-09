@@ -1,0 +1,36 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Schema follows hermes-agent's optional-mcps manifest.yaml (Nous Research,
+# MIT) with Freyja additions: homepage, license, tags, verified.
+manifest_version: 1
+
+name: filesystem
+description: Read, write, search and edit files under an allow-listed root directory.
+homepage: https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem
+license: MIT
+verified: 2026-09-03
+tags: [files, local, reference-server]
+
+# @modelcontextprotocol/server-filesystem 2026.7.10 published 2026-07-10
+# (registry.npmjs.org, verified 2026-09-03). The allowed root is passed as a
+# positional arg; Freyja expands ${MCP_FILESYSTEM_ROOT} at connect time.
+transport:
+  type: stdio
+  command: npx
+  args: ["-y", "@modelcontextprotocol/server-filesystem@2026.7.10", "${MCP_FILESYSTEM_ROOT}"]
+  package: "@modelcontextprotocol/server-filesystem"
+  version: "2026.7.10"
+
+auth:
+  type: none
+  env:
+    - name: MCP_FILESYSTEM_ROOT
+      description: Absolute path the server may access (e.g. /Users/you/projects).
+      required: true
+      secret: false
+
+suggest:
+  keywords: [filesystem, local files]
+
+post_install: |
+  Set MCP_FILESYSTEM_ROOT=/absolute/path in ~/.freyja/.env, then
+  `/mcp enable filesystem`. Add more roots as extra args in mcp.json.

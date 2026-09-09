@@ -17,6 +17,13 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/new', description: 'Start a fresh session', keys: 'Cmd+N' },
   { name: '/clear', description: 'Alias for /new', hidden: true },
   { name: '/tools', description: 'Load the full tool catalog' },
+  {
+    name: '/mcp',
+    description:
+      'MCP servers — /mcp <status|enable|disable|reload|login|logout|reauth|add|remove|test|tools|approve|catalog> [server] [args…] · approve <server> <tool> registers a quarantined tool · add <url|cmd> [--name n] [--transport t] [--header K=V] [--enable] · catalog [list|search <q>|install <id> [--enable]]',
+  },
+  { name: '/plugin', description: 'Plugins (usage: /plugin [list|install <src>|remove <name>])' },
+  { name: '/plugins', description: 'Alias for /plugin', hidden: true },
   { name: '/usage', description: 'Show token and cost usage' },
   { name: '/model', description: 'Switch model (usage: /model claude-opus-4-6)' },
   { name: '/permissions', description: 'Jump to the permission policy' },

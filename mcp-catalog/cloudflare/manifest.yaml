@@ -1,0 +1,88 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Adapted from hermes-agent optional-mcps/cloudflare/manifest.yaml
+# (Copyright (c) 2025 Nous Research, MIT License). URL/pins re-verified for
+# Freyja on the `verified` date below.
+manifest_version: 1
+
+name: cloudflare
+description: Full Cloudflare API access via the official remote MCP.
+homepage: https://developers.cloudflare.com/agents/model-context-protocol/mcp-servers-for-cloudflare/
+license: proprietary
+verified: 2026-09-03
+tags: [cloud, dns, workers, infra, remote, oauth]
+
+# Cloudflare's official API MCP is a managed remote server fronting the whole
+# Cloudflare API. `?codemode=false` is pinned deliberately: the default "Code
+# Mode" hides the API behind search()/execute() meta-tools and a provider-side
+# JS sandbox; with codemode=false every endpoint is a real tool with a real
+# JSON Schema, which Freyja's own tool disclosure handles fine.
+# Verified live: 401 + resource_metadata=
+# https://mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp
+transport:
+  type: http
+  url: https://mcp.cloudflare.com/mcp?codemode=false
+
+auth:
+  type: oauth
+
+# ~3,300 endpoint tools. Curated exclude list (copied from hermes) drops
+# enterprise-contract / org-fleet / read-only-analytics families; DNS,
+# Workers, R2, KV, D1, Queues, Pages, WAF, tunnels, Access, Stream, Images,
+# AI, Vectorize stay on. Written to mcp.json tools.exclude on first install
+# only — edit there to re-enable a family.
+tools:
+  default_excluded:
+    - docs
+    - "*_radar_*"
+    - "*_accounts_magic_*"
+    - "*_accounts_mnm_*"
+    - "*_accounts_cni_*"
+    - "*_accounts_teamnet_*"
+    - "*_accounts_cloudforceone_*"
+    - "*_accounts_dlp_*"
+    - "*_accounts_devices*"
+    - "*_accounts_dex_*"
+    - "*_accounts_datasecurity_*"
+    - "*_accounts_emailsecurity_*"
+    - "*_accounts_scim_*"
+    - "*_accounts_gateway*"
+    - "*_accounts_zerotrust_*"
+    - "*_accounts_one_*"
+    - "*_accounts_brandprotection_*"
+    - "*_accounts_intel_*"
+    - "*_accounts_urlscanner_*"
+    - "*_accounts_vuln_scanner_*"
+    - "*_zones_securitycenter_*"
+    - "*_accounts_securitycenter_*"
+    - "*_zones_api_gateway_*"
+    - "*_zones_schema_validation*"
+    - "*_zones_token_validation*"
+    - "*_zones_waiting_rooms*"
+    - "*_accounts_addressing_*"
+    - "*_accounts_shares*"
+    - "*_accounts_slurper_*"
+    - "*_zones_web3_*"
+    - "*_accounts_flagship_*"
+    - "*_zones_secondary_dns_*"
+    - "*_accounts_secondary_dns_*"
+    - "*_user_load_balancers*"
+
+suggest:
+  keywords: [cloudflare, workers, r2, d1]
+  hosts: [cloudflare.com, dash.cloudflare.com]
+
+post_install: |
+  On first connection Freyja opens a browser to authorize with Cloudflare
+  (or run `/mcp login cloudflare`). Pick the account and permissions to
+  grant, then `/mcp enable cloudflare`.
+
+  Headless / CI alternative: create an API token at
+  https://dash.cloudflare.com/profile/api-tokens, set CLOUDFLARE_API_TOKEN in
+  ~/.freyja/.env, and change the mcp.json entry to
+    "headers": {"Authorization": "Bearer ${CLOUDFLARE_API_TOKEN}"}
+  (drop the "auth"/"oauth" keys).
+
+  Product-specific Cloudflare servers (same OAuth flow): observability
+  https://observability.mcp.cloudflare.com/mcp, browser rendering
+  https://browser.mcp.cloudflare.com/mcp, radar https://radar.mcp.cloudflare.com/mcp.
+  Docs search needs no auth — see the `cloudflare-docs` catalog entry.

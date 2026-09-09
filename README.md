@@ -278,6 +278,10 @@ Long sessions are first-class. Freyja tracks context pressure, compaction events
 
 `schedule` tool lets agents create, inspect, and manage cron-style jobs that fire agent turns at specified times. Managed via `/schedule` in the chat or the `freyja gateway` CLI.
 
+### MCP servers & plugins
+
+External MCP servers (stdio, streamable HTTP, SSE) are configured in `~/.freyja/mcp.json` and exposed to the agent as `mcp__<server>__<tool>` tools. Manage them with `/mcp` (desktop chat, Settings → MCP servers, or the Slack gateway): `/mcp add <url|command>`, `/mcp catalog install <name>` from the curated `mcp-catalog/`, `/mcp login <server>` for OAuth 2.1 remotes, `/mcp status|test|tools`. Claude-Code-style plugins install with `/plugin install <path|git-url>` and register their skills (`<plugin>:` prefix) and servers. Full reference: `docs/mcp.md`.
+
 ---
 
 ## Tool Reference
@@ -428,6 +432,7 @@ uv run python -m bridge.freyja_bridge
 | `docs/SKILLS-MEMORY-DESIGN.md` | Skills and memory design |
 | `docs/COMPACTION-DECISION-DRAFT.md` | Context compaction strategy and cooperative protocol |
 | `docs/SLACK-GATEWAY.md` | Slack gateway protocol, manifest, and scopes reference |
+| `docs/mcp.md` | MCP servers, OAuth, plugins, catalog, `/mcp` and `/plugin` command reference |
 | `docs/TRAJECTORY-TRAINING.md` | Session trajectory export formats |
 | `docs/WARP-FILE-EDIT-UX-RESEARCH.md` | File-edit UX research and design notes |
 

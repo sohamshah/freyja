@@ -1,0 +1,45 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Schema follows hermes-agent's optional-mcps manifest.yaml (Nous Research,
+# MIT) with Freyja additions: homepage, license, tags, verified.
+manifest_version: 1
+
+name: slack-stdio
+description: >-
+  Slack via a local server and a user token (xoxp) — channels, history,
+  search, threads; no OAuth app install required.
+homepage: https://github.com/korotovsky/slack-mcp-server
+license: MIT
+verified: 2026-09-03
+tags: [chat, collaboration, slack, local, api-key]
+
+# slack-mcp-server 1.3.0 published 2026-05-14 (registry.npmjs.org, verified
+# 2026-09-03). Alternative to the OAuth `slack` entry for headless setups.
+transport:
+  type: stdio
+  command: npx
+  args: ["-y", "slack-mcp-server@1.3.0", "--transport", "stdio"]
+  package: slack-mcp-server
+  version: "1.3.0"
+
+auth:
+  type: api_key
+  env:
+    - name: SLACK_MCP_XOXP_TOKEN
+      description: Slack user OAuth token (xoxp-...) from your app's OAuth & Permissions page.
+      required: true
+      secret: true
+    - name: SLACK_MCP_ADD_MESSAGE_TOOL
+      description: >-
+        Leave unset for read-only. Set to "true" to allow posting everywhere,
+        or a comma-separated channel-id allowlist.
+      required: false
+      secret: false
+
+suggest:
+  keywords: [slack user token, xoxp]
+  hosts: [slack.com]
+
+post_install: |
+  Set SLACK_MCP_XOXP_TOKEN=xoxp-... in ~/.freyja/.env, then
+  `/mcp enable slack-stdio`. Posting is disabled until you set
+  SLACK_MCP_ADD_MESSAGE_TOOL. Prefer per-user OAuth? Use the `slack` entry.

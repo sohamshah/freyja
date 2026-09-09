@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useHarness } from '../state/store'
 import { useVoiceStore } from '../state/voice-store'
+import { McpServersPanel } from './mcp/McpServersPanel'
 import type { PermissionTier, VoiceConfig } from '@shared/events'
 
 interface PermissionOption {
@@ -244,6 +245,13 @@ export function SettingsModal() {
             description={`Speak to the Mac. ${voiceHotkey ? `${voiceHotkey} opens an exchange` : 'Click the title-bar sigil to open an exchange'}; the mic is live only while the sigil is lit, and the session auto-closes after silence.`}
           >
             <VoiceSettings />
+          </Section>
+
+          <Section
+            title="MCP servers"
+            description="Model Context Protocol servers whose tools the agent can call. Enable/disable, sign in to OAuth-protected servers, run a connection test, or install from the catalog. Same actions as /mcp."
+          >
+            <McpServersPanel />
           </Section>
 
           <Section

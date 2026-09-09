@@ -1,0 +1,29 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Schema follows hermes-agent's optional-mcps manifest.yaml (Nous Research,
+# MIT) with Freyja additions: homepage, license, tags, verified.
+manifest_version: 1
+
+name: todoist
+description: Todoist tasks, projects and labels via the official hosted MCP.
+homepage: https://developer.todoist.com/api/v1/#tag/AI
+license: proprietary
+verified: 2026-09-03
+tags: [tasks, productivity, remote, oauth]
+
+# Verified live: 401 + resource_metadata=
+# https://ai.todoist.net/.well-known/oauth-protected-resource/mcp
+transport:
+  type: http
+  url: https://ai.todoist.net/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords: [todoist]
+  hosts: [todoist.com]
+
+post_install: |
+  On first connection Freyja opens a browser to authorize with Todoist
+  (or run `/mcp login todoist`). Approve access, then `/mcp enable todoist`
+  (or `/mcp reload` if already enabled) so the tools load.

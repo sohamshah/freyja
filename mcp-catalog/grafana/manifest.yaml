@@ -1,0 +1,40 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Adapted from hermes-agent optional-mcps/grafana/manifest.yaml
+# (Copyright (c) 2025 Nous Research, MIT License). URL/pins re-verified for
+# Freyja on the `verified` date below.
+manifest_version: 1
+
+name: grafana
+description: Query metrics, logs, dashboards, alerts, and incidents from Grafana Cloud.
+homepage: https://grafana.com/docs/grafana-cloud/ai-tools/mcp-servers/cloud-mcp/
+license: proprietary
+verified: 2026-09-03
+tags: [observability, metrics, logs, remote, oauth]
+
+# Hosted Grafana Cloud MCP (not the self-run OSS mcp-grafana binary).
+# Verified live: 401 + resource_metadata=
+# https://mcp.grafana.com/.well-known/oauth-protected-resource/mcp
+transport:
+  type: http
+  url: https://mcp.grafana.com/mcp
+
+auth:
+  type: oauth
+
+tools:
+  default_excluded:
+    - ask_assistant
+    - "agento11y_*"
+
+suggest:
+  keywords: [grafana, promql, logql, observability, dashboard]
+  hosts: [grafana.net, grafana.com]
+
+post_install: |
+  On first connection Freyja opens a browser to authorize with Grafana Cloud
+  (or run `/mcp login grafana`). Enter your stack URL
+  (https://<your-stack>.grafana.net), choose read or read+write, approve,
+  then `/mcp enable grafana`.
+
+  Requires a hosted Grafana Cloud stack and the "Assistant Cloud MCP User"
+  role. Self-hosted Grafana: use the OSS mcp-grafana server instead.

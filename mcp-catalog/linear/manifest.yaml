@@ -1,0 +1,30 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Adapted from hermes-agent optional-mcps/linear/manifest.yaml
+# (Copyright (c) 2025 Nous Research, MIT License). URL/pins re-verified for
+# Freyja on the `verified` date below.
+manifest_version: 1
+
+name: linear
+description: Find, create, and update Linear issues, projects, and comments.
+homepage: https://linear.app/docs/mcp
+license: proprietary
+verified: 2026-09-03
+tags: [issues, project-management, remote, oauth]
+
+# Remote MCP with native OAuth 2.1 + DCR over Streamable HTTP. Verified live:
+# 401 + resource_metadata=https://mcp.linear.app/.well-known/oauth-protected-resource/mcp
+transport:
+  type: http
+  url: https://mcp.linear.app/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords: [linear]
+  hosts: [linear.app]
+
+post_install: |
+  On first connection Freyja opens a browser to authorize with Linear
+  (or run `/mcp login linear`). Approve access, then `/mcp enable linear`
+  (or `/mcp reload` if already enabled) so the tools load.

@@ -14,9 +14,22 @@ from bridge.knowledge.models import SkillRecord
 
 
 class SkillStore:
-    def __init__(self, workspace: Path | str) -> None:
+    def __init__(
+        self,
+        workspace: Path | str,
+        *,
+        plugins_root: Path | str | None = None,
+    ) -> None:
         self.workspace = Path(workspace).expanduser().resolve()
         self.usage_path = Path.home() / ".freyja" / "knowledge" / "skill_usage.jsonl"
+        # Installed plugin root (bridge/plugins/loader.py). Each
+        # <plugins_root>/<plugin>/skills/** tree is a standing scan
+        # root; skill names get a "<plugin>:" prefix.
+        self.plugins_root = (
+            Path(plugins_root).expanduser()
+            if plugins_root is not None
+            else Path.home() / ".freyja" / "plugins"
+        )
         self._skills: dict[str, SkillRecord] = {}
         self._by_name: dict[str, SkillRecord] = {}
         self._fingerprint: tuple[tuple[str, int, int], ...] = ()
@@ -35,6 +48,8 @@ class SkillStore:
         for skill in self._read_skill_dirs(Path.home() / ".freyja" / "skills", "user"):
             self._put(discovered, skill)
         for skill in self._read_skill_dirs(Path.home() / ".claude" / "skills", "compat"):
+            self._put(discovered, skill)
+        for skill in self._read_plugin_skills():
             self._put(discovered, skill)
         for skill in self._read_skill_dirs(self.workspace / "knowledge", "project"):
             self._put(discovered, skill)
@@ -274,6 +289,33 @@ class SkillStore:
                 out.append(parsed)
         return out
 
+    def _read_plugin_skills(self) -> list[SkillRecord]:
+        """Skills installed by bridge/plugins/loader.py under
+        ``<plugins_root>/<plugin>/skills/**``. Every name is prefixed
+        with ``<plugin>:`` (unless the frontmatter already carries the
+        prefix, as loader-generated command-skills do) so plugin skills
+        never collide with user/project skills."""
+        try:
+            plugin_dirs = sorted(p for p in self.plugins_root.iterdir() if p.is_dir())
+        except OSError:
+            return []
+        out: list[SkillRecord] = []
+        for plugin_dir in plugin_dirs:
+            skills_dir = plugin_dir / "skills"
+            if not skills_dir.is_dir():
+                continue
+            prefix = f"{plugin_dir.name}:"
+            for skill in self._read_skill_dirs(skills_dir, "plugin"):
+                name = skill.name if skill.name.startswith(prefix) else f"{prefix}{skill.name}"
+                out.append(
+                    replace(
+                        skill,
+                        name=name,
+                        id=_skill_id_for("plugin", name, skill.skill_type),
+                    )
+                )
+        return out
+
     def _build_fingerprint(self) -> tuple[tuple[str, int, int], ...]:
         paths = {self.usage_path, self.workspace / "knowledge" / "index.jsonl"}
         for base in (
@@ -291,7 +333,13 @@ class SkillStore:
                 paths.update(base.rglob("SKILL.md"))
             except Exception:
                 continue
-
+        try:
+            for plugin_dir in self.plugins_root.iterdir():
+                base = plugin_dir / "skills"
+                if base.is_dir():
+                    paths.update(base.rglob("SKILL.md"))
+        except OSError:
+            pass
         records: list[tuple[str, int, int]] = []
         for path in sorted(paths):
             try:

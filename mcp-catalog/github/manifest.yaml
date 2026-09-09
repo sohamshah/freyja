@@ -1,0 +1,46 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Schema follows hermes-agent's optional-mcps manifest.yaml (Nous Research,
+# MIT) with Freyja additions: homepage, license, tags, verified.
+manifest_version: 1
+
+name: github
+description: >-
+  GitHub repos, issues, pull requests, actions and code search via the
+  official hosted GitHub MCP server (personal access token).
+homepage: https://docs.github.com/en/copilot/how-tos/context/use-mcp/use-the-github-mcp-server
+license: MIT
+verified: 2026-09-03
+tags: [git, code, issues, ci, remote, api-key]
+
+# Official remote server (github/github-mcp-server, MIT). Verified live: 401 +
+# resource_metadata=https://api.githubcopilot.com/.well-known/oauth-protected-resource/mcp/
+# resource_name "GitHub MCP Server". Its OAuth requires a per-host registered
+# GitHub App (generic DCR is not offered), so the catalog uses the documented
+# PAT bearer header instead. Read-only variant: .../mcp/readonly. Limit
+# toolsets with an extra header, e.g. "X-MCP-Toolsets": "repos,issues,pull_requests".
+transport:
+  type: http
+  url: https://api.githubcopilot.com/mcp/
+
+auth:
+  type: api_key
+  header: Authorization
+  header_format: "Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}"
+  env:
+    - name: GITHUB_PERSONAL_ACCESS_TOKEN
+      description: >-
+        Fine-grained or classic PAT (https://github.com/settings/tokens) with
+        repo / read:org scopes as needed.
+      required: true
+      secret: true
+
+suggest:
+  keywords: [github, pull request, pr, gh]
+  hosts: [github.com]
+
+post_install: |
+  Create a PAT at https://github.com/settings/tokens, add
+  GITHUB_PERSONAL_ACCESS_TOKEN=... to ~/.freyja/.env, then `/mcp enable github`.
+
+  Prefer read-only? Change url to https://api.githubcopilot.com/mcp/readonly.
+  Local alternative: docker ghcr.io/github/github-mcp-server (pin a tag).

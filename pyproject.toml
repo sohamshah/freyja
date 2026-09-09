@@ -31,6 +31,7 @@ dependencies = [
     "slack-sdk>=3.27",
     # aiohttp for downloading Slack file attachments (carries auth header).
     "aiohttp>=3.9",
+    "mcp>=2.0",
 ]
 
 [project.scripts]

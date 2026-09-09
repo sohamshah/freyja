@@ -23,6 +23,7 @@ import { formatDuration } from '../lib/format'
 import { BranchSessionDialog } from './BranchSessionDialog'
 import { CalibrationCard } from './shared/CalibrationCard'
 import { InlineForgetting, InlineCompactionReceipt } from './MemorySystemCards'
+import { McpResultBlock } from './mcp/McpResultBlock'
 import {
   StructuredJsonView,
   tryParseCompleteJson,
@@ -1483,6 +1484,17 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
           headline={part.text ?? 'Working memory extracted'}
           summaryText={part.systemSummaryText}
           variant="working_memory"
+        />
+      )
+    }
+    // /mcp replies: multi-line status tables, tool lists, catalog rows
+    // and test reports render as a monospace block instead of the chip.
+    if (part.systemSubtype === 'mcp_result' || part.systemSubtype === 'mcp_error') {
+      return (
+        <McpResultBlock
+          text={part.text ?? ''}
+          ok={part.systemSubtype === 'mcp_result'}
+          action={part.mcpAction}
         />
       )
     }

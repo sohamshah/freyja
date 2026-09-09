@@ -1,0 +1,32 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Adapted from hermes-agent optional-mcps/postman/manifest.yaml
+# (Copyright (c) 2025 Nous Research, MIT License). URL/pins re-verified for
+# Freyja on the `verified` date below.
+manifest_version: 1
+
+name: postman
+description: Postman workspaces, collections, environments, and APIs.
+homepage: https://learning.postman.com/docs/reference/postman-api/postman-mcp-server/postman-mcp-remote-server/
+license: proprietary
+verified: 2026-09-03
+tags: [api, testing, remote, oauth]
+
+# /minimal is Postman's documented essential-CRUD variant. The full surface
+# (100+ tools) lives at https://mcp.postman.com/mcp — swap the url if needed.
+# Verified live: 401 + resource_metadata=
+# https://mcp.postman.com/.well-known/oauth-protected-resource/minimal
+transport:
+  type: http
+  url: https://mcp.postman.com/minimal
+
+auth:
+  type: oauth
+
+suggest:
+  keywords: [postman, api collection]
+  hosts: [postman.com]
+
+post_install: |
+  On first connection Freyja opens a browser to authorize with Postman
+  (or run `/mcp login postman`). Approve access, then `/mcp enable postman`
+  (or `/mcp reload` if already enabled) so the tools load.

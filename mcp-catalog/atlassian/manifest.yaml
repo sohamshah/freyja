@@ -1,0 +1,36 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Adapted from hermes-agent optional-mcps/atlassian/manifest.yaml
+# (Copyright (c) 2025 Nous Research, MIT License). URL/pins re-verified for
+# Freyja on the `verified` date below.
+manifest_version: 1
+
+name: atlassian
+description: >-
+  Jira issues and Confluence pages via Atlassian's hosted Rovo remote MCP.
+homepage: https://support.atlassian.com/rovo/docs/getting-started-with-the-atlassian-remote-mcp-server/
+license: proprietary
+verified: 2026-09-03
+tags: [issues, wiki, jira, confluence, remote, oauth]
+
+# Official vendor-hosted remote MCP (Streamable HTTP, native OAuth 2.1).
+# Atlassian's docs (fetched 2026-09-03) now point custom clients at /v2/mcp;
+# verified live: 401 + resource_metadata=
+# https://mcp.atlassian.com/.well-known/oauth-protected-resource/v2/mcp,
+# authorization_servers = https://auth.atlassian.com/<id>. The older
+# /v1/mcp/authv2 endpoint (hermes's pin) still answers but is superseded.
+# Append `?tools=all` to the url for the full (non-curated) tool surface.
+transport:
+  type: http
+  url: https://mcp.atlassian.com/v2/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords: [jira, confluence, atlassian, bitbucket]
+  hosts: [atlassian.net, atlassian.com, jira.com]
+
+post_install: |
+  On first connection Freyja opens a browser to authorize with Atlassian
+  (or run `/mcp login atlassian`). Approve access, then `/mcp enable atlassian`
+  (or `/mcp reload` if already enabled) so the tools load.

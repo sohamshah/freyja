@@ -1,0 +1,29 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Schema follows hermes-agent's optional-mcps manifest.yaml (Nous Research,
+# MIT) with Freyja additions: homepage, license, tags, verified.
+manifest_version: 1
+
+name: paypal
+description: PayPal invoices, orders, payments and disputes via the hosted MCP.
+homepage: https://developer.paypal.com/tools/mcp-server/
+license: proprietary
+verified: 2026-09-03
+tags: [payments, billing, remote, oauth]
+
+# Verified live: 401 + resource_metadata=
+# https://mcp.paypal.com/.well-known/oauth-protected-resource
+transport:
+  type: http
+  url: https://mcp.paypal.com/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords: [paypal]
+  hosts: [paypal.com]
+
+post_install: |
+  On first connection Freyja opens a browser to authorize with PayPal
+  (or run `/mcp login paypal`). Approve access, then `/mcp enable paypal`
+  (or `/mcp reload` if already enabled) so the tools load.

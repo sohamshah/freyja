@@ -1,0 +1,47 @@
+# Freyja MCP catalog entry — presence in mcp-catalog/ = reviewed + approved.
+# Schema follows hermes-agent's optional-mcps manifest.yaml (Nous Research,
+# MIT) with Freyja additions: homepage, license, tags, verified.
+manifest_version: 1
+
+name: n8n
+description: >-
+  n8n node documentation plus workflow management (list, create, update,
+  execute) against your n8n instance.
+homepage: https://github.com/czlonkowski/n8n-mcp
+license: MIT
+verified: 2026-09-03
+tags: [automation, workflows, local, api-key]
+
+# n8n-mcp 2.73.0 published 2026-08-19 (registry.npmjs.org, verified 2026-09-03).
+# hermes ships a git-cloned bridge instead; Freyja has no git-install path, so
+# the widely used npm package is pinned here.
+transport:
+  type: stdio
+  command: npx
+  args: ["-y", "n8n-mcp@2.73.0"]
+  package: n8n-mcp
+  version: "2.73.0"
+  env:
+    MCP_MODE: stdio
+    LOG_LEVEL: error
+    DISABLE_CONSOLE_OUTPUT: "true"
+
+auth:
+  type: api_key
+  env:
+    - name: N8N_API_URL
+      description: Your n8n instance URL (e.g. https://n8n.example.com).
+      required: true
+      secret: false
+    - name: N8N_API_KEY
+      description: n8n API key (Settings → n8n API).
+      required: true
+      secret: true
+
+suggest:
+  keywords: [n8n, workflow automation]
+  hosts: [n8n.io, n8n.cloud]
+
+post_install: |
+  Set N8N_API_URL and N8N_API_KEY in ~/.freyja/.env, then `/mcp enable n8n`.
+  Workflow activate/execute tools mutate your live n8n — treat with care.
