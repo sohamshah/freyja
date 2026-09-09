@@ -248,6 +248,23 @@ def _domain_of(url: str) -> str:
         return ""
 
 
+def _stream_is_dead(error: str | None) -> bool:
+    """Slack has two ways of saying "that streaming message is gone".
+
+    ``message_not_in_streaming_state`` — it exists but stopStream already
+    sealed it. ``message_not_found`` — it is gone entirely (deleted, or the
+    ts belongs to a message this token can no longer see).
+
+    Only the first was ever checked, so a ``message_not_found`` stream left
+    cards enabled and every subsequent event re-attempted the append: a
+    2026-09-09 Slack turn logged 44 identical failures with full tracebacks
+    while the card sat frozen. Either error means the same thing to us —
+    stop trying.
+    """
+    e = (error or "").lower()
+    return "message_not_in_streaming_state" in e or "message_not_found" in e
+
+
 @dataclass
 class _StreamState:
     """Per-turn mutable state.
@@ -621,7 +638,7 @@ class SlackStreamConsumer:
             self._state.cards_emitted_this_phase = 0
             if not result.ok:
                 logger.debug("[slack] plan chunk append failed: %s", result.error)
-                if "message_not_in_streaming_state" in (result.error or "").lower():
+                if _stream_is_dead(result.error):
                     self._state.cards_disabled = True
 
     def _close_phase_if_after_cards(self) -> None:
@@ -750,7 +767,7 @@ class SlackStreamConsumer:
                         "[slack] thinking delta exceeds Slack cap (%d chars) — dropped",
                         len(piece),
                     )
-                if "message_not_in_streaming_state" in err:
+                if _stream_is_dead(err):
                     self._state.cards_disabled = True
                     break
         self._state.thinking_sent = self._state.thinking_buffer
@@ -934,7 +951,7 @@ class SlackStreamConsumer:
                 # subsequent body-text flushes route through the
                 # chat.postMessage fallback path and the user still
                 # sees the agent's prose response.
-                if "message_not_in_streaming_state" in (result.error or "").lower():
+                if _stream_is_dead(result.error):
                     self._state.cards_disabled = True
 
     def _format_tool_title(self, name: str, args: dict[str, Any]) -> str:

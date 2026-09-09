@@ -12,10 +12,71 @@ import fnmatch
 import functools
 import os
 import re
+import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 from bridge.tools.base import ToolDefinition, ToolResult, ToolTier
+
+# ── traversal bounds ────────────────────────────────────────────────────
+#
+# Both tools used to do `list(path.rglob("*"))` — materializing the whole
+# tree before looking at a single file, then stat()ing every entry. Pointed
+# at a monorepo checkout (~/work/services: 118 GB, 2.36M files) that never
+# returns: the walk alone is minutes, and a pattern with no match never
+# trips the max_results early-exit. A Slack turn did exactly this and hung
+# indefinitely with the agent loop blocked on the tool.
+#
+# The fix is to stream the walk, prune the directories that hold nearly all
+# of those files, and stop on a wall-clock deadline. Partial results are
+# always labelled — a silently truncated search reads as "no matches",
+# which is a wrong answer rather than a slow one.
+
+#: Directories pruned in-place during os.walk so we never descend into
+#: them. node_modules and .git dominate the file count in any real repo.
+PRUNE_DIRS: frozenset[str] = frozenset({
+    ".git", ".hg", ".svn",
+    ".venv", "venv", "site-packages", "__pycache__",
+    "node_modules", "bower_components",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".eggs",
+    ".next", ".nuxt", ".svelte-kit", ".parcel-cache", ".cache",
+    ".terraform", ".gradle", ".m2",
+    ".worktrees", ".deps",
+    "dist", "build", "target", "vendor",
+})
+
+#: Wall-clock ceiling for a single search. Generous for any sane tree,
+#: decisive on a pathological one.
+WALK_DEADLINE_SEC = 20.0
+
+#: Hard cap on files opened and read, independent of the deadline.
+MAX_FILES_SCANNED = 20_000
+
+#: Files above this are skipped rather than read into memory. Source files
+#: are far below it; minified bundles and data dumps are far above.
+MAX_FILE_BYTES = 2 * 1024 * 1024
+
+
+def iter_files(
+    root: Path,
+    *,
+    deadline: float,
+    prune: frozenset[str] = PRUNE_DIRS,
+) -> Iterator[Path]:
+    """Yield files under ``root``, pruning junk directories, lazily.
+
+    Lazy matters as much as the pruning: the caller can stop on its own
+    budget without waiting for the traversal to finish. Symlinks are not
+    followed — a self-referential link would otherwise loop forever.
+    """
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        if time.monotonic() > deadline:
+            return
+        # In-place mutation is what makes os.walk skip the subtree.
+        dirnames[:] = [d for d in dirnames if d not in prune]
+        for name in filenames:
+            yield Path(dirpath) / name
 
 
 class GlobTool:
@@ -95,27 +156,58 @@ Examples:
             )
 
         try:
-            # Use rglob for recursive patterns, glob for non-recursive
+            stopped_early: str | None = None
+            deadline = time.monotonic() + WALK_DEADLINE_SEC
+
+            # Recursive patterns walk with pruning + a deadline; a plain
+            # glob is already bounded to one directory level.
             if "**" in pattern:
-                matches = list(path.rglob(pattern.replace("**/", "")))
+                leaf = pattern.replace("**/", "") or "*"
+                pairs: list[tuple[float, Path]] = []
+                for candidate in iter_files(path, deadline=deadline):
+                    if time.monotonic() > deadline:
+                        stopped_early = f"time limit ({WALK_DEADLINE_SEC:.0f}s)"
+                        break
+                    if not fnmatch.fnmatch(candidate.name, leaf):
+                        continue
+                    try:
+                        pairs.append((candidate.stat().st_mtime, candidate))
+                    except OSError:
+                        continue
+                    if len(pairs) >= MAX_FILES_SCANNED:
+                        stopped_early = f"file limit ({MAX_FILES_SCANNED:,} files)"
+                        break
+                # Sort the survivors, not the whole tree.
+                pairs.sort(key=lambda p: p[0], reverse=True)
+                total_matches = len(pairs)
+                matches = [p for _, p in pairs[:max_results]]
             else:
                 matches = list(path.glob(pattern))
+                if not pattern.endswith("/"):
+                    matches = [m for m in matches if m.is_file()]
+                matches.sort(
+                    key=lambda x: x.stat().st_mtime if x.exists() else 0,
+                    reverse=True,
+                )
+                total_matches = len(matches)
+                matches = matches[:max_results]
 
-            # Filter out directories if pattern doesn't end with /
-            if not pattern.endswith("/"):
-                matches = [m for m in matches if m.is_file()]
-
-            # Sort by modification time (newest first)
-            matches.sort(key=lambda x: x.stat().st_mtime if x.exists() else 0, reverse=True)
-
-            # Limit results
-            total_matches = len(matches)
-            matches = matches[:max_results]
+            incomplete_note = (
+                f"⚠️ INCOMPLETE: stopped at the {stopped_early}. This listing "
+                f"is partial — narrow `path` and search again."
+                if stopped_early else ""
+            )
 
             if not matches:
+                verdict = (
+                    f"No files matched '{pattern}' before the {stopped_early} — "
+                    "this is NOT a confirmed absence."
+                    if stopped_early
+                    else f"No files found matching pattern: {pattern}"
+                )
                 return ToolResult(
                     call_id=call_id,
-                    content=f"No files found matching pattern: {pattern}\nSearch directory: {path}",
+                    content=f"{verdict}\nSearch directory: {path}",
                     is_error=False,
                 )
 
@@ -123,6 +215,8 @@ Examples:
                 f"Found {total_matches} file(s) matching '{pattern}'",
                 f"Search directory: {path}",
             ]
+            if incomplete_note:
+                output_lines.append(incomplete_note)
             if total_matches > max_results:
                 output_lines.append(f"(showing first {max_results})")
             output_lines.append("-" * 60)
@@ -249,16 +343,16 @@ Examples:
             results = []
             files_searched = 0
             files_with_matches = 0
+            stopped_early: str | None = None
 
-            # Get files to search
+            deadline = time.monotonic() + WALK_DEADLINE_SEC
+
+            # Streamed, not materialized — see the traversal-bounds notes at
+            # the top of this module.
             if path.is_file():
-                files_to_search = [path]
+                candidates: Iterator[Path] = iter([path])
             else:
-                if "**" in file_pattern or file_pattern == "*":
-                    files_to_search = list(path.rglob("*"))
-                else:
-                    files_to_search = list(path.rglob(file_pattern))
-                files_to_search = [f for f in files_to_search if f.is_file()]
+                candidates = iter_files(path, deadline=deadline)
 
             # Skip binary files and common non-text files
             skip_extensions = {
@@ -269,16 +363,30 @@ Examples:
                 ".woff", ".woff2", ".ttf", ".eot",
             }
 
-            for file_path in files_to_search:
+            for file_path in candidates:
+                if time.monotonic() > deadline:
+                    stopped_early = f"time limit ({WALK_DEADLINE_SEC:.0f}s)"
+                    break
+                if files_searched >= MAX_FILES_SCANNED:
+                    stopped_early = f"file limit ({MAX_FILES_SCANNED:,} files)"
+                    break
+
                 if file_path.suffix.lower() in skip_extensions:
                     continue
 
-                # Skip hidden directories
-                if any(part.startswith(".") for part in file_path.parts):
-                    if ".git" in file_path.parts or ".venv" in file_path.parts:
-                        continue
+                # `file_pattern` used to select the rglob; with a streamed
+                # walk it becomes an explicit filter on the name.
+                if file_pattern not in ("*", "**/*") and not fnmatch.fnmatch(
+                    file_path.name, file_pattern.rsplit("/", 1)[-1]
+                ):
+                    continue
 
                 try:
+                    # stat before open: skips huge files without reading them,
+                    # and doubles as the is_file()/broken-symlink check.
+                    st = file_path.stat()
+                    if not os.path.isfile(file_path) or st.st_size > MAX_FILE_BYTES:
+                        continue
                     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                         lines = f.readlines()
                     files_searched += 1
@@ -322,10 +430,26 @@ Examples:
                 if len(results) >= max_results:
                     break
 
+            # A cut-short search that found nothing is NOT "no matches" —
+            # saying so would hand the model a false negative it has no way
+            # to detect. Name the limit and how to narrow the search.
+            incomplete_note = (
+                f"\n⚠️ INCOMPLETE: stopped at the {stopped_early} after "
+                f"{files_searched} file(s). Results below are partial — narrow "
+                f"`path`, or set `file_pattern`, and search again."
+                if stopped_early else ""
+            )
+
             if not results:
+                verdict = (
+                    f"No matches found in the {files_searched} file(s) searched "
+                    f"before the {stopped_early} — this is NOT a confirmed absence."
+                    if stopped_early
+                    else f"No matches found for pattern: {pattern}"
+                )
                 return ToolResult(
                     call_id=call_id,
-                    content=f"No matches found for pattern: {pattern}\nSearched {files_searched} file(s) in {path}",
+                    content=f"{verdict}\nSearched {files_searched} file(s) in {path}{incomplete_note}",
                     is_error=False,
                 )
 
@@ -335,6 +459,8 @@ Examples:
                 f"Pattern: {pattern}",
                 f"Searched: {files_searched} file(s)",
             ]
+            if incomplete_note:
+                output_lines.append(incomplete_note.strip())
             if len(results) >= max_results:
                 output_lines.append(f"(showing first {max_results} results)")
             output_lines.append("-" * 60)
