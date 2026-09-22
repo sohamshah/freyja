@@ -50,6 +50,7 @@ from bridge.tools.talk_tool import (
 )
 from bridge.tools.task_board import TaskBoardTool
 from bridge.tools.tool_search_tool import ToolSearchTool
+from bridge.tools.twitter_tool import TwitterSearchTool
 from bridge.tools.video_analysis_tool import AnalyzeVideoTool
 from bridge.tools.view_image_tool import ViewImageTool
 from bridge.tools.widget_tool import ReadWidgetSpecTool, ShowWidgetTool
@@ -360,6 +361,9 @@ def build_desktop_registry(
                 )
         except Exception as exc:  # noqa: BLE001
             logger.info("web tools skipped: %s", exc)
+
+    # Twitter/X search via xAI Grok API
+    tools.append(TwitterSearchTool())
 
     # Meta tool — lets the model load WARM-tier schemas on demand
     tools.append(ToolSearchTool(registry))

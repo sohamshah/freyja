@@ -56,13 +56,14 @@ EFFECT_OTHER_TOOLS = frozenset({"generate_image", "generate_svg", "generate_soun
 OBSERVATION_TOOLS = frozenset({
     "read_file", "grep", "glob", "list_directory",
     "web_search", "web_fetch", "fetch_url", "view_image",
+    "twitter_search",
 })
 # Of the observations, only *research* (external lookups) is worth a durable
 # ledger row — the user explicitly wanted "research / web search done" kept.
 # Local reads/greps are high-volume noise already recoverable via `recall`
 # over raw_messages.jsonl, so we don't persist a row for them (keeps the
 # ledger high-signal and small).
-RESEARCH_TOOLS = frozenset({"web_search", "web_fetch", "fetch_url"})
+RESEARCH_TOOLS = frozenset({"web_search", "web_fetch", "fetch_url", "twitter_search"})
 
 # Mutating shell verbs. A bash command matching one of these is an effect; any
 # other bash command (ls, cat, git status, grep, …) is treated as an
@@ -638,7 +639,7 @@ class SessionLedger:
 
     @staticmethod
     def _observation_target(tool_name: str, tool_args: dict[str, Any]) -> str:
-        if tool_name in ("web_search",):
+        if tool_name in ("web_search", "twitter_search"):
             return str(tool_args.get("query") or "")
         if tool_name in ("web_fetch", "fetch_url"):
             return str(tool_args.get("url") or tool_args.get("query") or "")

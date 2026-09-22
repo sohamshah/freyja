@@ -524,7 +524,7 @@ AGENT_TYPES: dict[str, AgentType] = {
         model_policy="first_available",
         model_fallbacks=("gpt-5.5", "kimi-k2.6", "deepseek-v4-pro"),
         tool_include=frozenset({
-            "web_search", "web_fetch", "web_research",
+            "web_search", "web_fetch", "web_research", "twitter_search",
             "bash", "read_file", "write_file", "list_directory",
             "glob", "grep",
         }),
@@ -544,7 +544,7 @@ AGENT_TYPES: dict[str, AgentType] = {
         model_policy="random_available",
         model_fallbacks=("claude-haiku-4-5",),
         tool_include=frozenset({
-            "web_search", "web_fetch",
+            "web_search", "web_fetch", "twitter_search",
             "bash", "read_file", "list_directory",
         }),
         system_prompt=_EXPLORE_FAST_PROMPT,

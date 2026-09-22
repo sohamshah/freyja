@@ -24,6 +24,7 @@ from bridge.tools.search_tools import GlobTool, GrepTool
 from bridge.tools.skill_tools import ListSkillsTool, LoadSkillTool, SearchSkillsTool
 from bridge.tools.quiver_tools import GenerateSvgTool
 from bridge.tools.sound_generation_tool import GenerateSoundEffectTool
+from bridge.tools.twitter_tool import TwitterSearchTool
 
 __all__ = [
     "AnalyzeVideoTool",
@@ -45,6 +46,7 @@ __all__ = [
     "RecordUserPreferenceTool",
     "SearchSkillsTool",
     "SessionKanbanBoard",
+    "TwitterSearchTool",
     "WriteFileTool",
     "build_desktop_registry",
 ]

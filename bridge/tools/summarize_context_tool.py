@@ -62,6 +62,7 @@ class SummarizeContextTool:
         "web_search",
         "web_fetch",
         "web_task",
+        "twitter_search",
     })
 
     def __init__(

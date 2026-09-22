@@ -2704,7 +2704,7 @@ _TOOL_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "glob", "grep", "list_directory", "artifacts",
     )),
     ("Shell", ("bash",)),
-    ("Web", ("web_search", "web_fetch", "web_research")),
+    ("Web", ("web_search", "web_fetch", "web_research", "twitter_search")),
     ("Browser", ("browser_execute_js", "browser_screenshot")),
     ("Computer", (
         "screenshot", "click", "move_mouse", "scroll", "type_text",

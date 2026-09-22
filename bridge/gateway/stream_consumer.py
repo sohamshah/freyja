@@ -108,9 +108,10 @@ PLAN_TITLE_THINKING = "Thinking"
 # every group. Tools not listed here fall through to the default.
 _PHASE_TITLE_BY_TOOL = {
     # Research / external data
-    "web_search":   "Researching",
-    "web_fetch":    "Researching",
-    "web_research": "Researching",
+    "web_search":     "Researching",
+    "web_fetch":      "Researching",
+    "web_research":   "Researching",
+    "twitter_search": "Searching X/Twitter",
     # Local filesystem reads
     "read_file":      "Reading",
     "list_directory": "Reading",
@@ -215,7 +216,7 @@ def _build_sources_for_tool(
                     _add(u, lbl)
                 if len(sources) >= _MAX_SOURCES_PER_CARD:
                     break
-    elif tool_name == "web_search":
+    elif tool_name in {"web_search", "twitter_search"}:
         # Pull the top URLs from the result preview. Slack renders the
         # citation pills underneath the card title.
         for m in _URL_RE.finditer(preview):

@@ -56,6 +56,7 @@ SLACK_TOOL_ALLOWLIST: frozenset[str] = frozenset({
     "web_search",
     "web_fetch",
     "web_research",
+    "twitter_search",
     # WRITE (scoped)
     "write_file",
     "edit_file",
