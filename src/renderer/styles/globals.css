@@ -1191,6 +1191,12 @@ body.splash-active [data-splash-target='hero-icon'] {
   }
 }
 
+/* Scrollbar corner — paints white by default when a box has both bars;
+   on this ground that reads as a bug even when the overflow is real. */
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 /* ─── Fold — animated disclosure ────────────────────────────────────
    One choreography for every collapsible surface (sidebar sections,
    session sub-trees, activity-panel sections). Component + state
@@ -1218,6 +1224,13 @@ body.splash-active [data-splash-target='hero-icon'] {
 .fold {
   display: grid;
   grid-template-rows: 0fr;
+  /* One column that is allowed to shrink. Grid items default to
+     min-width:auto, so without minmax(0, …) + min-width:0 a no-wrap
+     row title (`truncate`) would set the fold's minimum width and push
+     the whole sidebar into horizontal overflow — a stray horizontal
+     scrollbar and a white scrollbar-corner square. */
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   transition: grid-template-rows var(--fold-close) var(--ease-in-quart);
 }
 .fold[data-open='true'] {
@@ -1226,6 +1239,7 @@ body.splash-active [data-splash-target='hero-icon'] {
 }
 .fold-in {
   min-height: 0;
+  min-width: 0;
   overflow: hidden;
 }
 /* At rest the clip is released so focus rings / hover shadows at the
