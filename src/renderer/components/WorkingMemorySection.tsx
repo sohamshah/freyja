@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Fold, FoldCaret } from './Fold'
 import { useHarness } from '../state/store'
 import {
   ChildLabel,
@@ -189,7 +190,8 @@ export function WorkingMemorySection({ topOffset = 0 }: { topOffset?: number }) 
         </button>
       </SectionSlug>
 
-      {!expanded ? null : !loaded ? (
+      <Fold open={expanded} stagger={false}>
+      {!loaded ? (
         <LoadingGhost />
       ) : error ? (
         <div className="px-4 pb-3 pt-2 font-mono text-[11px] text-fg-3">
@@ -200,7 +202,7 @@ export function WorkingMemorySection({ topOffset = 0 }: { topOffset?: number }) 
           No workstreams set this session.
         </div>
       ) : (
-        <div className="space-y-2.5 px-4 pb-3 pt-2">
+        <div className="space-y-2.5 px-4 pb-3 pt-2 fold-rows fold-rows--slide">
           {hasOverview && <OverviewCard overview={overview!} />}
 
           {workstreams.map((ws) => (
@@ -221,6 +223,7 @@ export function WorkingMemorySection({ topOffset = 0 }: { topOffset?: number }) 
           )}
         </div>
       )}
+      </Fold>
     </div>
   )
 }
@@ -464,23 +467,24 @@ function DoneFold({
       <button
         type="button"
         onClick={onToggle}
-        className="flex w-full items-baseline gap-1.5 text-left font-mono text-[10.5px] leading-[1.5] text-ok transition-colors hover:text-fg-1"
+        data-open={expanded ? 'true' : 'false'}
+        className="fold-head flex w-full items-baseline gap-1.5 text-left font-mono text-[10.5px] leading-[1.5] text-ok transition-colors hover:text-fg-1"
       >
         <span className="shrink-0">✓</span>
         <span className="shrink-0 tabular-nums">{streams.length} done</span>
         <span className="min-w-0 flex-1 truncate text-fg-3">
           · {titles.join(', ')}
         </span>
-        <span className="shrink-0 text-[9px] text-fg-3">{expanded ? '▾' : '▸'}</span>
+        <FoldCaret open={expanded} className="self-center text-fg-3" />
       </button>
 
-      {expanded && (
+      <Fold open={expanded} innerClassName="fold-rows--slide">
         <div className="mt-2 space-y-2.5">
           {streams.map((ws) => (
             <WorkstreamCard key={ws.id} workstream={ws} groups={childrenOf(ws.id)} />
           ))}
         </div>
-      )}
+      </Fold>
     </div>
   )
 }

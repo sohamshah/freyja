@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { Receipt } from '@shared/events'
 import { useVoiceStore } from '../../state/voice-store'
 import { StickyHeader } from '../StickyHeader'
+import { Fold, FoldCaret } from '../Fold'
 
 /**
  * VoiceReceiptsSection — the paper trail of the Galdr voice lane inside
@@ -26,16 +27,18 @@ export function VoiceReceiptsSection() {
         <div className="flex w-full items-baseline justify-between gap-2 px-4 py-2">
           <button
             onClick={() => setExpanded((v) => !v)}
-            className="flex items-baseline gap-2 text-left"
+            data-open={expanded ? 'true' : 'false'}
+            className="fold-head flex items-baseline gap-2 text-left"
           >
-            <div className="label">voice</div>
+            <div className="label fold-title">voice</div>
             <span className="font-mono text-[10px] text-fg-3">{receipts.length}</span>
-            <span className="text-[9px] text-fg-3">{expanded ? '▾' : '▸'}</span>
+            <FoldCaret open={expanded} className="self-center text-fg-3" />
           </button>
         </div>
       </StickyHeader>
 
-      {!expanded ? null : recent.length === 0 ? (
+      <Fold open={expanded}>
+      {recent.length === 0 ? (
         <div className="px-4 pb-3 pt-1 text-[11px] italic text-fg-3">
           No voice activity yet{hotkeyLabel ? ` · ${hotkeyLabel} to speak` : ''}
         </div>
@@ -46,6 +49,7 @@ export function VoiceReceiptsSection() {
           ))}
         </div>
       )}
+      </Fold>
     </div>
   )
 }
@@ -59,7 +63,7 @@ function ReceiptRow({ receipt, onUndo }: { receipt: Receipt; onUndo: () => void 
     >
       <div className="flex items-center gap-2">
         <span
-          className={`h-1 w-1 shrink-0 rounded-full ${laneDotClass(receipt.lane)}`}
+          className={`fold-dot h-1 w-1 shrink-0 rounded-full ${laneDotClass(receipt.lane)}`}
           title={`${receipt.lane} lane · ${receipt.verb}`}
         />
         <span className="shrink-0 font-mono text-[10px] tabular-nums text-fg-3">

@@ -4,6 +4,7 @@ import type { ArtifactRecord } from '@shared/events'
 import { relativeTime } from '../lib/format'
 import { ArtifactLibrary } from './ArtifactLibrary'
 import { StickyHeader } from './StickyHeader'
+import { Fold, FoldCaret } from './Fold'
 
 /**
  * File type to icon/color mapping for the artifact list.
@@ -73,11 +74,12 @@ export function ArtifactsSection() {
         <div className="flex w-full items-baseline justify-between gap-2 px-4 py-2">
           <button
             onClick={() => setExpanded((v) => !v)}
-            className="flex items-baseline gap-2 text-left"
+            data-open={expanded ? 'true' : 'false'}
+            className="fold-head flex items-baseline gap-2 text-left"
           >
-            <div className="label">artifacts</div>
+            <div className="label fold-title">artifacts</div>
             <span className="font-mono text-[10px] text-fg-3">{artifacts.length}</span>
-            <span className="text-[9px] text-fg-3">{expanded ? '▾' : '▸'}</span>
+            <FoldCaret open={expanded} className="self-center text-fg-3" />
           </button>
           {artifacts.length > 0 && (
             <button
@@ -90,7 +92,8 @@ export function ArtifactsSection() {
         </div>
       </StickyHeader>
 
-      {!expanded ? null : artifacts.length === 0 ? (
+      <Fold open={expanded} stagger={false}>
+      {artifacts.length === 0 ? (
         <div className="px-4 pb-3 pt-1 text-[11px] italic text-fg-3">No file changes yet</div>
       ) : (
         <div className="space-y-3 px-4 pb-3 pt-1">
@@ -109,8 +112,8 @@ export function ArtifactsSection() {
                 </span>
               </div>
 
-              {/* File list */}
-              <div className="space-y-1">
+              {/* File list — staggers; the type glyph stamps in a beat after its row */}
+              <div className="space-y-1 fold-rows">
                 {group.items.map((artifact) => (
                   <ArtifactRow
                     key={artifact.id}
@@ -123,6 +126,7 @@ export function ArtifactsSection() {
           ))}
         </div>
       )}
+      </Fold>
     </div>
   )
 }
@@ -144,7 +148,7 @@ function ArtifactRow({
       className="group flex w-full items-center gap-2 rounded-md bg-white/[0.02] px-2 py-1.5 text-left ring-hairline transition-colors hover:bg-white/[0.06] hover:ring-accent/30"
     >
       {/* Type icon */}
-      <span className={`shrink-0 font-mono text-[10px] font-bold ${meta.color}`}>
+      <span className={`fold-stamp shrink-0 font-mono text-[10px] font-bold ${meta.color}`}>
         {meta.icon}
       </span>
 

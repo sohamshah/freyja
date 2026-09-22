@@ -10,6 +10,7 @@ import { ToolTimeline } from './ToolTimeline'
 import { ChangesSection } from './ChangesSection'
 import { TopoBackdrop } from './TopoBackdrop'
 import { StickyHeader } from './StickyHeader'
+import { Fold, FoldCaret } from './Fold'
 import { DrafterRunsPanel } from './DrafterRunsPanel'
 import { SkillCandidatesPanel } from './SkillCandidatesPanel'
 import { VoiceReceiptsSection } from './voice/VoiceReceiptsSection'
@@ -246,12 +247,13 @@ export function ActivityPanel() {
             <div className="flex w-full items-center justify-between gap-2 px-4 py-2">
               <button
                 onClick={() => setDiagnosticsOpen((open) => !open)}
-                className={`label flex items-center gap-2 hover:text-fg-1 ${
+                data-open={diagnosticsOpen ? 'true' : 'false'}
+                className={`fold-head label flex items-center gap-2 hover:text-fg-1 ${
                   diagnosticAttention > 0 ? 'text-warn' : 'text-fg-2'
                 }`}
               >
-                <span>{diagnosticsOpen ? '▾' : '▸'}</span>
-                diagnostics
+                <FoldCaret open={diagnosticsOpen} />
+                <span className="fold-title">diagnostics</span>
                 {diagnosticAttention > 0 && (
                   <span className="rounded bg-warn/10 px-1.5 py-[1px] font-mono text-[8.5px] text-warn ring-1 ring-warn/20">
                     {diagnosticAttention}
@@ -273,9 +275,9 @@ export function ActivityPanel() {
               {systemEvents.length} events · {logs.length} logs
             </div>
           )}
-          {diagnosticsOpen && (
+          <Fold open={diagnosticsOpen} stagger={false}>
             <div className="space-y-2">
-              <div className="space-y-1">
+              <div className="space-y-1 fold-rows fold-rows--scan">
                 {systemEvents.length === 0 && (
                   <div className="rounded bg-white/[0.02] px-2 py-1.5 text-[11px] italic text-fg-3 ring-hairline">
                     No system events
@@ -313,7 +315,7 @@ export function ActivityPanel() {
                 ))}
               </div>
             </div>
-          )}
+          </Fold>
           </div>
         </div>
       </div>
@@ -677,11 +679,11 @@ function SkillCandidatesPanelContainer() {
           {open ? 'hide' : 'show'}
         </span>
       </button>
-      {open && (
+      <Fold open={open} stagger={false}>
         <div className="hairline-t">
           <SkillCandidatesPanel />
         </div>
-      )}
+      </Fold>
     </div>
   )
 }

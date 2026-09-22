@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useHarness } from '../state/store'
 import { StickyHeader } from './StickyHeader'
+import { Fold, FoldCaret } from './Fold'
 
 /**
  * One row of the per-session action ledger (what the agent did). Mirrors the
@@ -150,16 +151,18 @@ export function ActionLedgerSection() {
         <div className="flex w-full items-baseline justify-between gap-2 px-4 py-2">
           <button
             onClick={() => setExpanded((v) => !v)}
-            className="flex items-baseline gap-2 text-left"
+            data-open={expanded ? 'true' : 'false'}
+            className="fold-head flex items-baseline gap-2 text-left"
           >
-            <div className="label">actions this session</div>
+            <div className="label fold-title">actions this session</div>
             <span className="font-mono text-[10px] tabular-nums text-fg-3">{actionCount}</span>
-            <span className="text-[9px] text-fg-3">{expanded ? '▾' : '▸'}</span>
+            <FoldCaret open={expanded} className="self-center text-fg-3" />
           </button>
         </div>
       </StickyHeader>
 
-      {!expanded ? null : total === 0 && pinned.length === 0 ? (
+      <Fold open={expanded} innerClassName="fold-rows--posted">
+      {total === 0 && pinned.length === 0 ? (
         <div className="px-4 pb-3 pt-1 text-[11px] italic text-fg-3">
           {error ? `ledger unavailable: ${error}` : 'No recorded actions yet'}
         </div>
@@ -175,7 +178,7 @@ export function ActionLedgerSection() {
                   title={item.path}
                   className="flex w-full items-center gap-2 rounded-md bg-white/[0.02] px-2 py-1.5 ring-hairline"
                 >
-                  <span className={`shrink-0 font-mono text-[11px] font-bold ${meta.color}`}>
+                  <span className={`fold-stamp shrink-0 font-mono text-[11px] font-bold ${meta.color}`}>
                     {meta.glyph}
                   </span>
                   <div className="min-w-0 flex-1">
@@ -243,6 +246,7 @@ export function ActionLedgerSection() {
           )}
         </div>
       )}
+      </Fold>
     </div>
   )
 }

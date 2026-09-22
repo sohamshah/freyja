@@ -5,6 +5,8 @@ import { relativeTime } from '../lib/format'
 import { ArtifactLibrary } from './ArtifactLibrary'
 import { FileChangeCard } from './FileChangeCard'
 import { StickyHeader } from './StickyHeader'
+import { Fold, FoldCaret } from './Fold'
+import type { CSSProperties } from 'react'
 
 export function ChangesSection() {
   const changeSets = useHarness((s) => s.fileChanges)
@@ -47,9 +49,10 @@ export function ChangesSection() {
         <div className="flex w-full items-baseline justify-between gap-2 px-4 py-2">
           <button
             onClick={() => setExpanded((v) => !v)}
-            className="flex items-baseline gap-2 text-left"
+            data-open={expanded ? 'true' : 'false'}
+            className="fold-head flex items-baseline gap-2 text-left"
           >
-            <div className="label">changes</div>
+            <div className="label fold-title">changes</div>
             <span className="font-mono text-[10px] text-fg-3">{changeSets.length}</span>
             {changeSets.length > 0 && (
               <span className="font-mono text-[9px] text-fg-3">
@@ -57,7 +60,7 @@ export function ChangesSection() {
                 <span className="text-danger">-{totals.deletions}</span>
               </span>
             )}
-            <span className="text-[9px] text-fg-3">{expanded ? '▾' : '▸'}</span>
+            <FoldCaret open={expanded} className="self-center text-fg-3" />
           </button>
           {changeSets.length > 0 && (
             <button
@@ -70,7 +73,8 @@ export function ChangesSection() {
         </div>
       </StickyHeader>
 
-      {!expanded ? null : ordered.length === 0 ? (
+      <Fold open={expanded}>
+      {ordered.length === 0 ? (
         <div className="px-4 pb-3 pt-1 text-[11px] italic text-fg-3">No file changes yet</div>
       ) : (
         <div className="space-y-2 px-4 pb-3 pt-1">
@@ -92,6 +96,7 @@ export function ChangesSection() {
           )}
         </div>
       )}
+      </Fold>
     </div>
   )
 }
@@ -132,8 +137,12 @@ function ChangeSetRow({
             <span>·</span>
             <span>{relativeTime(changeSet.createdAt)}</span>
             <span>·</span>
-            <span className="text-ok">+{changeSet.totals.additions}</span>
-            <span className="text-danger">-{changeSet.totals.deletions}</span>
+            <span className="text-ok">
+              +<span className="fold-tally" style={{ '--fold-tally-to': changeSet.totals.additions } as CSSProperties} />
+            </span>
+            <span className="text-danger">
+              -<span className="fold-tally" style={{ '--fold-tally-to': changeSet.totals.deletions } as CSSProperties} />
+            </span>
           </div>
         </button>
         <button

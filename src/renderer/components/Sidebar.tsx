@@ -13,6 +13,7 @@ import type {
 import { formatDuration, formatTokens, relativeTime } from '../lib/format'
 import { Spinner } from '../lib/spinner'
 import { StickyHeader } from './StickyHeader'
+import { Fold, FoldCaret } from './Fold'
 import { BranchSessionDialog } from './BranchSessionDialog'
 import { TopoBackdrop } from './TopoBackdrop'
 
@@ -86,6 +87,37 @@ export function Sidebar() {
   const sidebarWidth = useHarness((s) => s.sidebarWidth)
   const setSidebarWidth = useHarness((s) => s.setSidebarWidth)
   const [resizing, setResizing] = useState(false)
+
+  // Each parent row is followed by a Fold holding its children. The
+  // spine (a guide line down from the parent's caret) is positioned
+  // from the same indent arithmetic SessionRow uses (8 + depth * 14).
+  const renderSessionNodes = (nodes: SessionTreeNode[]): React.ReactNode =>
+    nodes.map((node) => {
+      const s = node.row
+      return (
+        <Fragment key={s.id}>
+          <SessionRow
+            session={s}
+            depth={s.depth}
+            isActive={s.id === activeSessionId}
+            hasChildren={s.hasChildren}
+            isExpanded={s.isExpanded}
+            onToggleExpand={() => toggleExpanded(s.id, s.isExpanded)}
+            onOpen={(mode) => openSessionPane(s.id, mode)}
+          />
+          {s.hasChildren && (
+            <Fold
+              open={s.isExpanded}
+              className="fold-spine"
+              innerClassName="space-y-0.5"
+              style={{ '--spine-x': `${8 + s.depth * 14 + 3}px` } as React.CSSProperties}
+            >
+              {renderSessionNodes(node.kids)}
+            </Fold>
+          )}
+        </Fragment>
+      )
+    })
 
   // When the active session changes (quick switcher, sidebar click,
   // pane swap), make sure that session's row is visible in the
@@ -531,18 +563,7 @@ export function Sidebar() {
                     : 'No local sessions.'}
             </div>
           )}
-          {sessionTree.map((s) => (
-            <SessionRow
-              key={s.id}
-              session={s}
-              depth={s.depth}
-              isActive={s.id === activeSessionId}
-              hasChildren={s.hasChildren}
-              isExpanded={s.isExpanded}
-              onToggleExpand={() => toggleExpanded(s.id, s.isExpanded)}
-              onOpen={(mode) => openSessionPane(s.id, mode)}
-            />
-          ))}
+          {renderSessionNodes(nestSessionTree(sessionTree))}
         </Section>
       </div>
 
@@ -604,7 +625,7 @@ export function Sidebar() {
                     />
                   ) : (
                     <span
-                      className={`block h-1.5 w-1.5 rounded-full ${
+                      className={`block h-1.5 w-1.5 rounded-full fold-dot ${
                         failed ? 'bg-danger' : 'bg-ok'
                       }`}
                     />
@@ -686,7 +707,7 @@ export function Sidebar() {
                 className="group relative flex w-full items-start gap-2 rounded-md px-2 py-[7px] text-left text-[12px] text-fg-1 hover:bg-white/[0.04]"
               >
                 <span className="mt-[3px] flex h-3 w-[18px] items-center justify-center">
-                  <span className={`block h-1.5 w-1.5 rounded-full ${dotClass}`} />
+                  <span className={`block h-1.5 w-1.5 rounded-full fold-dot ${dotClass}`} />
                 </span>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
@@ -779,6 +800,27 @@ export function Sidebar() {
   )
 }
 
+type SessionTreeRow = SessionSnapshot & { depth: number; hasChildren: boolean; isExpanded: boolean }
+type SessionTreeNode = { row: SessionTreeRow; kids: SessionTreeNode[] }
+
+/** Re-nest the depth-first flattened tree so each expanded parent's
+ *  children can sit inside their own Fold and unroll / fold as a group.
+ *  The flat walk only emits children of expanded parents, so a collapsed
+ *  parent gets an empty Fold — the Fold renders its last snapshot on the
+ *  way out, which is what makes the close animate. */
+function nestSessionTree(rows: SessionTreeRow[]): SessionTreeNode[] {
+  const roots: SessionTreeNode[] = []
+  const stack: SessionTreeNode[] = []
+  for (const row of rows) {
+    const node: SessionTreeNode = { row, kids: [] }
+    while (stack.length > row.depth) stack.pop()
+    if (stack.length === 0) roots.push(node)
+    else stack[stack.length - 1].kids.push(node)
+    stack.push(node)
+  }
+  return roots
+}
+
 function Section({
   title,
   count,
@@ -795,21 +837,29 @@ function Section({
   // The title row is wrapped in StickyHeader, which pins it to the
   // top of the scroll container and morphs it into a centered chip
   // once the user scrolls past its natural position.
+  // The body is a Fold (components/Fold.tsx): the sheet folds open on
+  // grid-template-rows so the rail below the sessions pane grows at one
+  // continuous rate instead of snapping, and rows stagger in. The
+  // header carries the "signal" cues — caret lamp, ruled hairline,
+  // tracking settle — styled in globals.css under "Fold".
   return (
     <div>
       <StickyHeader>
         <button
           onClick={onToggle}
-          className="flex w-full items-center justify-between px-3 py-2 label hover:text-fg-1"
+          data-open={open ? 'true' : 'false'}
+          className="fold-head fold-head--inset flex w-full items-center justify-between px-3 py-2 label hover:text-fg-1"
         >
           <span className="flex items-center gap-1.5">
-            <Caret open={open} />
-            {title}
+            <FoldCaret open={open} />
+            <span className="fold-title">{title}</span>
           </span>
           <span className="font-mono text-fg-3">{count}</span>
         </button>
       </StickyHeader>
-      {open && <div className="space-y-0.5 px-2 pb-2 pt-1">{children}</div>}
+      <Fold open={open} innerClassName="space-y-0.5 px-2 pb-2 pt-1">
+        {children}
+      </Fold>
     </div>
   )
 }
@@ -969,7 +1019,7 @@ function SkillRow({ skill, onSelect }: { skill: Skill; onSelect?: () => void }) 
       title={liveHeadline || `Open ${skill.name}`}
     >
       <span
-        className={`mt-[7px] inline-block h-1.5 w-1.5 rounded-full ${CONFIDENCE_COLOR[skill.confidence]}`}
+        className={`mt-[7px] inline-block h-1.5 w-1.5 rounded-full fold-dot ${CONFIDENCE_COLOR[skill.confidence]}`}
       />
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-1.5">
@@ -1018,7 +1068,7 @@ function MemoryRow({ memory, onSelect }: { memory: MemoryRecord; onSelect?: () =
       className="group flex w-full items-start gap-2 rounded-md px-2 py-[6px] text-left hover:bg-white/[0.04]"
       title={`Open ${memory.kind} memory`}
     >
-      <span className="mt-[7px] inline-block h-1.5 w-1.5 rounded-full bg-accent" />
+      <span className="mt-[7px] inline-block h-1.5 w-1.5 rounded-full fold-dot bg-accent" />
       <div className="min-w-0 flex-1">
         <div className="line-clamp-2 text-[11.5px] leading-[1.35] text-fg-0">
           {text}
@@ -1768,19 +1818,6 @@ function Stat({
   )
 }
 
-function Caret({ open }: { open: boolean }) {
-  return (
-    <svg
-      viewBox="0 0 10 10"
-      width="8"
-      height="8"
-      style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 120ms' }}
-    >
-      <path d="M3 2 L7 5 L3 8 Z" fill="currentColor" />
-    </svg>
-  )
-}
-
 const SUBAGENT_STATE_COLOR: Record<SubagentState, string> = {
   pending: 'bg-fg-3',
   running: 'bg-accent',
@@ -1800,7 +1837,7 @@ function StateDot({ state }: { state: SubagentState }) {
   return (
     <span className="relative mt-[6px]">
       <span
-        className={`inline-block h-1.5 w-1.5 rounded-full ${SUBAGENT_STATE_COLOR[state]}`}
+        className={`inline-block h-1.5 w-1.5 rounded-full fold-dot ${SUBAGENT_STATE_COLOR[state]}`}
       />
     </span>
   )
@@ -1954,7 +1991,7 @@ function SessionRow({
           </span>
         ) : (
           <span
-            className={`mt-[5px] inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
+            className={`mt-[5px] inline-block h-1.5 w-1.5 shrink-0 rounded-full fold-dot ${
               isActive ? 'bg-accent' : isChild ? 'bg-fg-3/70' : 'bg-fg-3'
             }`}
           />
@@ -1976,14 +2013,8 @@ function SessionRow({
             }}
             title={isExpanded ? 'Collapse sub-sessions' : 'Expand sub-sessions'}
             className="mt-[6px] flex h-3 w-3 shrink-0 items-center justify-center text-fg-3 hover:text-fg-0"
-            style={{
-              transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
-              transition: 'transform 120ms',
-            }}
           >
-            <svg viewBox="0 0 10 10" width="6" height="6">
-              <path d="M3 2 L7 5 L3 8 Z" fill="currentColor" />
-            </svg>
+            <FoldCaret open={isExpanded} size={6} />
           </span>
         ) : (
           <span className="mt-[6px] inline-block h-3 w-3 shrink-0" />

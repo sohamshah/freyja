@@ -1190,3 +1190,246 @@ body.splash-active [data-splash-target='hero-icon'] {
     filter: none;
   }
 }
+
+/* ─── Fold — animated disclosure ────────────────────────────────────
+   One choreography for every collapsible surface (sidebar sections,
+   session sub-trees, activity-panel sections). Component + state
+   machine: components/Fold.tsx. Sequence on open: the caret turns first
+   (220ms expo), 40ms later the sheet folds open on grid-template-rows
+   (260ms quint) — never `height` — and rows fade + rise 4px in with an
+   18ms stagger capped at eight, so an 88-row list still settles in
+   ~330ms. Close is faster, unstaggered, and eases IN like a real thing
+   accelerating shut. Everything else is a small quirk on a small
+   surface: the caret blinks accent once (the running-session lamp), a
+   ruled hairline draws under the open header, status dots land in
+   three steps (the pixel-dither indicator), header tracking settles. */
+:root {
+  --fold-open: 260ms;
+  --fold-close: 190ms;
+  --fold-lead: 40ms;
+  --fold-row: 200ms;
+  --fold-row-out: 120ms;
+  --fold-stagger: 18ms;
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-quart: cubic-bezier(0.7, 0, 0.84, 0);
+}
+
+.fold {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--fold-close) var(--ease-in-quart);
+}
+.fold[data-open='true'] {
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--fold-open) var(--ease-out-quint) var(--fold-lead);
+}
+.fold-in {
+  min-height: 0;
+  overflow: hidden;
+}
+/* At rest the clip is released so focus rings / hover shadows at the
+   edges aren't cut off. It comes back the instant the fold closes. */
+.fold[data-settled='true'] > .fold-in {
+  overflow: visible;
+}
+
+/* Row order → stagger index. Capped at 8 so long lists don't drag. */
+.fold-rows > :nth-child(1) { --fold-i: 0; }
+.fold-rows > :nth-child(2) { --fold-i: 1; }
+.fold-rows > :nth-child(3) { --fold-i: 2; }
+.fold-rows > :nth-child(4) { --fold-i: 3; }
+.fold-rows > :nth-child(5) { --fold-i: 4; }
+.fold-rows > :nth-child(6) { --fold-i: 5; }
+.fold-rows > :nth-child(7) { --fold-i: 6; }
+.fold-rows > :nth-child(8) { --fold-i: 7; }
+.fold-rows > :nth-child(n + 9) { --fold-i: 8; }
+/* "Posted" — entries land oldest-first so the newest arrives last, the
+   way a ledger is posted. Used by the action ledger. */
+.fold-rows--posted > :nth-child(n) { --fold-i: 8; }
+.fold-rows--posted > :nth-last-child(1) { --fold-i: 0; }
+.fold-rows--posted > :nth-last-child(2) { --fold-i: 1; }
+.fold-rows--posted > :nth-last-child(3) { --fold-i: 2; }
+.fold-rows--posted > :nth-last-child(4) { --fold-i: 3; }
+.fold-rows--posted > :nth-last-child(5) { --fold-i: 4; }
+.fold-rows--posted > :nth-last-child(6) { --fold-i: 5; }
+.fold-rows--posted > :nth-last-child(7) { --fold-i: 6; }
+.fold-rows--posted > :nth-last-child(8) { --fold-i: 7; }
+
+@keyframes fold-row-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes fold-row-in-x {
+  from { opacity: 0; transform: translateX(-5px); }
+  to   { opacity: 1; transform: none; }
+}
+/* Only while opening ([data-settled=false]) — a row inserted or
+   re-sorted into an open section never replays the entrance. */
+.fold[data-open='true'][data-settled='false'] .fold-rows > * {
+  animation: fold-row-in var(--fold-row) var(--ease-out-expo) backwards;
+  animation-delay: calc(var(--fold-lead) + var(--fold-i, 0) * var(--fold-stagger));
+}
+/* "Slide" — entries arrive along the rule, not from above. Working memory. */
+.fold[data-open='true'][data-settled='false'] .fold-rows--slide > * {
+  animation-name: fold-row-in-x;
+}
+/* "Scan" — quantised fade, the scan-line vibe. Diagnostics. */
+.fold[data-open='true'][data-settled='false'] .fold-rows--scan > * {
+  animation-timing-function: steps(3, end);
+}
+.fold[data-open='false'] .fold-rows > * {
+  opacity: 0;
+  transition: opacity var(--fold-row-out) var(--ease-in-quart);
+}
+
+/* Status dots (.fold-dot) and type glyphs (.fold-stamp) land a beat
+   after their row, in three steps — the pixel-dither indicator's
+   quantised feel, on a 6px surface. */
+@keyframes fold-stamp {
+  from { opacity: 0; transform: scale(0.5); }
+  to   { opacity: 1; transform: none; }
+}
+.fold[data-open='true'][data-settled='false'] .fold-rows .fold-dot,
+.fold[data-open='true'][data-settled='false'] .fold-rows .fold-stamp {
+  animation: fold-stamp 210ms steps(3, end) backwards;
+  animation-delay: calc(var(--fold-lead) + 60ms + var(--fold-i, 0) * var(--fold-stagger));
+}
+
+/* Tallies (.fold-tally) count up from 0 to --fold-tally-to as their
+   row lands. Changes section. The number is drawn by a CSS counter so
+   the integer itself is what interpolates. */
+@property --fold-tally {
+  syntax: '<integer>';
+  inherits: false;
+  initial-value: 0;
+}
+.fold-tally {
+  --fold-tally: var(--fold-tally-to, 0);
+  font-variant-numeric: tabular-nums;
+}
+.fold-tally::after {
+  counter-reset: fold-tally var(--fold-tally);
+  content: counter(fold-tally);
+}
+@keyframes fold-tally-up {
+  from { --fold-tally: 0; }
+}
+.fold[data-open='true'][data-settled='false'] .fold-rows .fold-tally {
+  animation: fold-tally-up 420ms var(--ease-out-quint) backwards;
+  animation-delay: calc(var(--fold-lead) + 40ms + var(--fold-i, 0) * var(--fold-stagger));
+}
+
+/* Caret: turns with the fold, blinks accent once as it turns (from the
+   second toggle on — sections that boot open don't all flash). */
+.fold-caret {
+  flex: 0 0 auto;
+  transition: transform 160ms var(--ease-in-quart);
+}
+.fold-caret[data-open='true'] {
+  transform: rotate(90deg);
+  transition: transform 220ms var(--ease-out-expo);
+}
+.fold-lamp {
+  fill: var(--accent);
+  opacity: 0;
+}
+@keyframes fold-lamp {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+@keyframes fold-lamp-glow {
+  from { filter: drop-shadow(0 0 3px rgba(168, 212, 252, 0.7)); }
+  to   { filter: drop-shadow(0 0 2px rgba(168, 212, 252, 0)); }
+}
+.fold-caret[data-open='true'][data-lamp='true'] {
+  animation: fold-lamp-glow 460ms var(--ease-out-quint) backwards;
+}
+.fold-caret[data-open='true'][data-lamp='true'] .fold-lamp {
+  animation: fold-lamp 460ms var(--ease-out-quint) backwards;
+}
+
+/* Header: a ruled hairline draws in left→right under an open section
+   and un-draws from the right on close; the label's tracking settles
+   from 0.20em to 0.14em as it opens. */
+.fold-head {
+  position: relative;
+}
+.fold-head::after {
+  content: '';
+  position: absolute;
+  left: var(--fold-rule-inset, 0px);
+  right: var(--fold-rule-inset, 0px);
+  bottom: 0;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.12);
+  transform: scaleX(0);
+  transform-origin: right center;
+  transition: transform 160ms var(--ease-in-quart);
+  pointer-events: none;
+}
+.fold-head[data-open='true']::after {
+  transform: scaleX(1);
+  transform-origin: left center;
+  transition: transform 300ms var(--ease-out-expo) var(--fold-lead);
+}
+.fold-head--inset {
+  --fold-rule-inset: 12px;
+}
+.fold-title {
+  transition: letter-spacing 320ms var(--ease-out-quint);
+}
+.fold-head[data-open='false'] .fold-title {
+  letter-spacing: 0.2em;
+}
+
+/* Spine: a session sub-tree's guide line draws top→down along the
+   parent's caret as the children unroll. */
+.fold-spine {
+  position: relative;
+}
+.fold-spine::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 6px;
+  left: var(--spine-x, 11px);
+  width: 1px;
+  background: rgba(255, 255, 255, 0.09);
+  transform: scaleY(0);
+  transform-origin: top center;
+  transition: transform 140ms var(--ease-in-quart);
+  pointer-events: none;
+}
+.fold-spine[data-open='true']::before {
+  transform: scaleY(1);
+  transition: transform 320ms var(--ease-out-expo) var(--fold-lead);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fold,
+  .fold[data-open='true'],
+  .fold-caret,
+  .fold-caret[data-open='true'],
+  .fold-head::after,
+  .fold-head[data-open='true']::after,
+  .fold-spine::before,
+  .fold-spine[data-open='true']::before {
+    transition-duration: 1ms;
+    transition-delay: 0ms;
+  }
+  .fold-title {
+    transition: none;
+  }
+  .fold-rows > *,
+  .fold-dot,
+  .fold-stamp,
+  .fold-lamp,
+  .fold-caret,
+  .fold-tally {
+    animation: none !important;
+  }
+  .fold[data-open='false'] .fold-rows > * {
+    transition-duration: 1ms;
+  }
+}

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { relativeTime } from '../../lib/format'
 import { StickyHeader } from '../StickyHeader'
+import { FoldCaret } from '../Fold'
 
 /**
  * Grounded Memory — shared design primitives.
@@ -210,17 +211,16 @@ export function SectionSlug({
           type="button"
           onClick={onToggle}
           disabled={!toggleable}
-          className={`flex min-w-0 items-baseline gap-2 text-left ${
+          data-open={toggleable ? (expanded ? 'true' : 'false') : undefined}
+          className={`fold-head flex min-w-0 items-baseline gap-2 text-left ${
             toggleable ? '' : 'cursor-default'
           }`}
         >
-          <span className="label shrink-0">{label}</span>
+          <span className="label fold-title shrink-0">{label}</span>
           {count != null && (
             <span className="shrink-0 font-mono text-[10px] tabular-nums text-fg-3">{count}</span>
           )}
-          {toggleable && (
-            <span className="shrink-0 text-[9px] text-fg-3">{expanded ? '▾' : '▸'}</span>
-          )}
+          {toggleable && <FoldCaret open={expanded} className="self-center text-fg-3" />}
         </button>
         {children && <div className="flex shrink-0 items-center gap-1.5">{children}</div>}
       </div>
