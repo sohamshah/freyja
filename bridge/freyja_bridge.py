@@ -10283,12 +10283,24 @@ class _BridgeSession:
         self._ledger_last_digest = digest
         self._ledger_turns_since_emit = 0
         self._ledger_seen_compactions = comp_count
+        # Working-tree changes seen across passive commands (sleep, tail…)
+        # are listed as "not yours"; a fork says so up front, so the model
+        # doesn't read inherited history as things it did in this chat.
+        coincident = led.coincident(creator_id=self.id) if hasattr(led, "coincident") else []
+        forked_from: str | None = None
+        meta = getattr(self.session, "metadata", None) if self.session is not None else None
+        if isinstance(meta, dict):
+            ff = meta.get("forked_from")
+            if isinstance(ff, str) and ff.strip():
+                forked_from = ff.strip()
         return render_ledger_reminder(
             effects,
             pinned,
             just_compacted=just_compacted,
             shell_note=int(getattr(led, "shell_effect_count", 0) or 0) > 0,
             memory_present=memory_present,
+            coincident=coincident,
+            forked_from=forked_from,
         )
 
     def _ledger_ground_truth(self) -> str | None:
@@ -13307,6 +13319,19 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 id_remap=project_remap,
                 cutoff_ms=cutoff_ms,
             )
+            if project_cloned:
+                # Stamp the copied ledger so the fork knows the rows above
+                # are inherited (only when it has its own copy — a shared
+                # dir belongs to the source and must not be annotated).
+                try:
+                    from bridge.session_ledger import SessionLedger
+
+                    SessionLedger(
+                        session_id=new_parent_id,
+                        project_dir=project_output_dir(new_parent_id),
+                    ).record_fork_marker(session_id, stamp)
+                except Exception as exc:  # noqa: BLE001
+                    log("warn", f"branch_session: fork marker not written: {exc}")
 
         where = "whole session" if whole else (
             f"before {cutoff_ms:.0f}ms" if cutoff_ms is not None else f"msg #{ordinal}"

@@ -520,3 +520,91 @@ def test_pinned_facts_creator_filter(tmp_path):
     assert led.pinned_facts(creator_id="s1") == ["parent note"]
     assert led.pinned_facts(creator_id="sub-9") == ["child note"]
     assert len(led.pinned_facts()) == 2
+
+
+# ── coincident changes (passive commands) + fork marker ───────────────────
+
+def test_passive_command_delta_is_coincident_not_an_effect(tmp_path):
+    # The incident: a fork's agent read "ran `sleep 100…` → changed
+    # transcript_persistence.py" in its reminder. The file was edited by
+    # someone else during the sleep; the command has no mutating verb, so it
+    # cannot be the author of the delta.
+    led = _mk(tmp_path)
+    row = led.record_shell_git_effect(
+        command="cd ~/personal/freyja && sleep 100; tail -1 evals/x.log; ls evals/*.jsonl",
+        delta=[{"op": "modified", "path": "bridge/transcript_persistence.py"}],
+        repo="/Users/sohamshah/personal/freyja", creator_id="s1", tool_call_id="b9",
+    )
+    assert row is not None
+    assert row["class"] == "observation" and row["kind"] == "shell_coincident"
+    assert "not by this command" in row["summary"]
+    assert "transcript_persistence.py" in row["summary"]
+    # Never counted as the agent's own work.
+    assert led.has_effects() is False
+    assert led.effects(creator_id="s1") == []
+    assert led.shell_effect_count == 0
+    assert [r["kind"] for r in led.coincident(creator_id="s1")] == ["shell_coincident"]
+    # Survives a reload from disk with the same classification.
+    led2 = _mk(tmp_path)
+    assert led2.has_effects() is False
+    assert len(led2.coincident()) == 1
+
+
+def test_mutating_command_delta_is_still_an_effect(tmp_path):
+    led = _mk(tmp_path)
+    row = led.record_shell_git_effect(
+        command="sed -i '' 's/a/b/' bridge/x.py && sleep 5",
+        delta=[{"op": "modified", "path": "bridge/x.py"}],
+        repo="/r", creator_id="s1",
+    )
+    assert row["class"] == "effect" and row["kind"] == "shell_effect"
+    assert led.shell_effect_count == 1
+    assert led.coincident() == []
+
+
+def test_render_reminder_lists_coincident_changes_as_not_yours():
+    effects = [{"kind": "file_edit", "summary": "edited foo.py", "path": "/r/foo.py"}]
+    coincident = [{
+        "kind": "shell_coincident",
+        "command": "cd ~/personal/freyja && sleep 100; tail -1 evals/x.log",
+        "gitDelta": [{"op": "modified", "path": "bridge/transcript_persistence.py"}],
+    }]
+    block = render_ledger_reminder(effects, [], coincident=coincident)
+    assert block is not None
+    assert "NOT by them" in block
+    assert "transcript_persistence.py — during `cd ~/personal/freyja && sleep 100; tail" in block
+    # The coincident file never appears under the "changed" list.
+    changed = block.split("Files and actions you've created or changed:")[1].split("Changed on disk")[0]
+    assert "transcript_persistence" not in changed
+
+
+def test_render_reminder_names_the_fork_source():
+    effects = [{"kind": "file_edit", "summary": "edited foo.py", "path": "/r/foo.py"}]
+    block = render_ledger_reminder(effects, [], forked_from="session-abc")
+    assert block is not None
+    assert "fork of `session-abc`" in block
+    assert block.index("fork of") < block.index("Files and actions")
+    assert "fork of" not in (render_ledger_reminder(effects, []) or "")
+
+
+def test_fork_marker_is_a_note_not_an_effect(tmp_path):
+    led = _mk(tmp_path)
+    led.record_effect(kind="file_edit", operation="edit", summary="edited a.py", path="/r/a.py")
+    row = led.record_fork_marker("session-src", 1790000000000)
+    assert row["class"] == "note" and row["kind"] == "fork"
+    assert row["sourceSessionId"] == "session-src" and row["createdAt"] == 1790000000000
+    assert [r["summary"] for r in led.effects()] == ["edited a.py"]
+    # Written to disk, reloads, still not an effect.
+    led2 = _mk(tmp_path)
+    assert any(r.get("kind") == "fork" for r in led2._snapshot())
+    assert len(led2.effects()) == 1
+
+
+def test_digest_changes_when_a_coincident_row_lands(tmp_path):
+    led = _mk(tmp_path)
+    led.record_effect(kind="file_edit", operation="edit", summary="edited a.py", path="/r/a.py")
+    before = led.digest()
+    led.record_shell_git_effect(
+        command="sleep 30", delta=[{"op": "modified", "path": "b.py"}], repo="/r",
+    )
+    assert led.digest() != before

@@ -211,6 +211,8 @@ def render_ledger_reminder(
     shell_note: bool = False,
     memory_present: bool = False,
     cap: int = 12,
+    coincident: list[dict[str, Any]] | None = None,
+    forked_from: str | None = None,
 ) -> str | None:
     """Render the standing write-ledger ``<system-reminder>`` block.
 
@@ -238,6 +240,14 @@ def render_ledger_reminder(
             "disagree):"
         )
 
+    if forked_from:
+        lines.append("")
+        lines.append(
+            f"This session is a fork of `{forked_from}`. The record below "
+            "includes what was done there before the fork — it is your "
+            "history, but it happened in that session, not in this one."
+        )
+
     if effects:
         lines.append("")
         lines.append("Files and actions you've created or changed:")
@@ -257,6 +267,20 @@ def render_ledger_reminder(
         lines.append("Notes you pinned as load-bearing:")
         for fact in pinned_facts[:6]:
             lines.append(f"  • {fact.strip()}")
+
+    if coincident:
+        lines.append("")
+        lines.append(
+            "Changed on disk while your commands ran, but NOT by them "
+            "(something else is editing this repo — treat these as not yours):"
+        )
+        for row in coincident[:4]:
+            delta = row.get("gitDelta") or []
+            files = ", ".join(_short_path(str(d.get("path") or "")) for d in delta[:4])
+            more = f" +{len(delta) - 4} more" if len(delta) > 4 else ""
+            cmd = str(row.get("command") or "").strip()
+            short = cmd if len(cmd) <= 48 else cmd[:45] + "…"
+            lines.append(f"  • {files}{more} — during `{short}`")
 
     if shell_note:
         lines.append("")
@@ -481,6 +505,20 @@ class SessionLedger:
         no git repo / no delta)."""
         if not delta:
             return None
+        if classify_bash_command(command) == "observation":
+            # The command has no mutating verb (sleep, tail, ls, git status…)
+            # so it cannot have produced this delta. Something else changed
+            # the tree while it ran — the operator's editor, another agent,
+            # a rebuild. Recording it as the agent's own effect is exactly
+            # how a forked session came to believe a `sleep 100` had edited
+            # transcript_persistence.py.
+            return self.record_coincident_change(
+                command=command,
+                delta=delta,
+                repo=repo,
+                creator_id=creator_id,
+                tool_call_id=tool_call_id,
+            )
         files = ", ".join(_short_path(d["path"]) for d in delta[:6])
         more = f" +{len(delta) - 6} more" if len(delta) > 6 else ""
         short = command if len(command) <= 80 else command[:77] + "…"
@@ -493,6 +531,75 @@ class SessionLedger:
             creator_id=creator_id,
             extra={"command": command, "gitDelta": delta},
         )
+
+    def record_coincident_change(
+        self,
+        *,
+        command: str,
+        delta: list[dict[str, str]],
+        repo: str | None = None,
+        creator_id: str | None = None,
+        tool_call_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """A working-tree delta observed across a command that could not have
+        caused it. Stored as an OBSERVATION (never surfaces under "files you
+        changed"); the reminder lists it separately as "changed on disk while
+        you ran …", so the agent knows the repo is being edited by someone
+        else instead of doubting its own memory."""
+        if not delta:
+            return None
+        files = ", ".join(_short_path(d["path"]) for d in delta[:6])
+        more = f" +{len(delta) - 6} more" if len(delta) > 6 else ""
+        short = command if len(command) <= 80 else command[:77] + "…"
+        row = {
+            "kind": "shell_coincident",
+            "class": "observation",
+            "operation": "shell",
+            "summary": f"while `{short}` ran, {files}{more} changed on disk (not by this command)",
+            "path": None,
+            "repo": repo,
+            "dir": None,
+            "toolCallId": tool_call_id,
+            "creatorId": creator_id or self.session_id,
+            "createdAt": int(time.time() * 1000),
+            "command": command,
+            "gitDelta": delta,
+        }
+        self._append(row)
+        return row
+
+    def coincident(self, creator_id: str | None = None) -> list[dict[str, Any]]:
+        """Coincident working-tree changes (see record_coincident_change),
+        newest-first, optionally filtered to one creator."""
+        rows = [
+            r
+            for r in self._snapshot()
+            if r.get("kind") == "shell_coincident"
+            and (creator_id is None or r.get("creatorId") == creator_id)
+        ]
+        rows.sort(key=lambda r: int(r.get("createdAt") or 0), reverse=True)
+        return rows
+
+    def record_fork_marker(
+        self, source_session_id: str, forked_at_ms: int | None = None
+    ) -> dict[str, Any]:
+        """Stamp a cloned ledger with where it came from. Every row above this
+        one was inherited from the source session (with ids rewritten to
+        this session), so the agent reading the reminder in a fork knows
+        that history happened before the fork rather than in this
+        conversation. A note, not an effect — never listed as work done."""
+        at = int(forked_at_ms or time.time() * 1000)
+        row = {
+            "kind": "fork",
+            "class": "note",
+            "summary": f"forked from {source_session_id}; entries above were inherited from that session",
+            "sourceSessionId": source_session_id,
+            "forkedAt": at,
+            "creatorId": self.session_id,
+            "createdAt": at,
+        }
+        self._append(row)
+        return row
 
     def record_pinned_fact(
         self, text: str, *, source: str = "preserve_facts", creator_id: str | None = None
@@ -765,6 +872,10 @@ class SessionLedger:
             f"{r.get('kind')}:{r.get('path') or r.get('summary')}" for r in effs
         )
         key += "##" + "|".join(self.pinned_facts(creator_id=creator_id))
+        key += "##" + "|".join(
+            f"{r.get('createdAt')}:{r.get('summary')}"
+            for r in self.coincident(creator_id=creator_id)
+        )
         return hashlib.sha1(key.encode("utf-8", "replace")).hexdigest()[:16]
 
     # ── persistence ──────────────────────────────────────────────────────
