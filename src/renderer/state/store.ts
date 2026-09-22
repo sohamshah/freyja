@@ -612,9 +612,17 @@ export interface HarnessActions {
   /** Pin (or unpin) a message so the compactor preserves it verbatim
    *  through every future summary. */
   toggleEntryPin(messageId: string, pinned: boolean): Promise<void>
-  /** Branch the current session at a message boundary. New session
-   *  contains messages 0..N-1; subagent transcripts are deep-cloned. */
-  branchSessionFrom(messageId: string, newName?: string): Promise<void>
+  /** Fork a session into a new one. With `messageId`, the new session
+   *  contains everything BEFORE that message; with `null`, everything up
+   *  to now. Sub-agent runs, sidecars and the project dir (artifacts,
+   *  ledger, working memory) are cloned by the bridge; the renderer
+   *  seeds + persists the UI slice so the fork opens fully populated.
+   *  `opts.sessionId` forks a non-active session (sidebar action). */
+  branchSessionFrom(
+    messageId: string | null,
+    newName?: string,
+    opts?: { sessionId?: string },
+  ): Promise<void>
   requestFileMatches(query: string): Promise<void>
   answerPermission(requestId: string, approved: boolean): Promise<void>
   /** Resolve a drafter-produced skill candidate. ``promote`` writes it to
@@ -729,6 +737,84 @@ function collectDescendantSessionIds(
     }
   }
   return out
+}
+
+/** Deep-copy `obj`, replacing every string that exactly equals an old
+ *  session id with its new id (keys included — `subagents` and
+ *  `kanbanCards` are keyed by id). Mirrors the bridge's `remap_ids` so
+ *  the fork's UI slice and its on-disk files agree about who is who. */
+export function remapIdsDeep<T>(obj: T, remap: Record<string, string>): T {
+  const table = new Map(Object.entries(remap))
+  if (table.size === 0) return obj
+  const walk = (v: unknown): unknown => {
+    if (typeof v === 'string') return table.get(v) ?? v
+    if (Array.isArray(v)) return v.map(walk)
+    if (v && typeof v === 'object') {
+      const out: Record<string, unknown> = {}
+      for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+        out[table.get(k) ?? k] = walk(val)
+      }
+      return out
+    }
+    return v
+  }
+  return walk(obj) as T
+}
+
+/** Build the UI slice for a forked session from its source slice.
+ *  With `cutoffMs`, every timestamped record at/after the cutoff is
+ *  dropped (branch-before-message); without it the slice is copied
+ *  whole (fork at current point). Sub-agent cards survive only for
+ *  children the bridge actually cloned (present in `remap`), and all
+ *  ids are rewritten to the fork's. Streaming state is reset — a fork
+ *  is never mid-turn. */
+export function forkSliceForBranch(
+  source: SessionSlice,
+  remap: Record<string, string>,
+  cutoffMs: number | null,
+): SessionSlice {
+  const before = (t: number | undefined) =>
+    cutoffMs == null || typeof t !== 'number' || t < cutoffMs
+  const toolCalls: SessionSlice['toolCalls'] = {}
+  for (const [id, tc] of Object.entries(source.toolCalls)) {
+    if (before(tc.startedAt)) toolCalls[id] = tc
+  }
+  const subagents: SessionSlice['subagents'] = {}
+  const subagentOrder: string[] = []
+  const subagentIds = [
+    ...source.subagentOrder,
+    ...Object.keys(source.subagents).filter((id) => !source.subagentOrder.includes(id)),
+  ]
+  for (const id of subagentIds) {
+    const rec = source.subagents[id]
+    if (!rec || typeof remap[id] !== 'string') continue
+    subagents[id] = rec
+    subagentOrder.push(id)
+  }
+  const widgets: SessionSlice['widgets'] = {}
+  for (const [id, w] of Object.entries(source.widgets)) {
+    if (before(w.createdAt)) widgets[id] = w
+  }
+  const forked: SessionSlice = {
+    ...source,
+    messages: source.messages.filter((m) => before(m.createdAt)),
+    currentStreamingMessageId: null,
+    currentTurnId: null,
+    thinking: '',
+    isStreaming: false,
+    toolCalls,
+    toolCallOrder: source.toolCallOrder.filter((id) => id in toolCalls),
+    fileChanges: source.fileChanges.filter((f) => before(f.createdAt)),
+    subagents,
+    subagentOrder,
+    systemEvents: source.systemEvents.filter((e) => before(e.at)),
+    busMessages: source.busMessages.filter((b) => before(b.timestamp)),
+    inboxEvents: source.inboxEvents.filter((e) => before(e.timestamp)),
+    artifacts: source.artifacts.filter((a) => before(a.createdAt)),
+    widgets,
+    harnessSessionId: undefined,
+  }
+  return remapIdsDeep(forked, remap)
 }
 
 /** The set of session IDs the activity-panel should scope to: the
@@ -2073,12 +2159,88 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           (ev.capabilities?.coordinationStrategy as string | undefined)
           || prev.coordinationStrategy,
         )
+        const modeDetail =
+          ev.mode === 'live' ? 'live bridge' : ev.mode === 'demo' ? 'demo mode' : 'error'
+        // The row for the active session is normally RENAMED to the id the
+        // bridge just announced: at boot the active row is the
+        // `session-local` placeholder (or a just-created empty session)
+        // and this is how it acquires its real id. But `ready` also fires
+        // when the bridge dies mid-life and the app drops to demo mode —
+        // and then the active session is a real conversation. Renaming
+        // it forks the whole thing under a `demo-*` id (messages,
+        // children, cost) and the next index write drops the original,
+        // orphaning every sub-agent in the sidebar. A session that has a
+        // user message or sub-agents is real: park it in the archive
+        // untouched and open a fresh session for the new id instead.
+        const activeIsReal =
+          firstSessionId !== prev.activeSessionId &&
+          (prev.messages.some((m) => m.role === 'user') ||
+            prev.sessions.some(
+              (s) =>
+                s.id === prev.activeSessionId
+                  ? !!s.parentSessionId || !!s.childSessionIds?.length
+                  : s.parentSessionId === prev.activeSessionId,
+            ))
+        if (activeIsReal) {
+          const now = Date.now()
+          const parked = sliceFromState(prev)
+          const fresh = emptySlice(
+            capModel,
+            nextReasoning,
+            models.length > 0 ? models : prev.availableModels,
+            nextStrategy,
+            'native',
+          )
+          const existingPanes = prev.sessionPanes.length > 0
+            ? prev.sessionPanes
+            : [{ id: 'pane-main', sessionId: prev.activeSessionId, createdAt: now }]
+          return {
+            ...prev,
+            ...fresh,
+            ready: true,
+            mode: ev.mode,
+            modeDetail,
+            activeSessionId: firstSessionId,
+            sessionArchive: { ...prev.sessionArchive, [prev.activeSessionId]: parked },
+            sessionMRU: [
+              prev.activeSessionId,
+              ...prev.sessionMRU.filter((id) => id !== prev.activeSessionId),
+            ].slice(0, 20),
+            sessions: [
+              {
+                id: firstSessionId,
+                title: ev.mode === 'demo' ? 'Demo session' : 'New session',
+                workspace: nextWorkspace,
+                model: capModel,
+                reasoningLevel: nextReasoning,
+                coordinationStrategy: nextStrategy,
+                runtime: 'native',
+                createdAt: now,
+                updatedAt: now,
+                messageCount: 0,
+                totalInputTokens: 0,
+                totalOutputTokens: 0,
+                cacheReadTokens: 0,
+              },
+              ...prev.sessions,
+            ],
+            sessionPanes: existingPanes.map((pane) =>
+              pane.sessionId === prev.activeSessionId
+                ? { ...pane, sessionId: firstSessionId }
+                : pane,
+            ),
+            availableModels: models.length > 0 ? models : prev.availableModels,
+            availableHarnesses: ((ev.capabilities?.harnesses as
+              import('@shared/events').HarnessChoice[] | undefined)
+              ?? prev.availableHarnesses),
+            pendingAttachments: [],
+          }
+        }
         return {
           ...prev,
           ready: true,
           mode: ev.mode,
-          modeDetail:
-            ev.mode === 'live' ? 'live bridge' : ev.mode === 'demo' ? 'demo mode' : 'error',
+          modeDetail,
           activeSessionId: firstSessionId,
           sessions: prev.sessions.map((s) =>
             s.id === prev.activeSessionId
@@ -2599,54 +2761,58 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         }
       }
       if (ev.type === 'session_branched') {
-        // Bridge has finished cloning transcript files on disk and
-        // hands us back a remap of every old id → new id (parent +
-        // every cloned subagent). We mirror the same shape in our
-        // in-memory snapshot graph so the new branch is immediately
-        // browsable from the sidebar, then defer a switch_session
-        // command (queueMicrotask so the reducer stays free of
-        // direct side-effects) so the bridge restores the cloned
-        // transcript on the renderer's behalf.
-        const remap = ev.idRemap || {}
+        // Bridge has cloned every file on disk (transcript, sidecars,
+        // project dir) and hands back the id remap. Mirror it in the
+        // in-memory snapshot graph AND seed an archive slice for every
+        // clone from the renderer's own state, so the fork opens with
+        // its full tool timeline / artifacts / sub-agent cards instead
+        // of a text-only synthesis from the transcript. App.tsx's
+        // post-event effect then persists the slices + index and
+        // switches to the new session — the reducer stays pure.
+        const remap = (ev.idRemap || {}) as Record<string, string>
         const now = Date.now()
+        const cutoff =
+          typeof ev.messageCreatedAt === 'number' && ev.messageCreatedAt > 0
+            ? ev.messageCreatedAt
+            : null
         const cloned: SessionSnapshot[] = []
+        const nextArchive = { ...prev.sessionArchive }
         for (const [oldId, newId] of Object.entries(remap)) {
           if (typeof oldId !== 'string' || typeof newId !== 'string') continue
           const orig = prev.sessions.find((s) => s.id === oldId)
           if (!orig) continue
+          const isParent = oldId === ev.originalSessionId
           const remappedParent = orig.parentSessionId
             ? remap[orig.parentSessionId] ?? orig.parentSessionId
             : undefined
-          const isParent = oldId === ev.originalSessionId
+          const source = sliceForSession(prev, oldId)
+          const seeded = source
+            ? forkSliceForBranch(source, remap, isParent ? cutoff : null)
+            : undefined
+          if (seeded) nextArchive[newId] = seeded
+          const childIds = prev.sessions
+            .filter((s) => s.parentSessionId === oldId && typeof remap[s.id] === 'string')
+            .map((s) => remap[s.id])
           cloned.push({
             ...orig,
             id: newId,
             title: isParent ? ev.newName : orig.title,
             parentSessionId: isParent ? undefined : remappedParent,
-            childSessionIds: undefined,
+            childSessionIds: childIds.length > 0 ? childIds : undefined,
+            messageCount: seeded ? seeded.messages.length : orig.messageCount,
             createdAt: now,
             updatedAt: now,
+            harnessSessionId: undefined,
           })
         }
         if (cloned.length === 0) return prev
-        // Defer the switch so the reducer remains pure: schedule a
-        // microtask that asks the store's own switchSession action
-        // to load the branched transcript. switchSession handles
-        // archiving the current slice, sending switch_session to the
-        // bridge, and waking up transcript_restored events.
-        queueMicrotask(() => {
-          try {
-            void useHarness.getState().switchSession(ev.newSessionId)
-          } catch {
-            // ignore — switchSession reports its own toast on failure
-          }
-        })
         return {
           ...prev,
           sessions: [...prev.sessions, ...cloned],
+          sessionArchive: nextArchive,
           toast: {
             id: nextId('toast'),
-            message: `Branched to "${ev.newName}"`,
+            message: `Forked to "${ev.newName}"`,
             tone: 'ok',
             at: now,
           },
@@ -4065,6 +4231,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     if (!api || !sessionId) return
     const ordinal = messageOrdinalById(state.messages, messageId)
     if (ordinal < 0) return
+    const anchor = state.messages.find((m) => m.id === messageId)
     // Local truncate: drop everything from the edited message onward and
     // re-insert a new user message with the new content. Streaming
     // response will append a fresh assistant turn.
@@ -4091,6 +4258,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       type: 'edit_user_message',
       sessionId,
       messageOrdinal: ordinal,
+      messageCreatedAt: anchor?.createdAt,
       content: trimmed,
     })
   },
@@ -4122,6 +4290,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       type: 'rerun_user_message',
       sessionId,
       messageOrdinal: ordinal,
+      messageCreatedAt: target.createdAt,
     })
   },
 
@@ -4132,6 +4301,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     if (!api || !sessionId) return
     const ordinal = messageOrdinalById(state.messages, messageId)
     if (ordinal < 0) return
+    const anchor = state.messages.find((m) => m.id === messageId)
     set((prev) => {
       const idx = prev.messages.findIndex((m) => m.id === messageId)
       if (idx < 0) return {}
@@ -4147,6 +4317,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       type: 'delete_messages_from',
       sessionId,
       messageOrdinal: ordinal,
+      messageCreatedAt: anchor?.createdAt,
     })
   },
 
@@ -4157,6 +4328,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     if (!api || !sessionId) return
     const ordinal = messageOrdinalById(state.messages, messageId)
     if (ordinal < 0) return
+    const anchor = state.messages.find((m) => m.id === messageId)
     // Optimistic update — bridge confirms via entry_pin_changed event.
     set((prev) => ({
       messages: prev.messages.map((m) =>
@@ -4167,28 +4339,64 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       type: 'toggle_entry_pin',
       sessionId,
       messageOrdinal: ordinal,
+      messageCreatedAt: anchor?.createdAt,
       pinned,
     })
   },
 
-  async branchSessionFrom(messageId, newName) {
+  async branchSessionFrom(messageId, newName, opts) {
     const api = (window as any).harness
     const state = useHarness.getState()
-    const sessionId = state.activeSessionId
+    const sessionId = opts?.sessionId ?? state.activeSessionId
     if (!api || !sessionId) return
-    const ordinal = messageOrdinalById(state.messages, messageId)
-    if (ordinal < 0) return
-    // Walk every descendant of the active session in the in-memory
-    // snapshot graph so the bridge can clone every subagent transcript
-    // on disk in one shot. The bridge doesn't track parent-child
-    // links itself — that graph lives in the renderer's metadata.
-    const childIds = collectDescendantSessionIds(state.sessions, sessionId)
+    const snapshot = state.sessions.find((s) => s.id === sessionId)
+    const runtime =
+      (sessionId === state.activeSessionId ? state.runtime : snapshot?.runtime) ?? 'native'
+    if (runtime !== 'native') {
+      // Harness runtimes keep their transcript inside the external CLI
+      // (~/.claude/projects, ~/.codex/sessions); there is nothing on our
+      // side to clone, so a fork would open empty.
+      state.showToast(
+        'Forking is only available for native sessions (not Claude Code / Codex harness sessions)',
+        'warn',
+      )
+      return
+    }
+    // The reducer seeds the fork's UI slice from the source slice, so
+    // make sure it is in memory for a non-active source.
+    if (sessionId !== state.activeSessionId && !state.sessionArchive[sessionId]) {
+      await state.loadPersistedSessionIntoArchive(sessionId)
+    }
+    const fresh = useHarness.getState()
+    const slice = sliceForSession(fresh, sessionId)
+    let ordinal = -1
+    let messageCreatedAt: number | undefined
+    if (messageId) {
+      if (!slice) return
+      ordinal = messageOrdinalById(slice.messages, messageId)
+      if (ordinal < 0) return
+      messageCreatedAt = slice.messages.find((m) => m.id === messageId)?.createdAt
+    }
+    // Walk every descendant of the source in the in-memory snapshot
+    // graph so the bridge can clone every subagent alongside the parent
+    // (the bridge doesn't track parent-child links itself). For a
+    // branch-before-message, only children that existed at that point
+    // belong to the fork's timeline.
+    const byId = new Map(fresh.sessions.map((s) => [s.id, s]))
+    const childIds = collectDescendantSessionIds(fresh.sessions, sessionId).filter((id) => {
+      if (messageCreatedAt == null) return true
+      const child = byId.get(id)
+      return !child || child.createdAt < messageCreatedAt
+    })
+    fresh.showToast('Forking session…', 'info')
     await api.sendCommand({
       type: 'branch_session',
       sessionId,
       messageOrdinal: ordinal,
+      messageCreatedAt,
       newName,
       childSessionIds: childIds,
+      cloneProject: true,
     })
   },
 

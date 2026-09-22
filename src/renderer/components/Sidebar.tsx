@@ -13,6 +13,7 @@ import type {
 import { formatDuration, formatTokens, relativeTime } from '../lib/format'
 import { Spinner } from '../lib/spinner'
 import { StickyHeader } from './StickyHeader'
+import { BranchSessionDialog } from './BranchSessionDialog'
 import { TopoBackdrop } from './TopoBackdrop'
 
 type Section = 'sessions' | 'skills' | 'subagents' | 'memory' | 'runs'
@@ -1827,6 +1828,7 @@ function SessionRow({
   const renameSession = useHarness((st) => st.renameSession)
   const deleteSession = useHarness((st) => st.deleteSession)
   const downloadSession = useHarness((st) => st.downloadSession)
+  const branchSessionFrom = useHarness((st) => st.branchSessionFrom)
   const allSessions = useHarness((st) => st.sessions)
   // Per-row "is this session currently streaming" subscription. For the
   // active session we read the top-level `isStreaming`; for everyone
@@ -1840,6 +1842,7 @@ function SessionRow({
     return sub?.state === 'running' || sub?.state === 'pending'
   })
   const [menuOpen, setMenuOpen] = useState(false)
+  const [forking, setForking] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(s.title)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -2100,6 +2103,15 @@ function SessionRow({
             }}
           />
           <CtxBtn label="Rename" onClick={startRename} />
+          {(s.runtime ?? 'native') === 'native' && (
+            <CtxBtn
+              label="Fork"
+              onClick={() => {
+                setMenuOpen(false)
+                setForking(true)
+              }}
+            />
+          )}
           <CtxBtn
             label="Download"
             onClick={() => {
@@ -2122,6 +2134,17 @@ function SessionRow({
             />
           )}
         </div>
+      )}
+      {forking && (
+        <BranchSessionDialog
+          mode="whole"
+          defaultName={`${s.title} (fork)`}
+          onCancel={() => setForking(false)}
+          onConfirm={(name) => {
+            setForking(false)
+            void branchSessionFrom(null, name, { sessionId: s.id })
+          }}
+        />
       )}
     </div>
   )

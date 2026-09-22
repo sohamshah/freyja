@@ -502,7 +502,13 @@ def _append_session_event_jsonl(session_id: str, event: dict[str, Any]) -> None:
             # Touch-on-access so the LRU eviction order reflects
             # actual usage, not just open order. Cheap (O(1)).
             _SESSION_EVENT_FILES.move_to_end(session_id)
-        fp.write(json.dumps(event, ensure_ascii=False, default=str))
+        # Stamp the line with wall-clock ms. The live event stream doesn't
+        # need it (the renderer stamps on receipt) but the file does: it
+        # is what lets a branch-before-message keep only the events that
+        # happened before the branch point. Never overwrite a stamp the
+        # event already carries.
+        row = event if "_t" in event else {**event, "_t": int(time.time() * 1000)}
+        fp.write(json.dumps(row, ensure_ascii=False, default=str))
         fp.write("\n")
         fp.flush()
     except Exception:  # noqa: BLE001
@@ -11230,17 +11236,60 @@ async def _command_loop(state: _BridgeState) -> None:
             traceback.print_exc(file=sys.stderr)
 
 
+def _message_cutoff_ts(cmd: dict[str, Any]) -> float | None:
+    """Renderer ``messageCreatedAt`` (ms wall-clock of the renderer message
+    a command is anchored on) → engine-entry timestamp in seconds, or
+    None when the renderer didn't send one (legacy ordinal path)."""
+    raw = cmd.get("messageCreatedAt")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw <= 0:
+        return None
+    return float(raw) / 1000.0
+
+
+def _find_message_entry_index(
+    entries: list[Any],
+    ordinal: int,
+    cutoff_ts: float | None = None,
+) -> int | None:
+    """Locate the engine entry a renderer message maps to.
+
+    With ``cutoff_ts`` (preferred): the first message-bearing entry
+    appended at/after that wall-clock. The renderer stamps ``createdAt``
+    before the bridge appends the corresponding engine entry, and every
+    engine entry created for a LATER renderer message is later still,
+    so this is exact regardless of compaction or how many tool_result
+    entries a turn produced. Without it (legacy): the ``ordinal``-th
+    message-bearing entry, which only lines up with the renderer's
+    user/assistant numbering for tool-free, never-compacted sessions.
+    """
+    msg_count = 0
+    for i, entry in enumerate(entries):
+        if entry.message is None:
+            continue
+        if cutoff_ts is not None:
+            ts = getattr(entry, "timestamp", 0.0) or 0.0
+            if ts >= cutoff_ts:
+                return i
+            continue
+        if msg_count == ordinal:
+            return i
+        msg_count += 1
+    return None
+
+
 def _truncate_session_at_message_ordinal(
     session: Any,
     ordinal: int,
+    *,
+    cutoff_ts: float | None = None,
 ) -> tuple[bool, Any | None]:
-    """Drop the message-bearing entry at `ordinal` plus everything after.
-
-    `ordinal` is 0-indexed across message-bearing entries (compaction
-    entries are skipped). Returns ``(success, removed_target_entry)``.
-    On success the engine transcript is shortened so callers can re-issue
-    a turn cleanly. The removed target is returned so callers like
-    "rerun" can read the original user content back.
+    """Drop the message-bearing entry the renderer points at plus everything
+    after it. See ``_find_message_entry_index`` for how the renderer's
+    message is resolved (``cutoff_ts`` preferred over ``ordinal``).
+    Returns ``(success, removed_target_entry)``. On success the engine
+    transcript is shortened so callers can re-issue a turn cleanly. The
+    removed target is returned so callers like "rerun" can read the
+    original user content back.
     """
     if session is None:
         return False, None
@@ -11249,15 +11298,7 @@ def _truncate_session_at_message_ordinal(
     except Exception:  # noqa: BLE001
         return False, None
 
-    target_index: int | None = None
-    msg_count = 0
-    for i, entry in enumerate(entries):
-        if entry.message is None:
-            continue
-        if msg_count == ordinal:
-            target_index = i
-            break
-        msg_count += 1
+    target_index = _find_message_entry_index(entries, ordinal, cutoff_ts)
 
     if target_index is None:
         return False, None
@@ -12964,14 +13005,12 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             return
         target_entry_id: str | None = None
         try:
-            msg_count = 0
-            for entry in sess.session.transcript.entries:
-                if entry.message is None:
-                    continue
-                if msg_count == ordinal:
-                    target_entry_id = entry.id
-                    break
-                msg_count += 1
+            entries = sess.session.transcript.entries
+            idx = _find_message_entry_index(
+                entries, ordinal, _message_cutoff_ts(cmd)
+            )
+            if idx is not None:
+                target_entry_id = entries[idx].id
         except Exception:  # noqa: BLE001
             target_entry_id = None
         if not target_entry_id:
@@ -13010,7 +13049,9 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         if sess.pending_task and not sess.pending_task.done():
             log("warn", "edit_user_message: turn in progress, ignoring")
             return
-        ok, target = _truncate_session_at_message_ordinal(sess.session, ordinal)
+        ok, target = _truncate_session_at_message_ordinal(
+            sess.session, ordinal, cutoff_ts=_message_cutoff_ts(cmd)
+        )
         if not ok:
             log("warn", f"edit_user_message: ordinal {ordinal} not found")
             return
@@ -13042,7 +13083,9 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         if sess.pending_task and not sess.pending_task.done():
             log("warn", "rerun_user_message: turn in progress, ignoring")
             return
-        ok, target = _truncate_session_at_message_ordinal(sess.session, ordinal)
+        ok, target = _truncate_session_at_message_ordinal(
+            sess.session, ordinal, cutoff_ts=_message_cutoff_ts(cmd)
+        )
         if not ok or target is None or target.message is None:
             log("warn", f"rerun_user_message: ordinal {ordinal} not found")
             return
@@ -13122,53 +13165,157 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
     if ctype == "branch_session":
         if not session_id:
             return
+        # Branch point. ``messageCreatedAt`` (renderer ms) is the anchor:
+        # everything created before it is copied. ``messageOrdinal`` is
+        # the legacy anchor, only used when no timestamp came through.
+        # Neither present (ordinal < 0) → fork the whole session as it
+        # stands right now.
         ordinal = int(cmd.get("messageOrdinal", -1))
-        if ordinal < 0:
-            return
-        new_name = str(cmd.get("newName") or f"branch of {session_id}").strip()
+        cutoff_ts = _message_cutoff_ts(cmd)
+        cutoff_ms = cutoff_ts * 1000.0 if cutoff_ts is not None else None
+        whole = cutoff_ts is None and ordinal < 0
+        new_name = str(cmd.get("newName") or f"fork of {session_id}").strip()
+        clone_project = bool(cmd.get("cloneProject", True))
         raw_children = cmd.get("childSessionIds") or []
-        child_ids: list[str] = [
-            str(cid) for cid in raw_children if isinstance(cid, str) and cid
-        ]
+        child_ids: list[str] = []
+        for cid in raw_children:
+            if isinstance(cid, str) and cid and cid != session_id and cid not in child_ids:
+                child_ids.append(cid)
 
-        # Make sure the parent's transcript on disk is current. If the
-        # session is loaded in memory we flush; otherwise we trust the
-        # last persisted state.
+        # Make sure everything on disk is current. Live sessions flush
+        # their transcript (+ goal sidecar) and inbox; sub-agents that
+        # are still resident flush too. Otherwise we trust the last
+        # persisted state.
+        old_project_id = session_id
         sess = state.get(session_id)
-        if sess is not None and sess.session is not None:
-            try:
-                sess._save_transcript()  # noqa: SLF001
-            except Exception:  # noqa: BLE001
-                pass
+        if sess is not None:
+            old_project_id = sess.project_session_id or session_id
+            if sess.session is not None:
+                try:
+                    sess._save_transcript()  # noqa: SLF001
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    sess._save_inbox()  # noqa: SLF001
+                except Exception:  # noqa: BLE001
+                    pass
+        for cid in child_ids:
+            csess = state.sessions.get(cid)
+            if csess is not None and csess.session is not None:
+                try:
+                    csess._save_transcript()  # noqa: SLF001
+                except Exception:  # noqa: BLE001
+                    pass
 
-        from bridge.transcript_persistence import clone_transcript
+        from bridge.project_paths import project_output_dir
+        from bridge.transcript_persistence import (
+            clone_project_dir,
+            clone_session_sidecars,
+            clone_transcript,
+            load_transcript,
+        )
+
+        # The source's project dir is whatever its transcript says
+        # (sub-agents and re-woken sessions point at their parent's).
+        if sess is None:
+            src_meta = (load_transcript(session_id) or {}).get("metadata") or {}
+            if isinstance(src_meta, dict):
+                pid = src_meta.get("project_session_id") or src_meta.get("parent_session_id")
+                if isinstance(pid, str) and pid.strip():
+                    old_project_id = pid.strip()
 
         stamp = int(time.time() * 1000)
-        new_parent_id = f"{session_id}-branch-{stamp:x}"
-        id_remap: dict[str, str] = {}
+        # Gateway ids (``freyja:slack:...``) would make the fork look like
+        # a read-only Slack mirror in the sidebar (it keys on the id
+        # prefix), so forks of gateway sessions get a plain desktop id.
+        base_id = "session" if session_id.startswith("freyja:") else session_id
+        new_parent_id = f"{base_id}-branch-{stamp:x}"
+        # Compute the full remap up front so cross-references between
+        # the parent and its children (spawn tool results, inbox
+        # senders, ledger creators) all rewrite in a single pass.
+        id_remap: dict[str, str] = {session_id: new_parent_id}
+        for offset, child_old in enumerate(child_ids):
+            id_remap[child_old] = f"{child_old}-branch-{stamp:x}-{offset}"
+        # Ledger rows in a project dir name the dir's owner. When the
+        # source shares someone else's dir (it is itself a sub-agent, or
+        # a fork that chose to share) that owner id must become the fork
+        # in the COPIED dir only — never in the transcripts, where the
+        # same id is the source's parent.
+        project_remap = dict(id_remap)
+        if clone_project and old_project_id != session_id:
+            project_remap.setdefault(old_project_id, new_parent_id)
+
+        # The fork is a root session in its own right, whatever the
+        # source was: it owns (or explicitly shares) a project dir and
+        # has no parent.
+        parent_overrides: dict[str, Any] = {
+            "project_session_id": new_parent_id if clone_project else old_project_id,
+            "parent_session_id": None,
+            "subagent_id": None,
+        }
+
         if not clone_transcript(
             session_id,
             new_parent_id,
-            truncate_to_message_ordinal=ordinal,
+            truncate_to_message_ordinal=(None if whole or cutoff_ts is not None else ordinal),
+            cutoff_ts=cutoff_ts,
+            id_remap=id_remap,
+            metadata_overrides=parent_overrides,
         ):
             emit_error(
                 f"branch_session: cannot read transcript for {session_id}",
                 recoverable=True,
             )
             return
-        id_remap[session_id] = new_parent_id
+        sidecars = clone_session_sidecars(
+            session_id, new_parent_id, id_remap=id_remap, cutoff_ms=cutoff_ms
+        )
 
         cloned_children: list[dict[str, str]] = []
-        for offset, child_old in enumerate(child_ids):
-            child_new = f"{child_old}-branch-{stamp:x}-{offset}"
-            if clone_transcript(child_old, child_new):
-                id_remap[child_old] = child_new
+        final_remap: dict[str, str] = {session_id: new_parent_id}
+        for child_old in child_ids:
+            child_new = id_remap[child_old]
+            child_overrides: dict[str, Any] = {}
+            if not clone_project:
+                child_overrides["project_session_id"] = old_project_id
+            # Children are copied whole — they are finished (or paused)
+            # sub-agent runs; the renderer decides which children belong
+            # before the branch point and only sends those.
+            if clone_transcript(
+                child_old,
+                child_new,
+                id_remap=id_remap,
+                metadata_overrides=child_overrides,
+            ):
+                final_remap[child_old] = child_new
                 cloned_children.append({"oldId": child_old, "newId": child_new})
+                clone_session_sidecars(child_old, child_new, id_remap=id_remap)
+            else:
+                # No transcript on disk but the re-wake record may still
+                # exist — clone what there is so talk() can revive it.
+                if clone_session_sidecars(child_old, child_new, id_remap=id_remap):
+                    final_remap[child_old] = child_new
+                    cloned_children.append({"oldId": child_old, "newId": child_new})
+                else:
+                    log("warn", f"branch_session: no files found for child {child_old}, skipped")
 
+        project_cloned = False
+        if clone_project:
+            project_cloned = clone_project_dir(
+                project_output_dir(old_project_id),
+                project_output_dir(new_parent_id),
+                id_remap=project_remap,
+                cutoff_ms=cutoff_ms,
+            )
+
+        where = "whole session" if whole else (
+            f"before {cutoff_ms:.0f}ms" if cutoff_ms is not None else f"msg #{ordinal}"
+        )
         log(
             "info",
-            f"branched {session_id} → {new_parent_id} at msg #{ordinal} "
-            f"(+{len(cloned_children)} subagent transcripts cloned)",
+            f"branched {session_id} → {new_parent_id} ({where}; "
+            f"+{len(cloned_children)} subagents, sidecars={len(sidecars)}, "
+            f"project={'cloned' if project_cloned else 'shared' if not clone_project else 'none'})",
         )
         emit(
             {
@@ -13177,8 +13324,11 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 "newSessionId": new_parent_id,
                 "newName": new_name,
                 "messageOrdinal": ordinal,
-                "idRemap": id_remap,
+                "messageCreatedAt": cutoff_ms,
+                "idRemap": final_remap,
                 "childMappings": cloned_children,
+                "projectSessionId": new_parent_id if clone_project else old_project_id,
+                "projectCloned": project_cloned,
             }
         )
         return
@@ -13196,7 +13346,9 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         if sess.pending_task and not sess.pending_task.done():
             log("warn", "delete_messages_from: turn in progress, ignoring")
             return
-        ok, _ = _truncate_session_at_message_ordinal(sess.session, ordinal)
+        ok, _ = _truncate_session_at_message_ordinal(
+            sess.session, ordinal, cutoff_ts=_message_cutoff_ts(cmd)
+        )
         if not ok:
             log("warn", f"delete_messages_from: ordinal {ordinal} not found")
             return

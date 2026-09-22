@@ -587,6 +587,7 @@ export function Conversation() {
       )}
       {branchFor && branchTarget && (
         <BranchSessionDialog
+          mode="before-message"
           defaultName={`branch @ msg ${branchHumanIndex}`}
           branchAtHumanIndex={branchHumanIndex}
           onCancel={() => setBranchFor(null)}

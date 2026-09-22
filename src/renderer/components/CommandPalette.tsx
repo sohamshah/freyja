@@ -130,6 +130,23 @@ export function CommandPalette() {
         },
       },
     )
+    {
+      const st = useHarness.getState()
+      const current = st.sessions.find((sess) => sess.id === st.activeSessionId)
+      const runtime = st.runtime ?? current?.runtime ?? 'native'
+      if (current && runtime === 'native') {
+        out.push({
+          id: 'session:fork',
+          title: 'Fork session',
+          subtitle: 'Copy this session as it stands — context, sub-agents, artifacts, task board',
+          group: 'Command',
+          action: () => {
+            void useHarness.getState().branchSessionFrom(null, `${current.title} (fork)`)
+            close(false)
+          },
+        })
+      }
+    }
     for (const c of SLASH_COMMANDS.filter((command) => !command.hidden)) {
       out.push({
         id: `cmd:${c.name}`,

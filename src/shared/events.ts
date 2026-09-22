@@ -604,6 +604,11 @@ export type BridgeCommand =
       type: 'edit_user_message'
       sessionId: string
       messageOrdinal: number
+      /** Wall-clock ms (`Message.createdAt`) of the renderer message this
+       *  command is anchored on. The bridge resolves the matching engine
+       *  entry by timestamp — the only mapping that survives compaction
+       *  and tool-heavy turns. `messageOrdinal` is the legacy fallback. */
+      messageCreatedAt?: number
       content: string
       attachments?: CommandAttachment[]
     }
@@ -614,6 +619,11 @@ export type BridgeCommand =
       type: 'rerun_user_message'
       sessionId: string
       messageOrdinal: number
+      /** Wall-clock ms (`Message.createdAt`) of the renderer message this
+       *  command is anchored on. The bridge resolves the matching engine
+       *  entry by timestamp — the only mapping that survives compaction
+       *  and tool-heavy turns. `messageOrdinal` is the legacy fallback. */
+      messageCreatedAt?: number
     }
   | {
       // Delete the message at `messageOrdinal` and every message after
@@ -621,21 +631,38 @@ export type BridgeCommand =
       type: 'delete_messages_from'
       sessionId: string
       messageOrdinal: number
+      /** Wall-clock ms (`Message.createdAt`) of the renderer message this
+       *  command is anchored on. The bridge resolves the matching engine
+       *  entry by timestamp — the only mapping that survives compaction
+       *  and tool-heavy turns. `messageOrdinal` is the legacy fallback. */
+      messageCreatedAt?: number
     }
   | {
-      // Deep-clone the current session at a message boundary into a new
-      // session. The new session contains messages 0..messageOrdinal-1
-      // (i.e. everything BEFORE the right-clicked message). Subagent
-      // transcripts in `childSessionIds` are copied with new IDs;
-      // workspace files on disk are NOT copied.
+      // Deep-clone a session into a new one. Two anchors:
+      //   · `messageCreatedAt` set → everything created BEFORE that
+      //     renderer message (the classic "branch before message N").
+      //   · neither `messageCreatedAt` nor a non-negative `messageOrdinal`
+      //     → fork the whole session as it stands right now.
+      // The bridge clones the engine transcript, every sidecar (goal,
+      // inbox, sub-agent re-wake record, event mirror, task + kanban
+      // journals) and — with `cloneProject` (default true) — the
+      // session's project dir (artifacts, manifest, action ledger,
+      // working memory) under the new id, rewriting ids throughout.
+      // Workspace files on disk are NOT copied. The renderer persists
+      // its own UI slice for the fork on `session_branched`.
       type: 'branch_session'
       sessionId: string
+      /** Legacy anchor; -1 (or absent) means "whole session". */
       messageOrdinal: number
+      messageCreatedAt?: number
       newName?: string
-      /** All descendant session ids the renderer wants cloned alongside
-       *  the parent. The bridge mirrors these as fresh transcript files
-       *  on disk and returns the id remap via `session_branched`. */
+      /** Descendant session ids to clone alongside the parent (the
+       *  renderer sends only those that existed before the branch
+       *  point). The bridge returns the id remap via `session_branched`. */
       childSessionIds?: string[]
+      /** Copy the project output dir (artifacts etc.) under the new id.
+       *  False shares the source's dir instead. Defaults to true. */
+      cloneProject?: boolean
     }
   | {
       // Delete a session: drop it from the bridge's in-memory map,
@@ -670,6 +697,11 @@ export type BridgeCommand =
       type: 'toggle_entry_pin'
       sessionId: string
       messageOrdinal: number
+      /** Wall-clock ms (`Message.createdAt`) of the renderer message this
+       *  command is anchored on. The bridge resolves the matching engine
+       *  entry by timestamp — the only mapping that survives compaction
+       *  and tool-heavy turns. `messageOrdinal` is the legacy fallback. */
+      messageCreatedAt?: number
       pinned: boolean
     }
   | { type: 'memory_restore'; sessionId: string; id: string; note?: string }
@@ -1217,8 +1249,14 @@ export type BridgeEvent =
       newSessionId: string
       newName: string
       messageOrdinal: number
+      /** Echo of the branch anchor (renderer ms), null for a whole fork.
+       *  The renderer truncates its own UI slice at this point. */
+      messageCreatedAt?: number | null
       idRemap: Record<string, string>
       childMappings: Array<{ oldId: string; newId: string }>
+      /** Project dir the fork writes into (its own id when cloned). */
+      projectSessionId?: string
+      projectCloned?: boolean
     }
   // --- Computer-use events ---
   | ({

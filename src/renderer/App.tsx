@@ -34,6 +34,7 @@ import { QuickSwitcher } from './components/QuickSwitcher'
 import { VoiceHUD } from './components/voice/VoiceHUD'
 import { startInRendererDemo } from './lib/inRendererDemo'
 import { extractConversationSummary } from './lib/conversationSummary'
+import { forkSliceForBranch } from './state/store'
 
 function runPostEventEffects(event: any, api: any) {
   if (event?.type === 'session_spawned') {
@@ -49,6 +50,45 @@ function runPostEventEffects(event: any, api: any) {
     const sid = (event.sessionId as string | undefined) || state.activeSessionId
     state.persistSession(sid).catch(() => {})
     state.persistSessionIndex().catch(() => {})
+  }
+  // A fork just landed. The reducer already seeded an archive slice for
+  // every clone it had source state for; write those to disk, fill in
+  // any child whose source wasn't in memory from its persisted file,
+  // update the index, and only THEN switch — so the switch never has to
+  // fall back to a text-only synthesis from the cloned transcript.
+  if (event?.type === 'session_branched') {
+    const remap = (event.idRemap || {}) as Record<string, string>
+    const newSessionId = event.newSessionId as string
+    void (async () => {
+      const state = useHarness.getState()
+      for (const [oldId, newId] of Object.entries(remap)) {
+        try {
+          if (!useHarness.getState().sessionArchive[newId]) {
+            const loaded = await state.loadPersistedSessionIntoArchive(oldId)
+            const src = useHarness.getState().sessionArchive[oldId]
+            if (loaded && src) {
+              const seeded = forkSliceForBranch(src, remap, null)
+              useHarness.setState((prev) => ({
+                sessionArchive: { ...prev.sessionArchive, [newId]: seeded },
+              }))
+            }
+          }
+          await state.persistSession(newId)
+        } catch {
+          /* best effort — the transcript on disk still makes it resumable */
+        }
+      }
+      try {
+        await state.persistSessionIndex()
+      } catch {
+        /* ignore */
+      }
+      try {
+        await useHarness.getState().switchSession(newSessionId)
+      } catch {
+        /* switchSession reports its own toast */
+      }
+    })()
   }
   // Auto-rename from the bridge needs to land on disk — without
   // persistence the new title vanishes on next app start. The reducer

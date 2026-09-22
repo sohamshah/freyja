@@ -1,23 +1,31 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 interface BranchSessionDialogProps {
   /** Default name pre-filled in the input. */
   defaultName: string
+  /** 'before-message': everything before message #branchAtHumanIndex.
+   *  'whole': the session as it stands right now. */
+  mode?: 'before-message' | 'whole'
   /** 1-indexed message number for the human-readable hint. */
-  branchAtHumanIndex: number
+  branchAtHumanIndex?: number
   onCancel: () => void
   onConfirm: (name: string) => void
 }
 
 /**
- * Tiny modal that asks for a name before kicking off a session branch.
- * The user agreed branch operations should clone a session at a chosen
- * message boundary; everything before that point becomes the new
- * session, everything after stays only on the original. Subagent
- * transcripts are deep-cloned by the bridge.
+ * Tiny modal that asks for a name before kicking off a session fork.
+ * The bridge clones the engine transcript, every sidecar (goal, inbox,
+ * sub-agent re-wake records, task + kanban journals) and the session's
+ * project folder (artifacts, ledger, working memory) under new ids; the
+ * renderer seeds and persists the UI slice so the fork opens with its
+ * tool timeline and sub-agent cards intact. Workspace files on disk are
+ * shared, not copied. Portaled to <body> so it can be mounted from
+ * anywhere (conversation, sidebar row) without clipping.
  */
 export function BranchSessionDialog({
   defaultName,
+  mode = 'before-message',
   branchAtHumanIndex,
   onCancel,
   onConfirm,
@@ -47,7 +55,12 @@ export function BranchSessionDialog({
     onConfirm(trimmed)
   }
 
-  return (
+  const scope =
+    mode === 'whole' || branchAtHumanIndex == null
+      ? 'Copy this session as it stands right now'
+      : `Copy everything before message #${branchAtHumanIndex}`
+
+  return createPortal(
     <div className="fixed inset-0 z-[70] flex items-center justify-center p-6">
       <div
         className="absolute inset-0 bg-black/55 backdrop-blur-[3px]"
@@ -55,12 +68,12 @@ export function BranchSessionDialog({
       />
       <div className="relative w-[min(440px,94vw)] rounded-2xl modal-opaque p-5 ring-hairline-strong shadow-2xl">
         <div className="mb-1 font-mono text-[10px] uppercase tracking-[0.2em] text-fg-2">
-          branch session
+          {mode === 'whole' ? 'fork session' : 'branch session'}
         </div>
         <div className="mb-3 font-prose text-[12.5px] leading-[1.45] text-fg-1">
-          Fork everything before message #{branchAtHumanIndex} into a new
-          session. Subagent runs and stored artifacts are deep-cloned;
-          workspace files on disk stay shared.
+          {scope} into a new session. Context, sub-agent runs, goal state,
+          task board and the session&apos;s project folder (artifacts, ledger,
+          working memory) are cloned; workspace files on disk stay shared.
         </div>
         <input
           ref={inputRef}
@@ -72,7 +85,7 @@ export function BranchSessionDialog({
               submit()
             }
           }}
-          placeholder="branch name"
+          placeholder={mode === 'whole' ? 'fork name' : 'branch name'}
           className="w-full rounded-md bg-white/[0.04] px-3 py-2 font-prose text-[12.5px] text-fg-0 ring-hairline placeholder:text-fg-3 focus:outline-none focus:ring-1 focus:ring-accent/40"
         />
         <div className="mt-4 flex items-center justify-end gap-2">
@@ -87,10 +100,11 @@ export function BranchSessionDialog({
             disabled={!name.trim()}
             className="rounded-md bg-accent/15 px-3 py-1.5 font-mono text-[10.5px] uppercase tracking-[0.08em] text-accent ring-1 ring-accent/30 hover:bg-accent/25 disabled:opacity-60"
           >
-            create branch
+            {mode === 'whole' ? 'create fork' : 'create branch'}
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

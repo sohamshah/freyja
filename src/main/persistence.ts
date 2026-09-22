@@ -218,12 +218,59 @@ export function sessionsDirectory(): string {
   return SESSIONS_DIR
 }
 
+// Ids whose backing file has been seen on disk. A row only needs
+// checking once per process; the set keeps the sweep below O(new rows)
+// rather than two stat() calls per row per 30s poll.
+const _verifiedRowIds = new Set<string>()
+const GHOST_ROW_GRACE_MS = 60_000
+
+/** Drop index rows that nothing on disk backs any more. A root session
+ *  row whose ``<id>.json`` AND ``<id>.transcript.json`` are both gone
+ *  can only ever produce a "Session not found" toast — it is a ghost
+ *  left behind when files were removed out from under a running
+ *  renderer (which rewrites the whole index from memory). Sub-agent
+ *  rows are left alone: their index metadata (task, outcome) is still
+ *  meaningful under the parent even without a file. Rows touched in
+ *  the last minute are skipped so a session mid-first-save isn't
+ *  mistaken for a ghost. */
+function pruneGhostRows(rows: PersistedSessionMeta[]): PersistedSessionMeta[] {
+  const now = Date.now()
+  let dropped = 0
+  const kept = rows.filter((row) => {
+    if (!row?.id || _verifiedRowIds.has(row.id)) return true
+    if (row.parentSessionId) return true
+    if (typeof row.updatedAt === 'number' && now - row.updatedAt < GHOST_ROW_GRACE_MS) {
+      return true
+    }
+    if (
+      fs.existsSync(sessionFile(row.id)) ||
+      fs.existsSync(resolveSessionPath(row.id, '.transcript.json'))
+    ) {
+      _verifiedRowIds.add(row.id)
+      return true
+    }
+    dropped += 1
+    return false
+  })
+  if (dropped > 0) {
+    console.log(`[persistence] dropped ${dropped} ghost session row(s) with no file on disk`)
+    enqueueIndexWrite(async () => {
+      const indexed = (await readIndexAsync()) ?? []
+      const keep = new Set(kept.map((r) => r.id))
+      return writeIndexUnlocked(indexed.filter((row) => keep.has(row.id) || !!row.parentSessionId))
+    }).catch((err) => {
+      console.error('[persistence] failed to write index after ghost sweep:', err)
+    })
+  }
+  return kept
+}
+
 export function listSessions(): PersistedSessionMeta[] {
   ensureDir()
   let rows: PersistedSessionMeta[]
   const indexed = readIndexSync()
   if (indexed) {
-    rows = [...indexed]
+    rows = pruneGhostRows([...indexed])
   } else {
     rows = []
     let files: string[] = []
