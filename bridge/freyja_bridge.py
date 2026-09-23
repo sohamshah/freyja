@@ -14302,7 +14302,9 @@ async def _main_headless() -> None:
         from bridge.gateway.run import GatewayDaemon
 
         gateway = GatewayDaemon()
-        await gateway.start()
+        # Send-only: the dedicated gateway process owns inbound Slack.
+        # Listening here too made both processes answer every mention.
+        await gateway.start(listen=False)
         state = gateway.state  # type: ignore[assignment]
         if state is None:
             log("error", "headless: gateway start produced no state")

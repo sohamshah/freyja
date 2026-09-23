@@ -35,7 +35,7 @@ async def test_start_boots_mcp_manager_before_adapter_connect(monkeypatch):
     class _Adapter:
         name = "slack"
 
-        async def connect(self, _on_inbound) -> bool:
+        async def connect(self, _on_inbound, *, listen: bool = True) -> bool:
             order.append("adapter.connect")
             return False  # no adapters → start() proceeds to control channel
 
@@ -81,7 +81,7 @@ async def test_start_survives_mcp_manager_boot_failure(monkeypatch, caplog):
     class _Adapter:
         name = "slack"
 
-        async def connect(self, _on_inbound) -> bool:
+        async def connect(self, _on_inbound, *, listen: bool = True) -> bool:
             return False
 
     import bridge.freyja_bridge as fb
@@ -110,3 +110,71 @@ async def test_start_survives_mcp_manager_boot_failure(monkeypatch, caplog):
 
     await daemon.start()  # must not raise
     assert "mcp manager boot failed" in caplog.text
+
+
+async def _start_with_recording_adapter(monkeypatch, *, owner_pid, **start_kwargs):
+    """Boot a GatewayDaemon against a fake adapter and return the
+    ``listen`` value it was connected with."""
+    seen: dict[str, bool] = {}
+
+    class _Adapter:
+        name = "slack"
+
+        async def connect(self, _on_inbound, *, listen: bool = True) -> bool:
+            seen["listen"] = listen
+            return False
+
+    import bridge.freyja_bridge as fb
+    import bridge.gateway.config as gcfg
+    import bridge.gateway.mcp_slack as mcp_slack
+    import bridge.gateway.pid as pid_mod
+
+    monkeypatch.setattr(fb, "_BridgeState", _FakeState)
+    monkeypatch.setattr(
+        gcfg.GatewayConfig, "load",
+        classmethod(lambda cls: types.SimpleNamespace(
+            default_model="m", default_reasoning_level="low")),
+    )
+    monkeypatch.setattr(run_mod, "SlackAdapter", _Adapter)
+    monkeypatch.setattr(
+        mcp_slack, "ensure_manager",
+        lambda _d: types.SimpleNamespace(server_count=0),
+    )
+    monkeypatch.setattr(pid_mod, "get_running_pid", lambda: owner_pid)
+    daemon = GatewayDaemon()
+
+    async def _noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(daemon, "_start_control_channel", _noop)
+    monkeypatch.setattr(daemon, "_sweep_orphaned_permission_requests", lambda: None)
+    await daemon.start(**start_kwargs)
+    return seen["listen"]
+
+
+@pytest.mark.asyncio
+async def test_co_resident_daemon_does_not_listen_on_slack(monkeypatch):
+    """A second Socket Mode listener made both processes answer every
+    mention (Slack split message/app_mention across the two sockets)."""
+    import os
+
+    assert await _start_with_recording_adapter(
+        monkeypatch, owner_pid=os.getpid() + 1) is False
+
+
+@pytest.mark.asyncio
+async def test_lock_owner_listens_on_slack(monkeypatch):
+    import os
+
+    assert await _start_with_recording_adapter(
+        monkeypatch, owner_pid=os.getpid()) is True
+    assert await _start_with_recording_adapter(
+        monkeypatch, owner_pid=None) is True
+
+
+@pytest.mark.asyncio
+async def test_explicit_send_only_wins_even_without_a_gateway(monkeypatch):
+    """The scheduler daemon passes listen=False: if it boots before the
+    gateway writes its PID file, it must still not open a socket."""
+    assert await _start_with_recording_adapter(
+        monkeypatch, owner_pid=None, listen=False) is False

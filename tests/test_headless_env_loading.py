@@ -99,7 +99,9 @@ def test_headless_entrypoint_reaches_start():
     )
     body = ast.unparse(fn)
     assert "GatewayDaemon()" in body
-    assert "gateway.start()" in body
+    # Send-only: the dedicated gateway owns inbound Slack. A listening
+    # scheduler daemon made both processes answer every mention.
+    assert "gateway.start(listen=False)" in body
 
 
 def test_headless_does_not_log_a_workspace_it_does_not_use():

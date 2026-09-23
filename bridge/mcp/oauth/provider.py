@@ -440,6 +440,12 @@ class FreyjaOAuthClientProvider(OAuthClientProvider):
         self.token_user_agent = token_user_agent
         self.last_poisoned = False
         self.performed_authorization = False
+        # Cross-process token sync (see FreyjaTokenStorage.acquire_refresh_lock).
+        self._disk_mtime_ns: int | None = None
+        self._refresh_lock_fd: int | None = None
+        # Identity of the auth flow holding the flock, so one flow's cleanup
+        # never releases a lock a concurrent flow took.
+        self._refresh_lock_owner: object | None = None
 
     # -- request shaping ----------------------------------------------------
 
@@ -499,6 +505,14 @@ class FreyjaOAuthClientProvider(OAuthClientProvider):
         raise OAuthTokenError(message)
 
     async def _handle_refresh_response(self, response: httpx2.Response) -> bool:
+        try:
+            return await self._handle_refresh_response_locked(response)
+        finally:
+            # The refresh lock taken in _sync_before_flow covers exactly one
+            # "refresh → write tokens.json" — release once the write landed.
+            self._release_refresh_lock()
+
+    async def _handle_refresh_response_locked(self, response: httpx2.Response) -> bool:
         """Accept any 2xx refresh response and avoid logging token bodies."""
         if not (200 <= response.status_code < 300):
             detail = ""
@@ -510,16 +524,16 @@ class FreyjaOAuthClientProvider(OAuthClientProvider):
                 "mcp oauth '%s': token refresh failed: %s%s",
                 self.server_name, response.status_code, f" ({detail})" if detail else "",
             )
-            self.context.clear_tokens()
-            return False
+            return await self._recover_failed_refresh()
         try:
             content = await response.aread()
             token_response = OAuthToken.model_validate_json(content)
         except (httpx2.HTTPError, ValidationError, ValueError):
+            # Slack's token endpoint reports errors as HTTP 200 + ok:false,
+            # which lands here rather than in the status branch above.
             logger.warning("mcp oauth '%s': invalid refresh response: %s",
                            self.server_name, response.status_code)
-            self.context.clear_tokens()
-            return False
+            return await self._recover_failed_refresh()
         # RFC 6749 section 6: a refresh response may omit scope (unchanged)
         # and refresh_token (the AS does not rotate). Carry both forward so
         # the persisted token stays self-describing and the next expiry can
@@ -540,6 +554,95 @@ class FreyjaOAuthClientProvider(OAuthClientProvider):
         storage = self.context.storage
         return storage if isinstance(storage, FreyjaTokenStorage) else None
 
+    # -- cross-process token sync --------------------------------------------
+
+    def _seed_expiry(self, tokens: OAuthToken) -> None:
+        if tokens.expires_in is None:
+            return
+        self.context.update_token_expiry(tokens)
+        if int(tokens.expires_in) <= 0 and self.context.token_expiry_time is not None:
+            # Already expired by wall clock: make is_token_valid() False
+            # deterministically rather than relying on sub-second drift.
+            self.context.token_expiry_time -= 1.0
+
+    async def _adopt_disk_tokens(self, *, force: bool = False) -> bool:
+        """Swap in tokens.json when another process rewrote it.
+
+        Returns True if the in-memory tokens changed. Cheap when nothing
+        changed: a stat, no read, unless ``force``.
+        """
+        storage = self._freyja_storage()
+        if storage is None:
+            return False
+        mtime = storage.tokens_mtime_ns()
+        if not force and mtime == self._disk_mtime_ns:
+            return False
+        self._disk_mtime_ns = mtime
+        disk = await storage.get_tokens()
+        if disk is None:
+            return False
+        cur = self.context.current_tokens
+        if (
+            cur is not None
+            and cur.access_token == disk.access_token
+            and cur.refresh_token == disk.refresh_token
+        ):
+            return False
+        self.context.current_tokens = disk
+        self.context.token_expiry_time = None
+        self._seed_expiry(disk)
+        logger.info(
+            "mcp oauth '%s': adopted tokens refreshed by another process", self.server_name
+        )
+        return True
+
+    async def _sync_before_flow(self, owner: object) -> None:
+        """Before the SDK decides whether to refresh: pick up tokens another
+        process wrote, and if a refresh is still due, take the cross-process
+        refresh lock so exactly one process spends the refresh token.
+
+        Never waits on the flock while holding ``context.lock`` — a flow in
+        this process that already holds the flock needs ``context.lock`` to
+        finish its refresh.
+        """
+        storage = self._freyja_storage()
+        if storage is None:
+            return
+        async with self.context.lock:
+            if not self._initialized:
+                await self._initialize()
+            await self._adopt_disk_tokens()
+            due = not self.context.is_token_valid() and self.context.can_refresh_token()
+        if not due:
+            return
+        fd = await storage.acquire_refresh_lock()
+        async with self.context.lock:
+            # Whoever held the lock before us may have just refreshed.
+            await self._adopt_disk_tokens(force=True)
+            still_due = not self.context.is_token_valid() and self.context.can_refresh_token()
+            if still_due and fd is not None and self._refresh_lock_fd is None:
+                self._refresh_lock_fd = fd
+                self._refresh_lock_owner = owner
+                return
+        storage.release_refresh_lock(fd)
+
+    def _release_refresh_lock(self, owner: object | None = None) -> None:
+        """Release the flock; with ``owner``, only if that flow holds it."""
+        if owner is not None and owner is not self._refresh_lock_owner:
+            return
+        fd, self._refresh_lock_fd = self._refresh_lock_fd, None
+        self._refresh_lock_owner = None
+        FreyjaTokenStorage.release_refresh_lock(fd)
+
+    async def _recover_failed_refresh(self) -> bool:
+        """A refresh was rejected. If tokens.json holds a different token
+        set (a process without the lock — e.g. an older build — rotated it),
+        adopt it instead of wiping credentials that are still good."""
+        if await self._adopt_disk_tokens(force=True):
+            return self.context.is_token_valid()
+        self.context.clear_tokens()
+        return False
+
     async def _initialize(self) -> None:
         """Load stored tokens + client info AND seed ``token_expiry_time``.
 
@@ -556,16 +659,14 @@ class FreyjaOAuthClientProvider(OAuthClientProvider):
         we have tokens but no cache) so ``_refresh_token`` has the correct
         ``token_endpoint`` instead of the SDK's guessed ``{server_url}/token``.
         """
+        storage = self._freyja_storage()
+        if storage is not None:
+            self._disk_mtime_ns = storage.tokens_mtime_ns()
         await super()._initialize()
         tokens = self.context.current_tokens
-        if tokens is not None and tokens.expires_in is not None:
-            self.context.update_token_expiry(tokens)
-            if int(tokens.expires_in) <= 0 and self.context.token_expiry_time is not None:
-                # Already expired by wall clock: make is_token_valid() False
-                # deterministically rather than relying on sub-second drift.
-                self.context.token_expiry_time -= 1.0
+        if tokens is not None:
+            self._seed_expiry(tokens)
 
-        storage = self._freyja_storage()
         if storage is not None and self.context.oauth_metadata is None:
             meta = storage.load_oauth_metadata()
             if meta is not None:
@@ -735,6 +836,8 @@ class FreyjaOAuthClientProvider(OAuthClientProvider):
         sniffing responses for ``invalid_client`` and releasing the context
         lock around the resource request.
         """
+        flow_id = object()
+        await self._sync_before_flow(flow_id)
         inner = super().async_auth_flow(request)
         resource_lock_released = False
         sent_access_token: str | None = None
@@ -766,10 +869,13 @@ class FreyjaOAuthClientProvider(OAuthClientProvider):
                         # the SDK completed a full authorization (or a 403
                         # step-up). The server rejected the fresh token.
                         retry_rejected_status = status
-                # A different request may have completed refresh or full
-                # authorization while this resource request was in flight.
-                # Retry with that token instead of starting a duplicate
-                # OAuth transition from the stale 401/403.
+                # A different request — in this process, or another Freyja
+                # process via tokens.json — may have completed refresh or
+                # full authorization while this resource request was in
+                # flight. Retry with that token instead of starting a
+                # duplicate OAuth transition from the stale 401/403.
+                if is_resource and status in (401, 403):
+                    await self._adopt_disk_tokens(force=True)
                 tokens = self.context.current_tokens
                 if (
                     is_resource
@@ -816,6 +922,9 @@ class FreyjaOAuthClientProvider(OAuthClientProvider):
                     await inner.aclose()
                 except Exception:  # noqa: BLE001 — teardown must never mask the cause
                     pass
+                # A flow cancelled mid-refresh must not wedge every other
+                # Freyja process's refresh behind a held flock.
+                self._release_refresh_lock(flow_id)
 
         if retry_after_concurrent_auth:
             yield request

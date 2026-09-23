@@ -2234,8 +2234,14 @@ class GatewayDaemon:
             except Exception:  # noqa: BLE001
                 logger.debug("log rotation cycle failed", exc_info=True)
 
-    async def start(self) -> None:
-        """Stand up the bridge state + connect all configured adapters."""
+    async def start(self, *, listen: bool | None = None) -> None:
+        """Stand up the bridge state + connect all configured adapters.
+
+        ``listen`` decides whether adapters receive inbound events. None
+        means "only if this process owns the gateway PID lock (or no
+        gateway runs)". The scheduler-only headless daemon passes False:
+        it only posts scheduled-job output.
+        """
         from bridge.freyja_bridge import _BridgeState
 
         from bridge.gateway.config import GatewayConfig
@@ -2301,8 +2307,17 @@ class GatewayDaemon:
 
         # Slack adapter is the only one in v1. Future: read
         # ~/.freyja/gateway.yaml to enable/disable adapters.
+        # EXACTLY ONE process may hold a Socket Mode connection — same rule
+        # as the control channel below. Observed failure: the scheduler
+        # daemon (which also boots a GatewayDaemon) listened alongside the
+        # real gateway once 910ecdb gave it tokens; Slack handed a mention's
+        # message and app_mention events to different processes, each
+        # passed its own in-process dedup, and the thread got two agents
+        # answering every message.
+        if listen is None:
+            listen = self._owns_gateway_lock()
         adapter = SlackAdapter()
-        ok = await adapter.connect(self._on_inbound)
+        ok = await adapter.connect(self._on_inbound, listen=listen)
         if ok:
             self.adapters.append(adapter)
             # Register with the destructive-command approval module
@@ -2425,6 +2440,18 @@ class GatewayDaemon:
                 orphans_cleared,
             )
 
+    @staticmethod
+    def _owns_gateway_lock() -> bool:
+        """True if this process holds the gateway PID lock, or no live
+        gateway holds it."""
+        try:
+            from bridge.gateway.pid import get_running_pid
+
+            owner = get_running_pid()
+        except Exception:  # noqa: BLE001
+            owner = None
+        return owner is None or owner == os.getpid()
+
     async def _start_control_channel(self) -> None:
         # EXACTLY ONE process may tail commands.jsonl — the readers share
         # a single offset file, so a second reader silently steals
@@ -2433,17 +2460,10 @@ class GatewayDaemon:
         # skill_candidate_resolve commands meant for the real gateway
         # and failed them with not_found. Only the gateway PID-lock
         # owner (or a process starting where no gateway runs) reads.
-        try:
-            from bridge.gateway.pid import get_running_pid
-
-            owner = get_running_pid()
-        except Exception:  # noqa: BLE001
-            owner = None
-        if owner is not None and owner != os.getpid():
+        if not self._owns_gateway_lock():
             logger.info(
-                "control channel NOT started — gateway pid %d owns "
-                "commands.jsonl (this instance is a co-resident daemon)",
-                owner,
+                "control channel NOT started — another gateway pid owns "
+                "commands.jsonl (this instance is a co-resident daemon)"
             )
             return
         reader = ControlChannelReader()

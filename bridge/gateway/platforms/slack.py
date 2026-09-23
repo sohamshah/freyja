@@ -348,8 +348,16 @@ class SlackAdapter:
 
     # ── lifecycle ──────────────────────────────────────────────
 
-    async def connect(self, on_event: EventCallback) -> bool:
-        """Authenticate with all configured workspaces + start Socket Mode."""
+    async def connect(self, on_event: EventCallback, *, listen: bool = True) -> bool:
+        """Authenticate with all configured workspaces + start Socket Mode.
+
+        ``listen=False`` authenticates the web clients (so this process can
+        still post) but opens no Socket Mode connection. Slack spreads a
+        single app's events across every open socket, and dedup is
+        per-process, so a second listener splits one mention's
+        ``message`` / ``app_mention`` twins across two processes and both
+        answer. Only the gateway PID-lock owner may listen.
+        """
         if not _SLACK_AVAILABLE:
             logger.error(
                 "slack-bolt not installed — run `uv pip install slack-bolt slack-sdk`"
@@ -374,12 +382,12 @@ class SlackAdapter:
                 "[slack] SLACK_BOT_TOKEN not set — run `freyja setup slack`"
             )
             return False
-        if not app_token:
+        if listen and not app_token:
             logger.error(
                 "[slack] SLACK_APP_TOKEN not set — Socket Mode requires it"
             )
             return False
-        if not app_token.startswith("xapp-"):
+        if listen and not app_token.startswith("xapp-"):
             logger.error("[slack] SLACK_APP_TOKEN must start with xapp-")
             return False
 
@@ -451,6 +459,15 @@ class SlackAdapter:
                     "[slack] authenticated as @%s in workspace %s (team %s)",
                     bot_name, team_name, team_id,
                 )
+
+            if not listen:
+                self._running = True
+                logger.info(
+                    "[slack] send-only (%d workspace(s)) — no Socket Mode; "
+                    "the gateway PID-lock owner receives events",
+                    len(self._team_clients),
+                )
+                return True
 
             self._register_event_handlers()
 

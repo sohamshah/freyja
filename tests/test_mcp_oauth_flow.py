@@ -763,3 +763,77 @@ async def test_no_secret_values_appear_in_any_log_line(root, caplog):
         for line in lines:
             for secret in secrets:
                 assert secret not in line, f"secret leaked in log line: {line[:120]}"
+
+
+# ---------------------------------------------------------------------------
+# Cross-process refresh (desktop bridge + gateway + scheduler daemon share
+# tokens.json; each holds its own provider). With rotating refresh tokens the
+# first process to refresh used to revoke every other process's in-memory
+# refresh token -> invalid_grant -> needs-auth despite a valid tokens.json.
+# ---------------------------------------------------------------------------
+
+
+async def _two_warm_processes(fake, root):
+    browser = AutoBrowser()
+    assert (await run_login(_spec(fake), flow=browser.flow, storage_root=root, timeout=10)).ok
+    await browser.drain()
+    a = build_httpx_auth(_spec(fake), interactive=False, storage_root=root)
+    b = build_httpx_auth(_spec(fake), interactive=False, storage_root=root)
+    assert (await _authed_post(a, fake.resource_url)).status_code == 200
+    assert (await _authed_post(b, fake.resource_url)).status_code == 200
+    # Time passes: both processes' in-memory access tokens are now expired.
+    for p in (a, b):
+        p.context.token_expiry_time = time.time() - 1
+    _expire_tokens_on_disk(FreyjaTokenStorage("acme", root=root))
+    fake.reset_hits()
+    return a, b
+
+
+async def test_second_process_adopts_rotated_tokens_instead_of_refreshing(fake, root):
+    a, b = await _two_warm_processes(fake, root)
+
+    assert (await _authed_post(a, fake.resource_url)).status_code == 200
+    assert fake.hits["token"] == 1  # A refreshed and rotated the refresh token
+
+    # B still holds the now-revoked refresh token in memory. It must pick up
+    # A's tokens from disk, not spend the dead refresh token.
+    assert (await _authed_post(b, fake.resource_url)).status_code == 200
+    assert fake.hits["token"] == 1
+    assert fake.hits["authorize"] == 0
+    assert b.context.current_tokens.access_token == a.context.current_tokens.access_token
+
+
+async def test_concurrent_refresh_across_processes_spends_refresh_token_once(fake, root):
+    a, b = await _two_warm_processes(fake, root)
+
+    ra, rb = await asyncio.gather(
+        _authed_post(a, fake.resource_url), _authed_post(b, fake.resource_url)
+    )
+    assert (ra.status_code, rb.status_code) == (200, 200)
+    assert fake.hits["token"] == 1  # the flock serialized them; loser adopted
+    assert fake.hits["authorize"] == 0
+    storage = FreyjaTokenStorage("acme", root=root)
+    fd = await storage.acquire_refresh_lock(timeout=0.2)
+    assert fd is not None  # nothing left holding the lock
+    storage.release_refresh_lock(fd)
+
+
+async def test_rejected_refresh_adopts_newer_disk_tokens_instead_of_clearing(fake, root):
+    """An unlocked writer (e.g. an older build) rotated tokens.json between
+    our disk check and our refresh: recover from disk rather than wipe."""
+    a, b = await _two_warm_processes(fake, root)
+    assert (await _authed_post(a, fake.resource_url)).status_code == 200
+    storage = FreyjaTokenStorage("acme", root=root)
+
+    # Skip B's pre-flow sync so it spends its revoked refresh token.
+    async def _no_sync(_owner):
+        return None
+
+    b._sync_before_flow = _no_sync  # type: ignore[method-assign]
+    fake.reset_hits()
+
+    resp = await _authed_post(b, fake.resource_url)
+    assert resp.status_code == 200
+    assert fake.hits["token"] == 1  # the one rejected refresh
+    assert fake.hits["authorize"] == 0
+    assert read_json(storage.tokens_path())["access_token"] == a.context.current_tokens.access_token

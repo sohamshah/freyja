@@ -15,6 +15,7 @@ flat ``<server>.json`` / ``<server>.client.json`` files)::
             meta.json                     0600  OAuthMetadata (AS discovery cache)
             cimd-off                            marker: AS refused our CIMD document
             client.json.bak               0600  last poisoned registration
+            .refresh.lock                 0600  flock: one process refreshes at a time
 
 Security model (hermes #19673): files are created with
 ``os.open(O_WRONLY|O_CREAT|O_EXCL, 0o600)`` into a per-pid/random temp name
@@ -67,6 +68,8 @@ TOKENS_FILE = "tokens.json"
 CLIENT_FILE = "client.json"
 META_FILE = "meta.json"
 CIMD_OFF_FILE = "cimd-off"
+# flock target for cross-process refresh serialization; never holds data.
+REFRESH_LOCK_FILE = ".refresh.lock"
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +259,82 @@ class FreyjaTokenStorage:
 
     def cimd_rejected_path(self) -> Path:
         return self.server_dir / CIMD_OFF_FILE
+
+    def refresh_lock_path(self) -> Path:
+        return self.server_dir / REFRESH_LOCK_FILE
+
+    def tokens_mtime_ns(self) -> int | None:
+        try:
+            return self.tokens_path().stat().st_mtime_ns
+        except OSError:
+            return None
+
+    # -- cross-process refresh lock ------------------------------------------
+    #
+    # The desktop bridge, the gateway and the scheduler daemon each hold
+    # their own in-memory copy of these tokens. Slack and Atlassian rotate
+    # refresh tokens: every refresh returns a new one and revokes the old.
+    # Unserialized, the first process to refresh strands the others on a
+    # revoked refresh token — their next refresh fails (Slack
+    # ``invalid_grant``, Atlassian 403 ``refresh_token is invalid``), the SDK
+    # clears the tokens, and the server drops to needs-auth even though
+    # tokens.json on disk is perfectly valid. The provider holds this flock
+    # across "re-read disk → refresh → write", so one process refreshes and
+    # the rest adopt its result.
+
+    async def acquire_refresh_lock(self, *, timeout: float = 30.0) -> int | None:
+        """Take the exclusive refresh flock; returns an fd for
+        :meth:`release_refresh_lock`, or None if it couldn't be taken in
+        ``timeout`` (callers proceed unlocked rather than hang)."""
+        import fcntl
+
+        import anyio
+
+        try:
+            self.server_dir.mkdir(parents=True, exist_ok=True)
+            secure_dir(self.server_dir)
+            fd = os.open(
+                str(self.refresh_lock_path()),
+                os.O_RDWR | os.O_CREAT,
+                stat.S_IRUSR | stat.S_IWUSR,
+            )
+        except OSError as exc:
+            logger.debug("mcp oauth '%s': refresh lock unavailable: %s", self.server_name, exc)
+            return None
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                # Non-blocking + poll: never parks an event-loop thread, and
+                # two fds in the same process still exclude each other.
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return fd
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    logger.warning(
+                        "mcp oauth '%s': refresh lock busy for %.0fs — refreshing unlocked",
+                        self.server_name, timeout,
+                    )
+                    os.close(fd)
+                    return None
+                await anyio.sleep(0.05)
+            except OSError:
+                os.close(fd)
+                return None
+
+    @staticmethod
+    def release_refresh_lock(fd: int | None) -> None:
+        if fd is None:
+            return
+        import fcntl
+
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
     # -- tokens ------------------------------------------------------------
 
