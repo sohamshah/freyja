@@ -5,7 +5,7 @@ This is the heart of the engine, implementing the resilience patterns
 from OpenClaw's runEmbeddedPiAgent() function (run.ts:400-1100).
 
 Key behaviors:
-1. Retry iteration formula: min(160, max(100, 24 + 8 * num_profiles))
+1. No per-run step ceiling by default (StopCondition.max_iterations opts in)
 2. Three-tier overflow cascade for context management
 3. Auth profile rotation with cooldown awareness
 4. Model fallback chain with primary probing
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -220,6 +221,11 @@ def _call_key(name: str, arguments: dict) -> str:
 # Stop Condition
 # ============================================================================
 
+
+def _fmt_cap(max_iterations: int) -> str:
+    """Render a step ceiling for logs; the uncapped default is sys.maxsize."""
+    return "∞" if max_iterations >= sys.maxsize else str(max_iterations)
+
 @dataclass
 class StopCondition:
     """
@@ -349,7 +355,7 @@ class AgentRunner:
         max_iterations = stop.max_iterations or self.config.compute_max_iterations(num_profiles)
 
         logger.info(
-            f"Starting agent run: max_iterations={max_iterations}, "
+            f"Starting agent run: max_iterations={_fmt_cap(max_iterations)}, "
             f"num_profiles={num_profiles}"
         )
 
@@ -386,7 +392,7 @@ class AgentRunner:
         while ctx.iteration < max_iterations and ctx.state == RunnerState.RUNNING:
             ctx.iteration += 1
             self.current_iteration = ctx.iteration
-            logger.debug(f"Iteration {ctx.iteration}/{max_iterations}")
+            logger.debug(f"Iteration {ctx.iteration}/{_fmt_cap(max_iterations)}")
 
             try:
                 response = self._call_provider(session)
@@ -1111,8 +1117,8 @@ class AsyncAgentRunner:
             provider.session_id = session.id
 
         logger.info(
-            "Starting agent run | session=%s | max_iterations=%d | streaming=%s | model=%s",
-            session.id, max_iterations, stream,
+            "Starting agent run | session=%s | max_iterations=%s | streaming=%s | model=%s",
+            session.id, _fmt_cap(max_iterations), stream,
             getattr(provider, "model_id", "unknown"),
         )
 
@@ -1158,8 +1164,8 @@ class AsyncAgentRunner:
             # mid-turn pressure escalation.
             self.reset_turn_pressure_state()
             logger.info(
-                "Agent iteration %d/%d | session=%s",
-                ctx.iteration, max_iterations, session.id,
+                "Agent iteration %d/%s | session=%s",
+                ctx.iteration, _fmt_cap(max_iterations), session.id,
             )
 
             # Pre-iteration hook: lets the bridge drain the session's

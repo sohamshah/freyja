@@ -338,14 +338,19 @@ class CodexClient:
 
         # Wait for turn/completed or the silent-timeout watchdog. The
         # watchdog only fires once we've seen at least one event from
-        # Codex (`_turn_last_activity_at is not None`); the overall
-        # `timeout_s` deadline catches a subprocess that never speaks.
+        # Codex (`_turn_last_activity_at is not None`); the `timeout_s`
+        # deadline only catches a subprocess that never speaks. Once Codex
+        # is producing events there is no total turn budget — a long turn
+        # that keeps working runs to completion.
         deadline = asyncio.get_event_loop().time() + timeout_s
         try:
             while True:
-                remaining = deadline - asyncio.get_event_loop().time()
-                if remaining <= 0:
-                    raise asyncio.TimeoutError()
+                if self._turn_last_activity_at is None:
+                    remaining = deadline - asyncio.get_event_loop().time()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError()
+                else:
+                    remaining = silent_timeout_s
                 if self._turn_last_activity_at is not None:
                     silent = (
                         asyncio.get_event_loop().time()
@@ -374,7 +379,7 @@ class CodexClient:
             await self._issue_interrupt(result.turn_id)
             result.interrupted = True
             result.should_retire = True
-            result.error = f"turn timed out after {timeout_s:.0f}s"
+            result.error = f"Codex never started the turn within {timeout_s:.0f}s"
         finally:
             self._turn_active = False
             self._turn_on_event = None

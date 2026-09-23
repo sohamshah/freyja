@@ -34,6 +34,10 @@ from typing import Any, Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+# Idle timeout, not a turn budget: a turn is abandoned only after this long
+# with no stdout from Claude Code at all. Long turns that keep producing
+# events run to completion. Generous because a single long tool call (a
+# full test suite) is silent on stdout until it returns.
 _DEFAULT_TURN_TIMEOUT_S = 900.0
 
 
@@ -123,6 +127,7 @@ class ClaudeCodeClient:
         # Per-turn result Future, set by the stdout reader when we see
         # the `result` event for the in-flight turn.
         self._turn_future: asyncio.Future[dict] | None = None
+        self._last_activity_at: float = 0.0  # loop.time() of last stdout line
         self._on_event: EventHandler | None = None
         # Accumulators populated by the stdout reader, drained when a
         # turn completes.
@@ -275,6 +280,7 @@ class ClaudeCodeClient:
         self._on_event = on_event
         loop = asyncio.get_event_loop()
         self._turn_future = loop.create_future()
+        self._last_activity_at = loop.time()
 
         payload = {
             "type": "user",
@@ -292,9 +298,18 @@ class ClaudeCodeClient:
             ) from exc
 
         try:
-            result_event = await asyncio.wait_for(
-                self._turn_future, timeout=timeout_s
-            )
+            while True:
+                idle_left = timeout_s - (loop.time() - self._last_activity_at)
+                if idle_left <= 0:
+                    raise asyncio.TimeoutError()
+                try:
+                    # shield: a wait_for timeout must not cancel the turn.
+                    result_event = await asyncio.wait_for(
+                        asyncio.shield(self._turn_future), timeout=idle_left
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    continue  # re-check: output may have arrived meanwhile
         except asyncio.TimeoutError:
             return ClaudeCodeTurnResult(
                 text="".join(self._current_turn_text),
@@ -303,7 +318,7 @@ class ClaudeCodeClient:
                 tool_use_count=self._current_turn_tool_uses,
                 stop_reason="timeout",
                 is_error=True,
-                error=f"turn timed out after {timeout_s:.0f}s",
+                error=f"Claude Code produced no output for {timeout_s:.0f}s",
                 should_retire=True,
             )
         finally:
@@ -373,6 +388,7 @@ class ClaudeCodeClient:
                 line = await self._proc.stdout.readline()
                 if not line:
                     break
+                self._last_activity_at = asyncio.get_event_loop().time()
                 try:
                     msg = json.loads(line.decode("utf-8", errors="replace"))
                 except json.JSONDecodeError:

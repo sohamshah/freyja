@@ -243,7 +243,7 @@ class SubAgentSpec:
     emit_event: SubAgentEventCb
     parent_reasoning_level: str = "auto"
     parent_session_id: str = ""
-    max_iterations: int = 25
+    max_iterations: int | None = None  # None = uncapped
     child_tool_names: frozenset[str] | None = None
     # Optional wrapper that turns a plain ToolRegistry into a tracing
     # registry scoped to a given session id. The bridge passes
@@ -1226,7 +1226,7 @@ Parameters:
                 f"- type: {agent_type.name}\n"
                 f"- model: {child_model}\n"
                 f"- thinking: {agent_type.thinking_effort}\n"
-                f"- max iterations: {agent_type.max_iterations}\n"
+                f"- max iterations: {agent_type.max_iterations or 'unlimited'}\n"
                 f"- source: {agent_type.source}\n"
             )
 

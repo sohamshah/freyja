@@ -73,8 +73,10 @@ class AgentType:
     system_prompt: str = ""
     """Specialized system prompt. If empty, uses the default sub-agent prompt."""
 
-    max_iterations: int = 25
-    """Max runner iterations for this agent type."""
+    max_iterations: int | None = None
+    """Runner step ceiling for this agent type. None = no ceiling (the run
+    ends when the model ends it). Only review/judge and background
+    housekeeping profiles keep one."""
 
     source: str = "builtin"
     """Where this profile came from: builtin, user, or project file."""
@@ -237,8 +239,8 @@ def tool_summary(agent_type: AgentType) -> str:
     return ", ".join(items[:6]) + f", +{len(items) - 6}"
 
 
-def iteration_cap(profile: str, default: int) -> int:
-    """Profile cap with optional env override for local tuning."""
+def iteration_cap(profile: str, default: int | None = None) -> int | None:
+    """Profile cap (None = uncapped) with optional env override for local tuning."""
     specific_key = f"FREYJA_AGENT_MAX_ITERATIONS_{profile.upper().replace('-', '_')}"
     raw = os.environ.get(specific_key) or os.environ.get(
         "FREYJA_SUBAGENT_MAX_ITERATIONS"
@@ -248,7 +250,7 @@ def iteration_cap(profile: str, default: int) -> int:
     try:
         return max(1, int(raw))
     except ValueError:
-        logger.warning("invalid %s=%r; using %d", specific_key, raw, default)
+        logger.warning("invalid %s=%r; using %s", specific_key, raw, default)
         return default
 
 
@@ -509,7 +511,7 @@ AGENT_TYPES: dict[str, AgentType] = {
         model="parent",
         thinking_effort="auto",
         model_policy="inherit",
-        max_iterations=iteration_cap("general", 100),
+        max_iterations=iteration_cap("general"),
     ),
     "explore": AgentType(
         name="explore",
@@ -529,7 +531,7 @@ AGENT_TYPES: dict[str, AgentType] = {
             "glob", "grep",
         }),
         system_prompt=_EXPLORE_PROMPT,
-        max_iterations=iteration_cap("explore", 160),
+        max_iterations=iteration_cap("explore"),
     ),
     "explore-fast": AgentType(
         name="explore-fast",
@@ -548,7 +550,7 @@ AGENT_TYPES: dict[str, AgentType] = {
             "bash", "read_file", "list_directory",
         }),
         system_prompt=_EXPLORE_FAST_PROMPT,
-        max_iterations=iteration_cap("explore-fast", 60),
+        max_iterations=iteration_cap("explore-fast"),
     ),
     "code": AgentType(
         name="code",
@@ -565,7 +567,7 @@ AGENT_TYPES: dict[str, AgentType] = {
             "list_directory", "glob", "grep",
         }),
         system_prompt=_CODE_PROMPT,
-        max_iterations=iteration_cap("code", 120),
+        max_iterations=iteration_cap("code"),
     ),
     "verify": AgentType(
         name="verify",
@@ -585,7 +587,7 @@ AGENT_TYPES: dict[str, AgentType] = {
             "glob", "grep",
         }),
         system_prompt=_VERIFY_PROMPT,
-        max_iterations=iteration_cap("verify", 100),
+        max_iterations=iteration_cap("verify"),
     ),
     "judge-calibrator": AgentType(
         name="judge-calibrator",
@@ -742,7 +744,7 @@ AGENT_TYPES: dict[str, AgentType] = {
             "list_skills", "search_skills", "load_skill",
         }),
         system_prompt=_PLAN_PROMPT,
-        max_iterations=iteration_cap("plan", 80),
+        max_iterations=iteration_cap("plan"),
     ),
     "review": AgentType(
         name="review",
@@ -759,7 +761,7 @@ AGENT_TYPES: dict[str, AgentType] = {
             "bash", "read_file", "list_directory", "glob", "grep",
         }),
         system_prompt=_REVIEW_PROMPT,
-        max_iterations=iteration_cap("review", 100),
+        max_iterations=iteration_cap("review"),
     ),
     "test": AgentType(
         name="test",
@@ -775,7 +777,7 @@ AGENT_TYPES: dict[str, AgentType] = {
             "bash", "read_file", "list_directory", "glob", "grep",
         }),
         system_prompt=_TEST_PROMPT,
-        max_iterations=iteration_cap("test", 100),
+        max_iterations=iteration_cap("test"),
     ),
     "browser-qa": AgentType(
         name="browser-qa",
@@ -792,7 +794,7 @@ AGENT_TYPES: dict[str, AgentType] = {
             "browser_execute_js", "browser_screenshot",
         }),
         system_prompt=_BROWSER_QA_PROMPT,
-        max_iterations=iteration_cap("browser-qa", 100),
+        max_iterations=iteration_cap("browser-qa"),
     ),
     "performance": AgentType(
         name="performance",
@@ -810,7 +812,7 @@ AGENT_TYPES: dict[str, AgentType] = {
             "browser_execute_js", "browser_screenshot",
         }),
         system_prompt=_PERFORMANCE_PROMPT,
-        max_iterations=iteration_cap("performance", 140),
+        max_iterations=iteration_cap("performance"),
     ),
     "docs": AgentType(
         name="docs",
@@ -827,7 +829,7 @@ AGENT_TYPES: dict[str, AgentType] = {
             "list_directory", "glob", "grep",
         }),
         system_prompt=_DOCS_PROMPT,
-        max_iterations=iteration_cap("docs", 100),
+        max_iterations=iteration_cap("docs"),
     ),
     "memory-curator": AgentType(
         name="memory-curator",
@@ -844,7 +846,7 @@ AGENT_TYPES: dict[str, AgentType] = {
             "list_skills", "search_skills", "load_skill",
         }),
         system_prompt=_MEMORY_CURATOR_PROMPT,
-        max_iterations=iteration_cap("memory-curator", 80),
+        max_iterations=iteration_cap("memory-curator"),
     ),
     "specifier": AgentType(
         name="specifier",
@@ -862,7 +864,7 @@ AGENT_TYPES: dict[str, AgentType] = {
             "read_file", "list_directory", "glob", "grep",
         }),
         system_prompt=_SPECIFIER_PROMPT,
-        max_iterations=iteration_cap("specifier", 30),
+        max_iterations=iteration_cap("specifier"),
     ),
 }
 
@@ -933,9 +935,9 @@ def _load_agent_profile(path: Path) -> AgentType:
 
     max_iterations_raw = metadata.get("max_iterations") or metadata.get("max_steps")
     try:
-        max_iterations = int(max_iterations_raw) if max_iterations_raw else 25
+        max_iterations = int(max_iterations_raw) if max_iterations_raw else None
     except (TypeError, ValueError):
-        max_iterations = 25
+        max_iterations = None
 
     return AgentType(
         name=name,
@@ -1048,7 +1050,7 @@ def agent_types_for_prompt(
             f"model: {model_summary(atype)}; "
             f"thinking: {atype.thinking_effort}; "
             f"tools: {tool_summary(atype)}; "
-            f"max iterations: {atype.max_iterations}"
+            f"max iterations: {atype.max_iterations or 'unlimited'}"
         )
         if parent_model is not None:
             resolution = resolve_model_choice(atype, parent_model)

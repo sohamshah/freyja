@@ -9,6 +9,8 @@ Types mirror OpenClaw's TypeScript definitions from:
 
 from __future__ import annotations
 
+import sys
+
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -961,21 +963,14 @@ class AgentConfig:
     Agent configuration matching OpenClaw's constants.
 
     From run.ts:112-115:
-    - BASE_RUN_RETRY_ITERATIONS = 24
-    - RUN_RETRY_ITERATIONS_PER_PROFILE = 8
-    - MIN_RUN_RETRY_ITERATIONS = 32
-    - MAX_RUN_RETRY_ITERATIONS = 160
     - MAX_OVERFLOW_COMPACTION_ATTEMPTS = 3
-
-    Iteration formula:
-        MAX_ITERATIONS = min(160, max(100, 24 + 8 * num_profiles))
     """
 
-    # Retry iteration bounds
-    base_retry_iterations: int = 24
-    iterations_per_profile: int = 8
-    min_retry_iterations: int = 100
-    max_retry_iterations: int = 160
+    max_iterations: int | None = None
+    """Per-run step ceiling. None = no ceiling: a turn runs until the model
+    ends it. The old OpenClaw formula (min(160, max(100, 24 + 8·profiles)))
+    cut long tasks off mid-plan with "I hit my per-turn step limit"; callers
+    that need a brake pass ``StopCondition(max_iterations=N)``."""
 
     # Context overflow handling
     max_compaction_attempts: int = 3
@@ -1015,15 +1010,6 @@ class AgentConfig:
     max_parallel_tools: int = 10
     """Maximum number of tools to execute in parallel."""
 
-    def compute_max_iterations(self, num_profiles: int) -> int:
-        """
-        Compute maximum retry iterations based on available auth profiles.
-
-        From OpenClaw run.ts:116-121:
-            const scaled = BASE + PER_PROFILE * profileCount;
-            return Math.min(MAX, Math.max(MIN, scaled));
-        """
-        scaled = self.base_retry_iterations + (
-            self.iterations_per_profile * num_profiles
-        )
-        return min(self.max_retry_iterations, max(self.min_retry_iterations, scaled))
+    def compute_max_iterations(self, num_profiles: int) -> int:  # noqa: ARG002
+        """Effective per-run step ceiling; ``sys.maxsize`` when uncapped."""
+        return self.max_iterations if self.max_iterations is not None else sys.maxsize

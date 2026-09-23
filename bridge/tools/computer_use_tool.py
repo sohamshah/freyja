@@ -238,7 +238,7 @@ Parameters:
     sub-agent to a specific monitor in a multi-display setup.
     Get valid ids from `list_displays`. If omitted the sub-agent
     uses the primary display.
-  * `max_steps`: cap on action count (default 60, max 200)
+  * `max_steps`: cap on action count (default 60; raise it for long tasks)
   * `mode`: "foreground" (block, default) or "background" (return
     immediately with a sub-agent id)
 """,
@@ -259,7 +259,7 @@ Parameters:
                     },
                     "max_steps": {
                         "type": "integer",
-                        "description": f"Hard cap on steps (default {DEFAULT_MAX_ITERATIONS}, max 200)",
+                        "description": f"Cap on steps (default {DEFAULT_MAX_ITERATIONS}; no upper bound)",
                     },
                     "mode": {
                         "type": "string",
@@ -299,9 +299,7 @@ Parameters:
                 target_display = int(target_display)
             except (TypeError, ValueError):
                 target_display = None
-        max_steps = min(
-            int(arguments.get("max_steps") or DEFAULT_MAX_ITERATIONS), 200
-        )
+        max_steps = max(1, int(arguments.get("max_steps") or DEFAULT_MAX_ITERATIONS))
         mode = arguments.get("mode") or "foreground"
         if mode not in ("foreground", "background"):
             mode = "foreground"

@@ -1804,7 +1804,7 @@ export type CompactionTelemetryRow =
       parent_session_id: string
       agent_type: string
       model: string
-      max_iterations: number
+      max_iterations: number | null
       task_preview: string
     }
   | {
