@@ -256,6 +256,12 @@ async def _reap(task: "asyncio.Future[Any]") -> None:
         pass
 
 
+# When the operator cuts in while a tool that can step aside is running
+# (bash: it moves its command to the background), the runner waits this long
+# for the tool to return its own result before cancelling it.
+TOOL_YIELD_GRACE_S = 2.0
+
+
 class TurnInterrupted(Exception):
     """An in-flight provider call was cut short by request_interrupt().
 
@@ -1115,6 +1121,12 @@ class AsyncAgentRunner:
         # "partial_chars": int, "tools": [names]}. Consumed (reset to
         # None) by consume_interrupt_note().
         self._last_interrupt: dict[str, Any] | None = None
+        # The same, for a turn the operator STOPPED (task cancelled):
+        # consumed by the bridge so the next turn can be told. The text a
+        # stopped stream had produced is kept in the transcript — the
+        # operator read it, so the model should remember writing it.
+        self._stop_note: dict[str, Any] | None = None
+        self._stream_partial: list[str] = []
 
         # Tool result truncator
         self.truncator = ToolResultTruncator(self.config)
@@ -1185,6 +1197,11 @@ class AsyncAgentRunner:
         note, self._last_interrupt = self._last_interrupt, None
         return note
 
+    def consume_stop_note(self) -> dict[str, Any] | None:
+        """Return and clear what the operator's stop cut short (or None)."""
+        note, self._stop_note = self._stop_note, None
+        return note
+
     def _pending_input(self) -> bool:
         if self.has_pending_input is None:
             return False
@@ -1194,7 +1211,20 @@ class AsyncAgentRunner:
             logger.exception("has_pending_input hook raised")
             return False
 
-    async def _race_interrupt(self, aw: Awaitable[Any]) -> tuple[bool, Any]:
+    def _tool_yields(self, name: str) -> bool:
+        """Whether a tool steps aside on its own when the operator cuts in
+        (``yields_on_interrupt``), so it deserves a grace period instead of
+        an immediate cancel."""
+        registry = self.tool_registry
+        try:
+            tool = registry.get(name) if registry is not None else None
+        except Exception:  # noqa: BLE001
+            tool = None
+        return bool(getattr(tool, "yields_on_interrupt", False))
+
+    async def _race_interrupt(
+        self, aw: Awaitable[Any], *, grace_s: float = 0.0,
+    ) -> tuple[bool, Any]:
         """Await ``aw`` unless request_interrupt() fires first.
 
         Returns ``(interrupted, result)``. On interrupt the work is cancelled
@@ -1202,6 +1232,10 @@ class AsyncAgentRunner:
         the work finishes at the same moment the interrupt lands, the result
         wins — throwing away a completed response helps nobody. Exceptions
         from ``aw`` propagate unchanged.
+
+        ``grace_s``: on interrupt, give the work that long to finish on its
+        own first (a tool that steps aside by itself); its result then
+        counts as a normal completion.
         """
         task = asyncio.ensure_future(aw)
         if self._interrupt is None:
@@ -1227,6 +1261,15 @@ class AsyncAgentRunner:
             waiter.cancel()
             await _reap(waiter)
             return False, task.result()
+        if grace_s > 0:
+            try:
+                done, _ = await asyncio.wait({task}, timeout=grace_s)
+            except asyncio.CancelledError:
+                task.cancel()
+                await _reap(task)
+                raise
+            if task in done:
+                return False, task.result()
         task.cancel()
         await _reap(task)
         return True, None
@@ -1244,10 +1287,26 @@ class AsyncAgentRunner:
     ) -> AgentResult:
         """Run the agent loop asynchronously."""
         self.turn_active = True
+        self._stop_note = None
+        self._stream_partial = []
         try:
             return await self._run(
                 session, user_message, stop_condition=stop_condition, stream=stream,
             )
+        except asyncio.CancelledError:
+            # The operator stopped the turn. Keep what the model had already
+            # said (only text — an unfinished tool call or unsigned thinking
+            # can't be replayed), and note what was cut for the next turn.
+            partial = "".join(self._stream_partial)
+            if partial.strip():
+                try:
+                    session.add_assistant_message(partial)
+                except Exception:  # noqa: BLE001
+                    logger.exception("could not keep the stopped reply")
+                self._stop_note = {"phase": "llm", "partial_chars": len(partial.strip())}
+            elif self._stop_note is None:
+                self._stop_note = {"phase": "other"}
+            raise
         finally:
             self.turn_active = False
             if self._interrupt is not None:
@@ -1827,9 +1886,10 @@ class AsyncAgentRunner:
         if self.tool_registry and len(self.tool_registry) > 0:
             tool_defs = self.tool_registry.list_definitions()
 
-        # Text streamed so far, so an interrupt can keep what the operator
-        # already saw (see TurnInterrupted).
+        # Text streamed so far, so an interrupt (or a stop) can keep what
+        # the operator already saw (see TurnInterrupted / run()).
         streamed_text: list[str] = []
+        self._stream_partial = streamed_text
 
         async def _handle_event(event: StreamEvent) -> None:
             if getattr(event, "type", None) == "text_delta":
@@ -1856,6 +1916,9 @@ class AsyncAgentRunner:
                 on_event=_handle_event,
             ))
         except Exception as exc:
+            # A failed attempt's text is not the reply (the retry streams a
+            # new one), so a stop during the backoff must not keep it.
+            self._stream_partial = []
             self._notify_llm_call(provider, start, streaming=True, response=None, error=exc)
             # See _call_provider_async: re-cast a raw transient transport error
             # (e.g. httpx RemoteProtocolError "peer closed connection" mid-stream)
@@ -1864,6 +1927,7 @@ class AsyncAgentRunner:
             if not isinstance(exc, ProviderError) and is_retryable_error(str(exc)):
                 raise ProviderError(str(exc), retryable=True) from exc
             raise
+        self._stream_partial = []
         if interrupted:
             raise TurnInterrupted("".join(streamed_text))
         self._notify_llm_call(provider, start, streaming=True, response=response, error=None)
@@ -2208,9 +2272,17 @@ class AsyncAgentRunner:
                     {"id": rest.id, "name": rest.name, "started": False}
                     for rest in tool_calls[i:]
                 ]
-            interrupted, outcome = await self._race_interrupt(
-                self._execute_single_tool(tc, ctx, session)
-            )
+            try:
+                interrupted, outcome = await self._race_interrupt(
+                    self._execute_single_tool(tc, ctx, session),
+                    grace_s=TOOL_YIELD_GRACE_S if self._tool_yields(tc.name) else 0.0,
+                )
+            except asyncio.CancelledError:
+                self._stop_note = {
+                    "phase": "tools",
+                    "tools": [rest.name for rest in tool_calls[i:]],
+                }
+                raise
             if interrupted:
                 session.add_tool_result(tc.id, INTERRUPTED_TOOL_RESULT, is_error=True)
                 for rest in tool_calls[i + 1:]:
@@ -2239,44 +2311,54 @@ class AsyncAgentRunner:
                 return tc.id, await self._execute_single_tool(tc, ctx, session)
 
         tasks = [asyncio.ensure_future(execute_with_semaphore(tc)) for tc in tool_calls]
-        interrupted, results = await self._race_interrupt(
-            asyncio.gather(*tasks, return_exceptions=True)
-        )
-        if interrupted:
-            # Cancelling the gather cancelled every unfinished task; the
-            # finished ones keep their real results.
-            cut: list[dict[str, Any]] = []
-            for tc, task in zip(tool_calls, tasks):
-                if task.done() and not task.cancelled() and task.exception() is None:
-                    _tc_id, (result_content, is_error) = task.result()
-                    session.add_tool_result(tc.id, result_content, is_error=is_error)
-                    continue
-                if task.done() and not task.cancelled():
-                    session.add_tool_result(
-                        tc.id, f"Tool execution error: {task.exception()}", is_error=True,
-                    )
-                    continue
+        try:
+            # asyncio.wait never cancels what it waits on, so an interrupt
+            # leaves the tool tasks running for the triage below.
+            interrupted, _ = await self._race_interrupt(asyncio.wait(tasks))
+            if interrupted:
+                # Tools that step aside by themselves (bash → background)
+                # get a moment to do it; everything else stops now.
+                patient = [
+                    t for tc, t in zip(tool_calls, tasks)
+                    if not t.done() and self._tool_yields(tc.name)
+                ]
+                for t in tasks:
+                    if not t.done() and t not in patient:
+                        t.cancel()
+                if patient:
+                    await asyncio.wait(patient, timeout=TOOL_YIELD_GRACE_S)
+                for t in patient:
+                    if not t.done():
+                        t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+        except asyncio.CancelledError:
+            self._stop_note = {
+                "phase": "tools",
+                "tools": [tc.name for tc, t in zip(tool_calls, tasks) if not t.done()],
+            }
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+        cut: list[dict[str, Any]] = []
+        for tc, task in zip(tool_calls, tasks):
+            if task.cancelled():
                 cut.append({"id": tc.id, "name": tc.name, "started": tc.id in started})
                 session.add_tool_result(
                     tc.id,
                     INTERRUPTED_TOOL_RESULT if tc.id in started else SKIPPED_TOOL_RESULT,
                     is_error=True,
                 )
-            return cut
-
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                tc = tool_calls[i]
-                logger.error("Tool execution error for %s: %s", tc.name, result)
-                session.add_tool_result(
-                    tc.id,
-                    f"Tool execution error: {result}",
-                    is_error=True,
-                )
                 continue
-            tc_id, (result_content, is_error) = result
-            session.add_tool_result(tc_id, result_content, is_error=is_error)
-        return []
+            exc = task.exception()
+            if exc is not None:
+                logger.error("Tool execution error for %s: %s", tc.name, exc)
+                session.add_tool_result(tc.id, f"Tool execution error: {exc}", is_error=True)
+                continue
+            _tc_id, (result_content, is_error) = task.result()
+            session.add_tool_result(tc.id, result_content, is_error=is_error)
+        return cut
 
     async def _execute_single_tool(
         self,

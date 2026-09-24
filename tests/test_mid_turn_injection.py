@@ -308,3 +308,90 @@ async def test_outer_cancel_still_stops_the_turn():
     with pytest.raises(asyncio.CancelledError):
         await task
     assert runner.turn_active is False
+
+
+class _YieldingTool(_Tool):
+    """Steps aside by itself shortly after a cut-in (like bash moving its
+    command to the background) and returns a normal result."""
+
+    yields_on_interrupt = True
+
+    def __init__(self, name, runner_ref):
+        super().__init__(name, None)
+        self._runner_ref = runner_ref
+
+    async def execute(self, call_id: str, arguments: dict) -> ToolResult:
+        self.started.set()
+        runner = self._runner_ref["r"]
+        while not runner._interrupt_pending():
+            await asyncio.sleep(0.02)
+        await asyncio.sleep(0.3)  # detaching takes a moment
+        return ToolResult(call_id=call_id, content="moved to background", is_error=False)
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+async def test_a_yielding_tool_gets_to_step_aside_instead_of_being_cut(parallel):
+    inbox = _Inbox()
+    ref: dict = {}
+    build = _YieldingTool("bash", ref)
+    slow = _Tool("slow", _forever)
+    registry = ToolRegistry()
+    registry.register(build)
+    registry.register(slow)
+    calls = [("c1", "bash"), ("c2", "slow")] if parallel else [("c1", "bash")]
+    provider = _ScriptedProvider([_tools(*calls), _end("ok")])
+    runner = _runner(provider, inbox, registry=registry,
+                     config=AgentConfig(parallel_tool_execution=parallel))
+    ref["r"] = runner
+    session = Session.create(system_prompt="t")
+
+    async def cut_in():
+        await build.started.wait()
+        inbox.queue.append("switch tasks")
+        runner.request_interrupt()
+
+    cutter = asyncio.create_task(cut_in())
+    await asyncio.wait_for(runner.run(session, "build it"), timeout=5)
+    await cutter
+    results = {m.tool_call_id: m.content for m in session.get_messages() if m.role == "tool_result"}
+    assert results["c1"] == "moved to background"
+    if parallel:
+        assert results["c2"] == INTERRUPTED_TOOL_RESULT
+    assert any(m.role == "user" and m.content == "switch tasks" for m in session.get_messages())
+
+
+async def test_a_stop_mid_reply_keeps_what_was_said_and_notes_it():
+    inbox = _Inbox()
+
+    async def long_stream(on_event):
+        await on_event(TextDeltaEvent(text="Here is the plan: first"))
+        return await _forever()
+
+    runner = _runner(_ScriptedProvider([long_stream]), inbox)
+    session = Session.create(system_prompt="t")
+    task = asyncio.create_task(runner.run(session, "plan it"))
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert _texts(session)[-1] == ("assistant", "Here is the plan: first")
+    assert runner.consume_stop_note() == {"phase": "llm", "partial_chars": len("Here is the plan: first")}
+    assert runner.consume_stop_note() is None
+
+
+async def test_a_stop_during_tools_notes_which_were_cut():
+    inbox = _Inbox()
+    slow = _Tool("slow", _forever)
+    registry = ToolRegistry()
+    registry.register(slow)
+    runner = _runner(
+        _ScriptedProvider([_tools(("c1", "slow"))]), inbox, registry=registry,
+        config=AgentConfig(parallel_tool_execution=False),
+    )
+    session = Session.create(system_prompt="t")
+    task = asyncio.create_task(runner.run(session, "go"))
+    await slow.started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert runner.consume_stop_note() == {"phase": "tools", "tools": ["slow"]}

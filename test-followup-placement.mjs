@@ -73,13 +73,36 @@ await check('ctrl+enter sends force; "now" upgrades a queued one', async () => {
   assert.equal(useHarness.getState().pendingFollowups[sid].find((p) => p.clientId === y).force, true)
 })
 
-await check('withdrawing hands the text back to the composer', async () => {
+await check('taking one back waits for the bridge, then returns the text', async () => {
   const pend = useHarness.getState().pendingFollowups[sid]
   const target = pend[pend.length - 1]
   useHarness.getState().setInputDraft('half-typed')
   await useHarness.getState().withdrawFollowup(sid, target.clientId)
+  assert.deepEqual(
+    { action: sent.at(-1).action, restore: sent.at(-1).restore },
+    { action: 'withdraw', restore: true },
+  )
+  // Not optimistic: nothing returns until the bridge says it made it.
+  assert.equal(useHarness.getState().inputDraft, 'half-typed')
+  assert.equal(useHarness.getState().pendingFollowups[sid].at(-1).withdrawing, true)
+  ev({ type: 'followup_withdrawn', messageId: 'mY', clientId: target.clientId, content: 'and Y', restore: true })
   assert.equal(useHarness.getState().inputDraft, 'and Y\n\nhalf-typed')
-  assert.equal(sent.at(-1).action, 'withdraw')
+  assert.ok(!useHarness.getState().pendingFollowups[sid].some((p) => p.clientId === target.clientId))
+})
+
+await check('a take-back that lost the race is not restored (no double send)', async () => {
+  await useHarness.getState().sendMessage('racy one')
+  const c = sent.at(-1).clientId
+  useHarness.getState().setInputDraft('')
+  await useHarness.getState().withdrawFollowup(sid, c)
+  ev({ type: 'followup_withdraw_failed', clientId: c, reason: 'already delivered' })
+  assert.equal(useHarness.getState().pendingFollowups[sid].find((p) => p.clientId === c).withdrawing, false)
+  ev({
+    type: 'inbox_injected', at: Date.now(), midTurn: true,
+    items: [{ messageId: 'mr', kind: 'followup', clientId: c, content: 'racy one' }],
+  })
+  assert.equal(useHarness.getState().inputDraft, '')
+  assert.ok(timeline().includes('user:racy one'))
 })
 
 await check('a follow-up that missed its turn is promoted ahead of the next reply', async () => {
@@ -141,6 +164,47 @@ await check('cutting into a tool batch settles every cut chip', async () => {
   assert.equal(tcs.tb.status, 'error')
   assert.match(tcs.tb.result, /Not run/)
   ev({ type: 'turn_complete', turnId: 'turn-5', success: true })
+})
+
+await check('tab-queued messages wait for the turn and run as their own turn', async () => {
+  ev({ type: 'turn_start', turnId: 'turn-6' })
+  await useHarness.getState().sendMessage('when done, write the changelog', { afterTurn: true })
+  const cmd = sent.at(-1)
+  assert.equal(cmd.afterTurn, true)
+  assert.equal(cmd.force, false)
+  const p = useHarness.getState().pendingFollowups[sid].find((x) => x.clientId === cmd.clientId)
+  assert.equal(p.afterTurn, true)
+  ev({ type: 'turn_complete', turnId: 'turn-6', success: true })
+  ev({
+    type: 'followups_promoted', at: Date.now() + 10,
+    items: [{ messageId: 'mq', clientId: cmd.clientId, content: 'when done, write the changelog' }],
+  })
+  assert.ok(timeline().includes('user:when done, write the changelog'))
+})
+
+await check('esc takes every waiting message back, newest first so the composer reads in order', async () => {
+  ev({ type: 'turn_start', turnId: 'turn-7' })
+  await useHarness.getState().sendMessage('first')
+  await useHarness.getState().sendMessage('second')
+  const before = sent.length
+  await useHarness.getState().withdrawAllFollowups(sid)
+  const withdraws = sent.slice(before).filter((c) => c.action === 'withdraw')
+  const ids = useHarness.getState().pendingFollowups[sid].map((p) => p.clientId)
+  assert.deepEqual(withdraws.map((c) => c.clientId), [...ids].reverse())
+  useHarness.getState().setInputDraft('')
+  for (const w of withdraws) {
+    const p = useHarness.getState().pendingFollowups[sid].find((x) => x.clientId === w.clientId)
+    ev({ type: 'followup_withdrawn', messageId: 'w', clientId: w.clientId, content: p.content, restore: true })
+  }
+  assert.equal(useHarness.getState().inputDraft, 'first\n\nsecond')
+  ev({ type: 'turn_complete', turnId: 'turn-7', success: true })
+})
+
+await check('stop names the turn it means', async () => {
+  ev({ type: 'turn_start', turnId: 'turn-8' })
+  await useHarness.getState().cancelTurn()
+  assert.equal(sent.at(-1).turnId, 'turn-8')
+  ev({ type: 'turn_complete', turnId: 'turn-8', success: false })
 })
 
 await check('stop-agents is its own scope', async () => {

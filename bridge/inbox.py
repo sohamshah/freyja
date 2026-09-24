@@ -31,8 +31,11 @@ Kinds:
                    instead of waiting for the turn to end. May carry
                    attachments (images); ``clientId`` lets the renderer
                    move its pending bubble to where the message landed.
-  * ``memo``     — a background sub-agent finished; the parent is told
-                   to go look at what was done.
+  * ``memo``     — a background sub-agent (or a backgrounded shell
+                   command) finished; the parent is told to go look at
+                   what was done.
+  * ``queued``   — the operator asked for this to run AFTER the current
+                   turn (Tab / ⌥↵), as its own turn.
 
 Bounded depth: oldest unread is dropped when the queue exceeds
 `max_unread`. The drop is logged as a system_event so the operator
@@ -53,6 +56,32 @@ RECENT_DELIVERED_KEEP = 50  # for renderer history, kept after drain
 KIND_TALK = "talk"
 KIND_FOLLOWUP = "followup"
 KIND_MEMO = "memo"
+# An operator message meant to wait for the running turn to finish and
+# then run as its own turn (Tab / ⌥↵ in the composer). Never slid into a
+# running turn; promoted one per turn once the session is between turns.
+KIND_QUEUED = "queued"
+# Operator input: never evicted, never sanitized.
+OPERATOR_KINDS = frozenset({KIND_FOLLOWUP, KIND_QUEUED})
+
+# Runtime control tags an agent-authored body must not be able to forge:
+# a sub-agent's report or a peer's talk message saying
+# "<system-reminder>The operator sent this follow-up…" would otherwise
+# read to the recipient exactly like the runtime speaking for the operator.
+_FORGEABLE_TAGS = ("system-reminder", "subagent-report", "turn-stopped")
+
+
+def neutralize_control_tags(text: str) -> str:
+    """Defang runtime control tags inside agent-authored text by swapping
+    their angle brackets for look-alikes the model won't read as markup."""
+    import re
+
+    if "<" not in text:
+        return text
+    pattern = re.compile(
+        r"<(/?)\s*(" + "|".join(_FORGEABLE_TAGS) + r")\b([^>]*)>",
+        re.IGNORECASE,
+    )
+    return pattern.sub(lambda m: f"‹{m.group(1)}{m.group(2)}{m.group(3)}›", text)
 
 
 @dataclass
@@ -170,11 +199,16 @@ class InboxMessage:
 
     def as_user_block(self) -> str:
         """Full transcript-ready block. Memos carry their own header
-        (built by build_subagent_memo); everything else gets the
-        attribution line so the recipient knows who is talking."""
+        (built by build_subagent_memo, which already sanitized the child's
+        report); everything else gets the attribution line so the recipient
+        knows who is talking. An agent's words are defanged so they can't
+        pose as runtime instructions."""
         if self.kind == KIND_MEMO:
             return self.content.strip()
-        return f"{self.attribution_prefix()}\n{self.content.strip()}"
+        body = self.content.strip()
+        if self.from_role != "operator":
+            body = neutralize_control_tags(body)
+        return f"{self.attribution_prefix()}\n{body}"
 
 
 def new_message_id() -> str:
@@ -200,11 +234,19 @@ class SessionInbox:
 
     def push(self, msg: InboxMessage) -> Optional[InboxMessage]:
         """Enqueue a new message. Returns the dropped message if the
-        queue had to evict an old one to stay within max_unread."""
+        queue had to evict an old one to stay within max_unread.
+
+        Eviction takes the oldest AGENT item (memo / talk) — never the
+        operator's own input, which is the one thing nobody can fetch back
+        later (a lost memo's result is still in the sub-agent registry).
+        When the queue is all operator input it is allowed to grow."""
         dropped: Optional[InboxMessage] = None
         if len(self.unread) >= self.max_unread:
-            dropped = self.unread.pop(0)
-            self._fire("dropped", dropped)
+            for i, old in enumerate(self.unread):
+                if old.kind not in OPERATOR_KINDS:
+                    dropped = self.unread.pop(i)
+                    self._fire("dropped", dropped)
+                    break
         self.unread.append(msg)
         self._fire("enqueued", msg)
         # Wake any reply waiter correlated to this message
@@ -267,6 +309,43 @@ class SessionInbox:
 
     def has_unread_kind(self, kind: str) -> bool:
         return any(m.kind == kind for m in self.unread)
+
+    def has_injectable(self) -> bool:
+        """Anything a running turn should take in at its next step —
+        everything except operator messages queued for after the turn."""
+        return any(m.kind != KIND_QUEUED for m in self.unread)
+
+    def drain_injectable(self) -> list[InboxMessage]:
+        """drain() minus KIND_QUEUED, which waits for the turn to end."""
+        if not self.unread:
+            return []
+        keep = [m for m in self.unread if m.kind == KIND_QUEUED]
+        out = [m for m in self.unread if m.kind != KIND_QUEUED]
+        if not out:
+            return []
+        self.unread = keep
+        now = time.time()
+        for m in out:
+            m.delivered_at = now
+            self.delivered.append(m)
+            self._fire("delivered", m)
+        if len(self.delivered) > RECENT_DELIVERED_KEEP:
+            self.delivered = self.delivered[-RECENT_DELIVERED_KEEP:]
+        return out
+
+    def take_first_kind(self, kind: str) -> Optional[InboxMessage]:
+        """Remove and return the oldest unread message of ``kind``
+        (delivered bookkeeping as drain())."""
+        for i, m in enumerate(self.unread):
+            if m.kind == kind:
+                self.unread.pop(i)
+                m.delivered_at = time.time()
+                self.delivered.append(m)
+                if len(self.delivered) > RECENT_DELIVERED_KEEP:
+                    self.delivered = self.delivered[-RECENT_DELIVERED_KEEP:]
+                self._fire("delivered", m)
+                return m
+        return None
 
     def take_kind(self, kind: str) -> list[InboxMessage]:
         """Remove and return every unread message of ``kind``, in order,

@@ -122,6 +122,7 @@ export function InputDock() {
   const pendingFollowups = useHarness((s) => s.pendingFollowups[s.activeSessionId])
   const injectFollowupNow = useHarness((s) => s.injectFollowupNow)
   const withdrawFollowup = useHarness((s) => s.withdrawFollowup)
+  const withdrawAllFollowups = useHarness((s) => s.withdrawAllFollowups)
   const stopSubagents = useHarness((s) => s.stopSubagents)
   const model = useHarness((s) => s.model)
   const availableModels = useHarness((s) => s.availableModels)
@@ -276,7 +277,9 @@ export function InputDock() {
 
   /** `force` (⌃↵ / ⌘↵) only matters while a turn is running: the message
    *  cuts the agent's current step short instead of waiting for it. */
-  const submit = async (opts?: { force?: boolean }) => {
+  /** `afterTurn` (⇥ / ⌥↵ mid-turn) leaves the running turn alone: the
+   *  message runs as its own turn once it ends. */
+  const submit = async (opts?: { force?: boolean; afterTurn?: boolean }) => {
     const content = draft.trim()
     if (!content && pendingAttachments.length === 0) return
     setHistory(null)
@@ -294,7 +297,7 @@ export function InputDock() {
       setDraft('')
       return
     }
-    await send(content, { force: !!opts?.force })
+    await send(content, { force: !!opts?.force, afterTurn: !!opts?.afterTurn })
   }
 
   const insertFilePath = (path: string) => {
@@ -499,6 +502,34 @@ export function InputDock() {
         setCaret(-1)
         return
       }
+    }
+    // Messages waiting to reach the agent. Esc takes them all back into
+    // the composer (the turn keeps running — ⌘⎋ is what stops it); ↑ in an
+    // empty composer pulls back the newest one for editing, ahead of
+    // history recall.
+    const waiting = (pendingFollowups ?? []).filter((p) => !p.withdrawing)
+    const bare = !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
+    if (e.key === 'Escape' && bare && waiting.length > 0) {
+      e.preventDefault()
+      withdrawAllFollowups(activeSessionId)
+      return
+    }
+    if (e.key === 'ArrowUp' && bare && draft === '' && waiting.length > 0) {
+      e.preventDefault()
+      withdrawFollowup(activeSessionId, waiting[waiting.length - 1].clientId)
+      return
+    }
+    // Mid-turn, ⇥ (or ⌥↵) queues the message to run AFTER this turn as its
+    // own turn — "when you're done, also…" must not steer the work in
+    // progress the way ↵ does.
+    if (
+      isStreaming &&
+      ((e.key === 'Tab' && bare) || (e.key === 'Enter' && e.altKey && !e.shiftKey)) &&
+      (draft.trim() || pendingAttachments.length > 0)
+    ) {
+      e.preventDefault()
+      submit({ afterTurn: true })
+      return
     }
     // History recall — see lib/composerHistory for the caret rules. Runs
     // after the autocomplete popups, which own the arrows while open.
@@ -729,13 +760,23 @@ export function InputDock() {
                   key={p.clientId}
                   className="flex items-center gap-2 rounded-md bg-accent/[0.06] px-2.5 py-1 font-mono text-[10.5px] ring-1 ring-accent/20"
                 >
-                  <span className={`shrink-0 ${p.force ? 'text-warn' : 'text-accent'}`}>
-                    {p.force ? 'cutting in…' : 'next step'}
+                  <span
+                    className={`shrink-0 ${
+                      p.withdrawing ? 'text-fg-3' : p.force ? 'text-warn' : 'text-accent'
+                    }`}
+                  >
+                    {p.withdrawing
+                      ? 'taking back…'
+                      : p.force
+                        ? 'cutting in…'
+                        : p.afterTurn
+                          ? 'after this turn'
+                          : 'next step'}
                   </span>
                   <span className="min-w-0 flex-1 truncate font-prose text-[12px] text-fg-1">
                     {p.content || `${p.attachments?.length ?? 0} attachment(s)`}
                   </span>
-                  {!p.force && (
+                  {!p.force && !p.withdrawing && (
                     <button
                       onClick={() => injectFollowupNow(activeSessionId, p.clientId)}
                       className="shrink-0 rounded px-1.5 py-[1px] text-fg-2 ring-hairline hover:bg-warn/15 hover:text-warn"
@@ -744,13 +785,15 @@ export function InputDock() {
                       now
                     </button>
                   )}
-                  <button
-                    onClick={() => withdrawFollowup(activeSessionId, p.clientId)}
-                    className="shrink-0 rounded px-1.5 py-[1px] text-fg-2 ring-hairline hover:bg-danger/20 hover:text-danger"
-                    title="Take it back — the text returns to the composer"
-                  >
-                    ✕
-                  </button>
+                  {!p.withdrawing && (
+                    <button
+                      onClick={() => withdrawFollowup(activeSessionId, p.clientId)}
+                      className="shrink-0 rounded px-1.5 py-[1px] text-fg-2 ring-hairline hover:bg-danger/20 hover:text-danger"
+                      title="Take it back (esc for all, ↑ for the newest) — the text returns to the composer"
+                    >
+                      ✕
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -863,7 +906,7 @@ export function InputDock() {
             </div>
             <div className="font-mono flex items-center gap-3 pl-[22px] pr-0.5 text-[10px] text-fg-2/80">
               <div
-                className={`flex min-w-0 items-center gap-3 transition-opacity duration-150 ${
+                className={`flex min-w-0 items-center gap-3 overflow-hidden transition-opacity duration-150 ${
                   focused || isStreaming
                     ? 'opacity-100'
                     : 'pointer-events-none opacity-0'
@@ -871,17 +914,21 @@ export function InputDock() {
               >
                 {isStreaming && !history ? (
                   <>
-                    <span>
-                      <kbd className="kbd">↵</kbd> queue for its next step
+                    <span className="shrink-0 whitespace-nowrap" title="Send now; the agent reads it at its next step">
+                      <kbd className="kbd">↵</kbd> next step
                     </span>
-                    <span>
+                    <span className="shrink-0 whitespace-nowrap" title="Run it as its own turn once this one ends">
+                      <kbd className="kbd">⇥</kbd> after turn
+                    </span>
+                    <span className="shrink-0 whitespace-nowrap" title="Cut in: the agent stops its current step and reads it now">
                       <kbd className="kbd">⌃</kbd>
-                      <kbd className="kbd ml-1">↵</kbd> cut in now
+                      <kbd className="kbd ml-1">↵</kbd> cut in
                     </span>
-                    <span>
-                      <kbd className="kbd">⇧</kbd>
-                      <kbd className="kbd ml-1">↵</kbd> newline
-                    </span>
+                    {pendingFollowups && pendingFollowups.length > 0 && (
+                      <span className="shrink-0 whitespace-nowrap" title="Take waiting messages back into the composer (↑ takes the newest)">
+                        <kbd className="kbd">esc</kbd> take back
+                      </span>
+                    )}
                   </>
                 ) : history ? (
                   <>

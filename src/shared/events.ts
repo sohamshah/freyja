@@ -275,8 +275,24 @@ export interface PendingFollowup {
   clientId: string
   content: string
   attachments?: MessageAttachmentRef[]
+  /** The composer's own attachment payloads, so taking the message back
+   *  restores them to the composer tray intact. */
+  composerAttachments?: Array<{
+    id: string
+    type: 'image' | 'video'
+    mimeType: string
+    dataBase64: string
+    previewUrl: string
+    filename?: string
+    sizeBytes?: number
+  }>
   /** Ctrl+Enter / "now" — the bridge is cutting the current step short. */
   force: boolean
+  /** Tab / ⌥↵ — waits for the turn to end, then runs as its own turn. */
+  afterTurn?: boolean
+  /** A take-back is in flight; the bridge decides whether it made it
+   *  before the agent read the message. */
+  withdrawing?: boolean
   createdAt: number
 }
 
@@ -542,6 +558,9 @@ export type BridgeCommand =
       /** Ctrl+Enter: cut the in-flight LLM call / tool batch short and
        *  inject now. */
       force?: boolean
+      /** Tab / ⌥↵: leave the running turn alone; run this as its own turn
+       *  once it ends. */
+      afterTurn?: boolean
     }
   | {
       type: 'followup_control'
@@ -550,8 +569,16 @@ export type BridgeCommand =
       action: 'inject' | 'withdraw'
       restore?: boolean
     }
-  | { type: 'cancel'; sessionId?: string; scope?: CancelScope }
-  | { type: 'force_cancel'; sessionId?: string; scope?: CancelScope }
+  | { type: 'cancel'; sessionId?: string; scope?: CancelScope; turnId?: string }
+  | {
+      type: 'force_cancel'
+      sessionId?: string
+      scope?: CancelScope
+      /** The turn the operator meant to stop. The bridge refuses a turn
+       *  stop when a different turn is running by then (e.g. a memo wake
+       *  turn started a moment before), instead of killing that one. */
+      turnId?: string
+    }
   | { type: 'diagnose' }
   | { type: 'compact'; sessionId?: string; model?: string; reasoningLevel?: string; coordinationStrategy?: CoordinationStrategy }
   | {
@@ -1049,10 +1076,18 @@ export type BridgeEvent =
       }
     } & SessionId)
   | ({
+      type: 'followup_withdraw_failed'
+      clientId: string
+      /** Why it could not be taken back — normally "already delivered":
+       *  the agent read it first, and it shows in the transcript. */
+      reason: string
+    } & SessionId)
+  | ({
       type: 'followup_queued'
       messageId: string
       clientId?: string | null
       force: boolean
+      afterTurn?: boolean
       /** The bridge cut the in-flight step short for it. */
       interrupting: boolean
       at: number

@@ -9,9 +9,19 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
+from pathlib import Path
 from typing import Any
 
 from bridge.process_env import child_env
+from bridge.tools.background_shell import (
+    CURRENT_TOOL_CONTEXT,
+    BackgroundCommand,
+    StreamingProcess,
+    ToolContext,
+    new_background_id,
+    tail,
+)
 from bridge.tools.base import (
     PermissionLevel,
     PermissionRequest,
@@ -195,20 +205,6 @@ def build_bash_display_summary(command: str, summary: str | None = None) -> str:
     return sanitize_bash_summary(summary) or default_bash_summary(command)
 
 
-def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
-    """SIGKILL a shell command and everything it spawned (it runs in its
-    own session, so its pid is its process-group id)."""
-    import signal
-
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-
-
 class BashTool:
     """
     Execute bash commands with permission gating.
@@ -216,6 +212,11 @@ class BashTool:
     Async-native implementation using asyncio subprocess.
     Dangerous commands require explicit user confirmation.
     """
+
+    # When the operator cuts in, the runner gives this tool a moment to
+    # move its command to the background (and return a normal result)
+    # before cancelling it — see AsyncAgentRunner._race_interrupt.
+    yields_on_interrupt = True
 
     def __init__(
         self,
@@ -253,7 +254,12 @@ The command runs with a timeout (default 120s) and captures both stdout and stde
 If `command` is long, multiline, or contains an inline script, provide `summary`
 with a short user-facing description. Never repeat the full command in `summary`.
 
-For long-running commands, consider using & for background execution.""",
+For long-running commands, consider using & for background execution.
+
+If the operator messages you while a command is running (after ~15s, or at
+once if they cut in), the command moves to the background instead of being
+stopped: the result says so and shows the output so far, the command keeps
+running, and a memo arrives when it exits.""",
             parameters={
                 "type": "object",
                 "properties": {
@@ -344,6 +350,10 @@ For long-running commands, consider using & for background execution.""",
         # venv, etc.) doesn't crash with "No module named 'encodings'"
         # because it inherited a PYTHONHOME pointed at Freyja's bundle.
         # See bridge/process_env.py for the full incident note.
+        # A session that can take a memo back lets a long command step aside
+        # for the operator (see bridge/tools/background_shell.py); without
+        # one (sub-agents, tests) the command just runs to completion.
+        tool_ctx = CURRENT_TOOL_CONTEXT.get()
         try:
             # Own process group, so stopping the command stops everything
             # it started — killing just the /bin/sh wrapper orphans the
@@ -356,50 +366,37 @@ For long-running commands, consider using & for background execution.""",
                 env=child_env(),
                 start_new_session=True,
             )
-
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(),
-                    timeout=timeout,
-                )
-            except asyncio.TimeoutError:
-                _kill_process_group(proc)
-                await proc.wait()  # Clean up the process
+            running = StreamingProcess(proc)
+            started = time.monotonic()
+            # Cancellation (the turn was stopped) stops the process group
+            # inside wait() and propagates.
+            outcome = await running.wait(
+                started=started,
+                timeout=timeout,
+                should_yield=tool_ctx.tool_yield.reason_to_yield if tool_ctx else None,
+            )
+            if outcome == "timeout":
+                await running.stop()
+                partial = _format_output(bytes(running.stdout), bytes(running.stderr), None)
                 return ToolResult(
                     call_id=call_id,
-                    content=f"Error: Command timed out after {timeout} seconds\nSummary: {summary}",
+                    content=(
+                        f"Error: Command timed out after {timeout} seconds and was "
+                        f"stopped\nSummary: {summary}\n\nOutput before the timeout:\n{partial}"
+                    ),
                     is_error=True,
                 )
-            except asyncio.CancelledError:
-                # The turn was stopped or the operator cut in mid-command
-                # (inject-now). Don't leave the command running behind a
-                # tool call that no longer exists.
-                _kill_process_group(proc)
-                raise
-
-            output_parts = []
-            stdout_text = stdout.decode("utf-8", errors="replace")
-            stderr_text = stderr.decode("utf-8", errors="replace")
-
-            if stdout_text:
-                output_parts.append("STDOUT:")
-                output_parts.append(stdout_text)
-
-            if stderr_text:
-                if output_parts:
-                    output_parts.append("")
-                output_parts.append("STDERR:")
-                output_parts.append(stderr_text)
-
-            if not output_parts:
-                output_parts.append("(no output)")
-
-            output_parts.append("")
-            output_parts.append(f"Exit code: {proc.returncode}")
+            if outcome != "exited" and tool_ctx is not None:
+                return self._move_to_background(
+                    call_id, command, summary, running, tool_ctx,
+                    reason=outcome, ran_s=time.monotonic() - started,
+                )
 
             return ToolResult(
                 call_id=call_id,
-                content="\n".join(output_parts),
+                content=_format_output(
+                    bytes(running.stdout), bytes(running.stderr), proc.returncode,
+                ),
                 is_error=proc.returncode != 0,
             )
 
@@ -409,6 +406,99 @@ For long-running commands, consider using & for background execution.""",
                 content=f"Error executing command: {e}\nSummary: {summary}",
                 is_error=True,
             )
+
+    def _move_to_background(
+        self,
+        call_id: str,
+        command: str,
+        summary: str,
+        running: StreamingProcess,
+        tool_ctx: ToolContext,
+        *,
+        reason: str,
+        ran_s: float,
+    ) -> ToolResult:
+        """Detach a running command so the operator's message can land:
+        it keeps running with output going to a log, the call returns now,
+        and the session gets a memo when it exits."""
+        bg = BackgroundCommand(
+            id=new_background_id(),
+            command=command,
+            summary=summary,
+            pid=running.proc.pid,
+            output_path="",
+            started_at=time.time() - ran_s,
+            backgrounded_at=time.time(),
+            reason=reason,
+            _process=running,
+        )
+        log_path = Path(tool_ctx.output_dir) / f"{bg.id}.log"
+        bg.output_path = str(log_path)
+        so_far_out = tail(bytes(running.stdout))
+        so_far_err = tail(bytes(running.stderr))
+        running.detach(log_path)
+        tool_ctx.on_background_start(bg)
+
+        async def _watch() -> None:
+            code = await running.finished()
+            bg.exit_code = code
+            bg.ended_at = time.time()
+            if bg.state == "running":
+                bg.state = "exited"
+            result = tool_ctx.on_background_exit(bg)
+            if asyncio.iscoroutine(result):
+                await result
+
+        asyncio.get_running_loop().create_task(_watch(), name=f"bg-watch-{bg.id}")
+
+        why = (
+            "the operator cut in"
+            if reason == "cut_in"
+            else "the operator sent a message and this had been running a while"
+        )
+        parts = [
+            f"Moved to the background after {ran_s:.0f}s because {why}. The "
+            f"command is STILL RUNNING (id {bg.id}, pid {bg.pid}) — it was not "
+            "stopped, so its effects continue.",
+        ]
+        if so_far_out:
+            parts += ["", "STDOUT so far:", so_far_out]
+        if so_far_err:
+            parts += ["", "STDERR so far:", so_far_err]
+        if not so_far_out and not so_far_err:
+            parts += ["", "(no output yet)"]
+        parts += [
+            "",
+            f"The rest of its output streams to {bg.output_path}. You'll get a "
+            "memo when it exits — don't poll or wait for it, and don't assume "
+            "how it ends. To stop it early: bash `kill -TERM -- -"
+            f"{bg.pid}` (its whole process group).",
+        ]
+        return ToolResult(call_id=call_id, content="\n".join(parts), is_error=False)
+
+
+def _format_output(stdout: bytes, stderr: bytes, exit_code: int | None) -> str:
+    output_parts = []
+    stdout_text = stdout.decode("utf-8", errors="replace")
+    stderr_text = stderr.decode("utf-8", errors="replace")
+
+    if stdout_text:
+        output_parts.append("STDOUT:")
+        output_parts.append(stdout_text)
+
+    if stderr_text:
+        if output_parts:
+            output_parts.append("")
+        output_parts.append("STDERR:")
+        output_parts.append(stderr_text)
+
+    if not output_parts:
+        output_parts.append("(no output)")
+
+    if exit_code is not None:
+        output_parts.append("")
+        output_parts.append(f"Exit code: {exit_code}")
+    return "\n".join(output_parts)
 
 
 # Backwards compatibility alias

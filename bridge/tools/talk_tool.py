@@ -373,6 +373,14 @@ class TalkRouter:
         recipient kind: root session inbox, sub-agent record inbox, or
         re-wake (archived sub-agent)."""
         if live_root is not None and getattr(live_root, "inbox", None) is not None:
+            force_note = ""
+            if msg.force and msg.from_role != "operator":
+                # A root session is the operator's conversation; only the
+                # operator cuts into it. An agent's "force" is delivered at
+                # the recipient's next step like any other message —
+                # otherwise two agents can interrupt each other in a loop.
+                msg.force = False
+                force_note = "; force ignored — only the operator can interrupt a root session"
             live_root.inbox.push(msg)
             if msg.force:
                 # Cut the recipient's in-flight LLM call / tool batch short
@@ -398,7 +406,7 @@ class TalkRouter:
                     wake_status = ""
             return "delivered to root session" + (
                 f" ({wake_status})" if wake_status else ""
-            )
+            ) + force_note
 
         if sub_record is not None and getattr(sub_record, "inbox", None) is not None:
             # Terminal sub-agents stay in the registry post-completion so
@@ -415,9 +423,18 @@ class TalkRouter:
                 SubAgentState.CANCELLED,
             )
             if not is_terminal:
+                # Only the operator or the child's own parent may cut into
+                # a running sub-agent; a sibling's force is plain delivery.
+                may_interrupt = msg.from_role == "operator" or (
+                    msg.from_session
+                    and msg.from_session == getattr(sub_record, "parent_session_id", "")
+                )
+                if msg.force and not may_interrupt:
+                    msg.force = False
                 sub_record.inbox.push(msg)
                 if msg.force:
                     self._signal_interrupt_record(sub_record)
+                    return "delivered to sub-agent (interrupted its current step)"
                 return "delivered to sub-agent"
             # Terminal — try re-wake. Look up sidecar from disk; if no
             # sidecar exists (very early-failed agent that never wrote
@@ -459,6 +476,10 @@ class TalkRouter:
             pass
 
 
+# _await_reply's answer when the operator's input ended the wait.
+_OPERATOR_CUT_IN: Any = object()
+
+
 # ============================================================================
 # talk tool
 # ============================================================================
@@ -498,12 +519,14 @@ class TalkTool:
                 "saying 'queued' or 'sidecar' means the recipient has NOT "
                 "seen it yet.\n\n"
                 "Flags:\n"
-                "  - force=true: interrupts the recipient mid-operation. Its "
-                "current LLM stream / tool call is cut short and your "
-                "message is injected right away; it then carries on with "
-                "your message in view. Use sparingly — for critical "
-                "redirects, not routine FYI. (To stop one of your "
-                "sub-agents outright, use `subagents` action=kill.)\n"
+                "  - force=true: interrupts one of YOUR OWN sub-agents "
+                "mid-operation. Its current LLM stream / tool call is cut "
+                "short and your message is injected right away; it then "
+                "carries on with your message in view. Ignored for anyone "
+                "else (root sessions and siblings get the message at their "
+                "next step). Use sparingly — for critical redirects, not "
+                "routine FYI. (To stop a sub-agent outright, use "
+                "`subagents` action=kill.)\n"
                 "  - wait_for_reply=true: blocks YOUR turn until the "
                 "recipient sends a reply tagged to this message (they must "
                 "call talk with reply_to=<your message id>, which they see "
@@ -531,7 +554,7 @@ class TalkTool:
                     "force": {
                         "type": "boolean",
                         "default": False,
-                        "description": "Interrupt the recipient mid-operation and inject now. Use for urgent redirects.",
+                        "description": "Interrupt one of your own sub-agents mid-operation and inject now. Ignored for other recipients.",
                     },
                     "wait_for_reply": {
                         "type": "boolean",
@@ -698,6 +721,17 @@ class TalkTool:
                 timeout_s=timeout,
             )
             delivery_note = results[0] if results else "sent"
+            if reply is _OPERATOR_CUT_IN:
+                return ToolResult(
+                    call_id=call_id,
+                    content=(
+                        f"Sent (id={sent_msg.id}); delivery: {delivery_note}. "
+                        "Stopped waiting for the reply because the operator sent "
+                        "you a message — read it next. If the recipient replies, "
+                        "it arrives in your inbox as a \"[message from …]\" block."
+                    ),
+                    is_error=False,
+                )
             if reply is None:
                 return ToolResult(
                     call_id=call_id,
@@ -757,14 +791,27 @@ class TalkTool:
         if got is not None:
             return got
 
+        # Waiting is idle time: the moment the operator has something to
+        # say, stop waiting so their message isn't held behind a reply that
+        # may never come (the reply still lands in the inbox later).
+        from bridge.tools.background_shell import CURRENT_TOOL_CONTEXT
+
+        tool_ctx = CURRENT_TOOL_CONTEXT.get()
         event = asyncio.Event()
         inbox.add_reply_waiter(source_msg_id, event)
         try:
-            try:
-                await asyncio.wait_for(event.wait(), timeout=timeout_s)
-            except asyncio.TimeoutError:
-                return None
-            return inbox.take_reply(source_msg_id)
+            deadline = time.monotonic() + timeout_s
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=min(0.5, remaining))
+                    return inbox.take_reply(source_msg_id)
+                except asyncio.TimeoutError:
+                    ty = tool_ctx.tool_yield if tool_ctx is not None else None
+                    if ty is not None and (ty.soft or ty.hard):
+                        return _OPERATOR_CUT_IN  # type: ignore[return-value]
         finally:
             inbox.remove_reply_waiter(source_msg_id)
 

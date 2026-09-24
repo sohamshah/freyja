@@ -206,7 +206,16 @@ async def fire_job(
                 wait_until_quiescent,
             )
 
-            quiet = asyncio.ensure_future(wait_until_quiescent(sess))
+            # With no job timeout, bound the wait on background work alone
+            # so one hung child can't hold the job (and its lock) forever.
+            quiet = asyncio.ensure_future(
+                wait_until_quiescent(
+                    sess,
+                    background_wait_cap_s=(
+                        None if timeout else BACKGROUND_WORK_WAIT_CAP_S
+                    ),
+                )
+            )
             cancel_outcome = await _await_pending_with_cancel_poll(
                 quiet,
                 job_id=job.id,
@@ -226,6 +235,18 @@ async def fire_job(
         # pending_task is done, the assistant's response has been
         # written to the session.
         output_text, iteration_count = _extract_last_assistant_text(sess)
+        still_running = getattr(sess, "_running_background_work", None)
+        leftover = still_running() if callable(still_running) else []
+        if leftover:
+            names = ", ".join(
+                getattr(w, "label", None) or getattr(w, "summary", None) or w.id
+                for w in leftover[:5]
+            )
+            output_text = (
+                f"{output_text}\n\n(Note: {len(leftover)} piece(s) of background "
+                f"work were still running when this run was delivered — {names}. "
+                "This result may be incomplete.)"
+            ).strip()
 
         # Capture per-run usage telemetry (tokens + cost) from the
         # session's recently-modified messages. This is what populates
@@ -783,6 +804,11 @@ def _run_abort(on_abort: Any) -> None:
         on_abort()
     except Exception as exc:  # noqa: BLE001
         logger.debug("scheduler abort hook failed: %s", exc)
+
+
+# With no job timeout, how long a fire waits on background work (sub-agents,
+# backgrounded commands) after its own turns are done before delivering.
+BACKGROUND_WORK_WAIT_CAP_S = 30 * 60
 
 
 # How often to poll for the cancel flag while the agent turn runs.

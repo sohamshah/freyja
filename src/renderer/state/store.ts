@@ -503,11 +503,16 @@ export interface HarnessActions {
    *  message becomes a follow-up the bridge slides into that turn at its
    *  next step; `force` (Ctrl+Enter) cuts the current step short so it
    *  lands now. Otherwise it starts a turn as usual. */
-  sendMessage(content: string, opts?: { force?: boolean }): Promise<void>
+  sendMessage(content: string, opts?: { force?: boolean; afterTurn?: boolean }): Promise<void>
   /** Upgrade a pending follow-up to inject-now. */
   injectFollowupNow(sessionId: string, clientId: string): Promise<void>
-  /** Take a pending follow-up back (its text returns to the composer). */
+  /** Ask to take a pending follow-up back. Its text (and attachments)
+   *  return to the composer only once the bridge confirms the agent had
+   *  not read it yet — otherwise it would be answered AND sitting in the
+   *  composer, one Enter from being sent twice. */
   withdrawFollowup(sessionId: string, clientId: string): Promise<void>
+  /** Take back every pending follow-up of a session (Esc in the composer). */
+  withdrawAllFollowups(sessionId: string): Promise<void>
   /** Stop the running background sub-agents of the active session
    *  (the turn, if any, keeps going). */
   stopSubagents(): Promise<void>
@@ -3535,6 +3540,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       if (
         ev.type === 'followup_queued' ||
         ev.type === 'followup_withdrawn' ||
+        ev.type === 'followup_withdraw_failed' ||
         ev.type === 'followups_promoted' ||
         ev.type === 'inbox_injected'
       ) {
@@ -3547,7 +3553,9 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
             pendingFollowups: {
               ...prev.pendingFollowups,
               [fsid]: list.map((p) =>
-                p.clientId === ev.clientId ? { ...p, force: ev.force } : p,
+                p.clientId === ev.clientId
+                  ? { ...p, force: ev.force, afterTurn: !!ev.afterTurn && !ev.force }
+                  : p,
               ),
             },
           }
@@ -3564,6 +3572,23 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
             inputDraft: restore
               ? restoreIntoDraft(prev.inputDraft, had?.content ?? ev.content)
               : prev.inputDraft,
+            pendingAttachments:
+              restore && had?.composerAttachments?.length
+                ? [...had.composerAttachments, ...prev.pendingAttachments]
+                : prev.pendingAttachments,
+          }
+        }
+        if (ev.type === 'followup_withdraw_failed') {
+          // The agent read it before the take-back arrived; its injection
+          // event places it in the transcript. Just stop "taking back…".
+          return {
+            ...prev,
+            pendingFollowups: {
+              ...prev.pendingFollowups,
+              [fsid]: list.map((p) =>
+                p.clientId === ev.clientId ? { ...p, withdrawing: false } : p,
+              ),
+            },
           }
         }
         const landed = new Set(
@@ -3666,7 +3691,8 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     if (!content.trim() && state.pendingAttachments.length === 0) return
     const id = nextId('msg')
     const sessionId = state.activeSessionId
-    const force = !!opts?.force
+    const afterTurn = !!opts?.afterTurn
+    const force = !!opts?.force && !afterTurn
     // The agent is mid-turn: this is a follow-up for that turn, not a new
     // turn. Hold it as a pending bubble until the bridge says where it
     // landed (see inbox_injected / followups_promoted).
@@ -3704,7 +3730,9 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
               clientId: id,
               content,
               attachments: messageAttachments,
+              composerAttachments: attachments.length > 0 ? attachments : undefined,
               force,
+              afterTurn,
               createdAt: Date.now(),
             },
           ],
@@ -3756,6 +3784,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     if (followup) {
       cmd.followup = true
       cmd.force = force
+      cmd.afterTurn = afterTurn
     }
     const activeSnapshot = state.sessions.find((s) => s.id === sessionId)
     if (activeSnapshot?.parentSessionId && state.messages.length > 0) {
@@ -3795,23 +3824,16 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
   },
 
   async withdrawFollowup(sessionId, clientId) {
-    // Optimistic: drop the bubble and hand the text back now. If the
-    // bridge had already slid it in, its injection event still carries
-    // the text, so the message appears in the transcript regardless.
-    const pending = (useHarness.getState().pendingFollowups[sessionId] ?? []).find(
-      (p) => p.clientId === clientId,
-    )
+    // Not optimistic: the bridge's inbox decides whether the agent read
+    // it first. followup_withdrawn hands the text back;
+    // followup_withdraw_failed (or the injection event) means it went in.
     set((prev) => ({
       pendingFollowups: {
         ...prev.pendingFollowups,
-        [sessionId]: (prev.pendingFollowups[sessionId] ?? []).filter(
-          (p) => p.clientId !== clientId,
+        [sessionId]: (prev.pendingFollowups[sessionId] ?? []).map((p) =>
+          p.clientId === clientId ? { ...p, withdrawing: true } : p,
         ),
       },
-      inputDraft:
-        pending && sessionId === prev.activeSessionId
-          ? restoreIntoDraft(prev.inputDraft, pending.content)
-          : prev.inputDraft,
     }))
     const api = (window as any).harness
     if (api)
@@ -3820,8 +3842,17 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         sessionId,
         clientId,
         action: 'withdraw',
-        restore: false,
+        restore: true,
       })
+  },
+
+  async withdrawAllFollowups(sessionId) {
+    const pending = useHarness.getState().pendingFollowups[sessionId] ?? []
+    // Newest first: each restored text is prepended to the draft, so the
+    // composer ends up reading in the order they were typed.
+    for (const p of [...pending].reverse()) {
+      if (!p.withdrawing) await useHarness.getState().withdrawFollowup(sessionId, p.clientId)
+    }
   },
 
   async stopSubagents() {
@@ -3968,11 +3999,13 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       }
     })
     const api = (window as any).harness
+    const { activeSessionId, currentTurnId } = useHarness.getState()
     if (api)
       await api.sendCommand({
         type: 'force_cancel',
-        sessionId: useHarness.getState().activeSessionId,
+        sessionId: activeSessionId,
         scope: 'turn',
+        ...(currentTurnId ? { turnId: currentTurnId } : {}),
       })
   },
 

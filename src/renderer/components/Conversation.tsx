@@ -926,7 +926,7 @@ function MemoChip({
   // what the agent reads. Show the prose.
   const body = content.split('\n').slice(1).join('\n').trim() || content
   const stats = [
-    meta?.agentType && meta.agentType !== 'general' ? meta.agentType : null,
+    meta?.agentType && !['general', 'bash', 'stop'].includes(meta.agentType) ? meta.agentType : null,
     meta?.elapsedMs != null ? formatDuration(meta.elapsedMs) : null,
     meta?.toolsCalled != null ? `${meta.toolsCalled} tools` : null,
   ].filter(Boolean)
@@ -934,7 +934,11 @@ function MemoChip({
     <div className="my-2 select-text rounded-md border border-white/[0.10] bg-white/[0.02] px-3 py-1.5 font-mono text-[11.5px] leading-[1.55] text-fg-1">
       <div className="flex items-center gap-2 text-[10.5px] uppercase tracking-[0.14em]">
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${tone.dot}`} />
-        <span className="text-fg-3">sub-agent {tone.word}</span>
+        <span className="text-fg-3">
+          {meta?.agentType === 'stop'
+            ? 'background work stopped'
+            : `${meta?.agentType === 'bash' ? 'command' : 'sub-agent'} ${tone.word}`}
+        </span>
         {onOpen ? (
           <button
             type="button"

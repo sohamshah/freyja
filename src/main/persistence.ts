@@ -572,6 +572,18 @@ function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
         }
       }
     }
+    // Runtime framing the bridge wraps around operator text (a stop
+    // notice, the mid-turn follow-up header) is for the model, not the
+    // transcript view.
+    if (msg.role === 'user') {
+      for (let i = parts.length - 1; i >= 0; i--) {
+        const p = parts[i]
+        if (p.type !== 'text' || typeof p.text !== 'string') continue
+        const stripped = p.text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>\s*/g, '')
+        if (stripped.trim()) p.text = stripped
+        else if (stripped !== p.text) parts.splice(i, 1)
+      }
+    }
     if (parts.length === 0 && attachments.length === 0) continue
     // Wake turns (a sub-agent memo or an agent message arrived while the
     // session sat idle) open with a synthetic "[system] …" prompt the
