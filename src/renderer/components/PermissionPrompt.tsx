@@ -70,6 +70,16 @@ export function PermissionPrompt() {
   useEffect(() => {
     if (!current) return
     const onKey = (e: KeyboardEvent) => {
+      // Enter typed into a text field belongs to that field — the
+      // composer sends (and ⌃↵ cuts into the running turn) while a
+      // prompt is up; that must not also approve the tool call.
+      const target = e.target as HTMLElement | null
+      if (
+        target &&
+        (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT' || target.isContentEditable)
+      ) {
+        return
+      }
       if (e.key === 'Enter' && current.level !== 'dangerous') {
         e.preventDefault()
         approve()

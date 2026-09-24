@@ -195,6 +195,20 @@ def build_bash_display_summary(command: str, summary: str | None = None) -> str:
     return sanitize_bash_summary(summary) or default_bash_summary(command)
 
 
+def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
+    """SIGKILL a shell command and everything it spawned (it runs in its
+    own session, so its pid is its process-group id)."""
+    import signal
+
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+
 class BashTool:
     """
     Execute bash commands with permission gating.
@@ -331,12 +345,16 @@ For long-running commands, consider using & for background execution.""",
         # because it inherited a PYTHONHOME pointed at Freyja's bundle.
         # See bridge/process_env.py for the full incident note.
         try:
+            # Own process group, so stopping the command stops everything
+            # it started — killing just the /bin/sh wrapper orphans the
+            # real work (`sleep 45 && …` kept running after a timeout).
             proc = await asyncio.create_subprocess_shell(
                 command,
                 cwd=working_dir,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=child_env(),
+                start_new_session=True,
             )
 
             try:
@@ -345,13 +363,19 @@ For long-running commands, consider using & for background execution.""",
                     timeout=timeout,
                 )
             except asyncio.TimeoutError:
-                proc.kill()
+                _kill_process_group(proc)
                 await proc.wait()  # Clean up the process
                 return ToolResult(
                     call_id=call_id,
                     content=f"Error: Command timed out after {timeout} seconds\nSummary: {summary}",
                     is_error=True,
                 )
+            except asyncio.CancelledError:
+                # The turn was stopped or the operator cut in mid-command
+                # (inject-now). Don't leave the command running behind a
+                # tool call that no longer exists.
+                _kill_process_group(proc)
+                raise
 
             output_parts = []
             stdout_text = stdout.decode("utf-8", errors="replace")

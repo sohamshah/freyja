@@ -126,6 +126,9 @@ def build_desktop_registry(
     # ship files back. Callable rather than a snapshot so children
     # always see the current source as the user moves between threads.
     subagent_gateway_source_getter: Any | None = None,
+    # Called when a model-spawned sub-agent reaches a terminal state; the
+    # bridge turns it into an inbox memo on the parent (and wakes it).
+    subagent_on_child_terminal: Any | None = None,
     talk_router: TalkRouter | None = None,
     talk_caller_session_id: str = "",
     talk_caller_label: str = "",
@@ -407,6 +410,7 @@ def build_desktop_registry(
             session_ledger=session_ledger,
             talk_router=talk_router,
             parent_gateway_source_getter=subagent_gateway_source_getter,
+            on_child_terminal=subagent_on_child_terminal,
         )
         tools.append(SubAgentTool(sub_spec))
         tools.append(SubAgentsTool(sub_registry))
@@ -436,7 +440,7 @@ def build_desktop_registry(
                 ComputerToolSpec,
                 build_computer_tools,
             )
-            from bridge.tools.computer_use_tool import ComputerUseTool
+            from bridge.tools.computer_use_tool import ComputerUseTool, ScreenLeasedTool
             from bridge.tools.provider_computer_tool import OpenAIComputerToolAdapter
 
             parent_cancel = computer_cancel_event or asyncio.Event()
@@ -448,8 +452,15 @@ def build_desktop_registry(
                 require_approval=False,
                 owner="parent",
             )
-            atomic_computer_tools = build_computer_tools(parent_spec)
+            # Leased: a background computer_use child owns the screen while
+            # it runs, and these (the parent's, inherited by general
+            # sub-agents) must not fight it for the mouse.
+            atomic_computer_tools = [
+                ScreenLeasedTool(t) for t in build_computer_tools(parent_spec)
+            ]
             tools.extend(atomic_computer_tools)
+            # The provider-native adapter dispatches into the leased tools
+            # above, so it inherits the lease without its own wrapper.
             tools.append(
                 OpenAIComputerToolAdapter(
                     {

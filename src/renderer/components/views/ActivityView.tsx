@@ -7,7 +7,7 @@ import type { SessionSnapshot } from '../../../shared/events'
  *  Aggregated across the swarm by MissionDashboard. */
 export interface InboxEventRecord {
   id: string
-  action: 'enqueued' | 'delivered' | 'dropped'
+  action: 'enqueued' | 'delivered' | 'dropped' | 'withdrawn'
   fromSession: string
   fromLabel: string
   fromRole: 'operator' | 'agent'
@@ -20,8 +20,9 @@ export interface InboxEventRecord {
    *  (the task was delivered as the runner's initial user message, not
    *  via an inbox push). Used to style spawn arcs distinctly so the
    *  operator can tell "this was a spawn-time request" vs a later
-   *  talk() call. */
-  kind?: 'spawn'
+   *  talk() call. `'memo'` is a finished background sub-agent reporting
+   *  back to its parent; `'followup'` an operator message sent mid-turn. */
+  kind?: import('@shared/events').InboxKind
 }
 
 interface Props {

@@ -177,7 +177,7 @@ Hermes supports running one daemon talking to N Slack workspaces via comma-separ
 What Freyja has that the Slack gateway can plug into:
 
 - **Multi-session bridge already works** — `_BridgeState.sessions: dict[str, _BridgeSession]` (`bridge/freyja_bridge.py:4996`). Each session runs its own agent turn loop concurrently.
-- **Per-session messaging queue** — `_schedule_or_queue_turn` (`freyja_bridge.py:5393`). Messages enqueue if the session is busy; drain via `_run_turn_queue`. We get this for free.
+- **Per-session messaging queue** — `_schedule_or_queue_turn` (`freyja_bridge.py:5393`). Messages enqueue if the session is busy; drain via `_run_turn_queue`. We get this for free. (Since 2026-09: a follow-up from the same sender in the same thread as the running turn is slid into that turn instead of queued — `_can_slide_into_running_turn` in `gateway/run.py`; see [MID-TURN-INPUT.md](MID-TURN-INPUT.md).)
 - **Streaming infrastructure** — `AsyncAgentRunner` emits `text_delta`, `thinking_delta`, `tool_use_start` stream events. The gateway adapter just needs to consume these and translate to Slack `chat.update` calls.
 - **Sub-agents, judge, calibrator, memory, skills** — all reusable from any session, regardless of the input source.
 - **Coordination strategies** (`bus`, `goal`, `kanban`, `isolated`) — also session-scoped; each Slack session gets to pick one.

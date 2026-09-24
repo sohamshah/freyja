@@ -1185,9 +1185,14 @@ class VoiceService:
         try:
             pending = getattr(sess, "pending_task", None)
             if pending is not None:
-                # wait(), not await-the-task: a failed/cancelled turn must
-                # not re-raise here — it IS the outcome we're reporting.
-                await asyncio.wait({pending})
+                # Wait for the whole mission, not just its first turn: the
+                # mission agent's sub-agents run in the background and their
+                # memos wake it for the turns that produce the real answer.
+                # Reports on the LAST turn (a failed/cancelled turn does not
+                # re-raise — it IS the outcome we're reporting).
+                from bridge.freyja_bridge import wait_until_quiescent
+
+                pending = await wait_until_quiescent(sess) or pending
             if pending is None:
                 ok, text = False, "mission never started a turn"
             elif pending.cancelled():

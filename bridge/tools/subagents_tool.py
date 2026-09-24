@@ -1,26 +1,64 @@
 """
-Orchestration tool for managing background sub-agents from within a turn.
+Orchestration tool for the sub-agents a session has spawned.
 
-Provides `action=list|wait|wait_all|kill` against the SubAgentRegistry.
-The desktop UI also exposes its own sidebar that mirrors the registry state,
-so this tool is primarily for the model to introspect its own spawned agents.
+Sub-agents always run in the background: `sub_agent` returns as soon as the
+child is launched, and when the child finishes a memo lands in the parent's
+inbox (waking the parent if it is idle). Nothing here blocks — the parent
+never sits on a child, so the operator can keep talking to it while the
+swarm works.
+
+Actions: `list` / `status` (snapshot), `result` (a finished child's full
+output), `kill`. The old blocking `wait` / `wait_all` actions are gone; a call
+to either (restored transcripts still contain them) returns the current
+status immediately with a pointer to the memo mechanism.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from typing import Any
 
 from bridge.tools.base import ToolDefinition, ToolResult, ToolTier
-from bridge.tools.sub_agent_registry import SubAgentRegistry, SubAgentState
+from bridge.tools.sub_agent_registry import SubAgentRecord, SubAgentRegistry
 
 logger = logging.getLogger(__name__)
 
+# `result` returns this much of a finished child's final text inline; the
+# rest is in the artifact file the child wrote.
+RESULT_INLINE_CHARS = 20_000
+
+_NO_WAIT_NOTE = (
+    "Sub-agents run in the background and there is no blocking wait. You "
+    "will get a memo in your inbox when each one finishes (it wakes you if "
+    "you are idle), so don't poll: keep working on something else, or end "
+    "your turn and tell the operator what is in flight."
+)
+
+
+def _row(r: SubAgentRecord, *, preview_chars: int = 300) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "id": r.id,
+        "label": r.label,
+        "state": r.state.name.lower(),
+        "agent_type": r.agent_type_name,
+        "elapsed_s": round(r.elapsed, 1),
+        "tokens_in": r.input_tokens,
+        "tokens_out": r.output_tokens,
+        "tools_called": r.tools_called,
+        "task": r.task[:200],
+        "artifact_path": r.artifact_path,
+        "created_files": list(r.created_files),
+    }
+    if r.result:
+        text = str(r.result)
+        row["summary"] = text[:preview_chars] + ("..." if len(text) > preview_chars else "")
+        row["full_length"] = len(text)
+    return row
+
 
 class SubAgentsTool:
-    """Manage background sub-agents: list, wait, wait_all, kill."""
+    """Inspect and manage background sub-agents: list, status, result, kill."""
 
     def __init__(self, registry: SubAgentRegistry) -> None:
         self._registry = registry
@@ -29,38 +67,32 @@ class SubAgentsTool:
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             name="subagents",
-            summary="Manage background sub-agents",
+            summary="Inspect or stop your background sub-agents",
             tier=ToolTier.HOT,
-            description="""Manage sub-agents you've spawned with `sub_agent`.
+            description="""Inspect or stop the sub-agents you spawned with `sub_agent`.
+
+Sub-agents always run in the background. When one finishes you receive a
+memo in your inbox — "[sub-agent memo …]" with its summary and artifact
+path — and an idle session is woken to handle it. You never need to wait
+or poll: keep working, answer the operator, or end your turn.
 
 Actions:
-- list: returns JSON of all sub-agents with state, mode, stats
-- wait: blocks until a specific sub-agent (by id) reaches a terminal
-  state (done / failed / cancelled). There is NO timeout — the wait
-  lasts as long as the sub-agent takes. Sub-agents are expensive to
-  restart, so never "give up" on one: either wait for it, or
-  explicitly kill it.
-- wait_all: blocks until every running background sub-agent reaches
-  a terminal state. Returns the full final output of EVERY completed
-  subagent (not just metadata). Same no-timeout contract as `wait`.
-- kill: cancels a running sub-agent by id
-
-IMPORTANT: `wait` and `wait_all` WILL block your entire turn for as
-long as the sub-agent keeps running. Do NOT fall back to doing the
-same work yourself "in case it's taking too long" — you are
-guaranteed to receive the final state (the user can panic-stop the
-whole session if truly needed).""",
+- list: every sub-agent with state, elapsed time, and stats
+- status: one sub-agent (pass `id`), or omit `id` for the ones still running
+- result: the full final output of a finished sub-agent (pass `id`) — use
+  it to re-read a memo's summary in full
+- kill: stop a running sub-agent (pass `id`)""",
             parameters={
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "wait", "wait_all", "kill"],
+                        "enum": ["list", "status", "result", "kill"],
                         "description": "What to do",
                     },
                     "id": {
                         "type": "string",
-                        "description": "Sub-agent id (required for wait/kill)",
+                        "description": "Sub-agent id (required for result/kill)",
                     },
                 },
                 "required": ["action"],
@@ -69,33 +101,59 @@ whole session if truly needed).""",
 
     async def execute(self, call_id: str, arguments: dict[str, Any]) -> ToolResult:
         action = arguments.get("action", "list")
-        sub_id = arguments.get("id")
+        sub_id = (arguments.get("id") or "").strip() or None
 
         if action == "list":
-            rows = []
-            for r in self._registry.list_all():
-                row: dict[str, Any] = {
-                    "id": r.id,
-                    "label": r.label,
-                    "mode": r.mode,
-                    "state": r.state.name.lower(),
-                    "agent_type": r.agent_type_name,
-                    "elapsed_s": round(r.elapsed, 2),
-                    "tokens_in": r.input_tokens,
-                    "tokens_out": r.output_tokens,
-                    "tools_called": r.tools_called,
-                    "task": r.task[:200],
-                    "artifact_path": r.artifact_path,
-                    "created_files": list(r.created_files),
-                }
-                if r.result:
-                    preview = str(r.result)[:300]
-                    row["summary"] = preview + ("..." if len(str(r.result)) > 300 else "")
-                    row["full_length"] = len(str(r.result))
-                rows.append(row)
+            rows = [_row(r) for r in self._registry.list_all()]
             return ToolResult(
                 call_id=call_id,
                 content=json.dumps({"subagents": rows}, indent=2),
+                is_error=False,
+            )
+
+        if action in ("status", "wait", "wait_all"):
+            return self._status(call_id, sub_id, legacy=action != "status")
+
+        if action == "result":
+            if not sub_id:
+                return ToolResult(
+                    call_id=call_id,
+                    content="Error: `id` is required for result",
+                    is_error=True,
+                )
+            record = self._registry.get(sub_id)
+            if record is None:
+                return ToolResult(
+                    call_id=call_id,
+                    content=f"Unknown sub-agent: {sub_id}",
+                    is_error=True,
+                )
+            if record.is_running:
+                return ToolResult(
+                    call_id=call_id,
+                    content=(
+                        f"Sub-agent {sub_id} is still running "
+                        f"({round(record.elapsed)}s so far). {_NO_WAIT_NOTE}"
+                    ),
+                    is_error=False,
+                )
+            text = str(record.result or "")
+            body: dict[str, Any] = {
+                "id": record.id,
+                "label": record.label,
+                "state": record.state.name.lower(),
+                "artifact_path": record.artifact_path,
+                "created_files": list(record.created_files),
+                "result": text[:RESULT_INLINE_CHARS],
+            }
+            if len(text) > RESULT_INLINE_CHARS:
+                body["truncated"] = True
+                body["full_length"] = len(text)
+                if record.artifact_path:
+                    body["_hint"] = f"read_file {record.artifact_path} for the rest"
+            return ToolResult(
+                call_id=call_id,
+                content=json.dumps(body, indent=2),
                 is_error=False,
             )
 
@@ -135,6 +193,9 @@ whole session if truly needed).""",
                     ),
                     is_error=False,
                 )
+            # The caller knows it stopped this one; a memo telling it so
+            # would only wake it for nothing.
+            record.cancel_origin = "parent"
             self._registry.kill(sub_id)
             return ToolResult(
                 call_id=call_id,
@@ -142,13 +203,14 @@ whole session if truly needed).""",
                 is_error=False,
             )
 
-        if action == "wait":
-            if not sub_id:
-                return ToolResult(
-                    call_id=call_id,
-                    content="Error: `id` is required for wait",
-                    is_error=True,
-                )
+        return ToolResult(
+            call_id=call_id,
+            content=f"Unknown action: {action}",
+            is_error=True,
+        )
+
+    def _status(self, call_id: str, sub_id: str | None, *, legacy: bool) -> ToolResult:
+        if sub_id:
             record = self._registry.get(sub_id)
             if record is None:
                 return ToolResult(
@@ -156,88 +218,19 @@ whole session if truly needed).""",
                     content=f"Unknown sub-agent: {sub_id}",
                     is_error=True,
                 )
-            # Poll the done_event with a short asyncio sleep. This
-            # never returns "timeout" — the only way out is a terminal
-            # state on the record or an asyncio.CancelledError from
-            # the parent session's emergency stop propagating through.
-            # The user explicitly asked for no-timeout: the parent
-            # agent kept bailing on slow sub-agents and redoing the
-            # work in the main loop, so we now guarantee that wait
-            # either delivers a result or the user kills it.
-            while not record.done_event.is_set():
-                await asyncio.sleep(0.25)
-            self._registry.mark_delivered(sub_id)
-            result_text = str(record.result or "")
-            response = {
-                "id": record.id,
-                "label": record.label,
-                "state": record.state.name.lower(),
-                "agent_type": record.agent_type_name,
-                "artifact_path": record.artifact_path,
-                "created_files": list(record.created_files),
-                "summary": result_text[:2000] + ("..." if len(result_text) > 2000 else ""),
-                "full_length": len(result_text),
-            }
-            if record.artifact_path:
-                response["_hint"] = f"Use read_file on {record.artifact_path} to see full results"
-            return ToolResult(
-                call_id=call_id,
-                content=json.dumps(response, indent=2),
-                is_error=record.state != SubAgentState.DONE,
-            )
-
-        if action == "wait_all":
-            # Snapshot the currently-running background agents once,
-            # then await them all one-by-one.
-            pending = [
-                r
-                for r in self._registry.list_all()
-                if r.mode == "background" and r.is_running
-            ]
-            for r in pending:
-                while not r.done_event.is_set():
-                    await asyncio.sleep(0.25)
-
-            # Return a structured JSON index with per-agent summaries
-            # and artifact file paths. The parent can read_file on any
-            # artifact_path to get the full output without the truncator
-            # destroying it.
-            entries = []
-            for r in pending:
-                result_text = str(r.result or "")
-                entry: dict[str, Any] = {
-                    "id": r.id,
-                    "label": r.label,
-                    "state": r.state.name.lower(),
-                    "agent_type": r.agent_type_name,
-                    "tokens_in": r.input_tokens,
-                    "tokens_out": r.output_tokens,
-                    "tools_called": r.tools_called,
-                    "elapsed_s": round(r.elapsed, 2),
-                    "artifact_path": r.artifact_path,
-                    "created_files": list(r.created_files),
-                    "summary": result_text[:500] + ("..." if len(result_text) > 500 else ""),
-                    "full_length": len(result_text),
-                }
-                entries.append(entry)
-                self._registry.mark_delivered(r.id)
-
-            body = json.dumps(
-                {
-                    "completed": entries,
-                    "count": len(entries),
-                    "_hint": "Use read_file on artifact_path to see full results",
-                },
-                indent=2,
-            ) if entries else "(no background sub-agents)"
-            return ToolResult(
-                call_id=call_id,
-                content=body,
-                is_error=False,
-            )
-
+            body: dict[str, Any] = _row(record, preview_chars=2000)
+            if record.artifact_path and not record.is_running:
+                body["_hint"] = (
+                    f"subagents result id={record.id} (or read_file "
+                    f"{record.artifact_path}) for the full output"
+                )
+        else:
+            running = [_row(r) for r in self._registry.list_all() if r.is_running]
+            body = {"running": running, "count": len(running)}
+        if legacy or (not sub_id) or (sub_id and body.get("state") == "running"):
+            body["_note"] = _NO_WAIT_NOTE
         return ToolResult(
             call_id=call_id,
-            content=f"Unknown action: {action}",
-            is_error=True,
+            content=json.dumps(body, indent=2),
+            is_error=False,
         )

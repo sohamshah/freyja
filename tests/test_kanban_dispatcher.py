@@ -26,8 +26,10 @@ class _StubSubAgentTool:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
-    async def execute(self, call_id: str, arguments: dict[str, Any]) -> Any:
-        self.calls.append({"callId": call_id, **arguments})
+    async def execute(
+        self, call_id: str, arguments: dict[str, Any], *, notify_parent: bool = True,
+    ) -> Any:
+        self.calls.append({"callId": call_id, "notifyParent": notify_parent, **arguments})
         return None
 
 

@@ -15,10 +15,16 @@ tool spins up a fresh sub-session with:
     screenshot_frame / action_planned event streams to the correct
     child slice in the renderer store
 
-The tool returns once the sub-agent finishes (foreground default) or
-immediately with an id for background mode. Either way, the child
-session shows up as a first-class swarm entry in the sidebar and
-attach/detach works the same as any other sub-agent.
+The tool returns immediately with the child's id — like every
+sub-agent, it runs in the background and the parent gets an inbox memo
+when it finishes (`SubAgentSpec.on_child_terminal`). The child session
+shows up as a first-class swarm entry in the sidebar and attach/detach
+works the same as any other sub-agent.
+
+Because the parent keeps working while the child drives the screen, the
+child holds a process-wide screen lease for its run: the parent's own
+mutating computer tools (and any general sub-agent's, which inherit them)
+refuse while it is held — see `ScreenLeasedTool`.
 """
 
 from __future__ import annotations
@@ -53,6 +59,69 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_ITERATIONS = 60
 
 MAX_ACTIVE_COMPUTER_SESSIONS = 2  # don't drive the screen in parallel
+
+# ─── Screen lease ─────────────────────────────────────────────────────
+#
+# Blocking the parent on a computer-use child used to be the only thing
+# that kept two agents from driving the mouse at once. Children run in the
+# background now, so the lease makes it explicit: while any computer-use
+# child runs, the parent-tier computer tools refuse to act (observing is
+# still fine). Process-wide on purpose — there is one screen.
+_SCREEN_DRIVERS: dict[str, str] = {}  # child record id → label
+
+# Tools that change what is on screen or under the cursor. Everything
+# else (screenshot, list_windows, find_element, …) only observes.
+MUTATING_SCREEN_TOOLS = frozenset(
+    {
+        "click",
+        "move_mouse",
+        "type_text",
+        "press_key",
+        "key_down",
+        "key_up",
+        "scroll",
+        "focus_window",
+    }
+)
+
+
+def screen_driver() -> str | None:
+    """Label of the computer-use sub-agent holding the screen, if any."""
+    for label in _SCREEN_DRIVERS.values():
+        return label
+    return None
+
+
+class ScreenLeasedTool:
+    """Wrap a parent-tier computer tool so it refuses to act while a
+    background computer-use sub-agent holds the screen."""
+
+    def __init__(self, tool: Any) -> None:
+        self._tool = tool
+
+    @property
+    def definition(self) -> ToolDefinition:
+        return self._tool.definition
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._tool, name)
+
+    async def execute(self, call_id: str, arguments: dict[str, Any]) -> ToolResult:
+        name = self._tool.definition.name
+        driver = screen_driver()
+        if driver and name in MUTATING_SCREEN_TOOLS:
+            return ToolResult(
+                call_id=call_id,
+                content=(
+                    f"The screen is being driven by the background computer-use "
+                    f"sub-agent `{driver}` — `{name}` would fight it for the "
+                    "mouse and keyboard. Wait for its memo (or stop it with "
+                    "`subagents` action=kill) before acting on the screen. "
+                    "Observing (screenshot, list_windows) is fine."
+                ),
+                is_error=True,
+            )
+        return await self._tool.execute(call_id, arguments)
 
 
 COMPUTER_SYSTEM_PROMPT = """You are a focused computer-use sub-agent running inside
@@ -239,8 +308,11 @@ Parameters:
     Get valid ids from `list_displays`. If omitted the sub-agent
     uses the primary display.
   * `max_steps`: cap on action count (default 60; raise it for long tasks)
-  * `mode`: "foreground" (block, default) or "background" (return
-    immediately with a sub-agent id)
+
+Like every sub-agent it runs in the BACKGROUND: this call returns at once
+with its id, and a memo lands in your inbox when it finishes (waking you if
+you are idle). While it runs it owns the screen — don't use your own
+click/type/scroll tools until the memo arrives.
 """,
             parameters={
                 "type": "object",
@@ -260,11 +332,6 @@ Parameters:
                     "max_steps": {
                         "type": "integer",
                         "description": f"Cap on steps (default {DEFAULT_MAX_ITERATIONS}; no upper bound)",
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["foreground", "background"],
-                        "description": "Execution mode (default foreground)",
                     },
                 },
                 "required": ["goal"],
@@ -300,9 +367,9 @@ Parameters:
             except (TypeError, ValueError):
                 target_display = None
         max_steps = max(1, int(arguments.get("max_steps") or DEFAULT_MAX_ITERATIONS))
-        mode = arguments.get("mode") or "foreground"
-        if mode not in ("foreground", "background"):
-            mode = "foreground"
+        # Background only — a `mode` argument from an older transcript is
+        # ignored. The parent hears back through an inbox memo.
+        mode = "background"
 
         running = sum(
             1
@@ -327,6 +394,19 @@ Parameters:
             id=sub_id, label=label, task=goal, mode=mode
         )
         record.agent_type_name = "computer"
+        record.notify_parent = True
+        record.parent_session_id = self._sub_spec.parent_session_id or ""
+        # An inbox so the parent (talk) and the operator (its pane) can
+        # steer it mid-run; force messages interrupt its current step.
+        try:
+            from bridge.inbox import SessionInbox
+            from bridge.tools.sub_agent_tool import _attach_inbox_emitter
+
+            record.inbox = SessionInbox(session_id=sub_id)
+            _attach_inbox_emitter(record, self._sub_spec.emit_event)
+        except Exception:  # noqa: BLE001
+            record.inbox = None
+        _SCREEN_DRIVERS[sub_id] = label
 
         # Same dual-event emission as sub_agent_tool so the UI sees the
         # child as a real session AND as an inline subagent card.
@@ -366,34 +446,70 @@ Parameters:
             },
         )
 
-        if mode == "foreground":
-            return await self._run_child(
-                call_id,
+        asyncio.create_task(
+            self._run_background(
+                record,
+                goal=goal,
+                target_app=target_app,
+                target_display=target_display,
+                max_steps=max_steps,
+            ),
+            name=f"compuse-bg-{sub_id}",
+        )
+        return ToolResult(
+            call_id=call_id,
+            content=(
+                f"Computer sub-agent `{label}` launched in the background "
+                f"(id={sub_id}). It owns the screen until it finishes — don't "
+                "use your own click/type/scroll tools meanwhile. You'll get a "
+                "memo in your inbox when it is done; don't wait or poll."
+            ),
+            is_error=False,
+        )
+
+    async def _run_background(
+        self,
+        record: SubAgentRecord,
+        *,
+        goal: str,
+        target_app: str | None,
+        target_display: int | None,
+        max_steps: int,
+    ) -> None:
+        """Run the child, release the screen, and memo the parent."""
+        try:
+            await self._run_child(
+                None,
                 record,
                 goal=goal,
                 target_app=target_app,
                 target_display=target_display,
                 max_steps=max_steps,
             )
+        except asyncio.CancelledError:
+            _SCREEN_DRIVERS.pop(record.id, None)
+            await self._notify_terminal(record)
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("computer_use sub-agent %s failed", record.id)
+            if record.is_running:
+                self._sub_spec.registry.mark_done(
+                    record.id, f"Error: {exc}", SubAgentState.FAILED
+                )
+        finally:
+            _SCREEN_DRIVERS.pop(record.id, None)
+        await self._notify_terminal(record)
 
-        asyncio.create_task(
-            self._run_child(
-                call_id=None,
-                record=record,
-                goal=goal,
-                target_app=target_app,
-                target_display=target_display,
-                max_steps=max_steps,
-            )
-        )
-        return ToolResult(
-            call_id=call_id,
-            content=(
-                f"Computer sub-agent `{label}` queued (id={sub_id}). "
-                "Use the `subagents` tool to monitor it."
-            ),
-            is_error=False,
-        )
+    async def _notify_terminal(self, record: SubAgentRecord) -> None:
+        cb = self._sub_spec.on_child_terminal
+        if cb is None or not record.notify_parent or record.is_running:
+            return
+        try:
+            result = cb(record)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception:  # noqa: BLE001
+            logger.exception("on_child_terminal failed for %s", record.id)
 
     async def _run_child(
         self,
@@ -557,13 +673,29 @@ Parameters:
                 },
             )
 
+        inbox_ref = record.inbox
+
+        async def _drain_inbox(sub_session: Any, _iteration: int) -> None:
+            if inbox_ref is None or not inbox_ref.has_unread():
+                return
+            for m in inbox_ref.drain():
+                try:
+                    sub_session.add_user_message(m.as_user_block())
+                except Exception:  # noqa: BLE001
+                    continue
+
         runner = AsyncAgentRunner(
             provider=provider,
             compaction_strategy=SummaryCompaction(),
             tool_registry=wrapped_registry,
             on_stream=on_stream,
             on_system_event=on_system_event,
+            on_pre_iteration=_drain_inbox,
+            has_pending_input=lambda: (
+                inbox_ref is not None and inbox_ref.has_unread()
+            ),
         )
+        record.request_interrupt = runner.request_interrupt  # type: ignore[attr-defined]
 
         # Optionally focus the target app before handing off to the model.
         if target_app:

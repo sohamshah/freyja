@@ -29,7 +29,7 @@ import {
   tryParseCompleteJson,
 } from './shared/StructuredJson'
 import type { CalibrationStatus, JudgeRules } from './shared/types'
-import type { Message, MessagePart } from '@shared/events'
+import type { MemoMeta, Message, MessagePart } from '@shared/events'
 
 /** Stable module-level empty array so the resultImages selector below
  *  returns the SAME reference on every call when the tool call has no
@@ -771,10 +771,14 @@ function ConversationStream({
   // task is already rendered as the first user message in this
   // transcript, so we'd just be double-printing it as a chip. Skip
   // them in the inline rail.
+  //
+  // `kind === 'followup'` is the operator's own message sent mid-turn —
+  // it renders as a user message where it landed (inbox_injected), not
+  // as a chip.
   const inboxArrivals = useMemo(
     () =>
       inboxEvents.filter(
-        (e) => e.action === 'enqueued' && (e as { kind?: string }).kind !== 'spawn',
+        (e) => e.action === 'enqueued' && e.kind !== 'spawn' && e.kind !== 'followup',
       ),
     [inboxEvents],
   )
@@ -840,6 +844,21 @@ function ConversationStream({
             if (entry.kind === 'inbox') {
               const ev = entry.event
               const senderSession = sessions.find((s) => s.id === ev.fromSession)
+              if (ev.kind === 'memo') {
+                return (
+                  <MemoChip
+                    key={`memo-${ev.id}-${idx}`}
+                    content={ev.content}
+                    meta={ev.meta}
+                    fallbackLabel={ev.fromLabel}
+                    onOpen={
+                      senderSession
+                        ? () => openSessionPane(ev.fromSession, 'split')
+                        : undefined
+                    }
+                  />
+                )
+              }
               return (
                 <InboxChip
                   key={`inbox-${ev.id}-${idx}`}
@@ -875,6 +894,79 @@ function NarratorLine({ event }: { event: SystemEventRecord }) {
   return (
     <div className="my-3 select-text font-prose text-[12.5px] italic leading-[1.55] text-fg-3">
       {text}
+    </div>
+  )
+}
+
+/** A background sub-agent reporting back: the memo the parent received
+ *  when the child finished. Sits in the timeline where it arrived — the
+ *  agent's reaction to it (a wake turn, or the rest of the running turn)
+ *  follows right below. Click the label to open the child's session. */
+function MemoChip({
+  content,
+  meta,
+  fallbackLabel,
+  onOpen,
+}: {
+  content: string
+  meta?: MemoMeta
+  fallbackLabel: string
+  onOpen?: () => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const state = meta?.state ?? 'done'
+  const tone =
+    state === 'done'
+      ? { dot: 'bg-ok', text: 'text-ok', word: 'finished' }
+      : state === 'failed'
+        ? { dot: 'bg-danger', text: 'text-danger', word: 'failed' }
+        : { dot: 'bg-warn', text: 'text-warn', word: 'stopped' }
+  const label = meta?.label || fallbackLabel
+  // The memo's first line is its machine header; the prose after it is
+  // what the agent reads. Show the prose.
+  const body = content.split('\n').slice(1).join('\n').trim() || content
+  const stats = [
+    meta?.agentType && meta.agentType !== 'general' ? meta.agentType : null,
+    meta?.elapsedMs != null ? formatDuration(meta.elapsedMs) : null,
+    meta?.toolsCalled != null ? `${meta.toolsCalled} tools` : null,
+  ].filter(Boolean)
+  return (
+    <div className="my-2 select-text rounded-md border border-white/[0.10] bg-white/[0.02] px-3 py-1.5 font-mono text-[11.5px] leading-[1.55] text-fg-1">
+      <div className="flex items-center gap-2 text-[10.5px] uppercase tracking-[0.14em]">
+        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${tone.dot}`} />
+        <span className="text-fg-3">sub-agent {tone.word}</span>
+        {onOpen ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onOpen()
+            }}
+            className="truncate rounded px-1.5 py-0.5 normal-case tracking-normal text-fg-1 transition hover:bg-white/[0.06] hover:text-fg-0"
+            title={`Open ${label}'s session`}
+          >
+            {label}
+          </button>
+        ) : (
+          <span className="truncate normal-case tracking-normal text-fg-1">{label}</span>
+        )}
+        {stats.length > 0 && (
+          <span className="shrink-0 normal-case tracking-normal text-fg-4">{stats.join(' · ')}</span>
+        )}
+        {!!meta?.stillRunning && (
+          <span className="ml-auto shrink-0 normal-case tracking-normal text-fg-3">
+            {meta.stillRunning} still running
+          </span>
+        )}
+      </div>
+      <div
+        onClick={() => setExpanded((v) => !v)}
+        className={`mt-1 cursor-pointer whitespace-pre-wrap ${expanded ? '' : 'line-clamp-2'} ${
+          state === 'done' ? '' : tone.text
+        }`}
+      >
+        {body}
+      </div>
     </div>
   )
 }
@@ -1109,6 +1201,18 @@ const MessageView = memo(function MessageView({ message }: { message: Message })
             <div className="selectable whitespace-pre-wrap">
               <HighlightedText text={textContent} query={searchQuery} />
             </div>
+          </div>
+        )}
+        {message.followup?.midTurn && (
+          <div
+            className="font-mono text-[10px] text-fg-3"
+            title={
+              message.followup.force
+                ? 'You cut in with ⌃↵ — the agent stopped its current step to read this.'
+                : 'Sent while the agent was working — it read this at its next step.'
+            }
+          >
+            {message.followup.force ? '↳ cut in mid-turn' : '↳ slid in mid-turn'}
           </div>
         )}
       </div>

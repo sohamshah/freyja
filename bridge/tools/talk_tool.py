@@ -375,12 +375,16 @@ class TalkRouter:
         if live_root is not None and getattr(live_root, "inbox", None) is not None:
             live_root.inbox.push(msg)
             if msg.force:
-                # For root sessions, cancel currently has no clean hook
-                # (no SubAgentRecord). The runner's pre-iteration drain
-                # will pick the message up at the next iteration; for
-                # mid-stream interruption on the root we'd need a
-                # bridge-level cancel — Phase 3 task.
-                pass
+                # Cut the recipient's in-flight LLM call / tool batch short
+                # so the message is read now rather than at the end of
+                # whatever it is doing. No-op when it is idle (the wake
+                # below starts a turn instead).
+                interrupt = getattr(live_root, "interrupt_for_inbox", None)
+                if callable(interrupt):
+                    try:
+                        interrupt()
+                    except Exception:  # noqa: BLE001
+                        pass
             # An IDLE root session never drains its inbox on its own —
             # the pre-iteration drain only runs during an active turn.
             # wake_for_inbox schedules a synthetic turn so the message
@@ -413,7 +417,7 @@ class TalkRouter:
             if not is_terminal:
                 sub_record.inbox.push(msg)
                 if msg.force:
-                    self._signal_force_cancel_record(sub_record)
+                    self._signal_interrupt_record(sub_record)
                 return "delivered to sub-agent"
             # Terminal — try re-wake. Look up sidecar from disk; if no
             # sidecar exists (very early-failed agent that never wrote
@@ -438,21 +442,21 @@ class TalkRouter:
 
         return "recipient not found"
 
-    def _signal_force_cancel_record(self, record: Any) -> None:
-        """Trip the SubAgentRecord's cancel events so the runner exits
-        the in-flight LLM stream / tool call ASAP. The runner's own
-        compliance-iteration logic (Phase 3) handles the recovery."""
+    def _signal_interrupt_record(self, record: Any) -> None:
+        """Cut a running sub-agent's in-flight LLM call / tool batch short
+        so its next step reads the force message. The child keeps running
+        with the message in view — stopping it is `subagents kill`."""
+        interrupt = getattr(record, "request_interrupt", None)
+        if not callable(interrupt):
+            return
+        loop = getattr(record, "loop", None)
         try:
-            record.cancel_event.set()
+            if loop is not None and loop.is_running():
+                loop.call_soon_threadsafe(interrupt)
+            else:
+                interrupt()
         except Exception:
             pass
-        loop = getattr(record, "loop", None)
-        evt = getattr(record, "asyncio_cancel", None)
-        if loop is not None and evt is not None:
-            try:
-                loop.call_soon_threadsafe(evt.set)
-            except Exception:
-                pass
 
 
 # ============================================================================
@@ -494,11 +498,12 @@ class TalkTool:
                 "saying 'queued' or 'sidecar' means the recipient has NOT "
                 "seen it yet.\n\n"
                 "Flags:\n"
-                "  - force=true: interrupts the recipient mid-operation. The "
-                "recipient's current LLM stream / tool call is cancelled, "
-                "they're given one compliance iteration to react to your "
-                "message, then they exit. Use sparingly — for stop signals "
-                "or critical redirects, not routine FYI.\n"
+                "  - force=true: interrupts the recipient mid-operation. Its "
+                "current LLM stream / tool call is cut short and your "
+                "message is injected right away; it then carries on with "
+                "your message in view. Use sparingly — for critical "
+                "redirects, not routine FYI. (To stop one of your "
+                "sub-agents outright, use `subagents` action=kill.)\n"
                 "  - wait_for_reply=true: blocks YOUR turn until the "
                 "recipient sends a reply tagged to this message (they must "
                 "call talk with reply_to=<your message id>, which they see "
@@ -526,7 +531,7 @@ class TalkTool:
                     "force": {
                         "type": "boolean",
                         "default": False,
-                        "description": "Interrupt the recipient mid-operation. Use for urgent stops/redirects.",
+                        "description": "Interrupt the recipient mid-operation and inject now. Use for urgent redirects.",
                     },
                     "wait_for_reply": {
                         "type": "boolean",

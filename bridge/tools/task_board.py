@@ -540,7 +540,7 @@ class TaskBoardTool:
                 ↓
             cancelled  (work no longer relevant)
 
-Mark a task `active` BEFORE you start it — that's what shows the operator you're working on it. Multiple tasks can be `active` simultaneously when work is genuinely parallel (e.g. waiting on a sub-agent while drafting the next section).
+Mark a task `active` BEFORE you start it — that's what shows the operator you're working on it. Multiple tasks can be `active` simultaneously when work is genuinely parallel (e.g. a background sub-agent working on one while you draft the next section).
 
 ## Never mark `done` if
 - Tests are failing
@@ -561,7 +561,7 @@ For work that takes minutes, call `action=heartbeat` with optional `progress` (0
 `complete` accepts `summary` (one-line outcome), `result` (longer detail), and `artifacts` (file paths or refs produced). The operator sees these in the rail — it's how they know what your work produced.
 
 ## Sub-agent integration
-When spawning a worker with `sub_agent`, pass `task_id` so the worker inherits the task and updates it as it works. The parent doesn't need to babysit. Workers without an explicit `task_id` don't get the `tasks` tool — the parent updates the task itself when the worker returns.
+When spawning a worker with `sub_agent`, pass `task_id` so the worker inherits the task and updates it as it works. The parent doesn't need to babysit. Workers without an explicit `task_id` don't get the `tasks` tool — the parent updates the task itself when the worker's memo arrives.
 
 ## Action summary
 - `list` — see all tasks (ordered: todo → active → blocked → done → cancelled, then priority, then created)

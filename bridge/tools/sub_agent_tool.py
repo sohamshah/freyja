@@ -1,8 +1,13 @@
 """
 Minimal sub-agent tool for the desktop bridge.
 
-Spawns a child `AsyncAgentRunner` with a curated read-only tool set and either
-blocks on its completion (foreground) or schedules it as a background task.
+Spawns a child `AsyncAgentRunner` as a background task and returns at once.
+The parent never blocks on a child: when the child reaches a terminal state
+a memo is pushed into the parent's inbox (see `build_subagent_memo` and
+`SubAgentSpec.on_child_terminal`), which slides into the parent's running
+turn or wakes an idle parent. Bridge-internal callers that genuinely need
+the child's answer inline (goal judge, calibrator, drafter) use
+`spawn_programmatically(mode="foreground")`.
 Replaces the CLI sub_agent_tool for the desktop use case —
 no Rich console, no grouped tree rendering, just JSON events for the UI.
 
@@ -222,7 +227,7 @@ def _attach_inbox_emitter(record: Any, _emit_event: SubAgentEventCb) -> None:
                 "type": "inbox_event",
                 "sessionId": sub_id,
                 "action": action,
-                "message": msg.to_dict(),
+                "message": msg.to_event_dict(),
             })
         except Exception:
             pass
@@ -287,6 +292,11 @@ class SubAgentSpec:
     # the child's system prompt. Callable so we always read the
     # parent's current source, not a stale snapshot.
     parent_gateway_source_getter: Any | None = None
+    # Called once when a child with ``record.notify_parent`` reaches a
+    # terminal state (done / failed / cancelled). The bridge turns it
+    # into an inbox memo on the parent session and wakes the parent if
+    # it is idle. Sync or async; errors are logged, never raised.
+    on_child_terminal: Callable[[SubAgentRecord], Awaitable[None] | None] | None = None
 
 
 class SubAgentTool:
@@ -309,14 +319,24 @@ Each agent type has a specialized model, thinking level, tool set, and
 system prompt optimized for its role. Choose the type that fits the task.
 
 Parameters:
+Sub-agents always run in the BACKGROUND. This call returns as soon as the
+child is launched — with its id — and your turn goes on. When the child
+finishes you get a memo in your inbox ("[sub-agent memo …]": its summary,
+artifact path, and which siblings are still running). It lands at your next
+step if you are mid-turn, or wakes you if you are idle. So:
+  · spawn every independent piece of work at once (multiple sub_agent calls
+    in one response), then keep going on your own part;
+  · never poll or wait — if you need the results before you can answer,
+    tell the operator what is in flight and end your turn; the memo wakes you;
+  · when a memo arrives, review what the child did before relying on it.
+
+Parameters:
 - label: short human-friendly name shown in the UI
-- task: the task/prompt given to the sub-agent
+- task: the task/prompt given to the sub-agent — self-contained, since the
+  child does not see your conversation
 - agent_type: agent specialization ({', '.join(type_names)}). Defaults to general.
 - kanban_task_id: optional board card id when the session is in kanban mode
-- task_id: optional task ledger id when the session is in task mode
-- mode: "foreground" blocks on the child (default); "background" returns
-  immediately with an agent id that can be monitored with the `subagents`
-  tool.""",
+- task_id: optional task ledger id when the session is in task mode""",
             parameters={
                 "type": "object",
                 "properties": {
@@ -332,11 +352,6 @@ Parameters:
                         "type": "string",
                         "enum": type_names,
                         "description": "Agent specialization. Defaults to general.",
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["foreground", "background"],
-                        "description": "Execution mode. Defaults to foreground.",
                     },
                     "kanban_task_id": {
                         "type": "string",
@@ -361,15 +376,26 @@ Parameters:
             },
         )
 
-    async def execute(self, call_id: str, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(
+        self,
+        call_id: str,
+        arguments: dict[str, Any],
+        *,
+        notify_parent: bool = True,
+    ) -> ToolResult:
+        """Launch a background child and return immediately.
+
+        ``notify_parent`` is False for bridge-internal dispatch (the kanban
+        dispatcher), whose workers report through the board rather than
+        the parent's inbox. A ``mode`` argument from an older transcript
+        or caller is ignored — there is no blocking mode any more.
+        """
         label = (arguments.get("label") or "sub-agent").strip()[:60]
         task = (arguments.get("task") or "").strip()
-        mode = arguments.get("mode") or "foreground"
+        mode = "background"
         agent_type_name = arguments.get("agent_type") or "general"
         kanban_task_id = (arguments.get("kanban_task_id") or "").strip()
         task_id = (arguments.get("task_id") or "").strip()
-        if mode not in ("foreground", "background"):
-            mode = "foreground"
 
         if not task:
             return ToolResult(
@@ -418,6 +444,7 @@ Parameters:
             id=sub_id, label=label, task=task, mode=mode
         )
         record.agent_type_name = agent_type.name
+        record.notify_parent = notify_parent
         # Stash the resolved agent type and model on the record so
         # _run_child can use them without re-resolving.
         record.agent_type = agent_type  # type: ignore[attr-defined]
@@ -530,17 +557,26 @@ Parameters:
         # paired profile_completion row when the run ends.
         record.spawned_at_ts = time.time()  # type: ignore[attr-defined]
 
-        if mode == "foreground":
-            return await self._run_foreground(call_id, record)
-
-        # Background: schedule and return immediately
-        asyncio.create_task(self._run_background(record))
+        asyncio.create_task(self._run_background(record), name=f"sub-bg-{sub_id}")
+        others = [
+            r for r in self._spec.registry.list_all()
+            if r.is_running and r.id != sub_id and r.notify_parent
+        ]
+        in_flight = (
+            f" {len(others)} other sub-agent{'s' if len(others) != 1 else ''} "
+            "also still running."
+            if others
+            else ""
+        )
         return ToolResult(
             call_id=call_id,
             content=(
-                f"Sub-agent `{label}` queued in background "
-                f"(id={sub_id}, type={agent_type.name}, model={child_model}). "
-                "Use the `subagents` tool with action=wait/list/kill to manage it."
+                f"Sub-agent `{label}` launched in the background "
+                f"(id={sub_id}, type={agent_type.name}, model={child_model}).{in_flight} "
+                "You'll get a memo in your inbox when it finishes — don't wait "
+                "or poll for it. Carry on with other work, or if you need its "
+                "result before you can go further, tell the operator what is "
+                "in flight and end your turn; the memo will wake you."
             ),
             is_error=False,
         )
@@ -550,6 +586,7 @@ Parameters:
         sidecar_data: dict[str, Any],
         *,
         woken_by: str = "agent",
+        notify_parent: bool | None = None,
     ) -> str | None:
         """Re-wake an archived sub-agent from its saved sidecar.
 
@@ -600,9 +637,18 @@ Parameters:
         # Register using the ORIGINAL sub_id so the renderer reuses its
         # existing session slice — no new pane, the old one wakes back up.
         record = self._spec.registry.register(
-            id=sub_id, label=label, task=task, mode="foreground"
+            id=sub_id, label=label, task=task, mode="background"
         )
         record.agent_type_name = agent_type.name
+        # A child re-woken by a message from its parent or the operator
+        # reports back like a fresh spawn. Kanban re-wakes (rework after
+        # a judge verdict) pass notify_parent=False — they report through
+        # the board instead.
+        record.notify_parent = (
+            woken_by in ("agent", "operator")
+            if notify_parent is None
+            else bool(notify_parent)
+        )
         record.agent_type = agent_type  # type: ignore[attr-defined]
         record.child_model = child_model  # type: ignore[attr-defined]
         record.model_resolution = model_resolution  # type: ignore[attr-defined]
@@ -656,7 +702,7 @@ Parameters:
                 "model": child_model,
                 "reasoningLevel": agent_type.thinking_effort,
                 "task": task,
-                "mode": "foreground",
+                "mode": "background",
                 "agentType": agent_type.name,
                 "coordinationStrategy": coord,
                 "kanbanTaskId": getattr(record, "kanban_task_id", None),
@@ -941,37 +987,38 @@ Parameters:
             transcript_snapshot=transcript_snapshot,
         )
 
-    async def _run_foreground(
-        self, call_id: str, record: SubAgentRecord
-    ) -> ToolResult:
-        try:
-            summary = await self._run_child(record)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("sub-agent %s failed", record.id)
-            self._spec.registry.mark_done(
-                record.id, f"Error: {exc}", SubAgentState.FAILED
-            )
-            await _emit_update(self._spec, record)
-            return ToolResult(
-                call_id=call_id,
-                content=f"Sub-agent `{record.label}` failed: {exc}",
-                is_error=True,
-            )
-        return ToolResult(
-            call_id=call_id,
-            content=summary,
-            is_error=False,
-        )
-
     async def _run_background(self, record: SubAgentRecord) -> None:
         try:
             await self._run_child(record)
+        except asyncio.CancelledError:
+            # Task-level cancel (the session's hard stop). _run_child
+            # already marked the record; the memo still goes out so the
+            # parent's next turn knows this child is gone.
+            if record.is_running:
+                self._spec.registry.mark_done(
+                    record.id, "Cancelled", SubAgentState.CANCELLED
+                )
+            await self._notify_terminal(record)
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.exception("background sub-agent %s failed", record.id)
             self._spec.registry.mark_done(
                 record.id, f"Error: {exc}", SubAgentState.FAILED
             )
             await _emit_update(self._spec, record)
+        await self._notify_terminal(record)
+
+    async def _notify_terminal(self, record: SubAgentRecord) -> None:
+        """Hand a finished model-spawned child to the parent (memo)."""
+        cb = self._spec.on_child_terminal
+        if cb is None or not record.notify_parent or record.is_running:
+            return
+        try:
+            result = cb(record)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception:  # noqa: BLE001
+            logger.exception("on_child_terminal failed for %s", record.id)
 
     async def _run_child(self, record: SubAgentRecord) -> str:
         """Run a real AsyncAgentRunner for this sub-agent and return its final text."""
@@ -1704,8 +1751,18 @@ Parameters:
             thinking=child_thinking,
             get_extra_system_reminders=_child_extra_reminders,
             get_compaction_ground_truth=_child_ground_truth,
+            # A message that lands while the child writes its final answer
+            # keeps the run going instead of dying unread in a finished
+            # record's inbox.
+            has_pending_input=lambda: (
+                sub_inbox_ref is not None and sub_inbox_ref.has_unread()
+            ),
         )
         sub_runner_holder["runner"] = runner
+        # talk(force=True) and the operator's inject-now reach the child
+        # through this: cut its in-flight call short so the message is
+        # read now (see TalkRouter.deliver).
+        record.request_interrupt = runner.request_interrupt  # type: ignore[attr-defined]
 
         # Register the asyncio cancel token on the record so the
         # bridge's force-cancel path can wake us directly, and also
@@ -1769,39 +1826,16 @@ Parameters:
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if watch_task in done and run_task not in done:
+                # The watchdog only fires on a real stop (subagents kill,
+                # the operator's stop). Force messages no longer come this
+                # way — they interrupt the runner and the child keeps going
+                # with the message in view.
                 cancelled_by_watchdog = True
                 run_task.cancel()
                 try:
                     await run_task
                 except BaseException:  # noqa: BLE001
                     pass
-                # Force-message compliance iteration: if the watchdog
-                # fired because a force=true inbox message arrived (vs.
-                # an external cancel), run ONE more bounded iteration
-                # so the agent can acknowledge / comply with the force
-                # message rather than dying mid-stream. The inbox
-                # pre-iteration hook drains the force message as the
-                # first thing the new iteration sees.
-                if (
-                    record.inbox is not None
-                    and record.inbox.has_force_unread()
-                ):
-                    try:
-                        # Reset cancel flags for the compliance pass.
-                        cancelled.clear()
-                        try:
-                            asyncio_cancel.clear()
-                        except Exception:
-                            pass
-                        compliance_result = await runner.run(
-                            session,
-                            "[INTERRUPT] Operator/parent force-stopped you. Read the message just delivered, summarize what you have, and exit.",
-                            stream=True,
-                            stop_condition=StopCondition(max_iterations=1),
-                        )
-                        result = compliance_result
-                    except BaseException as exc:  # noqa: BLE001
-                        run_exception = exc
             else:
                 watch_task.cancel()
                 try:
@@ -1902,6 +1936,19 @@ Parameters:
         record.iterations = getattr(result, "iterations", 0) or 0
 
         text = "".join(collected_text).strip() or "(no output)"
+        # The runner reports some failures by returning success=False
+        # rather than raising (a non-retryable provider 400, retries
+        # exhausted, the step ceiling). That is a failed child, not a
+        # finished one — its parent's memo must say so, with the reason.
+        run_failed = result is not None and getattr(result, "success", True) is False
+        if run_failed:
+            err = getattr(getattr(result, "error", None), "message", "") or "unknown error"
+            streamed = "".join(collected_text).strip()
+            text = (
+                f"{streamed}\n\n[run ended with an error: {err}]"
+                if streamed
+                else f"Error: {err}"
+            )
 
         # Stash the final transcript snapshot on the record so callers
         # that need to chain a follow-up LLM call against the SAME
@@ -1992,21 +2039,22 @@ Parameters:
             session,
             child_model=child_model,
             agent_type=agent_type,
-            state="done",
+            state="failed" if run_failed else "done",
         )
 
         self._spec.registry.mark_done(
             record.id,
             text,
-            SubAgentState.DONE,
+            SubAgentState.FAILED if run_failed else SubAgentState.DONE,
             input_tokens=record.input_tokens,
             output_tokens=record.output_tokens,
             iterations=record.iterations,
             tools_called=record.tools_called,
         )
-        await self._mark_kanban_terminal(record, "done", text)
-        await self._mark_task_terminal(record, "done", text)
-        await self._emit_terminal_events(record, success=True, usage=usage)
+        terminal = "blocked" if run_failed else "done"
+        await self._mark_kanban_terminal(record, terminal, text)
+        await self._mark_task_terminal(record, terminal, text)
+        await self._emit_terminal_events(record, success=not run_failed, usage=usage)
         await _emit_update(self._spec, record)
         return text
 
@@ -2506,6 +2554,133 @@ Parameters:
             })
         except Exception:
             pass
+
+
+# ─── Completion memos ─────────────────────────────────────────────────────
+
+# How much of a finished child's final answer rides inside the memo. Child
+# summaries are asked to be tight, so most fit whole; longer ones point at
+# `subagents result` / the artifact for the rest.
+MEMO_SUMMARY_CHARS = 8_000
+
+
+def _fmt_elapsed(seconds: float) -> str:
+    seconds = max(0, int(round(seconds)))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, secs = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m{secs:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"
+
+
+def build_subagent_memo(
+    record: SubAgentRecord,
+    *,
+    still_running: list[SubAgentRecord] | None = None,
+) -> Any:
+    """The inbox memo a parent receives when a background child finishes.
+
+    Written for the parent model: what finished and how, what it produced,
+    where the full output lives, and whether it should expect more memos —
+    so it can decide between acting now and ending its turn to wait.
+    """
+    from bridge.inbox import KIND_MEMO, InboxMessage, new_message_id
+
+    state = record.state.name.lower()
+    elapsed = _fmt_elapsed(record.elapsed)
+    kind = record.agent_type_name or "general"
+    if state == "done":
+        outcome = "finished"
+    elif state == "failed":
+        outcome = "FAILED"
+    else:
+        outcome = (
+            "was stopped by the operator"
+            if record.cancel_origin == "operator"
+            else "was cancelled"
+        )
+    task_line = " ".join((record.task or "").split())
+    if len(task_line) > 300:
+        task_line = task_line[:300] + "…"
+
+    lines = [
+        f"[sub-agent memo · {record.label} · id {record.id} · {state} · {elapsed}]",
+        f"Your background `{kind}` sub-agent {outcome}. Review what it did "
+        "before you rely on it.",
+        f"Task: {task_line}",
+        f"Work: {record.tools_called} tool calls, {record.iterations} steps, {elapsed}.",
+    ]
+    if record.artifact_path:
+        lines.append(f"Full output: {record.artifact_path}")
+    produced = [p for p in record.created_files if p and p != record.artifact_path]
+    if produced:
+        shown = produced[:12]
+        more = f" (+{len(produced) - len(shown)} more)" if len(produced) > len(shown) else ""
+        lines.append("Files it produced: " + ", ".join(f"`{p}`" for p in shown) + more)
+
+    text = str(record.result or "").strip()
+    if state == "done":
+        if text:
+            body = text[:MEMO_SUMMARY_CHARS]
+            lines.append("")
+            lines.append("Its final report:")
+            lines.append(body)
+            if len(text) > MEMO_SUMMARY_CHARS:
+                lines.append(
+                    f"[…{len(text) - MEMO_SUMMARY_CHARS} more chars — "
+                    f"`subagents result id={record.id}` or read the full output file]"
+                )
+        else:
+            lines.append("It returned no final text — check its session or files.")
+    elif state == "failed":
+        lines.append(f"Error: {text[:1500] or '(no detail)'}")
+        lines.append(
+            "Anything it produced before failing is in its session; decide "
+            "whether to retry, do the part yourself, or tell the operator."
+        )
+    else:
+        lines.append(
+            "It stopped before finishing — any partial work is in its session "
+            "and files. Don't assume the task is done."
+        )
+
+    running = [r for r in (still_running or []) if r.id != record.id]
+    lines.append(
+        "No reply is needed — this sub-agent has finished (a talk message "
+        "to it would re-wake it; do that only to give it more work)."
+    )
+    lines.append("")
+    if running:
+        names = ", ".join(f"{r.label} ({r.id})" for r in running[:8])
+        more = f" and {len(running) - 8} more" if len(running) > 8 else ""
+        lines.append(
+            f"Still running: {names}{more} — each sends its own memo. If you "
+            "need their results too, act on what you have so far or end your "
+            "turn; the next memo will wake you."
+        )
+    else:
+        lines.append("No other sub-agents of yours are running.")
+
+    return InboxMessage(
+        id=new_message_id(),
+        from_session=record.id,
+        from_label=record.label,
+        from_role="agent",
+        content="\n".join(lines),
+        kind=KIND_MEMO,
+        meta={
+            "subagentId": record.id,
+            "label": record.label,
+            "agentType": kind,
+            "state": state,
+            "elapsedMs": int(record.elapsed * 1000),
+            "toolsCalled": record.tools_called,
+            "artifactPath": record.artifact_path,
+            "stillRunning": len(running),
+        },
+    )
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────

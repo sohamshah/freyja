@@ -402,26 +402,29 @@ function PaneChatbox({
     else setLocalDraft(next)
   }
 
-  const submit = async () => {
+  const submit = async (cutIn = false) => {
     const content = value.trim()
     if (!content) return
     if (writable) {
-      // Active root session — normal turn pipeline.
-      await sendMessage(content)
+      // Active root session — normal turn pipeline (mid-turn it becomes
+      // a follow-up; ⌃↵ cuts in now).
+      await sendMessage(content, { force: cutIn })
       return
     }
     // Non-active session — route as operator talk (root or sub-agent
     // — bridge's TalkRouter handles either). DOES NOT switch active
-    // session; the operator stays where they are.
+    // session; the operator stays where they are. Force (the toggle, or
+    // ⌃↵) interrupts the recipient's current step and injects now; it
+    // keeps working with the message in view.
     setLocalDraft('')
-    await operatorTalk(sessionId, content, forceArmed)
+    await operatorTalk(sessionId, content, forceArmed || cutIn)
     setForceArmed(false)
   }
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      submit()
+      submit(e.ctrlKey || e.metaKey)
     }
   }
 
@@ -469,8 +472,8 @@ function PaneChatbox({
               : 'bg-white/[0.025] text-fg-3 ring-white/[0.06] hover:bg-white/[0.06] hover:text-fg-1'
           }`}
           title={forceArmed
-            ? 'Force armed — next message interrupts the recipient mid-operation'
-            : 'Click to arm force — interrupts recipient mid-operation'}
+            ? 'Force armed — next message cuts into the recipient\'s current step (it keeps working with your message in view)'
+            : 'Click to arm force (or send with ⌃↵) — cuts into the recipient\'s current step instead of waiting for its next one'}
         >
           force
         </button>
@@ -483,7 +486,7 @@ function PaneChatbox({
             cancel()
           }}
           className="shrink-0 rounded-md bg-danger/15 px-2 py-1 font-mono text-[9.5px] uppercase text-danger ring-1 ring-danger/30 hover:bg-danger/25"
-          title="Force-cancel this turn"
+          title="Stop this turn (background sub-agents keep running)"
         >
           stop
         </button>

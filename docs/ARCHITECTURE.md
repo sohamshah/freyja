@@ -237,7 +237,7 @@ Episodes are generated via self-summary: when a sub-agent completes, the engine 
 
 ## 6. Agent Orchestration
 
-The *main agent* is what the user talks to: it maintains the conversation transcript, owns the session context, decides when to delegate to sub-agents, synthesizes episode results, manages tool approval, and persists the session. *Sub-agents* are spawned for bounded tasks, receiving a fresh context (no parent conversation history), a goal, relevant episodes, and relevant skills. They run on a potentially different model, produce an episode on completion, and cannot spawn further sub-agents (single-level nesting). They can operate in foreground (parent waits) or background (parallel execution).
+The *main agent* is what the user talks to: it maintains the conversation transcript, owns the session context, decides when to delegate to sub-agents, synthesizes episode results, manages tool approval, and persists the session. *Sub-agents* are spawned for bounded tasks, receiving a fresh context (no parent conversation history), a goal, relevant episodes, and relevant skills. They run on a potentially different model, produce an episode on completion, and cannot spawn further sub-agents (single-level nesting). They always run in the background: the parent's turn goes on (and the operator can keep talking to it) while they work, and each one reports back with a memo in the parent's inbox when it finishes — see [MID-TURN-INPUT.md](MID-TURN-INPUT.md).
 
 Four built-in sub-agent types cover the common cases:
 

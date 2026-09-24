@@ -196,11 +196,23 @@ async def fire_job(
             timeout = job.timeout_seconds or (
                 job.budget.wall_clock_timeout_seconds if job.budget else None
             )
+            # Wait for the WHOLE job, not just the fire's own turn:
+            # sub-agents run in the background, so the turn can end with
+            # children still working and their memos then wake the session
+            # for the turns that actually produce the result. Timeout and
+            # cancel stop all of it (turn + children).
+            from bridge.freyja_bridge import (
+                _force_cancel_session,
+                wait_until_quiescent,
+            )
+
+            quiet = asyncio.ensure_future(wait_until_quiescent(sess))
             cancel_outcome = await _await_pending_with_cancel_poll(
-                pending,
+                quiet,
                 job_id=job.id,
                 run_id=run.run_id,
                 timeout_seconds=timeout,
+                on_abort=lambda: _force_cancel_session(sess, scope="all"),
             )
             if cancel_outcome == "timed_out":
                 run.status = "timed_out"
@@ -764,6 +776,15 @@ def _extract_text(msg: Any) -> str:
 # ─── Cross-process cancellation polling ────────────────────────────────
 
 
+def _run_abort(on_abort: Any) -> None:
+    if on_abort is None:
+        return
+    try:
+        on_abort()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("scheduler abort hook failed: %s", exc)
+
+
 # How often to poll for the cancel flag while the agent turn runs.
 # 1s gives the user sub-second-feel cancellation latency without
 # burning CPU on a stat call.
@@ -771,14 +792,20 @@ _CANCEL_POLL_INTERVAL = 1.0
 
 
 async def _await_pending_with_cancel_poll(
-    pending: asyncio.Task,
+    pending: asyncio.Future,
     *,
     job_id: str,
     run_id: str,
     timeout_seconds: float | None,
+    on_abort: Any = None,
 ) -> str:
     """Await ``pending`` while also polling the run JSON for
     ``cancel_requested``.
+
+    ``on_abort`` (zero-arg, sync) runs whenever we give up on ``pending``
+    — timeout, cancel flag, or our own cancellation — for the work that
+    cancelling ``pending`` alone would not stop (the session's turn and
+    background sub-agents, when ``pending`` is a quiescence waiter).
 
     Returns one of:
       · "completed"  — turn finished on its own
@@ -800,6 +827,7 @@ async def _await_pending_with_cancel_poll(
         if timeout_seconds is not None and timeout_seconds > 0:
             elapsed = time.time() - started
             if elapsed >= timeout_seconds:
+                _run_abort(on_abort)
                 try:
                     pending.cancel()
                 except Exception:  # noqa: BLE001
@@ -814,6 +842,7 @@ async def _await_pending_with_cancel_poll(
                 return "timed_out"
         # Cross-process cancel-flag check.
         if read_run_cancel_requested(job_id, run_id):
+            _run_abort(on_abort)
             try:
                 pending.cancel()
             except Exception:  # noqa: BLE001
@@ -840,6 +869,7 @@ async def _await_pending_with_cancel_poll(
         except asyncio.CancelledError:
             # OUR task got cancelled (e.g. service.stop()). Pass it
             # on to the turn so the LLM stream stops cleanly.
+            _run_abort(on_abort)
             try:
                 pending.cancel()
             except Exception:  # noqa: BLE001

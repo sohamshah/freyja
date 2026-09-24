@@ -465,6 +465,14 @@ export function loadSession(id: string): PersistedSession | null {
  *  metadata. Tool calls, sub-agents, kanban etc. are left empty
  *  (transcripts don't break them out and they're not meaningful for
  *  an external chat). */
+/** Openings of the bridge's synthetic wake prompts (freyja_bridge.py
+ *  TALK_WAKE_PROMPT / MEMO_WAKE_PROMPT / INBOX_WAKE_PROMPT). */
+const SYNTHETIC_WAKE_PREFIXES = [
+  '[system] One or more inter-agent messages were just delivered',
+  '[system] Background sub-agent work you dispatched just finished',
+  '[system] New items arrived in your inbox while you were idle',
+]
+
 function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
   const transcriptPath = resolveSessionPath(id, '.transcript.json')
   let raw: string
@@ -565,6 +573,20 @@ function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
       }
     }
     if (parts.length === 0 && attachments.length === 0) continue
+    // Wake turns (a sub-agent memo or an agent message arrived while the
+    // session sat idle) open with a synthetic "[system] …" prompt the
+    // bridge writes as the user turn. Nobody typed it — don't render it
+    // as the operator speaking.
+    if (
+      msg.role === 'user' &&
+      attachments.length === 0 &&
+      parts.length === 1 &&
+      parts[0].type === 'text' &&
+      typeof parts[0].text === 'string' &&
+      SYNTHETIC_WAKE_PREFIXES.some((p) => parts[0].text.startsWith(p))
+    ) {
+      continue
+    }
     totalInput += msg.input_tokens ?? 0
     totalOutput += msg.output_tokens ?? 0
     totalCacheR += msg.cache_read_tokens ?? 0

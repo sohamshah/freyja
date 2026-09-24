@@ -1,10 +1,12 @@
 """
 Thread-safe central registry for sub-agent lifecycle state.
 
-Tracks all sub-agents (foreground and background), providing:
+Tracks every sub-agent a session spawns, providing:
 - Registration and state tracking
-- Efficient blocking via per-agent done_event (no polling)
-- Background result delivery queue
+- Efficient blocking via per-agent done_event (no polling) — used by bridge
+  infrastructure (kanban judge lane), never by the model: agent-spawned
+  children run in the background and report back with an inbox memo
+  (see SubAgentTool._deliver_memo).
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ class SubAgentRecord:
     id: str                          # "sub_1", "sub_2"
     label: str
     task: str
-    mode: str                        # "foreground" | "background"
+    mode: str                        # "background" for agent spawns; "foreground" only for bridge-internal blocking spawns
     state: SubAgentState = SubAgentState.RUNNING
     result: Any | None = None        # ToolResult when done
     start_time: float = field(default_factory=time.time)
@@ -71,6 +73,15 @@ class SubAgentRecord:
     final_messages: Any = field(default_factory=list)
     final_system_prompt: str = ""
     final_model_id: str = ""
+    # Send the parent a memo when this child reaches a terminal state.
+    # Set for children the parent's MODEL spawned (sub_agent,
+    # computer_use, archived re-wakes); bridge-internal spawns (judges,
+    # drafters, kanban workers) report through their own channels.
+    notify_parent: bool = False
+    # Who stopped it, when it was stopped: "parent" (its own subagents
+    # kill — no memo, the parent knows), "operator" (session stop — memo
+    # queued without waking), or "" (not cancelled / external).
+    cancel_origin: str = ""
 
     @property
     def elapsed(self) -> float:
@@ -92,13 +103,12 @@ class SubAgentRegistry:
     NO timeout on wait. Sub-agents reach a terminal state exactly once
     (done / failed / cancelled) and the event fires at that point; the
     only way to "abandon" a running sub-agent is to explicitly `kill`
-    it. See the `subagents` tool docstring for the rationale.
+    it.
     """
 
     def __init__(self) -> None:
         self._records: dict[str, SubAgentRecord] = {}
         self._lock = threading.Lock()
-        self._undelivered_bg: list[str] = []  # IDs of completed bg agents not yet delivered
 
     def register(
         self,
@@ -141,7 +151,6 @@ class SubAgentRegistry:
     ) -> None:
         """
         Mark a sub-agent as complete. Sets done_event so waiters unblock.
-        Appends to _undelivered_bg if it was a background agent.
 
         Stats fields (input_tokens, output_tokens, etc.) default to None,
         meaning "preserve the existing value on the record". This avoids
@@ -164,8 +173,6 @@ class SubAgentRegistry:
             if tools_called is not None:
                 record.tools_called = tools_called
             record.done_event.set()
-            if record.mode == "background":
-                self._undelivered_bg.append(id)
 
     def kill(self, id: str) -> bool:
         """
@@ -186,9 +193,9 @@ class SubAgentRegistry:
         Block until the specified agent reaches a terminal state.
         Returns the record, or None if the agent doesn't exist.
 
-        Blocks indefinitely — sub-agents do not time out. Use the
-        async `SubAgentsTool.execute` wrapper for a cancellable wait
-        that cooperates with the asyncio event loop.
+        Blocks indefinitely — sub-agents do not time out. Bridge
+        infrastructure only (run it via asyncio.to_thread); the model
+        never blocks on a child.
         """
         with self._lock:
             record = self._records.get(id)
@@ -197,53 +204,13 @@ class SubAgentRegistry:
         record.done_event.wait()
         return record
 
-    def wait_all(self) -> list[SubAgentRecord]:
-        """
-        Block until every currently-running background agent reaches
-        a terminal state. Returns the snapshot list of agents that
-        were running when wait_all started.
-
-        Blocks indefinitely. See the async wrapper in `SubAgentsTool`
-        for cancellation semantics.
-        """
+    def adopt(self, record: SubAgentRecord) -> None:
+        """Track an existing record (a child still running when its
+        session's runner was rebuilt — see _BridgeSession.reset)."""
         with self._lock:
-            bg_records = [
-                r for r in self._records.values()
-                if r.mode == "background" and r.is_running
-            ]
-        for record in bg_records:
-            record.done_event.wait()
-        return bg_records
+            self._records[record.id] = record
 
-    def mark_delivered(self, id: str) -> None:
-        """Remove an agent from the undelivered queue.
-
-        Call this after explicitly delivering a result via wait/wait_all
-        so that pop_completed_background() doesn't auto-inject it again.
-        """
+    def running(self) -> list[SubAgentRecord]:
+        """Snapshot of the sub-agents still running."""
         with self._lock:
-            try:
-                self._undelivered_bg.remove(id)
-            except ValueError:
-                pass
-
-    def pop_completed_background(self) -> list[SubAgentRecord]:
-        """Return and clear undelivered completed background agent records."""
-        with self._lock:
-            if not self._undelivered_bg:
-                return []
-            records = [
-                self._records[id]
-                for id in self._undelivered_bg
-                if id in self._records
-            ]
-            self._undelivered_bg.clear()
-            return records
-
-    def has_running_background(self) -> bool:
-        """Check if any background agents are still running."""
-        with self._lock:
-            return any(
-                r.mode == "background" and r.is_running
-                for r in self._records.values()
-            )
+            return [r for r in self._records.values() if r.is_running]

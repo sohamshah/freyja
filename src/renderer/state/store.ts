@@ -7,9 +7,13 @@ import type {
   ArtifactRecord,
   DesktopSettings,
   FileChangeSet,
+  InboxKind,
+  InjectedItem,
+  MemoMeta,
   MemoryRecord,
   Message,
   MessagePart,
+  PendingFollowup,
   PermissionTier,
   SessionSnapshot,
   Skill,
@@ -185,7 +189,7 @@ export interface SessionSlice {
    *  indicators in the sidebar. Capped at 100 most recent. */
   inboxEvents: Array<{
     id: string
-    action: 'enqueued' | 'delivered' | 'dropped'
+    action: 'enqueued' | 'delivered' | 'dropped' | 'withdrawn'
     fromSession: string
     fromLabel: string
     fromRole: 'operator' | 'agent'
@@ -199,7 +203,9 @@ export interface SessionSlice {
      *  task as the first user message). Lets the conversation chip
      *  rail render spawn events as ambient stage directions instead
      *  of duplicate message cards. */
-    kind?: 'spawn'
+    kind?: InboxKind
+    /** Memo payload (kind `'memo'`): which sub-agent finished and how. */
+    meta?: MemoMeta
   }>
   artifacts: Array<import('@shared/events').ArtifactRecord>
   /** Generative-UI widgets keyed by the tool call that emitted them.
@@ -388,6 +394,13 @@ export interface HarnessState extends SessionSlice {
     filename?: string
     sizeBytes?: number
   }>
+  /** Operator messages sent while a session's turn was running, keyed by
+   *  session id, waiting for the bridge to slide them in. They render as
+   *  pending bubbles above the composer and become real user messages
+   *  where the bridge reports they landed (`inbox_injected` /
+   *  `followups_promoted`). Not persisted — the bridge's inbox is the
+   *  durable copy and its injection event carries the text. */
+  pendingFollowups: Record<string, PendingFollowup[]>
   // Derived / UI
   inputDraft: string
   commandPaletteOpen: boolean
@@ -486,7 +499,18 @@ export interface HarnessActions {
   /** Drop a reply the panel has consumed. */
   clearMcpResult(requestId: string): void
   setInputDraft(v: string): void
-  sendMessage(content: string): Promise<void>
+  /** Send from the composer. While the session's turn is running the
+   *  message becomes a follow-up the bridge slides into that turn at its
+   *  next step; `force` (Ctrl+Enter) cuts the current step short so it
+   *  lands now. Otherwise it starts a turn as usual. */
+  sendMessage(content: string, opts?: { force?: boolean }): Promise<void>
+  /** Upgrade a pending follow-up to inject-now. */
+  injectFollowupNow(sessionId: string, clientId: string): Promise<void>
+  /** Take a pending follow-up back (its text returns to the composer). */
+  withdrawFollowup(sessionId: string, clientId: string): Promise<void>
+  /** Stop the running background sub-agents of the active session
+   *  (the turn, if any, keeps going). */
+  stopSubagents(): Promise<void>
   /** Operator-typed message into any agent session's inbox. Routes
    *  through the bridge's TalkRouter so root sessions, live sub-agents,
    *  and archived (re-wakeable) sub-agents all work uniformly.
@@ -1220,6 +1244,7 @@ function emptyState(): HarnessState {
     skillRejectedCache: null,
     skillPromotedCache: null,
     pendingAttachments: [],
+    pendingFollowups: {},
     inputDraft: '',
     commandPaletteOpen: false,
     missionDashboardOpen: false,
@@ -1574,10 +1599,123 @@ function upsertArtifactsFromChangeSet(
  * slice. Used both for live updates (against the top-level slice) and for
  * cold updates to archived sessions.
  */
+/** Put a follow-up's text back into the composer without clobbering
+ *  whatever the operator has typed since. */
+function restoreIntoDraft(draft: string, content: string): string {
+  if (!content.trim()) return draft
+  return draft.trim() ? `${content}\n\n${draft}` : content
+}
+
+/** Place an operator follow-up in the transcript at `createdAt`. If the
+ *  renderer already shows it (sent while it looked idle, so it went in as
+ *  an ordinary message), move that message to where it actually landed. */
+function placeFollowupMessage(
+  messages: Message[],
+  item: { clientId?: string | null; messageId?: string | null; content?: string | null; force?: boolean },
+  pending: PendingFollowup | undefined,
+  createdAt: number,
+  midTurn: boolean,
+): Message[] {
+  const id = item.clientId || item.messageId || nextId('msg')
+  const idx = messages.findIndex((m) => m.id === id)
+  const existing = idx >= 0 ? messages[idx] : undefined
+  const text = pending?.content ?? item.content ?? ''
+  const msg: Message = {
+    ...(existing ?? {
+      id,
+      role: 'user' as const,
+      parts: text ? [{ type: 'text' as const, text }] : [],
+      attachments: pending?.attachments,
+    }),
+    createdAt,
+    followup: { force: !!(item.force ?? pending?.force), midTurn },
+  }
+  const rest = idx >= 0 ? [...messages.slice(0, idx), ...messages.slice(idx + 1)] : messages
+  return [...rest, msg]
+}
+
+function pendingFor(
+  pending: PendingFollowup[] | undefined,
+  clientId: string | null | undefined,
+): PendingFollowup | undefined {
+  if (!pending || !clientId) return undefined
+  return pending.find((p) => p.clientId === clientId)
+}
+
 function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
   const next: SessionSlice = { ...slice }
 
   switch (ev.type) {
+    case 'inbox_injected': {
+      // The bridge slid queued input into the running turn. Mid-turn,
+      // close the reply streamed so far right here and continue the turn
+      // in a fresh message below the injected input — otherwise the rest
+      // of the reply would keep growing ABOVE the message it answers
+      // (the timeline sorts by createdAt, and the streaming message's
+      // createdAt is the turn start). Memos and talk messages are already
+      // on screen as inbox chips; the split puts them in the right place
+      // too.
+      const at = ev.at || Date.now()
+      const followups = ev.items.filter((i) => i.kind === 'followup')
+      const streamingId = slice.currentStreamingMessageId
+      let messages = slice.messages
+      if (ev.midTurn && streamingId) {
+        messages = messages.map((m) =>
+          m.id === streamingId ? { ...m, completedAt: m.completedAt ?? at } : m,
+        )
+        let t = at
+        for (const item of followups) {
+          messages = placeFollowupMessage(
+            messages, item, pendingFor(ev.pending, item.clientId), t++, true,
+          )
+        }
+        const segmentId = nextId('msg')
+        messages = [...messages, { id: segmentId, role: 'assistant', parts: [], createdAt: t }]
+        next.currentStreamingMessageId = segmentId
+      } else if (followups.length > 0) {
+        // Landed at a turn's first step: show it just ahead of that
+        // turn's reply.
+        const streaming = messages.find((m) => m.id === streamingId)
+        let t = (streaming?.createdAt ?? at) - followups.length
+        for (const item of followups) {
+          messages = placeFollowupMessage(
+            messages, item, pendingFor(ev.pending, item.clientId), t++, false,
+          )
+        }
+      }
+      next.messages = messages
+      return next
+    }
+
+    case 'followups_promoted': {
+      // The turn these were aimed at ended first, so the bridge made them
+      // the next turn's user message. Show them as ordinary messages just
+      // ahead of that turn (whose turn_start follows this event).
+      let messages = slice.messages
+      let t = (ev.at || Date.now()) - ev.items.length
+      for (const item of ev.items) {
+        const id = item.clientId || item.messageId
+        if (id && messages.some((m) => m.id === id)) {
+          t++
+          continue
+        }
+        const pending = pendingFor(ev.pending, item.clientId)
+        const text = pending?.content ?? item.content ?? ''
+        messages = [
+          ...messages,
+          {
+            id: id || nextId('msg'),
+            role: 'user',
+            parts: text ? [{ type: 'text', text }] : [],
+            attachments: pending?.attachments,
+            createdAt: t++,
+          },
+        ]
+      }
+      next.messages = messages
+      return next
+    }
+
     case 'turn_start': {
       const msgId = nextId('msg')
       const newMessage: Message = {
@@ -1807,6 +1945,7 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
           timestamp: m.timestamp,
           sessionId: ev.sessionId,
           ...(m.kind ? { kind: m.kind } : {}),
+          ...(m.meta ? { meta: m.meta } : {}),
         },
       ]
       return next
@@ -1848,6 +1987,29 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
           details: ev.details,
         },
       ]
+      // The operator cut in while tools ran: the runner stopped the
+      // running ones and skipped the rest. Tools that never started get no
+      // tool_result event of their own, so settle every cut chip here or
+      // it spins forever.
+      if (ev.subtype === 'turn_interrupted' && Array.isArray(ev.details?.cut)) {
+        const cut = ev.details.cut as Array<{ id: string; started?: boolean }>
+        let toolCalls = slice.toolCalls
+        for (const c of cut) {
+          const tc = toolCalls[c.id]
+          if (!tc || tc.status !== 'running') continue
+          toolCalls = {
+            ...toolCalls,
+            [c.id]: {
+              ...tc,
+              status: 'error',
+              isError: true,
+              result: c.started ? 'Interrupted — you cut in' : 'Not run — you cut in first',
+              durationMs: tc.durationMs ?? Math.max(0, Date.now() - tc.startedAt),
+            },
+          }
+        }
+        next.toolCalls = toolCalls
+      }
       // Durable kanban card snapshot. `kanban_*` events carry the
       // full `task` (or `tasks[]`) payload; upsert into the per-
       // card snapshot map so completed cards aren't lost when the
@@ -3364,12 +3526,67 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       }
       if (ev.type === 'message_stop') return prev
 
+      // Operator follow-ups sent mid-turn. The pending bubbles live
+      // outside the session slice (keyed by session), so settle them
+      // here; the placement of the message itself is a slice concern and
+      // goes through the routing below with the bubbles attached.
+      let followupPatch: Partial<HarnessState> | null = null
+      let routed: BridgeEvent = ev
+      if (
+        ev.type === 'followup_queued' ||
+        ev.type === 'followup_withdrawn' ||
+        ev.type === 'followups_promoted' ||
+        ev.type === 'inbox_injected'
+      ) {
+        const fsid = ev.sessionId || prev.activeSessionId
+        const list = prev.pendingFollowups[fsid] ?? []
+        if (ev.type === 'followup_queued') {
+          if (!ev.clientId || !list.some((p) => p.clientId === ev.clientId)) return prev
+          return {
+            ...prev,
+            pendingFollowups: {
+              ...prev.pendingFollowups,
+              [fsid]: list.map((p) =>
+                p.clientId === ev.clientId ? { ...p, force: ev.force } : p,
+              ),
+            },
+          }
+        }
+        if (ev.type === 'followup_withdrawn') {
+          const had = list.find((p) => p.clientId === ev.clientId)
+          const restore = ev.restore && fsid === prev.activeSessionId
+          return {
+            ...prev,
+            pendingFollowups: {
+              ...prev.pendingFollowups,
+              [fsid]: list.filter((p) => p.clientId !== ev.clientId),
+            },
+            inputDraft: restore
+              ? restoreIntoDraft(prev.inputDraft, had?.content ?? ev.content)
+              : prev.inputDraft,
+          }
+        }
+        const landed = new Set(
+          ev.items.map((i) => i.clientId).filter((c): c is string => !!c),
+        )
+        if (landed.size > 0) {
+          const attached = list.filter((p) => landed.has(p.clientId))
+          routed = { ...ev, pending: attached }
+          followupPatch = {
+            pendingFollowups: {
+              ...prev.pendingFollowups,
+              [fsid]: list.filter((p) => !landed.has(p.clientId)),
+            },
+          }
+        }
+      }
+
       // Session-scoped events: route to the right slice.
       const sessionId = (ev as any).sessionId as string | undefined
       const isActive = !sessionId || sessionId === prev.activeSessionId
 
       if (isActive) {
-        const nextSlice = applyEventToSlice(sliceFromState(prev), ev)
+        const nextSlice = applyEventToSlice(sliceFromState(prev), routed)
         // Update the session snapshot's summary numbers when usage lands.
         let sessions = prev.sessions
         if (ev.type === 'usage' || ev.type === 'usage_snapshot') {
@@ -3397,7 +3614,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
               : s,
           )
         }
-        return { ...prev, ...nextSlice, sessions }
+        return { ...prev, ...nextSlice, sessions, ...followupPatch }
       }
 
       // Non-active: update or create the archived slice, and also
@@ -3417,7 +3634,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
             sessionSnapshot?.coordinationStrategy || prev.coordinationStrategy,
           ),
         )
-      const updated = applyEventToSlice(existingArchive, ev)
+      const updated = applyEventToSlice(existingArchive, routed)
       const updatedSessions = prev.sessions.map((s) =>
         s.id === sessionId
           ? {
@@ -3435,6 +3652,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         ...prev,
         sessions: updatedSessions,
         sessionArchive: { ...prev.sessionArchive, [sessionId!]: updated },
+        ...followupPatch,
       }
     })
   },
@@ -3443,45 +3661,73 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     set({ inputDraft: v })
   },
 
-  async sendMessage(content) {
+  async sendMessage(content, opts) {
     const state = useHarness.getState()
     if (!content.trim() && state.pendingAttachments.length === 0) return
     const id = nextId('msg')
+    const sessionId = state.activeSessionId
+    const force = !!opts?.force
+    // The agent is mid-turn: this is a follow-up for that turn, not a new
+    // turn. Hold it as a pending bubble until the bridge says where it
+    // landed (see inbox_injected / followups_promoted).
+    const followup = state.isStreaming
     const parts: MessagePart[] = []
     if (content.trim()) parts.push({ type: 'text', text: content })
     const attachments = state.pendingAttachments
-    set((prev) => ({
-      messages: [
-        ...prev.messages,
-        {
-          id,
-          role: 'user',
-          parts,
-          createdAt: Date.now(),
-          attachments: attachments.length > 0
-            ? attachments.map((a) => ({
-                id: a.id,
-                type: a.type,
-                // Video composer-tray previews are blob: URLs (cheap,
-                // ephemeral). For the persisted message we swap in a
-                // data: URL built from the same base64 we're about to
-                // send, so the preview survives session reload — blob:
-                // URLs are document-scoped and would 404 after restart.
-                // Images already use data: URLs at attach time.
-                previewUrl:
-                  a.type === 'video'
-                    ? `data:${a.mimeType};base64,${a.dataBase64}`
-                    : a.previewUrl,
-                name: a.filename,
-                mimeType: a.mimeType,
-                sizeBytes: a.sizeBytes,
-              }))
-            : undefined,
-        } as Message,
-      ],
-      inputDraft: '',
-      pendingAttachments: [],
-    }))
+    const messageAttachments =
+      attachments.length > 0
+        ? attachments.map((a) => ({
+            id: a.id,
+            type: a.type,
+            // Video composer-tray previews are blob: URLs (cheap,
+            // ephemeral). For the persisted message we swap in a
+            // data: URL built from the same base64 we're about to
+            // send, so the preview survives session reload — blob:
+            // URLs are document-scoped and would 404 after restart.
+            // Images already use data: URLs at attach time.
+            previewUrl:
+              a.type === 'video'
+                ? `data:${a.mimeType};base64,${a.dataBase64}`
+                : a.previewUrl,
+            name: a.filename,
+            mimeType: a.mimeType,
+            sizeBytes: a.sizeBytes,
+          }))
+        : undefined
+    if (followup) {
+      set((prev) => ({
+        pendingFollowups: {
+          ...prev.pendingFollowups,
+          [sessionId]: [
+            ...(prev.pendingFollowups[sessionId] ?? []),
+            {
+              clientId: id,
+              content,
+              attachments: messageAttachments,
+              force,
+              createdAt: Date.now(),
+            },
+          ],
+        },
+        inputDraft: '',
+        pendingAttachments: [],
+      }))
+    } else {
+      set((prev) => ({
+        messages: [
+          ...prev.messages,
+          {
+            id,
+            role: 'user',
+            parts,
+            createdAt: Date.now(),
+            attachments: messageAttachments,
+          } as Message,
+        ],
+        inputDraft: '',
+        pendingAttachments: [],
+      }))
+    }
     // Free the blob: URLs that backed the composer tray previews —
     // the sent-message attachment now references a fresh data: URL
     // and nothing else points at the blob. Without this, every video
@@ -3494,7 +3740,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     const api = (window as any).harness
     const cmd: any = {
       type: 'send_message',
-      sessionId: state.activeSessionId,
+      sessionId,
       content,
       // Always include the model so the bridge uses the correct
       // provider — especially important for resumed sessions where
@@ -3503,8 +3749,15 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       model: state.model,
       reasoningLevel: state.reasoningLevel,
       coordinationStrategy: state.coordinationStrategy,
+      // Lets the bridge's follow-up events name this message, whichever
+      // way it ends up being delivered.
+      clientId: id,
     }
-    const activeSnapshot = state.sessions.find((s) => s.id === state.activeSessionId)
+    if (followup) {
+      cmd.followup = true
+      cmd.force = force
+    }
+    const activeSnapshot = state.sessions.find((s) => s.id === sessionId)
     if (activeSnapshot?.parentSessionId && state.messages.length > 0) {
       const contextSummary = extractConversationSummary(state.messages, state.toolCalls)
       if (contextSummary) {
@@ -3525,6 +3778,60 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     } else {
       ;(window as any).__harnessDemo?.send(content)
     }
+  },
+
+  async injectFollowupNow(sessionId, clientId) {
+    set((prev) => ({
+      pendingFollowups: {
+        ...prev.pendingFollowups,
+        [sessionId]: (prev.pendingFollowups[sessionId] ?? []).map((p) =>
+          p.clientId === clientId ? { ...p, force: true } : p,
+        ),
+      },
+    }))
+    const api = (window as any).harness
+    if (api)
+      await api.sendCommand({ type: 'followup_control', sessionId, clientId, action: 'inject' })
+  },
+
+  async withdrawFollowup(sessionId, clientId) {
+    // Optimistic: drop the bubble and hand the text back now. If the
+    // bridge had already slid it in, its injection event still carries
+    // the text, so the message appears in the transcript regardless.
+    const pending = (useHarness.getState().pendingFollowups[sessionId] ?? []).find(
+      (p) => p.clientId === clientId,
+    )
+    set((prev) => ({
+      pendingFollowups: {
+        ...prev.pendingFollowups,
+        [sessionId]: (prev.pendingFollowups[sessionId] ?? []).filter(
+          (p) => p.clientId !== clientId,
+        ),
+      },
+      inputDraft:
+        pending && sessionId === prev.activeSessionId
+          ? restoreIntoDraft(prev.inputDraft, pending.content)
+          : prev.inputDraft,
+    }))
+    const api = (window as any).harness
+    if (api)
+      await api.sendCommand({
+        type: 'followup_control',
+        sessionId,
+        clientId,
+        action: 'withdraw',
+        restore: false,
+      })
+  },
+
+  async stopSubagents() {
+    const api = (window as any).harness
+    if (api)
+      await api.sendCommand({
+        type: 'force_cancel',
+        sessionId: useHarness.getState().activeSessionId,
+        scope: 'subagents',
+      })
   },
 
   async operatorTalk(sessionId, content, force = false) {
@@ -3634,10 +3941,12 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
   },
 
   async cancelTurn() {
-    // Mark ALL in-flight state as cancelled so spinners stop, tool
-    // chips show error, sub-agents show cancelled. We do NOT flip
-    // `isStreaming` to false so the cancel button stays visible as
-    // a recovery path. The real `turn_complete` from the bridge
+    // Mark the turn's in-flight state as cancelled so spinners stop and
+    // tool chips show error. Background sub-agents are NOT touched: they
+    // outlive the turn that spawned them, and stopping a reply shouldn't
+    // kill research running beside it (stopSubagents does that). We do
+    // NOT flip `isStreaming` to false so the cancel button stays visible
+    // as a recovery path. The real `turn_complete` from the bridge
     // handles that.
     set((prev) => {
       // Stop any spinning tool calls
@@ -3653,24 +3962,9 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           }
         }
       }
-      // Stop any running sub-agents
-      const nextSubs = { ...prev.subagents }
-      for (const [id, rec] of Object.entries(prev.subagents)) {
-        if (rec.state === 'running' || rec.state === 'pending') {
-          nextSubs[id] = { ...rec, state: 'cancelled' }
-        }
-      }
-      // Stop computer sessions
-      const nextComp: Record<string, ComputerSessionState> = {}
-      for (const [id, s] of Object.entries(prev.computerSessions)) {
-        nextComp[id] = s.status === 'running' ? { ...s, status: 'cancelled' } : s
-      }
       return {
         ...prev,
         toolCalls: nextToolCalls,
-        subagents: nextSubs,
-        computerSessions: nextComp,
-        computerActive: false,
       }
     })
     const api = (window as any).harness
@@ -3678,6 +3972,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       await api.sendCommand({
         type: 'force_cancel',
         sessionId: useHarness.getState().activeSessionId,
+        scope: 'turn',
       })
   },
 

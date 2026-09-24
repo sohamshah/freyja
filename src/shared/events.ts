@@ -250,11 +250,58 @@ export interface MessageAttachmentRef {
   sizeBytes?: number
 }
 
+export type InboxKind = 'spawn' | 'talk' | 'followup' | 'memo'
+
+/** Structured payload on a sub-agent memo (inbox kind `'memo'`). */
+export interface MemoMeta {
+  subagentId: string
+  label: string
+  agentType: string
+  state: 'done' | 'failed' | 'cancelled' | string
+  elapsedMs: number
+  toolsCalled?: number
+  artifactPath?: string | null
+  stillRunning?: number
+}
+
+/** What a stop stops. Background sub-agents outlive the turn that
+ *  spawned them, so stopping the turn leaves them running. */
+export type CancelScope = 'turn' | 'subagents' | 'all'
+
+/** An operator message sent while the agent was working, waiting to be
+ *  slid into the running turn. Lives outside the transcript until the
+ *  bridge reports where it landed. */
+export interface PendingFollowup {
+  clientId: string
+  content: string
+  attachments?: MessageAttachmentRef[]
+  /** Ctrl+Enter / "now" — the bridge is cutting the current step short. */
+  force: boolean
+  createdAt: number
+}
+
+/** One item the bridge slid into a running turn (see `inbox_injected`). */
+export interface InjectedItem {
+  messageId: string
+  kind: 'talk' | 'followup' | 'memo'
+  clientId?: string | null
+  force?: boolean
+  fromLabel?: string
+  /** Text for follow-ups (shown as a user message); null otherwise. */
+  content?: string | null
+  attachmentCount?: number
+}
+
 export interface Message {
   id: string
   role: 'user' | 'assistant' | 'system'
   parts: MessagePart[]
   createdAt: number
+  /** Set on user messages the operator sent while the agent was working
+   *  and that were slid into the running turn (rather than starting one).
+   *  `force`: they cut in (Ctrl+Enter). `midTurn`: it landed between two
+   *  steps of a turn, not at the start of one. */
+  followup?: { force: boolean; midTurn: boolean }
   /** Wall-clock ms at which the turn that produced this message finished.
    *  Set on `turn_complete`, so `completedAt - createdAt` is the turn's
    *  full duration (model + tools + sub-agents). Absent on user messages,
@@ -486,9 +533,25 @@ export type BridgeCommand =
       reasoningLevel?: string
       coordinationStrategy?: CoordinationStrategy
       attachments?: CommandAttachment[]
+      /** Renderer id for the message, echoed back on the follow-up
+       *  events so a pending bubble can be matched to where it landed. */
+      clientId?: string
+      /** Sent while a turn was running: the bridge slides it into that
+       *  turn at its next step instead of queueing a new turn. */
+      followup?: boolean
+      /** Ctrl+Enter: cut the in-flight LLM call / tool batch short and
+       *  inject now. */
+      force?: boolean
     }
-  | { type: 'cancel'; sessionId?: string }
-  | { type: 'force_cancel'; sessionId?: string }
+  | {
+      type: 'followup_control'
+      sessionId?: string
+      clientId: string
+      action: 'inject' | 'withdraw'
+      restore?: boolean
+    }
+  | { type: 'cancel'; sessionId?: string; scope?: CancelScope }
+  | { type: 'force_cancel'; sessionId?: string; scope?: CancelScope }
   | { type: 'diagnose' }
   | { type: 'compact'; sessionId?: string; model?: string; reasoningLevel?: string; coordinationStrategy?: CoordinationStrategy }
   | {
@@ -960,7 +1023,7 @@ export type BridgeEvent =
   | ({ type: 'bus_message'; message: BusMessageRecord } & SessionId)
   | ({
       type: 'inbox_event'
-      action: 'enqueued' | 'delivered' | 'dropped'
+      action: 'enqueued' | 'delivered' | 'dropped' | 'withdrawn'
       message: {
         id: string
         fromSession: string
@@ -971,13 +1034,58 @@ export type BridgeEvent =
         replyTo: string | null
         timestamp: number
         deliveredAt: number | null
-        /** Optional origin tag. `'spawn'` marks a synthetic event emitted
-         *  at sub-agent spawn time so the comm graph can show parent →
-         *  child intent (the task itself is delivered as the runner's
-         *  initial user message, not via inbox push). Regular talk() and
-         *  operator_talk traffic omits this field. */
-        kind?: 'spawn'
+        /** Origin tag. `'spawn'` marks a synthetic event emitted at
+         *  sub-agent spawn time so the comm graph can show parent → child
+         *  intent (the task itself is delivered as the runner's initial
+         *  user message, not via inbox push). `'followup'` is an operator
+         *  message sent mid-turn (rendered as a user message, not a chip).
+         *  `'memo'` is a background sub-agent reporting that it finished.
+         *  `'talk'` (or absent) is regular talk() / operator_talk traffic. */
+        kind?: InboxKind
+        /** Memo payload: which sub-agent, how it ended. */
+        meta?: MemoMeta
+        attachmentCount?: number
+        clientId?: string
       }
+    } & SessionId)
+  | ({
+      type: 'followup_queued'
+      messageId: string
+      clientId?: string | null
+      force: boolean
+      /** The bridge cut the in-flight step short for it. */
+      interrupting: boolean
+      at: number
+    } & SessionId)
+  | ({
+      type: 'followup_withdrawn'
+      messageId: string
+      clientId?: string | null
+      content: string
+      /** Hand the text back to the composer (the operator stopped the turn). */
+      restore: boolean
+    } & SessionId)
+  | ({
+      type: 'followups_promoted'
+      at: number
+      items: Array<{
+        messageId?: string | null
+        clientId?: string | null
+        content: string
+        attachmentCount?: number
+      }>
+      /** Renderer-only: the matching pending bubbles, attached by the
+       *  store before the slice reducer runs (for their attachments). */
+      pending?: PendingFollowup[]
+    } & SessionId)
+  | ({
+      type: 'inbox_injected'
+      at: number
+      /** Landed between two steps of a turn (vs. at its first step). */
+      midTurn: boolean
+      items: InjectedItem[]
+      /** Renderer-only: see `followups_promoted.pending`. */
+      pending?: PendingFollowup[]
     } & SessionId)
   | ({
       type: 'subagent_event'

@@ -119,6 +119,10 @@ export function InputDock() {
   const requestFileMatches = useHarness((s) => s.requestFileMatches)
   const activeSessionId = useHarness((s) => s.activeSessionId)
   const sessions = useHarness((s) => s.sessions)
+  const pendingFollowups = useHarness((s) => s.pendingFollowups[s.activeSessionId])
+  const injectFollowupNow = useHarness((s) => s.injectFollowupNow)
+  const withdrawFollowup = useHarness((s) => s.withdrawFollowup)
+  const stopSubagents = useHarness((s) => s.stopSubagents)
   const model = useHarness((s) => s.model)
   const availableModels = useHarness((s) => s.availableModels)
 
@@ -151,6 +155,15 @@ export function InputDock() {
     return matchSlash('/' + slashToken.query)
   }, [slashToken])
   const activeSession = sessions.find((session) => session.id === activeSessionId)
+  // Background sub-agents of this session that are still working. They
+  // outlive the turn that spawned them, so they get their own stop.
+  const subagents = useHarness((s) => s.subagents)
+  const runningChildren = useMemo(() => {
+    const done = new Set(sessions.filter((s) => s.completed).map((s) => s.id))
+    return Object.values(subagents).filter(
+      (r) => (r.state === 'running' || r.state === 'pending') && !done.has(r.id),
+    ).length
+  }, [sessions, subagents])
   const workspaceLabel = compactPath(activeSession?.workspace || '~/')
   const modelLabel = activeSession?.model || model
   // Gemini-only feature gate for video drag/drop/paste. We look up the
@@ -261,7 +274,9 @@ export function InputDock() {
     })
   }
 
-  const submit = async () => {
+  /** `force` (⌃↵ / ⌘↵) only matters while a turn is running: the message
+   *  cuts the agent's current step short instead of waiting for it. */
+  const submit = async (opts?: { force?: boolean }) => {
     const content = draft.trim()
     if (!content && pendingAttachments.length === 0) return
     setHistory(null)
@@ -279,7 +294,7 @@ export function InputDock() {
       setDraft('')
       return
     }
-    await send(content)
+    await send(content, { force: !!opts?.force })
   }
 
   const insertFilePath = (path: string) => {
@@ -520,7 +535,9 @@ export function InputDock() {
     }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      submit()
+      // Mid-turn, ↵ queues the message for the agent's next step and
+      // ⌃↵ (or ⌘↵) cuts in now. Idle, both just send.
+      submit({ force: e.ctrlKey || e.metaKey })
     }
   }
 
@@ -703,6 +720,41 @@ export function InputDock() {
         onDragOver={onDragOver}
       >
         <div className="mx-auto w-full max-w-[820px]">
+          {/* Follow-ups sent while the agent works, waiting for it to reach
+              a step boundary. Each can be pushed in now or taken back. */}
+          {pendingFollowups && pendingFollowups.length > 0 && (
+            <div className="mb-2 flex flex-col gap-1">
+              {pendingFollowups.map((p) => (
+                <div
+                  key={p.clientId}
+                  className="flex items-center gap-2 rounded-md bg-accent/[0.06] px-2.5 py-1 font-mono text-[10.5px] ring-1 ring-accent/20"
+                >
+                  <span className={`shrink-0 ${p.force ? 'text-warn' : 'text-accent'}`}>
+                    {p.force ? 'cutting in…' : 'next step'}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate font-prose text-[12px] text-fg-1">
+                    {p.content || `${p.attachments?.length ?? 0} attachment(s)`}
+                  </span>
+                  {!p.force && (
+                    <button
+                      onClick={() => injectFollowupNow(activeSessionId, p.clientId)}
+                      className="shrink-0 rounded px-1.5 py-[1px] text-fg-2 ring-hairline hover:bg-warn/15 hover:text-warn"
+                      title="Cut the agent's current step short and hand it this message now (same as ⌃↵)"
+                    >
+                      now
+                    </button>
+                  )}
+                  <button
+                    onClick={() => withdrawFollowup(activeSessionId, p.clientId)}
+                    className="shrink-0 rounded px-1.5 py-[1px] text-fg-2 ring-hairline hover:bg-danger/20 hover:text-danger"
+                    title="Take it back — the text returns to the composer"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           {/* Attachment tray */}
           {pendingAttachments.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-2">
@@ -817,7 +869,21 @@ export function InputDock() {
                     : 'pointer-events-none opacity-0'
                 }`}
               >
-                {history ? (
+                {isStreaming && !history ? (
+                  <>
+                    <span>
+                      <kbd className="kbd">↵</kbd> queue for its next step
+                    </span>
+                    <span>
+                      <kbd className="kbd">⌃</kbd>
+                      <kbd className="kbd ml-1">↵</kbd> cut in now
+                    </span>
+                    <span>
+                      <kbd className="kbd">⇧</kbd>
+                      <kbd className="kbd ml-1">↵</kbd> newline
+                    </span>
+                  </>
+                ) : history ? (
                   <>
                     <span className="text-accent">
                       history {history.index + 1}/{history.total}
@@ -848,19 +914,30 @@ export function InputDock() {
                   </>
                 )}
               </div>
-              <div className="ml-auto flex min-w-0 items-center">
+              <div className="ml-auto flex min-w-0 items-center gap-1.5">
+                {runningChildren > 0 && (
+                  <button
+                    onClick={() => stopSubagents()}
+                    title="Stop this session's background sub-agents. The conversation (and any running turn) keeps going."
+                    className="shrink-0 rounded-md bg-white/[0.04] px-2 py-[2px] text-[10px] text-fg-2 ring-hairline hover:bg-danger/15 hover:text-danger"
+                  >
+                    ■ stop {runningChildren} agent{runningChildren === 1 ? '' : 's'}
+                  </button>
+                )}
                 {isStreaming ? (
                   <button
                     onClick={() => cancel()}
-                    title="Force-cancel this turn and every sub-agent running under it. Also bound to ⎋."
-                    className="rounded-md bg-danger/15 px-2 py-[2px] text-[10px] text-danger ring-1 ring-danger/30 hover:bg-danger/25"
+                    title="Stop this turn. Background sub-agents keep running — stop them separately. Also bound to ⌘⎋."
+                    className="shrink-0 rounded-md bg-danger/15 px-2 py-[2px] text-[10px] text-danger ring-1 ring-danger/30 hover:bg-danger/25"
                   >
-                    ■ force cancel (esc)
+                    ■ stop turn (⌘esc)
                   </button>
                 ) : (
-                  <span className="truncate text-fg-2/70">
-                    {workspaceLabel} · {modelLabel}
-                  </span>
+                  runningChildren === 0 && (
+                    <span className="truncate text-fg-2/70">
+                      {workspaceLabel} · {modelLabel}
+                    </span>
+                  )
                 )}
               </div>
             </div>

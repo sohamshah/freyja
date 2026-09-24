@@ -716,6 +716,98 @@ TALK_WAKE_PROMPT = (
     "work request, do the work."
 )
 
+# Wake prompt when only sub-agent memos are waiting. The memos themselves
+# arrive in the same turn via the pre-iteration drain.
+MEMO_WAKE_PROMPT = (
+    "[system] Background sub-agent work you dispatched just finished — "
+    "the \"[sub-agent memo …]\" block(s) in this turn say what each one "
+    "did. Look at what was done (the summary, and the full output file or "
+    "`subagents result` when the summary is not enough), check it before "
+    "relying on it, then carry on with what the work was for: integrate "
+    "it, tell the operator what came back, or dispatch follow-up work. "
+    "If other sub-agents are still running and you need them too, say "
+    "what you have so far and end your turn — their memos will wake you."
+)
+
+# Wake prompt for a mix of memos and inter-agent messages.
+INBOX_WAKE_PROMPT = (
+    "[system] New items arrived in your inbox while you were idle — "
+    "sub-agent memos (\"[sub-agent memo …]\") and/or messages from other "
+    "agents (\"[message from …]\"). They appear in this turn. Review what "
+    "the finished sub-agents did before relying on it, answer any message "
+    "that asks for a reply (talk with reply_to=<id>), and carry on."
+)
+
+# Every synthetic wake prompt, so transcript replays (gateway sessions
+# rebuilt from disk, exports) can tell them apart from real operator turns.
+SYNTHETIC_WAKE_PROMPTS: tuple[str, ...] = (
+    TALK_WAKE_PROMPT,
+    MEMO_WAKE_PROMPT,
+    INBOX_WAKE_PROMPT,
+)
+
+# How long a finished child's memo waits before waking an idle parent, so
+# siblings finishing together land in one wake turn instead of several.
+MEMO_WAKE_DEBOUNCE_S = 0.6
+
+
+def _wake_prompt_for(inbox: Any) -> str:
+    """Pick the wake prompt that matches what is waiting."""
+    from bridge.inbox import KIND_MEMO
+
+    unread = list(getattr(inbox, "unread", None) or [])
+    kinds = {getattr(m, "kind", "talk") for m in unread}
+    if kinds == {KIND_MEMO}:
+        return MEMO_WAKE_PROMPT
+    if KIND_MEMO in kinds:
+        return INBOX_WAKE_PROMPT
+    return TALK_WAKE_PROMPT
+
+
+def _promote_followups(sess: Any) -> tuple[str, list[dict[str, Any]] | None] | None:
+    """Take every queued operator follow-up out of ``sess``'s inbox and
+    return it as the content (+ attachments) of a fresh turn.
+
+    Used when the turn a follow-up was aimed at ended before reaching a
+    boundary that could inject it. Emits ``followups_promoted`` so the
+    renderer turns its pending bubbles into user messages ahead of the
+    new turn's reply. Returns None when there is nothing to promote.
+    """
+    from bridge.inbox import KIND_FOLLOWUP
+
+    inbox = getattr(sess, "inbox", None)
+    if inbox is None or not inbox.has_unread_kind(KIND_FOLLOWUP):
+        return None
+    picked = inbox.take_kind(KIND_FOLLOWUP)
+    if not picked:
+        return None
+    at_ms = int(time.time() * 1000)
+    content = "\n\n".join(m.content.strip() for m in picked if m.content.strip())
+    attachments: list[dict[str, Any]] = []
+    for m in picked:
+        attachments.extend(m.attachments or [])
+    try:
+        emit(
+            {
+                "type": "followups_promoted",
+                "sessionId": sess.id,
+                "at": at_ms,
+                "items": [
+                    {
+                        "messageId": m.id,
+                        "clientId": m.client_id,
+                        "content": m.content,
+                        "attachmentCount": len(m.attachments or []),
+                    }
+                    for m in picked
+                ],
+            }
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    inbox.strip_delivered_attachments()
+    return content, (attachments or None)
+
 
 def _resolve_archived_subagent(session_id: str) -> dict[str, Any] | None:
     """Lookup helper used by TalkRouter to find a saved sub-agent
@@ -1017,9 +1109,21 @@ async def _start_desktop_control_reader(state: "_BridgeState") -> Any | None:
         return None
 
 
-async def _wake_archived_subagent(state: Any, session_id: str, msg: Any) -> None:
+async def _wake_archived_subagent(
+    state: Any,
+    session_id: str,
+    msg: Any,
+    *,
+    notify_parent: bool = True,
+) -> None:
     """Re-wake a saved sub-agent by spawning a fresh runner with the
     persisted transcript + the incoming message.
+
+    ``notify_parent``: when the re-woken run ends, memo its parent (as a
+    fresh spawn would). Only honoured when the host is the ORIGINAL
+    parent — a memo to whichever root happened to host the resume would
+    land in an unrelated conversation. Kanban re-wakes pass False: they
+    report through the board.
 
     Flow:
       1. Append the new message to the inbox sidecar so it survives
@@ -1093,8 +1197,11 @@ async def _wake_archived_subagent(state: Any, session_id: str, msg: Any) -> None
 
     # Step 5: spawn the resume. msg.from_role tells us the wake source.
     woken_by = "operator" if getattr(msg, "from_role", "") == "operator" else "agent"
+    notify = bool(notify_parent) and bool(preferred_parent) and host_sess.id == preferred_parent
     try:
-        result_id = await sub_tool.resume_archived(sidecar, woken_by=woken_by)
+        result_id = await sub_tool.resume_archived(
+            sidecar, woken_by=woken_by, notify_parent=notify,
+        )
         if result_id:
             log("info", f"_wake_archived_subagent: resumed {result_id} (woken_by={woken_by})")
     except Exception as exc:  # noqa: BLE001
@@ -2532,6 +2639,12 @@ _DOING_TASKS_BLOCK = f"""# Doing tasks
 - When you hit an obstacle, identify the root cause; don't take destructive shortcuts to make it go away (see Executing actions with care).
 - Be careful not to introduce security vulnerabilities — command injection, XSS, SQL injection, path traversal, the OWASP top 10. If you notice you wrote insecure code, immediately fix it."""
 
+_WORKING_ALONGSIDE_BLOCK = """# Working alongside the operator
+- The operator can keep talking while you work. A message they send mid-turn is slid in at your next step, marked as a follow-up sent while you were working; if they cut in, the reply or tool call you were in the middle of was stopped to make room. Read it right away — if it changes what you should do, change course now instead of finishing the old plan first.
+- Sub-agents (`sub_agent`, `computer_use`) always run in the background: the call returns at once and your turn goes on. Launch every independent piece of work together, then do your own part or keep the conversation going. Never wait on them, poll them, or redo their work yourself.
+- When one finishes, a "[sub-agent memo …]" lands in your inbox — at your next step if you are mid-turn, or as a wake-up turn if you were idle. Look at what it actually did (its report, the files it produced, `subagents result` for the full text) before relying on it, then carry on with what the work was for. If you need several results and only some are back, say what you have and end your turn; the remaining memos will wake you.
+- A system reminder lists the sub-agents still running. Tell the operator what is in flight when it matters to them."""
+
 _EXECUTING_ACTIONS_BLOCK = """# Executing actions with care
 Carefully consider the reversibility and blast radius of actions. Local, reversible actions (file edits, running tests, reading state) — proceed freely. For hard-to-reverse actions, actions that affect shared systems, or anything risky, confirm with the user first. The cost of pausing to confirm is low; the cost of an unwanted action (lost work, unintended messages, deleted branches) can be very high.
 
@@ -3426,6 +3539,26 @@ def _new_tracing_registry(
 
         try:
             result = await original_execute(call, **kwargs)
+        except asyncio.CancelledError:
+            # Stopped mid-run — the operator cut in (inject-now) or stopped
+            # the turn. Close the chip out instead of leaving it spinning,
+            # and release the git-capture claim like the error path does.
+            if _git_root and session_ledger is not None:
+                session_ledger.end_git_capture(_git_root)
+            try:
+                emit(
+                    {
+                        "type": "tool_result",
+                        "sessionId": session_id,
+                        "id": tool_id,
+                        "preview": "Interrupted before it finished",
+                        "isError": True,
+                        "durationMs": int((time.monotonic() - start) * 1000),
+                    }
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            raise
         except Exception as exc:
             # Release any git-capture claim so a raising bash tool doesn't leave
             # the repo permanently "in flight" (blocking future attribution).
@@ -3901,6 +4034,9 @@ class _BridgeSession:
         # in progress, we queue it here instead of cancelling. The task
         # runner drains the queue after each turn completes.
         self.queued_messages: list[tuple[str, list[dict[str, Any]] | None]] = []
+        # Running background sub-agents handed across a reset() to the
+        # registry the next initialize() builds.
+        self._carried_subagents: list[Any] = []
         # Shared cancel signal for computer-use tools. `computer.emergency_stop`
         # sets this; parent-tier computer tools poll it every action and
         # abort mid-flight. Rebuilt on reset() so a new session starts clean.
@@ -4110,6 +4246,10 @@ class _BridgeSession:
             emit(event)
 
         sub_registry = SubAgentRegistry()
+        for carried in getattr(self, "_carried_subagents", None) or []:
+            if carried.is_running:
+                sub_registry.adopt(carried)
+        self._carried_subagents = []
         self.subagent_registry = sub_registry
         self.permission_handler = DesktopPermissionHandler(
             session_id=self.id,
@@ -4339,6 +4479,9 @@ class _BridgeSession:
             subagent_gateway_source_getter=lambda: getattr(
                 self, "gateway_source", None,
             ),
+            # Background children report back through the inbox: a memo
+            # that slides into the running turn or wakes an idle session.
+            subagent_on_child_terminal=self._on_child_terminal,
             permission_handler=self.permission_handler,
             include_computer=self.state.computer_enabled,
             computer_session_id=self.id,
@@ -4581,6 +4724,8 @@ class _BridgeSession:
         #   9. Session-specific commands — slash command catalog.
         #  10. Installing deps — narrow tactical rule.
         #  11. Available tools / sub-agents / coordination.
+        # (Working alongside the operator — mid-turn follow-ups and
+        # background sub-agent memos — sits right after Doing tasks.)
         # Drop the tasks-tool bullet entirely in kanban mode — the tool
         # isn't registered there (board is None), and leaving the
         # instruction in the prompt would point the agent at a tool
@@ -4602,6 +4747,8 @@ class _BridgeSession:
             f"{project_output_guidance(self.project_session_id, self.workspace)}\n"
             "\n"
             f"{doing_tasks_block}\n"
+            "\n"
+            f"{_WORKING_ALONGSIDE_BLOCK}\n"
             "\n"
             f"{_EXECUTING_ACTIONS_BLOCK}\n"
             "\n"
@@ -4661,6 +4808,9 @@ class _BridgeSession:
             on_llm_call=self._on_llm_call,
             on_tool_metric=self._on_tool_metric,
             on_pre_iteration=self._drain_inbox_into_session,
+            # Follow-ups / memos that land while the final reply streams
+            # extend the turn rather than waiting for the next one.
+            has_pending_input=self._has_pending_inbox,
             thinking=thinking,
             # Stale-task reminder source. Returns a list of
             # `<system-reminder>` blocks per request; empty most of the
@@ -4790,6 +4940,18 @@ class _BridgeSession:
         self.runner = None
         self.provider = None
         self.tool_registry = None
+        # Background sub-agents outlive the runner: every reset() caller
+        # restores the transcript and carries on (model switch, runtime
+        # swap, computer toggle), so the children keep working and their
+        # memos still land here. Hand the running ones to the registry the
+        # next initialize() builds so reminders, the goal gate, cancel and
+        # `subagents list` still see them.
+        prev_registry = self.subagent_registry
+        if prev_registry is not None:
+            try:
+                self._carried_subagents = prev_registry.running()
+            except Exception:  # noqa: BLE001
+                self._carried_subagents = []
         self.subagent_registry = None
         self.memory_store = None
         self.skill_store = None
@@ -5133,31 +5295,329 @@ class _BridgeSession:
         return await self.try_restore_transcript()
 
     async def _drain_inbox_into_session(self, session: Any, iteration: int) -> None:
-        """Runner pre-iteration hook. Drains any pending inbox messages
-        and prepends each one as an attributed user turn so the agent
-        sees inbound talk at the next provider call.
+        """Runner pre-iteration hook: slide queued input into the turn.
 
-        Runs on every iteration including the first — a force message
-        could arrive before the agent's first LLM call.
+        Runs at every iteration boundary — before the first provider call
+        and between tool batches — and is where everything that arrived
+        while the agent worked lands: operator follow-ups (sent while the
+        turn ran), sub-agent memos, and inter-agent messages. Each becomes
+        a user block ahead of the next provider call.
+
+        Emits ``inbox_injected`` so the renderer can close the streaming
+        reply at this point and show what was slid in right here, with the
+        rest of the turn's output continuing below it.
         """
+        from bridge.inbox import KIND_FOLLOWUP
+
         if self.inbox is None or not self.inbox.has_unread():
             return
         if session is None:
             return
+        # Timestamp BEFORE the transcript writes: edit/rerun anchors a
+        # renderer message to the first transcript entry at/after its
+        # createdAt, and this is the createdAt the renderer will use.
+        at_ms = int(time.time() * 1000)
         msgs = self.inbox.drain()
         if not msgs:
             return
+        note = None
+        runner = getattr(self, "runner", None)
+        if runner is not None:
+            try:
+                note = runner.consume_interrupt_note()
+            except Exception:  # noqa: BLE001
+                note = None
+        mid_turn = iteration > 1
+        items: list[dict[str, Any]] = []
         for m in msgs:
             try:
-                session.add_user_message(m.as_user_block())
+                if m.kind == KIND_FOLLOWUP:
+                    session.add_user_message(
+                        self._followup_user_message(m, mid_turn=mid_turn, interrupt=note)
+                    )
+                    note = None  # the first follow-up explains the cut
+                else:
+                    session.add_user_message(m.as_user_block())
             except Exception as exc:  # noqa: BLE001
                 log("warn", f"failed to inject inbox msg {m.id[:8]}: {exc}")
                 continue
+            items.append(
+                {
+                    "messageId": m.id,
+                    "kind": m.kind,
+                    "clientId": m.client_id,
+                    "force": bool(m.force),
+                    "fromLabel": m.from_label,
+                    # Content for follow-ups only: the renderer shows them
+                    # as user messages (and needs the text if it lost its
+                    # pending copy, e.g. across a reload). Memos and talk
+                    # already rendered as inbox chips on arrival.
+                    "content": m.content if m.kind == KIND_FOLLOWUP else None,
+                    "attachmentCount": len(m.attachments or []),
+                }
+            )
+        self.inbox.strip_delivered_attachments()
         # Persist after drain so a crash mid-iteration doesn't double-deliver.
         try:
             self._save_inbox()
         except Exception:
             pass
+        if items:
+            try:
+                emit(
+                    {
+                        "type": "inbox_injected",
+                        "sessionId": self.id,
+                        "at": at_ms,
+                        "midTurn": mid_turn,
+                        "items": items,
+                    }
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _followup_user_message(
+        self,
+        msg: Any,
+        *,
+        mid_turn: bool,
+        interrupt: dict[str, Any] | None,
+    ) -> Any:
+        """Engine user message for an operator follow-up.
+
+        Mid-turn it carries a one-line framing so the model reads it as the
+        operator speaking now (not as tool output it happens to sit next
+        to), and — when the operator cut in with inject-now — what that
+        cut short, so it doesn't resume a half-finished thought blindly.
+        """
+        text = msg.content.strip()
+        if mid_turn:
+            cut = ""
+            if interrupt:
+                if interrupt.get("phase") == "tools" and interrupt.get("tools"):
+                    names = ", ".join(sorted(set(interrupt["tools"])))
+                    cut = (
+                        f" They cut in, so the tool call(s) still running "
+                        f"({names}) were stopped — see their results."
+                    )
+                elif interrupt.get("phase") == "llm":
+                    cut = (
+                        " They cut in, so your reply above stopped mid-way."
+                        if interrupt.get("partial_chars")
+                        else " They cut in before your next reply started."
+                    )
+            header = (
+                "<system-reminder>The operator sent this follow-up while you "
+                "were working on this turn." + cut + " Read it now: if it "
+                "changes what you should do, adjust course; otherwise fold it "
+                "in and carry on.</system-reminder>"
+            )
+            text = f"{header}\n{text}" if text else header
+        attachments = msg.attachments or None
+        if not attachments:
+            return text
+        image_refs_note = self._register_user_image_refs(attachments)
+        return _build_user_message_with_attachments(
+            text,
+            attachments,
+            image_refs_note,
+            model_id=self.model_id,
+        )
+
+    def _has_pending_inbox(self) -> bool:
+        """Runner ``has_pending_input`` hook: anything the next pre-iteration
+        drain would inject."""
+        inbox = getattr(self, "inbox", None)
+        return inbox is not None and inbox.has_unread()
+
+    def _operator_input_pending(self) -> bool:
+        """The operator has something waiting to be read — a queued turn or
+        an un-injected follow-up. Automation (goal continuation, kanban
+        auto-dispatch) yields to it."""
+        from bridge.inbox import KIND_FOLLOWUP
+
+        if getattr(self, "queued_messages", None):
+            return True
+        inbox = getattr(self, "inbox", None)
+        return inbox is not None and inbox.has_unread_kind(KIND_FOLLOWUP)
+
+    def _running_notifying_children(self) -> list[Any]:
+        """Background sub-agents this session's model spawned that are
+        still working (the ones that will send a memo)."""
+        reg = getattr(self, "subagent_registry", None)
+        if reg is None:
+            return []
+        try:
+            return [r for r in reg.list_all() if r.is_running and getattr(r, "notify_parent", False)]
+        except Exception:  # noqa: BLE001
+            return []
+
+    def interrupt_for_inbox(self) -> bool:
+        """Cut the running turn's in-flight LLM call / tool batch short so
+        the inbox is drained now. No-op (False) when no native turn runs."""
+        runner = getattr(self, "runner", None)
+        if runner is None or getattr(self, "runtime", "native") != "native":
+            return False
+        try:
+            return bool(runner.request_interrupt())
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"interrupt_for_inbox failed for {self.id}: {exc}")
+            return False
+
+    def accepts_followups(self) -> bool:
+        """Whether an operator message sent now can be slid into work that
+        is already running, rather than queued as its own turn: a native
+        session with a turn task in flight. Harness runtimes own their own
+        turn loop, so they keep the queue-after-turn behavior."""
+        if getattr(self, "runtime", "native") != "native" or self.inbox is None:
+            return False
+        pending = self.pending_task
+        return pending is not None and not pending.done()
+
+    def push_operator_followup(
+        self,
+        content: str,
+        attachments: list[dict[str, Any]] | None,
+        *,
+        force: bool = False,
+        client_id: str | None = None,
+    ) -> Any:
+        """Queue an operator message for the running turn.
+
+        It lands at the turn's next boundary (after the current LLM call or
+        tool batch); with ``force`` the in-flight call is cut short so it
+        lands now. If the turn has already finished its runner loop, the
+        post-turn drain in ``_run_turn_queue`` starts a fresh turn with it.
+        """
+        from bridge.inbox import KIND_FOLLOWUP, InboxMessage, new_message_id
+
+        msg = InboxMessage(
+            id=new_message_id(),
+            from_session="operator",
+            from_label="operator",
+            from_role="operator",
+            content=content,
+            force=force,
+            kind=KIND_FOLLOWUP,
+            attachments=list(attachments) if attachments else None,
+            client_id=client_id,
+        )
+        self.inbox.push(msg)
+        interrupted = self.interrupt_for_inbox() if force else False
+        emit(
+            {
+                "type": "followup_queued",
+                "sessionId": self.id,
+                "messageId": msg.id,
+                "clientId": client_id,
+                "force": force,
+                "interrupting": interrupted,
+                "at": int(msg.timestamp * 1000),
+            }
+        )
+        return msg
+
+    def inject_followup_now(self, client_or_message_id: str) -> bool:
+        """Upgrade a queued follow-up to inject-now (the operator pressed
+        Ctrl+Enter on it, or its "now" button)."""
+        if self.inbox is None:
+            return False
+        for m in self.inbox.unread:
+            if m.id == client_or_message_id or (
+                m.client_id and m.client_id == client_or_message_id
+            ):
+                m.force = True
+                interrupted = self.interrupt_for_inbox()
+                emit(
+                    {
+                        "type": "followup_queued",
+                        "sessionId": self.id,
+                        "messageId": m.id,
+                        "clientId": m.client_id,
+                        "force": True,
+                        "interrupting": interrupted,
+                        "at": int(m.timestamp * 1000),
+                    }
+                )
+                return True
+        return False
+
+    def withdraw_followup(self, client_or_message_id: str, *, restore: bool = False) -> bool:
+        """Take back a queued follow-up before it is injected."""
+        if self.inbox is None:
+            return False
+        m = self.inbox.remove(client_or_message_id)
+        if m is None:
+            return False
+        emit(
+            {
+                "type": "followup_withdrawn",
+                "sessionId": self.id,
+                "messageId": m.id,
+                "clientId": m.client_id,
+                "content": m.content,
+                "restore": restore,
+            }
+        )
+        return True
+
+    def withdraw_all_followups(self, *, restore: bool) -> int:
+        """Operator stopped the turn: hand every queued follow-up back
+        rather than firing it into a fresh turn they didn't ask for."""
+        from bridge.inbox import KIND_FOLLOWUP
+
+        if self.inbox is None:
+            return 0
+        ids = [m.id for m in self.inbox.unread if m.kind == KIND_FOLLOWUP]
+        n = 0
+        for mid in ids:
+            if self.withdraw_followup(mid, restore=restore):
+                n += 1
+        return n
+
+    async def _on_child_terminal(self, record: Any) -> None:
+        """A background sub-agent this session's model spawned finished.
+
+        Push a memo into our inbox. If a turn is running it slides in at
+        the next boundary (or extends the turn if the reply is finishing);
+        if we are idle, a wake turn runs shortly — debounced so siblings
+        that finish together are handled in one turn. A child the operator
+        stopped with the session stop queues its memo without waking: they
+        just asked for quiet.
+        """
+        from bridge.tools.sub_agent_tool import build_subagent_memo
+
+        if record.cancel_origin == "parent":
+            return  # the parent killed it itself; nothing to report
+        still_running = []
+        if self.subagent_registry is not None:
+            try:
+                still_running = [
+                    r for r in self.subagent_registry.running()
+                    if r.notify_parent and r.id != record.id
+                ]
+            except Exception:  # noqa: BLE001
+                still_running = []
+        try:
+            memo = build_subagent_memo(record, still_running=still_running)
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"memo build failed for {record.id}: {exc}")
+            return
+        self.inbox.push(memo)
+        if record.cancel_origin == "operator":
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            loop.call_later(MEMO_WAKE_DEBOUNCE_S, self._wake_for_memos)
+        except RuntimeError:
+            self._wake_for_memos()
+
+    def _wake_for_memos(self) -> None:
+        try:
+            status = self.wake_for_inbox()
+            log("debug", f"memo wake on {self.id}: {status}")
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"memo wake failed for {self.id}: {exc}")
 
     def wake_for_inbox(self) -> str:
         """Ensure a just-pushed inbox message actually gets processed.
@@ -5172,8 +5632,11 @@ class _BridgeSession:
         when the operator happened to poke the session by hand.
 
         Busy sessions need nothing: the pre-iteration drain picks the
-        message up within one iteration. Idle sessions get a synthetic
-        turn whose only job is to carry the drain. Returns a short
+        message up within one iteration, and the post-turn drain in
+        _run_turn_queue catches anything that lands after the runner's
+        last boundary. Idle sessions get a turn: queued operator
+        follow-ups become its user message; otherwise a synthetic wake
+        prompt whose only job is to carry the drain. Returns a short
         human-readable status for the sender's tool result.
         """
         if self.inbox is None or not self.inbox.has_unread():
@@ -5181,12 +5644,18 @@ class _BridgeSession:
         pending = self.pending_task
         if pending is not None and not pending.done():
             return "recipient busy — will process at its next iteration boundary"
+        promoted = _promote_followups(self)
+        if promoted is not None:
+            prompt, attachments = promoted
+        else:
+            prompt, attachments = _wake_prompt_for(self.inbox), None
+        hook = self.talk_wake_hook
         try:
             scheduled = _schedule_or_queue_turn(
                 self,
-                TALK_WAKE_PROMPT,
-                None,
-                on_turn_start=self.talk_wake_hook,
+                prompt,
+                attachments,
+                on_turn_start=hook,
             )
         except Exception as exc:  # noqa: BLE001
             log("warn", f"wake_for_inbox failed for {self.id}: {exc}")
@@ -5206,8 +5675,8 @@ class _BridgeSession:
             emit({
                 "type": "inbox_event",
                 "sessionId": self.id,
-                "action": action,                  # enqueued | delivered | dropped
-                "message": msg.to_dict(),
+                "action": action,                  # enqueued | delivered | dropped | withdrawn
+                "message": msg.to_event_dict(),
             })
         except Exception:
             pass
@@ -7422,7 +7891,7 @@ class _BridgeSession:
         if not force:
             if not self.auto_dispatch_enabled:
                 return
-            if self.queued_messages:
+            if self._operator_input_pending():
                 # User has something to say — don't burn turns on auto-
                 # dispatch until they're processed. Mirrors the goal-loop
                 # preemption.
@@ -7724,10 +8193,10 @@ class _BridgeSession:
                 "source": source,
             },
         )
-        # Run the spawn in background mode so the dispatcher tick doesn't
-        # block waiting for the worker. Foreground vs background here is
-        # an internal scheduling concern — from the renderer's perspective
-        # it's still a tracked sub-agent.
+        # Sub-agents always run in the background, so the dispatcher tick
+        # never blocks on the worker. notify_parent=False: a dispatched
+        # worker reports through its card (review → judge), not through
+        # a memo in the parent's inbox.
         await sub_tool.execute(
             f"auto-{card.id}-{int(time.time() * 1000):x}",
             {
@@ -7737,6 +8206,7 @@ class _BridgeSession:
                 "mode": "background",
                 "kanban_task_id": card.id,
             },
+            notify_parent=False,
         )
 
     async def _wake_subagent_with_task(
@@ -7778,7 +8248,12 @@ class _BridgeSession:
             reply_to=None,
         )
         try:
-            await _wake_archived_subagent(self.state, session_id, msg)
+            # The card flow (review → judge → rework) is how this worker
+            # reports; a memo to the parent on top would wake it for
+            # nothing on every rework cycle.
+            await _wake_archived_subagent(
+                self.state, session_id, msg, notify_parent=False,
+            )
             return True
         except Exception as exc:  # noqa: BLE001
             log("warn", f"_wake_subagent_with_task({session_id}): {exc}")
@@ -8829,11 +9304,27 @@ class _BridgeSession:
         goal = self.goal_state
         if goal is None or not goal.active:
             return
-        if self.queued_messages:
+        if self._operator_input_pending():
             self._emit_goal_event(
                 "goal_preempted",
                 "Goal continuation paused for queued user input",
                 details={"queueDepth": len(self.queued_messages)},
+            )
+            return
+        # Sub-agents run in the background, so a turn can end with the
+        # goal's work still in flight. Judging now would grade a half-done
+        # state and spin continuation turns while the children work; the
+        # last child's memo wakes this session, and the judge runs after
+        # that turn instead.
+        running_children = self._running_notifying_children()
+        if running_children:
+            self._emit_goal_event(
+                "goal_waiting",
+                (
+                    f"Goal loop waiting on {len(running_children)} "
+                    "background sub-agent(s) before judging"
+                ),
+                details={"subagents": [r.id for r in running_children]},
             )
             return
 
@@ -8968,6 +9459,11 @@ class _BridgeSession:
         # user input to protect.
         if not is_goal_continuation:
             self._suppress_task_reminder_next_call = True
+        # A wake turn's "user message" is a synthetic prompt that only
+        # exists to carry inbox items (memos, agent messages) into the
+        # drain. Nobody said it: it must not seed a goal or a mission card
+        # or count as operator activity.
+        synthetic_wake = user_content in SYNTHETIC_WAKE_PROMPTS
         # Reset the per-turn reminder budget. The lifetime cap still
         # applies on top; this just stops the entire lifetime budget
         # from being consumed inside one tool-heavy turn.
@@ -9021,12 +9517,13 @@ class _BridgeSession:
             self.coordination_strategy == "goal"
             and self.goal_state is None
             and not is_goal_continuation
+            and not synthetic_wake
             and pre_formed_message is None
             and user_content.strip()
         ):
             self._set_goal(user_content, source="first_message")
 
-        if pre_formed_message is None:
+        if pre_formed_message is None and not synthetic_wake:
             await self._ensure_mission_root_card(user_content)
 
         self._refresh_knowledge_context(user_content)
@@ -9182,7 +9679,7 @@ class _BridgeSession:
             # the user-turn count off the actual user activity.
             self._tick_skill_learning_hooks(
                 success=agent_succeeded,
-                had_user_message=not is_goal_continuation,
+                had_user_message=not (is_goal_continuation or synthetic_wake),
             )
             latest_response = (getattr(result, "response", None) or "").strip()
             if not latest_response:
@@ -9229,7 +9726,7 @@ class _BridgeSession:
             # bump (cancel isn't a unit of operator work).
             self._tick_skill_learning_hooks(
                 success=False,
-                had_user_message=not is_goal_continuation,
+                had_user_message=not (is_goal_continuation or synthetic_wake),
             )
             raise
         except Exception as exc:  # noqa: BLE001
@@ -9256,7 +9753,7 @@ class _BridgeSession:
             # H2: same rationale as the cancel branch.
             self._tick_skill_learning_hooks(
                 success=False,
-                had_user_message=not is_goal_continuation,
+                had_user_message=not (is_goal_continuation or synthetic_wake),
             )
 
     # ──────────────────────────────────────────────────────────────────
@@ -10217,7 +10714,50 @@ class _BridgeSession:
             blocks.extend(self._build_stale_task_reminders())
         except Exception:
             log("debug", "stale-task reminder failed")
+        try:
+            bg = self._build_background_work_reminder()
+            if bg:
+                blocks.append(bg)
+        except Exception:
+            log("debug", "background-work reminder failed")
         return blocks
+
+    def _build_background_work_reminder(self) -> str | None:
+        """Which of this session's sub-agents are still out working.
+
+        Sub-agents never block the turn, so without this the agent can lose
+        track of what it has in flight while it chats with the operator —
+        and either forget the work is coming or redo it itself. Rides the
+        per-request reminder tail (not the cached prefix), so it can change
+        every call without costing the cache.
+        """
+        running = self._running_notifying_children()
+        if not running:
+            return None
+        lines = []
+        for r in running[:12]:
+            minutes = int(r.elapsed // 60)
+            age = f"{minutes}m" if minutes else "<1m"
+            lines.append(f"- {r.label} [{r.agent_type_name}] id={r.id}, running {age}")
+        if len(running) > 12:
+            lines.append(f"- … and {len(running) - 12} more")
+        computer = any(r.agent_type_name == "computer" for r in running)
+        screen = (
+            "\nA computer-use sub-agent is driving the screen — don't use "
+            "your own computer tools until its memo arrives."
+            if computer
+            else ""
+        )
+        return (
+            "<system-reminder>\n"
+            f"Background sub-agents still working ({len(running)}):\n"
+            + "\n".join(lines)
+            + "\nEach sends a memo to your inbox when it finishes (it wakes you "
+            "if you are idle). Don't wait or poll for them and don't redo "
+            "their work — keep going, answer the operator, or end your turn."
+            + screen
+            + "\n</system-reminder>"
+        )
 
     def _build_working_memory_injection(self) -> str | None:
         """One-shot post-compaction re-grounding of the agent's STRUCTURED
@@ -11521,8 +12061,17 @@ def _tool_result_to_mcp_content(result: Any) -> dict[str, Any]:
     return {"content": content_parts, "isError": bool(getattr(result, "is_error", False))}
 
 
-def _force_cancel_session(sess: "_BridgeSession") -> int:
-    """Hard-cancel every in-flight operation for a session.
+def _force_cancel_session(sess: "_BridgeSession", *, scope: str = "all") -> int:
+    """Hard-cancel in-flight work for a session.
+
+    ``scope`` picks what stops, because background sub-agents outlive the
+    turn that spawned them and stopping one should not stop the other:
+      * ``"turn"``      — the session's own turn (steps 3-4 + harness);
+                          running sub-agents keep going. Queued follow-ups
+                          are handed back to the composer.
+      * ``"subagents"`` — only the running sub-agents (steps 1, 2, 5).
+      * ``"all"``       — everything (the emergency stop, and the default
+                          for callers that predate scopes).
 
     Fires five signals in order of increasing bluntness so that
     whichever mechanism the running code is blocked on unwinds
@@ -11552,11 +12101,19 @@ def _force_cancel_session(sess: "_BridgeSession") -> int:
 
     Returns the number of cancel signals fired (diagnostic only).
     """
+    stop_turn = scope in ("turn", "all")
+    stop_children = scope in ("subagents", "all")
     fired = 0
-    if sess.subagent_registry is not None:
+    child_ids: set[str] = set()
+    if stop_children and sess.subagent_registry is not None:
         for rec in sess.subagent_registry.list_all():
             if not rec.is_running:
                 continue
+            # Their memos still reach the parent (so its next turn knows
+            # they are gone) but must not wake it — the operator just
+            # asked for quiet.
+            rec.cancel_origin = "operator"
+            child_ids.add(rec.id)
             rec.cancel_event.set()
             fired += 1
             ac = getattr(rec, "asyncio_cancel", None)
@@ -11569,34 +12126,50 @@ def _force_cancel_session(sess: "_BridgeSession") -> int:
     if not sess.computer_cancel.is_set():
         sess.computer_cancel.set()
         fired += 1
-    if sess.pending_task and not sess.pending_task.done():
-        sess.pending_task.cancel()
-        fired += 1
-
-    # Harness adapter: tell the child to drop its in-flight turn so
-    # the model stops generating. The adapter swallows errors on
-    # best-effort cancel, so this never raises.
-    if sess.harness_adapter is not None:
+    if stop_turn:
+        # Hand queued follow-ups back to the composer rather than firing
+        # them into a new turn right after the operator said stop.
         try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(sess.harness_adapter.cancel(), name="harness-cancel")
-            fired += 1
+            sess.withdraw_all_followups(restore=True)
         except Exception:  # noqa: BLE001
             pass
+        if sess.pending_task and not sess.pending_task.done():
+            sess.pending_task.cancel()
+            fired += 1
 
-    # Direct-cancel any lingering runner / watchdog tasks by name.
-    # This is the last-resort path — if everything above worked
-    # these tasks are already done or about to be, and
-    # cancelling them is a no-op.
+        # Harness adapter: tell the child to drop its in-flight turn so
+        # the model stops generating. The adapter swallows errors on
+        # best-effort cancel, so this never raises.
+        if sess.harness_adapter is not None:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(sess.harness_adapter.cancel(), name="harness-cancel")
+                fired += 1
+            except Exception:  # noqa: BLE001
+                pass
+
+    if not stop_children:
+        return fired
+
+    # Direct-cancel any lingering runner / watchdog tasks of THIS
+    # session's children by name. This is the last-resort path — if
+    # everything above worked these tasks are already done or about to
+    # be, and cancelling them is a no-op. Scoped to our own children:
+    # sub-agents are background work now, and another session's swarm
+    # must survive this session's stop.
     try:
         tasks = asyncio.all_tasks()
     except RuntimeError:
         tasks = set()
+    prefixes = ("compuse-run-", "compuse-watch-", "sub-run-", "sub-watch-")
     for t in tasks:
         if t.done():
             continue
         name = t.get_name() or ""
-        if name.startswith(("compuse-run-", "compuse-watch-", "sub-run-", "sub-watch-")):
+        if not name.startswith(prefixes):
+            continue
+        owner = name.split("-", 2)[-1]
+        if owner in child_ids:
             t.cancel()
             fired += 1
     return fired
@@ -11734,28 +12307,154 @@ async def _apply_pending_config(sess: "_BridgeSession") -> None:
         log("error", f"applying deferred config failed (session={sess.id}): {exc}")
 
 
+async def wait_until_quiescent(sess: Any, *, poll_s: float = 0.5) -> Any:
+    """Wait until everything a turn set in motion has finished.
+
+    Sub-agents run in the background, so "the turn task is done" no longer
+    means "the work is done": the turn can end with children still out,
+    and their memos then wake the session for more turns. Callers that
+    treat a session's work as one job (scheduled fires, voice missions)
+    wait for all of it — no turn running, none of the session's own
+    background children still working, and nothing left in its inbox.
+
+    Returns the last turn task observed so the caller can inspect how the
+    final turn ended (cancelled / raised). Tolerates stand-in session
+    objects that have only ``pending_task``.
+    """
+    last = getattr(sess, "pending_task", None)
+    idle_with_unread_since: float | None = None
+    nudged = False
+    while True:
+        pending = getattr(sess, "pending_task", None)
+        if pending is not None:
+            last = pending
+            if not pending.done():
+                # wait(), not await: a failed/cancelled turn must not raise here.
+                await asyncio.wait({pending}, timeout=poll_s)
+                idle_with_unread_since = None
+                continue
+        running = getattr(sess, "_running_notifying_children", None)
+        children = running() if callable(running) else []
+        inbox = getattr(sess, "inbox", None)
+        unread = bool(inbox is not None and inbox.has_unread())
+        if not children and not unread:
+            return last
+        if children:
+            idle_with_unread_since = None
+            await asyncio.sleep(poll_s)
+            continue
+        # Idle with unread items: a memo's debounced wake is due any moment.
+        # If none comes (a memo parked without waking), nudge once, then give
+        # up rather than hang the caller.
+        now = time.monotonic()
+        if idle_with_unread_since is None:
+            idle_with_unread_since = now
+        elif now - idle_with_unread_since > MEMO_WAKE_DEBOUNCE_S + 2.5:
+            if nudged:
+                return last
+            nudged = True
+            idle_with_unread_since = now
+            wake = getattr(sess, "wake_for_inbox", None)
+            if callable(wake):
+                try:
+                    wake()
+                except Exception:  # noqa: BLE001
+                    pass
+        await asyncio.sleep(poll_s)
+
+
+def _next_inbox_turn(
+    sess: "_BridgeSession",
+) -> tuple[str, list[dict[str, Any]] | None, Any] | None:
+    """What to run next for input still sitting in the inbox after a turn.
+
+    The runner drains the inbox at every iteration boundary, but input can
+    land after its last one — while the turn's tail (usage, goal judge,
+    kanban tick) runs. Operator follow-ups become the next turn's user
+    message; memos / inter-agent messages get a wake prompt and ride in
+    via the pre-iteration drain. None when the inbox is empty.
+    """
+    inbox = getattr(sess, "inbox", None)
+    if inbox is None or not inbox.has_unread():
+        return None
+    # Either way the turn needs the session's output hook (the gateway's
+    # builds a Slack consumer for the thread); the desktop has none.
+    hook = getattr(sess, "talk_wake_hook", None)
+    promoted = _promote_followups(sess)
+    if promoted is not None:
+        content, attachments = promoted
+        return content, attachments, hook
+    return _wake_prompt_for(inbox), None, hook
+
+
 async def _run_turn_queue(
     sess: "_BridgeSession",
     content: str,
     attachments: list[dict[str, Any]] | None,
 ) -> None:
+    cancelled = False
     try:
         await sess.run_turn(content, attachments)
     except asyncio.CancelledError:
+        cancelled = True
         log("info", f"turn cancelled (session={sess.id})")
     except Exception as exc:  # noqa: BLE001
         log("error", f"turn failed (session={sess.id}): {exc}")
         _emit_turn_failed(sess, exc)
+    await _drain_after_turn(sess, cancelled=cancelled)
 
+
+async def _drain_after_turn(sess: "_BridgeSession", *, cancelled: bool = False) -> None:
+    """Everything that has to happen once a turn is over, in order: apply
+    a parked config change, then run what arrived while the turn ran.
+    Shared by the normal turn queue and the edit / rerun paths, which
+    start their turn task directly."""
     # The turn is over, so a parked config change is now safe to apply.
     # Do this BEFORE draining the queue so messages the operator sent
     # after `/model X` run on X rather than on the old model.
     await _apply_pending_config(sess)
 
-    # Drain the queue: process any messages the user sent while this
-    # turn was running. Goal-loop continuation checks the same queue
-    # before auto-continuing, so real user input preempts automation.
-    while sess.queued_messages:
+    # Drain what arrived while this turn ran: explicitly queued turns
+    # first (harness runtimes, gateway messages from another source),
+    # then anything left in the inbox after the runner's last boundary
+    # (follow-ups → a fresh turn, memos / talk → a wake turn). Goal-loop
+    # continuation checks the same state before auto-continuing, so real
+    # user input preempts automation.
+    while True:
+        if not sess.queued_messages:
+            if cancelled:
+                # The operator stopped this session. Don't answer the stop
+                # by immediately starting another turn for inbox items —
+                # they stay queued for the next turn (and new memos still
+                # wake an idle session on their own).
+                break
+            nxt = _next_inbox_turn(sess)
+            if nxt is None:
+                break
+            w_content, w_attachments, w_hook = nxt
+            before = {m.id for m in sess.inbox.unread}
+            log(
+                "info",
+                f"processing inbox after turn on session={sess.id} "
+                f"({len(before)} item(s) left for the drain)",
+            )
+            await _apply_pending_config(sess)
+            _run_pre_turn_hook(w_hook, sess)
+            try:
+                await sess.run_turn(w_content, w_attachments)
+            except asyncio.CancelledError:
+                log("info", f"inbox turn cancelled (session={sess.id})")
+                break
+            except Exception as exc:  # noqa: BLE001
+                log("error", f"inbox turn failed (session={sess.id}): {exc}")
+                _emit_turn_failed(sess, exc)
+            if before and before & {m.id for m in sess.inbox.unread}:
+                # The turn never reached its first boundary (init failure,
+                # runner missing). Looping would spin; leave the items for
+                # the next real turn.
+                log("warn", f"inbox items not drained on {sess.id}; stopping")
+                break
+            continue
         entry = sess.queued_messages.pop(0)
         # Queue entries are (content, attachments[, on_turn_start]).
         # The hook is what installs per-turn state right before
@@ -11933,10 +12632,13 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
     if ctype == "cancel" or ctype == "force_cancel":
         sess = state.get(session_id)
         if sess:
-            fired = _force_cancel_session(sess)
+            scope = str(cmd.get("scope") or "all")
+            if scope not in ("turn", "subagents", "all"):
+                scope = "all"
+            fired = _force_cancel_session(sess, scope=scope)
             log(
                 "info",
-                f"{ctype} fired {fired} signal(s) on session={sess.id}",
+                f"{ctype} (scope={scope}) fired {fired} signal(s) on session={sess.id}",
             )
             emit(
                 {
@@ -11944,7 +12646,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                     "sessionId": sess.id,
                     "subtype": "turn_cancelled",
                     "message": f"Cancelled {fired} in-flight operation(s)",
-                    "details": {"fired": fired, "kind": ctype},
+                    "details": {"fired": fired, "kind": ctype, "scope": scope},
                 }
             )
         return
@@ -12926,7 +13628,53 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             if vsummary:
                 await _inject_voice_context(sess, vsummary)
 
+        # A message sent while the session is working slides into that
+        # work instead of waiting for it to end: queued for the running
+        # turn's next boundary, or — with force (Ctrl+Enter) — injected
+        # right away by cutting the in-flight LLM call / tool batch short.
+        client_id = str(cmd.get("clientId") or "").strip() or None
+        force = bool(cmd.get("force") or False)
+        if sess.accepts_followups():
+            sess.push_operator_followup(
+                content, attachments, force=force, client_id=client_id,
+            )
+            return
+        if client_id and cmd.get("followup"):
+            # The renderer held this back as a pending follow-up, but the
+            # turn it was aimed at is already over: it becomes an ordinary
+            # turn, and the renderer shows it as an ordinary message.
+            emit(
+                {
+                    "type": "followups_promoted",
+                    "sessionId": sess.id,
+                    "at": int(time.time() * 1000),
+                    "items": [
+                        {
+                            "messageId": None,
+                            "clientId": client_id,
+                            "content": content,
+                            "attachmentCount": len(attachments or []),
+                        }
+                    ],
+                }
+            )
         _schedule_or_queue_turn(sess, content, attachments)
+        return
+
+    if ctype == "followup_control":
+        # The operator acting on a queued follow-up from its pending
+        # bubble: `inject` (cut in now) or `withdraw` (take it back).
+        sess = state.get(session_id)
+        target = str(cmd.get("clientId") or cmd.get("messageId") or "").strip()
+        action = str(cmd.get("action") or "")
+        if sess is None or not target:
+            return
+        if action == "inject":
+            if not sess.inject_followup_now(target):
+                log("debug", f"followup_control inject: {target} already delivered")
+        elif action == "withdraw":
+            if not sess.withdraw_followup(target, restore=bool(cmd.get("restore"))):
+                log("debug", f"followup_control withdraw: {target} already delivered")
         return
 
     if ctype == "operator_talk":
@@ -13074,10 +13822,15 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         attachments = cmd.get("attachments") or None
 
         async def _run_edit() -> None:
+            cancelled = False
             try:
                 await sess.run_turn(new_content, attachments)
+            except asyncio.CancelledError:
+                cancelled = True
             except Exception as exc:  # noqa: BLE001
                 log("error", f"edit_user_message turn failed: {exc}")
+            # Follow-ups / memos that arrived during the edited turn.
+            await _drain_after_turn(sess, cancelled=cancelled)
 
         sess.pending_task = asyncio.create_task(_run_edit(), name=f"edit-{sess.id}")
         return
@@ -13112,10 +13865,14 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             pass
 
         async def _run_rerun() -> None:
+            cancelled = False
             try:
                 await sess.run_turn("", None, pre_formed_message=original_content)
+            except asyncio.CancelledError:
+                cancelled = True
             except Exception as exc:  # noqa: BLE001
                 log("error", f"rerun_user_message turn failed: {exc}")
+            await _drain_after_turn(sess, cancelled=cancelled)
 
         sess.pending_task = asyncio.create_task(_run_rerun(), name=f"rerun-{sess.id}")
         return
@@ -13143,6 +13900,12 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                         pending.cancel()
                     except Exception:  # noqa: BLE001
                         pass
+                # Its background sub-agents would otherwise keep working
+                # (and memo a session that no longer exists).
+                try:
+                    _force_cancel_session(existing, scope="subagents")
+                except Exception:  # noqa: BLE001
+                    pass
                 # H3: drain the outcome watcher before dropping the
                 # session so in-flight classifier tasks don't fire
                 # against a torn-down transcript (see new_session

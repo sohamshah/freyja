@@ -79,6 +79,39 @@ def _scheduler_help_card() -> str:
     )
 
 
+def _can_slide_into_running_turn(session: object, source: object) -> bool:
+    """Whether an inbound message can join the turn already running.
+
+    Only when the answer would land in the same place anyway: a native
+    session whose runner loop is live, the same chat, the same thread,
+    and the same sender. Everything else keeps the queue — a top-level
+    DM message anchors its own reply, another user in a channel thread
+    gets their own answer, the double-fired files copy of the in-flight
+    mention (same ts) must not be read as a follow-up, and after the
+    runner's last step the queued turn gets its own consumer.
+    """
+    accepts = getattr(session, "accepts_followups", None)
+    if not callable(accepts) or not accepts():
+        return False
+    runner = getattr(session, "runner", None)
+    if runner is None or not getattr(runner, "turn_active", False):
+        return False
+    current = getattr(session, "gateway_source", None)
+    if current is None:
+        return False
+    thread = getattr(source, "thread_id", None) or ""
+    if not thread or thread != (getattr(current, "thread_id", None) or ""):
+        return False
+    if getattr(source, "chat_id", None) != getattr(current, "chat_id", None):
+        return False
+    if getattr(source, "user_id", None) != getattr(current, "user_id", None):
+        return False
+    msg_id = getattr(source, "message_id", None)
+    if msg_id and msg_id == getattr(current, "message_id", None):
+        return False
+    return True
+
+
 def _attach_turn_consumer(session: object, key: str, consumer: SlackStreamConsumer) -> None:
     """Register ``consumer`` as THE live stream consumer for this session.
 
@@ -783,6 +816,19 @@ class GatewayDaemon:
         )
         if not downstream_attachments:
             downstream_attachments = None
+        if _can_slide_into_running_turn(session, message.source):
+            # A follow-up from the same person in the same thread as the
+            # turn that is running: slide it into that turn at its next
+            # step instead of queueing a whole new turn behind it. Its
+            # answer streams into the running turn's post in this thread,
+            # so the consumer built above is never attached.
+            try:
+                session.push_operator_followup(
+                    framed_text, downstream_attachments, force=False,
+                )
+                return
+            except Exception:
+                logger.exception("follow-up injection failed; queueing instead")
         try:
             _schedule_or_queue_turn(
                 session,
@@ -2197,11 +2243,23 @@ class GatewayDaemon:
         strategy = getattr(session, "coordination_strategy", "?")
         pending = getattr(session, "pending_task", None)
         queued = len(getattr(session, "queued_messages", []) or [])
+        inbox = getattr(session, "inbox", None)
+        followups = sum(
+            1 for m in (getattr(inbox, "unread", None) or [])
+            if getattr(m, "kind", "") == "followup"
+        )
+        registry = getattr(session, "subagent_registry", None)
+        try:
+            bg_running = len(registry.running()) if registry is not None else 0
+        except Exception:
+            bg_running = 0
         in_flight = bool(pending and not pending.done())
         lines.append(f"• model: `{model}`")
         lines.append(f"• mode: `{strategy}`")
         lines.append(f"• in-flight: {'yes' if in_flight else 'no'}")
         lines.append(f"• queued messages: {queued}")
+        lines.append(f"• follow-ups waiting to slide in: {followups}")
+        lines.append(f"• background sub-agents running: {bg_running}")
         return "\n".join(lines)
 
     # How often to check the stdout log's size. The log grows fast

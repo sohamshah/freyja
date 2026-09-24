@@ -226,6 +226,47 @@ def _fmt_cap(max_iterations: int) -> str:
     """Render a step ceiling for logs; the uncapped default is sys.maxsize."""
     return "∞" if max_iterations >= sys.maxsize else str(max_iterations)
 
+
+# Tool results written when request_interrupt() cuts a tool batch short.
+# Every tool_use still needs a paired tool_result or the next request 400s,
+# and the model has to be able to tell "ran and was stopped" (side effects
+# possible) from "never started" (safe to re-issue).
+INTERRUPTED_TOOL_RESULT = (
+    "[interrupted] The operator sent a message while this tool was running, "
+    "so it was stopped before it finished. It may have partially run — check "
+    "its effects before re-running it."
+)
+SKIPPED_TOOL_RESULT = (
+    "[not run] The operator sent a message before this tool started, so it "
+    "was skipped. Re-issue it if it is still needed after reading the message."
+)
+
+
+async def _reap(task: "asyncio.Future[Any]") -> None:
+    """Await a task we just cancelled (or that already finished), dropping
+    its outcome — but never swallow a cancellation aimed at US: if the
+    current task is being cancelled, re-raise so the stop propagates."""
+    try:
+        await task
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():
+            raise
+    except BaseException:  # noqa: BLE001
+        pass
+
+
+class TurnInterrupted(Exception):
+    """An in-flight provider call was cut short by request_interrupt().
+
+    Carries the text that had already streamed so the loop can keep it in
+    the transcript — the operator saw it, so the model should too.
+    """
+
+    def __init__(self, partial_text: str = "") -> None:
+        super().__init__("turn interrupted")
+        self.partial_text = partial_text
+
 @dataclass
 class StopCondition:
     """
@@ -1034,6 +1075,13 @@ class AsyncAgentRunner:
         # updates/extends the existing memory rather than re-deriving it.
         # Returns None when unavailable.
         get_working_memory_state: Callable[[], str | None] | None = None,
+        # Whether input the pre-iteration hook would inject is waiting
+        # (an operator follow-up, a sub-agent memo, an inter-agent
+        # message). Checked when the model ends its turn: if something
+        # arrived while the final response streamed, the loop runs one
+        # more iteration so the hook can slide it in, instead of the
+        # turn ending with the message unread.
+        has_pending_input: Callable[[], bool] | None = None,
     ):
         self.provider = provider
         self.config = config or AgentConfig()
@@ -1054,6 +1102,19 @@ class AsyncAgentRunner:
         # and prepend incoming messages as attributed user turns.
         # Signature: async (session, iteration_index) -> None
         self.on_pre_iteration = on_pre_iteration
+        self.has_pending_input = has_pending_input
+        # Mid-turn interrupt (see request_interrupt). The event is created
+        # lazily so the runner can be constructed outside a running loop.
+        self._interrupt: asyncio.Event | None = None
+        # True from the start of run() until it returns. The bridge reads
+        # it to decide whether a follow-up can be slid into this turn or
+        # has to start a new one.
+        self.turn_active: bool = False
+        # What the most recent interrupt cut short, for the hook that
+        # injects the message that caused it: {"phase": "llm"|"tools",
+        # "partial_chars": int, "tools": [names]}. Consumed (reset to
+        # None) by consume_interrupt_note().
+        self._last_interrupt: dict[str, Any] | None = None
 
         # Tool result truncator
         self.truncator = ToolResultTruncator(self.config)
@@ -1096,6 +1157,83 @@ class AsyncAgentRunner:
             if asyncio.iscoroutine(result):
                 await result
 
+    # ------------------------------------------------------------------
+    # Mid-turn interrupts
+    # ------------------------------------------------------------------
+
+    def request_interrupt(self) -> bool:
+        """Cut the in-flight provider call or tool batch short.
+
+        The loop then reaches its next iteration boundary right away, where
+        ``on_pre_iteration`` injects whatever the caller queued (the caller
+        pushes the message first, then interrupts). Streamed text is kept;
+        tools that were running are stopped and get an ``[interrupted]``
+        result, tools that had not started get ``[not run]``.
+
+        Returns False when no turn is running — there is nothing to cut, and
+        the caller has to start a turn instead.
+        """
+        if not self.turn_active:
+            return False
+        if self._interrupt is None:
+            self._interrupt = asyncio.Event()
+        self._interrupt.set()
+        return True
+
+    def consume_interrupt_note(self) -> dict[str, Any] | None:
+        """Return and clear what the last interrupt cut short (or None)."""
+        note, self._last_interrupt = self._last_interrupt, None
+        return note
+
+    def _pending_input(self) -> bool:
+        if self.has_pending_input is None:
+            return False
+        try:
+            return bool(self.has_pending_input())
+        except Exception:  # noqa: BLE001
+            logger.exception("has_pending_input hook raised")
+            return False
+
+    async def _race_interrupt(self, aw: Awaitable[Any]) -> tuple[bool, Any]:
+        """Await ``aw`` unless request_interrupt() fires first.
+
+        Returns ``(interrupted, result)``. On interrupt the work is cancelled
+        and awaited, so nothing keeps running behind the loop's back. When
+        the work finishes at the same moment the interrupt lands, the result
+        wins — throwing away a completed response helps nobody. Exceptions
+        from ``aw`` propagate unchanged.
+        """
+        task = asyncio.ensure_future(aw)
+        if self._interrupt is None:
+            self._interrupt = asyncio.Event()
+        if self._interrupt.is_set():
+            task.cancel()
+            await _reap(task)
+            return True, None
+        waiter = asyncio.ensure_future(self._interrupt.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {task, waiter}, return_when=asyncio.FIRST_COMPLETED,
+            )
+        except asyncio.CancelledError:
+            # The whole turn was cancelled (operator stop). asyncio.wait
+            # does not cancel what it waits on, so do it here.
+            task.cancel()
+            waiter.cancel()
+            await _reap(task)
+            await _reap(waiter)
+            raise
+        if task in done:
+            waiter.cancel()
+            await _reap(waiter)
+            return False, task.result()
+        task.cancel()
+        await _reap(task)
+        return True, None
+
+    def _interrupt_pending(self) -> bool:
+        return self._interrupt is not None and self._interrupt.is_set()
+
     async def run(
         self,
         session: Session,
@@ -1105,6 +1243,24 @@ class AsyncAgentRunner:
         stream: bool = True,
     ) -> AgentResult:
         """Run the agent loop asynchronously."""
+        self.turn_active = True
+        try:
+            return await self._run(
+                session, user_message, stop_condition=stop_condition, stream=stream,
+            )
+        finally:
+            self.turn_active = False
+            if self._interrupt is not None:
+                self._interrupt.clear()
+
+    async def _run(
+        self,
+        session: Session,
+        user_message: str | list[ContentBlock],
+        *,
+        stop_condition: StopCondition | None,
+        stream: bool,
+    ) -> AgentResult:
         ctx = RunnerContext(state=RunnerState.RUNNING)
         stop = stop_condition or StopCondition()
 
@@ -1168,6 +1324,14 @@ class AsyncAgentRunner:
                 ctx.iteration, _fmt_cap(max_iterations), session.id,
             )
 
+            # An interrupt exists to get a queued message in front of the
+            # model; this is the boundary where that happens, so it is
+            # spent. Cleared BEFORE the drain: a message pushed after the
+            # drain re-arms it and cuts the upcoming call short, which is
+            # what it should do — that message was not injected yet.
+            if self._interrupt is not None:
+                self._interrupt.clear()
+
             # Pre-iteration hook: lets the bridge drain the session's
             # inbox and prepend any new operator/agent messages as
             # attributed user turns before this iteration's LLM call.
@@ -1183,10 +1347,36 @@ class AsyncAgentRunner:
                 # Pre-request safety check: compact BEFORE sending
                 await self._ensure_context_room(session, ctx)
 
-                if stream:
-                    response = await self._call_provider_stream(session)
-                else:
-                    response = await self._call_provider_async(session)
+                try:
+                    if stream:
+                        response = await self._call_provider_stream(session)
+                    else:
+                        response = await self._call_provider_async(session)
+                except TurnInterrupted as ti:
+                    # Keep what already streamed — the operator read it and
+                    # is replying to it. Only when there IS input to inject
+                    # next, though: a transcript that ends on an assistant
+                    # message is a prefill, which the 4.6+/Fable models 400.
+                    partial = ti.partial_text
+                    pending = self._pending_input()
+                    if partial.strip() and pending:
+                        session.add_assistant_message(partial)
+                    self._last_interrupt = {
+                        "phase": "llm",
+                        "partial_chars": len(partial.strip()) if pending else 0,
+                        "tools": [],
+                    }
+                    logger.info(
+                        "Provider call interrupted for injected input "
+                        "(%d chars streamed) | session=%s",
+                        len(partial), session.id,
+                    )
+                    await self._emit_system_event(SystemEvent(
+                        type="turn_interrupted",
+                        message="Stopped mid-response to take your message",
+                        details={"phase": "llm", "partial_chars": len(partial)},
+                    ))
+                    continue
 
                 self.usage.update(response.usage)
                 last_stop_reason = response.stop_reason
@@ -1275,8 +1465,26 @@ class AsyncAgentRunner:
                         continue
 
                     ctx.state = RunnerState.AWAITING_TOOL
-                    await self._handle_tool_calls(session, response.tool_calls, ctx)
+                    interrupted_tools = await self._handle_tool_calls(
+                        session, response.tool_calls, ctx,
+                    )
                     ctx.state = RunnerState.RUNNING
+
+                    if interrupted_tools:
+                        # Every call already has a result (interrupted / not
+                        # run). Skip loop detection — a cut-short batch says
+                        # nothing about repetition — and go straight to the
+                        # boundary where the message gets injected.
+                        await self._emit_system_event(SystemEvent(
+                            type="turn_interrupted",
+                            message="Stopped the running tools to take your message",
+                            details={
+                                "phase": "tools",
+                                "tools": [c["name"] for c in interrupted_tools],
+                                "cut": interrupted_tools,
+                            },
+                        ))
+                        continue
 
                     tracked_calls = [
                         tc for tc in response.tool_calls
@@ -1393,6 +1601,26 @@ class AsyncAgentRunner:
                             f"{STEERING_TAG_OPEN}{verification_msg}{STEERING_TAG_CLOSE}"
                         )
                         ctx.verification_injected = True
+                        continue
+
+                    # Input arrived while the final response streamed (a
+                    # follow-up, a sub-agent memo). Keep the turn going so
+                    # the pre-iteration hook slides it in — ending here would
+                    # leave it unread until something else started a turn.
+                    # An end_turn response was committed above, so the next
+                    # request ends on the injected user message, not on a
+                    # prefill.
+                    if response.stop_reason == "end_turn" and self._pending_input():
+                        logger.info(
+                            "Input arrived during the final response — "
+                            "extending the turn | session=%s",
+                            session.id,
+                        )
+                        await self._emit_system_event(SystemEvent(
+                            type="turn_extended",
+                            message="Picking up a message that arrived as the reply finished",
+                            details={"iteration": ctx.iteration},
+                        ))
                         continue
 
                     if ctx.verification_injected and pre_verification_response:
@@ -1567,13 +1795,13 @@ class AsyncAgentRunner:
             session.get_messages(),
         )
         try:
-            response = await provider.complete_async(
+            interrupted, response = await self._race_interrupt(provider.complete_async(
                 messages=request_messages,
                 tools=tool_defs,
                 system_prompt=session.system_prompt,
                 max_tokens=self.config.max_tokens_per_turn,
                 thinking=self.thinking if self.thinking.enabled else None,
-            )
+            ))
         except Exception as exc:
             self._notify_llm_call(provider, start, streaming=False, response=None, error=exc)
             # A raw transport error (e.g. httpx RemoteProtocolError) isn't a
@@ -1584,6 +1812,8 @@ class AsyncAgentRunner:
             if not isinstance(exc, ProviderError) and is_retryable_error(str(exc)):
                 raise ProviderError(str(exc), retryable=True) from exc
             raise
+        if interrupted:
+            raise TurnInterrupted("")
         self._notify_llm_call(provider, start, streaming=False, response=response, error=None)
         return response
 
@@ -1597,7 +1827,13 @@ class AsyncAgentRunner:
         if self.tool_registry and len(self.tool_registry) > 0:
             tool_defs = self.tool_registry.list_definitions()
 
+        # Text streamed so far, so an interrupt can keep what the operator
+        # already saw (see TurnInterrupted).
+        streamed_text: list[str] = []
+
         async def _handle_event(event: StreamEvent) -> None:
+            if getattr(event, "type", None) == "text_delta":
+                streamed_text.append(getattr(event, "text", "") or "")
             if self.on_stream:
                 result = self.on_stream(event)
                 if asyncio.iscoroutine(result):
@@ -1611,14 +1847,14 @@ class AsyncAgentRunner:
             session.get_messages(),
         )
         try:
-            response = await provider.stream_to_response(
+            interrupted, response = await self._race_interrupt(provider.stream_to_response(
                 messages=request_messages,
                 tools=tool_defs,
                 system_prompt=session.system_prompt,
                 max_tokens=self.config.max_tokens_per_turn,
                 thinking=self.thinking if self.thinking.enabled else None,
-                on_event=_handle_event if self.on_stream else None,
-            )
+                on_event=_handle_event,
+            ))
         except Exception as exc:
             self._notify_llm_call(provider, start, streaming=True, response=None, error=exc)
             # See _call_provider_async: re-cast a raw transient transport error
@@ -1628,6 +1864,8 @@ class AsyncAgentRunner:
             if not isinstance(exc, ProviderError) and is_retryable_error(str(exc)):
                 raise ProviderError(str(exc), retryable=True) from exc
             raise
+        if interrupted:
+            raise TurnInterrupted("".join(streamed_text))
         self._notify_llm_call(provider, start, streaming=True, response=response, error=None)
         return response
 
@@ -1934,39 +2172,97 @@ class AsyncAgentRunner:
         session: Session,
         tool_calls: list,
         ctx: RunnerContext,
-    ) -> None:
-        """Execute tool calls and add results to session."""
+    ) -> list[dict[str, Any]]:
+        """Execute tool calls and add results to session.
+
+        Returns the calls request_interrupt() cut short — ``{"id", "name",
+        "started"}`` each; ``started`` False means it never ran — or an
+        empty list when the batch ran to completion. Every call gets
+        exactly one result either way.
+        """
         if self.config.parallel_tool_execution and len(tool_calls) > 1:
-            await self._handle_tool_calls_parallel(session, tool_calls, ctx)
+            cut = await self._handle_tool_calls_parallel(session, tool_calls, ctx)
         else:
-            await self._handle_tool_calls_sequential(session, tool_calls, ctx)
+            cut = await self._handle_tool_calls_sequential(session, tool_calls, ctx)
+        if cut:
+            names = [c["name"] for c in cut]
+            self._last_interrupt = {"phase": "tools", "partial_chars": 0, "tools": names}
+            logger.info(
+                "Tool batch interrupted for injected input (%s) | session=%s",
+                ", ".join(names), session.id,
+            )
+        return cut
 
     async def _handle_tool_calls_sequential(
         self,
         session: Session,
         tool_calls: list,
         ctx: RunnerContext,
-    ) -> None:
+    ) -> list[dict[str, Any]]:
         """Execute tool calls sequentially."""
-        for tc in tool_calls:
-            result_content, is_error = await self._execute_single_tool(tc, ctx, session)
+        for i, tc in enumerate(tool_calls):
+            if self._interrupt_pending():
+                for rest in tool_calls[i:]:
+                    session.add_tool_result(rest.id, SKIPPED_TOOL_RESULT, is_error=True)
+                return [
+                    {"id": rest.id, "name": rest.name, "started": False}
+                    for rest in tool_calls[i:]
+                ]
+            interrupted, outcome = await self._race_interrupt(
+                self._execute_single_tool(tc, ctx, session)
+            )
+            if interrupted:
+                session.add_tool_result(tc.id, INTERRUPTED_TOOL_RESULT, is_error=True)
+                for rest in tool_calls[i + 1:]:
+                    session.add_tool_result(rest.id, SKIPPED_TOOL_RESULT, is_error=True)
+                return [{"id": tc.id, "name": tc.name, "started": True}] + [
+                    {"id": rest.id, "name": rest.name, "started": False}
+                    for rest in tool_calls[i + 1:]
+                ]
+            result_content, is_error = outcome
             session.add_tool_result(tc.id, result_content, is_error=is_error)
+        return []
 
     async def _handle_tool_calls_parallel(
         self,
         session: Session,
         tool_calls: list,
         ctx: RunnerContext,
-    ) -> None:
+    ) -> list[dict[str, Any]]:
         """Execute tool calls in parallel with concurrency limit."""
         semaphore = asyncio.Semaphore(self.config.max_parallel_tools)
+        started: set[str] = set()
 
         async def execute_with_semaphore(tc):
             async with semaphore:
+                started.add(tc.id)
                 return tc.id, await self._execute_single_tool(tc, ctx, session)
 
-        tasks = [execute_with_semaphore(tc) for tc in tool_calls]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        tasks = [asyncio.ensure_future(execute_with_semaphore(tc)) for tc in tool_calls]
+        interrupted, results = await self._race_interrupt(
+            asyncio.gather(*tasks, return_exceptions=True)
+        )
+        if interrupted:
+            # Cancelling the gather cancelled every unfinished task; the
+            # finished ones keep their real results.
+            cut: list[dict[str, Any]] = []
+            for tc, task in zip(tool_calls, tasks):
+                if task.done() and not task.cancelled() and task.exception() is None:
+                    _tc_id, (result_content, is_error) = task.result()
+                    session.add_tool_result(tc.id, result_content, is_error=is_error)
+                    continue
+                if task.done() and not task.cancelled():
+                    session.add_tool_result(
+                        tc.id, f"Tool execution error: {task.exception()}", is_error=True,
+                    )
+                    continue
+                cut.append({"id": tc.id, "name": tc.name, "started": tc.id in started})
+                session.add_tool_result(
+                    tc.id,
+                    INTERRUPTED_TOOL_RESULT if tc.id in started else SKIPPED_TOOL_RESULT,
+                    is_error=True,
+                )
+            return cut
 
         for i, result in enumerate(results):
             if isinstance(result, Exception):
@@ -1980,6 +2276,7 @@ class AsyncAgentRunner:
                 continue
             tc_id, (result_content, is_error) = result
             session.add_tool_result(tc_id, result_content, is_error=is_error)
+        return []
 
     async def _execute_single_tool(
         self,

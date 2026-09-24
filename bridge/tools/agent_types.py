@@ -538,8 +538,8 @@ AGENT_TYPES: dict[str, AgentType] = {
         description="Quick lookup agent (fast model rotation, no thinking)",
         usage_hint=(
             "Use for quick factual lookups, parallel fanout searches, or "
-            "when you need breadth over depth. Spawn 3-5 of these in "
-            "background mode for broad coverage."
+            "when you need breadth over depth. Spawn 3-5 of these at "
+            "once for broad coverage."
         ),
         model=["kimi-k2.6", "minimax-m2.7", "zai-glm-4.7"],
         thinking_effort="off",

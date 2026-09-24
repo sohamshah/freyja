@@ -20,7 +20,19 @@ Wire shape (`InboxMessage.to_dict`):
                                                  # to a wait_for_reply message
       "timestamp":     <epoch ms>,
       "delivered_at":  <epoch ms | null>,        # set when drained
+      "kind":          "talk" | "followup" | "memo",
+      "clientId":      <renderer message id | null>,  # followups only
     }
+
+Kinds:
+  * ``talk``     — agent → agent (or operator → any pane) via `talk`.
+  * ``followup`` — the operator typed into a session while its turn was
+                   running. Slid into that turn at the next boundary
+                   instead of waiting for the turn to end. May carry
+                   attachments (images); ``clientId`` lets the renderer
+                   move its pending bubble to where the message landed.
+  * ``memo``     — a background sub-agent finished; the parent is told
+                   to go look at what was done.
 
 Bounded depth: oldest unread is dropped when the queue exceeds
 `max_unread`. The drop is logged as a system_event so the operator
@@ -35,8 +47,12 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 
-MAX_UNREAD_DEFAULT = 20
+MAX_UNREAD_DEFAULT = 100  # memos from a 30-agent fan-out must not evict follow-ups
 RECENT_DELIVERED_KEEP = 50  # for renderer history, kept after drain
+
+KIND_TALK = "talk"
+KIND_FOLLOWUP = "followup"
+KIND_MEMO = "memo"
 
 
 @dataclass
@@ -50,9 +66,18 @@ class InboxMessage:
     reply_to: Optional[str] = None
     timestamp: float = field(default_factory=time.time)
     delivered_at: Optional[float] = None
+    kind: str = KIND_TALK
+    # Operator follow-ups can carry images, in the same wire shape
+    # send_message uses. Dropped once delivered (the transcript holds
+    # them from then on) so the delivered-history sidecar stays small.
+    attachments: Optional[list[dict[str, Any]]] = None
+    client_id: Optional[str] = None
+    # Structured payload for memos (sub-agent id, state, …) so the
+    # renderer can draw a card without parsing the text.
+    meta: Optional[dict[str, Any]] = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "id": self.id,
             "fromSession": self.from_session,
             "fromLabel": self.from_label,
@@ -62,7 +87,24 @@ class InboxMessage:
             "replyTo": self.reply_to,
             "timestamp": int(self.timestamp * 1000),
             "deliveredAt": int(self.delivered_at * 1000) if self.delivered_at else None,
+            "kind": self.kind,
         }
+        if self.attachments:
+            out["attachments"] = self.attachments
+        if self.client_id:
+            out["clientId"] = self.client_id
+        if self.meta:
+            out["meta"] = self.meta
+        return out
+
+    def to_event_dict(self) -> dict[str, Any]:
+        """``to_dict`` without attachment payloads — base64 images do not
+        belong in every inbox_event the renderer receives."""
+        out = self.to_dict()
+        atts = out.pop("attachments", None)
+        if atts:
+            out["attachmentCount"] = len(atts)
+        return out
 
     @classmethod
     def from_dict(cls, payload: Any) -> Optional["InboxMessage"]:
@@ -95,6 +137,16 @@ class InboxMessage:
             ),
             timestamp=ts,
             delivered_at=delivered,
+            kind=str(payload.get("kind") or KIND_TALK),
+            attachments=(
+                list(payload.get("attachments"))
+                if isinstance(payload.get("attachments"), list)
+                else None
+            ),
+            client_id=(
+                str(payload.get("clientId")) if payload.get("clientId") else None
+            ),
+            meta=payload.get("meta") if isinstance(payload.get("meta"), dict) else None,
         )
 
     def attribution_prefix(self) -> str:
@@ -117,7 +169,11 @@ class InboxMessage:
         return f"[message from {role_tag} · id {self.id}{urgency}{reply}]"
 
     def as_user_block(self) -> str:
-        """Full transcript-ready block."""
+        """Full transcript-ready block. Memos carry their own header
+        (built by build_subagent_memo); everything else gets the
+        attribution line so the recipient knows who is talking."""
+        if self.kind == KIND_MEMO:
+            return self.content.strip()
         return f"{self.attribution_prefix()}\n{self.content.strip()}"
 
 
@@ -172,6 +228,9 @@ class SessionInbox:
             m.delivered_at = now
             self.delivered.append(m)
             self._fire("delivered", m)
+            # The caller holds `out` (attachments intact) for injection;
+            # the history copy is the same object, so strip after the
+            # caller is done — see strip_delivered_attachments().
         # Trim history
         if len(self.delivered) > RECENT_DELIVERED_KEEP:
             self.delivered = self.delivered[-RECENT_DELIVERED_KEEP:]
@@ -205,6 +264,42 @@ class SessionInbox:
 
     def has_force_unread(self) -> bool:
         return any(m.force for m in self.unread)
+
+    def has_unread_kind(self, kind: str) -> bool:
+        return any(m.kind == kind for m in self.unread)
+
+    def take_kind(self, kind: str) -> list[InboxMessage]:
+        """Remove and return every unread message of ``kind``, in order,
+        marking each delivered (same bookkeeping as drain()). Used to
+        turn queued operator follow-ups into a fresh turn's user message
+        when the turn they were aimed at has already ended."""
+        picked = [m for m in self.unread if m.kind == kind]
+        if not picked:
+            return []
+        self.unread = [m for m in self.unread if m.kind != kind]
+        now = time.time()
+        for m in picked:
+            m.delivered_at = now
+            self.delivered.append(m)
+            self._fire("delivered", m)
+        if len(self.delivered) > RECENT_DELIVERED_KEEP:
+            self.delivered = self.delivered[-RECENT_DELIVERED_KEEP:]
+        return picked
+
+    def remove(self, message_id: str) -> Optional[InboxMessage]:
+        """Withdraw an unread message (the operator cancelled a queued
+        follow-up before it was injected). Returns it, or None if it was
+        already delivered."""
+        for i, m in enumerate(self.unread):
+            if m.id == message_id or (m.client_id and m.client_id == message_id):
+                self.unread.pop(i)
+                self._fire("withdrawn", m)
+                return m
+        return None
+
+    def strip_delivered_attachments(self) -> None:
+        for m in self.delivered:
+            m.attachments = None
 
     def add_reply_waiter(self, message_id: str, event: Any) -> None:
         self._reply_waiters[message_id] = event
