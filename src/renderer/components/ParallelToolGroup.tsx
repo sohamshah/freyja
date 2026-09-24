@@ -4,7 +4,7 @@ import { formatDuration } from '../lib/format'
 import { Spinner } from '../lib/spinner'
 import { useFrameObjectUrl } from '../lib/frameMedia'
 import { FileChangeBadge, FileChangeCard } from './FileChangeCard'
-import { summarizePartialJson, ToolResultImages } from './ToolCallChip'
+import { describeCall, summarizePartialJson, ToolResultImages } from './ToolCallChip'
 import { SearchQueryContext, HighlightText } from './searchContext'
 import type { ToolCallRecord } from '@shared/events'
 
@@ -342,6 +342,8 @@ function getToolCategory(name: string) {
 
 function summarizeArgs(name: string, args?: Record<string, unknown>): string {
   if (!args) return ''
+  const described = describeCall(name, args)
+  if (described) return described
   const str = (k: string): string => {
     const v = args[k]
     return typeof v === 'string' ? v : ''

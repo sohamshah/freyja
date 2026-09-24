@@ -531,6 +531,8 @@ function summarizePhaseTool(tc: { name: string; arguments?: Record<string, unkno
     return 'kanban'
   }
   if (name === 'bash') {
+    const summary = typeof args.summary === 'string' ? args.summary.trim() : ''
+    if (summary) return summary.slice(0, 48)
     const cmd = String(args.command ?? '').split('\n')[0]
     return cmd ? `$ ${cmd.slice(0, 48)}` : 'bash'
   }

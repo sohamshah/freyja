@@ -247,12 +247,32 @@ export function ToolResultImages({
   )
 }
 
+// Board tools take a `summary` too, but there it's a handoff note for the
+// card, not a description of the call itself.
+const HANDOFF_SUMMARY_TOOLS = new Set(['kanban', 'tasks'])
+
+/** The call's own plain-language account of itself, when the tool takes
+ *  one: bash's `summary`, the computer-use agents' `goal`. It beats any
+ *  raw argument for the header — "Verify the rebuilt app…" says more than
+ *  the first 80 chars of a shell one-liner. Exported so ParallelToolGroup
+ *  picks the same line. */
+export function describeCall(name: string, args?: Record<string, unknown>): string {
+  if (!args || HANDOFF_SUMMARY_TOOLS.has(name)) return ''
+  for (const key of ['summary', 'goal']) {
+    const v = args[key]
+    if (typeof v === 'string' && v.trim()) return v.trim()
+  }
+  return ''
+}
+
 function summarizeArgs(name: string, args?: Record<string, unknown>): string {
   if (!args) return ''
   // Kanban gets its own summary path so each chip reads as the action it
   // is rather than a generic "kanban" pill. Otherwise twenty board moves
   // in a row look identical.
   if (name === 'kanban') return summarizeKanban(args)
+  const described = describeCall(name, args)
+  if (described) return described
   if (typeof args.path === 'string') return args.path
   if (typeof args.pattern === 'string') return args.pattern as string
   if (typeof args.query === 'string') return args.query as string
@@ -281,6 +301,12 @@ export function summarizePartialJson(name: string, partial?: string): string {
     const action = grab('action')
     const taskId = grab('task_id')
     return action ? (taskId ? `${action} ${taskId}` : action) : ''
+  }
+  // bash streams `command` before `summary`, so the header shows the
+  // command briefly and then settles on the summary once it arrives.
+  if (!HANDOFF_SUMMARY_TOOLS.has(name)) {
+    const described = grab('summary') || grab('goal')
+    if (described) return described
   }
   const path = grab('path')
   if (path) return path

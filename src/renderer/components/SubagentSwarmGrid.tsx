@@ -285,6 +285,8 @@ function summarizeToolCall(tc: ToolCallRecord): string {
     case 'bash':
     case 'run_bash':
     case 'shell': {
+      const summary = str('summary').trim()
+      if (summary) return shorten(summary, 40)
       const cmd = str('command') || str('cmd')
       const first = cmd.split('\n')[0]
       return first ? `$ ${shorten(first, 38)}` : 'Running bash'

@@ -484,6 +484,8 @@ function formatToolCall(tc: ToolCallRecord, full: boolean): string {
     }
     case 'bash':
     case 'shell': {
+      const summary = str('summary').trim()
+      if (summary) return summary.slice(0, limit)
       const cmd = (str('command') || str('cmd')).split('\n')[0]
       return cmd ? `$ ${cmd.slice(0, limit)}` : 'bash'
     }
