@@ -446,7 +446,7 @@ click/type/scroll tools until the memo arrives.
             },
         )
 
-        asyncio.create_task(
+        record.bg_task = asyncio.create_task(
             self._run_background(
                 record,
                 goal=goal,
@@ -477,6 +477,9 @@ click/type/scroll tools until the memo arrives.
         max_steps: int,
     ) -> None:
         """Run the child, release the screen, and memo the parent."""
+        from bridge.tools.background_shell import CURRENT_TOOL_CONTEXT
+
+        CURRENT_TOOL_CONTEXT.set(None)  # not the parent's session (see sub_agent_tool)
         try:
             await self._run_child(
                 None,

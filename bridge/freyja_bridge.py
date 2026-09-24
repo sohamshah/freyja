@@ -3556,9 +3556,11 @@ def _new_tracing_registry(
 
         from bridge.tools.background_shell import CURRENT_TOOL_CONTEXT
 
-        ctx_token = (
-            CURRENT_TOOL_CONTEXT.set(tool_context) if tool_context is not None else None
-        )
+        # Always set — even to None. A sub-agent's task is created inside
+        # its parent's `sub_agent` call and inherits the parent's value;
+        # leaving it would let the child's bash yield to the PARENT's
+        # operator and memo the parent's inbox.
+        ctx_token = CURRENT_TOOL_CONTEXT.set(tool_context)
         try:
             result = await original_execute(call, **kwargs)
         except asyncio.CancelledError:
@@ -3599,8 +3601,7 @@ def _new_tracing_registry(
             )
             raise
         finally:
-            if ctx_token is not None:
-                CURRENT_TOOL_CONTEXT.reset(ctx_token)
+            CURRENT_TOOL_CONTEXT.reset(ctx_token)
 
         # Channel 1 of the cooperative compaction protocol: append a
         # token-usage tag to every tool result so the agent has continuous
@@ -5492,7 +5493,11 @@ class _BridgeSession:
                 f"The tool call(s) still running ({names}) were stopped and may "
                 "have partially run — check their effects before relying on them."
             )
-        still = self._running_background_work()
+        # Work the operator's stop is taking down doesn't count as running.
+        still = [
+            w for w in self._running_background_work()
+            if getattr(w, "cancel_origin", "") != "operator"
+        ]
         if still:
             parts.append(
                 f"{len(still)} piece(s) of background work you started are still "
@@ -5778,6 +5783,11 @@ class _BridgeSession:
                 }
             )
             return False
+        # Nothing of the operator's left waiting → tools needn't step aside.
+        from bridge.inbox import KIND_FOLLOWUP
+
+        if not self.inbox.has_unread_kind(KIND_FOLLOWUP):
+            self._clear_tool_yield()
         emit(
             {
                 "type": "followup_withdrawn",
@@ -9946,6 +9956,13 @@ class _BridgeSession:
                 except Exception as be:  # noqa: BLE001
                     log("warn", f"orphan backfill failed: {be}")
             self._stop_note = self._describe_stop()
+            # The stopped turn has unwound, so its computer actions are
+            # done; don't leave the event latched for the general
+            # sub-agents that share these computer tools and keep running.
+            try:
+                self.computer_cancel.clear()
+            except Exception:  # noqa: BLE001
+                pass
             emit(
                 {
                     "type": "turn_complete",
@@ -12306,6 +12323,49 @@ def _tool_result_to_mcp_content(result: Any) -> dict[str, Any]:
     return {"content": content_parts, "isError": bool(getattr(result, "is_error", False))}
 
 
+def _stop_background_work(
+    sess: Any, *, exclude: frozenset[str] | set[str] = frozenset(),
+) -> tuple[int, set[str]]:
+    """Stop the session's running sub-agents and backgrounded commands,
+    except those in ``exclude``. Returns (signals fired, sub-agent ids).
+
+    Their memos still reach the parent (so its next turn knows they are
+    gone) but are folded into one notice and never wake it — whoever
+    stopped them just asked for quiet."""
+    fired = 0
+    child_ids: set[str] = set()
+    registry = getattr(sess, "subagent_registry", None)
+    if registry is not None:
+        for rec in registry.list_all():
+            if not rec.is_running or rec.id in exclude:
+                continue
+            rec.cancel_origin = "operator"
+            child_ids.add(rec.id)
+            rec.cancel_event.set()
+            fired += 1
+            ac = getattr(rec, "asyncio_cancel", None)
+            loop = getattr(rec, "loop", None)
+            if ac is not None and loop is not None:
+                try:
+                    loop.call_soon_threadsafe(ac.set)
+                except Exception:  # noqa: BLE001
+                    pass
+    # Shell commands that stepped aside into the background are this
+    # session's background work too.
+    from bridge.tools.background_shell import stop_process_group
+
+    for bg in list((getattr(sess, "background_commands", None) or {}).values()):
+        if not bg.is_running or bg.id in exclude:
+            continue
+        bg.cancel_origin = "operator"
+        bg.state = "stopped"
+        proc = getattr(getattr(bg, "_process", None), "proc", None)
+        if proc is not None:
+            stop_process_group(proc)
+            fired += 1
+    return fired, child_ids
+
+
 def _force_cancel_session(sess: "_BridgeSession", *, scope: str = "all") -> int:
     """Hard-cancel in-flight work for a session.
 
@@ -12350,39 +12410,12 @@ def _force_cancel_session(sess: "_BridgeSession", *, scope: str = "all") -> int:
     stop_children = scope in ("subagents", "all")
     fired = 0
     child_ids: set[str] = set()
-    if stop_children and sess.subagent_registry is not None:
-        for rec in sess.subagent_registry.list_all():
-            if not rec.is_running:
-                continue
-            # Their memos still reach the parent (so its next turn knows
-            # they are gone) but must not wake it — the operator just
-            # asked for quiet.
-            rec.cancel_origin = "operator"
-            child_ids.add(rec.id)
-            rec.cancel_event.set()
-            fired += 1
-            ac = getattr(rec, "asyncio_cancel", None)
-            loop = getattr(rec, "loop", None)
-            if ac is not None and loop is not None:
-                try:
-                    loop.call_soon_threadsafe(ac.set)
-                except Exception:  # noqa: BLE001
-                    pass
     if stop_children:
-        # Shell commands that stepped aside into the background are this
-        # session's background work too.
-        from bridge.tools.background_shell import stop_process_group
-
-        for bg in list(getattr(sess, "background_commands", {}).values()):
-            if not bg.is_running:
-                continue
-            bg.cancel_origin = "operator"
-            bg.state = "stopped"
-            proc = getattr(getattr(bg, "_process", None), "proc", None)
-            if proc is not None:
-                stop_process_group(proc)
-                fired += 1
-    if not sess.computer_cancel.is_set():
+        fired, child_ids = _stop_background_work(sess)
+    if stop_turn and not sess.computer_cancel.is_set():
+        # Aborts the turn's in-flight computer actions. Not for "stop
+        # agents": the conversation keeps running and its computer tools
+        # must keep working (computer_use children have their own event).
         sess.computer_cancel.set()
         fired += 1
     if stop_turn:
@@ -12571,6 +12604,7 @@ async def wait_until_quiescent(
     *,
     poll_s: float = 0.5,
     background_wait_cap_s: float | None = None,
+    ignore_ids: frozenset[str] | set[str] = frozenset(),
 ) -> Any:
     """Wait until everything a turn set in motion has finished.
 
@@ -12589,6 +12623,10 @@ async def wait_until_quiescent(
     background work (no turn running): a hung child must not hold the
     caller forever. Past it, this returns with that work still running —
     the caller can check ``_running_background_work()`` and say so.
+
+    ``ignore_ids``: background work that was already running before the
+    caller's job started (a scheduled fire into a session the operator is
+    using) — not the caller's to wait for.
     """
     last = getattr(sess, "pending_task", None)
     idle_with_unread_since: float | None = None
@@ -12604,7 +12642,10 @@ async def wait_until_quiescent(
                 idle_with_unread_since = None
                 continue
         running = getattr(sess, "_running_background_work", None)
-        children = running() if callable(running) else []
+        children = [
+            w for w in (running() if callable(running) else [])
+            if getattr(w, "id", None) not in ignore_ids
+        ]
         inbox = getattr(sess, "inbox", None)
         unread = bool(inbox is not None and inbox.has_unread())
         if not children and not unread:
@@ -12673,11 +12714,22 @@ async def _run_turn_queue(
         await sess.run_turn(content, attachments)
     except asyncio.CancelledError:
         cancelled = True
+        _uncancel_current_task()
         log("info", f"turn cancelled (session={sess.id})")
     except Exception as exc:  # noqa: BLE001
         log("error", f"turn failed (session={sess.id}): {exc}")
         _emit_turn_failed(sess, exc)
     await _drain_after_turn(sess, cancelled=cancelled)
+
+
+def _uncancel_current_task() -> None:
+    """This task caught (and is handling) a stop, then keeps running more
+    turns. Take the stop off its pending-cancel count, or later code that
+    reads ``cancelling()`` (the runner's interrupt races) would treat every
+    cut-in in those turns as another stop."""
+    task = asyncio.current_task()
+    if task is not None and task.cancelling():
+        task.uncancel()
 
 
 async def _drain_after_turn(sess: "_BridgeSession", *, cancelled: bool = False) -> None:
@@ -14146,6 +14198,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 await sess.run_turn(new_content, attachments)
             except asyncio.CancelledError:
                 cancelled = True
+                _uncancel_current_task()
             except Exception as exc:  # noqa: BLE001
                 log("error", f"edit_user_message turn failed: {exc}")
             # Follow-ups / memos that arrived during the edited turn.
@@ -14189,6 +14242,7 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                 await sess.run_turn("", None, pre_formed_message=original_content)
             except asyncio.CancelledError:
                 cancelled = True
+                _uncancel_current_task()
             except Exception as exc:  # noqa: BLE001
                 log("error", f"rerun_user_message turn failed: {exc}")
             await _drain_after_turn(sess, cancelled=cancelled)

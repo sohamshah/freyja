@@ -142,3 +142,41 @@ def test_yield_reasons():
     assert ty.reason_to_yield(0) == "cut_in"
     ty.clear()
     assert ty.reason_to_yield(999) is None
+
+
+async def test_a_backgrounded_command_still_has_its_time_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(bs, "SOFT_YIELD_AFTER_S", 0.2)
+    exits: list = []
+    ctx, started = _ctx(tmp_path, exits)
+    ctx.tool_yield.request(hard=False)
+    tool = BashTool(working_dir=str(tmp_path))
+    marker = f"sleep 20.{uuid.uuid4().int % 1000:03d}"
+    result = await _run(tool, marker, ctx, timeout=1.0)
+    assert "Moved to the background" in result.content
+    assert "time limit still applies" in result.content
+    for _ in range(80):
+        if exits:
+            break
+        await asyncio.sleep(0.05)
+    (bg,) = exits
+    assert bg.state == "timed_out"
+    assert "time limit" in bs.build_background_command_memo(bg).content
+    await asyncio.sleep(1.2)
+    assert not _alive(marker)
+    assert bg._watch_task is not None
+
+
+async def test_stop_kills_group_members_that_outlive_the_shell(tmp_path):
+    marker = f"sleep 30.{uuid.uuid4().int % 1000:03d}"
+    # The subshell ignores SIGTERM and execs sleep (the ignore survives exec);
+    # the leader /bin/sh dies on the SIGTERM.
+    proc = await asyncio.create_subprocess_shell(
+        f"(trap '' TERM; exec {marker}) & sleep 60",
+        start_new_session=True,
+    )
+    await asyncio.sleep(0.3)
+    assert _alive(marker)
+    bs.stop_process_group(proc, grace_s=0.3)
+    await proc.wait()
+    await asyncio.sleep(0.6)
+    assert not _alive(marker)

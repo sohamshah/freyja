@@ -153,7 +153,8 @@ async def test_followup_during_final_reply_extends_the_turn():
     result = await runner.run(session, "do the thing")
 
     assert result.success is True
-    assert result.response == "second answer"
+    # Both replies are this turn's answer (the goal judge reads it).
+    assert result.response == "first answer\n\nsecond answer"
     assert len(provider.requests) == 2
     assert inbox.injected_at == [2]
     roles = [r for r, _ in _texts(session)]
@@ -395,3 +396,56 @@ async def test_a_stop_during_tools_notes_which_were_cut():
     with pytest.raises(asyncio.CancelledError):
         await task
     assert runner.consume_stop_note() == {"phase": "tools", "tools": ["slow"]}
+
+
+
+async def test_a_cut_in_after_a_handled_stop_is_still_a_cut_in():
+    """A turn loop that caught an earlier stop (without uncancel) leaves
+    the task's cancelling() at 1. The next turn's cut-in must still be an
+    interrupt, not look like another stop."""
+    inbox = _Inbox()
+    ref: dict = {}
+
+    async def long_stream(on_event):
+        await on_event(TextDeltaEvent(text="working on it"))
+        inbox.queue.append("new direction")
+        ref["r"].request_interrupt()
+        return await _forever()
+
+    async def body():
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            pass  # a stop, handled — count stays at 1
+        assert asyncio.current_task().cancelling() == 1
+        runner = _runner(_ScriptedProvider([long_stream, _end("ok")]), inbox)
+        ref["r"] = runner
+        return await runner.run(Session.create(system_prompt="t"), "go")
+
+    task = asyncio.create_task(body())
+    await asyncio.sleep(0.02)
+    task.cancel()
+    result = await asyncio.wait_for(task, timeout=5)
+    assert result.success is True and result.response == "ok"
+
+
+async def test_text_before_a_refusal_fallback_is_not_kept():
+    from engine.types import StreamEvent
+
+    inbox = _Inbox()
+    ref: dict = {}
+
+    async def stream_with_fallback(on_event):
+        await on_event(TextDeltaEvent(text="declined model's partial"))
+        await on_event(StreamEvent(type="text_reset"))
+        await on_event(TextDeltaEvent(text="fallback model's reply"))
+        inbox.queue.append("cut in")
+        ref["r"].request_interrupt()
+        return await _forever()
+
+    runner = _runner(_ScriptedProvider([stream_with_fallback, _end("ok")]), inbox)
+    ref["r"] = runner
+    session = Session.create(system_prompt="t")
+    await asyncio.wait_for(runner.run(session, "go"), timeout=5)
+    kept = [c for r, c in _texts(session) if r == "assistant"]
+    assert kept[0] == "fallback model's reply"

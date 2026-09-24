@@ -242,15 +242,25 @@ SKIPPED_TOOL_RESULT = (
 )
 
 
-async def _reap(task: "asyncio.Future[Any]") -> None:
+async def _reap(task: "asyncio.Future[Any]", baseline: int | None) -> None:
     """Await a task we just cancelled (or that already finished), dropping
     its outcome — but never swallow a cancellation aimed at US: if the
-    current task is being cancelled, re-raise so the stop propagates."""
+    current task's pending-cancel count rose above ``baseline`` (its value
+    when the race began), re-raise so the stop propagates.
+
+    Comparing to a baseline rather than to zero matters: a turn loop that
+    caught an earlier stop without ``uncancel()`` leaves the count at 1 for
+    the rest of the task, and every later interrupt would look like a stop.
+    ``baseline=None`` never re-raises (the caller re-raises itself)."""
     try:
         await task
     except asyncio.CancelledError:
         current = asyncio.current_task()
-        if current is not None and current.cancelling():
+        if (
+            baseline is not None
+            and current is not None
+            and current.cancelling() > baseline
+        ):
             raise
     except BaseException:  # noqa: BLE001
         pass
@@ -1237,12 +1247,14 @@ class AsyncAgentRunner:
         own first (a tool that steps aside by itself); its result then
         counts as a normal completion.
         """
+        current = asyncio.current_task()
+        baseline = current.cancelling() if current is not None else 0
         task = asyncio.ensure_future(aw)
         if self._interrupt is None:
             self._interrupt = asyncio.Event()
         if self._interrupt.is_set():
             task.cancel()
-            await _reap(task)
+            await _reap(task, baseline)
             return True, None
         waiter = asyncio.ensure_future(self._interrupt.wait())
         try:
@@ -1254,24 +1266,24 @@ class AsyncAgentRunner:
             # does not cancel what it waits on, so do it here.
             task.cancel()
             waiter.cancel()
-            await _reap(task)
-            await _reap(waiter)
+            await _reap(task, None)
+            await _reap(waiter, None)
             raise
         if task in done:
             waiter.cancel()
-            await _reap(waiter)
+            await _reap(waiter, baseline)
             return False, task.result()
         if grace_s > 0:
             try:
                 done, _ = await asyncio.wait({task}, timeout=grace_s)
             except asyncio.CancelledError:
                 task.cancel()
-                await _reap(task)
+                await _reap(task, None)
                 raise
             if task in done:
                 return False, task.result()
         task.cancel()
-        await _reap(task)
+        await _reap(task, baseline)
         return True, None
 
     def _interrupt_pending(self) -> bool:
@@ -1369,6 +1381,9 @@ class AsyncAgentRunner:
         """Main async agent loop with streaming."""
         final_response: str = ""
         pre_verification_response: str = ""
+        # Replies that ended a step but not the turn, because input arrived
+        # as they finished; they are part of this turn's answer too.
+        extended_response: str = ""
         last_stop_reason: str | None = None
 
         while ctx.iteration < max_iterations and ctx.state == RunnerState.RUNNING:
@@ -1670,6 +1685,8 @@ class AsyncAgentRunner:
                     # request ends on the injected user message, not on a
                     # prefill.
                     if response.stop_reason == "end_turn" and self._pending_input():
+                        if (response.content or "").strip():
+                            extended_response += response.content + "\n\n"
                         logger.info(
                             "Input arrived during the final response — "
                             "extending the turn | session=%s",
@@ -1686,6 +1703,7 @@ class AsyncAgentRunner:
                         final_response = pre_verification_response + "\n\n" + response.content
                     else:
                         final_response = response.content
+                    final_response = extended_response + final_response
                     ctx.state = RunnerState.COMPLETED
                     break
 
@@ -1892,8 +1910,13 @@ class AsyncAgentRunner:
         self._stream_partial = streamed_text
 
         async def _handle_event(event: StreamEvent) -> None:
-            if getattr(event, "type", None) == "text_delta":
+            etype = getattr(event, "type", None)
+            if etype == "text_delta":
                 streamed_text.append(getattr(event, "text", "") or "")
+            elif etype == "text_reset":
+                # The provider switched models mid-stream (refusal
+                # fallback); the text before this is not the reply.
+                streamed_text.clear()
             if self.on_stream:
                 result = self.on_stream(event)
                 if asyncio.iscoroutine(result):

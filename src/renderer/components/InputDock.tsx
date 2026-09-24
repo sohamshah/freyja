@@ -507,7 +507,9 @@ export function InputDock() {
     // the composer (the turn keeps running — ⌘⎋ is what stops it); ↑ in an
     // empty composer pulls back the newest one for editing, ahead of
     // history recall.
-    const waiting = (pendingFollowups ?? []).filter((p) => !p.withdrawing)
+    // A cut-in is already stopping the agent's step for its message;
+    // taking it back then would leave the cut-off reply regenerated twice.
+    const waiting = (pendingFollowups ?? []).filter((p) => !p.withdrawing && !p.force)
     const bare = !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
     if (e.key === 'Escape' && bare && waiting.length > 0) {
       e.preventDefault()
@@ -785,7 +787,7 @@ export function InputDock() {
                       now
                     </button>
                   )}
-                  {!p.withdrawing && (
+                  {!p.withdrawing && !p.force && (
                     <button
                       onClick={() => withdrawFollowup(activeSessionId, p.clientId)}
                       className="shrink-0 rounded px-1.5 py-[1px] text-fg-2 ring-hairline hover:bg-danger/20 hover:text-danger"

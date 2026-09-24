@@ -86,12 +86,17 @@ class BackgroundCommand:
     started_at: float
     backgrounded_at: float
     reason: str  # "cut_in" | "followup"
-    state: str = "running"  # running | exited | stopped
+    state: str = "running"  # running | exited | stopped | timed_out
+    # The command's own time limit still applies in the background — a
+    # hung or never-ending command (a dev server) would otherwise run, and
+    # hold every quiescence wait, forever.
+    timeout_s: float | None = None
     exit_code: int | None = None
     ended_at: float | None = None
     # "operator" when the operator's stop ended it (no wake, memo batched).
     cancel_origin: str = ""
     _process: Any = field(default=None, repr=False)
+    _watch_task: Any = field(default=None, repr=False)
 
     @property
     def elapsed(self) -> float:
@@ -147,12 +152,13 @@ def stop_process_group(proc: Any, *, grace_s: float = TERM_GRACE_S) -> None:
             return
 
     def _escalate() -> None:
-        if getattr(proc, "returncode", None) is None:
-            if not _signal_group(pid, signal.SIGKILL):
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
+        # The whole group, whether or not /bin/sh (the leader) already
+        # died — members that ignore or outlive SIGTERM are the point.
+        if not _signal_group(pid, signal.SIGKILL) and getattr(proc, "returncode", None) is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
 
     try:
         asyncio.get_running_loop().call_later(grace_s, _escalate)
@@ -253,6 +259,22 @@ class StreamingProcess:
         return code
 
 
+def read_tail_bytes(path: Path, limit: int = 64 * 1024) -> bytes:
+    """The last ``limit`` bytes of a file — a chatty build's log can be
+    gigabytes, and a memo needs only its end."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - limit))
+            data = f.read()
+        if size > limit:
+            data = data.split(b"\n", 1)[-1]  # drop the cut-off first line
+        return data
+    except OSError:
+        return b""
+
+
 def tail(data: bytes, lines: int = TAIL_LINES) -> str:
     text = data.decode("utf-8", errors="replace")
     parts = text.rstrip("\n").split("\n")
@@ -269,6 +291,11 @@ def build_background_command_memo(bg: BackgroundCommand) -> Any:
     took = f"{elapsed // 60}m{elapsed % 60:02d}s" if elapsed >= 60 else f"{elapsed}s"
     if bg.state == "stopped":
         outcome, state = "was stopped by the operator", "cancelled"
+    elif bg.state == "timed_out":
+        outcome, state = (
+            f"ran past its {int(bg.timeout_s or 0)}s time limit and was stopped",
+            "failed",
+        )
     elif bg.exit_code == 0:
         outcome, state = "finished (exit code 0)", "done"
     else:
@@ -283,10 +310,7 @@ def build_background_command_memo(bg: BackgroundCommand) -> Any:
         f"{outcome}. (Automatic notice — no human input has occurred.)",
         f"Command: {neutralize_control_tags(command)}",
     ]
-    try:
-        log_tail = tail(Path(bg.output_path).read_bytes())
-    except OSError:
-        log_tail = ""
+    log_tail = tail(read_tail_bytes(Path(bg.output_path)))
     if log_tail:
         lines += [
             "",

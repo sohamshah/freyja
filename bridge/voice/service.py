@@ -1192,7 +1192,11 @@ class VoiceService:
                 # re-raise — it IS the outcome we're reporting).
                 from bridge.freyja_bridge import wait_until_quiescent
 
-                pending = await wait_until_quiescent(sess) or pending
+                # Bounded like a scheduled fire: a hung child must not
+                # leave the mission unreported forever.
+                pending = await wait_until_quiescent(
+                    sess, background_wait_cap_s=30 * 60,
+                ) or pending
             if pending is None:
                 ok, text = False, "mission never started a turn"
             elif pending.cancelled():

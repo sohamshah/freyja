@@ -82,6 +82,9 @@ class SubAgentRecord:
     # kill — no memo, the parent knows), "operator" (session stop — memo
     # queued without waking), or "" (not cancelled / external).
     cancel_origin: str = ""
+    # The asyncio task running this child in the background. Held here so
+    # it can't be garbage-collected mid-run (asyncio keeps only weak refs).
+    bg_task: Any = None
 
     @property
     def elapsed(self) -> float:

@@ -3851,7 +3851,8 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
     // Newest first: each restored text is prepended to the draft, so the
     // composer ends up reading in the order they were typed.
     for (const p of [...pending].reverse()) {
-      if (!p.withdrawing) await useHarness.getState().withdrawFollowup(sessionId, p.clientId)
+      // Cut-ins are already interrupting for their message; leave them.
+      if (!p.withdrawing && !p.force) await useHarness.getState().withdrawFollowup(sessionId, p.clientId)
     }
   },
 

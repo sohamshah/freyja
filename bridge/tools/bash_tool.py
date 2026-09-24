@@ -390,6 +390,7 @@ running, and a memo arrives when it exits.""",
                 return self._move_to_background(
                     call_id, command, summary, running, tool_ctx,
                     reason=outcome, ran_s=time.monotonic() - started,
+                    timeout_s=float(timeout) if timeout else None,
                 )
 
             return ToolResult(
@@ -417,6 +418,7 @@ running, and a memo arrives when it exits.""",
         *,
         reason: str,
         ran_s: float,
+        timeout_s: float | None,
     ) -> ToolResult:
         """Detach a running command so the operator's message can land:
         it keeps running with output going to a log, the call returns now,
@@ -430,6 +432,7 @@ running, and a memo arrives when it exits.""",
             started_at=time.time() - ran_s,
             backgrounded_at=time.time(),
             reason=reason,
+            timeout_s=timeout_s,
             _process=running,
         )
         log_path = Path(tool_ctx.output_dir) / f"{bg.id}.log"
@@ -440,7 +443,16 @@ running, and a memo arrives when it exits.""",
         tool_ctx.on_background_start(bg)
 
         async def _watch() -> None:
-            code = await running.finished()
+            finished = asyncio.ensure_future(running.finished())
+            remaining = None if timeout_s is None else max(0.0, timeout_s - ran_s)
+            done, _ = await asyncio.wait({finished}, timeout=remaining)
+            if not done:
+                # Past the time limit it had in the foreground: stop it
+                # the same way a foreground timeout would have.
+                if bg.state == "running":
+                    bg.state = "timed_out"
+                await running.stop()
+            code = await finished
             bg.exit_code = code
             bg.ended_at = time.time()
             if bg.state == "running":
@@ -449,7 +461,11 @@ running, and a memo arrives when it exits.""",
             if asyncio.iscoroutine(result):
                 await result
 
-        asyncio.get_running_loop().create_task(_watch(), name=f"bg-watch-{bg.id}")
+        # Kept on the record: a task nobody references can be collected
+        # mid-run, and then the exit memo would never come.
+        bg._watch_task = asyncio.get_running_loop().create_task(
+            _watch(), name=f"bg-watch-{bg.id}",
+        )
 
         why = (
             "the operator cut in"
@@ -471,7 +487,13 @@ running, and a memo arrives when it exits.""",
             "",
             f"The rest of its output streams to {bg.output_path}. You'll get a "
             "memo when it exits — don't poll or wait for it, and don't assume "
-            "how it ends. To stop it early: bash `kill -TERM -- -"
+            "how it ends."
+            + (
+                f" Its {int(timeout_s)}s time limit still applies."
+                if timeout_s
+                else ""
+            )
+            + " To stop it early: bash `kill -TERM -- -"
             f"{bg.pid}` (its whole process group).",
         ]
         return ToolResult(call_id=call_id, content="\n".join(parts), is_error=False)

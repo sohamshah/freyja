@@ -558,7 +558,9 @@ Parameters:
         # paired profile_completion row when the run ends.
         record.spawned_at_ts = time.time()  # type: ignore[attr-defined]
 
-        asyncio.create_task(self._run_background(record), name=f"sub-bg-{sub_id}")
+        record.bg_task = asyncio.create_task(
+            self._run_background(record), name=f"sub-bg-{sub_id}",
+        )
         others = [
             r for r in self._spec.registry.list_all()
             if r.is_running and r.id != sub_id and r.notify_parent
@@ -718,7 +720,9 @@ Parameters:
 
         # Background spawn — caller is the bridge router, not an agent
         # tool call, so there's no ToolResult to return.
-        asyncio.create_task(self._run_background(record), name=f"resume-{sub_id}")
+        record.bg_task = asyncio.create_task(
+            self._run_background(record), name=f"resume-{sub_id}",
+        )
         return sub_id
 
     async def spawn_programmatically(
@@ -990,6 +994,11 @@ Parameters:
         )
 
     async def _run_background(self, record: SubAgentRecord) -> None:
+        # This task was created inside the parent's tool call and copied
+        # its context; the child is not the parent's session.
+        from bridge.tools.background_shell import CURRENT_TOOL_CONTEXT
+
+        CURRENT_TOOL_CONTEXT.set(None)
         try:
             await self._run_child(record)
         except asyncio.CancelledError:

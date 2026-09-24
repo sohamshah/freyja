@@ -158,6 +158,13 @@ async def fire_job(
         # _schedule_or_queue_turn returns True for immediate dispatch
         # and False for queued. Either way we'll await sess.pending_task
         # below to wait for completion.
+        # Background work already running in this session (a fire into
+        # the operator's own session) isn't this fire's: it neither waits
+        # for it nor stops it on timeout.
+        _running_work = getattr(sess, "_running_background_work", None)
+        preexisting = {
+            w.id for w in (_running_work() if callable(_running_work) else [])
+        }
         _schedule_or_queue_turn(sess, prompt, attachments=None)
         pending = getattr(sess, "pending_task", None)
         # Detect the self-await trap. This fires when:
@@ -200,9 +207,10 @@ async def fire_job(
             # sub-agents run in the background, so the turn can end with
             # children still working and their memos then wake the session
             # for the turns that actually produce the result. Timeout and
-            # cancel stop all of it (turn + children).
+            # cancel stop all of it (turn + the work this fire started).
             from bridge.freyja_bridge import (
                 _force_cancel_session,
+                _stop_background_work,
                 wait_until_quiescent,
             )
 
@@ -214,14 +222,20 @@ async def fire_job(
                     background_wait_cap_s=(
                         None if timeout else BACKGROUND_WORK_WAIT_CAP_S
                     ),
+                    ignore_ids=preexisting,
                 )
             )
+
+            def _abort_this_fire() -> None:
+                _force_cancel_session(sess, scope="turn")
+                _stop_background_work(sess, exclude=preexisting)
+
             cancel_outcome = await _await_pending_with_cancel_poll(
                 quiet,
                 job_id=job.id,
                 run_id=run.run_id,
                 timeout_seconds=timeout,
-                on_abort=lambda: _force_cancel_session(sess, scope="all"),
+                on_abort=_abort_this_fire,
             )
             if cancel_outcome == "timed_out":
                 run.status = "timed_out"
@@ -236,7 +250,10 @@ async def fire_job(
         # written to the session.
         output_text, iteration_count = _extract_last_assistant_text(sess)
         still_running = getattr(sess, "_running_background_work", None)
-        leftover = still_running() if callable(still_running) else []
+        leftover = [
+            w for w in (still_running() if callable(still_running) else [])
+            if w.id not in preexisting
+        ]
         if leftover:
             names = ", ".join(
                 getattr(w, "label", None) or getattr(w, "summary", None) or w.id

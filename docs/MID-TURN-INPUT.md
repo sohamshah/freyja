@@ -10,9 +10,9 @@ Freyja never makes the operator wait for the agent to finish before they can spe
 
 **Tab (or Option+Enter) while the agent is working** queues the message for after the turn. It does not touch the running work. When the turn ends, it runs as its own turn, one queued message per turn. Use it for "when you're done, also do X".
 
-**Taking messages back.** Esc takes every waiting message back into the composer without stopping the turn. Up in an empty composer takes back the newest one. The ✕ on a bubble takes back that one. The text (and any images) returns only after the bridge confirms the agent had not read it yet. If the agent got there first, the bubble becomes a normal message in the transcript instead, so nothing is ever both answered and sitting in the composer.
+**Taking messages back.** Esc takes every waiting message back into the composer without stopping the turn. A cut-in message can't be taken back, since the agent has already stopped its step for it. Up in an empty composer takes back the newest one. The ✕ on a bubble takes back that one. The text (and any images) returns only after the bridge confirms the agent had not read it yet. If the agent got there first, the bubble becomes a normal message in the transcript instead, so nothing is ever both answered and sitting in the composer.
 
-**Long commands don't block you.** When you send a message while a bash command has been running for 15 seconds or more, or the moment you cut in, the command moves to the background. It keeps running and its output goes to a log file. The agent gets the output so far and reads your message now. When the command exits, a memo reports its exit code and last output, and an idle agent is woken to look at it.
+**Long commands don't block you.** When you send a message while a bash command has been running for 15 seconds or more, or the moment you cut in, the command moves to the background. It keeps running and its output goes to a log file. The agent gets the output so far and reads your message now. The command's own time limit still applies in the background. When the command exits, a memo reports its exit code and last output, and an idle agent is woken to look at it.
 
 When the agent is idle, Enter, Tab, and Ctrl+Enter all just send.
 
@@ -73,7 +73,9 @@ The runner drains the inbox at every step boundary through its `on_pre_iteration
 
 ### Callers that treat a session's work as one job
 
-Scheduled fires and voice missions used to treat "the turn task finished" as "the job is done". With background children that is no longer true, so both now call `wait_until_quiescent(sess)`. It waits until no turn is running, none of the session's background work (children or commands) is running, and the inbox is empty. A scheduler timeout or cancel stops the turn and the children together. A job with no timeout of its own waits at most `BACKGROUND_WORK_WAIT_CAP_S` (30 minutes) on background work alone, then delivers with a note that some work was still running.
+Scheduled fires and voice missions used to treat "the turn task finished" as "the job is done". With background children that is no longer true, so both now call `wait_until_quiescent(sess)`. It waits until no turn is running, none of the session's background work (children or commands) is running, and the inbox is empty. A scheduler timeout or cancel stops the turn and the children together. A job with no timeout of its own waits at most `BACKGROUND_WORK_WAIT_CAP_S` (30 minutes) on background work alone, then delivers with a note that some work was still running. A fire into a session that already had background work running (the operator's own session) neither waits for that work nor stops it on timeout. Voice missions use the same 30-minute cap.
+
+Children are launched from inside the parent's tool call, so their tasks copy the parent's context. The tracing wrapper therefore always sets the tool context, to `None` for sub-agents, so a child's bash never yields to the parent's operator.
 
 ### Slack
 

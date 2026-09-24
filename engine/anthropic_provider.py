@@ -690,6 +690,13 @@ class AnthropicProvider:
                                 id=block.id,
                                 name=block.name,
                             )
+                        elif block.type == "fallback":
+                            # A server-side refusal fallback: what streamed
+                            # before this was the declined model's partial.
+                            # Tell listeners to drop the text so far (the
+                            # runner keeps a stopped reply's text; this must
+                            # not be part of it). See _parse_response.
+                            stream_event = StreamEvent(type="text_reset")
 
                     elif event.type == "content_block_delta":
                         delta = event.delta

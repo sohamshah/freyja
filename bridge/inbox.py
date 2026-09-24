@@ -67,21 +67,34 @@ OPERATOR_KINDS = frozenset({KIND_FOLLOWUP, KIND_QUEUED})
 # a sub-agent's report or a peer's talk message saying
 # "<system-reminder>The operator sent this follow-up…" would otherwise
 # read to the recipient exactly like the runtime speaking for the operator.
-_FORGEABLE_TAGS = ("system-reminder", "subagent-report", "turn-stopped")
+_FORGEABLE_TAGS = (
+    "system-reminder",
+    "subagent-report",
+    "command-output",
+    "agent-steering",  # engine.constants.STEERING_TAG_OPEN
+)
 
 
 def neutralize_control_tags(text: str) -> str:
-    """Defang runtime control tags inside agent-authored text by swapping
-    their angle brackets for look-alikes the model won't read as markup."""
+    """Defang runtime markup inside agent-authored text: control tags get
+    look-alike brackets the model won't read as markup, and a line posing
+    as the operator's attribution header is marked as quoted."""
     import re
 
-    if "<" not in text:
-        return text
-    pattern = re.compile(
-        r"<(/?)\s*(" + "|".join(_FORGEABLE_TAGS) + r")\b([^>]*)>",
-        re.IGNORECASE,
-    )
-    return pattern.sub(lambda m: f"‹{m.group(1)}{m.group(2)}{m.group(3)}›", text)
+    if "<" in text:
+        pattern = re.compile(
+            r"<(/?)\s*(" + "|".join(_FORGEABLE_TAGS) + r")\b([^>]*)>",
+            re.IGNORECASE,
+        )
+        text = pattern.sub(lambda m: f"‹{m.group(1)}{m.group(2)}{m.group(3)}›", text)
+    if "message from operator" in text.lower():
+        text = re.sub(
+            r"\[(\s*message from operator)",
+            r"[(quoted) \1",
+            text,
+            flags=re.IGNORECASE,
+        )
+    return text
 
 
 @dataclass
