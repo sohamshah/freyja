@@ -1,0 +1,4 @@
+data/raw/
+data/cache/
+results/logs/
+__pycache__/
