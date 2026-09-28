@@ -354,11 +354,18 @@ def find_ax_element(pid: int, *, role: str | None = None, label: str | None = No
     x, y, w, h = result
     return Bounds(x=float(x), y=float(y), w=float(w), h=float(h))
 
+def ax_press(pid: int, x: float, y: float, role: str, bounds: Sequence[float]) -> bool:
+    """AXPress the `role` element of app `pid` under (x, y) whose frame is
+    `bounds` (x, y, w, h). False when no such element exists or it cannot be
+    pressed, so the caller can fall back to a pointer click."""
+    bx, by, bw, bh = (float(v) for v in bounds)
+    return bool(_native.ax_press(int(pid), float(x), float(y), str(role), (bx, by, bw, bh)))
+
 
 __all__ = [
     "Bounds", "DisplayInfo", "WindowInfo", "ScreenshotFrame", "Permissions",
     "list_displays", "screenshot", "list_windows", "get_frontmost_window",
     "focus_window", "focus_app", "click", "move_mouse", "type_text",
     "press_key", "key_down", "key_up", "scroll", "cursor_position",
-    "read_ax_tree", "find_ax_element",
+    "read_ax_tree", "find_ax_element", "ax_press",
 ]

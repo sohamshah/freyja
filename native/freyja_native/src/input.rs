@@ -8,8 +8,14 @@
 //! Coordinate system: Quartz uses top-left origin, which is what the
 //! agent operates in too. Enigo respects that on macOS.
 
+use core_graphics::event::{
+    CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, CGMouseButton, EventField,
+};
+use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+use core_graphics::geometry::CGPoint;
+use std::time::{Duration, Instant};
 use enigo::{
-    Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings,
+    Axis, Button, Direction, Enigo, Key, Keyboard, Mouse, Settings,
 };
 use thiserror::Error;
 
@@ -27,6 +33,16 @@ pub enum InputError {
 
 fn make_enigo() -> Result<Enigo, InputError> {
     Enigo::new(&Settings::default()).map_err(|e| InputError::Init(e.to_string()))
+}
+
+/// For key_down/key_up: the default Enigo releases every key it pressed when
+/// dropped, so a fresh instance per call would let go of the key immediately.
+fn make_holding_enigo() -> Result<Enigo, InputError> {
+    Enigo::new(&Settings {
+        release_keys_when_dropped: false,
+        ..Settings::default()
+    })
+    .map_err(|e| InputError::Init(e.to_string()))
 }
 
 fn parse_button(button: &str) -> Result<Button, InputError> {
@@ -125,17 +141,15 @@ pub fn click(
     double: bool,
     modifiers: Vec<String>,
 ) -> Result<(), InputError> {
-    let btn = parse_button(button)?;
+    let (down, up, cg_button) = mouse_events(button)?;
+    let point = CGPoint::new(x as f64, y as f64);
+    move_pointer(point)?;
+    let flags = modifier_flags(&modifiers)?;
     let mut enigo = make_enigo()?;
-    enigo
-        .move_mouse(x, y, Coordinate::Abs)
-        .map_err(|e| InputError::Action(e.to_string()))?;
-    with_modifiers(&mut enigo, &modifiers, |e| {
-        e.button(btn, Direction::Click)
-            .map_err(|err| InputError::Action(err.to_string()))?;
-        if double {
-            e.button(btn, Direction::Click)
-                .map_err(|err| InputError::Action(err.to_string()))?;
+    with_modifiers(&mut enigo, &modifiers, |_| {
+        for n in 1..=(if double { 2 } else { 1 }) {
+            post_mouse(down, point, cg_button, flags, n)?;
+            post_mouse(up, point, cg_button, flags, n)?;
         }
         Ok(())
     })
@@ -143,10 +157,71 @@ pub fn click(
 
 /// Move the mouse without clicking.
 pub fn move_mouse(x: i32, y: i32) -> Result<(), InputError> {
-    let mut enigo = make_enigo()?;
-    enigo
-        .move_mouse(x, y, Coordinate::Abs)
-        .map_err(|e| InputError::Action(e.to_string()))
+    move_pointer(CGPoint::new(x as f64, y as f64))
+}
+
+// Clicks carry their own location. enigo posts the button events at the
+// pointer position it reads back right after posting the move, which is often
+// still the old position, so the click landed wherever the pointer had been.
+fn post_mouse(
+    kind: CGEventType,
+    at: CGPoint,
+    button: CGMouseButton,
+    flags: CGEventFlags,
+    click_state: i64,
+) -> Result<(), InputError> {
+    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+        .map_err(|_| InputError::Action("creating an event source failed".into()))?;
+    let event = CGEvent::new_mouse_event(source, kind, at, button)
+        .map_err(|_| InputError::Action("creating a mouse event failed".into()))?;
+    if click_state > 0 {
+        event.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, click_state);
+    }
+    event.set_flags(flags);
+    event.post(CGEventTapLocation::HID);
+    Ok(())
+}
+
+/// Move the pointer and wait (up to 300 ms) until the system reports it there,
+/// so hover state and scroll-wheel routing see the new position.
+fn move_pointer(to: CGPoint) -> Result<(), InputError> {
+    post_mouse(CGEventType::MouseMoved, to, CGMouseButton::Left, CGEventFlags::CGEventFlagNull, 0)?;
+    let deadline = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < deadline {
+        let here = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
+            .ok()
+            .and_then(|src| CGEvent::new(src).ok())
+            .map(|e| e.location());
+        if let Some(p) = here {
+            if (p.x - to.x).abs() < 1.0 && (p.y - to.y).abs() < 1.0 {
+                return Ok(());
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    Ok(())
+}
+
+fn mouse_events(button: &str) -> Result<(CGEventType, CGEventType, CGMouseButton), InputError> {
+    Ok(match parse_button(button)? {
+        Button::Right => (CGEventType::RightMouseDown, CGEventType::RightMouseUp, CGMouseButton::Right),
+        Button::Middle => (CGEventType::OtherMouseDown, CGEventType::OtherMouseUp, CGMouseButton::Center),
+        _ => (CGEventType::LeftMouseDown, CGEventType::LeftMouseUp, CGMouseButton::Left),
+    })
+}
+
+fn modifier_flags(modifiers: &[String]) -> Result<CGEventFlags, InputError> {
+    let mut flags = CGEventFlags::CGEventFlagNull;
+    for m in modifiers {
+        flags |= match parse_modifier(m)? {
+            Key::Meta => CGEventFlags::CGEventFlagCommand,
+            Key::Control => CGEventFlags::CGEventFlagControl,
+            Key::Alt => CGEventFlags::CGEventFlagAlternate,
+            Key::Shift => CGEventFlags::CGEventFlagShift,
+            _ => CGEventFlags::CGEventFlagSecondaryFn,
+        };
+    }
+    Ok(flags)
 }
 
 /// Type a string. Honors whatever keyboard layout is active.
@@ -154,7 +229,20 @@ pub fn type_text(text: &str) -> Result<(), InputError> {
     let mut enigo = make_enigo()?;
     enigo
         .text(text)
-        .map_err(|e| InputError::Action(e.to_string()))
+        .map_err(|e| InputError::Action(e.to_string()))?;
+    // enigo posts each text chunk as a key-down of keycode 0 (the A key) with
+    // no key-up, which leaves A reported as held in the HID state.
+    release_keycode(0)
+}
+
+fn release_keycode(keycode: u16) -> Result<(), InputError> {
+    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+        .map_err(|_| InputError::Action("creating an event source failed".into()))?;
+    let event = CGEvent::new_keyboard_event(source, keycode, false)
+        .map_err(|_| InputError::Action("creating a key-up event failed".into()))?;
+    event.set_flags(CGEventFlags::CGEventFlagNull);
+    event.post(CGEventTapLocation::HID);
+    Ok(())
 }
 
 /// Press a named key (optionally with modifiers).
@@ -176,7 +264,7 @@ pub fn press_key(key: &str, modifiers: Vec<String>) -> Result<(), InputError> {
 /// subsequent session until they quit the offending app.
 pub fn key_down(key: &str) -> Result<(), InputError> {
     let k = parse_key(key)?;
-    let mut enigo = make_enigo()?;
+    let mut enigo = make_holding_enigo()?;
     enigo
         .key(k, Direction::Press)
         .map_err(|e| InputError::Action(e.to_string()))
@@ -185,7 +273,7 @@ pub fn key_down(key: &str) -> Result<(), InputError> {
 /// Release a previously-held key.
 pub fn key_up(key: &str) -> Result<(), InputError> {
     let k = parse_key(key)?;
-    let mut enigo = make_enigo()?;
+    let mut enigo = make_holding_enigo()?;
     enigo
         .key(k, Direction::Release)
         .map_err(|e| InputError::Action(e.to_string()))
@@ -200,12 +288,10 @@ pub fn scroll(
     x: Option<i32>,
     y: Option<i32>,
 ) -> Result<(), InputError> {
-    let mut enigo = make_enigo()?;
     if let (Some(x), Some(y)) = (x, y) {
-        enigo
-            .move_mouse(x, y, Coordinate::Abs)
-            .map_err(|e| InputError::Action(e.to_string()))?;
+        move_pointer(CGPoint::new(x as f64, y as f64))?;
     }
+    let mut enigo = make_enigo()?;
     if dy != 0 {
         enigo
             .scroll(dy, Axis::Vertical)
