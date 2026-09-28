@@ -514,6 +514,8 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
     # Anthropic models
     "claude-fable-5-1": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-fable-5": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
+    "claude-opus-5-5": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
+    "claude-opus-5-5-fast": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-opus-4-8": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-opus-4-8-fast": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-opus-4-7": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
@@ -524,6 +526,7 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
     "claude-sonnet-4-5": {"provider": "anthropic", "context_window": 1_000_000, "thinking": True},
     "claude-opus-4-5": {"provider": "anthropic", "context_window": 200_000, "thinking": True},
     # OpenAI models (Responses API)
+    "gpt-6-astra": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
     "gpt-5.6-sol": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
     "gpt-5.6-terra": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
     "gpt-5.6-luna": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
@@ -748,7 +751,7 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
 MODEL_SPEED_TIERS = {
     "fast": "claude-haiku-4-5",
     "medium": "claude-sonnet-4-6",
-    "slow": "claude-opus-4-7",   # latest Opus; 4-6 stays in registry as fallback target
+    "slow": "claude-opus-5-5",   # latest Opus; older ones stay in registry as fallback targets
     "openai": "gpt-5.6-sol",     # OpenAI flagship (GPT-5.6 Sol)
     "codex": "gpt-5.3-codex",    # agentic coding specialist
     "cerebras": "zai-glm-4.7",
@@ -776,6 +779,15 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, 
     # with that multiplier. Cache write is unchanged at 1.25x ($12.50).
     "claude-fable-5-1": (10.0, 50.0, 0.25, 12.5),
     "claude-fable-5": (10.0, 50.0, 1.0, 12.5),
+    # Opus 5.5 undercuts Opus 5's $5/$25 at $4/$20, and its cache reads are
+    # 0.05x input ($0.20) rather than the usual 0.1x — the Fable-5.1-style
+    # discount, one tier down. 5m cache write is $5 (1h writes are $8; this
+    # tuple only models the 5m TTL the provider actually requests).
+    "claude-opus-5-5": (4.0, 20.0, 0.20, 5.0),
+    # Fast mode is a flat 2x multiplier on standard rates ($8/$40), and the
+    # caching multipliers stack on top of it, so cache_read stays 0.05x input
+    # and cache_write stays 1.25x input.
+    "claude-opus-5-5-fast": (8.0, 40.0, 0.40, 10.0),
     "claude-opus-4-8": (5.0, 25.0, 0.50),
     "claude-opus-4-8-fast": (10.0, 50.0, 1.0),  # fast-mode multiplier on 4.8
     "claude-opus-4-7": (5.0, 25.0, 0.50),
@@ -788,6 +800,9 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, 
     # OpenAI Responses API. GPT-5.6 (Sol/Terra/Luna): cache_read is 10% of
     # input; cache_write defaults to 1.25× input (OpenAI's stated markup).
     # Sol output is $30/M — double GPT-5.5's $15 — so don't copy 5.5's tuple.
+    # GPT-6 Astra publishes cached input ($1) and cache writes ($12.50)
+    # explicitly rather than leaving them to the 0.1x / 1.25x defaults.
+    "gpt-6-astra": (10.0, 50.0, 1.0, 12.5),
     "gpt-5.6-sol": (5.0, 30.0, 0.50),
     "gpt-5.6-terra": (2.5, 15.0, 0.25),
     "gpt-5.6-luna": (1.0, 6.0, 0.10),
@@ -864,6 +879,9 @@ def compute_cost(
 FALLBACK_CHAINS: dict[str, list[str]] = {
     "claude-fable-5-1": ["claude-fable-5", "claude-opus-4-8", "kimi-k2.6"],
     "claude-fable-5": ["claude-opus-4-8", "claude-opus-4-7", "kimi-k2.6"],
+    # Opus 5 is not registered in this repo, so 5.5 degrades straight to 4.8.
+    "claude-opus-5-5": ["claude-opus-4-8", "claude-opus-4-7", "kimi-k2.6"],
+    "claude-opus-5-5-fast": ["claude-opus-5-5", "claude-opus-4-8"],
     "claude-opus-4-8": ["claude-opus-4-7", "kimi-k2.6", "deepseek-v4-pro"],
     "claude-opus-4-8-fast": ["claude-opus-4-8", "claude-opus-4-7"],
     "claude-opus-4-7": ["claude-opus-4-8", "claude-opus-4-6", "kimi-k2.6", "deepseek-v4-pro"],
@@ -872,6 +890,7 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     "claude-opus-4-6": ["kimi-k2.6", "deepseek-v4-pro"],
     "claude-haiku-4-5": ["kimi-k2.6", "kimi-k2.5"],
     "zai-glm-4.7": ["kimi-k2.6", "kimi-k2.5"],
+    "gpt-6-astra": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
     "gpt-5.6-sol": ["gpt-5.6-terra", "gpt-5.6-luna"],
     "gpt-5.6-terra": ["gpt-5.6-luna"],
     "gpt-5.6-luna": ["gpt-5.6-terra"],

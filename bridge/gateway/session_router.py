@@ -178,10 +178,10 @@ def parse_inline_session_flags(
         should short-circuit to the models listing and skip the agent turn.
 
     Examples:
-        ``"--model claude-opus-4-8 fix the bug"`` →
-            ``("claude-opus-4-8", None, "fix the bug", [], False)``
-        ``"--mode goal --model claude-opus-4-8 ship it"`` →
-            ``("claude-opus-4-8", "goal", "ship it", [], False)``
+        ``"--model claude-opus-5-5 fix the bug"`` →
+            ``("claude-opus-5-5", None, "fix the bug", [], False)``
+        ``"--mode goal --model claude-opus-5-5 ship it"`` →
+            ``("claude-opus-5-5", "goal", "ship it", [], False)``
         ``"--mode banana write some code"`` →
             ``(None, None, "write some code",
                ["Invalid mode `banana`. Available: `bus`, `goal`, `kanban`."], False)``

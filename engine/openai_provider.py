@@ -72,6 +72,7 @@ logger = logging.getLogger(__name__)
 # OpenAI-specific duplicate of engine/constants.py:MODEL_CONTEXT_WINDOWS.
 # See docs/ADDING-A-MODEL.md for the full per-model checklist.
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    "gpt-6-astra": 1_050_000,
     "gpt-5.6-sol": 1_050_000,
     "gpt-5.6-terra": 1_050_000,
     "gpt-5.6-luna": 1_050_000,
@@ -85,6 +86,10 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
 
 # Models that support the `reasoning` parameter.
 REASONING_MODELS: set[str] = {
+    # Astra's effort ladder has no "none" or "minimal" rung — see
+    # MODEL_REASONING_META in bridge/freyja_bridge.py, which is what keeps
+    # an unsupported level from ever reaching `reasoning.effort` here.
+    "gpt-6-astra",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -97,6 +102,7 @@ REASONING_MODELS: set[str] = {
 }
 
 NATIVE_COMPUTER_MODELS: set[str] = {
+    "gpt-6-astra",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",

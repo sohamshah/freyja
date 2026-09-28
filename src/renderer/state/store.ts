@@ -994,6 +994,9 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // Fable 5
   'claude-fable-5-1': 1_000_000,
   'claude-fable-5': 1_000_000,
+  // Claude 5.5
+  'claude-opus-5-5': 1_000_000,
+  'claude-opus-5-5-fast': 1_000_000,
   // Claude 4.8
   'claude-opus-4-8': 1_000_000,
   'claude-opus-4-8-fast': 1_000_000,
@@ -1011,6 +1014,7 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   'claude-sonnet-4': 200_000,
   'claude-opus-4': 200_000,
   // OpenAI
+  'gpt-6-astra': 1_050_000,
   'gpt-5.6-sol': 1_050_000,
   'gpt-5.6-terra': 1_050_000,
   'gpt-5.6-luna': 1_050_000,
@@ -1070,6 +1074,9 @@ function contextWindowFor(model: string): number {
 const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel: string }> = {
   'claude-fable-5-1': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'claude-fable-5': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
+  // Opus 5.5: no 'none' rung — thinking cannot be disabled on this model.
+  'claude-opus-5-5': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },
+  'claude-opus-5-5-fast': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },
   'claude-opus-4-8': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'claude-opus-4-8-fast': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'claude-opus-4-7': { levels: ['auto'], defaultLevel: 'auto' },
@@ -1079,6 +1086,8 @@ const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel
   'claude-haiku-4-5': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
   'claude-opus-4-5': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
   'claude-sonnet-4-5': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
+  // Astra: no 'none' or 'minimal' rung.
+  'gpt-6-astra': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'gpt-5.6-sol': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'gpt-5.6-terra': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },
   'gpt-5.6-luna': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'low' },

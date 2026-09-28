@@ -264,7 +264,7 @@ _KANBAN_JUDGE_MODEL_POOL: tuple[str, ...] = (
 # glm-5.3-flash-fireworks for quick: $0.15/$0.50, cheaper AND stronger
 # than the claude-haiku-4-5 it replaces.
 _GOAL_JUDGE_MODEL = "gemini-3.1-pro-preview"
-_GOAL_JUDGE_MODEL_ALT = "claude-opus-4-8"
+_GOAL_JUDGE_MODEL_ALT = "claude-opus-5-5"
 _GOAL_JUDGE_QUICK_MODEL = "glm-5.3-flash-fireworks"
 _GOAL_JUDGE_QUICK_MODEL_ALT = "claude-haiku-4-5"
 
@@ -602,7 +602,9 @@ def _format_user_facing_runner_failure(
             f"{prefix}⚠️ The model's safety classifiers stopped this response "
             f"(stop_reason=refusal). {cut_off_note}Details: {detail}. "
             "Rephrasing usually helps; `/model claude-opus-4-8` sidesteps "
-            "the Fable-class classifiers entirely."
+            "the classifiers entirely. Note this one stays on 4.8 on "
+            "purpose: Opus 5.5 runs cyber AND biology classifiers plus a "
+            "`reasoning_extraction` category, so it is not an escape hatch."
         )
     if code == "max_iterations":
         # Like refusal, this one shows even when prose already streamed —
@@ -639,7 +641,7 @@ def _format_user_facing_runner_failure(
             "Provider is overloaded right now — the model returned "
             "rate-limit / overloaded errors on every retry. "
             f"Detail: {short}. Try again in a minute, or switch model "
-            "with `/model claude-opus-4-8`."
+            "with `/model claude-opus-5-5`."
         )
     if reason == "auth":
         return (
@@ -664,7 +666,7 @@ def _format_user_facing_runner_failure(
             "The request exceeded the model's context window even "
             "after the engine attempted to compact history. "
             f"Detail: {short}. Try `/reset` to start fresh, or move "
-            "to a longer-context model with `/model claude-opus-4-8`."
+            "to a longer-context model with `/model claude-opus-5-5`."
         )
     # Catch-all (unknown / tool_use / retry) — still better than
     # silence. The operator gets the reason tag for log triage.
@@ -1594,15 +1596,22 @@ async def _main() -> None:
         traceback.print_exc(file=sys.stderr)
         sys.exit(2)
 
-    # Default to GLM 5.3 on Fireworks across all sessions (desktop AND
-    # gateway daemon) — same weights as the first-party `glm-5.3` entry,
-    # on the Fireworks key/quota pool. Its reasoning_default in
-    # MODEL_REASONING_META is already "high", so newly-created sessions
-    # automatically run at high thinking — no extra plumbing needed.
+    # Default to Claude Opus 5.5 (2026-09-22) across all sessions.
+    # Replaces glm-5.3-fireworks, which was ~3x cheaper per token
+    # ($1.40/$4.40 vs $4/$20) — this is a deliberate trade of cost for
+    # capability on the main session, taken 2026-09-22.
+    # Two things to know about the reasoning default: Opus 5.5's ladder
+    # has NO "none" rung (thinking cannot be disabled — a disabled or
+    # budgeted `thinking` block is a 400), and its reasoning_default in
+    # MODEL_REASONING_META is "medium", not "high" like the models it
+    # replaces. Medium is roughly parity, because 5.5 thinks more per
+    # turn than earlier Opus at the same effort level.
+    # Cache reads are 0.05x input ($0.20/MTok), so long sessions with a
+    # warm prefix cost far less than the sticker rate suggests.
     # Sub-agent defaults stay on sonnet (see bridge/tools/registry.py)
     # for cost control on fan-out.
     # Override per-launch with FREYJA_MODEL env.
-    default_model = os.environ.get("FREYJA_MODEL", "glm-5.3-fireworks")
+    default_model = os.environ.get("FREYJA_MODEL", "claude-opus-5-5")
     from bridge.runtimes.registry import capabilities_payload as _harness_capabilities
     emit(
         {
@@ -1799,6 +1808,26 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "description": "Mythos-class model made safe for general use. Most capable widely-released Claude; state-of-the-art on long-horizon agentic and knowledge work. Adaptive thinking (always on), 128k output. Premium $10/$50 per MTok.",
     },
     {
+        "id": "claude-opus-5-5",
+        "family": "anthropic",
+        "label": "Claude Opus 5.5",
+        "tier": "max",
+        "contextWindow": 1_000_000,
+        "thinking": True,
+        "envVar": "ANTHROPIC_API_KEY",
+        "description": "Latest Opus (Sep 2026). Long-running agentic coding and knowledge work, and cheaper than 4.8 at $4/$20 per MTok with cache reads at 0.05x input. Adaptive thinking is always on and cannot be disabled; 1M ctx, 128k output. Forced tool choice 400s, so structured-output calls fall back to auto.",
+    },
+    {
+        "id": "claude-opus-5-5-fast",
+        "family": "anthropic",
+        "label": "Claude Opus 5.5 (Fast)",
+        "tier": "max",
+        "contextWindow": 1_000_000,
+        "thinking": True,
+        "envVar": "ANTHROPIC_API_KEY",
+        "description": "Opus 5.5 with fast mode enabled (research preview): same weights, ~2.5x output tokens/sec at 2x pricing ($8/$40 per MTok). Requires fast-mode allowlist; may 429 if your org hasn't been granted access.",
+    },
+    {
         "id": "claude-opus-4-8",
         "family": "anthropic",
         "label": "Claude Opus 4.8",
@@ -1889,6 +1918,16 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "description": "Previous-gen Sonnet.",
     },
     # ─── OpenAI (OPENAI_API_KEY) ───────────────────────────────────────
+    {
+        "id": "gpt-6-astra",
+        "family": "openai",
+        "label": "GPT-6 Astra",
+        "tier": "max",
+        "contextWindow": 1_050_000,
+        "thinking": True,
+        "envVar": "OPENAI_API_KEY",
+        "description": "OpenAI's newest flagship (Sep 2026), built for the hardest end-to-end work. Complex reasoning, coding, computer use, research. 1.05M ctx, 128k output, $10/$50 per MTok. Effort ladder is low..max with no off or minimal rung.",
+    },
     {
         "id": "gpt-5.6-sol",
         "family": "openai",
@@ -2272,6 +2311,23 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningLevels": ["none", "low", "medium", "high", "xhigh", "max"],
         "reasoningDefault": "high",
     },
+    # Opus 5.5 has no "none" rung on purpose: thinking is always on, and
+    # `thinking: {"type": "disabled"}` / a manual budget both 400. Leaving
+    # it out is what stops the UI's "off" from reaching the provider —
+    # _normalize_reasoning_level clamps an unlisted level back to the
+    # default. Default is "medium" because that is the model's own API
+    # default and it thinks more per turn than Opus 5 at the same level,
+    # so medium here is roughly parity with high on the older Opus tiers.
+    "claude-opus-5-5": {
+        "reasoningMode": "required",
+        "reasoningLevels": ["low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "medium",
+    },
+    "claude-opus-5-5-fast": {
+        "reasoningMode": "required",
+        "reasoningLevels": ["low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "medium",
+    },
     "claude-opus-4-8": {
         "reasoningMode": "effort",
         "reasoningLevels": ["none", "low", "medium", "high", "xhigh", "max"],
@@ -2315,6 +2371,13 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
     "claude-sonnet-4-5": {
         "reasoningMode": "budget",
         "reasoningLevels": ["none", "low", "medium", "high"],
+        "reasoningDefault": "high",
+    },
+    # Astra drops both the "none" and "minimal" rungs the 5.x family has;
+    # reasoning.effort accepts only low/medium/high/xhigh/max.
+    "gpt-6-astra": {
+        "reasoningMode": "required",
+        "reasoningLevels": ["low", "medium", "high", "xhigh", "max"],
         "reasoningDefault": "high",
     },
     "gpt-5.6-sol": {
