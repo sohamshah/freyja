@@ -5928,6 +5928,36 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         show('compaction requested', 'info')
         return true
       }
+      case '/repair': {
+        const api = (window as any).harness
+        if (!api) {
+          show('no bridge', 'warn')
+          return true
+        }
+        if (!state.activeSessionId) {
+          show('no session to repair', 'warn')
+          return true
+        }
+        const mode = (args ?? '').trim().toLowerCase()
+        if (mode && mode !== 'images') {
+          show('usage: /repair [images]', 'info')
+          return true
+        }
+        api
+          .sendCommand({
+            type: 'repair_session',
+            sessionId: state.activeSessionId,
+            model: state.model,
+            reasoningLevel: state.reasoningLevel,
+            dropImages: mode === 'images',
+          })
+          .then((res: { ok: boolean; error?: string } | undefined) => {
+            if (res && !res.ok) show(res.error || 'repair request failed', 'warn')
+          })
+          .catch(() => show('repair request failed', 'warn'))
+        show('repair requested', 'info')
+        return true
+      }
       case '/goal': {
         const api = (window as any).harness
         if (!api) {

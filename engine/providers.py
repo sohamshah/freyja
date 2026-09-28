@@ -182,6 +182,20 @@ class ImagePayloadTooLargeError(ProviderError):
         self.max_bytes = max_bytes
 
 
+class ImageDimensionsTooLargeError(ProviderError):
+    """An image in the request has a side over the provider's pixel cap.
+
+    The cap is 8000px, or 2000px once a request carries more than 20
+    images. Recovery is to shrink the history's images to ``max_dim`` and
+    resend; resending unchanged fails identically, so this isn't retryable
+    on its own.
+    """
+
+    def __init__(self, message: str, max_dim: int, **kwargs):
+        super().__init__(message, status=400, retryable=False, **kwargs)
+        self.max_dim = max_dim
+
+
 class ModelNotFoundError(ProviderError):
     """Model does not exist."""
 

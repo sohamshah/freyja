@@ -48,13 +48,14 @@ from engine.errors import (
 from engine.providers import (
     AuthProfileManager,
     ContextOverflowError,
+    ImageDimensionsTooLargeError,
     ImagePayloadTooLargeError,
     ModelFallbackChain,
     ModelProvider,
     ProviderError,
     ProviderResponse,
 )
-from engine.session import Session
+from engine.session import ImageFitResult, Session
 from engine.tools import ToolRegistry, ToolResultTruncator
 from engine.types import (
     AgentConfig,
@@ -620,6 +621,14 @@ class AgentRunner:
             except ProviderError as e:
                 ctx.state = RunnerState.RECOVERING
 
+                # Per-image pixel cap — shrink the history's images to the
+                # cap the provider named and resend.
+                if isinstance(e, ImageDimensionsTooLargeError):
+                    if session.transcript.fit_images_to_dim(e.max_dim).changed:
+                        ctx.consecutive_errors = 0
+                        ctx.state = RunnerState.RUNNING
+                        continue
+
                 # Per-image payload-size cap — handled before the generic
                 # provider-error path because the right remedy is pruning
                 # the oversized block, not retrying the same payload.
@@ -691,6 +700,7 @@ class AgentRunner:
             keep_recent=KEEP_RECENT_COMPUTER_IMAGES,
             hard_limit=MAX_REQUEST_IMAGES_SAFETY,
         )
+        session.transcript.fit_images_for_request()
 
         tool_defs = None
         if self.tool_registry and len(self.tool_registry) > 0:
@@ -1724,6 +1734,19 @@ class AsyncAgentRunner:
                 _err_reason = classify_failover_reason(str(e))
                 _is_rate_limit = _err_reason == "rate_limit"
                 _is_too_much_media = "too much media" in str(e).lower()
+
+                # Per-image pixel cap (8000px, or 2000px past 20 images).
+                # The pre-request fit normally prevents this; it lands when
+                # the provider counts differently (Bedrock/Vertex count PDFs
+                # toward the 20) or the cap changes. Shrink to the cap the
+                # provider named and resend.
+                if isinstance(e, ImageDimensionsTooLargeError):
+                    fit = session.transcript.fit_images_to_dim(e.max_dim)
+                    if fit.changed:
+                        await self._emit_image_fit_event(fit, trigger="provider_error")
+                        ctx.consecutive_errors = 0
+                        ctx.state = RunnerState.RUNNING
+                        continue
 
                 # Per-image payload-size cap (Anthropic: 5 MB, OpenAI: 20 MB).
                 # Distinct from context overflow — summarization keeps the
@@ -2881,12 +2904,35 @@ class AsyncAgentRunner:
         except Exception:  # noqa: BLE001
             return
 
+    async def _emit_image_fit_event(self, fit: ImageFitResult, *, trigger: str) -> None:
+        parts = []
+        if fit.resized:
+            parts.append(f"Resized {fit.resized} image{'s' if fit.resized != 1 else ''}")
+        if fit.omitted:
+            parts.append(
+                f"dropped {fit.omitted} image{'s' if fit.omitted != 1 else ''} "
+                "that could not be resized"
+            )
+        await self._emit_system_event(SystemEvent(
+            type="media_pruning",
+            message=(
+                f"{' and '.join(parts)} to fit the {fit.max_dim}px per-side limit "
+                f"({fit.image_count} images in history)."
+            ),
+            details={**fit.to_details(), "trigger": trigger, "strategy": "image_dim_fit"},
+        ))
+
     async def _ensure_media_room(self, session: Session) -> None:
         """Keep computer-use image history inside provider media limits."""
         stats = session.transcript.prune_old_tool_result_images(
             keep_recent=KEEP_RECENT_COMPUTER_IMAGES,
             hard_limit=MAX_REQUEST_IMAGES_SAFETY,
         )
+        # Past 20 images every image must be <=2000px per side, or the whole
+        # request is rejected. Runs after the prune so the count is final.
+        fit = session.transcript.fit_images_for_request()
+        if fit.changed:
+            await self._emit_image_fit_event(fit, trigger="pre_request")
         if not stats.changed:
             return
         await self._emit_system_event(SystemEvent(

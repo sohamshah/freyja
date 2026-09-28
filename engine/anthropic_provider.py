@@ -33,6 +33,7 @@ from engine.providers import (
     AuthenticationError,
     BillingError,
     ContextOverflowError,
+    ImageDimensionsTooLargeError,
     ImagePayloadTooLargeError,
     ModelNotFoundError,
     ProviderError,
@@ -47,6 +48,7 @@ from engine.constants import (
     DEFAULT_THINKING_BUDGET_TOKENS,
     MODEL_CONTEXT_WINDOWS,
 )
+from engine.image_fit import MANY_IMAGE_MAX_DIM, MAX_IMAGE_DIM
 from engine.tools import ToolDefinition
 from engine.types import (
     APIUsage,
@@ -1317,6 +1319,23 @@ class AnthropicProvider:
             return ModelNotFoundError(message)
         elif status == 400:
             lower = message.lower()
+            # Per-image pixel caps: 8000px per side, or 2000px once the
+            # request carries more than 20 images. Examples:
+            #   "…image.source.base64.data: At least one of the image
+            #    dimensions exceed max allowed size for many-image
+            #    requests: 2000 pixels"
+            #   "…image dimensions exceed max allowed size: 8000 pixels"
+            # The cap is read from the message so a changed limit still
+            # recovers; the fallback matches the documented values.
+            if "image dimensions exceed" in lower:
+                m = re.search(r"(\d+)\s*pixels", lower)
+                if m:
+                    max_dim = int(m.group(1))
+                elif "many-image" in lower:
+                    max_dim = MANY_IMAGE_MAX_DIM
+                else:
+                    max_dim = MAX_IMAGE_DIM
+                return ImageDimensionsTooLargeError(message, max_dim=max_dim)
             # Per-image payload-size errors. Match these BEFORE the
             # generic "exceeds" heuristic — they share the word "exceeds"
             # but represent a different problem and need image-specific
