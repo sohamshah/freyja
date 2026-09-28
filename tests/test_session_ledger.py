@@ -9,6 +9,7 @@ from bridge.session_ledger import (
     classify_bash_command,
     classify_tool,
     detect_negative_self_claim,
+    find_negative_self_claim,
     git_status_delta,
     render_ledger_reminder,
 )
@@ -61,6 +62,28 @@ def test_classify_bash_command_observations():
         assert classify_bash_command(cmd) == "observation", cmd
 
 
+def test_classify_bash_command_ignores_discard_and_fd_redirects():
+    # Discarding or merging output writes no file — these were most of one
+    # session's shell "actions".
+    for cmd in [
+        "ls missing 2>/dev/null",
+        "find . -name '*.py' 2> /dev/null | head",
+        "curl -s localhost:8080 >/dev/null",
+        "pgrep -f freyja &>/dev/null",
+        "echo 'bad input' >&2",
+        "curl -s x 1>/dev/null 2>&1",
+        "python check.py 2>&1 | tail -5",
+    ]:
+        assert classify_bash_command(cmd) == "observation", cmd
+    # A real redirect into a file still counts, even next to a harmless one.
+    for cmd in [
+        "pytest -q > out.txt 2>&1",
+        "grep -rn foo . 2>/dev/null > hits.txt",
+        "date >> log 2>/dev/null",
+    ]:
+        assert classify_bash_command(cmd) == "effect", cmd
+
+
 # ── negative self-claim detection ─────────────────────────────────────────
 
 def test_detect_negative_self_claim_positive():
@@ -69,7 +92,8 @@ def test_detect_negative_self_claim_positive():
         "Everything in our conversation so far has been read-only exploration.",
         "No changes were made during this session.",
         "I haven't made any edits.",
-        "nothing was written or created",
+        "I have not written any files so far.",
+        "Nothing has been written so far.",
     ]:
         assert detect_negative_self_claim(txt) is True, txt
 
@@ -81,8 +105,29 @@ def test_detect_negative_self_claim_negative():
         "I'll explore the codebase first, then implement.",
         "I edited three files and opened a PR.",
         "",
+        # Accurate reports on a single run or click, not the whole session
+        # (the two desktop false alarms, plus near misses).
+        "Nothing was written. `>05<` occurs three times on the page, so that "
+        "replacement has to be limited to the index tile.",
+        "Nothing changed. Next I'll read the Automation page's accessibility structure.",
+        "The script didn't make any changes.",
+        "no changes were made to the file because the pattern didn't match",
+        "There is nothing written about this in the docs.",
+        # First-person, but narrowed to one place rather than the session.
+        "I haven't changed anything in prod.",
     ]:
         assert detect_negative_self_claim(txt) is False, txt
+
+
+def test_find_negative_self_claim_returns_sentence():
+    txt = (
+        "I checked the build. Everything in our conversation so far has been "
+        "read-only exploration. Want me to start?"
+    )
+    assert find_negative_self_claim(txt) == (
+        "Everything in our conversation so far has been read-only exploration."
+    )
+    assert find_negative_self_claim("I created a.py.") is None
 
 
 # ── ledger recording + dedup ──────────────────────────────────────────────
@@ -332,8 +377,10 @@ def test_effects_filtered_by_creator(tmp_path):
 def test_detect_negative_claim_excludes_nothing_about():
     # M1: "nothing written about X" is documentation talk, not a self-claim.
     assert detect_negative_self_claim("There is nothing written about this in the docs.") is False
-    # But the real self-claim still fires.
-    assert detect_negative_self_claim("nothing was written or created") is True
+    # Unscoped "nothing was written" is how the agent reports on one command
+    # or run, so it no longer fires; scoped to the session, it does.
+    assert detect_negative_self_claim("nothing was written or created") is False
+    assert detect_negative_self_claim("nothing was written or created this session") is True
 
 
 # ── diff stats on file effects (chunk 2 / diff-aware artifact) ─────────────
