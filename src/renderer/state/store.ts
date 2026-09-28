@@ -1390,6 +1390,105 @@ function sliceForSession(state: HarnessState, sessionId: string): SessionSlice |
     : state.sessionArchive[sessionId]
 }
 
+// ─── Sub-agent records vs. the bridge ────────────────────────────────
+// Sub-agents live only in the bridge process, but each session slice
+// keeps (and persists) its own copy of their records. When the bridge
+// dies those copies keep saying `running` forever. The bridge reports
+// what is really running (`session_switched.details.runningSubagentIds`,
+// and `subagents_snapshot` in reply to `list_subagents`); records it
+// doesn't list are settled. Never settle on load alone: after a renderer
+// reload the bridge is still alive and its children may be running.
+
+const SUBAGENT_INTERRUPTED = 'Interrupted: the app restarted while this was running'
+
+const isLiveSubagent = (rec: SubagentRecord) =>
+  rec.state === 'running' || rec.state === 'pending'
+
+/** The running sub-agent ids an event reports for its session, or null
+ *  when the event doesn't carry them. */
+function reportedRunningSubagents(ev: BridgeEvent): string[] | null {
+  if (ev.type === 'subagents_snapshot') {
+    return Array.isArray(ev.runningIds) ? ev.runningIds : null
+  }
+  if (ev.type === 'system_event' && ev.subtype === 'session_switched') {
+    const ids = ev.details?.runningSubagentIds
+    return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : null
+  }
+  return null
+}
+
+/** Gateway sessions (Slack) run their sub-agents in the gateway daemon,
+ *  which the local bridge knows nothing about — its answer can't settle
+ *  them. */
+function subagentsHostedElsewhere(state: HarnessState, sessionId: string): boolean {
+  return (
+    sessionId.startsWith('freyja:') ||
+    state.sessions.find((s) => s.id === sessionId)?.agentType === 'gateway-slack'
+  )
+}
+
+/** Sessions whose slice (active or archived) still shows a sub-agent as
+ *  running — the ones worth asking the bridge about. */
+function sessionsWithLiveSubagents(state: HarnessState): string[] {
+  const ids: string[] = []
+  const consider = (sessionId: string, slice: SessionSlice | undefined) => {
+    if (!slice || subagentsHostedElsewhere(state, sessionId)) return
+    if (Object.values(slice.subagents ?? {}).some(isLiveSubagent)) ids.push(sessionId)
+  }
+  consider(state.activeSessionId, sliceFromState(state))
+  for (const [sessionId, slice] of Object.entries(state.sessionArchive)) {
+    if (sessionId !== state.activeSessionId) consider(sessionId, slice)
+  }
+  return ids
+}
+
+/** Ask the bridge which of a session's sub-agents are really running.
+ *  The reply (`subagents_snapshot`) settles the ones it no longer has. */
+function requestSubagentSnapshot(sessionId: string): void {
+  const api = (window as any).harness
+  if (!sessionId || !api?.sendCommand) return
+  Promise.resolve(api.sendCommand({ type: 'list_subagents', sessionId })).catch(() => {})
+}
+
+/** Settle `sessionId`'s sub-agent records that still say running but
+ *  aren't in the bridge's `runningIds`: a child whose own completion
+ *  already reached its session row takes that outcome; the rest failed
+ *  with the bridge that ran them. Their session rows are marked
+ *  completed so the sidebar stops spinning. Returns the state patch, or
+ *  null when nothing changes. */
+function settleStaleSubagents(
+  state: HarnessState,
+  sessionId: string,
+  runningIds: string[],
+): Partial<HarnessState> | null {
+  const slice = sliceForSession(state, sessionId)
+  if (!slice || subagentsHostedElsewhere(state, sessionId)) return null
+  const running = new Set(runningIds)
+  const settled = new Set<string>()
+  const subagents = { ...slice.subagents }
+  for (const rec of Object.values(slice.subagents ?? {})) {
+    if (!isLiveSubagent(rec) || running.has(rec.id)) continue
+    const row = state.sessions.find((s) => s.id === rec.id)
+    subagents[rec.id] = row?.completed
+      ? { ...rec, state: row.success ? 'done' : 'failed' }
+      : { ...rec, state: 'failed', result: SUBAGENT_INTERRUPTED }
+    settled.add(rec.id)
+  }
+  if (settled.size === 0) return null
+  const now = Date.now()
+  const sessions = state.sessions.map((s) =>
+    settled.has(s.id) && !s.completed
+      ? { ...s, completed: true, completedAt: now, success: false }
+      : s,
+  )
+  return sessionId === state.activeSessionId
+    ? { subagents, sessions }
+    : {
+        sessions,
+        sessionArchive: { ...state.sessionArchive, [sessionId]: { ...slice, subagents } },
+      }
+}
+
 function hasPersistableSessionState(
   session: SessionSnapshot,
   slice?: SessionSlice,
@@ -2307,6 +2406,33 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
   ...emptyState(),
 
   handleEvent(ev) {
+    // The bridge said which of a session's sub-agents are really running:
+    // settle the records it no longer has and save what changed.
+    const reportedRunning = reportedRunningSubagents(ev)
+    const reportedFor = (ev as { sessionId?: string }).sessionId
+    if (reportedRunning && reportedFor) {
+      let settled = false
+      set((prev) => {
+        const patch = settleStaleSubagents(prev, reportedFor, reportedRunning)
+        settled = patch !== null
+        return patch ?? prev
+      })
+      if (settled) {
+        const state = get()
+        state.persistSession(reportedFor).catch(() => {})
+        state.persistSessionIndex().catch(() => {})
+      }
+    }
+    if (ev.type === 'subagents_snapshot') return
+    // A new bridge knows nothing of the old one's sub-agents: ask about
+    // every session that still shows some running.
+    if (ev.type === 'ready' && ev.mode === 'live') {
+      queueMicrotask(() => {
+        for (const sessionId of sessionsWithLiveSubagents(get())) {
+          requestSubagentSnapshot(sessionId)
+        }
+      })
+    }
     set((prev) => {
       // Non-session global events live in their own section.
       if (ev.type === 'ready') {
@@ -4358,6 +4484,10 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           ? { autoDispatchEnabled: autoDispatchForBridge }
           : {}),
       })
+      // The switch above is a silent no-op when the bridge already has
+      // this session active (a renderer reload), so ask outright which
+      // of its sub-agents are running; the reply settles stale records.
+      requestSubagentSnapshot(sessionId)
     }
   },
 

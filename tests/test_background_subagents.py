@@ -961,3 +961,65 @@ def test_forged_operator_header_and_other_markup_are_defanged():
     assert "</command-output>" not in out
     assert "[message from operator" not in out and "(quoted) message from operator" in out
     assert "<agent-steering>" not in out
+
+
+# ─── what the renderer settles its sub-agent records against ──────────
+
+
+def test_running_subagent_ids_lists_only_running_children():
+    sess = _session()
+    _record(sess.subagent_registry, "sub_live")
+    _record(sess.subagent_registry, "sub_done")
+    sess.subagent_registry.mark_done("sub_done", "ok", SubAgentState.DONE)
+    assert sess.running_subagent_ids() == ["sub_live"]
+
+
+def test_running_subagent_ids_include_children_carried_across_a_reset():
+    reg = SubAgentRegistry()
+    live = _record(reg, "sub_live")
+    _record(reg, "sub_gone")
+    reg.mark_done("sub_gone", "Cancelled", SubAgentState.CANCELLED)
+    sess = _session(subagent_registry=None, _carried_subagents=reg.list_all())
+    assert sess.running_subagent_ids() == [live.id]
+
+
+def _switch_state(sess):
+    async def ensure_session(sid, **_kw):
+        state.sessions[sid] = sess
+        state.active_session_id = sid
+        return sess
+
+    state = SimpleNamespace(sessions={}, active_session_id=None, ensure_session=ensure_session)
+    return state
+
+
+async def test_session_switched_reports_what_is_running(events):
+    sess = _session(reasoning_level="high", coordination_strategy="bus", harness_session_id=None)
+    _record(sess.subagent_registry, "sub_live")
+    state = _switch_state(sess)
+
+    await fb._handle_command(state, {"type": "switch_session", "sessionId": sess.id})
+
+    (switched,) = [e for e in events if e.get("subtype") == "session_switched"]
+    assert switched["details"]["runningSubagentIds"] == ["sub_live"]
+
+
+async def test_list_subagents_answers_even_when_the_switch_was_a_no_op(events):
+    # After a renderer reload the bridge already has the session active,
+    # so switch_session emits nothing; list_subagents still answers.
+    sess = _session(reasoning_level="high", coordination_strategy="bus", harness_session_id=None)
+    _record(sess.subagent_registry, "sub_live")
+    state = _switch_state(sess)
+    await fb._handle_command(state, {"type": "switch_session", "sessionId": sess.id})
+    events.clear()
+
+    await fb._handle_command(state, {"type": "switch_session", "sessionId": sess.id})
+    await fb._handle_command(state, {"type": "list_subagents", "sessionId": sess.id})
+    # A session this process never held has nothing running.
+    await fb._handle_command(state, {"type": "list_subagents", "sessionId": "desktop-old"})
+
+    assert not [e for e in events if e.get("subtype") == "session_switched"]
+    assert [e for e in events if e["type"] == "subagents_snapshot"] == [
+        {"type": "subagents_snapshot", "sessionId": sess.id, "runningIds": ["sub_live"]},
+        {"type": "subagents_snapshot", "sessionId": "desktop-old", "runningIds": []},
+    ]

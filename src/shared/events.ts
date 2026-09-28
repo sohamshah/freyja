@@ -1047,6 +1047,14 @@ export type BridgeEvent =
   | ({ type: 'subagent_spawn'; record: SubagentRecord } & SessionId)
   | ({ type: 'subagent_update'; id: string; patch: Partial<SubagentRecord> } & SessionId)
   | ({ type: 'subagent_done'; id: string; result: string; elapsedMs: number } & SessionId)
+  | ({
+      /** Reply to `list_subagents`: the session's sub-agents that are
+       *  running in the bridge right now. Records the renderer still
+       *  shows as running that aren't listed died with an earlier
+       *  bridge (see `session_switched.details.runningSubagentIds`). */
+      type: 'subagents_snapshot'
+      runningIds: string[]
+    } & SessionId)
   | ({ type: 'bus_message'; message: BusMessageRecord } & SessionId)
   | ({
       type: 'inbox_event'

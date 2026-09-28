@@ -5537,6 +5537,20 @@ class _BridgeSession:
         except Exception:  # noqa: BLE001
             return []
 
+    def running_subagent_ids(self) -> list[str]:
+        """Ids of this session's sub-agents that are running in this
+        process, including ones carried across a reset() that the next
+        initialize() hasn't adopted yet. The renderer persists its own
+        copy of each sub-agent record, and after a restart those copies
+        still say `running`; it settles them against this list."""
+        reg = getattr(self, "subagent_registry", None)
+        if reg is not None:
+            return [r.id for r in reg.running()]
+        return [
+            r.id for r in (getattr(self, "_carried_subagents", None) or [])
+            if r.is_running
+        ]
+
     def _running_background_commands(self) -> list[Any]:
         return [
             bg for bg in (getattr(self, "background_commands", None) or {}).values()
@@ -13949,6 +13963,10 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                     "coordinationStrategy": sess.coordination_strategy,
                     "runtime": sess.runtime,
                     "harnessSessionId": sess.harness_session_id,
+                    # What is really running. An empty list matters: the
+                    # renderer settles every record it still shows as
+                    # running that isn't here (see list_subagents).
+                    "runningSubagentIds": sess.running_subagent_ids(),
                 },
             }
         )
@@ -14617,6 +14635,21 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         return
 
     if ctype == "list_subagents":
+        # Sub-agent state lives only in this process, but the renderer
+        # persists its records, so after a restart they say `running`
+        # for children that died with the old bridge. It asks here after
+        # a switch or a bridge `ready` and settles the ones not listed.
+        # A session this process doesn't hold has nothing running.
+        if not session_id:
+            return
+        sess = state.sessions.get(session_id)
+        emit(
+            {
+                "type": "subagents_snapshot",
+                "sessionId": session_id,
+                "runningIds": sess.running_subagent_ids() if sess is not None else [],
+            }
+        )
         return
 
     if ctype == "permission_response":
