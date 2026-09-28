@@ -94,4 +94,5 @@ A follow-up from the same sender in the same thread as the running turn slides i
 - `tests/test_mid_turn_injection.py`: runner behavior (extension, stream and tool interrupts, the yield grace, stop propagation and stop notes).
 - `tests/test_background_subagents.py`: memos, the `subagents` tool, drain and wake behavior, the queued kind, confirmed withdraw, eviction, forged-tag defanging, cancel scopes and turn-matched stops, quiescence and its cap, the Slack slide-in rule, the screen lease, and the scheduler abort hook.
 - `tests/test_background_commands.py`: real subprocesses moving to the background, their memos, and process-group stops.
+- `scripts/e2e_steering.py`: the live check. It runs the real bridge against a real model (it costs tokens) and covers each behavior above: queued follow-ups, cut-ins, backgrounded commands, Tab-queued turns, stops, and sub-agent memos. Run it with `uv run python scripts/e2e_steering.py [scenario …]` after changing any of this.
 - `test-followup-placement.mjs` (`npx tsx`): renderer placement of follow-ups and memos.

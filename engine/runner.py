@@ -242,6 +242,15 @@ SKIPPED_TOOL_RESULT = (
 )
 
 
+def _describe_transport_error(exc: BaseException) -> str:
+    """``TypeName: message`` for classifying a raw (non-ProviderError)
+    failure. The type name carries the signal the message often lacks:
+    ``str(httpx.ReadTimeout())`` is empty, so a stream that stalled for ten
+    minutes read as a non-retryable error and killed the turn (the
+    scheduled morning briefing, twice) instead of being retried."""
+    return f"{type(exc).__name__}: {exc}"
+
+
 async def _reap(task: "asyncio.Future[Any]", baseline: int | None) -> None:
     """Await a task we just cancelled (or that already finished), dropping
     its outcome — but never swallow a cancellation aimed at US: if the
@@ -1886,8 +1895,10 @@ class AsyncAgentRunner:
             # never sees it — it escapes to the top-level catch-all and fails the
             # turn non-retryably. Re-cast transient ones so the retry machine
             # re-issues the call.
-            if not isinstance(exc, ProviderError) and is_retryable_error(str(exc)):
-                raise ProviderError(str(exc), retryable=True) from exc
+            if not isinstance(exc, ProviderError):
+                described = _describe_transport_error(exc)
+                if is_retryable_error(described):
+                    raise ProviderError(described, retryable=True) from exc
             raise
         if interrupted:
             raise TurnInterrupted("")
@@ -1947,8 +1958,10 @@ class AsyncAgentRunner:
             # (e.g. httpx RemoteProtocolError "peer closed connection" mid-stream)
             # as a retryable ProviderError so the retry machine re-issues it
             # instead of the turn dying in the top-level catch-all.
-            if not isinstance(exc, ProviderError) and is_retryable_error(str(exc)):
-                raise ProviderError(str(exc), retryable=True) from exc
+            if not isinstance(exc, ProviderError):
+                described = _describe_transport_error(exc)
+                if is_retryable_error(described):
+                    raise ProviderError(described, retryable=True) from exc
             raise
         self._stream_partial = []
         if interrupted:

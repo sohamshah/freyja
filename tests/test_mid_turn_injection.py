@@ -449,3 +449,34 @@ async def test_text_before_a_refusal_fallback_is_not_kept():
     await asyncio.wait_for(runner.run(session, "go"), timeout=5)
     kept = [c for r, c in _texts(session) if r == "assistant"]
     assert kept[0] == "fallback model's reply"
+
+
+async def test_a_stalled_stream_with_an_empty_error_message_is_retried(monkeypatch):
+    """httpx.ReadTimeout() has an empty str(); classifying by message alone
+    made a stream that stalled for minutes kill the whole turn."""
+    import httpx
+
+    import engine.runner as runner_mod
+
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep(asyncio.sleep))
+
+    async def stalls(on_event):
+        raise httpx.ReadTimeout("")
+
+    provider = _ScriptedProvider([stalls, _end("recovered")])
+    runner = _runner(provider, _Inbox())
+    result = await asyncio.wait_for(
+        runner.run(Session.create(system_prompt="t"), "brief me"), timeout=5,
+    )
+    assert result.success is True and result.response == "recovered"
+    assert len(provider.requests) == 2
+    assert runner_mod._describe_transport_error(httpx.ReadTimeout("")) == "ReadTimeout: "
+
+
+def _no_sleep(real_sleep):
+    """Skip the retry backoff, but keep zero-length yields working."""
+
+    async def fast(delay, *args, **kwargs):
+        return await real_sleep(0)
+
+    return fast
