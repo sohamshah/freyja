@@ -471,6 +471,41 @@ def _session_event_path(session_id: str) -> Path:
     return _SESSION_EVENT_DIR / f"{safe}.events.jsonl"
 
 
+def _externalize_event_images(event: dict[str, Any]) -> dict[str, Any]:
+    """Copy of ``event`` with image payloads moved to the media store.
+
+    The mirror is written for replay/branching, and nothing reads its image
+    bytes back, yet screenshot frames and tool-result images made it the
+    largest file in ``~/.freyja/sessions``. Each payload is replaced by its
+    hash (``pngBase64`` -> ``pngSha256``, ``imageB64`` -> ``imageSha256``,
+    ``images[].dataBase64`` -> ``images[].dataSha256``); one that can't be
+    stored stays inline. The live event is not modified.
+    """
+    from engine.media_store import put_image
+
+    def _move(holder: dict[str, Any], key: str, sha_key: str, mime: str) -> dict[str, Any]:
+        data = holder.get(key)
+        if not isinstance(data, str) or not data:
+            return holder
+        sha = put_image(data, mime)
+        if sha is None:
+            return holder
+        out = {k: v for k, v in holder.items() if k != key}
+        out[sha_key] = sha
+        return out
+
+    row = _move(event, "pngBase64", "pngSha256", str(event.get("mimeType") or "image/png"))
+    row = _move(row, "imageB64", "imageSha256", "image/png")
+    images = row.get("images")
+    if isinstance(images, list):
+        row = {**row, "images": [
+            _move(img, "dataBase64", "dataSha256", str(img.get("mimeType") or "image/png"))
+            if isinstance(img, dict) else img
+            for img in images
+        ]}
+    return row
+
+
 def _append_session_event_jsonl(session_id: str, event: dict[str, Any]) -> None:
     """Best-effort append. Failures (disk full, permission denied) are
     swallowed — losing the file-side mirror of a single event must
@@ -508,6 +543,7 @@ def _append_session_event_jsonl(session_id: str, event: dict[str, Any]) -> None:
         # happened before the branch point. Never overwrite a stamp the
         # event already carries.
         row = event if "_t" in event else {**event, "_t": int(time.time() * 1000)}
+        row = _externalize_event_images(row)
         fp.write(json.dumps(row, ensure_ascii=False, default=str))
         fp.write("\n")
         fp.flush()
@@ -6201,9 +6237,11 @@ class _BridgeSession:
             )
 
             json_path = base.with_suffix(".json")
+            from engine.media_store import externalize_images
+
             json_path.write_text(
                 json.dumps(
-                    self.session.serialize_transcript(),
+                    externalize_images(self.session.serialize_transcript()),
                     indent=2,
                     ensure_ascii=False,
                     default=str,
@@ -11795,6 +11833,9 @@ class _BridgeSession:
                 "turn_id": self.current_turn_id,
                 "message": message.to_dict() if hasattr(message, "to_dict") else None,
             }
+            from engine.media_store import externalize_images
+
+            externalize_images(payload)
             with target.open("a", encoding="utf-8") as fh:
                 fh.write(_json.dumps(payload, ensure_ascii=False))
                 fh.write("\n")
