@@ -74,7 +74,10 @@ RESEARCH_TOOLS = frozenset({"web_search", "web_fetch", "fetch_url", "twitter_sea
 _BASH_EFFECT_PATTERNS = (
     r"\bgit\s+(commit|push|merge|rebase|reset|checkout\s+-b|cherry-pick|tag|apply|am|revert|stash\s+(push|pop|apply)|clean)\b",
     r"\bgh\s+(pr|release|issue)\s+(create|edit|merge|close)\b",
-    r"(^|[^>])>>?(?!\s*&)\s*[^\s|&]+",  # output redirection into a file (not >&2)
+    # Output redirection into a file (not >&2). `->`, `=>` and `>=` are
+    # arrows and comparisons (jq, gcloud filters, code in -c strings), not
+    # redirects.
+    r"(^|[^>=\-])>>?(?![=&]|\s*&)\s*[^\s|&]+",
     r"\btee\b",
     r"\b(mkdir|mv|cp|rm|rmdir|ln|touch|chmod|chown|truncate|dd|sed\s+-i|patch)\b",
     r"\b(npm|pnpm|yarn|bun)\s+(i|install|add|remove|ci|run\s+build)\b",

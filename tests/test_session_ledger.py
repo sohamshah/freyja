@@ -84,6 +84,19 @@ def test_classify_bash_command_ignores_discard_and_fd_redirects():
         assert classify_bash_command(cmd) == "effect", cmd
 
 
+def test_classify_bash_command_ignores_arrows_and_comparisons():
+    # These tripped the redirect pattern and turned read-only commands into
+    # "actions", which is what still made two denials look like forgetting.
+    for cmd in [
+        "gcloud logging read 'timestamp>=\"2026-09-01\"' --limit 5",
+        "jq '.items[] | select(.n >= 3)' data.json",
+        "echo 'a -> b'",
+        "rg 'x => y' src",
+    ]:
+        assert classify_bash_command(cmd) == "observation", cmd
+    assert classify_bash_command("jq '.x' in.json > out.json") == "effect"
+
+
 # ── negative self-claim detection ─────────────────────────────────────────
 
 def test_detect_negative_self_claim_positive():
