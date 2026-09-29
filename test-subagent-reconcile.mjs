@@ -6,7 +6,7 @@
 // saved. Run from the repo root:
 //   npx tsx test-subagent-reconcile.mjs
 import assert from 'node:assert/strict'
-import { useHarness } from './src/renderer/state/store.ts'
+import { flushScheduledPersists, useHarness } from './src/renderer/state/store.ts'
 
 const sent = []
 const saves = []
@@ -23,6 +23,12 @@ window.harness = {
 
 const INTERRUPTED = 'Interrupted: the app restarted while this was running'
 const tick = () => new Promise((r) => setTimeout(r, 0))
+// Saves are coalesced (schedulePersistSession): write whatever is pending
+// now instead of waiting out the delay.
+const settleSaves = () => {
+  flushScheduledPersists()
+  return tick()
+}
 
 const rec = (id, state, extra = {}) => ({
   id, label: id, mode: 'background', state, task: 't', startedAt: 1,
@@ -91,6 +97,8 @@ const rowOf = (id) => H().sessions.find((s) => s.id === id)
 let failures = 0
 async function check(name, fn) {
   try {
+    // Don't let a save one case scheduled land in the next case's counts.
+    await settleSaves()
     seed()
     await fn()
     console.log(`ok   ${name}`)
@@ -114,7 +122,7 @@ await check('a snapshot settles only the records the bridge is not running, and 
   assert.equal(rowOf('a').success, false)
   assert.ok(!rowOf('b').completed)
   assert.equal(rowOf('d').success, true)
-  await tick()
+  await settleSaves()
   const saved = saves.find((p) => p.id === 'p')
   assert.ok(saved, 'parent slice saved')
   assert.equal(saved.slice.subagents.a.state, 'failed')
@@ -122,7 +130,7 @@ await check('a snapshot settles only the records the bridge is not running, and 
   assert.equal(indexSaves[0].find((r) => r.id === 'a').completed, true)
   // Nothing else to settle: no second write.
   ev({ type: 'subagents_snapshot', sessionId: 'p', runningIds: ['b'] })
-  await tick()
+  await settleSaves()
   assert.equal(saves.length, 1)
   assert.equal(indexSaves.length, 1)
 })
@@ -146,7 +154,7 @@ await check('an archived session is settled in the archive', async () => {
   assert.equal(H().sessionArchive.q.subagents.q1.state, 'failed')
   assert.equal(H().subagents.a.state, 'running')
   assert.equal(rowOf('q1').completed, true)
-  await tick()
+  await settleSaves()
   assert.deepEqual(saves.map((p) => p.id), ['q'])
 })
 
