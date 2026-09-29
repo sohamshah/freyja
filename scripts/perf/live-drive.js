@@ -101,6 +101,10 @@ if (phase === 'measure') {
   })()`)
   await send('Performance.enable')
   const metrics = async () => Object.fromEntries((await send('Performance.getMetrics')).metrics.map((x) => [x.name, x.value]))
+  // Main-process stalls (saves serialize on this thread, which also routes input).
+  const { monitorEventLoopDelay } = require('perf_hooks')
+  const eld = monitorEventLoopDelay({ resolution: 5 })
+  eld.enable()
   const m0 = await metrics()
   const t0 = Date.now()
 
@@ -137,6 +141,7 @@ if (phase === 'measure') {
   }
   await sleep(500)
   const m1 = await metrics()
+  eld.disable()
   const probe = await ev(`(() => { const p = window.__fpDrive; p.o1.disconnect(); p.o2.disconnect(); delete window.__fpDrive; return { keys: p.keys, loaf: p.loaf } })()`)
   await send('Performance.disable')
   const secs = (Date.now() - t0) / 1000
@@ -158,6 +163,8 @@ if (phase === 'measure') {
     scriptSec: +(m1.ScriptDuration - m0.ScriptDuration).toFixed(2),
     layoutSec: +(m1.LayoutDuration - m0.LayoutDuration).toFixed(2),
     layouts: m1.LayoutCount - m0.LayoutCount,
+    mainStallMaxMs: +(eld.max / 1e6).toFixed(1),
+    mainStallP99Ms: +(eld.percentile(99) / 1e6).toFixed(1),
     msPerLayout: m1.LayoutCount - m0.LayoutCount ? +(((m1.LayoutDuration - m0.LayoutDuration) * 1000) / (m1.LayoutCount - m0.LayoutCount)).toFixed(1) : 0,
   }
 }
