@@ -48,6 +48,7 @@ from engine.constants import (
     DEFAULT_THINKING_BUDGET_TOKENS,
     MODEL_CONTEXT_WINDOWS,
 )
+from engine.anthropic_files import AnthropicImageFiles, file_refs_enabled
 from engine.image_fit import MANY_IMAGE_MAX_DIM, MAX_IMAGE_DIM
 from engine.tools import ToolDefinition
 from engine.types import (
@@ -72,11 +73,17 @@ from engine.types import (
 logger = logging.getLogger(__name__)
 
 
-def _anthropic_image_block(block: ImageBlock) -> dict[str, Any]:
+def _anthropic_image_block(
+    block: ImageBlock, files: AnthropicImageFiles | None = None
+) -> dict[str, Any]:
     """Serialize an ImageBlock for the Anthropic API, swapping any media type
     Anthropic can't accept (e.g. image/svg+xml) for a text placeholder so one
-    bad block can't 400 the whole request. See SUPPORTED_IMAGE_MEDIA_TYPES."""
+    bad block can't 400 the whole request. See SUPPORTED_IMAGE_MEDIA_TYPES.
+    An image already uploaded through ``files`` goes by file ID."""
     if image_media_type_supported(block.media_type):
+        source = files.source_for(block) if files is not None else None
+        if source is not None:
+            return {"type": "image", "source": source}
         return block.to_api_format()
     return {"type": "text", "text": unsupported_image_placeholder_text(block.media_type)}
 
@@ -300,6 +307,14 @@ class AnthropicProvider:
             timeout=self._config.timeout,
         )
 
+        # Images go by Files API ID once uploaded (engine/anthropic_files.py);
+        # first-party API only.
+        self._image_files: AnthropicImageFiles | None = (
+            AnthropicImageFiles(self._async_client, api_key)
+            if file_refs_enabled(self._config.base_url)
+            else None
+        )
+
         # The `-fast` suffix is a Freyja-side tier marker, not a real
         # Anthropic model id. Strip it before sending to the API and
         # remember to attach `speed: "fast"` + the fast-mode beta header
@@ -391,7 +406,7 @@ class AnthropicProvider:
         except AnthropicAuthError as e:
             raise AuthenticationError(str(e)) from e
         except APIStatusError as e:
-            raise self._convert_api_error(e) from e
+            raise self._request_error(e, request_kwargs) from e
         except APIError as e:
             raise ProviderError(str(e), retryable=True) from e
 
@@ -413,6 +428,8 @@ class AnthropicProvider:
 
         Same as complete() but async.
         """
+        if self._image_files is not None:
+            await self._image_files.prepare(messages)
         request_kwargs = self._build_request(
             messages=messages,
             tools=tools,
@@ -428,7 +445,7 @@ class AnthropicProvider:
         except AnthropicAuthError as e:
             raise AuthenticationError(str(e)) from e
         except APIStatusError as e:
-            raise self._convert_api_error(e) from e
+            raise self._request_error(e, request_kwargs) from e
         except APIError as e:
             raise ProviderError(str(e), retryable=True) from e
 
@@ -581,6 +598,8 @@ class AnthropicProvider:
         Yields:
             StreamEvent instances as they arrive
         """
+        if self._image_files is not None:
+            await self._image_files.prepare(messages)
         request_kwargs = self._build_request(
             messages=messages,
             tools=tools,
@@ -637,7 +656,7 @@ class AnthropicProvider:
         except AnthropicAuthError as e:
             raise AuthenticationError(str(e)) from e
         except APIStatusError as e:
-            raise self._convert_api_error(e) from e
+            raise self._request_error(e, request_kwargs) from e
         except APIError as e:
             raise ProviderError(str(e), retryable=True) from e
 
@@ -669,6 +688,8 @@ class AnthropicProvider:
         Returns:
             ProviderResponse with complete content and usage
         """
+        if self._image_files is not None:
+            await self._image_files.prepare(messages)
         request_kwargs = self._build_request(
             messages=messages,
             tools=tools,
@@ -768,7 +789,7 @@ class AnthropicProvider:
         except AnthropicAuthError as e:
             raise AuthenticationError(str(e)) from e
         except APIStatusError as e:
-            raise self._convert_api_error(e) from e
+            raise self._request_error(e, request_kwargs) from e
         except APIError as e:
             raise ProviderError(str(e), retryable=True) from e
 
@@ -1027,7 +1048,7 @@ class AnthropicProvider:
                         if isinstance(block, TextBlock):
                             api_content.append({"type": "text", "text": block.text})
                         elif isinstance(block, ImageBlock):
-                            api_content.append(_anthropic_image_block(block))
+                            api_content.append(_anthropic_image_block(block, self._image_files))
                         elif isinstance(block, DocumentBlock):
                             api_content.append(block.to_api_format())
                         else:
@@ -1111,7 +1132,7 @@ class AnthropicProvider:
                                 {"type": "text", "text": block.text}
                             )
                         elif isinstance(block, ImageBlock):
-                            api_blocks.append(_anthropic_image_block(block))
+                            api_blocks.append(_anthropic_image_block(block, self._image_files))
                         else:
                             api_blocks.append(
                                 {"type": "text", "text": str(block)}
@@ -1296,6 +1317,23 @@ class AnthropicProvider:
             thinking_blocks=thinking_blocks if thinking_blocks else None,
         )
 
+    def _request_error(
+        self, error: APIStatusError, request_kwargs: dict[str, Any]
+    ) -> ProviderError:
+        """Convert an API error from a request. A missing upload drops the
+        file IDs that request used; the error is retryable only if some were
+        dropped, so the resend (images inline) can't loop."""
+        converted = self._convert_api_error(error)
+        if converted.code == "file_not_found":
+            dropped = (
+                self._image_files.forget_request_files(request_kwargs)
+                if self._image_files is not None
+                else 0
+            )
+            logger.warning("Uploaded image missing (%s); dropped %d file IDs", error, dropped)
+            converted.retryable = dropped > 0
+        return converted
+
     def _convert_api_error(self, error: APIStatusError) -> ProviderError:
         """Convert Anthropic API error to internal error type."""
         message = str(error)
@@ -1334,6 +1372,9 @@ class AnthropicProvider:
                         pass
             return RateLimitError(message, retry_after=retry_after)
         elif status == 404:
+            if _is_missing_file_error(message):
+                # A referenced upload is gone (see _request_error).
+                return ProviderError(message, status=404, code="file_not_found", retryable=True)
             return ModelNotFoundError(message)
         elif status == 400:
             lower = message.lower()
@@ -1391,6 +1432,12 @@ class AnthropicProvider:
             return ProviderError(message, status=status, retryable=True)
         else:
             return ProviderError(message, status=status, retryable=False)
+
+
+def _is_missing_file_error(message: str) -> bool:
+    """The Files API's 404 for a deleted/expired upload: "File `file_…` not found." """
+    lower = message.lower()
+    return "file" in lower and "not found" in lower and "not_found_error" in lower
 
 
 _COMPACTION_SUMMARY_MARKER = "[Previous conversation summary]"

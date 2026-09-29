@@ -216,12 +216,18 @@ def delete_subagent_state(session_id: str) -> None:
 def save_transcript(session_id: str, data: dict[str, Any]) -> None:
     """Persist a serialized transcript to disk.
 
-    Writes atomically via tmp+rename to avoid corruption on crash.
+    Writes atomically via tmp+rename to avoid corruption on crash. Image
+    bytes go to the shared media store and the file keeps their hashes
+    (``engine.media_store.externalize_images``); ``data`` is modified in
+    place.
     """
+    from engine.media_store import externalize_images
+
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     dest = _transcript_path(session_id)
     tmp = dest.with_suffix(".tmp")
     try:
+        externalize_images(data)
         tmp.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
         tmp.replace(dest)
     except Exception:
