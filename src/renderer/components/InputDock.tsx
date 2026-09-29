@@ -5,19 +5,90 @@ import { couldRecall, stepHistory, type HistoryCursor } from '../lib/composerHis
 
 /** Auto-grow a textarea to fit its content, up to a max height in px.
  *
- * Collapse to 0 BEFORE reading scrollHeight, not 'auto'. In a flex row the
- * textarea can be cross-axis-stretched to the row's height; `scrollHeight`
- * then returns that stretched clientHeight (never below the padding box),
- * which — since the row height is driven BY the textarea — is a feedback
- * loop that locks the field open at maxPx and can never shrink back
- * (observed 2026-07-09). Forcing height to 0 makes scrollHeight report the
- * true content height, so the field always collapses correctly. Paired with
- * `self-start` on the element so nothing stretches it in the first place. */
+ * The content height comes from a hidden copy (see measureTextarea), never
+ * from the field's own scrollHeight: in a flex row the field can be
+ * cross-axis-stretched to the row's height, and its scrollHeight then
+ * reports that stretched height — a feedback loop that locked the field
+ * open at maxPx (observed 2026-07-09). `self-start` on the element keeps
+ * anything from stretching it in the first place. */
 function resizeTextarea(el: HTMLTextAreaElement, maxPx: number) {
-  el.style.height = '0px'
-  const next = Math.min(maxPx, el.scrollHeight)
-  el.style.height = `${next}px`
-  el.style.overflowY = el.scrollHeight > maxPx ? 'auto' : 'hidden'
+  const content = measureTextarea(el)
+  const height = `${Math.min(maxPx, content)}px`
+  if (el.style.height !== height) el.style.height = height
+  const overflowY = content > maxPx ? 'auto' : 'hidden'
+  if (el.style.overflowY !== overflowY) el.style.overflowY = overflowY
+}
+
+/** The height `resizeTextarea` used to get by collapsing the field to 0
+ *  and reading scrollHeight — measured on a hidden copy instead.
+ *
+ * Collapsing the real field changed the composer's height, and so the
+ * window's layout, twice per keystroke (collapse to measure, then
+ * restore): profiled in the app at ~15 ms each on a long session, the
+ * bulk of a 70 ms keystroke. The copy is out of flow and fully contained,
+ * so giving it the text and reading its height lays out only the copy
+ * (~0.2 ms). Its width follows the field through a ResizeObserver, so
+ * measuring never has to read the field's layout either. */
+interface TextareaCopy {
+  copy: HTMLTextAreaElement
+  observer: ResizeObserver
+}
+
+const textareaCopies = new WeakMap<HTMLTextAreaElement, TextareaCopy>()
+
+/** Everything that decides where the text wraps and how tall it stands. */
+const COPIED_STYLES = [
+  'boxSizing', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontStretch',
+  'fontFeatureSettings', 'fontVariationSettings', 'lineHeight', 'letterSpacing',
+  'wordSpacing', 'textTransform', 'textIndent', 'tabSize', 'whiteSpace', 'wordBreak',
+  'overflowWrap', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+  'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth',
+  'borderTopStyle', 'borderRightStyle', 'borderBottomStyle', 'borderLeftStyle',
+] as const
+
+function measureTextarea(el: HTMLTextAreaElement): number {
+  let entry = textareaCopies.get(el)
+  if (!entry) {
+    const copy = document.createElement('textarea')
+    copy.setAttribute('aria-hidden', 'true')
+    copy.tabIndex = -1
+    const cs = getComputedStyle(el)
+    for (const prop of COPIED_STYLES) copy.style[prop] = cs[prop]
+    copy.style.position = 'absolute'
+    copy.style.top = '0'
+    copy.style.left = '-10000px'
+    copy.style.height = '0'
+    copy.style.minHeight = '0'
+    copy.style.maxHeight = 'none'
+    copy.style.visibility = 'hidden'
+    copy.style.overflow = 'hidden'
+    copy.style.pointerEvents = 'none'
+    copy.style.resize = 'none'
+    copy.style.contain = 'strict'
+    copy.style.width = `${el.getBoundingClientRect().width}px`
+    document.body.appendChild(copy)
+    const observer = new ResizeObserver((entries) => {
+      const box = entries[entries.length - 1]?.borderBoxSize?.[0]
+      copy.style.width = `${box ? box.inlineSize : el.getBoundingClientRect().width}px`
+    })
+    observer.observe(el)
+    entry = { copy, observer }
+    textareaCopies.set(el, entry)
+  }
+  entry.copy.value = el.value
+  // The field's min-height floors the result, as it did when the collapsed
+  // field reported max(min-height, content) as its scrollHeight.
+  const minHeight = parseFloat(el.style.minHeight || getComputedStyle(el).minHeight) || 0
+  return Math.max(minHeight, entry.copy.scrollHeight)
+}
+
+function releaseTextareaCopy(el: HTMLTextAreaElement | null): void {
+  if (!el) return
+  const entry = textareaCopies.get(el)
+  if (!entry) return
+  entry.observer.disconnect()
+  entry.copy.remove()
+  textareaCopies.delete(el)
 }
 
 /** Find a `@word` token at the current caret position, if any. */
@@ -229,6 +300,11 @@ export function InputDock() {
     if (!el) return
     resizeTextarea(el, MAX_PX)
   }, [draft])
+
+  useEffect(() => {
+    const el = inputRef.current
+    return () => releaseTextareaCopy(el)
+  }, [])
 
   useEffect(() => {
     inputRef.current?.focus()
