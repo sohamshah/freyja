@@ -76,7 +76,32 @@ node mainrpc.mjs live-fibers.js    # store subscriptions per component
 node mainrpc.mjs -e "setTimeout(() => require('inspector').close(), 200)"
 ```
 
-Each script removes its probes and detaches when it finishes. Close the
+`live-drive.js` measures typing and streaming in the running app without
+a model turn: it forks a session (parent only, no project copy), replays
+recorded stream events into the fork, and types into the composer (never
+Enter), then restores your draft and switches back:
+
+```sh
+node mainrpc.mjs -e "globalThis.__fpPhase='fork'; globalThis.__fpSource='<session id>'; $(cat live-drive.js)"
+node mainrpc.mjs -e "globalThis.__fpPhase='measure'; globalThis.__fpFork='<fork id>'; globalThis.__fpReplay='$PWD/out/replay.json'; globalThis.__fpTypeMs=25000; $(cat live-drive.js)"
+node mainrpc.mjs -e "globalThis.__fpPhase='restore'; globalThis.__fpSource='<session id>'; $(cat live-drive.js)"
+```
+
+The fork stays in the sidebar (named "perf-test fork (safe to delete)").
+
+Each script removes its probes and detaches when it finishes.
+
+## Comparing Electron versions
+
+`electron-ab.cjs` runs a built renderer inside a given Electron binary and
+reports layout per keystroke / per streamed token, the per-frame commit
+cost, and key-to-paint latency. `FP_WINDOW=app` uses the app's
+transparent + vibrancy window; `FP_BLUR=1` measures with the window
+unfocused. It opens a visible window for about a minute.
+
+```sh
+"<path to Electron.app>/Contents/MacOS/Electron" electron-ab.cjs <dist dir> "<session title>"
+``` Close the
 inspector afterwards: while it is open, any local process can run code in
 the app. The installed bundle is minified; extract its source map with
 `npx @electron/asar extract <app.asar> out/asar` and pass it to
