@@ -37,6 +37,8 @@ import {
   migrateLegacySessionFiles,
   saveSessionIndex as persistSaveSessionIndex,
   saveSession as persistSaveSession,
+  flushPersistenceWrites,
+  hasPendingPersistenceWrites,
   type PersistedSession,
   type PersistedSessionMeta,
 } from './persistence.js'
@@ -1509,10 +1511,20 @@ app.on('window-all-closed', () => {
 // before-quit's unregisterAll also covers it, but will-quit fires on
 // every quit path (incl. autoUpdater-style relaunches that skip
 // before-quit handlers' window closing).
-app.on('will-quit', () => {
+let persistenceFlushedForQuit = false
+app.on('will-quit', (event) => {
   try {
     if (activeVoiceHotkey) globalShortcut.unregister(activeVoiceHotkey)
   } catch {}
+  // Session saves are written off-thread; the last ones (the renderer
+  // flushes its pending saves as the window goes away) may still be in
+  // flight. Hold the quit until they land, briefly, so a quit right after
+  // a turn doesn't leave the older file on disk.
+  if (!persistenceFlushedForQuit && hasPendingPersistenceWrites()) {
+    persistenceFlushedForQuit = true
+    event.preventDefault()
+    void flushPersistenceWrites(3000).finally(() => app.exit(0))
+  }
 })
 
 app.on('before-quit', () => {

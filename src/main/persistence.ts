@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import { Worker } from 'node:worker_threads'
 import { imageBlockBase64, inlineStoredImages } from './mediaStore'
 
 /**
@@ -175,37 +176,173 @@ function readIndexSync(): PersistedSessionMeta[] | null {
 
 async function readIndexAsync(): Promise<PersistedSessionMeta[] | null> {
   ensureDir()
+  const indexPath = sessionIndexFile()
   try {
-    const raw = await fs.promises.readFile(sessionIndexFile(), 'utf8')
+    // Every session save upserts its row, and re-parsing a multi-MB index
+    // for each one cost the main thread ~12 ms; reuse the parsed rows while
+    // the file is the one we last read or wrote (another process writing it
+    // moves the mtime and forces a fresh read).
+    const stat = await fs.promises.stat(indexPath)
+    if (_indexCache && _indexCache.mtimeMs === stat.mtimeMs) return [..._indexCache.rows]
+    const raw = await fs.promises.readFile(indexPath, 'utf8')
     const parsed = JSON.parse(raw) as PersistedSessionIndex
     if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.sessions)) {
       return null
     }
-    return sortSessions(dedupeSessions(parsed.sessions))
+    const rows = sortSessions(dedupeSessions(parsed.sessions))
+    _indexCache = { mtimeMs: stat.mtimeMs, rows }
+    return [...rows]
   } catch {
     return null
   }
 }
 
-async function writeJsonAtomic(filePath: string, value: unknown): Promise<number> {
-  ensureDir()
+// ─── Off-thread JSON writes ──────────────────────────────────────────
+//
+// A long session's file is ~30 MB of JSON. Stringifying it here took the
+// main process ~65–140 ms per save, and this thread also routes the
+// window's input: each save froze typing for that long (measured live,
+// ~120 ms). A worker stringifies and writes instead; this thread only
+// structured-clones the value across (a few ms). One worker handles every
+// write in the order it was asked for, so rapid saves of the same file can
+// no longer finish out of order and leave an older save on disk.
+const WRITER_SOURCE = `
+const { parentPort } = require('node:worker_threads')
+const fs = require('node:fs')
+parentPort.on('message', ({ id, filePath, tmpPath, value }) => {
+  try {
+    const raw = JSON.stringify(value)
+    fs.writeFileSync(tmpPath, raw, 'utf8')
+    fs.renameSync(tmpPath, filePath)
+    parentPort.postMessage({ id, bytes: Buffer.byteLength(raw, 'utf8') })
+  } catch (err) {
+    try { fs.rmSync(tmpPath, { force: true }) } catch {}
+    parentPort.postMessage({ id, error: String((err && err.stack) || err) })
+  }
+})
+`
+
+interface WriteJob {
+  resolve: (bytes: number) => void
+  reject: (err: Error) => void
+}
+
+let writer: Worker | null = null
+let writerFailed = false
+let nextWriteId = 0
+const pendingWrites = new Map<number, WriteJob>()
+let drainWaiters: Array<() => void> = []
+
+function settleWrite(id: number, outcome: { bytes?: number; error?: string }): void {
+  const job = pendingWrites.get(id)
+  if (!job) return
+  pendingWrites.delete(id)
+  if (outcome.error) job.reject(new Error(outcome.error))
+  else job.resolve(outcome.bytes ?? 0)
+  if (pendingWrites.size === 0) {
+    const waiters = drainWaiters
+    drainWaiters = []
+    for (const done of waiters) done()
+  }
+}
+
+function getWriter(): Worker | null {
+  if (writer) return writer
+  if (writerFailed) return null
+  try {
+    const w = new Worker(WRITER_SOURCE, { eval: true })
+    // Never hold the process open by itself; quitting drains it explicitly
+    // (flushPersistenceWrites).
+    w.unref()
+    w.on('message', (msg: { id: number; bytes?: number; error?: string }) => settleWrite(msg.id, msg))
+    const fail = (err: unknown) => {
+      writerFailed = true
+      writer = null
+      const error = err instanceof Error ? err : new Error(String(err))
+      for (const id of [...pendingWrites.keys()]) settleWrite(id, { error: error.message })
+    }
+    w.on('error', fail)
+    w.on('exit', (code) => {
+      if (writer === w) fail(new Error(`persistence writer exited (${code})`))
+    })
+    writer = w
+    return w
+  } catch {
+    writerFailed = true
+    return null
+  }
+}
+
+function tmpPathFor(filePath: string): string {
+  return `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`
+}
+
+async function writeJsonAtomicHere(filePath: string, value: unknown): Promise<number> {
   const raw = JSON.stringify(value)
   const bytes = Buffer.byteLength(raw, 'utf8')
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.${Math.random()
-    .toString(36)
-    .slice(2)}.tmp`
+  const tmp = tmpPathFor(filePath)
   await fs.promises.writeFile(tmp, raw, 'utf8')
   await fs.promises.rename(tmp, filePath)
   return bytes
 }
 
+async function writeJsonAtomic(filePath: string, value: unknown): Promise<number> {
+  ensureDir()
+  const w = getWriter()
+  if (!w) return writeJsonAtomicHere(filePath, value)
+  const id = ++nextWriteId
+  const done = new Promise<number>((resolve, reject) => pendingWrites.set(id, { resolve, reject }))
+  try {
+    w.postMessage({ id, filePath, tmpPath: tmpPathFor(filePath), value })
+  } catch (err) {
+    // Not cloneable (shouldn't happen for JSON data): write it here.
+    settleWrite(id, { bytes: 0 })
+    void done
+    return writeJsonAtomicHere(filePath, value)
+  }
+  try {
+    return await done
+  } catch (err) {
+    // The worker died mid-write: this write still has to land.
+    if (writerFailed) return writeJsonAtomicHere(filePath, value)
+    throw err
+  }
+}
+
+/** Resolve once every queued off-thread write has landed, or after
+ *  `timeoutMs`. Called on quit so the last saves aren't cut off. */
+export function flushPersistenceWrites(timeoutMs = 3000): Promise<void> {
+  if (pendingWrites.size === 0) return Promise.resolve()
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs)
+    drainWaiters.push(() => {
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+}
+
+export function hasPendingPersistenceWrites(): boolean {
+  return pendingWrites.size > 0
+}
+
 async function writeIndexUnlocked(rows: PersistedSessionMeta[]): Promise<number> {
+  const sessions = sortSessions(dedupeSessions(rows))
   const index: PersistedSessionIndex = {
     version: 1,
     updatedAt: Date.now(),
-    sessions: sortSessions(dedupeSessions(rows)),
+    sessions,
   }
-  return writeJsonAtomic(sessionIndexFile(), index)
+  const indexPath = sessionIndexFile()
+  const bytes = await writeJsonAtomic(indexPath, index)
+  // Keep the parsed rows for the next upsert (see readIndexAsync).
+  try {
+    const stat = await fs.promises.stat(indexPath)
+    _indexCache = { mtimeMs: stat.mtimeMs, rows: sessions }
+  } catch {
+    _indexCache = null
+  }
+  return bytes
 }
 
 function enqueueIndexWrite<T>(work: () => Promise<T>): Promise<T> {
