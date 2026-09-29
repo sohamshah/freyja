@@ -305,15 +305,17 @@ function WorkstreamCard({
   const status = workstream.status ?? 'active'
   const isPaused = status === 'paused'
   // The single live card: accent ring + the council-tile pulse. Paused cards
-  // dim and lose the ring/pulse so exactly one thing moves on screen.
+  // dim and lose the ring/pulse so exactly one thing moves on screen. The
+  // ring only breathes while the agent is actually running a turn.
   const isLive = !isPaused && status !== 'done'
+  const isWorking = useHarness((s) => s.isStreaming)
   const statusWord = isPaused ? 'paused' : status === 'done' ? 'done' : 'active'
   const ts = workstream.updatedAt ?? workstream.createdAt ?? Date.now()
 
   return (
     <div
       className={`glass-raised animate-fade-in rounded-lg p-3 ${
-        isLive ? 'memory-card--live' : ''
+        isLive ? `memory-card--live${isWorking ? ' memory-card--working' : ''}` : ''
       } ${isPaused ? 'opacity-70' : ''}`}
     >
       {/* Card head: status pip + task title + status word + dateline */}

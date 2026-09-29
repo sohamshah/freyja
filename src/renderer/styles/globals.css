@@ -1000,7 +1000,11 @@ select {
 
 /* The single moving thing: the active workstream card's accent ring breathes
    like a running council tile ("the ink is still wet"). The ::before inset
-   ring + opacity pulse mirror .council-tile.is-running exactly. */
+   ring + opacity pulse mirror .council-tile.is-running exactly. The ring
+   holds still unless the agent is mid-turn (--working): a workstream stays
+   "active" for hours, and a pulse that never stops keeps the window painting
+   every frame — ~60% of the renderer's main thread with nothing happening,
+   measured in the app. */
 .memory-card--live {
   position: relative;
   box-shadow:
@@ -1016,6 +1020,8 @@ select {
   pointer-events: none;
   box-shadow: inset 0 0 0 1px var(--accent, rgba(168, 212, 252, 0.5));
   opacity: 0.32;
+}
+.memory-card--live.memory-card--working::before {
   animation: council-tile-pulse 2.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
@@ -1029,7 +1035,8 @@ select {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .memory-card--live::before {
+  .memory-card--live::before,
+  .memory-card--live.memory-card--working::before {
     animation: none;
     opacity: 0.4;
   }
