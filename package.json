@@ -20,7 +20,7 @@
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
-    "electron": "^33.2.1",
+    "electron": "^44.4.5",
     "electron-builder": "^25.1.8",
     "esbuild": "^0.24.0",
     "postcss": "^8.4.49",
@@ -63,7 +63,10 @@
       "icon": "assets/icon.icns",
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
-      "identity": null
+      "identity": null,
+      "extendInfo": {
+        "NSAudioCaptureUsageDescription": "Freyja captures your screen for computer-use tasks. It does not record system audio."
+      }
     },
     "afterPack": "./scripts/sign-resources.js",
     "extraResources": [
