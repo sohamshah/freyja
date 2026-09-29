@@ -7,7 +7,7 @@ v1 reads once at daemon start.
 Schema (all keys optional; missing → default):
 
   defaults:
-    model: claude-opus-4-8             # default model for new sessions (high thinking)
+    model: claude-opus-5-5             # default model for new sessions (high thinking)
     reasoning_level: xhigh             # optional default reasoning effort (low/medium/high/xhigh/max)
     coordination_strategy: bus         # default strategy
   slack:
@@ -86,13 +86,19 @@ class SlackConfig:
 class GatewayConfig:
     """Top-level gateway config."""
 
-    # Chat-gateway (Slack/Telegram) default. Deliberately separate from
-    # the desktop bridge's FREYJA_MODEL default: gateway turns are
-    # latency-sensitive (someone is watching a thread) and get a fast
-    # frontier model, while the desktop can sit on a slower one.
+    # Chat-gateway (Slack/Telegram) default. This used to be
+    # kimi-k3-fast on the theory that gateway turns are latency-sensitive
+    # (someone is watching a thread) and so should get a fast model while
+    # the desktop sat on a slower one. Moved to Opus 5.5 on 2026-09-22:
+    # it is also *cheaper* than kimi-k3-fast ($4/$20 vs $4.50/$22.50),
+    # and the desktop moved to the same model, so the split no longer
+    # buys anything. Latency is "moderate" rather than fast — if thread
+    # responsiveness regresses, the options are `claude-opus-5-5-fast`
+    # (~2.5x output tokens/sec, $8/$40, needs the fast-mode allowlist) or
+    # dropping reasoning_level to `low`/`medium` in the yaml.
     # Resolution order is FREYJA_MODEL env → ~/.freyja/gateway.yaml →
     # this constant, so this only bites a fresh install with no yaml.
-    default_model: str = "kimi-k3-fast"
+    default_model: str = "claude-opus-5-5"
     default_reasoning_level: str | None = None
     default_strategy: str = "bus"
     slack: SlackConfig = field(default_factory=SlackConfig)

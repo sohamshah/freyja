@@ -41,7 +41,7 @@ CADENCE_THRESHOLD_ENV_VAR = "FREYJA_SKILL_NUDGE_INTERVAL"
 # skill-drafter AgentType for telemetry. The actual sub-agent model
 # selection happens in bridge/tools/agent_types.py — this constant
 # governs the env-override + fallback path only.
-DRAFTER_DEFAULT_MODEL = "claude-opus-4-8"
+DRAFTER_DEFAULT_MODEL = "claude-opus-5-5"
 DRAFTER_MODEL_ENV_VAR = "FREYJA_DRAFTER_MODEL"
 
 # Which drafter shape runs. "fork" (default) reviews a copy of the
@@ -55,7 +55,7 @@ DRAFTER_MODE_ENV_VAR = "FREYJA_DRAFTER_MODE"
 DRAFTER_MODE_DEFAULT = "fork"
 
 # Outcome classifier model. Same shape: default + env override.
-OUTCOME_CLASSIFIER_DEFAULT_MODEL = "claude-opus-4-8"
+OUTCOME_CLASSIFIER_DEFAULT_MODEL = "claude-opus-5-5"
 OUTCOME_CLASSIFIER_MODEL_ENV_VAR = "FREYJA_OUTCOME_CLASSIFIER_MODEL"
 
 

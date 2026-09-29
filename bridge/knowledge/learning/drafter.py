@@ -268,7 +268,7 @@ def _compute_existing_skill_diff_stats(candidate: Any) -> dict[str, Any]:
 def _drafter_model() -> str:
     """The model used by the drafter.
 
-    Defaults to ``claude-opus-4-8`` (top quality tier — verified present
+    Defaults to ``claude-opus-5-5`` (top quality tier — verified present
     in ``freyja_bridge.AVAILABLE_MODELS``). Overridable via
     ``FREYJA_DRAFTER_MODEL`` so a cost-sensitive deployment can drop to
     Sonnet without code changes.

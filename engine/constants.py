@@ -55,6 +55,11 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     # Fable 5 (Mythos-class, GA 2026-06-09)
     "claude-fable-5-1": 1_000_000,
     "claude-fable-5": 1_000_000,
+    # Claude 5.5 (GA 2026-09-22). Fast mode is a request flag, not a
+    # separate model, but the `-fast` tier id needs its own entry here
+    # because this dict is looked up before the suffix is stripped.
+    "claude-opus-5-5": 1_000_000,
+    "claude-opus-5-5-fast": 1_000_000,
     # Claude 4.8
     "claude-opus-4-8": 1_000_000,
     "claude-opus-4-8-fast": 1_000_000,
@@ -72,6 +77,7 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "claude-sonnet-4-5": 1_000_000,
     "claude-opus-4-5": 200_000,
     # OpenAI
+    "gpt-6-astra": 1_050_000,
     "gpt-5.6-sol": 1_050_000,
     "gpt-5.6-terra": 1_050_000,
     "gpt-5.6-luna": 1_050_000,

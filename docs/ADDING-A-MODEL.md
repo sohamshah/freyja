@@ -1,6 +1,6 @@
 # Adding (or changing) an LLM model — codepoint checklist
 
-Freyja has model metadata scattered across **14 codepoints** in 11 files.
+Freyja has model metadata scattered across **19 codepoints** in 11 files.
 There is no single registry; the Python bridge, the engine providers,
 and the TypeScript renderer each carry overlapping copies for reasons
 (fallback when the bridge hasn't sent its catalog yet, runtime lookup
@@ -75,11 +75,42 @@ variant, the base id (without `-fast`) goes here.
 Missing entry → `_fast_mode` request raises ValueError at construct
 time before any API call.
 
+### 7a. `engine/anthropic_provider.py` — capability sets (Anthropic only)
+Three more allowlists in the same file. They are *not* optional polish —
+each one is a request the API rejects if the set is wrong:
+
+- `INLINE_SYSTEM_MESSAGE_MODELS` — models that accept `role: "system"`
+  mid-`messages`. Unsupported models 400 with `role 'system' is not
+  supported on this model`, so `_convert_messages` squashes to a
+  `[System context]:` user prefix instead. A model that *does* support
+  it but is missing here silently loses the cached-prefix benefit.
+- `FORCED_TOOL_CHOICE_UNSUPPORTED_MODELS` — models that 400 on
+  `tool_choice` `{"type":"any"}` / `{"type":"tool"}`. Substring-matched,
+  so a `-fast` suffix is tolerated. `complete_structured` falls back to
+  `auto` for these. Missing entry on a rejecting model → every
+  structured-output call 400s until the retry path catches it.
+- `REFUSAL_FALLBACK_MODELS` — models whose safety classifiers can end a
+  turn with `stop_reason="refusal"`. Listing a model opts it into
+  server-side fallbacks to `REFUSAL_FALLBACK_TARGET`. Missing entry →
+  a declined request is a dead turn instead of a rescued one.
+
 ### 8. `engine/openai_provider.py` — `MODEL_CONTEXT_WINDOWS`
 OpenAI-specific duplicate of #1. Read by the OpenAI provider's
 constructor; falls back to `400_000` (not the 200k from constants.py).
 
 Missing entry → smaller window for OpenAI models.
+
+### 8a. `engine/openai_provider.py` — capability sets (OpenAI only)
+- `REASONING_MODELS` — gates whether the `reasoning` parameter is sent
+  at all. Missing entry → the model silently runs without reasoning and
+  the effort selector in the UI does nothing.
+- `NATIVE_COMPUTER_MODELS` — gates the native `computer_use` tool.
+  Missing entry → computer-use sessions fall back to the generic path.
+
+Note the effort ladder itself is **not** enforced here: the OpenAI
+provider forwards whatever effort it is handed. `MODEL_REASONING_META`
+(#11) is the only thing that stops an unsupported rung — e.g. `none` or
+`minimal` on `gpt-6-astra` — from reaching the wire as a 400.
 
 ### 9. `engine/types.py` — `_ADAPTIVE_THINKING_MODEL_IDS`
 Duplicate of #5. The engine types module needs it for type-level
@@ -137,18 +168,35 @@ Missing entry → model is unselectable from the picker on cold start.
 
 ## Quick-reference grep checklist
 
-When adding model `claude-opus-4-X`, grep for an existing model id you're
-following (e.g. `claude-opus-4-7`) and ensure your new id appears in every
+When adding model `claude-opus-X-Y`, grep for an existing model id you're
+following (e.g. `claude-opus-4-8`) and ensure your new id appears in every
 hit:
 
 ```sh
-grep -rn "claude-opus-4-7" \
+grep -rn "claude-opus-4-8" \
   engine/ bridge/ src/renderer/state/store.ts \
   src/renderer/components/ModelPicker.tsx
 ```
 
-You should see roughly 14 hits. The new id should land in the same
-positions.
+You should see roughly 20 hits (a model with a `-fast` tier roughly
+doubles that — Opus 5.5 lands 24). The new id should land in the same
+positions. Some hits are defaults and docstrings rather than registries
+(`bridge/gateway/config.py`, `bridge/knowledge/learning/constants.py`,
+`bridge/gateway/run.py` help text) — changing those is a separate
+decision from registering the model, and adding a model does **not**
+require changing them.
+
+### A model whose capabilities shrank
+
+The checklist assumes a new model is a superset of the old one. Recent
+models are not. Claude Opus 5.5 (Sep 2026) *removed* the ability to
+disable thinking and *removed* forced tool use; GPT-6 Astra dropped the
+`none` and `minimal` effort rungs the GPT-5.x family had. For these,
+the thing that keeps a bad request off the wire is **leaving a rung out
+of `reasoningLevels`** in #11 and #13, because
+`_normalize_reasoning_level` clamps an unlisted level back to the
+model's default. Adding the rung "for consistency" with its sibling
+models re-introduces the 400.
 
 ## Adding a whole new PROVIDER (not just a model)
 

@@ -344,8 +344,8 @@ def _help_card_text() -> str:
         "  Prefix the first message of a thread with `--model <id>` "
         "and/or `--mode <bus|goal|kanban>` to pin the session's model "
         "and coordination strategy from the start. Examples:\n"
-        "    `@Freyja --model claude-opus-4-8 ship the auth bug`\n"
-        "    `@Freyja --mode goal --model claude-opus-4-8 build a JSON parser`\n"
+        "    `@Freyja --model claude-opus-5-5 ship the auth bug`\n"
+        "    `@Freyja --mode goal --model claude-opus-5-5 build a JSON parser`\n"
         "  Use `--models` anywhere (including inside threads) to list all "
         "available models, harnesses, and coordination modes.\n"
         "\n"
@@ -1436,7 +1436,7 @@ class GatewayDaemon:
                 (
                     f"Current model: `{current}`\nUsage: `/model <id>` "
                     "(e.g. `kimi-k3-fast`, `glm-5.3-fireworks`, "
-                    "`claude-fable-5-1`, `gpt-5.6-sol`)"
+                    "`claude-opus-5-5`, `claude-fable-5-1`, `gpt-6-astra`)"
                     if current else
                     "No active session. Usage: `/model <id>`"
                 ),

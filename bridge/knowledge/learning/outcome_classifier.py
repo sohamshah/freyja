@@ -18,7 +18,7 @@ this is the only place we LEARN whether a skill is working.
 
 Model choice
 ────────────
-Defaults to ``claude-opus-4-8`` (the operator's chosen quality tier).
+Defaults to ``claude-opus-5-5`` (the operator's chosen quality tier).
 Overridable via ``FREYJA_OUTCOME_CLASSIFIER_MODEL`` env var so a
 cost-sensitive deployment can drop to Sonnet without code changes.
 """

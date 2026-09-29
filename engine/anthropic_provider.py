@@ -92,6 +92,7 @@ def _anthropic_image_block(block: ImageBlock) -> dict[str, Any]:
 # When adding a model see docs/ADDING-A-MODEL.md — these three sets +
 # `engine/types.py:_ADAPTIVE_THINKING_MODEL_IDS` must move together.
 ADAPTIVE_THINKING_MODELS = {
+    "claude-opus-5-5",
     "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-opus-4-6",
@@ -110,9 +111,12 @@ THINKING_MODELS = ADAPTIVE_THINKING_MODELS | LEGACY_THINKING_MODELS
 # Models that accept fast mode (speed: "fast" + fast-mode-2026-02-01 beta).
 # Per Anthropic docs: 4.6 fast mode is deprecated as of 4.8 launch and falls
 # back to standard speed at standard pricing; we still list it so existing
-# requests don't silently break, but 4.8 is the only one we register a
-# distinct fast-tier model id for in AVAILABLE_MODELS.
+# requests don't silently break. 4.7 is stricter than 4.6 — it *errors* on
+# speed:"fast" rather than falling back — but it stays listed for the same
+# reason. Only 4.8 and 5.5 get a distinct `-fast` tier id in AVAILABLE_MODELS.
 FAST_MODE_MODELS = {
+    # Opus 5.5 fast mode is $8/$40 (2x standard), vs 4.8's $10/$50.
+    "claude-opus-5-5",
     "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-opus-4-6",
@@ -126,6 +130,7 @@ FAST_MODE_BETA = "fast-mode-2026-02-01"
 # squash on unsupported models so post-compaction summaries still reach
 # the model.
 INLINE_SYSTEM_MESSAGE_MODELS = {
+    "claude-opus-5-5",
     "claude-opus-4-8",
 }
 
@@ -139,6 +144,12 @@ INLINE_SYSTEM_MESSAGE_MODELS = {
 # "auto" for these; the retry-on-400 path covers any future model not listed.
 FORCED_TOOL_CHOICE_UNSUPPORTED_MODELS = {
     "claude-fable-5",
+    # Opus 5.5 joins the Fable tier here: tool_choice {"type":"any"} and
+    # {"type":"tool"} both 400 with
+    #   tool_choice: type "tool" and "any" are not supported for this model.
+    # on the Messages API *and* count_tokens. Documented at launch
+    # (2026-09-22), not inferred from a live probe.
+    "claude-opus-5-5",
 }
 
 
@@ -160,6 +171,11 @@ def _model_rejects_forced_tool_choice(model: str) -> bool:
 REFUSAL_FALLBACK_MODELS = {
     "claude-fable-5",
     "claude-mythos-5",
+    # Opus 5.5 ships classifiers too — a biology one on top of the cyber
+    # classifier Opus 5 ran, plus a `reasoning_extraction` category that
+    # fires when a prompt pushes the model to restate its own reasoning.
+    # Same dead-turn failure mode as Fable 5, so same opt-in.
+    "claude-opus-5-5",
 }
 REFUSAL_FALLBACK_TARGET = "claude-opus-4-8"
 SERVER_FALLBACK_BETA = "server-side-fallback-2026-06-01"
@@ -188,10 +204,12 @@ def _normalize_stop_details(raw: Any) -> dict[str, Any] | None:
     return {"raw": str(raw)}
 
 # Model speed tiers for user selection
+# NOTE: currently unreferenced — nothing reads this dict. Kept in sync
+# anyway so a future reader doesn't wire up a stale "most capable" alias.
 MODEL_SPEED_TIERS = {
     "fast": "claude-haiku-4-5",       # Fastest, most cost-effective
     "medium": "claude-sonnet-4-6",    # Balanced speed/capability
-    "slow": "claude-opus-4-8",        # Most capable (adaptive thinking, 128k out)
+    "slow": "claude-opus-5-5",        # Most capable (adaptive thinking, 128k out)
 }
 
 
