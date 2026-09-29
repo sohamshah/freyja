@@ -582,6 +582,14 @@ export type BridgeCommand =
   | { type: 'diagnose' }
   | { type: 'compact'; sessionId?: string; model?: string; reasoningLevel?: string; coordinationStrategy?: CoordinationStrategy }
   | {
+      type: 'repair_session'
+      sessionId: string
+      model?: string
+      reasoningLevel?: string
+      /** `/repair images`: also strip every image from the model's history. */
+      dropImages?: boolean
+    }
+  | {
       type: 'goal_control'
       sessionId?: string
       action: 'set' | 'status' | 'pause' | 'resume' | 'clear' | 'stop' | 'done'

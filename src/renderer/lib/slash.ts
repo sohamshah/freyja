@@ -41,6 +41,11 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/export', description: 'Export transcript (markdown / jsonl)' },
   { name: '/compact', description: 'Force a context compaction pass' },
   { name: '/compaction', description: 'Alias for /compact', hidden: true },
+  {
+    name: '/repair',
+    description:
+      "Fix history problems that make the API reject this session (/repair images also removes images from the model's copy)",
+  },
   { name: '/goal', description: 'Set, inspect, pause, resume, or clear an active goal loop' },
   { name: '/debug', description: 'Toggle the debug drawer', keys: 'Cmd+D', hidden: true },
   { name: '/docs', description: 'Open the Freyja documentation' },

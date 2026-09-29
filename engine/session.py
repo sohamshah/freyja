@@ -83,6 +83,28 @@ class ImagePruneResult:
         }
 
 
+@dataclass
+class ImageFitResult:
+    """Summary of shrinking history images to a per-side pixel cap."""
+
+    max_dim: int
+    image_count: int
+    resized: int = 0
+    omitted: int = 0
+
+    @property
+    def changed(self) -> bool:
+        return self.resized > 0 or self.omitted > 0
+
+    def to_details(self) -> dict[str, Any]:
+        return {
+            "max_dim": self.max_dim,
+            "image_count": self.image_count,
+            "resized": self.resized,
+            "omitted": self.omitted,
+        }
+
+
 # ============================================================================
 # Transcript Entry
 # ============================================================================
@@ -796,6 +818,121 @@ class TranscriptManager:
             if isinstance(msg.content, list):
                 _walk(msg.content)
         return total
+
+    def count_images(self) -> int:
+        """Image blocks a request built from this history carries, nested
+        tool-result images included — the count the provider's many-image
+        rule is applied to."""
+        count = 0
+
+        def _walk(container: list) -> None:
+            nonlocal count
+            for block in container:
+                if isinstance(block, ImageBlock):
+                    count += 1
+                elif isinstance(block, ToolResultBlock) and isinstance(block.content, list):
+                    _walk(block.content)
+
+        for entry in self._entries:
+            msg = entry.message
+            if msg is not None and isinstance(msg.content, list):
+                _walk(msg.content)
+        return count
+
+    def fit_images_to_dim(self, max_dim: int) -> ImageFitResult:
+        """Shrink, in place, every base64 image with a side over ``max_dim``.
+
+        An oversize image that can't be re-encoded is swapped for a text
+        marker instead: it would be rejected on every request, so keeping it
+        bricks the session. Images whose size can't be read, and URL images,
+        are left alone.
+        """
+        from engine.image_fit import image_size, shrink_image
+
+        max_dim = max(1, int(max_dim))
+        result = ImageFitResult(max_dim=max_dim, image_count=self.count_images())
+
+        def _fit(container: list) -> list | None:
+            new_blocks: list = []
+            touched = False
+            for block in container:
+                if isinstance(block, ToolResultBlock) and isinstance(block.content, list):
+                    nested = _fit(block.content)
+                    if nested is not None:
+                        block.content = nested
+                    new_blocks.append(block)
+                    continue
+                size = (
+                    image_size(block.data)
+                    if isinstance(block, ImageBlock)
+                    and block.source_type == "base64"
+                    and block.data
+                    else None
+                )
+                if size is None or max(size) <= max_dim:
+                    new_blocks.append(block)
+                    continue
+                touched = True
+                shrunk = shrink_image(block.data, block.media_type, max_dim)
+                if shrunk is not None:
+                    block.data, block.media_type = shrunk
+                    new_blocks.append(block)
+                    result.resized += 1
+                else:
+                    new_blocks.append(TextBlock(text=(
+                        f"[image omitted from model history: {size[0]}x{size[1]}px "
+                        f"is over the {max_dim}px per-side limit and could not "
+                        "be resized]"
+                    )))
+                    result.omitted += 1
+            return new_blocks if touched else None
+
+        for entry in self._entries:
+            msg = entry.message
+            if msg is None or not isinstance(msg.content, list):
+                continue
+            fitted = _fit(msg.content)
+            if fitted is not None:
+                msg.content = fitted
+
+        if result.changed:
+            logger.info(
+                "Fit history images to %dpx per side: %d resized, %d omitted (%d images)",
+                max_dim, result.resized, result.omitted, result.image_count,
+            )
+        return result
+
+    def fit_images_for_request(self) -> ImageFitResult:
+        """Shrink history images to the per-side cap the provider enforces for
+        a request carrying this many images (2000px past 20 images)."""
+        from engine.image_fit import request_image_dim_limit
+
+        return self.fit_images_to_dim(request_image_dim_limit(self.count_images()))
+
+    def omit_images(self, note: str) -> int:
+        """Swap every image in history for a text marker carrying ``note``.
+        The last resort when the provider rejects images for a reason no
+        guard recognizes. Returns how many images were removed."""
+        omitted = 0
+
+        def _strip(container: list) -> list:
+            nonlocal omitted
+            out: list = []
+            for block in container:
+                if isinstance(block, ImageBlock):
+                    omitted += 1
+                    out.append(TextBlock(text=f"[image omitted from model history: {note}]"))
+                    continue
+                if isinstance(block, ToolResultBlock) and isinstance(block.content, list):
+                    block.content = _strip(block.content)
+                out.append(block)
+            return out
+
+        for entry in self._entries:
+            msg = entry.message
+            if msg is not None and isinstance(msg.content, list):
+                msg.content = _strip(msg.content)
+        return omitted
 
     def set_entry_pinned(self, entry_id: str, pinned: bool) -> bool:
         """Toggle the compaction_excluded flag on a single entry.

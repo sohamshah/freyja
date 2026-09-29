@@ -666,6 +666,16 @@ def _format_user_facing_runner_failure(
             f"Detail: {short}. Try `/reset` to start fresh, or move "
             "to a longer-context model with `/model claude-opus-4-8`."
         )
+    if "invalid_request_error" in (message or ""):
+        # The API rejected the request itself, usually because something
+        # in the session's history breaks its rules. Resending the same
+        # history fails the same way, so "try again" is the wrong advice.
+        return (
+            "The API rejected this request, so the agent stopped before "
+            f"responding. Detail: {short}. Retrying will fail the same way "
+            "until the session's history is fixed: run `/repair`, then send "
+            "your message again."
+        )
     # Catch-all (unknown / tool_use / retry) — still better than
     # silence. The operator gets the reason tag for log triage.
     return (
@@ -6210,6 +6220,105 @@ class _BridgeSession:
         except Exception as exc:  # noqa: BLE001
             log("warn", f"failed to write {phase} compaction snapshot: {exc}")
             return {}
+
+    async def repair_history(self, *, drop_images: bool = False) -> None:
+        """``/repair``: fix known problems in the model's copy of this
+        session's history that make the API reject every request, save it,
+        and report what changed in the chat.
+
+        The same fixes run automatically before each turn or request; this
+        is the manual lever for a session that is stuck anyway. With
+        ``drop_images`` every image is swapped for a text marker, which
+        clears image rejections no guard recognizes yet. The chat the
+        operator sees and the image files on disk are untouched, and the
+        pre-repair transcript is kept as a gzip backup.
+        """
+
+        def _report(message: str, **details: Any) -> None:
+            emit(
+                {
+                    "type": "system_event",
+                    "sessionId": self.id,
+                    "subtype": "session_repaired",
+                    "message": message,
+                    "details": {"chatVisible": True, **details},
+                }
+            )
+
+        if self.session is None:
+            _report("Nothing to repair: this session has no model history loaded.")
+            return
+        if self.pending_task and not self.pending_task.done():
+            _report(
+                "Repair skipped: a turn is running. Stop it or let it finish, "
+                "then run /repair again.",
+                reason="turn_running",
+            )
+            return
+
+        def _n(count: int, noun: str) -> str:
+            return f"{count} {noun}{'s' if count != 1 else ''}"
+
+        before = self.session.serialize_transcript()
+        fixes: list[str] = []
+        orphans = _backfill_orphan_tool_results(self.session)
+        if orphans:
+            fixes.append(f"closed {_n(orphans, 'tool call')} left without a result")
+        oversize = _sanitize_session_oversize_images(self.session)
+        if oversize:
+            fixes.append(f"shrank {_n(oversize, 'image')} over the size limit")
+        fit = self.session.transcript.fit_images_for_request()
+        if fit.resized:
+            fixes.append(
+                f"resized {_n(fit.resized, 'image')} to the {fit.max_dim}px per-side "
+                f"limit ({fit.image_count} images in history)"
+            )
+        if fit.omitted:
+            fixes.append(f"removed {_n(fit.omitted, 'image')} that could not be resized")
+        if drop_images:
+            dropped = self.session.transcript.omit_images("removed by /repair images")
+            if dropped:
+                fixes.append(f"removed {_n(dropped, 'image')} from the model's history")
+
+        if not fixes:
+            _report(
+                "Nothing to repair: none of the known problems were found in this "
+                "session's history. If requests still fail, `/repair images` removes "
+                "images from the model's copy, or right-click a recent message and "
+                "choose delete to rewind past the bad step.",
+                changed=False,
+            )
+            return
+
+        backup = self._write_repair_backup(before)
+        self._save_transcript()
+        log("info", f"repaired session {self.id}: {'; '.join(fixes)}")
+        _report(
+            f"Repaired this session's history: {'; '.join(fixes)}. "
+            "Send your message again to continue."
+            + (f" Pre-repair copy: {backup}" if backup else ""),
+            changed=True,
+            fixes=fixes,
+            backup=backup,
+        )
+
+    def _write_repair_backup(self, data: dict[str, Any]) -> str | None:
+        """Keep the pre-repair transcript next to the live one, gzipped."""
+        try:
+            import gzip
+
+            from bridge.transcript_persistence import _transcript_path
+
+            live = _transcript_path(self.id)
+            live.parent.mkdir(parents=True, exist_ok=True)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            path = live.parent / f"{live.stem}.pre-repair-{stamp}.json.gz"
+            with gzip.open(path, "wt", encoding="utf-8") as f:
+                json.dump(data, f, separators=(",", ":"))
+            return str(path)
+        except Exception as exc:  # noqa: BLE001
+            log("warn", f"repair backup failed for {self.id}: {exc}")
+            return None
 
     async def force_compact(self) -> None:
         """Force an LLM summary compaction for the current session."""
@@ -13250,6 +13359,18 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
                     },
                 }
             )
+        return
+
+    if ctype == "repair_session":
+        if not session_id:
+            return
+        sess = await state.ensure_session(
+            session_id,
+            model_id=cmd.get("model"),
+            reasoning_level=cmd.get("reasoningLevel"),
+            coordination_strategy=cmd.get("coordinationStrategy"),
+        )
+        await sess.repair_history(drop_images=bool(cmd.get("dropImages")))
         return
 
     if ctype == "set_model":
