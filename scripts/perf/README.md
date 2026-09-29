@@ -48,7 +48,16 @@ bottom on a tail window, scrolling up reveals everything, search reaches
 the oldest message, sidebar folding works, and the tool timeline tooltip
 shows on hover.
 
+`check-composer.mjs` checks the composer's auto-grow against the old
+measure-by-collapsing method, that the side panels are layout-contained,
+and that overlays opened from them still cover the window.
+
 `dom-breakdown.mjs` prints DOM node counts per panel.
+
+The harness runs your installed Chrome, which is newer than the app's
+Electron. Some costs only show in the app — a full-window layout on every
+change (fixed by containing the side panels) was ~15 ms there and near zero
+here — so confirm layout and frame costs with the live scripts below.
 
 ## Profiling the running app
 
@@ -59,7 +68,9 @@ the scripts it runs attach to the window's debugger:
 
 ```sh
 kill -USR1 "$(pgrep -f 'Freyja.app/Contents/MacOS/Freyja$')"
-node mainrpc.mjs live-capture.js   # 25 s renderer CPU profile + main-loop stalls
+node mainrpc.mjs live-capture.js   # 25 s renderer CPU profile + main-loop stalls + events/s
+node mainrpc.mjs -e "globalThis.__fpWaitForEvents = 5; $(cat live-capture.js)"   # wait for a turn to stream first
+node mainrpc.mjs live-trace.js     # 4 s trace: main-thread time by event (Layout, Commit, ...)
 node mainrpc.mjs live-traffic.js   # bridge events/s by type, save timings
 node mainrpc.mjs live-fibers.js    # store subscriptions per component
 node mainrpc.mjs -e "setTimeout(() => require('inspector').close(), 200)"

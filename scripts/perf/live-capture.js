@@ -2,7 +2,8 @@
 // window's debugger, records a renderer CPU profile + input/frame timing and
 // the main process's own event-loop delay for CAPTURE_MS, and writes the
 // results to scripts/perf/out. Read-only: it observes, doesn't drive, and
-// removes its probes and detaches when done.
+// removes its probes and detaches when done. Set __fpWaitForEvents (events/s)
+// to arm it ahead of a turn: it waits for streaming before recording.
 const fs = require('fs')
 const path = require('path')
 const { monitorEventLoopDelay, performance: mperf } = require('perf_hooks')
@@ -36,6 +37,40 @@ const stalls = []
 let lastTick = mperf.now()
 const probe = setInterval(() => { const now = mperf.now(); const gap = now - lastTick - 20; if (gap > 40) stalls.push({ at: Math.round(now), gapMs: Math.round(gap) }); lastTick = now }, 20)
 
+// Count the bridge events the window receives, so busy time can be read
+// per event. Waits (up to __fpWaitMs) for __fpWaitForEvents events/s before
+// starting, so a capture can be armed ahead of a turn.
+let events = 0
+const byType = {}
+const origSend = wc.send
+wc.send = function (channel, ...args) {
+  if (channel === 'harness:bridge-event') {
+    events += 1
+    const t = args[0]?.type || '?'
+    byType[t] = (byType[t] || 0) + 1
+  }
+  return origSend.call(this, channel, ...args)
+}
+const restoreSend = () => { delete wc.send }
+const minRate = Number(globalThis.__fpWaitForEvents || 0)
+if (minRate > 0) {
+  const deadline = Date.now() + Number(globalThis.__fpWaitMs || 600000)
+  let armed = false
+  while (Date.now() < deadline) {
+    const before = events
+    await new Promise((r) => setTimeout(r, 2000))
+    if ((events - before) / 2 >= minRate) { armed = true; break }
+  }
+  if (!armed) {
+    restoreSend()
+    dbg.detach()
+    return { tag, waited: true, armed: false, note: 'no streaming seen before the deadline' }
+  }
+}
+events = 0
+for (const k of Object.keys(byType)) delete byType[k]
+
+await send('Performance.enable')
 await send('Profiler.enable')
 await send('Profiler.setSamplingInterval', { interval: 500 })
 await send('Profiler.start')
@@ -43,6 +78,8 @@ const m0 = Object.fromEntries((await send('Performance.getMetrics')).metrics.map
 await new Promise((r) => setTimeout(r, CAPTURE_MS))
 const m1 = Object.fromEntries((await send('Performance.getMetrics')).metrics.map((x) => [x.name, x.value]))
 const { profile } = await send('Profiler.stop')
+const capturedEvents = events
+restoreSend()
 clearInterval(probe)
 eld.disable()
 fs.mkdirSync(OUT, { recursive: true })
@@ -59,10 +96,15 @@ await reval(`(() => {
   delete window.__fpPerf
 })()`)
 await send('Profiler.disable')
+await send('Performance.disable')
 dbg.detach()
 const d = (k) => +(m1[k] - m0[k]).toFixed(3)
 return {
   tag,
+  events: capturedEvents,
+  eventsPerSec: +(capturedEvents / (CAPTURE_MS / 1000)).toFixed(1),
+  msScriptPerEvent: capturedEvents ? +((d('ScriptDuration') * 1000) / capturedEvents).toFixed(2) : null,
+  eventTypes: Object.entries(byType).sort((a, b) => b[1] - a[1]).slice(0, 6),
   rendererSecondsBusy: { task: d('TaskDuration'), script: d('ScriptDuration'), layout: d('LayoutDuration'), style: d('RecalcStyleDuration') },
   layouts: d('LayoutCount'), recalcs: d('RecalcStyleCount'),
   heapMB: Math.round(m1.JSHeapUsedSize / 1e6), nodes: perf.nodes,

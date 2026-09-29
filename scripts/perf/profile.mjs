@@ -45,7 +45,9 @@ const browser = await chromium.launch({
   headless: args.headful ? false : true,
   args: ['--enable-precise-memory-info', '--js-flags=--expose-gc'],
 })
-const context = await browser.newContext({ viewport: { width: 1512, height: 900 }, deviceScaleFactor: 2 })
+// Default matches a 14" MacBook; --viewport 1752x1170 --dpr 1.67 matches a larger window.
+const [VW, VH] = String(args.viewport || '1512x900').split('x').map(Number)
+const context = await browser.newContext({ viewport: { width: VW, height: VH }, deviceScaleFactor: Number(args.dpr || 2) })
 await context.addInitScript({ path: path.join(HERE, 'mock-harness.js') })
 // Instrumentation: Event Timing (input latency), long animation frames
 // (script attribution), long tasks, and a rAF frame-gap recorder.
@@ -118,6 +120,7 @@ function summarize(rec) {
     keyInputDelayAvg: +(keyEvents.reduce((a, e) => a + e.inputDelay, 0) / (keyEvents.length || 1)).toFixed(1),
     keyProcessingAvg: +(keyEvents.reduce((a, e) => a + e.processing, 0) / (keyEvents.length || 1)).toFixed(1),
     keyProcessingMax: +Math.max(0, ...keyEvents.map((e) => e.processing)).toFixed(1),
+    forcedLayoutInInputMs: Math.round(rec.loaf.reduce((a, f) => a + f.scripts.filter((x) => /oninput|onkeydown|onkeypress/.test(x.invoker || '')).reduce((b, x) => b + (x.fl || 0), 0), 0)),
   }
 }
 function topScripts(rec, n = 12) {
@@ -238,7 +241,7 @@ if (SCENARIOS.includes('open')) {
   await page.waitForTimeout(1500)
 }
 
-const composer = page.locator('textarea').last()
+const composer = page.locator('textarea:not([aria-hidden="true"])').last()
 const TEXT = 'the quick brown fox jumps over the lazy dog while the swarm keeps streaming '
 
 async function typeScenario(name) {
