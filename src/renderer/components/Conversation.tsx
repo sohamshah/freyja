@@ -1,4 +1,4 @@
-import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createContext, memo, startTransition, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useHarness, type SystemEventRecord } from '../state/store'
 import { renderMarkdown } from '../lib/markdown'
 import { HeroWelcome } from './HeroWelcome'
@@ -20,6 +20,13 @@ import {
   writeClipboard,
 } from '../lib/copyMarkdown'
 import { formatDuration } from '../lib/format'
+import {
+  TRANSCRIPT_PART_BUDGET,
+  TRANSCRIPT_REVEAL_BUDGET,
+  entryWeight,
+  revealEarlier,
+  tailStart,
+} from '../lib/transcriptWindow'
 import { BranchSessionDialog } from './BranchSessionDialog'
 import { CalibrationCard } from './shared/CalibrationCard'
 import { InlineForgetting, InlineCompactionReceipt } from './MemorySystemCards'
@@ -111,6 +118,7 @@ export function Conversation() {
   const deleteMessagesFrom = useHarness((s) => s.deleteMessagesFrom)
   const toggleEntryPin = useHarness((s) => s.toggleEntryPin)
   const branchSessionFrom = useHarness((s) => s.branchSessionFrom)
+  const activeSessionId = useHarness((s) => s.activeSessionId)
   const scrollerRef = useRef<HTMLDivElement>(null)
   // Scroll lock + "new messages" tracking. The user can scroll up to
   // read while the agent streams; the auto-scroll effect stops forcing
@@ -487,18 +495,66 @@ export function Conversation() {
     el.scrollTop = el.scrollHeight
   }, [messages, thinking, isStreaming, searchOpen])
 
+  // Content also grows without a store change: offscreen rows render at
+  // their real height only once they scroll into view (content-visibility
+  // placeholders are 240px), images decode, code blocks lay out. Opening
+  // a long session scrolled to the placeholder bottom and then landed
+  // ~19k px short of it once the last turn measured. Follow the content's
+  // size while the tail is live (streaming) and for a moment after the
+  // transcript opens — not otherwise, or expanding a tool chip near the
+  // bottom would scroll it out from under the reader.
+  const contentRef = useRef<HTMLDivElement>(null)
+  const followUntilRef = useRef(0)
+  const isStreamingRef = useRef(isStreaming)
+  isStreamingRef.current = isStreaming
+  useEffect(() => {
+    followUntilRef.current = performance.now() + 3000
+  }, [activeSessionId])
+  useEffect(() => {
+    const el = scrollerRef.current
+    const content = contentRef.current
+    if (!el || !content || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      if (scrolledUpRef.current || searchOpen) return
+      if (!isStreamingRef.current && performance.now() > followUntilRef.current) return
+      if (el.scrollHeight - el.scrollTop - el.clientHeight > 1) el.scrollTop = el.scrollHeight
+    })
+    ro.observe(content)
+    // Any deliberate interaction ends the settle window.
+    const stopFollowing = () => {
+      followUntilRef.current = 0
+    }
+    el.addEventListener('pointerdown', stopFollowing)
+    el.addEventListener('keydown', stopFollowing)
+    return () => {
+      ro.disconnect()
+      el.removeEventListener('pointerdown', stopFollowing)
+      el.removeEventListener('keydown', stopFollowing)
+    }
+  }, [searchOpen, messages.length === 0])
+
   useEffect(() => {
     if (!focusedToolCallId) return
     const scroller = scrollerRef.current
     if (!scroller) return
-    requestAnimationFrame(() => {
+    // The call may sit above the mounted tail — ConversationStream widens
+    // its window to include it, which lands a render or two later. Look
+    // for a few frames before giving up.
+    let frame = 0
+    let raf = 0
+    const seek = () => {
       const target = Array.from(
         scroller.querySelectorAll<HTMLElement>('[data-tool-call-id]'),
       ).find((el) => el.dataset.toolCallId === focusedToolCallId)
-      if (!target) return
+      if (!target) {
+        if (++frame < 6) raf = requestAnimationFrame(seek)
+        return
+      }
       lockScrollUp()
       target.scrollIntoView({ block: 'center', behavior: 'smooth' })
-    })
+    }
+    raf = requestAnimationFrame(seek)
+    return () => cancelAnimationFrame(raf)
   }, [focusedToolCallId, focusedToolCallSerial, lockScrollUp])
 
   if (messages.length === 0 && !thinking) {
@@ -546,7 +602,7 @@ export function Conversation() {
             className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden"
           >
             <ChildSessionBreadcrumb />
-            <div className="mx-auto w-full max-w-[1200px] px-8 py-6">
+            <div ref={contentRef} className="mx-auto w-full max-w-[1200px] px-8 py-6">
               {systemPrompt && systemPrompt.trim() && (
                 <SystemPromptHeader prompt={systemPrompt} />
               )}
@@ -559,7 +615,13 @@ export function Conversation() {
                   onOpenJudgeBrief={() => toggleMissionDashboard(true, 'overview')}
                 />
               )}
-              <ConversationStream messages={messages} systemEvents={systemEvents} />
+              <ConversationStream
+                key={activeSessionId}
+                messages={messages}
+                systemEvents={systemEvents}
+                scrollerRef={scrollerRef}
+                showAll={!!searchQuery}
+              />
               {/* Thinking renders inline within message parts now */}
             </div>
           </div>
@@ -730,9 +792,14 @@ const NARRATOR_SUBTYPES = new Set([
 function ConversationStream({
   messages,
   systemEvents,
+  scrollerRef,
+  showAll,
 }: {
   messages: Message[]
   systemEvents: SystemEventRecord[]
+  scrollerRef: React.RefObject<HTMLDivElement>
+  /** Mount the whole transcript (in-session search walks the DOM). */
+  showAll: boolean
 }) {
   const inboxEvents = useHarness((s) => s.inboxEvents)
   const openSessionPane = useHarness((s) => s.openSessionPane)
@@ -806,6 +873,108 @@ function ConversationStream({
     return entries
   }, [messages, narratorEvents, inboxArrivals])
 
+  // ── Tail window (see lib/transcriptWindow) ─────────────────────
+  const weights = useMemo(
+    () => stream.map((entry) => entryWeight(entry.kind === 'message' ? entry.message.parts.length : 0)),
+    [stream],
+  )
+  // Index of the first mounted entry. Entries only ever append at the
+  // tail, so a fixed start keeps what the reader is looking at mounted.
+  const [windowStart, setWindowStart] = useState(() => tailStart(weights))
+  // Opening search mounts everything, and closing it keeps it that way —
+  // shrinking back would unmount the old message the reader just jumped
+  // to. The next send (or the at-bottom trim) shrinks the window again.
+  const [searchWidened, setSearchWidened] = useState(showAll)
+  if (showAll !== searchWidened) {
+    setSearchWidened(showAll)
+    if (showAll) setWindowStart(0)
+  }
+  const start = showAll ? 0 : Math.min(windowStart, Math.max(0, stream.length - 1))
+  const hiddenMessages = useMemo(() => {
+    let n = 0
+    for (let i = 0; i < start; i += 1) if (stream[i].kind === 'message') n += 1
+    return n
+  }, [stream, start])
+
+  // Reveal one more chunk above, keeping the viewport on what the reader
+  // was looking at. Chromium's scroll anchoring usually does this on its
+  // own; the layout effect below covers the cases it skips.
+  const anchorRef = useRef<{ top: number; height: number } | null>(null)
+  const revealMore = useCallback(() => {
+    const el = scrollerRef.current
+    if (el) anchorRef.current = { top: el.scrollTop, height: el.scrollHeight }
+    // A transition keeps the mount interruptible, so a reveal that lands
+    // mid-scroll doesn't stall the wheel for a whole chunk.
+    startTransition(() => {
+      setWindowStart((cur) => revealEarlier(weights, Math.min(cur, weights.length), TRANSCRIPT_REVEAL_BUDGET))
+    })
+  }, [scrollerRef, weights])
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current
+    const el = scrollerRef.current
+    anchorRef.current = null
+    if (!anchor || !el) return
+    const grew = el.scrollHeight - anchor.height
+    if (grew > 0 && Math.abs(el.scrollTop - anchor.top) < 1) el.scrollTop = anchor.top + grew
+  }, [start, scrollerRef])
+
+  // Load the next chunk before the reader reaches the top edge.
+  const sentinelRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const sentinel = sentinelRef.current
+    const root = scrollerRef.current
+    if (!sentinel || !root || start === 0) return
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) revealMore()
+      },
+      { root, rootMargin: '1200px 0px 0px 0px' },
+    )
+    io.observe(sentinel)
+    return () => io.disconnect()
+  }, [start, revealMore, scrollerRef])
+
+  // Sending a message snaps back to the tail, so a transcript the reader
+  // scrolled all the way through drops back to a small mounted window.
+  const lastUserId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) if (messages[i].role === 'user') return messages[i].id
+    return null
+  }, [messages])
+  const lastUserIdRef = useRef(lastUserId)
+  useEffect(() => {
+    if (lastUserIdRef.current === lastUserId) {
+      // Long autonomous stretches (a swarm waking the agent turn after
+      // turn) never send a user message; trim the mounted head as the
+      // tail grows, but only while the reader is pinned to the bottom so
+      // nothing moves under them.
+      if (showAll) return
+      let mounted = 0
+      for (let i = windowStart; i < weights.length; i += 1) mounted += weights[i]
+      if (mounted <= TRANSCRIPT_PART_BUDGET * 3) return
+      const el = scrollerRef.current
+      if (!el || el.scrollHeight - el.scrollTop - el.clientHeight > 40) return
+      setWindowStart(tailStart(weights))
+      return
+    }
+    lastUserIdRef.current = lastUserId
+    setWindowStart(tailStart(weights))
+  }, [lastUserId, weights, windowStart, showAll, scrollerRef])
+
+  // Jumping to a tool call (activity panel, receipts) mounts the entry
+  // that holds it; Conversation's focus effect then scrolls to it.
+  const focusedToolCallId = useHarness((s) => s.focusedToolCallId)
+  const focusedToolCallSerial = useHarness((s) => s.focusedToolCallSerial)
+  useEffect(() => {
+    if (!focusedToolCallId) return
+    const idx = stream.findIndex(
+      (entry) =>
+        entry.kind === 'message' &&
+        entry.message.parts.some((part) => part.toolCallId === focusedToolCallId),
+    )
+    if (idx >= 0) setWindowStart((cur) => Math.min(cur, idx))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusedToolCallId, focusedToolCallSerial])
+
   const toggleMissionDashboard = useHarness((s) => s.toggleMissionDashboard)
   // Delegated click handler for `.kanban-card-mention` spans inserted
   // into prose by the markdown post-pass. Opens the dashboard on the
@@ -837,7 +1006,20 @@ function ConversationStream({
     <KanbanCardLookupContext.Provider value={kanbanLookup}>
       <SystemEventLookupContext.Provider value={systemEventLookup}>
         <div onClick={onClick}>
-          {stream.map((entry, idx) => {
+          {start > 0 && (
+            <div ref={sentinelRef} className="mb-6 flex justify-center">
+              <button
+                type="button"
+                onClick={revealMore}
+                title="Older messages mount as you scroll up"
+                className="rounded-full bg-white/[0.04] px-3 py-1 font-mono text-[10.5px] uppercase tracking-[0.12em] text-fg-3 ring-hairline transition hover:bg-white/[0.08] hover:text-fg-1"
+              >
+                ↑ {hiddenMessages > 0 ? `${hiddenMessages} earlier message${hiddenMessages === 1 ? '' : 's'}` : 'earlier activity'}
+              </button>
+            </div>
+          )}
+          {stream.slice(start).map((entry, i) => {
+            const idx = start + i
             if (entry.kind === 'message') {
               return <MessageView key={entry.message.id} message={entry.message} />
             }

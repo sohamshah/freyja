@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 
 /**
  * Ambient topographic backdrop — port of `topo-mock-v2.html`.
@@ -79,7 +79,9 @@ const CFG = {
   lightHigh: 68,
 } as const
 
-export function TopoBackdrop({ seed, className }: Props) {
+// Memoized: both side panels re-render on streamed frames, and this
+// backdrop's props (a seed and a class) never change with them.
+export const TopoBackdrop = memo(function TopoBackdrop({ seed, className }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState<{ w: number; h: number } | null>(null)
 
@@ -150,7 +152,7 @@ export function TopoBackdrop({ seed, className }: Props) {
       )}
     </div>
   )
-}
+})
 
 // ─── colour ramp ───────────────────────────────────────────────────
 

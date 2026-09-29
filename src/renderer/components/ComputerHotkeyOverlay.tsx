@@ -29,9 +29,17 @@ export function ComputerHotkeyOverlay() {
   useEffect(() => {
     const unsub = useHarness.subscribe((state, prevState) => {
       if (state.systemEvents === prevState.systemEvents) return
-      const last = state.systemEvents[state.systemEvents.length - 1]
-      if (last && last.subtype === 'open_computer_hotkey') {
-        setOpen(true)
+      // Store notifications are batched per frame, so several events can
+      // land between two calls — scan everything newer than the last
+      // event we saw, not just the tail.
+      const seen = prevState.systemEvents[prevState.systemEvents.length - 1]
+      for (let i = state.systemEvents.length - 1; i >= 0; i -= 1) {
+        const event = state.systemEvents[i]
+        if (event === seen) break
+        if (event.subtype === 'open_computer_hotkey') {
+          setOpen(true)
+          break
+        }
       }
     })
     return unsub

@@ -34,22 +34,27 @@ import { QuickSwitcher } from './components/QuickSwitcher'
 import { VoiceHUD } from './components/voice/VoiceHUD'
 import { startInRendererDemo } from './lib/inRendererDemo'
 import { extractConversationSummary } from './lib/conversationSummary'
-import { forkSliceForBranch } from './state/store'
+import {
+  batchStoreUpdates,
+  flushScheduledPersists,
+  forkSliceForBranch,
+  schedulePersistIndex,
+  schedulePersistSession,
+} from './state/store'
 
 function runPostEventEffects(event: any, api: any) {
+  // Coalesced (see schedulePersistSession): a swarm spawns and finishes
+  // sub-agents in bursts, and each of these used to re-save the parent
+  // and the whole index on the spot.
   if (event?.type === 'session_spawned') {
-    const state = useHarness.getState()
-    const sid = event.sessionId as string | undefined
-    const parentId = event.parentSessionId as string | undefined
-    if (parentId) state.persistSession(parentId).catch(() => {})
-    if (sid) state.persistSession(sid).catch(() => {})
-    state.persistSessionIndex().catch(() => {})
+    schedulePersistSession(event.parentSessionId as string | undefined)
+    schedulePersistSession(event.sessionId as string | undefined)
+    schedulePersistIndex()
   }
   if (event?.type === 'turn_complete' || event?.type === 'session_completed') {
     const state = useHarness.getState()
-    const sid = (event.sessionId as string | undefined) || state.activeSessionId
-    state.persistSession(sid).catch(() => {})
-    state.persistSessionIndex().catch(() => {})
+    schedulePersistSession((event.sessionId as string | undefined) || state.activeSessionId)
+    schedulePersistIndex()
   }
   // A child's terminal state reaches the record in its parent's slice
   // with this update, which the bridge sends just AFTER the child's
@@ -107,11 +112,10 @@ function runPostEventEffects(event: any, api: any) {
   // persistence the new title vanishes on next app start. The reducer
   // already updated the in-memory list; mirror that to disk here.
   if (event?.type === 'session_renamed') {
-    const state = useHarness.getState()
     const sid = event.sessionId as string | undefined
     if (sid) {
-      state.persistSession(sid).catch(() => {})
-      state.persistSessionIndex().catch(() => {})
+      schedulePersistSession(sid)
+      schedulePersistIndex()
     }
   }
   // Legacy fallback: bridge couldn't find a transcript file for a
@@ -185,7 +189,9 @@ export function App() {
     const events = eventQueueRef.current
     if (events.length === 0) return
     eventQueueRef.current = []
-    unstable_batchedUpdates(() => {
+    // One store notification for the whole frame's events — see
+    // batchStoreUpdates. Without it every event re-ran every selector.
+    unstable_batchedUpdates(() => batchStoreUpdates(() => {
       for (const event of events) {
         useHarness.getState().handleEvent(event)
         // Mirror scheduler-targeted events into the scheduler store
@@ -212,7 +218,7 @@ export function App() {
           useVoiceStore.getState().handleEvent(event)
         }
       }
-    })
+    }))
     for (const event of events) {
       runPostEventEffects(event, bridgeApiRef.current)
     }
@@ -274,6 +280,10 @@ export function App() {
       const unsub = api.onEvent((event: any) => {
         enqueueBridgeEvent(event)
       })
+      // Saves are coalesced by a second or so; don't strand one on reload
+      // or quit. The IPC request leaves synchronously, so it goes out
+      // before the page does.
+      window.addEventListener('pagehide', flushScheduledPersists)
       api.getMode().then((mode: string) => {
         useHarness.getState().handleEvent({
           type: 'ready',
@@ -381,6 +391,7 @@ export function App() {
 
       return () => {
         unsub()
+        window.removeEventListener('pagehide', flushScheduledPersists)
         unsubVoiceToggle?.()
         window.removeEventListener('focus', focusHandler)
         clearInterval(pollTimer)

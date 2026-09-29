@@ -198,10 +198,13 @@ select {
 
 /* Let Chromium skip paint/layout work for old conversation rows while the
    streaming tail is updating. The content remains in the DOM for scroll,
-   search, selection, and export. */
+   search, selection, and export. `auto` makes a row that has rendered once
+   keep its real height while skipped, instead of snapping back to the
+   240px placeholder — without it, scrolling back up jumped as rows
+   re-measured, and opening a session landed short of the bottom. */
 .render-cached {
   content-visibility: auto;
-  contain-intrinsic-size: 240px;
+  contain-intrinsic-size: auto 240px;
 }
 
 /* Soft hairline borders — glow edges for glass panels */

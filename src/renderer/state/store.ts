@@ -1,4 +1,4 @@
-import { create } from 'zustand'
+import { create, type StateCreator } from 'zustand'
 import type {
   BridgeCommand,
   BridgeEvent,
@@ -745,24 +745,53 @@ function messageOrdinalById(messages: Message[], messageId: string): number {
   return -1
 }
 
+interface SessionTreeIndex {
+  byId: Map<string, SessionSnapshot>
+  childrenOf: Map<string, string[]>
+}
+
+// Keyed on the `sessions` array itself: it is replaced (never mutated) on
+// every change, so an entry is valid for exactly as long as its array.
+const sessionTreeIndexes = new WeakMap<SessionSnapshot[], SessionTreeIndex>()
+
+/** Id lookup + parent → children lists for a sessions array, built once
+ *  per array. The cost roll-ups run inside selectors on every store
+ *  update; walking ~1.5k sessions once per descendant there cost ~1ms a
+ *  call on a 90-sub-agent session. */
+export function sessionTreeIndex(sessions: SessionSnapshot[]): SessionTreeIndex {
+  let index = sessionTreeIndexes.get(sessions)
+  if (index) return index
+  const byId = new Map<string, SessionSnapshot>()
+  const childrenOf = new Map<string, string[]>()
+  for (const s of sessions) {
+    if (!byId.has(s.id)) byId.set(s.id, s)
+    if (!s.parentSessionId) continue
+    const kids = childrenOf.get(s.parentSessionId)
+    if (kids) kids.push(s.id)
+    else childrenOf.set(s.parentSessionId, [s.id])
+  }
+  index = { byId, childrenOf }
+  sessionTreeIndexes.set(sessions, index)
+  return index
+}
+
 /** Walk the parent-child session graph and return every descendant id of
  *  `parentId`, in BFS order. Used to enumerate which subagent transcripts
  *  the bridge should clone alongside the parent during a branch. */
-function collectDescendantSessionIds(
+export function collectDescendantSessionIds(
   sessions: SessionSnapshot[],
   parentId: string,
 ): string[] {
+  const { childrenOf } = sessionTreeIndex(sessions)
   const out: string[] = []
   const queue: string[] = [parentId]
   const seen = new Set<string>([parentId])
-  while (queue.length > 0) {
-    const cur = queue.shift()!
-    for (const s of sessions) {
-      if (s.parentSessionId === cur && !seen.has(s.id)) {
-        seen.add(s.id)
-        out.push(s.id)
-        queue.push(s.id)
-      }
+  for (let i = 0; i < queue.length; i += 1) {
+    for (const id of childrenOf.get(queue[i]) ?? []) {
+      if (seen.has(id)) continue
+      seen.add(id)
+      out.push(id)
+      queue.push(id)
     }
   }
   return out
@@ -872,7 +901,7 @@ export function activeSessionScope(
  *  `totalCost` so unloaded subagents still contribute their tracked
  *  spend. Returns 0 when neither source has it. */
 function costForSessionId(state: HarnessState, sessionId: string): number {
-  const snapshot = state.sessions.find((s) => s.id === sessionId)
+  const snapshot = sessionTreeIndex(state.sessions).byId.get(sessionId)
   if (state.activeSessionId === sessionId) {
     return state.usage?.totalCost ?? snapshot?.totalCost ?? 0
   }
@@ -897,7 +926,7 @@ export function sessionCostBreakdown(
     },
   ]
   for (const id of collectDescendantSessionIds(state.sessions, sessionId)) {
-    const snap = state.sessions.find((s) => s.id === id)
+    const snap = sessionTreeIndex(state.sessions).byId.get(id)
     rows.push({
       id,
       title: snap?.title || id,
@@ -2411,7 +2440,120 @@ function applyEventToSlice(slice: SessionSlice, ev: BridgeEvent): SessionSlice {
   }
 }
 
-export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
+// ─── Coalesced persistence ──────────────────────────────────────────
+//
+// Event-driven saves (turn ends, spawns, renames) used to write
+// immediately, and a swarm fires them in bursts: every sub-agent spawn
+// re-saved the parent (27 MB on a long research session) plus the whole
+// session index (~9 MB), and the main process JSON-encodes those
+// synchronously on the thread that also routes the window's input — ~100
+// ms of dead UI per save. These helpers keep at most one pending save per
+// session (and one for the index); the write reads the latest state when
+// it fires, so nothing is lost, only merged.
+const PERSIST_DELAY_MS = 1000
+const pendingSessionSaves = new Map<string, ReturnType<typeof setTimeout>>()
+let pendingIndexSave: ReturnType<typeof setTimeout> | null = null
+
+export function schedulePersistSession(sessionId: string | undefined | null): void {
+  if (!sessionId || pendingSessionSaves.has(sessionId)) return
+  pendingSessionSaves.set(
+    sessionId,
+    setTimeout(() => {
+      pendingSessionSaves.delete(sessionId)
+      useHarness.getState().persistSession(sessionId).catch(() => {})
+    }, PERSIST_DELAY_MS),
+  )
+}
+
+export function schedulePersistIndex(): void {
+  if (pendingIndexSave) return
+  pendingIndexSave = setTimeout(() => {
+    pendingIndexSave = null
+    useHarness.getState().persistSessionIndex().catch(() => {})
+  }, PERSIST_DELAY_MS)
+}
+
+/** Fire every pending save now (window unload). */
+export function flushScheduledPersists(): void {
+  const state = useHarness.getState()
+  for (const [sessionId, timer] of pendingSessionSaves) {
+    clearTimeout(timer)
+    state.persistSession(sessionId).catch(() => {})
+  }
+  pendingSessionSaves.clear()
+  if (pendingIndexSave) {
+    clearTimeout(pendingIndexSave)
+    pendingIndexSave = null
+    state.persistSessionIndex().catch(() => {})
+  }
+}
+
+// ─── Batched store notifications ────────────────────────────────────
+//
+// Every mounted `useHarness(selector)` call is a store subscription, and
+// zustand re-runs ALL of them on every `set()`. A long session mounts ~5k
+// of them (one per transcript part, tool chip, sidebar row …), and the
+// bridge streams a `set()` per event — tens to hundreds a second while a
+// swarm runs. Profiled live on a 90-sub-agent session, that sweep alone
+// kept the renderer ~30% busy at 23 events/s, which is what made typing,
+// scrolling and clicks lag.
+//
+// `batchStoreUpdates(fn)` applies every `set()` inside `fn` immediately
+// (so `getState()` stays current mid-batch) but holds listener
+// notification until `fn` returns, then notifies once with the state
+// from before the batch as `prev`. The event flush wraps each frame's
+// events in it, so a frame costs one selector sweep instead of one per
+// event. Subscribers that diff `prev` → `state` see the net change of
+// the whole batch.
+type StoreListener = (state: HarnessState & HarnessActions, prev: HarnessState & HarnessActions) => void
+let runBatched: (fn: () => void) => void = (fn) => fn()
+
+export function batchStoreUpdates(fn: () => void): void {
+  runBatched(fn)
+}
+
+function withBatchedNotifications(
+  initializer: StateCreator<HarnessState & HarnessActions>,
+): StateCreator<HarnessState & HarnessActions> {
+  return (set, get, api) => {
+    const listeners = new Set<StoreListener>()
+    let depth = 0
+    let batchPrev: (HarnessState & HarnessActions) | null = null
+    api.subscribe((state, prev) => {
+      if (depth > 0) {
+        if (batchPrev === null) batchPrev = prev
+        return
+      }
+      listeners.forEach((listener) => listener(state, prev))
+    })
+    // The React bindings read `api.subscribe` when a hook runs, and
+    // `create` copies `api` onto the hook afterwards — replacing it here
+    // routes every subscription through the gate above.
+    api.subscribe = (listener: StoreListener) => {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    }
+    runBatched = (fn) => {
+      depth += 1
+      try {
+        fn()
+      } finally {
+        depth -= 1
+        if (depth === 0 && batchPrev !== null) {
+          const prev = batchPrev
+          batchPrev = null
+          const state = api.getState()
+          if (!Object.is(state, prev)) listeners.forEach((listener) => listener(state, prev))
+        }
+      }
+    }
+    return initializer(set, get, api)
+  }
+}
+
+export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNotifications((set, get) => ({
   ...emptyState(),
 
   handleEvent(ev) {
@@ -3783,7 +3925,7 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
       // targeted persistence has accurate metadata for the row.
       // Without this the swarm panel rows stayed at "empty" and were
       // dropped from persistence entirely.
-      const sessionSnapshot = prev.sessions.find((s) => s.id === sessionId)
+      const sessionSnapshot = sessionTreeIndex(prev.sessions).byId.get(sessionId!)
       const existingArchive =
         prev.sessionArchive[sessionId!] ??
         emptySlice(
@@ -3795,19 +3937,33 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
           ),
         )
       const updated = applyEventToSlice(existingArchive, routed)
-      const updatedSessions = prev.sessions.map((s) =>
-        s.id === sessionId
-          ? {
-              ...s,
-              messageCount: updated.messages.length,
-              updatedAt: Date.now(),
-              totalInputTokens: updated.usage.totalInputTokens,
-              totalOutputTokens: updated.usage.totalOutputTokens,
-              cacheReadTokens: updated.usage.totalCacheReadTokens,
-              totalCost: updated.usage.totalCost,
-            }
-          : s,
-      )
+      // Only replace the row when a number it shows actually moved. Most
+      // background events are thinking/tool deltas that change none of
+      // these; replacing the ~1.5k-row `sessions` array for each of them
+      // (just to bump updatedAt) invalidated the sidebar tree, every
+      // row's memo and the cost roll-ups on every sub-agent token.
+      const rowChanged =
+        !sessionSnapshot ||
+        sessionSnapshot.messageCount !== updated.messages.length ||
+        sessionSnapshot.totalInputTokens !== updated.usage.totalInputTokens ||
+        sessionSnapshot.totalOutputTokens !== updated.usage.totalOutputTokens ||
+        sessionSnapshot.cacheReadTokens !== updated.usage.totalCacheReadTokens ||
+        sessionSnapshot.totalCost !== updated.usage.totalCost
+      const updatedSessions = rowChanged
+        ? prev.sessions.map((s) =>
+            s.id === sessionId
+              ? {
+                  ...s,
+                  messageCount: updated.messages.length,
+                  updatedAt: Date.now(),
+                  totalInputTokens: updated.usage.totalInputTokens,
+                  totalOutputTokens: updated.usage.totalOutputTokens,
+                  cacheReadTokens: updated.usage.totalCacheReadTokens,
+                  totalCost: updated.usage.totalCost,
+                }
+              : s,
+          )
+        : prev.sessions
       return {
         ...prev,
         sessions: updatedSessions,
@@ -6309,4 +6465,4 @@ export const useHarness = create<HarnessState & HarnessActions>((set, get) => ({
         return false
     }
   },
-}))
+})))

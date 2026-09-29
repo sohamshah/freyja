@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { memo, useMemo, useRef, useState } from 'react'
 import { useHarness } from '../state/store'
 import { formatDuration } from '../lib/format'
 import type { ToolCallRecord } from '@shared/events'
@@ -25,14 +25,71 @@ function getColor(name: string): string {
   return CATEGORY_COLORS[name] ?? '#888'
 }
 
+/** What the chart draws for one call. `toolCalls` is replaced on every
+ *  streamed argument delta; projecting to just these fields lets the
+ *  chart skip re-rendering its (possibly hundreds of) bars unless a bar
+ *  actually moved, started, finished or failed. */
+interface TimelineRecord {
+  id: string
+  name: string
+  startedAt: number
+  durationMs?: number
+  status: ToolCallRecord['status']
+  summary: string
+}
+
+function sameRecords(a: TimelineRecord[], b: TimelineRecord[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i += 1) {
+    const x = a[i]
+    const y = b[i]
+    if (
+      x.id !== y.id ||
+      x.status !== y.status ||
+      x.durationMs !== y.durationMs ||
+      x.startedAt !== y.startedAt ||
+      x.name !== y.name ||
+      x.summary !== y.summary
+    ) {
+      return false
+    }
+  }
+  return true
+}
+
 export function ToolTimeline() {
   const toolCallOrder = useHarness((s) => s.toolCallOrder)
   const toolCalls = useHarness((s) => s.toolCalls)
 
-  const records = useMemo(
-    () => toolCallOrder.map((id) => toolCalls[id]).filter(Boolean) as ToolCallRecord[],
-    [toolCallOrder, toolCalls],
-  )
+  const prevRef = useRef<TimelineRecord[]>([])
+  const records = useMemo(() => {
+    const next: TimelineRecord[] = []
+    for (const id of toolCallOrder) {
+      const r = toolCalls[id]
+      if (!r) continue
+      next.push({
+        id: r.id,
+        name: r.name,
+        startedAt: r.startedAt,
+        durationMs: r.durationMs,
+        status: r.status,
+        // Arguments only settle once the call is issued; a running
+        // call's partial arguments would churn the tooltip text.
+        summary: r.status === 'running' ? '' : summarizeShort(r),
+      })
+    }
+    if (sameRecords(prevRef.current, next)) return prevRef.current
+    prevRef.current = next
+    return next
+  }, [toolCallOrder, toolCalls])
+
+  return <TimelineChart records={records} />
+}
+
+const TimelineChart = memo(function TimelineChart({ records }: { records: TimelineRecord[] }) {
+  // One tooltip for the whole chart, positioned over the hovered bar —
+  // a tooltip subtree per bar was most of this panel's DOM.
+  const [hover, setHover] = useState<{ record: TimelineRecord; left: number; top: number } | null>(null)
 
   // Segment the timeline: when there's a long idle gap between tool
   // calls (session continued hours later), collapse it into a fixed
@@ -140,7 +197,7 @@ export function ToolTimeline() {
     //
     // Falls back to `groupId` grouping when durations are 0 or missing —
     // same groupId stacks vertically, different groupIds share row 0.
-    const result: Array<{ record: ToolCallRecord; row: number }> = []
+    const result: Array<{ record: TimelineRecord; row: number }> = []
     const rowEndTimes: number[] = [] // last end time on each row
 
     // Sort by start time so greedy assignment is deterministic.
@@ -285,6 +342,10 @@ export function ToolTimeline() {
             <div
               key={record.id}
               className="absolute group"
+              onMouseEnter={() =>
+                setHover({ record, left: startPct, top: row * ROW_HEIGHT + 4 + TOP_PAD })
+              }
+              onMouseLeave={() => setHover((h) => (h?.record.id === record.id ? null : h))}
               style={{
                 left: `${startPct}%`,
                 width: `${Math.max(1.5, widthPct)}%`,
@@ -303,33 +364,42 @@ export function ToolTimeline() {
                   boxShadow: 'inset 0 0.5px 0 0 rgba(255,255,255,0.18)',
                 }}
               />
-
-              {/* Tooltip on hover — escapes the chart via overflow-visible
-                   on the chart container. z-30 keeps it above sibling bars
-                   and the activity panel drag handle (z-10). */}
-              <div className="pointer-events-none absolute bottom-full left-0 z-30 mb-1.5 hidden rounded-md bg-[#0e0e10]/95 px-2 py-1 text-[9.5px] text-fg-0 shadow-[0_8px_20px_-8px_rgba(0,0,0,0.7)] ring-1 ring-white/[0.08] backdrop-blur-md group-hover:block whitespace-nowrap">
-                <span className="font-bold" style={{ color }}>{record.name}</span>
-                {record.durationMs != null && (
-                  <span className="ml-1.5 text-fg-3">{formatDuration(record.durationMs)}</span>
-                )}
-                {summarizeShort(record) && (
-                  <div className="mt-0.5 max-w-[220px] truncate text-fg-2">
-                    {summarizeShort(record)}
-                  </div>
-                )}
-                {/* Pointer caret connecting the tooltip to the bar */}
-                <span
-                  className="absolute left-3 top-full h-0 w-0"
-                  style={{
-                    borderLeft: '4px solid transparent',
-                    borderRight: '4px solid transparent',
-                    borderTop: '4px solid rgba(14,14,16,0.95)',
-                  }}
-                />
-              </div>
             </div>
           )
         })}
+
+        {/* Tooltip for the hovered bar — escapes the chart via
+             overflow-visible on the chart container. z-30 keeps it above
+             sibling bars and the activity panel drag handle (z-10). */}
+        {hover && (
+          <div
+            className="pointer-events-none absolute z-30 whitespace-nowrap rounded-md bg-[#0e0e10]/95 px-2 py-1 text-[9.5px] text-fg-0 shadow-[0_8px_20px_-8px_rgba(0,0,0,0.7)] ring-1 ring-white/[0.08] backdrop-blur-md"
+            style={{
+              left: `${hover.left}%`,
+              top: `${hover.top - 6}px`,
+              transform: 'translateY(-100%)',
+            }}
+          >
+            <span className="font-bold" style={{ color: getColor(hover.record.name) }}>
+              {hover.record.name}
+            </span>
+            {hover.record.durationMs != null && (
+              <span className="ml-1.5 text-fg-3">{formatDuration(hover.record.durationMs)}</span>
+            )}
+            {hover.record.summary && (
+              <div className="mt-0.5 max-w-[220px] truncate text-fg-2">{hover.record.summary}</div>
+            )}
+            {/* Pointer caret connecting the tooltip to the bar */}
+            <span
+              className="absolute left-3 top-full h-0 w-0"
+              style={{
+                borderLeft: '4px solid transparent',
+                borderRight: '4px solid transparent',
+                borderTop: '4px solid rgba(14,14,16,0.95)',
+              }}
+            />
+          </div>
+        )}
       </div>
 
       {hasCollapsedGaps && (
@@ -354,7 +424,7 @@ export function ToolTimeline() {
       </div>
     </div>
   )
-}
+})
 
 function shortDuration(ms: number): string {
   if (ms < 60_000) return `${Math.round(ms / 1000)}s`
@@ -370,7 +440,7 @@ function summarizeShort(r: ToolCallRecord): string {
   return s('path') || s('file_path') || s('query') || s('url')?.slice(0, 50) || s('command')?.split('\n')[0]?.slice(0, 50) || ''
 }
 
-function uniqueCategories(records: ToolCallRecord[]) {
+function uniqueCategories(records: TimelineRecord[]) {
   const seen = new Map<string, string>()
   for (const r of records) {
     const color = getColor(r.name)

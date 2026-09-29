@@ -1,6 +1,6 @@
-import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { useHarness } from '../state/store'
+import { collectDescendantSessionIds, useHarness } from '../state/store'
 import { useSchedulerStore } from '../state/scheduler-store'
 import type {
   CoordinationStrategy,
@@ -102,8 +102,11 @@ export function Sidebar() {
             isActive={s.id === activeSessionId}
             hasChildren={s.hasChildren}
             isExpanded={s.isExpanded}
-            onToggleExpand={() => toggleExpanded(s.id, s.isExpanded)}
-            onOpen={(mode) => openSessionPane(s.id, mode)}
+            subagentCount={
+              s.hasChildren ? collectDescendantSessionIds(sessions, s.id).length : 0
+            }
+            onToggleExpand={toggleExpanded}
+            onOpen={openSessionPane}
           />
           {s.hasChildren && (
             <Fold
@@ -290,8 +293,13 @@ export function Sidebar() {
   // re-computes when those bags actually change.
   const activeMessages = useHarness((s) => s.messages)
   const sessionArchive = useHarness((s) => s.sessionArchive)
+  const searchActive = sessionQuery.trim().length > 0
   const sessionSearchIndex = useMemo(() => {
     const index = new Map<string, string>()
+    // Flattening + lowercasing every loaded transcript is the heaviest
+    // thing the sidebar does, and its inputs change on every streamed
+    // frame. Only pay for it while a query is actually typed.
+    if (!searchActive) return index
     const flatten = (parts: Array<{ type: string; text?: string }> | undefined) => {
       if (!parts) return ''
       const buf: string[] = []
@@ -307,7 +315,7 @@ export function Sidebar() {
       index.set(s.id, `${s.title}\n${body}`.toLowerCase())
     }
     return index
-  }, [sessions, activeSessionId, activeMessages, sessionArchive])
+  }, [searchActive, sessions, activeSessionId, activeMessages, sessionArchive])
 
   const searchTokens = useMemo(() => {
     const trimmed = sessionQuery.trim().toLowerCase()
@@ -383,6 +391,7 @@ export function Sidebar() {
   // while multiple sessions stream concurrently. User messages are
   // bursty / occasional, so this gives an order that tracks the
   // operator's attention without thrashing.
+  const lastUserAtRef = useRef<Map<string, number> | null>(null)
   const lastUserAt = useMemo(() => {
     const map = new Map<string, number>()
     for (const s of sessions) {
@@ -399,6 +408,22 @@ export function Sidebar() {
       }
       map.set(s.id, ts)
     }
+    // Streaming replaces `activeMessages` / `sessionArchive` every frame
+    // but almost never moves a user-message timestamp. Hand back the
+    // previous map when nothing changed so the tree below (and every
+    // row object it builds) stays put.
+    const prevMap = lastUserAtRef.current
+    if (prevMap && prevMap.size === map.size) {
+      let same = true
+      for (const [id, ts] of map) {
+        if (prevMap.get(id) !== ts) {
+          same = false
+          break
+        }
+      }
+      if (same) return prevMap
+    }
+    lastUserAtRef.current = map
     return map
   }, [sessions, activeSessionId, activeMessages, sessionArchive])
 
@@ -1845,28 +1870,61 @@ function StateDot({ state }: { state: SubagentState }) {
 
 // ─── Session row with context menu ──────────────────────────────────
 
-function SessionRow({
-  session: s,
-  depth,
-  isActive,
-  hasChildren,
-  isExpanded,
-  onToggleExpand,
-  onOpen,
-}: {
+interface SessionRowProps {
   session: SessionSnapshot & { depth: number }
   depth: number
   isActive: boolean
   hasChildren: boolean
   isExpanded: boolean
-  onToggleExpand: () => void
-  onOpen: (mode: 'replace' | 'split') => void
-}) {
-  const renameSession = useHarness((st) => st.renameSession)
-  const deleteSession = useHarness((st) => st.deleteSession)
-  const downloadSession = useHarness((st) => st.downloadSession)
-  const branchSessionFrom = useHarness((st) => st.branchSessionFrom)
-  const allSessions = useHarness((st) => st.sessions)
+  /** Every descendant sub-session, so a folded parent and the Delete
+   *  entry can say how far the subtree reaches. Counted once by the
+   *  sidebar off the shared session-tree index. */
+  subagentCount: number
+  onToggleExpand: (sessionId: string, currentlyExpanded: boolean) => void
+  onOpen: (sessionId: string, mode: 'replace' | 'split') => void
+}
+
+/** Rows re-render only when something they show changed. The sidebar
+ *  re-renders on every streamed frame (it tracks messages for search and
+ *  recency) and rebuilds its row objects; without this every one of the
+ *  ~hundreds of rows re-rendered with it. */
+function sessionRowPropsEqual(a: SessionRowProps, b: SessionRowProps): boolean {
+  if (
+    a.depth !== b.depth ||
+    a.isActive !== b.isActive ||
+    a.hasChildren !== b.hasChildren ||
+    a.isExpanded !== b.isExpanded ||
+    a.subagentCount !== b.subagentCount ||
+    a.onToggleExpand !== b.onToggleExpand ||
+    a.onOpen !== b.onOpen
+  ) {
+    return false
+  }
+  if (a.session === b.session) return true
+  const ka = Object.keys(a.session) as Array<keyof SessionRowProps['session']>
+  if (ka.length !== Object.keys(b.session).length) return false
+  return ka.every((k) => a.session[k] === b.session[k])
+}
+
+const SessionRow = memo(function SessionRow({
+  session: s,
+  depth,
+  isActive,
+  hasChildren,
+  isExpanded,
+  subagentCount,
+  onToggleExpand: toggleExpand,
+  onOpen: open,
+}: SessionRowProps) {
+  const onToggleExpand = () => toggleExpand(s.id, isExpanded)
+  const onOpen = (mode: 'replace' | 'split') => open(s.id, mode)
+  // Actions are read at call time rather than subscribed: a row renders
+  // hundreds of times over, and each subscription re-runs on every
+  // store update.
+  const renameSession = (id: string, title: string) =>
+    useHarness.getState().renameSession(id, title)
+  const deleteSession = (id: string) => useHarness.getState().deleteSession(id)
+  const downloadSession = (id: string) => useHarness.getState().downloadSession(id)
   // Per-row "is this session currently streaming" subscription. For the
   // active session we read the top-level `isStreaming`; for everyone
   // else we look up the archived slice. Scoping the selector to one
@@ -1884,26 +1942,6 @@ function SessionRow({
   const [renameValue, setRenameValue] = useState(s.title)
   const inputRef = useRef<HTMLInputElement>(null)
   const rowRef = useRef<HTMLDivElement>(null)
-
-  // Count every descendant subagent under this session so the Delete
-  // entry can warn the user that the cascade reaches further than the
-  // single row they right-clicked.
-  const subagentCount = useMemo(() => {
-    let count = 0
-    const queue: string[] = [s.id]
-    const seen = new Set<string>([s.id])
-    while (queue.length > 0) {
-      const cur = queue.shift()!
-      for (const other of allSessions) {
-        if (other.parentSessionId === cur && !seen.has(other.id)) {
-          seen.add(other.id)
-          count += 1
-          queue.push(other.id)
-        }
-      }
-    }
-    return count
-  }, [allSessions, s.id])
 
   // Close context menu on click outside
   useEffect(() => {
@@ -1934,7 +1972,7 @@ function SessionRow({
       renameSession(s.id, trimmed)
     }
     setRenaming(false)
-  }, [renameValue, s.id, s.title, renameSession])
+  }, [renameValue, s.id, s.title])
 
   return (
     <div
@@ -2173,13 +2211,13 @@ function SessionRow({
           onCancel={() => setForking(false)}
           onConfirm={(name) => {
             setForking(false)
-            void branchSessionFrom(null, name, { sessionId: s.id })
+            void useHarness.getState().branchSessionFrom(null, name, { sessionId: s.id })
           }}
         />
       )}
     </div>
   )
-}
+}, sessionRowPropsEqual)
 
 /** Coordination-strategy badge shown on each session row's meta
  *  line. Maps the internal strategy ids to short operator-facing
