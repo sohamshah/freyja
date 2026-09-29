@@ -110,7 +110,8 @@ function RecallAffordance({
 // line sits directly above the ground truth, framed as "the record disagrees"
 // rather than an error. Reads details.effect_count from the
 // forgetting_detected system_event; if absent, renders nothing so the default
-// system chip handles it.
+// system chip handles it. details.claim, when present, is the sentence that
+// tripped the check and becomes the struck line (older events lack it).
 
 export function InlineForgetting({ eventId }: { eventId: string }) {
   const lookup = useContext(SystemEventLookupContext)
@@ -118,6 +119,7 @@ export function InlineForgetting({ eventId }: { eventId: string }) {
   const details = event?.details as Record<string, unknown> | undefined
   const rawCount = details?.effect_count ?? (details as { effectCount?: number })?.effectCount
   const count = typeof rawCount === 'number' ? rawCount : undefined
+  const claim = typeof details?.claim === 'string' ? details.claim.trim() : ''
 
   // No count → let the default chip handle it. The card has nothing
   // load-bearing to say without the ground-truth number.
@@ -137,13 +139,13 @@ export function InlineForgetting({ eventId }: { eventId: string }) {
         {event && <DatelineTS ts={event.at} />}
       </div>
 
-      {/* the struck belief — what the message implied */}
+      {/* the struck belief — what the message said (or implied, on older events) */}
       <div className="flex items-baseline gap-1.5">
         <span aria-hidden="true" className="shrink-0 font-mono text-[10.5px] leading-[1.5] text-fg-2">
           ⊘
         </span>
-        <span className="min-w-0 flex-1 font-mono text-[10.5px] leading-[1.5] text-fg-2 line-through">
-          I implied nothing was changed this session
+        <span className="min-w-0 flex-1 break-words font-mono text-[10.5px] leading-[1.5] text-fg-2 line-through">
+          {claim ? `“${claim}”` : 'I implied nothing was changed this session'}
         </span>
       </div>
 

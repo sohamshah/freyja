@@ -34,7 +34,7 @@ def _fake(tmp_path):
     fake._session_memory_present = _BridgeSession._session_memory_present.__get__(fake)
     fake._ledger_ground_truth = _BridgeSession._ledger_ground_truth.__get__(fake)
     fake._last_assistant_text = _BridgeSession._last_assistant_text  # staticmethod
-    fake._emit_forgetting_telemetry = lambda n: fake.forgetting_calls.append(n)
+    fake._emit_forgetting_telemetry = lambda n, claim="": fake.forgetting_calls.append((n, claim))
     return fake, led
 
 
@@ -101,9 +101,12 @@ def test_forgetting_correction_fires_once(tmp_path):
         )),
     ]
     out = fake._build_forgetting_correction()
+    claim = "I have no recollection of making changes; everything was read-only."
     assert out is not None
     assert "ledger records" in out
-    assert fake.forgetting_calls == [1]
+    # The triggering sentence is quoted to the agent and carried to the card.
+    assert f'"{claim}"' in out
+    assert fake.forgetting_calls == [(1, claim)]
     # Same tool-call index → flagged only once.
     assert fake._build_forgetting_correction() is None
 

@@ -74,7 +74,10 @@ RESEARCH_TOOLS = frozenset({"web_search", "web_fetch", "fetch_url", "twitter_sea
 _BASH_EFFECT_PATTERNS = (
     r"\bgit\s+(commit|push|merge|rebase|reset|checkout\s+-b|cherry-pick|tag|apply|am|revert|stash\s+(push|pop|apply)|clean)\b",
     r"\bgh\s+(pr|release|issue)\s+(create|edit|merge|close)\b",
-    r"(^|[^>])>>?(?!\s*&)\s*[^\s|&]+",  # output redirection into a file (not >&2)
+    # Output redirection into a file (not >&2). `->`, `=>` and `>=` are
+    # arrows and comparisons (jq, gcloud filters, code in -c strings), not
+    # redirects.
+    r"(^|[^>=\-])>>?(?![=&]|\s*&)\s*[^\s|&]+",
     r"\btee\b",
     r"\b(mkdir|mv|cp|rm|rmdir|ln|touch|chmod|chown|truncate|dd|sed\s+-i|patch)\b",
     r"\b(npm|pnpm|yarn|bun)\s+(i|install|add|remove|ci|run\s+build)\b",
@@ -84,21 +87,49 @@ _BASH_EFFECT_PATTERNS = (
     r"\balembic\s+(upgrade|downgrade|revision)\b",
 )
 _BASH_EFFECT_RE = re.compile("|".join(_BASH_EFFECT_PATTERNS), re.IGNORECASE)
+# Redirects that discard or merge output (2>/dev/null, &>/dev/null, >&2,
+# 2>&1) write no file. They are stripped before matching so they don't turn a
+# read-only command into an effect — they were most of one session's shell
+# "actions".
+_BASH_HARMLESS_REDIRECT_RE = re.compile(
+    r"(?:\d+|&)?>>?\s*(?:/dev/(?:null|stdout|stderr)\b|&(?:\d+|-))"
+)
 
 # Strong negative self-claims that, when the ledger holds real effects, almost
-# certainly mean the agent forgot work it did. Deliberately conservative — we
-# match unambiguous "I did nothing / only looked" assertions, not hedged or
-# future-tense statements, to keep false positives near zero.
-_NEGATIVE_CLAIM_RE = re.compile(
-    r"(no recollection of (making|any) (changes|edits)"
-    r"|(haven'?t|did\s*not|didn'?t|have not)\s+(made|make)\s+any\s+(changes|edits|modifications)"
-    r"|no\s+(changes|edits|modifications)\s+(were\s+)?(made|done)"
-    r"|(only|just)\s+(did\s+)?read[\- ]only\s+(exploration|work)"
-    r"|everything\b[^.\n]{0,60}\bread[\-\s]only"
-    r"|nothing\s+(was\s+)?(written|created|changed|modified)(?!\s+about)"
-    r"|i\s+have\s+not\s+(written|created|edited|modified|changed)\s+any)",
+# certainly mean the agent forgot work it did. Only claims about the agent's
+# work across the session count: "Nothing was written." after one guarded
+# script, or "Nothing changed." after one click, is accurate reporting on a
+# single run, and flagging it put false corrections in the chat. So:
+#   • first-person denials ("I haven't made any edits", "I have not written any
+#     files", "no recollection of making changes") and "everything so far has
+#     been read-only" characterizations fire on their own — unless narrowed to
+#     one place ("I haven't changed anything in prod", "…any changes to the
+#     file") without a session scope;
+#   • impersonal denials ("no changes were made", "nothing has been written")
+#     fire only when the same sentence scopes them to the session.
+_NEG = r"(?:\s+haven['’]?t|\s+have\s+not|['’]ve\s+not)"  # perfect tense
+_NEG_OR_PAST = r"(?:\s+haven['’]?t|\s+have\s+not|['’]ve\s+not|\s+didn['’]?t|\s+did\s+not)"
+_SELF_CLAIM_RE = re.compile(
+    r"no\s+recollection\s+of\s+(?:making|any)\s+(?:changes|edits)"
+    rf"|\b(?:i|we){_NEG_OR_PAST}(?:\s+yet)?\s+(?:made|make)\s+any\s+(?:\w+\s+)?(?:changes|edits|modifications)"
+    rf"|\b(?:i|we){_NEG}(?:\s+yet)?\s+(?:written|created|edited|modified|changed|touched)\s+any(?:thing\b|\s+\w+)"
+    r"|\b(?:only|just)\s+(?:did\s+|done\s+)?read[\-\s]only\s+(?:exploration|work)"
+    r"|\beverything\b[^.\n]{0,60}\b(?:has\s+been|had\s+been|was|been)\s+(?:\w+\s+)?read[\-\s]only",
     re.IGNORECASE,
 )
+_SESSION_CLAIM_RE = re.compile(
+    r"\bno\s+(?:\w+\s+)?(?:changes|edits|modifications|files)\s+(?:(?:have|has|had)\s+been\s+|were\s+|was\s+)?(?:made|done|written|created|modified|edited)"
+    # Passive only: "nothing was changed" is about work, "nothing changed" is
+    # about the world (a page after a click).
+    r"|\bnothing(?:\s+was|(?:['’]s|\s+has|\s+had)\s+been)\s+(?:written|created|changed|modified|edited)(?!\s+about)",
+    re.IGNORECASE,
+)
+_SESSION_SCOPE_RE = re.compile(
+    r"\b(?:this|the\s+current|our)\s+(?:session|conversation|chat)\b|\b(?:so|thus)\s+far\b|\b(?:until|up\s+to)\s+now\b",
+    re.IGNORECASE,
+)
+_NARROWED_RE = re.compile(r"\s*(?:in|to|on|inside|within|under)\b", re.IGNORECASE)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 
 
 def classify_tool(tool_name: str) -> str:
@@ -122,6 +153,7 @@ def classify_bash_command(command: str) -> str:
     """
     if not command or not command.strip():
         return "observation"
+    command = _BASH_HARMLESS_REDIRECT_RE.sub(" ", command)
     return "effect" if _BASH_EFFECT_RE.search(command) else "observation"
 
 
@@ -173,16 +205,28 @@ def git_status_delta(before: str, after: str) -> list[dict[str, str]]:
     return out
 
 
-def detect_negative_self_claim(text: str) -> bool:
-    """True if ``text`` makes a strong "I did nothing / only explored" claim.
+def find_negative_self_claim(text: str) -> str | None:
+    """Return the sentence in ``text`` that claims the agent did nothing / only
+    explored this session, or None.
 
     Used by the self-model monitor: if this fires while the ledger holds
     effects, the agent has very likely forgotten its own work and we inject a
-    correction + emit a ``forgetting_detected`` telemetry row.
+    correction + emit a ``forgetting_detected`` telemetry row quoting the
+    sentence.
     """
-    if not text:
-        return False
-    return bool(_NEGATIVE_CLAIM_RE.search(text))
+    for sentence in _SENTENCE_SPLIT_RE.split(text or ""):
+        scoped = _SESSION_SCOPE_RE.search(sentence) is not None
+        m = _SELF_CLAIM_RE.search(sentence)
+        if m and (scoped or not _NARROWED_RE.match(sentence, m.end())):
+            return sentence.strip()
+        if scoped and _SESSION_CLAIM_RE.search(sentence):
+            return sentence.strip()
+    return None
+
+
+def detect_negative_self_claim(text: str) -> bool:
+    """True if ``text`` makes a whole-session "I did nothing" claim."""
+    return find_negative_self_claim(text) is not None
 
 
 def _short_path(path: str, *, segments: int = 2) -> str:

@@ -60,7 +60,7 @@ from bridge.project_paths import project_output_dir, project_output_guidance
 from bridge.session_ledger import (  # noqa: E402
     SessionLedger,
     classify_bash_command,
-    detect_negative_self_claim,
+    find_negative_self_claim,
     git_status_delta,
     render_ledger_reminder,
 )
@@ -11564,23 +11564,26 @@ class _BridgeSession:
         if led is None or not led.has_effects(creator_id=self.id) or self.session is None:
             return None
         text = self._last_assistant_text(self.session)
-        if not text or not detect_negative_self_claim(text):
+        claim = find_negative_self_claim(text) if text else None
+        if not claim:
             return None
         # Flag a given episode only once (keyed on the tool-call index so a
         # later, genuinely-new claim can still fire).
         if self._forgetting_flag_index == self._tool_call_index:
             return None
         self._forgetting_flag_index = self._tool_call_index
+        if len(claim) > 200:
+            claim = claim[:199].rstrip() + "…"
         effects = led.effects(creator_id=self.id)
-        self._emit_forgetting_telemetry(len(effects))
+        self._emit_forgetting_telemetry(len(effects), claim)
         names = "; ".join(str(r.get("summary") or "") for r in effects[:5] if r.get("summary"))
         return (
             "<system-reminder>\n"
-            "Your previous message suggested you made no changes or only "
-            "explored this session, but the runtime ledger records "
-            f"{len(effects)} action(s) you took — e.g. {names}. Re-check the "
-            "write-ledger above and `git status` before answering; if you did "
-            "the work, acknowledge it.\n"
+            f"Your previous message said \"{claim}\", suggesting you made no "
+            "changes or only explored this session, but the runtime ledger "
+            f"records {len(effects)} action(s) you took — e.g. {names}. "
+            "Re-check the write-ledger above and `git status` before "
+            "answering; if you did the work, acknowledge it.\n"
             "</system-reminder>"
         )
 
@@ -11606,7 +11609,7 @@ class _BridgeSession:
             return ""
         return ""
 
-    def _emit_forgetting_telemetry(self, effect_count: int) -> None:
+    def _emit_forgetting_telemetry(self, effect_count: int, claim: str = "") -> None:
         try:
             from bridge.compaction_telemetry import append_telemetry
             append_telemetry({
@@ -11614,6 +11617,7 @@ class _BridgeSession:
                 "session_id": self.id,
                 "effect_count": effect_count,
                 "tool_call_index": self._tool_call_index,
+                "claim": claim,
             })
         except Exception:
             log("debug", "forgetting telemetry failed")
@@ -11632,6 +11636,9 @@ class _BridgeSession:
                 "details": {
                     "effect_count": effect_count,
                     "tool_call_index": self._tool_call_index,
+                    # The sentence that tripped the check, shown struck
+                    # through on the card.
+                    "claim": claim,
                 },
             })
         except Exception:  # noqa: BLE001
