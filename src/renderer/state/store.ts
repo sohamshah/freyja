@@ -3941,13 +3941,16 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       // these; replacing the ~1.5k-row `sessions` array for each of them
       // (just to bump updatedAt) invalidated the sidebar tree, every
       // row's memo and the cost roll-ups on every sub-agent token.
+      // No row at all (events that beat their session's registration):
+      // there is nothing to update, and mapping ~1.5k rows per event to
+      // find that out stalled the window for seconds under a busy stream.
       const rowChanged =
-        !sessionSnapshot ||
-        sessionSnapshot.messageCount !== updated.messages.length ||
+        !!sessionSnapshot &&
+        (sessionSnapshot.messageCount !== updated.messages.length ||
         sessionSnapshot.totalInputTokens !== updated.usage.totalInputTokens ||
         sessionSnapshot.totalOutputTokens !== updated.usage.totalOutputTokens ||
         sessionSnapshot.cacheReadTokens !== updated.usage.totalCacheReadTokens ||
-        sessionSnapshot.totalCost !== updated.usage.totalCost
+        sessionSnapshot.totalCost !== updated.usage.totalCost)
       const updatedSessions = rowChanged
         ? prev.sessions.map((s) =>
             s.id === sessionId
