@@ -189,6 +189,11 @@ fn read_ax_tree(pid: i32, max_depth: usize) -> PyResult<String> {
 }
 
 #[pyfunction]
+fn ax_press(pid: i32, x: f64, y: f64, role: &str, bounds: (f64, f64, f64, f64)) -> PyResult<bool> {
+    ax::press_at(pid, x, y, role, bounds).map_err(err)
+}
+
+#[pyfunction]
 #[pyo3(signature = (pid, role=None, label=None, title=None))]
 fn find_ax_element(
     pid: i32,
@@ -245,6 +250,7 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // ax
     m.add_function(wrap_pyfunction!(read_ax_tree, m)?)?;
     m.add_function(wrap_pyfunction!(find_ax_element, m)?)?;
+    m.add_function(wrap_pyfunction!(ax_press, m)?)?;
     m.add_function(wrap_pyfunction!(check_accessibility_permission, m)?)?;
     m.add_function(wrap_pyfunction!(prompt_accessibility_permission, m)?)?;
     Ok(())

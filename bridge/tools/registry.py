@@ -474,6 +474,12 @@ def build_desktop_registry(
                 tools.append(
                     ComputerUseTool(sub_spec=sub_spec, enabled=True)
                 )
+                from bridge.decisions.provider import TypeSafeProvider
+
+                if TypeSafeProvider().available:
+                    from bridge.tools.jev_computer_use_tool import JevComputerUseTool
+
+                    tools.append(JevComputerUseTool(sub_spec=sub_spec, enabled=True))
         except ImportError as exc:
             logger.warning(
                 "computer-use tools unavailable: %s (install freyja_native)",

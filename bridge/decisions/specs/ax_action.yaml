@@ -1,0 +1,52 @@
+id: ax_action
+version: 1
+mode: shadow
+privacy: personal
+description: >
+  Computer-use fast path. The state is a goal, the current plan step, and the
+  frontmost window's accessibility tree serialized as a numbered table of
+  actionable elements. The model grounds the step to an element index and
+  reports whether the previous step took effect; code executes the click.
+frame: >
+  The content describes an app window on a Mac as a numbered table of
+  interactive elements (index, role, label, value), plus the goal and the
+  single next step a planner wants performed. Pick the element that matches
+  the step. If no element matches, choose the null option.
+shuffle_options: false
+dynamic_options: [click_target, type_target]
+questions:
+  operation:
+    type: choice
+    instructions: Which kind of action does the next step call for?
+    options:
+      click: "press a button, select a menu item, choose a sidebar entry, toggle a checkbox"
+      type: "enter text into a text field"
+      key: "press a keyboard shortcut or key such as Return, Escape, Tab"
+      scroll: "the target is probably off-screen and the view must scroll"
+      done: "the goal is already satisfied by the visible state"
+      blocked: "a dialog, permission prompt, or error blocks progress"
+      need_vision: "the table does not describe the screen well enough to act; a screenshot is required"
+  click_target:
+    type: choice
+    instructions: >
+      Which element index should be clicked to perform the next step? Choose
+      none if the step is not a click or no element matches.
+  type_target:
+    type: choice
+    instructions: >
+      Which text field index should receive typed text for the next step?
+      Choose none if the step does not involve typing.
+  previous_step_succeeded:
+    type: noul
+    instructions: >
+      Comparing the previous window state with the current one, did the
+      previous step take the intended effect?
+  unexpected_dialog:
+    type: noul
+    instructions: >
+      Is a modal dialog, alert, permission prompt, or error sheet present
+      that the plan did not anticipate?
+gate:
+  min_confidence:
+    operation: 0.5
+    click_target: 0.5

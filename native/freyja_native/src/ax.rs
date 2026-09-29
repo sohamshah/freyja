@@ -9,13 +9,15 @@
 
 use accessibility::{AXAttribute, AXUIElement, AXUIElementAttributes};
 use accessibility_sys::{
-    kAXValueTypeCGRect, AXIsProcessTrustedWithOptions, AXValueGetType, AXValueGetValue,
+    kAXErrorSuccess, kAXValueTypeCGRect, AXIsProcessTrustedWithOptions,
+    AXUIElementCopyElementAtPosition, AXUIElementRef, AXValueGetType, AXValueGetValue,
     AXValueRef,
 };
 use core_foundation::array::CFArray;
 use core_foundation::base::{CFType, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::CFDictionary;
+use core_foundation::number::CFNumber;
 use core_foundation::string::CFString;
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use serde::Serialize;
@@ -91,6 +93,98 @@ pub fn read_ax_tree(pid: i32, max_depth: usize) -> Result<String, AxError> {
     let root = AXUIElement::application(pid);
     let node = walk(&root, max_depth);
     serde_json::to_string(&node).map_err(|e| AxError::Generic(e.to_string()))
+}
+
+/// Press the `role` element of app `pid` whose frame is `frame`, found by
+/// hit-testing (x, y), with the AXPress action instead of a synthetic click.
+/// The app hit-tests its own windows, so a window of another app on top cannot
+/// receive the press, and controls that ignore synthetic mouse events still
+/// respond. The hit is usually a child of the control (its text or image), so
+/// this climbs to the nearest ancestor with the expected role and frame.
+/// Returns false when there is no such element or it has no AXPress action.
+pub fn press_at(
+    pid: i32,
+    x: f64,
+    y: f64,
+    role: &str,
+    frame: (f64, f64, f64, f64),
+) -> Result<bool, AxError> {
+    let app = AXUIElement::application(pid);
+    let mut hit: AXUIElementRef = std::ptr::null_mut();
+    let err = unsafe {
+        AXUIElementCopyElementAtPosition(app.as_concrete_TypeRef(), x as f32, y as f32, &mut hit)
+    };
+    if err != kAXErrorSuccess || hit.is_null() {
+        return Ok(false);
+    }
+    let mut elem = unsafe { AXUIElement::wrap_under_create_rule(hit) };
+    for _ in 0..8 {
+        if is_match(&elem, role, frame) {
+            return Ok(press(&elem));
+        }
+        match elem.parent() {
+            Ok(parent) => elem = parent,
+            Err(_) => break,
+        }
+    }
+    // The hit test lands on whatever is on top, e.g. another window of the same
+    // app covering a sheet. Find the element in the tree instead; press it only
+    // if exactly one element has this role and frame.
+    match find_unique(&app, role, frame) {
+        Some(elem) => Ok(press(&elem)),
+        None => Ok(false),
+    }
+}
+
+fn is_match(elem: &AXUIElement, role: &str, frame: (f64, f64, f64, f64)) -> bool {
+    elem.role().map(|r| r.to_string() == role).unwrap_or(false)
+        && frame_matches(frame_of(elem), frame)
+}
+
+fn press(elem: &AXUIElement) -> bool {
+    let pressable = elem
+        .action_names()
+        .map(|names| names.iter().any(|n| n.to_string() == "AXPress"))
+        .unwrap_or(false);
+    pressable
+        && elem
+            .perform_action(&CFString::from_static_string("AXPress"))
+            .is_ok()
+}
+
+fn find_unique(
+    root: &AXUIElement,
+    role: &str,
+    frame: (f64, f64, f64, f64),
+) -> Option<AXUIElement> {
+    let mut stack: Vec<AXUIElement> = vec![root.clone()];
+    let mut found: Option<AXUIElement> = None;
+    let mut seen = 0;
+    while let Some(elem) = stack.pop() {
+        seen += 1;
+        if seen > 4000 {
+            return None;
+        }
+        if is_match(&elem, role, frame) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(elem.clone());
+        }
+        if let Ok(children) = elem.children() {
+            stack.extend(children.iter().map(|c| c.clone()));
+        }
+    }
+    found
+}
+
+fn frame_matches(actual: Option<(f64, f64, f64, f64)>, want: (f64, f64, f64, f64)) -> bool {
+    actual.is_some_and(|a| {
+        (a.0 - want.0).abs() <= 2.0
+            && (a.1 - want.1).abs() <= 2.0
+            && (a.2 - want.2).abs() <= 2.0
+            && (a.3 - want.3).abs() <= 2.0
+    })
 }
 
 pub fn find_ax_element(
@@ -174,7 +268,7 @@ fn walk(elem: &AXUIElement, depth: usize) -> AxNode {
         subrole: elem.subrole().ok().map(|s| s.to_string()),
         title: elem.title().ok().map(|s| s.to_string()),
         label: custom_string(elem, "AXDescription"),
-        value: custom_string(elem, "AXValue"),
+        value: value_string(elem),
         description: elem.role_description().ok().map(|s| s.to_string()),
         help: elem.help().ok().map(|s| s.to_string()),
         identifier: elem.identifier().ok().map(|s| s.to_string()),
@@ -196,6 +290,28 @@ fn custom_string(elem: &AXUIElement, name: &str) -> Option<String> {
             CFString::wrap_under_get_rule(value.as_CFTypeRef() as _)
         };
         Some(s.to_string())
+    } else {
+        None
+    }
+}
+
+/// AXValue as text. Checkboxes, radio buttons, switches, and sliders report a
+/// CFBoolean or CFNumber rather than a string, so reading strings only lost
+/// their state.
+fn value_string(elem: &AXUIElement) -> Option<String> {
+    let attr = AXAttribute::<CFType>::new(&CFString::new("AXValue"));
+    let value = elem.attribute(&attr).ok()?;
+    if value.instance_of::<CFString>() {
+        let s = unsafe { CFString::wrap_under_get_rule(value.as_CFTypeRef() as _) };
+        Some(s.to_string())
+    } else if value.instance_of::<CFBoolean>() {
+        let b = unsafe { CFBoolean::wrap_under_get_rule(value.as_CFTypeRef() as _) };
+        Some(if bool::from(b) { "1" } else { "0" }.to_string())
+    } else if value.instance_of::<CFNumber>() {
+        let n = unsafe { CFNumber::wrap_under_get_rule(value.as_CFTypeRef() as _) };
+        n.to_i64()
+            .map(|i| i.to_string())
+            .or_else(|| n.to_f64().map(|f| f.to_string()))
     } else {
         None
     }
