@@ -97,7 +97,9 @@ Each script removes its probes and detaches when it finishes.
 reports layout per keystroke / per streamed token, the per-frame commit
 cost, and key-to-paint latency. `FP_WINDOW=app` uses the app's
 transparent + vibrancy window; `FP_BLUR=1` measures with the window
-unfocused. It opens a visible window for about a minute.
+unfocused; `FP_REPLAY=<replay.json>` also types while recorded events
+stream into the open session (children go to fake ids). It opens a visible
+window for about a minute and uses its own `Electron` data folder.
 
 ```sh
 "<path to Electron.app>/Contents/MacOS/Electron" electron-ab.cjs <dist dir> "<session title>"

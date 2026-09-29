@@ -123,6 +123,47 @@ app.whenReady().then(async () => {
       p90: keys.length ? keys[Math.floor(keys.length * 0.9)] : 0,
       max: keys.length ? keys[keys.length - 1] : 0,
     }
+    // 4 — FP_REPLAY=<replay.json>: type while recorded bridge events stream
+    //     into the open session (parent → it, children → fake ids).
+    if (process.env.FP_REPLAY) {
+      const src = JSON.parse(fs.readFileSync(process.env.FP_REPLAY, 'utf8'))
+      const parent = src.find(([, e]) => e.type === 'turn_start')?.[1].sessionId
+      const openId = await js(`document.querySelector('[data-session-id] > button.ring-hairline, [data-session-id] > button[class*="ring-hairline"]')?.parentElement?.dataset.sessionId`)
+      const kids = new Map()
+      const rows = src.map(([at, e]) => {
+        const o = { ...e }
+        if (o.sessionId === parent) o.sessionId = openId
+        else if (o.sessionId) { if (!kids.has(o.sessionId)) kids.set(o.sessionId, `ab-child-${kids.size + 1}`); o.sessionId = kids.get(o.sessionId) }
+        return [at, o]
+      })
+      await js(`window.__fpRows = ${JSON.stringify(rows)}; 1`)
+      await js(`(() => { window.__fpKeys = []; const o = new PerformanceObserver((l) => { for (const e of l.getEntries()) if (e.name === 'keydown') window.__fpKeys.push(e.duration) }); o.observe({ type: 'event', durationThreshold: 16 }); window.__fpObs = o; return 1 })()`)
+      const s0 = await metrics()
+      await js(`(() => { const rows = window.__fpRows; const t0 = performance.now(); let i = 0; const pump = () => { const now = performance.now() - t0; const batch = []; while (i < rows.length && rows[i][0] <= now) batch.push(rows[i++][1]); if (batch.length) window.__emit(batch); if (i < rows.length && now < 25000) setTimeout(pump, 4); else window.__fpReplayDone = i }; pump(); return 1 })()`)
+      const r0 = Date.now()
+      let k = 0
+      while (Date.now() - r0 < 20000) {
+        const ch = text[k++ % text.length]
+        const keyCode = ch === ' ' ? 'Space' : ch
+        wc.sendInputEvent({ type: 'keyDown', keyCode })
+        wc.sendInputEvent({ type: 'char', keyCode: ch })
+        wc.sendInputEvent({ type: 'keyUp', keyCode })
+        await sleep(70)
+      }
+      await sleep(1000)
+      const s1 = await metrics()
+      const rk = await js(`(() => { window.__fpObs.disconnect(); return window.__fpKeys.sort((a, b) => a - b) })()`)
+      const secs = (Date.now() - r0) / 1000
+      out.streamingTyping = {
+        replayed: await js('window.__fpReplayDone || 0'),
+        p50: rk.length ? rk[Math.floor(rk.length / 2)] : 0,
+        p90: rk.length ? rk[Math.floor(rk.length * 0.9)] : 0,
+        max: rk.length ? rk[rk.length - 1] : 0,
+        busyPct: Math.round(((s1.TaskDuration - s0.TaskDuration) / secs) * 100),
+        layoutSec: +(s1.LayoutDuration - s0.LayoutDuration).toFixed(2),
+        scriptSec: +(s1.ScriptDuration - s0.ScriptDuration).toFixed(2),
+      }
+    }
     dbg.detach()
   } catch (err) {
     out.error = String(err).slice(0, 500)
