@@ -130,6 +130,11 @@ def write_plist() -> Path:
 
 def install() -> Path:
     """Write the plist + load it. Returns the plist path."""
+    from bridge.launchd_guard import launchd_changes_blocked
+
+    blocked = launchd_changes_blocked()
+    if blocked:
+        raise RuntimeError(f"refusing to change the gateway's launchd job: {blocked}")
     path = write_plist()
     # `launchctl bootstrap gui/<uid> <plist>` is the modern API; the
     # older `launchctl load` still works on macOS 11+ and is simpler
@@ -158,6 +163,11 @@ def unload(*, silent: bool = False) -> bool:
 
 def uninstall() -> bool:
     """Unload + delete the plist."""
+    from bridge.launchd_guard import launchd_changes_blocked
+
+    blocked = launchd_changes_blocked()
+    if blocked:
+        raise RuntimeError(f"refusing to change the gateway's launchd job: {blocked}")
     unload(silent=True)
     path = plist_path()
     if path.exists():

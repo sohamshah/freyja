@@ -11,4 +11,7 @@ def _isolated_freyja_home(tmp_path_factory, monkeypatch):
     # ~/.freyja — which happened once with an OAuth client registration.
     if "FREYJA_HOME" not in os.environ:
         monkeypatch.setenv("FREYJA_HOME", str(tmp_path_factory.mktemp("freyja-home")))
+    # launchd has one job registry per macOS user, so a test that installs
+    # a LaunchAgent replaces the real Freyja job (bridge/launchd_guard.py).
+    monkeypatch.setenv("FREYJA_NO_LAUNCHD", "1")
     yield

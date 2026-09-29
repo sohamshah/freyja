@@ -242,6 +242,12 @@ def ensure_daemon_installed(*, reason: str = "auto") -> dict[str, Any]:
     Returns a status dict suitable for system events / dashboard."""
     if not is_supported_platform():
         return {"installed": False, "reason": "platform_unsupported"}
+    from bridge.launchd_guard import launchd_changes_blocked
+
+    blocked = launchd_changes_blocked()
+    if blocked:
+        logger.info("scheduler daemon not installed (reason=%s): %s", reason, blocked)
+        return {"installed": False, "reason": f"launchd_blocked: {blocked}"}
 
     try:
         executable, args = resolve_bridge_invocation()
@@ -293,8 +299,18 @@ def ensure_daemon_installed(*, reason: str = "auto") -> dict[str, Any]:
     #     respawn so the next KeepAlive respawn (~10s) picks up the
     #     new content automatically. We could `launchctl stop` to
     #     hasten that, but the natural respawn cycle does the job.
-    currently_loaded = _launchctl_print(LAUNCH_AGENT_LABEL) is not None
-    if plist_changed and currently_loaded:
+    #   - the loaded job runs a different program than our shim → the
+    #     registration came from somewhere else (e.g. a test run with a
+    #     temporary HOME whose folder is gone) and launchd may not be able
+    #     to start it at all, so re-register from our plist.
+    loaded = _launchctl_print(LAUNCH_AGENT_LABEL)
+    currently_loaded = loaded is not None
+    registration_drifted = (
+        currently_loaded
+        and loaded.get("program") is not None
+        and loaded["program"] != str(shim)
+    )
+    if (plist_changed or registration_drifted) and currently_loaded:
         _launchctl_unload()
         _launchctl_load()
     elif not currently_loaded:
@@ -320,6 +336,7 @@ def ensure_daemon_installed(*, reason: str = "auto") -> dict[str, Any]:
         "bridge_args": args,
         "shim_rewritten": shim_changed,
         "plist_rewritten": plist_changed,
+        "registration_repaired": registration_drifted,
     })
 
     try:
@@ -360,6 +377,11 @@ def uninstall_daemon() -> dict[str, Any]:
     shim. Does NOT delete persisted job state — those survive."""
     if not is_supported_platform():
         return {"uninstalled": False, "reason": "platform_unsupported"}
+    from bridge.launchd_guard import launchd_changes_blocked
+
+    blocked = launchd_changes_blocked()
+    if blocked:
+        return {"uninstalled": False, "reason": f"launchd_blocked: {blocked}"}
 
     _launchctl_unload()
     removed_files: list[str] = []
@@ -472,8 +494,10 @@ def _launchctl_print(label: str) -> dict[str, Any] | None:
     info: dict[str, Any] = {}
     for line in out.splitlines():
         s = line.strip()
-        if s.startswith("state ="):
+        if s.startswith("state =") and "state" not in info:
             info["state"] = s.split("=", 1)[1].strip()
+        elif s.startswith("program =") and "program" not in info:
+            info["program"] = s.split("=", 1)[1].strip()
         elif s.startswith("pid ="):
             try:
                 info["pid"] = int(s.split("=", 1)[1].strip())

@@ -85,7 +85,11 @@ def _cmd_gateway_uninstall(args: argparse.Namespace) -> int:
         print("uninstall is macOS-only", file=sys.stderr)
         return 1
     from bridge.gateway.setup import launchd
-    ok = launchd.uninstall()
+    try:
+        ok = launchd.uninstall()
+    except RuntimeError as exc:
+        print(f"uninstall failed: {exc}", file=sys.stderr)
+        return 1
     if ok:
         print("uninstalled")
         return 0

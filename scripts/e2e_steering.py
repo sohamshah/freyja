@@ -84,6 +84,9 @@ def _bridge_env(home: Path) -> dict[str, str]:
         HOME=str(home),
         FREYJA_HOME=str(home / ".freyja"),
         FREYJA_WORKSPACE=str(workspace),
+        # The temporary HOME doesn't isolate launchd, which has one job
+        # registry per user; never let this bridge touch the real jobs.
+        FREYJA_NO_LAUNCHD="1",
         PYTHONPATH=str(REPO),
         PYTHONUNBUFFERED="1",
     )

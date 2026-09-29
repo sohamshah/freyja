@@ -259,17 +259,46 @@ fi
 # briefer rebrief silently ran without the new recency block: the desktop
 # app updated but this daemon didn't.) kickstart -k does stop+start in
 # one call; -k is harmless if it happens to be stopped.
-if [ -f ~/Library/LaunchAgents/com.freyja.scheduler.plist ]; then
+# Runs a command, killing it after $1 seconds. macOS ships no `timeout`.
+run_with_timeout() {
+  local secs=$1; shift
+  "$@" &
+  local pid=$!
+  ( sleep "$secs"; kill "$pid" 2>/dev/null ) &
+  local watcher=$!
+  local rc=0
+  wait "$pid" || rc=$?
+  kill "$watcher" 2>/dev/null || true
+  wait "$watcher" 2>/dev/null || true
+  return "$rc"
+}
+
+SCHEDULER_PLIST=~/Library/LaunchAgents/com.freyja.scheduler.plist
+if [ -f "$SCHEDULER_PLIST" ]; then
   echo "→ Restarting scheduler daemon to pick up new Python code…"
-  # kickstart -k is a synchronous kill+restart (unlike the gateway's
-  # async stop/start dance above), so no PID polling is needed. We DON'T
-  # silence the failure path: a kickstart that fails here means the
-  # daemon keeps running stale code — exactly the bug this block exists
-  # to prevent — so surface it (non-fatal; the app itself still works).
-  if ! launchctl kickstart -k "gui/$(id -u)/com.freyja.scheduler"; then
-    echo "  · WARN: scheduler daemon restart failed (it may not be loaded)."
+  # Re-register the job from the plist on disk instead of kickstarting
+  # whatever launchd has loaded. The loaded job can differ from the file
+  # (a test run once registered one pointing into a temporary folder that
+  # was then deleted), and `kickstart -k` on a job launchd can't start
+  # waits forever, which hung this script. bootstrap loads the current
+  # plist and starts the daemon (RunAtLoad). Every call has a time limit.
+  # A failure stays non-fatal (the app itself still works), but we say
+  # so, because a daemon left on stale code is the bug this step prevents.
+  SCHEDULER_JOB="gui/$(id -u)/com.freyja.scheduler"
+  run_with_timeout 15 launchctl bootout "$SCHEDULER_JOB" 2>/dev/null || true
+  # bootout returns before launchd has finished removing the job, and
+  # bootstrap fails while the old one is still there.
+  for i in $(seq 1 20); do
+    launchctl print "$SCHEDULER_JOB" >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+  if run_with_timeout 15 launchctl bootstrap "gui/$(id -u)" "$SCHEDULER_PLIST"; then
+    echo "  · registered from $SCHEDULER_PLIST"
+  else
+    echo "  · WARN: scheduler daemon restart failed."
     echo "    If briefings look stale, run:"
-    echo "      launchctl kickstart -k gui/\$(id -u)/com.freyja.scheduler"
+    echo "      launchctl bootout gui/\$(id -u)/com.freyja.scheduler"
+    echo "      launchctl bootstrap gui/\$(id -u) $SCHEDULER_PLIST"
   fi
 fi
 
