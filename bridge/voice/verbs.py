@@ -1,7 +1,7 @@
 """Verb registry for the Galdr voice agent (contract §3, pinned).
 
 A verb is one atomic Mac action ("spotify.play", "system.volume", …).
-The registry renders two projections of the same catalog:
+The registry renders three projections of the same catalog:
 
 - `catalog_markdown()` — the human/model-readable verb table baked into
   the realtime session instructions.
@@ -9,6 +9,8 @@ The registry renders two projections of the same catalog:
   `verb` enum is the registered names. A single tool keeps the realtime
   session config small and lets the catalog live in the instructions
   where it is cheaper to update.
+- `responses_tools()` — one typed function tool per verb (`spotify_play`)
+  for the GPT-Live seat's Responses backend (docs/GALDR-LIVE.md).
 
 Execution semantics (tiers, confirm tokens, receipts, undo retention)
 live in `bridge/voice/service.py`; adapters only return `VerbResult`s.
@@ -103,6 +105,60 @@ class VerbRegistry:
                 "required": ["verb"],
             },
         }
+
+    @staticmethod
+    def tool_name(verb_name: str) -> str:
+        """Function-tool name for a verb. Responses tool names allow only
+        [a-zA-Z0-9_-], so the namespace dot becomes an underscore:
+        `spotify.play` → `spotify_play`. Namespaces never contain an
+        underscore, so the first one always marks the split."""
+        return verb_name.replace(".", "_", 1)
+
+    def resolve_tool_name(self, name: str) -> Optional[str]:
+        """Inverse of `tool_name`: the registered verb a per-verb function
+        tool stands for, or None. Also accepts the dotted verb name itself
+        (a backend that echoes the catalog spelling still resolves)."""
+        if name in self._verbs:
+            return name
+        for verb_name in self._verbs:
+            if self.tool_name(verb_name) == name:
+                return verb_name
+        return None
+
+    def responses_tools(self, exclude: tuple[str, ...] = ()) -> list[dict[str, Any]]:
+        """One function tool per verb, for a GPT-Live Responses backend
+        (docs/GALDR-LIVE.md). A reasoning backend picks far better from
+        typed tools than from one `act` enum, and 50 schemas are cheap
+        once cached. Confirm-tier verbs gain an optional `confirm_token`
+        so the re-call after a spoken yes has a slot for it."""
+        tools: list[dict[str, Any]] = []
+        for verb in self._verbs.values():
+            if verb.name in exclude:
+                continue
+            properties = dict(verb.params)
+            description = verb.description
+            if verb.tier == "confirm":
+                properties["confirm_token"] = {
+                    "type": "string",
+                    "description": (
+                        "Only when a previous result said CONFIRM REQUIRED "
+                        "and the operator has assented: the token it gave."
+                    ),
+                }
+                description += " Requires spoken confirmation."
+            tools.append(
+                {
+                    "type": "function",
+                    "name": self.tool_name(verb.name),
+                    "description": description,
+                    "parameters": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": list(verb.required),
+                    },
+                }
+            )
+        return tools
 
 
 def build_default_registry() -> VerbRegistry:

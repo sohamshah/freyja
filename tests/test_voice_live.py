@@ -223,3 +223,28 @@ async def test_live_ws_text_mode_act_round_trip():
             if ev.get("type") == "response.done":
                 break
         assert final_text.strip(), "expected a final text confirmation after the tool result"
+
+
+
+# ── GPT-Live seat (docs/GALDR-LIVE.md) ────────────────────────────────────
+
+
+async def test_gpt_live_accepts_the_production_session_config(tmp_path):
+    """The live session object is strict — an unknown field fails
+    session.start. Build the REAL config (real registry, 49 verb tools,
+    both prompts) and make sure GPT-Live starts on it."""
+    import websockets
+
+    svc = VoiceService(SimpleNamespace(), base_dir=tmp_path / "voice", emit_fn=lambda e: None)
+    svc._log = lambda *a: None
+    config = svc._build_live_session_config(svc._ensure_registry())
+    assert config["model"] == "gpt-live-1"
+    async with websockets.connect(
+        "wss://api.openai.com/v1/live/sessions",
+        additional_headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
+    ) as ws:
+        await ws.send(json.dumps({"type": "session.start", "session": config}))
+        started = json.loads(await asyncio.wait_for(ws.recv(), 15))
+        assert started["type"] == "session.started", started
+        assert started["session"]["delegation"]["type"] == "responses"
+        await ws.send(json.dumps({"type": "session.close"}))

@@ -463,7 +463,9 @@ export type VoiceConfig = {
   /** No announcements while the local hour is in [start, end) — wrap-around
    *  aware (22..8 spans midnight). 24h local hours. */
   quietHours: { start: number; end: number }
-  available: { models: string[]; voices: string[] }
+  /** GPT-Live seats: the Responses model reasoning + tool calls go to. */
+  liveBackend?: string
+  available: { models: string[]; voices: string[]; backends?: string[] }
   /** Capability flags for the UI. */
   hasApiKey: boolean
   spotifySearch: boolean
@@ -885,6 +887,10 @@ export type BridgeCommand =
   | { type: 'wm.backfill'; id?: string; limit?: number; dryRun?: boolean }
   // ── Voice IPC (docs/GALDR-BUILD.md §2) ────────────────────────────
   | { type: 'voice_session_start' }
+  /** GPT-Live seat (docs/GALDR-LIVE.md): the renderer's WebRTC offer. The
+   *  bridge creates the session with the API key and answers with
+   *  voice_live_answer — no ephemeral secret ever reaches the renderer. */
+  | { type: 'voice_live_connect'; voiceSessionId: string; sdp: string }
   | {
       type: 'voice_session_end'
       voiceSessionId: string
@@ -934,6 +940,7 @@ export type BridgeCommand =
         idleTimeoutSec?: number
         proactiveVoice?: boolean
         quietHours?: { start?: number; end?: number }
+        liveBackend?: string
       }
     }
 
@@ -1467,10 +1474,25 @@ export type BridgeEvent =
   | {
       type: 'voice_session_ready'
       voiceSessionId: string
+      /** 'live' = GPT-Live: no client secret; the SDP exchange goes through
+       *  voice_live_connect. Absent on older bridges ⇒ realtime. */
+      transport?: 'realtime' | 'live'
       clientSecret: string
       model: string
+      /** GPT-Live only: the Responses model the session delegates to. */
+      backendModel?: string
       expiresAt: number
       webrtcUrl: string
+    }
+  | {
+      /** Answer to voice_live_connect — always sent, ok or not, so the
+       *  renderer's pending SDP exchange settles. */
+      type: 'voice_live_answer'
+      voiceSessionId: string
+      ok: boolean
+      sdp?: string
+      liveSessionId?: string
+      error?: string
     }
   | {
       type: 'voice_session_closed'
@@ -1495,6 +1517,9 @@ export type BridgeEvent =
        *  the function_call_output text and prunes the previous one so only
        *  the newest screenshot stays in the conversation. base64 PNG. */
       imageB64?: string
+      /** 'image/png' unless the bridge re-encoded an oversized screenshot
+       *  as JPEG to fit the data channel (same pixel dimensions). */
+      imageMime?: string
       imageW?: number
       imageH?: number
     }

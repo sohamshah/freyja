@@ -15550,6 +15550,13 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
             emit({"type": "voice_error", "code": "voice_session_start_failed", "message": str(exc)})
         return
 
+    if ctype == "voice_live_connect":
+        try:
+            state.voice.spawn("live_connect", state.voice.handle_live_connect(cmd))
+        except Exception as exc:  # noqa: BLE001
+            emit({"type": "voice_error", "code": "voice_live_connect_failed", "message": str(exc)})
+        return
+
     if ctype == "voice_session_end":
         try:
             state.voice.spawn("session_end", state.voice.handle_session_end(cmd))

@@ -341,6 +341,14 @@ function VoiceSettings() {
   const voices = config.available.voices.includes(config.voice)
     ? config.available.voices
     : [config.voice, ...config.available.voices]
+  // GPT-Live (docs/GALDR-LIVE.md) is full duplex — no turn detection to
+  // pick — and delegates reasoning + tools to a backend model instead.
+  const live = config.model.startsWith('gpt-live')
+  const liveBackend = config.liveBackend ?? 'gpt-6.1-sol'
+  const backendOptions = config.available.backends ?? [liveBackend]
+  const backends = backendOptions.includes(liveBackend)
+    ? backendOptions
+    : [liveBackend, ...backendOptions]
 
   const selectClass =
     'w-full rounded border border-white/[0.10] bg-black/[0.30] px-2 py-1.5 font-mono text-[11.5px] text-fg-0 focus:border-accent/[0.40] focus:outline-none'
@@ -412,19 +420,36 @@ function VoiceSettings() {
             ))}
           </select>
         </div>
-        <div>
-          <div className="mb-1 label">turn detection</div>
-          <select
-            value={config.vadMode}
-            onChange={(e) =>
-              patch({ vadMode: e.target.value as VoiceConfig['vadMode'] })
-            }
-            className={selectClass}
-          >
-            <option value="semantic_vad">semantic — natural turn-taking</option>
-            <option value="server_vad">server — silence-based</option>
-          </select>
-        </div>
+        {live ? (
+          <div>
+            <div className="mb-1 label">backend (reasoning + tools)</div>
+            <select
+              value={liveBackend}
+              onChange={(e) => patch({ liveBackend: e.target.value })}
+              className={selectClass}
+            >
+              {backends.map((b) => (
+                <option key={b} value={b}>
+                  {b}
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : (
+          <div>
+            <div className="mb-1 label">turn detection</div>
+            <select
+              value={config.vadMode}
+              onChange={(e) =>
+                patch({ vadMode: e.target.value as VoiceConfig['vadMode'] })
+              }
+              className={selectClass}
+            >
+              <option value="semantic_vad">semantic — natural turn-taking</option>
+              <option value="server_vad">server — silence-based</option>
+            </select>
+          </div>
+        )}
         <div>
           <div className="mb-1 label">idle timeout (s)</div>
           <input

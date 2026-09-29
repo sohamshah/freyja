@@ -33,14 +33,56 @@ import httpx
 
 from bridge.voice.floor import parse as floor_parse
 from bridge.voice.floor import scan_for_panic
-from bridge.voice.prompts import build_instructions
+from bridge.voice.prompts import (
+    build_backend_instructions,
+    build_instructions,
+    build_live_instructions,
+)
 from bridge.voice.receipts import Receipt, ReceiptStore, UndoLedger
 from bridge.voice.routines import INFO_VERBS, Routine, RoutineStep, RoutineStore, slugify
 
 _MINT_URL = "https://api.openai.com/v1/realtime/client_secrets"
 _WEBRTC_URL = "https://api.openai.com/v1/realtime/calls"
 _TRANSCRIPTION_MODEL = "gpt-realtime-whisper"
+# GPT-Live seat (docs/GALDR-LIVE.md): no ephemeral secret — the renderer
+# hands its SDP offer to the bridge, which creates the session with the
+# API key and returns the answer. The key still never leaves this process.
+_LIVE_URL = "https://api.openai.com/v1/live/sessions"
 _CONFIRM_TTL_SEC = 90.0
+
+# Screenshots cross the WebRTC data channel inside one JSON message, and
+# Chromium caps a data-channel message at 256 KiB whatever the remote
+# advertises (GPT-Live's SDP says 1 GiB; e2e 2026-09-28 still hit
+# "larger than max-message-size"). Leave room for the JSON around it.
+_IMAGE_B64_BUDGET = 200_000
+_JPEG_QUALITIES = (85, 70, 55, 40, 30)
+
+
+def _fit_image(image_b64: str) -> tuple[str, str]:
+    """(base64, mime) small enough for the data channel. A PNG over the
+    budget is re-encoded as JPEG at falling quality — never resized: the
+    pixel grid IS computer.click's coordinate space. Returns the input
+    untouched when it already fits or PIL can't help; the renderer
+    drops an image that still doesn't fit rather than the whole result."""
+    if len(image_b64) <= _IMAGE_B64_BUDGET:
+        return image_b64, "image/png"
+    try:
+        import io
+
+        from PIL import Image  # lazy — keep import free of PIL at boot
+
+        with Image.open(io.BytesIO(base64.b64decode(image_b64))) as src:
+            rgb = src.convert("RGB")
+        encoded = image_b64
+        for quality in _JPEG_QUALITIES:
+            buf = io.BytesIO()
+            rgb.save(buf, "JPEG", quality=quality, optimize=True)
+            encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+            if len(encoded) <= _IMAGE_B64_BUDGET:
+                break
+        return encoded, "image/jpeg"
+    except Exception:  # noqa: BLE001 — best effort; the original still goes
+        return image_b64, "image/png"
 
 # Post-step settle for routine.run (contract §13.2): GUI verbs
 # (computer.*/app.*) need the screen to catch up before the next step
@@ -74,10 +116,11 @@ _CONFIG_KEYS = (
     "idleTimeoutSec",
     "proactiveVoice",
     "quietHours",
+    "liveBackend",
 )
 _CONFIG_DEFAULTS: dict[str, Any] = {
     "enabled": True,
-    "model": "gpt-realtime-2.1-mini",
+    "model": "gpt-live-1",
     "voice": "marin",
     "vadMode": "semantic_vad",
     "idleTimeoutSec": 25,
@@ -89,7 +132,15 @@ _CONFIG_DEFAULTS: dict[str, Any] = {
     # 24h local hours, no announcements while the local hour is in
     # [start, end) treating wrap-around (22..8 spans midnight).
     "quietHours": {"start": 22, "end": 8},
+    # The Responses model a GPT-Live session delegates reasoning and tool
+    # calls to. Ignored by the realtime seats. gpt-6.1-sol reads a
+    # screenshot tool result in 2.3–2.7 s with all 49 verb tools loaded
+    # (gpt-6-sol 3.0 s at the same price; luna faster but weaker; astra
+    # ~2x slower and 5x the price). Probes 2026-09-28/29.
+    "liveBackend": "gpt-6.1-sol",
 }
+
+
 def _default_config() -> dict[str, Any]:
     """Fresh defaults with the nested quietHours deep-copied so instances
     (and a corrupt-file fallback) never share the same window object."""
@@ -99,13 +150,28 @@ def _default_config() -> dict[str, Any]:
 
 
 _AVAILABLE_MODELS = (
+    "gpt-live-1",
     "gpt-realtime-2.1-mini",
     "gpt-realtime-2.1",
     "gpt-realtime",
     "gpt-realtime-mini",
 )
 _AVAILABLE_VOICES = ("marin", "cedar", "alloy", "echo", "shimmer", "coral")
+_AVAILABLE_BACKENDS = ("gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra")
+# Verbs a GPT-Live backend doesn't get as tools. screen.look sends the
+# screen to a SECOND vision model; a vision backend reads computer.see's
+# screenshot itself, and given both it called screen_look first — one
+# wasted tool round per look (probe 2026-09-28).
+_LIVE_EXCLUDED_VERBS = ("screen.look",)
 _VAD_MODES = ("semantic_vad", "server_vad")
+
+
+def _is_live_model(model: str) -> bool:
+    """GPT-Live seats speak a different protocol (live/sessions, delegated
+    backend) from the realtime ones; everything branches on this."""
+    return model.startswith("gpt-live")
+
+
 
 
 def _args_hash(args: dict[str, Any]) -> str:
@@ -417,6 +483,10 @@ class VoiceService:
                 if isinstance(val, (int, float)) and not isinstance(val, bool):
                     merged[key] = int(max(0, min(23, val)))
             cfg["quietHours"] = {"start": int(merged["start"]), "end": int(merged["end"])}
+        # Free string like `model` — new backends ship faster than we edit
+        # the allowlist, and a bad name fails loudly at session create.
+        if isinstance(patch.get("liveBackend"), str) and patch["liveBackend"].strip():
+            cfg["liveBackend"] = patch["liveBackend"].strip()
 
     def get_config(self) -> dict[str, Any]:
         cfg = {k: self._config[k] for k in _CONFIG_KEYS}
@@ -428,6 +498,7 @@ class VoiceService:
         cfg["available"] = {
             "models": list(_AVAILABLE_MODELS),
             "voices": list(_AVAILABLE_VOICES),
+            "backends": list(_AVAILABLE_BACKENDS),
         }
         cfg["hasApiKey"] = bool(os.environ.get("OPENAI_API_KEY", "").strip())
         cfg["spotifySearch"] = bool(
@@ -478,6 +549,57 @@ class VoiceService:
             "tools": [registry.openai_tool_schema()],
             "tool_choice": "auto",
         }
+
+    def _build_live_session_config(self, registry: Any) -> dict[str, Any]:
+        """GPT-Live session object (strict — unknown fields are rejected).
+        The voice layer gets persona + delegation policy; the Responses
+        backend gets the operating manual and one function tool per verb.
+        Sequential tool calls: GUI actions must land in order, and each
+        returns the screenshot the next one is chosen from."""
+        return {
+            "model": str(self._config["model"]),
+            "instructions": build_live_instructions(),
+            "audio": {"output": {"voice": str(self._config["voice"])}},
+            "delegation": {
+                "type": "responses",
+                "responses": {
+                    "model": str(self._config.get("liveBackend") or "gpt-6.1-sol"),
+                    "instructions": build_backend_instructions(
+                        routines_md=self.routines.names_md()
+                    ),
+                    "tools": registry.responses_tools(exclude=_LIVE_EXCLUDED_VERBS),
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": False,
+                },
+            },
+        }
+
+    async def _live_create(self, api_key: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """POST /v1/live/sessions (WebRTC create). One retry on network
+        errors / 5xx like the mint; 4xx is terminal. 201 carries
+        {session: {id}, transport: {type: "webrtc", sdp}}."""
+        last_exc: Optional[Exception] = None
+        for _attempt in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.post(
+                        _LIVE_URL,
+                        headers={"Authorization": f"Bearer {api_key}"},
+                        json=payload,
+                    )
+            except Exception as exc:  # noqa: BLE001 — network/timeout, retry once
+                last_exc = exc
+                continue
+            if resp.status_code >= 500:
+                last_exc = RuntimeError(f"OpenAI returned {resp.status_code}: {resp.text[:200]}")
+                continue
+            if resp.status_code >= 400:
+                raise RuntimeError(f"OpenAI returned {resp.status_code}: {resp.text[:300]}")
+            data = resp.json()
+            if not isinstance(data, dict):
+                raise RuntimeError("live session response was not a JSON object")
+            return data
+        raise last_exc if last_exc is not None else RuntimeError("live session create failed")
 
     async def _mint(self, api_key: str, payload: dict[str, Any]) -> dict[str, Any]:
         """POST /v1/realtime/client_secrets — 10 s timeout, one retry on
@@ -534,9 +656,19 @@ class VoiceService:
                 }
             )
             return
+        live = _is_live_model(str(self._config["model"]))
         try:
             registry = self._ensure_registry()
-            payload = {"session": self._build_session_config(registry)}
+            # Live builds its session at voice_live_connect (it needs the
+            # renderer's SDP offer); building here still proves the
+            # registry and prompts are sound before a mic goes hot.
+            payload = {
+                "session": (
+                    self._build_live_session_config(registry)
+                    if live
+                    else self._build_session_config(registry)
+                )
+            }
         except Exception as exc:  # noqa: BLE001 — e.g. verbs module missing
             self._emit(
                 {
@@ -548,6 +680,21 @@ class VoiceService:
             return
         self._mint_generation += 1
         generation = self._mint_generation
+        if live:
+            voice_session_id = self._open_session()
+            self._emit(
+                {
+                    "type": "voice_session_ready",
+                    "voiceSessionId": voice_session_id,
+                    "transport": "live",
+                    "clientSecret": "",
+                    "model": str(self._config["model"]),
+                    "backendModel": str(self._config.get("liveBackend") or ""),
+                    "expiresAt": 0,
+                    "webrtcUrl": _LIVE_URL,
+                }
+            )
+            return
         try:
             data = await self._mint(api_key, payload)
         except Exception as exc:  # noqa: BLE001
@@ -579,6 +726,21 @@ class VoiceService:
                 }
             )
             return
+        voice_session_id = self._open_session()
+        self._emit(
+            {
+                "type": "voice_session_ready",
+                "voiceSessionId": voice_session_id,
+                "transport": "realtime",
+                "clientSecret": value,
+                "model": str(self._config["model"]),
+                "expiresAt": data.get("expires_at"),
+                "webrtcUrl": _WEBRTC_URL,
+            }
+        )
+
+    def _open_session(self) -> str:
+        """Allocate a fresh voiceSessionId and make it the active one."""
         if self._active_session_id:
             # A new session replaces the old one: tell the renderer the
             # old id is dead so receipts/stats never split across two ids.
@@ -600,14 +762,66 @@ class VoiceService:
         self._active_session_id = voice_session_id
         self._session_started_at = time.time()
         self._session_receipt_count = 0
+        return voice_session_id
+
+    async def handle_live_connect(self, cmd: dict[str, Any]) -> None:
+        """voice_live_connect{voiceSessionId, sdp} → create the GPT-Live
+        session with the renderer's SDP offer → voice_live_answer. Every
+        outcome answers with voice_live_answer (ok or not) so the
+        renderer's pending SDP exchange always settles."""
+        voice_session_id = str(cmd.get("voiceSessionId") or "")
+        sdp = cmd.get("sdp")
+
+        def fail(message: str) -> None:
+            self._emit(
+                {
+                    "type": "voice_live_answer",
+                    "voiceSessionId": voice_session_id,
+                    "ok": False,
+                    "error": message,
+                }
+            )
+
+        if not voice_session_id or voice_session_id != self._active_session_id:
+            fail("not the active voice session")
+            return
+        if not isinstance(sdp, str) or not sdp.strip():
+            fail("missing SDP offer")
+            return
+        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        if not api_key:
+            fail("OPENAI_API_KEY is not set")
+            return
+        try:
+            session = self._build_live_session_config(self._ensure_registry())
+        except Exception as exc:  # noqa: BLE001
+            fail(f"could not build the live session: {exc}")
+            return
+        try:
+            data = await self._live_create(
+                api_key, {"session": session, "transport": {"type": "webrtc", "sdp": sdp}}
+            )
+        except Exception as exc:  # noqa: BLE001
+            fail(f"could not create the GPT-Live session: {exc}")
+            return
+        transport = data.get("transport") if isinstance(data.get("transport"), dict) else {}
+        answer = transport.get("sdp")
+        if not isinstance(answer, str) or not answer.strip():
+            fail("GPT-Live returned no SDP answer")
+            return
+        live_session = data.get("session") if isinstance(data.get("session"), dict) else {}
+        self._log(
+            "info",
+            f"voice {voice_session_id}: GPT-Live session {live_session.get('id')} "
+            f"(backend {session['delegation']['responses']['model']})",
+        )
         self._emit(
             {
-                "type": "voice_session_ready",
+                "type": "voice_live_answer",
                 "voiceSessionId": voice_session_id,
-                "clientSecret": value,
-                "model": str(self._config["model"]),
-                "expiresAt": data.get("expires_at"),
-                "webrtcUrl": _WEBRTC_URL,
+                "ok": True,
+                "sdp": answer,
+                "liveSessionId": str(live_session.get("id") or ""),
             }
         )
 
@@ -646,19 +860,12 @@ class VoiceService:
         name = cmd.get("name")
         heard = str(cmd.get("heard") or "")
         if name != "act":
-            # Nothing was attempted against a verb — no receipt, just tell
-            # the model to self-correct.
-            self._emit_tool_result(
-                voice_session_id,
-                call_id,
-                ok=False,
-                output=json.dumps(
-                    {
-                        "ok": False,
-                        "error": "unknown_tool",
-                        "summary": f"only the `act` tool exists; got {name!r}",
-                    }
-                ),
+            await self._handle_verb_tool_call(
+                name=str(name or ""),
+                argumentsJson=cmd.get("argumentsJson"),
+                heard=heard,
+                call_id=call_id,
+                voice_session_id=voice_session_id,
             )
             return
         try:
@@ -692,19 +899,88 @@ class VoiceService:
         args_token = args.pop("confirm_token", None)
         if not isinstance(confirm_token, str):
             confirm_token = args_token if isinstance(args_token, str) else None
-        lane = (
-            "mission"
-            if verb in ("mission.spawn", "mission.status", "computer.do", "freyja.ask")
-            else "brain"
-        )
         await self._execute(
             verb=verb,
             args=args,
             confirm_token=confirm_token,
-            lane=lane,
+            lane=self._lane_for(verb),
             heard=heard,
             call_id=call_id,
             voice_session_id=voice_session_id,
+        )
+
+    @staticmethod
+    def _lane_for(verb: str) -> str:
+        return (
+            "mission"
+            if verb in ("mission.spawn", "mission.status", "computer.do", "freyja.ask")
+            else "brain"
+        )
+
+    async def _handle_verb_tool_call(
+        self,
+        *,
+        name: str,
+        argumentsJson: Any,
+        heard: str,
+        call_id: str,
+        voice_session_id: Optional[str],
+    ) -> None:
+        """A per-verb function tool (GPT-Live backend, docs/GALDR-LIVE.md):
+        the tool name IS the verb (`spotify_play`), the arguments are the
+        verb's args, and confirm_token rides alongside them."""
+        try:
+            registry = self._ensure_registry()
+            verb = registry.resolve_tool_name(name) if name else None
+        except Exception:  # noqa: BLE001 — _execute reports registry failure
+            verb = None
+        if verb is None:
+            # Nothing was attempted against a verb — no receipt, just tell
+            # the model to self-correct.
+            self._emit_tool_result(
+                voice_session_id,
+                call_id,
+                ok=False,
+                output=json.dumps(
+                    {
+                        "ok": False,
+                        "error": "unknown_tool",
+                        "summary": f"no tool named {name!r} — use only the tools you were given",
+                    }
+                ),
+            )
+            return
+        try:
+            args = json.loads(argumentsJson or "{}")
+            if not isinstance(args, dict):
+                raise ValueError("arguments must be a JSON object")
+        except Exception as exc:  # noqa: BLE001
+            self._emit_tool_result(
+                voice_session_id,
+                call_id,
+                ok=False,
+                output=json.dumps(
+                    {
+                        "ok": False,
+                        "error": "bad_arguments",
+                        "summary": f"argumentsJson was not a JSON object: {exc}",
+                    }
+                ),
+            )
+            return
+        # Stripped before the verb (and the confirm scope hash) sees args.
+        # The backend fills the optional slot with "" on a first call —
+        # that's no token, not a wrong one.
+        token = args.pop("confirm_token", None)
+        await self._execute(
+            verb=verb,
+            args=args,
+            confirm_token=token if isinstance(token, str) and token else None,
+            lane=self._lane_for(verb),
+            heard=heard,
+            call_id=call_id,
+            voice_session_id=voice_session_id,
+            tool=name,
         )
 
     async def _execute(
@@ -717,9 +993,13 @@ class VoiceService:
         heard: str,
         call_id: str,
         voice_session_id: Optional[str],
+        tool: str = "act",
     ) -> None:
         """Shared execution core for brain (tool_call) and floor (typed)
-        lanes: tier gate → run → receipt → voice_tool_result."""
+        lanes: tier gate → run → receipt → voice_tool_result. `tool` is
+        the function the model called, so a CONFIRM REQUIRED reply tells
+        it what to re-call (`act` on realtime, the verb's own tool on
+        GPT-Live)."""
         try:
             registry = self._ensure_registry()
         except Exception as exc:  # noqa: BLE001
@@ -778,9 +1058,9 @@ class VoiceService:
                 # the end — the model has no other channel to learn it.
                 output = (
                     f"CONFIRM REQUIRED: {summary}. If the user already clearly "
-                    f"assented to exactly this in their last utterance, call act "
+                    f"assented to exactly this in their last utterance, call {tool} "
                     f"again with confirm_token {token} right now — one spoken yes "
-                    f"is one yes. Otherwise ask aloud once, then call act again "
+                    f"is one yes. Otherwise ask aloud once, then call {tool} again "
                     f"with confirm_token {token}."
                 )
                 self._emit_tool_result(
@@ -2043,7 +2323,7 @@ class VoiceService:
         # base64) rides on the event only for computer.* results; the
         # renderer injects it as an input_image and dedupes stale ones.
         if image_b64:
-            event["imageB64"] = image_b64
+            event["imageB64"], event["imageMime"] = _fit_image(image_b64)
             if isinstance(image_w, int):
                 event["imageW"] = image_w
             if isinstance(image_h, int):

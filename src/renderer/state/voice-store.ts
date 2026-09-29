@@ -49,6 +49,7 @@ interface VoiceStore {
     voice?: string
     vadMode?: 'semantic_vad' | 'server_vad'
     idleTimeoutSec?: number
+    liveBackend?: string
   }): void
   hydrate(): void
   handleEvent(event: BridgeEvent): void
@@ -64,6 +65,8 @@ export type VoiceUsage = {
   outputText: number
   outputAudio: number
   totalTokens: number
+  /** GPT-Live: cumulative billed voice seconds (a snapshot, never summed). */
+  liveSeconds?: number
   estCostUsd: number
 }
 
@@ -81,7 +84,26 @@ const VOICE_RATES: Record<string, Rate> = {
 }
 const DEFAULT_RATE: Rate = VOICE_RATES['gpt-realtime-2.1-mini']
 
+// GPT-Live (docs/GALDR-LIVE.md): the voice layer is a flat $0.05/min,
+// billed per second; the delegated backend bills its own text tokens
+// (the only token counts a live session reports). USD per 1M tokens,
+// mirroring engine/providers.py; unlisted backends price at sol's rates.
+const LIVE_USD_PER_MIN = 0.05
+const BACKEND_RATES: Record<string, { input: number; cached: number; output: number }> = {
+  'gpt-6.1-sol': { input: 2, cached: 0.1, output: 10 },
+  'gpt-6-luna': { input: 0.1, cached: 0.01, output: 0.5 },
+  'gpt-6-astra': { input: 10, cached: 1, output: 50 },
+}
+
 function priceUsage(u: Omit<VoiceUsage, 'estCostUsd'>, model: string | undefined): number {
+  if (model?.startsWith('gpt-live')) {
+    const backend = useVoiceStore.getState().config?.liveBackend ?? 'gpt-6.1-sol'
+    const b = BACKEND_RATES[backend] ?? BACKEND_RATES['gpt-6.1-sol']
+    return (
+      ((u.liveSeconds ?? 0) / 60) * LIVE_USD_PER_MIN +
+      (u.inputText * b.input + u.inputCached * b.cached + u.outputText * b.output) / 1_000_000
+    )
+  }
   const r = (model && VOICE_RATES[model]) || DEFAULT_RATE
   return (
     (u.inputText * r.textIn +
@@ -98,7 +120,7 @@ function priceUsage(u: Omit<VoiceUsage, 'estCostUsd'>, model: string | undefined
 function accrueUsage(u: Omit<VoiceUsage, 'estCostUsd'>): void {
   const s = useVoiceStore.getState()
   const p = s.usage
-  const next = {
+  const next: Omit<VoiceUsage, 'estCostUsd'> = {
     inputText: (p?.inputText ?? 0) + u.inputText,
     inputAudio: (p?.inputAudio ?? 0) + u.inputAudio,
     inputCached: (p?.inputCached ?? 0) + u.inputCached,
@@ -106,6 +128,9 @@ function accrueUsage(u: Omit<VoiceUsage, 'estCostUsd'>): void {
     outputAudio: (p?.outputAudio ?? 0) + u.outputAudio,
     totalTokens: (p?.totalTokens ?? 0) + u.totalTokens,
   }
+  // Live seconds arrive as running totals — take the newest, never add.
+  const seconds = Math.max(p?.liveSeconds ?? 0, u.liveSeconds ?? 0)
+  if (seconds > 0) next.liveSeconds = seconds
   useVoiceStore.setState({ usage: { ...next, estCostUsd: priceUsage(next, s.config?.model) } })
 }
 
@@ -126,6 +151,45 @@ let _sessionGen = 0
  *  have no function_call in the realtime conversation to answer, so
  *  only ids in this set get relayed back via sendToolResult. */
 const _pendingCallIds = new Set<string>()
+/** The GPT-Live SDP exchange in flight: the engine's offer went to the
+ *  bridge as voice_live_connect; voice_live_answer settles it. */
+let _liveExchange: {
+  voiceSessionId: string
+  resolve: (sdp: string) => void
+  reject: (err: Error) => void
+  timer: number
+} | null = null
+/** Bridge round trip + OpenAI session create; the create itself retries
+ *  once with a 15 s timeout bridge-side. */
+const LIVE_EXCHANGE_TIMEOUT_MS = 35_000
+
+function requestLiveAnswer(voiceSessionId: string, offerSdp: string): Promise<string> {
+  abortLiveExchange('superseded')
+  return new Promise<string>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      if (_liveExchange?.timer === timer) {
+        _liveExchange = null
+        reject(new Error('GPT-Live session create timed out'))
+      }
+    }, LIVE_EXCHANGE_TIMEOUT_MS)
+    _liveExchange = { voiceSessionId, resolve, reject, timer }
+    _send({ type: 'voice_live_connect', voiceSessionId, sdp: offerSdp })
+  })
+}
+
+function abortLiveExchange(reason: string): void {
+  const x = _liveExchange
+  if (x === null) return
+  _liveExchange = null
+  window.clearTimeout(x.timer)
+  x.reject(new Error(`GPT-Live connect aborted: ${reason}`))
+}
+
+/** Per-verb tool names (GPT-Live backend) → the dotted verb for display:
+ *  `spotify_play` → `spotify.play`. Namespaces never hold an underscore. */
+function verbFromToolName(name: string): string {
+  return name.includes('_') ? name.replace('_', '.') : name
+}
 
 // ── Session projection (voice exchange → main harness store) ─────────
 // Every voice exchange is mirrored into the normal session graph so it
@@ -485,6 +549,7 @@ function failVoice(message?: string): void {
       : 0
   _sessionStartedAt = 0
   _pendingCallIds.clear()
+  abortLiveExchange('failed')
   // `active` flips BEFORE engine.stop so its closed event (checked
   // against `active`) can't re-enter endVoice and unmount the HUD.
   useVoiceStore.setState({
@@ -613,15 +678,16 @@ function ensureEngine(): VoiceEngine {
   engine.on('toolCall', (callId, name, argumentsJson) => {
     resetIdleTimer()
     _pendingCallIds.add(callId)
-    // The single `act` tool wraps every verb — surface the inner verb on
-    // the HUD chip when the arguments parse, the tool name otherwise.
-    let verb = name
+    // Realtime's single `act` tool wraps every verb — surface the inner
+    // verb on the HUD chip when the arguments parse. GPT-Live's backend
+    // calls one tool per verb, so the tool name IS the verb.
+    let verb = name === 'act' ? name : verbFromToolName(name)
     let verbArgs: Record<string, unknown> = {}
     try {
       const parsed: unknown = JSON.parse(argumentsJson)
       if (typeof parsed === 'object' && parsed !== null) {
         verbArgs = parsed as Record<string, unknown>
-        if (typeof (parsed as { verb?: unknown }).verb === 'string') {
+        if (name === 'act' && typeof (parsed as { verb?: unknown }).verb === 'string') {
           verb = (parsed as { verb: string }).verb
         }
       }
@@ -769,6 +835,7 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
         : 0
     _sessionStartedAt = 0
     _pendingCallIds.clear()
+    abortLiveExchange('ended')
     // Flip `active` BEFORE stopping the engine — its closed event checks
     // `active` to decide whether to re-enter endVoice.
     set({
@@ -860,12 +927,21 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
         const engine = ensureEngine()
         resetIdleTimer()
         const gen = _sessionGen
+        const voiceSessionId = event.voiceSessionId
         void engine
-          .start({
-            clientSecret: event.clientSecret,
-            model: event.model,
-            webrtcUrl: event.webrtcUrl,
-          })
+          .start(
+            event.transport === 'live'
+              ? {
+                  transport: 'live',
+                  model: event.model,
+                  exchangeSdp: (sdp) => requestLiveAnswer(voiceSessionId, sdp),
+                }
+              : {
+                  clientSecret: event.clientSecret,
+                  model: event.model,
+                  webrtcUrl: event.webrtcUrl,
+                },
+          )
           .catch((err: unknown) => {
             // The exchange this start belonged to is already over
             // (toggled off / failed) — the rejection is stale news.
@@ -894,6 +970,16 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
         return
       }
 
+      case 'voice_live_answer': {
+        const x = _liveExchange
+        if (x === null || x.voiceSessionId !== event.voiceSessionId) return
+        _liveExchange = null
+        window.clearTimeout(x.timer)
+        if (event.ok && event.sdp) x.resolve(event.sdp)
+        else x.reject(new Error(event.error || 'GPT-Live session create failed'))
+        return
+      }
+
       case 'voice_tool_result': {
         resetIdleTimer()
         // Relay to the model FIRST, and even on needsConfirm — the output
@@ -912,7 +998,7 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
               event.imageB64 &&
               typeof event.imageW === 'number' &&
               typeof event.imageH === 'number'
-                ? { b64: event.imageB64, w: event.imageW, h: event.imageH }
+                ? { b64: event.imageB64, w: event.imageW, h: event.imageH, mime: event.imageMime }
                 : undefined
             _engine.sendToolResult(event.callId, event.output, image)
           }
@@ -1003,7 +1089,7 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
         // Freyja speaks it in-conversation (sendText no-ops safely if the
         // data channel is already gone).
         if (s.active && _demo === null && _engine !== null) {
-          _engine.sendText(`Mission update — ${event.title}: ${event.text}`)
+          _engine.announce(`Mission update — ${event.title}: ${event.text}`)
           resetIdleTimer()
         }
         // Always glanceable on the HUD chip; the mission-lane receipt the

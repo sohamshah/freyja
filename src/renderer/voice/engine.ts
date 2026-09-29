@@ -1,13 +1,20 @@
 // VoiceEngine — WebRTC leg of the Galdr voice agent (docs/GALDR-BUILD.md §7.1).
 //
 // Owns the browser half of a voice exchange: mic capture, the
-// RTCPeerConnection to the OpenAI Realtime API, the `oai-events` data
-// channel, remote audio playback, and the engine-side state machine.
+// RTCPeerConnection to OpenAI, the `oai-events` data channel, remote
+// audio playback, and the engine-side state machine. Two seats share the
+// transport: the Realtime API (protocol handled inline below) and
+// GPT-Live (protocol in live-protocol.ts, docs/GALDR-LIVE.md).
 // Audio NEVER crosses the bridge IPC — only tool calls and transcripts
 // do, and those are forwarded by voice-store, not by this class.
 //
 // This file must stay import-light: shared event types only, no React,
 // no components. voice-store owns the singleton instance.
+
+import { LiveProtocol, type LiveUsage, type ToolImage } from './live-protocol'
+
+/** Chromium's data-channel message ceiling when the remote allows more. */
+const DC_MAX_MESSAGE_BYTES = 262_144
 
 export type VoiceEngineState =
   | 'idle'
@@ -38,10 +45,14 @@ export type EngineEvents = {
   assistantTranscript: (text: string, done: boolean) => void
   /** Store forwards to bridge as voice_tool_call. */
   toolCall: (callId: string, name: string, argumentsJson: string) => void
+  /** GPT-Live: the delegated backend's reply text (the voice relays it
+   *  in its own words). Never fires on realtime. */
+  backendText: (text: string) => void
   /** Mic level 0..1, ~30 Hz, for the waveform/sigil. */
   level: (rms: number) => void
-  /** Token usage from each response.done — the store accrues + prices it. */
-  usage: (u: UsageDelta) => void
+  /** Token usage from each response.done — the store accrues + prices it.
+   *  GPT-Live adds cumulative billed seconds (liveSeconds). */
+  usage: (u: LiveUsage) => void
   closed: (reason: string) => void
   error: (code: string, message: string) => void
 }
@@ -56,6 +67,13 @@ export class VoiceEngineUnavailableError extends Error {
     this.name = 'VoiceEngineUnavailableError'
   }
 }
+
+/** Realtime: an ephemeral secret the renderer POSTs its offer with.
+ *  Live: no secret — `exchangeSdp` round-trips the offer through the
+ *  bridge, which creates the session with the API key. */
+export type EngineStart =
+  | { transport?: 'realtime'; clientSecret: string; model: string; webrtcUrl: string }
+  | { transport: 'live'; model: string; exchangeSdp: (offerSdp: string) => Promise<string> }
 
 /** How long we keep the remote audio element muted after response.cancel
  *  — long enough to swallow the buffered tail of the cancelled response
@@ -73,6 +91,7 @@ export class VoiceEngine {
     userTranscript: new Set(),
     assistantTranscript: new Set(),
     toolCall: new Set(),
+    backendText: new Set(),
     level: new Set(),
     usage: new Set(),
     closed: new Set(),
@@ -92,6 +111,8 @@ export class VoiceEngine {
    *  what it acquired instead of resurrecting a dead session with a hot
    *  mic nobody owns. */
   private startGen = 0
+  /** Non-null while the current session is a GPT-Live one. */
+  private live: LiveProtocol | null = null
 
   // ── Per-session protocol bookkeeping ──────────────────────────────
   /** function_call argument deltas accumulated per call_id until the
@@ -158,11 +179,7 @@ export class VoiceEngine {
 
   // ── Lifecycle ─────────────────────────────────────────────────────
 
-  async start(ready: {
-    clientSecret: string
-    model: string
-    webrtcUrl: string
-  }): Promise<void> {
+  async start(ready: EngineStart): Promise<void> {
     if (
       typeof window === 'undefined' ||
       typeof RTCPeerConnection === 'undefined' ||
@@ -187,7 +204,10 @@ export class VoiceEngine {
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: true,
+          // Full duplex listens the whole time, so AGC pumping the room's
+          // noise floor up between words is exactly what makes it answer
+          // the room (Aug 28 autopsy). Realtime keeps its old behaviour.
+          autoGainControl: ready.transport !== 'live',
         },
       })
       if (gen !== this.startGen) {
@@ -234,6 +254,8 @@ export class VoiceEngine {
 
       const dc = pc.createDataChannel('oai-events')
       this.dc = dc
+      const live = ready.transport === 'live' ? this.makeLiveProtocol(dc) : null
+      this.live = live
       dc.onmessage = (e) => {
         let parsed: unknown
         try {
@@ -242,7 +264,8 @@ export class VoiceEngine {
           return // non-JSON frames are ignored silently, per contract
         }
         try {
-          this.handleServerEvent(parsed)
+          if (live) live.handle(parsed)
+          else this.handleServerEvent(parsed)
         } catch (err) {
           console.error('[voice-engine] server event handler error', err)
         }
@@ -256,29 +279,35 @@ export class VoiceEngine {
       await pc.setLocalDescription(offer)
       if (gen !== this.startGen) return
 
-      const res = await fetch(ready.webrtcUrl, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${ready.clientSecret}`,
-          'Content-Type': 'application/sdp',
-        },
-        body: offer.sdp ?? '',
-      })
-      if (gen !== this.startGen) return
-      if (!res.ok) {
-        const detail = await res.text().catch(() => '')
-        throw new Error(
-          `SDP exchange failed: HTTP ${res.status} ${detail.slice(0, 200)}`,
-        )
+      let answerSdp: string
+      if (ready.transport === 'live') {
+        answerSdp = await ready.exchangeSdp(offer.sdp ?? '')
+      } else {
+        const res = await fetch(ready.webrtcUrl, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${ready.clientSecret}`,
+            'Content-Type': 'application/sdp',
+          },
+          body: offer.sdp ?? '',
+        })
+        if (gen !== this.startGen) return
+        if (!res.ok) {
+          const detail = await res.text().catch(() => '')
+          throw new Error(
+            `SDP exchange failed: HTTP ${res.status} ${detail.slice(0, 200)}`,
+          )
+        }
+        answerSdp = await res.text()
       }
-      const answerSdp = await res.text()
       if (gen !== this.startGen) return
       await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp })
       if (gen !== this.startGen) return
 
       this.startLevelMeter(mic)
-      // connecting → listening happens on session.created over the data
-      // channel (§7.1) — the DC being open is implied by receiving it.
+      // connecting → listening happens on session.created (realtime) /
+      // session.started (live) over the data channel (§7.1) — the DC
+      // being open is implied by receiving it.
     } catch (err) {
       // Release everything acquired so far (esp. the live mic track) and
       // rethrow — the store owns user-facing failure state and messaging
@@ -298,15 +327,32 @@ export class VoiceEngine {
     // Invalidate any in-flight start() FIRST — even when there's nothing
     // to tear down yet (start may be parked at getUserMedia, holding
     // nothing but about to acquire the mic).
-    this.startGen++
+    const gen = ++this.startGen
     if (this._state === 'idle' && !this.pc && !this.micStream) return
     this.setState('closing')
+    // GPT-Live bills by the second until the session closes — ask for a
+    // graceful close (and its final usage) before cutting the transport.
+    if (this.live && this.dc?.readyState === 'open') {
+      try {
+        await this.live.close()
+      } catch {
+        /* best effort — teardown closes the transport regardless */
+      }
+      // A start() during that wait already tore this transport down and
+      // owns the engine now: tearing down again (or emitting 'closed')
+      // would kill the NEW exchange. Stand aside.
+      if (gen !== this.startGen) return
+    }
     await this.teardown()
     this.setState('idle')
     this.emit('closed', reason)
   }
 
   private async teardown(): Promise<void> {
+    if (this.live) {
+      this.live.dispose()
+      this.live = null
+    }
     if (this.levelRaf !== null) {
       cancelAnimationFrame(this.levelRaf)
       this.levelRaf = null
@@ -371,11 +417,11 @@ export class VoiceEngine {
 
   // ── Outbound (renderer → model) ───────────────────────────────────
 
-  sendToolResult(
-    callId: string,
-    outputJson: string,
-    image?: { b64: string; w: number; h: number },
-  ): void {
+  sendToolResult(callId: string, outputJson: string, image?: ToolImage): void {
+    if (this.live) {
+      this.live.sendToolResult(callId, outputJson, image)
+      return
+    }
     this.pendingToolCalls.delete(callId)
     this.sendEvent({
       type: 'conversation.item.create',
@@ -407,7 +453,7 @@ export class VoiceEngine {
    *  new one as an input_image user message. The created item's id is
    *  captured from the conversation.item.added event (see
    *  handleServerEvent) into `_lastImageItemId` for the NEXT prune. */
-  private injectImage(image: { b64: string; w: number; h: number }): void {
+  private injectImage(image: ToolImage): void {
     if (this._lastImageItemId !== null) {
       // Defensive: if the id is already gone server-side the delete is a
       // benign no-op (the realtime API answers with an error event, which
@@ -429,7 +475,7 @@ export class VoiceEngine {
         content: [
           {
             type: 'input_image',
-            image_url: `data:image/png;base64,${image.b64}`,
+            image_url: `data:${image.mime ?? 'image/png'};base64,${image.b64}`,
           },
           {
             type: 'input_text',
@@ -441,6 +487,10 @@ export class VoiceEngine {
   }
 
   sendText(text: string): void {
+    if (this.live) {
+      this.live.sendText(text)
+      return
+    }
     this.sendEvent({
       type: 'conversation.item.create',
       item: {
@@ -452,7 +502,22 @@ export class VoiceEngine {
     this.sendEvent({ type: 'response.create' })
   }
 
+  /** Something the voice should tell the operator mid-exchange (a mission
+   *  report). Live speaks it via commentary; realtime takes it as a
+   *  typed turn. */
+  announce(text: string): void {
+    if (this.live) this.live.announce(text)
+    else this.sendText(text)
+  }
+
   cancelResponse(): void {
+    if (this.live) {
+      // Full duplex has no response to cancel — redirect the voice and
+      // silence what's already buffered. Callers end the session next.
+      this.live.interrupt('Stop speaking now. Say nothing further unless the operator speaks.')
+      if (this.audioEl) this.audioEl.muted = true
+      return
+    }
     this.sendEvent({ type: 'response.cancel' })
     // The remote track keeps flowing for a beat after the cancel (audio
     // already buffered client-side); mute briefly so the user hears the
@@ -466,6 +531,40 @@ export class VoiceEngine {
         if (this.audioEl && !this.muteUntilNextResponse) this.audioEl.muted = false
       }, CANCEL_MUTE_MS)
     }
+  }
+
+  private makeLiveProtocol(dc: RTCDataChannel): LiveProtocol {
+    const live: LiveProtocol = new LiveProtocol({
+      send: (event) => {
+        if (dc.readyState !== 'open') {
+          this.emit('error', 'data_channel_closed', `cannot send ${String(event.type)} — data channel not open`)
+          return
+        }
+        try {
+          dc.send(JSON.stringify(event))
+        } catch (err) {
+          this.emit('error', 'send_failed', err instanceof Error ? err.message : String(err))
+        }
+      },
+      getState: () => this._state,
+      setState: (s) => this.setState(s),
+      userTranscript: (text, final) => this.emit('userTranscript', text, final),
+      assistantTranscript: (text, done) => this.emit('assistantTranscript', text, done),
+      toolCall: (callId, name, args) => this.emit('toolCall', callId, name, args),
+      backendText: (text) => this.emit('backendText', text),
+      usage: (u) => this.emit('usage', u),
+      error: (code, message) => this.emit('error', code, message),
+      serverClosed: (reason) => {
+        // Expired / content / remote hangup: the exchange is over. Only
+        // if this protocol is still the live one (not a stale session).
+        if (this.live === live) void this.stop(reason)
+      },
+      setTimeout: (fn, ms) => window.setTimeout(fn, ms),
+      clearTimeout: (id) => window.clearTimeout(id),
+      maxMessageBytes: () =>
+        Math.min(this.pc?.sctp?.maxMessageSize ?? DC_MAX_MESSAGE_BYTES, DC_MAX_MESSAGE_BYTES),
+    })
+    return live
   }
 
   private sendEvent(event: Record<string, unknown>): void {

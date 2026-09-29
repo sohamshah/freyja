@@ -154,3 +154,51 @@ def test_verb_result_defaults_are_independent():
     assert r1.say is None and r1.undo is None and r1.error is None
     r1.data["k"] = "v"
     assert r2.data == {}  # default_factory: no shared mutable state
+
+
+def test_tool_name_round_trip():
+    reg = VerbRegistry()
+    reg.register(_mk("freyja.project_status"))
+    reg.register(_mk("spotify.play"))
+    assert VerbRegistry.tool_name("freyja.project_status") == "freyja_project_status"
+    assert reg.resolve_tool_name("freyja_project_status") == "freyja.project_status"
+    assert reg.resolve_tool_name("spotify.play") == "spotify.play"  # dotted still resolves
+    assert reg.resolve_tool_name("spotify_explode") is None
+
+
+def test_responses_tools_one_per_verb_with_confirm_slot():
+    reg = VerbRegistry()
+    reg.register(_mk("spotify.play", params={"query": {"type": "string"}}, required=["query"]))
+    reg.register(_mk("app.quit", params={"name": {"type": "string"}}, required=["name"], tier="confirm"))
+    play, quit_ = reg.responses_tools()
+    assert play == {
+        "type": "function",
+        "name": "spotify_play",
+        "description": play["description"],
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+    }
+    assert quit_["name"] == "app_quit"
+    assert "confirm_token" in quit_["parameters"]["properties"]
+    assert quit_["parameters"]["required"] == ["name"]  # token stays optional
+    assert quit_["description"].endswith("Requires spoken confirmation.")
+    # the registry's own params dict isn't mutated by the projection
+    assert "confirm_token" not in reg.get("app.quit").params
+
+
+def test_default_registry_responses_tools_names_are_valid():
+    import re
+
+    tools = build_default_registry().responses_tools()
+    assert len(tools) == len({t["name"] for t in tools})
+    assert all(re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", t["name"]) for t in tools)
+
+
+def test_responses_tools_exclude():
+    reg = VerbRegistry()
+    reg.register(_mk("screen.look"))
+    reg.register(_mk("computer.see"))
+    assert [t["name"] for t in reg.responses_tools(exclude=("screen.look",))] == ["computer_see"]

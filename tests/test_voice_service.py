@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 import bridge.voice.service as voice_service_module
-from bridge.voice.service import _MINT_URL, _WEBRTC_URL, VoiceService
+from bridge.voice.service import _LIVE_URL, _MINT_URL, _WEBRTC_URL, VoiceService
 
 # ── fakes ─────────────────────────────────────────────────────────────────
 
@@ -74,6 +74,19 @@ class FakeRegistry:
     def catalog_markdown(self):
         return "- fake.verb() — a fake verb for tests"
 
+    def responses_tools(self, exclude=()):
+        return [
+            {"type": "function", "name": n.replace(".", "_", 1), "parameters": {}}
+            for n in sorted(self._verbs)
+            if n not in exclude
+        ]
+
+    def resolve_tool_name(self, name):
+        if name in self._verbs:
+            return name
+        dotted = name.replace("_", ".", 1)
+        return dotted if dotted in self._verbs else None
+
     def openai_tool_schema(self):
         return {
             "type": "function",
@@ -127,7 +140,10 @@ def install_fake_httpx(monkeypatch, post_results):
     return calls
 
 
-def make_service(tmp_path, verbs=(), state=None):
+def make_service(tmp_path, verbs=(), state=None, model="gpt-realtime-2.1-mini"):
+    """Most tests exercise the realtime seat's mint path, so the model is
+    pinned there — in memory AND on disk, so a svc.start() config reload
+    keeps it. Pass model=None for true defaults (GPT-Live)."""
     events = []
     svc = VoiceService(
         state if state is not None else SimpleNamespace(default_model="test-model"),
@@ -135,6 +151,13 @@ def make_service(tmp_path, verbs=(), state=None):
         registry=FakeRegistry(verbs),
         emit_fn=events.append,
     )
+    cfg_path = tmp_path / "voice" / "config.json"
+    if model is not None and not cfg_path.exists():
+        # Only seed a fresh dir — round-trip tests reopen a dir whose
+        # persisted config is the thing under test.
+        svc._config["model"] = model
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg_path.write_text(json.dumps({"model": model}))
     return svc, events
 
 
@@ -149,17 +172,20 @@ async def test_config_defaults(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
     monkeypatch.delenv("SPOTIFY_CLIENT_SECRET", raising=False)
-    svc, events = make_service(tmp_path)
+    svc, events = make_service(tmp_path, model=None)
     await svc.start()
     await svc.handle_get_config({})
     (ev,) = events_of(events, "voice_config")
     cfg = ev["config"]
     assert cfg["enabled"] is True
-    assert cfg["model"] == "gpt-realtime-2.1-mini"
+    assert cfg["model"] == "gpt-live-1"
+    assert cfg["liveBackend"] == "gpt-6.1-sol"
     assert cfg["voice"] == "marin"
     assert cfg["vadMode"] == "semantic_vad"
     assert cfg["idleTimeoutSec"] == 25
+    assert cfg["available"]["backends"] == ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"]
     assert cfg["available"]["models"] == [
+        "gpt-live-1",
         "gpt-realtime-2.1-mini",
         "gpt-realtime-2.1",
         "gpt-realtime",
@@ -260,6 +286,7 @@ async def test_session_start_mint_payload_and_ready_event(tmp_path, monkeypatch)
 
     (ready,) = events_of(events, "voice_session_ready")
     assert ready["voiceSessionId"].startswith("voice-")
+    assert ready["transport"] == "realtime"
     assert ready["clientSecret"] == "ek_test_123"
     assert ready["model"] == "gpt-realtime-2.1-mini"
     assert ready["expiresAt"] == 1750000000
@@ -1592,3 +1619,205 @@ async def test_synthesize_speech_maps_realtime_voice_to_tts_default(tmp_path, mo
     calls = install_fake_httpx(monkeypatch, [Resp200()])
     await voice_service_module._synthesize_speech("hi", "marin")  # realtime-only voice
     assert calls[0]["json"]["voice"] == "shimmer"  # default TTS voice
+
+
+# ── GPT-Live seat (docs/GALDR-LIVE.md) ────────────────────────────────────
+
+
+def _verb_cmd(voice_session_id, call_id, tool, args=None, heard=""):
+    return {
+        "type": "voice_tool_call",
+        "voiceSessionId": voice_session_id,
+        "callId": call_id,
+        "name": tool,
+        "argumentsJson": json.dumps(args or {}),
+        "heard": heard,
+    }
+
+
+async def test_live_session_start_skips_the_mint(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    svc, events = make_service(tmp_path, model="gpt-live-1")
+    await svc.start()
+    calls = install_fake_httpx(monkeypatch, [])
+    await svc.handle_session_start({})
+    assert calls == []  # no client secret — the SDP goes through the bridge
+    (ready,) = events_of(events, "voice_session_ready")
+    assert ready["transport"] == "live"
+    assert ready["clientSecret"] == ""
+    assert ready["model"] == "gpt-live-1"
+    assert ready["backendModel"] == "gpt-6.1-sol"
+    assert ready["voiceSessionId"] == svc._active_session_id
+
+
+async def test_live_connect_creates_the_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    svc, events = make_service(
+        tmp_path, verbs=[FakeVerb("spotify.play", run=None)], model="gpt-live-1"
+    )
+    await svc.start()
+    await svc.handle_set_config({"patch": {"liveBackend": "gpt-6-luna", "voice": "cedar"}})
+    await svc.handle_session_start({})
+    sid = svc._active_session_id
+    calls = install_fake_httpx(
+        monkeypatch,
+        [
+            FakeResponse(
+                status_code=201,
+                payload={
+                    "session": {"id": "live_abc"},
+                    "transport": {"type": "webrtc", "sdp": "v=0 answer"},
+                },
+            )
+        ],
+    )
+    await svc.handle_live_connect({"voiceSessionId": sid, "sdp": "v=0 offer"})
+
+    (call,) = calls
+    assert call["url"] == _LIVE_URL == "https://api.openai.com/v1/live/sessions"
+    assert call["headers"]["Authorization"] == "Bearer sk-test"
+    body = call["json"]
+    assert body["transport"] == {"type": "webrtc", "sdp": "v=0 offer"}
+    session = body["session"]
+    # strict schema: only the fields GPT-Live accepts at startup
+    assert set(session) == {"model", "instructions", "audio", "delegation"}
+    assert session["model"] == "gpt-live-1"
+    assert session["audio"] == {"output": {"voice": "cedar"}}
+    assert "You are Freyja" in session["instructions"]
+    delegation = session["delegation"]
+    assert delegation["type"] == "responses"
+    backend = delegation["responses"]
+    assert backend["model"] == "gpt-6-luna"
+    assert backend["tools"] == svc._registry.responses_tools(exclude=("screen.look",))
+    assert backend["tool_choice"] == "auto"
+    assert backend["parallel_tool_calls"] is False
+    assert "computer_see" in backend["instructions"]
+
+    (answer,) = events_of(events, "voice_live_answer")
+    assert answer == {
+        "type": "voice_live_answer",
+        "voiceSessionId": sid,
+        "ok": True,
+        "sdp": "v=0 answer",
+        "liveSessionId": "live_abc",
+    }
+
+
+async def test_live_connect_refuses_a_stale_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    svc, events = make_service(tmp_path, model="gpt-live-1")
+    calls = install_fake_httpx(monkeypatch, [])
+    await svc.handle_live_connect({"voiceSessionId": "voice-000000000000", "sdp": "v=0"})
+    assert calls == []
+    (answer,) = events_of(events, "voice_live_answer")
+    assert answer["ok"] is False
+    assert "not the active voice session" in answer["error"]
+
+
+async def test_live_connect_4xx_answers_not_ok(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    svc, events = make_service(tmp_path, model="gpt-live-1")
+    await svc.handle_session_start({})
+    sid = svc._active_session_id
+    calls = install_fake_httpx(
+        monkeypatch, [FakeResponse(status_code=400, text='{"error":"bad session"}')]
+    )
+    await svc.handle_live_connect({"voiceSessionId": sid, "sdp": "v=0"})
+    assert len(calls) == 1  # 4xx is terminal — no retry
+    (answer,) = events_of(events, "voice_live_answer")
+    assert answer["ok"] is False
+    assert "400" in answer["error"] and "bad session" in answer["error"]
+
+
+async def test_live_connect_without_answer_sdp_is_not_ok(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    svc, events = make_service(tmp_path, model="gpt-live-1")
+    await svc.handle_session_start({})
+    sid = svc._active_session_id
+    install_fake_httpx(monkeypatch, [FakeResponse(status_code=201, payload={"session": {}})])
+    await svc.handle_live_connect({"voiceSessionId": sid, "sdp": "v=0"})
+    (answer,) = events_of(events, "voice_live_answer")
+    assert answer["ok"] is False
+    assert "no SDP answer" in answer["error"]
+
+
+async def test_per_verb_tool_call_runs_the_verb(tmp_path):
+    ran = []
+
+    async def run(args):
+        ran.append(args)
+        return FakeResult(ok=True, summary="▶ Vienna")
+
+    svc, events = make_service(tmp_path, verbs=[FakeVerb("spotify.play", run=run)])
+    await svc.handle_tool_call(
+        _verb_cmd("voice-1", "call-1", "spotify_play", {"query": "vienna"}, heard="play vienna")
+    )
+    assert ran == [{"query": "vienna"}]
+    (result,) = events_of(events, "voice_tool_result")
+    assert result["ok"] is True
+    assert result["receipt"]["verb"] == "spotify.play"
+    assert result["receipt"]["lane"] == "brain"
+
+
+async def test_per_verb_tool_call_unknown_tool(tmp_path):
+    svc, events = make_service(tmp_path, verbs=[FakeVerb("spotify.play", run=None)])
+    await svc.handle_tool_call(_verb_cmd("voice-1", "call-1", "spotify_explode"))
+    (result,) = events_of(events, "voice_tool_result")
+    assert result["ok"] is False
+    assert json.loads(result["output"])["error"] == "unknown_tool"
+    assert "receipt" not in result
+
+
+async def test_per_verb_tool_confirm_cycle(tmp_path):
+    """The backend re-calls the verb's OWN tool with confirm_token beside
+    the args (probe 2026-09-28), and fills the optional slot with "" on
+    the first call — that's no token, not a wrong one."""
+    ran = []
+
+    async def run(args):
+        ran.append(args)
+        return FakeResult(ok=True, summary="quit Slack")
+
+    svc, events = make_service(tmp_path, verbs=[FakeVerb("app.quit", run=run, tier="confirm")])
+    await svc.handle_tool_call(
+        _verb_cmd("voice-1", "c1", "app_quit", {"name": "Slack", "confirm_token": ""})
+    )
+    assert ran == []
+    (r1,) = events_of(events, "voice_tool_result")
+    token = r1["needsConfirm"]["token"]
+    assert f"call app_quit again with confirm_token {token}" in r1["output"]
+
+    events.clear()
+    await svc.handle_tool_call(
+        _verb_cmd("voice-1", "c2", "app_quit", {"name": "Slack", "confirm_token": token})
+    )
+    assert ran == [{"name": "Slack"}]  # token stripped before the verb sees args
+    (r2,) = events_of(events, "voice_tool_result")
+    assert r2["ok"] is True
+
+
+def test_fit_image_passes_small_png_and_refits_big_one_as_jpeg():
+    """Chromium caps a data-channel message at 256 KiB; an oversized
+    screenshot is re-encoded as JPEG at the SAME pixel size (the grid is
+    computer.click's coordinate space), never resized."""
+    import base64
+    import io
+    import random
+
+    from PIL import Image
+
+    from bridge.voice.service import _IMAGE_B64_BUDGET, _fit_image
+
+    small = base64.b64encode(b"\x89PNG tiny").decode()
+    assert _fit_image(small) == (small, "image/png")
+
+    rnd = random.Random(1)
+    noisy = Image.frombytes("RGB", (1280, 800), bytes(rnd.randrange(256) for _ in range(1280 * 800 * 3)))
+    buf = io.BytesIO()
+    noisy.save(buf, "PNG")
+    big = base64.b64encode(buf.getvalue()).decode()
+    assert len(big) > _IMAGE_B64_BUDGET
+    fitted, mime = _fit_image(big)
+    assert mime == "image/jpeg"
+    with Image.open(io.BytesIO(base64.b64decode(fitted))) as im:
+        assert im.size == (1280, 800)
