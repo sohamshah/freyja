@@ -131,6 +131,46 @@ function deriveSnapshotFromTask(task: Record<string, unknown>): KanbanCardSnapsh
   }
 }
 
+/** Running indicator for the card's left gutter: a 2×6 grid of 3px pixels
+ *  lit by a band that sweeps from top to bottom. It uses the sidebar's
+ *  pixel-dither animation, staggered by row, fits inside the gutter's
+ *  20px, and spans the label and title rows beside it. The SVG is 8px
+ *  wide (one more than the grid) so centering it in the gutter lands on
+ *  whole pixels and the squares stay sharp. */
+function PixelScan() {
+  const cols = 2
+  const rows = 6
+  const cells: Array<{ x: number; y: number; delay: number }> = []
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      cells.push({ x: col * 4, y: row * 4, delay: row * 110 + col * 35 })
+    }
+  }
+  return (
+    <svg
+      width={cols * 4}
+      height={rows * 4 - 1}
+      viewBox={`0 0 ${cols * 4} ${rows * 4 - 1}`}
+      className="text-accent"
+      aria-label="running"
+      role="img"
+    >
+      {cells.map((cell, i) => (
+        <rect
+          key={i}
+          x={cell.x}
+          y={cell.y}
+          width={3}
+          height={3}
+          fill="currentColor"
+          className="pixel-dither-cell"
+          style={{ animationDelay: `${cell.delay}ms` }}
+        />
+      ))}
+    </svg>
+  )
+}
+
 /**
  * Inline subagent card shown in the parent conversation. Slate-inspired:
  * the entire card is a clickable "attach" affordance that switches the
@@ -206,19 +246,17 @@ export function SubagentCard({ id }: { id: string }) {
     <div
       onClick={(event) => handleAttach(event.metaKey || event.ctrlKey ? 'split' : 'replace')}
       className={`group rounded-xl glass-raised p-3 transition-all ${
-        childSnapshot
-          ? 'cursor-pointer hover:ring-1 hover:ring-accent/40 hover:shadow-glow-accent'
-          : ''
+        childSnapshot ? 'card-hover-accent cursor-pointer' : ''
       }`}
       title={childSnapshot ? 'Click to attach (⌘O to open swarm)' : undefined}
     >
       <div className="mb-2 flex items-start gap-2.5">
-        <div className="mt-[2px] flex h-4 w-5 items-center justify-center">
+        <div className="flex w-5 shrink-0 justify-center pt-[3px]">
           {isRunning ? (
-            <Spinner name="scan" className="text-accent" />
+            <PixelScan />
           ) : (
             <span
-              className={`block h-1.5 w-1.5 rounded-full ${statusColor.replace('text-', 'bg-')}`}
+              className={`mt-[2px] block h-1.5 w-1.5 rounded-full ${statusColor.replace('text-', 'bg-')}`}
             />
           )}
         </div>
