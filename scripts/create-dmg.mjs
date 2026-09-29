@@ -46,10 +46,24 @@ const dmgPath = path.join(outDir, dmgName)
 if (fs.existsSync(dmgPath)) fs.unlinkSync(dmgPath)
 
 console.log(`Creating ${dmgName} from ${path.relative(root, appDir)}...`)
-execSync(
-  `hdiutil create -volname "${appName}" -srcfolder "${appDir}" -ov -format UDZO "${dmgPath}"`,
-  { stdio: 'inherit' },
-)
+// hdiutil sometimes fails with "Resource temporarily unavailable" (EAGAIN)
+// and then succeeds on an immediate retry. rebuild.sh runs this before it
+// installs, so one transient failure used to abort the whole rebuild with
+// the app already quit and the new build never installed.
+const ATTEMPTS = 3
+for (let attempt = 1; ; attempt += 1) {
+  try {
+    execSync(
+      `hdiutil create -volname "${appName}" -srcfolder "${appDir}" -ov -format UDZO "${dmgPath}"`,
+      { stdio: 'inherit' },
+    )
+    break
+  } catch (err) {
+    if (attempt >= ATTEMPTS) throw err
+    console.warn(`hdiutil create failed (attempt ${attempt}/${ATTEMPTS}); retrying in 3s…`)
+    execSync('sleep 3')
+  }
+}
 
 const size = (fs.statSync(dmgPath).size / 1024 / 1024).toFixed(1)
 console.log(`\nDMG ready: ${path.relative(root, dmgPath)} (${size} MB)`)
