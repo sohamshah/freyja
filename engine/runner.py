@@ -621,6 +621,13 @@ class AgentRunner:
             except ProviderError as e:
                 ctx.state = RunnerState.RECOVERING
 
+                # An uploaded image is gone; the provider dropped the file IDs
+                # this request used, so resend at once (those images inline).
+                # Not a reason to back off or fall back to another model.
+                if getattr(e, "code", None) == "file_not_found" and e.retryable:
+                    ctx.state = RunnerState.RUNNING
+                    continue
+
                 # Per-image pixel cap — shrink the history's images to the
                 # cap the provider named and resend.
                 if isinstance(e, ImageDimensionsTooLargeError):
@@ -1734,6 +1741,13 @@ class AsyncAgentRunner:
                 _err_reason = classify_failover_reason(str(e))
                 _is_rate_limit = _err_reason == "rate_limit"
                 _is_too_much_media = "too much media" in str(e).lower()
+
+                # An uploaded image is gone; the provider dropped the file IDs
+                # this request used, so resend at once (those images inline).
+                # Not a reason to back off or fall back to another model.
+                if getattr(e, "code", None) == "file_not_found" and e.retryable:
+                    ctx.state = RunnerState.RUNNING
+                    continue
 
                 # Per-image pixel cap (8000px, or 2000px past 20 images).
                 # The pre-request fit normally prevents this; it lands when

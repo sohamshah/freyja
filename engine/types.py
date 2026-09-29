@@ -395,11 +395,25 @@ def content_block_from_dict(d: dict[str, Any]) -> ContentBlock:
     if t == "text":
         return TextBlock(text=d.get("text", ""))
     if t == "image":
+        media_type = d.get("media_type", "image/png")
+        data = d.get("data", "")
+        if not data and d.get("sha256"):
+            # Persisted by reference (engine/media_store.py).
+            from engine.media_store import get_image
+
+            data = get_image(d["sha256"], media_type) or ""
+            if not data:
+                # A missing blob must not become an empty image: that is
+                # rejected on every request and bricks the session.
+                return TextBlock(text=(
+                    f"[image unavailable: its stored copy ({d['sha256'][:12]}) "
+                    "is missing from the media store]"
+                ))
         return ImageBlock(
             source_type=d.get("source_type", "base64"),
-            data=d.get("data", ""),
+            data=data,
             url=d.get("url", ""),
-            media_type=d.get("media_type", "image/png"),
+            media_type=media_type,
         )
     if t == "document":
         return DocumentBlock(

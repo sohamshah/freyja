@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import { imageBlockBase64, inlineStoredImages } from './mediaStore'
 
 /**
  * Disk-backed session persistence. Lives under Electron's main process so
@@ -542,7 +543,7 @@ function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
           // pane reads `message.attachments[]` and renders preview
           // chips next to the message body.
           const mime = String(block.media_type || 'image/png')
-          const data = String(block.data || '')
+          const data = imageBlockBase64(block)
           if (data) {
             attachments.push({
               id: `attach-${e.id || ''}-${attachmentSeq++}`,
@@ -1304,6 +1305,8 @@ function loadSessionExportBundle(id: string): SessionExportBundle | null {
     turn_id: string | null
     message: unknown
   }>
+  // The raw log stores images by reference; an export must stand alone.
+  inlineStoredImages(rawRows)
   const compactionRows = readJsonl(compactionsPath) as Array<{
     ts: number
     session_id: string
