@@ -58,16 +58,16 @@ function runPostEventEffects(event: any, api: any) {
   }
   // A child's terminal state reaches the record in its parent's slice
   // with this update, which the bridge sends just AFTER the child's
-  // `session_completed` — save the parent now, or its file keeps the
-  // record `running` until the parent's next turn (forever, if the app
-  // dies first).
+  // `session_completed` — save the parent, or its file keeps the record
+  // `running` until the parent's next turn (forever, if the app dies
+  // first). Coalesced like the rest: a swarm finishing is a burst of
+  // these, and the save reads the parent's state when it fires.
   if (
     event?.type === 'subagent_update' &&
     ['done', 'failed', 'cancelled'].includes(event.patch?.state)
   ) {
     const state = useHarness.getState()
-    const parentId = (event.sessionId as string | undefined) || state.activeSessionId
-    state.persistSession(parentId).catch(() => {})
+    schedulePersistSession((event.sessionId as string | undefined) || state.activeSessionId)
   }
   // A fork just landed. The reducer already seeded an archive slice for
   // every clone it had source state for; write those to disk, fill in

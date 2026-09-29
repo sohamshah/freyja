@@ -2569,9 +2569,8 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         return patch ?? prev
       })
       if (settled) {
-        const state = get()
-        state.persistSession(reportedFor).catch(() => {})
-        state.persistSessionIndex().catch(() => {})
+        schedulePersistSession(reportedFor)
+        schedulePersistIndex()
       }
     }
     if (ev.type === 'subagents_snapshot') return
