@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useHarness } from '../state/store'
 
 type LogLevel = 'error' | 'warn' | 'info' | 'debug' | 'other'
@@ -117,7 +118,9 @@ export function LogStreamModal({ onClose }: { onClose: () => void }) {
     return c
   }, [logs])
 
-  return (
+  // Portaled: the side panels contain their layout (see Sidebar /
+  // ActivityPanel), which would otherwise trap a fixed overlay inside them.
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
       <div
         className="absolute inset-0 bg-black/55 backdrop-blur-[3px]"
@@ -240,6 +243,7 @@ export function LogStreamModal({ onClose }: { onClose: () => void }) {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 /**
  * Modal showing the unified diff between a pending candidate and the
@@ -73,7 +74,9 @@ export function SkillDiffModal({
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  return (
+  // Portaled: the side panels contain their layout (see Sidebar /
+  // ActivityPanel), which would otherwise trap a fixed overlay inside them.
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
       onClick={onClose}
@@ -128,7 +131,8 @@ export function SkillDiffModal({
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 

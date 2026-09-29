@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useHarness } from '../state/store'
 import type { ArtifactRecord, FileChangeSet } from '@shared/events'
 import { ArtifactPreview } from './ArtifactPreview'
@@ -260,7 +261,9 @@ export function ArtifactLibrary({
     ? artifacts.find((a) => a.path === previewPath) ?? null
     : null
 
-  return (
+  // Portaled: the side panels contain their layout (see Sidebar /
+  // ActivityPanel), which would otherwise trap a fixed overlay inside them.
+  return createPortal(
     <div className="fixed inset-0 z-50 flex flex-col bg-[#0c0c10]/95 backdrop-blur-md">
       {/* ── Header ─────────────────────────────────────── */}
       <Header
@@ -341,7 +344,8 @@ export function ArtifactLibrary({
           </div>
         </div>
       )}
-    </div>
+    </div>,
+    document.body,
   )
 }
 

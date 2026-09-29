@@ -100,8 +100,10 @@ export function ActivityPanel() {
   const ctxPct = Math.min(100, Math.round((contextTokens / usage.contextWindow) * 100))
 
   return (
+    // Layout-contained like the Sidebar (see the note there): nothing in
+    // this panel sizes it, so the rest of the window never re-lays it out.
     <aside
-      className="glass glass-panel relative isolate flex shrink-0 flex-col overflow-hidden rounded-[18px]"
+      className="glass glass-panel relative isolate flex shrink-0 flex-col overflow-hidden rounded-[18px] [contain:strict]"
       style={{ width: `${panelWidth}px` }}
     >
       {/* Ambient topographic backdrop — same vocabulary as Sidebar

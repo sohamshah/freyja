@@ -512,8 +512,14 @@ export function Sidebar() {
   }, [subagentOrder, subagents])
 
   return (
+    // `contain: strict`: the panel's size comes from its width and the
+    // window, never from its rows. Without it every layout anywhere in the
+    // window (a keystroke in the composer, a streamed token) re-laid out
+    // the whole session tree — its nested Fold grids defeat the layout
+    // cache — ~15 ms a time on a long session. Fixed overlays inside must
+    // portal to <body> (they already clip here: overflow-hidden).
     <aside
-      className="glass glass-panel relative isolate flex shrink-0 flex-col overflow-hidden rounded-[18px]"
+      className="glass glass-panel relative isolate flex shrink-0 flex-col overflow-hidden rounded-[18px] [contain:strict]"
       style={{ width: `${sidebarWidth}px` }}
     >
       {/* Ambient topographic backdrop — paired-peak height field with

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { SkillDiffModal } from './SkillDiffModal'
 
 /**
@@ -95,7 +96,9 @@ export function SkillDetailModal({
   const linesAdded = existingSkill?.linesAdded ?? 0
   const linesRemoved = existingSkill?.linesRemoved ?? 0
 
-  return (
+  // Portaled: the side panels contain their layout (see Sidebar /
+  // ActivityPanel), which would otherwise trap a fixed overlay inside them.
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
       onClick={onClose}
@@ -232,6 +235,7 @@ export function SkillDetailModal({
           onClose={() => setShowDiff(false)}
         />
       )}
-    </div>
+    </div>,
+    document.body,
   )
 }
