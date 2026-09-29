@@ -100,6 +100,7 @@ def _anthropic_image_block(
 # `engine/types.py:_ADAPTIVE_THINKING_MODEL_IDS` must move together.
 ADAPTIVE_THINKING_MODELS = {
     "claude-opus-5-5",
+    "claude-sonnet-5-5",
     "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-opus-4-6",
@@ -109,11 +110,29 @@ ADAPTIVE_THINKING_MODELS = {
     "claude-fable-5",
     "claude-fable-5-1",
 }
+# Models whose "thinking off" setting is `between_tools` instead of
+# omitting the `thinking` field. Keep in sync with
+# engine/types.py:_BETWEEN_TOOLS_THINKING_MODEL_IDS — that copy is what
+# ThinkingConfig actually reads; this one documents the capability next to
+# its siblings and is what `supports_thinking_off` reports.
+BETWEEN_TOOLS_THINKING_MODELS = {
+    "claude-sonnet-5-5",
+}
 LEGACY_THINKING_MODELS = {
     "claude-sonnet-4-5",
     "claude-opus-4-5",
 }
 THINKING_MODELS = ADAPTIVE_THINKING_MODELS | LEGACY_THINKING_MODELS
+
+# Models where thinking cannot be turned off at all — no `disabled`, no
+# `budget_tokens`, no `between_tools`. Effort is the only lever. Asking for
+# "none" on one of these silently yields full adaptive thinking, which is
+# why their reasoning ladders in bridge/freyja_bridge.py omit the rung.
+ALWAYS_THINKING_MODELS = {
+    "claude-opus-5-5",
+    "claude-fable-5",
+    "claude-fable-5-1",
+}
 
 # Models that accept fast mode (speed: "fast" + fast-mode-2026-02-01 beta).
 # Per Anthropic docs: 4.6 fast mode is deprecated as of 4.8 launch and falls
@@ -138,6 +157,10 @@ FAST_MODE_BETA = "fast-mode-2026-02-01"
 # the model.
 INLINE_SYSTEM_MESSAGE_MODELS = {
     "claude-opus-5-5",
+    # Sonnet 5.5 supports these; plain Sonnet 5 does not, so this is a real
+    # gain when moving the Sonnet tier forward — post-compaction summaries
+    # reach the model as operator text instead of a squashed user prefix.
+    "claude-sonnet-5-5",
     "claude-opus-4-8",
 }
 
@@ -157,6 +180,11 @@ FORCED_TOOL_CHOICE_UNSUPPORTED_MODELS = {
     # on the Messages API *and* count_tokens. Documented at launch
     # (2026-09-22), not inferred from a live probe.
     "claude-opus-5-5",
+    # Sonnet 5.5 (2026-09-28) carries the same restriction, also documented
+    # at launch. NOTE the substring match below: "claude-sonnet-5-5" does
+    # NOT match the still-supported "claude-sonnet-5", so legacy Sonnet 5
+    # sessions keep forced tool use.
+    "claude-sonnet-5-5",
 }
 
 
@@ -183,6 +211,12 @@ REFUSAL_FALLBACK_MODELS = {
     # fires when a prompt pushes the model to restate its own reasoning.
     # Same dead-turn failure mode as Fable 5, so same opt-in.
     "claude-opus-5-5",
+    # Sonnet 5.5 declines in five categories (cyber, bio, frontier_llm,
+    # reasoning_extraction, general_harms). Anthropic's own server-side
+    # fallback only retries cyber and frontier_llm for this model, so the
+    # other three still surface as a refusal to the operator — the opt-in
+    # is a partial net here, not a complete one.
+    "claude-sonnet-5-5",
 }
 REFUSAL_FALLBACK_TARGET = "claude-opus-4-8"
 SERVER_FALLBACK_BETA = "server-side-fallback-2026-06-01"
@@ -215,7 +249,7 @@ def _normalize_stop_details(raw: Any) -> dict[str, Any] | None:
 # anyway so a future reader doesn't wire up a stale "most capable" alias.
 MODEL_SPEED_TIERS = {
     "fast": "claude-haiku-4-5",       # Fastest, most cost-effective
-    "medium": "claude-sonnet-4-6",    # Balanced speed/capability
+    "medium": "claude-sonnet-5-5",    # Balanced speed/capability
     "slow": "claude-opus-5-5",        # Most capable (adaptive thinking, 128k out)
 }
 
@@ -227,7 +261,7 @@ class AnthropicConfig:
     api_key: str | None = None
     """API key (defaults to ANTHROPIC_API_KEY env var)."""
 
-    model: str = "claude-sonnet-4-6"
+    model: str = "claude-sonnet-5-5"
     """Model to use."""
 
     max_tokens: int = DEFAULT_MAX_TOKENS
@@ -256,7 +290,7 @@ class AnthropicProvider:
     Example:
         provider = AnthropicProvider(
             config=AnthropicConfig(
-                model="claude-sonnet-4-6",
+                model="claude-sonnet-5-5",
                 thinking=ThinkingConfig(enabled=True, budget_tokens=10000),
             )
         )
@@ -360,6 +394,18 @@ class AnthropicProvider:
     def supports_thinking(self) -> bool:
         """Whether the current model supports extended thinking."""
         return self._model in THINKING_MODELS
+
+    @property
+    def supports_thinking_off(self) -> bool:
+        """Whether this model can run with up-front thinking turned off.
+
+        False for Opus 5.5 / Fable-class models, where thinking is always
+        on and the only lever is `effort`. True for between_tools models
+        and for every pre-5.5 model, where omitting `thinking` works.
+        """
+        if self._model in BETWEEN_TOOLS_THINKING_MODELS:
+            return True
+        return self._model not in ALWAYS_THINKING_MODELS
 
     async def close(self) -> None:
         """Close the async client to release resources."""
@@ -915,14 +961,22 @@ class AnthropicProvider:
         if tool_choice:
             request_kwargs["tool_choice"] = tool_choice
 
-        # Add thinking if enabled and supported
-        if think_config.enabled and self.supports_thinking:
-            request_kwargs["thinking"] = think_config.to_api_param(self._model)
+        # Add thinking if supported. Note this is NOT gated on
+        # `think_config.enabled` any more: on a between_tools model
+        # (Sonnet 5.5) "off" is an explicit `{"type": "between_tools"}`
+        # block, not the absence of one, so to_api_param decides. It still
+        # returns None for off-on-every-other-model, which keeps the old
+        # behaviour everywhere else.
+        if self.supports_thinking:
+            thinking_param = think_config.to_api_param(self._model)
+            if thinking_param:
+                request_kwargs["thinking"] = thinking_param
 
-            # Add output_config with effort level for adaptive models (4.6+)
-            output_config = think_config.get_output_config(self._model)
-            if output_config:
-                request_kwargs["output_config"] = output_config
+                # output_config.effort for adaptive models (4.6+). Returns
+                # None for between_tools — see ThinkingConfig for why.
+                output_config = think_config.get_output_config(self._model)
+                if output_config:
+                    request_kwargs["output_config"] = output_config
 
         # Fast mode (research preview). The SDK doesn't know `speed` yet,
         # so we inject it via `extra_body`, and the beta header via
@@ -1573,7 +1627,7 @@ def _try_cache_conversation_tail(anthropic_messages: list[dict[str, Any]]) -> No
 
 def create_anthropic_provider(
     api_key: str | None = None,
-    model: str = "claude-sonnet-4-6",
+    model: str = "claude-sonnet-5-5",
     thinking: ThinkingConfig | None = None,
     **kwargs,
 ) -> AnthropicProvider:

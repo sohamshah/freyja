@@ -93,7 +93,7 @@ export function startInRendererDemo(emit: Emit): { burst(): void; send(content: 
     type: 'ready',
     sessionId: 'renderer-demo',
     mode: 'demo',
-    capabilities: { model: 'claude-sonnet-4-6', subagents: true, skills: true, tools: 42 },
+    capabilities: { model: 'claude-sonnet-5-5', subagents: true, skills: true, tools: 42 },
   })
   for (const skill of DEMO_SKILLS) emit({ type: 'skill_updated', skill })
 

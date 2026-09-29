@@ -1026,6 +1026,8 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // Claude 5.5
   'claude-opus-5-5': 1_000_000,
   'claude-opus-5-5-fast': 1_000_000,
+  // Claude Sonnet 5.5
+  'claude-sonnet-5-5': 1_000_000,
   // Claude 4.8
   'claude-opus-4-8': 1_000_000,
   'claude-opus-4-8-fast': 1_000_000,
@@ -1044,6 +1046,8 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   'claude-opus-4': 200_000,
   // OpenAI
   'gpt-6-astra': 1_050_000,
+  'gpt-6.1-sol': 1_050_000,
+  'gpt-6-luna': 1_050_000,
   'gpt-5.6-sol': 1_050_000,
   'gpt-5.6-terra': 1_050_000,
   'gpt-5.6-luna': 1_050_000,
@@ -1060,6 +1064,7 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // Cerebras context window is 131k — compaction triggers felt
   // "wrong" because the UI denominator didn't match the provider.
   'zai-glm-4.7': 131_072,
+  'deepseek-v4p1-flash': 1_048_576,
   'deepseek-v4-pro': 1_048_576,
   'glm-5.1': 202_752,
   'glm-5.2': 1_048_576,
@@ -1101,8 +1106,9 @@ function contextWindowFor(model: string): number {
 // hasn't sent its `ready` event yet. See docs/ADDING-A-MODEL.md —
 // keep in sync with bridge/freyja_bridge.py:MODEL_REASONING_META.
 const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel: string }> = {
-  'claude-fable-5-1': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
-  'claude-fable-5': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
+  // Fable tiers: thinking is always on, so there is no 'none' rung.
+  'claude-fable-5-1': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
+  'claude-fable-5': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   // Opus 5.5: no 'none' rung — thinking cannot be disabled on this model.
   'claude-opus-5-5': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },
   'claude-opus-5-5-fast': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },
@@ -1110,6 +1116,10 @@ const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel
   'claude-opus-4-8-fast': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'claude-opus-4-7': { levels: ['auto'], defaultLevel: 'auto' },
   'claude-opus-4-6': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'max' },
+  // Sonnet 5.5 keeps 'none', but it means between_tools (no up-front
+  // thinking) rather than an omitted thinking field — see the bridge's
+  // MODEL_REASONING_META comment.
+  'claude-sonnet-5-5': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'claude-sonnet-5': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'claude-sonnet-4-6': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
   'claude-haiku-4-5': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
@@ -1117,6 +1127,8 @@ const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel
   'claude-sonnet-4-5': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
   // Astra: no 'none' or 'minimal' rung.
   'gpt-6-astra': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
+  'gpt-6.1-sol': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },
+  'gpt-6-luna': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },
   'gpt-5.6-sol': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'gpt-5.6-terra': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },
   'gpt-5.6-luna': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'low' },
@@ -1126,6 +1138,7 @@ const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel
   'gpt-5.4-mini': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], defaultLevel: 'medium' },
   'gpt-5.4-nano': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], defaultLevel: 'low' },
   'gpt-5.3-codex': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], defaultLevel: 'medium' },
+  'deepseek-v4p1-flash': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'high' },
   'deepseek-v4-pro': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'high' },
   'glm-5.1': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
   'glm-5.2': { levels: ['none', 'low', 'medium', 'high', 'max'], defaultLevel: 'high' },
@@ -1615,7 +1628,7 @@ function materializeFramesForPersistence(slice: SessionSlice): SessionSlice {
 }
 
 function normalizePersistedFrames(slice: SessionSlice): SessionSlice {
-  const model = slice.model || 'claude-sonnet-4-6'
+  const model = slice.model || 'claude-sonnet-5-5'
   const contextWindow = slice.usage?.contextWindow ?? contextWindowFor(model)
   const totalInputTokens = slice.usage?.totalInputTokens ?? 0
   const persistedContext = (slice.usage as any)?.currentContextTokens
@@ -4602,7 +4615,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
 
     // Tell the bridge which model this session was using so it creates
     // (or reconfigures) the _BridgeSession with the right provider.
-    // Without this the bridge defaults to claude-sonnet-4-6 for every
+    // Without this the bridge defaults to claude-sonnet-5-5 for every
     // resumed session, even if the user had picked gpt-5.4 before.
     const restoredModel = useHarness.getState().model
     const restoredReasoning = useHarness.getState().reasoningLevel
@@ -5053,9 +5066,9 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         id: s.id,
         title: s.title || 'Session',
         workspace: s.workspace || prev.sessions[0]?.workspace || '~/',
-        model: s.model || 'claude-sonnet-4-6',
+        model: s.model || 'claude-sonnet-5-5',
         reasoningLevel: normalizeReasoningFor(
-          s.model || 'claude-sonnet-4-6',
+          s.model || 'claude-sonnet-5-5',
           s.reasoningLevel,
           prev.availableModels,
         ),

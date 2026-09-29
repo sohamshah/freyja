@@ -537,6 +537,14 @@ class ThinkingConfig:
             API parameter dict or None if disabled.
         """
         if not self.enabled:
+            # On most models "off" means send no `thinking` field at all.
+            # On Sonnet 5.5 that would silently run FULL adaptive thinking
+            # (thinking is on by default there), so an operator asking for
+            # "none" on a cheap fan-out sub-agent would quietly pay for
+            # reasoning. `between_tools` is the documented off-switch.
+            # Deliberately no `display` key: sending one is a 400.
+            if _is_between_tools_model(model):
+                return {"type": "between_tools"}
             return None
 
         # Claude 4.6+ adaptive thinking. On 4.7 the docs silently changed
@@ -555,6 +563,9 @@ class ThinkingConfig:
             "budget_tokens": self.budget_tokens,
         }
 
+    BETWEEN_TOOLS_MAX_EFFORT = "high"
+    """Highest effort `between_tools` accepts; xhigh/max return 400."""
+
     def get_output_config(self, model: str = "") -> dict[str, Any] | None:
         """Get output_config for effort level (Claude 4.6+).
 
@@ -565,6 +576,12 @@ class ThinkingConfig:
             output_config dict or None if not applicable.
         """
         if not self.enabled:
+            # `between_tools` runs without an output_config at all. The
+            # server default effort (high on Sonnet 5.5) is inside the
+            # low/medium/high band it accepts, and omitting the key keeps
+            # us clear of the "effort can't change mid-conversation with
+            # between_tools" rule, which 400s on a per-message effort that
+            # differs from the level in effect.
             return None
 
         # Adaptive-thinking models accept output_config.effort. Pre-4.6
@@ -583,6 +600,7 @@ class ThinkingConfig:
 # See docs/ADDING-A-MODEL.md — this set is codepoint #9 of 19.
 _ADAPTIVE_THINKING_MODEL_IDS: set[str] = {
     "claude-opus-5-5",
+    "claude-sonnet-5-5",
     "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-opus-4-6",
@@ -592,6 +610,32 @@ _ADAPTIVE_THINKING_MODEL_IDS: set[str] = {
     "claude-fable-5",
     "claude-fable-5-1",
 }
+
+
+# Models where "turn thinking off" is expressed as
+# `thinking: {"type": "between_tools"}` rather than by omitting the field.
+# Claude Sonnet 5.5 400s on `{"type": "disabled"}` and, like every 4.6+
+# model, on a manual `budget_tokens`; `between_tools` is the documented
+# replacement and the lowest thinking setting on the model. It keeps the
+# short progress notes the model writes between tool calls coming back as
+# readable `thinking` blocks, which is why it is strictly better than the
+# old "send nothing" behaviour for cheap sub-agent fan-out.
+# Constraints the request builder must respect:
+#   - accepted at low/medium/high effort only (xhigh/max → 400)
+#   - takes NO companion field: `display`, `budget_tokens`, and
+#     `block_binding` each return 400 when sent alongside it
+# See docs/ADDING-A-MODEL.md codepoint #9a.
+_BETWEEN_TOOLS_THINKING_MODEL_IDS: set[str] = {
+    "claude-sonnet-5-5",
+}
+
+
+def _is_between_tools_model(model: str) -> bool:
+    """Whether `model` expresses thinking-off as `between_tools`."""
+    if not model:
+        return False
+    base = model[:-5] if model.endswith("-fast") else model
+    return base in _BETWEEN_TOOLS_THINKING_MODEL_IDS
 
 
 def _is_adaptive_thinking_model(model: str) -> bool:

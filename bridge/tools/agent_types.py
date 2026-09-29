@@ -521,10 +521,10 @@ AGENT_TYPES: dict[str, AgentType] = {
             "exploring codebases, or any task that benefits from deep context. "
             "Spawn one for thorough investigation."
         ),
-        model="claude-sonnet-4-6",
+        model="claude-sonnet-5-5",
         thinking_effort="medium",
         model_policy="first_available",
-        model_fallbacks=("gpt-5.5", "kimi-k2.6", "deepseek-v4-pro"),
+        model_fallbacks=("gpt-6.1-sol", "glm-5.3-fireworks", "kimi-k3"),
         tool_include=frozenset({
             "web_search", "web_fetch", "web_research", "twitter_search",
             "bash", "read_file", "write_file", "list_directory",
@@ -541,7 +541,12 @@ AGENT_TYPES: dict[str, AgentType] = {
             "when you need breadth over depth. Spawn 3-5 of these at "
             "once for broad coverage."
         ),
-        model=["kimi-k2.6", "minimax-m2.7", "zai-glm-4.7"],
+        # Retargeted 2026-09-29: kimi-k2.6 and minimax-m2.7 were both
+        # removed from Fireworks serverless and 404, which left this
+        # rotation with one working model out of three. gpt-6-luna is the
+        # cheapest option anywhere ($0.10/$0.50) and, unlike the rest of the
+        # GPT-6 family, still accepts reasoning effort "none".
+        model=["gpt-6-luna", "glm-5.3-flash-fireworks", "zai-glm-4.7"],
         thinking_effort="off",
         model_policy="random_available",
         model_fallbacks=("claude-haiku-4-5",),
@@ -580,7 +585,7 @@ AGENT_TYPES: dict[str, AgentType] = {
         model="gpt-5.5",
         thinking_effort="high",
         model_policy="first_available",
-        model_fallbacks=("gpt-5.4", "claude-sonnet-4-6", "deepseek-v4-pro", "glm-5.1"),
+        model_fallbacks=("gpt-6.1-sol", "claude-sonnet-5-5", "deepseek-v4p1-flash"),
         tool_include=frozenset({
             "kanban",  # for kanban-coordinated verification (Move C)
             "bash", "read_file", "list_directory",
@@ -607,7 +612,7 @@ AGENT_TYPES: dict[str, AgentType] = {
         model="parent",
         thinking_effort="high",
         model_policy="prefer_parent",
-        model_fallbacks=("claude-opus-4-7", "gpt-5.5", "claude-sonnet-4-6"),
+        model_fallbacks=("claude-opus-5-5", "gpt-6.1-sol", "claude-sonnet-5-5"),
         # No tools — calibration is a pure reasoning task. The goal text +
         # any operator context are the entire input.
         tool_include=frozenset(),
@@ -637,7 +642,7 @@ AGENT_TYPES: dict[str, AgentType] = {
         model="parent",
         thinking_effort="high",
         model_policy="prefer_parent",
-        model_fallbacks=("claude-sonnet-4-6", "gpt-5.5", "deepseek-v4-pro"),
+        model_fallbacks=("claude-sonnet-5-5", "gpt-6.1-sol", "deepseek-v4p1-flash"),
         tool_include=frozenset({
             "read_file", "list_directory", "glob", "grep", "bash", "fetch_url",
         }),
@@ -674,7 +679,7 @@ AGENT_TYPES: dict[str, AgentType] = {
         model=DRAFTER_DEFAULT_MODEL,
         thinking_effort="high",
         model_policy="first_available",
-        model_fallbacks=("claude-opus-4-7", "claude-sonnet-4-6"),
+        model_fallbacks=("claude-opus-5-5", "claude-sonnet-5-5"),
         # Read + skill-library + the publish tool. No write_file / edit_file
         # — the drafter never mutates the workspace; its only persistent
         # side effect is the candidate it writes via propose_skill.
@@ -756,7 +761,7 @@ AGENT_TYPES: dict[str, AgentType] = {
         model="gpt-5.5",
         thinking_effort="high",
         model_policy="first_available",
-        model_fallbacks=("gpt-5.4", "claude-sonnet-4-6", "deepseek-v4-pro", "glm-5.1"),
+        model_fallbacks=("gpt-6.1-sol", "claude-sonnet-5-5", "deepseek-v4p1-flash"),
         tool_include=frozenset({
             "bash", "read_file", "list_directory", "glob", "grep",
         }),

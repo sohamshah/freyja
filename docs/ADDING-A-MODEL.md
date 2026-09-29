@@ -1,6 +1,6 @@
 # Adding (or changing) an LLM model — codepoint checklist
 
-Freyja has model metadata scattered across **19 codepoints** in 11 files.
+Freyja has model metadata scattered across **22 codepoints** in 11 files.
 There is no single registry; the Python bridge, the engine providers,
 and the TypeScript renderer each carry overlapping copies for reasons
 (fallback when the bridge hasn't sent its catalog yet, runtime lookup
@@ -93,6 +93,12 @@ each one is a request the API rejects if the set is wrong:
   turn with `stop_reason="refusal"`. Listing a model opts it into
   server-side fallbacks to `REFUSAL_FALLBACK_TARGET`. Missing entry →
   a declined request is a dead turn instead of a rescued one.
+- `ALWAYS_THINKING_MODELS` — models where thinking cannot be turned off
+  by any means. Read by `supports_thinking_off`. Their reasoning ladders
+  in #11 and #13 must omit the `none` rung.
+- `BETWEEN_TOOLS_THINKING_MODELS` — models whose thinking-off switch is
+  `thinking: {"type": "between_tools"}`. See #9a, which is the copy that
+  actually shapes the request.
 
 ### 8. `engine/openai_provider.py` — `MODEL_CONTEXT_WINDOWS`
 OpenAI-specific duplicate of #1. Read by the OpenAI provider's
@@ -118,6 +124,33 @@ inference without importing the provider (circular import). Comment in
 file already says "keep in sync with anthropic_provider".
 
 Missing entry → adaptive-thinking type guard misses the new model.
+
+### 9a. `engine/types.py` — `_BETWEEN_TOOLS_THINKING_MODEL_IDS`
+Models where "thinking off" is an explicit `thinking: {"type":
+"between_tools"}` block rather than the absence of a `thinking` field.
+Claude Sonnet 5.5 is the first. `ThinkingConfig.to_api_param` reads this
+set, and `AnthropicProvider._build_request` is deliberately **not** gated
+on `think_config.enabled` so the block can be emitted while thinking is
+"off".
+
+Three constraints the API enforces with a 400, all verified by live probe
+on 2026-09-29:
+
+| Request | Result |
+|---|---|
+| `{"type": "between_tools"}` alone | 200 |
+| `between_tools` + `output_config.effort` of `xhigh`/`max` | 400 |
+| `between_tools` + `display` (or `budget_tokens`, `block_binding`) | 400 |
+| `{"type": "disabled"}` | 400, message points at `between_tools` |
+
+`get_output_config` returns `None` whenever thinking is off, which is what
+keeps rows 2 and 3 unreachable. Don't "helpfully" add a `display` key for
+symmetry with the adaptive path.
+
+Missing entry on a between_tools model → asking for `none` sends no
+`thinking` field, which on such a model means **full adaptive thinking**.
+It does not error; it just silently bills reasoning on the cheap fan-out
+sub-agents that asked for none.
 
 ### 10. `bridge/freyja_bridge.py` — `AVAILABLE_MODELS`
 The catalog the bridge sends to the renderer on the `ready` event.
@@ -186,12 +219,49 @@ positions. Some hits are defaults and docstrings rather than registries
 decision from registering the model, and adding a model does **not**
 require changing them.
 
+### Verify the provider still serves the models you already list
+
+A model can vanish under you. On 2026-09-26 Fireworks removed nine models
+from serverless inference; on 2026-09-29 a probe found that **9 of the 14
+Fireworks ids in this repo returned 404** `Model not found, inaccessible,
+and/or not deployed`, including `kimi-k2.6`, which was at the time the
+single most-used fallback target in `FALLBACK_CHAINS`. Nothing failed
+loudly, because a fallback target is only exercised when the primary is
+already failing — the outage was latent.
+
+Two lessons:
+
+1. **Don't trust a provider changelog over the provider's API.** The
+   Fireworks changelog listed `qwen3.7-plus` as still available and
+   `glm-5.1` as never deprecated; both 404 in practice.
+2. **Probe before you wire a fallback.** Listing a model in
+   `GET /v1/models` is not the same as it being served — several dead ids
+   were still in the list. The cheap check that actually answers it:
+
+```sh
+# Fireworks: is this id really served?
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -X POST https://api.fireworks.ai/inference/v1/chat/completions \
+  -H "Authorization: Bearer $FIREWORKS_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"accounts/fireworks/models/<id>","max_tokens":1,
+       "messages":[{"role":"user","content":"hi"}]}'
+```
+
+Retired ids are kept as `FALLBACK_CHAINS` **keys** (so a session still
+pinned to one degrades to something live) but must never appear as a
+fallback **target**. `tests/test_model_registry_consistency.py` enforces
+that, along with every registry model having a price and a chain.
+
 ### A model whose capabilities shrank
 
 The checklist assumes a new model is a superset of the old one. Recent
 models are not. Claude Opus 5.5 (Sep 2026) *removed* the ability to
-disable thinking and *removed* forced tool use; GPT-6 Astra dropped the
-`none` and `minimal` effort rungs the GPT-5.x family had. For these,
+disable thinking and *removed* forced tool use; Claude Sonnet 5.5
+*replaced* `disabled` with `between_tools` (#9a) and also dropped forced
+tool use; GPT-6 Astra and GPT-6.1 Sol dropped the `none` and `minimal`
+effort rungs the GPT-5.x family had, while GPT-6 Luna kept `none`. Two
+models in the same family released days apart can differ on this — check
+each one rather than copying its sibling's ladder. For these,
 the thing that keeps a bad request off the wire is **leaving a rung out
 of `reasoningLevels`** in #11 and #13, because
 `_normalize_reasoning_level` clamps an unlisted level back to the

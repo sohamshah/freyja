@@ -58,6 +58,14 @@ FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1"
 
 # Map short model names to Fireworks model IDs
 FIREWORKS_MODEL_MAP: dict[str, str] = {
+    # Path verified against the live Fireworks model list on 2026-09-29:
+    # it sits under the `fireworks` account, NOT `deepseek-ai`, even though
+    # the public playground URL is fireworks.ai/models/deepseek-ai/...
+    "deepseek-v4p1-flash": "accounts/fireworks/models/deepseek-v4p1-flash",
+    # RETIRED 2026-09-26 — kept so a pinned session resolves rather than
+    # crashing, but every one of these now returns
+    # `404 Model not found, inaccessible, and/or not deployed`.
+    # Verified dead by live probe 2026-09-29.
     "deepseek-v4-pro": "accounts/fireworks/models/deepseek-v4-pro",
     "glm-5.1": "accounts/fireworks/models/glm-5p1",
     "glm-5.2": "accounts/fireworks/models/glm-5p2",
@@ -77,6 +85,8 @@ FIREWORKS_MODEL_MAP: dict[str, str] = {
 }
 
 FIREWORKS_CONTEXT_WINDOWS: dict[str, int] = {
+    "deepseek-v4p1-flash": 1_048_576,
+    "accounts/fireworks/models/deepseek-v4p1-flash": 1_048_576,
     "deepseek-v4-pro": 1_048_576,
     "accounts/fireworks/models/deepseek-v4-pro": 1_048_576,
     "glm-5.1": 202_752,

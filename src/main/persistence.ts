@@ -833,7 +833,7 @@ function synthesizeSessionFromTranscript(id: string): PersistedSession | null {
   // (see ``src/renderer/state/store.ts:73``). Missing required fields
   // cause the renderer's setActive to silently drop the click — the
   // conversation pane stays on whatever it was showing.
-  const modelId = parsed?.metadata?.model_id || 'claude-sonnet-4-6'
+  const modelId = parsed?.metadata?.model_id || 'claude-sonnet-5-5'
   const reasoning = parsed?.metadata?.reasoning_level || 'auto'
   const strategy = parsed?.metadata?.coordination_strategy || 'bus'
   const slice = {

@@ -73,6 +73,8 @@ logger = logging.getLogger(__name__)
 # See docs/ADDING-A-MODEL.md for the full per-model checklist.
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "gpt-6-astra": 1_050_000,
+    "gpt-6.1-sol": 1_050_000,
+    "gpt-6-luna": 1_050_000,
     "gpt-5.6-sol": 1_050_000,
     "gpt-5.6-terra": 1_050_000,
     "gpt-5.6-luna": 1_050_000,
@@ -90,6 +92,10 @@ REASONING_MODELS: set[str] = {
     # MODEL_REASONING_META in bridge/freyja_bridge.py, which is what keeps
     # an unsupported level from ever reaching `reasoning.effort` here.
     "gpt-6-astra",
+    # gpt-6.1-sol also rejects "none"/"minimal"; gpt-6-luna accepts "none"
+    # but not "minimal". Both ladders live in MODEL_REASONING_META.
+    "gpt-6.1-sol",
+    "gpt-6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -103,6 +109,8 @@ REASONING_MODELS: set[str] = {
 
 NATIVE_COMPUTER_MODELS: set[str] = {
     "gpt-6-astra",
+    "gpt-6.1-sol",
+    "gpt-6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",

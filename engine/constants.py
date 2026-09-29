@@ -60,6 +60,8 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     # because this dict is looked up before the suffix is stripped.
     "claude-opus-5-5": 1_000_000,
     "claude-opus-5-5-fast": 1_000_000,
+    # Claude Sonnet 5.5 (GA 2026-09-28)
+    "claude-sonnet-5-5": 1_000_000,
     # Claude 4.8
     "claude-opus-4-8": 1_000_000,
     "claude-opus-4-8-fast": 1_000_000,
@@ -78,6 +80,8 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "claude-opus-4-5": 200_000,
     # OpenAI
     "gpt-6-astra": 1_050_000,
+    "gpt-6.1-sol": 1_050_000,
+    "gpt-6-luna": 1_050_000,
     "gpt-5.6-sol": 1_050_000,
     "gpt-5.6-terra": 1_050_000,
     "gpt-5.6-luna": 1_050_000,
@@ -94,6 +98,7 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "gpt-4": 8_192,
     "gpt-3.5-turbo": 16_385,
     # Fireworks
+    "deepseek-v4p1-flash": 1_048_576,
     "deepseek-v4-pro": 1_048_576,
     "glm-5.1": 202_752,
     "glm-5.2": 1_048_576,

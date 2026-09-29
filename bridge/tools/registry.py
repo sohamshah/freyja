@@ -76,7 +76,7 @@ def build_desktop_registry(
     excluded: frozenset[str] = frozenset(),
     subagent_registry: SubAgentRegistry | None = None,
     subagent_provider_factory: Any | None = None,
-    subagent_model: str = "claude-sonnet-4-6",
+    subagent_model: str = "claude-sonnet-5-5",
     subagent_reasoning_level: str = "auto",
     subagent_emit: Any | None = None,
     subagent_parent_session_id: str = "",

@@ -1914,6 +1914,16 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "description": "Previous-gen Opus. Deep reasoning with extended thinking.",
     },
     {
+        "id": "claude-sonnet-5-5",
+        "family": "anthropic",
+        "label": "Claude Sonnet 5.5",
+        "tier": "balanced",
+        "contextWindow": 1_000_000,
+        "thinking": True,
+        "envVar": "ANTHROPIC_API_KEY",
+        "description": "Latest Sonnet (Sep 2026). Best speed/intelligence balance: 30%+ faster than Sonnet 5 at identical prices ($2/$10, cache reads $0.20). 1M ctx, 128k output. Thinking is adaptive; the 'none' rung maps to between_tools, which drops up-front thinking but keeps between-tool progress notes. Forced tool choice 400s. Default sub-agent model.",
+    },
+    {
         "id": "claude-sonnet-4-6",
         "family": "anthropic",
         "label": "Claude Sonnet 4.6",
@@ -1973,6 +1983,26 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "thinking": True,
         "envVar": "OPENAI_API_KEY",
         "description": "OpenAI's newest flagship (Sep 2026), built for the hardest end-to-end work. Complex reasoning, coding, computer use, research. 1.05M ctx, 128k output, $10/$50 per MTok. Effort ladder is low..max with no off or minimal rung.",
+    },
+    {
+        "id": "gpt-6.1-sol",
+        "family": "openai",
+        "label": "GPT-6.1 Sol",
+        "tier": "balanced",
+        "contextWindow": 1_050_000,
+        "thinking": True,
+        "envVar": "OPENAI_API_KEY",
+        "description": "Cost-optimised GPT-6 tier (Sep 2026). Astra-family reasoning at $2/$10 with $0.10 cached input. 1.05M ctx, 128k output, computer use. Effort ladder low..max (no off/minimal). Prompts over 272k input bill at 2x input and cache rates.",
+    },
+    {
+        "id": "gpt-6-luna",
+        "family": "openai",
+        "label": "GPT-6 Luna",
+        "tier": "fast",
+        "contextWindow": 1_050_000,
+        "thinking": True,
+        "envVar": "OPENAI_API_KEY",
+        "description": "Cheapest GPT-6 tier: $0.10/$0.50, cached input $0.01. 1.05M ctx, 128k output, computer use, and it keeps an 'off' reasoning rung. Best OpenAI fanout slot. Prompts over 272k input bill at 2x input/cache and 1.5x output.",
     },
     {
         "id": "gpt-5.6-sol",
@@ -2083,7 +2113,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 262_144,
         "thinking": False,
         "envVar": "FIREWORKS_API_KEY",
-        "description": "Moonshot's Kimi K2.5 via Fireworks. Vision + 262k ctx.",
+        "description": "RETIRED (removed from Fireworks serverless 2026-09-26; returns 404 — kept so old sessions resolve). Moonshot's Kimi K2.5 via Fireworks. Vision + 262k ctx.",
     },
     {
         "id": "kimi-k2.6",
@@ -2093,7 +2123,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 262_144,
         "thinking": True,
         "envVar": "FIREWORKS_API_KEY",
-        "description": "Moonshot's newer multimodal agentic model via Fireworks. Vision + 262k ctx.",
+        "description": "RETIRED (removed from Fireworks serverless 2026-09-26; returns 404 — kept so old sessions resolve). Moonshot's newer multimodal agentic model via Fireworks. Vision + 262k ctx.",
     },
     {
         "id": "kimi-k2.7-code",
@@ -2103,7 +2133,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 262_144,
         "thinking": True,
         "envVar": "FIREWORKS_API_KEY",
-        "description": "Moonshot's Kimi K2.7 Code via Fireworks. Coding-focused agentic model, vision + 262k ctx, ~30% fewer thinking tokens than K2.6.",
+        "description": "RETIRED (removed from Fireworks serverless 2026-09-26; returns 404 — kept so old sessions resolve). Moonshot's Kimi K2.7 Code via Fireworks. Coding-focused agentic model, vision + 262k ctx, ~30% fewer thinking tokens than K2.6.",
     },
     {
         "id": "kimi-k3",
@@ -2126,6 +2156,16 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "description": "Kimi K3 on Fireworks' Fast serving tier (~+50% cost, lower latency). Native vision + 1M ctx.",
     },
     {
+        "id": "deepseek-v4p1-flash",
+        "family": "fireworks",
+        "label": "DeepSeek V4.1 Flash",
+        "tier": "balanced",
+        "contextWindow": 1_048_576,
+        "thinking": True,
+        "envVar": "FIREWORKS_API_KEY",
+        "description": "DeepSeek's V4.1 Flash via Fireworks (Sep 2026) — the replacement for the retired V4 Pro line. 552B MoE, native image input, 1M ctx, $0.30/$1.20 with $0.006 cached input. Cheapest capable Fireworks slot.",
+    },
+    {
         "id": "deepseek-v4-pro",
         "family": "fireworks",
         "label": "DeepSeek V4 Pro",
@@ -2133,7 +2173,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 1_048_576,
         "thinking": True,
         "envVar": "FIREWORKS_API_KEY",
-        "description": "DeepSeek's frontier MoE reasoning model via Fireworks. 1M ctx, function calling.",
+        "description": "RETIRED (removed from Fireworks serverless 2026-09-26; returns 404 — kept so old sessions resolve). DeepSeek's frontier MoE reasoning model via Fireworks. 1M ctx, function calling.",
     },
     {
         "id": "glm-5.1",
@@ -2143,7 +2183,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 202_752,
         "thinking": True,
         "envVar": "FIREWORKS_API_KEY",
-        "description": "Z.ai's newer GLM 5.1 via Fireworks. Agentic engineering, tool use, 202.8k ctx.",
+        "description": "RETIRED (removed from Fireworks serverless 2026-09-26; returns 404 — kept so old sessions resolve). Z.ai's newer GLM 5.1 via Fireworks. Agentic engineering, tool use, 202.8k ctx.",
     },
     {
         "id": "glm-5.2",
@@ -2153,7 +2193,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 1_048_576,
         "thinking": True,
         "envVar": "FIREWORKS_API_KEY",
-        "description": "Z.ai's GLM 5.2 via Fireworks. Long-horizon agentic coding flagship, tool use, 1M ctx.",
+        "description": "RETIRED (removed from Fireworks serverless 2026-09-26; returns 404 — kept so old sessions resolve). Z.ai's GLM 5.2 via Fireworks. Long-horizon agentic coding flagship, tool use, 1M ctx.",
     },
     {
         "id": "glm-5.3-fireworks",
@@ -2183,7 +2223,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 196_608,
         "thinking": True,
         "envVar": "FIREWORKS_API_KEY",
-        "description": "MiniMax M2.7 via Fireworks. Agent harnesses, teams, skills, and dynamic tool search.",
+        "description": "RETIRED (removed from Fireworks serverless 2026-09-26; returns 404 — kept so old sessions resolve). MiniMax M2.7 via Fireworks. Agent harnesses, teams, skills, and dynamic tool search.",
     },
     {
         "id": "minimax-m3",
@@ -2203,7 +2243,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 1_000_000,
         "thinking": True,
         "envVar": "FIREWORKS_API_KEY",
-        "description": "Alibaba's Qwen3.6 Plus via Fireworks. Vision, function calling, preserved reasoning, 1M ctx.",
+        "description": "RETIRED (removed from Fireworks serverless 2026-09-26; returns 404 — kept so old sessions resolve). Alibaba's Qwen3.6 Plus via Fireworks. Vision, function calling, preserved reasoning, 1M ctx.",
     },
     {
         "id": "qwen3.7-plus",
@@ -2213,7 +2253,7 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 262_144,
         "thinking": True,
         "envVar": "FIREWORKS_API_KEY",
-        "description": "Alibaba's Qwen 3.7 Plus via Fireworks (Fireworks-exclusive flagship). Vision + 262k ctx, function calling, effort reasoning.",
+        "description": "RETIRED (removed from Fireworks serverless 2026-09-26; returns 404 — kept so old sessions resolve). Alibaba's Qwen 3.7 Plus via Fireworks (Fireworks-exclusive flagship). Vision + 262k ctx, function calling, effort reasoning.",
     },
     # ─── Z.ai first-party (ZAI_API_KEY) ────────────────────────────────
     {
@@ -2347,14 +2387,18 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
     # xhigh is supported on both Fable tiers (verified against the Models
     # API capability tree) and is the recommended setting for coding and
     # agentic work — it was missing here while Opus 4.8 already had it.
+    # No "none" rung on either Fable tier: thinking is always on there, so
+    # an "off" request just omitted the `thinking` field and the model
+    # reasoned anyway — billed, with the UI claiming reasoning was off.
+    # Caught 2026-09-29 by tests/test_model_registry_consistency.py.
     "claude-fable-5-1": {
-        "reasoningMode": "effort",
-        "reasoningLevels": ["none", "low", "medium", "high", "xhigh", "max"],
+        "reasoningMode": "required",
+        "reasoningLevels": ["low", "medium", "high", "xhigh", "max"],
         "reasoningDefault": "high",
     },
     "claude-fable-5": {
-        "reasoningMode": "effort",
-        "reasoningLevels": ["none", "low", "medium", "high", "xhigh", "max"],
+        "reasoningMode": "required",
+        "reasoningLevels": ["low", "medium", "high", "xhigh", "max"],
         "reasoningDefault": "high",
     },
     # Opus 5.5 has no "none" rung on purpose: thinking is always on, and
@@ -2394,6 +2438,18 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningLevels": ["none", "low", "medium", "high", "max"],
         "reasoningDefault": "max",
     },
+    # Sonnet 5.5 keeps a "none" rung, unlike Opus 5.5 — but "none" here
+    # means `thinking: {"type": "between_tools"}`, not an omitted thinking
+    # field (which on this model would silently run full adaptive thinking).
+    # engine/types.py:ThinkingConfig.to_api_param does that translation.
+    # xhigh/max are adaptive-only: between_tools 400s above `high`, and the
+    # ladder is safe because "none" and a high effort are never sent
+    # together — get_output_config returns None whenever thinking is off.
+    "claude-sonnet-5-5": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "high",
+    },
     "claude-sonnet-5": {
         "reasoningMode": "effort",
         "reasoningLevels": ["none", "low", "medium", "high", "xhigh", "max"],
@@ -2425,6 +2481,17 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningMode": "required",
         "reasoningLevels": ["low", "medium", "high", "xhigh", "max"],
         "reasoningDefault": "high",
+    },
+    "gpt-6.1-sol": {
+        "reasoningMode": "required",
+        "reasoningLevels": ["low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "medium",
+    },
+    # Luna is the one GPT-6 model that accepts effort "none".
+    "gpt-6-luna": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "medium",
     },
     "gpt-5.6-sol": {
         "reasoningMode": "effort",
@@ -2470,6 +2537,11 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningMode": "effort",
         "reasoningLevels": ["none", "minimal", "low", "medium", "high", "xhigh"],
         "reasoningDefault": "medium",
+    },
+    "deepseek-v4p1-flash": {
+        "reasoningMode": "effort",
+        "reasoningLevels": ["none", "low", "medium", "high", "max"],
+        "reasoningDefault": "high",
     },
     "deepseek-v4-pro": {
         "reasoningMode": "effort",
