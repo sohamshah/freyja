@@ -148,6 +148,54 @@ npx tsx test-live-protocol.mjs         # LiveProtocol unit tests
 FREYJA_VOICE_LIVE=1 uv run --extra dev pytest tests/test_voice_live.py -k gpt_live
 ```
 
+## Multi-monitor + prompt pass (2026-09-29)
+
+The Sep 29 session (voice-8ea07ebb44d1; it ran on a pre-GPT-Live build,
+realtime-2.1-mini) shows the gap: asked about three screens, the model
+said "I only see one screen at a time", told the operator to switch focus
+so it could look, re-looked at the same display when asked for "each
+monitor", confused "frontmost app is Arc" with what the main display
+showed, answered a mis-heard Russian fragment, and gave a vague answer to
+"what model are you". Root cause beyond the model: every voice screenshot
+was the primary display (computer.see / screen.look passed no display),
+and nothing told the model the other monitors existed.
+
+What changed:
+
+- **computer.see** takes `display`: an id, or `"all"` for one look-only
+  overview tiling every monitor as it physically sits, each labeled
+  ("Display 3 · above-left of the laptop screen"). Without it, it looks
+  at the display holding the named/front app's window. Every look
+  reports the display list. The display looked at becomes the click
+  space (screenshots after a click follow it too).
+- **Clicks on non-primary displays.** Input events use one global space
+  (primary at (0,0), the monitors above this laptop at y = -1080), but the
+  shared computer tools mapped screenshot pixels by scale only — a click
+  read off display 2 landed on the laptop. `ComputerToolSpec.native_origin`
+  now carries the captured display's corner (read from CoreGraphics via
+  ctypes; the native module exposes no position); api<->native, AX-tree
+  bounds and the cursor overlay all use it. Agent sessions get the fix too,
+  and `list_displays` now prints each display's position.
+- **Voice prompt**, restructured on OpenAI's GPT-Live prompting guide:
+  role + identity (names GPT-Live and the backend), tone, English-only,
+  backchannel / interruption / silence-and-noise policies, delegation
+  ("delegate before answering", "never guess while waiting", reuse only
+  still-current results), a Screens section (several monitors; never say
+  you can see only one), and Limits ("never invent a limitation", "never
+  ask the operator to do what the backend can", "frustrated → act, don't
+  explain").
+- **Backend prompt** gets the live display layout and when to use
+  `display="all"` vs `display=<id>`; the realtime prompt gets a short
+  multi-monitor note.
+
+Verified with `--fake-desk` (synthetic three-display desk shaped like the
+real one, real computer.see display code): "what do you see on each of my
+screens" → one `computer_see(display="all")` → per-monitor answer by
+position; "look at my top right monitor" → `display="2"`; "just tell me
+what's on my other screens, not the laptop" → the two monitors, tersely.
+"What model are you?" → "Freyja, your voice, on GPT-Live. The brain
+behind me is gpt-6.1-sol."
+
 ## Follow-ups (not in this cut)
 
 - Seed `input` with preferences + the last exchange's tail (autopsy:

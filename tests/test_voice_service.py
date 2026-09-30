@@ -1659,6 +1659,9 @@ async def test_live_connect_creates_the_session(tmp_path, monkeypatch):
     await svc.handle_set_config({"patch": {"liveBackend": "gpt-6-luna", "voice": "cedar"}})
     await svc.handle_session_start({})
     sid = svc._active_session_id
+    monkeypatch.setattr(
+        VoiceService, "_display_layout", staticmethod(lambda: ["display 2: above-right, 1920x1080"])
+    )
     calls = install_fake_httpx(
         monkeypatch,
         [
@@ -1684,6 +1687,7 @@ async def test_live_connect_creates_the_session(tmp_path, monkeypatch):
     assert session["model"] == "gpt-live-1"
     assert session["audio"] == {"output": {"voice": "cedar"}}
     assert "You are Freyja" in session["instructions"]
+    assert "with gpt-6-luna doing the thinking" in session["instructions"]
     delegation = session["delegation"]
     assert delegation["type"] == "responses"
     backend = delegation["responses"]
@@ -1692,6 +1696,7 @@ async def test_live_connect_creates_the_session(tmp_path, monkeypatch):
     assert backend["tool_choice"] == "auto"
     assert backend["parallel_tool_calls"] is False
     assert "computer_see" in backend["instructions"]
+    assert "- display 2: above-right, 1920x1080" in backend["instructions"]
 
     (answer,) = events_of(events, "voice_live_answer")
     assert answer == {

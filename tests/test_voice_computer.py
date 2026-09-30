@@ -133,6 +133,8 @@ def rig(monkeypatch, tmp_path):
         return (app_arg or "Mail"), 42, "Inbox", ""
 
     monkeypatch.setattr(computer, "_resolve_app", fake_resolve)
+    # One screen unless a test says otherwise — never the real monitors.
+    monkeypatch.setattr(computer, "_layout", lambda: [])
 
     registry = VerbRegistry()
     computer.register(registry, enabled_fn=lambda: True)
@@ -695,3 +697,127 @@ async def test_click_by_target_not_found_asks(rig, monkeypatch):
     assert res.ok is False
     assert "unicorn" in res.summary
     assert rig.tools["click"].calls == []
+
+
+
+# ── multiple monitors ─────────────────────────────────────────────────────
+
+# The operator's real desk (2026-09-29): the laptop at the origin, two
+# 1920x1080 monitors above it, one to each side.
+_DESK = [
+    computer._Display(1, 0, 0, 1728, 1117, True, True),
+    computer._Display(2, 923, -1080, 1920, 1080, False, False),
+    computer._Display(3, -997, -1080, 1920, 1080, False, False),
+]
+
+
+def test_describe_layout_names_positions_and_orders_left_to_right():
+    layout = computer._describe_layout(_DESK)
+    assert [(d.id, d.where) for d in layout] == [
+        (3, "above-left of the laptop screen"),
+        (2, "above-right of the laptop screen"),
+        (1, "laptop screen, primary"),
+    ]
+    assert computer._layout_summary(layout)[0] == "display 3: above-left of the laptop screen, 1920x1080"
+
+
+def test_display_at_contains_else_nearest():
+    layout = computer._describe_layout(_DESK)
+    assert computer._display_at(layout, 1500, -500).id == 2
+    assert computer._display_at(layout, -500, -500).id == 3
+    assert computer._display_at(layout, 100, 100).id == 1
+    assert computer._display_at(layout, 5000, -500).id == 2  # off every screen → nearest
+
+
+def test_compose_overview_tiles_by_physical_layout():
+    layout = computer._describe_layout(_DESK)
+    shots = [(d, _png_bytes(1280, 720 if d.id != 1 else 827)) for d in layout]
+    png = computer._compose_overview(shots, max_w=1600, max_h=1000)
+    with Image.open(io.BytesIO(png)) as im:
+        # 3840 x 2197 points of desk, scaled to fit 1600 wide
+        assert im.width == 1600
+        assert 900 <= im.height <= 925
+
+
+@pytest.fixture
+def desk(rig, monkeypatch):
+    """The rig on a three-monitor desk, with the shared spec's display
+    state observable."""
+    spec = SimpleNamespace(api_dims=(1280, 720), native_dims=(1920, 1080), default_display_id=None)
+    monkeypatch.setattr(computer, "_SPEC", spec)
+    monkeypatch.setattr(computer, "_layout", lambda: computer._describe_layout(_DESK))
+    return SimpleNamespace(rig=rig, spec=spec)
+
+
+async def test_see_explicit_display_switches_the_click_space(desk):
+    res = await _run(desk.rig, "computer.see", {"display": "2"})
+    assert res.ok
+    assert res.data["display"] == 2
+    assert res.data["display_where"] == "above-right of the laptop screen"
+    assert len(res.data["displays"]) == 3
+    assert res.summary.startswith("saw display 2 (above-right of the laptop screen)")
+    # screenshots + click mapping now follow display 2
+    assert desk.spec.default_display_id == 2
+
+
+async def test_see_accepts_display_prefix_and_rejects_unknown(desk):
+    res = await _run(desk.rig, "computer.see", {"display": "display 3"})
+    assert res.ok and res.data["display"] == 3
+    bad = await _run(desk.rig, "computer.see", {"display": "7"})
+    assert not bad.ok
+    assert bad.error == "unknown_display"
+    assert len(bad.data["displays"]) == 3
+
+
+async def test_see_without_display_follows_the_app_window(desk, monkeypatch):
+    seen = {}
+
+    def fake_window_display(layout, pid):
+        seen["pid"] = pid
+        return next(d for d in layout if d.id == 3)
+
+    monkeypatch.setattr(computer, "_window_display", fake_window_display)
+    res = await _run(desk.rig, "computer.see", {"app": "Slack"})
+    assert seen["pid"] == 42  # the resolved app's pid
+    assert res.data["display"] == 3
+    assert desk.spec.default_display_id == 3
+
+
+async def test_see_display_switch_resets_cached_dims_before_refs(desk):
+    """Refs are built from the AX tree BEFORE the capture; on a display
+    switch the old display's dims/origin must not be used for them."""
+    desk.spec.default_display_id = 1
+    await _run(desk.rig, "computer.see", {"display": "2"})
+    assert desk.spec.default_display_id == 2
+    assert desk.spec.native_dims is None and desk.spec.api_dims is None
+
+
+async def test_see_all_returns_a_labeled_overview(desk, monkeypatch):
+    frames = {d.id: _png_bytes(1280, 720) for d in _DESK}
+
+    class FakeNative:
+        class Permissions:
+            @staticmethod
+            def screen_recording():
+                return True
+
+        @staticmethod
+        def screenshot(display_id=None, max_dim=None, format="png"):
+            return SimpleNamespace(png=frames[display_id])
+
+    import bridge.tools.computer_tools as ct
+
+    monkeypatch.setattr(ct, "_import_native", lambda: FakeNative)
+    res = await _run(desk.rig, "computer.see", {"display": "all"})
+    assert res.ok
+    assert res.summary == "overview of 3 displays"
+    assert res.data["overview"] is True
+    assert "call computer.see with display=<id>" in res.data["note"]
+    assert res.image_w == 1600
+    # look-only: the click space is untouched
+    assert desk.spec.default_display_id is None
+
+
+async def test_single_screen_keeps_the_old_shape(rig):
+    res = await _run(rig, "computer.see")
+    assert "displays" not in res.data and "display" not in res.data

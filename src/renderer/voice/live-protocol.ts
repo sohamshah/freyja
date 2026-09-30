@@ -20,9 +20,10 @@ import type { UsageDelta, VoiceEngineState } from './engine'
  *  their turn. A delegation closes it sooner (the voice layer decided
  *  the operator asked for something). */
 export const USER_TURN_GAP_MS = 1000
-/** Same for the assistant. Longer: the voice pauses between clauses,
- *  and a backchannel ("mm") shouldn't become a turn of its own. */
-export const ASSISTANT_TURN_GAP_MS = 1400
+/** Same for the assistant. Longer: the voice pauses between clauses
+ *  (over 1.4 s mid-sentence in e2e, splitting one answer in two), and a
+ *  backchannel ("mm") shouldn't become a turn of its own. */
+export const ASSISTANT_TURN_GAP_MS = 2000
 /** How long stop() waits for session.closed after session.close before
  *  tearing the transport down anyway. */
 export const CLOSE_WAIT_MS = 600

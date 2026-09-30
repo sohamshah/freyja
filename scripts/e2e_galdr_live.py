@@ -19,6 +19,12 @@ Ask only read-only things: the verbs really run on this Mac.
     # --electron runs the page on the app's own Electron/Chromium
     # (node_modules/electron) instead of system Chrome
 
+    # multi-monitor without touching the real screens: a synthetic
+    # three-display desk (laptop + two monitors above it), distinct
+    # content on each, driven through the real computer.see display code
+    uv run --extra dev --with aiohttp --with pillow python scripts/e2e_galdr_live.py \\
+        --fake-desk "What do you see on each of my screens?" 30
+
 Needs OPENAI_API_KEY (env or ~/.freyja/.env) and Google Chrome (or
 node_modules/electron with --electron).
 Receipts/transcripts go to a temp dir, never ~/.freyja/voice.
@@ -127,7 +133,89 @@ def fake_screenshot() -> tuple[str, int, int]:
     return base64.b64encode(buf.getvalue()).decode(), w, h
 
 
-async def main(utterance: str, listen_sec: float, fake_screen: bool, electron: bool) -> int:
+def install_fake_desk() -> None:
+    """Swap the native capture layer and display geometry for a synthetic
+    desk shaped like the operator's: laptop at the origin, a 1920x1080
+    monitor above-left and one above-right, each showing something
+    different. computer.see's real multi-display path runs on top."""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    import bridge.tools.computer_tools as ct
+
+    desk = {
+        1: (ct.DisplayGeometry(0, 0, 1728, 1117, True), (236, 236, 240),
+            ["Freyja", "Session: Galdr on GPT-Live", "Voice: 3 receipts today"]),
+        2: (ct.DisplayGeometry(923, -1080, 1920, 1080, False), (255, 255, 255),
+            ["github.com — Pull requests", "#1098 fix(models): document cascade", "#1097 feat: voice multi-monitor"]),
+        3: (ct.DisplayGeometry(-997, -1080, 1920, 1080, False), (18, 18, 18),
+            ["Terminal — zsh", "$ pytest", "1977 passed, 10 failed (kanban)"]),
+    }
+
+    def render(display_id: int, max_dim: int | None) -> tuple[bytes, int, int]:
+        geo, bg, lines = desk[display_id]
+        im = Image.new("RGB", (int(geo.w), int(geo.h)), bg)
+        d = ImageDraw.Draw(im)
+        ink = (230, 230, 230) if sum(bg) < 200 else (20, 20, 20)
+        try:
+            from PIL import ImageFont
+
+            font = ImageFont.load_default(size=56)
+        except TypeError:
+            font = None
+        for i, line in enumerate(lines):
+            d.text((80, 120 + i * 110), line, fill=ink, font=font)
+        if max_dim and max(im.size) > max_dim:
+            scale = max_dim / max(im.size)
+            im = im.resize((round(im.width * scale), round(im.height * scale)))
+        buf = io.BytesIO()
+        im.save(buf, "PNG")
+        return buf.getvalue(), im.width, im.height
+
+    class FakeNative:
+        class Permissions:
+            @staticmethod
+            def screen_recording():
+                return True
+
+            @staticmethod
+            def accessibility():
+                return True
+
+        @staticmethod
+        def list_displays():
+            return [
+                SimpleNamespace(id=i, width=int(g.w), height=int(g.h), scale=1.0, is_primary=i == 1)
+                for i, (g, _bg, _l) in desk.items()
+            ]
+
+        @staticmethod
+        def screenshot(display_id=None, window_id=None, max_dim=None, format="png", quality=75):
+            png, w, h = render(display_id or 1, max_dim)
+            return SimpleNamespace(png=png, width=w, height=h, format="png", mime_type="image/png", byte_len=len(png), capture_ms=1.0)
+
+        @staticmethod
+        def cursor_position():
+            return (400, 400)
+
+        @staticmethod
+        def list_windows(include_helpers=False):
+            return []
+
+        @staticmethod
+        def get_frontmost_window():
+            return None
+
+        @staticmethod
+        def read_ax_tree(pid, max_depth=8):
+            raise RuntimeError("AX not available in the fake desk")
+
+    ct._import_native = lambda: FakeNative
+    ct.display_geometry = lambda: {i: g for i, (g, _bg, _l) in desk.items()}
+
+
+async def main(utterance: str, listen_sec: float, fake_screen: bool, electron: bool, fake_desk: bool = False) -> int:
     load_key()
     work = Path(tempfile.mkdtemp(prefix="galdr-live-e2e-"))
     wav = work / "utterance.wav"
@@ -148,12 +236,17 @@ async def main(utterance: str, listen_sec: float, fake_screen: bool, electron: b
 
     events: list[dict] = []
     svc = VoiceService(
-        SimpleNamespace(default_model="e2e"),
+        # The fake desk fakes every native call, so the computer verbs'
+        # settings gate can open; otherwise it stays shut like a fresh app.
+        SimpleNamespace(default_model="e2e", computer_enabled=fake_desk),
         base_dir=work / "voice",
         emit_fn=events.append,
     )
     svc._log = lambda level, msg: print(f"  [bridge:{level}] {msg}")  # type: ignore[method-assign]
     await svc.start()
+    if fake_desk:
+        install_fake_desk()
+        print("  fake desk: 3 synthetic displays (laptop + two monitors above)")
     if fake_screen:
         b64, sw, sh = fake_screenshot()
         print(f"  fake screenshot: {sw}x{sh}, {len(b64) // 1024} KiB base64")
@@ -293,7 +386,8 @@ if __name__ == "__main__":
     argv = sys.argv[1:]
     fake = "--fake-screen" in argv
     electron = "--electron" in argv
-    argv = [a for a in argv if a not in ("--fake-screen", "--electron")]
+    fake_desk = "--fake-desk" in argv
+    argv = [a for a in argv if a not in ("--fake-screen", "--electron", "--fake-desk")]
     utterance = argv[0] if argv else "What app do I have in front right now?"
     listen = float(argv[1]) if len(argv) > 1 else 14.0
-    sys.exit(asyncio.run(main(utterance, listen, fake, electron)))
+    sys.exit(asyncio.run(main(utterance, listen, fake, electron, fake_desk)))

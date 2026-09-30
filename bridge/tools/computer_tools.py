@@ -33,6 +33,7 @@ import asyncio
 import base64
 import logging
 import os
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -148,6 +149,81 @@ class ComputerToolSpec:
     # "not resolved yet" — caller should call _ensure_dims.
     native_dims: tuple[int, int] | None = None
     api_dims: tuple[int, int] | None = None
+    # Global position (Quartz points) of the captured display's top-left.
+    # Input events use ONE global space across monitors: the primary
+    # display's corner is (0, 0) and the rest sit at offsets, often
+    # negative (a monitor above the laptop has y < 0). A screenshot of
+    # display 2 is local to display 2, so api → native adds this origin
+    # and native → api subtracts it. (0, 0) for the primary display.
+    native_origin: tuple[int, int] = (0, 0)
+
+
+@dataclass(frozen=True)
+class DisplayGeometry:
+    """Where a display sits in the global layout, in points."""
+
+    x: float
+    y: float
+    w: float
+    h: float
+    builtin: bool  # the laptop's own panel
+
+
+def display_geometry() -> dict[int, DisplayGeometry]:
+    """Global bounds of every active display, keyed by the same
+    CGDirectDisplayID `list_displays` reports. The native module's
+    DisplayInfo carries no position, so read it from CoreGraphics
+    directly. {} off macOS or on any failure — callers treat a missing
+    entry as "at the origin"."""
+    if sys.platform != "darwin":
+        return {}
+    try:
+        import ctypes
+        import ctypes.util
+
+        class _Point(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
+
+        class _Size(ctypes.Structure):
+            _fields_ = [("width", ctypes.c_double), ("height", ctypes.c_double)]
+
+        class _Rect(ctypes.Structure):
+            _fields_ = [("origin", _Point), ("size", _Size)]
+
+        cg = ctypes.CDLL(ctypes.util.find_library("CoreGraphics"))
+        cg.CGDisplayBounds.restype = _Rect
+        cg.CGDisplayBounds.argtypes = [ctypes.c_uint32]
+        cg.CGGetActiveDisplayList.argtypes = [
+            ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_uint32),
+            ctypes.POINTER(ctypes.c_uint32),
+        ]
+        cg.CGDisplayIsBuiltin.restype = ctypes.c_uint32
+        cg.CGDisplayIsBuiltin.argtypes = [ctypes.c_uint32]
+        ids = (ctypes.c_uint32 * 32)()
+        count = ctypes.c_uint32()
+        if cg.CGGetActiveDisplayList(32, ids, ctypes.byref(count)) != 0:
+            return {}
+        out: dict[int, DisplayGeometry] = {}
+        for i in range(count.value):
+            r = cg.CGDisplayBounds(ids[i])
+            out[int(ids[i])] = DisplayGeometry(
+                r.origin.x,
+                r.origin.y,
+                r.size.width,
+                r.size.height,
+                bool(cg.CGDisplayIsBuiltin(ids[i])),
+            )
+        return out
+    except Exception:  # noqa: BLE001 — geometry is an enhancement, never fatal
+        return {}
+
+
+def _display_origin(display_id: int | None) -> tuple[int, int]:
+    if display_id is None:
+        return (0, 0)
+    geo = display_geometry().get(int(display_id))
+    return (int(round(geo.x)), int(round(geo.y))) if geo else (0, 0)
 
 
 async def _fire(cb: ComputerEventCb, event: dict[str, Any]) -> None:
@@ -228,6 +304,7 @@ async def _emit_frame(
     # click tool still works after a window capture because it relies
     # on whatever full-display frame was most recently emitted.
     native_w, native_h = 0, 0
+    origin = (0, 0)
     if window_id is None:
         try:
             displays = await asyncio.to_thread(native.list_displays)
@@ -238,6 +315,8 @@ async def _emit_frame(
                 target = next((d for d in displays if d.is_primary), displays[0])
             if target is not None:
                 native_w, native_h = target.width, target.height
+                if not target.is_primary:
+                    origin = _display_origin(target.id)
         except Exception:  # noqa: BLE001
             pass
 
@@ -264,6 +343,7 @@ async def _emit_frame(
     if native_w > 0 and frame.width > 0 and window_id is None:
         spec.native_dims = (int(native_w), int(native_h))
         spec.api_dims = (int(frame.width), int(frame.height))
+        spec.native_origin = origin
 
     # Composite the cursor onto the frame. macOS screen capture APIs
     # omit the cursor overlay by default, so without this the model
@@ -274,11 +354,12 @@ async def _emit_frame(
     if native_w > 0 and window_id is None:
         try:
             cursor_pos = await asyncio.to_thread(native.cursor_position)
+            # The cursor position is global; the frame is display-local.
             png_bytes = await asyncio.to_thread(
                 _draw_cursor_on_frame,
                 frame.png,
-                cursor_pos[0],
-                cursor_pos[1],
+                cursor_pos[0] - origin[0],
+                cursor_pos[1] - origin[1],
                 native_w,
                 native_h,
                 PREVIEW_FORMAT,
@@ -564,6 +645,7 @@ async def _ensure_dims(spec: ComputerToolSpec, native: Any) -> None:
         spec.api_dims = _compute_api_dims(
             int(target.width), int(target.height)
         )
+        spec.native_origin = (0, 0) if target.is_primary else _display_origin(target.id)
 
 
 def _api_to_native(spec: ComputerToolSpec, x: float, y: float) -> tuple[int, int]:
@@ -583,7 +665,8 @@ def _api_to_native(spec: ComputerToolSpec, x: float, y: float) -> tuple[int, int
     aw, ah = spec.api_dims
     if aw <= 0 or ah <= 0:
         return int(round(x)), int(round(y))
-    return int(round(x * nw / aw)), int(round(y * nh / ah))
+    ox, oy = spec.native_origin
+    return int(round(x * nw / aw + ox)), int(round(y * nh / ah + oy))
 
 
 def _native_to_api(spec: ComputerToolSpec, x: float, y: float) -> tuple[int, int]:
@@ -601,7 +684,8 @@ def _native_to_api(spec: ComputerToolSpec, x: float, y: float) -> tuple[int, int
     aw, ah = spec.api_dims
     if nw <= 0 or nh <= 0:
         return int(round(x)), int(round(y))
-    return int(round(x * aw / nw)), int(round(y * ah / nh))
+    ox, oy = spec.native_origin
+    return int(round((x - ox) * aw / nw)), int(round((y - oy) * ah / nh))
 
 
 def _translate_ax_tree_bounds(
@@ -631,6 +715,7 @@ def _translate_ax_tree_bounds(
         return
     sx = aw / nw
     sy = ah / nh
+    ox, oy = spec.native_origin
 
     def _walk(node: Any) -> None:
         if isinstance(node, dict):
@@ -641,8 +726,8 @@ def _translate_ax_tree_bounds(
                 and all(isinstance(v, (int, float)) for v in b)
             ):
                 node["bounds"] = [
-                    int(round(b[0] * sx)),
-                    int(round(b[1] * sy)),
+                    int(round((b[0] - ox) * sx)),
+                    int(round((b[1] - oy) * sy)),
                     int(round(b[2] * sx)),
                     int(round(b[3] * sy)),
                 ]
@@ -969,10 +1054,11 @@ Use this when the user mentions a specific monitor (e.g. "the left screen"
 or "display 2"). Pass the returned `id` as `display_id` in subsequent
 `screenshot` calls to capture that specific display.
 
-Global click coordinates are continuous across all displays — the primary
-display's origin is (0,0) and other displays live at offsets. You can
-click anywhere in the global coordinate space regardless of which display
-you captured.
+Each display's position is its top-left corner in the global layout: the
+primary display is at (0,0) and the others sit at offsets (negative y =
+above it, negative x = left of it). After `screenshot(display_id=N)`,
+coordinates you pass to click/scroll/move_mouse are pixels in THAT
+screenshot; the tools translate them onto display N.
 """,
             parameters={"type": "object", "properties": {}},
         )
@@ -994,6 +1080,7 @@ you captured.
                 is_error=False,
             )
         default_id = self._spec.default_display_id
+        geometry = display_geometry()
         lines = [f"Found {len(displays)} display(s):"]
         for d in displays:
             flags = []
@@ -1002,8 +1089,10 @@ you captured.
             if default_id is not None and d.id == default_id:
                 flags.append("★ selected")
             flag_text = f" ({', '.join(flags)})" if flags else ""
+            geo = geometry.get(d.id)
+            where = f"  at ({geo.x:.0f}, {geo.y:.0f})" if geo else ""
             lines.append(
-                f"  id={d.id}  {d.width}x{d.height}  "
+                f"  id={d.id}  {d.width}x{d.height}{where}  "
                 f"scale={d.scale:.1f}x{flag_text}"
             )
         if default_id is not None:

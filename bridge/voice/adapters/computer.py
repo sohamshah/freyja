@@ -530,13 +530,16 @@ def _condense_elements(tree: Any, window_title: str) -> list[tuple[str, str, int
     return found
 
 
-async def _refresh_snapshot(app_arg: str) -> tuple[str, Optional[int], str, Optional[VerbResult]]:
+async def _refresh_snapshot(
+    app_arg: str, resolved: Optional[tuple[str, Optional[int], str, str]] = None
+) -> tuple[str, Optional[int], str, Optional[VerbResult]]:
     """Resolve the target app and (best-effort) rebuild the ref cache from
     its AX tree, so a later computer.click {ref:"e3"} still works. Returns
     (app, pid, window, setup_failure). The ref cache is a convenience
     fallback — an AX-opaque app just yields an empty map and the model
-    clicks by pixel — so only a setup-shaped AX failure short-circuits."""
-    app, pid, window, err = await _resolve_app(app_arg)
+    clicks by pixel — so only a setup-shaped AX failure short-circuits.
+    `resolved` passes in an already-run _resolve_app result."""
+    app, pid, window, err = resolved if resolved is not None else await _resolve_app(app_arg)
     if pid is None:
         target = app_arg or "the front app"
         return app, None, window, VerbResult(
@@ -567,13 +570,256 @@ async def _refresh_snapshot(app_arg: str) -> tuple[str, Optional[int], str, Opti
     return app, pid, window, None
 
 
+# ── displays ────────────────────────────────────────────────────────────────
+#
+# The operator runs several monitors. Every screenshot is ONE display, and
+# the display last looked at is the coordinate space clicks land in (the
+# shared spec's default_display_id + native_origin). computer.see picks it:
+# an explicit `display`, else wherever the named/front app's window is.
+# `display: "all"` is a look-only overview of every monitor in one image.
+
+
+@dataclass(frozen=True)
+class _Display:
+    id: int
+    x: float
+    y: float
+    w: float
+    h: float
+    primary: bool
+    builtin: bool
+    where: str = ""
+
+    @property
+    def center(self) -> tuple[float, float]:
+        return self.x + self.w / 2, self.y + self.h / 2
+
+
+def _describe_layout(displays: list[_Display]) -> list[_Display]:
+    """Name each display by where it sits relative to the primary one
+    ("above-left of the laptop screen"), and order them left to right,
+    top to bottom — the way the operator thinks about their desk."""
+    primary = next((d for d in displays if d.primary), displays[0] if displays else None)
+    if primary is None:
+        return []
+    anchor = "the laptop screen" if primary.builtin else "the primary display"
+    px, _py = primary.center
+    out: list[_Display] = []
+    for d in displays:
+        if d is primary:
+            where = "laptop screen, primary" if d.builtin else "primary"
+        else:
+            cx, _cy = d.center
+            vertical = (
+                "above" if d.y + d.h <= primary.y + 1
+                else "below" if d.y >= primary.y + primary.h - 1
+                else ""
+            )
+            horizontal = (
+                "left" if cx < px - primary.w / 4
+                else "right" if cx > px + primary.w / 4
+                else ""
+            )
+            if vertical and horizontal:
+                where = f"{vertical}-{horizontal} of {anchor}"
+            elif vertical:
+                where = f"{vertical} {anchor}"
+            elif horizontal:
+                where = f"{horizontal} of {anchor}"
+            else:
+                where = f"overlapping {anchor}"
+            if d.builtin:
+                where = f"laptop screen, {where}"
+        out.append(
+            _Display(d.id, d.x, d.y, d.w, d.h, d.primary, d.builtin, where)
+        )
+    return sorted(out, key=lambda d: (round(d.y / 200), d.x))
+
+
+def _layout() -> list[_Display]:
+    """Every connected display with its global position. [] when the
+    native module or CoreGraphics can't say (voice then behaves as if
+    there were one screen, like before)."""
+    try:
+        from bridge.tools.computer_tools import _import_native, display_geometry
+
+        native = _import_native()
+        infos = native.list_displays()
+        geometry = display_geometry()
+    except Exception:  # noqa: BLE001 — no layout is not an error
+        return []
+    displays = []
+    for info in infos:
+        geo = geometry.get(int(info.id))
+        if geo is None:
+            continue
+        displays.append(
+            _Display(int(info.id), geo.x, geo.y, geo.w, geo.h, bool(info.is_primary), geo.builtin)
+        )
+    return _describe_layout(displays)
+
+
+def _display_at(layout: list[_Display], x: float, y: float) -> Optional[_Display]:
+    """The display containing a global point, else the nearest one."""
+    for d in layout:
+        if d.x <= x < d.x + d.w and d.y <= y < d.y + d.h:
+            return d
+    if not layout:
+        return None
+    return min(layout, key=lambda d: (d.center[0] - x) ** 2 + (d.center[1] - y) ** 2)
+
+
+def _window_display(layout: list[_Display], pid: Optional[int]) -> Optional[_Display]:
+    """The display holding `pid`'s frontmost window (windows come back
+    front-to-back), or the front window's when pid is None."""
+    try:
+        from bridge.tools.computer_tools import _import_native
+
+        native = _import_native()
+        if pid is not None:
+            window = next((w for w in native.list_windows() if w.pid == pid and w.bounds.w > 50), None)
+        else:
+            window = native.get_frontmost_window()
+    except Exception:  # noqa: BLE001
+        return None
+    if window is None:
+        return None
+    cx, cy = window.bounds.center
+    return _display_at(layout, cx, cy)
+
+
+def _layout_summary(layout: list[_Display]) -> list[str]:
+    return [f"display {d.id}: {d.where}, {int(d.w)}x{int(d.h)}" for d in layout]
+
+
+def displays_brief() -> list[str]:
+    """One line per connected display, for the backend's prompt."""
+    return _layout_summary(_layout())
+
+
+def _compose_overview(
+    shots: list[tuple[_Display, bytes]], max_w: int = 1600, max_h: int = 1000
+) -> bytes:
+    """Tile every display's capture into one PNG, laid out the way the
+    monitors physically sit, each labeled "Display N · where". Look-only:
+    it is no display's coordinate space."""
+    from PIL import Image, ImageDraw, ImageFont  # lazy
+
+    minx = min(d.x for d, _ in shots)
+    miny = min(d.y for d, _ in shots)
+    maxx = max(d.x + d.w for d, _ in shots)
+    maxy = max(d.y + d.h for d, _ in shots)
+    scale = min(max_w / (maxx - minx), max_h / (maxy - miny), 1.0)
+    canvas = Image.new(
+        "RGB", (max(1, round((maxx - minx) * scale)), max(1, round((maxy - miny) * scale))), (20, 20, 20)
+    )
+    draw = ImageDraw.Draw(canvas)
+    try:
+        font = ImageFont.load_default(size=20)
+    except TypeError:  # Pillow < 10.1
+        font = ImageFont.load_default()
+    for d, raw in shots:
+        left, top = round((d.x - minx) * scale), round((d.y - miny) * scale)
+        size = (max(1, round(d.w * scale)), max(1, round(d.h * scale)))
+        with Image.open(_io.BytesIO(raw)) as im:
+            canvas.paste(im.convert("RGB").resize(size), (left, top))
+        draw.rectangle([left, top, left + size[0] - 1, top + size[1] - 1], outline=(255, 196, 0), width=3)
+        label = f"Display {d.id} · {d.where}"
+        box = draw.textbbox((left + 8, top + 6), label, font=font)
+        draw.rectangle([box[0] - 4, box[1] - 3, box[2] + 4, box[3] + 3], fill=(0, 0, 0))
+        draw.text((left + 8, top + 6), label, fill=(255, 196, 0), font=font)
+    buf = _io.BytesIO()
+    canvas.save(buf, "PNG")
+    return buf.getvalue()
+
+
+async def _see_all(layout: list[_Display], app: str) -> VerbResult:
+    """One image of every monitor, for "what's on my screens"."""
+    try:
+        from bridge.tools.computer_tools import _import_native
+
+        native = _import_native()
+        if not native.Permissions.screen_recording():
+            return _tool_failure(
+                "see",
+                "Screen Recording permission is not granted — System Settings "
+                "→ Privacy & Security → Screen Recording",
+            )
+        shots = []
+        for d in layout:
+            frame = await asyncio.to_thread(native.screenshot, display_id=d.id, max_dim=1280, format="png")
+            shots.append((d, frame.png))
+        png = await asyncio.to_thread(_compose_overview, shots)
+    except Exception as exc:  # noqa: BLE001
+        err = str(exc).splitlines()[0][:120] if str(exc) else exc.__class__.__name__
+        return VerbResult(ok=False, summary=f"couldn't capture every display: {err}", error=err)
+    try:
+        from PIL import Image  # lazy
+
+        with Image.open(_io.BytesIO(png)) as im:
+            w, h = im.width, im.height
+    except Exception:  # noqa: BLE001
+        w = h = 0
+    path = _save_frame(png, "png")
+    result = VerbResult(
+        ok=True,
+        summary=f"overview of {len(layout)} displays",
+        data={
+            "overview": True,
+            "displays": _layout_summary(layout),
+            "front_app": app,
+            "note": (
+                "Look-only overview, each monitor labeled. To act on one, "
+                "call computer.see with display=<id> first; clicks land on "
+                "the display you last looked at."
+            ),
+        },
+    )
+    return _attach(result, _Frame(b64=base64.b64encode(png).decode("ascii"), w=w, h=h, path=path))
+
+
 async def _see(args: dict[str, Any]) -> VerbResult:
     """The eyes: a grid-overlaid api_dims screenshot the model reads and
     clicks against by pixel. Also (best-effort) refreshes the ref cache so
     a `ref`-based click still works, but no AX listing or vision caption
-    reaches the model — it sees the pixels now (contract §12.2)."""
+    reaches the model — it sees the pixels now (contract §12.2).
+
+    Multi-monitor: `display` picks one by id, or "all" for an overview;
+    without it, the display holding the named (or front) app's window."""
     app_arg = str(args.get("app") or "").strip()
-    app, pid, window, setup_fail = await _refresh_snapshot(app_arg)
+    display_arg = str(args.get("display") or "").strip().lower().removeprefix("display").strip()
+    resolved = await _resolve_app(app_arg)
+    layout = await asyncio.to_thread(_layout)
+
+    if display_arg in ("all", "every", "each", "*") and len(layout) > 1:
+        return await _see_all(layout, resolved[0])
+
+    target: Optional[_Display] = None
+    if display_arg and display_arg not in ("all", "every", "each", "*"):
+        try:
+            wanted = int(display_arg)
+        except ValueError:
+            wanted = None
+        target = next((d for d in layout if d.id == wanted), None)
+        if target is None:
+            return VerbResult(
+                ok=False,
+                summary=f"no display {display_arg!r}",
+                error="unknown_display",
+                data={"displays": _layout_summary(layout)},
+            )
+    elif len(layout) > 1:
+        target = await asyncio.to_thread(_window_display, layout, resolved[1])
+
+    _ensure_tools()
+    if target is not None and _SPEC is not None and _SPEC.default_display_id != target.id:
+        # Switch the coordinate space: screenshots, click mapping, and the
+        # ref cache below all follow the display being looked at.
+        _SPEC.default_display_id = target.id
+        _SPEC.native_dims = None
+        _SPEC.api_dims = None
+
+    app, pid, window, setup_fail = await _refresh_snapshot(app_arg, resolved)
     if setup_fail is not None and pid is None:
         # App resolution failed — nothing to look at.
         return setup_fail
@@ -592,11 +838,19 @@ async def _see(args: dict[str, Any]) -> VerbResult:
             error="screenshot returned no frame",
         )
 
-    result = VerbResult(
-        ok=True,
-        summary=f"saw {app}: {frame.w}x{frame.h}",
-        data={"app": app, "window": window, "screen": f"{frame.w}x{frame.h}"},
-    )
+    data: dict[str, Any] = {"app": app, "window": window, "screen": f"{frame.w}x{frame.h}"}
+    summary = f"saw {app}: {frame.w}x{frame.h}"
+    if len(layout) > 1:
+        shown = target or next(
+            (d for d in layout if _SPEC is not None and d.id == _SPEC.default_display_id),
+            next((d for d in layout if d.primary), None),
+        )
+        if shown is not None:
+            data["display"] = shown.id
+            data["display_where"] = shown.where
+            summary = f"saw display {shown.id} ({shown.where}), front app {app}: {frame.w}x{frame.h}"
+        data["displays"] = _layout_summary(layout)
+    result = VerbResult(ok=True, summary=summary, data=data)
     return _attach(result, frame)
 
 
@@ -884,11 +1138,21 @@ def register(registry: VerbRegistry, *, enabled_fn: Callable[[], bool]) -> None:
         Verb(
             name="computer.see",
             description=(
-                "Look at the front (or named) app: returns a screenshot with a "
-                "coordinate grid. Read it, then click by the x,y you see"
+                "Look at the screen: returns a screenshot of ONE display with a "
+                "coordinate grid, plus the list of connected displays. Read it, "
+                "then click by the x,y you see — clicks land on the display you "
+                "last looked at. display=\"all\" returns one look-only overview "
+                "of every monitor, each labeled"
             ),
             params={
-                "app": {"type": "string", "description": "app name; omit for frontmost"},
+                "app": {
+                    "type": "string",
+                    "description": "app name; omit for frontmost. Without display, looks at the monitor this app's window is on",
+                },
+                "display": {
+                    "type": "string",
+                    "description": "a display id from the displays list (e.g. \"2\"), or \"all\" for an overview of every monitor; omit to follow the app",
+                },
             },
             required=[],
             tier="auto",
@@ -899,7 +1163,7 @@ def register(registry: VerbRegistry, *, enabled_fn: Callable[[], bool]) -> None:
         Verb(
             name="computer.click",
             description=(
-                "Click at pixel x,y read off the last screenshot's grid (primary). "
+                "Click at pixel x,y read off the last screenshot's grid, on the display that screenshot showed (primary). "
                 "Also accepts a ref from computer.see, a visible label, or a "
                 "target described in plain words (vision-grounded). Returns a fresh "
                 "screenshot of the result"

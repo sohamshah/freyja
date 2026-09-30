@@ -556,16 +556,18 @@ class VoiceService:
         backend gets the operating manual and one function tool per verb.
         Sequential tool calls: GUI actions must land in order, and each
         returns the screenshot the next one is chosen from."""
+        backend = str(self._config.get("liveBackend") or "gpt-6.1-sol")
         return {
             "model": str(self._config["model"]),
-            "instructions": build_live_instructions(),
+            "instructions": build_live_instructions(backend),
             "audio": {"output": {"voice": str(self._config["voice"])}},
             "delegation": {
                 "type": "responses",
                 "responses": {
-                    "model": str(self._config.get("liveBackend") or "gpt-6.1-sol"),
+                    "model": backend,
                     "instructions": build_backend_instructions(
-                        routines_md=self.routines.names_md()
+                        routines_md=self.routines.names_md(),
+                        displays=self._display_layout(),
                     ),
                     "tools": registry.responses_tools(exclude=_LIVE_EXCLUDED_VERBS),
                     "tool_choice": "auto",
@@ -573,6 +575,17 @@ class VoiceService:
                 },
             },
         }
+
+    @staticmethod
+    def _display_layout() -> list[str]:
+        """The monitor layout for the backend prompt; [] when unknown
+        (no native module, not macOS) — computer_see reports it live."""
+        try:
+            from bridge.voice.adapters.computer import displays_brief
+
+            return displays_brief()
+        except Exception:  # noqa: BLE001 — a prompt nicety, never fatal
+            return []
 
     async def _live_create(self, api_key: str, payload: dict[str, Any]) -> dict[str, Any]:
         """POST /v1/live/sessions (WebRTC create). One retry on network

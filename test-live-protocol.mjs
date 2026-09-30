@@ -185,16 +185,19 @@ await check('a backchannel mid-utterance flushes AFTER the operator, not before'
   r.p.handle(started)
   r.p.handle({ type: 'session.input_transcript.delta', delta: 'Open my calendar and' })
   r.p.handle({ type: 'session.output_transcript.delta', delta: 'Mm.' })
-  // the operator keeps talking past the assistant's gap
-  r.advance(ASSISTANT_TURN_GAP_MS - 500)
-  r.p.handle({ type: 'session.input_transcript.delta', delta: ' tell me about tomorrow' })
-  r.advance(600)
+  // the operator keeps talking (fragments inside their own turn gap)
+  // until well past the assistant's gap
+  const step = USER_TURN_GAP_MS - 100
+  for (let t = 0; t <= ASSISTANT_TURN_GAP_MS + step; t += step) {
+    r.advance(step)
+    r.p.handle({ type: 'session.input_transcript.delta', delta: ' and' })
+  }
   assert.deepEqual(r.finals(), [], 'assistant line held while the operator talks')
   r.advance(USER_TURN_GAP_MS)
-  assert.deepEqual(r.finals(), [
-    'user!:Open my calendar and tell me about tomorrow',
-    'asst!:Mm.',
-  ])
+  const finals = r.finals()
+  assert.equal(finals.length, 2)
+  assert.match(finals[0], /^user!:Open my calendar and( and)+$/)
+  assert.equal(finals[1], 'asst!:Mm.')
 })
 
 await check('voice talking while a tool is owed keeps the acting state', () => {
