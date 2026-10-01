@@ -49,6 +49,7 @@ import {
 } from './settings.js'
 import { GatewayLogTailer } from './gatewayLogTail.js'
 import { sendControlCommand } from './controlChannel.js'
+import { readCompactionTelemetry } from './telemetryReader.js'
 import {
   ingest as artifactIndexIngest,
   query as artifactIndexQuery,
@@ -964,37 +965,12 @@ function setupIpc() {
 
   // Read the compaction telemetry JSONL written by the Python bridge.
   // The metrics dashboard calls this on open + on refresh to aggregate
-  // across past sessions. We tail-read up to ~10k rows so the response
-  // stays under a few hundred KB.
+  // across past sessions. Every row on disk is returned — the dashboard's
+  // "all" window is only honest if nothing is trimmed here — and the
+  // reader is incremental, so a refresh only parses what was appended.
   ipcMain.handle(IPC.compactionMetrics, async () => {
     try {
-      const fs = await import('node:fs/promises')
-      const path = await import('node:path')
-      const os = await import('node:os')
-      const filePath = path.join(
-        os.homedir(),
-        '.freyja',
-        'telemetry',
-        'compaction.jsonl',
-      )
-      let raw: string
-      try {
-        raw = await fs.readFile(filePath, 'utf8')
-      } catch (err: any) {
-        if (err?.code === 'ENOENT') return { ok: true, rows: [] }
-        throw err
-      }
-      const lines = raw.split('\n').filter((l) => l.trim().length > 0)
-      // Tail-trim if huge.
-      const tailed = lines.length > 10_000 ? lines.slice(-10_000) : lines
-      const rows: unknown[] = []
-      for (const line of tailed) {
-        try {
-          rows.push(JSON.parse(line))
-        } catch {
-          // skip malformed
-        }
-      }
+      const rows = await readCompactionTelemetry()
       return { ok: true, rows }
     } catch (err) {
       return { ok: false, rows: [], error: String(err) }

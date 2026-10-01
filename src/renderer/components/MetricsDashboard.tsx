@@ -70,7 +70,13 @@ export function MetricsDashboard() {
   }
 
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      // The "all" window is every telemetry row ever written (tens of
+      // MB parsed); don't keep that resident while the dashboard is
+      // closed. Reopening refetches anyway.
+      setRawRows([])
+      return
+    }
     void refresh()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
@@ -1279,7 +1285,22 @@ function SpendChart({ series }: { series: Array<{ t: number; cum: number }> }) {
   const tMax = series[series.length - 1].t
   const tSpan = Math.max(1, tMax - tMin)
   const yMax = series[series.length - 1].cum
-  const path = series.map((p, i) => {
+  // One vertex per horizontal bucket (two per viewBox unit). The "all"
+  // window carries one point per LLM call — tens of thousands over
+  // months — and the extra vertices are sub-pixel; keep the last point
+  // of each bucket so the running total stays exact at every step.
+  const buckets = W * 2
+  const points: Array<{ t: number; cum: number }> = []
+  let lastBucket = -1
+  for (const p of series) {
+    const b = Math.floor(((p.t - tMin) / tSpan) * buckets)
+    if (b === lastBucket) points[points.length - 1] = p
+    else {
+      points.push(p)
+      lastBucket = b
+    }
+  }
+  const path = points.map((p, i) => {
     const x = ((p.t - tMin) / tSpan) * (W - 10) + 5
     const y = H - ((yMax > 0 ? p.cum / yMax : 0) * (H - 20)) - 10
     return `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`
