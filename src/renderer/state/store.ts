@@ -871,6 +871,19 @@ export function forkSliceForBranch(
     artifacts: source.artifacts.filter((a) => before(a.createdAt)),
     widgets,
     harnessSessionId: undefined,
+    // Spend is per session, and the fork has spent nothing yet: its
+    // bridge session starts a fresh cost accumulator, so the renderer
+    // must too or the sidebar / title bar / receipt show the source's
+    // bill until the fork's first turn. The context-size fields stay —
+    // the fork carries the same transcript.
+    usage: {
+      ...source.usage,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCacheReadTokens: 0,
+      totalCacheWriteTokens: 0,
+      totalCost: 0,
+    },
   }
   return remapIdsDeep(forked, remap)
 }
@@ -3259,6 +3272,11 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
             createdAt: now,
             updatedAt: now,
             harnessSessionId: undefined,
+            // A clone has spent nothing; see forkSliceForBranch.
+            totalInputTokens: 0,
+            totalOutputTokens: 0,
+            cacheReadTokens: 0,
+            totalCost: 0,
           })
         }
         if (cloned.length === 0) return prev
