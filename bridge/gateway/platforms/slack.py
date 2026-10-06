@@ -322,6 +322,7 @@ class SlackAdapter:
         self._bot_message_ts: set[str] = set()        # ts values we sent
         self._mentioned_threads: set[str] = set()     # thread_ts the bot joined
         self._dedup: dict[str, float] = {}            # event_ts → seen-at monotonic
+        self._denied_notice_at: dict[str, float] = {}  # user_id → last denial notice
         # Latest `app_context_changed` entities per (team_id, user_id) —
         # what the operator was last looking at. Bounded because it is a
         # convenience cache, not state anything depends on.
@@ -873,6 +874,55 @@ class SlackAdapter:
                 return list(m.get("files") or [])
         return []
 
+    _DENIED_NOTICE_COOLDOWN_SEC = 3600.0
+
+    async def _tell_denied(
+        self,
+        event: dict[str, Any],
+        channel_id: str,
+        team_id: str,
+        user_id: str,
+        text: str,
+    ) -> None:
+        """Answer a denied user once, but only if they spoke TO the bot.
+
+        The bot sees every message in the channels it joins, and nearly all
+        denials are chatter that was never meant for it, so replying to
+        those would be spam. A DM or an @mention is a real attempt to reach
+        Freyja; staying silent there looks like an outage. The reply is
+        ephemeral (only the sender sees it) and rate-limited per user.
+        """
+        try:
+            if not user_id or event.get("bot_id"):
+                return
+            is_dm = event.get("channel_type") == "im"
+            bot_id = self._team_bot_user_ids.get(team_id) or self._bot_user_id
+            mentioned = bool(bot_id) and f"<@{bot_id}>" in (text or "")
+            if not (is_dm or mentioned):
+                return
+            now = time.monotonic()
+            last = self._denied_notice_at.get(user_id)
+            if last is not None and now - last < self._DENIED_NOTICE_COOLDOWN_SEC:
+                return
+            self._denied_notice_at[user_id] = now
+            client = self._get_client(channel_id, team_id)
+            if client is None:
+                return
+            kwargs: dict[str, Any] = {
+                "channel": channel_id,
+                "user": user_id,
+                "text": (
+                    "I'm not set up to answer you in this workspace yet. "
+                    "Ask my owner to add you."
+                ),
+            }
+            thread_ts = event.get("thread_ts")
+            if thread_ts:
+                kwargs["thread_ts"] = thread_ts
+            await client.chat_postEphemeral(**kwargs)
+        except Exception:  # noqa: BLE001
+            logger.debug("[slack] denied-user notice failed", exc_info=True)
+
     async def _handle_message(self, event: dict[str, Any]) -> None:
         # Dedup: Socket Mode can redeliver after reconnect, AND Slack
         # double-fires @mentions in channels as both ``app_mention`` and
@@ -1017,6 +1067,7 @@ class SlackAdapter:
                 "[slack] denying message from team=%s user=%s — not in allowlist",
                 team_id, user_id,
             )
+            await self._tell_denied(event, channel_id, team_id, user_id, text)
             return
 
         # Diagnostic: if Slack delivered a message with no files but it
@@ -1248,6 +1299,12 @@ class SlackAdapter:
         slash_ctx = self._pop_slash_context_for(chat_id, ephemeral_user_id, raw_hint)
         if slash_ctx:
             return await self._send_slash_ephemeral(slash_ctx, content)
+
+        # Flag links to hosts that do not exist before they reach the
+        # thread. See bridge/gateway/link_check.py.
+        from bridge.gateway.link_check import annotate_unresolved
+
+        content = await annotate_unresolved(content)
 
         # Format defensively — idempotent, so callers that already
         # formatted (the stream consumer's chunking path) pass through

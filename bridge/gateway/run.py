@@ -485,6 +485,10 @@ class GatewayDaemon:
     def __init__(self) -> None:
         self.state: object | None = None
         self.adapters: list[object] = []
+        # (platform, chat, thread, message id, has files) → first-seen time.
+        # Second line of defence behind the adapter's per-ts dedup: see
+        # _is_redelivery.
+        self._recent_inbound: dict[tuple[Any, ...], float] = {}
         self.shutdown_event: asyncio.Event = asyncio.Event()
         self._planned_exit = False  # True on graceful SIGTERM or takeover
         # Reads desktop → daemon commands (permission_response, etc.)
@@ -505,6 +509,9 @@ class GatewayDaemon:
 
         if self.state is None:
             logger.warning("inbound message dropped — state not initialized")
+            return
+
+        if self._is_redelivery(message):
             return
 
         # Find the originating adapter (so the stream consumer sends
@@ -570,6 +577,17 @@ class GatewayDaemon:
             message.text = cleaned_text
 
 
+        # Fires from inside the session restore, just before it compacts a
+        # long transcript. That is the slow step, so the notice has to go
+        # out before it, not after route_message returns.
+        notice_sent = False
+
+        async def _restore_notice(est_tokens: int, reason: str) -> None:
+            nonlocal notice_sent
+            notice_sent = await self._send_catching_up_notice(
+                adapter, message, est_tokens, compacting=True
+            )
+
         try:
             # Pass in_mode through as-is (None when no --mode flag).
             # route_message seeds the "bus" default only on NEW
@@ -581,6 +599,7 @@ class GatewayDaemon:
                 self.state,
                 default_model=in_model,
                 default_strategy=in_mode,
+                restore_notice=_restore_notice,
             )
         except Exception:
             logger.exception("failed to route inbound message")
@@ -606,7 +625,8 @@ class GatewayDaemon:
         # will follow this notice, dim-aware after the most recent
         # patch — so any oversized screenshots from earlier in this
         # DM get rewritten in place before the LLM call.
-        await self._maybe_send_catching_up_notice(session, adapter, message)
+        if not notice_sent:
+            await self._maybe_send_catching_up_notice(session, adapter, message)
 
         # Slash commands without text body (just /status, /freyja help)
         # still get routed as agent turns — the slash text becomes the
@@ -843,6 +863,46 @@ class GatewayDaemon:
             # consumer doesn't leak.
             unregister_session_listener(key, consumer.on_event)
 
+    _REDELIVERY_TTL_SEC = 3600.0
+
+    def _is_redelivery(self, message: IncomingMessage) -> bool:
+        """True when this exact platform message was already accepted.
+
+        Slack Socket Mode redelivers an event the app did not ack in time.
+        On 2026-10-05 a long compaction froze the event loop, the socket
+        dropped, and the same message was routed twice eight minutes apart
+        (the second run then answered "same request, carrying on"). The
+        adapter dedups by event ts, but a redelivery can arrive through a
+        different event shape, so the gateway keys on the message itself.
+        Files are part of the key: an app_mention and its richer
+        message.channels twin share a ts and must both pass.
+        """
+        src = message.source
+        mid = getattr(src, "message_id", None)
+        if not mid or message.is_slash_command:
+            return False
+        key = (
+            getattr(src.platform, "value", src.platform),
+            src.chat_id,
+            src.thread_id,
+            mid,
+            bool(message.attachments),
+        )
+        now = time.monotonic()
+        if key in self._recent_inbound:
+            logger.info(
+                "dropping redelivered message: chat=%s thread=%s id=%s",
+                src.chat_id, src.thread_id, mid,
+            )
+            return True
+        if len(self._recent_inbound) > 2000:
+            cutoff = now - self._REDELIVERY_TTL_SEC
+            self._recent_inbound = {
+                k: v for k, v in self._recent_inbound.items() if v >= cutoff
+            }
+        self._recent_inbound[key] = now
+        return False
+
     def _adapter_for_platform(self, platform: Platform) -> object | None:
         for a in self.adapters:
             if getattr(a, "name", None) == platform.value:
@@ -946,51 +1006,78 @@ class GatewayDaemon:
             if est_tokens < self._CATCHING_UP_TOKEN_THRESHOLD:
                 return
 
-            # Format the count compactly.
-            if est_tokens >= 1_000_000:
-                tok_str = f"~{est_tokens / 1_000_000:.1f}M tokens"
-            elif est_tokens >= 1_000:
-                tok_str = f"~{est_tokens // 1_000}k tokens"
-            else:
-                tok_str = f"~{est_tokens} tokens"
-
-            big = est_tokens >= self._CATCHING_UP_BIG_TOKEN_THRESHOLD
-            tail = (
-                "Compacting history before responding — back to you "
-                "in a moment."
-            ) if big else (
-                "Catching up — back to you shortly."
-            )
-            text = (
-                f"_Looking at {n_msgs} prior messages ({tok_str}) in "
-                f"this conversation. {tail}_"
-            )
-
-            src = message.source
-            logger.info(
-                "catching-up notice firing: chat=%s thread=%s msgs=%d tokens=%d",
-                src.chat_id,
-                src.thread_id,
-                n_msgs,
+            await self._send_catching_up_notice(
+                adapter,
+                message,
                 est_tokens,
+                compacting=est_tokens >= self._CATCHING_UP_BIG_TOKEN_THRESHOLD,
+                n_msgs=n_msgs,
             )
-            try:
-                result = await adapter.send(
-                    src.chat_id,
-                    text,
-                    thread_id=src.thread_id,
-                    raw_hint=message.raw,
-                )
-                if not getattr(result, "ok", True):
-                    logger.warning(
-                        "catching-up notice send returned not-ok: %s",
-                        getattr(result, "error", "?"),
-                    )
-            except Exception:  # noqa: BLE001
-                logger.warning("catching-up notice send raised", exc_info=True)
         except Exception:  # noqa: BLE001
             # Never block the turn on a UI notice failure.
             logger.warning("catching-up notice raised", exc_info=True)
+
+    async def _send_catching_up_notice(
+        self,
+        adapter: Any,
+        message: IncomingMessage,
+        est_tokens: int,
+        *,
+        compacting: bool,
+        n_msgs: int | None = None,
+    ) -> bool:
+        """Post the "catching up" line. Returns True when it was sent."""
+        # Format the count compactly.
+        if est_tokens >= 1_000_000:
+            tok_str = f"~{est_tokens / 1_000_000:.1f}M tokens"
+        elif est_tokens >= 1_000:
+            tok_str = f"~{est_tokens // 1_000}k tokens"
+        else:
+            tok_str = f"~{est_tokens} tokens"
+
+        tail = (
+            "Compacting the history before I reply. This can take a few "
+            "minutes."
+        ) if compacting else (
+            "Catching up — back to you shortly."
+        )
+        # The message count is only known when the transcript is already
+        # in memory. During a restore it is not, so say tokens only.
+        head = (
+            f"Looking at {n_msgs} prior messages ({tok_str}) in this "
+            "conversation."
+            if n_msgs is not None
+            else f"This conversation is long ({tok_str})."
+        )
+        text = f"_{head} {tail}_"
+
+        src = message.source
+        logger.info(
+            "catching-up notice firing: chat=%s thread=%s msgs=%s tokens=%d "
+            "compacting=%s",
+            src.chat_id,
+            src.thread_id,
+            n_msgs,
+            est_tokens,
+            compacting,
+        )
+        try:
+            result = await adapter.send(
+                src.chat_id,
+                text,
+                thread_id=src.thread_id,
+                raw_hint=message.raw,
+            )
+            if not getattr(result, "ok", True):
+                logger.warning(
+                    "catching-up notice send returned not-ok: %s",
+                    getattr(result, "error", "?"),
+                )
+                return False
+            return True
+        except Exception:  # noqa: BLE001
+            logger.warning("catching-up notice send raised", exc_info=True)
+            return False
 
     async def _fetch_prior_context(
         self,

@@ -433,6 +433,13 @@ def gateway_source_block(source: MessageSource) -> str:
         "**bold** as *bold* and supports fenced code blocks). Long responses "
         "will be split across messages automatically."
     )
+    lines.append(
+        "Links: only post a URL you read from a tool result or from the "
+        "user's own messages. Never build one from memory or by pattern "
+        "(a hostname, a Jira or Confluence slug, an alert rule ID). If you "
+        "need to point at something you could not look up, name it in plain "
+        "text and say you have no link."
+    )
     # Make the agent aware of the gateway-only tools so it stops
     # apologizing about not being able to send files. Without this hint
     # it'll happily list paths but tell the user "I can't upload" —
@@ -507,6 +514,7 @@ async def route(
     *,
     default_model: str | None = None,
     default_strategy: str | None = None,
+    restore_notice: Any = None,
 ) -> tuple[str, Any]:
     """Look up or create the session for this message and enqueue it.
 
@@ -560,6 +568,7 @@ async def route(
         model_id=default_model,
         coordination_strategy=strategy_for_call,
         gateway_source=message.source,
+        restore_notice=restore_notice,
     )
 
     # NOTE: do NOT setattr(session, "gateway_source", message.source)
