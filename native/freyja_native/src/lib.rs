@@ -182,26 +182,47 @@ fn focus_app(bundle_id: &str) -> PyResult<()> {
 
 // ─── Accessibility tree ─────────────────────────────────────────────────
 
+// Every AX call below releases the GIL. They block on the target app, and
+// holding the GIL froze the whole Python process (event loop, every
+// sub-agent, the UI bridge) for as long as the app took to answer. On
+// 2026-10-06 one read of Arc held it for 2.4 hours.
 #[pyfunction]
-#[pyo3(signature = (pid, max_depth=8))]
-fn read_ax_tree(pid: i32, max_depth: usize) -> PyResult<String> {
-    ax::read_ax_tree(pid, max_depth).map_err(err)
+#[pyo3(signature = (pid, max_depth=8, budget_ms=8000, max_nodes=6000))]
+fn read_ax_tree(
+    py: Python<'_>,
+    pid: i32,
+    max_depth: usize,
+    budget_ms: u64,
+    max_nodes: usize,
+) -> PyResult<String> {
+    py.allow_threads(|| ax::read_ax_tree(pid, max_depth, budget_ms, max_nodes))
+        .map_err(err)
 }
 
 #[pyfunction]
-fn ax_press(pid: i32, x: f64, y: f64, role: &str, bounds: (f64, f64, f64, f64)) -> PyResult<bool> {
-    ax::press_at(pid, x, y, role, bounds).map_err(err)
+fn ax_press(
+    py: Python<'_>,
+    pid: i32,
+    x: f64,
+    y: f64,
+    role: &str,
+    bounds: (f64, f64, f64, f64),
+) -> PyResult<bool> {
+    py.allow_threads(|| ax::press_at(pid, x, y, role, bounds))
+        .map_err(err)
 }
 
 #[pyfunction]
 #[pyo3(signature = (pid, role=None, label=None, title=None))]
 fn find_ax_element(
+    py: Python<'_>,
     pid: i32,
     role: Option<&str>,
     label: Option<&str>,
     title: Option<&str>,
 ) -> PyResult<Option<(f64, f64, f64, f64)>> {
-    ax::find_ax_element(pid, role, label, title).map_err(err)
+    py.allow_threads(|| ax::find_ax_element(pid, role, label, title))
+        .map_err(err)
 }
 
 #[pyfunction]

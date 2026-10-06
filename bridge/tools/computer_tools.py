@@ -2310,8 +2310,19 @@ Pass `pid` from `list_windows` or `get_frontmost_window`.
                 call_id=call_id, content="Error: pid is required", is_error=True
             )
         try:
-            tree_json = await asyncio.to_thread(
-                native.read_ax_tree, pid, max_depth=max_depth
+            tree_json = await asyncio.wait_for(
+                asyncio.to_thread(native.read_ax_tree, pid, max_depth=max_depth),
+                timeout=30.0,
+            )
+        except asyncio.TimeoutError:
+            return ToolResult(
+                call_id=call_id,
+                content=(
+                    "read_ax_tree timed out after 30s: the app is not answering "
+                    "accessibility requests (busy or hung). Use a screenshot "
+                    "instead, or retry later."
+                ),
+                is_error=True,
             )
         except Exception as exc:  # noqa: BLE001
             return ToolResult(

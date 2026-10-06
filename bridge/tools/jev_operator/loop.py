@@ -135,6 +135,14 @@ class OperatorConfig:
     settle_ms: int = 350
     ax_depth: int = 25
     launch_if_missing: bool = True
+    # One accessibility read may not take longer than this. The native read
+    # has its own budget (8 s), so this only fires when the native call hangs.
+    ax_read_timeout_s: float = 30.0
+    # Give up after this many reads in a row that timed out or failed.
+    ax_max_consecutive_failures: int = 3
+    # Wall-clock ceiling for the whole run. The tool is foreground, so the
+    # parent turn waits for it: an unbounded run held a session for 2.9 h.
+    max_runtime_s: float = 900.0
 
 
 @dataclass
@@ -207,6 +215,7 @@ class Operator:
         self._start_windows: list[str] | None = None
         self._window_checks: set[str] = set()
         self._shot_geometry: tuple[tuple[float, ...], int, int] | None = None
+        self._ax_fail_streak = 0
 
     async def _say(self, text: str) -> None:
         if self.on_step is None:
@@ -333,11 +342,27 @@ class Operator:
     async def _observe(self, target: Target) -> Observation:
         t0 = time.perf_counter()
         try:
-            raw = await asyncio.to_thread(
-                self.native.read_ax_tree, target.pid, max_depth=self.cfg.ax_depth
+            raw = await asyncio.wait_for(
+                asyncio.to_thread(
+                    self.native.read_ax_tree, target.pid, max_depth=self.cfg.ax_depth
+                ),
+                timeout=self.cfg.ax_read_timeout_s,
             )
             tree = json.loads(raw) if raw else {}
+            self._ax_fail_streak = 0
+            if isinstance(tree, dict) and tree.get("truncated"):
+                self._log({"event": "ax_truncated", "pid": target.pid})
+        except asyncio.TimeoutError:
+            # The worker thread cannot be cancelled; it is abandoned. Arc's
+            # tree read took 100-140 s per step on 2026-10-06 and once 2.4 h.
+            self._ax_fail_streak += 1
+            tree = {
+                "role": "AXApplication",
+                "children": [],
+                "error": f"accessibility read timed out after {self.cfg.ax_read_timeout_s:.0f}s",
+            }
         except Exception as exc:  # noqa: BLE001
+            self._ax_fail_streak += 1
             tree = {"role": "AXApplication", "children": [], "error": str(exc)}
         read_ms = int((time.perf_counter() - t0) * 1000)
         obs = build_observation(
@@ -426,7 +451,23 @@ class Operator:
             if self.spec.cancel_event.is_set():
                 return finish("cancelled", "Cancelled by emergency stop.")
 
+            elapsed = time.perf_counter() - self._t_start
+            if elapsed > cfg.max_runtime_s:
+                return finish(
+                    "budget_exhausted",
+                    f"Stopped after {elapsed:.0f}s (limit {cfg.max_runtime_s:.0f}s) "
+                    f"and {len(self.history)} steps without reaching done.",
+                )
+
             obs = await self._observe(target)
+            if self._ax_fail_streak >= cfg.ax_max_consecutive_failures:
+                return finish(
+                    "blocked",
+                    f"{target.name} did not answer {self._ax_fail_streak} accessibility "
+                    "reads in a row (timed out or failed), so the operator cannot see "
+                    "its screen. The app may be busy or hung; try again later or use "
+                    "`computer_use` with screenshots.",
+                )
             if self._settle_next:
                 obs = await self._observe_settled(target, obs)
                 self._settle_next = False

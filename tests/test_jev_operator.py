@@ -1208,3 +1208,48 @@ def test_launch_by_bundle_id_uses_open_b(monkeypatch):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ─── a hung accessibility read must not hold the run ─────────────────
+
+def test_a_hung_ax_read_times_out_and_the_run_ends_blocked(tmp_path, monkeypatch):
+    """2026-10-06: reading Arc's tree took 100-140 s per step and once 2.4 h, with
+    no timeout and no run budget, so the foreground tool held its session."""
+    import threading
+    import time as _time
+
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+    release = threading.Event()
+
+    class Hung(FakeCalculator):
+        def read_ax_tree(self, pid, max_depth=8):
+            release.wait(30)
+            return super().read_ax_tree(pid, max_depth)
+
+    native = Hung()
+    op, _ = make_operator(native, ScriptedProvider([("click", "7")] * 20),
+                          ax_read_timeout_s=0.2, ax_max_consecutive_failures=1)
+
+    async def timed():
+        t0 = _time.monotonic()
+        res = await op.run()
+        return res, _time.monotonic() - t0
+
+    # asyncio.run() joins the abandoned worker thread when the loop closes, so
+    # the elapsed time is taken inside the loop. In the bridge the loop lives on.
+    try:
+        res, took = asyncio.run(timed())
+    finally:
+        release.set()
+    assert res.status == "blocked"
+    assert "accessibility" in res.summary
+    assert took < 5.0
+
+
+def test_the_run_stops_at_its_wall_clock_budget(tmp_path, monkeypatch):
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+    native = FakeCalculator()
+    op, _ = make_operator(native, ScriptedProvider([("click", "7")] * 50), max_runtime_s=0.0)
+    res = asyncio.run(op.run())
+    assert res.status == "budget_exhausted"
+    assert "limit" in res.summary

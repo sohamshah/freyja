@@ -10,8 +10,8 @@
 use accessibility::{AXAttribute, AXUIElement, AXUIElementAttributes};
 use accessibility_sys::{
     kAXErrorSuccess, kAXValueTypeCGRect, AXIsProcessTrustedWithOptions,
-    AXUIElementCopyElementAtPosition, AXUIElementRef, AXValueGetType, AXValueGetValue,
-    AXValueRef,
+    AXUIElementCopyElementAtPosition, AXUIElementRef, AXUIElementSetMessagingTimeout,
+    AXValueGetType, AXValueGetValue, AXValueRef,
 };
 use core_foundation::array::CFArray;
 use core_foundation::base::{CFType, TCFType};
@@ -22,6 +22,7 @@ use core_foundation::string::CFString;
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use serde::Serialize;
 use std::ffi::c_void;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -61,7 +62,38 @@ pub struct AxNode {
     bounds: Option<[f64; 4]>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     children: Vec<AxNode>,
+    /// Set on the root when the walk hit its time or node budget, so the
+    /// tree is a prefix of the real one.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    truncated: bool,
 }
+
+/// Limits for one tree walk. A busy browser such as Arc exposes tens of
+/// thousands of nodes, and every node costs about a dozen AX calls that can
+/// each wait out the messaging timeout. Without a budget one read took 100+
+/// seconds, and once 2.4 hours (2026-10-06).
+struct Budget {
+    deadline: Instant,
+    nodes_left: usize,
+    exhausted: bool,
+}
+
+impl Budget {
+    fn spend(&mut self) -> bool {
+        if self.exhausted {
+            return false;
+        }
+        if self.nodes_left == 0 || Instant::now() >= self.deadline {
+            self.exhausted = true;
+            return false;
+        }
+        self.nodes_left -= 1;
+        true
+    }
+}
+
+/// How long one AX call may wait on a busy app. The system default is 6 s.
+const AX_MESSAGING_TIMEOUT_SECS: f32 = 1.5;
 
 /// Check whether our process currently has Accessibility permission.
 /// Uses the non-prompting variant.
@@ -89,9 +121,23 @@ pub fn prompt_accessibility_permission() -> bool {
     }
 }
 
-pub fn read_ax_tree(pid: i32, max_depth: usize) -> Result<String, AxError> {
+pub fn read_ax_tree(
+    pid: i32,
+    max_depth: usize,
+    budget_ms: u64,
+    max_nodes: usize,
+) -> Result<String, AxError> {
     let root = AXUIElement::application(pid);
-    let node = walk(&root, max_depth);
+    unsafe {
+        AXUIElementSetMessagingTimeout(root.as_concrete_TypeRef(), AX_MESSAGING_TIMEOUT_SECS);
+    }
+    let mut budget = Budget {
+        deadline: Instant::now() + Duration::from_millis(budget_ms),
+        nodes_left: max_nodes,
+        exhausted: false,
+    };
+    let mut node = walk(&root, max_depth, &mut budget);
+    node.truncated = budget.exhausted;
     serde_json::to_string(&node).map_err(|e| AxError::Generic(e.to_string()))
 }
 
@@ -250,12 +296,22 @@ pub fn find_ax_element(
     Ok(None)
 }
 
-fn walk(elem: &AXUIElement, depth: usize) -> AxNode {
-    let children: Vec<AxNode> = if depth == 0 {
+fn walk(elem: &AXUIElement, depth: usize, budget: &mut Budget) -> AxNode {
+    // Out of budget: keep this node's own attributes cheap by not descending.
+    let children: Vec<AxNode> = if depth == 0 || !budget.spend() {
         Vec::new()
     } else {
         match elem.children() {
-            Ok(arr) => arr.iter().map(|c| walk(&c, depth - 1)).collect(),
+            Ok(arr) => {
+                let mut out = Vec::new();
+                for c in arr.iter() {
+                    if budget.exhausted {
+                        break;
+                    }
+                    out.push(walk(&c, depth - 1, budget));
+                }
+                out
+            }
             Err(_) => Vec::new(),
         }
     };
@@ -276,6 +332,7 @@ fn walk(elem: &AXUIElement, depth: usize) -> AxNode {
         focused: elem.focused().ok().map(|b| b == CFBoolean::true_value()),
         bounds: frame_of(elem).map(|(x, y, w, h)| [x, y, w, h]),
         children,
+        truncated: false,
     }
 }
 
