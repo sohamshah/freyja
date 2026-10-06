@@ -422,6 +422,74 @@ async def test_talk_deliver_to_unloaded_session_queues_sidecar(monkeypatch, tmp_
     assert [u["content"] for u in data["unread"]] == ["later"]
 
 
+async def test_talk_to_closed_desktop_root_cold_loads_and_wakes(monkeypatch, tmp_path):
+    """2026-10-06: a closed desktop session only got an inbox file and was
+    never run, while the sender waited out its reply timeout."""
+    from bridge import freyja_bridge as fb
+    from bridge import transcript_persistence as tp
+
+    monkeypatch.setattr(tp, "SESSIONS_DIR", tmp_path)
+    sid = "session-closed1"
+    (tmp_path / f"{sid}.transcript.json").write_text("{}")
+    monkeypatch.setattr(fb, "_process_owns_gateway", lambda: False)
+    monkeypatch.setattr(fb, "_resolve_archived_subagent", lambda s: None)
+
+    pushed: list = []
+    woke: list = []
+    sess = SimpleNamespace(
+        inbox=SimpleNamespace(push=pushed.append),
+        wake_for_inbox=lambda: woke.append(sid) or "woken",
+    )
+
+    class _State(SimpleNamespace):
+        async def ensure_session(self, session_id, **kw):
+            self.sessions[session_id] = sess
+            return sess
+
+    state = _State(sessions={}, talk_wake_hook_factory=None)
+    status = await fb.deliver_talk_message_locally(state, sid, _msg("hello"))
+    assert status == "woken"
+    assert [m.content for m in pushed] == ["hello"]
+    assert woke == [sid]
+
+
+async def test_talk_to_closed_subagent_is_not_cold_loaded_as_a_root(monkeypatch, tmp_path):
+    from bridge import freyja_bridge as fb
+    from bridge import transcript_persistence as tp
+
+    monkeypatch.setattr(tp, "SESSIONS_DIR", tmp_path)
+    sid = "sub_abc_1"
+    (tmp_path / f"{sid}.transcript.json").write_text("{}")
+    monkeypatch.setattr(fb, "_process_owns_gateway", lambda: False)
+    monkeypatch.setattr(fb, "_resolve_archived_subagent", lambda s: {"parentSessionId": "p"})
+    assert fb._is_closed_root_session(sid) is False
+
+
+async def test_talk_does_not_wait_for_a_reply_from_a_session_that_is_not_running(
+    monkeypatch, tmp_path
+):
+    from bridge import freyja_bridge as fb
+    from bridge import transcript_persistence as tp
+
+    monkeypatch.setattr(tp, "SESSIONS_DIR", tmp_path)
+    sid = "freyja:slack:T:channel:C:1.1"
+    monkeypatch.setattr(fb, "_process_owns_gateway", lambda: False)
+    router = _router({})
+    tool = TalkTool(router, _ctx())
+    (tmp_path / f"{sid}.transcript.json").write_text("{}")
+
+    async def boom(**kw):  # would block for reply_timeout_s
+        raise AssertionError("must not wait")
+
+    monkeypatch.setattr(tool, "_await_reply", boom)
+    out = await tool.execute(
+        "c1",
+        {"to": sid, "content": "hi", "wait_for_reply": True, "reply_timeout_s": 180},
+    )
+    assert "not waiting for a reply" in out.content
+    assert "NOT seen" in out.content
+
+
 # ─── list_agent_sessions filters ──────────────────────────────────────
 
 

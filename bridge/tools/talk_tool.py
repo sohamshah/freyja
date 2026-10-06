@@ -73,6 +73,11 @@ def _session_exists_on_disk(session_id: str) -> bool:
         return False
 
 
+# Status prefix of a message that was only written to disk. Nothing is
+# running to read it, so waiting for a reply can only time out.
+_QUEUED_ONLY = "queued to inbox sidecar"
+
+
 def queue_to_inbox_sidecar(session_id: str, msg: InboxMessage) -> str:
     """Persist a message into a session's on-disk inbox sidecar.
 
@@ -674,7 +679,7 @@ class TalkTool:
             )
             if fwd is not None:
                 results.append(f"'{ref}' → {target_id}: {fwd}")
-                if "failed" not in fwd:
+                if "failed" not in fwd and not fwd.startswith(_QUEUED_ONLY):
                     awaitable.append(msg)
                 continue
 
@@ -701,7 +706,7 @@ class TalkTool:
                 except Exception as exc:  # noqa: BLE001
                     status = f"delivery failed: {exc}"
                 results.append(f"'{ref}' → {target_id}: {status}")
-                if "failed" not in status:
+                if "failed" not in status and not status.startswith(_QUEUED_ONLY):
                     awaitable.append(msg)
                 continue
 
@@ -711,6 +716,16 @@ class TalkTool:
             results.append(f"'{ref}' ({target_id[:24]}): {status}")
             if "not found" not in status and "failed" not in status:
                 awaitable.append(msg)
+
+        if wait_for_reply and not awaitable and any(
+            _QUEUED_ONLY in r for r in results
+        ):
+            # Say why we returned at once instead of blocking for the
+            # whole reply_timeout_s (a 180 s stall on 2026-10-06).
+            results.append(
+                "not waiting for a reply: the recipient is not running, so "
+                "it has NOT seen the message and cannot answer yet"
+            )
 
         # Handle wait_for_reply (single-recipient case enforced above)
         if wait_for_reply and len(awaitable) == 1:

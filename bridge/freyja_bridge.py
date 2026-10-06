@@ -908,10 +908,23 @@ async def deliver_talk_message_locally(
     """
     sess = state.sessions.get(sid)
 
-    if sess is None and _is_gateway_session_id(sid) and _process_owns_gateway():
-        # Cold gateway session in the owner process (daemon restarted
-        # since the thread's last message). Load it so the message is
-        # processed now instead of waiting for the next Slack inbound.
+    cold_load = False
+    if sess is None:
+        if _is_gateway_session_id(sid):
+            cold_load = _process_owns_gateway()
+        elif not _process_owns_gateway() and _is_closed_root_session(sid):
+            # A closed DESKTOP root session ("session-…", "desktop-…") lives
+            # in the desktop bridge. Without this it only got an inbox file
+            # and nothing ever ran it: 2026-10-06 a talk() to a finished
+            # session sat unread while the sender waited out its 180 s
+            # wait_for_reply.
+            cold_load = True
+
+    if cold_load:
+        # Cold session in the process that hosts it (gateway daemon
+        # restarted since the thread's last message, or a closed desktop
+        # session). Load it so the message is processed now instead of
+        # waiting for the next inbound / the operator opening it.
         try:
             sess = await state.ensure_session(sid)
         except Exception as exc:  # noqa: BLE001
@@ -1048,6 +1061,19 @@ async def deliver_artifact_note(
     _install_talk_wake_hook(state, sess)
     inbox.push(msg)
     return sess.wake_for_inbox()
+
+
+def _is_closed_root_session(sid: str) -> bool:
+    """A persisted ROOT session (has a transcript on disk) that is not a
+    sub-agent. Sub-agents re-wake through their own sidecar path."""
+    try:
+        from bridge.transcript_persistence import _transcript_path
+
+        if not _transcript_path(sid).exists():
+            return False
+        return _resolve_archived_subagent(sid) is None
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _process_owns_gateway() -> bool:
