@@ -332,6 +332,13 @@ loop-break or verification injections."""
 # ============================================================================
 
 ANTHROPIC_API_TIMEOUT = 300.0
+
+# Compaction runs two parallel calls. The SDK timeout above is 300 s, which
+# is far too long to hold a Slack turn on a best-effort call. Call B (working
+# memory) is dropped after this; Call A (the summary) must exist, so it gets
+# longer before the compaction is declared failed.
+WORKING_MEMORY_CALL_TIMEOUT_S = 90.0
+SUMMARY_CALL_TIMEOUT_S = 180.0
 """Timeout for Anthropic API calls."""
 
 DEFAULT_BASH_TIMEOUT = 120.0

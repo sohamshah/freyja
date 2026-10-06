@@ -26,7 +26,9 @@ from engine.constants import (
     MIN_CONTENT_LENGTH_FOR_TRUNCATION,
     MIN_MESSAGES_TO_COMPACT,
     MIN_TOKENS_TO_SUMMARIZE,
+    SUMMARY_CALL_TIMEOUT_S,
     SUMMARY_MAX_TOKENS,
+    WORKING_MEMORY_CALL_TIMEOUT_S,
 )
 from engine.session import TranscriptManager
 from engine.types import ImageBlock, Message, ThinkingConfig
@@ -1396,6 +1398,7 @@ CONVERSATION TO EXTRACT FROM:
         invoked concurrently.
         """
         from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import TimeoutError as FuturesTimeout
 
         # No working-memory sink wired → nothing to extract; just the summary
         # (single call, on its own thread-free path).
@@ -1410,7 +1413,13 @@ CONVERSATION TO EXTRACT FROM:
             )
 
         wm_stats: dict[str, Any] = {}
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="compact") as pool:
+        # Not a ``with`` block: leaving one waits for every worker, so a hung
+        # Call B would still hold compaction (and the gateway turn behind it)
+        # until the SDK's own 300 s timeout fired. 2026-10-05: a stuck Call B
+        # held a Slack thread for 5.7 min. We bound both calls below and
+        # abandon a hung worker with shutdown(wait=False).
+        pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="compact")
+        try:
             # Call A fires on_summarizer_call itself (inside its worker); we
             # let it, then resolve it last so its hook has completed before we
             # fire Call B's from this thread — no concurrent hook calls.
@@ -1436,7 +1445,14 @@ CONVERSATION TO EXTRACT FROM:
             # Resolve Call B first (best-effort, never raises out of here).
             wm_result: dict[str, Any] | None
             try:
-                wm_result = fb.result()
+                wm_result = fb.result(timeout=WORKING_MEMORY_CALL_TIMEOUT_S)
+            except FuturesTimeout:
+                logger.warning(
+                    "working-memory extraction exceeded %.0fs — compacting "
+                    "without it",
+                    WORKING_MEMORY_CALL_TIMEOUT_S,
+                )
+                wm_result = None
             except Exception:
                 logger.debug("working-memory extraction failed", exc_info=True)
                 wm_result = None
@@ -1446,9 +1462,15 @@ CONVERSATION TO EXTRACT FROM:
             summary_exc: Exception | None = None
             summary: str | None = None
             try:
-                summary = fa.result()
+                summary = fa.result(timeout=SUMMARY_CALL_TIMEOUT_S)
+            except FuturesTimeout:
+                summary_exc = TimeoutError(
+                    f"compaction summary call exceeded {SUMMARY_CALL_TIMEOUT_S:.0f}s"
+                )
             except Exception as e:  # noqa: BLE001
                 summary_exc = e
+        finally:
+            pool.shutdown(wait=False)
 
         # Both workers are now done — safe to touch shared hooks/state.
         try:

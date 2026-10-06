@@ -26,6 +26,7 @@ Or from Electron main via spawn().
 from __future__ import annotations
 
 import asyncio
+import inspect
 import base64
 import json
 import logging
@@ -4045,6 +4046,10 @@ def _new_tracing_registry(
 class _BridgeSession:
     """Owns the engine Session + Runner + tool registry for one id."""
 
+    # Set by ensure_session while a restore may compact; None otherwise.
+    # Class-level so reset() cannot clear it mid-restore.
+    restore_notice: Any = None
+
     def __init__(
         self,
         session_id: str,
@@ -5429,18 +5434,42 @@ class _BridgeSession:
                 from engine.compaction import SummaryCompaction
 
                 compactor = SummaryCompaction()
+                # Tell the operator BEFORE the slow part. The gateway's
+                # "catching up" notice used to fire after restore returned,
+                # i.e. after the wait it was meant to explain.
+                notice = getattr(self, "restore_notice", None)
+                if notice is not None:
+                    try:
+                        res = notice(estimated, reason)
+                        if inspect.isawaitable(res):
+                            await res
+                    except Exception as exc:  # noqa: BLE001
+                        log("debug", f"restore notice failed: {exc}")
                 # Block the mid-session WM trigger for the whole window
                 # this compaction is running — its internal Call B and a
                 # session_memory-driven Call B would otherwise race.
                 self._compaction_in_flight = True
+                _t0 = time.monotonic()
+                log("info", f"restore compaction started ({reason})")
                 try:
-                    compactor.compact(
+                    # Worker thread, NOT the event loop. compact() is
+                    # synchronous and makes blocking LLM calls; run inline
+                    # it froze the whole gateway for 5.7 min on 2026-10-05,
+                    # Slack's Socket Mode missed its pings, the socket was
+                    # dropped, and Slack redelivered the message.
+                    await asyncio.to_thread(
+                        compactor.compact,
                         self.session.transcript, self.provider,
                         ground_truth=self._ledger_ground_truth(),
                         on_working_memory_upserts=self._apply_wm_upserts,
                     )
                 finally:
                     self._compaction_in_flight = False
+                    log(
+                        "info",
+                        f"restore compaction finished in "
+                        f"{time.monotonic() - _t0:.1f}s ({reason})",
+                    )
                 self.session.compaction_count += 1
                 # Anchor the mid-session WM-trigger cooldown to this
                 # compaction so a session_memory mutation in the next few
@@ -12154,6 +12183,7 @@ class _BridgeState:
         gateway_source: Any = None,
         runtime: str | None = None,
         harness_session_id: str | None = None,
+        restore_notice: Any = None,
     ) -> _BridgeSession:
         from bridge.tools.coordination import normalize_coordination_strategy
         from bridge.runtimes.registry import normalize_runtime
@@ -12270,13 +12300,20 @@ class _BridgeState:
                 # only adopt when we don't already have one (otherwise an
                 # in-flight switch could clobber a freshly-allocated id).
                 existing.harness_session_id = harness_session_id
-            if changed:
-                existing.reset()
-                # Re-restore from disk — the transcript was just wiped
-                # by reset() but the file still has the prior state.
-                await existing.try_restore_transcript()
-            else:
-                await existing._restore_persisted_transcript_if_empty()  # noqa: SLF001
+            # One-shot hook, live only while this call can restore a
+            # transcript (and so compact it). Cleared in ``finally`` so a
+            # later restore never pings a stale thread.
+            existing.restore_notice = restore_notice
+            try:
+                if changed:
+                    existing.reset()
+                    # Re-restore from disk — the transcript was just wiped
+                    # by reset() but the file still has the prior state.
+                    await existing.try_restore_transcript()
+                else:
+                    await existing._restore_persisted_transcript_if_empty()  # noqa: SLF001
+            finally:
+                existing.restore_notice = None
             self.active_session_id = session_id
             return existing
 
@@ -12306,7 +12343,11 @@ class _BridgeState:
         self.active_session_id = session_id
 
         # Attempt transcript restoration from disk for persisted sessions.
-        await s.try_restore_transcript()
+        s.restore_notice = restore_notice
+        try:
+            await s.try_restore_transcript()
+        finally:
+            s.restore_notice = None
         return s
 
     def get(self, session_id: str | None) -> _BridgeSession | None:
