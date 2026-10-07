@@ -18,6 +18,7 @@ having to import this module's internals.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -688,7 +689,16 @@ Parameters:
             if isinstance(stored_inbox, dict):
                 restored = SessionInbox.from_dict(stored_inbox)
                 if restored and restored.unread:
+                    # A message whose header is already in the saved
+                    # transcript was read by an earlier run. Sidecars from
+                    # before the drain wrote its state back still list
+                    # such messages as unread, and every re-wake replayed
+                    # them (2026-09-30: one brief reached the same child
+                    # twice).
+                    seen = json.dumps(transcript) if transcript else ""
                     for m in restored.unread:
+                        if seen and f"id {m.id}" in seen:
+                            continue
                         record.inbox.push(m)
         except Exception:
             record.inbox = None
@@ -1018,6 +1028,46 @@ Parameters:
             )
             await _emit_update(self._spec, record)
         await self._notify_terminal(record)
+        await self._rewake_for_stranded_messages(record)
+
+    async def _rewake_for_stranded_messages(self, record: SubAgentRecord) -> None:
+        """A message pushed after the runner's last inbox check but before
+        the record went terminal sits in an inbox nobody drains, while its
+        sender was told "delivered to sub-agent". Hand it to a fresh run."""
+        inbox = getattr(record, "inbox", None)
+        # DONE only. A stopped child stays stopped, and a run that failed
+        # before its first drain would re-wake itself in a loop.
+        if inbox is None or record.state != SubAgentState.DONE:
+            return
+        stranded = inbox.peek_unread()
+        if not stranded:
+            return
+        try:
+            from bridge.transcript_persistence import (
+                load_inbox_state,
+                load_subagent_state,
+                save_inbox_state,
+            )
+
+            data = load_inbox_state(record.id) or {
+                "sessionId": record.id, "unread": [], "delivered": [],
+            }
+            known = {u.get("id") for u in data.get("unread") or []}
+            data["unread"] = list(data.get("unread") or []) + [
+                m.to_dict() for m in stranded if m.id not in known
+            ]
+            save_inbox_state(record.id, data)
+            sidecar = load_subagent_state(record.id)
+            if not sidecar:
+                return
+            woken_by = "operator" if stranded[0].from_role == "operator" else "agent"
+            logger.info(
+                "sub-agent %s finished with %d unread message(s); re-waking",
+                record.id, len(stranded),
+            )
+            await self.resume_archived(sidecar, woken_by=woken_by)
+        except Exception:  # noqa: BLE001
+            logger.exception("re-wake for stranded messages failed for %s", record.id)
 
     async def _notify_terminal(self, record: SubAgentRecord) -> None:
         """Hand a finished model-spawned child to the parent (memo)."""
@@ -1478,6 +1528,10 @@ Parameters:
                 )
             elif etype == "tool_use_start":
                 tool_count += 1
+                # Live, so `subagents status` on a running child shows its
+                # progress. It read 0 tools / 0 tokens after 17 minutes and
+                # 68 steps (2026-10-07), which looked like a hung child.
+                record.tools_called = tool_count
                 tid = getattr(event, "id", "")
                 current_tool_id["id"] = tid
                 await _fire(
@@ -1544,6 +1598,11 @@ Parameters:
                 model = payload.get("model") or child_model
                 in_tok = int(payload.get("input_tokens", 0) or 0)
                 out_tok = int(payload.get("output_tokens", 0) or 0)
+                # Running totals for `subagents status`; the terminal path
+                # overwrites them with the runner's own usage.
+                record.input_tokens += in_tok
+                record.output_tokens += out_tok
+                record.iterations = turn_counter["n"]
                 cr_tok = int(payload.get("cache_read_tokens", 0) or 0)
                 cw_tok = int(payload.get("cache_write_tokens", 0) or 0)
                 cost = compute_cost(
@@ -1692,12 +1751,52 @@ Parameters:
         async def _drain_subagent_inbox(sub_session: Any, iteration: int) -> None:
             if sub_inbox_ref is None or not sub_inbox_ref.has_unread():
                 return
+            from bridge.inbox import KIND_FOLLOWUP
+
+            at_ms = int(time.time() * 1000)
             msgs = sub_inbox_ref.drain()
+            items: list[dict[str, Any]] = []
             for m in msgs:
                 try:
-                    sub_session.add_user_message(m.as_user_block())
+                    sub_session.add_user_message(
+                        _subagent_inbox_message(m, model_id=child_model)
+                    )
                 except Exception:
                     continue
+                items.append(
+                    {
+                        "messageId": m.id,
+                        "kind": m.kind,
+                        "clientId": m.client_id,
+                        "force": bool(m.force),
+                        "fromLabel": m.from_label,
+                        "content": m.content if m.kind == KIND_FOLLOWUP else None,
+                        "attachmentCount": len(m.attachments or []),
+                    }
+                )
+            sub_inbox_ref.strip_delivered_attachments()
+            # Write the drained state back. A re-wake rebuilds the inbox
+            # from this file, and without the write every later re-wake
+            # replayed all the messages earlier runs had already read.
+            try:
+                from bridge.transcript_persistence import save_inbox_state
+
+                save_inbox_state(record.id, sub_inbox_ref.to_dict())
+            except Exception:
+                pass
+            if items:
+                # Lets the renderer place what the operator typed into this
+                # sub-agent's pane where it landed (see the root drain).
+                await _fire(
+                    self._spec.emit_event,
+                    {
+                        "type": "inbox_injected",
+                        "sessionId": record.id,
+                        "at": at_ms,
+                        "midTurn": iteration > 1,
+                        "items": items,
+                    },
+                )
 
         # Child-scoped write-ledger reminder + summarizer seed, filtered to
         # this child's OWN effects (rows in the shared ledger are tagged by
@@ -2584,6 +2683,27 @@ def _fmt_elapsed(seconds: float) -> str:
         return f"{minutes}m{secs:02d}s"
     hours, minutes = divmod(minutes, 60)
     return f"{hours}h{minutes:02d}m"
+
+
+def _subagent_inbox_message(msg: Any, *, model_id: str) -> Any:
+    """Engine user message for an inbox item a sub-agent drains: the
+    attributed text block, plus the images the operator attached when
+    they typed into the sub-agent's pane."""
+    block = msg.as_user_block()
+    if not msg.attachments:
+        return block
+    try:
+        from bridge.freyja_bridge import _build_user_message_with_attachments
+
+        return _build_user_message_with_attachments(
+            block, msg.attachments, "", model_id=model_id,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("sub-agent inbox attachments dropped")
+        return (
+            f"{block}\n[{len(msg.attachments)} attachment(s) could not be "
+            "delivered]"
+        )
 
 
 def build_subagent_memo(

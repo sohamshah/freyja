@@ -901,32 +901,40 @@ async def deliver_talk_message_locally(
 
     Strictly local — never re-forwards to another process (the sender
     already decided this process is the owner; bouncing would loop).
-    Order of preference: live root session (push + wake), live
-    sub-agent record, cold gateway session we own (load from disk,
-    then push + wake), inbox sidecar (delivered on next load).
-    Returns a short status string for logs / tool results.
+    Order of preference: running sub-agent record, live root session
+    (push + wake), closed root session this process hosts (load from
+    disk, then push + wake), archived sub-agent (re-wake), inbox sidecar
+    (delivered on next load). Returns a short status string for logs /
+    tool results.
     """
+    # A running sub-agent first. A root session with the same id is a
+    # stray copy (see _is_subagent_session_id) and must not take its mail.
+    live_rec = _subagent_record_in_process(state, sid)
+    if (
+        live_rec is not None
+        and not _record_is_terminal(live_rec)
+        and getattr(live_rec, "inbox", None) is not None
+    ):
+        live_rec.inbox.push(msg)
+        return "delivered to sub-agent"
+
     sess = state.sessions.get(sid)
 
-    cold_load = False
     if sess is None:
-        if _is_gateway_session_id(sid):
-            cold_load = _process_owns_gateway()
-        elif not _process_owns_gateway() and _is_closed_root_session(sid):
-            # A closed DESKTOP root session ("session-…", "desktop-…") lives
-            # in the desktop bridge. Without this it only got an inbox file
-            # and nothing ever ran it: 2026-10-06 a talk() to a finished
-            # session sat unread while the sender waited out its 180 s
-            # wait_for_reply.
-            cold_load = True
-
-    if cold_load:
-        # Cold session in the process that hosts it (gateway daemon
-        # restarted since the thread's last message, or a closed desktop
-        # session). Load it so the message is processed now instead of
-        # waiting for the next inbound / the operator opening it.
         try:
-            sess = await state.ensure_session(sid)
+            if _is_gateway_session_id(sid):
+                if _process_owns_gateway():
+                    # Gateway daemon restarted since the thread's last
+                    # message. Load it so the message is processed now
+                    # instead of waiting for the next inbound.
+                    sess = await state.ensure_session(sid)
+            elif not _process_owns_gateway() and _is_closed_root_session(sid):
+                # A closed DESKTOP root session ("session-…", "desktop-…")
+                # lives in the desktop bridge. Without this it only got an
+                # inbox file and nothing ever ran it: 2026-10-06 a talk() to
+                # a finished session sat unread while the sender waited out
+                # its 180 s wait_for_reply.
+                sess = await _cold_load_session(state, sid)
         except Exception as exc:  # noqa: BLE001
             log("warn", f"talk deliver: cold load of {sid} failed: {exc}")
             sess = None
@@ -936,36 +944,17 @@ async def deliver_talk_message_locally(
         sess.inbox.push(msg)
         return sess.wake_for_inbox()
 
-    # Sub-agent hosted by one of this process's roots? Terminal records
-    # keep their (dead) inbox for the renderer — pushing there swallows
-    # the message, so terminal falls through to the re-wake path.
-    for root in list(state.sessions.values()):
-        reg = getattr(root, "subagent_registry", None)
-        if reg is None:
-            continue
-        try:
-            rec = reg.get(sid)
-        except Exception:  # noqa: BLE001
-            rec = None
-        if rec is not None and getattr(rec, "inbox", None) is not None:
-            from bridge.tools.sub_agent_registry import SubAgentState
-
-            if rec.state not in (
-                SubAgentState.DONE,
-                SubAgentState.FAILED,
-                SubAgentState.CANCELLED,
-            ):
-                rec.inbox.push(msg)
-                return "delivered to sub-agent"
-            break
-
-    # Archived / terminal sub-agent — re-wake from its sidecar.
+    # Archived / terminal sub-agent — re-wake from its sidecar. (A
+    # terminal record keeps its dead inbox for the renderer; pushing there
+    # would swallow the message.)
     archived = _resolve_archived_subagent(sid)
     if archived is not None:
         try:
-            await _wake_archived_subagent(state, sid, msg)
+            woke = await _wake_archived_subagent(state, sid, msg)
         except Exception as exc:  # noqa: BLE001
             return f"re-wake failed: {exc}"
+        if not woke:
+            return _REWAKE_FAILED
         return "queued for re-wake (recipient archived)"
 
     # Cold session — persist to the inbox sidecar; the next
@@ -973,6 +962,14 @@ async def deliver_talk_message_locally(
     from bridge.tools.talk_tool import queue_to_inbox_sidecar
 
     return queue_to_inbox_sidecar(sid, msg)
+
+
+# Status when an archived sub-agent could not be restarted. Contains
+# "failed", so the talk tool doesn't wait for a reply that cannot come.
+_REWAKE_FAILED = (
+    "re-wake failed (no session here could host it) — the message is saved "
+    "to its inbox file and it will read it when it next runs"
+)
 
 
 def _drafter_model_override() -> str | None:
@@ -1074,6 +1071,221 @@ def _is_closed_root_session(sid: str) -> bool:
         return _resolve_archived_subagent(sid) is None
     except Exception:  # noqa: BLE001
         return False
+
+
+def _subagent_record_in_process(state: Any, sid: str) -> Any | None:
+    """The sub-agent record ``sid`` held by one of this process's root
+    sessions, or None. Terminal records stay registered, and a re-wake
+    hosted by a different root registers a second record under the same
+    id, so a running record wins over a terminal one."""
+    found = None
+    for root in list((getattr(state, "sessions", None) or {}).values()):
+        reg = getattr(root, "subagent_registry", None)
+        if reg is None:
+            continue
+        try:
+            rec = reg.get(sid)
+        except Exception:  # noqa: BLE001
+            rec = None
+        if rec is None:
+            continue
+        if not _record_is_terminal(rec):
+            return rec
+        found = found or rec
+    return found
+
+
+def _is_subagent_session_id(state: Any, sid: str) -> bool:
+    """``sid`` names a sub-agent: one this process runs (or ran), or one
+    with a saved sidecar.
+
+    Such an id must never become a ROOT ``_BridgeSession``. The desktop
+    opens sub-agents as panes (sub-agent card, swarm grid, sidebar child),
+    which sends switch_session / send_message with the sub-agent's id.
+    ensure_session used to build a root session for it. On 2026-10-07 that
+    made a second, parentless copy of a running sub-agent from a UI
+    text summary. The operator's
+    messages went to the copy, its talk("parent") was unresolved, and both
+    copies edited the same files."""
+    if not sid or _is_gateway_session_id(sid):
+        return False
+    if _subagent_record_in_process(state, sid) is not None:
+        return True
+    try:
+        from bridge.transcript_persistence import _subagent_path
+
+        return _subagent_path(sid).exists()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _record_is_terminal(rec: Any) -> bool:
+    from bridge.tools.sub_agent_registry import SubAgentState
+
+    return getattr(rec, "state", None) in (
+        SubAgentState.DONE,
+        SubAgentState.FAILED,
+        SubAgentState.CANCELLED,
+    )
+
+
+async def _cold_load_session(state: Any, sid: str) -> Any:
+    """Load a closed session from disk on its OWN model and reasoning
+    level, without making it the active session.
+
+    ensure_session's defaults would restore a GPT or Gemini session under
+    the process default model, and try_restore_transcript strips every
+    thinking block on a provider-family change, permanently. ensure_session
+    also makes the loaded session the active one, and nobody asked to
+    switch the operator's view."""
+    model_id: str | None = None
+    reasoning_level: str | None = None
+    try:
+        from bridge.transcript_persistence import load_transcript
+
+        persisted = load_transcript(sid)
+        meta = persisted.get("metadata") if isinstance(persisted, dict) else None
+        if isinstance(meta, dict):
+            model_id = str(meta.get("model_id") or "") or None
+            reasoning_level = str(meta.get("reasoning_level") or "") or None
+    except Exception:  # noqa: BLE001
+        pass
+    previous_active = getattr(state, "active_session_id", None)
+    try:
+        return await state.ensure_session(
+            sid, model_id=model_id, reasoning_level=reasoning_level,
+        )
+    finally:
+        if previous_active and getattr(state, "active_session_id", None) != previous_active:
+            state.active_session_id = previous_active
+
+
+async def _host_for_subagent_wake(state: Any, parent_id: str) -> Any | None:
+    """The root session that should run a re-woken sub-agent.
+
+    Its original parent when this process can serve it: already loaded,
+    or closed and loadable from disk. Only the parent gets the child's
+    memo when the run ends, so any other host breaks the parent-child
+    link. Falls back to any loaded root (no memo) when the parent can't
+    be loaded here, e.g. a nested sub-agent whose parent is a sub-agent."""
+    sessions = getattr(state, "sessions", None) or {}
+    if parent_id and parent_id in sessions:
+        return sessions[parent_id]
+    if parent_id:
+        if _is_gateway_session_id(parent_id):
+            loadable = _process_owns_gateway()
+        else:
+            loadable = not _process_owns_gateway() and _is_closed_root_session(parent_id)
+        if loadable:
+            try:
+                host = await _cold_load_session(state, parent_id)
+                if getattr(host, "tool_registry", None) is None:
+                    await host.initialize()
+                # The child's memo wakes this parent; a Slack parent's wake
+                # turn has to stream to its thread.
+                _install_talk_wake_hook(state, host)
+                return host
+            except Exception as exc:  # noqa: BLE001
+                log("warn", f"sub-agent wake: loading parent {parent_id} failed: {exc}")
+    for root in sessions.values():
+        if getattr(root, "tool_registry", None) is not None:
+            return root
+    return None
+
+
+async def _route_operator_message_to_subagent(
+    state: Any,
+    sid: str,
+    content: str,
+    attachments: list[dict[str, Any]] | None,
+    *,
+    client_id: str | None = None,
+    force: bool = False,
+    followup: bool = False,
+) -> bool:
+    """Deliver what the operator typed into a sub-agent's pane to that
+    sub-agent. Returns False when ``sid`` is not a sub-agent.
+
+    A running sub-agent gets it at its next step (``force`` cuts its
+    current step short). A finished one is re-woken under its parent
+    with the message, so it reports back to the parent by memo."""
+    from bridge.inbox import KIND_FOLLOWUP, InboxMessage, new_message_id
+
+    if sid in state.sessions or not _is_subagent_session_id(state, sid):
+        return False
+    msg = InboxMessage(
+        id=new_message_id(),
+        from_session="operator",
+        from_label="operator",
+        from_role="operator",
+        content=content,
+        force=force,
+        kind=KIND_FOLLOWUP,
+        attachments=list(attachments) if attachments else None,
+        client_id=client_id,
+    )
+    rec = _subagent_record_in_process(state, sid)
+    if rec is not None and not _record_is_terminal(rec) and getattr(rec, "inbox", None) is not None:
+        rec.inbox.push(msg)
+        interrupting = False
+        if force:
+            interrupt = getattr(rec, "request_interrupt", None)
+            loop = getattr(rec, "loop", None)
+            if callable(interrupt):
+                try:
+                    if loop is not None and loop.is_running():
+                        loop.call_soon_threadsafe(interrupt)
+                    else:
+                        interrupt()
+                    interrupting = True
+                except Exception:  # noqa: BLE001
+                    pass
+        emit(
+            {
+                "type": "followup_queued",
+                "sessionId": sid,
+                "messageId": msg.id,
+                "clientId": client_id,
+                "force": force,
+                "afterTurn": False,
+                "interrupting": interrupting,
+                "at": int(msg.timestamp * 1000),
+            }
+        )
+        log("info", f"operator message → running sub-agent {sid}")
+        return True
+
+    if _resolve_archived_subagent(sid) is None:
+        emit_error(
+            f"Sub-agent {sid} has no saved state to resume from, so this "
+            "message could not be delivered."
+        )
+        return True
+    if followup and client_id:
+        # The renderer held it as a pending bubble for a run that is over.
+        emit(
+            {
+                "type": "followups_promoted",
+                "sessionId": sid,
+                "at": int(time.time() * 1000),
+                "items": [
+                    {
+                        "messageId": msg.id,
+                        "clientId": client_id,
+                        "content": content,
+                        "attachmentCount": len(attachments or []),
+                    }
+                ],
+            }
+        )
+    if await _wake_archived_subagent(state, sid, msg):
+        log("info", f"operator message → re-woke sub-agent {sid}")
+    else:
+        emit_error(
+            f"Could not restart sub-agent {sid} to deliver your message. It is "
+            "saved, and the sub-agent will read it when it next runs."
+        )
+    return True
 
 
 def _process_owns_gateway() -> bool:
@@ -1201,9 +1413,11 @@ async def _wake_archived_subagent(
     msg: Any,
     *,
     notify_parent: bool = True,
-) -> None:
+) -> bool:
     """Re-wake a saved sub-agent by spawning a fresh runner with the
-    persisted transcript + the incoming message.
+    persisted transcript + the incoming message. Returns True when the
+    message reached a running sub-agent, False when it only got saved to
+    the inbox sidecar.
 
     ``notify_parent``: when the re-woken run ends, memo its parent (as a
     fresh spawn would). Only honoured when the host is the ORIGINAL
@@ -1233,7 +1447,15 @@ async def _wake_archived_subagent(
             load_subagent_state,
         )
     except Exception:
-        return
+        return False
+
+    # Already running again (an earlier message re-woke it): its live
+    # inbox is the only thing it reads. resume_archived would return
+    # early and leave this message in the sidecar unread.
+    rec = _subagent_record_in_process(state, session_id)
+    if rec is not None and not _record_is_terminal(rec) and getattr(rec, "inbox", None) is not None:
+        rec.inbox.push(msg)
+        return True
 
     # Step 1: append to inbox sidecar (so spawn failures don't drop msg).
     existing_inbox = load_inbox_state(session_id) or {
@@ -1253,22 +1475,15 @@ async def _wake_archived_subagent(
     sidecar = load_subagent_state(session_id)
     if not sidecar:
         log("warn", f"_wake_archived_subagent: no sidecar for {session_id}")
-        return
+        return False
 
     # Step 3: find a host root session whose SubAgentTool we can call.
-    # Prefer the original parent; fall back to any root.
+    # The original parent (loaded from disk if it is closed), else any root.
     preferred_parent = str(sidecar.get("parentSessionId") or "")
-    host_sess = None
-    if preferred_parent and preferred_parent in state.sessions:
-        host_sess = state.sessions[preferred_parent]
-    else:
-        for root in state.sessions.values():
-            if root.tool_registry is not None:
-                host_sess = root
-                break
+    host_sess = await _host_for_subagent_wake(state, preferred_parent)
     if host_sess is None or host_sess.tool_registry is None:
         log("warn", f"_wake_archived_subagent: no host root running for {session_id}")
-        return
+        return False
 
     # Step 4: find the SubAgentTool on the host's registry. The tool is
     # registered under name "sub_agent" — the same tool exposed to the
@@ -1279,7 +1494,7 @@ async def _wake_archived_subagent(
         sub_tool = None
     if sub_tool is None:
         log("warn", f"_wake_archived_subagent: host has no sub_agent tool for {session_id}")
-        return
+        return False
 
     # Step 5: spawn the resume. msg.from_role tells us the wake source.
     woken_by = "operator" if getattr(msg, "from_role", "") == "operator" else "agent"
@@ -1290,8 +1505,10 @@ async def _wake_archived_subagent(
         )
         if result_id:
             log("info", f"_wake_archived_subagent: resumed {result_id} (woken_by={woken_by})")
+        return bool(result_id)
     except Exception as exc:  # noqa: BLE001
         log("warn", f"_wake_archived_subagent: resume_archived raised: {exc}")
+        return False
 
 
 # Anthropic enforces a 5 MiB cap on the base64 STRING for any image
@@ -10563,6 +10780,14 @@ class _BridgeSession:
             }
         )
 
+        # The harness has no pre-iteration hook, so take the inbox here.
+        # Without this a wake turn told the agent "the messages appear in
+        # this turn" and sent none, and the messages were never read.
+        if self.inbox is not None and self.inbox.has_injectable():
+            blocks = [m.as_user_block() for m in self.inbox.drain_injectable()]
+            self.inbox.strip_delivered_attachments()
+            user_content = "\n\n".join(b for b in [user_content, *blocks] if b)
+
         # Add the user message to the durable transcript ourselves —
         # the harness owns the loop, so the runner.run() side-effect
         # that normally does this is bypassed. We keep the message
@@ -13334,6 +13559,25 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
 
     if ctype == "cancel" or ctype == "force_cancel":
         sess = state.get(session_id)
+        if sess is None and session_id:
+            # Stop pressed in a sub-agent's pane: stop that sub-agent. Its
+            # parent hears about it on its next turn, as with any stop.
+            rec = _subagent_record_in_process(state, session_id)
+            if (
+                rec is not None
+                and not _record_is_terminal(rec)
+                and str(cmd.get("scope") or "all") != "subagents"
+            ):
+                rec.cancel_origin = "operator"
+                rec.cancel_event.set()
+                ac, loop = getattr(rec, "asyncio_cancel", None), getattr(rec, "loop", None)
+                if ac is not None and loop is not None:
+                    try:
+                        loop.call_soon_threadsafe(ac.set)
+                    except Exception:  # noqa: BLE001
+                        pass
+                log("info", f"{ctype}: stopped sub-agent {session_id} from its pane")
+            return
         if sess:
             scope = str(cmd.get("scope") or "all")
             if scope not in ("turn", "subagents", "all"):
@@ -14266,6 +14510,12 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
     if ctype == "switch_session":
         if not session_id:
             return
+        if session_id not in state.sessions and _is_subagent_session_id(state, session_id):
+            # Opening a sub-agent's pane only VIEWS it. The renderer shows its
+            # slice and live events; its runner (if any) belongs to its
+            # parent. Loading it here would make a second, parentless copy.
+            log("info", f"switch_session: {session_id} is a sub-agent — view only")
+            return
         # Capture pre-switch identity so we can detect a true no-op
         # switch (same session id, same config) and skip emitting
         # session_switched. Real-world incident: the operator clicking
@@ -14362,6 +14612,19 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         content = cmd.get("content", "") or ""
         attachments = cmd.get("attachments") or None
         if not content and not attachments:
+            return
+        # Typed into a sub-agent's pane: it goes to that sub-agent (running:
+        # next step; finished: re-woken under its parent), never to a new
+        # root session built on the sub-agent's id.
+        if session_id and await _route_operator_message_to_subagent(
+            state,
+            session_id,
+            content,
+            attachments,
+            client_id=str(cmd.get("clientId") or "").strip() or None,
+            force=bool(cmd.get("force") or False) and not bool(cmd.get("afterTurn") or False),
+            followup=bool(cmd.get("followup") or False),
+        ):
             return
         sess = await state.ensure_session(
             session_id or f"desktop-{int(time.time() * 1000):x}",
@@ -15014,11 +15277,25 @@ async def _handle_command(state: _BridgeState, cmd: dict[str, Any]) -> None:
         if not session_id:
             return
         sess = state.sessions.get(session_id)
+        if sess is not None:
+            running_ids = sess.running_subagent_ids()
+        else:
+            # A sub-agent's pane: its own children run in its root's
+            # registry, tagged with it as their parent.
+            running_ids = []
+            for root in list(state.sessions.values()):
+                reg = getattr(root, "subagent_registry", None)
+                if reg is None:
+                    continue
+                running_ids += [
+                    r.id for r in reg.running()
+                    if getattr(r, "parent_session_id", "") == session_id
+                ]
         emit(
             {
                 "type": "subagents_snapshot",
                 "sessionId": session_id,
-                "runningIds": sess.running_subagent_ids() if sess is not None else [],
+                "runningIds": running_ids,
             }
         )
         return

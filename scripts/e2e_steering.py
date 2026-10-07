@@ -30,6 +30,9 @@ Scenarios:
                   keeps the partial reply and the next turn is told.
     subagent      sub_agent returns at once, the parent keeps chatting, and
                   the child's memo wakes the parent.
+    subagent_pane Opening and typing into a running child's pane reaches
+                  the child (no parentless copy); typing into it after it
+                  finished re-wakes it under its parent, with no replay.
 
 Don't use claude-haiku-4-5 as --model: its `general` sub-agents fail on an
 adaptive-thinking 400, so `subagent` can't pass.
@@ -365,6 +368,73 @@ async def subagent(b: Bridge):
     )
 
 
+async def subagent_pane(b: Bridge):
+    """The desktop opens a running child's pane (switch_session with its id)
+    and the operator types into it. That must reach the child itself, not a
+    parentless copy (2026-10-07). Once the child is done, typing into its
+    pane again re-wakes it under its parent, without replaying the first
+    message, and the parent gets the memo."""
+    sid, m = "e2e-pane", _marker()
+    i0 = len(b.events)
+    await b.send(b.say(sid, (
+        "Spawn exactly one sub_agent with label 'counter', agent_type 'general', and task: "
+        f"'Use bash to run: sleep 25.{m} && echo APPLE . Then use the talk tool with to=\"parent\" "
+        "to send the single word PEAR. Then reply with the output of the command, plus any extra "
+        "word the operator asked you to add.' "
+        "Do not wait for it. After launching it, tell me in one short sentence that it is running, and end your turn."
+    )))
+    t1, _, _ = await b.wait_for(_is(sid, "turn_complete"), 120, "first turn end", i0)
+    spawned = [e for _, e in b.events[i0:t1] if e.get("type") == "session_spawned" and e.get("parentSessionId") == sid]
+    child = spawned[0]["sessionId"]
+    await b.send({"type": "switch_session", "sessionId": child, "model": b.model})
+    await asyncio.sleep(1)
+    await b.send(b.say(child, "Operator here: also add the word KIWI to your final reply.", clientId="fu-pane", followup=True))
+    await b.wait_for(
+        lambda e: _is(child, "inbox_injected")(e) and any(i.get("clientId") == "fu-pane" for i in e["items"]),
+        90, "child took the operator message", i0,
+    )
+    mi, _, memo = await b.wait_for(_memo(sid), 150, "memo", i0)
+    report = memo["message"]["content"]
+    pear = any(
+        _is(sid, "inbox_event", action="enqueued")(e)
+        and (e.get("message") or {}).get("fromSession") == child
+        and "PEAR" in (e.get("message") or {}).get("content", "")
+        for _, e in b.events[i0:]
+    )
+    copied = any(
+        e.get("type") == "log" and f"session {child} ready" in e.get("message", "")
+        for _, e in b.events[i0:]
+    )
+    # The memo either wakes the parent or slides into a turn the PEAR
+    # message already started; either way, let that turn finish.
+    di, _, _ = await b.wait_for(
+        lambda e: _is(sid, "inbox_event", action="delivered")(e)
+        and (e.get("message") or {}).get("id") == memo["message"]["id"],
+        60, "memo read", mi,
+    )
+    await b.wait_for(_is(sid, "turn_complete"), 150, "parent turn end", di)
+
+    i2 = len(b.events)
+    await b.send(b.say(child, "Operator again: reply with only the word MANGO."))
+    ri, _, resumed = await b.wait_for(
+        lambda e: e.get("type") == "session_spawned" and e.get("sessionId") == child and e.get("resumed"),
+        60, "child re-woken", i2,
+    )
+    _, _, drained = await b.wait_for(_is(child, "inbox_injected"), 60, "child drained", ri)
+    _, _, memo2 = await b.wait_for(_memo(sid), 150, "second memo", i2)
+    ok = (
+        "KIWI" in report and pear and not copied
+        and resumed.get("parentSessionId") == sid
+        and len(drained["items"]) == 1
+        and "MANGO" in memo2["message"]["content"]
+    )
+    return ok, (
+        f"no root copy={not copied}; pane message reached the child (KIWI in report={'KIWI' in report}); "
+        f"talk('parent') arrived={pear}; re-woken under parent={resumed.get('parentSessionId') == sid}; "
+        f"messages replayed on re-wake={len(drained['items']) - 1}; second memo has MANGO={'MANGO' in memo2['message']['content']}"
+    )
+
+
 SCENARIOS = {
     "soft": soft,
     "force_stream": force_stream,
@@ -373,6 +443,7 @@ SCENARIOS = {
     "after_turn": after_turn,
     "stop_note": stop_note,
     "subagent": subagent,
+    "subagent_pane": subagent_pane,
 }
 
 

@@ -154,7 +154,11 @@ class TalkRouter:
 
     def find_subagent_record(self, sub_id: str) -> Any | None:
         """Walk every root session's subagent_registry looking for the
-        sub-agent id. Returns the SubAgentRecord or None."""
+        sub-agent id. Returns the SubAgentRecord or None. A running record
+        wins: a re-wake hosted by another root registers a second record
+        under the same id while the finished one stays in its old
+        registry."""
+        found = None
         for root in self.running_sessions().values():
             reg = getattr(root, "subagent_registry", None)
             if reg is None:
@@ -163,9 +167,12 @@ class TalkRouter:
                 rec = reg.get(sub_id)
             except Exception:
                 rec = None
-            if rec is not None:
+            if rec is None:
+                continue
+            if getattr(rec, "is_running", False):
                 return rec
-        return None
+            found = found or rec
+        return found
 
     def all_subagent_records(self) -> list[Any]:
         out: list[Any] = []
@@ -229,9 +236,14 @@ class TalkRouter:
             return "", None, None, None
 
         # --- Direct session-id match ---
-        if ref_clean in running:
-            return ref_clean, running[ref_clean], None, None
         sub_rec = self.find_subagent_record(ref_clean)
+        if ref_clean in running:
+            # A root session that shares a RUNNING sub-agent's id is a
+            # stray copy built when its pane was opened; the real
+            # sub-agent is the one to talk to.
+            if sub_rec is not None and getattr(sub_rec, "is_running", False):
+                return ref_clean, None, sub_rec, None
+            return ref_clean, running[ref_clean], None, None
         if sub_rec is not None:
             return ref_clean, None, sub_rec, None
         archived = self.archived_subagent(ref_clean)
@@ -252,7 +264,31 @@ class TalkRouter:
         if len(label_sub_matches) == 1 and not label_root_matches:
             r = label_sub_matches[0]
             return r.id, None, r, None
+        if not label_root_matches and len(label_sub_matches) > 1:
+            # A label reused by a re-spawn: the running one is the live
+            # conversation (2026-10-02: a label had a failed first spawn
+            # and a running second one).
+            running_subs = [r for r in label_sub_matches if getattr(r, "is_running", False)]
+            if len(running_subs) == 1:
+                return running_subs[0].id, None, running_subs[0], None
         return "", None, None, None
+
+    def label_candidates(self, ref: str) -> list[str]:
+        """Ids of every session whose label is ``ref`` (for an error that
+        names them when a label is ambiguous)."""
+        ref_clean = (ref or "").strip()
+        if not ref_clean:
+            return []
+        out = [
+            f"{s.id} (root)"
+            for s in self.running_sessions().values()
+            if getattr(s, "title", None) == ref_clean
+        ]
+        for r in self.all_subagent_records():
+            if getattr(r, "label", "") == ref_clean:
+                state = getattr(getattr(r, "state", None), "name", "") or ""
+                out.append(f"{r.id} ({state.lower() or 'sub-agent'})")
+        return out
 
     # ------ Cross-process routing ------------------------------------
 
@@ -457,9 +493,15 @@ class TalkRouter:
             try:
                 result = self._wake_archived_sub(recipient_id, msg)
                 if asyncio.iscoroutine(result):
-                    await result
+                    result = await result
             except Exception as exc:  # noqa: BLE001
                 return f"re-wake failed: {exc}"
+            if result is False:
+                return (
+                    "re-wake failed (no session here could host it) — the "
+                    "message is saved to its inbox file and it will read it "
+                    "when it next runs"
+                )
             return "queued for re-wake (recipient archived)"
 
         return "recipient not found"
@@ -632,6 +674,19 @@ class TalkTool:
             resolved_id, live_root, sub_rec, archived = self._router.resolve_ref(
                 ref_clean, self._ctx
             )
+            if not resolved_id:
+                # Agents answer a message by passing its id as `to`
+                # (2026-10-06: talk(to=<a message id>) was unresolved
+                # and the reply needed a second try). Send it to whoever
+                # wrote that message, or wrote the one in `reply_to`.
+                sender = self._sender_of(ref_clean) or (
+                    self._sender_of(str(reply_to)) if reply_to else None
+                )
+                if sender:
+                    ref_clean = sender
+                    resolved_id, live_root, sub_rec, archived = (
+                        self._router.resolve_ref(sender, self._ctx)
+                    )
             # Gateway ids are routinely written without the "freyja:"
             # prefix (Slack surfaces them as "slack:T…:channel:…").
             # Normalize so both spellings address the same session.
@@ -653,10 +708,7 @@ class TalkTool:
                     # the cold-delivery branch below decides.
                     target_id = ref_clean
             if not target_id:
-                results.append(
-                    f"'{ref}': unresolved — use list_agent_sessions to find "
-                    "addressable ids/labels"
-                )
+                results.append(self._unresolved(ref))
                 continue
 
             msg = InboxMessage(
@@ -690,10 +742,7 @@ class TalkTool:
                 # A typo'd id must stay a hard "unresolved", not a
                 # sidecar file for a session that will never run.
                 if not _session_exists_on_disk(target_id):
-                    results.append(
-                        f"'{ref}': unresolved — no such session; use "
-                        "list_agent_sessions to find addressable ids/labels"
-                    )
+                    results.append(self._unresolved(ref))
                     continue
                 try:
                     from bridge.freyja_bridge import (
@@ -774,6 +823,29 @@ class TalkTool:
             content="; ".join(results) + f" (msg id={msg_id})",
             is_error=False,
         )
+
+    def _unresolved(self, ref: str) -> str:
+        candidates = self._router.label_candidates(ref)
+        if len(candidates) > 1:
+            return (
+                f"'{ref}': unresolved — that label matches more than one "
+                f"session: {', '.join(candidates)}. Pass the id instead."
+            )
+        return (
+            f"'{ref}': unresolved — no such session; use list_agent_sessions "
+            "to find addressable ids/labels"
+        )
+
+    def _sender_of(self, message_id: str) -> str | None:
+        """Session id of the agent that wrote message ``message_id`` to
+        this caller (still unread, or recently read), or None."""
+        inbox = self._caller_inbox()
+        if inbox is None or not message_id:
+            return None
+        for m in list(getattr(inbox, "unread", [])) + list(getattr(inbox, "delivered", [])):
+            if m.id == message_id and m.from_role != "operator" and m.from_session:
+                return m.from_session
+        return None
 
     def _caller_inbox(self) -> Any:
         """Find this caller's inbox. Caller may be a root session or a

@@ -200,15 +200,20 @@ class InboxMessage:
         talk(reply_to=<id>) — reply correlation matches on the exact id,
         and without it in the header the recipient has no way to
         construct a reply the sender's wait_for_reply can see.
+
+        The sender's session id is included too, so the recipient knows
+        what to put in ``to``. With only a label and a message id in the
+        header, agents addressed their reply to the message id.
         """
-        role_tag = (
-            "operator"
-            if self.from_role == "operator"
-            else f"agent · {self.from_label}"
-        )
+        if self.from_role == "operator":
+            role_tag = "operator"
+        elif self.from_session and self.from_session != self.from_label:
+            role_tag = f"agent · {self.from_label} (session {self.from_session})"
+        else:
+            role_tag = f"agent · session {self.from_session or self.from_label}"
         urgency = " · FORCE" if self.force else ""
         reply = f" · reply to {self.reply_to}" if self.reply_to else ""
-        return f"[message from {role_tag} · id {self.id}{urgency}{reply}]"
+        return f"[message from {role_tag} · msg id {self.id}{urgency}{reply}]"
 
     def as_user_block(self) -> str:
         """Full transcript-ready block. Memos carry their own header

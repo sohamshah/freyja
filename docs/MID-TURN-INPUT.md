@@ -33,7 +33,7 @@ Everything that can arrive while the agent works goes through the session's `Ses
 | `followup` | the operator, typed while a turn ran | "also check the cookie expiry" |
 | `queued` | the operator, with Tab: run after the turn | "when you're done, write the changelog" |
 | `memo` | a background sub-agent or backgrounded command that finished | "[sub-agent memo · log digger · done · 2m14s] …" |
-| `talk` | another agent, via the `talk` tool | "[message from agent · planner …]" |
+| `talk` | another agent, via the `talk` tool | "[message from agent · planner (session sub_…) · msg id …]" |
 
 When the inbox is full, it drops the oldest agent item (memo or talk) and never the operator's own input. Agent-written text (a sub-agent's report, a peer's message, command output) has runtime control tags like `<system-reminder>` defanged, and a memo's report sits inside its own `<subagent-report>` block with a line saying no human input occurred. That way a child can't pose as the operator.
 
@@ -58,7 +58,7 @@ The runner drains the inbox at every step boundary through its `on_pre_iteration
 - `BashTool` pumps output as it arrives (`StreamingProcess`), polling the yield signal. A queued follow-up asks softly, and the command yields once it has run `SOFT_YIELD_AFTER_S` (15s). A cut-in asks hard, and it yields at once. The signal is cleared at each step boundary.
 - The runner gives tools marked `yields_on_interrupt` up to `TOOL_YIELD_GRACE_S` (2s) to return on their own after a cut-in before it cancels them. Everything else is cancelled at once.
 - The session keeps `background_commands`, lists running ones in the background-work reminder, waits for them in quiescence and the goal gate, and stops them with the `subagents` and `all` stop scopes.
-- Harness runtimes (Claude Code, Codex) own their own turn loop, so they keep the old queue-after-turn behavior.
+- Harness runtimes (Claude Code, Codex) own their own turn loop, so they keep the old queue-after-turn behavior. Talk messages and memos waiting in their inbox are added to the prompt of their next turn.
 
 ### Background sub-agents and memos
 
@@ -70,6 +70,24 @@ The runner drains the inbox at every step boundary through its `on_pre_iteration
 - `subagents` has no blocking wait. It offers `list`, `status`, `result`, and `kill`. A per-request system reminder lists the children still running so the agent keeps track of them while it talks to the operator.
 - `computer_use` children hold a process-wide screen lease while they run. The parent's own mutating computer tools (and a general sub-agent's, which are the same objects) refuse to act until the lease is released. Observing tools still work.
 - Running children survive `reset()` (model switch, runtime swap), which always restores the transcript afterward. Deleting a session stops its children.
+
+### Talking to a sub-agent
+
+A sub-agent is never loaded as a root session. The desktop opens a child as a pane (sub-agent card, swarm grid, sidebar), and that sends `switch_session` and `send_message` with the child's id. Before this rule, the bridge built a root session for that id. On 2026-10-07 that made a second, parentless copy of a running child. The operator's messages went to the copy, its `talk("parent")` was unresolved, and both copies edited the same files.
+
+- `switch_session` with a sub-agent's id is view-only (`_is_subagent_session_id`).
+- `send_message` to a sub-agent goes to that sub-agent (`_route_operator_message_to_subagent`). A running child gets it at its next step, and its drain emits `inbox_injected` so the renderer places the bubble. A finished child is re-woken with the message.
+- A stop in a sub-agent's pane stops that sub-agent. `list_subagents` for a sub-agent's pane reports its own children.
+- A re-wake runs under the child's original parent, loaded from disk if it is closed (`_host_for_subagent_wake`). Only the parent gets the child's memo, so any other host breaks the link. If the child is already running again, the message goes into its live inbox.
+- The child's drain writes its inbox state back to the `.inbox.json` sidecar. Before that, every re-wake replayed all the messages earlier runs had read. `resume_archived` also skips a sidecar message whose id is already in the saved transcript, which cleans up old sidecars.
+- A message that lands after a child's last inbox check, but before it is marked done, starts a new run (`_rewake_for_stranded_messages`). It would otherwise sit in an inbox nothing reads.
+- When the same id is registered twice (a re-wake hosted by another root), the running record wins over the finished one.
+
+Addressing:
+
+- The header of a talk message names the sender's session id. Agents used to reply with `to=<message id>`. That now also works: it goes to the agent that wrote the message, or to the writer of the `reply_to` message.
+- A label that matches several sub-agents goes to the one that is running. If none or several are running, the error lists the candidate ids.
+- `subagents status` reports a running child's tool calls, tokens and steps live. They used to stay at 0 until the child finished, which made busy children look hung.
 
 ### Callers that treat a session's work as one job
 
@@ -94,5 +112,6 @@ A follow-up from the same sender in the same thread as the running turn slides i
 - `tests/test_mid_turn_injection.py`: runner behavior (extension, stream and tool interrupts, the yield grace, stop propagation and stop notes).
 - `tests/test_background_subagents.py`: memos, the `subagents` tool, drain and wake behavior, the queued kind, confirmed withdraw, eviction, forged-tag defanging, cancel scopes and turn-matched stops, quiescence and its cap, the Slack slide-in rule, the screen lease, and the scheduler abort hook.
 - `tests/test_background_commands.py`: real subprocesses moving to the background, their memos, and process-group stops.
-- `scripts/e2e_steering.py`: the live check. It runs the real bridge against a real model (it costs tokens) and covers each behavior above: queued follow-ups, cut-ins, backgrounded commands, Tab-queued turns, stops, and sub-agent memos. Run it with `uv run python scripts/e2e_steering.py [scenario …]` after changing any of this.
+- `tests/test_talk_subagent_routing.py`: sub-agent panes (view, type, stop), talk routing to the running child, re-wake without replays, stranded messages, and addressing by message id or a reused label.
+- `scripts/e2e_steering.py`: the live check. It runs the real bridge against a real model (it costs tokens) and covers each behavior above: queued follow-ups, cut-ins, backgrounded commands, Tab-queued turns, stops, sub-agent memos, and typing into a sub-agent's pane (`subagent_pane`). Run it with `uv run python scripts/e2e_steering.py [scenario …]` after changing any of this.
 - `test-followup-placement.mjs` (`npx tsx`): renderer placement of follow-ups and memos.
