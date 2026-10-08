@@ -29,7 +29,13 @@ from bridge.tools.jev_operator.handoff import (
     completer_from_provider,
     default_llm_model,
 )
-from bridge.tools.jev_operator.loop import Operator, OperatorConfig
+from bridge.tools.jev_operator.items import (
+    ItemsOutcome,
+    render_items_result,
+    run_items,
+    validate_items,
+)
+from bridge.tools.jev_operator.loop import Operator, OperatorConfig, RunResult
 from bridge.tools.sub_agent_registry import SubAgentState
 from bridge.tools.sub_agent_tool import SubAgentSpec, _fire, _record_to_dict
 
@@ -96,6 +102,16 @@ typed verbatim (e.g. type "hello world"). Merge consecutive micro-steps into
 one goal ("open Notes, create a note titled "Plan" with the body ...") instead
 of making one call per click.
 
+For a repeated procedure over a list (the same steps for each of N names,
+rows, files), pass `items` (up to 50 short strings, text data only). The same
+`goal` then runs once per item; write `{item}` where the item belongs. Each item
+is a fresh run that shares the app, the surface and the time limit. The result is
+transparent: a per-item table (status, steps, seconds, evidence), the surface and
+the log path. Try ONE item first, read the table, adjust the goal, then run the
+rest. After fixing something, continue with `skip_items=[indices already done]`.
+Three items in a row failing the same way stop the run; an item that needs
+confirmation stops it too.
+
 Parameters:
   * `goal`: one app-scoped goal with visible success criteria
   * `app`: bundle id or app name to operate on (launched if not running).
@@ -149,6 +165,17 @@ with status=blocked instead of clicking into the other app.
                     "use_llm": {
                         "type": "boolean",
                         "description": "Allow LLM handoff doors (default true)",
+                    },
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "string", "maxLength": 300},
+                        "maxItems": 50,
+                        "description": "Run the goal once per item (text data only, max 50, 300 chars each); `{item}` in the goal stands for the current item",
+                    },
+                    "skip_items": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "With items: indices already done, to skip",
                     },
                     "wait": {
                         "type": "boolean",
@@ -210,6 +237,12 @@ with status=blocked instead of clicking into the other app.
                 call_id=call_id, content="Error: `surface` must be auto, ax or dom", is_error=True
             )
         wait = bool(arguments.get("wait", False))
+        items: list[str] | None = None
+        skip: set[int] = set()
+        if arguments.get("items") is not None:
+            items, skip, err = validate_items(arguments.get("items"), arguments.get("skip_items"))
+            if err:
+                return ToolResult(call_id=call_id, content=f"Error: {err}", is_error=True)
 
         self._counter += 1
         sub_id = f"jev_{int(time.time() * 1000):x}_{self._counter}"
@@ -268,6 +301,8 @@ with status=blocked instead of clicking into the other app.
             surface=surface,
             provider=provider,
             native=native,
+            items=items,
+            skip=skip,
         )
         if wait:
             try:
@@ -331,6 +366,8 @@ with status=blocked instead of clicking into the other app.
         surface: str = "auto",
         provider: Any,
         native: Any,
+        items: list[str] | None = None,
+        skip: set[int] | None = None,
     ) -> ToolResult:
         call_id = call_id or ""
         sub_id = record.id
@@ -354,32 +391,51 @@ with status=blocked instead of clicking into the other app.
             owner="jev_computer_use",
         )
 
-        llm: LLMHelper | None = None
-        if use_llm:
+        def new_llm() -> LLMHelper | None:
+            if not use_llm:
+                return None
             try:
                 model = self._llm_model or default_llm_model()
-                llm = LLMHelper(
+                return LLMHelper(
                     completer_from_provider(self._sub_spec.build_provider(model, "off"))
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("jev_computer_use: LLM helper unavailable: %s", exc)
+                return None
 
         async def say(text: str) -> None:
             await _fire(emit, {"type": "text_delta", "sessionId": sub_id, "text": text + "\n"})
 
-        cfg = OperatorConfig(
-            goal=goal,
-            app=app,
-            max_steps=max_steps,
-            allow_irreversible=allow_irreversible,
-            surface=surface,
-            use_llm=llm is not None,
-            notes_workspace=self._sub_spec.parent_workspace or None,
-        )
-        op = Operator(cfg, provider=provider, spec=spec, native=native, llm=llm, on_step=say)
+        def make_op(op_goal: str, literals: list[str], runtime_s: float | None) -> Operator:
+            llm = new_llm()
+            extra = {} if runtime_s is None else {"max_runtime_s": runtime_s}
+            cfg = OperatorConfig(
+                goal=op_goal,
+                app=app,
+                max_steps=max_steps,
+                allow_irreversible=allow_irreversible,
+                surface=surface,
+                use_llm=llm is not None,
+                notes_workspace=self._sub_spec.parent_workspace or None,
+                extra_literals=literals,
+                **extra,
+            )
+            return Operator(cfg, provider=provider, spec=spec, native=native, llm=llm, on_step=say)
+
+        if items is None:
+            op = make_op(goal, [], None)
+            runner = op.run
+        else:
+            todo = len(items) - len(skip or ())
+            overall = min(3600.0, max(900.0, 120.0 * todo))
+
+            async def runner() -> Any:
+                return await run_items(
+                    make_op, goal, items, skip or set(), max_runtime_s=overall, cancel_event=asyncio_cancel
+                )
 
         try:
-            result = await op.run()
+            result = await runner()
         except asyncio.CancelledError:
             bridge_task.cancel()
             self._sub_spec.registry.mark_done(record.id, "Cancelled", SubAgentState.CANCELLED)
@@ -395,7 +451,11 @@ with status=blocked instead of clicking into the other app.
             )
         bridge_task.cancel()
 
-        text = render_result(result)
+        if isinstance(result, ItemsOutcome):
+            result = self._aggregate(result)
+            text = result.items_text
+        else:
+            text = render_result(result)
         # blocked / needs_confirmation / budget_exhausted are legitimate results the parent
         # acts on, so the child session is DONE; only a provider error is a failure.
         state = {
@@ -422,6 +482,30 @@ with status=blocked instead of clicking into the other app.
         return ToolResult(
             call_id=call_id, content=text, is_error=result.status in ("error", "cancelled")
         )
+
+    @staticmethod
+    def _aggregate(out: ItemsOutcome) -> Any:
+        """One RunResult-shaped total for the registry, with the rendered table attached."""
+        runs = out.runs()
+        last = runs[-1] if runs else None
+        total = RunResult(
+            status=out.status,
+            summary="",
+            steps=sum(r.steps for r in runs),
+            jev_calls=sum(r.jev_calls for r in runs),
+            jev_ms=[m for r in runs for m in r.jev_ms],
+            llm_calls=sum(r.llm_calls for r in runs),
+            llm_ms=sum(r.llm_ms for r in runs),
+            llm_tokens=(sum(r.llm_tokens[0] for r in runs), sum(r.llm_tokens[1] for r in runs)),
+            elapsed_s=out.elapsed_s,
+            history=[],
+            run_id=out.run_id,
+            log_path=out.log_path,
+            pending_action=out.pending_action,
+            surface=last.surface if last else "ax",
+        )
+        total.items_text = render_items_result(out, total.footer())  # type: ignore[attr-defined]
+        return total
 
     async def _emit_end(self, record: Any, *, outcome: str) -> None:
         emit = self._sub_spec.emit_event

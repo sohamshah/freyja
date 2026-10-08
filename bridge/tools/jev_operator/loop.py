@@ -158,6 +158,8 @@ class OperatorConfig:
     max_runtime_s: float = 900.0
     # Workspace whose skills may hold `jev-app-<slug>` notes; None skips the lookup.
     notes_workspace: str | None = None
+    # Typed-literal candidates beyond the goal's own quoted spans (for-each items).
+    extra_literals: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -293,6 +295,18 @@ class Operator:
         self._repeat_key: str | None = None
         self._repeat_count = 0
         self._repeat_replanned = False
+        self.item: int | None = None  # for-each index; stamped on every log row
+
+    def share_with(self, prior: "Operator", item: int | None) -> None:
+        """Continue a for-each run: reuse the prior operator's surface (with its
+        fallback state), actuator, run id and log. Everything else stays fresh."""
+        self.actuator = prior.actuator
+        self.surface = prior.surface
+        self._surface_injected = True
+        self._fell_back = prior._fell_back
+        self.run_id, self.log_path, self.item = prior.run_id, prior.log_path, item
+        if hasattr(self.surface, "_log"):
+            self.surface._log = self._log
 
     def _make_ax(self) -> AXSurface:
         return AXSurface(
@@ -349,7 +363,8 @@ class Operator:
             with self.log_path.open("a", encoding="utf-8") as f:
                 f.write(
                     json.dumps(
-                        {"run_id": self.run_id, "t": time.time(), "surface": self.surface.name, **row},
+                        {"run_id": self.run_id, "t": time.time(), "surface": self.surface.name,
+                         **({"item": self.item} if self.item is not None else {}), **row},
                         ensure_ascii=False,
                     )
                     + "\n"
@@ -536,7 +551,7 @@ class Operator:
     async def _run(self) -> RunResult:
         cfg = self.cfg
         finish = self._finish
-        literals = literals_from_goal(cfg.goal)
+        literals = list(dict.fromkeys([*cfg.extra_literals, *literals_from_goal(cfg.goal)]))
         launch_cands = launch_candidates_from_goal(cfg.goal, self.apps)
 
         self._log(
