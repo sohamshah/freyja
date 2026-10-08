@@ -225,5 +225,5 @@ def test_arc_double_encoded_results_decode():
     s = DOMSurface(bundle=TARGET.bundle, actuator=SimpleNamespace(), run_js=arc_like, js_source="/*js*/")
     obs = run(s.observe(TARGET))
     assert [e.label for e in obs.elements] == ["Go", "Search"]
-    res = run(s._js("act(1, 'click', null, 'g1')"))
+    res = run(s._js('act(1, "click", null, "g1")'))
     assert res["ok"] is True
