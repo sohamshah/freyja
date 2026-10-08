@@ -154,25 +154,47 @@ class LLMHelper:
         screenshot_size: tuple[int, int] | None,
         media_type: str = "image/jpeg",
         app_notes: str = "",
+        surface: str = "ax",
     ) -> dict[str, Any] | None:
+        if surface == "dom":
+            # A web page read through its DOM: no window chrome, no shortcuts.
+            how = (
+                "You are the planner behind a fast operator working on one web page in a browser. "
+                "The table lists the page's controls, including ones below the visible area (using one "
+                "scrolls it into view). The operator can click a listed control, type into a listed field "
+                "(typing replaces the field's contents), choose a listed option, press only return, escape "
+                "or tab, scroll, and open a web address. It cannot use the browser's address bar, tabs, "
+                "menus or keyboard shortcuts. It asked for help. Decide what to do next.\n"
+                'Return JSON: {"status": "continue"|"done"|"give_up", "subgoal": string|null, '
+                '"direct_action": null | {"kind": "open_url", "url": string}, "note": string}.\n'
+                "subgoal is one concrete instruction the operator can execute against listed controls in "
+                'the next one to three actions ("click the Search button, then type the query into the '
+                'Search field"). Use direct_action open_url to go where no listed control leads, for '
+                "example the site's own search or a page address you can build, on a site the goal names "
+                "or the run is already on. "
+            )
+        else:
+            how = (
+                "You are the planner behind a fast desktop operator. The operator can click, double-click, type into, "
+                "or press keys on controls listed in an accessibility table; it asked for help. Decide what to do next.\n"
+                'Return JSON: {"status": "continue"|"done"|"give_up", "subgoal": string|null, '
+                '"direct_action": null | {"kind": "click", "x": int, "y": int} | {"kind": "key", "combo": "cmd+n"} | {"kind": "type", "text": string}, '
+                '"note": string}.\n'
+                "subgoal is one concrete instruction the operator can execute against listed controls in the next one to three actions, "
+                'phrased as actions on visible controls ("click the File menu, then click New"). '
+                "Typing into a text area appends at its end and typing into a text field replaces "
+                "its contents, so no click is needed to place the caret; press cmd+a first to "
+                "replace a text area's contents. This is macOS, and the operator can press only "
+                "these keys: "
+                + ", ".join(KEY_OPTIONS)
+                + ". "
+                "Use direct_action only when the table does not expose the needed control and a screenshot is provided; "
+                "the screenshot shows only the app's window, and coordinates are pixels in that image "
+                "(its size is screenshot_size). Prefer subgoal over direct_action. "
+            )
         system = (
-            "You are the planner behind a fast desktop operator. The operator can click, double-click, type into, "
-            "or press keys on controls listed in an accessibility table; it asked for help. Decide what to do next.\n"
-            'Return JSON: {"status": "continue"|"done"|"give_up", "subgoal": string|null, '
-            '"direct_action": null | {"kind": "click", "x": int, "y": int} | {"kind": "key", "combo": "cmd+n"} | {"kind": "type", "text": string}, '
-            '"note": string}.\n'
-            "subgoal is one concrete instruction the operator can execute against listed controls in the next one to three actions, "
-            'phrased as actions on visible controls ("click the File menu, then click New"). '
-            "Typing into a text area appends at its end and typing into a text field replaces "
-            "its contents, so no click is needed to place the caret; press cmd+a first to "
-            "replace a text area's contents. This is macOS, and the operator can press only "
-            "these keys: "
-            + ", ".join(KEY_OPTIONS)
-            + ". "
-            "Use direct_action only when the table does not expose the needed control and a screenshot is provided; "
-            "the screenshot shows only the app's window, and coordinates are pixels in that image "
-            "(its size is screenshot_size). Prefer subgoal over direct_action. "
-            "Use done only when the screen shows the goal is met; use give_up when the goal cannot be achieved from here "
+            how
+            + "Use done only when the screen shows the goal is met; use give_up when the goal cannot be achieved from here "
             "(login, missing data, destructive step needing a human). note is one short sentence. "
             "Stay inside the goal: never change settings or preferences, "
             "or do anything the goal did not ask for. "

@@ -296,3 +296,19 @@ def test_filling_a_field_is_progress():
     assert own_effect({"kind": "click", "ok": True}, key(remote_b), before, after)
     assert not own_effect({"kind": "type", "ok": True}, key(name_b), before, before)
     assert not own_effect({"kind": "key", "ok": True}, key(name_b), before, after)
+
+
+def test_planner_open_url_stays_on_known_sites(tmp_path, monkeypatch):
+    """The planner may build an address (a site's own search URL) but only on a
+    site the goal names or the run has been on."""
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+    page = FakePage([action(1, label="Docs")])
+    op = dom_operator(page, provider=ScriptedProvider([("done", None)]),
+                      goal="Open https://developer.mozilla.org/en-US/ and find Array.flat")
+    op.actuator.target_bundle = "company.thebrowser.Browser"
+    obs = run(op.surface.observe(TARGET))
+    run(op._direct({"kind": "open_url", "url": "https://developer.mozilla.org/en-US/search?q=flat"}, obs))
+    run(op._direct({"kind": "open_url", "url": "https://evil.example/steal"}, obs))
+    acts = [h["action"] for h in op.history]
+    assert acts[0].startswith("planner open_url https://developer.mozilla.org") and op.history[0]["ok"]
+    assert acts[1].endswith("refused") and op.history[1]["ok"] is False

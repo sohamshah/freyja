@@ -1296,6 +1296,7 @@ class Operator:
             screenshot_size=(shot[0].width, shot[0].height) if shot else None,
             media_type=shot[0].mime_type if shot else "image/jpeg",
             app_notes=self._notes,
+            surface=self.surface.name,
         )
         self._log_llm(since)
         self._log({"event": "replan", "reason": reason, "out": out})
@@ -1326,7 +1327,9 @@ class Operator:
         self._set_subgoal(out.get("subgoal"))
         await self._say(f"  sub-goal: {self._subgoal}")
         da = out.get("direct_action")
-        if isinstance(da, dict) and not self.cfg.dry_run and shot is not None:
+        # Pointer and key actions need the screenshot they were read from; an
+        # address to open does not.
+        if isinstance(da, dict) and not self.cfg.dry_run and (shot is not None or da.get("kind") == "open_url"):
             try:
                 await self._direct(da, obs)
             except Cancelled:
@@ -1348,8 +1351,47 @@ class Operator:
                 )
         return None
 
+    def _allowed_hosts(self) -> set[str]:
+        """Sites a planner-built address may point at: the goal's, and the ones
+        this run has been on."""
+        hosts = {(urlparse(u).hostname or "").lower() for u in urls_from_goal(self.cfg.goal)}
+        hosts.update(self._site_notes)
+        cur = (urlparse(getattr(self.surface, "url", "") or "").hostname or "").lower()
+        hosts.add(cur)
+        hosts.discard("")
+        return {h[4:] if h.startswith("www.") else h for h in hosts}
+
     async def _direct(self, da: dict[str, Any], obs: Observation) -> None:
         kind = da.get("kind")
+        if kind == "open_url":
+            url = str(da.get("url") or "").strip()
+            host = (urlparse(url).hostname or "").lower()
+            host = host[4:] if host.startswith("www.") else host
+            browser = dom_surface.supported(getattr(self.actuator, "target_bundle", "") or "")
+            if not browser or not url.lower().startswith(("http://", "https://")) or host not in self._allowed_hosts():
+                self.history.append(
+                    {
+                        "step": len(self.history) + 1,
+                        "kind": "open_url",
+                        "action": f"planner open_url {url} refused",
+                        "ok": False,
+                        "changed": False,
+                        "diff": "refused: only addresses on a site the goal names or the run has visited",
+                    }
+                )
+                return
+            rec = await self.surface.execute("open_url", url)
+            self.history.append(
+                {
+                    "step": len(self.history) + 1,
+                    "kind": "open_url",
+                    "action": f"planner open_url {url}",
+                    "ok": rec.ok,
+                    "changed": None,
+                    "diff": "opened" if rec.ok else f"failed: {rec.error}",
+                }
+            )
+            return
         if (
             kind == "click"
             and isinstance(da.get("x"), (int, float))

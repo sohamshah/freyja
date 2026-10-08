@@ -231,3 +231,20 @@ def test_covered_rejected_and_click(page):
     page.eval("window.__clicked=0;document.getElementById('cov').addEventListener('click',()=>window.__clicked++)")
     assert page.act(cov["id"], "click", None, cov["guard"])["ok"] is True
     assert page.eval("window.__clicked") == 1
+
+
+def test_shadow_dom_controls_are_listed_and_usable(page):
+    """Controls inside open shadow roots are listed, labelled from their own
+    root, typed into and clicked (MDN's search lived entirely in shadow DOM and
+    the snapshot could not see it)."""
+    s = page.snap()
+    field = _by_label(s, "Find docs")
+    go = _by_label(s, "Go")
+    assert field and field[0]["kind"] == "fill" and field[0]["enter"] == "search"
+    assert go and go[0]["kind"] == "click"
+    assert "Shadow text here" in s["text"]
+    r = page.act(field[0]["id"], "fill", {"text": "flat", "mode": "replace"})
+    assert r["ok"] and r["readback"] == "flat"
+    assert _by_label(page.snap(), "Find docs")[0]["focused"] is True
+    assert page.act(go[0]["id"], "click")["ok"] is True
+    assert page.eval("document.title") == "went:flat"

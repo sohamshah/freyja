@@ -3,7 +3,7 @@
 // install (one observer only); a newer version replaces an older one.
 (function () {
   'use strict';
-  var VERSION = 3;
+  var VERSION = 4;
   var prior = window.__freyjaJev;
   if (prior && prior.version === VERSION) return 'already-installed';
   if (prior && prior.observer) { try { prior.observer.disconnect(); } catch (e) { /* ignore */ } }
@@ -13,9 +13,9 @@
   var ids = new WeakMap(), byId = new Map(), nextId = 1, mutations = 0;
 
   var observer = new MutationObserver(function (recs) { mutations += recs.length || 1; });
-  observer.observe(document.documentElement, {
-    childList: true, subtree: true, attributes: true, characterData: true,
-  });
+  var OBSERVE = { childList: true, subtree: true, attributes: true, characterData: true };
+  observer.observe(document.documentElement, OBSERVE);
+  var watchedRoots = new WeakSet();
 
   var SELECTOR = [
     'a[href]', 'button', 'input', 'textarea', 'select', 'summary', '[contenteditable]',
@@ -37,6 +37,43 @@
   function norm(s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); }
   function clip(s, n) { s = norm(s); return s.length > n ? s.slice(0, n) : s; }
   function attr(el, n) { return el.getAttribute(n); }
+
+  // Open shadow roots (web components) are part of the page: walk them in
+  // composed order, so a control inside one appears where its host is.
+  function eachElement(root, fn) {
+    var all = root.querySelectorAll('*');
+    for (var i = 0; i < all.length; i++) {
+      fn(all[i]);
+      var sr = all[i].shadowRoot;
+      if (sr) {
+        if (!watchedRoots.has(sr)) { watchedRoots.add(sr); try { observer.observe(sr, OBSERVE); } catch (e) { /* ignore */ } }
+        eachElement(sr, fn);
+      }
+    }
+  }
+
+  function parentOf(n) { return n.parentElement || (n.parentNode && n.parentNode.host) || null; }
+
+  function composedContains(a, b) {
+    for (var n = b; n; n = n.parentNode || n.host) if (n === a) return true;
+    return false;
+  }
+
+  function deepActive() {
+    var a = document.activeElement;
+    while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+    return a;
+  }
+
+  function deepElementFromPoint(x, y) {
+    var top = document.elementFromPoint(x, y);
+    while (top && top.shadowRoot) {
+      var inner = top.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === top) break;
+      top = inner;
+    }
+    return top;
+  }
 
   function isEditableHost(el) {
     var ce = attr(el, 'contenteditable');
@@ -89,7 +126,7 @@
   }
 
   function hiddenByAncestry(el) {
-    for (var n = el; n && n.nodeType === 1; n = n.parentElement) {
+    for (var n = el; n && n.nodeType === 1; n = parentOf(n)) {
       if (attr(n, 'aria-hidden') === 'true') return true;
       if (n.hasAttribute('inert')) return true;
     }
@@ -126,9 +163,9 @@
   function labelledBy(el) {
     var ids_ = attr(el, 'aria-labelledby');
     if (!ids_) return '';
-    var parts = [];
+    var parts = [], root = el.getRootNode ? el.getRootNode() : document;
     ids_.split(/\s+/).forEach(function (i) {
-      var t = i && document.getElementById(i);
+      var t = i && ((root.getElementById && root.getElementById(i)) || document.getElementById(i));
       if (t) parts.push(norm(t.textContent));
     });
     return norm(parts.join(' '));
@@ -258,7 +295,8 @@
 
   // Collect every visible candidate control (no viewport filtering, no cap).
   function collect() {
-    var els = document.querySelectorAll(SELECTOR);
+    var els = [];
+    eachElement(document, function (el) { if (el.matches(SELECTOR)) els.push(el); });
     var out = [], groups = new Map(), seen = new Set();
     for (var i = 0; i < els.length; i++) {
       var el = els[i];
@@ -319,28 +357,36 @@
   }
 
   // Visible text first; then, while the budget lasts, text below the visible area.
+  // Shadow roots are read where their host is.
   function pageText() {
-    var walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, null);
     var vis = [], below = [], total = 0, vh = window.innerHeight, vw = window.innerWidth, range = document.createRange();
-    var n;
-    while ((n = walker.nextNode())) {
-      var s = norm(n.nodeValue);
-      if (!s) continue;
-      var p = n.parentElement;
-      if (!p) continue;
-      var tag = p.tagName;
-      if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'TEMPLATE') continue;
-      if (!isVisibleLoose(p)) continue;
-      range.selectNodeContents(n);
-      var r = range.getBoundingClientRect();
-      if (r.width <= 0 || r.height <= 0) continue;
-      if (r.right <= 0 || r.left >= vw) continue;
-      if (r.bottom <= 0) continue;
-      if (r.top >= vh) { below.push(s); continue; }
-      vis.push(s);
-      total += s.length + 1;
-      if (total > MAX_TEXT) break;
+    function walk(root) {
+      var walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, null);
+      var n;
+      while ((n = walker.nextNode())) {
+        if (total > MAX_TEXT) return;
+        if (n.nodeType === 1) {
+          if (n.shadowRoot) walk(n.shadowRoot);
+          continue;
+        }
+        var s = norm(n.nodeValue);
+        if (!s) continue;
+        var p = n.parentElement;
+        if (!p) continue;
+        var tag = p.tagName;
+        if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'TEMPLATE') continue;
+        if (!isVisibleLoose(p)) continue;
+        range.selectNodeContents(n);
+        var r = range.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) continue;
+        if (r.right <= 0 || r.left >= vw) continue;
+        if (r.bottom <= 0) continue;
+        if (r.top >= vh) { below.push(s); continue; }
+        vis.push(s);
+        total += s.length + 1;
+      }
     }
+    walk(document.body || document.documentElement);
     var text = vis.join('\n');
     if (below.length && text.length < MAX_TEXT - 200) {
       text += '\n[below the visible area]\n' + below.join('\n');
@@ -367,11 +413,12 @@
       cands.sort(function (a, b) { return a.dist - b.dist || a.order - b.order; });
       cands = cands.slice(0, MAX_ACTIONS).sort(function (a, b) { return a.order - b.order; });
     }
+    var active = deepActive();
     var actions = cands.map(function (e) {
       var a = {
         id: idFor(e.el), kind: e.kind, role: e.role, label: e.label, value: e.value,
         checked: e.checked, expanded: e.expanded, offscreen: offscreenOf(e.el),
-        context: e.context, focused: document.activeElement === e.el, guard: e.guard,
+        context: e.context, focused: active === e.el, guard: e.guard,
       };
       if (e.kind === 'fill') a.enter = enterOf(e.el);
       if (e.kind === 'select') a.options = optionsOf(e.el);
@@ -449,7 +496,7 @@
   }
 
   function doKey(key) {
-    var a = document.activeElement;
+    var a = deepActive();
     if (key !== 'Enter' && key !== 'Escape' && key !== 'Tab') return res(false, 'unsupported_key');
     if (a && a.tagName === 'INPUT' && (a.type || '').toLowerCase() === 'password') return res(false, 'refused_password');
     if (key === 'Enter' && !isEditableActive(a)) return res(false, 'no_editable_focused');
@@ -471,7 +518,8 @@
       }
     }
     target.dispatchEvent(keyEvent('keyup', key));
-    return res(true, null, document.activeElement ? (document.activeElement.value != null ? document.activeElement.value : '') : '');
+    var now = deepActive();
+    return res(true, null, now ? (now.value != null ? now.value : '') : '');
   }
 
   // The element that scrolls: the page if it can, else the largest visible scroll container.
@@ -539,6 +587,12 @@
     return el.innerText;
   }
 
+  function coveredAt(el) {
+    var r = el.getBoundingClientRect();
+    var top = deepElementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return !top || !(composedContains(el, top) || composedContains(top, el));
+  }
+
   function act(id, op, arg, expectedGuard) {
     try {
       if (op === 'scroll') {
@@ -567,9 +621,10 @@
       if (op === 'select' && entry.kind !== 'select') return res(false, 'not_selectable');
 
       el.scrollIntoView({ block: 'center', inline: 'center' });
-      var r = el.getBoundingClientRect();
-      var top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-      if (!top || !(top === el || el.contains(top) || top.contains(el))) return res(false, 'covered');
+      if (coveredAt(el)) {
+        if (el.focus) el.focus({ preventScroll: true });
+        if (coveredAt(el)) return res(false, 'covered');
+      }
 
       if (op === 'click') {
         var opened = false, origOpen = window.open;

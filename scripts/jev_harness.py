@@ -20,6 +20,7 @@ Subcommands:
   call JSON            execute the tool with these arguments
                        (--trace prints the run log; --timeout seconds)
   trace RUN            condensed run log for a run id or log path
+  snap URL             open URL in a new Arc tab, print what the operator sees, close it
   serve                serve tests/fixtures/jev_live on 127.0.0.1 (+ POST /event)
   suite [NAMES]        run scenarios from scripts/jev_scenarios.py
 """
@@ -242,6 +243,29 @@ def page_events(run: str) -> list[dict[str, Any]]:
     return out
 
 
+async def _snap(url: str, wait_s: float) -> int:
+    """What the DOM surface reports for `url`: the element table and the text."""
+    from types import SimpleNamespace
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import jev_scenarios  # noqa: PLC0415
+
+    from bridge.tools.jev_operator.dom_surface import DOMSurface
+
+    before = jev_scenarios.arc_tab_ids()
+    try:
+        s = DOMSurface(bundle="company.thebrowser.Browser", actuator=None)
+        await s.open_url(url)
+        await asyncio.sleep(wait_s)
+        obs = await s.observe(SimpleNamespace(name="Arc", bundle="company.thebrowser.Browser", pid=0))
+        print(f"{obs.focused_window}\nread {obs.read_ms} ms, {len(obs.elements)} elements\n")
+        print(obs.table())
+        print("\n--- text ---\n" + obs.screen_text[:3000])
+    finally:
+        jev_scenarios.arc_close_new(before)
+    return 0
+
+
 # ─── main ───────────────────────────────────────────────────────────────
 
 
@@ -254,6 +278,10 @@ def main() -> int:
     c.add_argument("--trace", action="store_true")
     c.add_argument("--tables", action="store_true")
     c.add_argument("--timeout", type=float, default=1200)
+    c.add_argument("--cleanup", action="store_true", help="close the Arc tabs the call opened")
+    sn = sub.add_parser("snap")
+    sn.add_argument("url")
+    sn.add_argument("--wait", type=float, default=4.0)
     t = sub.add_parser("trace")
     t.add_argument("run")
     t.add_argument("--tables", action="store_true")
@@ -292,7 +320,17 @@ def main() -> int:
             raw = Path(raw[1:]).read_text()
         arguments = json.loads(raw)
         h = Harness(REPO)
-        out = asyncio.run(h.call(arguments, timeout_s=args.timeout))
+        before = None
+        if args.cleanup:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import jev_scenarios  # noqa: PLC0415
+
+            before = jev_scenarios.arc_tab_ids()
+        try:
+            out = asyncio.run(h.call(arguments, timeout_s=args.timeout))
+        finally:
+            if before is not None:
+                jev_scenarios.arc_close_new(before)
         print("=== tool result (what the agent sees immediately) ===")
         print(out["immediate"])
         if out["memo"]:
@@ -304,6 +342,9 @@ def main() -> int:
             print("\n=== run log ===")
             print("\n".join(trace_lines(out["log"], tables=args.tables)))
         return 0
+
+    if args.cmd == "snap":
+        return asyncio.run(_snap(args.url, args.wait))
 
     if args.cmd == "suite":
         sys.path.insert(0, str(Path(__file__).resolve().parent))

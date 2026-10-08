@@ -385,11 +385,18 @@ class DOMSurface:
             await self.settle("open_url", min_s=0.3)
 
     async def settle(self, kind: str, *, min_s: float = 0.0) -> None:
-        """Wait until the page stops changing, at most SETTLE_S[kind] seconds."""
+        """Wait until the page stops changing, at most SETTLE_S[kind] seconds.
+
+        Quiet means the same mutation count and URL across consecutive reads
+        ~0.25 s apart with the document complete. A freshly opened page must stay
+        quiet for three reads: single-page consoles pause between loading stages,
+        and one quiet pair let the first decision see half a page."""
         if min_s:
             await asyncio.sleep(min_s)
+        need = 3 if kind == "open_url" else 1
         deadline = time.perf_counter() + SETTLE_S.get(kind, 2.0)
         last: tuple[Any, Any] | None = None
+        quiet = 0
         while time.perf_counter() < deadline:
             try:
                 q = await self._js("quiet()", count=False)
@@ -401,7 +408,8 @@ class DOMSurface:
             if not isinstance(q, dict):
                 return
             key = (q.get("m"), q.get("u"))
-            if q.get("rs") == "complete" and key == last and not q.get("busy"):
+            quiet = quiet + 1 if q.get("rs") == "complete" and key == last else 0
+            if quiet >= need:
                 return
             last = key
             await asyncio.sleep(0.25)

@@ -8,6 +8,20 @@
 <div class="row"><input type="password" aria-label="Secret"><input type="hidden" name="h" value="x"><input type="file" aria-label="Upload"></div>
 <div class="row"><button aria-hidden="true">Ghost</button></div>
 <div class="row"><button id="cov">Covered</button></div>
+<div class="row"><x-search id="xs"></x-search></div>
+<script>
+// A web component whose controls live in an open shadow root (MDN, GitHub and
+// many design systems ship search boxes and buttons like this).
+customElements.define('x-search', class extends HTMLElement {
+  constructor() {
+    super();
+    var r = this.attachShadow({ mode: 'open' });
+    r.innerHTML = '<span id="lbl">Find docs</span><input id="in" aria-labelledby="lbl" type="search">' +
+      '<button id="go">Go</button><p>Shadow text here</p>';
+    r.getElementById('go').addEventListener('click', function () { document.title = 'went:' + r.getElementById('in').value; });
+  }
+});
+</script>
 <div class="spacer"></div>
 <button id="far">Far away</button>
 <div style="height:5000px"></div><button id="way">Way far</button>

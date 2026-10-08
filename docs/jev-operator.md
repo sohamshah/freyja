@@ -146,9 +146,9 @@ How the DOM surface behaves:
 - **One tab.** A run is pinned to a tab by id: the tab active when it started, or the tab it opened. Tab ids are matched with one bulk `id of every tab` per window, since a window can hold a thousand tabs. A click that opens another tab (`target=_blank`, `window.open`) moves the run there. The person can switch tabs meanwhile.
 - **URLs.** When the goal names a URL and the tab is not on it, code opens it in a new tab before the first decision, so a run never starts by acting on an unrelated tab. Jev can also choose `open_url` later (the goal's URLs are its options). A tab the run opened itself is reused for later addresses; the person's own tabs are never navigated.
 - **No pointer, no focus.** Page runs send no OS input and do not bring the browser forward, so they keep working behind other windows and while the screen is locked. Native-app runs cannot.
-- **Snapshot.** Up to 250 controls, nearest to the visible area first (controls far down a long page are targets; using one scrolls it into view), with a stable id per element, accessible names, values, states, row context for repeated labels ("Add (Claude Team $200 / month)"), and the visible text followed by text below the fold. A `<select>` lists each option as a clickable row. Password, file and hidden inputs are never listed.
+- **Snapshot.** Up to 250 controls, including those inside open shadow roots (web components; MDN's whole search lives in them), nearest to the visible area first (controls far down a long page are targets; using one scrolls it into view), with a stable id per element, accessible names, values, states, row context for repeated labels ("Add (Claude Team $200 / month)"), and the visible text followed by text below the fold. A `<select>` lists each option as a clickable row. Password, file and hidden inputs are never listed.
 - **Acting.** Clicks dispatch the full pointer sequence (pointerdown, mousedown, pointerup, mouseup, click), because many widgets commit on mousedown. Text goes in through `insertText` like a person typing, so frameworks and rich editors register it, and is read back; a mismatch fails the action. Each action is refused as "stale" when its element changed since the snapshot, and is re-bound only when exactly one element still matches. After each action the surface waits until the page stops changing (same mutation count and URL on two reads), up to 3 s (12 s after opening a URL).
-- **Keys.** Only Return, Escape and Tab are offered; browser shortcuts act on the window, which this surface does not see. Return in a field is gated by what the snapshot says it does there: a search box passes, a form passes unless its submit button's label is irreversible, and a field with no form or search role (a chat box may send on Return) needs confirmation.
+- **Keys.** Only Return, Escape and Tab are offered; browser shortcuts act on the window, which this surface does not see. The replan door is told the same, and instead of an address bar it can return `open_url` with an address it builds (a site's own search URL), which code opens only on a site the goal names or the run has been on. Return in a field is gated by what the snapshot says it does there: a search box passes, a form passes unless its submit button's label is irreversible, and a field with no form or search role (a chat box may send on Return) needs confirmation.
 
 ## Items
 
@@ -173,7 +173,7 @@ cd /Applications/Freyja.app/Contents/Resources
 
 ## What this does not do
 
-It does not read pixels except through the `direct_action` door. On web pages it does not see iframes from other origins, canvas content, or shadow DOM, and it cannot hover or drag. It does not plan
+It does not read pixels except through the `direct_action` door. On web pages it does not see iframes from other origins, closed shadow roots, or canvas content, and it cannot hover or drag. It does not plan
 multi-app workflows on its own; the parent agent should pass one app-scoped goal at a
 time, or the LLM replan door will be entered often. It does not run while any other
 computer-use session is active, since both would drive the same keyboard and mouse.
