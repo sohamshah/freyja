@@ -111,6 +111,13 @@ Parameters:
   * `wait`: default false. True blocks until the run ends and returns its
     result directly.
 
+Surface: `auto` (default) reads and drives the page DOM through the browser's
+own JavaScript for Arc and Chrome when page JavaScript is allowed (Chrome needs
+"Allow JavaScript from Apple Events"; Arc works once the Automation prompt is
+accepted), and the accessibility tree otherwise. Force one with `surface`:
+`dom` or `ax`. If the DOM fails twice in a row the run switches to the
+accessibility tree for the rest of the run. The result footer names the surface.
+
 Input is only sent while the target app is frontmost and owns the window under
 the pointer. If another app takes focus or covers the control, the run stops
 with status=blocked instead of clicking into the other app.
@@ -129,6 +136,11 @@ with status=blocked instead of clicking into the other app.
                     "max_steps": {
                         "type": "integer",
                         "description": f"Cap on decision steps (default {DEFAULT_MAX_STEPS}, max 120)",
+                    },
+                    "surface": {
+                        "type": "string",
+                        "enum": ["auto", "ax", "dom"],
+                        "description": "auto (default): DOM for Arc/Chrome when page JavaScript works, else AX",
                     },
                     "allow_irreversible": {
                         "type": "boolean",
@@ -192,6 +204,11 @@ with status=blocked instead of clicking into the other app.
         max_steps = max(1, min(max_steps, 120))
         allow_irreversible = bool(arguments.get("allow_irreversible", False))
         use_llm = bool(arguments.get("use_llm", True))
+        surface = str(arguments.get("surface") or "auto").lower()
+        if surface not in ("auto", "ax", "dom"):
+            return ToolResult(
+                call_id=call_id, content="Error: `surface` must be auto, ax or dom", is_error=True
+            )
         wait = bool(arguments.get("wait", False))
 
         self._counter += 1
@@ -248,6 +265,7 @@ with status=blocked instead of clicking into the other app.
             max_steps=max_steps,
             allow_irreversible=allow_irreversible,
             use_llm=use_llm,
+            surface=surface,
             provider=provider,
             native=native,
         )
@@ -310,6 +328,7 @@ with status=blocked instead of clicking into the other app.
         max_steps: int,
         allow_irreversible: bool,
         use_llm: bool,
+        surface: str = "auto",
         provider: Any,
         native: Any,
     ) -> ToolResult:
@@ -353,6 +372,7 @@ with status=blocked instead of clicking into the other app.
             app=app,
             max_steps=max_steps,
             allow_irreversible=allow_irreversible,
+            surface=surface,
             use_llm=llm is not None,
             notes_workspace=self._sub_spec.parent_workspace or None,
         )

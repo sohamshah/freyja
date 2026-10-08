@@ -39,6 +39,8 @@ from bridge.tools.jev_operator.observe import (
     meaningful_change,
 )
 from bridge.tools.jev_operator.notes import app_notes
+from bridge.tools.jev_operator import dom_surface
+from bridge.tools.jev_operator.dom_surface import DOMSurface, DOMUnavailable
 from bridge.tools.jev_operator.surface import AXSurface, Surface
 
 SELF_BUNDLE = "co.freyja.desktop"
@@ -135,6 +137,8 @@ class OperatorConfig:
     app: str | None = None
     max_steps: int = 40
     allow_irreversible: bool = False
+    # "auto": the page DOM for Arc/Chrome when page JavaScript is allowed, else AX.
+    surface: str = "auto"
     use_llm: bool = True
     verify_with_llm: bool = True
     llm_max_calls: int = 8
@@ -264,13 +268,9 @@ class Operator:
         self.on_step = on_step
         self.apps = apps if apps is not None else installed_apps()
         self.actuator = Actuator(spec, native, settle_ms=config.settle_ms)
-        self.surface: Surface = surface or AXSurface(
-            native,
-            self.actuator,
-            ax_depth=config.ax_depth,
-            read_timeout_s=config.ax_read_timeout_s,
-            log=self._log,
-        )
+        self._surface_injected = surface is not None
+        self.surface: Surface = surface or self._make_ax()
+        self._fell_back = False
         self.history: list[dict[str, Any]] = []
         self.jev_ms: list[int] = []
         self.run_id = time.strftime("%Y%m%d-%H%M%S") + f"-{os.getpid() % 10000:04d}"
@@ -293,6 +293,44 @@ class Operator:
         self._repeat_key: str | None = None
         self._repeat_count = 0
         self._repeat_replanned = False
+
+    def _make_ax(self) -> AXSurface:
+        return AXSurface(
+            self.native,
+            self.actuator,
+            ax_depth=self.cfg.ax_depth,
+            read_timeout_s=self.cfg.ax_read_timeout_s,
+            log=self._log,
+        )
+
+    def _make_dom(self, bundle: str) -> DOMSurface:
+        return DOMSurface(bundle=bundle, actuator=self.actuator, log=self._log)
+
+    async def _select_surface(self, target: Target) -> None:
+        """Pick the surface for this run. auto/dom use the page DOM only for a
+        supported browser that answers a trivial JavaScript probe."""
+        if self._surface_injected or self.cfg.surface == "ax":
+            return
+        if not dom_surface.supported(target.bundle):
+            if self.cfg.surface == "dom":
+                self._log({"event": "surface_probe", "ok": False, "detail": "unsupported browser", "bundle": target.bundle})
+            return
+        ok, detail = await asyncio.to_thread(dom_surface.probe, target.bundle)
+        self._log({"event": "surface_probe", "ok": ok, "detail": detail, "bundle": target.bundle})
+        if ok:
+            self.surface = self._make_dom(target.bundle)
+
+    def _swap_if_dom_failing(self) -> None:
+        """Two DOM failures in a row (timeout or error, not a stale element): use AX
+        for the rest of the run, never back."""
+        s = self.surface
+        if s.name == "dom" and getattr(s, "fail_streak", 0) >= 2:
+            self._log({"event": "surface_fallback", "surface": "dom", "to": "ax", "reason": "dom failed twice in a row"})
+            self.surface = self._make_ax()
+            self._fell_back = True
+
+    def _surface_label(self) -> str:
+        return "dom\u2192ax" if self._fell_back else self.surface.name
 
     @property
     def _ax_fail_streak(self) -> int:
@@ -424,7 +462,16 @@ class Operator:
         return obs
 
     async def _observe(self, target: Target) -> Observation:
-        obs = await self.surface.observe(target)
+        obs = None
+        for _ in range(3):
+            self._swap_if_dom_failing()
+            try:
+                obs = await self.surface.observe(target)
+                break
+            except DOMUnavailable as exc:
+                self._log({"event": "dom_error", "error": str(exc)})
+        if obs is None:
+            raise RuntimeError("the page surface failed repeatedly")
         read_ms = obs.read_ms
         self.read_ms.append(read_ms)
         self._last_obs = obs
@@ -521,6 +568,7 @@ class Operator:
                 "(Freyja itself, or an app with no windows). Pass `app`.",
             )
         self.actuator.set_target(target.pid, target.bundle, target.name)
+        await self._select_surface(target)
         self._notes = await self._load_notes(target)
         if not cfg.dry_run:
             await self.actuator.focus(target.bundle)
@@ -892,6 +940,12 @@ class Operator:
             return None
         if not obs.elements:
             return "an unseen control (the app exposes no accessibility tree)"
+        if self.surface.name == "dom" and any(e.focused and e.kind == "type" for e in obs.elements):
+            # Enter in a page field submits its form; the form's button is not tied to
+            # the field in the snapshot, so any irreversible button on the page counts.
+            for e in obs.elements:
+                if e.role == "AXButton" and is_irreversible(e):
+                    return e.label
         scope = obs.dialog is not None
         for e in obs.elements:
             if e.role != "AXButton" or not is_irreversible(e):
@@ -964,7 +1018,7 @@ class Operator:
             log_path=str(self.log_path),
             pending_action=pending,
             final_screen_text=screen or (last.screen_text if last else ""),
-            surface=self.surface.name,
+            surface=self._surface_label(),
             final_table=last.table() if last else "",
             read_ms=list(self.read_ms),
             last_frame_path=self._save_last_frame() if status in HANDOFF_STATUSES else None,
