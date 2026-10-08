@@ -1,0 +1,19 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Saved searches</title><link rel="stylesheet" href="style.css"></head>
+<body><header><span class="brand">Acme Cloud</span><a href="index.html">Home</a></header>
+<main><h1>Saved searches</h1><div class="card">
+<p id="count">12 saved filters</p>
+<button type="button" id="clear">Clear filters</button>
+<button type="button" id="save" class="primary">Save settings</button>
+<p id="st" class="muted"></p></div></main>
+<script src="harness.js"></script>
+<script>
+// Native dialogs, as many pages still use them.
+document.getElementById('clear').addEventListener('click', function () {
+  if (confirm('Clear all 12 saved filters? This cannot be undone.')) {
+    H.log('cleared'); document.getElementById('count').textContent = '0 saved filters';
+  } else { H.log('clear-cancelled'); }
+});
+document.getElementById('save').addEventListener('click', function () {
+  H.log('saved'); alert('Settings saved for project demo-project-123.'); document.getElementById('st').textContent = 'Saved.';
+});
+</script></body></html>

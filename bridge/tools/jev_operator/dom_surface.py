@@ -245,6 +245,9 @@ class DOMSurface:
         self.actuator = actuator
         self.tab_id = ""  # pinned tab; "" = the front window's active tab
         self.own_tab = False  # the run opened the pinned tab itself, so it may navigate it
+        self.may_confirm = False  # answer a page's confirm() with OK (allow_irreversible)
+        # A confirm() the page raised after an action (async) and the run declined.
+        self.declined_confirm: str | None = None
         self._injected_js = run_js is not None
         self._run_js = run_js or (
             lambda b, js: osascript_run_js(b, js, timeout_s, self.tab_id)
@@ -502,6 +505,16 @@ class DOMSurface:
             for i, e in enumerate(elements, 1):
                 e.index = i
         text = str(snap.get("text") or "")
+        shown = []
+        for d in snap.get("dialogs") or []:
+            if not isinstance(d, dict):
+                continue
+            msg = str(d.get("message") or "").strip()
+            shown.append(f"[page {d.get('kind')}] {msg}")
+            if d.get("kind") == "confirm" and not d.get("answer"):
+                self.declined_confirm = msg or "(no text)"
+        if shown:
+            text = "\n".join(shown) + "\n" + text
         if len(text) > MAX_TEXT_CHARS:
             text = text[: MAX_TEXT_CHARS - 1] + "…"
         obs = Observation(
@@ -585,7 +598,8 @@ class DOMSurface:
         )
 
     async def _call_act(self, dom_id: int, op: str, arg: Any, guard: str) -> dict[str, Any]:
-        call = f"act({json.dumps(dom_id)},{json.dumps(op)},{json.dumps(arg)},{json.dumps(guard)})"
+        args = [dom_id, op, arg, guard] + ([True] if self.may_confirm else [])
+        call = "act(" + ",".join(json.dumps(a) for a in args) + ")"
         res = await self._js(call)
         return res if isinstance(res, dict) else {"ok": False, "reason": "bad act() result"}
 
@@ -631,7 +645,9 @@ class DOMSurface:
             await self._follow_new_tab()
         elif settle:
             await self.settle(settle)
-        return done(True)
+        rec = done(True)
+        _note_dialogs(rec, res.get("dialogs"))
+        return rec
 
     async def _rebind(self, el: DOMElement) -> DOMElement | str:
         """Re-observe and return the one element matching `el`'s identity, or a reason."""
@@ -643,6 +659,20 @@ class DOMSurface:
             return matches[0]
         what = "gone from the page" if not matches else f"matches {len(matches)} elements now"
         return f"stale: {el.label!r} is {what}; re-read the page and choose again"
+
+
+def _note_dialogs(rec: ActionRecord, dialogs: Any) -> None:
+    """Fold the page's dialogs raised by this action into its record."""
+    for d in dialogs or []:
+        if not isinstance(d, dict):
+            continue
+        msg = str(d.get("message") or "").strip()
+        if d.get("kind") == "confirm" and not d.get("answer"):
+            rec.confirm_declined = msg or "(no text)"
+        else:
+            rec.dialog = (rec.dialog + " | " if rec.dialog else "") + f"{d.get('kind')}: {msg}"
+    if rec.dialog:
+        rec.description = f"{rec.description} (page {rec.dialog})"
 
 
 def _ms(t0: float) -> int:

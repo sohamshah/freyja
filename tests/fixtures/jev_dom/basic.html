@@ -9,6 +9,7 @@
 <div class="row"><button aria-hidden="true">Ghost</button></div>
 <div class="row"><button id="cov">Covered</button></div>
 <div class="row"><x-search id="xs"></x-search></div>
+<div class="row"><button id="ask" onclick="document.title = confirm('Really?') ? 'confirmed' : 'declined'; alert('done asking')">Ask</button></div>
 <script>
 // A web component whose controls live in an open shadow root (MDN, GitHub and
 // many design systems ship search boxes and buttons like this).

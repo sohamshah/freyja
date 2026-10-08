@@ -129,6 +129,10 @@ class ActionRecord:
     duration_ms: int
     ok: bool
     error: str | None = None
+    # A web page's alert()/prompt() text raised by this action, and the question
+    # of a confirm() the run answered Cancel (it may not confirm on its own).
+    dialog: str | None = None
+    confirm_declined: str | None = None
 
 
 class Actuator:

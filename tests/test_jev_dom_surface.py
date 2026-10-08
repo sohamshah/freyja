@@ -312,3 +312,16 @@ def test_planner_open_url_stays_on_known_sites(tmp_path, monkeypatch):
     acts = [h["action"] for h in op.history]
     assert acts[0].startswith("planner open_url https://developer.mozilla.org") and op.history[0]["ok"]
     assert acts[1].endswith("refused") and op.history[1]["ok"] is False
+
+
+def test_page_confirm_stops_the_run_for_the_person(tmp_path, monkeypatch):
+    """A harmless-looking label ("Clear filters") whose page asks confirm():
+    the run answered Cancel, so it stops and quotes the question."""
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+    page = FakePage([action(1, label="Clear filters")])
+    page.act_results = [{"ok": True, "reason": None, "readback": None,
+                         "dialogs": [{"kind": "confirm", "message": "Clear all 12 filters?", "answer": False}]}]
+    op = dom_operator(page, provider=ScriptedProvider([("click", "Clear filters"), ("done", None)]), goal="clear filters")
+    res = run(op.run())
+    assert res.status == "needs_confirmation" and "Clear all 12 filters?" in res.summary
+    assert res.pending_action and "confirm" in res.pending_action

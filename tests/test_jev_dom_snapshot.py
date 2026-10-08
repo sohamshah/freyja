@@ -248,3 +248,16 @@ def test_shadow_dom_controls_are_listed_and_usable(page):
     assert _by_label(page.snap(), "Find docs")[0]["focused"] is True
     assert page.act(go[0]["id"], "click")["ok"] is True
     assert page.eval("document.title") == "went:flat"
+
+
+def test_page_dialogs_do_not_block_and_confirm_needs_permission(page):
+    """While a run is active, confirm()/alert() do not block: confirm answers
+    Cancel unless the run may confirm, and both are reported."""
+    ask = _by_label(page.snap(), "Ask")[0]
+    r = page.act(ask["id"], "click")
+    assert r["ok"] and page.eval("document.title") == "declined"
+    kinds = [(d["kind"], d.get("answer")) for d in r["dialogs"]]
+    assert kinds == [("confirm", False), ("alert", None)] and r["dialogs"][0]["message"] == "Really?"
+    ask = _by_label(page.snap(), "Ask")[0]
+    r = page.eval("window.__freyjaJev.act(%d, 'click', null, '', true)" % ask["id"])
+    assert page.eval("document.title") == "confirmed"

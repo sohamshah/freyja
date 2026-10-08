@@ -1399,7 +1399,7 @@ def test_handoff_on_a_budget_exhausted_run(tmp_path, monkeypatch):
     h = res.handoff()
     assert h.startswith("[handoff]") and "surface: ax" in h
     assert "AXButton" in h
-    assert "ax read_ms: median=" in h and "next: narrow the goal" in h
+    assert "read_ms: median=" in h and "next: narrow the goal" in h
     done, _ = make_operator(FakeCalculator(), ScriptedProvider([("done", None)]))
     assert asyncio.run(done.run()).handoff() == ""
 

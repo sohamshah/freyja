@@ -3,7 +3,7 @@
 // install (one observer only); a newer version replaces an older one.
 (function () {
   'use strict';
-  var VERSION = 4;
+  var VERSION = 6;
   var prior = window.__freyjaJev;
   if (prior && prior.version === VERSION) return 'already-installed';
   if (prior && prior.observer) { try { prior.observer.disconnect(); } catch (e) { /* ignore */ } }
@@ -16,6 +16,47 @@
   var OBSERVE = { childList: true, subtree: true, attributes: true, characterData: true };
   observer.observe(document.documentElement, OBSERVE);
   var watchedRoots = new WeakSet();
+
+  // Page dialogs. This script runs in the browser's isolated world (it shares
+  // the DOM, not the page's globals), so overriding window.confirm here would
+  // not reach the page. A small hook goes into the page's own world through a
+  // <script> element and talks to us with DOM events. While a run is active
+  // (15 s after its last call) the hook makes alert/prompt non-blocking and
+  // answers confirm() Cancel unless the run may confirm, reports each dialog,
+  // and reports window.open (a new tab). A strict Content-Security-Policy can
+  // block the hook; then the page's dialogs behave as they normally do.
+  var MAIN = "(function(){if(window.__freyjaJevMain)return;window.__freyjaJevMain=1;" +
+    "var n={alert:window.alert,confirm:window.confirm,prompt:window.prompt,open:window.open},until=0,ans=false;" +
+    "document.addEventListener('freyja-jev-touch',function(e){until=Date.now()+15000;ans=e.detail==='confirm';});" +
+    "function live(){return Date.now()<until;}" +
+    "function rep(k,m,a){document.dispatchEvent(new CustomEvent('freyja-jev-dialog',{detail:JSON.stringify({kind:k,message:String(m==null?'':m).slice(0,500),answer:a})}));}" +
+    "window.alert=function(m){if(!live())return n.alert.apply(window,arguments);rep('alert',m);};" +
+    "window.confirm=function(m){if(!live())return n.confirm.apply(window,arguments);rep('confirm',m,ans);return ans;};" +
+    "window.prompt=function(m){if(!live())return n.prompt.apply(window,arguments);rep('prompt',m);return null;};" +
+    "window.open=function(){if(live())rep('open',arguments[0]||'');return n.open.apply(window,arguments);};" +
+    "document.dispatchEvent(new CustomEvent('freyja-jev-main-ready'));})();";
+  var dialogs = [], pageOpened = false, mainHook = false;
+  document.addEventListener('freyja-jev-main-ready', function () { mainHook = true; });
+  document.addEventListener('freyja-jev-dialog', function (e) {
+    var d = null;
+    try { d = JSON.parse(e.detail); } catch (x) { return; }
+    if (!d) return;
+    if (d.kind === 'open') pageOpened = true; else dialogs.push(d);
+  });
+  try {
+    var hook = document.createElement('script');
+    hook.textContent = MAIN;
+    (document.head || document.documentElement).appendChild(hook);
+    hook.remove();
+  } catch (e) { /* blocked: dialogs behave as usual */ }
+  // Every call keeps the run active; only an action sets whether a confirm() it
+  // triggers (now or after a delay) may be answered OK.
+  var mayConfirmNow = false;
+  function touch(mayConfirm) {
+    if (typeof mayConfirm === 'boolean') mayConfirmNow = mayConfirm;
+    document.dispatchEvent(new CustomEvent('freyja-jev-touch', { detail: mayConfirmNow ? 'confirm' : '' }));
+  }
+  function drain() { var d = dialogs; dialogs = []; return d; }
 
   var SELECTOR = [
     'a[href]', 'button', 'input', 'textarea', 'select', 'summary', '[contenteditable]',
@@ -400,6 +441,7 @@
   }
 
   function snapshot() {
+    touch();
     var all = collect(), cands = [], unoffered = [];
     for (var i = 0; i < all.length; i++) {
       var e = all[i];
@@ -431,15 +473,18 @@
       scroll: { x: Math.round(window.scrollX), y: Math.round(window.scrollY), maxY: Math.round(maxY) },
       viewport: { w: window.innerWidth, h: window.innerHeight },
       text: pageText(), mutations: mutations, actions: actions, unoffered: unoffered,
+      dialogs: drain(), hook: mainHook,
     });
   }
 
   function quiet() {
+    touch();
     return JSON.stringify({ m: mutations, rs: document.readyState, u: location.href });
   }
 
   // Navigate this tab (one the run opened itself) to another address.
   function go(url) {
+    touch();
     location.assign(url);
     return JSON.stringify({ ok: true });
   }
@@ -447,6 +492,7 @@
   function res(ok, reason, readback, extra) {
     var o = { ok: !!ok, reason: reason || null, readback: readback == null ? null : String(readback) };
     if (extra) for (var k in extra) o[k] = extra[k];
+    if (dialogs.length) o.dialogs = drain();
     return JSON.stringify(o);
   }
 
@@ -593,7 +639,9 @@
     return !top || !(composedContains(el, top) || composedContains(top, el));
   }
 
-  function act(id, op, arg, expectedGuard) {
+  function act(id, op, arg, expectedGuard, mayConfirm) {
+    touch(!!mayConfirm);
+    pageOpened = false;
     try {
       if (op === 'scroll') {
         var dy = Number(arg);
@@ -627,11 +675,11 @@
       }
 
       if (op === 'click') {
-        var opened = false, origOpen = window.open;
-        window.open = function () { opened = true; return origOpen.apply(window, arguments); };
+        var opened = false;
         var link = el.closest && el.closest('a[href]');
         if (link && link.target && !/^_(self|top|parent)$/i.test(link.target)) opened = true;
-        try { pointerClick(el); } finally { window.open = origOpen; }
+        pointerClick(el);
+        if (pageOpened) opened = true;
         return res(true, null, entry.kind === 'toggle' ? String(!!el.checked) : valueOf(el, entry.kind), opened ? { newTab: true } : null);
       }
 
@@ -657,6 +705,8 @@
     }
   }
 
-  window.__freyjaJev = { version: VERSION, snapshot: snapshot, act: act, quiet: quiet, go: go, observer: observer };
+  window.__freyjaJev = {
+    version: VERSION, snapshot: snapshot, act: act, quiet: quiet, go: go, observer: observer,
+  };
   return 'installed';
 })();

@@ -302,7 +302,7 @@ class RunResult:
             lines.append(f"last frame: {self.last_frame_path}")
         if self.read_ms:
             lines.append(
-                f"ax read_ms: median={int(statistics.median(self.read_ms))} max={max(self.read_ms)}"
+                f"read_ms: median={int(statistics.median(self.read_ms))} max={max(self.read_ms)}"
             )
         lines.append(f"next: {self.next_hint()}")
         return "\n".join(lines)
@@ -411,6 +411,7 @@ class Operator:
         self._log({"event": "surface_probe", "ok": ok, "detail": detail, "bundle": target.bundle})
         if ok:
             self.surface = self._make_dom(target.bundle)
+            self.surface.may_confirm = self.cfg.allow_irreversible
             await self.surface.pin_active()
 
     def _swap_if_dom_failing(self) -> None:
@@ -728,6 +729,17 @@ class Operator:
                     code="surface_failed",
                 )
             await self._refresh_site_notes()
+            late = getattr(self.surface, "declined_confirm", None)
+            if late and not cfg.allow_irreversible:
+                # The page asked to confirm after the last action returned.
+                self.surface.declined_confirm = None
+                return finish(
+                    "needs_confirmation",
+                    f"The page asked to confirm: {late!r}. The operator answered Cancel, so nothing "
+                    "was confirmed. Re-run with allow_irreversible=true to answer OK.",
+                    pending=f"confirm {late!r}",
+                    screen=obs.screen_text,
+                )
             if self._ax_fail_streak >= cfg.ax_max_consecutive_failures:
                 return finish(
                     "blocked",
@@ -1045,6 +1057,20 @@ class Operator:
                 before, pending = obs, None
                 continue
 
+            declined = getattr(rec, "confirm_declined", None)
+            if declined and not cfg.allow_irreversible:
+                await self._say(f"  the page asked to confirm {declined!r}; answered Cancel")
+                self.history.append(
+                    {"step": step, "kind": d.operation, "action": action_desc, "ok": True,
+                     "changed": None, "diff": f"the page asked to confirm: {declined!r}; answered Cancel"}
+                )
+                return finish(
+                    "needs_confirmation",
+                    f"{action_desc} made the page ask to confirm: {declined!r}. The operator answered "
+                    "Cancel, so nothing was confirmed. Re-run with allow_irreversible=true to answer OK.",
+                    pending=f"{action_desc} -> confirm {declined!r}",
+                    screen=obs.screen_text,
+                )
             before = obs
             pending = {
                 "step": step,
