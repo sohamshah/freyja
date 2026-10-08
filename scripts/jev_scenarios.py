@@ -256,6 +256,7 @@ TEXTEDIT = "com.apple.TextEdit"
 FINDER = "com.apple.finder"
 SETTINGS = "com.apple.systempreferences"
 DICTIONARY = "com.apple.Dictionary"
+PREVIEW = "com.apple.Preview"
 AX_DIR = Path(tempfile.gettempdir()) / "jev-ax-test"
 _BIDI = dict.fromkeys(map(ord, "‎‏‪‫‬‭‮⁦⁧⁨⁩"))
 
@@ -311,54 +312,84 @@ def ax_press(bundle: str, node: dict[str, Any]) -> bool:
     return bool(_native().ax_press(pid, b[0] + b[2] / 2, b[1] + b[3] / 2, node.get("role") or "AXButton", b))
 
 
+def window_ids(bundle: str) -> dict[int, str]:
+    return {w.id: w.title for w in _native().list_windows(include_helpers=True) if w.bundle == bundle and w.layer == 0}
+
+
+def front_window_id(bundle: str) -> int | None:
+    """The CG id of `bundle`'s front window when `bundle` is the active app. Read
+    fresh each time: get_frontmost_window() goes stale in a long-running process
+    (it trusts NSWorkspace, which needs a run loop)."""
+    from bridge.tools.jev_operator.act import frontmost_pid  # noqa: PLC0415
+
+    if frontmost_pid() != app_pid(bundle):
+        return None
+    for w in _native().list_windows(include_helpers=True):  # front to back
+        if w.bundle == bundle and w.layer == 0:
+            return w.id
+    return None
+
+
+def raise_window(bundle: str, wid: int) -> bool:
+    """Bring window `wid` to the front. focus_window() only activates the app, so
+    the window is raised with its AXRaise action, matched by its frame."""
+    n = _native()
+    w = next((w for w in n.list_windows(include_helpers=True) if w.id == wid), None)
+    pid = app_pid(bundle)
+    if w is None or pid is None:
+        return False
+    b = w.bounds
+    n.ax_perform(pid, b.x + b.w / 2, b.y + b.h / 2, "AXWindow", (b.x, b.y, b.w, b.h), "AXRaise")
+    n.focus_app(bundle)
+    for _ in range(10):
+        time.sleep(0.2)
+        if front_window_id(bundle) == wid:
+            return True
+    return False
+
+
+def close_window_id(bundle: str, wid: int) -> bool:
+    """Close window `wid`, and the tabs of it that take its place, with Cmd+W,
+    only while it is verifiably the front window."""
+    n = _native()
+    for _ in range(6):
+        if wid not in window_ids(bundle):
+            return True
+        if not raise_window(bundle, wid):
+            return False
+        w = next(w for w in n.list_windows(include_helpers=True) if w.id == wid)
+        place = (w.bounds.x, w.bounds.y)
+        n.press_key("w", modifiers=["cmd"])
+        for _ in range(10):
+            time.sleep(0.2)
+            if wid not in window_ids(bundle):
+                break
+        if wid in window_ids(bundle):
+            return False
+        # A closed tab hands its place to the window's next tab, under a new id.
+        tab = next(
+            (x.id for x in n.list_windows(include_helpers=True)
+             if x.bundle == bundle and (x.bounds.x, x.bounds.y) == place and x.id not in _BEFORE.get(bundle, set())),
+            None,
+        )
+        if tab is None:
+            return True
+        wid = tab
+    return wid not in window_ids(bundle)
+
+
 def close_window(bundle: str, title: str = "") -> bool:
+    """Close the first window whose title contains `title`: its close button when
+    the tree has one, else by raising it and pressing Cmd+W."""
     w = ax_window(bundle, title)
     if w is None:
         return False
     btn = ax_find(w, lambda n: n.get("subrole") == "AXCloseButton")
     if btn:
         return ax_press(bundle, btn[0])
-    # Finder leaves its title-bar buttons out of the tree: raise that exact window, then Cmd+W.
-    n = _native()
-    title = str(w.get("title") or "")
-    for win in n.list_windows(include_helpers=False):
-        if win.bundle == bundle and win.title == title:
-            n.focus_window(win.id)
-            time.sleep(0.4)
-            front = n.get_frontmost_window()
-            if front is not None and front.title == title:
-                n.press_key("w", modifiers=["cmd"])
-                for _ in range(10):
-                    time.sleep(0.3)
-                    if ax_window(bundle, title) is None:
-                        return True
-    return False
-
-
-def window_ids(bundle: str) -> dict[int, str]:
-    return {w.id: w.title for w in _native().list_windows() if w.bundle == bundle}
-
-
-def close_window_id(bundle: str, wid: int) -> bool:
-    """Close the window with CG id `wid` (and its other tabs, which take its
-    place) by raising it and pressing Cmd+W; only while it is the front window."""
-    n = _native()
-    for _ in range(4):
-        if wid not in window_ids(bundle):
-            return True
-        n.focus_window(wid)
-        time.sleep(0.4)
-        front = n.get_frontmost_window()
-        if front is None or front.id != wid:
-            return False
-        frame = (front.bounds.x, front.bounds.y)
-        n.press_key("w", modifiers=["cmd"])
-        time.sleep(0.6)
-        # A tab closed: the window's next tab shows at the same place under a new id.
-        nxt = [w for w in n.list_windows() if w.bundle == bundle and (w.bounds.x, w.bounds.y) == frame and w.id not in _BEFORE.get(bundle, set())]
-        if nxt and wid not in window_ids(bundle):
-            wid = nxt[0].id
-    return wid not in window_ids(bundle)
+    exact = str(w.get("title") or "")
+    wid = next((i for i, t in window_ids(bundle).items() if t == exact), None)
+    return wid is not None and close_window_id(bundle, wid)
 
 
 _BEFORE: dict[str, set[int]] = {}
@@ -490,9 +521,14 @@ def finder_setup() -> dict[str, Any]:
     root = Path(tempfile.gettempdir())
     for d in root.iterdir():  # earlier runs' folders: only this fixture's own files
         if d.is_dir() and _FIXTURE_DIR.fullmatch(d.name):
+            # A window still showing it would jump to the parent folder when it goes.
+            while close_window(FINDER, d.name):
+                pass
             for p in d.iterdir():
                 if _FIXTURE_FILE.fullmatch(p.name) or p.name == ".DS_Store":
                     p.unlink()
+                elif p.is_dir() and re.fullmatch(r"Q3 Reports \d+", p.name) and not any(p.iterdir()):
+                    p.rmdir()
             if not any(d.iterdir()):
                 d.rmdir()
     n = random.randint(100, 999)
@@ -502,7 +538,12 @@ def finder_setup() -> dict[str, Any]:
         (folder / name.format(n=n)).write_text(name)
     _BEFORE[FINDER] = set(window_ids(FINDER))
     launch(FINDER, str(folder), window=folder.name)
-    wid = next((i for i, t in window_ids(FINDER).items() if t == folder.name and i not in _BEFORE[FINDER]), None)
+    wid = None
+    for _ in range(25):  # the window server lists a new window a moment after AX does
+        wid = next((i for i, t in window_ids(FINDER).items() if t == folder.name and i not in _BEFORE[FINDER]), None)
+        if wid is not None:
+            break
+        time.sleep(0.2)
     return {"n": n, "folder": folder.name, "view": finder_view(), "wid": wid}
 
 
@@ -535,6 +576,68 @@ def finder_teardown(v: dict[str, Any]) -> None:
     extra = {i: t for i, t in window_ids(FINDER).items() if i not in _BEFORE.get(FINDER, set())}
     if extra:
         print(f"      left open (new Finder windows, not closed): {extra}", flush=True)
+
+
+def finder_new_folder_check(c: Ctx) -> tuple[bool, str]:
+    folder = Path(tempfile.gettempdir()) / c.vars["folder"]
+    made = sorted(p.name for p in folder.iterdir() if p.is_dir())
+    view = finder_view()
+    return ok(made == [f"Q3 Reports {c.vars['n']}"] and view == c.vars["view"], f"status={c.status} folders={made} view={c.vars['view']}->{view}")
+
+
+def volume_now() -> int:
+    """The output volume, 0-100, from Standard Additions (no app is scripted)."""
+    out = subprocess.run(["osascript", "-e", "output volume of (get volume settings)"], capture_output=True, text=True)
+    return int(out.stdout.strip() or -1)
+
+
+def volume_setup() -> dict[str, Any]:
+    return {"volume": volume_now()}
+
+
+def volume_check(c: Ctx) -> tuple[bool, str]:
+    want, now = c.vars["volume"], volume_now()
+    report = c.text.split("<subagent-report", 1)[-1]
+    said = [int(x) for x in re.findall(r"(\d{1,3})\s*%", report)] or [round(float(x) * 100) for x in re.findall(r"\b0\.\d+\b", report)]
+    good = c.status == "done" and bool(said) and abs(said[0] - want) <= 3 and now == want
+    return ok(good, f"status={c.status} want={want} said={said[:1]} now={now}")
+
+
+def pdf_pages(path: Path) -> int:
+    return len(re.findall(rb"/Type\s*/Page(?![s\w])", path.read_bytes()))
+
+
+def preview_setup() -> dict[str, Any]:
+    """A PDF of a random number of pages, opened in Preview."""
+    AX_DIR.mkdir(parents=True, exist_ok=True)
+    stem = f"jev-doc-{random.randint(1000, 9999)}"
+    txt = AX_DIR / f"{stem}.txt"
+    txt.write_text("\n".join(f"Line {i}" for i in range(random.randint(2, 6) * 55)))
+    pdf = AX_DIR / f"{stem}.pdf"
+    with pdf.open("wb") as f:
+        subprocess.run(["cupsfilter", "-m", "application/pdf", str(txt)], stdout=f, stderr=subprocess.DEVNULL, timeout=60)
+    launch(PREVIEW, str(pdf), window=stem)
+    return {"doc": stem, "pages": pdf_pages(pdf)}
+
+
+def preview_check(c: Ctx) -> tuple[bool, str]:
+    n = c.vars["pages"]
+    report = c.text.split("<subagent-report", 1)[-1]
+    said = re.search(r"\b(\d+)\s+pages?\b", report)
+    return ok(c.status == "done" and said is not None and int(said.group(1)) == n, f"status={c.status} pages={n} said={said.group(0) if said else None}")
+
+
+def preview_teardown(v: dict[str, Any]) -> None:
+    close_window(PREVIEW, v["doc"])
+
+
+TEXTEDIT_ITEMS = ["Apples 3", "Bread 1", "Coffee 2"]
+
+
+def textedit_items_check(c: Ctx) -> tuple[bool, str]:
+    body = textedit_body(c.vars["doc"])
+    lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
+    return ok(lines == TEXTEDIT_ITEMS, f"status={c.status} lines={lines}")
 
 
 def settings_version_check(c: Ctx) -> tuple[bool, str]:
@@ -621,6 +724,10 @@ SCENARIOS: list[Scenario] = [
     Scenario("ax_settings", "ax", {"goal": "Open System Settings, go to General > About, and report the macOS version. Read only: change nothing.", "app": "System Settings"}, settings_version_check, teardown=settings_teardown),
     Scenario("ax_appearance", "ax", {"goal": "In System Settings, find whether the appearance is set to Light, Dark or Auto, and report which. Read only: change nothing.", "app": "System Settings"}, appearance_check, setup=appearance_setup, teardown=settings_teardown),
     Scenario("ax_dictionary", "ax", {"goal": 'In the Dictionary app, look up "serendipity" and report its definition.', "app": "Dictionary"}, dictionary_check, teardown=dictionary_teardown),
+    Scenario("ax_volume", "ax", {"goal": "In System Settings, open Sound and report the output volume as a percentage. Read only: change nothing.", "app": "System Settings"}, volume_check, setup=volume_setup, teardown=settings_teardown),
+    Scenario("ax_preview_pages", "ax", {"goal": "In Preview, report how many pages the document {doc}.pdf has.", "app": "Preview"}, preview_check, setup=preview_setup, teardown=preview_teardown),
+    Scenario("ax_finder_new_folder", "ax", {"goal": 'In the Finder window {folder}, create a new folder named "Q3 Reports {n}".', "app": "Finder"}, finder_new_folder_check, setup=finder_setup, teardown=finder_teardown),
+    Scenario("ax_textedit_items", "ax", {"goal": 'In the TextEdit document {doc}, add "{item}" as a new line at the end of the document.', "app": "TextEdit", "items": TEXTEDIT_ITEMS}, textedit_items_check, setup=textedit_setup(), teardown=textedit_teardown, timeout_s=900),
 ]
 
 
