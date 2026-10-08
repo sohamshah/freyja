@@ -1,0 +1,227 @@
+"""Run bridge/tools/jev_operator/dom_snapshot.js in a real headless Chrome.
+
+Stdlib only: a tiny CDP websocket client. Skips when no Chrome is found.
+"""
+import base64
+import json
+import os
+import shutil
+import socket
+import struct
+import subprocess
+import tempfile
+import time
+import urllib.request
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+SCRIPT = (ROOT / "bridge/tools/jev_operator/dom_snapshot.js").read_text()
+FIXTURE = ROOT / "tests/fixtures/jev_dom/basic.html"
+CHROME_CANDIDATES = [
+    os.environ.get("JEV_TEST_CHROME", ""),
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    shutil.which("google-chrome") or "",
+    shutil.which("chromium") or "",
+]
+
+
+def _chrome():
+    for c in CHROME_CANDIDATES:
+        if c and os.path.exists(c):
+            return c
+    return None
+
+
+class _WS:
+    def __init__(self, url):
+        hostport, path = url[len("ws://"):].split("/", 1)
+        host, port = hostport.split(":")
+        self.s = socket.create_connection((host, int(port)), timeout=20)
+        key = base64.b64encode(os.urandom(16)).decode()
+        self.s.sendall((f"GET /{path} HTTP/1.1\r\nHost: {hostport}\r\nUpgrade: websocket\r\n"
+                        f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+                        "Sec-WebSocket-Version: 13\r\n\r\n").encode())
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            buf += self.s.recv(1)
+        self.n = 0
+
+    def send(self, obj):
+        data = json.dumps(obj).encode()
+        mask = os.urandom(4)
+        n = len(data)
+        head = b"\x81" + (bytes([0x80 | n]) if n < 126 else
+                          b"\xfe" + struct.pack(">H", n) if n < 65536 else
+                          b"\xff" + struct.pack(">Q", n))
+        self.s.sendall(head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+
+    def _read(self, k):
+        b = b""
+        while len(b) < k:
+            c = self.s.recv(k - len(b))
+            if not c:
+                raise ConnectionError("closed")
+            b += c
+        return b
+
+    def recv(self):
+        msg = b""
+        while True:
+            b1, b2 = self._read(2)
+            n = b2 & 0x7F
+            if n == 126:
+                n = struct.unpack(">H", self._read(2))[0]
+            elif n == 127:
+                n = struct.unpack(">Q", self._read(8))[0]
+            msg += self._read(n)
+            if b1 & 0x80:
+                return json.loads(msg)
+
+    def call(self, method, **params):
+        self.n += 1
+        self.send({"id": self.n, "method": method, "params": params})
+        while True:
+            m = self.recv()
+            if m.get("id") == self.n:
+                if "error" in m:
+                    raise RuntimeError(m["error"])
+                return m["result"]
+
+
+class Page:
+    def __init__(self, ws):
+        self.ws = ws
+
+    def eval(self, expr):
+        r = self.ws.call("Runtime.evaluate", expression=expr, returnByValue=True)
+        if "exceptionDetails" in r:
+            raise RuntimeError(r["exceptionDetails"])
+        return r["result"].get("value")
+
+    def snap(self):
+        return json.loads(self.eval("window.__freyjaJev.snapshot()"))
+
+    def act(self, id_, op, arg=None, guard=None):
+        return json.loads(self.eval(
+            f"window.__freyjaJev.act({json.dumps(id_)},{json.dumps(op)},{json.dumps(arg)},{json.dumps(guard)})"))
+
+
+@pytest.fixture(scope="module")
+def page():
+    chrome = _chrome()
+    if not chrome:
+        pytest.skip("no Chrome available")
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    tmp = tempfile.mkdtemp(prefix="jev-chrome-")
+    proc = subprocess.Popen(
+        [chrome, "--headless=new", f"--remote-debugging-port={port}", f"--user-data-dir={tmp}",
+         "--no-first-run", "--no-default-browser-check", "--window-size=800,600",
+         FIXTURE.as_uri()],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        target = None
+        for _ in range(100):
+            try:
+                tabs = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=2))
+                target = next((t for t in tabs if t.get("type") == "page" and "basic.html" in t.get("url", "")), None)
+                if target:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.2)
+        if not target:
+            pytest.skip("headless Chrome did not start")
+        p = Page(_WS(target["webSocketDebuggerUrl"]))
+        p.ws.call("Emulation.setDeviceMetricsOverride", width=800, height=600, deviceScaleFactor=1, mobile=False)
+        for _ in range(50):
+            if p.eval("document.readyState") == "complete":
+                break
+            time.sleep(0.1)
+        p.eval(SCRIPT)
+        yield p
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _by_label(snap, label):
+    return [a for a in snap["actions"] if a["label"] == label]
+
+
+def test_idempotent_install(page):
+    assert page.eval(SCRIPT) == "already-installed"
+    before = page.snap()["mutations"]
+    page.eval("document.body.setAttribute('data-x','1')")
+    time.sleep(0.1)
+    assert page.snap()["mutations"] - before == 1  # one observer, not two
+
+
+def test_filtering_and_shape(page):
+    s = page.snap()
+    labels = [a["label"] for a in s["actions"]]
+    assert "Secret" not in labels and "Upload" not in labels and "Ghost" not in labels
+    assert not any(a["role"] == "textbox" and a["label"] == "" for a in s["actions"])
+    assert "Checkout" not in labels
+    assert {"label": "Checkout", "context": ""} in s["unoffered"]
+    assert s["viewport"] == {"w": 800, "h": 600}
+    assert "Apple pie" in s["text"] and "Ghost" not in s["text"]
+    far = _by_label(s, "Far away")
+    assert far and far[0]["offscreen"] == "below"
+    assert not _by_label(s, "Way far")
+    assert _by_label(s, "Search")[0]["kind"] == "fill"
+    assert _by_label(s, "Size")[0]["kind"] == "select"
+
+
+def test_ids_stable_and_context_distinct(page):
+    a = page.snap()
+    b = page.snap()
+    assert [x["id"] for x in a["actions"]] == [x["id"] for x in b["actions"]]
+    adds = _by_label(a, "Add")
+    assert len(adds) == 2 and adds[0]["id"] != adds[1]["id"]
+    assert "Apple pie" in adds[0]["context"] and "Banana bread" in adds[1]["context"]
+    assert adds[0]["context"] != adds[1]["context"]
+    assert _by_label(a, "Search")[0]["context"] == ""
+
+
+def test_fill_select_and_stale(page):
+    s = page.snap()
+    q = _by_label(s, "Search")[0]
+    r = page.act(q["id"], "fill", {"text": "hello", "mode": "replace"}, q["guard"])
+    assert r == {"ok": True, "reason": None, "readback": "hello"}
+    r = page.act(q["id"], "fill", {"text": " world", "mode": "append"})
+    assert r["readback"] == "hello world"
+    # the old guard embeds the old value, so it is now stale
+    assert page.act(q["id"], "fill", {"text": "x", "mode": "replace"}, q["guard"])["reason"] == "stale"
+    size = _by_label(s, "Size")[0]
+    assert page.act(size["id"], "select", "Large")["readback"] == "l"
+    assert page.act(size["id"], "select", "Nope")["reason"] == "no_such_option"
+
+
+def test_key_and_scroll(page):
+    q = _by_label(page.snap(), "Search")[0]
+    page.act(q["id"], "fill", {"text": "k", "mode": "replace"})
+    assert page.act(0, "key", "Enter")["ok"] is True
+    page.eval("document.activeElement.blur()")
+    assert page.act(0, "key", "Enter") == {"ok": False, "reason": "no_editable_focused", "readback": None}
+    r = page.act(0, "scroll", 500)
+    assert r["ok"] and int(r["readback"]) > 0
+    page.act(0, "scroll", -10000)
+
+
+def test_covered_rejected_and_click(page):
+    s = page.snap()
+    cov = _by_label(s, "Covered")[0]
+    page.eval("document.getElementById('cover').style.display='block'")
+    assert page.act(cov["id"], "click", None, cov["guard"])["reason"] == "covered"
+    page.eval("document.getElementById('cover').style.display='none'")
+    page.eval("window.__clicked=0;document.getElementById('cov').addEventListener('click',()=>window.__clicked++)")
+    assert page.act(cov["id"], "click", None, cov["guard"])["ok"] is True
+    assert page.eval("window.__clicked") == 1
