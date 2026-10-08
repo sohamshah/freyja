@@ -1512,3 +1512,15 @@ def test_the_tool_blocks_when_wait_is_true(tmp_path, monkeypatch):
         assert terminal == []
 
     asyncio.run(go())
+
+
+def test_ax_surface_satisfies_protocol():
+    from bridge.tools.jev_operator.surface import AXSurface, Surface
+
+    s = AXSurface(object(), object(), ax_depth=3, read_timeout_s=1.0)
+    assert isinstance(s, Surface) and s.name == "ax"
+
+
+def test_loop_uses_ax_surface():
+    op, _ = make_operator(object(), None)
+    assert op.surface.name == "ax"

@@ -39,6 +39,7 @@ from bridge.tools.jev_operator.observe import (
     meaningful_change,
 )
 from bridge.tools.jev_operator.notes import app_notes
+from bridge.tools.jev_operator.surface import AXSurface, Surface
 
 SELF_BUNDLE = "co.freyja.desktop"
 RUN_DIR = Path(
@@ -253,6 +254,7 @@ class Operator:
         llm: LLMHelper | None = None,
         on_step: StepCb | None = None,
         apps: list[str] | None = None,
+        surface: Surface | None = None,
     ) -> None:
         self.cfg = config
         self.provider = provider
@@ -262,6 +264,13 @@ class Operator:
         self.on_step = on_step
         self.apps = apps if apps is not None else installed_apps()
         self.actuator = Actuator(spec, native, settle_ms=config.settle_ms)
+        self.surface: Surface = surface or AXSurface(
+            native,
+            self.actuator,
+            ax_depth=config.ax_depth,
+            read_timeout_s=config.ax_read_timeout_s,
+            log=self._log,
+        )
         self.history: list[dict[str, Any]] = []
         self.jev_ms: list[int] = []
         self.run_id = time.strftime("%Y%m%d-%H%M%S") + f"-{os.getpid() % 10000:04d}"
@@ -276,8 +285,6 @@ class Operator:
         self._start_windows: list[str] | None = None
         self._window_checks: set[str] = set()
         self._shot_geometry: tuple[tuple[float, ...], int, int] | None = None
-        self._ax_fail_streak = 0
-        self.surface = Observation.SURFACE
         self.read_ms: list[int] = []
         self._last_obs: Observation | None = None
         self._last_frame: tuple[bytes, str] | None = None
@@ -286,6 +293,10 @@ class Operator:
         self._repeat_key: str | None = None
         self._repeat_count = 0
         self._repeat_replanned = False
+
+    @property
+    def _ax_fail_streak(self) -> int:
+        return getattr(self.surface, "ax_fail_streak", 0)
 
     async def _say(self, text: str) -> None:
         if self.on_step is None:
@@ -300,7 +311,7 @@ class Operator:
             with self.log_path.open("a", encoding="utf-8") as f:
                 f.write(
                     json.dumps(
-                        {"run_id": self.run_id, "t": time.time(), "surface": self.surface, **row},
+                        {"run_id": self.run_id, "t": time.time(), "surface": self.surface.name, **row},
                         ensure_ascii=False,
                     )
                     + "\n"
@@ -347,7 +358,7 @@ class Operator:
             t = self._match_target(app, windows)
             if t is None and self.cfg.launch_if_missing and not self.cfg.dry_run:
                 await self._say(f"launching {app}")
-                rec = await self.actuator.launch(app)
+                rec = await self.surface.execute("launch", app)
                 if rec.ok:
                     for _ in range(10):
                         await asyncio.sleep(0.4)
@@ -413,38 +424,8 @@ class Operator:
         return obs
 
     async def _observe(self, target: Target) -> Observation:
-        t0 = time.perf_counter()
-        try:
-            raw = await asyncio.wait_for(
-                asyncio.to_thread(
-                    self.native.read_ax_tree, target.pid, max_depth=self.cfg.ax_depth
-                ),
-                timeout=self.cfg.ax_read_timeout_s,
-            )
-            tree = json.loads(raw) if raw else {}
-            self._ax_fail_streak = 0
-            if isinstance(tree, dict) and tree.get("truncated"):
-                self._log({"event": "ax_truncated", "pid": target.pid})
-        except asyncio.TimeoutError:
-            # The worker thread cannot be cancelled; it is abandoned. Arc's
-            # tree read took 100-140 s per step on 2026-10-06 and once 2.4 h.
-            self._ax_fail_streak += 1
-            tree = {
-                "role": "AXApplication",
-                "children": [],
-                "error": f"accessibility read timed out after {self.cfg.ax_read_timeout_s:.0f}s",
-            }
-        except Exception as exc:  # noqa: BLE001
-            self._ax_fail_streak += 1
-            tree = {"role": "AXApplication", "children": [], "error": str(exc)}
-        read_ms = int((time.perf_counter() - t0) * 1000)
-        obs = build_observation(
-            tree,
-            app_name=target.name,
-            bundle=target.bundle,
-            pid=target.pid,
-            read_ms=read_ms,
-        )
+        obs = await self.surface.observe(target)
+        read_ms = obs.read_ms
         self.read_ms.append(read_ms)
         self._last_obs = obs
         self.actuator.window_frames = obs.window_frames
@@ -784,7 +765,7 @@ class Operator:
                             pending=desc,
                             screen=obs.screen_text,
                         )
-                    rec = await self.actuator.click(
+                    rec = await self.surface.execute("click", 
                         d.target,
                         double=(d.operation == "double_click"),
                         irreversible=is_irreversible(d.target),
@@ -814,7 +795,7 @@ class Operator:
                         if out is not None:
                             return out
                         continue
-                    rec = await self.actuator.type_into(
+                    rec = await self.surface.execute("type_into", 
                         d.target, text, replace=(d.target.role != "AXTextArea")
                     )
                     action_desc = f"type {text!r} into [{d.target.index}] {d.target.label!r}"
@@ -831,15 +812,15 @@ class Operator:
                             pending=f"key {d.key} -> {gate}",
                             screen=obs.screen_text,
                         )
-                    rec = await self.actuator.press(d.key, window=obs.focused_frame)
+                    rec = await self.surface.execute("press", d.key, window=obs.focused_frame)
                 elif d.operation in ("scroll_down", "scroll_up"):
                     at = obs.scroll_point(f"{self.cfg.goal}\n{self._subgoal or ''}")
                     if at is None and (wb := self._window_bounds(target, obs.focused_window)):
                         at = (int(wb[0] + wb[2] / 2), int(wb[1] + wb[3] / 2))
-                    rec = await self.actuator.scroll(at, down=(d.operation == "scroll_down"))
+                    rec = await self.surface.execute("scroll", at, down=(d.operation == "scroll_down"))
                     self._settle_next = True
                 elif d.operation == "launch_app" and d.launch_app:
-                    rec = await self.actuator.launch(d.launch_app)
+                    rec = await self.surface.execute("launch", d.launch_app)
                     new_t = self._match_target(d.launch_app, self._windows())
                     if new_t:
                         target = new_t
@@ -983,7 +964,7 @@ class Operator:
             log_path=str(self.log_path),
             pending_action=pending,
             final_screen_text=screen or (last.screen_text if last else ""),
-            surface=self.surface,
+            surface=self.surface.name,
             final_table=last.table() if last else "",
             read_ms=list(self.read_ms),
             last_frame_path=self._save_last_frame() if status in HANDOFF_STATUSES else None,
@@ -1145,7 +1126,7 @@ class Operator:
                     }
                 )
                 return
-            rec = await self.actuator.click_point(
+            rec = await self.surface.execute("click_point", 
                 int(x),
                 int(y),
                 description=f"planner click{' on ' + hit.label if hit else ''}",
@@ -1178,7 +1159,7 @@ class Operator:
                     }
                 )
                 return
-            rec = await self.actuator.press(combo, window=obs.focused_frame)
+            rec = await self.surface.execute("press", combo, window=obs.focused_frame)
             self.history.append(
                 {
                     "step": len(self.history) + 1,
@@ -1203,7 +1184,7 @@ class Operator:
                     }
                 )
                 return
-            rec = await self.actuator.type_raw(da["text"])
+            rec = await self.surface.execute("type_raw", da["text"])
             self.history.append(
                 {
                     "step": len(self.history) + 1,
