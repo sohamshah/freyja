@@ -1,0 +1,84 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Model Catalog – demo-project-123</title><link rel="stylesheet" href="style.css">
+<style>
+ .layout { display: flex; height: calc(100vh - 44px); }
+ .side { width: 200px; padding: 16px; border-right: 1px solid #dde1e8; background: #fff; }
+ .content { flex: 1; display: flex; flex-direction: column; padding: 16px; }
+ .grid { flex: 1; overflow: auto; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; align-content: start; padding-right: 6px; }
+ .model { background: #fff; border: 1px solid #dde1e8; border-radius: 8px; padding: 12px; min-height: 150px; }
+ .model h4 { margin: 0 0 4px; }
+ .actions { display: flex; gap: 8px; margin-top: 10px; }
+ [role=button] { display: inline-block; padding: 5px 10px; border: 1px solid #b9c2d0; border-radius: 6px; cursor: pointer; user-select: none; }
+</style></head>
+<body>
+<header><span class="brand">Acme Cloud</span><span>Project: demo-project-123</span></header>
+<div class="layout">
+  <nav class="side"><b>Model catalog</b><p class="muted">Browse foundation models available to this project.</p></nav>
+  <section class="content">
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
+      <input id="filter" type="search" aria-label="Search models" placeholder="Search models" style="max-width:360px">
+      <span id="count" class="muted"></span>
+    </div>
+    <div class="grid" id="grid" aria-label="Model results"></div>
+  </section>
+</div>
+<aside class="panel hidden" id="panel" role="dialog" aria-label="Model details">
+  <div style="display:flex;justify-content:space-between"><h3 id="pname"></h3><button aria-label="Close panel" id="pclose">✕</button></div>
+  <div id="pbody"></div>
+</aside>
+<script src="harness.js"></script>
+<script>
+var MODELS = [
+  ['Gemini 3.5 Pro', 'Google', 'Enabled', '2M tokens', '$1.25 / 1M input'],
+  ['Gemini 3.5 Flash', 'Google', 'Enabled', '1M tokens', '$0.10 / 1M input'],
+  ['Llama 5 405B', 'Meta', 'Available', '256K tokens', '$0.90 / 1M input'],
+  ['Mistral Large 3', 'Mistral AI', 'Available', '256K tokens', '$0.80 / 1M input'],
+  ['Imagen 5', 'Google', 'Enabled', 'n/a', '$0.03 / image'],
+  ['Gemma 4 27B', 'Google', 'Available', '128K tokens', '$0.15 / 1M input'],
+  ['Jamba 2 Large', 'AI21 Labs', 'Request access', '256K tokens', '$1.00 / 1M input'],
+  ['Codestral 3', 'Mistral AI', 'Available', '256K tokens', '$0.30 / 1M input'],
+  ['Claude Opus 5.5', 'Anthropic', 'Request access', '1M tokens', '$5.00 / 1M input'],
+  ['Veo 4', 'Google', 'Available', 'n/a', '$0.40 / second'],
+  ['Qwen 4 72B', 'Alibaba', 'Available', '128K tokens', '$0.40 / 1M input'],
+  ['DeepSeek V4', 'DeepSeek', 'Available', '128K tokens', '$0.27 / 1M input'],
+  ['Chirp 3', 'Google', 'Enabled', 'n/a', '$0.016 / minute'],
+  ['Embeddings Gecko 4', 'Google', 'Enabled', '8K tokens', '$0.02 / 1M input'],
+  ['Claude Sonnet 5.5', 'Anthropic', 'Enabled', '1M tokens', '$3.00 / 1M input'],
+  ['Phi 5', 'Microsoft', 'Available', '128K tokens', '$0.12 / 1M input'],
+  ['Command R++', 'Cohere', 'Request access', '128K tokens', '$2.50 / 1M input'],
+  ['Llama 5 70B', 'Meta', 'Available', '256K tokens', '$0.35 / 1M input'],
+  ['Mistral Small 4', 'Mistral AI', 'Available', '128K tokens', '$0.10 / 1M input'],
+  ['Gemini 3.5 Flash-Lite', 'Google', 'Enabled', '1M tokens', '$0.05 / 1M input'],
+  ['Claude Haiku 4.5', 'Anthropic', 'Available', '200K tokens', '$1.00 / 1M input'],
+  ['Stable Diffusion 5', 'Stability AI', 'Available', 'n/a', '$0.04 / image'],
+  ['Whisper 4', 'OpenAI', 'Available', 'n/a', '$0.006 / minute'],
+  ['Nemotron 4 340B', 'NVIDIA', 'Request access', '128K tokens', '$1.40 / 1M input'],
+];
+var grid = document.getElementById('grid'), filter = document.getElementById('filter');
+function render() {
+  var q = filter.value.trim().toLowerCase();
+  grid.innerHTML = '';
+  var shown = MODELS.filter(function (m) { return !q || (m[0] + ' ' + m[1]).toLowerCase().indexOf(q) >= 0; });
+  shown.forEach(function (m) {
+    var c = document.createElement('div'); c.className = 'model';
+    c.innerHTML = '<h4>' + m[0] + '</h4><div class="muted">' + m[1] + '</div><div>Status: <span class="badge">' + m[2] + '</span></div>' +
+      '<div class="actions"><div role="button" tabindex="0" class="details">View details</div>' +
+      (m[2] === 'Enabled' ? '' : '<div role="button" tabindex="0" class="enable">' + (m[2] === 'Request access' ? 'Request access' : 'Enable') + '</div>') + '</div>';
+    c.querySelector('.details').addEventListener('click', function () { openPanel(m); });
+    var en = c.querySelector('.enable');
+    if (en) en.addEventListener('click', function () { H.log('enable', { model: m[0] }); en.textContent = 'Pending…'; });
+    grid.appendChild(c);
+  });
+  document.getElementById('count').textContent = shown.length + ' models';
+}
+function openPanel(m) {
+  document.getElementById('pname').textContent = m[0];
+  document.getElementById('pbody').innerHTML = '<p>Provider: ' + m[1] + '</p><p>Status: ' + m[2] + '</p><p>Context window: ' + m[3] + '</p><p>Price: ' + m[4] + '</p>';
+  document.getElementById('panel').classList.remove('hidden');
+  H.log('details', { model: m[0] });
+}
+document.getElementById('pclose').addEventListener('click', function () { document.getElementById('panel').classList.add('hidden'); H.log('close-details'); });
+var t; filter.addEventListener('input', function () { clearTimeout(t); t = setTimeout(function () { render(); H.log('filter', { q: filter.value }); }, 250); });
+// The catalog loads after a short delay, like a real console.
+grid.innerHTML = '<p class="muted">Loading models…</p>';
+setTimeout(render, 1200);
+</script></body></html>

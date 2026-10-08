@@ -1,0 +1,23 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Billing – Subscriptions</title><link rel="stylesheet" href="style.css"></head>
+<body><header><span class="brand">Acme Cloud</span><a href="index.html">Home</a></header>
+<main><h1>Add-on subscriptions</h1>
+<table><thead><tr><th>Add-on</th><th>Price</th><th>Seats</th><th></th></tr></thead><tbody id="tb"></tbody></table>
+<div class="card"><b>Cart:</b> <span id="cart">empty</span> <button id="checkout" class="primary" style="margin-left:12px">Checkout</button></div>
+</main>
+<script src="harness.js"></script>
+<script>
+var ROWS = [['Claude Team', '$200 / month', '10 seats'], ['GPT Business', '$150 / month', '10 seats'], ['Gemini Workspace', '$120 / month', '25 seats'], ['Mistral Pro', '$80 / month', '5 seats'], ['Copilot Enterprise', '$390 / month', '10 seats']];
+var cart = [];
+ROWS.forEach(function (r) {
+  var tr = document.createElement('tr');
+  tr.innerHTML = '<td>' + r[0] + '</td><td>' + r[1] + '</td><td>' + r[2] + '</td><td><button type="button">Add</button></td>';
+  tr.querySelector('button').addEventListener('click', function (e) {
+    if (cart.indexOf(r[0]) < 0) cart.push(r[0]);
+    e.target.textContent = 'Added'; e.target.disabled = true;
+    document.getElementById('cart').textContent = cart.join(', ');
+    H.log('add', { item: r[0], cart: cart.slice() });
+  });
+  document.getElementById('tb').appendChild(tr);
+});
+document.getElementById('checkout').addEventListener('click', function () { H.log('checkout', { cart: cart.slice() }); });
+</script></body></html>

@@ -1,0 +1,23 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Deployment settings</title><link rel="stylesheet" href="style.css">
+<style>.combo{position:relative;width:260px}.combo .trigger{border:1px solid #b9c2d0;border-radius:6px;padding:6px 10px;background:#fff;cursor:pointer}.combo [role=listbox]{position:absolute;top:36px;left:0;right:0;background:#fff;border:1px solid #b9c2d0;border-radius:6px;z-index:5}.combo [role=option]{padding:6px 10px;cursor:pointer}.combo [role=option]:hover{background:#eef3fb}</style></head>
+<body><header><span class="brand">Acme Cloud</span><a href="index.html">Home</a></header>
+<main><h1>Deployment settings</h1><div class="card">
+<label id="rl">Region</label>
+<div class="combo"><div class="trigger" role="combobox" aria-labelledby="rl" aria-expanded="false" tabindex="0" id="trig">us-central1</div>
+<div role="listbox" class="hidden" id="lb"></div></div>
+<label for="rep">Replicas</label><input id="rep" type="text" value="2" style="width:120px">
+<div style="margin-top:14px"><button type="button" class="primary" id="apply">Apply</button> <span id="st" class="muted"></span></div>
+</div></main>
+<script src="harness.js"></script>
+<script>
+var REG = ['us-central1', 'us-east4', 'europe-west1', 'europe-west4', 'asia-northeast1'];
+var trig = document.getElementById('trig'), lb = document.getElementById('lb');
+REG.forEach(function (r) {
+  var o = document.createElement('div'); o.setAttribute('role', 'option'); o.textContent = r;
+  // Like many component libraries, options commit on mousedown, not click.
+  o.addEventListener('mousedown', function (e) { e.preventDefault(); trig.textContent = r; lb.classList.add('hidden'); trig.setAttribute('aria-expanded', 'false'); H.log('pick-region', { region: r }); });
+  lb.appendChild(o);
+});
+trig.addEventListener('mousedown', function (e) { e.preventDefault(); var open = lb.classList.toggle('hidden') === false; trig.setAttribute('aria-expanded', open ? 'true' : 'false'); });
+document.getElementById('apply').addEventListener('click', function () { H.log('apply', { region: trig.textContent, replicas: document.getElementById('rep').value }); document.getElementById('st').textContent = 'Applied.'; });
+</script></body></html>

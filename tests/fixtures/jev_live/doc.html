@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Docs</title><link rel="stylesheet" href="style.css"></head>
+<body><header><span class="brand">Acme Cloud Docs</span><a href="index.html">Home</a></header>
+<main><h1 id="h"></h1><div class="card" id="body"></div></main>
+<script src="harness.js"></script>
+<script>
+var id = new URLSearchParams(location.search).get('id') || '';
+var T = {
+  'k8s-quickstart': ['Kubernetes quickstart', 'Step 1: create a cluster with <code>acme k8s create demo</code>. Step 2: deploy with <code>acme k8s apply</code>. A default cluster has 3 nodes.'],
+  'k8s-autoscaling': ['Kubernetes autoscaling', 'The autoscaler adds up to 40 nodes per pool. Scale-down waits 10 minutes.'],
+  'api-limits': ['API rate limits', 'Each project may send 600 requests per minute. Burst capacity is 1,200 requests.'],
+};
+var t = T[id] || ['Not found', 'This page does not exist.'];
+document.title = t[0] + ' – Acme Docs';
+document.getElementById('h').textContent = t[0];
+document.getElementById('body').innerHTML = '<p>' + t[1] + '</p>';
+H.log('open-doc', { id: id });
+</script></body></html>

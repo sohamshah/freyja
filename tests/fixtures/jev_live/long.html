@@ -1,0 +1,11 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Activity log</title><link rel="stylesheet" href="style.css"></head>
+<body><header><span class="brand">Acme Cloud</span><a href="index.html">Home</a></header>
+<main><h1>Activity log</h1><table><thead><tr><th>#</th><th>When</th><th>Who</th><th>What</th></tr></thead><tbody id="tb"></tbody></table>
+<div class="card" style="margin-top:20px"><button id="export" type="button">Export CSV</button> <span id="st" class="muted"></span></div></main>
+<script src="harness.js"></script>
+<script>
+var who = ['ada', 'grace', 'alan', 'edsger', 'barbara', 'ken'], what = ['signed in', 'updated a cluster', 'rotated a key', 'viewed billing', 'deployed build', 'invited a member'];
+var tb = document.getElementById('tb');
+for (var i = 150; i >= 1; i--) { var tr = document.createElement('tr'); tr.innerHTML = '<td>' + i + '</td><td>Oct ' + (1 + i % 7) + ', ' + (8 + i % 10) + ':0' + (i % 6) + '</td><td>' + who[i % 6] + '</td><td>' + what[i % 6] + '</td>'; tb.appendChild(tr); }
+document.getElementById('export').addEventListener('click', function () { H.log('export'); document.getElementById('st').textContent = 'activity.csv downloaded'; });
+</script></body></html>

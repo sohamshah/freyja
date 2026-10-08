@@ -1,0 +1,25 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Notification settings</title><link rel="stylesheet" href="style.css"></head>
+<body><header><span class="brand">Acme Cloud</span><a href="index.html">Home</a></header>
+<main><h1>Account</h1><div class="card"><p>Notifications: <span id="summary"></span></p><button id="openm" type="button">Notification settings</button></div></main>
+<div class="backdrop hidden" id="bd"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="mt">
+  <h3 id="mt">Notification settings</h3>
+  <label><input type="checkbox" id="email"> Email alerts</label>
+  <label><input type="checkbox" id="sms"> SMS alerts</label>
+  <label><input type="checkbox" id="digest"> Weekly digest</label>
+  <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end"><button type="button" id="cancel">Cancel</button><button type="button" class="primary" id="savem">Save</button></div>
+</div></div>
+<script src="harness.js"></script>
+<script>
+var state = { email: true, sms: false, digest: false };
+function summary() { document.getElementById('summary').textContent = 'email ' + (state.email ? 'on' : 'off') + ', SMS ' + (state.sms ? 'on' : 'off') + ', digest ' + (state.digest ? 'on' : 'off'); }
+document.getElementById('openm').addEventListener('click', function () {
+  ['email', 'sms', 'digest'].forEach(function (k) { document.getElementById(k).checked = state[k]; });
+  document.getElementById('bd').classList.remove('hidden'); H.log('open-modal');
+});
+document.getElementById('cancel').addEventListener('click', function () { document.getElementById('bd').classList.add('hidden'); H.log('cancel'); });
+document.getElementById('savem').addEventListener('click', function () {
+  ['email', 'sms', 'digest'].forEach(function (k) { state[k] = document.getElementById(k).checked; });
+  document.getElementById('bd').classList.add('hidden'); summary(); H.log('save-settings', state);
+});
+summary();
+</script></body></html>

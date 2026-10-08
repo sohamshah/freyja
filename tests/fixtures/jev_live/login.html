@@ -1,0 +1,8 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Sign in – Acme Cloud</title><link rel="stylesheet" href="style.css"></head>
+<body style="display:flex;align-items:center;justify-content:center;height:100vh">
+<form class="card" id="f" style="width:340px"><h2>Sign in to continue</h2>
+<label for="u">Email</label><input id="u" type="email"><label for="p">Password</label><input id="p" type="password">
+<button class="primary" style="margin-top:12px;width:100%">Sign in</button><p class="muted">Your session expired.</p></form>
+<script src="harness.js"></script>
+<script>document.getElementById('f').addEventListener('submit', function (e) { e.preventDefault(); H.log('sign-in-attempt', { user: document.getElementById('u').value, pw_len: document.getElementById('p').value.length }); });</script>
+</body></html>

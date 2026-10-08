@@ -1,0 +1,28 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Acme Cloud Console</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<header><span class="brand">Acme Cloud</span>
+  <a href="catalog.html">Catalog</a><a href="rows.html">Billing</a><a href="inbox.html">Expenses</a>
+  <a href="long.html">Activity</a><a href="slow.html">Reports</a><a href="spa.html#overview">Team</a>
+  <a href="docs.html" target="_blank">Docs</a></header>
+<main>
+  <h1>Welcome back</h1>
+  <div class="card">
+    <form id="search" action="search.html">
+      <label for="q">Search documentation</label>
+      <input id="q" name="q" type="search" placeholder="Search docs, guides, APIs">
+      <button type="submit">Search</button>
+    </form>
+  </div>
+  <div class="card"><h3>Project</h3><p>Current project: <b>demo-project-123</b> · Region: us-central1</p>
+    <a href="form.html">Apply for the beta program</a> · <a href="dropdown.html">Deployment settings</a> · <a href="editor.html">Write a post</a> · <a href="modal.html">Notification settings</a> · <a href="login.html">Admin area</a></div>
+  <div class="card"><h3>Danger zone</h3><p class="muted">Deleting a workspace removes every project in it.</p>
+    <button class="danger" id="del" type="button">Delete workspace</button></div>
+</main>
+<script src="harness.js"></script>
+<script>
+document.getElementById('search').addEventListener('submit', function (e) {
+  e.preventDefault(); var q = document.getElementById('q').value;
+  H.log('search', { q: q }); location.href = H.withRun('search.html?q=' + encodeURIComponent(q));
+});
+document.getElementById('del').addEventListener('click', function () { H.log('delete-workspace'); alert('Workspace deleted'); });
+</script></body></html>

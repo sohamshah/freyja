@@ -1,0 +1,39 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Expenses – Needs memo</title><link rel="stylesheet" href="style.css"></head>
+<body><header><span class="brand">Acme Cloud</span><a href="index.html">Home</a></header>
+<main style="margin-right:400px"><h1>Expenses missing a memo</h1>
+<table><thead><tr><th>Merchant</th><th>Amount</th><th>Date</th><th>Memo</th><th></th></tr></thead><tbody id="tb"></tbody></table></main>
+<aside class="panel hidden" id="panel" role="dialog" aria-label="Expense details">
+  <h3 id="ph"></h3><p id="pinfo" class="muted"></p>
+  <label for="memo">Memo</label><textarea id="memo" rows="3"></textarea>
+  <div style="margin-top:10px;display:flex;gap:8px"><button class="primary" id="savememo">Save memo</button><button id="closep">Close</button></div>
+</aside>
+<script src="harness.js"></script>
+<script>
+var EXP = [['Uber', '$23.40', 'Sep 29'], ['Blue Bottle Coffee', '$6.50', 'Sep 30'], ['Delta Air Lines', '$412.18', 'Oct 1'], ['Uber', '$18.75', 'Oct 2'], ['Figma', '$45.00', 'Oct 3']];
+var memos = {}, current = -1;
+function render() {
+  var tb = document.getElementById('tb'); tb.innerHTML = '';
+  EXP.forEach(function (x, i) {
+    var tr = document.createElement('tr');
+    tr.innerHTML = '<td>' + x[0] + '</td><td>' + x[1] + '</td><td>' + x[2] + '</td><td>' + (memos[i] ? '✓ ' + memos[i] : '<span class="badge">Missing</span>') + '</td><td><button type="button">Open</button></td>';
+    tr.querySelector('button').addEventListener('click', function () { open(i); });
+    tb.appendChild(tr);
+  });
+}
+function open(i) {
+  current = i; var x = EXP[i];
+  document.getElementById('ph').textContent = x[0] + ' · ' + x[1];
+  document.getElementById('pinfo').textContent = 'Charged ' + x[2] + ' on the corporate card ending 4417.';
+  document.getElementById('memo').value = memos[i] || '';
+  document.getElementById('panel').classList.remove('hidden');
+  H.log('open', { i: i, merchant: x[0], amount: x[1] });
+}
+document.getElementById('savememo').addEventListener('click', function () {
+  if (current < 0) return;
+  var v = document.getElementById('memo').value.trim();
+  memos[current] = v; H.log('save-memo', { i: current, merchant: EXP[current][0], amount: EXP[current][1], memo: v });
+  document.getElementById('panel').classList.add('hidden'); current = -1; render();
+});
+document.getElementById('closep').addEventListener('click', function () { document.getElementById('panel').classList.add('hidden'); current = -1; });
+render();
+</script></body></html>

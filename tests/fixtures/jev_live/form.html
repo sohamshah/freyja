@@ -1,0 +1,24 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Beta program application</title><link rel="stylesheet" href="style.css"></head>
+<body><header><span class="brand">Acme Cloud</span><a href="index.html">Home</a></header>
+<main><h1>Apply for the beta program</h1>
+<form class="card" id="f" style="max-width:520px">
+  <label for="name">Full name</label><input id="name" type="text" autocomplete="off">
+  <label for="email">Work email</label><input id="email" type="email" autocomplete="off">
+  <label for="team">Team</label><select id="team"><option value="">Choose a team</option><option>Platform</option><option>Research</option><option>Design</option><option>Sales</option></select>
+  <label><input id="remote" type="checkbox"> I work remotely</label>
+  <label for="notes">Anything else we should know?</label><textarea id="notes" rows="3"></textarea>
+  <label for="pw">Account password (only for existing customers)</label><input id="pw" type="password">
+  <div style="margin-top:12px;display:flex;gap:8px">
+    <button type="button" id="save">Save draft</button>
+    <button type="submit" class="primary">Submit application</button>
+  </div>
+  <p id="status" class="muted"></p>
+</form></main>
+<script src="harness.js"></script>
+<script>
+function vals() { return { name: fname.value, email: email.value, team: team.value, remote: remote.checked, notes: notes.value, pw_len: pw.value.length }; }
+var fname = document.getElementById('name'), email = document.getElementById('email'), team = document.getElementById('team'),
+    remote = document.getElementById('remote'), notes = document.getElementById('notes'), pw = document.getElementById('pw');
+document.getElementById('save').addEventListener('click', function () { H.log('save-draft', vals()); document.getElementById('status').textContent = 'Draft saved.'; });
+document.getElementById('f').addEventListener('submit', function (e) { e.preventDefault(); H.log('submit', vals()); document.getElementById('status').textContent = 'Application submitted. Thank you!'; });
+</script></body></html>

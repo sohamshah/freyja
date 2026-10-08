@@ -1,0 +1,11 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Reports</title><link rel="stylesheet" href="style.css"></head>
+<body><header><span class="brand">Acme Cloud</span><a href="index.html">Home</a></header>
+<main><h1>Reports</h1><div class="card" id="box"><p class="muted">Generating the quarterly report…</p></div></main>
+<script src="harness.js"></script>
+<script>
+setTimeout(function () {
+  var box = document.getElementById('box');
+  box.innerHTML = '<p>Quarterly report ready: Q3 revenue $4.2M, up 12%.</p><button type="button" id="dl" class="primary">Download report</button>';
+  document.getElementById('dl').addEventListener('click', function () { H.log('download'); box.insertAdjacentHTML('beforeend', '<p>report-q3.pdf downloaded</p>'); });
+}, 2500);
+</script></body></html>

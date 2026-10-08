@@ -1,0 +1,20 @@
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #1d2330; background: #f5f6f8; }
+header { display: flex; align-items: center; gap: 18px; padding: 10px 20px; background: #1f3a5f; color: #fff; }
+header a { color: #dce7f7; text-decoration: none; }
+header .brand { font-weight: 700; margin-right: 12px; }
+main { padding: 20px; max-width: 1100px; }
+.card { background: #fff; border: 1px solid #dde1e8; border-radius: 8px; padding: 14px; margin: 10px 0; }
+.btn, button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid #b9c2d0; background: #fff; cursor: pointer; }
+.btn.primary, button.primary { background: #2f6fde; border-color: #2f6fde; color: #fff; }
+.btn.danger, button.danger { background: #c62f2f; border-color: #c62f2f; color: #fff; }
+table { border-collapse: collapse; width: 100%; background: #fff; }
+td, th { border-bottom: 1px solid #e3e6eb; padding: 8px; text-align: left; }
+.muted { color: #6b7380; }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; background: #eef1f6; }
+.panel { position: fixed; right: 0; top: 0; bottom: 0; width: 380px; background: #fff; border-left: 1px solid #ccd; padding: 18px; box-shadow: -4px 0 12px rgba(0,0,0,.08); }
+.hidden { display: none !important; }
+.backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: center; justify-content: center; }
+.modal { background: #fff; border-radius: 10px; padding: 20px; width: 420px; }
+label { display: block; margin: 8px 0 4px; }
+input[type=text], input[type=email], input[type=search], textarea, select { font: inherit; padding: 6px 8px; border: 1px solid #b9c2d0; border-radius: 6px; width: 100%; }

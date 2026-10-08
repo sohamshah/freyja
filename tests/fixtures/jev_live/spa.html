@@ -1,0 +1,22 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Team</title><link rel="stylesheet" href="style.css">
+<style>.tabs{display:flex;gap:4px;border-bottom:1px solid #ccd;margin-bottom:12px}.tabs [role=tab]{padding:8px 14px;cursor:pointer;border:1px solid transparent;border-bottom:none}.tabs [aria-selected=true]{border-color:#ccd;background:#fff;font-weight:600}</style></head>
+<body><header><span class="brand">Acme Cloud</span><a href="index.html">Home</a></header>
+<main><h1>Team</h1>
+<div class="tabs" role="tablist"><div role="tab" data-t="overview">Overview</div><div role="tab" data-t="members">Members</div><div role="tab" data-t="billing">Billing</div></div>
+<div id="view" class="card"></div></main>
+<script src="harness.js"></script>
+<script>
+var MEMBERS = [['Ada Lovelace', 'Owner'], ['Alan Turing', 'Editor'], ['Grace Hopper', 'Admin'], ['Edsger Dijkstra', 'Viewer'], ['Barbara Liskov', 'Editor'], ['Ken Thompson', 'Viewer'], ['Margaret Hamilton', 'Admin'], ['Donald Knuth', 'Viewer']];
+var VIEWS = {
+  overview: function () { return '<p>8 members · 3 projects · created March 2024.</p>'; },
+  members: function () { return '<table><tr><th>Name</th><th>Role</th></tr>' + MEMBERS.map(function (m) { return '<tr><td>' + m[0] + '</td><td>' + m[1] + '</td></tr>'; }).join('') + '</table>'; },
+  billing: function () { return '<p>Plan: Team · $40 per seat per month · next invoice Nov 1.</p>'; },
+};
+function show() {
+  var t = (location.hash || '#overview').slice(1); if (!VIEWS[t]) t = 'overview';
+  document.querySelectorAll('[role=tab]').forEach(function (el) { el.setAttribute('aria-selected', el.dataset.t === t ? 'true' : 'false'); });
+  document.getElementById('view').innerHTML = VIEWS[t](); H.log('view', { tab: t });
+}
+document.querySelectorAll('[role=tab]').forEach(function (el) { el.addEventListener('click', function () { location.hash = el.dataset.t; }); });
+window.addEventListener('hashchange', show); show();
+</script></body></html>
