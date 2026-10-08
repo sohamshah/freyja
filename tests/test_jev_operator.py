@@ -1253,3 +1253,262 @@ def test_the_run_stops_at_its_wall_clock_budget(tmp_path, monkeypatch):
     res = asyncio.run(op.run())
     assert res.status == "budget_exhausted"
     assert "limit" in res.summary
+
+
+# ─── stuck detection, finish rows, surface, handoff ──────────────────
+
+def read_log(tmp_path, run_id):
+    return [json.loads(l) for l in (tmp_path / f"{run_id}.jsonl").read_text().splitlines()]
+
+
+def _obs(tree=None, display="0"):
+    return build_observation(tree or calculator_tree(display), app_name="Calculator", bundle="com.apple.calculator", pid=100, read_ms=5)
+
+
+def test_meaningful_change_ignores_jitter_and_field_churn():
+    from bridge.tools.jev_operator.observe import meaningful_change
+
+    a = _obs()
+    assert not meaningful_change(a, _obs())
+    # one element disappearing is jitter, not progress
+    tree = calculator_tree()
+    kids = tree["children"][1]["children"][1]["children"]  # the keypad buttons
+    j = json.loads(json.dumps(tree))
+    j["children"][1]["children"][1]["children"] = kids[:-1]
+    assert not meaningful_change(a, _obs(j))
+    # a new line of screen text is progress
+    assert meaningful_change(a, _obs(display="12"))
+    # a dialog opening is progress
+    b = _obs()
+    b.dialog = {"title": "Save", "text": ""}
+    assert meaningful_change(a, b)
+    # many elements appearing is progress
+    k = json.loads(json.dumps(tree))
+    k["children"][1]["children"][1]["children"] = kids + [node("AXButton", f"Extra {i}") for i in range(5)]
+    assert meaningful_change(a, _obs(k))
+
+
+def test_a_value_that_churns_does_not_reset_the_stuck_streak(tmp_path, monkeypatch):
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+
+    class Churn(FakeCalculator):
+        n = 0
+
+        def read_ax_tree(self, pid, max_depth=8):
+            self.n += 1
+            tree = calculator_tree(self.display)
+            tree["children"][0]["children"][0]["value"] = f"auto{self.n}"  # fingerprint moves every read
+            return json.dumps(tree)
+
+        def click(self, x, y, **kw):
+            self.clicks.append("noop")
+
+    async def fake_complete(messages, system_prompt, max_tokens):
+        return json.dumps({"status": "give_up", "subgoal": None, "direct_action": None, "note": "nothing works"})
+
+    op, _ = make_operator(Churn(), ScriptedProvider([("click", "1"), ("click", "2"), ("click", "3")] * 3), llm=LLMHelper(fake_complete, max_calls=3))
+    res = asyncio.run(op.run())
+    assert res.status == "blocked"
+    assert len(res.history) == 3
+
+
+def test_same_action_three_times_forces_one_replan_then_blocks(tmp_path, monkeypatch):
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+
+    class Inert(FakeCalculator):
+        def click(self, x, y, **kw):
+            self.clicks.append("noop")
+
+    reasons: list[str] = []
+    subgoals: list[Any] = []
+
+    async def fake_complete(messages, system_prompt, max_tokens):
+        payload = json.loads(messages[0].content)
+        reasons.append(payload["why_help_was_requested"])
+        subgoals.append(payload["current_subgoal"])
+        return json.dumps({"status": "continue", "subgoal": "press the same thing", "direct_action": None, "note": ""})
+
+    llm = LLMHelper(fake_complete, max_calls=6)
+    op, _ = make_operator(Inert(), ScriptedProvider([("click", "1")] * 20), llm=llm, max_steps=20)
+    op._subgoal = "stale plan"
+    res = asyncio.run(op.run())
+    assert len(reasons) == 1 and "repeated with no effect" in reasons[0]
+    assert subgoals == [None], "a repetition replan clears the stale sub-goal first"
+    assert res.status == "blocked" and "repeated" in res.summary
+    assert len(res.history) == 6
+
+
+def test_a_finish_row_is_written_when_the_run_is_cancelled(tmp_path, monkeypatch):
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+
+    class Slow(FakeCalculator):
+        def read_ax_tree(self, pid, max_depth=8):
+            import time as _t
+            _t.sleep(0.3)
+            return super().read_ax_tree(pid, max_depth)
+
+    op, _ = make_operator(Slow(), ScriptedProvider([("click", "7")] * 20))
+
+    async def go():
+        task = asyncio.create_task(op.run())
+        await asyncio.sleep(0.1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(go())
+    rows = read_log(tmp_path, op.run_id)
+    assert rows[-1]["event"] == "finish" and rows[-1]["status"] == "cancelled" and rows[-1]["reason"]
+    assert sum(1 for r in rows if r["event"] == "finish") == 1
+
+
+def test_a_finish_row_is_written_when_the_run_crashes(tmp_path, monkeypatch):
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+
+    class Boom(FakeCalculator):
+        def list_windows(self, *, include_helpers=False):
+            raise RuntimeError("x")
+
+    op, _ = make_operator(FakeCalculator(), ScriptedProvider([("click", "7")]))
+
+    async def boom(*a, **k):
+        raise ValueError("kaboom")
+
+    op._resolve_target = boom
+    with pytest.raises(ValueError):
+        asyncio.run(op.run())
+    last = read_log(tmp_path, op.run_id)[-1]
+    assert last["event"] == "finish" and last["status"] == "error" and "kaboom" in last["reason"]
+
+
+def test_rows_and_footer_carry_the_surface(tmp_path, monkeypatch):
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+    op, _ = make_operator(FakeCalculator(), ScriptedProvider([("click", "1"), ("done", None)]))
+    res = asyncio.run(op.run())
+    rows = read_log(tmp_path, res.run_id)
+    assert {r["event"] for r in rows} >= {"decision", "outcome", "finish"}
+    assert all(r["surface"] == "ax" for r in rows)
+    assert "surface=ax" in res.footer() and res.surface == "ax"
+
+
+def test_handoff_on_a_budget_exhausted_run(tmp_path, monkeypatch):
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+    op, _ = make_operator(FakeCalculator(), ScriptedProvider([("click", "7")] * 50), max_steps=2)
+    res = asyncio.run(op.run())
+    assert res.status == "budget_exhausted"
+    h = res.handoff()
+    assert h.startswith("[handoff]") and "surface: ax" in h
+    assert "AXButton" in h
+    assert "ax read_ms: median=" in h and "next: narrow the goal" in h
+    done, _ = make_operator(FakeCalculator(), ScriptedProvider([("done", None)]))
+    assert asyncio.run(done.run()).handoff() == ""
+
+
+def test_handoff_table_is_trimmed_and_unreadable_trees_get_the_ui_free_hint():
+    from bridge.tools.jev_operator.loop import RunResult
+
+    base = dict(summary="s", steps=0, jev_calls=0, jev_ms=[], llm_calls=0, llm_ms=0, llm_tokens=(0, 0), elapsed_s=1.0, history=[], run_id="r", log_path="/x.jsonl")
+    big = RunResult(status="blocked", final_table="\n".join(f"row{i}" for i in range(200)), final_screen_text="x" * 500, last_frame_path="/f.jpg", code="ax_unreadable", **base)
+    h = big.handoff()
+    assert "row59" in h and "row60" not in h
+    assert "last frame: /f.jpg" in h and "x" * 301 not in h
+    assert "bash/osascript/open" in h
+    conf = RunResult(status="needs_confirmation", pending_action="click Delete", **base)
+    assert "click Delete" in conf.handoff()
+
+
+# ─── per-app notes ───────────────────────────────────────────────────
+
+def test_app_notes_reads_the_jev_app_skill(tmp_path, monkeypatch):
+    from bridge.tools.jev_operator.notes import app_notes, app_slug
+
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path / "home")
+    skill = tmp_path / "ws" / ".freyja" / "skills" / "jev-app-calculator"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: jev-app-calculator\ndescription: Calculator quirks\n---\n\nUse the keypad. " + "x" * 3000
+    )
+    assert app_slug("com.apple.Calculator") == "calculator" and app_slug("Mail & News") == "mail-news"
+    got = app_notes("com.apple.calculator", workspace=tmp_path / "ws")
+    assert got.startswith("Use the keypad.") and len(got) == 2000
+    assert app_notes("Calculator", workspace=tmp_path / "ws")
+    assert app_notes("Pages", workspace=tmp_path / "ws") == ""
+    assert app_notes("Calculator", store=object()) == "", "a broken store never raises"
+
+
+def test_notes_reach_jev_and_the_llm_doors(tmp_path, monkeypatch):
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.app_notes", lambda name, workspace=None: "Equals is the big orange key.")
+    payloads: list[dict[str, Any]] = []
+
+    async def fake_complete(messages, system_prompt, max_tokens):
+        payloads.append(json.loads(messages[0].content))
+        return json.dumps({"satisfied": True, "summary": "ok", "subgoal": None})
+
+    provider = ScriptedProvider([("done", None)])
+    op, _ = make_operator(FakeCalculator(), provider, llm=LLMHelper(fake_complete), notes_workspace=str(tmp_path))
+    res = asyncio.run(op.run())
+    assert res.status == "done"
+    instr = provider.calls[0]["questions"]["operation"].instructions
+    assert "Notes from earlier runs on this app (may be stale):\nEquals is the big orange key." in instr
+    assert payloads and payloads[0]["Notes from earlier runs on this app (may be stale)"].startswith("Equals")
+    plain, _ = make_operator(FakeCalculator(), ScriptedProvider([("done", None)]))
+    asyncio.run(plain.run())
+    assert "Notes from earlier" not in plain.provider.calls[0]["questions"]["operation"].instructions
+
+
+# ─── tool: background mode ───────────────────────────────────────────
+
+def _tool(monkeypatch, tmp_path, result_status="blocked"):
+    import sys
+
+    from bridge.tools import jev_computer_use_tool as mod
+    from bridge.tools.jev_operator.loop import RunResult
+    from bridge.tools.sub_agent_registry import SubAgentRegistry
+
+    monkeypatch.setitem(sys.modules, "freyja_native", SimpleNamespace())
+    monkeypatch.setattr(mod, "TypeSafeProvider", lambda: SimpleNamespace(available=True))
+    release = asyncio.Event()
+
+    class FakeOp:
+        def __init__(self, cfg, **kw):
+            self.cfg = cfg
+
+        async def run(self):
+            await release.wait()
+            return RunResult(status=result_status, summary="stuck", steps=1, jev_calls=1, jev_ms=[5], llm_calls=0, llm_ms=0,
+                             llm_tokens=(0, 0), elapsed_s=1.0, history=[], run_id="r", log_path="/x", final_table="1 AXButton 'Go'", read_ms=[10, 30])
+
+    monkeypatch.setattr(mod, "Operator", FakeOp)
+    terminal: list[Any] = []
+    spec = SimpleNamespace(registry=SubAgentRegistry(), emit_event=lambda e: None, parent_session_id="p", parent_workspace=str(tmp_path),
+                           on_child_terminal=lambda r: terminal.append(r), build_provider=lambda *a: None)
+    return mod.JevComputerUseTool(sub_spec=spec, llm_model="x"), spec, terminal, release
+
+
+def test_the_tool_runs_in_the_background_and_wakes_the_parent(tmp_path, monkeypatch):
+    async def go():
+        tool, spec, terminal, release = _tool(monkeypatch, tmp_path)
+        out = await asyncio.wait_for(tool.execute("c1", {"goal": "do it", "app": "Calculator", "use_llm": False}), 2)
+        assert "background" in out.content and "inbox" in out.content and not out.is_error
+        rec = spec.registry.list_all()[0]
+        assert rec.is_running and rec.notify_parent and rec.mode == "background"
+        again = await tool.execute("c2", {"goal": "second", "use_llm": False})
+        assert again.is_error and "another computer-use session" in again.content
+        release.set()
+        await asyncio.wait_for(rec.bg_task, 2)
+        assert terminal == [rec] and not rec.is_running
+        assert "[handoff]" in rec.result and "next:" in rec.result
+
+    asyncio.run(go())
+
+
+def test_the_tool_blocks_when_wait_is_true(tmp_path, monkeypatch):
+    async def go():
+        tool, spec, terminal, release = _tool(monkeypatch, tmp_path, result_status="done")
+        release.set()
+        out = await tool.execute("c1", {"goal": "do it", "wait": True, "use_llm": False})
+        assert out.content.startswith("stuck") and "[handoff]" not in out.content
+        assert terminal == []
+
+    asyncio.run(go())

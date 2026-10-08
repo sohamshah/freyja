@@ -36,7 +36,9 @@ from bridge.tools.jev_operator.observe import (
     build_observation,
     diff_observations,
     literals_from_goal,
+    meaningful_change,
 )
+from bridge.tools.jev_operator.notes import app_notes
 
 SELF_BUNDLE = "co.freyja.desktop"
 RUN_DIR = Path(
@@ -85,6 +87,12 @@ _IRREVERSIBLE = re.compile("|".join(IRREVERSIBLE_PATTERNS), re.I)
 # only produces false stops (TextEdit's "Format" menu, a file named "Remove me.txt").
 GATED_ROLES = {"AXButton", "AXMenuItem", "AXLink", "AXMenuButton", "AXToolbarButton"}
 MAX_VERIFY_ROUNDS = 2
+# The same action this many times in a row with no meaningful change forces a
+# replan; the same thing again after that ends the run blocked.
+MAX_REPEATS = 3
+HANDOFF_STATUSES = ("blocked", "budget_exhausted", "error", "needs_confirmation")
+HANDOFF_ROWS = 60
+HANDOFF_SCREEN_CHARS = 300
 
 APP_DIRS = [
     "/Applications",
@@ -143,6 +151,8 @@ class OperatorConfig:
     # Wall-clock ceiling for the whole run. The tool is foreground, so the
     # parent turn waits for it: an unbounded run held a session for 2.9 h.
     max_runtime_s: float = 900.0
+    # Workspace whose skills may hold `jev-app-<slug>` notes; None skips the lookup.
+    notes_workspace: str | None = None
 
 
 @dataclass
@@ -161,14 +171,65 @@ class RunResult:
     log_path: str
     pending_action: str | None = None
     final_screen_text: str = ""
+    surface: str = Observation.SURFACE
+    final_table: str = ""
+    read_ms: list[int] = field(default_factory=list)
+    last_frame_path: str | None = None
+    # Why a blocked run stopped, when the tool can tell: "ax_unreadable".
+    code: str = ""
 
     def footer(self) -> str:
         med = int(statistics.median(self.jev_ms)) if self.jev_ms else 0
         return (
-            f"[jev_computer_use] status={self.status} steps={self.steps} jev_calls={self.jev_calls} "
+            f"[jev_computer_use] status={self.status} surface={self.surface} steps={self.steps} "
+            f"jev_calls={self.jev_calls} "
             f"jev_median_ms={med} llm_calls={self.llm_calls} llm_ms={self.llm_ms} "
             f"elapsed={self.elapsed_s:.1f}s log={self.log_path}"
         )
+
+    def next_hint(self) -> str:
+        if self.status == "needs_confirmation":
+            return (
+                f"confirm with the person, then re-run with allow_irreversible=true "
+                f"(pending: {self.pending_action})"
+            )
+        if self.status == "budget_exhausted":
+            return "narrow the goal or continue from the last state"
+        if self.status == "blocked" and self.code == "ax_unreadable":
+            return (
+                "try computer_use (screenshot-based) or do it without the UI "
+                "via bash/osascript/open"
+            )
+        if self.status == "blocked":
+            return (
+                "read the summary for what stopped it; if a dialog or login is in the way ask the "
+                "person, otherwise try computer_use or do it without the UI via bash/osascript/open"
+            )
+        return "retry once with a narrower goal; if it fails again use computer_use or bash/osascript/open"
+
+    def handoff(self) -> str:
+        """What the caller needs to take over after a run that did not finish
+        cleanly; empty for statuses that carry no handoff."""
+        if self.status not in HANDOFF_STATUSES:
+            return ""
+        rows = self.final_table.split("\n") if self.final_table else []
+        lines = ["[handoff]", f"surface: {self.surface}"]
+        if rows:
+            more = f" (first {HANDOFF_ROWS} of {len(rows)})" if len(rows) > HANDOFF_ROWS else ""
+            lines.append(f"elements{more}:")
+            lines.extend(rows[:HANDOFF_ROWS])
+        else:
+            lines.append("elements: none exposed")
+        screen = " | ".join(self.final_screen_text.split("\n"))[:HANDOFF_SCREEN_CHARS]
+        lines.append(f"screen text: {screen}" if screen else "screen text: (none)")
+        if self.last_frame_path:
+            lines.append(f"last frame: {self.last_frame_path}")
+        if self.read_ms:
+            lines.append(
+                f"ax read_ms: median={int(statistics.median(self.read_ms))} max={max(self.read_ms)}"
+            )
+        lines.append(f"next: {self.next_hint()}")
+        return "\n".join(lines)
 
 
 @dataclass
@@ -216,6 +277,15 @@ class Operator:
         self._window_checks: set[str] = set()
         self._shot_geometry: tuple[tuple[float, ...], int, int] | None = None
         self._ax_fail_streak = 0
+        self.surface = Observation.SURFACE
+        self.read_ms: list[int] = []
+        self._last_obs: Observation | None = None
+        self._last_frame: tuple[bytes, str] | None = None
+        self._finish_logged = False
+        self._notes = ""
+        self._repeat_key: str | None = None
+        self._repeat_count = 0
+        self._repeat_replanned = False
 
     async def _say(self, text: str) -> None:
         if self.on_step is None:
@@ -229,7 +299,10 @@ class Operator:
             RUN_DIR.mkdir(parents=True, exist_ok=True)
             with self.log_path.open("a", encoding="utf-8") as f:
                 f.write(
-                    json.dumps({"run_id": self.run_id, "t": time.time(), **row}, ensure_ascii=False)
+                    json.dumps(
+                        {"run_id": self.run_id, "t": time.time(), "surface": self.surface, **row},
+                        ensure_ascii=False,
+                    )
                     + "\n"
                 )
         except OSError:
@@ -372,6 +445,8 @@ class Operator:
             pid=target.pid,
             read_ms=read_ms,
         )
+        self.read_ms.append(read_ms)
+        self._last_obs = obs
         self.actuator.window_frames = obs.window_frames
         self._seen_windows.update(w for w in obs.windows if w != "(untitled window)")
         if self._start_windows is None:
@@ -403,6 +478,34 @@ class Operator:
 
     async def run(self) -> RunResult:
         self._t_start = time.perf_counter()
+        try:
+            return await self._run()
+        except BaseException as exc:  # a cancelled or crashed run still leaves a finish row
+            cancelled = isinstance(exc, asyncio.CancelledError)
+            self._log_finish(
+                "cancelled" if cancelled else "error",
+                "The run task was cancelled before it finished."
+                if cancelled
+                else f"{type(exc).__name__}: {exc}",
+            )
+            raise
+
+    async def _load_notes(self, target: Target) -> str:
+        if not self.cfg.notes_workspace:
+            return ""
+        names = [target.bundle, target.name]
+        for name in names:
+            try:
+                got = await asyncio.wait_for(
+                    asyncio.to_thread(app_notes, name, workspace=self.cfg.notes_workspace), 3.0
+                )
+            except Exception:  # noqa: BLE001
+                got = ""
+            if got:
+                return got
+        return ""
+
+    async def _run(self) -> RunResult:
         cfg = self.cfg
         finish = self._finish
         literals = literals_from_goal(cfg.goal)
@@ -437,6 +540,7 @@ class Operator:
                 "(Freyja itself, or an app with no windows). Pass `app`.",
             )
         self.actuator.set_target(target.pid, target.bundle, target.name)
+        self._notes = await self._load_notes(target)
         if not cfg.dry_run:
             await self.actuator.focus(target.bundle)
         await self._say(f"target: {target.name} ({target.bundle}, pid {target.pid})")
@@ -467,6 +571,7 @@ class Operator:
                     "reads in a row (timed out or failed), so the operator cannot see "
                     "its screen. The app may be busy or hung; try again later or use "
                     "`computer_use` with screenshots.",
+                    code="ax_unreadable",
                 )
             if self._settle_next:
                 obs = await self._observe_settled(target, obs)
@@ -485,19 +590,43 @@ class Operator:
 
             if pending is not None and before is not None:
                 changed, diff = diff_observations(before, obs)
+                # `changed` (any fingerprint movement) is for the log and the history;
+                # stuck detection uses only changes that show the action did something.
+                meaningful = meaningful_change(before, obs)
                 entry = {**pending, "changed": changed, "diff": diff}
                 self.history.append(entry)
                 if pending.get("kind") not in ("wait", "scroll_down", "scroll_up"):
-                    stuck_streak = 0 if changed else stuck_streak + 1
-                if changed:
+                    stuck_streak = 0 if meaningful else stuck_streak + 1
+                    self._track_repeat(pending, meaningful)
+                if meaningful:
                     self._replans_since_progress = 0
                 await self._say(f"  → {'changed' if changed else 'no change'}: {diff}")
-                self._log({"event": "outcome", "step": step, **entry})
+                self._log({"event": "outcome", "step": step, **entry, "meaningful": meaningful})
                 pending = None
                 if self._subgoal:
                     self._subgoal_steps += 1
                     if self._subgoal_steps >= 6:
                         self._subgoal = None
+
+            if self._repeat_count >= MAX_REPEATS:
+                action = self._repeat_key
+                self._repeat_count = 0
+                stuck_streak = 0
+                if self._repeat_replanned:
+                    return self._finish_blocked(
+                        obs, f"{action} repeated {MAX_REPEATS} more times with no effect after a replan"
+                    )
+                self._repeat_replanned = True
+                self._subgoal = None  # a repeating action means the plan behind it is stale
+                out = await self._replan(
+                    obs,
+                    target,
+                    reason=f"this action repeated with no effect: {action} "
+                    f"({MAX_REPEATS} times in a row)",
+                )
+                if out is not None:
+                    return out
+                continue
 
             if stuck_streak >= 3:
                 stuck_streak = 0
@@ -520,6 +649,7 @@ class Operator:
                     launch_candidates=launch_cands,
                     thresholds=cfg.thresholds,
                     model=cfg.jev_model,
+                    notes=self._notes,
                 )
             except DecisionError as exc:
                 return finish("error", f"Decision provider failed: {exc}")
@@ -789,9 +919,53 @@ class Operator:
                 return e.label
         return None
 
+    def _track_repeat(self, pending: dict[str, Any], meaningful: bool) -> None:
+        """Count the same action in a row that changed nothing meaningful."""
+        if meaningful:
+            self._repeat_key, self._repeat_count, self._repeat_replanned = None, 0, False
+            return
+        key = f"{pending.get('kind')}: {pending.get('action')}"
+        self._repeat_count = self._repeat_count + 1 if key == self._repeat_key else 1
+        self._repeat_key = key
+
+    def _save_last_frame(self) -> str | None:
+        if self._last_frame is None:
+            return None
+        data, mime = self._last_frame
+        ext = "png" if "png" in mime else "jpg"
+        path = RUN_DIR / f"{self.run_id}-last-frame.{ext}"
+        try:
+            RUN_DIR.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        except OSError:
+            return None
+        return str(path)
+
+    def _log_finish(self, status: str, summary: str, footer: str = "") -> None:
+        if self._finish_logged:
+            return
+        self._finish_logged = True
+        self._log(
+            {
+                "event": "finish",
+                "status": status,
+                "reason": summary,
+                "summary": summary,
+                "footer": footer,
+                "steps": len(self.history),
+            }
+        )
+
     def _finish(
-        self, status: str, summary: str, *, pending: str | None = None, screen: str = ""
+        self,
+        status: str,
+        summary: str,
+        *,
+        pending: str | None = None,
+        screen: str = "",
+        code: str = "",
     ) -> RunResult:
+        last = self._last_obs
         res = RunResult(
             status=status,
             summary=summary,
@@ -808,9 +982,14 @@ class Operator:
             run_id=self.run_id,
             log_path=str(self.log_path),
             pending_action=pending,
-            final_screen_text=screen,
+            final_screen_text=screen or (last.screen_text if last else ""),
+            surface=self.surface,
+            final_table=last.table() if last else "",
+            read_ms=list(self.read_ms),
+            last_frame_path=self._save_last_frame() if status in HANDOFF_STATUSES else None,
+            code=code or ("ax_unreadable" if last is not None and not last.elements and status == "blocked" else ""),
         )
-        self._log({"event": "finish", "status": status, "summary": summary, "footer": res.footer()})
+        self._log_finish(status, summary, res.footer())
         return res
 
     # ─── doors ───────────────────────────────────────────────────────
@@ -855,6 +1034,7 @@ class Operator:
         frame = await self.actuator.frame("replan")
         if frame is None or not frame.width or not frame.height:
             return None
+        self._last_frame = (frame.data, frame.mime_type)
         b = win.bounds
         return frame, (float(b.x), float(b.y), float(b.w), float(b.h))
 
@@ -888,6 +1068,7 @@ class Operator:
             screenshot=shot[0].data if shot else None,
             screenshot_size=(shot[0].width, shot[0].height) if shot else None,
             media_type=shot[0].mime_type if shot else "image/jpeg",
+            app_notes=self._notes,
         )
         self._log_llm(since)
         self._log({"event": "replan", "reason": reason, "out": out})
@@ -1047,6 +1228,7 @@ class Operator:
             window=obs.focused_window,
             windows_at_start=self._start_windows or [],
             windows_now=obs.windows,
+            app_notes=self._notes,
         )
         self._log_llm(since)
         self._log({"event": "verify", "out": out})

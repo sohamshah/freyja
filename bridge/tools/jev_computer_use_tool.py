@@ -23,6 +23,7 @@ from typing import Any
 from bridge.decisions.provider import TypeSafeProvider
 from bridge.tools.base import ToolDefinition, ToolResult, ToolTier
 from bridge.tools.computer_tools import ComputerToolSpec
+from bridge.tools.computer_use_tool import _SCREEN_DRIVERS
 from bridge.tools.jev_operator.handoff import (
     LLMHelper,
     completer_from_provider,
@@ -38,6 +39,17 @@ DEFAULT_MAX_STEPS = 40
 # A run needs its app frontmost and owns the single keyboard and mouse, so it
 # cannot share the screen with another computer-use session.
 MAX_ACTIVE_COMPUTER_SESSIONS = 1
+
+
+def render_result(result: Any) -> str:
+    """Summary, footer, pending action, and (for runs that did not finish cleanly) the handoff."""
+    text = result.summary + "\n\n" + result.footer()
+    if result.pending_action:
+        text += f"\npending_action: {result.pending_action}"
+    handoff = result.handoff()
+    if handoff:
+        text += "\n\n" + handoff
+    return text
 
 
 class JevComputerUseTool:
@@ -57,19 +69,35 @@ class JevComputerUseTool:
             tier=ToolTier.HOT,
             description="""Complete a goal in one macOS application using a fast decision-model loop.
 
+Choose the lightest route that works, in this order:
+  1. Do it without the UI: bash, osascript, `open`, a URL, an API.
+  2. `jev_computer_use` (this tool) for apps with labelled native controls:
+     Finder, System Settings, Calculator, Notes, Mail, Safari pages with real
+     form controls, menus and dialogs.
+  3. `computer_use` (screenshot-based) for custom-drawn or canvas UIs, games,
+     and apps whose accessibility tree is empty or unreadable. Use it when this
+     tool returns `blocked` with a note that the tree could not be read.
+
 Each step reads the app's accessibility tree, asks Jev (a ~200 ms decision
 model) which listed control to click, type into, or which key to press, acts,
 and diffs the tree to confirm the effect. An LLM is consulted only to compose
-text for a field, to replan when stuck, or to verify the end state, so typical
-steps take well under a second. Prefer this over `computer_use` for tasks in
-native apps with labelled controls (Finder, System Settings, Calculator,
-Notes, Mail, Safari pages with real form controls, menus and dialogs). Fall
-back to `computer_use` for custom-drawn or canvas UIs, games, or when this
-tool returns `blocked` with a note that the accessibility tree was empty.
+text for a field, to replan when stuck, or to verify the end state.
+
+It runs in the BACKGROUND by default: the call returns at once with a run id,
+and the result (summary plus a handoff block when it did not finish cleanly)
+arrives in your inbox. While it runs it owns the screen, so do not use your own
+click/type/scroll tools. Pass `wait=true` only when you must block for the
+result. A returned `done` is a hint, not proof: check it against the returned
+text or a screenshot before telling the person it worked.
+
+Write the goal well. Put the person's exact wording and every literal value
+(names, numbers, paths, text to type) in the goal, quoting text that must be
+typed verbatim (e.g. type "hello world"). Merge consecutive micro-steps into
+one goal ("open Notes, create a note titled "Plan" with the body ...") instead
+of making one call per click.
 
 Parameters:
-  * `goal`: one app-scoped goal with visible success criteria. Quote any text
-    that must be typed verbatim (e.g. type "hello world").
+  * `goal`: one app-scoped goal with visible success criteria
   * `app`: bundle id or app name to operate on (launched if not running).
     Pass it. Without it the run uses the frontmost app, and stops if that is
     Freyja itself.
@@ -80,6 +108,8 @@ Parameters:
     permits every such control for that whole run, not only the one reported.
   * `use_llm`: default true. Set false for a pure Jev run (no field text
     composition, no replanning, no end-state check, template summary).
+  * `wait`: default false. True blocks until the run ends and returns its
+    result directly.
 
 Input is only sent while the target app is frontmost and owns the window under
 the pointer. If another app takes focus or covers the control, the run stops
@@ -107,6 +137,10 @@ with status=blocked instead of clicking into the other app.
                     "use_llm": {
                         "type": "boolean",
                         "description": "Allow LLM handoff doors (default true)",
+                    },
+                    "wait": {
+                        "type": "boolean",
+                        "description": "Block until the run ends instead of running in the background (default false)",
                     },
                 },
                 "required": ["goal"],
@@ -158,14 +192,18 @@ with status=blocked instead of clicking into the other app.
         max_steps = max(1, min(max_steps, 120))
         allow_irreversible = bool(arguments.get("allow_irreversible", False))
         use_llm = bool(arguments.get("use_llm", True))
+        wait = bool(arguments.get("wait", False))
 
         self._counter += 1
         sub_id = f"jev_{int(time.time() * 1000):x}_{self._counter}"
         label = f"jev: {goal[:48]}{'…' if len(goal) > 48 else ''}"
         record = self._sub_spec.registry.register(
-            id=sub_id, label=label, task=goal, mode="foreground"
+            id=sub_id, label=label, task=goal, mode="foreground" if wait else "background"
         )
         record.agent_type_name = "computer"
+        if not wait:
+            record.notify_parent = True
+            record.parent_session_id = self._sub_spec.parent_session_id or ""
         asyncio_cancel = asyncio.Event()
         record.asyncio_cancel = asyncio_cancel
         record.loop = asyncio.get_running_loop()
@@ -182,7 +220,7 @@ with status=blocked instead of clicking into the other app.
                 "model": "jev-1.13.0",
                 "reasoningLevel": "off",
                 "task": goal,
-                "mode": "foreground",
+                "mode": record.mode,
                 "agentType": "computer",
                 "workspace": self._sub_spec.parent_workspace,
                 "createdAt": int(time.time() * 1000),
@@ -201,6 +239,84 @@ with status=blocked instead of clicking into the other app.
             },
         )
         await _fire(emit, {"type": "turn_start", "sessionId": sub_id, "turnId": "turn-1"})
+
+        # Parent-tier computer tools refuse to act while this run holds the screen.
+        _SCREEN_DRIVERS[sub_id] = label
+        run_kwargs = dict(
+            goal=goal,
+            app=app,
+            max_steps=max_steps,
+            allow_irreversible=allow_irreversible,
+            use_llm=use_llm,
+            provider=provider,
+            native=native,
+        )
+        if wait:
+            try:
+                return await self._run(call_id, record, **run_kwargs)
+            finally:
+                _SCREEN_DRIVERS.pop(sub_id, None)
+        record.bg_task = asyncio.create_task(
+            self._run_background(record, **run_kwargs), name=f"jevuse-bg-{sub_id}"
+        )
+        return ToolResult(
+            call_id=call_id,
+            content=(
+                f"jev_computer_use `{label}` started in the background (id={sub_id}). "
+                "It owns the screen until it finishes: don't use your own click/type/scroll "
+                "tools meanwhile. The result (summary, and a handoff block if it did not "
+                "finish cleanly) will arrive as a memo in your inbox; don't wait or poll."
+            ),
+            is_error=False,
+        )
+
+    async def _run_background(self, record: Any, **kwargs: Any) -> None:
+        """Run the operator, release the screen, and memo the parent."""
+        from bridge.tools.background_shell import CURRENT_TOOL_CONTEXT  # noqa: PLC0415
+
+        CURRENT_TOOL_CONTEXT.set(None)  # not the parent's session (see sub_agent_tool)
+        try:
+            await self._run(None, record, **kwargs)
+        except asyncio.CancelledError:
+            _SCREEN_DRIVERS.pop(record.id, None)
+            await self._notify_terminal(record)
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("jev_computer_use run %s failed", record.id)
+            if record.is_running:
+                self._sub_spec.registry.mark_done(record.id, f"Error: {exc}", SubAgentState.FAILED)
+        finally:
+            _SCREEN_DRIVERS.pop(record.id, None)
+        await self._notify_terminal(record)
+
+    async def _notify_terminal(self, record: Any) -> None:
+        cb = self._sub_spec.on_child_terminal
+        if cb is None or not record.notify_parent or record.is_running:
+            return
+        try:
+            result = cb(record)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception:  # noqa: BLE001
+            logger.exception("on_child_terminal failed for %s", record.id)
+
+    async def _run(
+        self,
+        call_id: str | None,
+        record: Any,
+        *,
+        goal: str,
+        app: str | None,
+        max_steps: int,
+        allow_irreversible: bool,
+        use_llm: bool,
+        provider: Any,
+        native: Any,
+    ) -> ToolResult:
+        call_id = call_id or ""
+        sub_id = record.id
+        emit = self._sub_spec.emit_event
+        asyncio_cancel = record.asyncio_cancel
 
         async def bridge_cancel() -> None:
             while not asyncio_cancel.is_set():
@@ -238,6 +354,7 @@ with status=blocked instead of clicking into the other app.
             max_steps=max_steps,
             allow_irreversible=allow_irreversible,
             use_llm=llm is not None,
+            notes_workspace=self._sub_spec.parent_workspace or None,
         )
         op = Operator(cfg, provider=provider, spec=spec, native=native, llm=llm, on_step=say)
 
@@ -258,9 +375,7 @@ with status=blocked instead of clicking into the other app.
             )
         bridge_task.cancel()
 
-        text = result.summary + "\n\n" + result.footer()
-        if result.pending_action:
-            text += f"\npending_action: {result.pending_action}"
+        text = render_result(result)
         # blocked / needs_confirmation / budget_exhausted are legitimate results the parent
         # acts on, so the child session is DONE; only a provider error is a failure.
         state = {

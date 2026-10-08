@@ -10,6 +10,7 @@ from typing import Any
 
 from bridge.decisions.provider import DecisionError, DecisionProvider
 from bridge.decisions.types import Answers, Choice, Noul, Question
+from bridge.tools.jev_operator.notes import notes_section
 from bridge.tools.jev_operator.observe import Element, Observation
 
 KEY_OPTIONS: dict[str, str] = {
@@ -86,10 +87,12 @@ def build_questions(
     subgoal: str | None,
     literals: list[str],
     launch_candidates: list[str],
+    notes: str = "",
 ) -> dict[str, Question]:
     goal_line = f"Goal: {goal}"
     if subgoal:
         goal_line += f"\nCurrent sub-goal (from the planner): {subgoal}"
+    policy = POLICY + (f"\n\n{notes_section(notes)}" if notes else "")
 
     ops = dict(OPERATION_OPTIONS)
     if not obs.type_targets:
@@ -104,7 +107,7 @@ def build_questions(
         ops.pop("double_click", None)
 
     qs: dict[str, Question] = {
-        "operation": Choice(instructions=f"{goal_line}\n{POLICY}", options=ops),
+        "operation": Choice(instructions=f"{goal_line}\n{policy}", options=ops),
     }
 
     if len(click_opts) >= 2:
@@ -180,9 +183,15 @@ async def decide(
     launch_candidates: list[str],
     thresholds: Thresholds,
     model: str | None = None,
+    notes: str = "",
 ) -> Decision:
     questions = build_questions(
-        obs, goal=goal, subgoal=subgoal, literals=literals, launch_candidates=launch_candidates
+        obs,
+        goal=goal,
+        subgoal=subgoal,
+        literals=literals,
+        launch_candidates=launch_candidates,
+        notes=notes,
     )
     state = obs.to_state(history, subgoal)
     try:

@@ -3077,7 +3077,7 @@ _DOING_TASKS_BLOCK = f"""# Doing tasks
 
 _WORKING_ALONGSIDE_BLOCK = """# Working alongside the operator
 - The operator can keep talking while you work. A message they send mid-turn is slid in at your next step, marked as a follow-up sent while you were working; if they cut in, the reply or tool call you were in the middle of was stopped to make room. Read it right away — if it changes what you should do, change course now instead of finishing the old plan first.
-- Sub-agents (`sub_agent`, `computer_use`) always run in the background: the call returns at once and your turn goes on. Launch every independent piece of work together, then do your own part or keep the conversation going. Never wait on them, poll them, or redo their work yourself.
+- Sub-agents (`sub_agent`, `computer_use`) always run in the background, and so does `jev_computer_use` unless you pass `wait=true`: the call returns at once and your turn goes on. Launch every independent piece of work together, then do your own part or keep the conversation going. Never wait on them, poll them, or redo their work yourself.
 - When one finishes, a "[sub-agent memo …]" lands in your inbox — at your next step if you are mid-turn, or as a wake-up turn if you were idle. Look at what it actually did (its report, the files it produced, `subagents result` for the full text) before relying on it, then carry on with what the work was for. If you need several results and only some are back, say what you have and end your turn; the remaining memos will wake you.
 - A system reminder lists the sub-agents still running. Tell the operator what is in flight when it matters to them."""
 

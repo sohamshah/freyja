@@ -15,7 +15,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 CLICK_ROLES = {
     "AXButton",
@@ -122,6 +122,8 @@ class Element:
 
 @dataclass
 class Observation:
+    # Which observation backend produced this; a later stage adds more surfaces.
+    SURFACE: ClassVar[str] = "ax"
     app_name: str
     bundle: str
     pid: int
@@ -552,6 +554,36 @@ def diff_observations(before: Observation, after: Observation) -> tuple[bool, st
     if changed and not notes:
         notes.append("layout changed")
     return changed, "; ".join(notes) if notes else "no visible change"
+
+
+# Stuck detection counts only changes that show the action did something. A
+# fingerprint moves on autocomplete churn and a +0/-1 element jitter, which
+# kept an operator pressing escape forever (2026-10-07).
+MEANINGFUL_ELEMENT_DELTA = 3
+
+
+def meaningful_change(before: Observation, after: Observation) -> bool:
+    """True when the screen moved in a way that shows progress: another window,
+    a dialog or menu opened or closed, screen-text lines came or went, or more
+    than a few elements appeared or disappeared. Text-field values are ignored."""
+    if before.focused_window != after.focused_window:
+        return True
+    if bool(before.dialog) != bool(after.dialog) or before.menu_open != after.menu_open:
+        return True
+    typed = {
+        ln
+        for o in (before, after)
+        for e in o.elements
+        if e.kind == "type" and e.value
+        for ln in e.value.split("\n")
+    }
+    b_lines = {ln for ln in before.screen_text.split("\n") if ln and ln not in typed}
+    a_lines = {ln for ln in after.screen_text.split("\n") if ln and ln not in typed}
+    if b_lines != a_lines:
+        return True
+    b_keys = {(e.window, e.role, e.label) for e in before.elements}
+    a_keys = {(e.window, e.role, e.label) for e in after.elements}
+    return len(a_keys - b_keys) + len(b_keys - a_keys) > MEANINGFUL_ELEMENT_DELTA
 
 
 # Double quotes pair with their own kind; a single quote only opens or closes a

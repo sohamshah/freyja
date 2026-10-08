@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from bridge.tools.jev_operator.decide import KEY_OPTIONS
+from bridge.tools.jev_operator.notes import NOTES_LABEL
 from engine.types import ImageBlock, Message, TextBlock
 
 Completer = Callable[[list[Message], str, int], Awaitable[str]]
@@ -152,6 +153,7 @@ class LLMHelper:
         screenshot: bytes | None,
         screenshot_size: tuple[int, int] | None,
         media_type: str = "image/jpeg",
+        app_notes: str = "",
     ) -> dict[str, Any] | None:
         system = (
             "You are the planner behind a fast desktop operator. The operator can click, double-click, type into, "
@@ -184,6 +186,8 @@ class LLMHelper:
             "elements": elements_table[:12000],
             "screen_text": screen_text[:4000],
         }
+        if app_notes:
+            payload[NOTES_LABEL] = app_notes
         if screenshot and screenshot_size:
             payload["screenshot_size"] = {"width": screenshot_size[0], "height": screenshot_size[1]}
             user = Message.user_with_images(
@@ -213,6 +217,7 @@ class LLMHelper:
         window: str = "",
         windows_at_start: list[str] | None = None,
         windows_now: list[str] | None = None,
+        app_notes: str = "",
     ) -> dict[str, Any] | None:
         system = (
             "You judge whether a desktop automation achieved its goal, from the final screen and the action log. "
@@ -236,6 +241,8 @@ class LLMHelper:
             "final_screen_text": screen_text[:4000],
             "final_elements": elements_table[:8000],
         }
+        if app_notes:
+            payload[NOTES_LABEL] = app_notes
         out = await self._call(
             "verify",
             system,
