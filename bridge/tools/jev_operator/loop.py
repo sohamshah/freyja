@@ -156,16 +156,22 @@ def own_effect(
     holds new text, a checkbox flipped, a list option became selected. Filling a
     form changes nothing else on screen, and three verified fields in a row were
     being counted as "stuck"."""
-    if not key or not pending.get("ok", True) or pending.get("kind") not in ("type", "click"):
+    if not key or not pending.get("ok", True) or pending.get("kind") not in ("type", "click", "scroll"):
         return False
     key = tuple(key)
     b = next((e for e in before.elements if (e.window, e.role, e.label) == key), None)
     a = next((e for e in after.elements if (e.window, e.role, e.label) == key), None)
     if b is None or a is None:
         return False
+    if pending.get("kind") == "scroll":
+        return b.offscreen and not a.offscreen  # scrolled the control it was heading for into view
     if pending.get("kind") == "type":
         return bool(a.value) and (a.value or "") != (b.value or "")
-    return (a.value or "") != (b.value or "") or a.toggle_state() != b.toggle_state()
+    return (
+        (a.value or "") != (b.value or "")
+        or a.toggle_state() != b.toggle_state()
+        or a.selected != b.selected
+    )
 
 
 class SurfaceFailed(RuntimeError):
@@ -931,8 +937,19 @@ class Operator:
             self._consecutive_waits = 0
 
             action_desc = describe(d)
+            kind = d.operation
             try:
-                if d.operation in ("click", "double_click") and d.target is not None:
+                if d.target is not None and d.target.offscreen and d.operation in ("click", "double_click", "type"):
+                    # Scrolled out of view: this step scrolls toward the control, and Jev
+                    # picks it again once it is in view (gates apply then).
+                    plan = obs.scroll_toward(d.target)
+                    rec = await self.surface.execute(
+                        "scroll", plan.point, down=(plan.way == "down"), way=plan.way, area=plan.area
+                    )
+                    action_desc = f"scroll {plan.way} toward [{d.target.index}] {d.target.label!r}"
+                    kind = "scroll"
+                    self._settle_next = True
+                elif d.operation in ("click", "double_click") and d.target is not None:
                     other = self._closes_unnamed_window(d.target)
                     if other:
                         # Twice tonight Jev closed the remaining, different document once
@@ -1015,10 +1032,15 @@ class Operator:
                         )
                     rec = await self.surface.execute("press", d.key, window=obs.focused_frame)
                 elif d.operation in ("scroll_down", "scroll_up"):
-                    at = obs.scroll_point(f"{self.cfg.goal}\n{self._subgoal or ''}")
+                    plan = obs.scroll_plan(
+                        f"{self.cfg.goal}\n{self._subgoal or ''}", down=d.operation == "scroll_down"
+                    )
+                    at = plan.point
                     if at is None and (wb := self._window_bounds(target, obs.focused_window)):
                         at = (int(wb[0] + wb[2] / 2), int(wb[1] + wb[3] / 2))
-                    rec = await self.surface.execute("scroll", at, down=(d.operation == "scroll_down"))
+                    rec = await self.surface.execute(
+                        "scroll", at, down=(d.operation == "scroll_down"), way=plan.way, area=plan.area
+                    )
                     self._settle_next = True
                 elif d.operation == "open_url" and d.url:
                     rec = await self.surface.execute("open_url", d.url)
@@ -1074,7 +1096,7 @@ class Operator:
             before = obs
             pending = {
                 "step": step,
-                "kind": d.operation,
+                "kind": kind,
                 "action": action_desc,
                 **(
                     {"target_key": (d.target.window, d.target.role, d.target.label)}
@@ -1291,20 +1313,8 @@ class Operator:
         b = win.bounds
         return frame, (float(b.x), float(b.y), float(b.w), float(b.h))
 
-    async def _replan(self, obs: Observation, target: Target, *, reason: str) -> RunResult | None:
-        """Returns a RunResult when the run should end, None to continue."""
-        self._replans_since_progress += 1
-        if self.llm is None or self.llm.budget_left <= 0 or self._replans_since_progress > 2:
-            # Jev can stall right after the goal was met (e.g. by a planner click);
-            # check the end state before reporting the run as stuck.
-            if self.history and self.llm is not None and self.llm.budget_left > 0:
-                check = await self._verify(obs)
-                if check and check.get("satisfied") is True:
-                    summary = str(check.get("summary") or "Goal satisfied.")
-                    return self._finish("done", summary, screen=obs.screen_text)
-            return self._finish_blocked(obs, reason)
-        want_shot = not obs.elements or self._replans_since_progress >= 2
-        shot = await self._window_shot(target) if want_shot else None
+    async def _ask_planner(self, obs: Observation, shot: Any, reason: str) -> dict[str, Any] | None:
+        assert self.llm is not None
         self._shot_geometry = None
         if shot is not None:
             frame, bounds = shot
@@ -1325,7 +1335,30 @@ class Operator:
             surface=self.surface.name,
         )
         self._log_llm(since)
-        self._log({"event": "replan", "reason": reason, "out": out})
+        self._log({"event": "replan", "reason": reason, "out": out, "screenshot": shot is not None})
+        return out
+
+    async def _replan(self, obs: Observation, target: Target, *, reason: str) -> RunResult | None:
+        """Returns a RunResult when the run should end, None to continue."""
+        self._replans_since_progress += 1
+        if self.llm is None or self.llm.budget_left <= 0 or self._replans_since_progress > 2:
+            # Jev can stall right after the goal was met (e.g. by a planner click);
+            # check the end state before reporting the run as stuck.
+            if self.history and self.llm is not None and self.llm.budget_left > 0:
+                check = await self._verify(obs)
+                if check and check.get("satisfied") is True:
+                    summary = str(check.get("summary") or "Goal satisfied.")
+                    return self._finish("done", summary, screen=obs.screen_text)
+            return self._finish_blocked(obs, reason)
+        want_shot = not obs.elements or self._replans_since_progress >= 2
+        shot = await self._window_shot(target) if want_shot else None
+        out = await self._ask_planner(obs, shot, reason)
+        if out is not None and out.get("status") == "give_up" and shot is None and self.surface.name == "ax":
+            # A planner giving up on the table alone often needs only a look: the
+            # chosen tile or highlighted row the app does not mark as selected.
+            shot = await self._window_shot(target)
+            if shot is not None:
+                out = await self._ask_planner(obs, shot, reason)
         if out is None:
             return self._finish_blocked(obs, reason)
         status = out.get("status")

@@ -421,13 +421,44 @@ class Actuator:
         await self.frame("post_action")
         return await self._executed("press_key", t0, ok=True)
 
-    async def scroll(self, at: tuple[int, int] | None, *, down: bool) -> ActionRecord:
+    async def scroll(
+        self,
+        at: tuple[int, int] | None,
+        *,
+        down: bool,
+        way: str | None = None,
+        area: tuple[float, float, float, float] | None = None,
+    ) -> ActionRecord:
+        """`way` ("down", "up", "left", "right") overrides `down`. With `area`, the
+        frame of a scroll area, the area pages itself (AXScroll<Way>ByPage): an
+        exact page with no pointer movement, where six wheel lines moved a Finder
+        column browser by about 60 of the 1,700 pixels it needed."""
         x, y = at if at else (None, None)
-        await self._planned("scroll", f"Scroll {'down' if down else 'up'}", x=x, y=y)
+        way = way or ("down" if down else "up")
+        await self._planned("scroll", f"Scroll {way}", x=x, y=y)
         t0 = time.perf_counter()
+        perform = getattr(self.native, "ax_perform", None)
+        if perform and area is not None and self.target_pid is not None:
+            await self._guard("scroll", t0)
+            ax, ay = area[0] + area[2] / 2, area[1] + area[3] / 2
+            try:
+                paged = await asyncio.to_thread(
+                    perform, self.target_pid, ax, ay, "AXScrollArea", area,
+                    f"AXScroll{way.capitalize()}ByPage",
+                )
+            except Exception:  # noqa: BLE001
+                paged = False
+            if paged:
+                await self.settle()
+                await self.frame("post_action")
+                rec = await self._executed("scroll", t0, ok=True)
+                rec.description = f"AXScroll{way.capitalize()}ByPage"
+                return rec
         await self._guard("scroll", t0, x, y)
+        dx = {"right": 6, "left": -6}.get(way, 0)
+        dy = {"down": 6, "up": -6}.get(way, 0)
         try:
-            await asyncio.to_thread(self.native.scroll, 0, 6 if down else -6, x=x, y=y)
+            await asyncio.to_thread(self.native.scroll, dx, dy, x=x, y=y)
         except Exception as exc:  # noqa: BLE001
             return await self._executed("scroll", t0, ok=False, error=str(exc))
         await self.settle()

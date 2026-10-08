@@ -15,7 +15,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from typing import Any, ClassVar, NamedTuple
 
 CLICK_ROLES = {
     "AXButton",
@@ -59,6 +59,8 @@ STATE_ROLES = (*TOGGLE_ROLES, "AXRadioButton", "AXDisclosureTriangle")
 DISCLOSURE_STATES = {"0": "collapsed", "1": "expanded"}
 TOGGLE_STATES = {"0": "off", "1": "on", "2": "mixed"}
 RADIO_STATES = {"0": "not selected", "1": "selected"}
+# In a menu AXSelected is the item under the pointer, not a choice.
+MENU_ROLES = ("AXMenuItem", "AXMenuBarItem")
 
 
 @dataclass
@@ -77,6 +79,15 @@ class Element:
     has_submenu: bool = False  # menu items: clicking opens a submenu instead of running a command
     scroll_area: tuple[float, float, float, float] | None = None  # visible rect of its scroll view
     window_frame: tuple[float, float, float, float] | None = None  # frame of its AX window
+    # AXSelected: the chosen one of a set of buttons, the selected row or tab.
+    selected: bool = False
+    # Visible rect of the innermost enclosing scroll view that is still on screen.
+    # Differs from scroll_area when the element's own scroll view is scrolled out of
+    # view too (a Finder column to the right of the visible ones); scrolling there
+    # reveals it.
+    scroll_view: tuple[float, float, float, float] | None = None
+    # Frame of the scroll area scroll_view belongs to: what a page scroll acts on.
+    scroll_frame: tuple[float, float, float, float] | None = None
 
     @property
     def center(self) -> tuple[int, int]:
@@ -91,6 +102,8 @@ class Element:
             states.append(toggle)
         elif self.value:
             parts.append(f"value={_clip(self.value, value_chars, keep_lines=keep_lines)!r}")
+        if self.selected and not toggle and self.role not in MENU_ROLES:
+            states.append("selected")
         if not self.enabled:
             states.append("disabled")
         if self.focused:
@@ -117,7 +130,14 @@ class Element:
         return None
 
     def fingerprint(self) -> str:
-        return f"{self.role}|{self.label}|{self.value or ''}|{int(self.bounds[0])},{int(self.bounds[1])}"
+        sel = "|selected" if self.selected else ""
+        return f"{self.role}|{self.label}|{self.value or ''}|{int(self.bounds[0])},{int(self.bounds[1])}{sel}"
+
+
+class ScrollPlan(NamedTuple):
+    point: tuple[int, int] | None  # where a wheel scroll goes
+    way: str  # "down" | "up" | "left" | "right"
+    area: tuple[float, float, float, float] | None  # the scroll area to page, when known
 
 
 @dataclass
@@ -143,20 +163,66 @@ class Observation:
     def scroll_point(self, hint: str) -> tuple[int, int] | None:
         """Where to scroll: inside the scroll view holding rows that are scrolled out of
         view, preferring rows `hint` names. None when nothing is out of view."""
+        return self.scroll_plan(hint, down=True).point
+
+    def scroll_toward(self, el: Element) -> "ScrollPlan":
+        """How to bring `el` into view: page its scroll view toward the side it is on,
+        sideways first (a Finder column off to the right), then up or down."""
+        x, y, w, h = _visible_view(el)
+        cx, cy = el.center
+        way = "right" if cx > x + w else "left" if cx < x else "up" if cy < y else "down"
+        return ScrollPlan((int(x + w / 2), int(y + h / 2)), way, el.scroll_frame)
+
+    def scroll_plan(self, hint: str, *, down: bool) -> "ScrollPlan":
+        """Where and which way to scroll: (point, "down" | "up" | "left" | "right").
+        The point is inside the visible part of the scroll view that hides the rows
+        `hint` names (else the most hidden rows). The direction is the side those rows
+        are on; rows hidden only sideways (a Finder column to the right) need a
+        sideways scroll, which Jev's up/down choice cannot express."""
+        asked = "down" if down else "up"
         hidden = [e for e in self.elements if e.offscreen and e.scroll_area]
         if not hidden:
-            return None
+            return ScrollPlan(None, asked, None)
         named = [
             e for e in hidden
             if len(e.label) >= 3 and re.search(rf"(?<!\w){re.escape(e.label)}(?!\w)", hint, re.I)
         ]
-        areas = [e.scroll_area for e in named or hidden]
-        x, y, w, h = max(set(areas), key=areas.count)
-        return int(x + w / 2), int(y + h / 2)
+        pool = named or hidden
+        views = [_visible_view(e) for e in pool]
+        view = max(set(views), key=views.count)
+        x, y, w, h = view
+        point = (int(x + w / 2), int(y + h / 2))
+        side = {"down": 0, "up": 0, "left": 0, "right": 0}
+        for e in pool:
+            if _visible_view(e) != view:
+                continue
+            cx, cy = e.center
+            if cy > y + h:
+                side["down"] += 1
+            elif cy < y:
+                side["up"] += 1
+            if cx > x + w:
+                side["right"] += 1
+            elif cx < x:
+                side["left"] += 1
+        vertical = side["down"] + side["up"]
+        sideways = side["left"] + side["right"]
+        area = next((e.scroll_frame for e in pool if _visible_view(e) == view and e.scroll_frame), None)
+        if named and sideways > vertical:
+            way = "right" if side["right"] >= side["left"] else "left"
+        elif named and vertical:
+            way = "down" if side["down"] >= side["up"] else "up"
+        elif side[asked] or vertical or not sideways:
+            way = asked
+        else:
+            way = "right" if side["right"] >= side["left"] else "left"
+        return ScrollPlan(point, way, area)
 
+    # Controls scrolled out of view are targets too: choosing one scrolls toward it
+    # (the loop), as on web pages, instead of leaving Jev to pick a scroll direction.
     @property
     def click_targets(self) -> list[Element]:
-        return [e for e in self.elements if e.kind == "click" and e.enabled and not e.offscreen]
+        return [e for e in self.elements if e.kind == "click" and e.enabled]
 
     @property
     def type_targets(self) -> list[Element]:
@@ -165,7 +231,6 @@ class Observation:
             for e in self.elements
             if e.kind == "type"
             and e.enabled
-            and not e.offscreen
             and e.subrole not in SECURE_SUBROLES
         ]
 
@@ -268,6 +333,8 @@ def _descendant_text(node: dict[str, Any], limit: int = 3, depth: int = 3) -> st
                     out.append(t)
             elif ch.get("role") in ("AXTextField", "AXImage"):
                 t = _first_text(ch, ("title", "label"))
+                if not t and ch.get("role") == "AXTextField":
+                    t = _first_text(ch, ("value",))  # a name shown in a field (Finder's file names)
                 if t:
                     out.append(t)
             walk(ch, d + 1)
@@ -284,6 +351,25 @@ def _intersect(
     x0, y0 = max(a[0], b[0]), max(a[1], b[1])
     x1, y1 = min(a[0] + a[2], b[0] + b[2]), min(a[1] + a[3], b[1] + b[3])
     return (x0, y0, max(0.0, x1 - x0), max(0.0, y1 - y0))
+
+
+def _is_item(node: dict[str, Any]) -> bool:
+    """A group of exactly one icon and one name."""
+    kids = node.get("children") or []
+    roles = sorted(ch.get("role") or "" for ch in kids)
+    if len(kids) != 2 or roles[0] != "AXImage" or roles[1] not in ("AXStaticText", "AXTextField"):
+        return False
+    text = next(ch for ch in kids if ch.get("role") != "AXImage")
+    return bool(_first_text(text, ("value", "title", "label")))
+
+
+def _visible_view(e: Element) -> tuple[float, float, float, float]:
+    """The on-screen rect to scroll in for `e`: its scroll view's visible rect, or
+    the nearest enclosing one that is visible when its own is scrolled away."""
+    area = e.scroll_area
+    if area and area[2] > 0 and area[3] > 0:
+        return area
+    return e.scroll_view or area or e.bounds
 
 
 def _center_outside(
@@ -339,6 +425,8 @@ def build_observation(
         clip: Rect | None,
         frame: Rect | None,
         row: str = "",
+        view: Rect | None = None,
+        view_frame: Rect | None = None,
     ) -> None:
         nonlocal focused_window, focused_frame, dialog, menu_open, node_count
         node_count += 1
@@ -356,9 +444,12 @@ def build_observation(
         own = _bounds(node)
         if own is not None:
             if role in CLIP_RESET_ROLES:
-                clip = own
+                clip = view = own
+                view_frame = None
             elif role in CLIP_ROLES:
                 clip = _intersect(clip, own)
+                if clip[2] > 0 and clip[3] > 0:
+                    view, view_frame = clip, own
         if role == "AXWindow":
             window = _text_of(node) or "(untitled window)"
             windows.append(window)
@@ -384,6 +475,16 @@ def build_observation(
             t = _display_text(node)
             if t and own and not in_row and not _center_outside(own, clip):
                 texts.append((own[1], own[0], t))
+        elif role == "AXGroup" and _is_item(node):
+            # An icon and a name (a file in Finder's column and icon views): one
+            # clickable item named by its text. Its name field is listed only while
+            # it is being edited.
+            if _add(node, window, "click", in_row, clip, frame, row, view, view_frame):
+                elements[-1].focused = False  # Finder reports every item group as focused
+            for ch in node.get("children") or []:
+                if ch.get("role") == "AXTextField" and ch.get("focused"):
+                    walk(ch, window, depth + 1, True, clip, frame, row, view, view_frame)
+            return
         elif role in CLICK_ROLES or role in TYPE_ROLES or subrole in SECURE_SUBROLES:
             added = _add(
                 node,
@@ -393,12 +494,14 @@ def build_observation(
                 clip,
                 frame,
                 row,
+                view,
+                view_frame,
             )
             if added and role in ("AXRow", "AXCell"):
                 in_row = True
                 row = elements[-1].label
         for ch in node.get("children") or []:
-            walk(ch, window, depth + 1, in_row, clip, frame, row)
+            walk(ch, window, depth + 1, in_row, clip, frame, row, view, view_frame)
 
     def _walk_menu(menu: dict[str, Any], window: str) -> None:
         for item in menu.get("children") or []:
@@ -420,6 +523,8 @@ def build_observation(
         clip: Rect | None,
         frame: Rect | None = None,
         row: str = "",
+        view: Rect | None = None,
+        view_frame: Rect | None = None,
     ) -> bool:
         role = node.get("role") or ""
         b = _bounds(node)
@@ -464,6 +569,9 @@ def build_observation(
                 offscreen=_center_outside(b, clip),
                 scroll_area=clip,
                 window_frame=frame,
+                selected=bool(node.get("selected")),
+                scroll_view=view,
+                scroll_frame=view_frame,
             )
         )
         return True
@@ -529,7 +637,11 @@ def diff_observations(before: Observation, after: Observation) -> tuple[bool, st
     value_changes = []
     for k, b in b_els.items():
         a = a_els.get(k)
-        if a is None or a.value == b.value:
+        if a is None:
+            continue
+        if a.selected != b.selected and not a.toggle_state() and a.role not in MENU_ROLES:
+            value_changes.append(f"{k[2]!r} now {'selected' if a.selected else 'not selected'}")
+        if a.value == b.value:
             continue
         if a.toggle_state() and b.toggle_state():
             value_changes.append(f"{k[2]!r} now {a.toggle_state()}")
@@ -537,6 +649,10 @@ def diff_observations(before: Observation, after: Observation) -> tuple[bool, st
             was, now = (_clip(e.value or "", DIFF_VALUE_CHARS) for e in (b, a))
             value_changes.append(f"{k[2]!r}: {was!r} -> {now!r}")
     notes.extend(value_changes[:4])
+    came = [k[2] for k, b in b_els.items() if k in a_els and b.offscreen and not a_els[k].offscreen]
+    if came:
+        more = f" and {len(came) - 3} more" if len(came) > 3 else ""
+        notes.append("now in view: " + ", ".join(repr(x) for x in came[:3]) + more)
     added = len(set(a_els) - set(b_els))
     removed = len(set(b_els) - set(a_els))
     if added or removed:
@@ -581,9 +697,19 @@ def meaningful_change(before: Observation, after: Observation) -> bool:
     a_lines = {ln for ln in after.screen_text.split("\n") if ln and ln not in typed}
     if b_lines != a_lines:
         return True
+    if _selection(before) != _selection(after):
+        return True  # selecting a row or an option is the step itself
     b_keys = {(e.window, e.role, e.label) for e in before.elements}
     a_keys = {(e.window, e.role, e.label) for e in after.elements}
+    b_out = {(e.window, e.role, e.label) for e in before.elements if e.offscreen}
+    a_out = {(e.window, e.role, e.label) for e in after.elements if e.offscreen}
+    if (b_out ^ a_out) & b_keys & a_keys:
+        return True  # a scroll moved listed controls into or out of view
     return len(a_keys - b_keys) + len(b_keys - a_keys) > MEANINGFUL_ELEMENT_DELTA
+
+
+def _selection(o: Observation) -> set[tuple[str, str, str]]:
+    return {(e.window, e.role, e.label) for e in o.elements if e.selected and e.role not in MENU_ROLES}
 
 
 # Double quotes pair with their own kind; a single quote only opens or closes a

@@ -141,6 +141,16 @@ Selection is code: with `surface=auto`, a supported browser that answers a trivi
 
 Why a DOM surface: the AX tree of a browser is the worst case for this loop (60-130 s per read on Arc before read budgets, unnamed fields, page content mixed with browser chrome), while the page DOM answers in about 0.2 s with named controls.
 
+How the AX reader keeps native apps fast and complete (`native/freyja_native/src/ax.rs`):
+
+- **One round trip per element.** All attributes of an element, its children included, come from one `AXUIElementCopyMultipleAttributeValues` call. One call per attribute meant a dozen round trips per element: Finder in column view spent the whole 8 s budget on about 900 elements and never reached the folder the goal named.
+- **Closed menus are skipped.** A closed menu still lists all its items, with zero-size frames. In Finder they were 353 of 382 elements.
+- **Rows out of view are capped.** Inside a window or scroll area, a parent lists at most 30 children that lie outside the visible rect; past that, a frame read decides, and children in view are still read. A folder of 600 files costs about 30 rows, not 600. Whole columns scrolled sideways out of view are few, so they are read: their file names are in the table, marked "scrolled out of view".
+- **Selected state.** `AXSelected` is read. Choices with no value of their own, such as System Settings' Auto, Light and Dark tiles, show as "(selected)", as do the selected row and tab. A change of selection counts as progress.
+- **Sideways scrolling.** A scroll goes toward the rows the goal names, in whichever direction hides them, at a point inside the visible part of their scroll view. A Finder column browser opens scrolled to its first columns, with the folder's own column off to the right; a vertical scroll there did nothing.
+- **Controls out of view are targets.** Jev may choose a control marked "scrolled out of view". The step then scrolls toward it instead of clicking, because its center can lie on top of another control; Jev chooses it again once it is in view, and the gates apply then. A control coming into view counts as progress.
+- **Icon-and-name items.** A group of one icon and one name (a file in Finder's column and icon views) is one clickable item named by its text. Its name field is listed only while it is being renamed. Text fields with no name of their own also name the row they sit in, so a Finder list row reads "roadmap.md · Today at 11:45 · …".
+
 How the DOM surface behaves:
 
 - **One tab.** A run is pinned to a tab by id: the tab active when it started, or the tab it opened. Tab ids are matched with one bulk `id of every tab` per window, since a window can hold a thousand tabs. A click that opens another tab (`target=_blank`, `window.open`) moves the run there. The person can switch tabs meanwhile.
@@ -173,12 +183,17 @@ cd /Applications/Freyja.app/Contents/Resources
 
 `scripts/jev_scenarios.py` holds the scenarios: fixture pages (`tests/fixtures/jev_live`) that report what was done to the harness server, public sites read-only, and native apps. Checks read that ground truth, not the run's own summary. Browser scenarios open their own tab and close only the tabs they created. The `ax` group moves the real pointer and needs an unlocked, idle Mac.
 
+The native scenarios follow three rules:
+
+- **Fresh values per run.** A setup returns the values the goal and the check use: random operands for Calculator, a new file for TextEdit, a new folder for Finder. Calculator reopens showing its last result, so a fixed `12 × 7` once passed with no action at all.
+- **Accessibility and `open` only.** Setup, checks and teardown read and press through `freyja_native`, never AppleScript. An AppleScript command to an app needs an Automation grant for the terminal, and the first one raises a consent prompt that blocks the run until someone answers it.
+- **Settings stay as they were.** The Finder checks compare Finder's default view (`FXPreferredViewStyle`) before and after, and the Appearance check compares the appearance. In a folder with no view of its own, Finder's view buttons change the default view for every folder: a planner that switched a window to list view to read it changed the person's default (2026-10-08).
+
+To try a change to the native reader before a rebuild, build a wheel with `maturin build --release` into a scratch folder, unzip it, and put that folder on `PYTHONPATH` when running the harness.
+
 ## What this does not do
 
-It does not read pixels except through the `direct_action` door. On web pages it does not see iframes from other origins, closed shadow roots, or canvas content, and it cannot hover or drag. It does not plan
-multi-app workflows on its own; the parent agent should pass one app-scoped goal at a
-time, or the LLM replan door will be entered often. It does not run while any other
-computer-use session is active, since both would drive the same keyboard and mouse.
+It does not read pixels except through the replan door, which gets a screenshot on a second replan, or when it would otherwise give up. On web pages it does not see iframes from other origins, closed shadow roots, or canvas content, and it cannot hover or drag. It does not plan multi-app workflows on its own; the parent agent should pass one app-scoped goal at a time, or the LLM replan door will be entered often. It does not run while any other computer-use session is active, since both would drive the same keyboard and mouse.
 
 ## Files
 

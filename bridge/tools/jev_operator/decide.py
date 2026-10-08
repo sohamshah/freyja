@@ -42,14 +42,16 @@ KEY_OPTIONS: dict[str, str] = {
 
 COMMIT_KEYS = {"return", "space", "cmd+return"}
 ALWAYS_GATED_KEYS = {"cmd+return"}
+# Appended to a target option that is scrolled out of view.
+_OUT = " (out of view: choosing it scrolls it into view first)"
 
 OPERATION_OPTIONS: dict[str, str] = {
-    "click": "click a button, link, row, tab, menu, checkbox, or other listed control",
+    "click": "click a button, link, row, tab, menu, checkbox, or other listed control (one marked out of view too: the operator scrolls to it first)",
     "double_click": "double-click a listed row or item to open it",
     "type": "type text into a listed text field (the field is chosen in type_target)",
     "key": "press a key or shortcut from key_target",
-    "scroll_down": "scroll the focused window down to reveal more",
-    "scroll_up": "scroll the focused window up",
+    "scroll_down": "scroll down to reveal controls or text that are not listed yet",
+    "scroll_up": "scroll up to reveal controls or text that are not listed yet",
     "wait": "the screen is still changing; wait briefly and look again",
     "done": "the goal is visibly satisfied by the current screen",
     "blocked": "a dialog, permission prompt, login, or error stops progress and no listed control resolves it",
@@ -109,7 +111,7 @@ def build_questions(
             "when the goal names a page that is not the one on screen"
         )
 
-    click_opts = {str(e.index): f"{e.role} {e.label}" for e in obs.click_targets[:254]}
+    click_opts = {str(e.index): f"{e.role} {e.label}{_OUT}" if e.offscreen else f"{e.role} {e.label}" for e in obs.click_targets[:254]}
     click_opts["none"] = "no listed element is the right click target"
     if len(click_opts) < 2:
         ops.pop("click", None)
@@ -130,7 +132,7 @@ def build_questions(
 
     if obs.type_targets:
         type_opts = {
-            str(e.index): f"{e.role} {e.label}" + (f" (currently {e.value!r})" if e.value else "")
+            str(e.index): f"{e.role} {e.label}" + (f" (currently {e.value!r})" if e.value else "") + (_OUT if e.offscreen else "")
             for e in obs.type_targets[:254]
         }
         type_opts["none"] = "the next step does not type into a field"

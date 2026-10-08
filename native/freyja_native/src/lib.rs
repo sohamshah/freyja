@@ -213,6 +213,20 @@ fn ax_press(
 }
 
 #[pyfunction]
+fn ax_perform(
+    py: Python<'_>,
+    pid: i32,
+    x: f64,
+    y: f64,
+    role: &str,
+    bounds: (f64, f64, f64, f64),
+    action: &str,
+) -> PyResult<bool> {
+    py.allow_threads(|| ax::perform_at(pid, x, y, role, bounds, action))
+        .map_err(err)
+}
+
+#[pyfunction]
 #[pyo3(signature = (pid, role=None, label=None, title=None))]
 fn find_ax_element(
     py: Python<'_>,
@@ -272,6 +286,7 @@ fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_ax_tree, m)?)?;
     m.add_function(wrap_pyfunction!(find_ax_element, m)?)?;
     m.add_function(wrap_pyfunction!(ax_press, m)?)?;
+    m.add_function(wrap_pyfunction!(ax_perform, m)?)?;
     m.add_function(wrap_pyfunction!(check_accessibility_permission, m)?)?;
     m.add_function(wrap_pyfunction!(prompt_accessibility_permission, m)?)?;
     Ok(())

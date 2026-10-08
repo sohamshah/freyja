@@ -361,11 +361,18 @@ def ax_press(pid: int, x: float, y: float, role: str, bounds: Sequence[float]) -
     bx, by, bw, bh = (float(v) for v in bounds)
     return bool(_native.ax_press(int(pid), float(x), float(y), str(role), (bx, by, bw, bh)))
 
+def ax_perform(pid: int, x: float, y: float, role: str, bounds: Sequence[float], action: str) -> bool:
+    """Perform AX `action` (e.g. "AXScrollDownByPage") on the `role` element of
+    app `pid` under (x, y) whose frame is `bounds`. False when no such element
+    exists or it does not offer the action."""
+    bx, by, bw, bh = (float(v) for v in bounds)
+    return bool(_native.ax_perform(int(pid), float(x), float(y), str(role), (bx, by, bw, bh), str(action)))
+
 
 __all__ = [
     "Bounds", "DisplayInfo", "WindowInfo", "ScreenshotFrame", "Permissions",
     "list_displays", "screenshot", "list_windows", "get_frontmost_window",
     "focus_window", "focus_app", "click", "move_mouse", "type_text",
     "press_key", "key_down", "key_up", "scroll", "cursor_position",
-    "read_ax_tree", "find_ax_element", "ax_press",
+    "read_ax_tree", "find_ax_element", "ax_press", "ax_perform",
 ]

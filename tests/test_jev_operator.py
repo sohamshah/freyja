@@ -27,6 +27,7 @@ from bridge.tools.jev_operator.observe import (
     build_observation,
     diff_observations,
     literals_from_goal,
+    meaningful_change,
 )
 
 # ─── fixtures ────────────────────────────────────────────────────────
@@ -135,6 +136,55 @@ def test_scrolling_targets_the_scroll_view_that_hides_the_named_row():
     assert obs.scroll_point("open the Printers & Scanners section") == (100, 175)
     assert obs.scroll_point("click Add Printer") == (410, 175)
     assert obs.scroll_point("scroll down") == (100, 175), "otherwise the view hiding the most rows"
+
+
+def test_scrolling_goes_sideways_to_a_column_scrolled_out_of_view():
+    # A Finder column browser opened scrolled to its first columns: the folder's
+    # own column lies to the right of the visible area, so its scroll view's
+    # visible rect is empty and its center is off the window.
+    def column(x, names):
+        rows = [node("AXRow", n, bounds=(x + 10, 110 + 24 * i, 200, 22)) for i, n in enumerate(names)]
+        return node("AXScrollArea", None, bounds=(x, 100, 240, 300), children=[node("AXList", None, bounds=(x, 100, 240, 300), children=rows)])
+
+    browser = node("AXScrollArea", None, bounds=(100, 100, 500, 300), children=[
+        column(100, ["Macintosh HD"]), column(340, ["private"]), column(1060, ["roadmap.md", "budget.csv"]),
+    ])
+    win = node("AXWindow", "jev-finder-1", focused=True, bounds=(0, 40, 620, 400), children=[browser])
+    obs = build_observation(node("AXApplication", "Finder", children=[win]), app_name="Finder", bundle="b", pid=1)
+    assert [e.label for e in obs.elements if e.offscreen] == ["roadmap.md", "budget.csv"]
+    plan = obs.scroll_plan("rename roadmap.md to roadmap-final.md", down=True)
+    assert plan.way == "right" and plan.area == (100, 100, 500, 300), "pages the browser, not the hidden column"
+    assert 100 <= plan.point[0] <= 600 and 100 <= plan.point[1] <= 400, "the point is inside the visible browser"
+    assert obs.scroll_plan("look around", down=True).way == "right", "nothing is hidden above or below"
+    roadmap = next(e for e in obs.elements if e.label == "roadmap.md")
+    assert obs.scroll_toward(roadmap) == plan, "a reveal goes by the target's own position"
+
+
+def test_scrolling_keeps_the_asked_direction_when_rows_are_hidden_that_way():
+    rows = [node("AXRow", f"Row {i}", bounds=(0, 60 + 40 * i, 200, 30)) for i in range(12)]
+    area = node("AXScrollArea", None, bounds=(0, 50, 200, 200), children=[node("AXOutline", None, bounds=(0, 50, 200, 500), children=rows)])
+    win = node("AXWindow", "List", focused=True, bounds=(0, 40, 300, 300), children=[area])
+    obs = build_observation(node("AXApplication", "App", children=[win]), app_name="App", bundle="b", pid=1)
+    plan = obs.scroll_plan("", down=True)
+    assert (plan.point, plan.way, plan.area) == ((100, 150), "down", (0, 50, 200, 200))
+    assert obs.scroll_plan("open Row 11", down=False).way == "down", "a named row decides"
+
+
+def test_selected_choices_show_and_a_new_selection_counts_as_progress():
+    def tree(chosen):
+        win = node("AXWindow", "Appearance", focused=True, bounds=(0, 40, 500, 400), children=[
+            node("AXButton", None, label=name, bounds=(10 + 70 * i, 50, 60, 60), **({"selected": True} if name == chosen else {}))
+            for i, name in enumerate(["Auto", "Light", "Dark"])
+        ])
+        return node("AXApplication", "System Settings", children=[win])
+
+    before = build_observation(tree("Auto"), app_name="System Settings", bundle="b", pid=1)
+    after = build_observation(tree("Dark"), app_name="System Settings", bundle="b", pid=1)
+    rows = before.table().split("\n")
+    assert rows[:3] == ["[1] AXButton 'Auto' (selected)", "[2] AXButton 'Light'", "[3] AXButton 'Dark'"]
+    changed, summary = diff_observations(before, after)
+    assert changed and "'Dark' now selected" in summary and "'Auto' now not selected" in summary
+    assert meaningful_change(before, after)
 
 
 def test_window_buttons_name_their_window():
@@ -443,7 +493,7 @@ class ScriptedProvider:
                 if name == "operation":
                     pick = op
                 elif name == "click_target" and label and op in ("click", "double_click"):
-                    pick = next((k for k, v in q.options.items() if v.endswith(" " + label)), "none")
+                    pick = next((k for k, v in q.options.items() if v.split(" (out of view")[0].endswith(" " + label)), "none")
                 elif name == "key_target" and op == "key" and label:
                     pick = label
                 probs = {k: (0.92 if k == pick else 0.08 / max(1, len(q.options) - 1)) for k in q.options}
@@ -549,6 +599,116 @@ def test_loop_need_help_replan_sets_subgoal_and_continues(tmp_path, monkeypatch)
     call = op.provider.calls[1]
     assert "Current sub-goal (from the planner): click the 7 button" in call["questions"]["operation"].instructions
     assert "subgoal_complete" in call["questions"]
+
+
+class FakeList(FakeCalculator):
+    """A list in a scroll view: scrolling moves rows into view, clicking a row selects it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.offset = 0
+        self.scrolls: list[tuple[int, int]] = []
+        self.chosen: str | None = None
+
+    def list_windows(self, *, include_helpers: bool = False):
+        return [FakeWindow(1, 100, "com.apple.calculator", "List", FakeBounds(0, 40, 300, 300))]
+
+    def rows(self):
+        return [(f"Row {i}", (0, 60 + 40 * i - self.offset, 200, 30)) for i in range(12)]
+
+    def read_ax_tree(self, pid: int, max_depth: int = 8) -> str:
+        rows = [node("AXRow", n, bounds=b, **({"selected": True} if n == self.chosen else {})) for n, b in self.rows()]
+        area = node("AXScrollArea", None, bounds=(0, 50, 200, 200), children=[
+            node("AXOutline", None, bounds=(0, 50 - self.offset, 200, 500), children=rows),
+        ])
+        win = node("AXWindow", "List", focused=True, bounds=(0, 40, 300, 300), children=[area])
+        return json.dumps(node("AXApplication", "App", children=[win]))
+
+    def scroll(self, dx, dy, *, x=None, y=None) -> None:
+        self.scrolls.append((dx, dy))
+        self.offset = max(0, min(300, self.offset + 20 * dy))
+
+    def click(self, x, y, *, button="left", double=False, modifiers=None) -> None:
+        hit = next((n for n, b in self.rows() if b[0] <= x <= b[0] + b[2] and b[1] <= y <= b[1] + b[3] and 50 <= y <= 250), None)
+        self.clicks.append(hit or f"({x},{y})")
+        self.chosen = hit or self.chosen
+
+
+def test_choosing_a_row_out_of_view_scrolls_to_it_then_clicks(tmp_path, monkeypatch):
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+    native = FakeList()
+    op, _ = make_operator(native, ScriptedProvider([("click", "Row 9")] * 3 + [("done", None)]), goal="select Row 9")
+    res = asyncio.run(op.run())
+    assert native.scrolls == [(0, 6), (0, 6)], "two scrolls down toward the row"
+    assert native.clicks == ["Row 9"] and native.chosen == "Row 9"
+    assert res.history[0]["action"] == "scroll down toward [10] 'Row 9'"
+    assert "now in view" in res.history[1]["diff"] and "'Row 9' now selected" in res.history[2]["diff"]
+    assert res.status == "done"
+
+
+def test_reveal_pages_the_scroll_area_through_accessibility_when_offered(tmp_path, monkeypatch):
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+
+    class PagedList(FakeList):
+        def __init__(self) -> None:
+            super().__init__()
+            self.performed: list[tuple[str, tuple]] = []
+
+        def ax_perform(self, pid, x, y, role, bounds, action) -> bool:
+            self.performed.append((action, tuple(bounds)))
+            self.offset = min(300, self.offset + 200)
+            return True
+
+    native = PagedList()
+    op, _ = make_operator(native, ScriptedProvider([("click", "Row 9")] * 2 + [("done", None)]), goal="select Row 9")
+    res = asyncio.run(op.run())
+    assert native.performed == [("AXScrollDownByPage", (0.0, 50.0, 200.0, 200.0))]
+    assert native.scrolls == [], "no wheel events"
+    assert native.clicks == ["Row 9"] and res.status == "done"
+
+
+def test_icon_and_name_groups_are_items_named_by_their_text():
+    def item(name, y, editing=False):
+        field = node("AXTextField", None, value=name, bounds=(334, y + 3, 120, 18), **({"focused": True} if editing else {}))
+        return node("AXGroup", None, bounds=(310, y, 200, 24), children=[node("AXImage", None, bounds=(312, y + 3, 18, 18)), field])
+
+    def tree(editing):
+        col = node("AXScrollArea", None, bounds=(300, 100, 240, 300), children=[
+            node("AXList", None, bounds=(300, 100, 240, 300), children=[item("roadmap.md", 110, editing), item("budget.csv", 134)]),
+        ])
+        win = node("AXWindow", "jev-finder-1", focused=True, bounds=(0, 40, 620, 400), children=[col])
+        return node("AXApplication", "Finder", children=[win])
+
+    obs = build_observation(tree(False), app_name="Finder", bundle="b", pid=1)
+    assert obs.table().split("\n") == ["[1] AXGroup 'roadmap.md'", "[2] AXGroup 'budget.csv'"]
+    renaming = build_observation(tree(True), app_name="Finder", bundle="b", pid=1)
+    assert "[2] AXTextField 'text field' value='roadmap.md' (focused)" in renaming.table().split("\n")
+
+
+def test_planner_that_gives_up_without_a_screenshot_gets_one_look(tmp_path, monkeypatch):
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+    native = FakeCalculator()
+    looked: list[bool] = []
+
+    async def fake_complete(messages, system_prompt, max_tokens):
+        content = messages[0].content
+        payload = json.loads(content if isinstance(content, str) else content[-1].text)
+        if "why_help_was_requested" not in payload:
+            return json.dumps({"satisfied": True, "summary": "display shows 7", "subgoal": None})
+        looked.append(not isinstance(content, str))
+        if isinstance(content, str):
+            return json.dumps({"status": "give_up", "subgoal": None, "direct_action": None, "note": "the table does not say which is selected"})
+        return json.dumps({"status": "continue", "subgoal": "click the 7 button", "direct_action": None, "note": ""})
+
+    async def window_shot(target):
+        return SimpleNamespace(data=b"png", width=220, height=300, mime_type="image/png"), (0.0, 40.0, 220.0, 300.0)
+
+    llm = LLMHelper(fake_complete, max_calls=5)
+    op, _ = make_operator(native, ScriptedProvider([("need_help", None), ("click", "7"), ("done", None)]), goal="show 7", llm=llm)
+    op._window_shot = window_shot
+    res = asyncio.run(op.run())
+    assert looked == [False, True]
+    assert res.status == "done" and native.clicks == ["7"]
 
 
 def test_planner_done_is_held_to_the_end_state_check(tmp_path, monkeypatch):
@@ -802,14 +962,34 @@ def scroll_tree() -> dict[str, Any]:
     return node("AXApplication", "ListApp", children=[win])
 
 
-def test_rows_scrolled_out_of_view_are_not_targets():
+def test_rows_scrolled_out_of_view_are_scrolled_to_never_clicked_where_they_are_not(tmp_path, monkeypatch):
     obs = build_observation(scroll_tree(), app_name="ListApp", bundle="b", pid=1)
     rows = {e.label: e for e in obs.elements if e.role == "AXRow"}
     assert not rows["Item 0"].offscreen and not rows["Item 3"].offscreen
     # Item 5's center (y=280) lies below the scroll area (60..220) but inside the
     # window, on top of the 'Delete' button.
-    assert rows["Item 5"].offscreen and rows["Item 5"] not in obs.click_targets
-    assert "scrolled out of view" in rows["Item 5"].row()
+    assert rows["Item 5"].offscreen and "scrolled out of view" in rows["Item 5"].row()
+    assert rows["Item 5"] in obs.click_targets, "a target: choosing it scrolls toward it"
+
+    class StuckList(FakeCalculator):
+        scrolls: list[tuple[int, int]] = []
+
+        def read_ax_tree(self, pid: int, max_depth: int = 8) -> str:
+            return json.dumps(scroll_tree())
+
+        def list_windows(self, *, include_helpers: bool = False):
+            return [FakeWindow(1, 100, "com.apple.calculator", "List", FakeBounds(0, 40, 400, 400))]
+
+        def scroll(self, dx, dy, *, x=None, y=None) -> None:
+            self.scrolls.append((dx, dy))
+
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+    native = StuckList()
+    op, _ = make_operator(native, ScriptedProvider([("click", "Item 5")] * 6), goal="open Item 5", max_steps=6)
+    res = asyncio.run(op.run())
+    assert native.clicks == [], "never a click at its center, which is on top of 'Delete'"
+    assert native.scrolls and all(s == (0, 6) for s in native.scrolls)
+    assert res.status != "done"
 
 
 def test_literals_keep_apostrophes():

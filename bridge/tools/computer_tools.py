@@ -2264,10 +2264,13 @@ class ReadAxTreeTool:
             name="read_ax_tree",
             summary="Read the accessibility tree for an app",
             tier=ToolTier.HOT,
-            description="""Return a JSON tree of every UI element in an app's accessibility hierarchy.
+            description="""Return a JSON tree of the UI elements in an app's accessibility hierarchy.
 
 Each node has role (AXButton, AXWindow, AXTextField, ...), title,
-description, identifier, bounds, and children. This is dramatically
+description, identifier, bounds, and children; `selected: true` marks
+the selected row, tab or option. Closed menus list no items (open the
+menu first). A list scrolled far out of view keeps its rows in view
+plus 30 others; `omitted` counts the rows left out. This is dramatically
 faster and more reliable than screenshot+vision for apps that are
 AX-friendly (most native macOS apps, Cocoa, SwiftUI). Electron,
 web views, and custom-drawn UIs may return empty trees — in which
