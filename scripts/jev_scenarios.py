@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import subprocess
 import tempfile
@@ -31,6 +32,7 @@ class Ctx:
     status: str
     events: list[dict[str, Any]]
     out: dict[str, Any]
+    vars: dict[str, Any] = field(default_factory=dict)  # what the scenario's setup returned
 
     def ev(self, name: str) -> list[dict[str, Any]]:
         return [e for e in self.events if e.get("event") == name]
@@ -47,8 +49,10 @@ class Scenario:
     args: dict[str, Any]
     check: Callable[[Ctx], tuple[bool, str]]
     start: str | None = None  # fixture path opened in a fresh Arc tab first
-    setup: Callable[[], None] | None = None
-    teardown: Callable[[], None] | None = None
+    # Returns values substituted for "{name}" in args (fresh per run, so a result
+    # left over from an earlier run cannot pass); the check and teardown get them.
+    setup: Callable[[], dict[str, Any] | None] | None = None
+    teardown: Callable[[dict[str, Any]], None] | None = None
     timeout_s: float = 600
     # Read from the environment and substituted for "{env}" in the goal; the
     # scenario is skipped when it is unset (private URLs stay out of the repo).
@@ -243,38 +247,337 @@ def check_github(c: Ctx) -> tuple[bool, str]:
 
 
 # ─── native app helpers ─────────────────────────────────────────────────
+# Setup, checks and teardown use the accessibility API and `open` only. AppleScript
+# sent to an app needs an Automation grant for the terminal, and the first one
+# raises a consent prompt that blocks until someone answers it.
 
-FINDER_DIR = Path(tempfile.gettempdir()) / "jev-finder-test"
-
-
-def finder_setup() -> None:
-    FINDER_DIR.mkdir(parents=True, exist_ok=True)
-    for n in ("alpha-notes.txt", "budget-2026.csv", "roadmap.md"):
-        (FINDER_DIR / n).write_text(n)
-    subprocess.run(["open", str(FINDER_DIR)])
-    time.sleep(1.5)
-
-
-def finder_teardown() -> None:
-    osa(f'tell application "Finder" to close (every window whose name is "{FINDER_DIR.name}")')
+CALC = "com.apple.calculator"
+TEXTEDIT = "com.apple.TextEdit"
+FINDER = "com.apple.finder"
+SETTINGS = "com.apple.systempreferences"
+DICTIONARY = "com.apple.Dictionary"
+AX_DIR = Path(tempfile.gettempdir()) / "jev-ax-test"
+_BIDI = dict.fromkeys(map(ord, "‎‏‪‫‬‭‮⁦⁧⁨⁩"))
 
 
-def textedit_setup() -> None:
-    osa('tell application "TextEdit"\nactivate\nmake new document\nend tell')
-    time.sleep(1.0)
+def _native() -> Any:
+    import freyja_native  # noqa: PLC0415  (the app bundle's module)
+
+    return freyja_native
 
 
-def textedit_check(c: Ctx) -> tuple[bool, str]:
-    body = osa('tell application "TextEdit" to get text of front document')
-    return ok("Jev harness check 42" in body, f"status={c.status} doc={body[:80]!r}")
+def app_pid(bundle: str) -> int | None:
+    out = subprocess.run(
+        ["lsappinfo", "info", "-only", "pid", "-app", bundle], capture_output=True, text=True
+    ).stdout
+    m = re.search(r'"pid"\s*=\s*(\d+)', out)
+    return int(m.group(1)) if m else None
 
 
-def textedit_teardown() -> None:
-    osa('tell application "TextEdit" to close front document saving no')
+def ax_tree(bundle: str, depth: int = 18) -> dict[str, Any]:
+    pid = app_pid(bundle)
+    if pid is None:
+        return {}
+    raw = _native().read_ax_tree(pid, max_depth=depth)
+    return json.loads(raw) if raw else {}
+
+
+def ax_find(node: dict[str, Any] | None, pred: Callable[[dict[str, Any]], bool]) -> list[dict[str, Any]]:
+    if not node:
+        return []
+    out = [node] if pred(node) else []
+    for ch in node.get("children") or []:
+        out += ax_find(ch, pred)
+    return out
+
+
+def ax_strings(node: dict[str, Any] | None, roles: tuple[str, ...] = ("AXStaticText", "AXTextField", "AXTextArea")) -> str:
+    """The values shown by text elements under `node`."""
+    vals = [str(n.get("value") or n.get("title") or "") for n in ax_find(node, lambda n: n.get("role") in roles)]
+    return " | ".join(v for v in vals if v).translate(_BIDI)
+
+
+def ax_window(bundle: str, title: str = "") -> dict[str, Any] | None:
+    for w in ax_find(ax_tree(bundle), lambda n: n.get("role") == "AXWindow"):
+        if title.lower() in str(w.get("title") or "").lower():
+            return w
+    return None
+
+
+def ax_press(bundle: str, node: dict[str, Any]) -> bool:
+    pid, b = app_pid(bundle), node.get("bounds")
+    if pid is None or not b:
+        return False
+    return bool(_native().ax_press(pid, b[0] + b[2] / 2, b[1] + b[3] / 2, node.get("role") or "AXButton", b))
+
+
+def close_window(bundle: str, title: str = "") -> bool:
+    w = ax_window(bundle, title)
+    if w is None:
+        return False
+    btn = ax_find(w, lambda n: n.get("subrole") == "AXCloseButton")
+    if btn:
+        return ax_press(bundle, btn[0])
+    # Finder leaves its title-bar buttons out of the tree: raise that exact window, then Cmd+W.
+    n = _native()
+    title = str(w.get("title") or "")
+    for win in n.list_windows(include_helpers=False):
+        if win.bundle == bundle and win.title == title:
+            n.focus_window(win.id)
+            time.sleep(0.4)
+            front = n.get_frontmost_window()
+            if front is not None and front.title == title:
+                n.press_key("w", modifiers=["cmd"])
+                for _ in range(10):
+                    time.sleep(0.3)
+                    if ax_window(bundle, title) is None:
+                        return True
+    return False
+
+
+def window_ids(bundle: str) -> dict[int, str]:
+    return {w.id: w.title for w in _native().list_windows() if w.bundle == bundle}
+
+
+def close_window_id(bundle: str, wid: int) -> bool:
+    """Close the window with CG id `wid` (and its other tabs, which take its
+    place) by raising it and pressing Cmd+W; only while it is the front window."""
+    n = _native()
+    for _ in range(4):
+        if wid not in window_ids(bundle):
+            return True
+        n.focus_window(wid)
+        time.sleep(0.4)
+        front = n.get_frontmost_window()
+        if front is None or front.id != wid:
+            return False
+        frame = (front.bounds.x, front.bounds.y)
+        n.press_key("w", modifiers=["cmd"])
+        time.sleep(0.6)
+        # A tab closed: the window's next tab shows at the same place under a new id.
+        nxt = [w for w in n.list_windows() if w.bundle == bundle and (w.bounds.x, w.bounds.y) == frame and w.id not in _BEFORE.get(bundle, set())]
+        if nxt and wid not in window_ids(bundle):
+            wid = nxt[0].id
+    return wid not in window_ids(bundle)
+
+
+_BEFORE: dict[str, set[int]] = {}
+
+
+def launch(bundle: str, *paths: str, window: str = "", wait_s: float = 10.0) -> None:
+    subprocess.run(["open", "-b", bundle, *paths], capture_output=True, timeout=20)
+    deadline = time.time() + wait_s
+    while time.time() < deadline and ax_window(bundle, window) is None:
+        time.sleep(0.3)
+    time.sleep(0.5)
+
+
+def keys(bundle: str, *combos: str) -> None:
+    """Press key combos ("cmd+1") in `bundle`, brought to the front first. Nothing
+    is sent unless `bundle` is the frontmost app."""
+    from bridge.tools.jev_operator.act import frontmost_pid  # noqa: PLC0415
+
+    n = _native()
+    n.focus_app(bundle)
+    time.sleep(0.4)
+    for combo in combos:
+        if frontmost_pid() != app_pid(bundle):
+            print(f"      keys skipped: {bundle} is not in front", flush=True)
+            return
+        *mods, key = combo.split("+")
+        n.press_key(key, modifiers=mods)
+        time.sleep(0.2)
+
+
+def wait_idle(min_s: float = 4.0, max_wait_s: float = 300.0) -> bool:
+    """Wait until no keyboard or pointer input for `min_s` seconds. The operator
+    stops when it sees input it did not send in the last 3 s, so a scenario
+    starts only after the harness's own keys, and a person's, have settled."""
+    from bridge.tools.jev_operator.act import seconds_since_input  # noqa: PLC0415
+
+    deadline = time.time() + max_wait_s
+    while True:
+        idle = seconds_since_input()
+        if idle is None or idle >= min_s:
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(min(2.0, min_s - idle + 0.2))
+
+
+def calc_display() -> str:
+    areas = ax_find(ax_tree(CALC), lambda n: n.get("role") == "AXScrollArea" and n.get("label") == "Edit field")
+    return ax_strings(areas[0]).replace(",", "").strip() if areas else ""
+
+
+def calc_setup(kind: str) -> Callable[[], dict[str, Any]]:
+    def f() -> dict[str, Any]:
+        launch(CALC)
+        keys(CALC, "cmd+1", "escape", "escape")  # Basic mode, cleared: Calculator reopens showing its last result
+        if kind == "sqrt":
+            k = random.randint(23, 97)
+            return {"sq": k * k, "want": str(k)}
+        a, b = random.randint(13, 98), random.randint(13, 98)
+        return {"a": a, "b": b, "want": str(a * b)}
+
+    return f
 
 
 def calc_check(c: Ctx) -> tuple[bool, str]:
-    return ok(c.status == "done" and "84" in c.text, f"status={c.status}")
+    shown = calc_display()
+    want = c.vars["want"]
+    return ok(
+        c.status == "done" and shown == want and want in c.text.replace(",", ""),
+        f"status={c.status} want={want} display={shown!r}",
+    )
+
+
+def calc_teardown(v: dict[str, Any]) -> None:
+    keys(CALC, "cmd+1", "escape", "escape")
+    close_window(CALC, "Calculator")
+
+
+def textedit_setup(body: str = "") -> Callable[[], dict[str, Any]]:
+    """A plain-text file of our own, opened in TextEdit (no AppleScript)."""
+
+    def f() -> dict[str, Any]:
+        AX_DIR.mkdir(parents=True, exist_ok=True)
+        stem = f"jev-note-{random.randint(1000, 9999)}"
+        path = AX_DIR / f"{stem}.txt"
+        path.write_text(body)
+        launch(TEXTEDIT, str(path), window=stem)
+        return {"doc": stem}
+
+    return f
+
+
+def textedit_body(stem: str) -> str:
+    areas = ax_find(ax_window(TEXTEDIT, stem), lambda n: n.get("role") == "AXTextArea")
+    return str(areas[0].get("value") or "") if areas else ""
+
+
+def textedit_check(c: Ctx) -> tuple[bool, str]:
+    body = textedit_body(c.vars["doc"])
+    return ok(body.strip() == "Jev harness check 42", f"status={c.status} doc={body[:80]!r}")
+
+
+def textedit_replace_check(c: Ctx) -> tuple[bool, str]:
+    body = textedit_body(c.vars["doc"])
+    good = "fox" not in body.lower() and body.count("cat") == 5 and "lazy dog" in body
+    return ok(good, f"status={c.status} doc={body[:120]!r}")
+
+
+def textedit_teardown(v: dict[str, Any]) -> None:
+    close_window(TEXTEDIT, v["doc"])
+
+
+FINDER_NAMES = ("alpha-notes-{n}.txt", "budget-{n}.csv", "roadmap-{n}.md")
+_FIXTURE_DIR = re.compile(r"jev-finder-(test|\d+)")
+_FIXTURE_FILE = re.compile(r"(alpha-notes|budget|roadmap|roadmap-final)-\d+\.(txt|csv|md)")
+
+
+def finder_view() -> str:
+    """Finder's default view style (clmv, Nlsv, icnv, glyv). A view switch in a
+    folder with no view of its own changes it for every folder."""
+    return subprocess.run(
+        ["defaults", "read", "com.apple.finder", "FXPreferredViewStyle"], capture_output=True, text=True
+    ).stdout.strip()
+
+
+def finder_setup() -> dict[str, Any]:
+    """A new folder per run, so Finder shows it in the person's default view and
+    nothing a run changed carries over."""
+    root = Path(tempfile.gettempdir())
+    for d in root.iterdir():  # earlier runs' folders: only this fixture's own files
+        if d.is_dir() and _FIXTURE_DIR.fullmatch(d.name):
+            for p in d.iterdir():
+                if _FIXTURE_FILE.fullmatch(p.name) or p.name == ".DS_Store":
+                    p.unlink()
+            if not any(d.iterdir()):
+                d.rmdir()
+    n = random.randint(100, 999)
+    folder = root / f"jev-finder-{n}"
+    folder.mkdir()
+    for name in FINDER_NAMES:
+        (folder / name.format(n=n)).write_text(name)
+    _BEFORE[FINDER] = set(window_ids(FINDER))
+    launch(FINDER, str(folder), window=folder.name)
+    wid = next((i for i, t in window_ids(FINDER).items() if t == folder.name and i not in _BEFORE[FINDER]), None)
+    return {"n": n, "folder": folder.name, "view": finder_view(), "wid": wid}
+
+
+def finder_list_check(c: Ctx) -> tuple[bool, str]:
+    names = [x.format(n=c.vars["n"]).rsplit(".", 1)[0] for x in FINDER_NAMES]
+    view = finder_view()
+    return ok(
+        c.status == "done" and c.has(*names) and view == c.vars["view"],
+        f"status={c.status} needs={names} view={c.vars['view']}->{view}",
+    )
+
+
+def finder_rename_check(c: Ctx) -> tuple[bool, str]:
+    n = c.vars["n"]
+    folder = Path(tempfile.gettempdir()) / c.vars["folder"]
+    have = sorted(p.name for p in folder.iterdir() if p.name != ".DS_Store")
+    want = sorted([f"alpha-notes-{n}.txt", f"budget-{n}.csv", f"roadmap-final-{n}.md"])
+    view = finder_view()
+    return ok(have == want and view == c.vars["view"], f"status={c.status} files={have} view={c.vars['view']}->{view}")
+
+
+def finder_teardown(v: dict[str, Any]) -> None:
+    """Close the run's window by id: a run can navigate it, so its title is not
+    reliable. Windows that appeared during the run are only reported: one may be
+    the person's."""
+    if v.get("wid") is not None:
+        close_window_id(FINDER, v["wid"])
+    else:
+        close_window(FINDER, v["folder"])
+    extra = {i: t for i, t in window_ids(FINDER).items() if i not in _BEFORE.get(FINDER, set())}
+    if extra:
+        print(f"      left open (new Finder windows, not closed): {extra}", flush=True)
+
+
+def settings_version_check(c: Ctx) -> tuple[bool, str]:
+    v = subprocess.run(["sw_vers", "-productVersion"], capture_output=True, text=True).stdout.strip()
+    return ok(c.status == "done" and v in c.text, f"status={c.status} want={v}")
+
+
+def appearance() -> str:
+    def read(key: str) -> str:
+        return subprocess.run(["defaults", "read", "-g", key], capture_output=True, text=True).stdout.strip()
+
+    if read("AppleInterfaceStyleSwitchesAutomatically") == "1":
+        return "Auto"
+    return "Dark" if read("AppleInterfaceStyle") == "Dark" else "Light"
+
+
+def appearance_setup() -> dict[str, Any]:
+    return {"appearance": appearance()}
+
+
+def appearance_check(c: Ctx) -> tuple[bool, str]:
+    """The answer names the setting first ("Appearance is set to Auto; ... Light and Dark")."""
+    want, now = c.vars["appearance"], appearance()
+    report = c.text.split("<subagent-report", 1)[-1]
+    first = re.search(r"\b(Light|Dark|Auto)\b", report)
+    said = first.group(1) if first else None
+    return ok(c.status == "done" and said == want and now == want, f"status={c.status} want={want} said={said} now={now}")
+
+
+def dictionary_check(c: Ctx) -> tuple[bool, str]:
+    shown = ax_strings(ax_window(DICTIONARY), ("AXStaticText", "AXTextField", "AXSearchField")).lower()
+    return ok(
+        c.status == "done" and "serendipity" in shown and c.has("chance"),
+        f"status={c.status} app_shows_word={'serendipity' in shown}",
+    )
+
+
+def settings_teardown(v: dict[str, Any]) -> None:
+    close_window(SETTINGS)
+
+
+def dictionary_teardown(v: dict[str, Any]) -> None:
+    close_window(DICTIONARY)
 
 
 # ─── scenarios ──────────────────────────────────────────────────────────
@@ -309,20 +612,27 @@ SCENARIOS: list[Scenario] = [
     # A signed-in console page; set JEV_REAL_CONSOLE_URL to a Vertex AI Model Garden URL.
     Scenario("real_console", "real", {"goal": 'Open {env}, search the Model Garden for "Claude", and report which Claude models are listed. Navigation and reading only: do not enable, deploy, or accept anything.', "app": "Arc"}, check_text("Claude"), timeout_s=900, env="JEV_REAL_CONSOLE_URL"),
     # Native apps through the accessibility tree (moves the real pointer and keyboard).
-    Scenario("ax_calculator", "ax", {"goal": "Compute 12 × 7 and report the result.", "app": "Calculator"}, calc_check, teardown=lambda: osa('quit app "Calculator"')),
-    Scenario("ax_textedit", "ax", {"goal": 'In the new, empty TextEdit document, type "Jev harness check 42".', "app": "TextEdit"}, textedit_check, setup=textedit_setup, teardown=textedit_teardown),
-    Scenario("ax_finder", "ax", {"goal": "In the Finder window jev-finder-test, report the names of the files it contains.", "app": "Finder"}, check_text("alpha-notes", "budget-2026", "roadmap"), setup=finder_setup, teardown=finder_teardown),
-    Scenario("ax_settings", "ax", {"goal": "Open System Settings, go to General > About, and report the macOS version. Read only: change nothing.", "app": "System Settings"}, check_text("macOS"), teardown=lambda: osa('quit app "System Settings"')),
+    Scenario("ax_calculator", "ax", {"goal": "Compute {a} × {b} and report the result.", "app": "Calculator"}, calc_check, setup=calc_setup("multiply"), teardown=calc_teardown),
+    Scenario("ax_calculator_sqrt", "ax", {"goal": "Use Calculator to compute the square root of {sq} and report it.", "app": "Calculator"}, calc_check, setup=calc_setup("sqrt"), teardown=calc_teardown),
+    Scenario("ax_textedit", "ax", {"goal": 'In the TextEdit document {doc}, type "Jev harness check 42".', "app": "TextEdit"}, textedit_check, setup=textedit_setup(), teardown=textedit_teardown),
+    Scenario("ax_textedit_replace", "ax", {"goal": 'In the TextEdit document {doc}, replace every "fox" with "cat".', "app": "TextEdit"}, textedit_replace_check, setup=textedit_setup("The quick brown fox jumps over the lazy dog. The fox is quick.\nA fox, a fox, a fox!\n"), teardown=textedit_teardown),
+    Scenario("ax_finder", "ax", {"goal": "In the Finder window {folder}, report the names of the files it contains.", "app": "Finder"}, finder_list_check, setup=finder_setup, teardown=finder_teardown),
+    Scenario("ax_finder_rename", "ax", {"goal": "In the Finder window {folder}, rename roadmap-{n}.md to roadmap-final-{n}.md.", "app": "Finder"}, finder_rename_check, setup=finder_setup, teardown=finder_teardown),
+    Scenario("ax_settings", "ax", {"goal": "Open System Settings, go to General > About, and report the macOS version. Read only: change nothing.", "app": "System Settings"}, settings_version_check, teardown=settings_teardown),
+    Scenario("ax_appearance", "ax", {"goal": "In System Settings, find whether the appearance is set to Light, Dark or Auto, and report which. Read only: change nothing.", "app": "System Settings"}, appearance_check, setup=appearance_setup, teardown=settings_teardown),
+    Scenario("ax_dictionary", "ax", {"goal": 'In the Dictionary app, look up "serendipity" and report its definition.', "app": "Dictionary"}, dictionary_check, teardown=dictionary_teardown),
 ]
 
 
-def _fill(v: Any, base: str, run: str, env: str = "") -> Any:
+def _fill(v: Any, subs: dict[str, Any]) -> Any:
     if isinstance(v, str):
-        return v.replace("{base}", base).replace("{run}", run).replace("{env}", env)
+        for k, x in subs.items():
+            v = v.replace("{" + k + "}", str(x))
+        return v
     if isinstance(v, list):
-        return [_fill(x, base, run, env) for x in v]
+        return [_fill(x, subs) for x in v]
     if isinstance(v, dict):
-        return {k: _fill(x, base, run, env) for k, x in v.items()}
+        return {k: _fill(x, subs) for k, x in v.items()}
     return v
 
 
@@ -330,19 +640,25 @@ async def run_one(s: Scenario, base: str, rep: int) -> dict[str, Any]:
     run = f"{s.name}-{rep}-{int(time.time())}"
     browser = s.group in ("dom", "real")
     before = arc_tab_ids() if browser else []
+    got: dict[str, Any] = {}
     try:
+        if s.group == "ax" and not wait_idle():
+            raise RuntimeError("someone kept using the Mac for 5 minutes; not run")
         if s.setup:
-            s.setup()
+            got = s.setup() or {}
+        if s.group == "ax" and not wait_idle():
+            raise RuntimeError("someone kept using the Mac for 5 minutes; not run")
         if s.start:
             sep = "&" if "?" in s.start else "?"
             arc_open(f"{base}/{s.start}{sep}run={run}")
         h = Harness(REPO)
-        out = await h.call(_fill(s.args, base, run, os.environ.get(s.env or "", "")), timeout_s=s.timeout_s)
+        subs = {"base": base, "run": run, "env": os.environ.get(s.env or "", ""), **got}
+        out = await h.call(_fill(s.args, subs), timeout_s=s.timeout_s)
         text = out["memo"] or out["immediate"] or ""
         m = re.search(r"status=(\w+)", text)
         status = m.group(1) if m else ("error" if out.get("is_error") else "?")
         time.sleep(0.5)  # let the page's last beacon land
-        c = Ctx(text=text, status=status, events=page_events(run), out=out)
+        c = Ctx(text=text, status=status, events=page_events(run), out=out, vars=got)
         try:
             passed, why = s.check(c)
         except Exception as exc:  # noqa: BLE001
@@ -359,9 +675,9 @@ async def run_one(s: Scenario, base: str, rep: int) -> dict[str, Any]:
             arc_close_new(before)
         if s.teardown:
             try:
-                s.teardown()
-            except Exception:  # noqa: BLE001
-                pass
+                s.teardown(got)
+            except Exception as exc:  # noqa: BLE001
+                print(f"      teardown failed: {exc!r}", flush=True)
 
 
 async def run_suite(names: list[str], *, port: int, repeat: int = 1) -> int:
@@ -373,7 +689,11 @@ async def run_suite(names: list[str], *, port: int, repeat: int = 1) -> int:
     rows = []
     for rep in range(repeat):
         for s in sel:
-            r = await run_one(s, base, rep)
+            try:
+                r = await run_one(s, base, rep)
+            except Exception as exc:  # noqa: BLE001  (a broken setup fails its scenario, not the suite)
+                r = {"name": s.name, "group": s.group, "rep": rep, "pass": False, "why": f"harness error {exc!r}",
+                     "status": "harness_error", "secs": 0, "steps": None, "surface": None, "log": None, "text": ""}
             rows.append(r)
             print(
                 f"{'PASS' if r['pass'] else 'FAIL'}  {r['name']:<18} {r['status']:<18} {r['secs']:>6}s "
