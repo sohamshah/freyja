@@ -220,9 +220,18 @@ def _tool(monkeypatch, tmp_path, script):
 
 def test_tool_rejects_bad_items(tmp_path, monkeypatch):
     tool, *_ = _tool(monkeypatch, tmp_path, [])
-    for bad in (["x"] * 51, ["x" * 301], "abc", []):
+    for bad in (["x"] * 51, ["x" * 301], "abc"):
         out = asyncio.run(tool.execute("c", {"goal": "g", "items": bad, "wait": True, "use_llm": False}))
         assert out.is_error and "items" in out.content
+
+
+def test_tool_empty_items_is_a_single_run(tmp_path, monkeypatch):
+    """Models fill every optional field: `items: []` means no items. Rejecting it
+    made a real agent invent a dummy item to get past the error."""
+    tool, *_ = _tool(monkeypatch, tmp_path, [result("done")])
+    args = {"goal": "g", "items": [], "skip_items": [], "wait": True, "use_llm": False}
+    out = asyncio.run(tool.execute("c", args))
+    assert not out.is_error and "# | item" not in out.content and "status=done" in out.content
 
 
 def test_tool_wait_mode_returns_table_and_goal_template_stays_clean(tmp_path, monkeypatch):

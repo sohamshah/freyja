@@ -175,7 +175,11 @@ def test_filtering_and_shape(page):
     assert "Apple pie" in s["text"] and "Ghost" not in s["text"]
     far = _by_label(s, "Far away")
     assert far and far[0]["offscreen"] == "below"
-    assert not _by_label(s, "Way far")
+    # Controls far below the fold are offered too (nearest 250 first), so a
+    # button at the bottom of a long page needs no scrolling to find.
+    way = _by_label(s, "Way far")
+    assert way and way[0]["offscreen"] == "below"
+    assert _by_label(s, "Size")[0]["options"], "a <select> lists its options"
     assert _by_label(s, "Search")[0]["kind"] == "fill"
     assert _by_label(s, "Size")[0]["kind"] == "select"
 
@@ -212,8 +216,10 @@ def test_key_and_scroll(page):
     page.eval("document.activeElement.blur()")
     assert page.act(0, "key", "Enter") == {"ok": False, "reason": "no_editable_focused", "readback": None}
     r = page.act(0, "scroll", 500)
-    assert r["ok"] and int(r["readback"]) > 0
+    assert r["ok"] and r["moved"] > 0 and r["readback"].startswith("page at ")
     page.act(0, "scroll", -10000)
+    r = page.act(0, "scroll", -500)
+    assert r["ok"] and r["moved"] == 0 and "already at the top" in r["readback"]
 
 
 def test_covered_rejected_and_click(page):

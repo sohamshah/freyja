@@ -133,9 +133,47 @@ When the goal contains a quoted string or a number, Jev can pick it as the text 
   ill-posed questions, so a `none` pick and a low-confidence pick both route to
   `need_help` rather than to a guess.
 
+## Surfaces: the accessibility tree and the page DOM
+
+The loop reads and acts through a surface (`surface.py`). `AXSurface` is everything above: the accessibility tree and synthetic input through `freyja_native`. `DOMSurface` (`dom_surface.py`, `dom_snapshot.js`) reads and drives a web page in Arc or Chrome through the browser's own JavaScript, sent with `osascript` (`execute <tab> javascript`). Both produce the same `Observation`, so Jev's questions, the gates and the doors do not know which one ran.
+
+Selection is code: with `surface=auto`, a supported browser that answers a trivial script (`document.title`) gets the DOM surface; anything else gets AX. A browser that is slow to answer gets one longer retry, because the AX fallback for a browser is far slower: Arc's tree has 3,500+ nodes and a read takes the full 8 s budget. Two DOM failures in a row switch the run to AX for good; a closed tab ends the run.
+
+Why a DOM surface: the AX tree of a browser is the worst case for this loop (60-130 s per read on Arc before read budgets, unnamed fields, page content mixed with browser chrome), while the page DOM answers in about 0.2 s with named controls.
+
+How the DOM surface behaves:
+
+- **One tab.** A run is pinned to a tab by id: the tab active when it started, or the tab it opened. Tab ids are matched with one bulk `id of every tab` per window, since a window can hold a thousand tabs. A click that opens another tab (`target=_blank`, `window.open`) moves the run there. The person can switch tabs meanwhile.
+- **URLs.** When the goal names a URL and the tab is not on it, code opens it in a new tab before the first decision, so a run never starts by acting on an unrelated tab. Jev can also choose `open_url` later (the goal's URLs are its options). A tab the run opened itself is reused for later addresses; the person's own tabs are never navigated.
+- **No pointer, no focus.** Page runs send no OS input and do not bring the browser forward, so they keep working behind other windows and while the screen is locked. Native-app runs cannot.
+- **Snapshot.** Up to 250 controls, nearest to the visible area first (controls far down a long page are targets; using one scrolls it into view), with a stable id per element, accessible names, values, states, row context for repeated labels ("Add (Claude Team $200 / month)"), and the visible text followed by text below the fold. A `<select>` lists each option as a clickable row. Password, file and hidden inputs are never listed.
+- **Acting.** Clicks dispatch the full pointer sequence (pointerdown, mousedown, pointerup, mouseup, click), because many widgets commit on mousedown. Text goes in through `insertText` like a person typing, so frameworks and rich editors register it, and is read back; a mismatch fails the action. Each action is refused as "stale" when its element changed since the snapshot, and is re-bound only when exactly one element still matches. After each action the surface waits until the page stops changing (same mutation count and URL on two reads), up to 3 s (12 s after opening a URL).
+- **Keys.** Only Return, Escape and Tab are offered; browser shortcuts act on the window, which this surface does not see. Return in a field is gated by what the snapshot says it does there: a search box passes, a form passes unless its submit button's label is irreversible, and a field with no form or search role (a chat box may send on Return) needs confirmation.
+
+## Items
+
+`items` runs the same goal once per item, each with fresh loop state, sharing the surface, the tab and the time limit. The item text is data: it appears only in a delimited ITEM block and in the typed-literal pool, which also gets the item's parts ("Delta $412.18 — memo: Flight to NYC" offers "Flight to NYC"), so a field is not filled with the whole line. The result is one table (status, steps, seconds, evidence per item). Three items in a row ending the same non-done way stop the run; `skip_items` resumes it.
+
+## Notes and learning
+
+Before deciding, the loop reads two kinds of skill as notes for Jev and the doors: `jev-app-<app>` (for example `jev-app-calculator`) and, on a web page, `jev-site-<host>` (for example `jev-site-console-cloud-google-com`). They are ordinary skills, so they are written the way all skills are: the main agent asks a `skill-drafter` sub-agent to propose one after a run that taught it something, and the person approves it.
+
+## Testing against real apps
+
+`scripts/jev_harness.py` runs the tool the way the bridge does (a real `SubAgentSpec`, background mode, the inbox memo the agent receives) from a source tree, with the app's own Python and native extension:
+
+```sh
+cd /Applications/Freyja.app/Contents/Resources
+./python-bundle/bin/python3 <repo>/scripts/jev_harness.py call '{"goal": "...", "app": "Arc"}' --trace
+./python-bundle/bin/python3 <repo>/scripts/jev_harness.py serve &      # fixture pages on 127.0.0.1:8765
+./python-bundle/bin/python3 <repo>/scripts/jev_harness.py suite dom real ax
+```
+
+`scripts/jev_scenarios.py` holds the scenarios: fixture pages (`tests/fixtures/jev_live`) that report what was done to the harness server, public sites read-only, and native apps. Checks read that ground truth, not the run's own summary. Browser scenarios open their own tab and close only the tabs they created. The `ax` group moves the real pointer and needs an unlocked, idle Mac.
+
 ## What this does not do
 
-It does not read pixels except through the `direct_action` door. It does not plan
+It does not read pixels except through the `direct_action` door. On web pages it does not see iframes from other origins, canvas content, or shadow DOM, and it cannot hover or drag. It does not plan
 multi-app workflows on its own; the parent agent should pass one app-scoped goal at a
 time, or the LLM replan door will be entered often. It does not run while any other
 computer-use session is active, since both would drive the same keyboard and mouse.
@@ -147,6 +185,11 @@ computer-use session is active, since both would drive the same keyboard and mou
 - `bridge/tools/jev_operator/act.py` — actuator over `freyja_native` with UI events
 - `bridge/tools/jev_operator/handoff.py` — the three LLM doors
 - `bridge/tools/jev_operator/loop.py` — `Operator.run()`
+- `bridge/tools/jev_operator/surface.py` — the surface protocol and `AXSurface`
+- `bridge/tools/jev_operator/dom_surface.py`, `dom_snapshot.js` — the page surface for Arc and Chrome
+- `bridge/tools/jev_operator/items.py` — for-each runs over `items`
+- `bridge/tools/jev_operator/notes.py` — `jev-app-*` and `jev-site-*` notes
+- `scripts/jev_harness.py`, `scripts/jev_scenarios.py`, `tests/fixtures/jev_live/` — live testing
 - `bridge/tools/jev_operator/__main__.py` — CLI for headless runs
 - `bridge/tools/jev_computer_use_tool.py` — tool wrapper registered next to `computer_use`
 - `tests/test_jev_operator.py` — table serialization, diff, gating, literal extraction, loop with fake providers

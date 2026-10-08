@@ -1,10 +1,15 @@
 // Jev operator DOM snapshot. Evaluate in a page to install window.__freyjaJev.
-// Idempotent: a second evaluation keeps the first install (one observer only).
+// Idempotent per version: evaluating the same version again keeps the first
+// install (one observer only); a newer version replaces an older one.
 (function () {
   'use strict';
-  if (window.__freyjaJev && window.__freyjaJev.version) return 'already-installed';
+  var VERSION = 3;
+  var prior = window.__freyjaJev;
+  if (prior && prior.version === VERSION) return 'already-installed';
+  if (prior && prior.observer) { try { prior.observer.disconnect(); } catch (e) { /* ignore */ } }
 
   var MAX_ACTIONS = 250, MAX_LABEL = 200, MAX_VALUE = 500, MAX_CTX = 300, MAX_TEXT = 6000;
+  var MAX_OPTIONS = 25;
   var ids = new WeakMap(), byId = new Map(), nextId = 1, mutations = 0;
 
   var observer = new MutationObserver(function (recs) { mutations += recs.length || 1; });
@@ -15,12 +20,19 @@
   var SELECTOR = [
     'a[href]', 'button', 'input', 'textarea', 'select', 'summary', '[contenteditable]',
     '[role=button]', '[role=link]', '[role=checkbox]', '[role=radio]', '[role=tab]',
-    '[role=menuitem]', '[role=switch]', '[role=combobox]', '[role=textbox]', '[role=option]',
+    '[role=menuitem]', '[role=menuitemcheckbox]', '[role=menuitemradio]', '[role=switch]',
+    '[role=combobox]', '[role=textbox]', '[role=searchbox]', '[role=option]', '[role=treeitem]',
+    '[onclick]',
   ].join(',');
-  var ARIA_ROLES = { button: 1, link: 1, checkbox: 1, radio: 1, tab: 1, menuitem: 1, switch: 1, combobox: 1, textbox: 1, option: 1 };
+  var ARIA_ROLES = {
+    button: 1, link: 1, checkbox: 1, radio: 1, tab: 1, menuitem: 1, menuitemcheckbox: 1,
+    menuitemradio: 1, switch: 1, combobox: 1, textbox: 1, searchbox: 1, option: 1, treeitem: 1,
+  };
   var BUTTON_INPUTS = { button: 1, submit: 1, reset: 1, image: 1 };
   var TOGGLE_INPUTS = { checkbox: 1, radio: 1 };
   var NON_TEXT_INPUTS = { range: 1, color: 1, date: 1, 'datetime-local': 1, month: 1, time: 1, week: 1 };
+  var KEY_CODES = { Enter: 13, Escape: 27, Tab: 9 };
+  var SEARCHY = /search|filter|find|query|lookup/i;
 
   function norm(s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); }
   function clip(s, n) { s = norm(s); return s.length > n ? s.slice(0, n) : s; }
@@ -50,6 +62,7 @@
       if (BUTTON_INPUTS[t]) return 'button';
       if (t === 'checkbox') return 'checkbox';
       if (t === 'radio') return 'radio';
+      if (t === 'search') return 'searchbox';
       return 'textbox';
     }
     if (isEditableHost(el)) return 'textbox';
@@ -67,10 +80,11 @@
       if (NON_TEXT_INPUTS[t]) return 'fill';
       return 'fill';
     }
-    if (isEditableHost(el) || role === 'textbox') return 'fill';
-    if (role === 'checkbox' || role === 'radio' || role === 'switch') return 'toggle';
+    if (isEditableHost(el) || role === 'textbox' || role === 'searchbox') return 'fill';
+    if (role === 'checkbox' || role === 'radio' || role === 'switch' ||
+        role === 'menuitemcheckbox' || role === 'menuitemradio') return 'toggle';
     if (role === 'link') return 'link';
-    if (role === 'combobox') return 'select';
+    // A combobox that is not a text input is a button that opens a list.
     return 'click';
   }
 
@@ -144,16 +158,17 @@
     if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') {
       v = textOf(el);
       if (v) return clip(v, MAX_LABEL);
-      var img = el.querySelector && el.querySelector('img[alt],[aria-label]');
+      var img = el.querySelector && el.querySelector('img[alt],[aria-label],svg title');
       if (img) {
-        v = norm(attr(img, 'alt') || attr(img, 'aria-label'));
+        v = norm(attr(img, 'alt') || attr(img, 'aria-label') || img.textContent);
         if (v) return clip(v, MAX_LABEL);
       }
     }
-    v = norm(attr(el, 'title'));
-    if (v) return clip(v, MAX_LABEL);
-    v = norm(attr(el, 'placeholder'));
-    if (v) return clip(v, MAX_LABEL);
+    var keys = ['title', 'placeholder', 'data-tooltip', 'mattooltip', 'data-title', 'name'];
+    for (var k = 0; k < keys.length; k++) {
+      v = norm(attr(el, keys[k]));
+      if (v) return clip(v, MAX_LABEL);
+    }
     return '';
   }
 
@@ -165,7 +180,9 @@
     } else if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
       if (kind === 'fill') v = el.value || '';
     } else if (kind === 'fill') {
-      v = el.textContent || '';
+      v = el.innerText != null ? el.innerText : (el.textContent || '');
+    } else if (attr(el, 'role') === 'combobox') {
+      v = textOf(el);
     }
     return String(v).slice(0, MAX_VALUE);
   }
@@ -194,6 +211,33 @@
     return null;
   }
 
+  // What Enter does in a text field: "search" (filters or searches; safe),
+  // "form:<submit label>" (submits that form), "form" (a form with no submit
+  // button), or "unknown" (page scripts decide; a chat box may send).
+  function enterOf(el) {
+    var hay = [attr(el, 'type'), attr(el, 'role'), attr(el, 'aria-label'), attr(el, 'placeholder'),
+      attr(el, 'name'), el.id, nameOf(el)].join(' ');
+    if ((el.type || '').toLowerCase() === 'search' || attr(el, 'role') === 'searchbox' ||
+        (el.closest && el.closest('[role=search]')) || SEARCHY.test(hay)) return 'search';
+    var f = el.form;
+    if (f) {
+      var b = f.querySelector('button[type=submit],button:not([type]),input[type=submit],input[type=image]');
+      return b ? 'form:' + nameOf(b) : 'form';
+    }
+    return 'unknown';
+  }
+
+  function optionsOf(el) {
+    if (el.tagName !== 'SELECT') return null;
+    var out = [];
+    for (var i = 0; i < el.options.length && out.length < MAX_OPTIONS; i++) {
+      var o = el.options[i];
+      if (o.disabled || o.hidden) continue;
+      out.push({ v: o.value, t: norm(o.text), sel: o.selected });
+    }
+    return out;
+  }
+
   function hash(s) {
     var h = 5381;
     for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
@@ -206,21 +250,24 @@
     return id;
   }
 
+  function onclickNoise(el) {
+    // [onclick] catches clickable divs without a role; skip big containers.
+    if (!el.hasAttribute('onclick') || el.matches('a[href],button,input,select,textarea,[role]')) return false;
+    return textOf(el).length > 120;
+  }
+
   // Collect every visible candidate control (no viewport filtering, no cap).
   function collect() {
     var els = document.querySelectorAll(SELECTOR);
-    var out = [], groups = new Map();
+    var out = [], groups = new Map(), seen = new Set();
     for (var i = 0; i < els.length; i++) {
       var el = els[i];
+      if (seen.has(el)) continue;
+      seen.add(el);
       if (excludedInput(el)) continue;
-      if (isEditableHost(el) && el.parentElement && el.parentElement.isContentEditable &&
-          !(el.tagName === 'INPUT')) {
-        // nested editable child of an editable host: the host is the control
-        if (isEditableHost(el.parentElement) || el.parentElement.closest('[contenteditable]:not([contenteditable=false])')) {
-          if (attr(el, 'contenteditable') === '' || attr(el, 'contenteditable') === 'true') {
-            if (el.parentElement.closest('[contenteditable]:not([contenteditable=false])')) continue;
-          }
-        }
+      if (onclickNoise(el)) continue;
+      if (isEditableHost(el) && el.parentElement && el.parentElement.closest('[contenteditable]:not([contenteditable=false])')) {
+        continue; // nested editable child of an editable host: the host is the control
       }
       if (!isVisible(el)) continue;
       var role = roleOf(el), kind = kindOf(el, role);
@@ -263,14 +310,18 @@
     return null;
   }
 
-  function inRange(el) {
+  // Distance from the visible area, in pixels (0 = on screen).
+  function distance(el) {
     var r = el.getBoundingClientRect(), vh = window.innerHeight, vw = window.innerWidth;
-    return r.bottom > -vh && r.top < 2 * vh && r.right > -vw && r.left < 2 * vw;
+    var dy = r.bottom < 0 ? -r.bottom : r.top > vh ? r.top - vh : 0;
+    var dx = r.right < 0 ? -r.right : r.left > vw ? r.left - vw : 0;
+    return dy + dx;
   }
 
-  function visibleText() {
+  // Visible text first; then, while the budget lasts, text below the visible area.
+  function pageText() {
     var walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, null);
-    var parts = [], total = 0, vh = window.innerHeight, vw = window.innerWidth, range = document.createRange();
+    var vis = [], below = [], total = 0, vh = window.innerHeight, vw = window.innerWidth, range = document.createRange();
     var n;
     while ((n = walker.nextNode())) {
       var s = norm(n.nodeValue);
@@ -283,12 +334,18 @@
       range.selectNodeContents(n);
       var r = range.getBoundingClientRect();
       if (r.width <= 0 || r.height <= 0) continue;
-      if (r.bottom <= 0 || r.top >= vh || r.right <= 0 || r.left >= vw) continue;
-      parts.push(s);
+      if (r.right <= 0 || r.left >= vw) continue;
+      if (r.bottom <= 0) continue;
+      if (r.top >= vh) { below.push(s); continue; }
+      vis.push(s);
       total += s.length + 1;
       if (total > MAX_TEXT) break;
     }
-    return parts.join('\n').slice(0, MAX_TEXT);
+    var text = vis.join('\n');
+    if (below.length && text.length < MAX_TEXT - 200) {
+      text += '\n[below the visible area]\n' + below.join('\n');
+    }
+    return text.slice(0, MAX_TEXT);
   }
 
   function isVisibleLoose(el) {
@@ -297,36 +354,88 @@
   }
 
   function snapshot() {
-    var all = collect(), actions = [], unoffered = [];
+    var all = collect(), cands = [], unoffered = [];
     for (var i = 0; i < all.length; i++) {
       var e = all[i];
-      if (!inRange(e.el)) continue;
       if (e.disabled) { unoffered.push({ label: e.label, context: e.context }); continue; }
-      if (actions.length >= MAX_ACTIONS) continue;
-      actions.push({
+      e.order = i;
+      e.dist = distance(e.el);
+      cands.push(e);
+    }
+    // The nearest MAX_ACTIONS controls, shown in document order.
+    if (cands.length > MAX_ACTIONS) {
+      cands.sort(function (a, b) { return a.dist - b.dist || a.order - b.order; });
+      cands = cands.slice(0, MAX_ACTIONS).sort(function (a, b) { return a.order - b.order; });
+    }
+    var actions = cands.map(function (e) {
+      var a = {
         id: idFor(e.el), kind: e.kind, role: e.role, label: e.label, value: e.value,
         checked: e.checked, expanded: e.expanded, offscreen: offscreenOf(e.el),
         context: e.context, focused: document.activeElement === e.el, guard: e.guard,
-      });
-    }
+      };
+      if (e.kind === 'fill') a.enter = enterOf(e.el);
+      if (e.kind === 'select') a.options = optionsOf(e.el);
+      return a;
+    });
     var de = document.documentElement;
     var maxY = Math.max(0, Math.max(de.scrollHeight, document.body ? document.body.scrollHeight : 0) - window.innerHeight);
     return JSON.stringify({
       url: location.href, title: document.title, readyState: document.readyState,
       scroll: { x: Math.round(window.scrollX), y: Math.round(window.scrollY), maxY: Math.round(maxY) },
       viewport: { w: window.innerWidth, h: window.innerHeight },
-      text: visibleText(), mutations: mutations, actions: actions, unoffered: unoffered,
+      text: pageText(), mutations: mutations, actions: actions, unoffered: unoffered,
     });
   }
 
-  function res(ok, reason, readback) {
-    return JSON.stringify({ ok: !!ok, reason: reason || null, readback: readback == null ? null : String(readback) });
+  function quiet() {
+    return JSON.stringify({ m: mutations, rs: document.readyState, u: location.href });
+  }
+
+  // Navigate this tab (one the run opened itself) to another address.
+  function go(url) {
+    location.assign(url);
+    return JSON.stringify({ ok: true });
+  }
+
+  function res(ok, reason, readback, extra) {
+    var o = { ok: !!ok, reason: reason || null, readback: readback == null ? null : String(readback) };
+    if (extra) for (var k in extra) o[k] = extra[k];
+    return JSON.stringify(o);
   }
 
   function fire(el, type, ctor, init) {
     init = init || {};
     init.bubbles = true; init.cancelable = true;
     el.dispatchEvent(new (ctor || Event)(type, init));
+  }
+
+  function keyEvent(type, key) {
+    var ev = new KeyboardEvent(type, { key: key, code: key, bubbles: true, cancelable: true, composed: true });
+    var code = KEY_CODES[key] || 0;
+    try {
+      Object.defineProperty(ev, 'keyCode', { get: function () { return code; } });
+      Object.defineProperty(ev, 'which', { get: function () { return code; } });
+    } catch (e) { /* ignore */ }
+    return ev;
+  }
+
+  // The full sequence a real pointer produces; many widgets act on mousedown.
+  function pointerClick(el) {
+    var r = el.getBoundingClientRect();
+    var init = {
+      bubbles: true, cancelable: true, composed: true, view: window, button: 0, buttons: 1,
+      clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, pointerId: 1, pointerType: 'mouse', isPrimary: true,
+    };
+    var P = typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
+    el.dispatchEvent(new P('pointerover', init));
+    el.dispatchEvent(new MouseEvent('mouseover', init));
+    el.dispatchEvent(new P('pointerdown', init));
+    var down = el.dispatchEvent(new MouseEvent('mousedown', init));
+    if (down && el.focus) el.focus({ preventScroll: true });
+    init.buttons = 0;
+    el.dispatchEvent(new P('pointerup', init));
+    el.dispatchEvent(new MouseEvent('mouseup', init));
+    el.click();
   }
 
   function isEditableActive(a) {
@@ -345,12 +454,10 @@
     if (a && a.tagName === 'INPUT' && (a.type || '').toLowerCase() === 'password') return res(false, 'refused_password');
     if (key === 'Enter' && !isEditableActive(a)) return res(false, 'no_editable_focused');
     var target = a || document.body;
-    var init = { key: key, code: key === 'Escape' ? 'Escape' : key, bubbles: true, cancelable: true };
-    var down = new KeyboardEvent('keydown', init);
-    var notPrevented = target.dispatchEvent(down);
+    var notPrevented = target.dispatchEvent(keyEvent('keydown', key));
     if (notPrevented) {
       if (key === 'Enter') {
-        target.dispatchEvent(new KeyboardEvent('keypress', init));
+        target.dispatchEvent(keyEvent('keypress', key));
         if (target.tagName === 'INPUT' && target.form && target.form.requestSubmit) {
           try { target.form.requestSubmit(); } catch (e) { /* invalid form: ignore */ }
         }
@@ -363,8 +470,73 @@
         if (nx) nx.focus();
       }
     }
-    target.dispatchEvent(new KeyboardEvent('keyup', init));
+    target.dispatchEvent(keyEvent('keyup', key));
     return res(true, null, document.activeElement ? (document.activeElement.value != null ? document.activeElement.value : '') : '');
+  }
+
+  // The element that scrolls: the page if it can, else the largest visible scroll container.
+  function scroller() {
+    var se = document.scrollingElement || document.documentElement;
+    if (se.scrollHeight > window.innerHeight + 20) return null;
+    var best = null, area = 0, all = document.querySelectorAll('body *');
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (el.scrollHeight <= el.clientHeight + 20 || el.clientHeight < 80) continue;
+      var oy = getComputedStyle(el).overflowY;
+      if (oy !== 'auto' && oy !== 'scroll' && oy !== 'overlay') continue;
+      var r = el.getBoundingClientRect();
+      var a = Math.max(0, Math.min(r.bottom, window.innerHeight) - Math.max(r.top, 0)) * r.width;
+      if (a > area) { area = a; best = el; }
+    }
+    return best;
+  }
+
+  function doScroll(dy) {
+    var s = scroller();
+    if (!s) {
+      var y0 = window.scrollY;
+      window.scrollBy(0, dy);
+      var moved = Math.round(window.scrollY - y0);
+      return res(true, null, 'page at ' + Math.round(window.scrollY) + ' of ' +
+        Math.round(Math.max(0, (document.scrollingElement || document.documentElement).scrollHeight - window.innerHeight)) +
+        (moved ? '' : ' (did not move: already at the ' + (dy > 0 ? 'bottom' : 'top') + ')'), { moved: moved });
+    }
+    var before = s.scrollTop;
+    s.scrollTop = before + dy;
+    var m = Math.round(s.scrollTop - before);
+    return res(true, null, 'panel at ' + Math.round(s.scrollTop) + ' of ' + Math.round(s.scrollHeight - s.clientHeight) +
+      (m ? '' : ' (did not move: already at the ' + (dy > 0 ? 'bottom' : 'top') + ')'), { moved: m });
+  }
+
+  // Type the way a person does (select, then insert), so frameworks and rich
+  // editors see a real input; fall back to setting the value directly.
+  function fillText(el, text, append) {
+    el.focus();
+    var isField = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA';
+    var want = append ? (isField ? (el.value || '') : (el.innerText || '')) + text : text;
+    try {
+      if (isField) {
+        if (append) { var n = (el.value || '').length; el.setSelectionRange(n, n); } else { el.select(); }
+      } else {
+        var sel = window.getSelection(), rng = document.createRange();
+        rng.selectNodeContents(el);
+        if (append) rng.collapse(false);
+        sel.removeAllRanges(); sel.addRange(rng);
+      }
+      var ok = document.execCommand('insertText', false, text);
+      var now = isField ? el.value : el.innerText;
+      if (ok && norm(now) === norm(want)) return now;
+    } catch (e) { /* fall through */ }
+    if (isField) {
+      var proto = el.tagName === 'INPUT' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, want);
+      fire(el, 'input', typeof InputEvent === 'function' ? InputEvent : Event, { inputType: 'insertText', data: text });
+      fire(el, 'change');
+      return el.value;
+    }
+    el.textContent = want;
+    fire(el, 'input', typeof InputEvent === 'function' ? InputEvent : Event, { inputType: 'insertText', data: text });
+    return el.innerText;
   }
 
   function act(id, op, arg, expectedGuard) {
@@ -372,8 +544,7 @@
       if (op === 'scroll') {
         var dy = Number(arg);
         if (!isFinite(dy)) return res(false, 'bad_arg');
-        window.scrollBy(0, dy);
-        return res(true, null, Math.round(window.scrollY));
+        return doScroll(dy);
       }
       if (op === 'key') return doKey(String(arg));
       if (op !== 'click' && op !== 'fill' && op !== 'select') return res(false, 'unknown_op');
@@ -394,9 +565,6 @@
         if (isReadOnly(el)) return res(false, 'read_only');
       }
       if (op === 'select' && entry.kind !== 'select') return res(false, 'not_selectable');
-      if (op === 'click' && entry.kind === 'fill') {
-        // clicking an editable just focuses it
-      }
 
       el.scrollIntoView({ block: 'center', inline: 'center' });
       var r = el.getBoundingClientRect();
@@ -404,27 +572,18 @@
       if (!top || !(top === el || el.contains(top) || top.contains(el))) return res(false, 'covered');
 
       if (op === 'click') {
-        el.focus && el.focus({ preventScroll: true });
-        el.click();
-        return res(true, null, entry.kind === 'toggle' ? String(!!el.checked) : valueOf(el, entry.kind));
+        var opened = false, origOpen = window.open;
+        window.open = function () { opened = true; return origOpen.apply(window, arguments); };
+        var link = el.closest && el.closest('a[href]');
+        if (link && link.target && !/^_(self|top|parent)$/i.test(link.target)) opened = true;
+        try { pointerClick(el); } finally { window.open = origOpen; }
+        return res(true, null, entry.kind === 'toggle' ? String(!!el.checked) : valueOf(el, entry.kind), opened ? { newTab: true } : null);
       }
 
       if (op === 'fill') {
         var spec = arg && typeof arg === 'object' ? arg : { text: arg, mode: 'replace' };
         var text = String(spec.text == null ? '' : spec.text);
-        var append = spec.mode === 'append';
-        el.focus();
-        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
-          var proto = el.tagName === 'INPUT' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
-          var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-          setter.call(el, append ? (el.value || '') + text : text);
-          fire(el, 'input', typeof InputEvent === 'function' ? InputEvent : Event, { inputType: 'insertText', data: text });
-          fire(el, 'change');
-          return res(true, null, el.value);
-        }
-        el.textContent = append ? (el.textContent || '') + text : text;
-        fire(el, 'input', typeof InputEvent === 'function' ? InputEvent : Event, { inputType: 'insertText', data: text });
-        return res(true, null, el.textContent);
+        return res(true, null, fillText(el, text, spec.mode === 'append'));
       }
 
       // select
@@ -443,6 +602,6 @@
     }
   }
 
-  window.__freyjaJev = { version: 1, snapshot: snapshot, act: act, observer: observer };
+  window.__freyjaJev = { version: VERSION, snapshot: snapshot, act: act, quiet: quiet, go: go, observer: observer };
   return 'installed';
 })();

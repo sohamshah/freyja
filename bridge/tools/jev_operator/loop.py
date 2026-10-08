@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlparse
 
 from bridge.decisions.provider import DecisionError, DecisionProvider
 from bridge.tools.computer_tools import ComputerToolSpec
@@ -38,9 +39,9 @@ from bridge.tools.jev_operator.observe import (
     literals_from_goal,
     meaningful_change,
 )
-from bridge.tools.jev_operator.notes import app_notes
+from bridge.tools.jev_operator.notes import app_notes, site_notes
 from bridge.tools.jev_operator import dom_surface
-from bridge.tools.jev_operator.dom_surface import DOMSurface, DOMUnavailable
+from bridge.tools.jev_operator.dom_surface import DOMSurface, DOMUnavailable, TabGone
 from bridge.tools.jev_operator.surface import AXSurface, Surface
 
 SELF_BUNDLE = "co.freyja.desktop"
@@ -83,6 +84,25 @@ IRREVERSIBLE_PATTERNS = [
     r"\bforce quit\b",
     r"\bsleep\b",
     r"\block screen\b",
+    # Web apps: merges, approvals, deploys, paid or access-granting switches.
+    r"\bmerge\b",
+    r"\bapprove\b",
+    r"\breject\b",
+    r"\bdeploy\b",
+    r"\bconfirm\b",
+    r"\baccept (the )?(terms|invitation|invite|offer|agreement|and)\b",
+    r"\benable\b",
+    r"\brequest access\b",
+    r"\barchive\b",
+    r"\brevoke\b",
+    r"\bdeactivate\b",
+    r"\bcancel (my |the |your )?(subscription|plan|order|membership|account|booking|reservation)\b",
+    r"\bsubscribe\b",
+    r"\bupgrade\b",
+    r"\binvite\b",
+    r"\bwithdraw\b",
+    r"\bbook now\b",
+    r"\breserve\b",
 ]
 _IRREVERSIBLE = re.compile("|".join(IRREVERSIBLE_PATTERNS), re.I)
 # Roles whose activation can commit something. Menu-bar items only open a menu,
@@ -103,6 +123,53 @@ APP_DIRS = [
     "/System/Applications/Utilities",
     str(Path.home() / "Applications"),
 ]
+
+
+_URL = re.compile(r"https?://[^\s\"'<>()\[\]{}]+", re.I)
+
+
+def urls_from_goal(goal: str) -> list[str]:
+    out: list[str] = []
+    for m in _URL.finditer(goal):
+        u = m.group(0).rstrip(".,;:!?")
+        if u not in out:
+            out.append(u)
+    return out[:5]
+
+
+def same_page(current: str, wanted: str) -> bool:
+    """Is the browser already on `wanted` (same address, ignoring scheme, www,
+    a trailing slash and the fragment; extra query or path on `current` is fine)?"""
+
+    def n(u: str) -> str:
+        u = u.split("#")[0].rstrip("/").lower()
+        return re.sub(r"^https?://(www\.)?", "", u)
+
+    c, w = n(current), n(wanted)
+    return bool(c) and (c == w or c.startswith(w))
+
+
+def own_effect(
+    pending: dict[str, Any], key: Any, before: Observation, after: Observation
+) -> bool:
+    """The action's own target took the change it was meant to make: a field now
+    holds new text, a checkbox flipped, a list option became selected. Filling a
+    form changes nothing else on screen, and three verified fields in a row were
+    being counted as "stuck"."""
+    if not key or not pending.get("ok", True) or pending.get("kind") not in ("type", "click"):
+        return False
+    key = tuple(key)
+    b = next((e for e in before.elements if (e.window, e.role, e.label) == key), None)
+    a = next((e for e in after.elements if (e.window, e.role, e.label) == key), None)
+    if b is None or a is None:
+        return False
+    if pending.get("kind") == "type":
+        return bool(a.value) and (a.value or "") != (b.value or "")
+    return (a.value or "") != (b.value or "") or a.toggle_state() != b.toggle_state()
+
+
+class SurfaceFailed(RuntimeError):
+    """Three reads in a row failed on every surface the run could use."""
 
 
 def is_irreversible(el: Element) -> bool:
@@ -184,6 +251,8 @@ class RunResult:
     last_frame_path: str | None = None
     # Why a blocked run stopped, when the tool can tell: "ax_unreadable".
     code: str = ""
+    # The page a DOM run ended on ("title — url"), so the caller can continue there.
+    page: str = ""
 
     def footer(self) -> str:
         med = int(statistics.median(self.jev_ms)) if self.jev_ms else 0
@@ -292,6 +361,8 @@ class Operator:
         self._last_frame: tuple[bytes, str] | None = None
         self._finish_logged = False
         self._notes = ""
+        self._app_notes = ""
+        self._site_notes: dict[str, str] = {}  # host -> notes, looked up once per host
         self._repeat_key: str | None = None
         self._repeat_count = 0
         self._repeat_replanned = False
@@ -330,9 +401,17 @@ class Operator:
                 self._log({"event": "surface_probe", "ok": False, "detail": "unsupported browser", "bundle": target.bundle})
             return
         ok, detail = await asyncio.to_thread(dom_surface.probe, target.bundle)
+        if not ok and "did not answer" in detail:
+            # A busy browser can miss the first 3 s; the accessibility fallback for
+            # a browser is far slower than waiting once more.
+            ok, again = await asyncio.to_thread(
+                dom_surface.probe, target.bundle, None, dom_surface.PROBE_RETRY_TIMEOUT_S
+            )
+            detail = f"{detail}; retry: {again}"
         self._log({"event": "surface_probe", "ok": ok, "detail": detail, "bundle": target.bundle})
         if ok:
             self.surface = self._make_dom(target.bundle)
+            await self.surface.pin_active()
 
     def _swap_if_dom_failing(self) -> None:
         """Two DOM failures in a row (timeout or error, not a stale element): use AX
@@ -478,15 +557,22 @@ class Operator:
 
     async def _observe(self, target: Target) -> Observation:
         obs = None
+        last = ""
         for _ in range(3):
             self._swap_if_dom_failing()
             try:
                 obs = await self.surface.observe(target)
                 break
-            except DOMUnavailable as exc:
+            except TabGone as exc:
+                # The person closed the run's tab: stop rather than read the whole
+                # browser through the accessibility tree.
                 self._log({"event": "dom_error", "error": str(exc)})
+                raise SurfaceFailed(str(exc)) from exc
+            except DOMUnavailable as exc:
+                last = str(exc)
+                self._log({"event": "dom_error", "error": last})
         if obs is None:
-            raise RuntimeError("the page surface failed repeatedly")
+            raise SurfaceFailed(last or "the page surface failed repeatedly")
         read_ms = obs.read_ms
         self.read_ms.append(read_ms)
         self._last_obs = obs
@@ -532,6 +618,24 @@ class Operator:
                 else f"{type(exc).__name__}: {exc}",
             )
             raise
+
+    async def _refresh_site_notes(self) -> None:
+        """On a page, add the `jev-site-<host>` notes for the host it is on."""
+        if self.surface.name != "dom" or not self.cfg.notes_workspace:
+            return
+        host = (urlparse(getattr(self.surface, "url", "") or "").hostname or "").lower()
+        if not host or host in self._site_notes:
+            return
+        try:
+            got = await asyncio.wait_for(
+                asyncio.to_thread(site_notes, host, workspace=self.cfg.notes_workspace), 3.0
+            )
+        except Exception:  # noqa: BLE001
+            got = ""
+        self._site_notes[host] = got
+        if got:
+            self._log({"event": "notes", "site": host, "chars": len(got)})
+        self._notes = "\n\n".join(x for x in [self._app_notes, *self._site_notes.values()] if x)
 
     async def _load_notes(self, target: Target) -> str:
         if not self.cfg.notes_workspace:
@@ -584,10 +688,17 @@ class Operator:
             )
         self.actuator.set_target(target.pid, target.bundle, target.name)
         await self._select_surface(target)
-        self._notes = await self._load_notes(target)
-        if not cfg.dry_run:
+        self._app_notes = await self._load_notes(target)
+        self._notes = self._app_notes
+        # The DOM surface drives the page through JavaScript; the browser can stay
+        # behind whatever the person is working in.
+        if not cfg.dry_run and self.surface.name != "dom":
             await self.actuator.focus(target.bundle)
         await self._say(f"target: {target.name} ({target.bundle}, pid {target.pid})")
+        browser = dom_surface.supported(target.bundle)
+        urls = urls_from_goal(cfg.goal) if browser else []
+        if urls and not cfg.dry_run:
+            await self._open_goal_url(urls[0])
 
         before: Observation | None = None
         pending: dict[str, Any] | None = None
@@ -607,7 +718,16 @@ class Operator:
                     f"and {len(self.history)} steps without reaching done.",
                 )
 
-            obs = await self._observe(target)
+            try:
+                obs = await self._observe(target)
+            except SurfaceFailed as exc:
+                return finish(
+                    "blocked",
+                    f"The app could not be read three times in a row ({exc}). Try again, "
+                    "or use `computer_use` with screenshots.",
+                    code="surface_failed",
+                )
+            await self._refresh_site_notes()
             if self._ax_fail_streak >= cfg.ax_max_consecutive_failures:
                 return finish(
                     "blocked",
@@ -635,8 +755,12 @@ class Operator:
             if pending is not None and before is not None:
                 changed, diff = diff_observations(before, obs)
                 # `changed` (any fingerprint movement) is for the log and the history;
-                # stuck detection uses only changes that show the action did something.
-                meaningful = meaningful_change(before, obs)
+                # stuck detection uses only changes that show the action did something:
+                # the screen moved, or the action's own target took its change.
+                target_key = pending.pop("target_key", None)
+                meaningful = meaningful_change(before, obs) or own_effect(
+                    pending, target_key, before, obs
+                )
                 entry = {**pending, "changed": changed, "diff": diff}
                 self.history.append(entry)
                 if pending.get("kind") not in ("wait", "scroll_down", "scroll_up"):
@@ -694,6 +818,8 @@ class Operator:
                     thresholds=cfg.thresholds,
                     model=cfg.jev_model,
                     notes=self._notes,
+                    urls=urls or None,
+                    key_options=getattr(self.surface, "key_options", None),
                 )
             except DecisionError as exc:
                 return finish("error", f"Decision provider failed: {exc}")
@@ -882,6 +1008,8 @@ class Operator:
                         at = (int(wb[0] + wb[2] / 2), int(wb[1] + wb[3] / 2))
                     rec = await self.surface.execute("scroll", at, down=(d.operation == "scroll_down"))
                     self._settle_next = True
+                elif d.operation == "open_url" and d.url:
+                    rec = await self.surface.execute("open_url", d.url)
                 elif d.operation == "launch_app" and d.launch_app:
                     rec = await self.surface.execute("launch", d.launch_app)
                     new_t = self._match_target(d.launch_app, self._windows())
@@ -922,6 +1050,11 @@ class Operator:
                 "step": step,
                 "kind": d.operation,
                 "action": action_desc,
+                **(
+                    {"target_key": (d.target.window, d.target.role, d.target.label)}
+                    if d.target is not None
+                    else {}
+                ),
                 "ok": rec.ok,
                 **({"via": rec.description} if rec.description else {}),
                 **({"error": rec.error} if rec.error else {}),
@@ -955,12 +1088,19 @@ class Operator:
             return None
         if not obs.elements:
             return "an unseen control (the app exposes no accessibility tree)"
-        if self.surface.name == "dom" and any(e.focused and e.kind == "type" for e in obs.elements):
-            # Enter in a page field submits its form; the form's button is not tied to
-            # the field in the snapshot, so any irreversible button on the page counts.
-            for e in obs.elements:
-                if e.role == "AXButton" and is_irreversible(e):
-                    return e.label
+        focused = next((e for e in obs.elements if e.focused and e.kind == "type"), None)
+        if self.surface.name == "dom" and focused is not None:
+            # What Enter does in this field, as the page snapshot reports it.
+            hint = getattr(focused, "enter_hint", "") or "unknown"
+            if hint in ("search", "form"):
+                return None
+            if hint.startswith("form:"):
+                label = hint[5:]
+                return label if _IRREVERSIBLE.search(label) else None
+            return (
+                f"Enter in {focused.label!r} (no form or search box: the page decides what "
+                "Enter does, and it may send or submit)"
+            )
         scope = obs.dialog is not None
         for e in obs.elements:
             if e.role != "AXButton" or not is_irreversible(e):
@@ -1038,9 +1178,46 @@ class Operator:
             read_ms=list(self.read_ms),
             last_frame_path=self._save_last_frame() if status in HANDOFF_STATUSES else None,
             code=code or ("ax_unreadable" if last is not None and not last.elements and status == "blocked" else ""),
+            page=self._page_line(),
         )
         self._log_finish(status, summary, res.footer())
         return res
+
+    def _page_line(self) -> str:
+        url = getattr(self.surface, "url", "") if self.surface.name == "dom" else ""
+        if not url:
+            return ""
+        title = getattr(self.surface, "title", "")
+        return f"{title} — {url}" if title else url
+
+    async def _open_goal_url(self, url: str) -> None:
+        """The goal names a page: open it in a new tab unless the browser already
+        shows it. Done in code, before the first decision, so a run never starts
+        by acting on whatever unrelated tab happens to be in front."""
+        current = ""
+        try:
+            if self.surface.name == "dom":
+                current = await self.surface.current_url()
+            else:
+                current = await asyncio.to_thread(dom_surface.active_tab_url, self.actuator.target_bundle)
+        except Exception:  # noqa: BLE001
+            pass
+        if same_page(current, url):
+            self._log({"event": "open_url", "url": url, "skipped": "already on it"})
+            return
+        await self._say(f"opening {url} in a new tab")
+        rec = await self.surface.execute("open_url", url)
+        self._log({"event": "open_url", "url": url, "ok": rec.ok, "error": rec.error})
+        self.history.append(
+            {
+                "step": 0,
+                "kind": "open_url",
+                "action": f"open_url {url}",
+                "ok": rec.ok,
+                "changed": rec.ok,
+                "diff": "opened in a new tab" if rec.ok else f"failed: {rec.error}",
+            }
+        )
 
     # ─── doors ───────────────────────────────────────────────────────
 

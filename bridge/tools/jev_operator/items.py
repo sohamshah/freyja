@@ -9,6 +9,7 @@ goal template.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -44,6 +45,28 @@ def validate_items(items: Any, skip: Any) -> tuple[list[str], set[int], str | No
     return out, set(skip), None
 
 
+_PART_SEP = re.compile(r"\s+[—–-]\s+|\s*[|;]\s*|\s*(?:->|=>|→)\s*")
+_KEYED = re.compile(r"^[A-Za-z][\w /]{0,30}:\s*(.+)$")
+
+
+def item_literals(item: str) -> list[str]:
+    """Typing candidates from one item: its parts first, then the whole item.
+    "Delta $412.18 — memo: Flight to NYC" offers "Flight to NYC", so a memo field
+    is not filled with the whole line (it was, before parts were offered)."""
+    out: list[str] = []
+    for part in _PART_SEP.split(item):
+        part = part.strip()
+        if not part:
+            continue
+        m = _KEYED.match(part)
+        for cand in ([m.group(1).strip()] if m else []) + [part]:
+            if cand and cand not in out:
+                out.append(cand)
+    if item not in out:
+        out.append(item)
+    return out[:8]
+
+
 def item_goal(goal: str, index: int, total: int, item: str) -> str:
     """The goal template with `{item}` replaced by a fixed phrase, plus the ITEM block."""
     safe = " ".join(item.split()).replace(">>>", "> > >").replace("<<<", "< < <")
@@ -70,6 +93,7 @@ class ItemsOutcome:
     pending_action: str | None = None
     log_path: str = ""
     run_id: str = ""
+    surface: str = ""  # the surface that actually ran, even if every item crashed
 
     def runs(self) -> list[Any]:
         return [r.run for r in self.results if r.run is not None]
@@ -123,7 +147,7 @@ async def run_items(
             results.append(ItemResult(i, text, "skipped", evidence=stop_reason))
             continue
 
-        op = make_operator(item_goal(goal, i, total, text), [text], remaining)
+        op = make_operator(item_goal(goal, i, total, text), item_literals(text), remaining)
         if first is None:
             first = op
         else:
@@ -173,7 +197,13 @@ async def run_items(
             }
         )
     return ItemsOutcome(
-        results, status, elapsed, pending, getattr(first, "log_path", "") and str(first.log_path), getattr(first, "run_id", "")
+        results,
+        status,
+        elapsed,
+        pending,
+        getattr(first, "log_path", "") and str(first.log_path),
+        getattr(first, "run_id", ""),
+        surface=first._surface_label() if hasattr(first, "_surface_label") else "",
     )
 
 

@@ -78,7 +78,8 @@ def test_observation_mapping_and_context_folding():
     assert labels[0] == "Add (Claude · $200.00)"
     assert [e.role for e in obs.elements] == ["AXButton", "AXLink", "AXTextField", "AXCheckBox", "AXComboBox", "AXButton"]
     assert obs.elements[3].toggle_state() == "on"
-    assert "scrolled out of view" in obs.elements[5].row() and obs.elements[5] not in obs.click_targets
+    # Off-screen page elements stay targetable: act() scrolls them into view.
+    assert "below the visible area" in obs.elements[5].row() and obs.elements[5] in obs.click_targets
     assert obs.screen_text == "hello" and "x.test" in obs.focused_window
     assert len(obs.type_targets) == 2
     other = run(surface(FakePage([action(1)])).observe(TARGET))
@@ -151,16 +152,22 @@ def test_loop_stops_on_dom_delete(tmp_path, monkeypatch):
 
 
 def test_enter_in_form_field_gated_by_submit_button(tmp_path, monkeypatch):
+    """Enter is decided per field from the snapshot's `enter` hint: a form whose
+    submit button looks irreversible, or a field whose Enter handling is unknown
+    (a chat box may send), needs confirmation; a search box or a form with a
+    harmless submit button does not."""
     monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
-    acts = [action(1, "fill", "Amount", focused=True), action(2, label="Pay now")]
-    page = FakePage(acts)
-    op = dom_operator(page, provider=ScriptedProvider([("key", "return")]), goal="pay")
-    res = run(op.run())
-    assert res.status == "needs_confirmation" and page.calls == []
-    page2 = FakePage([action(1, "fill", "Search", focused=True), action(2, label="Go")])
-    op2 = dom_operator(page2, provider=ScriptedProvider([("key", "return"), ("done", None)]), goal="search")
-    res2 = run(op2.run())
-    assert res2.status == "done" and page2.calls == [[0, "key", "Enter", ""]]
+
+    def attempt(enter: str, label: str = "Amount") -> tuple[str, list]:
+        page = FakePage([action(1, "fill", label, focused=True, enter=enter), action(2, label="Go")])
+        op = dom_operator(page, provider=ScriptedProvider([("key", "return"), ("done", None)]), goal="go")
+        return run(op.run()).status, page.calls
+
+    assert attempt("form:Pay now") == ("needs_confirmation", [])
+    assert attempt("unknown", "Message") == ("needs_confirmation", [])
+    assert attempt("search", "Search")[0] == "done"
+    assert attempt("form:Save")[1] == [[0, "key", "Enter", ""]]
+    assert attempt("form")[0] == "done"
 
 
 def test_probe():
@@ -174,7 +181,7 @@ def test_probe():
 
 def browser_operator(tmp_path, monkeypatch, probe_result, surface_arg="auto", bundle="company.thebrowser.Browser"):
     monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
-    monkeypatch.setattr(dom_surface, "probe", lambda b, run_js=None: probe_result)
+    monkeypatch.setattr(dom_surface, "probe", lambda b, run_js=None, timeout_s=None: probe_result)
     native = FakeCalculator()
     op, _ = make_operator(native, ScriptedProvider([("done", None)]), surface=surface_arg)
     return op, native, SimpleNamespace(name="Arc", bundle=bundle, pid=100)
@@ -227,3 +234,65 @@ def test_arc_double_encoded_results_decode():
     assert [e.label for e in obs.elements] == ["Go", "Search"]
     res = run(s._js('act(1, "click", null, "g1")'))
     assert res["ok"] is True
+
+
+def test_select_options_are_click_targets():
+    """A <select> lists its options as rows; clicking one selects it by value.
+    (Live run 2026-10-08: option rows were built without required fields and
+    every snapshot of a page with a dropdown failed.)"""
+    sel = action(2, "select", "Team", value="", options=[
+        {"v": "", "t": "Choose a team", "sel": True}, {"v": "r", "t": "Research", "sel": False}])
+    page = FakePage([action(1, "fill", "Full name"), sel])
+    s = surface(page)
+    obs = run(s.observe(TARGET))
+    rows_ = [e.label for e in obs.elements]
+    assert "Research (option of Team)" in rows_
+    opt = next(e for e in obs.elements if e.label == "Research (option of Team)")
+    assert opt in obs.click_targets and opt.role == "AXMenuItem"
+    rec = run(s.execute("click", opt))
+    assert rec.ok and page.calls == [[2, "select", "r", "g2"]]
+
+
+def test_unparseable_snapshot_falls_back_to_ax(tmp_path, monkeypatch):
+    """The transport answers but the snapshot cannot be parsed: that is a surface
+    failure too, so two in a row move the run to AX instead of crashing it."""
+    op, native, target = browser_operator(tmp_path, monkeypatch, (True, "ok"))
+    run(op._select_surface(target))
+    op.surface._run_js = lambda b, js: json.dumps({"url": "x", "actions": [{"kind": "click", "id": "not-an-int"}]})
+    obs = run(op._observe(SimpleNamespace(name="Calculator", bundle="com.apple.calculator", pid=100)))
+    assert op.surface.name == "ax" and obs.elements and op._surface_label() == "dom→ax"
+
+
+def test_probe_retries_once_when_the_browser_is_slow(tmp_path, monkeypatch):
+    """One 3 s timeout sent a whole Arc run to the accessibility tree (8 s reads);
+    a slow first answer now gets one longer retry."""
+    op, native, target = browser_operator(tmp_path, monkeypatch, (True, "x"))
+    answers = iter([(False, "Arc did not answer within 3s"), (True, "title='x'")])
+    seen = []
+
+    def probe(b, run_js=None, timeout_s=None):
+        seen.append(timeout_s)
+        return next(answers)
+
+    monkeypatch.setattr(dom_surface, "probe", probe)
+    monkeypatch.setattr(DOMSurface, "pin_active", lambda self: asyncio.sleep(0))
+    run(op._select_surface(target))
+    assert op.surface.name == "dom" and seen == [None, dom_surface.PROBE_RETRY_TIMEOUT_S]
+    probe_rows = [r for r in rows(op) if r.get("event") == "surface_probe"]
+    assert probe_rows[-1]["ok"] is True and "retry" in probe_rows[-1]["detail"]
+
+
+def test_filling_a_field_is_progress():
+    """Typing into a form changes nothing else on screen; the field taking the
+    text is the progress. Three verified fields were counted as "stuck"."""
+    from bridge.tools.jev_operator.loop import own_effect
+
+    s = surface(FakePage([]))
+    before = s._build(snap([action(1, "fill", "Full name"), action(2, "toggle", "Remote", checked=False)]), TARGET, 1)
+    after = s._build(snap([action(1, "fill", "Full name", value="Ada"), action(2, "toggle", "Remote", checked=True)]), TARGET, 1)
+    name_b, remote_b = before.elements
+    key = lambda e: (e.window, e.role, e.label)  # noqa: E731
+    assert own_effect({"kind": "type", "ok": True}, key(name_b), before, after)
+    assert own_effect({"kind": "click", "ok": True}, key(remote_b), before, after)
+    assert not own_effect({"kind": "type", "ok": True}, key(name_b), before, before)
+    assert not own_effect({"kind": "key", "ok": True}, key(name_b), before, after)

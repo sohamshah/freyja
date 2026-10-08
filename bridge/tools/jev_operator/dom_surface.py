@@ -4,8 +4,12 @@ The page runs `dom_snapshot.js` (injected once per page load). `snapshot()` list
 the actionable elements with stable ids; `act()` clicks, fills or scrolls one of
 them, guarded so an element that changed since the snapshot is refused ("stale").
 The transport is `osascript` talking to the browser, so no accessibility tree and
-no pointer are involved. Arc and Chrome are supported; Chrome needs "Allow
-JavaScript from Apple Events" turned on.
+no pointer are involved, and the browser does not need to be frontmost. Arc and
+Chrome are supported; Chrome needs "Allow JavaScript from Apple Events" turned on.
+
+A run is pinned to one tab by id: the tab that was active when it started, or
+the tab it opened with `open_url`. Switching tabs while it runs does not move it,
+and a click that opens a new tab moves the run to that tab.
 """
 
 from __future__ import annotations
@@ -34,17 +38,48 @@ from bridge.tools.jev_operator.observe import (
 JS_FILE = Path(__file__).with_name("dom_snapshot.js")
 RUN_TIMEOUT_S = 5.0
 PROBE_TIMEOUT_S = 3.0
+PROBE_RETRY_TIMEOUT_S = 8.0
+OPEN_TIMEOUT_S = 10.0
+# After an action, wait until the page stops changing (same mutation count and
+# URL on two reads ~0.25 s apart, document complete), at most this long.
+SETTLE_S = {"click": 3.0, "key": 3.0, "type": 1.5, "scroll": 1.0, "open_url": 12.0}
+MAX_OPTIONS = 25
 
-# bundle id -> (application name, AppleScript that runs `js` in the front window's active tab)
-_TELL_TAB = 'tell application "{app}" to tell active tab of front window to execute javascript js'
-SUPPORTED_BROWSERS: dict[str, tuple[str, str]] = {
-    "company.thebrowser.Browser": ("Arc", _TELL_TAB),
-    "com.google.Chrome": ("Google Chrome", _TELL_TAB),
+# bundle id -> application name. Both expose `execute <tab> javascript <text>`
+# and tab ids through AppleScript.
+SUPPORTED_BROWSERS: dict[str, str] = {
+    "company.thebrowser.Browser": "Arc",
+    "com.google.Chrome": "Google Chrome",
 }
 
-_APPLESCRIPT = """on run argv
+# argv: <js file> <tab id or "">. An empty tab id means the front window's active
+# tab. Ids are matched through one bulk `id of every tab` per window (a window
+# can hold a thousand tabs; per-tab Apple Events would take seconds).
+_RUN_IN_TAB = """on run argv
     set js to read (POSIX file (item 1 of argv)) as «class utf8»
-    {body}
+    set tid to item 2 of argv
+    tell application "{app}"
+        if tid is "" then return execute active tab of front window javascript js
+        repeat with wi from 1 to (count of windows)
+            set ids to id of every tab of window wi
+            repeat with i from 1 to (count of ids)
+                if ((item i of ids) as text) is tid then return execute tab i of window wi javascript js
+            end repeat
+        end repeat
+    end tell
+    error "freyja: tab " & tid & " is gone" number 1404
+end run
+"""
+_ACTIVE_TAB = 'tell application "{app}" to return (id of active tab of front window) as text'
+_ACTIVE_URL = 'tell application "{app}" to return (URL of active tab of front window) as text'
+# Arc's `make new tab` returns a broken reference, so read the new tab's id from
+# the window's active tab, which the new tab becomes.
+_NEW_TAB = """on run argv
+    tell application "{app}"
+        tell front window to make new tab with properties {{URL:(item 1 of argv)}}
+        delay 0.2
+        return (id of active tab of front window) as text
+    end tell
 end run
 """
 
@@ -58,44 +93,60 @@ KIND_ROLES = {
     "toggle": "AXCheckBox",
 }
 KEY_MAP = {"return": "Enter", "enter": "Enter", "escape": "Escape", "esc": "Escape", "tab": "Tab"}
+# The keys a page understands; browser shortcuts (cmd+l, cmd+t) act on the
+# browser window, which this surface does not see.
+DOM_KEYS = ("return", "escape", "tab")
 _SECURE = re.compile(r"password|passcode|\bpin\b|secure", re.I)
 _WS = re.compile(r"\s+")
+_VERSION = re.compile(r"var VERSION = (\d+);")
 
 
 class DOMUnavailable(Exception):
     """The page could not be reached (timeout, osascript error, JavaScript disabled)."""
 
 
+class TabGone(DOMUnavailable):
+    """The tab the run is pinned to was closed."""
+
+
 def supported(bundle_id: str) -> bool:
     return bundle_id in SUPPORTED_BROWSERS
 
 
-def osascript_run_js(bundle_id: str, js: str, timeout_s: float = RUN_TIMEOUT_S) -> str:
-    """Run `js` in the front window's active tab and return its text result.
+def _osascript(script: str, args: list[str], timeout_s: float, app: str) -> str:
+    try:
+        proc = subprocess.run(
+            ["osascript", "-e", script, *args], capture_output=True, text=True, timeout=timeout_s
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise DOMUnavailable(f"{app} did not answer within {timeout_s:.0f}s") from exc
+    if proc.returncode != 0:
+        err = (proc.stderr or "osascript failed").strip()
+        if "(1404)" in err or "is gone" in err:
+            raise TabGone("the run's browser tab was closed")
+        raise DOMUnavailable(err[:300])
+    return proc.stdout.rstrip("\n")
 
-    The JS goes through a temp file the AppleScript reads as UTF-8, so quotes,
-    newlines and unicode never touch AppleScript string syntax."""
-    entry = SUPPORTED_BROWSERS.get(bundle_id)
-    if entry is None:
+
+def _app(bundle_id: str) -> str:
+    app = SUPPORTED_BROWSERS.get(bundle_id)
+    if app is None:
         raise DOMUnavailable(f"{bundle_id} is not a supported browser")
-    app, template = entry
-    script = _APPLESCRIPT.format(body=template.format(app=app))
+    return app
+
+
+def osascript_run_js(
+    bundle_id: str, js: str, timeout_s: float = RUN_TIMEOUT_S, tab_id: str = ""
+) -> str:
+    """Run `js` in the pinned tab (or the front window's active tab) and return its
+    text result. The JS goes through a temp file the AppleScript reads as UTF-8,
+    so quotes, newlines and unicode never touch AppleScript string syntax."""
+    app = _app(bundle_id)
     fd, path = tempfile.mkstemp(prefix="freyja-jev-", suffix=".js")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(js)
-        try:
-            proc = subprocess.run(
-                ["osascript", "-e", script, path],
-                capture_output=True,
-                text=True,
-                timeout=timeout_s,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise DOMUnavailable(f"{app} did not answer within {timeout_s:.0f}s") from exc
-        if proc.returncode != 0:
-            raise DOMUnavailable((proc.stderr or "osascript failed").strip()[:300])
-        return proc.stdout.rstrip("\n")
+        return _osascript(_RUN_IN_TAB.format(app=app), [path, tab_id or ""], timeout_s, app)
     finally:
         try:
             os.unlink(path)
@@ -103,15 +154,31 @@ def osascript_run_js(bundle_id: str, js: str, timeout_s: float = RUN_TIMEOUT_S) 
             pass
 
 
+def active_tab_id(bundle_id: str, timeout_s: float = PROBE_TIMEOUT_S) -> str:
+    app = _app(bundle_id)
+    return _osascript(_ACTIVE_TAB.format(app=app), [], timeout_s, app).strip()
+
+
+def active_tab_url(bundle_id: str, timeout_s: float = PROBE_TIMEOUT_S) -> str:
+    app = _app(bundle_id)
+    return _osascript(_ACTIVE_URL.format(app=app), [], timeout_s, app).strip()
+
+
+def new_tab(bundle_id: str, url: str, timeout_s: float = OPEN_TIMEOUT_S) -> str:
+    """Open `url` in a new tab of the front window; return the new tab's id."""
+    app = _app(bundle_id)
+    return _osascript(_NEW_TAB.format(app=app), [url], timeout_s, app).strip()
+
+
 def probe(
-    bundle_id: str, run_js: Callable[..., str] | None = None
+    bundle_id: str, run_js: Callable[..., str] | None = None, timeout_s: float = PROBE_TIMEOUT_S
 ) -> tuple[bool, str]:
     """Can we run page JavaScript in this browser's front tab? Read-only."""
     if not supported(bundle_id):
         return False, "unsupported browser"
     try:
         if run_js is None:
-            out = osascript_run_js(bundle_id, "document.title", PROBE_TIMEOUT_S)
+            out = osascript_run_js(bundle_id, "document.title", timeout_s)
         else:
             out = run_js(bundle_id, "document.title")
     except DOMUnavailable as exc:
@@ -119,6 +186,15 @@ def probe(
     except Exception as exc:  # noqa: BLE001
         return False, f"{type(exc).__name__}: {exc}"
     return True, f"title={_clip(str(out), 60)!r}"
+
+
+def _decode(raw: Any) -> Any:
+    """Arc JSON-encodes a script's return value, so a script that returns a JSON
+    string arrives as a quoted string: decode until it is not a string."""
+    data = json.loads(raw)
+    if isinstance(data, str):
+        data = json.loads(data)
+    return data
 
 
 @dataclass
@@ -129,11 +205,16 @@ class DOMElement(Element):
     context: str = ""
     dom_kind: str = ""
     expanded: bool | None = None
+    below: str | None = None  # "above" / "below": outside the viewport, scrolled into view on use
+    option_value: str | None = None  # for an option row: the value to select
+    enter_hint: str = ""  # what Enter does in this field: search | form:<submit label> | form | unknown
 
     def row(self, *args: Any, **kwargs: Any) -> str:
         text = super().row(*args, **kwargs)
         if self.expanded is not None:
             text += " (expanded)" if self.expanded else " (collapsed)"
+        if self.below:
+            text += f" ({self.below} the visible area; scrolled into view when used)"
         return text
 
     def identity(self) -> tuple[str, str, str]:
@@ -148,6 +229,7 @@ class DOMSurface:
     """Surface over page JavaScript. `run_js(bundle_id, js) -> str` is injectable."""
 
     name = "dom"
+    key_options = DOM_KEYS
 
     def __init__(
         self,
@@ -161,7 +243,12 @@ class DOMSurface:
     ) -> None:
         self.bundle = bundle
         self.actuator = actuator
-        self._run_js = run_js or (lambda b, js: osascript_run_js(b, js, timeout_s))
+        self.tab_id = ""  # pinned tab; "" = the front window's active tab
+        self.own_tab = False  # the run opened the pinned tab itself, so it may navigate it
+        self._injected_js = run_js is not None
+        self._run_js = run_js or (
+            lambda b, js: osascript_run_js(b, js, timeout_s, self.tab_id)
+        )
         self._js_source = js_source
         self._log = log or (lambda row: None)
         self.timeout_s = timeout_s
@@ -169,6 +256,8 @@ class DOMSurface:
         self.ax_fail_streak = 0  # the loop's AX-unreadable check never fires for DOM
         self._target: Any = None
         self._viewport_h = 0
+        self.url = ""
+        self.title = ""
 
     # ─── transport ───────────────────────────────────────────────────
 
@@ -181,55 +270,169 @@ class DOMSurface:
         return self._js_source
 
     def _wrap(self, call: str) -> str:
-        return (
-            "(function(){if(typeof window.__freyjaJev==='undefined'){"
-            + self._source()
-            + "\n}return window.__freyjaJev."
-            + call
-            + ";})()"
+        # Inject when the page has no install or an older version (a tab that
+        # stayed open across an update keeps the old script otherwise).
+        src = self._source()
+        m = _VERSION.search(src)
+        need = (
+            f"!window.__freyjaJev||window.__freyjaJev.version!=={m.group(1)}"
+            if m
+            else "typeof window.__freyjaJev==='undefined'"
         )
+        return f"(function(){{if({need}){{{src}\n}}return window.__freyjaJev.{call};}})()"
 
-    async def _js(self, call: str) -> Any:
+    async def _js(self, call: str, *, count: bool = True, reset: bool = True) -> Any:
+        """Run one `window.__freyjaJev.<call>` and decode its JSON. `count=False`
+        keeps best-effort calls (settling) out of the failure streak that decides
+        the fallback to AX."""
         try:
             raw = await asyncio.wait_for(
                 asyncio.to_thread(self._run_js, self.bundle, self._wrap(call)),
                 timeout=self.timeout_s + 1,
             )
         except asyncio.TimeoutError as exc:
-            self.fail_streak += 1
+            self.fail_streak += count
             raise DOMUnavailable(f"page JavaScript timed out after {self.timeout_s:.0f}s") from exc
         except DOMUnavailable:
-            self.fail_streak += 1
+            self.fail_streak += count
             raise
         except Exception as exc:  # noqa: BLE001
-            self.fail_streak += 1
+            self.fail_streak += count
             raise DOMUnavailable(f"{type(exc).__name__}: {exc}") from exc
         try:
-            data = json.loads(raw)
-            # Arc JSON-encodes the script's return value, so a script that
-            # returns a JSON string arrives as a quoted string: decode twice.
-            if isinstance(data, str):
-                data = json.loads(data)
+            data = _decode(raw)
         except (TypeError, ValueError) as exc:
-            self.fail_streak += 1
+            self.fail_streak += count
             raise DOMUnavailable(f"page returned non-JSON: {_clip(str(raw), 80)!r}") from exc
-        self.fail_streak = 0
+        if count and reset:
+            self.fail_streak = 0
         return data
+
+    # ─── tab ─────────────────────────────────────────────────────────
+
+    async def pin_active(self) -> None:
+        """Pin the run to the tab that is active now, so later tab switches by the
+        person do not move it."""
+        if self._injected_js:
+            return
+        try:
+            self.tab_id = await asyncio.to_thread(active_tab_id, self.bundle)
+        except DOMUnavailable as exc:
+            self._log({"event": "dom_pin_failed", "error": str(exc)})
+            return
+        self._log({"event": "dom_tab", "tab": self.tab_id, "how": "active at start"})
+
+    async def current_url(self) -> str:
+        """The pinned tab's address ("" when the page does not answer)."""
+        try:
+            q = await self._js("quiet()", count=False)
+        except DOMUnavailable:
+            return ""
+        return str(q.get("u") or "") if isinstance(q, dict) else ""
+
+    async def open_url(self, url: str) -> ActionRecord:
+        """Open `url`: in the tab this run opened earlier (items, a second address),
+        else in a new tab. The person's own tabs are never navigated away."""
+        t0 = time.perf_counter()
+        if self._injected_js:
+            self.url = url
+            return ActionRecord(kind="open_url", description=f"Open {url}", duration_ms=0, ok=True)
+        if self.own_tab and self.tab_id:
+            try:
+                await self._js(f"go({json.dumps(url)})", count=False)
+            except TabGone:
+                self.own_tab = False
+            except DOMUnavailable:
+                pass  # navigating away can interrupt the answer; the settle below decides
+            else:
+                await self.settle("open_url", min_s=0.6)
+                return ActionRecord(
+                    kind="open_url", description=f"Open {url} in the run's tab", duration_ms=_ms(t0), ok=True
+                )
+            if self.own_tab:
+                await self.settle("open_url", min_s=0.6)
+                return ActionRecord(
+                    kind="open_url", description=f"Open {url} in the run's tab", duration_ms=_ms(t0), ok=True
+                )
+        try:
+            tid = await asyncio.to_thread(new_tab, self.bundle, url)
+        except DOMUnavailable as exc:
+            return ActionRecord(
+                kind="open_url", description=f"Open {url}", duration_ms=_ms(t0), ok=False, error=str(exc)
+            )
+        if tid:
+            self.tab_id = tid
+            self.own_tab = True
+            self._log({"event": "dom_tab", "tab": tid, "how": f"opened {url}"})
+        await self.settle("open_url", min_s=0.6)
+        return ActionRecord(
+            kind="open_url", description=f"Open {url} in a new tab", duration_ms=_ms(t0), ok=True
+        )
+
+    async def _follow_new_tab(self) -> None:
+        """A click opened a new tab (target=_blank or window.open): continue there."""
+        if self._injected_js:
+            return
+        await asyncio.sleep(0.5)
+        try:
+            tid = await asyncio.to_thread(active_tab_id, self.bundle)
+        except DOMUnavailable:
+            return
+        if tid and tid != self.tab_id:
+            self._log({"event": "dom_tab", "tab": tid, "how": "the click opened a new tab"})
+            self.tab_id = tid
+            self.own_tab = True
+            await self.settle("open_url", min_s=0.3)
+
+    async def settle(self, kind: str, *, min_s: float = 0.0) -> None:
+        """Wait until the page stops changing, at most SETTLE_S[kind] seconds."""
+        if min_s:
+            await asyncio.sleep(min_s)
+        deadline = time.perf_counter() + SETTLE_S.get(kind, 2.0)
+        last: tuple[Any, Any] | None = None
+        while time.perf_counter() < deadline:
+            try:
+                q = await self._js("quiet()", count=False)
+            except DOMUnavailable:
+                if kind == "open_url":  # still loading: the page may not answer yet
+                    await asyncio.sleep(0.4)
+                    continue
+                return
+            if not isinstance(q, dict):
+                return
+            key = (q.get("m"), q.get("u"))
+            if q.get("rs") == "complete" and key == last and not q.get("busy"):
+                return
+            last = key
+            await asyncio.sleep(0.25)
 
     # ─── observe ─────────────────────────────────────────────────────
 
     async def observe(self, target: Any) -> Observation:
         self._target = target
         t0 = time.perf_counter()
-        snap = await self._js("snapshot()")
+        snap = await self._js("snapshot()", reset=False)
         read_ms = int((time.perf_counter() - t0) * 1000)
-        return self._build(snap, target, read_ms)
+        try:
+            obs = self._build(snap, target, read_ms)
+        except Exception as exc:  # noqa: BLE001  # a page we cannot parse is a surface failure
+            self.fail_streak += 1
+            raise DOMUnavailable(f"unreadable snapshot: {type(exc).__name__}: {exc}") from exc
+        self.fail_streak = 0
+        return obs
 
     def _build(self, snap: dict[str, Any], target: Any, read_ms: int) -> Observation:
+        if not isinstance(snap, dict):
+            raise TypeError(f"snapshot is {type(snap).__name__}, not an object")
         url = str(snap.get("url") or "")
         title = str(snap.get("title") or "")
+        self.url, self.title = url, title
         window = f"{title} ({url})" if url else title or "(untitled page)"
         elements: list[DOMElement] = []
+
+        def add(**kw: Any) -> None:
+            elements.append(DOMElement(index=len(elements) + 1, bounds=(0, 0, 0, 0), enabled=True, window=window, **kw))
+
         for a in snap.get("actions") or []:
             kind = a.get("kind") or "click"
             role = KIND_ROLES.get(kind, "AXButton")
@@ -243,32 +446,51 @@ class DOMSurface:
                 value_s = "1" if a.get("checked") else "0"
             if secure:
                 value_s = "••••" if value_s else None
-            elements.append(
-                DOMElement(
-                    index=len(elements) + 1,
-                    role=role,
-                    subrole="AXSecureTextField" if secure else None,
-                    label=_clip(label, MAX_LABEL_CHARS),
-                    value=value_s,
-                    bounds=(0, 0, 0, 0),
-                    enabled=True,
-                    focused=bool(a.get("focused")),
-                    window=window,
-                    kind="type" if kind in ("fill", "select") else "click",
-                    offscreen=bool(a.get("offscreen")),
-                    dom_id=int(a.get("id", 0)),
-                    guard=str(a.get("guard") or ""),
-                    raw_label=raw,
-                    context=ctx,
-                    dom_kind=kind,
-                    expanded=a.get("expanded"),
-                )
+            add(
+                role=role,
+                subrole="AXSecureTextField" if secure else None,
+                label=_clip(label, MAX_LABEL_CHARS),
+                value=value_s,
+                focused=bool(a.get("focused")),
+                kind="type" if kind in ("fill", "select") else "click",
+                offscreen=False,
+                below=a.get("offscreen") or None,
+                dom_id=int(a.get("id", 0)),
+                guard=str(a.get("guard") or ""),
+                raw_label=raw,
+                context=ctx,
+                dom_kind=kind,
+                expanded=a.get("expanded"),
+                enter_hint=str(a.get("enter") or ""),
             )
+            if kind == "select":
+                # Each option is its own click target, so choosing one is a click
+                # on a listed row, not text Jev has to produce.
+                for o in (a.get("options") or [])[:MAX_OPTIONS]:
+                    text = str(o.get("t") or o.get("v") or "").strip()
+                    if not text:
+                        continue
+                    add(
+                        role="AXMenuItem",
+                        subrole=None,
+                        label=_clip(f"{text} (option of {raw or 'list'})", MAX_LABEL_CHARS),
+                        value="selected" if o.get("sel") else None,
+                        focused=False,
+                        kind="click",
+                        offscreen=False,
+                        below=a.get("offscreen") or None,
+                        dom_id=int(a.get("id", 0)),
+                        guard=str(a.get("guard") or ""),
+                        raw_label=text,
+                        context=raw,
+                        dom_kind="option",
+                        option_value=str(o.get("v") if o.get("v") is not None else text),
+                    )
         truncated = len(elements) > MAX_ROWS
         if truncated:
-            visible = [e for e in elements if not e.offscreen]
-            hidden = [e for e in elements if e.offscreen]
-            elements = (visible + hidden)[:MAX_ROWS]
+            near = [e for e in elements if not e.below]
+            far = [e for e in elements if e.below]
+            elements = (near + far)[:MAX_ROWS]
             for i, e in enumerate(elements, 1):
                 e.index = i
         text = str(snap.get("text") or "")
@@ -295,19 +517,26 @@ class DOMSurface:
     # ─── execute ─────────────────────────────────────────────────────
 
     async def execute(self, action: str, *args: Any, **kwargs: Any) -> Any:
+        if action == "open_url":
+            return await self.open_url(str(args[0]))
         if action == "click":
             el = args[0]
             if kwargs.get("double"):
                 return await self._fail("click", "double-click is not supported on the DOM surface")
-            return await self._act_on(el, "click", None, f"Click {el.role} {el.label!r}", "click")
+            if getattr(el, "dom_kind", "") == "option":
+                return await self._act_on(
+                    el, "select", el.option_value, f"Choose {el.raw_label!r} in {el.context!r}", "click",
+                    settle="click",
+                )
+            return await self._act_on(el, "click", None, f"Click {el.role} {el.label!r}", "click", settle="click")
         if action == "type_into":
             el, text = args[0], args[1]
             return await self._type_into(el, text, replace=bool(kwargs.get("replace", True)))
         if action == "press":
             key = KEY_MAP.get(str(args[0]).lower())
             if key is None:
-                return await self.actuator.press(*args, **kwargs)
-            return await self._act_on(None, "key", key, f"Press {args[0]}", "press_key")
+                return await self._fail("press_key", f"{args[0]} is not a page key (the DOM surface sends Return, Escape, Tab)")
+            return await self._act_on(None, "key", key, f"Press {args[0]}", "press_key", settle="key")
         if action == "scroll":
             down = bool(kwargs.get("down", True))
             return await self._scroll(down)
@@ -315,7 +544,7 @@ class DOMSurface:
         return await getattr(self.actuator, action)(*args, **kwargs)
 
     async def _fail(self, kind: str, error: str, t0: float | None = None) -> ActionRecord:
-        ms = int((time.perf_counter() - t0) * 1000) if t0 else 0
+        ms = _ms(t0) if t0 else 0
         return ActionRecord(kind=kind, description="", duration_ms=ms, ok=False, error=error)
 
     async def _type_into(self, el: DOMElement, text: str, *, replace: bool) -> ActionRecord:
@@ -323,10 +552,9 @@ class DOMSurface:
             return await self._fail("type_text", "refusing to type into a secure field")
         desc = f"Type {text!r} into {el.label!r}"
         if el.dom_kind == "select":
-            return await self._act_on(el, "select", text, desc, "type_text")
+            return await self._act_on(el, "select", text, desc, "type_text", settle="type")
         arg = {"text": text, "mode": "replace" if replace else "append"}
-        rec = await self._act_on(el, "fill", arg, desc, "type_text", expect=(text, replace))
-        return rec
+        return await self._act_on(el, "fill", arg, desc, "type_text", expect=(text, replace), settle="type")
 
     async def _scroll(self, down: bool) -> ActionRecord:
         t0 = time.perf_counter()
@@ -336,13 +564,16 @@ class DOMSurface:
             res = await self._js(f"act(0,'scroll',{json.dumps(dy)},'')")
         except DOMUnavailable as exc:
             return await self._fail("scroll", f"dom transport: {exc}", t0)
-        ok = bool(res.get("ok"))
+        ok = bool(isinstance(res, dict) and res.get("ok"))
+        if ok:
+            await self.settle("scroll")
         return ActionRecord(
             kind="scroll",
-            description=f"Scroll {'down' if down else 'up'}",
-            duration_ms=int((time.perf_counter() - t0) * 1000),
+            description=f"Scroll {'down' if down else 'up'}"
+            + (f" ({res.get('readback')})" if isinstance(res, dict) and res.get("readback") else ""),
+            duration_ms=_ms(t0),
             ok=ok,
-            error=None if ok else str(res.get("reason") or "scroll failed"),
+            error=None if ok else str((res or {}).get("reason") or "scroll failed"),
         )
 
     async def _call_act(self, dom_id: int, op: str, arg: Any, guard: str) -> dict[str, Any]:
@@ -359,17 +590,12 @@ class DOMSurface:
         kind: str,
         *,
         expect: tuple[str, bool] | None = None,
+        settle: str = "",
     ) -> ActionRecord:
         t0 = time.perf_counter()
 
         def done(ok: bool, error: str | None = None) -> ActionRecord:
-            return ActionRecord(
-                kind=kind,
-                description=desc,
-                duration_ms=int((time.perf_counter() - t0) * 1000),
-                ok=ok,
-                error=error,
-            )
+            return ActionRecord(kind=kind, description=desc, duration_ms=_ms(t0), ok=ok, error=error)
 
         dom_id, guard = (el.dom_id, el.guard) if el is not None else (0, "")
         try:
@@ -393,6 +619,10 @@ class DOMSurface:
             good = g.endswith(w) if not replace else g == w
             if got is not None and not good:
                 return done(False, f"readback mismatch: typed {want!r}, field shows {got!r}")
+        if res.get("newTab"):
+            await self._follow_new_tab()
+        elif settle:
+            await self.settle(settle)
         return done(True)
 
     async def _rebind(self, el: DOMElement) -> DOMElement | str:
@@ -405,3 +635,7 @@ class DOMSurface:
             return matches[0]
         what = "gone from the page" if not matches else f"matches {len(matches)} elements now"
         return f"stale: {el.label!r} is {what}; re-read the page and choose again"
+
+
+def _ms(t0: float) -> int:
+    return int((time.perf_counter() - t0) * 1000)

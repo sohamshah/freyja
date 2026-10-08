@@ -5,6 +5,7 @@ the table is treated as `none`.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -78,6 +79,7 @@ class Decision:
     answers: Answers
     latency_ms: int
     reasons: list[str] = field(default_factory=list)
+    url: str | None = None
 
 
 def build_questions(
@@ -88,6 +90,8 @@ def build_questions(
     literals: list[str],
     launch_candidates: list[str],
     notes: str = "",
+    urls: list[str] | None = None,
+    key_options: tuple[str, ...] | None = None,
 ) -> dict[str, Question]:
     goal_line = f"Goal: {goal}"
     if subgoal:
@@ -99,6 +103,11 @@ def build_questions(
         ops.pop("type")
     if launch_candidates:
         ops["launch_app"] = "open or switch to an application named in launch_target"
+    if urls:
+        ops["open_url"] = (
+            "open a web address given in the goal (url_target) in a new browser tab, "
+            "when the goal names a page that is not the one on screen"
+        )
 
     click_opts = {str(e.index): f"{e.role} {e.label}" for e in obs.click_targets[:254]}
     click_opts["none"] = "no listed element is the right click target"
@@ -139,12 +148,21 @@ def build_questions(
             options=text_opts,
         )
 
-    key_opts = dict(KEY_OPTIONS)
+    keys = KEY_OPTIONS if key_options is None else {k: KEY_OPTIONS[k] for k in key_options if k in KEY_OPTIONS}
+    key_opts = dict(keys)
     key_opts["none"] = "the next step is not a key press"
     qs["key_target"] = Choice(
         instructions=f"{goal_line}\nIf the next operation is key, which key or shortcut? Choose none otherwise.",
         options=key_opts,
     )
+
+    if urls:
+        url_opts = {f"url{i}": u for i, u in enumerate(urls)}
+        url_opts["none"] = "the next step does not open a web address"
+        qs["url_target"] = Choice(
+            instructions=f"{goal_line}\nIf the next operation is open_url, which address? Choose none otherwise.",
+            options=url_opts,
+        )
 
     if launch_candidates:
         launch_opts = {f"app{i}": name for i, name in enumerate(launch_candidates)}
@@ -184,6 +202,8 @@ async def decide(
     thresholds: Thresholds,
     model: str | None = None,
     notes: str = "",
+    urls: list[str] | None = None,
+    key_options: tuple[str, ...] | None = None,
 ) -> Decision:
     questions = build_questions(
         obs,
@@ -192,6 +212,8 @@ async def decide(
         literals=literals,
         launch_candidates=launch_candidates,
         notes=notes,
+        urls=urls,
+        key_options=key_options,
     )
     state = obs.to_state(history, subgoal)
     try:
@@ -199,7 +221,13 @@ async def decide(
     except DecisionError:
         raise
     return interpret(
-        answers, obs, literals=literals, launch_candidates=launch_candidates, thresholds=thresholds
+        answers,
+        obs,
+        literals=literals,
+        launch_candidates=launch_candidates,
+        thresholds=thresholds,
+        urls=urls,
+        goal_text=f"{goal}\n{subgoal or ''}",
     )
 
 
@@ -210,11 +238,13 @@ def interpret(
     literals: list[str],
     launch_candidates: list[str],
     thresholds: Thresholds,
+    urls: list[str] | None = None,
+    goal_text: str = "",
 ) -> Decision:
     reasons: list[str] = []
     op = answers.choice("operation")
     operation = op.choice
-    if operation not in OPERATION_OPTIONS and operation != "launch_app":
+    if operation not in OPERATION_OPTIONS and operation not in ("launch_app", "open_url"):
         reasons.append(f"unknown operation {operation!r}")
         operation = "need_help"
     if op.confidence < thresholds.operation and operation not in ("wait",):
@@ -230,6 +260,7 @@ def interpret(
     text_literal: str | None = None
     text_needs_llm = False
     launch_app: str | None = None
+    url: str | None = None
 
     if operation in ("click", "double_click") and "click_target" not in answers.answers:
         reasons.append("click chosen without click targets")
@@ -241,7 +272,9 @@ def interpret(
         if target is None:
             reasons.append("click_target none or unknown")
             operation = "need_help"
-        elif ct.confidence < thresholds.target:
+        elif ct.confidence < thresholds.target and not (
+            ct.confidence >= RESCUE_TARGET and _label_in_goal(target, goal_text)
+        ):
             reasons.append(f"click_target confidence {ct.confidence:.2f} < {thresholds.target}")
             operation = "need_help"
             target = None
@@ -283,6 +316,18 @@ def interpret(
         else:
             reasons.append(f"key_target {kt.choice!r} conf {kt.confidence:.2f}")
             operation = "need_help"
+    elif operation == "open_url":
+        if "url_target" in answers.answers:
+            ut = answers.choice("url_target")
+            target_conf = ut.confidence
+            suffix = ut.choice[3:]
+            if ut.choice.startswith("url") and suffix.isdigit() and ut.confidence >= thresholds.target:
+                idx = int(suffix)
+                if urls and 0 <= idx < len(urls):
+                    url = urls[idx]
+        if url is None:
+            reasons.append("open_url without a confident url_target")
+            operation = "need_help"
     elif operation == "launch_app":
         lt = answers.choice("launch_target")
         target_conf = lt.confidence
@@ -310,7 +355,23 @@ def interpret(
         answers=answers,
         latency_ms=answers.latency_ms,
         reasons=reasons,
+        url=url if operation == "open_url" else None,
     )
+
+
+# A click target Jev scored below the threshold but at least this high is still
+# taken when its label is written in the goal: "In the Members tab" and a target
+# labelled "Members" at 0.48 cost a 7 s replan to confirm the obvious.
+RESCUE_TARGET = 0.3
+
+
+def _label_in_goal(el: Element | None, goal_text: str) -> bool:
+    if el is None:
+        return False
+    label = (getattr(el, "raw_label", "") or el.label or "").strip().lower()
+    if len(label) < 3:
+        return False
+    return re.search(r"(?<![a-z0-9])" + re.escape(label) + r"(?![a-z0-9])", goal_text.lower()) is not None
 
 
 def _resolve(choice: str, candidates: list[Element]) -> Element | None:
@@ -330,4 +391,6 @@ def describe(d: Decision) -> str:
         return f"key {d.key}"
     if d.operation == "launch_app":
         return f"launch_app {d.launch_app}"
+    if d.operation == "open_url":
+        return f"open_url {d.url}"
     return d.operation

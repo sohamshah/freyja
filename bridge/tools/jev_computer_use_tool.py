@@ -50,6 +50,8 @@ MAX_ACTIVE_COMPUTER_SESSIONS = 1
 def render_result(result: Any) -> str:
     """Summary, footer, pending action, and (for runs that did not finish cleanly) the handoff."""
     text = result.summary + "\n\n" + result.footer()
+    if getattr(result, "page", ""):
+        text += f"\npage: {result.page}"
     if result.pending_action:
         text += f"\npending_action: {result.pending_action}"
     handoff = result.handoff()
@@ -71,72 +73,88 @@ class JevComputerUseTool:
     def definition(self) -> ToolDefinition:
         return ToolDefinition(
             name="jev_computer_use",
-            summary="Drive a macOS app quickly via the accessibility tree and the Jev decision model",
+            summary="Drive a macOS app or a web page (Arc, Chrome) quickly with the Jev decision model",
             tier=ToolTier.HOT,
-            description="""Complete a goal in one macOS application using a fast decision-model loop.
+            description="""Complete a goal in one macOS app, including web pages in Arc or Chrome, with a fast decision-model loop.
 
 Choose the lightest route that works, in this order:
-  1. Do it without the UI: bash, osascript, `open`, a URL, an API.
-  2. `jev_computer_use` (this tool) for apps with labelled native controls:
-     Finder, System Settings, Calculator, Notes, Mail, Safari pages with real
-     form controls, menus and dialogs.
-  3. `computer_use` (screenshot-based) for custom-drawn or canvas UIs, games,
-     and apps whose accessibility tree is empty or unreadable. Use it when this
-     tool returns `blocked` with a note that the tree could not be read.
+  1. No UI needed: bash, osascript, `open`, an API.
+  2. `jev_computer_use` (this tool): native apps with labelled controls (Finder,
+     System Settings, Calculator, Notes, Mail, TextEdit), and web pages in Arc
+     or Chrome, which it reads and drives through the page itself.
+  3. `computer_use` (screenshot-based): canvas or custom-drawn UIs, games,
+     remote desktops, and anything this tool returns `blocked` on because it
+     could not read the app.
 
-Each step reads the app's accessibility tree, asks Jev (a ~200 ms decision
-model) which listed control to click, type into, or which key to press, acts,
-and diffs the tree to confirm the effect. An LLM is consulted only to compose
-text for a field, to replan when stuck, or to verify the end state.
+Each step reads the app (its accessibility tree, or the page's DOM in a
+browser), asks Jev (a ~200 ms decision model) which listed control to click,
+type into, or which key to press, acts, and checks the effect. An LLM is
+consulted only to compose text for a field, to replan when stuck, or to check
+the end state and write the summary.
+
+Web pages (Arc, Chrome): put the address in the goal ("Open https://… and …").
+The run opens it in a NEW tab and works only in that tab; your other tabs are
+not touched, and a link that opens another tab is followed. Without an address
+it works in the browser's current tab. Page runs use no pointer or keyboard, so
+the browser can stay behind other windows. To read something, say what to
+report ("… and report the price of X"): the summary carries it, and `page:`
+names where the run ended. Controls below the visible area are reachable
+directly; dropdown options are listed as rows.
 
 It runs in the BACKGROUND by default: the call returns at once with a run id,
 and the result (summary plus a handoff block when it did not finish cleanly)
-arrives in your inbox. While it runs it owns the screen, so do not use your own
-click/type/scroll tools. Pass `wait=true` only when you must block for the
-result. A returned `done` is a hint, not proof: check it against the returned
-text or a screenshot before telling the person it worked.
+arrives in your inbox. While a native-app run is going it owns the pointer and
+keyboard, so do not use your own click/type/scroll tools. Pass `wait=true` only
+when you must block for the result. A returned `done` is a hint, not proof:
+check it against the returned text before telling the person it worked.
 
 Write the goal well. Put the person's exact wording and every literal value
-(names, numbers, paths, text to type) in the goal, quoting text that must be
+(names, numbers, URLs, text to type) in the goal, quoting text that must be
 typed verbatim (e.g. type "hello world"). Merge consecutive micro-steps into
 one goal ("open Notes, create a note titled "Plan" with the body ...") instead
-of making one call per click.
+of making one call per click. State what must not happen ("do not submit").
 
 For a repeated procedure over a list (the same steps for each of N names,
 rows, files), pass `items` (up to 50 short strings, text data only). The same
 `goal` then runs once per item; write `{item}` where the item belongs. Each item
-is a fresh run that shares the app, the surface and the time limit. The result is
-transparent: a per-item table (status, steps, seconds, evidence), the surface and
-the log path. Try ONE item first, read the table, adjust the goal, then run the
-rest. After fixing something, continue with `skip_items=[indices already done]`.
-Three items in a row failing the same way stop the run; an item that needs
-confirmation stops it too.
+is a fresh run that shares the app, the tab and the time limit. The result is a
+per-item table (status, steps, seconds, evidence). Try ONE item first, read the
+table, adjust the goal, then run the rest. After fixing something, continue
+with `skip_items=[indices already done]`. Three items in a row failing the same
+way stop the run; an item that needs confirmation stops it too.
+
+Learning: runs read two kinds of skill as notes, `jev-app-<app>` (for example
+jev-app-calculator) and, on a web page, `jev-site-<host>` (for example
+jev-site-console-cloud-google-com). When a run teaches you something durable
+(the route that works, a control to avoid, a page that needs its URL), ask a
+`skill-drafter` sub-agent to propose that skill; the person approves it before
+runs use it.
 
 Parameters:
   * `goal`: one app-scoped goal with visible success criteria
-  * `app`: bundle id or app name to operate on (launched if not running).
-    Pass it. Without it the run uses the frontmost app, and stops if that is
-    Freyja itself.
+  * `app`: bundle id or app name to operate on (launched if not running), e.g.
+    "Arc", "Calculator". Pass it. Without it the run uses the frontmost app,
+    and stops if that is Freyja itself.
   * `max_steps`: cap on decision steps (default 40, max 120)
   * `allow_irreversible`: default false. Buttons, menu items, and links whose
-    label reads delete, send, submit, pay, empty trash, etc. stop the run with
-    status=needs_confirmation; re-run with true after the user confirms. True
+    label reads delete, send, submit, pay, merge, approve, deploy, enable,
+    request access, empty trash, etc., and Return in a field whose form would
+    submit that way or whose page may send on Return, stop the run with
+    status=needs_confirmation; re-run with true after the person confirms. True
     permits every such control for that whole run, not only the one reported.
   * `use_llm`: default true. Set false for a pure Jev run (no field text
     composition, no replanning, no end-state check, template summary).
+  * `surface`: `auto` (default) uses the page DOM for Arc and Chrome when page
+    JavaScript is allowed (Chrome needs "Allow JavaScript from Apple Events";
+    Arc needs the Automation prompt accepted once), and the accessibility tree
+    otherwise; `dom` or `ax` forces one. If the page cannot be read twice in a
+    row, the run switches to the accessibility tree. The footer names the surface.
   * `wait`: default false. True blocks until the run ends and returns its
     result directly.
 
-Surface: `auto` (default) reads and drives the page DOM through the browser's
-own JavaScript for Arc and Chrome when page JavaScript is allowed (Chrome needs
-"Allow JavaScript from Apple Events"; Arc works once the Automation prompt is
-accepted), and the accessibility tree otherwise. Force one with `surface`:
-`dom` or `ax`. If the DOM fails twice in a row the run switches to the
-accessibility tree for the rest of the run. The result footer names the surface.
-
-Input is only sent while the target app is frontmost and owns the window under
-the pointer. If another app takes focus or covers the control, the run stops
-with status=blocked instead of clicking into the other app.
+Native-app input is only sent while the target app is frontmost and owns the
+window under the pointer. If another app takes focus or covers the control,
+the run stops with status=blocked instead of clicking into the other app.
 """,
             parameters={
                 "type": "object",
@@ -239,7 +257,9 @@ with status=blocked instead of clicking into the other app.
         wait = bool(arguments.get("wait", False))
         items: list[str] | None = None
         skip: set[int] = set()
-        if arguments.get("items") is not None:
+        # Models fill every optional field; an empty `items` means "no items",
+        # not an error (an error here made one agent invent a dummy item).
+        if arguments.get("items") not in (None, [], ""):
             items, skip, err = validate_items(arguments.get("items"), arguments.get("skip_items"))
             if err:
                 return ToolResult(call_id=call_id, content=f"Error: {err}", is_error=True)
@@ -502,7 +522,8 @@ with status=blocked instead of clicking into the other app.
             run_id=out.run_id,
             log_path=out.log_path,
             pending_action=out.pending_action,
-            surface=last.surface if last else "ax",
+            surface=out.surface or (last.surface if last else "ax"),
+            page=last.page if last else "",
         )
         total.items_text = render_items_result(out, total.footer())  # type: ignore[attr-defined]
         return total

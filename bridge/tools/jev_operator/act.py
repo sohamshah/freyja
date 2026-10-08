@@ -484,6 +484,35 @@ class Actuator:
         await self.frame("post_action")
         return await self._executed("launch_app", t0, ok=True)
 
+    async def open_url(self, url: str) -> ActionRecord:
+        """Open `url` in a new tab of the target browser, without the address bar.
+
+        Arc and Chrome get the tab through AppleScript (an `open` from another
+        app can land in a separate "Little Arc" window); other apps hand the
+        URL to `open -b`."""
+        from bridge.tools.jev_operator import dom_surface  # noqa: PLC0415
+
+        await self._planned("open_url", f"Open {url}")
+        t0 = time.perf_counter()
+        bundle = getattr(self, "target_bundle", "") or ""
+        try:
+            if dom_surface.supported(bundle):
+                await asyncio.to_thread(dom_surface.new_tab, bundle, url)
+            else:
+                cmd = ["open", "-b", bundle, url] if bundle else ["open", url]
+                proc = await asyncio.to_thread(
+                    subprocess.run, cmd, capture_output=True, text=True, timeout=15
+                )
+                if proc.returncode != 0:
+                    return await self._executed(
+                        "open_url", t0, ok=False, error=proc.stderr.strip() or "open failed"
+                    )
+        except Exception as exc:  # noqa: BLE001
+            return await self._executed("open_url", t0, ok=False, error=str(exc))
+        await self.settle(2500)
+        await self.frame("post_action")
+        return await self._executed("open_url", t0, ok=True)
+
     async def focus(self, bundle: str) -> None:
         try:
             await asyncio.to_thread(self.native.focus_app, bundle)
