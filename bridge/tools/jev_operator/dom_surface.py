@@ -206,6 +206,10 @@ class DOMSurface:
             raise DOMUnavailable(f"{type(exc).__name__}: {exc}") from exc
         try:
             data = json.loads(raw)
+            # Arc JSON-encodes the script's return value, so a script that
+            # returns a JSON string arrives as a quoted string: decode twice.
+            if isinstance(data, str):
+                data = json.loads(data)
         except (TypeError, ValueError) as exc:
             self.fail_streak += 1
             raise DOMUnavailable(f"page returned non-JSON: {_clip(str(raw), 80)!r}") from exc

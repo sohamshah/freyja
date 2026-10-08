@@ -211,3 +211,19 @@ def test_double_failure_falls_back_to_ax_once(tmp_path, monkeypatch):
     assert evs[-1]["surface"] == "dom" and op._surface_label() == "dom→ax"
     op._swap_if_dom_failing()
     assert op.surface.name == "ax"
+
+
+def test_arc_double_encoded_results_decode():
+    """Arc JSON-encodes a script's return value, so the snapshot/act JSON
+    strings arrive as quoted strings (found on a live Arc tab 2026-10-07)."""
+    page = FakePage([action(1, label="Go"), action(2, "fill", "Search")])
+    inner = page.__call__
+
+    def arc_like(bundle, js):
+        return json.dumps(inner(bundle, js))
+
+    s = DOMSurface(bundle=TARGET.bundle, actuator=SimpleNamespace(), run_js=arc_like, js_source="/*js*/")
+    obs = run(s.observe(TARGET))
+    assert [e.label for e in obs.elements] == ["Go", "Search"]
+    res = run(s._js("act(1, 'click', null, 'g1')"))
+    assert res["ok"] is True
