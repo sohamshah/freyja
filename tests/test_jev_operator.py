@@ -187,6 +187,33 @@ def test_selected_choices_show_and_a_new_selection_counts_as_progress():
     assert meaningful_change(before, after)
 
 
+def test_sliders_and_progress_are_listed_for_reading_only():
+    win = node("AXWindow", "Sound", focused=True, bounds=(0, 40, 500, 400), children=[
+        node("AXSlider", None, label="Output volume", value=0.35, bounds=(10, 60, 200, 20)),
+        node("AXProgressIndicator", None, value=72, bounds=(10, 100, 200, 10)),
+        node("AXButton", "Mute", bounds=(220, 60, 40, 20)),
+    ])
+    obs = build_observation(node("AXApplication", "System Settings", children=[win]), app_name="System Settings", bundle="b", pid=1)
+    rows = obs.table().split("\n")
+    assert rows[:2] == ["[1] AXSlider 'Output volume' value='0.35'", "[2] AXProgressIndicator 'progressindicator' value='72'"]
+    assert [e.label for e in obs.click_targets] == ["Mute"], "a click would move the slider"
+
+
+def test_a_full_table_keeps_the_focused_windows_rows_out_of_view_before_other_windows():
+    def win(title, focused, n, y0):
+        rows = [node("AXRow", f"{title} {i}", bounds=(0, y0 + 30 * i, 200, 28)) for i in range(n)]
+        area = node("AXScrollArea", None, bounds=(0, y0, 200, 90), children=[node("AXOutline", None, bounds=(0, y0, 200, 30 * n), children=rows)])
+        return node("AXWindow", title, focused=focused, bounds=(0, y0 - 10, 300, 120), children=[area])
+
+    menubar = node("AXMenuBar", children=[node("AXMenuBarItem", "File", bounds=(40, 0, 30, 20))])
+    app = node("AXApplication", "Finder", children=[win("goal", True, 8, 100), win("other", False, 8, 400), menubar])
+    obs = build_observation(app, app_name="Finder", bundle="b", pid=1, max_rows=10)
+    assert [e.label for e in obs.elements] == [
+        "goal 0", "goal 1", "goal 2", "File", "goal 3", "goal 4", "goal 5", "goal 6", "goal 7", "other 0",
+    ]
+    assert obs.truncated
+
+
 def test_window_buttons_name_their_window():
     win = node("AXWindow", "notes.txt", focused=True, bounds=(0, 40, 500, 400), children=[
         node("AXButton", None, label="close button", subrole="AXCloseButton", bounds=(8, 44, 14, 14)),
@@ -992,6 +1019,13 @@ def test_rows_scrolled_out_of_view_are_scrolled_to_never_clicked_where_they_are_
     assert res.status != "done"
 
 
+def test_planner_subgoal_text_becomes_a_typing_option_with_its_line_break():
+    from bridge.tools.jev_operator.observe import quoted_literals
+
+    assert quoted_literals('Type "\\nBread 1" into the text entry area [1].') == ["\nBread 1"]
+    assert quoted_literals("click [3], then press return") == [], "element indexes are not text to type"
+
+
 def test_literals_keep_apostrophes():
     assert literals_from_goal('type "Don\'t panic, it\'s fine"') == ["Don't panic, it's fine"]
     assert literals_from_goal("In Soham's notes, type 'buy milk'") == ["buy milk"]
@@ -1230,6 +1264,97 @@ def test_typing_into_an_unfocused_text_area_appends():
         ("click", 170, 200), ("key", "cmd+down"), ("type", " more"),
         ("click", 120, 92), ("key", "cmd+a"), ("key", "cmd+a"), ("type", "soham"),
     ]
+
+
+def test_appending_to_a_focused_text_area_goes_to_the_end_and_breaks_lines_with_return():
+    # A select-all left by an earlier step made the next item's text replace the
+    # whole document (2026-10-08): appends always go to the end first.
+    from bridge.tools.jev_operator.observe import Element
+
+    class Recorder(FakeCalculator):
+        def __init__(self):
+            super().__init__()
+            self.events: list[tuple] = []
+
+        def click(self, x, y, *, button="left", double=False, modifiers=None):
+            self.events.append(("click", x, y))
+
+        def press_key(self, key, modifiers=None):
+            self.events.append(("key", "+".join([*(modifiers or []), key])))
+
+        def type_text(self, text):
+            self.events.append(("type", text))
+
+    async def go(native):
+        spec = ComputerToolSpec(session_id="t", emit_event=lambda _e: None, cancel_event=asyncio.Event())
+        actuator = act_module.Actuator(spec, native, settle_ms=0)
+        area = Element(index=1, role="AXTextArea", subrole=None, label="Notes", value="Apples 3", bounds=(20, 160, 300, 80), enabled=True, focused=True, window="w", kind="type")
+        field = Element(index=2, role="AXTextField", subrole=None, label="Search", value="", bounds=(20, 80, 200, 24), enabled=True, focused=True, window="w", kind="type")
+        await actuator.type_into(area, "\nBread 1", replace=False)
+        await actuator.type_into(field, "two\nlines", replace=True)
+
+    native = Recorder()
+    asyncio.run(go(native))
+    assert native.events == [
+        ("key", "cmd+down"), ("key", "return"), ("type", "Bread 1"),
+        ("type", "two lines"),  # a single-line field never gets a Return from typed text
+    ]
+
+
+def test_the_same_text_is_not_appended_twice_in_a_row(tmp_path, monkeypatch):
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+
+    class Notes(FakeCalculator):
+        def __init__(self):
+            super().__init__()
+            self.text = "Apples 3"
+
+        def list_windows(self, *, include_helpers=False):
+            return [FakeWindow(1, 100, "com.apple.calculator", "Notes", FakeBounds(0, 40, 400, 300))]
+
+        def read_ax_tree(self, pid, max_depth=8):
+            area = node("AXTextArea", None, label="Notes", value=self.text, focused=True, bounds=(20, 60, 300, 200))
+            return json.dumps(node("AXApplication", "Notes", children=[node("AXWindow", "Notes", focused=True, bounds=(0, 40, 400, 300), children=[area])]))
+
+        def type_text(self, text):
+            self.text += text
+
+        def press_key(self, key, modifiers=None):
+            if key == "return" and not modifiers:
+                self.text += "\n"
+
+    class Typist(ScriptedProvider):
+        async def decide(self, state, questions, *, model=None) -> Answers:
+            self.calls.append({"state": state, "questions": questions})
+            op = self.script.pop(0)[0] if self.script else "done"
+            out: dict[str, Any] = {}
+            for name, q in questions.items():
+                if isinstance(q, Choice):
+                    pick = {"operation": op, "type_target": "1" if op == "type" else "none"}.get(name, "none")
+                    if name == "text_source" and op == "type":
+                        pick = next(k for k, v in q.options.items() if v.endswith(": Bread 1"))
+                    probs = {k: (0.92 if k == pick else 0.08 / max(1, len(q.options) - 1)) for k in q.options}
+                    out[name] = ChoiceAnswer(choice=pick, probabilities=probs, confidence=0.92)
+                else:
+                    out[name] = NoulAnswer(p=0.05)
+            return Answers(answers=out, model="fake", provider="scripted", latency_ms=3)
+
+    reasons: list[str] = []
+
+    async def fake_complete(messages, system_prompt, max_tokens):
+        payload = json.loads(messages[0].content if isinstance(messages[0].content, str) else messages[0].content[-1].text)
+        if "why_help_was_requested" in payload:
+            reasons.append(payload["why_help_was_requested"])
+            return json.dumps({"status": "done", "subgoal": None, "direct_action": None, "note": "added"})
+        return json.dumps({"satisfied": True, "summary": "Bread 1 was added.", "subgoal": None})
+
+    native = Notes()
+    llm = LLMHelper(fake_complete, max_calls=4)
+    op, _ = make_operator(native, Typist([("type", None)] * 3), goal='add "Bread 1" to the notes', llm=llm)
+    res = asyncio.run(op.run())
+    assert native.text == "Apples 3Bread 1", "typed once, not again"
+    assert reasons and "would add it twice" in reasons[0]
+    assert res.status == "done"
 
 
 def test_select_all_key_is_sent_twice_and_other_keys_once():

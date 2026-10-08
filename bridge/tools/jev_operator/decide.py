@@ -140,7 +140,7 @@ def build_questions(
             instructions=f"{goal_line}\nIf the next operation is type, which text field receives the text? Choose none otherwise.",
             options=type_opts,
         )
-        text_opts = {f"lit{i}": f"type exactly: {s}" for i, s in enumerate(literals)}
+        text_opts = {f"lit{i}": "type exactly: " + s.replace("\n", "\\n") for i, s in enumerate(literals)}
         text_opts["needs_llm"] = (
             "the text to type is not given verbatim in the goal and must be composed"
         )

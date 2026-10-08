@@ -33,6 +33,9 @@ CLICK_ROLES = {
     "AXToolbarButton",
 }
 TYPE_ROLES = {"AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"}
+# Listed with their values for reading only (kind "info"): a click on a slider
+# would move it.
+VALUE_ROLES = {"AXSlider", "AXProgressIndicator", "AXLevelIndicator"}
 TEXT_ROLES = {"AXStaticText", "AXHeading"}
 SKIP_SUBTREES = {"AXMenuBar"}
 SECURE_SUBROLES = {"AXSecureTextField"}
@@ -74,7 +77,7 @@ class Element:
     enabled: bool
     focused: bool
     window: str
-    kind: str  # "click" | "type"
+    kind: str  # "click" | "type" | "info" (read only)
     offscreen: bool = False
     has_submenu: bool = False  # menu items: clicking opens a submenu instead of running a command
     scroll_area: tuple[float, float, float, float] | None = None  # visible rect of its scroll view
@@ -485,6 +488,8 @@ def build_observation(
                 if ch.get("role") == "AXTextField" and ch.get("focused"):
                     walk(ch, window, depth + 1, True, clip, frame, row, view, view_frame)
             return
+        elif role in VALUE_ROLES:
+            _add(node, window, "info", in_row, clip, frame, row, view, view_frame)
         elif role in CLICK_ROLES or role in TYPE_ROLES or subrole in SECURE_SUBROLES:
             added = _add(
                 node,
@@ -532,14 +537,16 @@ def build_observation(
             return False
         if role in TYPE_ROLES:
             label = _first_text(node, ("title", "label", "help", "placeholder"))
-        elif role in STATE_ROLES:
+        elif role in STATE_ROLES or role in VALUE_ROLES:
             label = _first_text(node, ("title", "label", "help"))
         else:
             label = _text_of(node)
         if role in ("AXRow", "AXCell") or not label:
             label = _descendant_text(node) or label
-        if not label and role in STATE_ROLES:
+        if not label and (role in STATE_ROLES or role in VALUE_ROLES):
             label = row  # e.g. the switch in a settings row named by the row's text
+        if not label and role in VALUE_ROLES:
+            label = _first_text(node, ("description",))
         if not label and node.get("subrole") in NAMED_BY_SUBROLE:
             label = _first_text(node, ("description",))
         if role in TYPE_ROLES and not label:
@@ -580,12 +587,21 @@ def build_observation(
 
     truncated = False
     if len(elements) > max_rows:
+        # The focused window first, its rows out of view included (the folder the
+        # goal names can be a column scrolled out of view), then the menus, then
+        # other windows; Finder with a few windows open has 500+ elements.
         truncated = True
-        visible = [e for e in elements if not e.offscreen]
-        focused = [e for e in visible if e.window == focused_window]
-        others = [e for e in visible if e.window != focused_window]
-        hidden = [e for e in elements if e.offscreen]
-        elements = (focused + others + hidden)[:max_rows]
+        menus = [e for e in elements if e.role in MENU_ROLES]
+        rest = [e for e in elements if e.role not in MENU_ROLES]
+        mine = [e for e in rest if e.window == focused_window]
+        others = [e for e in rest if e.window != focused_window]
+        elements = (
+            [e for e in mine if not e.offscreen]
+            + menus
+            + [e for e in mine if e.offscreen]
+            + [e for e in others if not e.offscreen]
+            + [e for e in others if e.offscreen]
+        )[:max_rows]
         for i, e in enumerate(elements, 1):
             e.index = i
 
@@ -721,6 +737,18 @@ _QUOTED = re.compile(
     r"|(?<!\w)‘(.{1,200}?)’(?!\w)"
 )
 _NUMBERISH = re.compile(r"(?<![\w.])[-+]?\d[\d,]*(?:\.\d+)?(?![\w.])")
+
+
+def quoted_literals(text: str) -> list[str]:
+    """Quoted spans only, with \\n and \\t read as a line break and a tab: the
+    planner writes a subgoal like 'Type "\\nBread 1" into the text area'. Bare
+    numbers are left out; in a subgoal they are mostly element indexes."""
+    out: list[str] = []
+    for m in _QUOTED.finditer(text or ""):
+        s = next(g for g in m.groups() if g is not None).replace("\\n", "\n").replace("\\t", "\t")
+        if s.strip() and s not in out:
+            out.append(s)
+    return out
 
 
 def literals_from_goal(goal: str) -> list[str]:

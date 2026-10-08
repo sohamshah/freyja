@@ -29,36 +29,17 @@ verify:   re-observe; diff (window title, values, screen text) → changed flag 
           into history; 3 consecutive unchanged non-scroll actions = stuck
 ```
 
-Jev never sees a screenshot. State carries observation only (app, windows, screen text,
-element table, recent actions with their diffs, current sub-goal). The goal is placed in
-each question's `instructions`, following the pattern TypeSafe recommends and the cua
-recipe adopted (research/R10). Every target question has a `none` option; the operation
-question has `done`, `blocked`, and `need_help`.
+Jev never sees a screenshot. State carries observation only (app, windows, screen text, element table, recent actions with their diffs, current sub-goal). The goal is placed in each question's `instructions`, following the pattern TypeSafe recommends and the cua recipe adopted (research/R10). Every target question has a `none` option; the operation question has `done`, `blocked`, and `need_help`.
 
-Element rows are `[i] AXRole 'label' value='…' (state)`. The label is the element's
-AXTitle, else its AXDescription (`label` in `freyja_native.read_ax_tree` output), else its
-value or help text; static text contributes its AXValue to the screen text. The native
-`description` key is AXRoleDescription ("button", "text") and is never used as a name,
-except for window close/minimize/zoom buttons, whose role description is specific. Click
-roles and type roles form separate option sets and the target is read from the set
-matching the chosen operation. Menu bar items are clickable rows. Items of a menu appear
-only while that menu is showing, which the AX tree reports directly: a closed menu still
-lists its items, but with zero-size bounds. Menu items that open a submenu read "opens
-submenu", and checkboxes, switches, and radio buttons read on/off (selected) in rows and
-diffs. Elements whose center lies outside their scroll area or window are shown as
-"scrolled out of view" and are not targets, because AX keeps reporting their bounds and a
-click there lands on whatever is drawn at that point. A scroll operation scrolls inside the
-scroll view that hides the rows the goal names (otherwise the one hiding the most rows),
-not at the window center, and the next observation waits until element positions stop
-moving, because smooth scrolling keeps animating after the event. Secure text fields are
-never listed as type targets. The table is capped at 200 rows, focused window first,
-scrolled-out elements last; row values are clipped to 120 characters for Jev, while the
-replan and verify doors see up to 4000.
+Element rows are `[i] AXRole 'label' value='…' (state)`. The label is the element's AXTitle, else its AXDescription (`label` in `freyja_native.read_ax_tree` output), else its value or help text; static text contributes its AXValue to the screen text. The native `description` key is AXRoleDescription ("button", "text") and is never used as a name, except for window close/minimize/zoom buttons, whose role description is specific. Click roles and type roles form separate option sets, and the target is read from the set matching the chosen operation. Sliders, progress bars and level indicators are listed with their values for reading only: a click would move a slider.
 
-Typing into a text area appends at its end; typing into a text field replaces its contents
-(Cmd+A, then the text). Cmd+A is always sent twice: when the text ends in an unfinished
-word, the first one only makes macOS commit its pending autocorrection (measured 0/5 vs
-5/5 with the second press).
+Menu bar items are clickable rows. Items of a menu appear only while that menu is showing (the reader skips closed menus). Menu items that open a submenu read "opens submenu". Checkboxes, switches and radio buttons read on/off or selected in rows and diffs; other controls read "selected" when AXSelected says so, and a change of selection counts as progress.
+
+Elements whose center lies outside their scroll area or window read "scrolled out of view". They are targets, but choosing one scrolls toward it instead of clicking, because AX keeps reporting their bounds and a click there lands on whatever is drawn at that point; Jev chooses the control again once it is in view. A scroll goes toward the hidden rows (sideways when they are off to a side), pages the scroll area with its AXScroll<Way>ByPage action where offered, and falls back to the scroll wheel inside the visible part of that scroll view. The next observation waits until element positions stop moving, because smooth scrolling keeps animating after the event. Secure text fields are never listed as type targets.
+
+The table is capped at 200 rows: the focused window's controls in view, then the menus, then the focused window's controls out of view, then other windows. Row values are clipped to 120 characters for Jev, while the replan and verify doors see up to 4000.
+
+Typing into a text area appends at its end: the operator always moves to the end first, since a selection left by an earlier step would otherwise be replaced. A line break in the text is a Return key press there; in a single-line field it becomes a space, so typed text never submits a form past the Return gate. The same text is not appended to the same text area twice in a row: the second time goes to the planner instead (an item was once typed six times, since each append changed the document and so counted as progress). Quoted text in the planner's sub-goal is a typing option for Jev, so text the planner composes, such as a leading line break, reaches the field. Typing into a text field replaces its contents (Cmd+A, then the text). Cmd+A is always sent twice: when the text ends in an unfinished word, the first one only makes macOS commit its pending autocorrection (measured 0/5 vs 5/5 with the second press).
 
 ## Handoff doors
 
@@ -187,7 +168,11 @@ The native scenarios follow three rules:
 
 - **Fresh values per run.** A setup returns the values the goal and the check use: random operands for Calculator, a new file for TextEdit, a new folder for Finder. Calculator reopens showing its last result, so a fixed `12 × 7` once passed with no action at all.
 - **Accessibility and `open` only.** Setup, checks and teardown read and press through `freyja_native`, never AppleScript. An AppleScript command to an app needs an Automation grant for the terminal, and the first one raises a consent prompt that blocks the run until someone answers it.
-- **Settings stay as they were.** The Finder checks compare Finder's default view (`FXPreferredViewStyle`) before and after, and the Appearance check compares the appearance. In a folder with no view of its own, Finder's view buttons change the default view for every folder: a planner that switched a window to list view to read it changed the person's default (2026-10-08).
+- **Settings stay as they were.** The Finder checks compare Finder's default view (`FXPreferredViewStyle`) before and after, and the Appearance and volume checks compare those settings. In a folder with no view of its own, Finder's view buttons change the default view for every folder: a planner that switched a window to list view to read it changed the person's default (2026-10-08).
+- **Close only what the run opened.** A scenario records the id of the window it opened and closes that window: it raises it with `AXRaise` (`focus_window` only activates the app), confirms from the window server's front-to-back order that it is in front, then presses Cmd+W. Titles are not used, because a run can navigate its window elsewhere. Windows that appeared during a run are reported, not closed: one may be the person's. Left-over windows matter: when a later setup deleted their folders, Finder moved each to the parent folder (600 entries), and every Finder read grew to 1,800 elements.
+- **Wait for a quiet Mac.** A native scenario starts only after 4 s without keyboard or pointer input, and the harness sends its own keys only to the app in front.
+
+The native group has 13 scenarios: Calculator (multiply; square root, which needs Scientific mode), TextEdit (type; find and replace; a for-each run with `items`), Finder in column view (list a folder; rename a file; create a folder), System Settings (macOS version; Appearance; output volume), Dictionary, and Preview (page count of a generated PDF).
 
 To try a change to the native reader before a rebuild, build a wheel with `maturin build --release` into a scratch folder, unzip it, and put that folder on `PYTHONPATH` when running the harness.
 

@@ -381,11 +381,12 @@ class Actuator:
                     self.native.click, x, y, button="left", double=False, modifiers=[]
                 )
                 await asyncio.sleep(0.15)
-                if el.role == "AXTextArea":
-                    # The focusing click puts the caret under the element's center,
-                    # which is mid-document once text fills the view; append instead.
-                    await asyncio.to_thread(self.native.press_key, "down", modifiers=["cmd"])
-                    await asyncio.sleep(0.05)
+            if el.role == "AXTextArea" and not replace:
+                # Typing appends. The caret can be anywhere: under a focusing click
+                # (mid-document once text fills the view), or a selection left by an
+                # earlier step, which the text would replace (a whole document once).
+                await asyncio.to_thread(self.native.press_key, "down", modifiers=["cmd"])
+                await asyncio.sleep(0.05)
             if replace and el.value:
                 # When the text ends in an unfinished word, the first Cmd+A only makes
                 # macOS commit its pending autocorrection; the second one selects.
@@ -393,7 +394,7 @@ class Actuator:
                 for _ in range(2):
                     await asyncio.to_thread(self.native.press_key, "a", modifiers=["cmd"])
                     await asyncio.sleep(0.1)
-            await asyncio.to_thread(self.native.type_text, text)
+            await self._type_text(text, multiline=el.role == "AXTextArea")
         except Exception as exc:  # noqa: BLE001
             return await self._executed("type_text", t0, ok=False, error=str(exc))
         await self.settle()
@@ -486,12 +487,26 @@ class Actuator:
         await self.frame("post_action")
         return await self._executed("click", t0, ok=True)
 
+    async def _type_text(self, text: str, *, multiline: bool) -> None:
+        """A line break is a Return key press in a text area: apps do not all read
+        a typed newline character as one. Elsewhere it becomes a space, so text
+        can never submit a form past the Return gate."""
+        if not multiline:
+            await asyncio.to_thread(self.native.type_text, " ".join(text.splitlines()) if "\n" in text else text)
+            return
+        for i, part in enumerate(text.split("\n")):
+            if i:
+                await asyncio.to_thread(self.native.press_key, "return", modifiers=[])
+                await asyncio.sleep(0.05)
+            if part:
+                await asyncio.to_thread(self.native.type_text, part)
+
     async def type_raw(self, text: str) -> ActionRecord:
         await self._planned("type_text", f"Type {text!r}")
         t0 = time.perf_counter()
         await self._guard("type_text", t0)
         try:
-            await asyncio.to_thread(self.native.type_text, text)
+            await self._type_text(text, multiline=False)
         except Exception as exc:  # noqa: BLE001
             return await self._executed("type_text", t0, ok=False, error=str(exc))
         await self.settle()

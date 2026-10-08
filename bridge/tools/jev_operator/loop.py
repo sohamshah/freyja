@@ -37,6 +37,7 @@ from bridge.tools.jev_operator.observe import (
     build_observation,
     diff_observations,
     literals_from_goal,
+    quoted_literals,
     meaningful_change,
 )
 from bridge.tools.jev_operator.notes import app_notes, site_notes
@@ -355,6 +356,9 @@ class Operator:
         self._subgoal: str | None = None
         self._subgoal_steps = 0
         self._replans_since_progress = 0
+        # (window, role, label, text) of the last step when it appended text to a
+        # text area; any other step clears it.
+        self._last_append: tuple[str, str, str, str] | None = None
         self._consecutive_waits = 0
         self._settle_next = False  # after a scroll, wait for the animation to end before acting
         self._clicked_toggle: tuple[str, str, str, str | None] | None = None
@@ -831,7 +835,9 @@ class Operator:
                     goal=cfg.goal,
                     subgoal=self._subgoal,
                     history=self.history,
-                    literals=literals,
+                    # The planner's own quoted text ("\\nBread 1", with its line break)
+                    # is a typing option too; the goal's literals alone lost the break.
+                    literals=list(dict.fromkeys([*literals, *quoted_literals(self._subgoal or "")])),
                     launch_candidates=launch_cands,
                     thresholds=cfg.thresholds,
                     model=cfg.jev_model,
@@ -938,6 +944,7 @@ class Operator:
 
             action_desc = describe(d)
             kind = d.operation
+            prev_append, self._last_append = self._last_append, None
             try:
                 if d.target is not None and d.target.offscreen and d.operation in ("click", "double_click", "type"):
                     # Scrolled out of view: this step scrolls toward the control, and Jev
@@ -1013,9 +1020,23 @@ class Operator:
                         if out is not None:
                             return out
                         continue
+                    append = d.target.role == "AXTextArea"
+                    key = (d.target.window, d.target.role, d.target.label, text)
+                    if append and prev_append == key:
+                        # Appending is not idempotent: the same text typed into the same
+                        # area twice in a row was "Bread 1" six times (2026-10-08).
+                        out = await self._replan(
+                            obs,
+                            target,
+                            reason=f"{text!r} was just typed into {d.target.label!r}; typing it again would add it twice",
+                        )
+                        if out is not None:
+                            return out
+                        continue
                     rec = await self.surface.execute("type_into", 
-                        d.target, text, replace=(d.target.role != "AXTextArea")
+                        d.target, text, replace=not append
                     )
+                    self._last_append = key if append and rec.ok else None
                     action_desc = f"type {text!r} into [{d.target.index}] {d.target.label!r}"
                 elif d.operation == "key" and d.key:
                     gate = self._key_gate(d.key, obs)
