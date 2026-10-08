@@ -525,7 +525,8 @@ the run stops with status=blocked instead of clicking into the other app.
             surface=out.surface or (last.surface if last else "ax"),
             page=last.page if last else "",
         )
-        total.items_text = render_items_result(out, total.footer())  # type: ignore[attr-defined]
+        footer = total.footer() + (f"\npage: {total.page}" if total.page else "")
+        total.items_text = render_items_result(out, footer)  # type: ignore[attr-defined]
         return total
 
     async def _emit_end(self, record: Any, *, outcome: str) -> None:
