@@ -361,7 +361,7 @@ class FakeBrowser:
 
     def __call__(self, bundle, js, timeout_s=None, tab_id=""):
         if js.endswith("quiet();})()"):
-            return json.dumps({"m": 0, "rs": "complete", "u": self.url, "t": self.title})
+            return json.dumps({"m": 0, "rs": "complete", "u": self.url})
         if js.endswith("snapshot();})()"):
             return json.dumps(snap([action(1, label="More options")], url=self.url, title=self.title))
         self.acts.append(js[-80:])
@@ -370,9 +370,13 @@ class FakeBrowser:
 
 def test_a_run_without_an_address_never_starts_in_a_tab_no_run_used(tmp_path, monkeypatch):
     """A test run with no address attached to the browser's front tab, which was
-    the person's live video call, and clicked in it."""
+    the person's live video call, and clicked in it. Now it stops, names the
+    tab, and sends no script into it at all."""
     page = FakeBrowser()
     monkeypatch.setattr(dom_surface, "osascript_run_js", page)
+    calls: list[str] = []
+    monkeypatch.setattr(dom_surface, "osascript_run_js", lambda *a, **k: calls.append("js") or page(*a, **k))
+    monkeypatch.setattr(dom_surface, "tab_info", lambda b, tid, timeout_s=None: ("Meet - Weekly", "https://meet.example/abc"))
     op, native, _ = browser_operator(tmp_path, monkeypatch, (True, "ok"))
     op.provider = ScriptedProvider([("click", "More options"), ("done", None)])
     op.cfg.app = "company.thebrowser.Browser"
@@ -380,7 +384,7 @@ def test_a_run_without_an_address_never_starts_in_a_tab_no_run_used(tmp_path, mo
     res = run(op.run())
     assert res.status == "blocked" and res.code == "foreign_tab"
     assert "'Meet - Weekly' (https://meet.example/abc)" in res.summary and "Open <url>" in res.summary
-    assert page.acts == [] and native.clicks == []
+    assert page.acts == [] and native.clicks == [] and calls == []
 
 
 def test_a_tab_an_earlier_run_worked_in_is_fine(tmp_path, monkeypatch):

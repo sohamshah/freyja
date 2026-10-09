@@ -485,7 +485,7 @@
 
   function quiet() {
     touch();
-    return JSON.stringify({ m: mutations, rs: document.readyState, u: location.href, t: document.title });
+    return JSON.stringify({ m: mutations, rs: document.readyState, u: location.href });
   }
 
   // Navigate this tab (one the run opened itself) to another address.

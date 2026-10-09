@@ -71,6 +71,20 @@ _RUN_IN_TAB = """on run argv
 end run
 """
 _ACTIVE_TAB = 'tell application "{app}" to return (id of active tab of front window) as text'
+# Title and address of one tab, by id, from the browser's own tab properties.
+_TAB_INFO = """on run argv
+    set tid to item 1 of argv
+    tell application "{app}"
+        repeat with wi from 1 to (count of windows)
+            set ids to id of every tab of window wi
+            repeat with i from 1 to (count of ids)
+                if ((item i of ids) as text) is tid then return (title of tab i of window wi) & linefeed & (URL of tab i of window wi)
+            end repeat
+        end repeat
+    end tell
+    return ""
+end run
+"""
 # Every tab id of every window, one bulk read per window.
 _TAB_IDS = """tell application "{app}"
     set out to {{}}
@@ -196,6 +210,14 @@ def tab_ids(bundle_id: str, timeout_s: float = PROBE_RETRY_TIMEOUT_S) -> set[str
     app = _app(bundle_id)
     out = _osascript(_TAB_IDS.format(app=app), [], timeout_s, app)
     return {x.strip() for x in out.splitlines() if x.strip()}
+
+
+def tab_info(bundle_id: str, tab_id: str, timeout_s: float = PROBE_TIMEOUT_S) -> tuple[str, str]:
+    """(title, url) of the tab with this id; ("", "") when it is gone."""
+    app = _app(bundle_id)
+    out = _osascript(_TAB_INFO.format(app=app), [tab_id], timeout_s, app)
+    title, _, url = out.partition("\n")
+    return title.strip(), url.strip()
 
 
 def new_tab(bundle_id: str, url: str, timeout_s: float = OPEN_TIMEOUT_S) -> str:
@@ -375,13 +397,15 @@ class DOMSurface:
         return str(q.get("u") or "") if isinstance(q, dict) else ""
 
     async def describe_tab(self) -> str:
-        """The pinned tab as "'title' (url)", for a message to the caller."""
+        """The pinned tab as "'title' (url)", for a message to the caller. Read
+        from the browser's tab properties: running the page script there would
+        install it in a tab that is not the run's."""
+        if not self.tab_id:
+            return "a tab that could not be identified"
         try:
-            q = await self._js("quiet()", count=False)
+            title, url = await asyncio.to_thread(tab_info, self.bundle, self.tab_id)
         except DOMUnavailable:
             return "a tab that did not answer"
-        q = q if isinstance(q, dict) else {}
-        title, url = str(q.get("t") or "").strip(), str(q.get("u") or "").strip()
         return f"{title!r} ({url})" if title else url or "an unnamed tab"
 
     async def open_url(self, url: str) -> ActionRecord:
