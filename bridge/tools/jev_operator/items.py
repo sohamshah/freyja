@@ -23,6 +23,8 @@ STATUSES = ("done", "blocked", "needs_confirmation", "budget_exhausted", "error"
 
 # make_operator(item_goal, extra_literals, remaining_s) -> an Operator
 MakeOperator = Callable[[str, list[str], float], Any]
+# on_item(index, total, item) runs before each item that runs, to label its part of the log
+OnItem = Callable[[int, int, str], Awaitable[None]]
 
 
 def validate_items(items: Any, skip: Any) -> tuple[list[str], set[int], str | None]:
@@ -121,6 +123,7 @@ async def run_items(
     *,
     max_runtime_s: float,
     cancel_event: Any,
+    on_item: OnItem | None = None,
 ) -> ItemsOutcome:
     t0 = time.perf_counter()
     total = len(items)
@@ -154,6 +157,8 @@ async def run_items(
             op.share_with(first, i)
         op.item = i
         try:
+            if on_item is not None:
+                await on_item(i, total, text)
             res = await op.run()
             r = ItemResult(i, text, res.status, res.steps, res.elapsed_s, _evidence(res), res)
             if res.status not in STATUSES and res.status != "cancelled":

@@ -18,7 +18,7 @@ export interface AgentView {
   sub?: SubagentRecord
   slice?: SessionSlice
   attachable: boolean
-  status: 'pending' | 'running' | 'done' | 'failed' | 'cancelled'
+  status: 'pending' | 'running' | 'done' | 'failed' | 'stopped' | 'cancelled'
   agentType: string
   tools: ToolCallRecord[]
   tokensIn: number

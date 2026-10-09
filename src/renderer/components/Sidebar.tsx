@@ -617,6 +617,9 @@ export function Sidebar() {
             const failed = child.completed && child.success === false
             const computerSession = computerSessions[child.id]
             const isComputer = Boolean(computerSession)
+            // A jev run that ended blocked or waiting for confirmation reports
+            // success=false; that is a stop, not a failure.
+            const isJev = child.id.startsWith('jev_')
             return (
               <button
                 key={child.id}
@@ -657,7 +660,7 @@ export function Sidebar() {
                   ) : (
                     <span
                       className={`block h-1.5 w-1.5 rounded-full fold-dot ${
-                        failed ? 'bg-danger' : 'bg-ok'
+                        failed ? (isJev ? 'bg-warn' : 'bg-danger') : 'bg-ok'
                       }`}
                     />
                   )}
@@ -684,7 +687,9 @@ export function Sidebar() {
                     </span>
                     <span>·</span>
                     <span className="font-mono">
-                      {isComputer
+                      {isJev
+                        ? `${subRecord?.toolsCalled ?? computerSession?.history.length ?? 0} act`
+                        : isComputer
                         ? `${computerSession.history.length} act`
                         : formatTokens(
                             (child.totalInputTokens ?? 0) +
@@ -1962,6 +1967,17 @@ const SessionRow = memo(function SessionRow({
   }, [menuOpen])
 
   const label = s.messageCount > 0 ? `${s.messageCount} msg` : 'empty'
+  // By id: a gateway session's row can carry a jev model it borrowed.
+  const isJevRun = s.id.startsWith('jev_')
+  // A run cut off by a quit never sends its completion. The longest run (an
+  // items run) stops at one hour, so after two hours it is not "running".
+  const jevState = s.completed
+    ? s.success === false
+      ? 'stopped'
+      : 'done'
+    : Date.now() - s.updatedAt < 2 * 60 * 60 * 1000
+      ? 'running'
+      : 'unfinished'
   const isChild = depth > 0
   const leftPad = 8 + depth * 14
 
@@ -2100,18 +2116,36 @@ const SessionRow = memo(function SessionRow({
                 voice
               </span>
             )}
-            {s.coordinationStrategy ? (
-              <StrategyChip strategy={s.coordinationStrategy} />
-            ) : null}
-            <span className="font-mono">
-              {s.runtime === 'claude_code'
-                ? 'Claude Code'
-                : s.runtime === 'codex_app_server'
-                  ? 'Codex'
-                  : s.model.replace('claude-', '')}
-            </span>
-            <span>·</span>
-            <span>{label}</span>
+            {isJevRun ? (
+              // A jev_computer_use run: no strategy or message count to show,
+              // but whether it is still going and how it ended.
+              <>
+                <span
+                  title={s.model}
+                  className="inline-flex items-center rounded px-1 py-px font-mono text-[9px] uppercase tracking-[0.10em] text-fg-1 bg-white/[0.04] ring-1 ring-white/[0.10]"
+                >
+                  jev
+                </span>
+                <span className={jevState === 'running' ? 'text-accent' : jevState === 'done' ? 'text-ok' : 'text-warn'}>
+                  {jevState}
+                </span>
+              </>
+            ) : (
+              <>
+                {s.coordinationStrategy ? (
+                  <StrategyChip strategy={s.coordinationStrategy} />
+                ) : null}
+                <span className="font-mono">
+                  {s.runtime === 'claude_code'
+                    ? 'Claude Code'
+                    : s.runtime === 'codex_app_server'
+                      ? 'Codex'
+                      : s.model.replace('claude-', '')}
+                </span>
+                <span>·</span>
+                <span>{label}</span>
+              </>
+            )}
             <span>·</span>
             <span>{relativeTime(s.updatedAt)}</span>
             {/* Folded marker — so a collapsed parent advertises how much it's

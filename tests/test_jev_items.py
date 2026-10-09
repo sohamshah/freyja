@@ -244,6 +244,19 @@ def test_tool_wait_mode_returns_table_and_goal_template_stays_clean(tmp_path, mo
     assert all("SECRET" not in g.partition("\n\nITEM ")[0] for g in goals)
 
 
+def test_tool_labels_each_item_in_the_run_pane_and_ends_with_the_result(tmp_path, monkeypatch):
+    """The run's pane parses its log line by line: each item that runs gets a header
+    line, skipped items get none, and the result follows a `[result]` line."""
+    tool, spec, terminal, goals = _tool(monkeypatch, tmp_path, [result("done"), result("done")])
+    events: list[dict] = []
+    spec.emit_event = events.append
+    args = {"goal": "g {item}", "items": ["a", "b\nc", "d"], "skip_items": [0], "wait": True, "use_llm": False}
+    out = asyncio.run(tool.execute("c", args))
+    lines = "".join(e["text"] for e in events if e.get("type") == "text_delta").split("\n")
+    assert [ln for ln in lines if ln.startswith("item ")] == ["item 2 of 3 (#1): b c", "item 3 of 3 (#2): d"]
+    assert "\n".join(lines).endswith("[result]\n" + out.content + "\n")
+
+
 def test_tool_background_mode_memos_the_table(tmp_path, monkeypatch):
     async def go():
         tool, spec, terminal, goals = _tool(monkeypatch, tmp_path, [result("done"), result("done")])

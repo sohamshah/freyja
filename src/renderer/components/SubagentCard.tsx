@@ -4,6 +4,8 @@ import { useHarness, type SystemEventRecord } from '../state/store'
 import { formatDuration, formatTokens } from '../lib/format'
 import { Spinner } from '../lib/spinner'
 import { useFrameObjectUrl } from '../lib/frameMedia'
+import { parseJevResult } from '../lib/jevLog'
+import { JevResultSummary, jevActivity, jevStatus, useJevLastLine } from './JevRun'
 
 /** Snapshot of a kanban card's current state, derived from the running
  *  fold over `kanban_*` system events. Used by the subagent card to
@@ -191,6 +193,16 @@ export function SubagentCard({ id }: { id: string }) {
   // Screenshot thumbnail collapses by default once a computer session
   // completes — viewer can re-expand to review the final state.
   const [expanded, setExpanded] = useState(true)
+  // A jev_computer_use run: its result names the real outcome (blocked,
+  // needs confirmation), and while it runs its log's last line says what
+  // it is doing (web-page runs send no frames or actions to show).
+  const isJevRun = id.startsWith('jev_')
+  const jevResult = useMemo(
+    () => (isJevRun && sub?.result ? parseJevResult(sub.result) : null),
+    [isJevRun, sub?.result],
+  )
+  const jevLastLine = useJevLastLine(isJevRun && !jevResult ? id : undefined)
+  const jevNow = useMemo(() => jevActivity(jevLastLine), [jevLastLine])
   if (!sub) return null
 
   // Prefer the (more authoritative) session snapshot state when present.
@@ -213,7 +225,10 @@ export function SubagentCard({ id }: { id: string }) {
   const verified =
     isDone && cardSnapshot?.status === 'done' && cardSnapshot.verifierActor !== null
   const rejected = Boolean(cardSnapshot?.rejected)
-  const statusColor = isFailed
+  const jevTone = jevResult && isDone ? jevStatus(jevResult.status) : null
+  const statusColor = jevTone
+    ? jevTone.text
+    : isFailed
     ? 'text-danger'
     : rejected
       ? 'text-danger'
@@ -224,7 +239,9 @@ export function SubagentCard({ id }: { id: string }) {
           : isRunning
             ? 'text-accent'
             : 'text-fg-2'
-  const statusLabel = isFailed
+  const statusLabel = jevTone
+    ? jevTone.word
+    : isFailed
     ? 'failed'
     : rejected
       ? 'rejected'
@@ -286,7 +303,7 @@ export function SubagentCard({ id }: { id: string }) {
         <Stat label="elapsed" value={formatDuration(sub.elapsedMs)} />
         <Stat label="in" value={formatTokens(sub.tokensIn)} />
         <Stat label="out" value={formatTokens(sub.tokensOut)} />
-        <Stat label="tools" value={String(sub.toolsCalled)} />
+        <Stat label={isJevRun ? 'actions' : 'tools'} value={String(sub.toolsCalled)} />
         {childSnapshot && (
           <span className="ml-auto flex items-center gap-1 text-[10px] text-accent/80">
             <button
@@ -303,7 +320,8 @@ export function SubagentCard({ id }: { id: string }) {
           </span>
         )}
       </div>
-      {computerSession && showInline && (
+      {/* A jev run on a web page sends no frames or actions: no empty strip. */}
+      {computerSession && showInline && (!isJevRun || computerSession.frameCount > 0) && (
         <div className="hairline-t mt-2 pt-2">
           <div className="mb-1 flex items-center justify-between">
             <div className="label flex items-center gap-1.5">
@@ -386,12 +404,21 @@ export function SubagentCard({ id }: { id: string }) {
           )}
         </div>
       )}
+      {isRunning && jevNow && (
+        <div className="hairline-t mt-2 truncate pt-2 font-mono text-[10.5px] text-fg-2" title={jevNow}>
+          → {jevNow}
+        </div>
+      )}
       {sub.result && isDone && (
         <div className="hairline-t mt-2 pt-2">
           <div className="mb-1 label">result</div>
-          <div className="selectable line-clamp-3 text-[11px] leading-[1.55] text-fg-1">
-            {sub.result}
-          </div>
+          {jevResult ? (
+            <JevResultSummary result={jevResult} showStatus={false} showStats={false} />
+          ) : (
+            <div className="selectable line-clamp-3 text-[11px] leading-[1.55] text-fg-1">
+              {sub.result}
+            </div>
+          )}
         </div>
       )}
       {/* Verifier byline. Sits where a co-author credit would sit on a

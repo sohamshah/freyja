@@ -147,6 +147,16 @@ How the DOM surface behaves:
 
 `items` runs the same goal once per item, each with fresh loop state, sharing the surface, the tab and the time limit. The item text is data: it appears only in a delimited ITEM block and in the typed-literal pool, which also gets the item's parts ("Delta $412.18 — memo: Flight to NYC" offers "Flight to NYC"), so a field is not filled with the whole line. The result is one table (status, steps, seconds, evidence per item). Three items in a row ending the same non-done way stop the run; `skip_items` resumes it.
 
+## In the app
+
+A run writes its log as text into its own sub-agent session: one line per event (`Operator._say`: the target, each step and its outcome, replans, sub-goals, stops), a line `item N of T (#i): <item>` before each item of an items run, and at the end a `[result]` line followed by the result text the parent receives. Keep these line formats when you change a `_say` call: the renderer parses them, and a line it does not know shows as a plain note.
+
+- **The run's pane.** `src/renderer/lib/jevLog.ts` parses the log and `src/renderer/components/JevRun.tsx` draws it as a step timeline: the operation, the target, and the outcome with what changed (URLs shortened), with replans, sub-goals and checks as callouts and repeated actions marked "again". A step number in amber had low confidence. The "timings" switch shows each step's confidence, Jev and read times, and element count. The result card below shows the status, the summary, the item table, what a run waits on, the page, the counts and the handoff. The text is the record, so runs saved before this view render the same way; a run with no `[result]` block takes its result from the parent's sub-agent record when the parent was open first. With a search query the pane shows the raw log, so matches can be highlighted.
+- **The parent.** The sub-agent card, the inbox memo and the expanded `jev_computer_use` tool row draw the result: its real status (blocked, needs confirmation, partly done) instead of "finished" or "failed", the summary, the item table and the pending action. While a run is going, the card shows its latest step; page runs send no screenshots, so this line is the only live view.
+- **Elsewhere.** A run that ended short of done (the bridge reports outcome `stuck`) is "stopped", in amber, in the sidebar, the swarm list, the dashboard and the Activity card; only an error is "failed". Sidebar rows for runs show "jev" and running, done or stopped.
+
+`test-jev-log.mjs` (`npx tsx test-jev-log.mjs`) checks the parser against each line format and the store path.
+
 ## Notes and learning
 
 Before deciding, the loop reads two kinds of skill as notes for Jev and the doors: `jev-app-<app>` (for example `jev-app-calculator`) and, on a web page, `jev-site-<host>` (for example `jev-site-console-cloud-google-com`). They are ordinary skills, so they are written the way all skills are: the main agent asks a `skill-drafter` sub-agent to propose one after a run that taught it something, and the person approves it.
@@ -194,4 +204,5 @@ It does not read pixels except through the replan door, which gets a screenshot 
 - `scripts/jev_harness.py`, `scripts/jev_scenarios.py`, `tests/fixtures/jev_live/` — live testing
 - `bridge/tools/jev_operator/__main__.py` — CLI for headless runs
 - `bridge/tools/jev_computer_use_tool.py` — tool wrapper registered next to `computer_use`
+- `src/renderer/lib/jevLog.ts`, `src/renderer/components/JevRun.tsx`, `test-jev-log.mjs` — how a run shows in the app
 - `tests/test_jev_operator.py` — table serialization, diff, gating, literal extraction, loop with fake providers

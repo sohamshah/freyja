@@ -1808,6 +1808,28 @@ def test_the_tool_runs_in_the_background_and_wakes_the_parent(tmp_path, monkeypa
     asyncio.run(go())
 
 
+def test_the_run_pane_ends_with_the_result(tmp_path, monkeypatch):
+    """The run's own pane showed the steps but never how the run ended: it now ends
+    with the text the parent receives, after a `[result]` line."""
+    async def go():
+        tool, spec, terminal, release = _tool(monkeypatch, tmp_path)
+        events: list[dict] = []
+        spec.emit_event = events.append
+        release.set()
+        out = await tool.execute("c1", {"goal": "do it", "wait": True, "use_llm": False})
+        text = "".join(e["text"] for e in events if e.get("type") == "text_delta")
+        assert text == "[result]\n" + out.content + "\n" and "[handoff]" in text
+
+    asyncio.run(go())
+
+
+def test_step_log_lines_are_single_lines():
+    """A sub-goal from the planner can hold line breaks; the pane reads one event per line."""
+    op, events = make_operator(object(), None)
+    asyncio.run(op._say("  sub-goal: close the dialog\nthen click Save"))
+    assert events == ["  sub-goal: close the dialog then click Save"]
+
+
 def test_the_tool_blocks_when_wait_is_true(tmp_path, monkeypatch):
     async def go():
         tool, spec, terminal, release = _tool(monkeypatch, tmp_path, result_status="done")

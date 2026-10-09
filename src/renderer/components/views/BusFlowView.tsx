@@ -90,7 +90,8 @@ export function BusFlowView({
         a.session.createdAt ??
         now
       const elapsedMs = a.sub?.elapsedMs ?? 0
-      const ended = a.status === 'done' || a.status === 'failed' || a.status === 'cancelled'
+      const ended =
+        a.status === 'done' || a.status === 'failed' || a.status === 'stopped' || a.status === 'cancelled'
       const endedAt = ended ? startedAt + elapsedMs : now
       return {
         id: a.session.id,
@@ -821,7 +822,7 @@ function StatusDot({ status }: { status: AgentView['status'] }) {
   const cls =
     status === 'done'
       ? 'bg-ok'
-      : status === 'failed'
+      : status === 'failed' || status === 'stopped'
       ? 'bg-warn'
       : status === 'cancelled'
       ? 'bg-fg-4'

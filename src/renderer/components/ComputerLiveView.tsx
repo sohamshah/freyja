@@ -4,6 +4,7 @@ import { formatDuration } from '../lib/format'
 import { Spinner } from '../lib/spinner'
 import { useFrameObjectUrl } from '../lib/frameMedia'
 import { StickyHeader } from './StickyHeader'
+import { jevActivity, jevOutcomeLine, useJevLastLine } from './JevRun'
 
 /**
  * Live screenshot viewer for an active computer-use session.
@@ -65,7 +66,9 @@ export function ComputerLiveView() {
                     ? 'bg-ok'
                     : displayed.status === 'failed'
                       ? 'bg-danger'
-                      : 'bg-fg-2'
+                      : displayed.status === 'stopped'
+                        ? 'bg-warn'
+                        : 'bg-fg-2'
                 }`}
               />
             )}
@@ -131,6 +134,9 @@ function ScreenshotCanvas({ session }: { session: ComputerSessionState }) {
   }, [planned, frame, box])
 
   if (!src) {
+    // A run that ended without a frame, or a jev run (web pages send none),
+    // has no screen to wait for; the narration line says what it did.
+    if (session.status !== 'running' || session.sessionId.startsWith('jev_')) return null
     return (
       <div className="relative flex aspect-[16/10] w-full items-center justify-center rounded-md bg-black/40 ring-hairline">
         <div className="text-center font-mono text-[10.5px] text-fg-2">
@@ -210,7 +216,14 @@ function HighlightRing() {
 function Narration({ session }: { session: ComputerSessionState }) {
   const planned = session.plannedAction
   const lastAction = session.history[session.history.length - 1]
-  const line = planned?.description ?? (lastAction ? describe(lastAction.action) : session.goal)
+  // A jev run says what it is doing in its log, and how it ended in its result.
+  const jevLine = useJevLastLine(session.status === 'running' ? session.sessionId : undefined)
+  const jevNow =
+    session.status === 'running' ? jevActivity(jevLine) : jevOutcomeLine(session.summary)
+  const line =
+    (session.sessionId.startsWith('jev_') ? jevNow : null) ??
+    planned?.description ??
+    (lastAction ? describe(lastAction.action) : session.goal)
   return (
     <div className="mt-2 flex items-center gap-2 font-mono text-[10.5px] text-fg-1">
       <span

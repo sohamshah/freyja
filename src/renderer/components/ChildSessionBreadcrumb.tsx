@@ -22,7 +22,13 @@ export function ChildSessionBreadcrumb() {
         onClick={() => switchToParent()}
         className="group flex w-full items-center gap-3 rounded-lg glass-raised px-3 py-2 text-left ring-1 ring-accent/20 hover:ring-accent/40"
       >
-        <Spinner name="scan" className="text-accent" />
+        {active.completed ? (
+          <span
+            className={`mx-[5px] h-1.5 w-1.5 shrink-0 rounded-full ${active.success === false ? 'bg-warn' : 'bg-ok'}`}
+          />
+        ) : (
+          <Spinner name="scan" className="text-accent" />
+        )}
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="label text-accent">sub-agent session</span>
@@ -31,7 +37,11 @@ export function ChildSessionBreadcrumb() {
               {active.title}
             </span>
             {active.completed && (
-              <span className="label ml-1 text-ok">done</span>
+              // `success` is false for a run that ended without finishing
+              // (a jev run blocked or waiting for confirmation, too).
+              <span className={`label ml-1 ${active.success === false ? 'text-warn' : 'text-ok'}`}>
+                {active.success === false ? 'stopped' : 'done'}
+              </span>
             )}
           </div>
           <div className="mt-[2px] flex items-center gap-1.5 text-[10.5px] text-fg-2">

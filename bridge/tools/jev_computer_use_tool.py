@@ -42,6 +42,9 @@ from bridge.tools.sub_agent_tool import SubAgentSpec, _fire, _record_to_dict
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_STEPS = 40
+# The line in the run's pane after which the result text follows (the renderer
+# draws the step log above it as a timeline and the result below it as a card).
+RESULT_MARK = "[result]"
 # A run needs its app frontmost and owns the single keyboard and mouse, so it
 # cannot share the screen with another computer-use session.
 MAX_ACTIVE_COMPUTER_SESSIONS = 1
@@ -449,9 +452,13 @@ the run stops with status=blocked instead of clicking into the other app.
             todo = len(items) - len(skip or ())
             overall = min(3600.0, max(900.0, 120.0 * todo))
 
+            async def on_item(i: int, total: int, text: str) -> None:
+                await say(f"item {i + 1} of {total} (#{i}): {' '.join(text.split())}")
+
             async def runner() -> Any:
                 return await run_items(
-                    make_op, goal, items, skip or set(), max_runtime_s=overall, cancel_event=asyncio_cancel
+                    make_op, goal, items, skip or set(), max_runtime_s=overall,
+                    cancel_event=asyncio_cancel, on_item=on_item,
                 )
 
         try:
@@ -459,12 +466,14 @@ the run stops with status=blocked instead of clicking into the other app.
         except asyncio.CancelledError:
             bridge_task.cancel()
             self._sub_spec.registry.mark_done(record.id, "Cancelled", SubAgentState.CANCELLED)
+            await say(f"{RESULT_MARK}\nCancelled.\n\n[jev_computer_use] status=cancelled")
             await self._emit_end(record, outcome="cancelled")
             raise
         except Exception as exc:  # noqa: BLE001
             bridge_task.cancel()
             logger.exception("jev_computer_use failed")
             self._sub_spec.registry.mark_done(record.id, f"Error: {exc}", SubAgentState.FAILED)
+            await say(f"{RESULT_MARK}\njev_computer_use failed: {exc}\n\n[jev_computer_use] status=error")
             await self._emit_end(record, outcome="failed")
             return ToolResult(
                 call_id=call_id, content=f"jev_computer_use failed: {exc}", is_error=True
@@ -476,6 +485,8 @@ the run stops with status=blocked instead of clicking into the other app.
             text = result.items_text
         else:
             text = render_result(result)
+        # The run's own pane ends with what the parent receives.
+        await say(f"{RESULT_MARK}\n{text}")
         # blocked / needs_confirmation / budget_exhausted are legitimate results the parent
         # acts on, so the child session is DONE; only a provider error is a failure.
         state = {

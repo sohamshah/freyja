@@ -6,6 +6,8 @@ import { useFrameObjectUrl } from '../lib/frameMedia'
 import { FileChangeBadge, FileChangeCard } from './FileChangeCard'
 import { describeCall, summarizePartialJson, ToolResultImages } from './ToolCallChip'
 import { SearchQueryContext, HighlightText } from './searchContext'
+import { JevResultSummary } from './JevRun'
+import { parseJevResult } from '../lib/jevLog'
 import type { ToolCallRecord } from '@shared/events'
 
 /**
@@ -124,6 +126,10 @@ function ToolLane({
       (record.result ?? '').toLowerCase().includes(q))
   const open = (userOpen ?? (isRunning && hasAnyArgs)) || matchInBody
   const toolCategory = getToolCategory(record.name)
+  const jevResult = useMemo(
+    () => (record.name === 'jev_computer_use' && record.result ? parseJevResult(record.result) : null),
+    [record.name, record.result],
+  )
 
   const statusDot = isRunning ? (
     <Spinner name="braille" className="text-accent" />
@@ -284,11 +290,18 @@ function ToolLane({
               <div className="mb-1 text-[9px] uppercase tracking-[0.1em] text-fg-3">
                 result{record.isError ? ' (error)' : ''}
               </div>
-              <pre className={`max-h-[200px] overflow-auto whitespace-pre-wrap rounded-md bg-black/40 p-2 text-[10.5px] ${
-                record.isError ? 'text-danger' : 'text-fg-0'
-              }`}>
-                <HighlightText text={record.result} query={searchQuery} />
-              </pre>
+              {jevResult && !searchQuery ? (
+                // A jev run that the agent waited on returns its full result here.
+                <div className="rounded-md bg-black/40 p-2">
+                  <JevResultSummary result={jevResult} clamp={false} />
+                </div>
+              ) : (
+                <pre className={`max-h-[200px] overflow-auto whitespace-pre-wrap rounded-md bg-black/40 p-2 text-[10.5px] ${
+                  record.isError ? 'text-danger' : 'text-fg-0'
+                }`}>
+                  <HighlightText text={record.result} query={searchQuery} />
+                </pre>
+              )}
             </div>
           )}
           {record.fileChangeSet && <FileChangeCard changeSet={record.fileChangeSet} />}

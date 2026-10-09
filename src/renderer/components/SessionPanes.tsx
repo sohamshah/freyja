@@ -7,6 +7,8 @@ import { Conversation } from './Conversation'
 import { ToolCallChip } from './ToolCallChip'
 import { Widget } from './Widget'
 import { ScopedErrorBoundary } from './ScopedErrorBoundary'
+import { JevRunView, jevStatus } from './JevRun'
+import { looksLikeJevLog, parseJevResult } from '../lib/jevLog'
 import type { Message, MessagePart, SessionSnapshot, SubagentRecord } from '@shared/events'
 
 export function SessionPanes() {
@@ -200,7 +202,7 @@ function PaneTranscript({
     <div ref={scrollerRef} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
       <div className="space-y-5 px-5 py-5">
         {messages.map((message) => (
-          <PaneMessage key={message.id} message={message} slice={slice} />
+          <PaneMessage key={message.id} message={message} slice={slice} jevRun={!!snapshot?.id.startsWith('jev_')} />
         ))}
       </div>
     </div>
@@ -210,9 +212,11 @@ function PaneTranscript({
 function PaneMessage({
   message,
   slice,
+  jevRun,
 }: {
   message: Message
   slice: SessionSlice
+  jevRun: boolean
 }) {
   if (message.role === 'user') {
     const parts = safeArray<MessagePart>(message.parts)
@@ -255,15 +259,18 @@ function PaneMessage({
       </div>
       <div className="space-y-2.5">
         {safeArray<MessagePart>(message.parts).map((part, index) => (
-          <PanePart key={index} part={part} slice={slice} />
+          <PanePart key={index} part={part} slice={slice} jevRun={jevRun} />
         ))}
       </div>
     </div>
   )
 }
 
-function PanePart({ part, slice }: { part: MessagePart; slice: SessionSlice }) {
+function PanePart({ part, slice, jevRun }: { part: MessagePart; slice: SessionSlice; jevRun: boolean }) {
   if (part.type === 'text' && part.text) {
+    if (jevRun && looksLikeJevLog(part.text)) {
+      return <JevRunView text={part.text} live={!!slice.isStreaming} />
+    }
     const html = renderMarkdown(part.text)
     return (
       <div
@@ -332,19 +339,25 @@ function PaneSubagent({ sub, sessionId }: { sub?: SubagentRecord; sessionId: str
   const state = sub?.state ?? (snapshot?.completed ? 'done' : 'running')
   const tools = sub?.toolsCalled ?? 0
   const elapsed = sub?.elapsedMs ?? ((snapshot?.updatedAt ?? Date.now()) - (snapshot?.createdAt ?? Date.now()))
+  // A finished jev run names its real outcome and counts actions, not tools.
+  const jev = sessionId.startsWith('jev_') && sub?.result ? parseJevResult(sub.result) : null
+  const jevTone = jev ? jevStatus(jev.status) : null
+  const dot = jevTone?.dot ?? (state === 'done' ? 'bg-ok' : state === 'failed' ? 'bg-danger' : 'bg-accent')
 
   return (
     <div className="rounded-xl glass-raised p-3">
       <div className="flex items-start gap-2">
-        <span className={`mt-[5px] h-1.5 w-1.5 rounded-full ${state === 'done' ? 'bg-ok' : state === 'failed' ? 'bg-danger' : 'bg-accent'}`} />
+        <span className={`mt-[5px] h-1.5 w-1.5 rounded-full ${dot}`} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-[12px] text-fg-0">{label}</div>
           <div className="mt-1 line-clamp-2 text-[11px] leading-[1.45] text-fg-2">
-            {sub?.task ?? snapshot?.task ?? 'Sub-agent session'}
+            {jev?.summary || (sub?.task ?? snapshot?.task ?? 'Sub-agent session')}
           </div>
           <div className="mt-2 flex gap-3 font-mono text-[10px] text-fg-3">
-            <span>{state}</span>
-            <span>{tools} tools</span>
+            <span className={jevTone?.text}>{jevTone?.word ?? state}</span>
+            <span>
+              {tools} {jev ? 'actions' : 'tools'}
+            </span>
             <span>{formatDuration(elapsed)}</span>
           </div>
         </div>

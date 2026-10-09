@@ -443,7 +443,8 @@ class Operator:
     async def _say(self, text: str) -> None:
         if self.on_step is None:
             return
-        r = self.on_step(text)
+        # One event per line: the run's pane parses the log line by line.
+        r = self.on_step(text.replace("\n", " "))
         if asyncio.iscoroutine(r):
             await r
 
@@ -868,7 +869,7 @@ class Operator:
             )
             await self._say(
                 f"step {step}: {describe(d)} (op {d.op_confidence:.2f}, target {d.target_confidence:.2f}, "
-                f"jev {d.latency_ms} ms, ax {obs.read_ms} ms, {len(obs.elements)} rows)"
+                f"jev {d.latency_ms} ms, read {obs.read_ms} ms, {len(obs.elements)} rows)"
                 + (f" [{'; '.join(d.reasons)}]" if d.reasons else "")
             )
 

@@ -7,6 +7,8 @@ import { Widget } from './Widget'
 import { ParallelToolGroup } from './ParallelToolGroup'
 import { SubagentCard } from './SubagentCard'
 import { SubagentSwarmGrid } from './SubagentSwarmGrid'
+import { JevResultSummary, JevRunView, jevStatus } from './JevRun'
+import { looksLikeJevLog, parseJevResult } from '../lib/jevLog'
 import { ChildSessionBreadcrumb } from './ChildSessionBreadcrumb'
 import { ConversationSearch } from './ConversationSearch'
 import { SearchQueryContext } from './searchContext'
@@ -1097,21 +1099,35 @@ function MemoChip({
 }) {
   const [expanded, setExpanded] = useState(false)
   const state = meta?.state ?? 'done'
-  const tone =
-    state === 'done'
+  // What the sub-agent reported, without the notice addressed to the model.
+  const report = useMemo(() => {
+    const m = /<subagent-report[^>]*>\n?([\s\S]*?)\n?<\/subagent-report>/.exec(content)
+    return m ? m[1].trim() : null
+  }, [content])
+  // A jev run's report is its result: draw it, and name its real outcome
+  // (blocked, needs confirmation) rather than "finished".
+  const jev = useMemo(() => (report ? parseJevResult(report) : null), [report])
+  const jevTone = jev ? jevStatus(jev.status) : null
+  const tone = jevTone
+    ? { dot: jevTone.dot, text: jevTone.text, word: jevTone.word }
+    : state === 'done'
       ? { dot: 'bg-ok', text: 'text-ok', word: 'finished' }
       : state === 'failed'
         ? { dot: 'bg-danger', text: 'text-danger', word: 'failed' }
         : { dot: 'bg-warn', text: 'text-warn', word: 'stopped' }
   const label = meta?.label || fallbackLabel
-  // The memo's first line is its machine header; the prose after it is
-  // what the agent reads. Show the prose.
-  const body = content.split('\n').slice(1).join('\n').trim() || content
-  const stats = [
-    meta?.agentType && !['general', 'bash', 'stop'].includes(meta.agentType) ? meta.agentType : null,
-    meta?.elapsedMs != null ? formatDuration(meta.elapsedMs) : null,
-    meta?.toolsCalled != null ? `${meta.toolsCalled} tools` : null,
-  ].filter(Boolean)
+  // Otherwise the report, or a failure's error line; the memo's first line
+  // is its machine header and the prose after it is what the agent reads.
+  const errorLine = content.split('\n').find((l) => l.startsWith('Error: '))
+  const body = report ?? errorLine ?? (content.split('\n').slice(1).join('\n').trim() || content)
+  // A jev result carries its own steps and timings.
+  const stats = jev
+    ? []
+    : [
+        meta?.agentType && !['general', 'bash', 'stop'].includes(meta.agentType) ? meta.agentType : null,
+        meta?.elapsedMs != null ? formatDuration(meta.elapsedMs) : null,
+        meta?.toolsCalled != null ? `${meta.toolsCalled} tools` : null,
+      ].filter(Boolean)
   return (
     <div className="my-2 select-text rounded-md border border-white/[0.10] bg-white/[0.02] px-3 py-1.5 font-mono text-[11.5px] leading-[1.55] text-fg-1">
       <div className="flex items-center gap-2 text-[10.5px] uppercase tracking-[0.14em]">
@@ -1119,7 +1135,7 @@ function MemoChip({
         <span className="text-fg-3">
           {meta?.agentType === 'stop'
             ? 'background work stopped'
-            : `${meta?.agentType === 'bash' ? 'command' : 'sub-agent'} ${tone.word}`}
+            : `${jev ? 'jev run' : meta?.agentType === 'bash' ? 'command' : 'sub-agent'} ${tone.word}`}
         </span>
         {onOpen ? (
           <button
@@ -1145,14 +1161,20 @@ function MemoChip({
           </span>
         )}
       </div>
-      <div
-        onClick={() => setExpanded((v) => !v)}
-        className={`mt-1 cursor-pointer whitespace-pre-wrap ${expanded ? '' : 'line-clamp-2'} ${
-          state === 'done' ? '' : tone.text
-        }`}
-      >
-        {body}
-      </div>
+      {jev ? (
+        <div onClick={() => setExpanded((v) => !v)} className="mt-1 cursor-pointer">
+          <JevResultSummary result={jev} clamp={!expanded} showStatus={false} />
+        </div>
+      ) : (
+        <div
+          onClick={() => setExpanded((v) => !v)}
+          className={`mt-1 cursor-pointer whitespace-pre-wrap ${expanded ? '' : 'line-clamp-2'} ${
+            state === 'done' ? '' : tone.text
+          }`}
+        >
+          {body}
+        </div>
+      )}
     </div>
   )
 }
@@ -1661,13 +1683,27 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
   const searchQuery = useContext(SearchQueryContext)
   const kanbanLookup = useContext(KanbanCardLookupContext)
   const sourceText = part.type === 'text' ? part.text ?? '' : ''
+  // A jev_computer_use run's pane holds its step log: drawn as a timeline,
+  // not as markdown (which folds it into one paragraph).
+  const jevSession = useHarness((s) => part.type === 'text' && s.activeSessionId.startsWith('jev_'))
+  const isJevLog = jevSession && looksLikeJevLog(sourceText)
+  // Runs saved before the log carried its result: the parent's record has it.
+  const jevParentResult = useHarness((s) => {
+    if (!isJevLog) return undefined
+    const pid = s.sessions.find((row) => row.id === s.activeSessionId)?.parentSessionId
+    return pid ? s.sessionArchive[pid]?.subagents?.[s.activeSessionId]?.result : undefined
+  })
+  const jevFallback = useMemo(
+    () => (jevParentResult ? parseJevResult(jevParentResult) : null),
+    [jevParentResult],
+  )
   const visibleText = useCharacterReveal(
     sourceText,
-    part.type === 'text' && isActiveTail && !searchQuery,
+    part.type === 'text' && isActiveTail && !searchQuery && !isJevLog,
   )
   const renderedTextHtml = useMemo(
-    () => (part.type === 'text' ? renderMarkdown(visibleText) : ''),
-    [part.type, visibleText],
+    () => (part.type === 'text' && !isJevLog ? renderMarkdown(visibleText) : ''),
+    [part.type, visibleText, isJevLog],
   )
   // Detect when an assistant text part is actually a JSON payload
   // (e.g. judge calibrator output) and short-circuit to a structured
@@ -1679,12 +1715,23 @@ function Part({ part, isActiveTail }: { part: MessagePart; isActiveTail: boolean
     if (part.type !== 'text') return undefined
     if (isActiveTail) return undefined
     if (searchQuery) return undefined
+    if (isJevLog) return undefined
     const parsed = tryParseCompleteJson(sourceText)
     if (!parsed || typeof parsed !== 'object') return undefined
     return parsed
-  }, [part.type, isActiveTail, searchQuery, sourceText])
+  }, [part.type, isActiveTail, searchQuery, sourceText, isJevLog])
 
   if (part.type === 'text') {
+    if (isJevLog) {
+      return (
+        <JevRunView
+          text={sourceText}
+          live={isActiveTail}
+          searchQuery={searchQuery || undefined}
+          fallbackResult={jevFallback}
+        />
+      )
+    }
     if (parsedJson !== undefined) {
       return <StructuredJsonView data={parsedJson} />
     }

@@ -104,7 +104,7 @@ export interface ComputerSessionState {
   parentSessionId?: string
   goal: string
   targetApp?: string
-  status: 'idle' | 'running' | 'done' | 'failed' | 'cancelled'
+  status: 'idle' | 'running' | 'done' | 'failed' | 'stopped' | 'cancelled'
   latestFrame?: FrameRef
   /** Total number of screenshot_frame events received for this session.
    *  Surfaced in the UI as a diagnostic badge. */
@@ -3544,12 +3544,16 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         if (!existing) return prev
         const next = {
           ...existing,
+          // `stuck`: the run ended without finishing (a jev run blocked or
+          // waiting for confirmation), which is not a failure.
           status:
             ev.outcome === 'done'
               ? ('done' as const)
               : ev.outcome === 'cancelled'
                 ? ('cancelled' as const)
-                : ('failed' as const),
+                : ev.outcome === 'stuck'
+                  ? ('stopped' as const)
+                  : ('failed' as const),
           summary: ev.summary,
         }
         const updatedMap = { ...prev.computerSessions, [sessionId]: next }

@@ -39,7 +39,7 @@ interface AgentView {
   sub?: SubagentRecord
   slice?: SessionSlice
   attachable: boolean
-  status: 'pending' | 'running' | 'done' | 'failed' | 'cancelled'
+  status: 'pending' | 'running' | 'done' | 'failed' | 'stopped' | 'cancelled'
   agentType: string
   tools: ToolCallRecord[]
   tokensIn: number
@@ -2470,7 +2470,11 @@ function resolveAgentStatus(
   session: SessionSnapshot,
   sub?: SubagentRecord,
 ): AgentView['status'] {
-  if (session.completed) return session.success === false ? 'failed' : 'done'
+  // A jev run that ended blocked or waiting for confirmation stopped; it did not fail.
+  if (session.completed) {
+    if (session.success !== false) return 'done'
+    return session.id.startsWith('jev_') ? 'stopped' : 'failed'
+  }
   if (sub?.state) return sub.state
   return 'running'
 }
@@ -2538,6 +2542,7 @@ function topicHex(topic: BusMessageRecord['topic']): string {
 
 function statusHex(status: AgentView['status']): string {
   if (status === 'failed' || status === 'cancelled') return '#b48282'
+  if (status === 'stopped') return '#b8a078'
   if (status === 'done') return '#a8b0a8'
   if (status === 'running') return '#a8d4fc'
   return '#8a9491'
@@ -2559,6 +2564,7 @@ function topicClass(topic: BusMessageRecord['topic']): string {
 
 function statusTextClass(status: AgentView['status']): string {
   if (status === 'failed' || status === 'cancelled') return 'text-danger'
+  if (status === 'stopped') return 'text-warn'
   if (status === 'done') return 'text-ok'
   if (status === 'running') return 'text-accent'
   return 'text-fg-2'
