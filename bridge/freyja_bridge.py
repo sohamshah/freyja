@@ -705,6 +705,19 @@ def _format_user_facing_runner_failure(
             f"Detail: {short}. Try `/reset` to start fresh, or move "
             "to a longer-context model with `/model claude-opus-5-5`."
         )
+    if any(
+        phrase in (message or "")
+        for phrase in ("not supported for this model", "not a valid fallback target")
+    ):
+        # The API refused a setting of the request for this model (e.g. a
+        # refusal fallback outside its allow-list). Nothing in the history is
+        # wrong, so /repair finds nothing; another model or setting helps.
+        return (
+            "The API rejected a setting this model does not support, so the "
+            f"agent stopped before responding. Detail: {short}. The session's "
+            "history is fine and `/repair` will not help: switch model with "
+            "`/model` or change the reasoning level, then send your message again."
+        )
     if "invalid_request_error" in (message or ""):
         # The API rejected the request itself, usually because something
         # in the session's history breaks its rules. Resending the same

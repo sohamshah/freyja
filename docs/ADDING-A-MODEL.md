@@ -89,10 +89,7 @@ each one is a request the API rejects if the set is wrong:
   so a `-fast` suffix is tolerated. `complete_structured` falls back to
   `auto` for these. Missing entry on a rejecting model → every
   structured-output call 400s until the retry path catches it.
-- `REFUSAL_FALLBACK_MODELS` — models whose safety classifiers can end a
-  turn with `stop_reason="refusal"`. Listing a model opts it into
-  server-side fallbacks to `REFUSAL_FALLBACK_TARGET`. Missing entry →
-  a declined request is a dead turn instead of a rescued one.
+- `REFUSAL_FALLBACK_TARGETS` — models whose safety classifiers can end a turn with `stop_reason="refusal"`, each mapped to the model that re-serves a declined request (server-side fallbacks). Missing entry → a declined request is a dead turn instead of a rescued one. The target must be in the model's `allowed_fallback_models` (`GET /v1/models/{model}`), and the API checks every request against the target too: a target outside the list, or one that lacks a feature the request uses, is a 400 on every request. Sonnet 5.5 shipped with `claude-opus-4-8` and answered nothing for ten days; its only allowed target is `claude-sonnet-5`, which also lacks `between_tools` thinking, so thinking-off requests go without a fallback. Probe the new model with a real request at each reasoning level, fallback included. If the API refuses a fallback anyway, the provider drops it for that model and resends at once (`_request_error`).
 - `ALWAYS_THINKING_MODELS` — models where thinking cannot be turned off
   by any means. Read by `supports_thinking_off`. Their reasoning ladders
   in #11 and #13 must omit the `none` rung.

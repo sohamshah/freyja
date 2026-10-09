@@ -200,32 +200,62 @@ def _model_rejects_forced_tool_choice(model: str) -> bool:
 # and false-positive on benign adjacent topics (e.g. a Kindle *device*
 # jailbreak discussion tripping the cyber classifier, observed 2026-07-06).
 # For these we opt into Anthropic's server-side refusal fallbacks: a declined
-# request is transparently re-served by REFUSAL_FALLBACK_TARGET inside the
+# request is transparently re-served by the model's target below inside the
 # same call. A decline before any output isn't billed; the rescue bills at
 # the fallback model's own rates.
-REFUSAL_FALLBACK_MODELS = {
-    "claude-fable-5",
-    "claude-mythos-5",
+#
+# A target must be in the model's `allowed_fallback_models` (GET
+# /v1/models/{model}). Any other target is a 400 on every request: Sonnet 5.5
+# shipped with claude-opus-4-8 and could not answer at all. Checked
+# 2026-10-09: Fable 5 / 5.1 and Opus 5.5 allow claude-opus-4-8 and
+# claude-opus-5; Sonnet 5.5 allows only claude-sonnet-5. If the API refuses a
+# target anyway, the provider drops it and retries (see _request_error).
+REFUSAL_FALLBACK_TARGETS = {
+    "claude-fable-5": "claude-opus-4-8",
+    "claude-mythos-5": "claude-opus-4-8",
     # Opus 5.5 ships classifiers too — a biology one on top of the cyber
     # classifier Opus 5 ran, plus a `reasoning_extraction` category that
     # fires when a prompt pushes the model to restate its own reasoning.
     # Same dead-turn failure mode as Fable 5, so same opt-in.
-    "claude-opus-5-5",
+    "claude-opus-5-5": "claude-opus-4-8",
     # Sonnet 5.5 declines in five categories (cyber, bio, frontier_llm,
     # reasoning_extraction, general_harms). Anthropic's own server-side
     # fallback only retries cyber and frontier_llm for this model, so the
     # other three still surface as a refusal to the operator — the opt-in
     # is a partial net here, not a complete one.
-    "claude-sonnet-5-5",
+    "claude-sonnet-5-5": "claude-sonnet-5",
 }
-REFUSAL_FALLBACK_TARGET = "claude-opus-4-8"
 SERVER_FALLBACK_BETA = "server-side-fallback-2026-06-01"
+
+# (model, target) → the API's message, for refusal fallbacks refused in this
+# process ("'…' is not a valid fallback target for '…'", or a feature the
+# target lacks). Requests for that model go without the fallback from then
+# on, so a changed allow-list costs one failed call, not every turn.
+_REFUSED_FALLBACKS: dict[tuple[str, str], str] = {}
+
+
+def _api_error_message(error: Exception) -> str:
+    """The API's own message for an error, without the per-request id."""
+    body = getattr(error, "body", None)
+    inner = body.get("error") if isinstance(body, dict) else None
+    if isinstance(inner, dict) and isinstance(inner.get("message"), str):
+        return inner["message"]
+    return re.sub(r"req_\w+", "", str(error))
+
+
+def _refusal_fallback_target(model: str) -> str | None:
+    """The server-side refusal fallback for `model`, or None if it has none.
+    Longest name first, so a model never takes a shorter name's target."""
+    m = (model or "").lower()
+    for base in sorted(REFUSAL_FALLBACK_TARGETS, key=len, reverse=True):
+        if base in m:
+            return REFUSAL_FALLBACK_TARGETS[base]
+    return None
 
 
 def _model_wants_refusal_fallback(model: str) -> bool:
     """True if `model` should request server-side refusal fallbacks."""
-    m = (model or "").lower()
-    return any(base in m for base in REFUSAL_FALLBACK_MODELS)
+    return _refusal_fallback_target(model) is not None
 
 
 def _normalize_stop_details(raw: Any) -> dict[str, Any] | None:
@@ -995,15 +1025,24 @@ class AnthropicProvider:
         # Server-side refusal fallbacks (beta). Fable-class safety
         # classifiers can decline a request with stop_reason="refusal" —
         # opting in makes the API transparently re-serve the declined
-        # request on REFUSAL_FALLBACK_TARGET within the same call, so the
-        # user gets an answer instead of a dead turn. SDK 0.94 doesn't
+        # request on the model's fallback target within the same call, so
+        # the user gets an answer instead of a dead turn. SDK 0.94 doesn't
         # type `fallbacks` yet, so it's wired via extra_body/extra_headers
         # like fast mode above. Response markers: a `fallback` content
         # block at each switch point and `response.model` naming the model
         # that actually served the message (see _parse_response).
-        if _model_wants_refusal_fallback(self._model):
+        # The API checks the request against the target too. Only Sonnet
+        # 5.5 takes `between_tools` thinking (its thinking-off), so such a
+        # request goes without: with claude-sonnet-5 it is a 400.
+        fallback_target = _refusal_fallback_target(self._model)
+        thinking_type = (request_kwargs.get("thinking") or {}).get("type")
+        if (
+            fallback_target
+            and (self._model, fallback_target) not in _REFUSED_FALLBACKS
+            and thinking_type != "between_tools"
+        ):
             extra_body = request_kwargs.get("extra_body") or {}
-            extra_body["fallbacks"] = [{"model": REFUSAL_FALLBACK_TARGET}]
+            extra_body["fallbacks"] = [{"model": fallback_target}]
             request_kwargs["extra_body"] = extra_body
             extra_headers = request_kwargs.get("extra_headers") or {}
             existing_beta = extra_headers.get("anthropic-beta")
@@ -1376,7 +1415,8 @@ class AnthropicProvider:
     ) -> ProviderError:
         """Convert an API error from a request. A missing upload drops the
         file IDs that request used; the error is retryable only if some were
-        dropped, so the resend (images inline) can't loop."""
+        dropped, so the resend (images inline) can't loop. A refused refusal
+        fallback is dropped the same way: the resend goes without it."""
         converted = self._convert_api_error(error)
         if converted.code == "file_not_found":
             dropped = (
@@ -1386,6 +1426,28 @@ class AnthropicProvider:
             )
             logger.warning("Uploaded image missing (%s); dropped %d file IDs", error, dropped)
             converted.retryable = dropped > 0
+        elif converted.code == "invalid_fallback":
+            reason = _api_error_message(error)
+            sent = [
+                fb.get("model")
+                for fb in (request_kwargs.get("extra_body") or {}).get("fallbacks") or []
+                if isinstance(fb, dict) and fb.get("model")
+            ]
+            for target in sent:
+                _REFUSED_FALLBACKS[(self._model, target)] = reason
+            if sent:
+                logger.warning(
+                    "API refused refusal fallback %s for %s; sending without it: %s",
+                    sent, self._model, error,
+                )
+            else:
+                # The same refusal without a fallback: the model itself lacks
+                # the feature, so the fallback was not the cause. Keep it.
+                for pair, why in list(_REFUSED_FALLBACKS.items()):
+                    if pair[0] == self._model and why == reason:
+                        del _REFUSED_FALLBACKS[pair]
+            # Without a fallback in the request, resending changes nothing.
+            converted.retryable = bool(sent)
         return converted
 
     def _convert_api_error(self, error: APIStatusError) -> ProviderError:
@@ -1432,6 +1494,14 @@ class AnthropicProvider:
             return ModelNotFoundError(message)
         elif status == 400:
             lower = message.lower()
+            # The fallback target isn't in the model's allowed_fallback_models,
+            # or lacks a feature the request uses (the API checks the request
+            # against the target too). Nothing in the history is wrong; when
+            # the request had a fallback, _request_error drops it.
+            if "not a valid fallback target" in lower or "not supported for this model" in lower:
+                return ProviderError(
+                    message, status=status, code="invalid_fallback", retryable=False
+                )
             # Per-image pixel caps: 8000px per side, or 2000px once the
             # request carries more than 20 images. Examples:
             #   "…image.source.base64.data: At least one of the image

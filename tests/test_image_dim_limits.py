@@ -298,6 +298,24 @@ def test_invalid_request_failure_points_to_repair_not_retry():
     assert "Try again in a moment" not in out
 
 
+def test_a_setting_the_model_refuses_does_not_send_the_user_to_repair():
+    """The history is fine when the API refuses a model setting; /repair
+    finds nothing (Sonnet 5.5 with a refusal fallback outside its allow-list)."""
+    from bridge.freyja_bridge import _format_user_facing_runner_failure
+
+    out = _format_user_facing_runner_failure(
+        reason="unknown",
+        message=(
+            "Error code: 400 - {'type': 'error', 'error': {'type': "
+            "'invalid_request_error', 'message': \"'claude-opus-4-8' is not a "
+            "valid fallback target for 'claude-sonnet-5-5'.\"}}"
+        ),
+        already_streamed=False,
+    )
+    assert "`/repair` will not help" in out
+    assert "/model" in out
+
+
 def test_other_failures_keep_generic_text():
     from bridge.freyja_bridge import _format_user_facing_runner_failure
 

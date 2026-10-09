@@ -623,8 +623,10 @@ class AgentRunner:
 
                 # An uploaded image is gone; the provider dropped the file IDs
                 # this request used, so resend at once (those images inline).
-                # Not a reason to back off or fall back to another model.
-                if getattr(e, "code", None) == "file_not_found" and e.retryable:
+                # Likewise a refusal fallback the API refused: the provider
+                # dropped it. Not a reason to back off or fall back to
+                # another model.
+                if getattr(e, "code", None) in ("file_not_found", "invalid_fallback") and e.retryable:
                     ctx.state = RunnerState.RUNNING
                     continue
 
@@ -1744,8 +1746,10 @@ class AsyncAgentRunner:
 
                 # An uploaded image is gone; the provider dropped the file IDs
                 # this request used, so resend at once (those images inline).
-                # Not a reason to back off or fall back to another model.
-                if getattr(e, "code", None) == "file_not_found" and e.retryable:
+                # Likewise a refusal fallback the API refused: the provider
+                # dropped it. Not a reason to back off or fall back to
+                # another model.
+                if getattr(e, "code", None) in ("file_not_found", "invalid_fallback") and e.retryable:
                     ctx.state = RunnerState.RUNNING
                     continue
 

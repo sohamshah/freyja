@@ -31,16 +31,18 @@ from types import SimpleNamespace
 
 import pytest
 
+from engine import anthropic_provider
 from engine.anthropic_provider import (
     AnthropicConfig,
     AnthropicProvider,
-    REFUSAL_FALLBACK_TARGET,
+    REFUSAL_FALLBACK_TARGETS,
     SERVER_FALLBACK_BETA,
     _model_wants_refusal_fallback,
+    _refusal_fallback_target,
 )
-from engine.providers import APIUsage, ProviderResponse
+from engine.providers import APIUsage, ProviderError, ProviderResponse
 from engine.runner import StopCondition, _describe_refusal
-from engine.types import Message
+from engine.types import Message, ThinkingConfig
 
 
 def _provider(monkeypatch, model: str) -> AnthropicProvider:
@@ -168,9 +170,27 @@ def test_ensure_alternating_merge_never_yields_whitespace_only(monkeypatch):
 def test_fallback_model_detection():
     assert _model_wants_refusal_fallback("claude-fable-5")
     assert _model_wants_refusal_fallback("claude-mythos-5")
+    assert _model_wants_refusal_fallback("claude-opus-5-5")
+    assert _model_wants_refusal_fallback("claude-sonnet-5-5")
     assert not _model_wants_refusal_fallback("claude-opus-4-8")
+    assert not _model_wants_refusal_fallback("claude-sonnet-5")
     assert not _model_wants_refusal_fallback("claude-sonnet-4-6")
     assert not _model_wants_refusal_fallback("")
+
+
+def test_each_model_falls_back_to_a_target_its_allow_list_has():
+    """A target outside the model's allowed_fallback_models is a 400 on every
+    request: Sonnet 5.5 shipped with claude-opus-4-8 and never answered.
+    Allow-lists from GET /v1/models/{model}, 2026-10-09."""
+    allowed = {
+        "claude-fable-5": {"claude-opus-4-8", "claude-opus-5"},
+        "claude-fable-5-1": {"claude-opus-4-8", "claude-opus-5"},
+        "claude-opus-5-5": {"claude-opus-4-8", "claude-opus-5"},
+        "claude-opus-5-5-fast": {"claude-opus-4-8", "claude-opus-5"},
+        "claude-sonnet-5-5": {"claude-sonnet-5"},
+    }
+    for model, targets in allowed.items():
+        assert _refusal_fallback_target(model) in targets, model
 
 
 def test_build_request_adds_fallbacks_for_fable(monkeypatch):
@@ -178,10 +198,146 @@ def test_build_request_adds_fallbacks_for_fable(monkeypatch):
     kwargs = p._build_request(
         messages=[Message(role="user", content="hello")],
     )
-    assert kwargs["extra_body"]["fallbacks"] == [
-        {"model": REFUSAL_FALLBACK_TARGET}
-    ]
+    assert kwargs["extra_body"]["fallbacks"] == [{"model": "claude-opus-4-8"}]
     assert SERVER_FALLBACK_BETA in kwargs["extra_headers"]["anthropic-beta"]
+
+
+def test_build_request_sonnet_5_5_falls_back_to_sonnet_5(monkeypatch):
+    p = _provider(monkeypatch, "claude-sonnet-5-5")
+    kwargs = p._build_request(
+        messages=[Message(role="user", content="hello")],
+        thinking=ThinkingConfig(enabled=True, effort="high"),
+    )
+    assert kwargs["thinking"]["type"] == "adaptive"
+    assert kwargs["extra_body"]["fallbacks"] == [{"model": "claude-sonnet-5"}]
+
+
+def test_sonnet_5_5_thinking_off_goes_without_a_fallback(monkeypatch):
+    """Thinking off on Sonnet 5.5 is `between_tools`, which claude-sonnet-5
+    lacks; the API checks the request against the target too (400 "…
+    between_tools is not supported for this model", live 2026-10-09)."""
+    p = _provider(monkeypatch, "claude-sonnet-5-5")
+    kwargs = p._build_request(
+        messages=[Message(role="user", content="hello")],
+        thinking=ThinkingConfig(enabled=False),
+    )
+    assert kwargs["thinking"] == {"type": "between_tools"}
+    assert "fallbacks" not in (kwargs.get("extra_body") or {})
+
+
+class _FallbackRefused(Exception):
+    """The API's 400 for a target outside the model's allow-list."""
+
+    status_code = 400
+
+    def __str__(self):
+        return (
+            "Error code: 400 - {'type': 'error', 'error': {'type': "
+            "'invalid_request_error', 'message': \"'claude-opus-4-8' is not a "
+            "valid fallback target for 'claude-sonnet-5-5'. See this model's "
+            "allowed_fallback_models on GET /v1/models/claude-sonnet-5-5.\"}}"
+        )
+
+
+def test_a_refused_fallback_is_dropped_and_the_request_resent(monkeypatch):
+    monkeypatch.setattr(anthropic_provider, "_REFUSED_FALLBACKS", {})
+    # The target Sonnet 5.5 shipped with, which its allow-list lacks.
+    monkeypatch.setitem(REFUSAL_FALLBACK_TARGETS, "claude-sonnet-5-5", "claude-opus-4-8")
+    hello = [Message(role="user", content="hello")]
+    on = ThinkingConfig(enabled=True)
+    p = _provider(monkeypatch, "claude-sonnet-5-5")
+    sent = p._build_request(messages=hello, thinking=on)
+    assert sent["extra_body"]["fallbacks"] == [{"model": "claude-opus-4-8"}]
+
+    err = p._request_error(_FallbackRefused(), sent)
+    assert err.code == "invalid_fallback" and err.retryable
+
+    resend = p._build_request(messages=hello, thinking=on)
+    assert "fallbacks" not in (resend.get("extra_body") or {})
+    # One-shot callers make a provider per call; those go without it too.
+    fresh = _provider(monkeypatch, "claude-sonnet-5-5")._build_request(messages=hello, thinking=on)
+    assert "fallbacks" not in (fresh.get("extra_body") or {})
+    # Nothing left to drop, so a second refusal is final: no loop.
+    assert not p._request_error(_FallbackRefused(), resend).retryable
+    # Other models keep theirs.
+    fable = _provider(monkeypatch, "claude-fable-5")._build_request(messages=hello)
+    assert fable["extra_body"]["fallbacks"] == [{"model": "claude-opus-4-8"}]
+
+
+class _Unsupported(Exception):
+    """A feature refused, by the model or by its fallback target."""
+
+    status_code = 400
+
+    def __init__(self, request_id: str):
+        super().__init__()
+        self.request_id = request_id
+
+    def __str__(self):
+        return (
+            "Error code: 400 - {'type': 'error', 'error': {'type': "
+            "'invalid_request_error', 'message': 'tool_choice: type \"tool\" "
+            "and \"any\" are not supported for this model.'}, "
+            f"'request_id': '{self.request_id}'}}"
+        )
+
+
+def test_a_feature_the_model_itself_lacks_keeps_the_fallback(monkeypatch):
+    """"not supported for this model" may come from the target or the model.
+    The resend without the fallback tells which: the same refusal again
+    means the model, so the fallback is kept for later requests."""
+    monkeypatch.setattr(anthropic_provider, "_REFUSED_FALLBACKS", {})
+    hello = [Message(role="user", content="hello")]
+    p = _provider(monkeypatch, "claude-sonnet-5-5")
+    sent = p._build_request(messages=hello, thinking=ThinkingConfig(enabled=True))
+
+    first = p._request_error(_Unsupported("req_011A"), sent)
+    assert first.code == "invalid_fallback" and first.retryable
+    resend = p._build_request(messages=hello, thinking=ThinkingConfig(enabled=True))
+    assert "fallbacks" not in (resend.get("extra_body") or {})
+
+    again = p._request_error(_Unsupported("req_011B"), resend)
+    assert not again.retryable
+    later = p._build_request(messages=hello, thinking=ThinkingConfig(enabled=True))
+    assert later["extra_body"]["fallbacks"] == [{"model": "claude-sonnet-5"}]
+
+
+@pytest.mark.asyncio
+async def test_runner_resends_at_once_after_a_refused_fallback():
+    """Same model, no backoff, no move down the model fallback chain: the
+    provider already dropped the refused target."""
+    import time as _time
+
+    from engine.runner import AsyncAgentRunner
+    from engine.session import Session
+
+    class _Provider:
+        name, model_id, context_window = "anthropic", "claude-sonnet-5-5", 1_000_000
+
+        def __init__(self):
+            self.calls = 0
+
+        async def complete_async(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise ProviderError(
+                    str(_FallbackRefused()), status=400, code="invalid_fallback", retryable=True
+                )
+            return ProviderResponse(
+                content="done",
+                tool_calls=None,
+                stop_reason="end_turn",
+                usage=APIUsage(input_tokens=1, output_tokens=1),
+                model=self.model_id,
+            )
+
+    provider = _Provider()
+    started = _time.perf_counter()
+    result = await AsyncAgentRunner(provider).run(
+        Session.create(system_prompt="t"), "go", stream=False
+    )
+    assert result.success and provider.calls == 2
+    assert _time.perf_counter() - started < 0.5
 
 
 def test_build_request_no_fallbacks_for_opus(monkeypatch):
