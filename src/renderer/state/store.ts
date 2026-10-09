@@ -126,6 +126,49 @@ export interface ComputerSessionState {
     at: number
   }>
   summary?: string
+  /** The session's own agent opened this entry by using the computer tools
+   *  itself (or a general sub-agent did, with the parent's tools), not
+   *  through a computer_use or jev run. Nothing sends an end event for that
+   *  use, so the entry counts as running only from its latest frame or
+   *  action until the agent's turn ends. */
+  direct?: boolean
+}
+
+/** Whether a computer_use or jev run is driving the screen. The panic button
+ *  shows only for these. An agent that uses the computer tools in its own
+ *  turn is stopped with that turn. */
+function computerRunActive(map: Record<string, ComputerSessionState>): boolean {
+  return Object.values(map).some((s) => s.status === 'running' && !s.direct)
+}
+
+/** End the running entries that the given sessions' own agents opened (see
+ *  `ComputerSessionState.direct`). Returns a patch, or null if nothing ends. */
+function endDirectComputerUse(
+  prev: Pick<HarnessState, 'computerSessions'>,
+  sessionIds: Array<string | undefined>,
+): Partial<HarnessState> | null {
+  let map: Record<string, ComputerSessionState> | null = null
+  for (const id of sessionIds) {
+    const s = id ? prev.computerSessions[id] : undefined
+    if (!s?.direct || s.status !== 'running') continue
+    map = map ?? { ...prev.computerSessions }
+    map[id!] = { ...s, status: 'done', plannedAction: undefined }
+  }
+  return map ? { computerSessions: map, computerActive: computerRunActive(map) } : null
+}
+
+/** A new bridge process: whatever the old one was doing on the screen ended
+ *  with it, and no end event will come for it. */
+function endComputerUseOfOldBridge(
+  map: Record<string, ComputerSessionState>,
+): Record<string, ComputerSessionState> {
+  let next: Record<string, ComputerSessionState> | null = null
+  for (const [id, s] of Object.entries(map)) {
+    if (s.status !== 'running') continue
+    next = next ?? { ...map }
+    next[id] = { ...s, status: s.direct ? 'done' : 'cancelled', plannedAction: undefined }
+  }
+  return next ?? map
 }
 
 export interface SystemEventRecord {
@@ -462,9 +505,9 @@ export interface HarnessState extends SessionSlice {
   /** Live state for each active computer-use session. Frames are
    *  latest-only (no history) to keep memory bounded. */
   computerSessions: Record<string, ComputerSessionState>
-  /** Floating panic window is visible whenever any session is
-   *  running. Derived from computerSessions but cached here for
-   *  cheap selector access. */
+  /** Floating panic window is visible whenever a computer_use or jev
+   *  run is running (`computerRunActive`). Derived from
+   *  computerSessions but cached here for cheap selector access. */
   computerActive: boolean
   /** Wizard state for the permission setup flow. */
   computerWizardOpen: boolean
@@ -2630,6 +2673,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
         )
         const modeDetail =
           ev.mode === 'live' ? 'live bridge' : ev.mode === 'demo' ? 'demo mode' : 'error'
+        const computerSessions = endComputerUseOfOldBridge(prev.computerSessions)
         // The row for the active session is normally RENAMED to the id the
         // bridge just announced: at boot the active row is the
         // `session-local` placeholder (or a just-created empty session)
@@ -2669,6 +2713,8 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
             ready: true,
             mode: ev.mode,
             modeDetail,
+            computerSessions,
+            computerActive: false,
             activeSessionId: firstSessionId,
             sessionArchive: { ...prev.sessionArchive, [prev.activeSessionId]: parked },
             sessionMRU: [
@@ -2710,6 +2756,8 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
           ready: true,
           mode: ev.mode,
           modeDetail,
+          computerSessions,
+          computerActive: false,
           activeSessionId: firstSessionId,
           sessions: prev.sessions.map((s) =>
             s.id === prev.activeSessionId
@@ -3358,6 +3406,13 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
             }
           }
         }
+        // A general sub-agent acts on the screen with its parent's computer
+        // tools, so its frames open the parent's entry. When it finishes and
+        // the parent is between turns, nothing is left on the screen.
+        const parentId = sessionTreeIndex(prev.sessions).byId.get(ev.sessionId!)?.parentSessionId
+        const parentStreaming = parentId === prev.activeSessionId
+          ? prev.isStreaming
+          : !!(parentId && prev.sessionArchive[parentId]?.isStreaming)
         return {
           ...prev,
           artifacts: nextArtifacts,
@@ -3373,6 +3428,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
                 }
               : s,
           ),
+          ...endDirectComputerUse(prev, [ev.sessionId, parentStreaming ? undefined : parentId]),
         }
       }
       // ─── Computer-use events ──────────────────────────────────
@@ -3396,14 +3452,18 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
       }
       if (ev.type === 'screenshot_frame') {
         const sessionId = ev.sessionId!
-        const existing =
+        const existing: ComputerSessionState =
           prev.computerSessions[sessionId] ?? {
             sessionId,
             goal: '',
-            status: 'running' as const,
+            status: 'running',
             history: [],
             frameCount: 0,
+            // No computer_session_start: the session's own agent is on the screen.
+            direct: true,
           }
+        // The agent's own use resumes in a later turn; a run that ended stays ended.
+        const status = existing.direct ? 'running' : existing.status
         const frame = registerFrame({
           pngBase64: ev.pngBase64,
           mimeType: ev.mimeType ?? 'image/png',
@@ -3455,6 +3515,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
               ...prev.computerSessions,
               [sessionId]: {
                 ...existing,
+                status,
                 frameCount: existing.frameCount + 1,
                 latestFrame: frame,
               },
@@ -3485,6 +3546,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
             ...prev.computerSessions,
             [sessionId]: {
               ...existing,
+              status,
               frameCount: existing.frameCount + 1,
               latestFrame: frame,
             },
@@ -3501,6 +3563,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
             ...prev.computerSessions,
             [sessionId]: {
               ...existing,
+              status: existing.direct ? 'running' : existing.status,
               plannedAction: {
                 action: ev.action,
                 description: ev.description,
@@ -3524,6 +3587,7 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
             ...prev.computerSessions,
             [sessionId]: {
               ...existing,
+              status: existing.direct ? 'running' : existing.status,
               plannedAction: undefined,
               history: [
                 ...existing.history,
@@ -3557,13 +3621,10 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
           summary: ev.summary,
         }
         const updatedMap = { ...prev.computerSessions, [sessionId]: next }
-        const stillActive = Object.values(updatedMap).some(
-          (s) => s.status === 'running',
-        )
         return {
           ...prev,
           computerSessions: updatedMap,
-          computerActive: stillActive,
+          computerActive: computerRunActive(updatedMap),
         }
       }
       if (ev.type === 'emergency_stop') {
@@ -3950,7 +4011,12 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
               : s,
           )
         }
-        return { ...prev, ...nextSlice, sessions, ...followupPatch }
+        // The agent is off the screen once its turn ends.
+        const computerPatch =
+          ev.type === 'turn_complete' && !nextSlice.isStreaming
+            ? endDirectComputerUse(prev, [prev.activeSessionId])
+            : null
+        return { ...prev, ...nextSlice, sessions, ...followupPatch, ...computerPatch }
       }
 
       // Non-active: update or create the archived slice, and also
@@ -4001,11 +4067,16 @@ export const useHarness = create<HarnessState & HarnessActions>()(withBatchedNot
               : s,
           )
         : prev.sessions
+      const computerPatch =
+        ev.type === 'turn_complete' && !updated.isStreaming
+          ? endDirectComputerUse(prev, [sessionId])
+          : null
       return {
         ...prev,
         sessions: updatedSessions,
         sessionArchive: { ...prev.sessionArchive, [sessionId!]: updated },
         ...followupPatch,
+        ...computerPatch,
       }
     })
   },
