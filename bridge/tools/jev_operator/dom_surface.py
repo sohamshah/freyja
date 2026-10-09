@@ -71,6 +71,16 @@ _RUN_IN_TAB = """on run argv
 end run
 """
 _ACTIVE_TAB = 'tell application "{app}" to return (id of active tab of front window) as text'
+# Every tab id of every window, one bulk read per window.
+_TAB_IDS = """tell application "{app}"
+    set out to {{}}
+    repeat with wi from 1 to (count of windows)
+        set out to out & (id of every tab of window wi)
+    end repeat
+end tell
+set AppleScript's text item delimiters to linefeed
+return out as text
+"""
 _ACTIVE_URL = 'tell application "{app}" to return (URL of active tab of front window) as text'
 # Arc's `make new tab` returns a broken reference, so read the new tab's id from
 # the window's active tab, which the new tab becomes.
@@ -111,6 +121,23 @@ class TabGone(DOMUnavailable):
 
 def supported(bundle_id: str) -> bool:
     return bundle_id in SUPPORTED_BROWSERS
+
+
+# Tabs a run has opened or worked in, per browser. A run whose goal gives no
+# address starts only in one of these: the tab in front when it starts can be
+# anything the person has open (a test run once acted in a live video call that
+# had come to the front).
+_RUN_TABS: dict[str, set[str]] = {}
+
+
+def remember_tab(bundle_id: str, tab_id: str) -> None:
+    if tab_id:
+        _RUN_TABS.setdefault(bundle_id, set()).add(tab_id)
+
+
+def run_tab(bundle_id: str, tab_id: str) -> bool:
+    """Has a run opened or worked in this tab?"""
+    return bool(tab_id) and tab_id in _RUN_TABS.get(bundle_id, set())
 
 
 def _osascript(script: str, args: list[str], timeout_s: float, app: str) -> str:
@@ -162,6 +189,13 @@ def active_tab_id(bundle_id: str, timeout_s: float = PROBE_TIMEOUT_S) -> str:
 def active_tab_url(bundle_id: str, timeout_s: float = PROBE_TIMEOUT_S) -> str:
     app = _app(bundle_id)
     return _osascript(_ACTIVE_URL.format(app=app), [], timeout_s, app).strip()
+
+
+def tab_ids(bundle_id: str, timeout_s: float = PROBE_RETRY_TIMEOUT_S) -> set[str]:
+    """Ids of every tab in every window."""
+    app = _app(bundle_id)
+    out = _osascript(_TAB_IDS.format(app=app), [], timeout_s, app)
+    return {x.strip() for x in out.splitlines() if x.strip()}
 
 
 def new_tab(bundle_id: str, url: str, timeout_s: float = OPEN_TIMEOUT_S) -> str:
@@ -245,6 +279,9 @@ class DOMSurface:
         self.actuator = actuator
         self.tab_id = ""  # pinned tab; "" = the front window's active tab
         self.own_tab = False  # the run opened the pinned tab itself, so it may navigate it
+        # Tabs that existed when the run started, plus the ones it opened: a tab
+        # in front after a click is followed only if it is not one of these.
+        self.known_tabs: set[str] | None = None
         self.may_confirm = False  # answer a page's confirm() with OK (allow_irreversible)
         # A confirm() the page raised after an action (async) and the run declined.
         self.declined_confirm: str | None = None
@@ -324,6 +361,10 @@ class DOMSurface:
             self._log({"event": "dom_pin_failed", "error": str(exc)})
             return
         self._log({"event": "dom_tab", "tab": self.tab_id, "how": "active at start"})
+        try:
+            self.known_tabs = await asyncio.to_thread(tab_ids, self.bundle)
+        except DOMUnavailable as exc:
+            self._log({"event": "dom_tabs_unread", "error": str(exc)})
 
     async def current_url(self) -> str:
         """The pinned tab's address ("" when the page does not answer)."""
@@ -332,6 +373,16 @@ class DOMSurface:
         except DOMUnavailable:
             return ""
         return str(q.get("u") or "") if isinstance(q, dict) else ""
+
+    async def describe_tab(self) -> str:
+        """The pinned tab as "'title' (url)", for a message to the caller."""
+        try:
+            q = await self._js("quiet()", count=False)
+        except DOMUnavailable:
+            return "a tab that did not answer"
+        q = q if isinstance(q, dict) else {}
+        title, url = str(q.get("t") or "").strip(), str(q.get("u") or "").strip()
+        return f"{title!r} ({url})" if title else url or "an unnamed tab"
 
     async def open_url(self, url: str) -> ActionRecord:
         """Open `url`: in the tab this run opened earlier (items, a second address),
@@ -366,6 +417,9 @@ class DOMSurface:
         if tid:
             self.tab_id = tid
             self.own_tab = True
+            remember_tab(self.bundle, tid)
+            if self.known_tabs is not None:
+                self.known_tabs.add(tid)
             self._log({"event": "dom_tab", "tab": tid, "how": f"opened {url}"})
         await self.settle("open_url", min_s=0.6)
         return ActionRecord(
@@ -382,9 +436,17 @@ class DOMSurface:
         except DOMUnavailable:
             return
         if tid and tid != self.tab_id:
+            # The person may have brought one of their own tabs to the front
+            # meanwhile; follow only a tab that did not exist before.
+            if self.known_tabs is None or tid in self.known_tabs:
+                self._log({"event": "dom_tab_not_followed", "tab": tid,
+                           "why": "tabs unknown" if self.known_tabs is None else "an existing tab is in front"})
+                return
             self._log({"event": "dom_tab", "tab": tid, "how": "the click opened a new tab"})
             self.tab_id = tid
             self.own_tab = True
+            remember_tab(self.bundle, tid)
+            self.known_tabs.add(tid)
             await self.settle("open_url", min_s=0.3)
 
     async def settle(self, kind: str, *, min_s: float = 0.0) -> None:
@@ -447,6 +509,8 @@ class DOMSurface:
         for a in snap.get("actions") or []:
             kind = a.get("kind") or "click"
             role = KIND_ROLES.get(kind, "AXButton")
+            if kind == "toggle" and a.get("role") in ("radio", "menuitemradio"):
+                role = "AXRadioButton"  # one choice of a group, not an on/off box
             raw = str(a.get("label") or "").strip()
             ctx = str(a.get("context") or "").strip()
             label = f"{raw} ({ctx})" if raw and ctx else raw or ctx or kind

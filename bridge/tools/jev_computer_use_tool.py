@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
+import weakref
 from typing import Any
 
 from bridge.decisions.provider import TypeSafeProvider
@@ -45,14 +47,36 @@ DEFAULT_MAX_STEPS = 40
 # The line in the run's pane after which the result text follows (the renderer
 # draws the step log above it as a timeline and the result below it as a card).
 RESULT_MARK = "[result]"
-# A run needs its app frontmost and owns the single keyboard and mouse, so it
-# cannot share the screen with another computer-use session.
-MAX_ACTIVE_COMPUTER_SESSIONS = 1
+# Jev runs take turns on the screen: one started while another is going waits
+# for it (an agent often starts two in one message) instead of failing. One
+# lock per event loop, so tests on separate loops do not share it.
+_SCREEN_TURNS: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _screen_turn() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _SCREEN_TURNS.get(loop)
+    if lock is None:
+        lock = _SCREEN_TURNS[loop] = asyncio.Lock()
+    return lock
 
 
 def render_result(result: Any) -> str:
-    """Summary, footer, pending action, and (for runs that did not finish cleanly) the handoff."""
-    text = result.summary + "\n\n" + result.footer()
+    """Summary, the values the run read, footer, pending action, and (for runs
+    that did not finish cleanly) the handoff."""
+    text = result.summary
+    # The check may already bullet its lines; strip only a marker and its space
+    # (a value like "-5 °C" keeps its sign).
+    report = [
+        re.sub(r"^[-•*]\s+", "", line.strip())
+        for line in (getattr(result, "report", "") or "").split("\n")
+        if line.strip()
+    ]
+    if report:
+        text += "\n\nRead:\n" + "\n".join(f"- {line}" for line in report)
+    text += "\n\n" + result.footer()
     if getattr(result, "page", ""):
         text += f"\npage: {result.page}"
     if result.pending_action:
@@ -84,7 +108,9 @@ Choose the lightest route that works, in this order:
   1. No UI needed: bash, osascript, `open`, an API.
   2. `jev_computer_use` (this tool): native apps with labelled controls (Finder,
      System Settings, Calculator, Notes, Mail, TextEdit), and web pages in Arc
-     or Chrome, which it reads and drives through the page itself.
+     or Chrome, which it reads and drives through the page itself. Clicking and
+     typing on a web page is UI work: do not run your own JavaScript in the page
+     through osascript instead; a run does that with checks.
   3. `computer_use` (screenshot-based): canvas or custom-drawn UIs, games,
      remote desktops, and anything this tool returns `blocked` on because it
      could not read the app.
@@ -98,18 +124,24 @@ the end state and write the summary.
 Web pages (Arc, Chrome): put the address in the goal ("Open https://… and …").
 The run opens it in a NEW tab and works only in that tab; your other tabs are
 not touched, and a link that opens another tab is followed. Without an address
-it works in the browser's current tab. Page runs use no pointer or keyboard, so
-the browser can stay behind other windows. To read something, say what to
-report ("… and report the price of X"): the summary carries it, and `page:`
-names where the run ended. Controls below the visible area are reachable
-directly; dropdown options are listed as rows.
+it continues in the front tab only if an earlier run opened or worked in it; it
+never starts in a tab no run has used (the person's own tabs: mail, a call), and
+says which tab was in front so you can give its address. Page runs use no
+pointer or keyboard, so the browser can stay behind other windows. To read something, say what to
+report ("… and report the price of X", "list every project's name and ID"):
+the values come back under `Read:`, including ones read on earlier pages of a
+list, and `page:` names where the run ended. Controls below the visible area
+are reachable directly; dropdown options are listed as rows, and a custom
+dropdown's options appear once a click opens it.
 
 It runs in the BACKGROUND by default: the call returns at once with a run id,
 and the result (summary plus a handoff block when it did not finish cleanly)
 arrives in your inbox. While a native-app run is going it owns the pointer and
-keyboard, so do not use your own click/type/scroll tools. Pass `wait=true` only
-when you must block for the result. A returned `done` is a hint, not proof:
-check it against the returned text before telling the person it worked.
+keyboard, so do not use your own click/type/scroll tools. Runs take turns: one
+started while another is going waits for it, so start a run that depends on
+another's result only after reading that result. Pass `wait=true` only when
+you must block for the result. A returned `done` is a hint, not proof: check
+it against the returned text before telling the person it worked.
 
 Write the goal well. Put the person's exact wording and every literal value
 (names, numbers, URLs, text to type) in the goal, quoting text that must be
@@ -147,11 +179,13 @@ Parameters:
     permits every such control for that whole run, not only the one reported.
   * `use_llm`: default true. Set false for a pure Jev run (no field text
     composition, no replanning, no end-state check, template summary).
-  * `surface`: `auto` (default) uses the page DOM for Arc and Chrome when page
-    JavaScript is allowed (Chrome needs "Allow JavaScript from Apple Events";
-    Arc needs the Automation prompt accepted once), and the accessibility tree
-    otherwise; `dom` or `ax` forces one. If the page cannot be read twice in a
-    row, the run switches to the accessibility tree. The footer names the surface.
+  * `surface`: `auto` (default) uses the page DOM for Arc and Chrome (Chrome
+    needs "Allow JavaScript from Apple Events"; Arc needs the Automation prompt
+    accepted once) and the accessibility tree for other apps; `dom` or `ax`
+    forces one. When a browser's page does not answer its JavaScript, or stops
+    answering, the run stops: the accessibility tree would act on whatever
+    browser window is in front. `ax` on a web page sees the browser's own
+    buttons and only part of the page. The footer names the surface.
   * `wait`: default false. True blocks until the run ends and returns its
     result directly.
 
@@ -177,7 +211,7 @@ the run stops with status=blocked instead of clicking into the other app.
                     "surface": {
                         "type": "string",
                         "enum": ["auto", "ax", "dom"],
-                        "description": "auto (default): DOM for Arc/Chrome when page JavaScript works, else AX",
+                        "description": "auto (default): DOM for Arc/Chrome, AX for other apps",
                     },
                     "allow_irreversible": {
                         "type": "boolean",
@@ -229,18 +263,16 @@ the run stops with status=blocked instead of clicking into the other app.
         except ImportError as exc:
             return ToolResult(call_id=call_id, content=f"jev_computer_use: {exc}", is_error=True)
 
-        running = sum(
-            1
-            for r in self._sub_spec.registry.list_all()
-            if r.is_running and r.label.startswith(("computer:", "jev:"))
-        )
-        if running >= MAX_ACTIVE_COMPUTER_SESSIONS:
+        running = [r for r in self._sub_spec.registry.list_all() if r.is_running]
+        if any(r.label.startswith("computer:") for r in running):
+            # A screenshot-based run does not take turns with jev runs.
             return ToolResult(
                 call_id=call_id,
-                content="Error: another computer-use session is active; "
-                "the screen cannot be driven in parallel.",
+                content="Error: a computer_use run is driving the screen; wait for its memo "
+                "before starting a jev run.",
                 is_error=True,
             )
+        ahead = [r.label for r in running if r.label.startswith("jev:")]
 
         app = (arguments.get("app") or "").strip() or None
         try:
@@ -335,10 +367,15 @@ the run stops with status=blocked instead of clicking into the other app.
         record.bg_task = asyncio.create_task(
             self._run_background(record, **run_kwargs), name=f"jevuse-bg-{sub_id}"
         )
+        queued = (
+            f" It waits for {len(ahead)} jev run(s) ahead of it ({ahead[0]}) and then starts."
+            if ahead
+            else ""
+        )
         return ToolResult(
             call_id=call_id,
             content=(
-                f"jev_computer_use `{label}` started in the background (id={sub_id}). "
+                f"jev_computer_use `{label}` started in the background (id={sub_id}).{queued} "
                 "It owns the screen until it finishes: don't use your own click/type/scroll "
                 "tools meanwhile. The result (summary, and a handoff block if it did not "
                 "finish cleanly) will arrive as a memo in your inbox; don't wait or poll."
@@ -376,7 +413,50 @@ the run stops with status=blocked instead of clicking into the other app.
         except Exception:  # noqa: BLE001
             logger.exception("on_child_terminal failed for %s", record.id)
 
-    async def _run(
+    async def _run(self, call_id: str | None, record: Any, **kwargs: Any) -> ToolResult:
+        """Run once the screen is free (runs take turns, see _screen_turn). A
+        run stopped while it waits ends cancelled without touching the screen."""
+        turn = _screen_turn()
+        if turn.locked():
+            await self._say(record, "waiting for the jev run ahead of this one to finish")
+        try:
+            while True:
+                if record.cancel_event.is_set() or record.asyncio_cancel.is_set():
+                    return await self._cancel_queued(call_id, record)
+                try:
+                    await asyncio.wait_for(turn.acquire(), timeout=0.25)
+                    break
+                except asyncio.TimeoutError:
+                    continue
+        except asyncio.CancelledError:
+            await self._cancel_queued(call_id, record)
+            raise
+        try:
+            return await self._run_now(call_id, record, **kwargs)
+        finally:
+            turn.release()
+
+    async def _say(self, record: Any, text: str) -> None:
+        await _fire(
+            self._sub_spec.emit_event,
+            {"type": "text_delta", "sessionId": record.id, "text": text + "\n"},
+        )
+
+    async def _cancel_queued(self, call_id: str | None, record: Any) -> ToolResult:
+        self._sub_spec.registry.mark_done(
+            record.id, "Cancelled before it started", SubAgentState.CANCELLED
+        )
+        await self._say(
+            record, f"{RESULT_MARK}\nCancelled before it started.\n\n[jev_computer_use] status=cancelled"
+        )
+        await self._emit_end(record, outcome="cancelled")
+        return ToolResult(
+            call_id=call_id or "",
+            content="jev_computer_use: cancelled while it waited for another run to finish.",
+            is_error=True,
+        )
+
+    async def _run_now(
         self,
         call_id: str | None,
         record: Any,

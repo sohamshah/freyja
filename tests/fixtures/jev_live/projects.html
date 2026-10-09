@@ -1,0 +1,73 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Model Garden</title><link rel="stylesheet" href="style.css">
+<style>
+#dlg{position:fixed;left:50%;top:60px;transform:translateX(-50%);width:640px;background:#fff;border:1px solid #9aa3b2;border-radius:8px;box-shadow:0 4px 18px rgba(0,0,0,.25);padding:16px;z-index:20}
+#dlg table{width:100%;border-collapse:collapse;margin:8px 0}#dlg td,#dlg th{text-align:left;padding:6px 8px;border-bottom:1px solid #e3e7ee}
+#dlg .rowbtn{background:none;border:none;color:#1a56c4;cursor:pointer;padding:0;font:inherit}
+[role=tab][aria-selected=true]{font-weight:bold;border-bottom:2px solid #1a56c4}
+</style></head>
+<body><header><span class="brand">Acme Cloud</span> <button type="button" id="picker">No project selected</button></header>
+<main><h1>Model Garden</h1><p>Select a project to see its models.</p></main>
+<div id="dlg" class="hidden" role="dialog" aria-label="Select a resource">
+<h2>Select a resource</h2>
+<input id="q" aria-label="Search projects and folders" placeholder="Search projects and folders" style="width:100%">
+<div role="tablist" style="margin-top:8px"><button role="tab" id="t-recent">Recent</button> <button role="tab" id="t-starred">Starred</button> <button role="tab" id="t-all">All</button></div>
+<table><thead><tr><th>Name</th><th>Type</th><th>ID</th></tr></thead><tbody id="rows"></tbody></table>
+<div><span id="range"></span> <button type="button" id="prev" aria-label="Previous 10 rows">&lsaquo;</button> <button type="button" id="nextp" aria-label="Next 10 rows">&rsaquo;</button></div>
+<div style="margin-top:10px;text-align:right"><button type="button" id="cancel">Cancel</button> <button type="button" class="primary" id="open">Open</button></div>
+</div>
+<script src="harness.js"></script>
+<script>
+// 27 projects named acme-* among 150 system projects, ten rows per page, like a
+// cloud console's project picker.
+var ACME = [
+  ['acme-analytics', 'acme-analytics-3120'], ['acme-billing', 'acme-billing'], ['acme-community', 'acme-community'],
+  ['acme-data-lake', 'acme-data-lake-7741'], ['acme-demo', 'acme-demo-518200'], ['acme-demo-old', 'acme-demo-old-2'],
+  ['acme-partners', 'acme-partners'], ['acme-dev', 'acme-dev-518200'], ['acme-docs', 'acme-docs'],
+  ['acme-edge', 'acme-edge-2290'], ['acme-gateway', 'acme-gateway'], ['acme-hr', 'acme-hr-5512'],
+  ['acme-infra', 'acme-infra'], ['acme-labs', 'acme-labs-8823'], ['acme-marketing', 'acme-marketing'],
+  ['acme-ml', 'acme-ml-1029'], ['acme-mobile', 'acme-mobile'], ['acme-ops', 'acme-ops-6677'],
+  ['acme-prod', 'acme-prod-518199'], ['acme-prod-eu', 'acme-prod-eu'], ['acme-research', 'acme-research-3301'],
+  ['acme-sandbox', 'acme-sandbox'], ['acme-search', 'acme-search-4410'], ['acme-staging', 'acme-staging'],
+  ['acme-staging-eu', 'acme-staging-eu-530917'], ['acme-support', 'acme-support'], ['acme-website', 'acme-website'],
+];
+var ALL = [];
+for (var i = 0; i < 150; i++) ALL.push(['Untitled project', 'sys-' + String(52817 + i * 7919).padStart(8, '0') + '93120']);
+ACME.forEach(function (p, k) { ALL.splice(k * 6 + 3, 0, p); });
+var LISTS = { recent: [ACME[7], ACME[23], ACME[18]], starred: [ACME[6], ACME[7]], all: ALL };
+var tab = 'recent', page = 0, view = [];
+function rows() {
+  var q = document.getElementById('q').value.trim().toLowerCase();
+  var base = q ? ALL : LISTS[tab];
+  return q ? base.filter(function (p) { return p[0].toLowerCase().indexOf(q) >= 0 || p[1].toLowerCase().indexOf(q) >= 0; }) : base;
+}
+function render() {
+  view = rows();
+  var tb = document.getElementById('rows');
+  tb.innerHTML = '';
+  view.slice(page * 10, page * 10 + 10).forEach(function (p) {
+    var tr = document.createElement('tr');
+    var b = document.createElement('button');
+    b.className = 'rowbtn'; b.textContent = p[0];
+    b.addEventListener('click', function () { H.log('select', { id: p[1] }); document.getElementById('picker').textContent = p[0]; close(); });
+    var td = document.createElement('td'); td.appendChild(b); tr.appendChild(td);
+    tr.insertAdjacentHTML('beforeend', '<td>Project</td><td>' + p[1] + '</td>');
+    tb.appendChild(tr);
+  });
+  var n = view.length;
+  document.getElementById('range').textContent = n ? (page * 10 + 1) + ' – ' + Math.min(n, page * 10 + 10) + ' of ' + n : 'No results';
+  document.getElementById('prev').disabled = page === 0;
+  document.getElementById('nextp').disabled = page * 10 + 10 >= n;
+  ['recent', 'starred', 'all'].forEach(function (t) { document.getElementById('t-' + t).setAttribute('aria-selected', String(t === tab)); });
+}
+function close() { document.getElementById('dlg').classList.add('hidden'); }
+document.getElementById('picker').addEventListener('click', function () { page = 0; render(); document.getElementById('dlg').classList.remove('hidden'); });
+['recent', 'starred', 'all'].forEach(function (t) {
+  document.getElementById('t-' + t).addEventListener('click', function () { tab = t; page = 0; render(); });
+});
+document.getElementById('q').addEventListener('input', function () { page = 0; render(); });
+document.getElementById('prev').addEventListener('click', function () { page = Math.max(0, page - 1); render(); });
+document.getElementById('nextp').addEventListener('click', function () { page += 1; render(); });
+document.getElementById('cancel').addEventListener('click', close);
+document.getElementById('open').addEventListener('click', function () { H.log('open', {}); close(); });
+document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
+</script></body></html>

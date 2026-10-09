@@ -261,3 +261,40 @@ def test_page_dialogs_do_not_block_and_confirm_needs_permission(page):
     ask = _by_label(page.snap(), "Ask")[0]
     r = page.eval("window.__freyjaJev.act(%d, 'click', null, '', true)" % ask["id"])
     assert page.eval("document.title") == "confirmed"
+
+
+def test_a_label_drawn_across_a_field_does_not_cover_it(page):
+    """Outlined fields draw their label across the middle of the control, and
+    the label is not inside it. The Google Cloud console's selects and an empty
+    text field were refused as covered, so its form could not be filled."""
+    hq = _by_label(page.snap(), "Headquarters")[0]
+    assert hq["role"] == "combobox"
+    assert page.act(hq["id"], "click", None, hq["guard"])["ok"] is True
+    opts = [a for a in page.snap()["actions"] if a["role"] == "option"]
+    assert [a["label"] for a in opts] == ["United States of America", "Canada", "Mexico"]
+    assert page.act(opts[0]["id"], "click")["ok"] is True
+    assert page.eval("document.getElementById('hq').textContent") == "United States of America"
+    uc = _by_label(page.snap(), "Use cases")[0]
+    r = page.act(uc["id"], "fill", {"text": "enterprise agents", "mode": "replace"}, uc["guard"])
+    assert r == {"ok": True, "reason": None, "readback": "enterprise agents"}
+
+
+def test_an_open_dropdown_still_covers_the_field_under_it(page):
+    s = page.snap()
+    hq, uc = _by_label(s, "Headquarters")[0], _by_label(s, "Use cases")[0]
+    assert page.act(hq["id"], "click")["ok"] is True
+    assert page.act(uc["id"], "fill", {"text": "x", "mode": "replace"})["reason"] == "covered"
+    assert page.act(0, "key", "Escape")["ok"] is True
+    assert page.eval("!!document.getElementById('panel')") is False
+    assert page.act(uc["id"], "fill", {"text": "x", "mode": "replace"})["ok"] is True
+
+
+def test_enter_opens_a_focused_combobox(page):
+    """Enter was refused outside a text field, so a focused dropdown could not
+    be opened from the keyboard; Enter with nothing focused still is."""
+    page.eval("document.getElementById('hq').focus()")
+    assert page.act(0, "key", "Enter")["ok"] is True
+    assert page.eval("document.getElementById('hq').getAttribute('aria-expanded')") == "true"
+    page.act(0, "key", "Escape")
+    page.eval("document.activeElement.blur()")
+    assert page.act(0, "key", "Enter")["reason"] == "no_editable_focused"

@@ -323,6 +323,27 @@ def test_irreversible_detection():
     assert not is_irreversible(labels["Continue"])
 
 
+def test_a_quoted_address_is_text_to_type_not_the_page_to_open():
+    """'Business website "https://acme.example"' made a run open acme.example
+    instead of filling the form it was on."""
+    from bridge.tools.jev_operator.loop import urls_from_goal
+
+    goal = ('Open https://console.example.com/form?p=1 and fill Business website "https://acme.example" '
+            'and Contact email "ops@acme.example".')
+    assert urls_from_goal(goal) == ["https://console.example.com/form?p=1"]
+    assert urls_from_goal('Fill Business website "https://acme.example" on this form.') == []
+    assert urls_from_goal('Open "https://docs.example.com/a" and report the limit.') == ["https://docs.example.com/a"]
+    assert urls_from_goal("Go to \u201chttps://docs.example.com/b\u201d and read it.") == ["https://docs.example.com/b"]
+
+
+def test_agree_buttons_are_irreversible():
+    """A console's enablement form ends in "Agree", which accepts Marketplace terms."""
+    from bridge.tools.jev_operator.loop import _IRREVERSIBLE
+
+    assert _IRREVERSIBLE.search("Agree") and _IRREVERSIBLE.search("I agree")
+    assert not _IRREVERSIBLE.search("Disagree") and not _IRREVERSIBLE.search("Agreement details")
+
+
 # ─── decision interpretation ─────────────────────────────────────────
 
 
@@ -1643,6 +1664,96 @@ def test_same_action_three_times_forces_one_replan_then_blocks(tmp_path, monkeyp
     assert len(res.history) == 6
 
 
+def test_scrolls_that_move_nothing_end_in_a_replan(tmp_path, monkeypatch):
+    """Scrolls were exempt from the stuck rule, so a run scrolled 29 times in a
+    row with no visible change and never asked for help."""
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+    reasons: list[str] = []
+
+    async def fake_complete(messages, system_prompt, max_tokens):
+        payload = json.loads(messages[0].content)
+        if "why_help_was_requested" in payload:
+            reasons.append(payload["why_help_was_requested"])
+            return json.dumps({"status": "give_up", "subgoal": None, "direct_action": None, "note": "nothing scrolls"})
+        return json.dumps({"satisfied": False, "summary": "nothing moved", "report": "", "subgoal": None})
+
+    op, _ = make_operator(FakeCalculator(), ScriptedProvider([("scroll_down", None)] * 12),
+                          llm=LLMHelper(fake_complete, max_calls=4), max_steps=12)
+    res = asyncio.run(op.run())
+    assert res.status == "blocked" and len(res.history) == 3, (res.status, len(res.history))
+    assert reasons and ("changed nothing" in reasons[0] or "repeated" in reasons[0])
+
+
+def test_values_read_on_earlier_screens_reach_the_check_and_the_result(tmp_path, monkeypatch):
+    """A list read page by page is gone from the final screen. The check only saw
+    that screen and the last actions, so a run that had read every project ID
+    reported that the IDs were "not visible here"."""
+    from bridge.tools.jev_computer_use_tool import render_result
+
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+    payloads: list[dict[str, Any]] = []
+
+    async def fake_complete(messages, system_prompt, max_tokens):
+        payload = json.loads(messages[0].content)
+        payloads.append(payload)
+        if "why_help_was_requested" in payload:
+            return json.dumps({"status": "continue", "subgoal": "clear the display", "direct_action": None,
+                               "note": "the display read 12 before it was cleared"})
+        return json.dumps({"satisfied": True, "summary": "12 was read, then the display was cleared.",
+                           "report": "- first number: 12\n- after clearing: 0", "subgoal": None})
+
+    native = FakeCalculator()
+    op, _ = make_operator(native, ScriptedProvider([("click", "1"), ("click", "2"), ("need_help", None),
+                                                    ("click", "All Clear"), ("done", None)]),
+                          goal="read the number on the display, then clear it", llm=LLMHelper(fake_complete, max_calls=4))
+    res = asyncio.run(op.run())
+    check = payloads[-1]
+    assert "12" in check["earlier_screens_text"].split("\n"), check.get("earlier_screens_text")
+    assert check["planner_notes"] == ["the display read 12 before it was cleared"]
+    assert res.status == "done" and res.report == "- first number: 12\n- after clearing: 0"
+    text = render_result(res)
+    assert "Read:\n- first number: 12\n- after clearing: 0\n\n[jev_computer_use]" in text
+
+
+def test_a_stuck_run_keeps_the_checks_account_of_what_it_read(tmp_path, monkeypatch):
+    """When the end-state check disagreed, the run reported only "Performed N
+    actions" and dropped what the check had found on the screen."""
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+
+    async def fake_complete(messages, system_prompt, max_tokens):
+        payload = json.loads(messages[0].content)
+        if "why_help_was_requested" in payload:
+            return json.dumps({"status": "continue", "subgoal": "press 7", "direct_action": None, "note": ""})
+        return json.dumps({"satisfied": False, "summary": "The display shows 7; the second page was never opened.",
+                           "report": "page one: 7", "subgoal": "open page two"})
+
+    op, _ = make_operator(FakeCalculator(), ScriptedProvider([("click", "7")] + [("need_help", None)] * 4),
+                          goal="report the number on both pages", llm=LLMHelper(fake_complete, max_calls=8))
+    res = asyncio.run(op.run())
+    assert res.status == "blocked"
+    assert "the second page was never opened" in res.summary and "Performed" not in res.summary
+    assert res.report == "page one: 7"
+
+
+def test_running_out_of_steps_on_a_met_read_goal_ends_done_with_what_was_read(tmp_path, monkeypatch):
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+    verdict = {"satisfied": True, "summary": "The display shows 7.", "report": "display: 7", "subgoal": None}
+
+    async def fake_complete(messages, system_prompt, max_tokens):
+        return json.dumps(verdict)
+
+    op, _ = make_operator(FakeCalculator(), ScriptedProvider([("click", "7")] * 5), goal="read the display",
+                          llm=LLMHelper(fake_complete, max_calls=4), max_steps=2)
+    res = asyncio.run(op.run())
+    assert res.status == "done" and res.report == "display: 7" and res.summary == "The display shows 7."
+    verdict.update(satisfied=False, summary="Only page one was read.")
+    op, _ = make_operator(FakeCalculator(), ScriptedProvider([("click", "7")] * 5), goal="read the display",
+                          llm=LLMHelper(fake_complete, max_calls=4), max_steps=2)
+    res = asyncio.run(op.run())
+    assert res.status == "budget_exhausted" and res.report == "display: 7"
+    assert res.summary == "Stopped after 2 steps without reaching done. Only page one was read."
+
+
 def test_a_finish_row_is_written_when_the_run_is_cancelled(tmp_path, monkeypatch):
     monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
 
@@ -1798,12 +1909,59 @@ def test_the_tool_runs_in_the_background_and_wakes_the_parent(tmp_path, monkeypa
         assert "background" in out.content and "inbox" in out.content and not out.is_error
         rec = spec.registry.list_all()[0]
         assert rec.is_running and rec.notify_parent and rec.mode == "background"
-        again = await tool.execute("c2", {"goal": "second", "use_llm": False})
-        assert again.is_error and "another computer-use session" in again.content
         release.set()
         await asyncio.wait_for(rec.bg_task, 2)
         assert terminal == [rec] and not rec.is_running
         assert "[handoff]" in rec.result and "next:" in rec.result
+
+    asyncio.run(go())
+
+
+def test_a_second_run_waits_its_turn_instead_of_failing(tmp_path, monkeypatch):
+    """An agent started two runs in one message and the second failed with
+    "another computer-use session is active"; it now waits for the first."""
+    async def go():
+        tool, spec, terminal, release = _tool(monkeypatch, tmp_path)
+        from bridge.tools import jev_computer_use_tool as mod
+
+        started: list[str] = []
+        real = mod.Operator
+
+        class Recording(real):  # type: ignore[misc, valid-type]
+            async def run(self):
+                started.append(self.cfg.goal)
+                return await super().run()
+
+        monkeypatch.setattr(mod, "Operator", Recording)
+        first = await tool.execute("c1", {"goal": "first", "use_llm": False})
+        second = await tool.execute("c2", {"goal": "second", "use_llm": False})
+        assert not second.is_error and "waits for 1 jev run(s) ahead" in second.content
+        await asyncio.sleep(0.3)
+        assert started == ["first"], "the second run must not start while the first holds the screen"
+        release.set()
+        a, b = spec.registry.list_all()
+        await asyncio.wait_for(asyncio.gather(a.bg_task, b.bg_task), 3)
+        assert started == ["first", "second"] and not a.is_running and not b.is_running
+
+    asyncio.run(go())
+
+
+def test_a_run_stopped_while_it_waits_never_starts(tmp_path, monkeypatch):
+    async def go():
+        tool, spec, terminal, release = _tool(monkeypatch, tmp_path)
+        events: list[dict] = []
+        spec.emit_event = events.append
+        await tool.execute("c1", {"goal": "first", "use_llm": False})
+        await tool.execute("c2", {"goal": "second", "use_llm": False})
+        a, b = spec.registry.list_all()
+        b.cancel_event.set()
+        await asyncio.wait_for(b.bg_task, 2)
+        assert not b.is_running and b.result == "Cancelled before it started"
+        ends = [e for e in events if e.get("type") == "computer_session_end" and e["sessionId"] == b.id]
+        assert ends and ends[0]["outcome"] == "cancelled"
+        assert a.is_running
+        release.set()
+        await asyncio.wait_for(a.bg_task, 2)
 
     asyncio.run(go())
 

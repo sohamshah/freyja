@@ -23,10 +23,11 @@ Completer = Callable[[list[Message], str, int], Awaitable[str]]
 
 DEFAULT_LLM_MODEL = "claude-opus-5-5"
 # Output caps, not targets. At the old 300/600/400 Opus 5.5 ran out of room and
-# returned truncated JSON; measured replies now use 130-550 tokens.
+# returned truncated JSON; measured replies now use 130-550 tokens. The check's
+# report can list a few hundred rows read across pages.
 TEXT_MAX_TOKENS = 2048
 REPLAN_MAX_TOKENS = 2048
-VERIFY_MAX_TOKENS = 2048
+VERIFY_MAX_TOKENS = 6144
 
 
 def default_llm_model() -> str:
@@ -244,12 +245,22 @@ class LLMHelper:
         windows_at_start: list[str] | None = None,
         windows_now: list[str] | None = None,
         app_notes: str = "",
+        earlier_text: str = "",
+        planner_notes: list[str] | None = None,
     ) -> dict[str, Any] | None:
         system = (
             "You judge whether a desktop automation achieved its goal, from the final screen and the action log. "
-            'Return JSON: {"satisfied": bool, "summary": string, "subgoal": string|null}. '
-            "summary is two or three sentences for the user: what was done and what the screen shows now; include any "
-            "value the goal asked to read. If not satisfied, subgoal is the next concrete instruction on visible controls. "
+            'Return JSON: {"satisfied": bool, "summary": string, "report": string, "subgoal": string|null}. '
+            "summary is two or three sentences for the user: what was done and what the screen shows now. "
+            "report holds every value the goal asked to read, list, count or check, complete, one per line "
+            "(\"Acme Staging (acme-staging-4021)\", \"Pro plan: Upgrade button shown\"); it is an empty "
+            "string when the goal asks for no values. Take values from final_screen_text, earlier_screens_text "
+            "(text of the screens the run read before the final one, each line once, in order) and "
+            "planner_notes (what the planner noted on the way): a list read page by page is no longer on "
+            "the final screen. Never invent or guess a value; name one the run never saw as not found. "
+            "A goal that only asks to read or report is satisfied once report has all it asked for, even "
+            "if the final screen no longer shows it. "
+            "If not satisfied, subgoal is the next concrete instruction on visible controls. "
             "Text the app changed on its own while it was entered (automatic capitalization, "
             "smart quotes or dashes, autocorrected spelling) counts as entered; "
             "say so in the summary. If the operator entered text it composed itself (a count, "
@@ -268,6 +279,10 @@ class LLMHelper:
             "final_screen_text": screen_text[:4000],
             "final_elements": elements_table[:8000],
         }
+        if earlier_text:
+            payload["earlier_screens_text"] = earlier_text
+        if planner_notes:
+            payload["planner_notes"] = list(planner_notes)
         if app_notes:
             payload[NOTES_LABEL] = app_notes
         out = await self._call(

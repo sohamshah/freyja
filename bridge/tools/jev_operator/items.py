@@ -110,9 +110,14 @@ class ItemsOutcome:
 
 def _evidence(res: Any) -> str:
     summary = " ".join((res.summary or "").split())
+    read = "; ".join(s.strip() for s in (getattr(res, "report", "") or "").split("\n") if s.strip())
     screen = " | ".join(s for s in (res.final_screen_text or "").split("\n") if s.strip())
     screen = screen[:EVIDENCE_SCREEN_CHARS]
-    return f"{summary[:200]}" + (f" // screen: {screen}" if screen else "")
+    return (
+        f"{summary[:200]}"
+        + (f" // read: {read[:200]}" if read else "")
+        + (f" // screen: {screen}" if screen else "")
+    )
 
 
 async def run_items(

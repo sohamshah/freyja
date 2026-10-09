@@ -92,6 +92,8 @@ IRREVERSIBLE_PATTERNS = [
     r"\bdeploy\b",
     r"\bconfirm\b",
     r"\baccept (the )?(terms|invitation|invite|offer|agreement|and)\b",
+    # "Agree" after a terms box accepts the terms (a Marketplace purchase, say).
+    r"\bagree\b",
     r"\benable\b",
     r"\brequest access\b",
     r"\barchive\b",
@@ -111,6 +113,12 @@ _IRREVERSIBLE = re.compile("|".join(IRREVERSIBLE_PATTERNS), re.I)
 # only produces false stops (TextEdit's "Format" menu, a file named "Remove me.txt").
 GATED_ROLES = {"AXButton", "AXMenuItem", "AXLink", "AXMenuButton", "AXToolbarButton"}
 MAX_VERIFY_ROUNDS = 2
+# Besides the final screen, the end-state check reads every other line the run
+# saw (each once, in order) and the planner's notes: a list read page by page is
+# gone from the final screen. Capped to keep the check one moderate call.
+SEEN_MAX_CHARS = 20_000
+PLANNER_NOTES_KEPT = 12
+BELOW_MARK = "[below the visible area]"
 # The same action this many times in a row with no meaningful change forces a
 # replan; the same thing again after that ends the run blocked.
 MAX_REPEATS = 3
@@ -126,12 +134,21 @@ APP_DIRS = [
 ]
 
 
-_URL = re.compile(r"https?://[^\s\"'<>()\[\]{}]+", re.I)
+_URL = re.compile(r"https?://[^\s\"'<>()\[\]{}“”‘’]+", re.I)
+_QUOTED = re.compile(r'"[^"\n]*"|“[^”\n]*”')
+_OPEN_VERB = re.compile(r"\b(?:open|go to|visit|navigate to|load|browse to)\s*$", re.I)
 
 
 def urls_from_goal(goal: str) -> list[str]:
+    """Addresses the goal sends the run to. A quoted address is text to type (a
+    form's website field), not a page to open, unless the goal says to open it
+    ('Business website "https://acme.example"' once opened acme.example)."""
+    quoted = [m.span() for m in _QUOTED.finditer(goal)]
     out: list[str] = []
     for m in _URL.finditer(goal):
+        span = next((q for q in quoted if q[0] < m.start() < q[1]), None)
+        if span is not None and not _OPEN_VERB.search(goal[max(0, span[0] - 24) : span[0]]):
+            continue
         u = m.group(0).rstrip(".,;:!?")
         if u not in out:
             out.append(u)
@@ -260,6 +277,9 @@ class RunResult:
     code: str = ""
     # The page a DOM run ended on ("title — url"), so the caller can continue there.
     page: str = ""
+    # The values the goal asked to read, one per line, as the end-state check
+    # found them on the screens the run saw ("" when it asked for none).
+    report: str = ""
 
     def footer(self) -> str:
         med = int(statistics.median(self.jev_ms)) if self.jev_ms else 0
@@ -283,6 +303,16 @@ class RunResult:
                 "try computer_use (screenshot-based) or do it without the UI "
                 "via bash/osascript/open"
             )
+        if self.surface.startswith("dom"):
+            # A web page: scripting it through osascript skips every check a run
+            # makes (irreversible controls, page dialogs, what changed).
+            if self.status == "blocked":
+                return (
+                    "read the summary for what stopped it; if a dialog or login is in the way ask "
+                    "the person, otherwise re-run on the step that failed with a narrower goal, or "
+                    "use computer_use for that step; do not script the page through osascript"
+                )
+            return "retry once with a narrower goal; if it fails again use computer_use for that step"
         if self.status == "blocked":
             return (
                 "read the summary for what stopped it; if a dialog or login is in the way ask the "
@@ -348,7 +378,8 @@ class Operator:
         self.actuator = Actuator(spec, native, settle_ms=config.settle_ms)
         self._surface_injected = surface is not None
         self.surface: Surface = surface or self._make_ax()
-        self._fell_back = False
+        # Why a browser's page did not answer its JavaScript probe (the run stops).
+        self._page_unreadable = ""
         self.history: list[dict[str, Any]] = []
         self.jev_ms: list[int] = []
         self.run_id = time.strftime("%Y%m%d-%H%M%S") + f"-{os.getpid() % 10000:04d}"
@@ -367,6 +398,11 @@ class Operator:
         self._window_checks: set[str] = set()
         self._shot_geometry: tuple[tuple[float, ...], int, int] | None = None
         self.read_ms: list[int] = []
+        # What the end-state check reports from (see SEEN_MAX_CHARS).
+        self._seen: list[str] = []
+        self._seen_lines: set[str] = set()
+        self._seen_chars = 0
+        self._planner_notes: list[str] = []
         self._last_obs: Observation | None = None
         self._last_frame: tuple[bytes, str] | None = None
         self._finish_logged = False
@@ -379,12 +415,11 @@ class Operator:
         self.item: int | None = None  # for-each index; stamped on every log row
 
     def share_with(self, prior: "Operator", item: int | None) -> None:
-        """Continue a for-each run: reuse the prior operator's surface (with its
-        fallback state), actuator, run id and log. Everything else stays fresh."""
+        """Continue a for-each run: reuse the prior operator's surface (and its
+        pinned tab), actuator, run id and log. Everything else stays fresh."""
         self.actuator = prior.actuator
         self.surface = prior.surface
         self._surface_injected = True
-        self._fell_back = prior._fell_back
         self.run_id, self.log_path, self.item = prior.run_id, prior.log_path, item
         if hasattr(self.surface, "_log"):
             self.surface._log = self._log
@@ -412,8 +447,7 @@ class Operator:
             return
         ok, detail = await asyncio.to_thread(dom_surface.probe, target.bundle)
         if not ok and "did not answer" in detail:
-            # A busy browser can miss the first 3 s; the accessibility fallback for
-            # a browser is far slower than waiting once more.
+            # A busy browser can miss the first 3 s: wait once more before giving up.
             ok, again = await asyncio.to_thread(
                 dom_surface.probe, target.bundle, None, dom_surface.PROBE_RETRY_TIMEOUT_S
             )
@@ -423,18 +457,41 @@ class Operator:
             self.surface = self._make_dom(target.bundle)
             self.surface.may_confirm = self.cfg.allow_irreversible
             await self.surface.pin_active()
+        else:
+            # No fallback to the accessibility tree: on a browser it acts on the
+            # front window, whose tabs may be anything the person has open (a run
+            # whose test page had not loaded switched the person's own tabs).
+            self._page_unreadable = detail
+
+    async def _foreign_tab(self) -> str | None:
+        """Why a run whose goal gives no address may not work in its pinned tab,
+        or None. It works only in a tab a run has opened or worked in: the tab
+        in front can be anything the person has open (a test run once acted in
+        a live video call that had come to the front)."""
+        s = self.surface
+        if getattr(s, "_injected_js", False):
+            return None  # a test page, not a browser
+        if dom_surface.run_tab(s.bundle, s.tab_id):
+            return None
+        where = await s.describe_tab()
+        return (
+            f"The browser's front tab is {where}, which no run has opened or worked in. A run "
+            "whose goal gives no address works only in a tab an earlier run opened or used, so it "
+            "never acts on whatever the person has in front. Put the page's address in the goal "
+            '("Open <url> and \u2026") to work on it.'
+        )
 
     def _swap_if_dom_failing(self) -> None:
-        """Two DOM failures in a row (timeout or error, not a stale element): use AX
-        for the rest of the run, never back."""
+        """Two DOM failures in a row (timeout or error, not a stale element) end
+        the run: the accessibility tree would act on the browser's front window,
+        which may no longer be the run's tab."""
         s = self.surface
         if s.name == "dom" and getattr(s, "fail_streak", 0) >= 2:
-            self._log({"event": "surface_fallback", "surface": "dom", "to": "ax", "reason": "dom failed twice in a row"})
-            self.surface = self._make_ax()
-            self._fell_back = True
+            self._log({"event": "surface_failed", "surface": "dom", "reason": "dom failed twice in a row"})
+            raise SurfaceFailed("the page stopped answering its JavaScript twice in a row")
 
     def _surface_label(self) -> str:
-        return "dom\u2192ax" if self._fell_back else self.surface.name
+        return self.surface.name
 
     @property
     def _ax_fail_streak(self) -> int:
@@ -588,6 +645,7 @@ class Operator:
         read_ms = obs.read_ms
         self.read_ms.append(read_ms)
         self._last_obs = obs
+        self._remember_text(obs.screen_text)
         self.actuator.window_frames = obs.window_frames
         self._seen_windows.update(w for w in obs.windows if w != "(untitled window)")
         if self._start_windows is None:
@@ -621,6 +679,14 @@ class Operator:
         self._t_start = time.perf_counter()
         try:
             return await self._run()
+        except SurfaceFailed as exc:
+            # Raised from a re-read outside the main loop's own handler.
+            last = self._last_obs
+            return self._finish(
+                "blocked",
+                f"Stopped: {exc}. " + (self._template_summary(last) if last else ""),
+                code="surface_failed",
+            )
         except BaseException as exc:  # a cancelled or crashed run still leaves a finish row
             cancelled = isinstance(exc, asyncio.CancelledError)
             self._log_finish(
@@ -700,6 +766,21 @@ class Operator:
             )
         self.actuator.set_target(target.pid, target.bundle, target.name)
         await self._select_surface(target)
+        if self._page_unreadable:
+            return finish(
+                "blocked",
+                f"The page in {target.name} did not answer its JavaScript ({self._page_unreadable}). "
+                "On a browser the accessibility route acts on whatever window is in front, so the "
+                "run stops instead. Check that the page has loaded (an error page runs no "
+                'JavaScript), or pass surface="ax" to use the accessibility route anyway.',
+                code="page_unreadable",
+            )
+        browser = dom_surface.supported(target.bundle)
+        urls = urls_from_goal(cfg.goal) if browser else []
+        if self.surface.name == "dom" and not urls and not cfg.dry_run:
+            foreign = await self._foreign_tab()
+            if foreign:
+                return finish("blocked", foreign, code="foreign_tab")
         self._app_notes = await self._load_notes(target)
         self._notes = self._app_notes
         # The DOM surface drives the page through JavaScript; the browser can stay
@@ -707,8 +788,6 @@ class Operator:
         if not cfg.dry_run and self.surface.name != "dom":
             await self.actuator.focus(target.bundle)
         await self._say(f"target: {target.name} ({target.bundle}, pid {target.pid})")
-        browser = dom_surface.supported(target.bundle)
-        urls = urls_from_goal(cfg.goal) if browser else []
         if urls and not cfg.dry_run:
             await self._open_goal_url(urls[0])
 
@@ -724,10 +803,17 @@ class Operator:
 
             elapsed = time.perf_counter() - self._t_start
             if elapsed > cfg.max_runtime_s:
-                return finish(
-                    "budget_exhausted",
+                last = self._last_obs
+                summary, report, met = await self._closing(
+                    last,
                     f"Stopped after {elapsed:.0f}s (limit {cfg.max_runtime_s:.0f}s) "
                     f"and {len(self.history)} steps without reaching done.",
+                )
+                return finish(
+                    "done" if met else "budget_exhausted",
+                    summary,
+                    screen=last.screen_text if last else "",
+                    report=report,
                 )
 
             try:
@@ -786,7 +872,15 @@ class Operator:
                 )
                 entry = {**pending, "changed": changed, "diff": diff}
                 self.history.append(entry)
-                if pending.get("kind") not in ("wait", "scroll_down", "scroll_up"):
+                kind = pending.get("kind")
+                if kind in ("scroll_down", "scroll_up"):
+                    # A scroll that moved the view is progress even when nothing
+                    # meaningful came into it; one that changed nothing at all is
+                    # not (the page was at its end, or the wheel hit something
+                    # that does not scroll). 29 such scrolls once ran unchecked.
+                    stuck_streak = 0 if changed else stuck_streak + 1
+                    self._track_repeat(pending, changed)
+                elif kind != "wait":
                     stuck_streak = 0 if meaningful else stuck_streak + 1
                     self._track_repeat(pending, meaningful)
                 if meaningful:
@@ -898,7 +992,10 @@ class Operator:
                     summary = str(out.get("summary") or "")
                     if out.get("satisfied") is True:
                         return finish(
-                            "done", summary or "Goal reported satisfied.", screen=obs.screen_text
+                            "done",
+                            summary or "Goal reported satisfied.",
+                            screen=obs.screen_text,
+                            report=self._report(out),
                         )
                     if verify_rounds >= MAX_VERIFY_ROUNDS:
                         return finish(
@@ -906,6 +1003,7 @@ class Operator:
                             f"Jev reported done {verify_rounds} times but the end-state check "
                             f"disagreed each time: {summary} " + self._template_summary(obs),
                             screen=obs.screen_text,
+                            report=self._report(out),
                         )
                     self._set_subgoal(out.get("subgoal"))
                     await self._say(f"  verifier disagrees: {summary}; sub-goal: {self._subgoal}")
@@ -1135,13 +1233,16 @@ class Operator:
             final = await self._observe(target)
             changed, diff = diff_observations(before, final)
             self.history.append({**pending, "changed": changed, "diff": diff})
+        # A read-only goal can be met by the time the steps run out (the last
+        # page of a list read, the picker still open): say so, with what was read.
+        summary, report, met = await self._closing(
+            final, f"Stopped after {cfg.max_steps} steps without reaching done."
+        )
         return finish(
-            "budget_exhausted",
-            f"Stopped after {cfg.max_steps} steps without reaching done. "
-            + self._template_summary(final)
-            if final
-            else f"Stopped after {cfg.max_steps} steps without reaching done.",
+            "done" if met else "budget_exhausted",
+            summary,
             screen=final.screen_text if final else "",
+            report=report,
         )
 
     def _key_gate(self, key: str, obs: Observation) -> str | None:
@@ -1178,6 +1279,22 @@ class Operator:
             if scope or e.focused:
                 return e.label
         return None
+
+    def _remember_text(self, text: str) -> None:
+        for line in (text or "").split("\n"):
+            line = line.strip()
+            if not line or line == BELOW_MARK or line in self._seen_lines:
+                continue
+            if self._seen_chars + len(line) > SEEN_MAX_CHARS:
+                return
+            self._seen_lines.add(line)
+            self._seen.append(line)
+            self._seen_chars += len(line) + 1
+
+    def _earlier_text(self, obs: Observation) -> str:
+        """Lines the run saw that the final screen no longer shows."""
+        final = {line.strip() for line in obs.screen_text.split("\n")}
+        return "\n".join(line for line in self._seen if line not in final)
 
     def _track_repeat(self, pending: dict[str, Any], meaningful: bool) -> None:
         """Count the same action in a row that changed nothing meaningful."""
@@ -1224,6 +1341,7 @@ class Operator:
         pending: str | None = None,
         screen: str = "",
         code: str = "",
+        report: str = "",
     ) -> RunResult:
         last = self._last_obs
         res = RunResult(
@@ -1249,6 +1367,7 @@ class Operator:
             last_frame_path=self._save_last_frame() if status in HANDOFF_STATUSES else None,
             code=code or ("ax_unreadable" if last is not None and not last.elements and status == "blocked" else ""),
             page=self._page_line(),
+            report=report,
         )
         self._log_finish(status, summary, res.footer())
         return res
@@ -1273,6 +1392,10 @@ class Operator:
         except Exception:  # noqa: BLE001
             pass
         if same_page(current, url):
+            # The goal names this page, so the run may work in this tab, and a
+            # later run without an address may continue in it.
+            if self.surface.name == "dom":
+                dom_surface.remember_tab(self.surface.bundle, self.surface.tab_id)
             self._log({"event": "open_url", "url": url, "skipped": "already on it"})
             return
         await self._say(f"opening {url} in a new tab")
@@ -1358,6 +1481,10 @@ class Operator:
         )
         self._log_llm(since)
         self._log({"event": "replan", "reason": reason, "out": out, "screenshot": shot is not None})
+        note = str((out or {}).get("note") or "").strip()
+        if note and note not in self._planner_notes:
+            self._planner_notes.append(note[:600])
+            del self._planner_notes[:-PLANNER_NOTES_KEPT]
         return out
 
     async def _replan(self, obs: Observation, target: Target, *, reason: str) -> RunResult | None:
@@ -1366,12 +1493,15 @@ class Operator:
         if self.llm is None or self.llm.budget_left <= 0 or self._replans_since_progress > 2:
             # Jev can stall right after the goal was met (e.g. by a planner click);
             # check the end state before reporting the run as stuck.
+            check = None
             if self.history and self.llm is not None and self.llm.budget_left > 0:
                 check = await self._verify(obs)
                 if check and check.get("satisfied") is True:
                     summary = str(check.get("summary") or "Goal satisfied.")
-                    return self._finish("done", summary, screen=obs.screen_text)
-            return self._finish_blocked(obs, reason)
+                    return self._finish(
+                        "done", summary, screen=obs.screen_text, report=self._report(check)
+                    )
+            return self._finish_blocked(obs, reason, check)
         want_shot = not obs.elements or self._replans_since_progress >= 2
         shot = await self._window_shot(target) if want_shot else None
         out = await self._ask_planner(obs, shot, reason)
@@ -1397,7 +1527,9 @@ class Operator:
                 )
             if check.get("satisfied") is True:
                 note = str(check.get("summary") or out.get("note") or "Goal satisfied.")
-                return self._finish("done", note, screen=obs.screen_text)
+                return self._finish(
+                    "done", note, screen=obs.screen_text, report=self._report(check)
+                )
             self._set_subgoal(check.get("subgoal"))
             await self._say(
                 f"  planner said done, end-state check disagrees: {check.get('summary')}"
@@ -1579,10 +1711,34 @@ class Operator:
             windows_at_start=self._start_windows or [],
             windows_now=obs.windows,
             app_notes=self._notes,
+            earlier_text=self._earlier_text(obs),
+            planner_notes=self._planner_notes,
         )
         self._log_llm(since)
         self._log({"event": "verify", "out": out})
         return out
+
+    @staticmethod
+    def _report(check: dict[str, Any] | None) -> str:
+        """The check's report as plain lines ("" when it has none)."""
+        r = (check or {}).get("report")
+        if isinstance(r, list):
+            r = "\n".join(str(x) for x in r if str(x).strip())
+        return r.strip() if isinstance(r, str) else ""
+
+    async def _closing(self, obs: Observation | None, head: str) -> tuple[str, str, bool]:
+        """Summary, report and whether the goal was met, for a run that ends
+        without a decision of its own (out of steps or time). One end-state
+        check when the run did something and the LLM budget allows; else the
+        template."""
+        if obs is None:
+            return head, "", False
+        check = await self._verify(obs) if self.history else None
+        if check is None:
+            return f"{head} {self._template_summary(obs)}", "", False
+        summary = str(check.get("summary") or "").strip()
+        met = check.get("satisfied") is True
+        return (summary if met else f"{head} {summary}"), self._report(check), met
 
     def _template_summary(self, obs: Observation) -> str:
         acts = [h["action"] for h in self.history if h.get("kind") not in ("wait",)]
@@ -1594,10 +1750,16 @@ class Operator:
         text = obs.screen_text.replace("\n", " | ")[:300]
         return head + (f". Screen now shows: {text}" if text else ".")
 
-    def _finish_blocked(self, obs: Observation, reason: str) -> RunResult:
+    def _finish_blocked(
+        self, obs: Observation, reason: str, check: dict[str, Any] | None = None
+    ) -> RunResult:
+        """A stuck run's result. With an end-state check of this screen (`check`),
+        its account of what was done and read replaces the action template."""
         tried = f" Last sub-goal: {self._subgoal}." if self._subgoal else ""
+        said = str((check or {}).get("summary") or "").strip()
         return self._finish(
             "blocked",
-            f"Stopped: {reason}.{tried} " + self._template_summary(obs),
+            f"Stopped: {reason}.{tried} " + (said or self._template_summary(obs)),
             screen=obs.screen_text,
+            report=self._report(check),
         )

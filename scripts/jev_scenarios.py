@@ -64,38 +64,67 @@ def osa(script: str, *argv: str, timeout: float = 20) -> str:
     return (p.stdout or p.stderr).strip()
 
 
-def arc_tab_ids() -> list[str]:
-    out = osa('tell application "Arc" to return id of every tab of front window')
-    return [x.strip() for x in out.split(",") if x.strip()]
+def arc_tab_ids() -> set[str]:
+    """Ids of every tab in every Arc window."""
+    out = osa(
+        'tell application "Arc"\nset out to {}\nrepeat with wi from 1 to (count of windows)\n'
+        "set out to out & (id of every tab of window wi)\nend repeat\nend tell\n"
+        "set AppleScript's text item delimiters to linefeed\nreturn out as text"
+    )
+    return {x.strip() for x in out.splitlines() if x.strip()}
 
 
-def arc_open(url: str) -> None:
+def arc_open(url: str) -> str:
+    """Open `url` in a new tab of the front window; return that tab's id ("" if unclear)."""
+    before = arc_tab_ids()
     osa(
         'on run argv\ntell application "Arc"\ntell front window to make new tab with properties {URL:(item 1 of argv)}\nend tell\nend run',
         url,
     )
     time.sleep(1.0)
+    new = arc_tab_ids() - before
+    return next(iter(new)) if len(new) == 1 else ""
 
 
-def arc_close_new(before: list[str]) -> int:
-    """Close every tab of the front window that did not exist before the scenario."""
-    keep = set(before)
+def run_tabs(log: str | None) -> set[str]:
+    """Tab ids a jev run opened or followed, from its log."""
+    ids: set[str] = set()
+    if not log or not Path(log).exists():
+        return ids
+    for line in Path(log).read_text().splitlines():
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if r.get("event") == "dom_tab" and str(r.get("how", "")).startswith(("opened", "the click opened")):
+            ids.add(str(r.get("tab") or ""))
+    ids.discard("")
+    return ids
+
+
+def arc_close_ids(ids: set[str]) -> int:
+    """Close exactly these tabs, in whichever window they are. Never "every tab
+    that is new": the person may open tabs or bring another window to the front
+    while a scenario runs."""
+    if not ids:
+        return 0
     script = """on run argv
-  set keep to argv
   set n to 0
   tell application "Arc"
-    set ids to id of every tab of front window
-    repeat with i from (count of ids) to 1 by -1
-      if keep does not contain (item i of ids) then
-        close tab i of front window
-        set n to n + 1
-      end if
+    repeat with wi from 1 to (count of windows)
+      set ids to id of every tab of window wi
+      repeat with i from (count of ids) to 1 by -1
+        if argv contains ((item i of ids) as text) then
+          close tab i of window wi
+          set n to n + 1
+        end if
+      end repeat
     end repeat
   end tell
   return n
 end run"""
     try:
-        return int(osa(script, *keep) or 0)
+        return int(osa(script, *sorted(ids)) or 0)
     except ValueError:
         return 0
 
@@ -234,6 +263,40 @@ def check_text(*needles: str, status: str = "done") -> Callable[[Ctx], tuple[boo
         return ok(c.status == status and c.has(*needles), f"status={c.status} needs={needles}")
 
     return f
+
+
+QUESTIONNAIRE_WANT = {
+    "name": "Acme Robotics", "website": "https://acme.example", "email": "ops@acme.example",
+    "hq": "United States of America", "industry": "Telecommunications",
+    "users": "Internal employees and external users", "usecases": "enterprise agents", "aup": "no",
+}
+
+
+def check_questionnaire(c: Ctx) -> tuple[bool, str]:
+    """Outlined fields and overlay selects, as on a cloud console's model
+    enablement form: every value right, and neither Next nor Agree pressed."""
+    states = c.ev("state")
+    last = states[-1] if states else {}
+    bad = {k: last.get(k) for k, v in QUESTIONNAIRE_WANT.items() if last.get(k) != v}
+    pressed = [e["event"] for e in c.events if e.get("event") in ("next", "agree")]
+    return ok(c.status == "done" and not bad and not pressed, f"status={c.status} wrong={bad} pressed={pressed}")
+
+
+PICKER_IDS = [
+    "acme-analytics-3120", "acme-billing", "acme-community", "acme-data-lake-7741", "acme-demo-518200",
+    "acme-demo-old-2", "acme-partners", "acme-dev-518200", "acme-docs", "acme-edge-2290", "acme-gateway",
+    "acme-hr-5512", "acme-infra", "acme-labs-8823", "acme-marketing", "acme-ml-1029", "acme-mobile",
+    "acme-ops-6677", "acme-prod-518199", "acme-prod-eu", "acme-research-3301", "acme-sandbox",
+    "acme-search-4410", "acme-staging", "acme-staging-eu-530917", "acme-support", "acme-website",
+]
+
+
+def check_picker_list(c: Ctx) -> tuple[bool, str]:
+    """A list read ten rows a page: every ID comes back, though the final screen
+    shows only the last page."""
+    missing = [i for i in PICKER_IDS if i not in c.text]
+    return ok(c.status == "done" and not missing and not c.ev("select"),
+              f"status={c.status} missing={len(missing)} {missing[:4]} selects={len(c.ev('select'))}")
 
 
 def check_github(c: Ctx) -> tuple[bool, str]:
@@ -706,6 +769,8 @@ SCENARIOS: list[Scenario] = [
     Scenario("newtab_docs", "dom", {"goal": "Open Docs from the top navigation and report the API request limit.", "app": "Arc"}, check_docs_limit, start="index.html"),
     Scenario("confirm_dialog", "dom", {"goal": "Clear the saved filters.", "app": "Arc"}, check_confirm_dialog, start="dialogs.html"),
     Scenario("alert_dialog", "dom", {"goal": "Save the settings and report what the page says.", "app": "Arc"}, check_alert_dialog, start="dialogs.html"),
+    Scenario("questionnaire", "dom", {"goal": 'Fill the "Claude model enablement" questionnaire exactly: Business name "Acme Robotics"; Business website "https://acme.example"; Contact email address "ops@acme.example"; Where is your Business headquartered: "United States of America"; Industry: "Telecommunications"; Who are your intended users of Claude models: "Internal employees and external users"; What are your intended use cases for Claude models: "enterprise agents"; additional requirements under the Acceptable Use Policy: "No". Then stop and report each value. Do NOT click Next.', "app": "Arc"}, check_questionnaire, start="questionnaire.html"),
+    Scenario("picker_list", "dom", {"goal": 'Open the project picker, search for "acme", and list every matching project with its name and project ID. Read only: do not select or open a project.', "app": "Arc"}, check_picker_list, start="projects.html"),
     Scenario("delete_gate", "dom", {"goal": "Delete the workspace.", "app": "Arc"}, check_delete_gate, start="index.html"),
     # Public sites, read-only.
     Scenario("real_wikipedia", "real", {"goal": 'Open https://en.wikipedia.org/wiki/Main_Page, search for "Ada Lovelace", open her article, and report her date of birth.', "app": "Arc"}, check_text("1815")),
@@ -746,7 +811,8 @@ def _fill(v: Any, subs: dict[str, Any]) -> Any:
 async def run_one(s: Scenario, base: str, rep: int) -> dict[str, Any]:
     run = f"{s.name}-{rep}-{int(time.time())}"
     browser = s.group in ("dom", "real")
-    before = arc_tab_ids() if browser else []
+    opened: set[str] = set()  # the tabs this scenario opened, closed at the end by id
+    out: dict[str, Any] = {}
     got: dict[str, Any] = {}
     try:
         if s.group == "ax" and not wait_idle():
@@ -757,7 +823,15 @@ async def run_one(s: Scenario, base: str, rep: int) -> dict[str, Any]:
             raise RuntimeError("someone kept using the Mac for 5 minutes; not run")
         if s.start:
             sep = "&" if "?" in s.start else "?"
-            arc_open(f"{base}/{s.start}{sep}run={run}")
+            tid = arc_open(f"{base}/{s.start}{sep}run={run}")
+            if not tid:
+                raise RuntimeError("could not tell which tab the start page opened in; not run")
+            opened.add(tid)
+            # The run may work in the start page's tab (a run with no address in
+            # its goal refuses tabs no run has used, such as the person's own).
+            from bridge.tools.jev_operator import dom_surface  # noqa: PLC0415
+
+            dom_surface.remember_tab(ARC, tid)
         h = Harness(REPO)
         subs = {"base": base, "run": run, "env": os.environ.get(s.env or "", ""), **got}
         out = await h.call(_fill(s.args, subs), timeout_s=s.timeout_s)
@@ -779,7 +853,7 @@ async def run_one(s: Scenario, base: str, rep: int) -> dict[str, Any]:
         }
     finally:
         if browser:
-            arc_close_new(before)
+            arc_close_ids(opened | run_tabs(out.get("log")))
         if s.teardown:
             try:
                 s.teardown(got)

@@ -1,0 +1,118 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Claude model enablement</title><link rel="stylesheet" href="style.css">
+<style>
+/* Outlined fields drawn the way Material-style design systems draw them: an
+   empty field's label lies across the middle of the control and is not inside
+   it; it moves up into the outline once the field has a value or focus. */
+.ff{position:relative;width:480px;height:48px;margin:16px 0}
+.ff .ctl{position:absolute;left:0;top:0;width:100%;height:100%;box-sizing:border-box;border:1px solid #9aa3b2;border-radius:4px;background:#fff;padding:14px 12px 0;font:14px sans-serif}
+.ff [role=combobox].ctl{cursor:pointer;line-height:30px;padding-top:4px}
+.ff .lab{position:absolute;left:10px;right:10px;top:8px;height:32px;line-height:32px;color:#5f6368;background:#fff;padding:0 2px}
+.ff.up .lab{top:-9px;left:8px;right:auto;height:16px;line-height:16px;font-size:11px}
+.ff .arrow{position:absolute;right:12px;top:15px;color:#5f6368}
+.panel{position:absolute;max-height:240px;overflow:auto;background:#fff;border:1px solid #9aa3b2;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,.2);z-index:10}
+.panel [role=option]{padding:8px 12px;cursor:pointer}
+.panel [role=option]:hover{background:#eef3fb}
+</style></head>
+<body><header><span class="brand">Acme Cloud</span><a href="index.html">Home</a></header>
+<main><h1>Claude model enablement</h1>
+<div class="card" id="form">
+<p>This third party model is licensed from its maker. Fill out the form below to request access.</p>
+<div class="ff"><input class="ctl" id="name" aria-labelledby="l-name"><span class="lab" id="l-name">Business name *</span></div>
+<div class="ff"><input class="ctl" id="website" aria-labelledby="l-website"><span class="lab" id="l-website">Business website *</span></div>
+<div class="ff"><input class="ctl" id="email" aria-labelledby="l-email"><span class="lab" id="l-email">Contact email address *</span></div>
+<div class="ff"><div class="ctl" role="combobox" tabindex="0" aria-expanded="false" aria-labelledby="l-hq" id="hq"></div><span class="lab" id="l-hq">Where is your Business headquartered *</span><span class="arrow">&#9662;</span></div>
+<div class="ff"><div class="ctl" role="combobox" tabindex="0" aria-expanded="false" aria-labelledby="l-industry" id="industry"></div><span class="lab" id="l-industry">Industry *</span><span class="arrow">&#9662;</span></div>
+<div class="ff"><div class="ctl" role="combobox" tabindex="0" aria-expanded="false" aria-labelledby="l-users" id="users"></div><span class="lab" id="l-users">Who are your intended users of Claude models *</span><span class="arrow">&#9662;</span></div>
+<div class="ff"><input class="ctl" id="usecases" aria-labelledby="l-usecases"><span class="lab" id="l-usecases">What are your intended use cases for Claude models *</span></div>
+<p>Do any of your use cases have additional requirements per the Acceptable Use Policy? These include legal, medical or financial advice to consumers, or chatbots that talk to consumers directly.</p>
+<label><input type="radio" name="aup" value="yes"> Yes</label><br>
+<label><input type="radio" name="aup" value="no"> No</label>
+<div class="ff"><input class="ctl" id="aupdetail" aria-labelledby="l-aupdetail"><span class="lab" id="l-aupdetail">If yes, please describe how you plan to meet the additional requirements.</span></div>
+<div style="margin-top:14px"><button type="button" class="primary" id="next">Next</button> <button type="button" id="cancel">Cancel</button></div>
+</div>
+<div class="card hidden" id="terms"><h2>Terms and agreements</h2><label><input type="checkbox" id="tos"> I accept the terms of service</label>
+<div style="margin-top:14px"><button type="button" class="primary" id="agree">Agree</button></div></div>
+</main>
+<script src="harness.js"></script>
+<script>
+var OPTS = {
+  hq: ['United States of America', 'Canada', 'Afghanistan', 'Albania', 'Algeria', 'Andorra', 'Angola', 'Argentina',
+       'Armenia', 'Australia', 'Austria', 'Belgium', 'Brazil', 'Chile', 'Denmark', 'Egypt', 'Finland', 'France',
+       'Germany', 'India', 'Ireland', 'Japan', 'Kenya', 'Mexico', 'Netherlands', 'Norway', 'Singapore', 'Spain',
+       'Sweden', 'United Kingdom'],
+  industry: ['Agriculture', 'Automotive', 'Banking', 'Consumer goods', 'Education', 'Energy', 'Financial services',
+             'Government', 'Healthcare', 'Insurance', 'Manufacturing', 'Media', 'Retail', 'Technology',
+             'Telecommunications', 'Other'],
+  users: ['Internal employees', 'External customers or users', 'Internal employees and external users'],
+};
+var panel = null;
+function state() {
+  var v = {};
+  ['name', 'website', 'email', 'usecases', 'aupdetail'].forEach(function (k) { v[k] = document.getElementById(k).value; });
+  ['hq', 'industry', 'users'].forEach(function (k) { v[k] = document.getElementById(k).textContent; });
+  var r = document.querySelector('input[name=aup]:checked');
+  v.aup = r ? r.value : '';
+  return v;
+}
+function lift() {
+  document.querySelectorAll('.ff').forEach(function (ff) {
+    var c = ff.querySelector('.ctl');
+    var has = c.tagName === 'INPUT' ? c.value : c.textContent;
+    ff.classList.toggle('up', !!has || document.activeElement === c);
+  });
+}
+function changed() { lift(); H.log('state', state()); }
+function close() {
+  if (!panel) return;
+  panel.trig.setAttribute('aria-expanded', 'false');
+  panel.el.remove();
+  panel = null;
+}
+// Options open in a panel at the end of the page, over the fields below, as
+// overlay-based selects do.
+function open(trig) {
+  close();
+  var r = trig.getBoundingClientRect();
+  var el = document.createElement('div');
+  el.className = 'panel';
+  el.setAttribute('role', 'listbox');
+  el.style.left = (r.left + window.scrollX) + 'px';
+  el.style.top = (r.bottom + window.scrollY + 2) + 'px';
+  el.style.width = r.width + 'px';
+  OPTS[trig.id].forEach(function (t) {
+    var o = document.createElement('div');
+    o.setAttribute('role', 'option');
+    o.textContent = t;
+    o.addEventListener('click', function () { trig.textContent = t; close(); changed(); });
+    el.appendChild(o);
+  });
+  document.body.appendChild(el);
+  trig.setAttribute('aria-expanded', 'true');
+  panel = { el: el, trig: trig };
+}
+document.querySelectorAll('[role=combobox]').forEach(function (t) {
+  // Opens on a press, like the console's selects; a bare click event does nothing.
+  t.addEventListener('mousedown', function (e) {
+    e.preventDefault();
+    t.focus();
+    if (panel && panel.trig === t) close(); else open(t);
+  });
+  t.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') { e.preventDefault(); open(t); }
+  });
+});
+document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
+document.addEventListener('mousedown', function (e) {
+  if (panel && !panel.el.contains(e.target) && e.target !== panel.trig) close();
+});
+document.querySelectorAll('input').forEach(function (i) {
+  ['input', 'change', 'focus', 'blur'].forEach(function (ev) { i.addEventListener(ev, changed); });
+});
+document.getElementById('next').addEventListener('click', function () {
+  H.log('next', state());
+  document.getElementById('form').classList.add('hidden');
+  document.getElementById('terms').classList.remove('hidden');
+});
+document.getElementById('agree').addEventListener('click', function () { H.log('agree', {}); });
+lift();
+</script></body></html>

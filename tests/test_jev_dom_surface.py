@@ -182,6 +182,10 @@ def test_probe():
 def browser_operator(tmp_path, monkeypatch, probe_result, surface_arg="auto", bundle="company.thebrowser.Browser"):
     monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
     monkeypatch.setattr(dom_surface, "probe", lambda b, run_js=None, timeout_s=None: probe_result)
+    # Never ask the real browser which tabs it has.
+    monkeypatch.setattr(dom_surface, "active_tab_id", lambda b, timeout_s=None: "T1")
+    monkeypatch.setattr(dom_surface, "tab_ids", lambda b, timeout_s=None: {"T1", "T2"})
+    monkeypatch.setattr(dom_surface, "_RUN_TABS", {})
     native = FakeCalculator()
     op, _ = make_operator(native, ScriptedProvider([("done", None)]), surface=surface_arg)
     return op, native, SimpleNamespace(name="Arc", bundle=bundle, pid=100)
@@ -201,23 +205,28 @@ def test_auto_selection(tmp_path, monkeypatch, probe_result, bundle, surf, expec
     op, _, target = browser_operator(tmp_path, monkeypatch, probe_result, surf, bundle)
     run(op._select_surface(target))
     assert op.surface.name == expect
+    # A browser whose page does not answer is not driven through the
+    # accessibility tree: the run stops.
+    assert bool(op._page_unreadable) is (surf == "auto" and bundle != "com.apple.Notes" and not probe_result[0])
     if surf == "auto" and bundle != "com.apple.Notes":
         probes = [r for r in rows(op) if r.get("event") == "surface_probe"]
         assert probes and probes[0]["ok"] is probe_result[0]
 
 
-def test_double_failure_falls_back_to_ax_once(tmp_path, monkeypatch):
+def test_two_page_failures_end_the_run_instead_of_switching_to_ax(tmp_path, monkeypatch):
+    """The accessibility tree acts on the browser's front window, which may no
+    longer be the run's tab, so a page that stops answering ends the run."""
+    from bridge.tools.jev_operator.loop import SurfaceFailed
+
     op, native, target = browser_operator(tmp_path, monkeypatch, (True, "ok"))
     run(op._select_surface(target))
     assert op.surface.name == "dom"
     op.surface._run_js = lambda b, js: (_ for _ in ()).throw(RuntimeError("osascript died"))
-    obs = run(op._observe(SimpleNamespace(name="Calculator", bundle="com.apple.calculator", pid=100)))
-    assert op.surface.name == "ax" and obs.elements
-    evs = [r for r in rows(op) if r.get("event") in ("dom_error", "surface_fallback")]
-    assert [e["event"] for e in evs] == ["dom_error", "dom_error", "surface_fallback"]
-    assert evs[-1]["surface"] == "dom" and op._surface_label() == "dom→ax"
-    op._swap_if_dom_failing()
-    assert op.surface.name == "ax"
+    with pytest.raises(SurfaceFailed):
+        run(op._observe(SimpleNamespace(name="Calculator", bundle="com.apple.calculator", pid=100)))
+    assert op.surface.name == "dom" and native.clicks == []
+    evs = [r["event"] for r in rows(op) if r.get("event") in ("dom_error", "surface_failed")]
+    assert evs == ["dom_error", "dom_error", "surface_failed"]
 
 
 def test_arc_double_encoded_results_decode():
@@ -253,14 +262,16 @@ def test_select_options_are_click_targets():
     assert rec.ok and page.calls == [[2, "select", "r", "g2"]]
 
 
-def test_unparseable_snapshot_falls_back_to_ax(tmp_path, monkeypatch):
+def test_unparseable_snapshots_end_the_run(tmp_path, monkeypatch):
     """The transport answers but the snapshot cannot be parsed: that is a surface
-    failure too, so two in a row move the run to AX instead of crashing it."""
+    failure too, so two in a row end the run (blocked, not crashed)."""
+    from bridge.tools.jev_operator.loop import SurfaceFailed
+
     op, native, target = browser_operator(tmp_path, monkeypatch, (True, "ok"))
     run(op._select_surface(target))
     op.surface._run_js = lambda b, js: json.dumps({"url": "x", "actions": [{"kind": "click", "id": "not-an-int"}]})
-    obs = run(op._observe(SimpleNamespace(name="Calculator", bundle="com.apple.calculator", pid=100)))
-    assert op.surface.name == "ax" and obs.elements and op._surface_label() == "dom→ax"
+    with pytest.raises(SurfaceFailed):
+        run(op._observe(SimpleNamespace(name="Calculator", bundle="com.apple.calculator", pid=100)))
 
 
 def test_probe_retries_once_when_the_browser_is_slow(tmp_path, monkeypatch):
@@ -325,3 +336,86 @@ def test_page_confirm_stops_the_run_for_the_person(tmp_path, monkeypatch):
     res = run(op.run())
     assert res.status == "needs_confirmation" and "Clear all 12 filters?" in res.summary
     assert res.pending_action and "confirm" in res.pending_action
+
+
+def test_radio_buttons_read_as_radio_buttons():
+    """A page's radio buttons were listed as checkboxes ("AXCheckBox 'No' (off)"),
+    though picking one clears the others."""
+    page = FakePage([
+        action(1, "toggle", "Yes", role="radio", checked=False),
+        action(2, "toggle", "No", role="radio", checked=True),
+        action(3, "toggle", "Remember me", role="checkbox", checked=False),
+    ])
+    obs = run(surface(page).observe(TARGET))
+    assert [e.role for e in obs.elements] == ["AXRadioButton", "AXRadioButton", "AXCheckBox"]
+    assert [e.toggle_state() for e in obs.elements] == ["not selected", "selected", "off"]
+
+
+class FakeBrowser:
+    """Answers the page script the way a browser tab does, for a run that picks
+    its own surface (no injected page)."""
+
+    def __init__(self, title="Meet - Weekly", url="https://meet.example/abc"):
+        self.title, self.url = title, url
+        self.acts: list[str] = []
+
+    def __call__(self, bundle, js, timeout_s=None, tab_id=""):
+        if js.endswith("quiet();})()"):
+            return json.dumps({"m": 0, "rs": "complete", "u": self.url, "t": self.title})
+        if js.endswith("snapshot();})()"):
+            return json.dumps(snap([action(1, label="More options")], url=self.url, title=self.title))
+        self.acts.append(js[-80:])
+        return json.dumps({"ok": True, "reason": None, "readback": None})
+
+
+def test_a_run_without_an_address_never_starts_in_a_tab_no_run_used(tmp_path, monkeypatch):
+    """A test run with no address attached to the browser's front tab, which was
+    the person's live video call, and clicked in it."""
+    page = FakeBrowser()
+    monkeypatch.setattr(dom_surface, "osascript_run_js", page)
+    op, native, _ = browser_operator(tmp_path, monkeypatch, (True, "ok"))
+    op.provider = ScriptedProvider([("click", "More options"), ("done", None)])
+    op.cfg.app = "company.thebrowser.Browser"
+    monkeypatch.setattr(op, "_resolve_target", lambda app: asyncio.sleep(0, SimpleNamespace(name="Arc", bundle="company.thebrowser.Browser", pid=100)))
+    res = run(op.run())
+    assert res.status == "blocked" and res.code == "foreign_tab"
+    assert "'Meet - Weekly' (https://meet.example/abc)" in res.summary and "Open <url>" in res.summary
+    assert page.acts == [] and native.clicks == []
+
+
+def test_a_tab_an_earlier_run_worked_in_is_fine(tmp_path, monkeypatch):
+    page = FakeBrowser(title="Tasks", url="https://app.example/tasks")
+    monkeypatch.setattr(dom_surface, "osascript_run_js", page)
+    op, native, _ = browser_operator(tmp_path, monkeypatch, (True, "ok"))
+    dom_surface.remember_tab("company.thebrowser.Browser", "T1")
+    op.provider = ScriptedProvider([("done", None)])
+    monkeypatch.setattr(op, "_resolve_target", lambda app: asyncio.sleep(0, SimpleNamespace(name="Arc", bundle="company.thebrowser.Browser", pid=100)))
+    res = run(op.run())
+    assert res.status == "done", res.summary
+
+
+def test_a_page_that_does_not_answer_stops_the_run_without_the_accessibility_tree(tmp_path, monkeypatch):
+    """With its test page not loaded, a run fell back to the accessibility tree
+    and switched the person's own tabs in the sidebar."""
+    op, native, _ = browser_operator(tmp_path, monkeypatch, (False, "Arc did not answer within 3s"))
+    op.provider = ScriptedProvider([("click", "1")])
+    monkeypatch.setattr(op, "_resolve_target", lambda app: asyncio.sleep(0, SimpleNamespace(name="Arc", bundle="company.thebrowser.Browser", pid=100)))
+    res = run(op.run())
+    assert res.status == "blocked" and res.code == "page_unreadable" and 'surface="ax"' in res.summary
+    assert native.clicks == [] and op.provider.calls == []
+
+
+def test_a_new_tab_is_followed_only_if_it_did_not_exist_before(monkeypatch):
+    """A click that opens a tab moves the run to the front tab; if the person
+    brought one of their own tabs to the front meanwhile, the run stays put."""
+    s = DOMSurface(bundle=TARGET.bundle, actuator=SimpleNamespace(), log=lambda r: None)
+    s.tab_id, s.known_tabs = "A", {"A", "B"}
+    monkeypatch.setattr(dom_surface, "_RUN_TABS", {})
+    monkeypatch.setattr(DOMSurface, "settle", lambda self, kind, min_s=0.0: asyncio.sleep(0))
+    front = {"id": "B"}
+    monkeypatch.setattr(dom_surface, "active_tab_id", lambda b, timeout_s=None: front["id"])
+    run(s._follow_new_tab())
+    assert s.tab_id == "A" and not dom_surface.run_tab(TARGET.bundle, "B")
+    front["id"] = "C"
+    run(s._follow_new_tab())
+    assert s.tab_id == "C" and s.own_tab and dom_surface.run_tab(TARGET.bundle, "C")

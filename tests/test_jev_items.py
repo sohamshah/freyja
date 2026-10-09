@@ -185,10 +185,9 @@ def test_share_with_reuses_surface_actuator_and_log_but_not_counters(tmp_path, m
     b, _ = make_operator(FakeCalculator(), ScriptedProvider([]))
     a.history.append({"x": 1})
     a._replans_since_progress = 2
-    a._fell_back = True
     b.share_with(a, 3)
     assert b.surface is a.surface and b.actuator is a.actuator and b.log_path == a.log_path and b.run_id == a.run_id
-    assert b.history == [] and b._replans_since_progress == 0 and b._fell_back
+    assert b.history == [] and b._replans_since_progress == 0
     b._log({"event": "x"})
     a.item = None
     a._log({"event": "y"})

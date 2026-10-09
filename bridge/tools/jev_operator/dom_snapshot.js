@@ -3,7 +3,7 @@
 // install (one observer only); a newer version replaces an older one.
 (function () {
   'use strict';
-  var VERSION = 6;
+  var VERSION = 7;
   var prior = window.__freyjaJev;
   if (prior && prior.version === VERSION) return 'already-installed';
   if (prior && prior.observer) { try { prior.observer.disconnect(); } catch (e) { /* ignore */ } }
@@ -73,6 +73,12 @@
   var TOGGLE_INPUTS = { checkbox: 1, radio: 1 };
   var NON_TEXT_INPUTS = { range: 1, color: 1, date: 1, 'datetime-local': 1, month: 1, time: 1, week: 1 };
   var KEY_CODES = { Enter: 13, Escape: 27, Tab: 9 };
+  // Widgets whose page script handles keys: Enter opens a combobox, picks an
+  // option or a menu item, or selects a tab.
+  var KEY_WIDGETS = {
+    combobox: 1, listbox: 1, option: 1, menuitem: 1, menuitemcheckbox: 1, menuitemradio: 1,
+    tab: 1, treeitem: 1,
+  };
   var SEARCHY = /search|filter|find|query|lookup/i;
 
   function norm(s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); }
@@ -479,7 +485,7 @@
 
   function quiet() {
     touch();
-    return JSON.stringify({ m: mutations, rs: document.readyState, u: location.href });
+    return JSON.stringify({ m: mutations, rs: document.readyState, u: location.href, t: document.title });
   }
 
   // Navigate this tab (one the run opened itself) to another address.
@@ -513,11 +519,12 @@
   }
 
   // The full sequence a real pointer produces; many widgets act on mousedown.
-  function pointerClick(el) {
+  function pointerClick(el, at) {
     var r = el.getBoundingClientRect();
     var init = {
       bubbles: true, cancelable: true, composed: true, view: window, button: 0, buttons: 1,
-      clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, pointerId: 1, pointerType: 'mouse', isPrimary: true,
+      clientX: at ? at.x : r.left + r.width / 2, clientY: at ? at.y : r.top + r.height / 2,
+      pointerId: 1, pointerType: 'mouse', isPrimary: true,
     };
     var P = typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
     el.dispatchEvent(new P('pointerover', init));
@@ -541,11 +548,16 @@
     return a.isContentEditable === true;
   }
 
+  function keyWidget(a) {
+    var r = a && attr(a, 'role');
+    return !!(r && KEY_WIDGETS[r.trim().split(/\s+/)[0].toLowerCase()]);
+  }
+
   function doKey(key) {
     var a = deepActive();
     if (key !== 'Enter' && key !== 'Escape' && key !== 'Tab') return res(false, 'unsupported_key');
     if (a && a.tagName === 'INPUT' && (a.type || '').toLowerCase() === 'password') return res(false, 'refused_password');
-    if (key === 'Enter' && !isEditableActive(a)) return res(false, 'no_editable_focused');
+    if (key === 'Enter' && !isEditableActive(a) && !keyWidget(a)) return res(false, 'no_editable_focused');
     var target = a || document.body;
     var notPrevented = target.dispatchEvent(keyEvent('keydown', key));
     if (notPrevented) {
@@ -633,10 +645,39 @@
     return el.innerText;
   }
 
-  function coveredAt(el) {
-    var r = el.getBoundingClientRect();
-    var top = deepElementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-    return !top || !(composedContains(el, top) || composedContains(top, el));
+  // Where a person's click on `el` would land: a point whose topmost element is
+  // `el`, inside it, or around it. The middle of a control can sit under parts
+  // of the control that are not inside it, such as the label drawn across an
+  // outlined field, so other points are tried too. Failing those, a topmost
+  // element of the same small widget still counts (the nearest shared ancestor
+  // is not much bigger than the control: the field's own wrapper). Anything
+  // else (a dialog, a backdrop, an open menu) covers the control: null.
+  function hitPoint(el) {
+    var r = el.getBoundingClientRect(), vw = window.innerWidth, vh = window.innerHeight;
+    var fx = [0.5, 0.25, 0.75, 0.1, 0.9], fy = [0.5, 0.25, 0.75];
+    for (var j = 0; j < fy.length; j++) {
+      for (var i = 0; i < fx.length; i++) {
+        var x = r.left + r.width * fx[i], y = r.top + r.height * fy[j];
+        if (x < 0 || y < 0 || x >= vw || y >= vh) continue;
+        var top = deepElementFromPoint(x, y);
+        if (top && (composedContains(el, top) || composedContains(top, el))) return { x: x, y: y };
+      }
+    }
+    var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    var t = deepElementFromPoint(cx, cy);
+    return t && sameWidget(el, t, r) ? { x: cx, y: cy } : null;
+  }
+
+  function sameWidget(el, other, r) {
+    var mine = new Set();
+    for (var n = el; n; n = n.parentNode || n.host) mine.add(n);
+    for (var m = other; m; m = m.parentNode || m.host) {
+      if (!mine.has(m)) continue;
+      if (m.nodeType !== 1 || m === document.body || m === document.documentElement) return false;
+      var a = m.getBoundingClientRect();
+      return a.width * a.height <= 6 * Math.max(1, r.width * r.height);
+    }
+    return false;
   }
 
   function act(id, op, arg, expectedGuard, mayConfirm) {
@@ -669,16 +710,18 @@
       if (op === 'select' && entry.kind !== 'select') return res(false, 'not_selectable');
 
       el.scrollIntoView({ block: 'center', inline: 'center' });
-      if (coveredAt(el)) {
+      var at = hitPoint(el);
+      if (!at) {
         if (el.focus) el.focus({ preventScroll: true });
-        if (coveredAt(el)) return res(false, 'covered');
+        at = hitPoint(el);
+        if (!at) return res(false, 'covered');
       }
 
       if (op === 'click') {
         var opened = false;
         var link = el.closest && el.closest('a[href]');
         if (link && link.target && !/^_(self|top|parent)$/i.test(link.target)) opened = true;
-        pointerClick(el);
+        pointerClick(el, at);
         if (pageOpened) opened = true;
         return res(true, null, entry.kind === 'toggle' ? String(!!el.checked) : valueOf(el, entry.kind), opened ? { newTab: true } : null);
       }

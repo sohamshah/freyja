@@ -252,9 +252,8 @@ async def _snap(url: str, wait_s: float) -> int:
 
     from bridge.tools.jev_operator.dom_surface import DOMSurface
 
-    before = jev_scenarios.arc_tab_ids()
+    s = DOMSurface(bundle="company.thebrowser.Browser", actuator=None)
     try:
-        s = DOMSurface(bundle="company.thebrowser.Browser", actuator=None)
         await s.open_url(url)
         await asyncio.sleep(wait_s)
         obs = await s.observe(SimpleNamespace(name="Arc", bundle="company.thebrowser.Browser", pid=0))
@@ -262,7 +261,9 @@ async def _snap(url: str, wait_s: float) -> int:
         print(obs.table())
         print("\n--- text ---\n" + obs.screen_text[:3000])
     finally:
-        jev_scenarios.arc_close_new(before)
+        # Close only the tab this opened, by id.
+        if s.own_tab and s.tab_id:
+            jev_scenarios.arc_close_ids({s.tab_id})
     return 0
 
 
@@ -278,7 +279,7 @@ def main() -> int:
     c.add_argument("--trace", action="store_true")
     c.add_argument("--tables", action="store_true")
     c.add_argument("--timeout", type=float, default=1200)
-    c.add_argument("--cleanup", action="store_true", help="close the Arc tabs the call opened")
+    c.add_argument("--cleanup", action="store_true", help="close the Arc tabs the run opened (by id, from its log)")
     sn = sub.add_parser("snap")
     sn.add_argument("url")
     sn.add_argument("--wait", type=float, default=4.0)
@@ -320,17 +321,17 @@ def main() -> int:
             raw = Path(raw[1:]).read_text()
         arguments = json.loads(raw)
         h = Harness(REPO)
-        before = None
-        if args.cleanup:
-            sys.path.insert(0, str(Path(__file__).resolve().parent))
-            import jev_scenarios  # noqa: PLC0415
-
-            before = jev_scenarios.arc_tab_ids()
+        out: dict[str, Any] = {}
         try:
             out = asyncio.run(h.call(arguments, timeout_s=args.timeout))
         finally:
-            if before is not None:
-                jev_scenarios.arc_close_new(before)
+            if args.cleanup:
+                # Close exactly the tabs the run opened (from its log), never
+                # "every new tab": the person may open tabs meanwhile.
+                sys.path.insert(0, str(Path(__file__).resolve().parent))
+                import jev_scenarios  # noqa: PLC0415
+
+                jev_scenarios.arc_close_ids(jev_scenarios.run_tabs(out.get("log")))
         print("=== tool result (what the agent sees immediately) ===")
         print(out["immediate"])
         if out["memo"]:
