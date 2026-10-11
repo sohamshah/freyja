@@ -184,9 +184,15 @@ class OpenAIConfig:
         Reasoning (thinking) configuration. Controls effort level and whether
         reasoning is enabled.
     native_computer : bool
-        Whether to expose OpenAI's native computer tool when Freyja computer
-        primitives are available. The actual desktop execution still runs
-        through Freyja's shared computer backend.
+        Whether to declare OpenAI's native computer tool in place of
+        Freyja's screen tools when they are available. The actual desktop
+        execution still runs through Freyja's shared computer backend.
+        Off by default: while the tool is declared, the API accepts at most
+        one image across all user messages ("Computer tool cannot use
+        multiple image inputs."), so a session stops working once the user
+        has attached a second image. With it off, the model drives the
+        screen through Freyja's screen tools as plain functions, whose
+        results may carry any number of images.
     """
 
     api_key: str | None = None
@@ -196,7 +202,7 @@ class OpenAIConfig:
     base_url: str | None = None
     store: bool = False
     reasoning: ThinkingConfig = field(default_factory=ThinkingConfig)
-    native_computer: bool = True
+    native_computer: bool = False
 
 
 class OpenAIProvider:
@@ -610,6 +616,10 @@ class OpenAIProvider:
         # -- Convert messages to Responses API input items --
         input_items: list[dict[str, Any]] = []
         tool_calls_by_id = self._tool_call_lookup(messages)
+        # The API refuses computer_call items in a request that does not
+        # declare the computer tool, so without it a past computer call goes
+        # back as a plain function call and its screenshot as function output.
+        native_computer = self._native_computer_enabled(tools)
 
         for message in messages:
 
@@ -714,7 +724,7 @@ class OpenAIProvider:
                 # Emit function_call items (from tool_calls)
                 if message.tool_calls:
                     for tool_call in message.tool_calls:
-                        if is_openai_computer_call(tool_call):
+                        if native_computer and is_openai_computer_call(tool_call):
                             input_items.append(
                                 self._computer_call_input_item(tool_call)
                             )
@@ -733,7 +743,11 @@ class OpenAIProvider:
 
             elif message.role == "tool_result":
                 original_call = tool_calls_by_id.get(message.tool_call_id or "")
-                if original_call is not None and is_openai_computer_call(original_call):
+                if (
+                    native_computer
+                    and original_call is not None
+                    and is_openai_computer_call(original_call)
+                ):
                     computer_output = self._computer_call_output_item(
                         message, original_call
                     )
@@ -778,7 +792,6 @@ class OpenAIProvider:
             from engine.cerebras_provider import _validate_tool_name
 
             converted_tools: list[dict[str, Any]] = []
-            native_computer = self._native_computer_enabled(tools)
             if native_computer:
                 converted_tools.append({"type": "computer"})
             for tool in tools:

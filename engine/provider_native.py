@@ -25,8 +25,8 @@ OPENAI_COMPUTER_PROTOCOL = NativeToolProtocol(
     kind="openai.computer_call",
     internal_tool_name="computer",
     # Generic Freyja tools that overlap with OpenAI's native computer tool.
-    # When active, these should not be advertised as plain function tools to
-    # OpenAI models; their visual results cannot be returned as function output.
+    # When that tool is declared, these are not advertised as plain function
+    # tools, so the model drives the screen through one tool set.
     shadowed_tool_names=frozenset(
         {
             "browser_screenshot",

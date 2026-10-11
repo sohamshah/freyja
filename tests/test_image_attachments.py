@@ -84,35 +84,17 @@ def test_openai_provider_sends_explicit_reasoning_none() -> None:
     assert "include" not in params
 
 
-def test_openai_provider_advertises_native_computer_tool_for_gpt55() -> None:
-    provider = OpenAIProvider(OpenAIConfig(api_key="test-key", model="gpt-5.5"))
-    tools = [
-        ToolDefinition(name="screenshot", summary="screen", description="screen"),
-        ToolDefinition(name="click", summary="click", description="click"),
-        ToolDefinition(name="browser_screenshot", summary="browser", description="browser"),
-        ToolDefinition(name="grep", summary="grep", description="grep"),
-    ]
-
-    params = provider.build_request_params(
-        [Message(role="user", content="use the screen")],
-        tools=tools,
-    )
-
-    assert {"type": "computer"} in params["tools"]
-    function_names = [
-        tool["name"] for tool in params["tools"] if tool["type"] == "function"
-    ]
-    assert "grep" in function_names
-    assert "screenshot" not in function_names
-    assert "click" not in function_names
-    assert "browser_screenshot" not in function_names
+SCREEN_TOOLS = [
+    ToolDefinition(name="screenshot", summary="screen", description="screen"),
+    ToolDefinition(name="click", summary="click", description="click"),
+    ToolDefinition(name="browser_screenshot", summary="browser", description="browser"),
+    ToolDefinition(name="grep", summary="grep", description="grep"),
+]
 
 
-def test_openai_provider_round_trips_native_computer_screenshot_output() -> None:
-    provider = OpenAIProvider(OpenAIConfig(api_key="test-key", model="gpt-5.5"))
+def _computer_call_history() -> list[Message]:
     actions = [{"type": "screenshot"}]
-    safety = [{"id": "safe-1", "code": "demo", "message": "ack"}]
-    messages = [
+    return [
         Message(role="user", content="look"),
         Message(
             role="assistant",
@@ -127,7 +109,9 @@ def test_openai_provider_round_trips_native_computer_screenshot_output() -> None
                         "id": "item-1",
                         "status": "in_progress",
                         "actions": actions,
-                        "pending_safety_checks": safety,
+                        "pending_safety_checks": [
+                            {"id": "safe-1", "code": "demo", "message": "ack"}
+                        ],
                     },
                 )
             ],
@@ -142,7 +126,79 @@ def test_openai_provider_round_trips_native_computer_screenshot_output() -> None
         ),
     ]
 
-    params = provider.build_request_params(messages)
+
+def test_openai_provider_keeps_screen_tools_as_functions_by_default() -> None:
+    # A declared computer tool makes the API refuse a second user image
+    # ("Computer tool cannot use multiple image inputs."), which stopped a
+    # fresh gpt-6-astra session whose first message had two screenshots.
+    provider = OpenAIProvider(OpenAIConfig(api_key="test-key", model="gpt-6-astra"))
+    pasted = [ImageBlock.from_base64("aW1hZ2U=", "image/png")] * 2
+    params = provider.build_request_params(
+        [Message(role="user", content=[*pasted, TextBlock(text="look into this")])],
+        tools=SCREEN_TOOLS,
+    )
+
+    assert {"type": "computer"} not in params["tools"]
+    function_names = [tool["name"] for tool in params["tools"]]
+    assert function_names == ["screenshot", "click", "browser_screenshot", "grep"]
+
+
+def test_openai_provider_replays_past_computer_calls_as_function_calls() -> None:
+    # The API refuses computer_call items when the computer tool is not
+    # declared, so sessions that used it keep working through plain items.
+    provider = OpenAIProvider(OpenAIConfig(api_key="test-key", model="gpt-5.5"))
+
+    params = provider.build_request_params(_computer_call_history(), tools=SCREEN_TOOLS)
+
+    call, output = params["input"][1], params["input"][2]
+    assert call == {
+        "type": "function_call",
+        "call_id": "cu-call-1",
+        "name": OPENAI_COMPUTER_TOOL_NAME,
+        "arguments": '{"actions": [{"type": "screenshot"}]}',
+    }
+    assert output == {
+        "type": "function_call_output",
+        "call_id": "cu-call-1",
+        "output": [
+            {"type": "input_text", "text": "captured"},
+            {
+                "type": "input_image",
+                "image_url": "data:image/png;base64,aW1hZ2U=",
+                "detail": "auto",
+            },
+        ],
+    }
+
+
+def test_openai_provider_advertises_native_computer_tool_when_enabled() -> None:
+    provider = OpenAIProvider(
+        OpenAIConfig(api_key="test-key", model="gpt-5.5", native_computer=True)
+    )
+
+    params = provider.build_request_params(
+        [Message(role="user", content="use the screen")],
+        tools=SCREEN_TOOLS,
+    )
+
+    assert {"type": "computer"} in params["tools"]
+    function_names = [
+        tool["name"] for tool in params["tools"] if tool["type"] == "function"
+    ]
+    assert "grep" in function_names
+    assert "screenshot" not in function_names
+    assert "click" not in function_names
+    assert "browser_screenshot" not in function_names
+
+
+def test_openai_provider_round_trips_native_computer_screenshot_output() -> None:
+    provider = OpenAIProvider(
+        OpenAIConfig(api_key="test-key", model="gpt-5.5", native_computer=True)
+    )
+    actions = [{"type": "screenshot"}]
+    safety = [{"id": "safe-1", "code": "demo", "message": "ack"}]
+
+    params = provider.build_request_params(_computer_call_history(), tools=SCREEN_TOOLS)
 
     computer_call = params["input"][1]
     computer_output = params["input"][2]

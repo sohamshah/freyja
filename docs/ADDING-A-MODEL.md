@@ -107,8 +107,7 @@ Missing entry → smaller window for OpenAI models.
 - `REASONING_MODELS` — gates whether the `reasoning` parameter is sent
   at all. Missing entry → the model silently runs without reasoning and
   the effort selector in the UI does nothing.
-- `NATIVE_COMPUTER_MODELS` — gates the native `computer_use` tool.
-  Missing entry → computer-use sessions fall back to the generic path.
+- `NATIVE_COMPUTER_MODELS` — the models that may take OpenAI's native `computer` tool when `OpenAIConfig.native_computer` is on. It is off by default. While that tool is declared, the API accepts at most one image across all user messages ("Computer tool cannot use multiple image inputs."), so a session stops working once the user attaches a second image. Once the input holds computer calls, the tool must stay declared. Without it, GPT models use Freyja's screen tools as plain functions, like every other provider, and past computer calls go back as plain function calls.
 
 Note the effort ladder itself is **not** enforced here: the OpenAI
 provider forwards whatever effort it is handed. `MODEL_REASONING_META`
