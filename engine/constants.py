@@ -78,9 +78,12 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "claude-haiku-4-5": 200_000,
     "claude-sonnet-4-5": 1_000_000,
     "claude-opus-4-5": 200_000,
-    # OpenAI
+    # OpenAI. The `-ultrafast` ids are the ultrafast service tier of the
+    # same model, listed for the same reason as the `-fast` ids above.
     "gpt-6-astra": 1_050_000,
+    "gpt-6-astra-ultrafast": 1_050_000,
     "gpt-6.1-sol": 1_050_000,
+    "gpt-6.1-sol-ultrafast": 1_050_000,
     "gpt-6-luna": 1_050_000,
     "gpt-5.6-sol": 1_050_000,
     "gpt-5.6-terra": 1_050_000,

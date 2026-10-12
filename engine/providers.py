@@ -542,7 +542,9 @@ MODEL_REGISTRY: dict[str, dict[str, object]] = {
     "claude-opus-4-5": {"provider": "anthropic", "context_window": 200_000, "thinking": True},
     # OpenAI models (Responses API)
     "gpt-6-astra": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
+    "gpt-6-astra-ultrafast": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
     "gpt-6.1-sol": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
+    "gpt-6.1-sol-ultrafast": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
     "gpt-6-luna": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
     "gpt-5.6-sol": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
     "gpt-5.6-terra": {"provider": "openai", "context_window": 1_050_000, "thinking": True},
@@ -841,9 +843,13 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, 
     "gpt-6-astra": (10.0, 50.0, 1.0, 12.5),
     # GPT-6.1 Sol / GPT-6 Luna both publish cached-input and cache-write
     # rates. Neither tuple models the >272K-input surcharge (2x input and
-    # cache rates, and 1.5x output on Luna) — a long-context turn costs
-    # more than the meter shows. Flagged rather than silently averaged.
+    # cache rates, and 1.5x output) — a long-context turn costs more than
+    # the meter shows. Flagged rather than silently averaged.
     "gpt-6.1-sol": (2.0, 10.0, 0.10, 2.5),
+    # The ultrafast service tier bills 6x every Standard rate (OpenAI's
+    # pricing page, 2026-10-12). Only Astra and 6.1 Sol offer it.
+    "gpt-6-astra-ultrafast": (60.0, 300.0, 6.0, 75.0),
+    "gpt-6.1-sol-ultrafast": (12.0, 60.0, 0.60, 15.0),
     "gpt-6-luna": (0.10, 0.50, 0.01, 0.125),
     "gpt-5.6-sol": (5.0, 30.0, 0.50),
     "gpt-5.6-terra": (2.5, 15.0, 0.25),
@@ -946,7 +952,9 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     "zai-glm-4.7": ["glm-5.3-flash-fireworks", "kimi-k3"],
     # ── OpenAI ──
     "gpt-6-astra": ["gpt-6.1-sol", "gpt-5.6-sol", "gpt-6-luna"],
+    "gpt-6-astra-ultrafast": ["gpt-6-astra", "gpt-6.1-sol"],
     "gpt-6.1-sol": ["gpt-6-astra", "gpt-5.6-sol", "gpt-6-luna"],
+    "gpt-6.1-sol-ultrafast": ["gpt-6.1-sol", "gpt-6-astra"],
     "gpt-6-luna": ["gpt-6.1-sol", "gpt-5.6-luna"],
     "gpt-5.6-sol": ["gpt-6.1-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
     "gpt-5.6-terra": ["gpt-6.1-sol", "gpt-5.6-luna"],

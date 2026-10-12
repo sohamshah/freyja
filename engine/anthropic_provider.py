@@ -412,8 +412,9 @@ class AnthropicProvider:
 
     @property
     def model_id(self) -> str:
-        """Model identifier."""
-        return self._model
+        """Model identifier as configured, `-fast` suffix included, because
+        the cost meter prices each call by it."""
+        return self._public_model_id
 
     @property
     def context_window(self) -> int:

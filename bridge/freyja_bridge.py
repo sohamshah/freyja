@@ -2242,6 +2242,16 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "description": "OpenAI's newest flagship (Sep 2026), built for the hardest end-to-end work. Complex reasoning, coding, computer use, research. 1.05M ctx, 128k output, $10/$50 per MTok. Effort ladder is low..max with no off or minimal rung.",
     },
     {
+        "id": "gpt-6-astra-ultrafast",
+        "family": "openai",
+        "label": "GPT-6 Astra (Ultrafast)",
+        "tier": "max",
+        "contextWindow": 1_050_000,
+        "thinking": True,
+        "envVar": "OPENAI_API_KEY",
+        "description": "GPT-6 Astra on OpenAI's ultrafast service tier: the same model, context and effort ladder at 6x Standard prices ($60/$300 per MTok, $6 cached input). Measured 2026-10-12: a 1.1k-token answer finished in 4-6 s instead of 20-22 s.",
+    },
+    {
         "id": "gpt-6.1-sol",
         "family": "openai",
         "label": "GPT-6.1 Sol",
@@ -2249,7 +2259,17 @@ AVAILABLE_MODELS: list[dict[str, Any]] = [
         "contextWindow": 1_050_000,
         "thinking": True,
         "envVar": "OPENAI_API_KEY",
-        "description": "Cost-optimised GPT-6 tier (Sep 2026). Astra-family reasoning at $2/$10 with $0.10 cached input. 1.05M ctx, 128k output, computer use. Effort ladder low..max (no off/minimal). Prompts over 272k input bill at 2x input and cache rates.",
+        "description": "Cost-optimised GPT-6 tier (Sep 2026). Astra-family reasoning at $2/$10 with $0.10 cached input. 1.05M ctx, 128k output, computer use. Effort ladder low..max (no off/minimal). Prompts over 272k input bill at 2x input and cache rates and 1.5x output.",
+    },
+    {
+        "id": "gpt-6.1-sol-ultrafast",
+        "family": "openai",
+        "label": "GPT-6.1 Sol (Ultrafast)",
+        "tier": "balanced",
+        "contextWindow": 1_050_000,
+        "thinking": True,
+        "envVar": "OPENAI_API_KEY",
+        "description": "GPT-6.1 Sol on OpenAI's ultrafast service tier: the same model, context and effort ladder at 6x Standard prices ($12/$60 per MTok, $0.60 cached input). Measured 2026-10-12: a 1.1k-token answer finished in 4 s instead of 28 s.",
     },
     {
         "id": "gpt-6-luna",
@@ -2739,7 +2759,17 @@ MODEL_REASONING_META: dict[str, dict[str, Any]] = {
         "reasoningLevels": ["low", "medium", "high", "xhigh", "max"],
         "reasoningDefault": "high",
     },
+    "gpt-6-astra-ultrafast": {
+        "reasoningMode": "required",
+        "reasoningLevels": ["low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "high",
+    },
     "gpt-6.1-sol": {
+        "reasoningMode": "required",
+        "reasoningLevels": ["low", "medium", "high", "xhigh", "max"],
+        "reasoningDefault": "medium",
+    },
+    "gpt-6.1-sol-ultrafast": {
         "reasoningMode": "required",
         "reasoningLevels": ["low", "medium", "high", "xhigh", "max"],
         "reasoningDefault": "medium",

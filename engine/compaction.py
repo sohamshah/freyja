@@ -1056,9 +1056,12 @@ CONVERSATION TO EXTRACT FROM:
         out_tok = int(getattr(usage, "output_tokens", 0) or 0) if usage else 0
         cr_tok = int(getattr(usage, "cache_read_tokens", 0) or 0) if usage else 0
         cw_tok = int(getattr(usage, "cache_write_tokens", 0) or 0) if usage else 0
+        # Freyja's id for the model first: the pricing table is keyed by it,
+        # and it carries a speed tier (`-fast`, `-ultrafast`) that the API's
+        # echoed model name drops.
         model_id = (
-            getattr(response, "model", None)
-            or getattr(provider, "model_id", None)
+            getattr(provider, "model_id", None)
+            or getattr(response, "model", None)
             or "unknown"
         )
         # Estimate cost via the same compute_cost the rest of the codebase
@@ -1286,8 +1289,8 @@ CONVERSATION TO EXTRACT FROM:
             cr_tok = int(getattr(usage, "cache_read_tokens", 0) or 0) if usage else 0
             cw_tok = int(getattr(usage, "cache_write_tokens", 0) or 0) if usage else 0
             model_id = (
-                getattr(resp, "model", None)
-                or getattr(provider, "model_id", None)
+                getattr(provider, "model_id", None)
+                or getattr(resp, "model", None)
                 or "unknown"
             )
             cost: float | None = None

@@ -303,13 +303,24 @@ def test_a_feature_the_model_itself_lacks_keeps_the_fallback(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_runner_resends_at_once_after_a_refused_fallback():
+async def test_runner_resends_at_once_after_a_refused_fallback(monkeypatch):
     """Same model, no backoff, no move down the model fallback chain: the
     provider already dropped the refused target."""
-    import time as _time
+    import asyncio
 
     from engine.runner import AsyncAgentRunner
     from engine.session import Session
+
+    # Record the runner's sleeps instead of timing the run: the normal
+    # retry waits 0.5 s, and a cold first run can take that long anyway.
+    slept: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def _sleep(delay, *args, **kwargs):
+        slept.append(delay)
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", _sleep)
 
     class _Provider:
         name, model_id, context_window = "anthropic", "claude-sonnet-5-5", 1_000_000
@@ -332,12 +343,11 @@ async def test_runner_resends_at_once_after_a_refused_fallback():
             )
 
     provider = _Provider()
-    started = _time.perf_counter()
     result = await AsyncAgentRunner(provider).run(
         Session.create(system_prompt="t"), "go", stream=False
     )
     assert result.success and provider.calls == 2
-    assert _time.perf_counter() - started < 0.5
+    assert not [delay for delay in slept if delay > 0]
 
 
 def test_build_request_no_fallbacks_for_opus(monkeypatch):

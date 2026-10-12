@@ -107,6 +107,7 @@ Missing entry → smaller window for OpenAI models.
 - `REASONING_MODELS` — gates whether the `reasoning` parameter is sent
   at all. Missing entry → the model silently runs without reasoning and
   the effort selector in the UI does nothing.
+- `ULTRAFAST_MODELS` — the models that take `service_tier: "ultrafast"` (GPT-6 Astra and GPT-6.1 Sol). Freyja lists the tier as its own `<model>-ultrafast` id in every codepoint above, priced at 6x Standard; the provider strips the suffix and sends the tier. Other models answer 400 "Invalid service_tier argument". As with a `-fast` id, `provider.model_id` returns the tier id, because the cost meter prices each call by it.
 - `NATIVE_COMPUTER_MODELS` — the models that may take OpenAI's native `computer` tool when `OpenAIConfig.native_computer` is on. It is off by default. While that tool is declared, the API accepts at most one image across all user messages ("Computer tool cannot use multiple image inputs."), so a session stops working once the user attaches a second image. Once the input holds computer calls, the tool must stay declared. Without it, GPT models use Freyja's screen tools as plain functions, like every other provider, and past computer calls go back as plain function calls.
 
 Note the effort ladder itself is **not** enforced here: the OpenAI

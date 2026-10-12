@@ -1102,7 +1102,9 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   'claude-opus-4': 200_000,
   // OpenAI
   'gpt-6-astra': 1_050_000,
+  'gpt-6-astra-ultrafast': 1_050_000,
   'gpt-6.1-sol': 1_050_000,
+  'gpt-6.1-sol-ultrafast': 1_050_000,
   'gpt-6-luna': 1_050_000,
   'gpt-5.6-sol': 1_050_000,
   'gpt-5.6-terra': 1_050_000,
@@ -1183,7 +1185,9 @@ const MODEL_REASONING_FALLBACKS: Record<string, { levels: string[]; defaultLevel
   'claude-sonnet-4-5': { levels: ['none', 'low', 'medium', 'high'], defaultLevel: 'high' },
   // Astra: no 'none' or 'minimal' rung.
   'gpt-6-astra': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
+  'gpt-6-astra-ultrafast': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'gpt-6.1-sol': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },
+  'gpt-6.1-sol-ultrafast': { levels: ['low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },
   'gpt-6-luna': { levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },
   'gpt-5.6-sol': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'high' },
   'gpt-5.6-terra': { levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], defaultLevel: 'medium' },

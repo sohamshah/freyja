@@ -117,6 +117,15 @@ NATIVE_COMPUTER_MODELS: set[str] = {
     "gpt-5.5",
 }
 
+# Models that take `service_tier: "ultrafast"`. Freyja lists each as its own
+# `<model>-ultrafast` id, priced at the tier's 6x rates. Other models answer
+# 400 "Invalid service_tier argument".
+ULTRAFAST_SUFFIX = "-ultrafast"
+ULTRAFAST_MODELS: set[str] = {
+    "gpt-6-astra",
+    "gpt-6.1-sol",
+}
+
 # Type aliases for streaming callbacks (matching other providers)
 StreamCallback = Callable[[StreamEvent], None]
 AsyncStreamCallback = Callable[[StreamEvent], Awaitable[None]]
@@ -229,7 +238,19 @@ class OpenAIProvider:
                 "or set the OPENAI_API_KEY environment variable."
             )
 
+        # A `-ultrafast` id is the base model on the ultrafast service tier:
+        # the API gets the base id plus `service_tier`, and everything keyed
+        # by capability (context window, reasoning) reads the base id.
         self._model = self._config.model
+        self._service_tier: str | None = None
+        if self._model.endswith(ULTRAFAST_SUFFIX):
+            self._model = self._model[: -len(ULTRAFAST_SUFFIX)]
+            self._service_tier = "ultrafast"
+            if self._model not in ULTRAFAST_MODELS:
+                raise ValueError(
+                    f"Ultrafast requested for {self._model}, but only "
+                    f"{sorted(ULTRAFAST_MODELS)} support it."
+                )
         self._context_window = MODEL_CONTEXT_WINDOWS.get(self._model, 400_000)
 
         # Disable SDK auto-retry so rate limit errors propagate to the
@@ -260,12 +281,15 @@ class OpenAIProvider:
     def model_id(self) -> str:
         """Model identifier configured for this provider.
 
+        The configured id, tier suffix included, because the cost meter
+        prices each call by it.
+
         Returns
         -------
         str
-            The model ID (e.g., "gpt-5.4", "gpt-5.4-mini").
+            The model ID (e.g., "gpt-5.4", "gpt-6.1-sol-ultrafast").
         """
-        return self._model
+        return self._config.model
 
     @property
     def context_window(self) -> int:
@@ -779,6 +803,8 @@ class OpenAIProvider:
             "max_output_tokens": effective_max_tokens,
             "store": self._config.store,
         }
+        if self._service_tier:
+            request_params["service_tier"] = self._service_tier
 
         # System prompt maps to the instructions parameter
         if system_prompt:
