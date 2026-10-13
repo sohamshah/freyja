@@ -184,6 +184,7 @@ async def test_no_prefix_when_nothing_follows_the_cached_turn():
     # A summary right after the cached user turn would add its instruction to
     # that turn, which reads nothing from Anthropic's cache.
     provider, runner, session = await _ran([_tools("c1"), _end("done")])
+    session.add_user_message("one more thing")
     runner._sent_prompt = runner._record_prompt(
         session, provider, session.get_messages(), runner._request_tool_definitions(),
         runner._sent_prompt.thinking,

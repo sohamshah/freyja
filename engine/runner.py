@@ -31,6 +31,8 @@ from engine.compaction import (
     value_signature,
 )
 from engine.constants import (
+    CACHE_KEEPALIVE_LEAD_S,
+    CACHE_KEEPALIVE_PINGS,
     CONSECUTIVE_IDENTICAL_CALL_THRESHOLD,
     CONTEXT_COMPACTION_THRESHOLD,
     DEFAULT_THINKING_BUDGET_TOKENS,
@@ -1154,6 +1156,11 @@ class AsyncAgentRunner:
         # more iteration so the hook can slide it in, instead of the
         # turn ending with the message unread.
         has_pending_input: Callable[[], bool] | None = None,
+        # Between turns, re-read the cached prompt just before the provider's
+        # cache expires, so a reply after a short pause still finds it (see
+        # _keep_cache_warm). For sessions a person replies to; a sub-agent's
+        # calls come seconds apart.
+        keep_cache_warm: bool = False,
     ):
         self.provider = provider
         self.config = config or AgentConfig()
@@ -1226,6 +1233,8 @@ class AsyncAgentRunner:
         self._sent_prompt: _SentPrompt | None = None
         if hasattr(self.compaction, "prompt_source"):
             self.compaction.prompt_source = self.cached_prompt_prefix
+        self.keep_cache_warm = keep_cache_warm
+        self._cache_keeper: asyncio.Future | None = None
 
     def _compute_truncation_budget(self, session: Session) -> int:
         """Compute a context-aware token budget for truncating a tool result."""
@@ -1365,6 +1374,7 @@ class AsyncAgentRunner:
     ) -> AgentResult:
         """Run the agent loop asynchronously."""
         self.turn_active = True
+        self.stop_keeping_cache()
         self._stop_note = None
         self._stream_partial = []
         try:
@@ -1389,6 +1399,74 @@ class AsyncAgentRunner:
             self.turn_active = False
             if self._interrupt is not None:
                 self._interrupt.clear()
+            self._keep_cache_after_turn(session)
+
+    # ------------------------------------------------------------------
+    # Keeping the prompt cached between turns
+    # ------------------------------------------------------------------
+
+    def stop_keeping_cache(self) -> None:
+        """Cancel a pending keep-alive (a turn starts, or the runner is dropped)."""
+        task, self._cache_keeper = self._cache_keeper, None
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _keep_cache_after_turn(self, session: Session) -> None:
+        provider = self._sent_prompt.provider if self._sent_prompt else None
+        if not self.keep_cache_warm or not hasattr(provider, "keep_prompt_cached"):
+            return
+        self.stop_keeping_cache()
+        self._cache_keeper = asyncio.ensure_future(self._keep_cache_warm(session))
+
+    async def _keep_cache_warm(self, session: Session) -> None:
+        """While no turn runs, re-read the cached prompt just before it
+        expires, at most CACHE_KEEPALIVE_PINGS times.
+
+        Anthropic keeps a prompt 5 minutes after its last use. A reply after a
+        longer pause wrote the whole conversation again at 1.25x the input
+        rate; a keep-alive reads it at 0.1x and writes only the turn's last
+        reply. Measured alternatives were worse: an hour-long lifetime doubles
+        the price of every write within a turn, and a 1-hour breakpoint can't
+        reuse the 5-minute entries, so it can't be switched on at a pause.
+        """
+        try:
+            for _ in range(CACHE_KEEPALIVE_PINGS):
+                sent = self._sent_prompt
+                ttl = getattr(sent.provider, "prompt_cache_ttl_s", None) if sent else None
+                if not ttl:
+                    return
+                await asyncio.sleep(max(0.0, sent.sent_at + ttl - CACHE_KEEPALIVE_LEAD_S - time.monotonic()))
+                if self.turn_active or self._sent_prompt is not sent:
+                    return
+                found = self._cached_prompt(session)
+                if found is None:
+                    return
+                provider, messages, tools = found
+                # Nothing but the turn's last reply may follow the cached
+                # prompt (after the first keep-alive, the prompt ends with it).
+                after = messages[sent.message_count:]
+                last = messages[-1]
+                if last.role != "assistant" or last.tool_calls or len(after) > 1:
+                    return
+                start, started_at = time.perf_counter(), time.monotonic()
+                response = await provider.keep_prompt_cached(
+                    messages, tools=tools, system_prompt=sent.system_prompt, thinking=sent.thinking,
+                )
+                if response is None:
+                    return
+                self._notify_llm_call(
+                    provider, start, streaming=False, response=response, error=None,
+                    call_kind="cache_keepalive",
+                )
+                if self.turn_active or self._sent_prompt is not sent:
+                    return
+                self._sent_prompt = self._record_prompt(
+                    session, provider, messages, tools, sent.thinking, sent_at=started_at,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.info("cache keep-alive failed | session=%s", session.id, exc_info=True)
 
     async def _run(
         self,
@@ -1955,6 +2033,8 @@ class AsyncAgentRunner:
         request_messages: list[Message],
         tool_defs: list | None,
         thinking: ThinkingConfig | None,
+        *,
+        sent_at: float | None = None,
     ) -> _SentPrompt:
         """Fingerprint a request before it goes out (see cached_prompt_prefix).
         Taken before the send, so it records what the provider received."""
@@ -1966,7 +2046,7 @@ class AsyncAgentRunner:
             thinking=thinking,
             message_count=len(request_messages),
             message_signature=message_signature(request_messages),
-            sent_at=time.monotonic(),
+            sent_at=time.monotonic() if sent_at is None else sent_at,
         )
 
     def _cached_prompt(self, session: Session) -> tuple[Any, list[Message], list | None] | None:
@@ -2012,11 +2092,14 @@ class AsyncAgentRunner:
         if found is None:
             return None
         provider, messages, tools = found
-        # The instruction must start a new turn after the reply. Added to the
-        # user turn the cached prompt ends with, it would make Anthropic read
-        # nothing from the cache (measured on Opus 5.5 and Sonnet 5.5).
+        # The instruction must start a new turn after the cached prompt. Added
+        # to the user turn a cached prompt ends with, it would make Anthropic
+        # read nothing from the cache (measured on Opus 5.5 and Sonnet 5.5).
+        # A keep-alive's prompt ends with the reply, so anything after it is a
+        # new turn.
         n = sent.message_count
-        if len(messages) <= n or messages[n].role != "assistant":
+        ends_with_reply = n > 0 and messages[n - 1].role == "assistant"
+        if not ends_with_reply and (len(messages) <= n or messages[n].role != "assistant"):
             return None
         window = int(getattr(provider, "context_window", 0) or 0)
         needed = self._current_context_tokens(sent.session) + SUMMARY_REQUEST_HEADROOM_TOKENS
@@ -2396,6 +2479,7 @@ class AsyncAgentRunner:
         streaming: bool,
         response: ProviderResponse | None,
         error: Exception | None,
+        call_kind: str | None = None,
     ) -> None:
         """Fire the on_llm_call hook with structured per-call diagnostics."""
         if self.on_llm_call is None:
@@ -2422,6 +2506,8 @@ class AsyncAgentRunner:
             "thinking_blocks": len(response.thinking_blocks or []) if response else 0,
             "error": None if error is None else f"{type(error).__name__}: {error}",
         }
+        if call_kind:
+            payload["call_kind"] = call_kind
         try:
             self.on_llm_call(payload)
         except Exception:  # noqa: BLE001

@@ -143,6 +143,30 @@ StreamCallback = Callable[[StreamEvent], None]
 AsyncStreamCallback = Callable[[StreamEvent], Awaitable[None]]
 
 
+_EXPLICIT_BREAKPOINT = {"mode": "explicit"}
+
+
+def _mark_cache_breakpoints(input_items: list[dict[str, Any]]) -> None:
+    """Put an explicit cache breakpoint on the first developer message (the
+    system prompt) and on the last of the developer messages that lead the
+    input (the compaction summary, when there is one). Two of the three a
+    request may add; the API places its own at the end."""
+    lead = 0
+    while (
+        lead < len(input_items)
+        and input_items[lead].get("type") == "message"
+        and input_items[lead].get("role") == "developer"
+    ):
+        lead += 1
+    for index in {0, lead - 1}:
+        if index < 0 or index >= lead:
+            continue
+        parts = input_items[index].get("content") or []
+        text_parts = [p for p in parts if isinstance(p, dict) and p.get("type") == "input_text"]
+        if text_parts:
+            text_parts[-1]["prompt_cache_breakpoint"] = dict(_EXPLICIT_BREAKPOINT)
+
+
 def _api_usage_from_response_usage(response_usage: Any) -> APIUsage:
     """Convert OpenAI's ResponseUsage to our internal ``APIUsage``.
 
@@ -330,10 +354,17 @@ class OpenAIProvider:
         GPT-5.6 and later keep it 30 minutes. Older models keep it 5 to 10
         minutes, so they get the shorter figure.
         """
-        host = urlparse(self._config.base_url).hostname if self._config.base_url else None
-        if host not in (None, "api.openai.com"):
+        if not self._official_api():
             return None
         return 1800.0 if self._model in LONG_PROMPT_CACHE_MODELS else 300.0
+
+    def _official_api(self) -> bool:
+        host = urlparse(self._config.base_url).hostname if self._config.base_url else None
+        return host in (None, "api.openai.com")
+
+    def _cache_breakpoints(self) -> bool:
+        """Whether requests mark explicit prompt-cache breakpoints (GPT-5.6+)."""
+        return self._official_api() and self._model in LONG_PROMPT_CACHE_MODELS
 
     @property
     def supports_reasoning(self) -> bool:
@@ -839,8 +870,23 @@ class OpenAIProvider:
         if self._service_tier:
             request_params["service_tier"] = self._service_tier
 
-        # System prompt maps to the instructions parameter
-        if system_prompt:
+        if system_prompt and self._cache_breakpoints():
+            # A cached prefix is found only at a lookup boundary: the end of an
+            # earlier request, or an explicit breakpoint. The top-level
+            # `instructions` can't carry a breakpoint, so after a compaction
+            # (a new first message) nothing matched and the system prompt and
+            # tools were written again. As the first developer message the
+            # system prompt carries one, and so does the compaction summary
+            # after it, the last of the leading developer messages. Measured:
+            # the first request after a compaction reads them from the cache,
+            # and the overlap with the request's own write is billed once.
+            input_items.insert(0, {
+                "type": "message",
+                "role": "developer",
+                "content": [{"type": "input_text", "text": system_prompt}],
+            })
+            _mark_cache_breakpoints(input_items)
+        elif system_prompt:
             request_params["instructions"] = system_prompt
 
         # Convert tool definitions to the flat Responses API function schema.

@@ -5342,6 +5342,9 @@ class _BridgeSession:
             get_compaction_ground_truth=self._ledger_ground_truth,
             # Fold the summarizer's structured notes into working memory (2b).
             apply_working_memory_upserts=self._apply_wm_upserts,
+            # Someone reads each reply before answering, so the prompt cache
+            # often expires between turns. Sub-agent runners leave this off.
+            keep_cache_warm=True,
         )
         self.runner = runner
         log(
@@ -5459,6 +5462,10 @@ class _BridgeSession:
             except RuntimeError:
                 pass
         self._harness_tools_cache = {}
+        # A pending keep-alive would ping a provider that is being dropped.
+        stop_keeping_cache = getattr(self.runner, "stop_keeping_cache", None)
+        if stop_keeping_cache is not None:
+            stop_keeping_cache()
         self.session = None
         self.runner = None
         self.provider = None

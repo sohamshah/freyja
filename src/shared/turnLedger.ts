@@ -13,7 +13,10 @@
 export interface LedgerCall {
   /** ms since epoch */
   t: number
-  kind: 'main' | 'summarizer'
+  /** `main` is the agent loop's own calls. The others ride along (compaction
+   *  and working memory, cache keep-alives between turns): they count in the
+   *  turn's totals but are not the prompt the next main call extends. */
+  kind: 'main' | 'summarizer' | 'keepalive'
   model: string
   /** Fresh input: neither read from nor written to the cache. */
   input: number
@@ -144,7 +147,9 @@ export function buildTurnLedger(eventsJsonl: string): LedgerTurn[] {
     }
     if (type !== 'llm_call_metric') continue
 
-    const kind = ev.callKind === 'summarizer' ? 'summarizer' : 'main'
+    const callKind = String(ev.callKind ?? 'main')
+    const kind: LedgerCall['kind'] =
+      callKind === 'main' ? 'main' : callKind === 'cache_keepalive' ? 'keepalive' : 'summarizer'
     const model = String(ev.model ?? '')
     const call: LedgerCall = {
       t,

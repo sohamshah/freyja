@@ -206,6 +206,17 @@ PROMPT_CACHE_TTL_MARGIN_S = 30.0
 """A sent prompt counts as cached until this long before the provider's cache
 lifetime runs out (5 minutes on Anthropic, 30 on OpenAI's GPT-5.6 and later)."""
 
+CACHE_KEEPALIVE_LEAD_S = 60.0
+"""A keep-alive goes out this long before the prompt's cache would expire:
+4 minutes after the last call on Anthropic's 5-minute cache."""
+
+CACHE_KEEPALIVE_PINGS = 2
+"""Keep-alives per pause between turns, so a reply within about 13 minutes
+finds the prompt still cached. Each costs a cache read of the prompt (0.1x
+input); a reply after an expired cache writes it all again at 1.25x. Two was
+the cheapest cap on three weeks of main sessions: 11.5% below no keep-alive,
+against 7.3% for a 1-hour cache lifetime and 10.2% for four keep-alives."""
+
 SUMMARY_REQUEST_HEADROOM_TOKENS = 4_096
 """Room for the instruction a summary adds when it continues the session's
 prompt (see engine.compaction.PromptPrefix)."""

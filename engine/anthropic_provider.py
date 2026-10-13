@@ -537,6 +537,72 @@ class AnthropicProvider:
 
         return self._parse_response(response)
 
+    async def keep_prompt_cached(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[ToolDefinition] | None = None,
+        system_prompt: str | None = None,
+        thinking: ThinkingConfig | None = None,
+    ) -> ProviderResponse | None:
+        """Re-read the cached prompt so it stays cached another 5 minutes.
+
+        ``messages`` is the prompt the last call sent, and the reply that
+        ended the turn. The request repeats them with the conversation
+        breakpoint on the reply, plus a placeholder message the model answers
+        with one token. Billed: a cache read of the prompt and a 5-minute write
+        of the reply. The entry it leaves ends at the reply, where the next
+        turn's request finds it.
+
+        A 1-hour breakpoint can't do this cheaply: it does not reuse 5-minute
+        entries, so it writes the whole prompt again at 2x the input rate
+        (measured). Returns None when the reply has no block that can carry a
+        breakpoint.
+        """
+        if self._image_files is not None:
+            await self._image_files.prepare(messages)
+        if thinking is not None and thinking.enabled:
+            # The effort can change without losing the cache; one token is
+            # all the reply gets anyway.
+            thinking = ThinkingConfig(
+                enabled=True, effort="low", budget_tokens=thinking.budget_tokens,
+            )
+        request_kwargs = self._build_request(
+            [*messages, Message(role="user", content=".")],
+            tools=tools,
+            system_prompt=system_prompt,
+            max_tokens=1,
+            thinking=thinking,
+            tool_choice="none" if tools else None,
+        )
+        api_messages = request_kwargs["messages"]
+        for block in api_messages[-1].get("content") or []:
+            if isinstance(block, dict):
+                block.pop("cache_control", None)
+        reply = api_messages[-2] if len(api_messages) >= 2 else None
+        content = reply.get("content") if reply and reply.get("role") == "assistant" else None
+        if isinstance(content, str) and content:
+            reply["content"] = content = [{"type": "text", "text": content}]
+        carriers = [
+            b for b in content or []
+            if isinstance(b, dict) and b.get("type") not in ("thinking", "redacted_thinking")
+        ]
+        if not carriers:
+            return None
+        carriers[-1]["cache_control"] = {"type": "ephemeral"}
+        self._log_request(request_kwargs, "keep_prompt_cached")
+
+        try:
+            response = await self._async_client.messages.create(**request_kwargs)
+        except AnthropicAuthError as e:
+            raise AuthenticationError(str(e)) from e
+        except APIStatusError as e:
+            raise self._request_error(e, request_kwargs) from e
+        except APIError as e:
+            raise ProviderError(str(e), retryable=True) from e
+
+        return self._parse_response(response)
+
     async def complete_structured(
         self,
         messages: list[Message],
