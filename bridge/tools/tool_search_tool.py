@@ -1,15 +1,26 @@
-"""Tool discovery helper for loading tool schemas on demand."""
+"""Tool discovery: load a deferred tool's schema, then call it.
+
+A deferred tool (listed to the model by name and summary only) is never added
+to the request's tool list mid-session. The tool list sits at the front of the
+cached prompt, so changing it makes the provider re-read the whole
+conversation: about $8 at 130k tokens on GPT-6 Astra Ultrafast. Instead,
+``tool_search`` returns the schema as a tool result, which is the newest part
+of the conversation, and ``call_tool`` runs the tool by name.
+"""
 
 from __future__ import annotations
 
+import json
 from difflib import get_close_matches
 from typing import Any
 
-from bridge.tools.base import ToolDefinition, ToolRegistry, ToolResult, ToolTier
+from bridge.tools.base import ToolCall, ToolDefinition, ToolRegistry, ToolResult, ToolTier
+
+CALL_TOOL_NAME = "call_tool"
 
 
 class ToolSearchTool:
-    """Load the full schema for a tool that is not yet fully loaded."""
+    """Return the full schema for a tool that is not in the tool list."""
 
     def __init__(self, registry: ToolRegistry):
         self._registry = registry
@@ -24,8 +35,8 @@ class ToolSearchTool:
                 "Load the full schema for a tool by exact name. "
                 "Use this before calling any tool that is listed by name and summary only, "
                 "or any tool revealed by a skill or workflow. "
-                "When the tool is found, its schema is loaded into the next model turn "
-                "so you can call it directly."
+                f"It returns the tool's parameters; then run the tool with `{CALL_TOOL_NAME}`. "
+                "Tools that are already in your tool list are called directly."
             ),
             parameters={
                 "type": "object",
@@ -115,20 +126,100 @@ class ToolSearchTool:
                 is_error=True,
             )
 
-        already_loaded = entry.schema_visible
-        definition = self._registry.promote_tool(tool_name)
-        if definition is None:
+        if entry.schema_visible:
             return ToolResult(
                 call_id=call_id,
-                content=f"Unable to load schema for '{tool_name}'.",
-                is_error=True,
+                content=f"Tool '{tool_name}' is already in your tool list. Call it directly.",
             )
-
-        status = "already loaded" if already_loaded else "loaded and ready on the next turn"
+        definition = entry.tool.definition
+        schema = json.dumps(definition.parameters, ensure_ascii=False, separators=(",", ":"))
         return ToolResult(
             call_id=call_id,
             content=(
-                f"Tool '{tool_name}' {status}.\n"
-                "Call the tool by its exact name on your next turn."
+                f"Tool '{tool_name}' is ready. It stays out of your tool list; run it with "
+                f'`{CALL_TOOL_NAME}(tool_name="{tool_name}", arguments={{...}})`, '
+                "where arguments match this schema.\n"
+                f"Description: {definition.description}\n"
+                f"Parameters (JSON Schema): {schema}"
             ),
+        )
+
+
+class CallToolTool:
+    """Run a tool that ``tool_search`` loaded, by name.
+
+    Dispatch goes through ``registry.execute``, the same path as a direct call,
+    so the tool's permission prompt still applies, and a tool the registry
+    does not run (stripped for a gateway session, refused in a read-only fork)
+    is still refused.
+    """
+
+    def __init__(self, registry: ToolRegistry):
+        self._registry = registry
+
+    @property
+    def definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name=CALL_TOOL_NAME,
+            summary="Run a tool loaded with tool_search",
+            tier=ToolTier.HOT,
+            description=(
+                "Run a tool whose schema tool_search returned. Pass the tool's exact name "
+                "and its arguments. The tool runs exactly as if called directly, including "
+                "any permission prompt, and its result is returned as this call's result."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "tool_name": {
+                        "type": "string",
+                        "description": "Exact tool name, as tool_search returned it",
+                    },
+                    "arguments": {
+                        "type": "object",
+                        "description": "The tool's arguments, matching the schema tool_search returned",
+                    },
+                },
+                "required": ["tool_name", "arguments"],
+            },
+        )
+
+    async def execute(self, call_id: str, arguments: dict[str, Any]) -> ToolResult:
+        tool_name = str(arguments.get("tool_name", "")).strip()
+        if not tool_name:
+            return ToolResult(call_id=call_id, content="Error: tool_name is required", is_error=True)
+        if tool_name in (CALL_TOOL_NAME, "tool_search"):
+            return ToolResult(
+                call_id=call_id,
+                content=f"Error: call {tool_name} directly, not through {CALL_TOOL_NAME}.",
+                is_error=True,
+            )
+        tool_args = arguments.get("arguments")
+        if tool_args is None:
+            tool_args = {}
+        if isinstance(tool_args, str):
+            try:
+                tool_args = json.loads(tool_args) if tool_args.strip() else {}
+            except json.JSONDecodeError as exc:
+                return ToolResult(
+                    call_id=call_id,
+                    content=f"Error: arguments is not valid JSON: {exc}",
+                    is_error=True,
+                )
+        if not isinstance(tool_args, dict):
+            return ToolResult(
+                call_id=call_id,
+                content="Error: arguments must be an object",
+                is_error=True,
+            )
+        if self._registry.get(tool_name) is None:
+            matches = ToolSearchTool(self._registry)._find_close_matches(tool_name)  # noqa: SLF001
+            hint = f" Close matches: {', '.join(matches)}" if matches else ""
+            return ToolResult(
+                call_id=call_id,
+                content=f"Error: no tool named '{tool_name}'.{hint}",
+                is_error=True,
+            )
+        return await self._registry.execute(
+            ToolCall(id=call_id, name=tool_name, arguments=tool_args)
         )

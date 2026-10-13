@@ -303,7 +303,7 @@ The full tool surface, organized by category:
 | **Coordination** | `tasks`, `kanban`, `publish_finding`, `read_findings` |
 | **Context** | `summarize_context` |
 | **Goals / scheduling** | `schedule` |
-| **Utilities** | `tool_search` |
+| **Utilities** | `tool_search`, `call_tool` |
 
 ### Built-in subagent profiles
 

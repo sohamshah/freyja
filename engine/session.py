@@ -449,6 +449,7 @@ class TranscriptManager:
         self,
         keep_recent: int = KEEP_RECENT_COMPUTER_IMAGES,
         hard_limit: int = MAX_REQUEST_IMAGES_SAFETY,
+        batch: int = 0,
     ) -> ImagePruneResult:
         """
         Remove old computer-use screenshots from model history.
@@ -458,9 +459,16 @@ class TranscriptManager:
         provider requests should only carry the latest few images. Older
         image blocks are replaced by a text marker inside the same tool_result
         message so tool-use/result adjacency stays valid.
+
+        ``batch`` lets screenshots pile up to ``keep_recent + batch`` before
+        anything is dropped, then drops back to ``keep_recent`` in one pass.
+        Each prune rewrites history, so fewer, larger prunes keep the prompt
+        cache warm (see ``SCREENSHOT_PRUNE_BATCH``). The hard limit still
+        applies on every call.
         """
         keep_recent = max(0, int(keep_recent))
         hard_limit = max(1, int(hard_limit))
+        batch = max(0, int(batch))
 
         tool_name_by_id: dict[str, str] = {}
         for entry in self._entries:
@@ -502,8 +510,9 @@ class TranscriptManager:
         non_prunable_images = images_before - tool_images_before
         allowed_by_hard_limit = max(0, hard_limit - non_prunable_images)
         actual_keep = min(keep_recent, allowed_by_hard_limit, tool_images_before)
+        prune_above = min(keep_recent + batch, allowed_by_hard_limit)
 
-        if tool_images_before <= actual_keep and images_before <= hard_limit:
+        if tool_images_before <= prune_above and images_before <= hard_limit:
             return ImagePruneResult(
                 images_before=images_before,
                 images_after=images_before,

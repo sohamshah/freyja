@@ -121,24 +121,32 @@ async def test_discovery_registers_warm_tools(tmp_path):
         assert conn.tool_count == 6  # remote count, pre-filter
 
 
-async def test_tool_search_promotes_schema(tmp_path):
-    from bridge.tools.tool_search_tool import ToolSearchTool
+async def test_tool_search_returns_the_schema_and_call_tool_runs_it(tmp_path):
+    # The tool list sits at the front of the cached prompt, so loading a
+    # deferred tool must not change it: tool_search hands the schema back as a
+    # result, and call_tool runs the tool by name.
+    from bridge.tools.tool_search_tool import CallToolTool, ToolSearchTool
 
     async with running_manager(tmp_path) as manager:
         registry = ToolRegistry()
         manager.register_into(registry)
         search = ToolSearchTool(registry)
+        before = [d.name for d in registry.list_definitions()]
 
         result = await search.execute("s1", {"tool_name": "mcp__fixture__echo"})
         assert not result.is_error
+        # Remote input schema passed through, in the result.
+        assert '"text"' in str(result.content)
+        assert "call_tool" in str(result.content)
+        assert [d.name for d in registry.list_definitions()] == before
+        assert registry.get_catalog_entry("mcp__fixture__echo").schema_visible is False
 
-        entry = registry.get_catalog_entry("mcp__fixture__echo")
-        assert entry.schema_visible is True
-        definitions = {d.name for d in registry.list_definitions()}
-        assert "mcp__fixture__echo" in definitions
-        # Remote input schema passed through.
-        schema = registry.get("mcp__fixture__echo").definition.parameters
-        assert "text" in schema.get("properties", {})
+        ran = await CallToolTool(registry).execute(
+            "c1", {"tool_name": "mcp__fixture__echo", "arguments": {"text": "round trip!"}}
+        )
+        assert ran.is_error is False
+        assert ran.call_id == "c1"
+        assert "round trip!" in str(ran.content)
 
 
 async def test_build_desktop_registry_wiring(tmp_path):

@@ -32,6 +32,7 @@ from engine.constants import (
     KEEP_RECENT_TOOL_RESULTS,
     MAX_REQUEST_IMAGES_SAFETY,
     LOOP_DETECTION_EXEMPT_TOOLS,
+    SCREENSHOT_PRUNE_BATCH,
     PRIMARY_PROBE_MAX_TOKENS,
     STEERING_TAG_CLOSE,
     STEERING_TAG_OPEN,
@@ -708,6 +709,7 @@ class AgentRunner:
         session.transcript.prune_old_tool_result_images(
             keep_recent=KEEP_RECENT_COMPUTER_IMAGES,
             hard_limit=MAX_REQUEST_IMAGES_SAFETY,
+            batch=SCREENSHOT_PRUNE_BATCH,
         )
         session.transcript.fit_images_for_request()
 
@@ -1184,6 +1186,10 @@ class AsyncAgentRunner:
         # with "actually-clean" if used as the sentinel.
         self._turn_start_pressure_band: int | None = None
         self._channel3_advisory_pending: str = ""
+        # User messages that already carry their reminder block, by id(). The
+        # value holds the message so its id can't be reused while listed.
+        # Cleared at the start of every run; only that run's retries need it.
+        self._reminder_tailed: dict[int, Message] = {}
         self.get_extra_system_reminders = get_extra_system_reminders
         self.get_compaction_ground_truth = get_compaction_ground_truth
         self.apply_working_memory_upserts = apply_working_memory_upserts
@@ -1378,6 +1384,7 @@ class AsyncAgentRunner:
         )
 
         self.usage.reset()
+        self._reminder_tailed = {}
         session.add_user_message(user_message)
 
         try:
@@ -2147,31 +2154,39 @@ class AsyncAgentRunner:
     def _augment_messages_with_pressure_note(
         self, messages: list[Message],
     ) -> list[Message]:
-        """Channel 2: tail-append the pressure note to the last user-role
-        message in the request, without mutating the session transcript.
+        """Channel 2: append the pressure note and the bridge's reminders to
+        the user message the request ends with, and keep them there.
 
-        Why not the system prompt: appending to ``system`` invalidates
-        Anthropic's cache_control breakpoint on the static system block
-        every time the pressure band changes — paying the cache_write
-        rate (1.25× input) for ~30k tokens to deliver ~200 bytes of
-        dynamic guidance. Tail-appending leaves the system + tools +
-        compaction-summary cache markers intact; only the suffix of the
-        last user message is reprocessed at full input rate (~200
-        tokens), which is the right cost shape.
+        Why not the system prompt: changing ``system`` invalidates the cached
+        prefix behind it, so every call re-reads the whole context at the
+        cache-write rate (1.25× input) to deliver ~200 bytes of guidance.
+        Appended after the newest message, the reminders cost only their own
+        tokens.
 
-        Why the last user message: at every provider-call moment the
-        last entry in the messages list is a user-role message —
-        either the initial user prompt (iter 1) or the most recent
-        tool_results batch. Anthropic + OpenAI both accept extra text
-        content appended to the end of that message. Tool_use_id /
-        tool_result_id pairing is unaffected because we add a new
-        TextBlock alongside the existing tool_result blocks (or
-        concatenate to string content).
+        Why the block stays in the transcript: OpenAI resumes a cached prefix
+        only at the end of an earlier request. A reminder sent once and then
+        dropped means the turn's first request is never a prefix of the
+        second, so the second re-reads everything after the previous turn.
+        Writing the block into the message makes every later request repeat
+        it exactly. Anthropic is unaffected: its breakpoint sits before the
+        block either way.
 
-        Returns a new list with a single cloned tail message so the
-        transcript stays clean; the original session entries are
-        never mutated.
+        Only a user-role tail gets reminders: the turn's message, or a message
+        that arrived mid-turn. Requests that end in a tool result skip the
+        producers entirely, so one-shot reminders wait for the next user
+        message instead of being built and thrown away. A retry of the same
+        request reuses the block it already has.
         """
+        if not messages:
+            return messages
+        tailed = getattr(self, "_reminder_tailed", None)
+        if tailed is None:
+            tailed = self._reminder_tailed = {}
+        last = messages[-1]
+        if last.role != "user" or id(last) in tailed:
+            return messages
+        if not isinstance(last.content, (str, list)):
+            return messages
         ratio = self._current_pressure_ratio()
         note = self._build_pressure_note(ratio)
         # Bridge-supplied extras (stale-task reminders, etc) ride
@@ -2180,40 +2195,20 @@ class AsyncAgentRunner:
         # turn instead of multiple injection mechanisms.
         extras = self._gather_extra_reminders()
         combined = (note or "") + (extras or "")
-        if not combined or not messages:
-            return messages
-        last = messages[-1]
-        if last.role != "user":
-            # Conservative: don't touch non-user trailing messages. In
-            # practice the loop only sends after a user/tool_result is
-            # appended, so this guard rarely fires.
+        if not combined:
             return messages
         # Always land the reminders in their OWN trailing block, even when the
-        # message's content is a plain string. The provider marks the last
-        # non-reminder block of the tail message as a cache breakpoint, which
-        # it can only find if the volatile suffix is separable from the stable
-        # text. Concatenating into the string would fuse the two and give up
-        # conversation-tail caching entirely.
+        # message's content is a plain string. The Anthropic provider marks the
+        # last non-reminder block of the tail message as a cache breakpoint,
+        # which it can only find if the reminders are separable from the text.
         from engine.types import TextBlock as _TextBlock
 
         if isinstance(last.content, str):
-            new_content: Any = [_TextBlock(text=last.content), _TextBlock(text=combined)]
-        elif isinstance(last.content, list):
-            new_content = list(last.content) + [_TextBlock(text=combined)]
+            last.content = [_TextBlock(text=last.content), _TextBlock(text=combined)]
         else:
-            return messages
-        cloned = Message(
-            role=last.role,
-            content=new_content,
-            tool_calls=last.tool_calls,
-            tool_call_id=last.tool_call_id,
-            thinking_blocks=last.thinking_blocks,
-            input_tokens=last.input_tokens,
-            output_tokens=last.output_tokens,
-            cache_read_tokens=last.cache_read_tokens,
-            cache_write_tokens=last.cache_write_tokens,
-        )
-        return messages[:-1] + [cloned]
+            last.content = list(last.content) + [_TextBlock(text=combined)]
+        tailed[id(last)] = last
+        return messages
 
     def mark_channel3_crossing(self) -> None:
         """Channel 3 (Approach A): detect mid-turn band escalation.
@@ -2945,6 +2940,7 @@ class AsyncAgentRunner:
         stats = session.transcript.prune_old_tool_result_images(
             keep_recent=KEEP_RECENT_COMPUTER_IMAGES,
             hard_limit=MAX_REQUEST_IMAGES_SAFETY,
+            batch=SCREENSHOT_PRUNE_BATCH,
         )
         # Past 20 images every image must be <=2000px per side, or the whole
         # request is rejected. Runs after the prune so the count is final.

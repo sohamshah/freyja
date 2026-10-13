@@ -3312,6 +3312,7 @@ _TOOL_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     )),
     ("Coordination", (
         "sub_agent", "subagents", "summarize_context", "tool_search",
+        "call_tool",
     )),
     ("Generative UI", ("widget_spec", "show_widget")),
 )
@@ -4427,6 +4428,12 @@ class _BridgeSession:
         )
         self.memory_store: Any | None = None
         self.skill_store: Any | None = None
+        # Knowledge listed in this transcript's messages, and the first entry
+        # id it was listed under: compaction or trimming replaces that entry,
+        # and the listings go with it (_refresh_knowledge_context).
+        self._knowledge_shown: set[str] = set()
+        self._knowledge_epoch: str | None = None
+        self._pending_knowledge: tuple[str, list[str]] | None = None
         from bridge.tools.image_store import SessionImageStore
         self.image_store = SessionImageStore()
         self.permission_handler: DesktopPermissionHandler | None = None
@@ -4724,6 +4731,7 @@ class _BridgeSession:
             )
             return
 
+        from engine.providers import standard_tier_model_id
         from engine.runner import AsyncAgentRunner
         from bridge.tools import build_desktop_registry
         from bridge.tools.coordination import (
@@ -4736,7 +4744,6 @@ class _BridgeSession:
         from bridge.tools.task_board import SessionTaskBoard
         from bridge.tools.sub_agent_registry import SubAgentRegistry
         from bridge.knowledge import MemoryStore, SkillStore
-        from bridge.knowledge.prompt import build_knowledge_prompt
 
         thinking = _thinking_config_for_model(self.model_id, self.reasoning_level)
         try:
@@ -4972,6 +4979,8 @@ class _BridgeSession:
             mcp_manager=getattr(self.state, "mcp_manager", None),
             subagent_registry=sub_registry,
             subagent_provider_factory=_provider_factory,
+            # The session's exact model. Fresh sub-agents drop to its standard
+            # tier (SubAgentSpec.standard_tier_model); forks keep this id.
             subagent_model=self.model_id,
             subagent_reasoning_level=self.reasoning_level,
             subagent_emit=_emit_subagent,
@@ -5206,7 +5215,7 @@ class _BridgeSession:
 
         agent_types_section = agent_types_for_prompt(
             workspace=Path(self.workspace),
-            parent_model=self.model_id,
+            parent_model=standard_tier_model_id(self.model_id),
         )
         self._agent_types_section = agent_types_section
 
@@ -5287,21 +5296,15 @@ class _BridgeSession:
             "\n"
             f"{coordination_prompt(self.coordination_strategy)}\n"
         )
-        knowledge_prompt = build_knowledge_prompt(
-            memory_store=self.memory_store,
-            skill_store=self.skill_store,
-        )
         # Day-resolution, deliberately: the system block is Anthropic's first
         # cache breakpoint and a minute-resolution clock here invalidated it —
         # and everything cached behind it — on nearly every turn. The precise
         # time rides the per-request reminder tail instead
-        # (_build_extra_system_reminders).
+        # (_build_extra_system_reminders). Memories and skills stay out for the
+        # same reason; each turn's message carries them
+        # (_refresh_knowledge_context).
         from bridge.tools.coordination import current_date_block
-        system_prompt = (
-            current_date_block() + "\n\n"
-            + self._base_system_prompt
-            + ("\n\n" + knowledge_prompt if knowledge_prompt else "")
-        )
+        system_prompt = current_date_block() + "\n\n" + self._base_system_prompt
         # Stash for the session export so training data includes the prompt
         self._system_prompt = system_prompt
 
@@ -5432,6 +5435,9 @@ class _BridgeSession:
         # Forget any skills the previous session had loaded — the new
         # incarnation starts with no resident skills.
         self.loaded_skills = {}
+        self._knowledge_shown = set()
+        self._knowledge_epoch = None
+        self._pending_knowledge = None
         # Harness adapter + MCP socket are async-shutdown only — schedule
         # close on the running loop instead of blocking the sync reset.
         if self.harness_adapter is not None:
@@ -7177,28 +7183,42 @@ class _BridgeSession:
         )
 
     def _refresh_knowledge_context(self, query: str) -> None:
-        """Refresh dynamic memory/skill context for the next provider call."""
+        """Retrieve the memories and skills for this turn's message.
+
+        They reach the model as a reminder on the turn's message (delivered by
+        _build_extra_system_reminders), never in the system prompt. Retrieval
+        follows the message, so a system prompt carrying it changed on most
+        turns, and each change made the provider re-read the whole conversation
+        at the cache-write rate. Only items no earlier message in the
+        transcript lists are sent.
+        """
         if self.session is None or self.memory_store is None or self.skill_store is None:
             return
         try:
-            from bridge.knowledge.prompt import build_knowledge_prompt
+            from bridge.knowledge.prompt import build_knowledge_reminder
 
-            knowledge_prompt = build_knowledge_prompt(
-                memory_store=self.memory_store,
-                skill_store=self.skill_store,
-                query=query,
-            )
             # Day-resolution — see the note at the sibling assembly in
             # initialize(). This runs on EVERY turn, so a volatile value here
             # is the single most expensive thing that can go in the prompt.
             from bridge.tools.coordination import current_date_block
-            system_prompt = (
-                current_date_block() + "\n\n"
-                + self._base_system_prompt
-                + ("\n\n" + knowledge_prompt if knowledge_prompt else "")
-            )
+            system_prompt = current_date_block() + "\n\n" + self._base_system_prompt
             self.session.system_prompt = system_prompt
             self._system_prompt = system_prompt
+            # Compaction (or trimming) replaces the transcript's first entry
+            # and drops the messages that listed earlier knowledge. An empty
+            # transcript getting its first entry is not a replacement.
+            entries = self.session.transcript.entries
+            epoch = entries[0].id if entries else ""
+            if self._knowledge_epoch and epoch != self._knowledge_epoch:
+                self._knowledge_shown = set()
+            self._knowledge_epoch = epoch
+            reminder, keys = build_knowledge_reminder(
+                memory_store=self.memory_store,
+                skill_store=self.skill_store,
+                query=query,
+                shown=self._knowledge_shown,
+            )
+            self._pending_knowledge = (reminder, keys) if reminder else None
             emit(
                 {
                     "type": "system_event",
@@ -11565,6 +11585,14 @@ class _BridgeSession:
             blocks.append(current_time_reminder())
         except Exception:
             log("debug", "time reminder failed")
+        # The turn's memories and skills (_refresh_knowledge_context). The
+        # runner keeps this block in the message, so its items count as shown.
+        pending = self._pending_knowledge
+        if pending is not None:
+            reminder, keys = pending
+            blocks.append(reminder)
+            self._knowledge_shown.update(keys)
+            self._pending_knowledge = None
         try:
             corr = self._build_forgetting_correction()
             if corr:

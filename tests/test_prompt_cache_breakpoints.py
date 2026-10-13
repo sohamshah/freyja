@@ -228,16 +228,45 @@ def test_runner_appends_reminders_as_their_own_block() -> None:
     assert content[1].text == REMINDER
 
 
-def test_runner_leaves_the_transcript_message_untouched() -> None:
+def test_runner_writes_the_reminders_into_the_transcript_message_once() -> None:
+    # OpenAI resumes a cached prefix only where an earlier request ended. If
+    # the turn's first request carried reminders the second did not repeat,
+    # the second could never resume from the first and re-read everything
+    # after the previous turn. So the block stays in the message, and a retry
+    # of the same request does not add another.
     from engine.runner import AsyncAgentRunner
-    from engine.types import Message
+    from engine.types import Message, TextBlock
 
     runner = AsyncAgentRunner.__new__(AsyncAgentRunner)
     runner._current_pressure_ratio = lambda: 0.0  # type: ignore[method-assign]
     runner._build_pressure_note = lambda _r: None  # type: ignore[method-assign]
-    runner._gather_extra_reminders = lambda: REMINDER  # type: ignore[method-assign]
+    builds: list[int] = []
+
+    def _gather() -> str:
+        builds.append(1)
+        return REMINDER
+
+    runner._gather_extra_reminders = _gather  # type: ignore[method-assign]
 
     original = Message(role="user", content="plain string turn")
-    out = runner._augment_messages_with_pressure_note([original])
-    assert original.content == "plain string turn"
-    assert out[-1] is not original
+    messages = [original]
+    first = runner._augment_messages_with_pressure_note(messages)
+    assert first[-1] is original
+    assert [b.text for b in original.content if isinstance(b, TextBlock)] == [
+        "plain string turn",
+        REMINDER,
+    ]
+
+    retry = runner._augment_messages_with_pressure_note(messages)
+    assert len(retry[-1].content) == 2
+    assert builds == [1]
+
+    # The turn's next request ends in a tool result: no reminders, and the
+    # producers do not run, so a one-shot reminder is not built and lost.
+    later = messages + [
+        Message(role="assistant", content="", tool_calls=None),
+        Message(role="tool_result", content="ok", tool_call_id="call_1"),
+    ]
+    assert runner._augment_messages_with_pressure_note(later) is later
+    assert builds == [1]
+    assert later[0].content[1].text == REMINDER

@@ -189,6 +189,16 @@ KEEP_RECENT_TOOL_RESULTS = 3
 KEEP_RECENT_COMPUTER_IMAGES = 4
 """Recent computer-use screenshots kept as image blocks in model history."""
 
+SCREENSHOT_PRUNE_BATCH = 8
+"""Older screenshots are dropped this many at a time, not one per step.
+
+Dropping an image rewrites history at that image, and the prompt cache cannot
+match past the rewrite: OpenAI resumes only at the end of an earlier request,
+so the next call re-reads everything after the first changed message at the
+cache-write rate. Pruning one image per new screenshot did that on every
+computer-use step. With a batch of 8, history stays fixed for 8 steps between
+prunes, and 4 to 12 screenshots are visible at any time."""
+
 MAX_REQUEST_IMAGES_SAFETY = 80
 """Soft request-level image ceiling; leaves provider headroom for attachments."""
 

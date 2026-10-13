@@ -71,9 +71,11 @@ READ_ONLY_TOOLS = frozenset(
         "list_skills",
         "search_skills",
         "load_skill",
-        # Deferred-schema loader. Rebound to the mirror below — the parent's
-        # instance would promote tools on the PARENT's catalog.
+        # Deferred-schema loader and its runner. Rebound to the mirror below,
+        # so they read the mirror's catalog and dispatch to the mirror's
+        # tools, where every mutating tool is a RefusedTool.
         "tool_search",
+        "call_tool",
     }
 )
 
@@ -126,9 +128,9 @@ def build_read_only_fork_registry(
     Preserves registration order and each tool's CURRENT schema visibility,
     both of which are part of the cached prefix. Building this by calling
     ``register()`` in a loop would reset visibility to the tool's static tier
-    and re-sort nothing — a session that had promoted ``propose_skill`` via
-    ``tool_search`` would silently lose the promotion, changing the tools array
-    and costing the cache hit this whole design is for.
+    and re-sort nothing — a session whose catalog had promoted
+    ``propose_skill`` would silently lose the promotion, changing the tools
+    array and costing the cache hit this whole design is for.
 
     ``also_allow`` lets a caller permit one extra tool it has a specific reason
     to trust — the drafter passes ``propose_skill``, which is a legitimate
@@ -146,27 +148,30 @@ def build_read_only_fork_registry(
             schema_visible=entry.schema_visible,
         )
 
-    # ``tool_search`` closes over the registry it promotes into. The parent's
-    # instance would flip schema_visible on the PARENT's catalog — changing the
-    # parent's tools array from inside a fork, which busts the very cache the
-    # fork exists to reuse, and does not even make the tool callable here since
-    # dispatch reads the mirror. Rebind it to the mirror.
+    # ``tool_search`` and ``call_tool`` close over the registry they were
+    # built with. The parent's instances would read the parent's catalog and
+    # run the parent's real tools, past every refusal stub here. Rebind both
+    # to the mirror.
     #
-    # Safe for prefix identity: ToolSearchTool's definition is a static literal
-    # with no dependency on registry contents, so the schema on the wire is
+    # Safe for prefix identity: both definitions are static literals with no
+    # dependency on registry contents, so the schemas on the wire are
     # byte-identical to the parent's.
-    if "tool_search" in mirror._tools:  # noqa: SLF001
-        try:
-            from bridge.tools.tool_search_tool import ToolSearchTool
+    try:
+        from bridge.tools.tool_search_tool import CallToolTool, ToolSearchTool
 
-            rebound = ToolSearchTool(mirror)
-            mirror._tools["tool_search"] = rebound  # noqa: SLF001
-            mirror._catalog["tool_search"].tool = rebound
+        rebinders = {"tool_search": ToolSearchTool, "call_tool": CallToolTool}
+    except Exception:  # noqa: BLE001
+        rebinders = {}
+    for name in ("tool_search", "call_tool"):
+        if name not in mirror._tools:  # noqa: SLF001
+            continue
+        try:
+            rebound = rebinders[name](mirror)
         except Exception:  # noqa: BLE001
-            # Better to refuse the tool than to let it mutate the parent.
-            stub = RefusedTool(parent._tools["tool_search"])  # noqa: SLF001
-            mirror._tools["tool_search"] = stub  # noqa: SLF001
-            mirror._catalog["tool_search"].tool = stub
-            logger.warning("fork registry: could not rebind tool_search; refusing it")
+            # Better to refuse the tool than to let it reach the parent.
+            rebound = RefusedTool(parent._tools[name])  # noqa: SLF001
+            logger.warning("fork registry: could not rebind %s; refusing it", name)
+        mirror._tools[name] = rebound  # noqa: SLF001
+        mirror._catalog[name].tool = rebound
 
     return mirror

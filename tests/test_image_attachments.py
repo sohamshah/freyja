@@ -760,12 +760,12 @@ def test_channel2_pressure_note_attaches_to_last_user_message_not_system() -> No
     # has no attribute for _gather_extra_reminders to read.
     runner.get_extra_system_reminders = None
 
-    base_system = "You are a helpful assistant. " + ("x" * 500)
     messages = [
         Message(role="user", content="initial prompt"),
         Message(role="assistant", content="ack"),
         Message(role="user", content=[TextBlock(text="follow-up question")]),
     ]
+    original_blocks = messages[-1].content
     augmented = runner._augment_messages_with_pressure_note(messages)  # noqa: SLF001
 
     # System prompt is untouched (no Channel 2 method anymore for it).
@@ -773,8 +773,9 @@ def test_channel2_pressure_note_attaches_to_last_user_message_not_system() -> No
     assert len(augmented) == len(messages)
     assert augmented[0] is messages[0]
     assert augmented[1] is messages[1]
-    # Last message is a CLONE, not the original — transcript stays clean.
-    assert augmented[-1] is not messages[-1]
+    # The note is written into the transcript message itself, so the next
+    # request repeats it and the prompt cache can match past it.
+    assert augmented[-1] is messages[-1]
     # Content is a list with the original block plus a new TextBlock
     # containing the pressure note.
     last_blocks = augmented[-1].content
@@ -787,8 +788,9 @@ def test_channel2_pressure_note_attaches_to_last_user_message_not_system() -> No
     assert "<system-reminder>" in last_blocks[1].text
     assert "</system-reminder>" in last_blocks[1].text
     assert "50-59%" in last_blocks[1].text  # quantized band
-    # Original list reference is unmodified.
-    assert len(messages[-1].content) == 1
+    # The content list is replaced, not grown in place: whoever built the
+    # message keeps an unchanged list.
+    assert len(original_blocks) == 1
 
 
 def test_channel2_no_op_below_soft_band() -> None:

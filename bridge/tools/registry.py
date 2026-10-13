@@ -49,7 +49,7 @@ from bridge.tools.talk_tool import (
     TalkTool,
 )
 from bridge.tools.task_board import TaskBoardTool
-from bridge.tools.tool_search_tool import ToolSearchTool
+from bridge.tools.tool_search_tool import CallToolTool, ToolSearchTool
 from bridge.tools.twitter_tool import TwitterSearchTool
 from bridge.tools.video_analysis_tool import AnalyzeVideoTool
 from bridge.tools.view_image_tool import ViewImageTool
@@ -368,8 +368,10 @@ def build_desktop_registry(
     # Twitter/X search via xAI Grok API
     tools.append(TwitterSearchTool())
 
-    # Meta tool — lets the model load WARM-tier schemas on demand
+    # Meta tools — load a WARM-tier schema on demand, then run it by name.
+    # The tool list itself never changes mid-session (see tool_search_tool).
     tools.append(ToolSearchTool(registry))
+    tools.append(CallToolTool(registry))
 
     # Generative-UI widget tools. `widget_spec` (WARM) returns the
     # design-system markdown; `show_widget` (HOT) mounts an inline

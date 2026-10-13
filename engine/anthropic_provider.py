@@ -1608,11 +1608,11 @@ def _try_cache_compaction_summary(anthropic_messages: list[dict[str, Any]]) -> N
                     return
 
 
-#: Marker for the per-request guidance the runner tail-appends to a clone of
-#: the last user message (pressure notes, write-ledger ground truth, the
-#: clock). These blocks change on every request by design, so the conversation
-#: breakpoint must sit BEFORE them or it would write a cache entry that can
-#: never be hit.
+#: Marker for the guidance the runner appends to the user message a request
+#: ends with (pressure notes, write-ledger ground truth, the clock, the turn's
+#: memories and skills). The conversation breakpoint sits BEFORE these blocks.
+#: They stay in the message once sent, so the next request re-reads only their
+#: few hundred tokens.
 _EPHEMERAL_REMINDER_MARKER = "<system-reminder>"
 
 #: Anthropic's hard cap. system + last tool + compaction summary + tail.
@@ -1647,13 +1647,11 @@ def _try_cache_conversation_tail(anthropic_messages: list[dict[str, Any]]) -> No
     Why the LAST NON-REMINDER block, not simply the last block
     ─────────────────────────────────────────────────────────
     ``AsyncAgentRunner._augment_messages_with_pressure_note`` appends
-    ``<system-reminder>`` blocks to a clone of the tail user message on every
-    request. Those change every time. A breakpoint placed on or after them
-    would write a cache entry whose prefix can never recur — pure cache-write
-    cost with no hit. Placing it on the last block that is NOT a reminder
-    caches everything durable and re-processes only the few hundred tokens of
-    per-request guidance, which is exactly the cost shape the tail-append seam
-    was designed for.
+    ``<system-reminder>`` blocks to the user message a request ends with.
+    Placing the breakpoint on the last block that is NOT a reminder caches
+    everything durable; the next request re-processes only the few hundred
+    tokens of guidance, which is the cost shape the tail-append seam was
+    designed for.
 
     No-ops when the tail message already carries a marker (it IS the compaction
     summary), when there is no marker budget left, or when the tail has no

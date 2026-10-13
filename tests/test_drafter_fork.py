@@ -730,34 +730,42 @@ def test_a_restored_session_does_not_share_metadata_with_the_source() -> None:
     assert parent.metadata == {"model_id": "opus"}
 
 
-def test_tool_search_in_a_fork_promotes_only_the_fork(monkeypatch) -> None:
-    # The parent's ToolSearchTool closes over the PARENT registry. Left in
-    # place, a fork calling it flips schema_visible on the parent's catalog —
-    # changing the parent's tools array from inside a fork, which invalidates
-    # the cached prefix the fork exists to reuse.
+def test_tool_search_and_call_tool_in_a_fork_use_the_fork(monkeypatch) -> None:
+    # The parent's tool_search and call_tool close over the PARENT registry.
+    # Left in place, a fork's call_tool would run the parent's real tools,
+    # past every refusal stub. Both are rebound to the mirror, and neither
+    # changes any tools array.
     import asyncio
 
     from bridge.tools.fork_registry import build_read_only_fork_registry
-    from bridge.tools.tool_search_tool import ToolSearchTool
+    from bridge.tools.tool_search_tool import CallToolTool, ToolSearchTool
 
     parent = _parent_registry()
     parent.register(ToolSearchTool(parent))
+    parent.register(CallToolTool(parent))
     fork = build_read_only_fork_registry(parent)
 
-    assert fork.get("tool_search") is not parent.get("tool_search")
-    # Definition stays byte-identical, or the tools array would differ.
-    assert fork.get("tool_search").definition.name == "tool_search"
-    assert (
-        fork.get("tool_search").definition.parameters
-        == parent.get("tool_search").definition.parameters
-    )
+    for name in ("tool_search", "call_tool"):
+        assert fork.get(name) is not parent.get(name)
+        # Definition stays byte-identical, or the tools array would differ.
+        assert fork.get(name).definition.parameters == parent.get(name).definition.parameters
 
-    before = [d.name for d in parent.list_definitions()]
-    asyncio.get_event_loop_policy().new_event_loop().run_until_complete(
+    before_parent = [d.name for d in parent.list_definitions()]
+    before_fork = [d.name for d in fork.list_definitions()]
+    loop = asyncio.get_event_loop_policy().new_event_loop()
+    found = loop.run_until_complete(
         fork.get("tool_search").execute("c1", {"tool_name": "propose_skill"})
     )
-    assert [d.name for d in parent.list_definitions()] == before
-    assert "propose_skill" in [d.name for d in fork.list_definitions()]
+    assert not found.is_error
+    assert [d.name for d in parent.list_definitions()] == before_parent
+    assert [d.name for d in fork.list_definitions()] == before_fork
+
+    # A mutating tool reached through call_tool is still refused in the fork.
+    refused = loop.run_until_complete(
+        fork.get("call_tool").execute("c2", {"tool_name": "write_file", "arguments": {}})
+    )
+    assert refused.is_error
+    assert "not available in this review fork" in str(refused.content)
 
 
 def test_crlf_output_still_parses() -> None:

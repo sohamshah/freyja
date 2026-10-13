@@ -368,7 +368,10 @@ class MemoryStore:
             raise
 
     def build_prompt(self, query: str = "", *, limit: int = 8) -> str:
-        items = self.relevant(query, limit=limit)
+        return self.format_prompt(self.relevant(query, limit=limit))
+
+    @staticmethod
+    def format_prompt(items: list[MemoryItem]) -> str:
         if not items:
             return ""
         lines = [

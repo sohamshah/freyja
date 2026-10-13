@@ -902,6 +902,24 @@ MODEL_PRICING_PER_M: dict[str, tuple[float, float, float] | tuple[float, float, 
 }
 
 
+def standard_tier_model_id(model_id: str) -> str:
+    """The same model at its standard speed and price.
+
+    ``gpt-6-astra-ultrafast`` gives ``gpt-6-astra`` and ``claude-opus-5-5-fast``
+    gives ``claude-opus-5-5``. Any other id comes back unchanged. Sub-agents run
+    at the standard tier: a premium speed tier is the operator's choice for the
+    conversation they are waiting on, and costs 2-6x on every token.
+    """
+    # Imported here: both provider modules import this one.
+    from engine.anthropic_provider import FAST_MODE_MODELS  # noqa: PLC0415
+    from engine.openai_provider import ULTRAFAST_MODELS, ULTRAFAST_SUFFIX  # noqa: PLC0415
+
+    for suffix, tiered in ((ULTRAFAST_SUFFIX, ULTRAFAST_MODELS), ("-fast", FAST_MODE_MODELS)):
+        if model_id.endswith(suffix) and model_id[: -len(suffix)] in tiered:
+            return model_id[: -len(suffix)]
+    return model_id
+
+
 def compute_cost(
     model: str,
     *,

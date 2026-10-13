@@ -424,7 +424,7 @@ click/type/scroll tools until the memo arrives.
                 "sessionId": sub_id,
                 "parentSessionId": self._sub_spec.parent_session_id,
                 "title": label,
-                "model": self._sub_spec.parent_model,
+                "model": self._sub_spec.standard_tier_model,
                 "reasoningLevel": self._sub_spec.parent_reasoning_level,
                 "task": goal,
                 "mode": mode,
@@ -595,7 +595,7 @@ click/type/scroll tools until the memo arrives.
         )
 
         provider = self._sub_spec.build_provider(
-            self._sub_spec.parent_model,
+            self._sub_spec.standard_tier_model,
             self._sub_spec.parent_reasoning_level,
         )
         session = Session.create(
@@ -851,7 +851,7 @@ click/type/scroll tools until the memo arrives.
         try:
             from engine.providers import compute_cost as _compute_cost
 
-            cu_model = self._sub_spec.parent_model or ""
+            cu_model = self._sub_spec.standard_tier_model or ""
             cost_estimate = _compute_cost(
                 cu_model,
                 input_tokens=int(record.input_tokens or 0),

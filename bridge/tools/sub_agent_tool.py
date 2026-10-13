@@ -260,6 +260,17 @@ class SubAgentSpec:
     # creator-tagged). Lets a child surface its OWN write-ledger reminder,
     # filtered to its session id.
     session_ledger: Any | None = None
+
+    @property
+    def standard_tier_model(self) -> str:
+        """The model a fresh sub-agent starts from: the session's model at its
+        standard tier (Ultrafast and fast mode cost 2-6x on every token).
+
+        A fork uses ``parent_model`` itself. It reuses the session's cached
+        prompt, and that cache belongs to the exact model and tier."""
+        from engine.providers import standard_tier_model_id
+
+        return standard_tier_model_id(self.parent_model)
     # Session-scoped message bus for inter-agent communication.
     message_bus: Any | None = None
     # Session-level coordination strategy.
@@ -410,7 +421,7 @@ Parameters:
         # avoids a dead/stuck sub-session when every candidate model is missing
         # the required provider configuration.
         agent_type = get_agent_type(agent_type_name, self._spec.parent_workspace)
-        model_resolution = resolve_model_choice(agent_type, self._spec.parent_model)
+        model_resolution = resolve_model_choice(agent_type, self._spec.standard_tier_model)
         if not model_resolution.available:
             reasons = "; ".join(
                 f"{model}: {reason}"
@@ -629,7 +640,7 @@ Parameters:
         transcript = sidecar_data.get("transcript") if isinstance(sidecar_data.get("transcript"), dict) else None
 
         agent_type = get_agent_type(agent_type_name, self._spec.parent_workspace)
-        model_resolution = resolve_model_choice(agent_type, self._spec.parent_model)
+        model_resolution = resolve_model_choice(agent_type, self._spec.standard_tier_model)
         if not model_resolution.available:
             return None
         child_model = model_resolution.model
@@ -798,8 +809,14 @@ Parameters:
                     reason,
                 )
         if model_resolution is None:
+            # A fork keeps the session's exact model so it hits the session's
+            # cached prompt; anything else starts at the standard tier.
+            base_model = (
+                self._spec.parent_model if fork_context is not None
+                else self._spec.standard_tier_model
+            )
             try:
-                model_resolution = resolve_model_choice(agent_type, self._spec.parent_model)
+                model_resolution = resolve_model_choice(agent_type, base_model)
             except Exception as exc:  # noqa: BLE001
                 return (
                     self._spec.registry.register(

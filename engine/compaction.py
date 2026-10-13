@@ -10,6 +10,7 @@ Provides:
 from __future__ import annotations
 
 import logging
+import re
 from abc import abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
@@ -40,6 +41,12 @@ logger = logging.getLogger(__name__)
 
 
 _SUMMARY_INJECT_MARKER = "[Previous conversation summary]"
+
+# Runtime guidance the runner appends to user messages (the clock, pressure
+# notes, the turn's memories and skills). It stays in the transcript so the
+# prompt cache can match, but it is not conversation, so the summarizer
+# doesn't get it.
+_SYSTEM_REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
 
 
 def _is_summary_inject(msg: Message) -> bool:
@@ -885,6 +892,8 @@ CONVERSATION TO EXTRACT FROM:
         def format_message(idx: int, msg: Message) -> str:
             role = msg.role.upper()
             content = msg.get_text() if hasattr(msg, "get_text") else str(msg.content)
+            if "<system-reminder>" in content:
+                content = _SYSTEM_REMINDER_RE.sub("", content).strip()
 
             tool_info = ""
             if msg.tool_calls:

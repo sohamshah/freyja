@@ -66,6 +66,9 @@ SLACK_TOOL_ALLOWLIST: frozenset[str] = frozenset({
     "subagents",
     "summarize_context",
     "tool_search",
+    # Runs tools tool_search loaded. It dispatches through the registry, so
+    # a tool this list strips stays unreachable.
+    "call_tool",
     # SCHEDULING — durable jobs created from Slack are core UX.
     "schedule",
     # KNOWLEDGE (read-only)

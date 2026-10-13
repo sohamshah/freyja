@@ -148,6 +148,7 @@ _PHASE_TITLE_BY_TOOL = {
     "search_skills":     "Searching skills",
     "list_skills":       "Searching skills",
     "tool_search":       "Searching tools",
+    "call_tool":         "Running a tool",
     "summarize_context": "Compacting context",
     # Outbound
     "send_attachment": "Sharing",

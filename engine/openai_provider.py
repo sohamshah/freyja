@@ -145,6 +145,10 @@ def _api_usage_from_response_usage(response_usage: Any) -> APIUsage:
     once at the cache rate via cache_read_tokens), inflating displayed
     costs ~10× whenever a cache hit happens. Subtract the cached slice
     here so downstream code sees disjoint values for every provider.
+
+    ``input_tokens_details.cache_write_tokens`` is a subset too: the tokens
+    written to the prompt cache. GPT-5.6 and later bill them at the cache-write
+    rate (1.25× input) instead of the input rate; earlier models report 0.
     """
     if response_usage is None:
         return APIUsage()
@@ -155,17 +159,21 @@ def _api_usage_from_response_usage(response_usage: Any) -> APIUsage:
         reasoning_tokens = getattr(output_details, "reasoning_tokens", 0) or 0
 
     cached_tokens = 0
+    written_tokens = 0
     input_details = getattr(response_usage, "input_tokens_details", None)
     if input_details is not None:
         cached_tokens = getattr(input_details, "cached_tokens", 0) or 0
+        written_tokens = getattr(input_details, "cache_write_tokens", 0) or 0
 
     raw_input = getattr(response_usage, "input_tokens", 0) or 0
-    fresh_input = max(0, raw_input - cached_tokens)
+    written_tokens = min(written_tokens, max(0, raw_input - cached_tokens))
+    fresh_input = max(0, raw_input - cached_tokens - written_tokens)
 
     return APIUsage(
         input_tokens=fresh_input,
         output_tokens=getattr(response_usage, "output_tokens", 0) or 0,
         cache_read_tokens=cached_tokens,
+        cache_write_tokens=written_tokens,
         reasoning_tokens=reasoning_tokens,
     )
 

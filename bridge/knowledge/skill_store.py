@@ -13,6 +13,13 @@ from typing import Any
 from bridge.knowledge.models import SkillRecord
 
 
+def skill_prompt_key(skill: SkillRecord) -> str:
+    """Identity of a skill as listed in a prompt: a changed description counts
+    as a new listing."""
+    digest = hashlib.sha1(skill.description.encode("utf-8")).hexdigest()[:12]
+    return f"skill:{skill.name.lower()}:{digest}"
+
+
 class SkillStore:
     def __init__(
         self,
@@ -179,6 +186,20 @@ class SkillStore:
         return event
 
     def build_prompt(self, query: str = "", *, limit: int = 12) -> str:
+        return self.build_prompt_excluding(query, limit=limit)[0]
+
+    def build_prompt_excluding(
+        self,
+        query: str = "",
+        *,
+        limit: int = 12,
+        exclude: frozenset[str] | set[str] = frozenset(),
+    ) -> tuple[str, list[str]]:
+        """The ``limit`` best skills for ``query``, minus those whose
+        :func:`skill_prompt_key` is in ``exclude``, and the keys listed.
+
+        Exclusion runs after ranking, so the block never reaches further down
+        the ranking to make up for skills already shown."""
         # Lazy import — value_score depends on bridge.knowledge.learning,
         # which is younger than this module. Importing at module scope
         # would force a hard dep on the learning loop being present even
@@ -192,7 +213,7 @@ class SkillStore:
             (skill, 0, "") for skill in self.list_skills()
         ]
         if not matches:
-            return ""
+            return "", []
 
         # Pull V rollups for every candidate and re-rank by measured V
         # before truncating to ``limit``. The match-score from search()
@@ -221,7 +242,11 @@ class SkillStore:
             )
 
         matches.sort(key=_rank_key)
-        matches = matches[:limit]
+        matches = [
+            item for item in matches[:limit] if skill_prompt_key(item[0]) not in exclude
+        ]
+        if not matches:
+            return "", []
 
         lines = [
             "## Available Skills",
@@ -244,7 +269,7 @@ class SkillStore:
             lines.append(
                 f"- `{skill.name}` [{tags}] · {head}{why}: {skill.description}"
             )
-        return "\n".join(lines)
+        return "\n".join(lines), [skill_prompt_key(skill) for skill, _, _ in matches]
 
     def _put(self, target: dict[str, SkillRecord], skill: SkillRecord) -> None:
         key = skill.name.lower()

@@ -169,7 +169,7 @@ Nested `.freyja/skills/` directories in monorepo subdirectories are discovered w
 | *guard* | Teaches recovery from errors | Regex match against `error_patterns` when a tool call fails | `fix-econnrefused` |
 | *reference* | Domain knowledge the agent should know | Auto-activated when agent reads files matching `paths` globs | `auth-architecture` |
 
-The agent can also activate skills via auto-discovery: the system prompt contains all skill descriptions (~100 tokens each), and the agent calls `load_skill(name)` when it determines relevance. Deactivation follows the eviction layers described in §3 — skills unload under context pressure and survive compaction within a token budget.
+The agent can also activate skills via auto-discovery: each turn's message lists the skills that match it, by name and description (~100 tokens each), and the agent calls `load_skill(name)` when it determines relevance. A skill is listed once per session (again after a compaction drops the listing). The list stays out of the system prompt because it changes with the message, and a changed system prompt makes the provider re-read the whole cached conversation. Deactivation follows the eviction layers described in §3 — skills unload under context pressure and survive compaction within a token budget.
 
 **Confidence lifecycle.** We track retrieval outcomes to provide passive evolutionary selection pressure without requiring an explicit optimizer:
 
@@ -182,7 +182,7 @@ UNVALIDATED ──(3+ retrievals)──▶ EXPERIMENTAL ──(10+ uses, ≥80% 
                                   DEPRECATED
 ```
 
-Activation occurs through four mechanisms: user invocation (`/skill-name`), agent auto-discovery (the system prompt contains all skill descriptions; the agent calls `load_skill` when it determines relevance), guard activation (the engine matches error text against `error_patterns` regexes), and path-based activation (skills with `paths` patterns load when the agent works with matching files). Deactivation follows the eviction layers described in §3 — skills unload under context pressure and survive compaction within a token budget.
+Activation occurs through four mechanisms: user invocation (`/skill-name`), agent auto-discovery (the turn's message lists the matching skills' descriptions; the agent calls `load_skill` when it determines relevance), guard activation (the engine matches error text against `error_patterns` regexes), and path-based activation (skills with `paths` patterns load when the agent works with matching files). Deactivation follows the eviction layers described in §3 — skills unload under context pressure and survive compaction within a token budget.
 
 **Skill retrieval at scale.** Our current retrieval (keyword triggers + LLM auto-discovery from descriptions) is adequate for small catalogs but will not scale. [SkillFlow](https://arxiv.org/abs/2504.06188) demonstrates that over a 36K-skill corpus, keyword-based retrieval (BM25) achieves only MRR 0.266 while a four-stage progressive pipeline (dense retrieval → shallow reranker → deep reranker → LLM selector) achieves MRR 0.634. More critically, [AgentSkillOS](https://arxiv.org/abs/2603.02176) shows that flat, unstructured skill invocation scores 17.2 on a Bradley-Terry quality metric at 200K skills while DAG-based orchestration — where skills declare dependencies and execute in dependency-ordered layers with parallelism within layers — scores 100.0. The quality gap is structural, not retrieval: even with oracle-perfect skill selection, flat invocation loses to orchestrated execution. We plan to address this in two phases: first, multi-stage retrieval (replacing our current `difflib.get_close_matches` with a dense-then-rerank pipeline), and second, dependency-aware composition (skills declaring `depends_on` and `composes_with` relationships in frontmatter, enabling DAG execution for multi-skill tasks).
 
@@ -391,12 +391,12 @@ Before entering the tool selection pipeline at all, the agent should assess whet
 | Tier | In API tools list | In system prompt | Discovery mechanism |
 |------|-------------------|-----------------|---------------------|
 | HOT | Full schema | Summary line | Agent calls directly |
-| WARM | No | Name + summary | Agent calls `tool_search("<name>")`, schema loads |
-| COLD | No | Not mentioned | Skill activation reveals tool name, then `tool_search` |
+| WARM | No | Name + summary | Agent calls `tool_search("<name>")` for the schema, then runs it with `call_tool` |
+| COLD | No | Not mentioned | Skill activation reveals tool name, then `tool_search` and `call_tool` |
 
 Built-in tools are HOT, MCP tools are WARM (deferred), and skill-specific tools are COLD. Claude Code's adoption of `defer_loading: true` on the Anthropic API reduced system tool context from approximately 14,000 tokens to 968 tokens — a 94% reduction — while maintaining full functionality. Our measurements show comparable savings: progressive disclosure reduces per-session token cost from $3.00 to $0.32 for a system with 100 tools across a 20-turn session at $3/M input pricing.
 
-Cold-to-hot promotion follows a three-hop discovery path: a user query triggers skill retrieval, the skill's `cold_tools` frontmatter field reveals tool names with summaries, and the agent calls `tool_search` to load the full schema. Promotion is sticky within a session — once loaded, a tool remains visible for all subsequent turns — and resets on session end.
+Cold-tool discovery follows a three-hop path: a user query triggers skill retrieval, the skill's `cold_tools` frontmatter field reveals tool names with summaries, and the agent calls `tool_search`, which returns the full schema as a tool result. The agent then runs the tool with `call_tool(tool_name, arguments)`, which dispatches through the registry, so the tool's permission prompt still applies. The API tools list never changes mid-session: it sits at the front of the cached prompt, and adding a schema to it would make the provider re-read the whole conversation. A schema loaded once stays in the conversation for the rest of the session.
 
 MCP tool schemas are deferred by default. Connecting GitHub + Slack + Sentry consumes approximately 94,000 tokens if always loaded (47% of a 200K window); with deferral, the overhead drops to approximately 1,600 tokens (tool names only). MCP tools inherit the session's permission tier and default to requiring approval, since they access external systems. Skills can pre-approve specific MCP tools via the `allowed-tools` frontmatter field.
 
@@ -580,7 +580,7 @@ We start with guard skills because they have the clearest success signal — eit
 | Deliverable | Details |
 |-------------|---------|
 | Skill discovery | Scan `.freyja/skills/`, `~/.freyja/skills/`, `.claude/skills/` at boot |
-| Skill index in system prompt | ~100 tokens per skill (name + description) |
+| Skill index in the turn's message | ~100 tokens per newly matching skill (name + description) |
 | `load_skill` tool | Injects full SKILL.md body into context on demand |
 | `/skill-name` invocation | Slash-command shorthand for user-triggered activation |
 | FREYJA.md loading | Project root, user global, local override; concatenated |
@@ -606,7 +606,7 @@ We start with guard skills because they have the clearest success signal — eit
 | Deliverable | Details |
 |-------------|---------|
 | Three-tier system | HOT (full schema), WARM (name only), COLD (skill-revealed) |
-| `tool_search` tool | Promotes WARM/COLD tools to HOT on demand |
+| `tool_search` + `call_tool` | Return a WARM/COLD tool's schema, then run it by name; the tools list never changes |
 | Skill-driven cold promotion | `cold_tools` frontmatter surfaces tools with instructions |
 | MCP server configuration | `~/.freyja/settings.json` and `.freyja/mcp.json` |
 | Deferred MCP schemas | `defer_loading: true`; names at boot, schemas on first use |
