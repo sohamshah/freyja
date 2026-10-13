@@ -1087,6 +1087,15 @@ def test_bridge_mirror_helper_writes_compaction_event_telemetry(tmp_path, monkey
     # Redirect HOME so the JSONL writes land in tmp_path.
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # compaction_telemetry fixes its paths when first imported. When an earlier
+    # test imported it, they point at the real ~/.freyja, and this test's row
+    # landed in the operator's dashboard data.
+    import bridge.compaction_telemetry as compaction_telemetry
+
+    telemetry_dir = tmp_path / ".freyja" / "telemetry"
+    monkeypatch.setattr(compaction_telemetry, "TELEMETRY_DIR", telemetry_dir)
+    monkeypatch.setattr(compaction_telemetry, "TELEMETRY_FILE", telemetry_dir / "compaction.jsonl")
+    monkeypatch.setattr(compaction_telemetry, "_ROTATED", telemetry_dir / "compaction.jsonl.old")
 
     state = _BridgeState(workspace=str(tmp_path), default_model="claude-opus-4-7")
     sess = _BridgeSession(

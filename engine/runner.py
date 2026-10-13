@@ -22,7 +22,14 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, AsyncIterator, Awaitable, Callable
 
-from engine.compaction import CompactionResult, CompactionStrategy, NoOpCompaction
+from engine.compaction import (
+    CompactionResult,
+    CompactionStrategy,
+    NoOpCompaction,
+    PromptPrefix,
+    message_signature,
+    value_signature,
+)
 from engine.constants import (
     CONSECUTIVE_IDENTICAL_CALL_THRESHOLD,
     CONTEXT_COMPACTION_THRESHOLD,
@@ -32,7 +39,9 @@ from engine.constants import (
     KEEP_RECENT_TOOL_RESULTS,
     MAX_REQUEST_IMAGES_SAFETY,
     LOOP_DETECTION_EXEMPT_TOOLS,
+    PROMPT_CACHE_TTL_MARGIN_S,
     SCREENSHOT_PRUNE_BATCH,
+    SUMMARY_REQUEST_HEADROOM_TOKENS,
     PRIMARY_PROBE_MAX_TOKENS,
     STEERING_TAG_CLOSE,
     STEERING_TAG_OPEN,
@@ -169,6 +178,23 @@ class RunnerContext:
     """Count of consecutive compactions that saved < 10% — when this
     reaches 2, further compactions are skipped until the agent does
     something that resets the count (e.g. user sends a fresh message)."""
+
+
+@dataclass
+class _SentPrompt:
+    """What the runner's last successful model call sent. A summary can
+    continue that prompt while the provider still caches it (see
+    engine.compaction.PromptPrefix)."""
+
+    session: Session
+    provider: Any
+    system_prompt: str | None
+    tools_signature: int
+    thinking: ThinkingConfig | None
+    message_count: int
+    message_signature: int
+    sent_at: float
+    """time.monotonic() when the request went out."""
 
 
 def _describe_refusal(response: ProviderResponse) -> tuple[str, dict[str, Any]]:
@@ -958,7 +984,7 @@ class AgentRunner:
                         "output_tokens": payload.get("output_tokens", 0),
                         "cache_read_tokens": payload.get("cache_read_tokens", 0),
                         "cache_write_tokens": payload.get("cache_write_tokens", 0),
-                        "reasoning_tokens": 0,
+                        "reasoning_tokens": payload.get("reasoning_tokens", 0),
                         "stop_reason": "end_turn",
                         "tool_calls": 0,
                         "thinking_blocks": 0,
@@ -1194,6 +1220,12 @@ class AsyncAgentRunner:
         self.get_compaction_ground_truth = get_compaction_ground_truth
         self.apply_working_memory_upserts = apply_working_memory_upserts
         self.get_working_memory_state = get_working_memory_state
+        # The last call's prompt, so a summary can continue it while it is
+        # still cached. Every caller of this compactor gets that: the runner's
+        # own compactions, the agent's summarize_context, a manual compact.
+        self._sent_prompt: _SentPrompt | None = None
+        if hasattr(self.compaction, "prompt_source"):
+            self.compaction.prompt_source = self.cached_prompt_prefix
 
     def _compute_truncation_budget(self, session: Session) -> int:
         """Compute a context-aware token budget for truncating a tool result."""
@@ -1492,9 +1524,11 @@ class AsyncAgentRunner:
                 # Channel 3 (mid-stream advisory): now that usage is
                 # updated and the band is current, see if pressure
                 # crossed mid-turn so the next tool result wrapper can
-                # surface the advisory.
+                # surface the advisory. Compaction itself waits for the
+                # next request's _ensure_context_room, where the reply and
+                # its tool results are in the transcript and the summary
+                # can continue the cached prompt.
                 self.mark_channel3_crossing()
-                await self._handle_context_pressure_async(session, ctx)
 
                 ctx.consecutive_errors = 0
                 ctx.last_error = None
@@ -1909,15 +1943,101 @@ class AsyncAgentRunner:
         )
         return result
 
+    def _request_tool_definitions(self) -> list | None:
+        if self.tool_registry and len(self.tool_registry) > 0:
+            return self.tool_registry.list_definitions()
+        return None
+
+    def _record_prompt(
+        self,
+        session: Session,
+        provider: Any,
+        request_messages: list[Message],
+        tool_defs: list | None,
+        thinking: ThinkingConfig | None,
+    ) -> _SentPrompt:
+        """Fingerprint a request before it goes out (see cached_prompt_prefix).
+        Taken before the send, so it records what the provider received."""
+        return _SentPrompt(
+            session=session,
+            provider=provider,
+            system_prompt=session.system_prompt,
+            tools_signature=value_signature(tool_defs),
+            thinking=thinking,
+            message_count=len(request_messages),
+            message_signature=message_signature(request_messages),
+            sent_at=time.monotonic(),
+        )
+
+    def _cached_prompt(self, session: Session) -> tuple[Any, list[Message], list | None] | None:
+        """``(provider, messages, tools)`` while the last call's prompt is
+        still in the provider's cache and the session would send it again
+        unchanged: same provider, system prompt, tools and thinking, and a
+        transcript that starts with the same messages. Else None."""
+        sent = self._sent_prompt
+        if sent is None or sent.session is not session:
+            return None
+        provider = self.fallback_chain.current if self.fallback_chain else self.provider
+        ttl = getattr(provider, "prompt_cache_ttl_s", None)
+        if provider is not sent.provider or not ttl:
+            return None
+        if time.monotonic() - sent.sent_at > ttl - PROMPT_CACHE_TTL_MARGIN_S:
+            return None
+        if session.system_prompt != sent.system_prompt:
+            return None
+        if (self.thinking if self.thinking.enabled else None) != sent.thinking:
+            return None
+        tools = self._request_tool_definitions()
+        if value_signature(tools) != sent.tools_signature:
+            return None
+        messages = session.get_messages()
+        if len(messages) < sent.message_count:
+            return None
+        if message_signature(messages[:sent.message_count]) != sent.message_signature:
+            return None
+        return provider, messages, tools
+
+    def cached_prompt_prefix(self, transcript: Any) -> PromptPrefix | None:
+        """The prompt the last call sent, for a summary that continues it, or
+        None when the summary would not read it from the provider's cache.
+
+        Bound to this runner's compactor as ``prompt_source``. A summary that
+        continues the prompt reads it at the cache-read rate, where a digest
+        is billed in full (see engine.compaction.PromptPrefix).
+        """
+        sent = self._sent_prompt
+        if sent is None or sent.session.transcript is not transcript:
+            return None
+        found = self._cached_prompt(sent.session)
+        if found is None:
+            return None
+        provider, messages, tools = found
+        # The instruction must start a new turn after the reply. Added to the
+        # user turn the cached prompt ends with, it would make Anthropic read
+        # nothing from the cache (measured on Opus 5.5 and Sonnet 5.5).
+        n = sent.message_count
+        if len(messages) <= n or messages[n].role != "assistant":
+            return None
+        window = int(getattr(provider, "context_window", 0) or 0)
+        needed = self._current_context_tokens(sent.session) + SUMMARY_REQUEST_HEADROOM_TOKENS
+        if window <= 0 or needed > window - self.config.max_tokens_per_turn:
+            return None
+        return PromptPrefix(
+            provider=provider,
+            system_prompt=sent.system_prompt,
+            tools=tools,
+            messages=messages,
+            thinking=sent.thinking,
+            max_tokens=self.config.max_tokens_per_turn,
+        )
+
     async def _call_provider_async(self, session: Session) -> ProviderResponse:
         """Make an async completion call without streaming."""
         provider = (
             self.fallback_chain.current if self.fallback_chain else self.provider
         )
 
-        tool_defs = None
-        if self.tool_registry and len(self.tool_registry) > 0:
-            tool_defs = self.tool_registry.list_definitions()
+        tool_defs = self._request_tool_definitions()
 
         start = time.perf_counter()
         # Channel 2 of the cooperative protocol: snapshot the pressure
@@ -1928,13 +2048,15 @@ class AsyncAgentRunner:
         request_messages = self._augment_messages_with_pressure_note(
             session.get_messages(),
         )
+        thinking = self.thinking if self.thinking.enabled else None
+        sent = self._record_prompt(session, provider, request_messages, tool_defs, thinking)
         try:
             interrupted, response = await self._race_interrupt(provider.complete_async(
                 messages=request_messages,
                 tools=tool_defs,
                 system_prompt=session.system_prompt,
                 max_tokens=self.config.max_tokens_per_turn,
-                thinking=self.thinking if self.thinking.enabled else None,
+                thinking=thinking,
             ))
         except Exception as exc:
             self._notify_llm_call(provider, start, streaming=False, response=None, error=exc)
@@ -1950,6 +2072,7 @@ class AsyncAgentRunner:
             raise
         if interrupted:
             raise TurnInterrupted("")
+        self._sent_prompt = sent
         self._notify_llm_call(provider, start, streaming=False, response=response, error=None)
         return response
 
@@ -1959,9 +2082,7 @@ class AsyncAgentRunner:
             self.fallback_chain.current if self.fallback_chain else self.provider
         )
 
-        tool_defs = None
-        if self.tool_registry and len(self.tool_registry) > 0:
-            tool_defs = self.tool_registry.list_definitions()
+        tool_defs = self._request_tool_definitions()
 
         # Text streamed so far, so an interrupt (or a stop) can keep what
         # the operator already saw (see TurnInterrupted / run()).
@@ -1988,13 +2109,15 @@ class AsyncAgentRunner:
         request_messages = self._augment_messages_with_pressure_note(
             session.get_messages(),
         )
+        thinking = self.thinking if self.thinking.enabled else None
+        sent = self._record_prompt(session, provider, request_messages, tool_defs, thinking)
         try:
             interrupted, response = await self._race_interrupt(provider.stream_to_response(
                 messages=request_messages,
                 tools=tool_defs,
                 system_prompt=session.system_prompt,
                 max_tokens=self.config.max_tokens_per_turn,
-                thinking=self.thinking if self.thinking.enabled else None,
+                thinking=thinking,
                 on_event=_handle_event,
             ))
         except Exception as exc:
@@ -2014,6 +2137,7 @@ class AsyncAgentRunner:
         self._stream_partial = []
         if interrupted:
             raise TurnInterrupted("".join(streamed_text))
+        self._sent_prompt = sent
         self._notify_llm_call(provider, start, streaming=True, response=response, error=None)
         return response
 
@@ -2654,6 +2778,9 @@ class AsyncAgentRunner:
             "Context overflow detected | session=%s | attempt %d/%d",
             session.id, ctx.compaction_attempts + 1, self.config.max_compaction_attempts,
         )
+        # The provider refused the request as too large, so a summary that
+        # continues it would be refused too: summarize the digest.
+        self._sent_prompt = None
 
         if ctx.compaction_attempts >= self.config.max_compaction_attempts:
             logger.error("Exhausted compaction attempts | session=%s", session.id)
@@ -2840,7 +2967,7 @@ class AsyncAgentRunner:
                         "output_tokens": payload.get("output_tokens", 0),
                         "cache_read_tokens": payload.get("cache_read_tokens", 0),
                         "cache_write_tokens": payload.get("cache_write_tokens", 0),
-                        "reasoning_tokens": 0,
+                        "reasoning_tokens": payload.get("reasoning_tokens", 0),
                         "stop_reason": "end_turn",
                         "tool_calls": 0,
                         "thinking_blocks": 0,
@@ -3044,6 +3171,8 @@ class AsyncAgentRunner:
             "summarizer_duration_ms": getattr(result, "summarizer_duration_ms", 0),
             "summarizer_model": getattr(result, "summarizer_model", None),
             "summarizer_cost_usd": getattr(result, "summarizer_cost_usd", None),
+            "summarizer_cache_read_tokens": getattr(result, "summarizer_cache_read_tokens", 0),
+            "summary_continued_prompt": getattr(result, "summary_continued_prompt", False),
             "resumed_from_previous": getattr(result, "resumed_from_previous", False),
             "trigger": trigger,
             "strategy": "llm_summary",
@@ -3067,7 +3196,17 @@ class AsyncAgentRunner:
             return
         usage_fraction = used_tokens / effective_window
 
-        if usage_fraction > self.config.compaction_threshold:
+        # Halving old tool results rewrites history, and the provider reads
+        # nothing from its cache past the first halved result. On Anthropic
+        # that meant everything after the compaction summary: in a long Opus
+        # 5.5 session, most halvings re-wrote ~330k tokens at the cache-write
+        # rate to save a few thousand cache-read tokens per later call. So
+        # halve only while the prompt is not cached (a cold cache rewrites
+        # everything anyway); while it is, compaction relieves the pressure.
+        if (
+            usage_fraction > self.config.compaction_threshold
+            and self._cached_prompt(session) is None
+        ):
             pruned = session.transcript.prune_old_tool_results(
                 keep_recent=KEEP_RECENT_TOOL_RESULTS
             )
@@ -3121,60 +3260,6 @@ class AsyncAgentRunner:
                     "Pre-request compaction failed | session=%s: %s",
                     session.id, compaction_result.error,
                 )
-            ctx.state = RunnerState.RUNNING
-
-    async def _handle_context_pressure_async(
-        self, session: Session, ctx: RunnerContext
-    ) -> None:
-        """Handle context pressure using REAL token count from API response."""
-        context_window = self.provider.context_window
-        effective_window = max(1, context_window - self.config.max_tokens_per_turn)
-        used_tokens = self.usage.effective_context_tokens()
-        usage_fraction = used_tokens / effective_window
-
-        if usage_fraction > self.config.compaction_threshold:
-            pruned = session.transcript.prune_old_tool_results(keep_recent=KEEP_RECENT_TOOL_RESULTS)
-            if pruned > 0:
-                logger.info(
-                    "Context pressure (%.1f%%): halved %d old tool results | session=%s",
-                    usage_fraction * 100, pruned, session.id,
-                )
-                await self._emit_system_event(SystemEvent(
-                    type="context_pruning",
-                    message=f"Context pressure ({usage_fraction:.0%}): halved {pruned} old tool results",
-                    details={
-                        "pruned_count": pruned,
-                        "usage_fraction": usage_fraction,
-                    },
-                ))
-
-        if usage_fraction > CONTEXT_COMPACTION_THRESHOLD:
-            ctx.state = RunnerState.COMPACTING
-            tokens_before = used_tokens
-            await self._emit_system_event(SystemEvent(
-                type="compaction_start",
-                message="Compacting conversation history...",
-                details={"tokens_before": tokens_before},
-            ))
-            compaction_result = self._attempt_compaction(session, ctx)
-            if compaction_result.success:
-                try:
-                    tokens_after = int(session.estimate_tokens())
-                except Exception:  # noqa: BLE001
-                    tokens_after = compaction_result.tokens_after
-                self._mark_context_compacted(tokens_after)
-                await self._emit_system_event(SystemEvent(
-                    type="compaction_complete",
-                    message=f"Compaction complete: {tokens_before} -> {tokens_after} tokens",
-                    details=self._compaction_event_details(
-                        compaction_result,
-                        trigger="context_pressure",
-                        tokens_before=tokens_before,
-                        tokens_after=tokens_after,
-                    ),
-                ))
-            else:
-                logger.warning("Compaction failed under context pressure | session=%s", session.id)
             ctx.state = RunnerState.RUNNING
 
 

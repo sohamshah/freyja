@@ -259,6 +259,7 @@ Agents can render interactive HTML/SVG widgets directly in the conversation — 
 Long sessions are first-class. Freyja tracks context pressure, compaction events, image history, and request media policy:
 
 - Token pressure triggers pruning and LLM-based compaction automatically
+- The summary request continues the session's own cached prompt, so it reads the conversation at the cache-read rate and sees all of it, not a cut-down digest
 - Compactions are visible in the transcript with before/after token estimates and a summary
 - Computer-use tool-result images are pruned from provider requests after the most recent few frames, while the UI retains the visual trail
 - The mission dashboard shows compaction cards and image-history policy

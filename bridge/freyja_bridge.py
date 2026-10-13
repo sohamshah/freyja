@@ -5098,12 +5098,12 @@ class _BridgeSession:
                     "output_tokens": payload.get("output_tokens", 0),
                     "cache_read_tokens": payload.get("cache_read_tokens", 0),
                     "cache_write_tokens": payload.get("cache_write_tokens", 0),
-                    "reasoning_tokens": 0,
+                    "reasoning_tokens": payload.get("reasoning_tokens", 0),
                     "stop_reason": "end_turn",
                     "tool_calls": 0,
                     "thinking_blocks": 0,
                     "error": None,
-                    "call_kind": "summarizer",
+                    "call_kind": payload.get("call_kind", "summarizer"),
                     "iterative": payload.get("iterative", False),
                 })
             ),
@@ -6859,7 +6859,11 @@ class _BridgeSession:
             )
             return
 
-        compactor = SummaryCompaction()
+        # The runner's compactor, so the summary can continue the prompt the
+        # last turn sent while the provider still caches it.
+        compactor = getattr(self.runner, "compaction", None)
+        if not isinstance(compactor, SummaryCompaction):
+            compactor = SummaryCompaction()
         try:
             request_tokens_before = int(self.session.estimate_tokens())
         except Exception:  # noqa: BLE001
@@ -7004,7 +7008,7 @@ class _BridgeSession:
                     "output_tokens": payload.get("output_tokens", 0),
                     "cache_read_tokens": payload.get("cache_read_tokens", 0),
                     "cache_write_tokens": payload.get("cache_write_tokens", 0),
-                    "reasoning_tokens": 0,
+                    "reasoning_tokens": payload.get("reasoning_tokens", 0),
                     "stop_reason": "end_turn",
                     "tool_calls": 0,
                     "thinking_blocks": 0,
@@ -7147,6 +7151,8 @@ class _BridgeSession:
             "summarizer_duration_ms": getattr(result, "summarizer_duration_ms", 0),
             "summarizer_model": getattr(result, "summarizer_model", None),
             "summarizer_cost_usd": getattr(result, "summarizer_cost_usd", None),
+            "summarizer_cache_read_tokens": getattr(result, "summarizer_cache_read_tokens", 0),
+            "summary_continued_prompt": getattr(result, "summary_continued_prompt", False),
             "resumed_from_previous": getattr(result, "resumed_from_previous", False),
             "chatVisible": True,
             **before_snapshot,

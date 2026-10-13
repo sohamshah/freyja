@@ -413,7 +413,11 @@ class TranscriptManager:
             if not isinstance(content, str):
                 continue
 
-            if content.rstrip().endswith(truncation_marker):
+            # Halve each result once. The marker sits between the kept head and
+            # tail, so testing for it at the end never matched, and every call
+            # halved the old results again (6,000 → 2,931 → 1,476 → 786 chars),
+            # rewriting history from the oldest one each time.
+            if truncation_marker in content:
                 continue
             if len(content) <= min_content_length:
                 continue

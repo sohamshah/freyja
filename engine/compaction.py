@@ -9,8 +9,11 @@ Provides:
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import logging
 import re
+import time
 from abc import abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
@@ -35,7 +38,7 @@ from engine.session import TranscriptManager
 from engine.types import ImageBlock, Message, ThinkingConfig
 
 if TYPE_CHECKING:
-    from engine.providers import ModelProvider, StructuredResponse
+    from engine.providers import ModelProvider, ProviderResponse, StructuredResponse
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +50,234 @@ _SUMMARY_INJECT_MARKER = "[Previous conversation summary]"
 # prompt cache can match, but it is not conversation, so the summarizer
 # doesn't get it.
 _SYSTEM_REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
+
+
+@dataclass
+class PromptPrefix:
+    """The prompt the session's last model call sent, still in the provider's
+    prompt cache, and what to send to continue it.
+
+    A summary request that repeats this prompt and adds its instruction as a
+    new turn reads the whole prompt at the cache-read rate (2.5-10% of the
+    input rate) and sees the whole conversation. The separate digest it
+    replaces is billed in full and holds a cut-down copy of the conversation
+    (long messages cut to 1,800 characters, the middle dropped past 400,000).
+
+    Everything here must be what that call sent. One different byte before the
+    new turn, and the provider reads nothing from its cache.
+    """
+
+    provider: "ModelProvider"
+    system_prompt: str | None
+    tools: list[Any] | None
+    messages: list[Message]
+    """The transcript as the next call would send it: the last call's messages,
+    unchanged, then at least the reply to them."""
+    thinking: ThinkingConfig | None
+    max_tokens: int
+
+
+def value_signature(value: Any) -> int:
+    """A fingerprint of a request part (messages, tool definitions).
+
+    Python caches the hash of each string, so after the first pass this costs
+    about a millisecond for 500 messages.
+    """
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return hash(value)
+    if isinstance(value, (list, tuple)):
+        return hash(tuple(value_signature(v) for v in value))
+    if isinstance(value, dict):
+        return hash(tuple((k, value_signature(v)) for k, v in value.items()))
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return hash((
+            type(value).__name__,
+            *(value_signature(getattr(value, f.name)) for f in dataclasses.fields(value)),
+        ))
+    try:
+        return hash(value)
+    except TypeError:
+        return hash(repr(value))
+
+
+def message_signature(messages: list[Message]) -> int:
+    """A fingerprint of what ``messages`` put into a request.
+
+    The runner takes one when it sends a request. A summary compares it before
+    it continues that request, which catches a message rewritten in between
+    (pruned screenshots, halved tool results). Token counts are left out: they
+    are bookkeeping and are not sent.
+    """
+    return value_signature([
+        (m.role, m.content, m.tool_call_id, m.tool_calls, m.thinking_blocks)
+        for m in messages
+    ])
+
+
+# The reply a summary request gets for a tool call the transcript has no
+# result for yet: the call that asked for the summary, and any calls after it
+# in the same batch. Both APIs reject a tool call without a result. The real
+# results are added after the summary, as usual.
+_NOT_RUN_YET = "[Not run yet: the conversation is summarized first.]"
+
+# Summary requests that continue the session's prompt may lower the reasoning
+# effort. Anthropic keeps the cache when only the effort changes (checked on
+# Opus 5.5 and Sonnet 5.5). OpenAI takes the effort from the provider's
+# configuration and ignores this, so its requests keep the session's effort,
+# which its cache requires.
+_SUMMARY_EFFORT = "medium"
+_WORKING_MEMORY_EFFORT = "low"
+_EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def _effort_at_most(thinking: ThinkingConfig | None, effort: str) -> ThinkingConfig | None:
+    if thinking is None or not thinking.enabled:
+        return thinking
+    current = thinking.effort if thinking.effort in _EFFORT_ORDER else "max"
+    if _EFFORT_ORDER.index(current) <= _EFFORT_ORDER.index(effort):
+        return thinking
+    return dataclasses.replace(thinking, effort=effort)
+
+
+def _results_for_open_tool_calls(messages: list[Message]) -> list[Message]:
+    """Results for the tool calls of the last assistant message that have none."""
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].role != "assistant":
+            continue
+        answered = {
+            m.tool_call_id for m in messages[i + 1:] if m.role == "tool_result"
+        }
+        return [
+            Message(role="tool_result", content=_NOT_RUN_YET, tool_call_id=call.id)
+            for call in messages[i].tool_calls or []
+            if call.id not in answered
+        ]
+    return []
+
+
+def _describe_message_start(msg: Message) -> str:
+    """Name a message so the summarizer can find it in the conversation."""
+    text = " ".join(_SYSTEM_REMINDER_RE.sub("", msg.get_text()).split())
+    if len(text) > 80:
+        text = text[:80].rstrip() + "…"
+    if msg.role == "user":
+        return f'the user message that begins "{text}"' if text else "a user message with no text"
+    if msg.role == "assistant":
+        if text:
+            return f'your message that begins "{text}"'
+        names = ", ".join(c.name for c in msg.tool_calls or [])
+        return f"your call to {names}" if names else "a message of yours with no text"
+    return "a tool result"
+
+
+def _summary_from_reply(raw_output: str) -> str:
+    summary_match = re.search(r"<summary>(.*?)</summary>", raw_output, re.DOTALL)
+    if summary_match:
+        return summary_match.group(1).strip()
+    return re.sub(r"<analysis>.*?</analysis>\s*", "", raw_output, flags=re.DOTALL).strip()
+
+
+def _json_object(text: str) -> dict[str, Any] | None:
+    """The JSON object in a reply, with or without a code fence around it."""
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        data = json.loads(text[start:end + 1])
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) and data else None
+
+
+def _call_stats(provider: Any, response: Any, duration_ms: int) -> dict[str, Any]:
+    """Token counts, model and cost of one summarizer call, for telemetry."""
+    usage = getattr(response, "usage", None)
+
+    def count(name: str) -> int:
+        return int(getattr(usage, name, 0) or 0) if usage else 0
+
+    # Freyja's id for the model first: the pricing table is keyed by it, and it
+    # carries a speed tier (`-fast`, `-ultrafast`) that the API's echoed model
+    # name drops.
+    model_id = (
+        getattr(provider, "model_id", None)
+        or getattr(response, "model", None)
+        or "unknown"
+    )
+    stats = {
+        "input_tokens": count("input_tokens"),
+        "output_tokens": count("output_tokens"),
+        "cache_read_tokens": count("cache_read_tokens"),
+        "cache_write_tokens": count("cache_write_tokens"),
+        "reasoning_tokens": count("reasoning_tokens"),
+        "duration_ms": duration_ms,
+        "model": model_id,
+    }
+    cost: float | None = None
+    try:
+        from engine.providers import compute_cost
+        cost = compute_cost(
+            model_id,
+            input_tokens=stats["input_tokens"],
+            output_tokens=stats["output_tokens"],
+            cache_read_tokens=stats["cache_read_tokens"],
+            cache_write_tokens=stats["cache_write_tokens"],
+        )
+    except Exception:
+        cost = None
+    stats["cost_usd"] = cost
+    return stats
+
+
+_SUMMARY_SECTIONS = """1. Primary Request and Intent:
+   - Capture all of the user's explicit requests in detail
+   - Note the overall goal and any sub-goals
+
+2. Key Technical Concepts:
+   - List important technical concepts, tools, and patterns discussed
+   - Include any configuration or setup details
+
+3. Files and Code Sections:
+   - List specific files examined, modified, or created
+   - Include relevant code snippets (especially recent changes)
+   - Note why each file is important
+   - Keep a distinct first-person list titled "Actions I performed" naming every
+     file you CREATED or EDITED, every command that changed state, and every
+     commit/PR — written as "I created X", "I edited Y". A completed action does
+     not become irrelevant by being finished: never drop it or fold it away.
+     This is what lets you later answer truthfully whether you made changes.
+
+4. Sub-agent Artifact References:
+   - CRITICAL: Preserve ALL file paths to sub-agent artifacts
+     (paths matching ~/.freyja/sessions/*/artifacts/*.md)
+   - These artifact files contain the ONLY copy of sub-agent research findings
+   - For each artifact, list: the file path, the sub-agent label, and a one-line summary
+   - Also preserve any other data file paths referenced in tool results
+
+5. Errors and Fixes:
+   - Document errors encountered and their solutions
+   - Include user feedback on fixes
+
+5. Problem Solving:
+   - Document problems solved
+   - Note any ongoing troubleshooting
+
+6. All User Messages:
+   - List ALL user messages (not tool results)
+   - These are critical for understanding intent changes
+
+7. Pending Tasks:
+   - Outline any tasks explicitly requested but not yet completed
+
+8. Current Work:
+   - Describe precisely what was being worked on immediately before this summary
+   - Focus on the most recent messages
+   - Include file names and code snippets where applicable
+
+9. Optional Next Step:
+   - List the next step ONLY if it directly aligns with the user's most recent explicit request
+   - Include direct quotes showing what task was in progress
+   - Do not start tangential work without user confirmation"""
 
 
 def _is_summary_inject(msg: Message) -> bool:
@@ -316,6 +547,13 @@ class CompactionResult:
     """Estimated USD cost of the summarizer call. None when the model
     isn't in the pricing table."""
 
+    summarizer_cache_read_tokens: int = 0
+    """Input tokens the summarizer call read from the provider's cache."""
+
+    summary_continued_prompt: bool = False
+    """True when the summary continued the session's cached prompt (see
+    PromptPrefix) instead of reading a digest."""
+
 
 # ============================================================================
 # Compaction Strategy Protocol
@@ -395,60 +633,51 @@ Before providing your final summary, wrap your analysis in <analysis> tags to or
 
 Your summary MUST include these sections:
 
-1. Primary Request and Intent:
-   - Capture all of the user's explicit requests in detail
-   - Note the overall goal and any sub-goals
-
-2. Key Technical Concepts:
-   - List important technical concepts, tools, and patterns discussed
-   - Include any configuration or setup details
-
-3. Files and Code Sections:
-   - List specific files examined, modified, or created
-   - Include relevant code snippets (especially recent changes)
-   - Note why each file is important
-   - Keep a distinct first-person list titled "Actions I performed" naming every
-     file you CREATED or EDITED, every command that changed state, and every
-     commit/PR — written as "I created X", "I edited Y". A completed action does
-     not become irrelevant by being finished: never drop it or fold it away.
-     This is what lets you later answer truthfully whether you made changes.
-
-4. Sub-agent Artifact References:
-   - CRITICAL: Preserve ALL file paths to sub-agent artifacts
-     (paths matching ~/.freyja/sessions/*/artifacts/*.md)
-   - These artifact files contain the ONLY copy of sub-agent research findings
-   - For each artifact, list: the file path, the sub-agent label, and a one-line summary
-   - Also preserve any other data file paths referenced in tool results
-
-5. Errors and Fixes:
-   - Document errors encountered and their solutions
-   - Include user feedback on fixes
-
-5. Problem Solving:
-   - Document problems solved
-   - Note any ongoing troubleshooting
-
-6. All User Messages:
-   - List ALL user messages (not tool results)
-   - These are critical for understanding intent changes
-
-7. Pending Tasks:
-   - Outline any tasks explicitly requested but not yet completed
-
-8. Current Work:
-   - Describe precisely what was being worked on immediately before this summary
-   - Focus on the most recent messages
-   - Include file names and code snippets where applicable
-
-9. Optional Next Step:
-   - List the next step ONLY if it directly aligns with the user's most recent explicit request
-   - Include direct quotes showing what task was in progress
-   - Do not start tangential work without user confirmation
+""" + _SUMMARY_SECTIONS + """
 
 CONVERSATION TO SUMMARIZE:
 {conversation}
 
 Respond with <analysis>...</analysis> followed by <summary>...</summary>. Be thorough but focused on what's needed to continue the work."""
+
+    # The instruction for a summary that continues the session's own prompt
+    # (see PromptPrefix). The conversation is the context above it, so it is
+    # not pasted in. No <analysis> block: the models that run these think
+    # before they answer, and visible analysis is output billed and thrown away.
+    CONTINUATION_SUMMARY_PROMPT = """This conversation is about to be compacted. The messages above will be replaced by the summary you write now, so it must hold everything needed to continue the work. Do not call any tools and do not continue the task: your whole reply is the summary.
+{previous}{kept}{ground_truth}
+Pay close attention to the user's explicit requests and to what you did. Keep the technical details, code patterns, file changes and decisions that are needed to continue without losing context. Before you write, go through the conversation in order, and check that the summary has every user request, decision, error and fix, and every change you made.
+
+Your summary MUST include these sections:
+
+""" + _SUMMARY_SECTIONS + """
+
+Reply with the summary inside <summary></summary> tags, and nothing else."""
+
+    # The working-memory request (Call B) when it continues the session's
+    # prompt. Structured output is not used here: on OpenAI a response format
+    # changes the cached prefix (measured: 0 tokens read), so the schema goes
+    # into the instruction and the reply is parsed.
+    CONTINUATION_WORKING_MEMORY_PROMPT = """This conversation is about to be compacted: older turns will be dropped from the live context. Capture everything that must survive into your persistent working memory. Do not call any tools and do not continue the task.
+
+Reply with one JSON object that has three fields:
+
+1. summary: a high-level summary of the session: the goal, where things stand, and what remains. The durable narrative an agent resuming this session needs.
+
+2. actions_completed: every concrete action taken or piece of work completed: each file created or edited, each command that changed state, each commit or PR, each bug fixed. First person, one short item each. This list answers "what have I actually done this session?", so make it complete and specific.
+
+3. entities: the durable entity graph (workstreams, decisions, findings, open threads, artifact notes): the structured reasoning a file list can't convey.
+
+RULES:
+- Be FAITHFUL. Record only what actually happened. Never invent progress, files, or decisions.
+- UPDATE and EXTEND the current working memory (shown below) rather than starting over. Reuse an existing entity's title or text to update it; add only entities that are new. Do not duplicate.
+- Treat the confirmed actions (when given) as authoritative: each one must appear in actions_completed, attributed to yourself.
+- Prefer durable, high-signal facts over transient chatter.
+{current_working_memory}{ground_truth}
+The object must match this JSON Schema:
+{schema}
+
+Reply with only the JSON object."""
 
     WORKING_MEMORY_EXTRACTION_PROMPT = """You maintain the durable working memory for a long-running coding agent session. The conversation below is about to be compacted (older turns dropped from the live context), so your job is to capture everything that must survive into the agent's persistent memory.
 
@@ -480,6 +709,10 @@ CONVERSATION TO EXTRACT FROM:
         self.keep_recent = keep_recent_messages
         self.min_messages = min_messages_to_compact
         self.summary_max_tokens = summary_max_tokens
+        # Set by the runner that owns this compactor: returns the prompt its
+        # last call sent while the provider still caches it, else None. With
+        # one, the summary continues that prompt instead of sending a digest.
+        self.prompt_source: Callable[[TranscriptManager], PromptPrefix | None] | None = None
 
     def should_compact(
         self,
@@ -670,6 +903,7 @@ CONVERSATION TO EXTRACT FROM:
             ]
 
         conversation_text = self._format_conversation(to_summarize)
+        prefix = self._cached_prefix(transcript)
 
         # Collect summarizer-call telemetry so the result can carry it
         # back to the caller (Gap 4). The hook is fired regardless of
@@ -678,9 +912,10 @@ CONVERSATION TO EXTRACT FROM:
         summarizer_stats: dict[str, Any] = {}
         summary: str | None = None
         try:
-            # Two parallel calls off the same conversation payload: Call A
-            # (prose summary, returned here) and Call B (structured working
-            # memory, applied via on_working_memory_upserts). See
+            # Two parallel calls: Call A (prose summary, returned here) and
+            # Call B (structured working memory, applied via
+            # on_working_memory_upserts). Both continue the session's cached
+            # prompt when there is one, else both read the digest. See
             # `_run_summary_and_working_memory`.
             summary = self._run_summary_and_working_memory(
                 conversation_text,
@@ -692,6 +927,8 @@ CONVERSATION TO EXTRACT FROM:
                 working_memory_state=working_memory_state,
                 on_working_memory_upserts=on_working_memory_upserts,
                 on_working_memory_call_start=on_working_memory_call_start,
+                prefix=prefix,
+                kept=to_keep,
             )
         except Exception as e:
             logger.warning(f"Summary generation failed: {e}")
@@ -760,6 +997,8 @@ CONVERSATION TO EXTRACT FROM:
             summarizer_duration_ms=int(summarizer_stats.get("duration_ms", 0) or 0),
             summarizer_model=summarizer_stats.get("model"),
             summarizer_cost_usd=summarizer_stats.get("cost_usd"),
+            summarizer_cache_read_tokens=int(summarizer_stats.get("cache_read_tokens", 0) or 0),
+            summary_continued_prompt=bool(summarizer_stats.get("continued", False)),
         )
 
     @staticmethod
@@ -998,7 +1237,6 @@ CONVERSATION TO EXTRACT FROM:
         downstream hooks (the runner's on_llm_call) can tag the cost
         as compaction overhead instead of regular session spend (Gap 4).
         """
-        import re
         import time as _time
         from engine.redact import redact_sensitive_text
 
@@ -1060,76 +1298,19 @@ CONVERSATION TO EXTRACT FROM:
         # Pull usage off the response so callers can attribute the
         # summarizer's spend (Gap 4). All providers populate APIUsage
         # — when they don't, the fields default to 0.
-        usage = getattr(response, "usage", None)
-        in_tok = int(getattr(usage, "input_tokens", 0) or 0) if usage else 0
-        out_tok = int(getattr(usage, "output_tokens", 0) or 0) if usage else 0
-        cr_tok = int(getattr(usage, "cache_read_tokens", 0) or 0) if usage else 0
-        cw_tok = int(getattr(usage, "cache_write_tokens", 0) or 0) if usage else 0
-        # Freyja's id for the model first: the pricing table is keyed by it,
-        # and it carries a speed tier (`-fast`, `-ultrafast`) that the API's
-        # echoed model name drops.
-        model_id = (
-            getattr(provider, "model_id", None)
-            or getattr(response, "model", None)
-            or "unknown"
+        self._report_summary_call(
+            provider, response, duration_ms,
+            continued=False,
+            iterative=previous_summary is not None,
+            stats_out=stats_out,
+            on_summarizer_call=on_summarizer_call,
         )
-        # Estimate cost via the same compute_cost the rest of the codebase
-        # uses; None if the model isn't in the pricing table.
-        cost: float | None = None
-        try:
-            from engine.providers import compute_cost
-            cost = compute_cost(
-                model_id,
-                input_tokens=in_tok,
-                output_tokens=out_tok,
-                cache_read_tokens=cr_tok,
-                cache_write_tokens=cw_tok,
-            )
-        except Exception:
-            cost = None
-        if stats_out is not None:
-            stats_out.update({
-                "input_tokens": in_tok,
-                "output_tokens": out_tok,
-                "cache_read_tokens": cr_tok,
-                "cache_write_tokens": cw_tok,
-                "duration_ms": duration_ms,
-                "model": model_id,
-                "cost_usd": cost,
-            })
-        if on_summarizer_call is not None:
-            try:
-                on_summarizer_call({
-                    "call_kind": "summarizer",
-                    "provider": getattr(provider, "name", "unknown"),
-                    "model": model_id,
-                    "input_tokens": in_tok,
-                    "output_tokens": out_tok,
-                    "cache_read_tokens": cr_tok,
-                    "cache_write_tokens": cw_tok,
-                    "duration_ms": duration_ms,
-                    "cost_usd": cost,
-                    "iterative": previous_summary is not None,
-                })
-            except Exception:
-                logger.exception("on_summarizer_call hook failed")
 
         raw_output = response.content.strip()
         if not raw_output:
             raise ValueError("Empty summary generated")
 
-        summary_match = re.search(
-            r"<summary>(.*?)</summary>",
-            raw_output,
-            re.DOTALL,
-        )
-
-        if summary_match:
-            summary = summary_match.group(1).strip()
-        else:
-            analysis_pattern = r"<analysis>.*?</analysis>\s*"
-            summary = re.sub(analysis_pattern, "", raw_output, flags=re.DOTALL).strip()
-
+        summary = _summary_from_reply(raw_output)
         if not summary:
             raise ValueError("Could not extract summary from model output")
 
@@ -1139,6 +1320,219 @@ CONVERSATION TO EXTRACT FROM:
         # conversation payload — see `_run_summary_and_working_memory`. This
         # call (Call A) is now summary-only.
         return redact_sensitive_text(summary)
+
+    @staticmethod
+    def _report_summary_call(
+        provider: Any,
+        response: Any,
+        duration_ms: int,
+        *,
+        continued: bool,
+        iterative: bool,
+        stats_out: dict[str, Any] | None,
+        on_summarizer_call: Callable[[dict[str, Any]], None] | None,
+    ) -> None:
+        """Record a summary call's tokens and cost (Gap 4)."""
+        stats = {**_call_stats(provider, response, duration_ms), "continued": continued}
+        if stats_out is not None:
+            stats_out.update(stats)
+        if on_summarizer_call is not None:
+            try:
+                on_summarizer_call({
+                    "call_kind": "summarizer",
+                    "provider": getattr(provider, "name", "unknown"),
+                    **stats,
+                    "iterative": iterative,
+                })
+            except Exception:
+                logger.exception("on_summarizer_call hook failed")
+
+    def _cached_prefix(self, transcript: TranscriptManager) -> PromptPrefix | None:
+        if self.prompt_source is None:
+            return None
+        try:
+            return self.prompt_source(transcript)
+        except Exception:  # noqa: BLE001
+            logger.debug("prompt source failed; summarizing a digest", exc_info=True)
+            return None
+
+    @staticmethod
+    def _continue_prompt(
+        prefix: PromptPrefix, instruction: str, *, effort: str,
+    ) -> tuple["ProviderResponse", int]:
+        """Send the session's cached prompt again with ``instruction`` as a
+        new turn after it. Returns the response and the duration in ms.
+
+        The instruction starts a new user turn after the reply: on Anthropic, a
+        block added to the cached user turn itself reads nothing from the cache
+        (measured on Opus 5.5 and Sonnet 5.5). Tool use is switched off; both
+        APIs keep the cache when only tool_choice changes.
+        """
+        messages = [
+            *prefix.messages,
+            *_results_for_open_tool_calls(prefix.messages),
+            Message(role="user", content=instruction),
+        ]
+        start = time.perf_counter()
+        response = prefix.provider.complete(
+            messages,
+            tools=prefix.tools,
+            system_prompt=prefix.system_prompt,
+            max_tokens=prefix.max_tokens,
+            thinking=_effort_at_most(prefix.thinking, effort),
+            tool_choice="none" if prefix.tools else None,
+        )
+        return response, int((time.perf_counter() - start) * 1000)
+
+    def _continue_for_summary(
+        self,
+        prefix: PromptPrefix,
+        *,
+        kept: list[Message],
+        previous_summary: str | None,
+        ground_truth: str | None,
+        stats_out: dict[str, Any] | None,
+        on_summarizer_call: Callable[[dict[str, Any]], None] | None,
+    ) -> str:
+        """Call A, as a continuation of the session's cached prompt."""
+        from engine.redact import redact_sensitive_text
+
+        previous = ""
+        if previous_summary:
+            previous = (
+                "\nThe conversation starts with the summary of its earlier part, "
+                f"marked {_SUMMARY_INJECT_MARKER}. Your summary replaces that one "
+                "too. Keep every fact from it that still matters (file paths, "
+                "function signatures, error messages, decisions, artifact paths, "
+                "user requests), and keep every action listed under \"Actions I "
+                "performed\". Remove only what the later conversation superseded.\n"
+            )
+        kept_note = ""
+        first_kept = next((m for m in kept if not _is_summary_inject(m)), None)
+        if first_kept is not None:
+            kept_note = (
+                f"\nThe last {len(kept)} messages, from "
+                f"{_describe_message_start(first_kept)}, stay in the context word "
+                "for word after your summary. Cover them briefly and give the "
+                "detail to everything before them.\n"
+            )
+        gt_note = ""
+        if ground_truth:
+            gt_note = (
+                "\nConfirmed actions (ground truth from the runtime ledger: these "
+                "file writes, edits and state changes happened in this session). "
+                "List each one in the first-person \"Actions I performed\" list, "
+                "attributed to yourself; do not omit or soften any of them:\n"
+                f"{redact_sensitive_text(ground_truth)}\n"
+            )
+        instruction = self.CONTINUATION_SUMMARY_PROMPT.format(
+            previous=previous, kept=kept_note, ground_truth=gt_note,
+        )
+        response, duration_ms = self._continue_prompt(
+            prefix, instruction, effort=_SUMMARY_EFFORT,
+        )
+        self._report_summary_call(
+            prefix.provider, response, duration_ms,
+            continued=True,
+            iterative=previous_summary is not None,
+            stats_out=stats_out,
+            on_summarizer_call=on_summarizer_call,
+        )
+        summary = _summary_from_reply((response.content or "").strip())
+        if not summary:
+            called = " (it called a tool instead)" if response.tool_calls else ""
+            raise ValueError(f"the reply held no summary{called}")
+        return redact_sensitive_text(summary)
+
+    def _continue_for_working_memory(
+        self,
+        prefix: PromptPrefix,
+        *,
+        working_memory_state: str | None,
+        ground_truth: str | None,
+        stats_out: dict[str, Any] | None,
+        on_call_start: Callable[[dict[str, Any]], None] | None,
+    ) -> dict[str, Any] | None:
+        """Call B, as a continuation of the session's cached prompt.
+
+        Best-effort like `_extract_working_memory`: None when the call fails or
+        the reply holds no JSON object, and the caller's ledger-based refresh
+        runs instead.
+        """
+        wm_section, gt_section = self._working_memory_sections(
+            working_memory_state, ground_truth,
+        )
+        instruction = self.CONTINUATION_WORKING_MEMORY_PROMPT.format(
+            current_working_memory=wm_section,
+            ground_truth=gt_section,
+            schema=json.dumps(_working_memory_schema(), indent=1),
+        )
+        provider = prefix.provider
+        if on_call_start is not None:
+            try:
+                on_call_start({
+                    "provider": getattr(provider, "name", "unknown"),
+                    "model": getattr(provider, "model_id", "unknown"),
+                    "has_state": bool(wm_section),
+                    "has_ground_truth": bool(gt_section),
+                    "conversation_chars": 0,
+                    "continued": True,
+                })
+            except Exception:
+                logger.debug("on_working_memory_call_start hook failed", exc_info=True)
+        try:
+            response, duration_ms = self._continue_prompt(
+                prefix, instruction, effort=_WORKING_MEMORY_EFFORT,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if stats_out is not None:
+                stats_out.update({
+                    "call_kind": "working_memory_extraction",
+                    "status": "failed",
+                    "error": f"{type(exc).__name__}: {exc}"[:500],
+                    "continued": True,
+                })
+            logger.debug("working-memory call failed", exc_info=True)
+            return None
+        raw = (response.content or "").strip()
+        data = _json_object(raw)
+        if stats_out is not None:
+            stats_out.update({
+                "call_kind": "working_memory_extraction",
+                "status": "ok" if data else "failed",
+                "error": None if data else "the reply held no JSON object",
+                "provider": getattr(provider, "name", "unknown"),
+                **_call_stats(provider, response, duration_ms),
+                "continued": True,
+                "raw_output": raw if len(raw) <= 24_000 else raw[:24_000] + "\n…(truncated)…",
+            })
+        if data is None:
+            return None
+        return self._normalize_working_memory(data)
+
+    @staticmethod
+    def _working_memory_sections(
+        working_memory_state: str | None, ground_truth: str | None,
+    ) -> tuple[str, str]:
+        """The current-working-memory and confirmed-actions parts of Call B."""
+        from engine.redact import redact_sensitive_text
+
+        wm_section = ""
+        if working_memory_state and working_memory_state.strip():
+            wm_section = (
+                "\nCURRENT WORKING MEMORY (update and extend this — do not "
+                "start over):\n"
+                f"{redact_sensitive_text(working_memory_state)}\n"
+            )
+        gt_section = ""
+        if ground_truth and ground_truth.strip():
+            gt_section = (
+                "\nCONFIRMED ACTIONS (ground truth from the runtime ledger — "
+                "these file writes/edits and state changes definitely happened "
+                "this session; every one must appear in actions_completed):\n"
+                f"{redact_sensitive_text(ground_truth)}\n"
+            )
+        return wm_section, gt_section
 
     def _extract_working_memory(
         self,
@@ -1178,21 +1572,9 @@ CONVERSATION TO EXTRACT FROM:
         if not safe_conversation.strip():
             return None
 
-        wm_section = ""
-        if working_memory_state and working_memory_state.strip():
-            wm_section = (
-                "\nCURRENT WORKING MEMORY (update and extend this — do not "
-                "start over):\n"
-                f"{redact_sensitive_text(working_memory_state)}\n"
-            )
-        gt_section = ""
-        if ground_truth and ground_truth.strip():
-            gt_section = (
-                "\nCONFIRMED ACTIONS (ground truth from the runtime ledger — "
-                "these file writes/edits and state changes definitely happened "
-                "this session; every one must appear in actions_completed):\n"
-                f"{redact_sensitive_text(ground_truth)}\n"
-            )
+        wm_section, gt_section = self._working_memory_sections(
+            working_memory_state, ground_truth,
+        )
 
         system_prompt = self.WORKING_MEMORY_EXTRACTION_PROMPT.format(
             current_working_memory=wm_section,
@@ -1292,36 +1674,13 @@ CONVERSATION TO EXTRACT FROM:
         # Capture spend so the orchestrator can attribute it as compaction
         # overhead (same treatment as the summary call).
         if stats_out is not None:
-            usage = getattr(resp, "usage", None)
-            in_tok = int(getattr(usage, "input_tokens", 0) or 0) if usage else 0
-            out_tok = int(getattr(usage, "output_tokens", 0) or 0) if usage else 0
-            cr_tok = int(getattr(usage, "cache_read_tokens", 0) or 0) if usage else 0
-            cw_tok = int(getattr(usage, "cache_write_tokens", 0) or 0) if usage else 0
-            model_id = (
-                getattr(provider, "model_id", None)
-                or getattr(resp, "model", None)
-                or "unknown"
-            )
-            cost: float | None = None
-            try:
-                from engine.providers import compute_cost
-                cost = compute_cost(
-                    model_id,
-                    input_tokens=in_tok,
-                    output_tokens=out_tok,
-                    cache_read_tokens=cr_tok,
-                    cache_write_tokens=cw_tok,
-                )
-            except Exception:
-                cost = None
             # Capture the raw structured JSON the model returned so the
             # bridge can ship it in the `working_memory_complete` event for
             # the operator's expandable inspection box. Cap the serialized
             # size so a pathological response can't blow the event payload.
             raw_obj = getattr(resp, "data", None)
             try:
-                import json as _json
-                raw_text = _json.dumps(raw_obj, indent=2, ensure_ascii=False)
+                raw_text = json.dumps(raw_obj, indent=2, ensure_ascii=False)
             except Exception:
                 raw_text = str(raw_obj)
             if isinstance(raw_text, str) and len(raw_text) > 24_000:
@@ -1330,13 +1689,8 @@ CONVERSATION TO EXTRACT FROM:
                 "call_kind": "working_memory_extraction",
                 "status": "ok",
                 "provider": getattr(provider, "name", "unknown"),
-                "model": model_id,
-                "input_tokens": in_tok,
-                "output_tokens": out_tok,
-                "cache_read_tokens": cr_tok,
-                "cache_write_tokens": cw_tok,
-                "duration_ms": duration_ms,
-                "cost_usd": cost,
+                **_call_stats(provider, resp, duration_ms),
+                "continued": False,
                 "raw_output": raw_text,
             })
 
@@ -1390,6 +1744,8 @@ CONVERSATION TO EXTRACT FROM:
         working_memory_state: str | None = None,
         on_working_memory_upserts: "Callable[[dict[str, Any] | None], None] | None" = None,
         on_working_memory_call_start: "Callable[[dict[str, Any]], None] | None" = None,
+        prefix: PromptPrefix | None = None,
+        kept: list[Message] | None = None,
     ) -> str:
         """Run the prose-summary call (Call A) and the structured
         working-memory extraction (Call B) concurrently against the same
@@ -1405,6 +1761,12 @@ CONVERSATION TO EXTRACT FROM:
           — even with ``None`` — so the bridge's deterministic ledger-based
           refresh runs on every compaction.
 
+        With a ``prefix``, both calls continue the session's cached prompt
+        instead of reading ``conversation`` (see PromptPrefix), and ``kept``
+        names the messages that stay word for word after the summary. If that
+        Call A fails it summarizes ``conversation`` instead; Call B, being
+        best-effort, is not repeated.
+
         Telemetry for both calls is fired from this (main) thread after both
         workers have finished, so the ``on_summarizer_call`` hook is never
         invoked concurrently.
@@ -1412,9 +1774,24 @@ CONVERSATION TO EXTRACT FROM:
         from concurrent.futures import ThreadPoolExecutor
         from concurrent.futures import TimeoutError as FuturesTimeout
 
-        # No working-memory sink wired → nothing to extract; just the summary
-        # (single call, on its own thread-free path).
-        if on_working_memory_upserts is None:
+        wm_stats: dict[str, Any] = {}
+
+        def summarize() -> str:
+            if prefix is not None:
+                try:
+                    return self._continue_for_summary(
+                        prefix,
+                        kept=kept or [],
+                        previous_summary=previous_summary,
+                        ground_truth=ground_truth,
+                        stats_out=stats_out,
+                        on_summarizer_call=on_summarizer_call,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "summary continuing the cached prompt failed (%s); "
+                        "summarizing a digest instead", exc,
+                    )
             return self._generate_summary(
                 conversation,
                 provider,
@@ -1424,7 +1801,29 @@ CONVERSATION TO EXTRACT FROM:
                 ground_truth=ground_truth,
             )
 
-        wm_stats: dict[str, Any] = {}
+        def extract_working_memory() -> dict[str, Any] | None:
+            if prefix is not None:
+                return self._continue_for_working_memory(
+                    prefix,
+                    working_memory_state=working_memory_state,
+                    ground_truth=ground_truth,
+                    stats_out=wm_stats,
+                    on_call_start=on_working_memory_call_start,
+                )
+            return self._extract_working_memory(
+                conversation,
+                provider,
+                working_memory_state=working_memory_state,
+                ground_truth=ground_truth,
+                stats_out=wm_stats,
+                on_call_start=on_working_memory_call_start,
+            )
+
+        # No working-memory sink wired → nothing to extract; just the summary
+        # (single call, on its own thread-free path).
+        if on_working_memory_upserts is None:
+            return summarize()
+
         # Not a ``with`` block: leaving one waits for every worker, so a hung
         # Call B would still hold compaction (and the gateway turn behind it)
         # until the SDK's own 300 s timeout fired. 2026-10-05: a stuck Call B
@@ -1435,24 +1834,8 @@ CONVERSATION TO EXTRACT FROM:
             # Call A fires on_summarizer_call itself (inside its worker); we
             # let it, then resolve it last so its hook has completed before we
             # fire Call B's from this thread — no concurrent hook calls.
-            fa = pool.submit(
-                self._generate_summary,
-                conversation,
-                provider,
-                previous_summary=previous_summary,
-                stats_out=stats_out,
-                on_summarizer_call=on_summarizer_call,
-                ground_truth=ground_truth,
-            )
-            fb = pool.submit(
-                self._extract_working_memory,
-                conversation,
-                provider,
-                working_memory_state=working_memory_state,
-                ground_truth=ground_truth,
-                stats_out=wm_stats,
-                on_call_start=on_working_memory_call_start,
-            )
+            fa = pool.submit(summarize)
+            fb = pool.submit(extract_working_memory)
 
             # Resolve Call B first (best-effort, never raises out of here).
             wm_result: dict[str, Any] | None
@@ -1507,8 +1890,10 @@ CONVERSATION TO EXTRACT FROM:
                     "output_tokens": wm_stats.get("output_tokens", 0),
                     "cache_read_tokens": wm_stats.get("cache_read_tokens", 0),
                     "cache_write_tokens": wm_stats.get("cache_write_tokens", 0),
+                    "reasoning_tokens": wm_stats.get("reasoning_tokens", 0),
                     "duration_ms": wm_stats.get("duration_ms", 0),
                     "cost_usd": wm_stats.get("cost_usd"),
+                    "continued": wm_stats.get("continued", False),
                     "iterative": previous_summary is not None,
                 })
             except Exception:

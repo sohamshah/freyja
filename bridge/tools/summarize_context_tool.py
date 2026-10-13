@@ -441,6 +441,13 @@ class SummarizeContextTool:
                 "tokens_after": result.tokens_after,
                 "entries_removed": result.entries_removed,
                 "resumed_from_previous": getattr(result, "resumed_from_previous", False),
+                # Whether the summary continued the session's cached prompt
+                # (engine.compaction.PromptPrefix) and what that call read.
+                "summary_continued_prompt": getattr(result, "summary_continued_prompt", False),
+                "summarizer_input_tokens": getattr(result, "summarizer_input_tokens", 0),
+                "summarizer_cache_read_tokens": getattr(result, "summarizer_cache_read_tokens", 0),
+                "summarizer_output_tokens": getattr(result, "summarizer_output_tokens", 0),
+                "summarizer_cost_usd": getattr(result, "summarizer_cost_usd", None),
                 "reason": reason or None,
                 # Excerpt for the inline glance, FULL text for the
                 # expand panel and dashboard detail view.

@@ -95,10 +95,15 @@ The context manager monitors fill level using provider token counts from API res
 |-------|---------|--------|-----------------|
 | 0 — Skill unload | 60% fill | Deactivate skills unreferenced in 5+ turns; keep descriptions, drop bodies | Near-zero; re-activatable |
 | 1 — Episode compression | 70% fill | Replace verbose sub-agent transcripts with episode summaries | Minimal; intentionally summarized |
-| 2 — Tool result truncation | 80% fill | Truncate old tool results to head (70%) + tail (25%); keep 3 most recent | Targeted |
-| 3 — Full compaction | 90% fill | Middle-out LLM summarization; re-attach recent skills (5K tokens each, 25K total budget) | Lossy but structured |
+| 2 — Tool result truncation | 25% fill, while the prompt is not cached | Truncate each old tool result once to head (70%) + tail (25%); keep 3 most recent | Targeted |
+| 3 — Full compaction | 70% fill, or when the agent calls `summarize_context` | LLM summarization; re-attach recent skills (5K tokens each, 25K total budget) | Lossy but structured |
 
-These thresholds are drawn from our engine constants (`CONTEXT_PRESSURE_THRESHOLD = 0.80`, `CONTEXT_COMPACTION_THRESHOLD = 0.90`) and from Claude Code's default of approximately 83.5%. Most sessions never reach Layer 3.
+These thresholds are drawn from our engine constants (`CONTEXT_PRESSURE_THRESHOLD = 0.25`, `CONTEXT_COMPACTION_THRESHOLD = 0.70`) and from Claude Code's default of approximately 83.5%. Most sessions never reach Layer 3.
+
+Both layers are built around the provider's prompt cache, which reads an unchanged prompt prefix at 2.5-10% of the input rate:
+
+- **Truncation waits for a cold cache.** Truncating a tool result rewrites history at that result, and the provider re-reads everything after it at the cache-write rate. On Anthropic that can be the whole conversation after the last compaction summary. A smaller prompt saves only cache reads, so Layer 2 runs only when the cache has expired anyway (5 minutes on Anthropic, 30 on OpenAI's GPT-5.6 and later).
+- **The summary continues the cached prompt.** While the last call's prompt is still cached and unchanged, the summary request repeats it exactly (system prompt, tools, thinking type, messages) and adds the instruction as a new turn after the reply. The provider reads the whole conversation from its cache, and the summarizer sees all of it. Otherwise, for example after a restart or a context overflow, the summarizer reads a digest of the conversation, with long messages cut to 1,800 characters. Anthropic keeps the cache when only the effort or `tool_choice` changes, so its summaries run at a lower effort with tools off. OpenAI keeps it when `tool_choice` changes but not the effort, so its summaries run at the session's effort.
 
 After compaction, the engine rebuilds the working context from surviving components:
 

@@ -16,6 +16,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable
+from urllib.parse import urlparse
 
 try:
     import openai
@@ -115,6 +116,17 @@ NATIVE_COMPUTER_MODELS: set[str] = {
     "gpt-5.6-terra",
     "gpt-5.6-luna",
     "gpt-5.5",
+}
+
+# Models that keep a prompt cached for 30 minutes after its last use, and bill
+# the cache write (`input_tokens_details.cache_write_tokens`).
+LONG_PROMPT_CACHE_MODELS: set[str] = {
+    "gpt-6-astra",
+    "gpt-6.1-sol",
+    "gpt-6-luna",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
 }
 
 # Models that take `service_tier: "ultrafast"`. Freyja lists each as its own
@@ -309,6 +321,19 @@ class OpenAIProvider:
             Context window size for the configured model.
         """
         return self._context_window
+
+    @property
+    def prompt_cache_ttl_s(self) -> float | None:
+        """How long OpenAI keeps a prompt cached after its last use, or None
+        when it is not known (another server behind ``base_url``).
+
+        GPT-5.6 and later keep it 30 minutes. Older models keep it 5 to 10
+        minutes, so they get the shorter figure.
+        """
+        host = urlparse(self._config.base_url).hostname if self._config.base_url else None
+        if host not in (None, "api.openai.com"):
+            return None
+        return 1800.0 if self._model in LONG_PROMPT_CACHE_MODELS else 300.0
 
     @property
     def supports_reasoning(self) -> bool:
@@ -614,7 +639,7 @@ class OpenAIProvider:
         tools: list[ToolDefinition] | None = None,
         system_prompt: str | None = None,
         max_tokens: int | None = None,
-        tool_choice: dict | None = None,
+        tool_choice: dict | str | None = None,
     ) -> dict[str, Any]:
         """Build kwargs for ``client.responses.create()``.
 
@@ -870,6 +895,8 @@ class OpenAIProvider:
         tools: list[ToolDefinition] | None = None,
         system_prompt: str | None = None,
         max_tokens: int | None = None,
+        thinking: Any = None,  # Accepted for protocol compatibility, uses config instead
+        tool_choice: dict | str | None = None,
     ) -> ProviderResponse:
         """Send a synchronous completion request via the Responses API.
 
@@ -887,6 +914,11 @@ class OpenAIProvider:
             System-level instructions for the model.
         max_tokens : int or None
             Maximum output tokens. Falls back to config default.
+        thinking : Any
+            Ignored: the reasoning effort comes from ``OpenAIConfig.reasoning``.
+            A different effort would also miss the prompt cache.
+        tool_choice : dict or str or None
+            Passed through, e.g. ``"none"`` to answer in text only.
 
         Returns
         -------
@@ -918,6 +950,7 @@ class OpenAIProvider:
             tools=tools,
             system_prompt=system_prompt,
             max_tokens=max_tokens,
+            tool_choice=tool_choice,
         )
 
         try:

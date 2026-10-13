@@ -202,6 +202,14 @@ prunes, and 4 to 12 screenshots are visible at any time."""
 MAX_REQUEST_IMAGES_SAFETY = 80
 """Soft request-level image ceiling; leaves provider headroom for attachments."""
 
+PROMPT_CACHE_TTL_MARGIN_S = 30.0
+"""A sent prompt counts as cached until this long before the provider's cache
+lifetime runs out (5 minutes on Anthropic, 30 on OpenAI's GPT-5.6 and later)."""
+
+SUMMARY_REQUEST_HEADROOM_TOKENS = 4_096
+"""Room for the instruction a summary adds when it continues the session's
+prompt (see engine.compaction.PromptPrefix)."""
+
 KEEP_RECENT_MESSAGES = 10
 """Messages kept verbatim during compaction (most recent N)."""
 

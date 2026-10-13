@@ -422,6 +422,12 @@ class AnthropicProvider:
         return self._context_window
 
     @property
+    def prompt_cache_ttl_s(self) -> float:
+        """How long a cache breakpoint lives after its last use. Every
+        breakpoint here is `ephemeral` with the default 5-minute lifetime."""
+        return 300.0
+
+    @property
     def supports_thinking(self) -> bool:
         """Whether the current model supports extended thinking."""
         return self._model in THINKING_MODELS
@@ -451,6 +457,7 @@ class AnthropicProvider:
         system_prompt: str | None = None,
         max_tokens: int | None = None,
         thinking: ThinkingConfig | None = None,
+        tool_choice: dict | str | None = None,
     ) -> ProviderResponse:
         """
         Send a completion request to Claude (synchronous).
@@ -461,6 +468,7 @@ class AnthropicProvider:
             system_prompt: System prompt to prepend
             max_tokens: Maximum tokens to generate
             thinking: Override thinking config for this request
+            tool_choice: Anthropic's dict, or "none" to answer in text only
 
         Returns:
             ProviderResponse with content, usage, and thinking blocks
@@ -475,6 +483,7 @@ class AnthropicProvider:
             system_prompt=system_prompt,
             max_tokens=max_tokens,
             thinking=thinking,
+            tool_choice=tool_choice,
         )
 
         # Make request
@@ -921,7 +930,7 @@ class AnthropicProvider:
         system_prompt: str | None = None,
         max_tokens: int | None = None,
         thinking: ThinkingConfig | None = None,
-        tool_choice: dict | None = None,
+        tool_choice: dict | str | None = None,
     ) -> dict[str, Any]:
         """Build the API request kwargs."""
         # Convert messages to Anthropic format
@@ -988,7 +997,10 @@ class AnthropicProvider:
         # the reason a forked session couldn't reuse its parent's prefix.
         _try_cache_conversation_tail(anthropic_messages)
 
-        # Anthropic format: {"type": "tool", "name": "..."}
+        # Anthropic format: {"type": "tool", "name": "..."}. "none" is the
+        # provider-neutral spelling the compactor uses.
+        if tool_choice == "none":
+            tool_choice = {"type": "none"}
         if tool_choice:
             request_kwargs["tool_choice"] = tool_choice
 
