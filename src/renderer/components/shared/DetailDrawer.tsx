@@ -6,6 +6,10 @@ interface DetailDrawerProps {
   onClose: () => void
   title: string
   statusLabel?: string
+  /** Color of the status label and dot. Defaults to the accent. */
+  statusTone?: 'accent' | 'ok' | 'warn' | 'danger' | 'muted'
+  /** Pulse the dot, for work that is still in progress. Defaults to true. */
+  statusPulse?: boolean
   width?: number
   children: React.ReactNode
   footer?: React.ReactNode
@@ -34,6 +38,8 @@ export function DetailDrawer({
   onClose,
   title,
   statusLabel,
+  statusTone = 'accent',
+  statusPulse = true,
   width = 480,
   children,
   footer,
@@ -64,8 +70,14 @@ export function DetailDrawer({
 
       <header className="relative z-10 flex items-center justify-between border-b border-white/[0.06] px-6 py-4">
         {statusLabel ? (
-          <span className="inline-flex items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.14em] text-accent">
-            <span className="h-1.5 w-1.5 animate-pulse-soft rounded-full bg-accent shadow-[0_0_6px_rgba(168,212,252,0.6)]" />
+          <span
+            className={`inline-flex items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.14em] ${STATUS_TONE[statusTone].text}`}
+          >
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${STATUS_TONE[statusTone].dot} ${
+                statusPulse ? 'animate-pulse-soft shadow-[0_0_6px_rgba(168,212,252,0.6)]' : ''
+              }`}
+            />
             {statusLabel}
           </span>
         ) : (
@@ -94,6 +106,14 @@ export function DetailDrawer({
       ) : null}
     </aside>
   )
+}
+
+const STATUS_TONE: Record<NonNullable<DetailDrawerProps['statusTone']>, { text: string; dot: string }> = {
+  accent: { text: 'text-accent', dot: 'bg-accent' },
+  ok: { text: 'text-ok', dot: 'bg-ok' },
+  warn: { text: 'text-warn', dot: 'bg-warn' },
+  danger: { text: 'text-danger', dot: 'bg-danger' },
+  muted: { text: 'text-fg-2', dot: 'bg-fg-3' },
 }
 
 export function DrawerSection({ label, children }: { label: string; children: React.ReactNode }) {
@@ -143,7 +163,7 @@ export function DrawerTimeline({ events }: { events: TimelineEvent[] }) {
       {events.map((ev, i) => (
         <div
           key={i}
-          className="grid grid-cols-[46px_72px_1fr] gap-3 border-t border-transparent py-1.5 text-[11.5px] leading-[1.55] text-fg-1 first:border-t-0 [&:not(:first-child)]:border-t-white/[0.03]"
+          className="grid grid-cols-[46px_72px_minmax(0,1fr)] gap-3 border-t border-transparent py-1.5 text-[11.5px] leading-[1.55] text-fg-1 first:border-t-0 [&:not(:first-child)]:border-t-white/[0.03]"
         >
           <span className="font-mono tabular-nums text-fg-3">{ev.ts}</span>
           <span
@@ -157,7 +177,7 @@ export function DrawerTimeline({ events }: { events: TimelineEvent[] }) {
           >
             {ev.who}
           </span>
-          <span>{ev.body}</span>
+          <span className="min-w-0 break-words">{ev.body}</span>
         </div>
       ))}
     </div>

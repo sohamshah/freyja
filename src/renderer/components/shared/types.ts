@@ -215,6 +215,9 @@ export interface TaskCardView {
   summary?: string
   result?: string
   artifacts?: string[]
+  /** Ids of tasks this one waits on, and of tasks waiting on it. */
+  blockedBy?: string[]
+  blocks?: string[]
   events?: Array<{
     kind?: string
     actor?: string

@@ -648,12 +648,61 @@ select {
   border-bottom-color: rgba(196, 227, 255, 0.65);
   background: rgba(168, 212, 252, 0.06);
 }
+/* Tailwind's base reset strips list markers and padding; put them back.
+   Markers sit in the padding, muted so the text leads. */
 .md ul,
 .md ol {
-  margin: 0.65em 0 1em 1.3em;
+  margin: 0.55em 0 0.9em 0;
+  padding-left: 1.45em;
+}
+.md ul {
+  list-style: disc;
+}
+.md ol {
+  list-style: decimal;
+  /* Room for a two-digit marker ("10. ") in the monospace face; a
+     bullet's 1.45em is too narrow and clips the number. */
+  padding-left: 2.2em;
+}
+.md li > ul {
+  list-style: circle;
+}
+.md li li > ul {
+  list-style: square;
+}
+.md li > ul,
+.md li > ol {
+  margin: 0.3em 0 0.35em 0;
 }
 .md li {
-  margin-bottom: 0.2em;
+  margin-bottom: 0.25em;
+  padding-left: 0.15em;
+}
+.md li::marker {
+  color: rgba(255, 255, 255, 0.4);
+}
+.md ol > li::marker {
+  font-size: 0.92em;
+  font-variant-numeric: tabular-nums;
+}
+.md li > p {
+  margin: 0.45em 0 0;
+}
+.md li > pre {
+  margin: 0.45em 0;
+}
+/* Agent-written markdown in narrow panels (the tasks drawer). Long words
+   and paths wrap, and tables and code scroll inside their own box instead
+   of widening the panel. */
+.task-md {
+  overflow-wrap: anywhere;
+}
+.task-md table {
+  display: block;
+  overflow-x: auto;
+}
+.task-md pre {
+  overflow-x: auto;
 }
 .md h1,
 .md h2,

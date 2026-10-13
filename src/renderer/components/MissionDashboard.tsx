@@ -182,6 +182,8 @@ interface TaskCardView {
   summary?: string
   result?: string
   artifacts?: string[]
+  blockedBy?: string[]
+  blocks?: string[]
   events?: Array<{ kind?: string; actor?: string; message?: string; timestamp?: number; details?: Record<string, unknown> }>
   agents?: AgentView[]
   createdAt?: number
@@ -642,7 +644,8 @@ export function MissionDashboard() {
       slice.toolCallOrder.map((id) => slice.toolCalls[id]).filter(Boolean),
     )
     const cost = slices.reduce((acc, { slice }) => acc + slice.usage.totalCost, 0)
-    const objective = lastUserText(missionSlice?.messages ?? messages) ??
+    const latestAsk = lastUserMessage(missionSlice?.messages ?? messages)
+    const objective = latestAsk?.text ??
       missionSession?.task ??
       missionSession?.title ??
       'No objective yet'
@@ -653,6 +656,7 @@ export function MissionDashboard() {
       missionSessionId: missionSession?.id ?? activeSessionId,
       missionSlice,
       objective,
+      latestAsk,
       agents,
       sessions,
       busEvents,
@@ -876,10 +880,11 @@ export function MissionDashboard() {
         )}
         {tab === 'tasks' && (
           <TasksListRailView
-            objective={dashboard.objective}
+            title={dashboard.missionSession?.title ?? ''}
+            goal={dashboard.goalState?.goal}
+            latestAsk={dashboard.latestAsk}
             tasks={dashboard.taskCards}
             agents={dashboard.agents}
-            events={dashboard.telemetryEvents}
             contextPct={contextPct}
             cost={dashboard.cost}
             onAttach={attach}
@@ -2479,7 +2484,9 @@ function resolveAgentStatus(
   return 'running'
 }
 
-function lastUserText(messages: Array<{ role: string; parts: Array<{ type: string; text?: string }> }>): string | null {
+function lastUserMessage(
+  messages: Array<{ role: string; createdAt?: number; parts: Array<{ type: string; text?: string }> }>,
+): { text: string; at?: number } | null {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i]
     if (message.role !== 'user') continue
@@ -2488,7 +2495,7 @@ function lastUserText(messages: Array<{ role: string; parts: Array<{ type: strin
       .map((part) => part.text)
       .join(' ')
       .trim()
-    if (text) return text
+    if (text) return { text, at: message.createdAt }
   }
   return null
 }
@@ -2699,6 +2706,8 @@ function collectTaskCards(events: TelemetryEventView[], agents: AgentView[]): Ta
       artifacts: normalizeStringArray(task.artifacts).length > 0
         ? normalizeStringArray(task.artifacts)
         : existing?.artifacts ?? [],
+      blockedBy: Array.isArray(task.blockedBy) ? normalizeStringArray(task.blockedBy) : existing?.blockedBy ?? [],
+      blocks: Array.isArray(task.blocks) ? normalizeStringArray(task.blocks) : existing?.blocks ?? [],
       events: history,
       agents: [],
       createdAt: typeof task.createdAt === 'number' ? task.createdAt : existing?.createdAt,
