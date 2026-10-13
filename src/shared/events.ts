@@ -1607,6 +1607,7 @@ export const IPC = {
   artifactNoteResolve: 'artifact:notes:resolve',
   compactionMetrics: 'compaction:metrics',
   getActionLedger: 'session:actionLedger',
+  getTurnLedger: 'session:turnLedger',
   getWorkingMemory: 'session:workingMemory',
   getRecall: 'session:recall',
   getBriefing: 'briefing:read',

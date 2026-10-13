@@ -31,6 +31,7 @@ import {
   listSessions as persistListSessions,
   loadSession as persistLoadSession,
   readActionLedger as persistReadActionLedger,
+  readTurnLedger as persistReadTurnLedger,
   readWorkingMemory as persistReadWorkingMemory,
   readRecall as persistReadRecall,
   readBriefing as persistReadBriefing,
@@ -980,6 +981,11 @@ function setupIpc() {
   // Per-session action ledger — what the agent did (effects/observations).
   ipcMain.handle(IPC.getActionLedger, async (_event, id: string) => {
     return persistReadActionLedger(id)
+  })
+
+  // Per-turn tokens, cache use and cost — the receipt's turn table.
+  ipcMain.handle(IPC.getTurnLedger, async (_event, id: string) => {
+    return persistReadTurnLedger(id)
   })
 
   // Morning briefing — daily synthesis written by the briefer job.

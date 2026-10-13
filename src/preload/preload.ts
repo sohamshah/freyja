@@ -21,6 +21,7 @@ import {
   type SkillListResult,
   type SkillReadResult,
 } from '../shared/events.js'
+import type { LedgerTurn } from '../shared/turnLedger.js'
 
 type EventListener = (event: BridgeEvent) => void
 
@@ -87,6 +88,11 @@ const api = {
     sessionId: string,
   ): Promise<{ ok: boolean; rows?: any[]; error?: string }> {
     return ipcRenderer.invoke(IPC.getActionLedger, sessionId)
+  },
+  async getTurnLedger(
+    sessionId: string,
+  ): Promise<{ ok: boolean; turns: LedgerTurn[]; error?: string }> {
+    return ipcRenderer.invoke(IPC.getTurnLedger, sessionId)
   },
   async getBriefing(date?: string): Promise<{
     ok: boolean

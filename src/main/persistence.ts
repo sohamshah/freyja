@@ -3,6 +3,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { Worker } from 'node:worker_threads'
 import { imageBlockBase64, inlineStoredImages } from './mediaStore'
+import { buildTurnLedger, type LedgerTurn } from '../shared/turnLedger.js'
 
 /**
  * Disk-backed session persistence. Lives under Electron's main process so
@@ -1210,6 +1211,24 @@ export function readActionLedger(
     return { ok: true, rows }
   } catch (err) {
     return { ok: false, error: String(err) }
+  }
+}
+
+/**
+ * Per-turn tokens, cache use and cost for one session, from its
+ * `<id>.events.jsonl` (see src/shared/turnLedger.ts). A session with no
+ * events file (never ran here, or purged) has no turns.
+ */
+export async function readTurnLedger(
+  id: string,
+): Promise<{ ok: true; turns: LedgerTurn[] } | { ok: false; turns: LedgerTurn[]; error: string }> {
+  try {
+    const eventsPath = resolveSessionPath(id, '.events.jsonl')
+    if (!fs.existsSync(eventsPath)) return { ok: true, turns: [] }
+    const text = await fs.promises.readFile(eventsPath, 'utf8')
+    return { ok: true, turns: buildTurnLedger(text) }
+  } catch (err) {
+    return { ok: false, turns: [], error: String(err) }
   }
 }
 

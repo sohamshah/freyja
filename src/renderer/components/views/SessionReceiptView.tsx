@@ -3,6 +3,7 @@ import { sessionCostBreakdown, useHarness } from '../../state/store'
 import { ScrambleText } from '../ScrambleText'
 import { formatCost, formatDuration, formatTokens } from '../../lib/format'
 import type { Message, SubagentRecord, ToolCallRecord } from '@shared/events'
+import type { LedgerTurn } from '@shared/turnLedger'
 
 /**
  * SessionReceiptView — the session-specific activity/metrics view.
@@ -17,8 +18,9 @@ import type { Message, SubagentRecord, ToolCallRecord } from '@shared/events'
  * the active session's slice.
  *
  * Below the braid: KPI tiles (ScrambleText, same treatment as the metrics
- * view) and four analysis cards — read amplification, wall clock by tool,
- * swarm reading, and what landed on disk.
+ * view), the per-turn ledger (tokens, cache use, re-reads and cost for each
+ * turn, from the session's event log) and four analysis cards — read
+ * amplification, wall clock by tool, swarm reading, and what landed on disk.
  */
 
 // ── palette ─────────────────────────────────────────────────────────────
@@ -1021,6 +1023,228 @@ function Card({
   )
 }
 
+// ── per-turn ledger ─────────────────────────────────────────────────────
+
+/** Turns read from the session's event log (main process), refreshed as
+ *  spend moves. `null` until the first read for this session lands. */
+function useTurnLedger(sessionId: string, refreshKey: unknown): LedgerTurn[] | null {
+  const [state, setState] = useState<{ sessionId: string; turns: LedgerTurn[] } | null>(null)
+  useEffect(() => {
+    const api = (window as any).harness
+    if (!sessionId || !api?.getTurnLedger) return
+    let alive = true
+    // Debounced: spend ticks once per model call during a busy turn.
+    const timer = window.setTimeout(() => {
+      api
+        .getTurnLedger(sessionId)
+        .then((res: { turns?: LedgerTurn[] }) => {
+          if (alive) setState({ sessionId, turns: res?.turns ?? [] })
+        })
+        .catch(() => {
+          if (alive) setState({ sessionId, turns: [] })
+        })
+    }, 600)
+    return () => {
+      alive = false
+      window.clearTimeout(timer)
+    }
+  }, [sessionId, refreshKey])
+  return state && state.sessionId === sessionId ? state.turns : null
+}
+
+/** A turn re-read enough of its context to be worth a look. A healthy turn
+ *  re-reads close to nothing, so this flags any real cache miss: a changed
+ *  system prompt or tool list, edited history, a compaction, an expired cache. */
+const rereadHot = (t: LedgerTurn) => t.reread >= 20_000
+
+function TurnLedger({
+  turns,
+  messages,
+  tip,
+}: {
+  turns: LedgerTurn[]
+  messages: Message[]
+  tip: TipBind
+}) {
+  // "You said": the operator's message that started the turn, i.e. the last
+  // one sent after the previous turn began. A turn with none was woken by
+  // something else (a sub-agent memo, a talk message).
+  const said = useMemo(() => {
+    // A follow-up slid into a running turn belongs to that turn.
+    const users = messages
+      .filter((m) => m.role === 'user' && m.createdAt > 0 && !m.followup?.midTurn)
+      .sort((a, b) => a.createdAt - b.createdAt)
+    return (turn: LedgerTurn, prevStart: number): { text: string; own: boolean } => {
+      let pick: Message | undefined
+      for (const m of users) {
+        if (m.createdAt > turn.t + 5_000) break
+        if (m.createdAt > prevStart + 5_000) pick = m
+      }
+      const text = pick?.parts
+        .filter((p) => p.type === 'text')
+        .map((p) => p.text ?? '')
+        .join(' ')
+        .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+      if (text) return { text, own: true }
+      return { text: turn.trigger ? `↩ ${turn.trigger}` : '—', own: false }
+    }
+  }, [messages])
+
+  const totals = turns.reduce(
+    (a, t) => ({
+      calls: a.calls + t.calls.length,
+      input: a.input + t.input,
+      cacheRead: a.cacheRead + t.cacheRead,
+      cacheWrite: a.cacheWrite + t.cacheWrite,
+      output: a.output + t.output,
+      reread: a.reread + t.reread,
+      cost: a.cost + t.cost,
+    }),
+    { calls: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reread: 0, cost: 0 },
+  )
+  const hot = turns.filter(rereadHot)
+  const causes = new Map<string, number>()
+  for (const t of turns) {
+    for (const c of t.calls) {
+      if (c.cause) causes.set(c.cause, (causes.get(c.cause) ?? 0) + c.reread)
+    }
+  }
+  const topCauses = [...causes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3)
+
+  const cols =
+    'grid grid-cols-[30px_44px_minmax(0,1fr)_40px_62px_72px_80px_56px_96px_66px_62px] items-center gap-x-3'
+  const read = (t: { input: number; cacheRead: number; cacheWrite: number }) =>
+    t.input + t.cacheRead + t.cacheWrite
+
+  return (
+    <>
+      <div className="font-mono text-[10.5px]">
+        <div className={`${cols} border-b border-white/[0.06] pb-1.5 text-[9.5px] uppercase tracking-[0.1em] text-fg-3`}>
+          <span>#</span>
+          <span>time</span>
+          <span>you said</span>
+          <span className="text-right">calls</span>
+          <span className="text-right">fresh in</span>
+          <span className="text-right">cache read</span>
+          <span className="text-right">cache write</span>
+          <span className="text-right">output</span>
+          <span>cached</span>
+          <span className="text-right">re-read</span>
+          <span className="text-right">cost</span>
+        </div>
+        <div className="max-h-[420px] overflow-y-auto">
+          {turns.map((t, i) => {
+            const r = read(t)
+            const who = said(t, i > 0 ? turns[i - 1].t : 0)
+            const cachedPct = r > 0 ? t.cacheRead / r : 0
+            const isHot = rereadHot(t)
+            const noisy = t.calls.filter((c) => c.reread > 0)
+            return (
+              <div
+                key={`${t.n}-${t.t}`}
+                {...tip(
+                  <span className="block max-w-[520px]">
+                    <span className="text-fg-1">
+                      turn {t.n} · {new Date(t.t).toLocaleString()}
+                    </span>{' '}
+                    · {t.calls.length} calls · {t.models.join(', ')}
+                    {noisy.length > 0 ? (
+                      noisy.slice(0, 8).map((c, i) => (
+                        <span key={i} className="block text-fg-2">
+                          {new Date(c.t).toLocaleTimeString()} · re-read {tok(c.reread)} of{' '}
+                          {tok(read(c))} · {c.cause ?? 'prompt changed'}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="block text-fg-2">every call reused the cached prompt</span>
+                    )}
+                  </span>,
+                )}
+                className={`${cols} border-t border-white/[0.03] py-1.5 first:border-t-0 hover:bg-white/[0.02]`}
+              >
+                <span className="tabular-nums text-fg-3">{t.n}</span>
+                <span className="tabular-nums text-fg-2">
+                  {new Date(t.t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}
+                </span>
+                <span className={`truncate ${who.own ? 'text-fg-1' : 'text-fg-3'}`}>{who.text}</span>
+                <span className="text-right tabular-nums text-fg-2">{t.calls.length}</span>
+                <span className="text-right tabular-nums text-fg-1">{tok(t.input)}</span>
+                <span className="text-right tabular-nums text-fg-1">{tok(t.cacheRead)}</span>
+                <span className="text-right tabular-nums text-fg-1">{tok(t.cacheWrite)}</span>
+                <span className="text-right tabular-nums text-fg-1">{tok(t.output)}</span>
+                <span className="flex items-center gap-2">
+                  <span className="relative h-1.5 w-12 overflow-hidden rounded-sm" style={{ background: ICE_4 }}>
+                    <span
+                      className="absolute inset-y-0 left-0"
+                      style={{ width: `${Math.round(cachedPct * 100)}%`, background: ICE_2 }}
+                    />
+                  </span>
+                  <span className="tabular-nums text-fg-2">{Math.round(cachedPct * 100)}%</span>
+                </span>
+                <span
+                  className="text-right tabular-nums"
+                  style={{ color: isHot ? SAND : undefined }}
+                >
+                  {t.reread > 0 ? `${isHot ? '▲ ' : ''}${tok(t.reread)}` : <span className="text-fg-3">—</span>}
+                </span>
+                <span className="text-right tabular-nums text-fg-0">{formatCost(t.cost)}</span>
+              </div>
+            )
+          })}
+        </div>
+        <div className={`${cols} border-t border-white/[0.06] pt-1.5 text-fg-1`}>
+          <span />
+          <span />
+          <span className="text-fg-2">{turns.length} turns</span>
+          <span className="text-right tabular-nums">{totals.calls}</span>
+          <span className="text-right tabular-nums">{tok(totals.input)}</span>
+          <span className="text-right tabular-nums">{tok(totals.cacheRead)}</span>
+          <span className="text-right tabular-nums">{tok(totals.cacheWrite)}</span>
+          <span className="text-right tabular-nums">{tok(totals.output)}</span>
+          <span className="tabular-nums text-fg-2">
+            {read(totals) > 0 ? `${Math.round((100 * totals.cacheRead) / read(totals))}%` : '—'}
+          </span>
+          <span className="text-right tabular-nums" style={{ color: hot.length ? SAND : undefined }}>
+            {totals.reread > 0 ? tok(totals.reread) : '—'}
+          </span>
+          <span className="text-right tabular-nums text-fg-0">{formatCost(totals.cost)}</span>
+        </div>
+      </div>
+      <p className="mt-3.5 border-t border-white/[0.03] pt-3 font-mono text-[10.5px] leading-relaxed text-fg-2">
+        {hot.length === 0 ? (
+          <>
+            <span className="text-fg-1">Every turn reused its cached prompt.</span> Re-read is input
+            the provider had already been sent, paid again at the full rate because something
+            earlier in the prompt changed.
+          </>
+        ) : (
+          <>
+            <span style={{ color: SAND }}>
+              {hot.length} of {turns.length} turns re-read context the provider had already been
+              sent: {tok(totals.reread)} tokens paid at the full rate instead of the cached rate.
+            </span>{' '}
+            Hover a turn for the calls and causes.{' '}
+            {topCauses.length > 0 && (
+              <>
+                Biggest causes:{' '}
+                {topCauses.map(([cause, n], i) => (
+                  <span key={cause}>
+                    {i > 0 ? '; ' : ''}
+                    <span className="text-fg-1">{cause}</span> {tok(n)}
+                  </span>
+                ))}
+                .
+              </>
+            )}
+          </>
+        )}
+      </p>
+    </>
+  )
+}
+
 // ── activity tab wrapper ────────────────────────────────────────────────
 
 /** The dashboard's activity tab: the receipt is the face, the classic
@@ -1080,6 +1304,7 @@ export function SessionReceiptView() {
   const sessionArchive = useHarness((s) => s.sessionArchive)
 
   const tip = useCursorTip()
+  const turnLedger = useTurnLedger(activeSessionId, `${usage.totalCost}:${isStreaming}`)
 
   // Coarse clock so a live session's braid keeps growing while the tab is
   // open. 30s resolution is plenty at minutes-per-pixel scale.
@@ -1299,6 +1524,15 @@ export function SessionReceiptView() {
             n={`across ${anatomy.threads.length} sub-agents`}
           />
         </div>
+
+        {/* ── per turn ──────────────────────────────────────────────── */}
+        {turnLedger && turnLedger.length > 0 && (
+          <div className="mt-3">
+            <Card title="per turn" hint="tokens · cache · cost">
+              <TurnLedger turns={turnLedger} messages={messages} tip={tip.bind} />
+            </Card>
+          </div>
+        )}
 
         {/* ── cards ─────────────────────────────────────────────────── */}
         <div className="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-2">
