@@ -9,5 +9,6 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["src/main", "src/preload", "src/shared", "scripts", "vite.config.ts"]
+  "include": ["src/main", "src/preload", "src/shared", "scripts", "vite.config.ts"],
+  "exclude": ["scripts/e2e"]
 }

@@ -694,6 +694,13 @@ export type BridgeCommand =
         body?: string
       }
     }
+  | {
+      /** `/learn-this`: run the skill drafter on this conversation now,
+       *  with optional operator guidance. */
+      type: 'skill_learn_this'
+      sessionId?: string
+      guidance?: string
+    }
   | { type: 'set_computer_enabled'; enabled: boolean }
   | { type: 'computer.emergency_stop'; reason?: string }
   | {
@@ -1714,11 +1721,13 @@ export interface GatewayStatus {
   logPath: string
   errPath: string
   slackConfigured: boolean   // both tokens present in ~/.freyja/.env
+  // Read from the allowlist config, which knows only team ids; the
+  // names come from a live Slack check (SlackVerifyResult), not here.
   workspaces: Array<{
     teamId: string
-    teamName: string
-    botUserId: string
-    botName: string
+    teamName?: string
+    botUserId?: string
+    botName?: string
     allowlist: string[]      // empty = allow any in this workspace
   }>
   error?: string
