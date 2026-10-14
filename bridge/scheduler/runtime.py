@@ -123,9 +123,21 @@ async def fire_job(
                 build_complete_loop_tool,
                 build_continue_loop_tool,
             )
+            # A session that has not run a turn yet (a new job session, or
+            # any session since a reset) builds its tool registry at the
+            # start of its first turn, after this point. Build it now, or
+            # the loop tools are silently left out.
+            initialize = getattr(sess, "initialize", None)
+            if getattr(sess, "tool_registry", None) is None and callable(initialize):
+                await initialize()
             reg = getattr(sess, "tool_registry", None)
             inner_reg = getattr(reg, "_underlying", None) or reg
-            if inner_reg is not None:
+            if inner_reg is None:
+                logger.warning(
+                    "job %s: session %s has no tool registry; the loop tools are missing",
+                    job.id, sess_id,
+                )
+            else:
                 loop_decision = LoopDecision()
                 cont = build_continue_loop_tool(schedule=job.schedule, decision=loop_decision)
                 comp = build_complete_loop_tool(schedule=job.schedule, decision=loop_decision)
@@ -135,7 +147,7 @@ async def fire_job(
                     cont.definition.name, comp.definition.name,
                 ])
         except Exception as exc:  # noqa: BLE001
-            logger.debug("loop tool registration failed: %s", exc)
+            logger.warning("job %s: loop tool registration failed: %s", job.id, exc)
 
     # Compose the fire-time prompt. We pre-load skills if the job
     # requested any, and inject a small system-style header that tells
@@ -155,6 +167,7 @@ async def fire_job(
     output_text = ""
     output_attachments: list[dict[str, Any]] = []
     iteration_count = 0
+    entries_before: set[str] | None = None
     try:
         from bridge.freyja_bridge import _schedule_or_queue_turn
 
@@ -171,6 +184,7 @@ async def fire_job(
         # The session's spend so far: a fire into an existing session
         # costs only what it adds on top.
         cost_before = float(getattr(sess, "cumulative_cost", 0.0) or 0.0)
+        entries_before = _entry_ids(sess)
         _schedule_or_queue_turn(sess, prompt, attachments=None)
         pending = getattr(sess, "pending_task", None)
         # Detect the self-await trap. This fires when:
@@ -340,11 +354,21 @@ async def fire_job(
     # downstream recovery can re-fire.
     if run.status == "running" and iteration_count == 0 and not (output_text or "").strip():
         run.status = "failed"
+        turn_error = getattr(sess, "last_turn_error", None)
         run.error = (
-            "agent made 0 iterations and produced no output — the fire was "
+            f"the turn failed before the model replied — {turn_error}"
+            if turn_error
+            else "agent made 0 iterations and produced no output — the fire was "
             "interrupted before it could start (most often the machine slept "
             "through the scheduled time). Nothing was produced."
         )
+
+    # A fire that nothing answered takes its prompt back out of the session's
+    # history; the run record keeps it. Left in, each failed fire adds one:
+    # a loop that failed 180 times put ~540k tokens of identical prompts
+    # ahead of the operator's next message.
+    if iteration_count == 0 and entries_before is not None:
+        _drop_unanswered_prompt(sess, entries_before, prompt)
 
     # Capture what the agent added to its working notes during this
     # turn — diffed against the pre-turn snapshot. This delta is what
@@ -855,6 +879,36 @@ def _extract_run_usage(sess: Any, cost_before: float) -> tuple[int, int, int, fl
     if isinstance(cumulative, (int, float)):
         cost = max(0.0, float(cumulative) - cost_before)
     return in_tok, out_tok, cache_tok, cost
+
+
+def _entry_ids(sess: Any) -> set[str] | None:
+    transcript = getattr(getattr(sess, "session", None), "transcript", None)
+    if transcript is None:
+        return None
+    return {e.id for e in transcript.entries}
+
+
+def _drop_unanswered_prompt(sess: Any, entries_before: set[str], prompt: str) -> bool:
+    """Remove this fire's prompt from the session's history when no reply
+    followed it, and save. Anything else added meanwhile stays."""
+    transcript = getattr(getattr(sess, "session", None), "transcript", None)
+    if transcript is None:
+        return False
+    added = [e for e in transcript.entries if e.id not in entries_before]
+    if any(getattr(e.message, "role", "") == "assistant" for e in added):
+        return False
+    header = prompt.split("\n", 1)[0]
+    ids = {
+        e.id for e in added
+        if getattr(e.message, "role", "") == "user" and header in _extract_text(e.message)
+    }
+    if not ids:
+        return False
+    transcript.remove_entries(ids)
+    save = getattr(sess, "_save_transcript", None)
+    if callable(save):
+        save()
+    return True
 
 
 def _extract_text(msg: Any) -> str:

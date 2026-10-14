@@ -15,6 +15,7 @@ import functools
 import json
 import logging
 import os
+import re
 import tempfile
 from abc import abstractmethod
 from dataclasses import dataclass, field
@@ -30,6 +31,11 @@ if TYPE_CHECKING:
     from engine.permissions import HumanInteractionHandler
 
 logger = logging.getLogger(__name__)
+
+# What every provider accepts as a tool name (OpenAI caps it at 64). A tool
+# outside this rule makes every request that lists it fail, so it is refused
+# at registration, where the mistake is made.
+TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
 # ============================================================================
@@ -149,6 +155,11 @@ class ToolRegistry:
     ) -> None:
         """Register a tool."""
         name = tool.definition.name
+        if not TOOL_NAME_PATTERN.match(name):
+            raise ValueError(
+                f"Tool name {name!r} must match {TOOL_NAME_PATTERN.pattern}: providers "
+                "reject a request that lists it."
+            )
 
         # Both permission members must be present together or absent together
         declares_permission_required = getattr(tool, "requires_permission", False)

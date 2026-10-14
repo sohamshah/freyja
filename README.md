@@ -420,6 +420,7 @@ uv run python -m bridge.freyja_bridge
 | Context grows large with screenshots | Use the dashboard image-policy view; provider requests auto-prune old tool-result images after the most recent few frames |
 | Slack gateway not responding | Run `freyja gateway status` and `freyja gateway logs`. Verify `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` are set in `~/.freyja/.env`. |
 | Adding a new model | See `docs/ADDING-A-MODEL.md` — there are 13+ codepoints that need matching updates |
+| Every message in a session fails with the same API error | Run `/repair`. If the error names a tool, or `/repair` finds nothing, see `docs/SESSION-REPAIR.md` |
 
 ---
 
@@ -434,6 +435,7 @@ uv run python -m bridge.freyja_bridge
 | `docs/COMPACTION-DECISION-DRAFT.md` | Context compaction strategy and cooperative protocol |
 | `docs/SLACK-GATEWAY.md` | Slack gateway protocol, manifest, and scopes reference |
 | `docs/mcp.md` | MCP servers, OAuth, plugins, catalog, `/mcp` and `/plugin` command reference |
+| `docs/SESSION-REPAIR.md` | What fixes a broken session by itself, what `/repair` does, and fixing a transcript by hand |
 | `docs/TRAJECTORY-TRAINING.md` | Session trajectory export formats |
 | `docs/WARP-FILE-EDIT-UX-RESEARCH.md` | File-edit UX research and design notes |
 

@@ -4696,6 +4696,10 @@ class _BridgeSession:
         # including done=false-with-real-criteria.
         self._consecutive_judge_failures: int = 0
         self._turn_text_parts: list[str] = []
+        # Why the latest turn failed ("<reason>: <provider message>"), or
+        # None. A scheduled run that nothing answered reports this instead
+        # of guessing.
+        self.last_turn_error: str | None = None
         self._tool_list = ""
         self._agent_types_section = ""
         self._base_system_prompt = ""
@@ -10446,6 +10450,7 @@ class _BridgeSession:
         self.current_turn_id = f"turn-{self.turn_counter}"
         self._record_turn_message_cursor()
         self._turn_text_parts = []
+        self.last_turn_error = None
         emit({"type": "turn_start", "sessionId": self.id, "turnId": self.current_turn_id})
 
         if pre_formed_message is not None:
@@ -10559,6 +10564,7 @@ class _BridgeSession:
                 err = getattr(result, "error", None)
                 reason = str(getattr(err, "reason", "") or "unknown")
                 err_msg = str(getattr(err, "message", "") or "(no detail)")
+                self.last_turn_error = f"{reason}: {err_msg[:400]}"
                 already_streamed = bool(
                     ("".join(self._turn_text_parts)).strip()
                 )
@@ -10881,6 +10887,7 @@ class _BridgeSession:
         self.current_turn_id = f"turn-{self.turn_counter}"
         self._record_turn_message_cursor()
         self._turn_text_parts = []
+        self.last_turn_error = None
         emit(
             {
                 "type": "turn_start",

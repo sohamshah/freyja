@@ -58,17 +58,30 @@ def _job(job_id: str = "sched_loop") -> JobRecord:
 
 
 def _session(cost_so_far: float) -> SimpleNamespace:
-    return SimpleNamespace(
+    sess = SimpleNamespace(
         tool_registry=ToolRegistry(),
         cumulative_cost=cost_so_far,
         pending_task=None,
         session=SimpleNamespace(transcript=TranscriptManager()),
+        saves=0,
     )
+    sess._save_transcript = lambda: setattr(sess, "saves", sess.saves + 1)
+    return sess
 
 
-def _drive_fire(monkeypatch, sess, *, loop_call: tuple[str, dict] | None, cost: float):
+def _drive_fire(
+    monkeypatch,
+    sess,
+    *,
+    loop_call: tuple[str, dict] | None,
+    cost: float,
+    replies: bool = True,
+    operator_says: str | None = None,
+):
     """Stand in for the agent turn: it sees the offered tools, makes the
-    given loop-tool call, spends ``cost`` and replies."""
+    given loop-tool call, spends ``cost`` and replies. With ``replies``
+    off the provider rejects the request, so nothing answers the prompt;
+    ``operator_says`` lands in the session while the fire runs."""
     import bridge.freyja_bridge as fb
 
     offered: list[str] = []
@@ -76,6 +89,11 @@ def _drive_fire(monkeypatch, sess, *, loop_call: tuple[str, dict] | None, cost: 
     async def turn(prompt: str) -> None:
         transcript = sess.session.transcript
         transcript.append_message(Message(role="user", content=prompt))
+        if operator_says is not None:
+            transcript.append_message(Message(role="user", content=operator_says))
+        if not replies:
+            sess.last_turn_error = "auth: Error code: 401 - Incorrect API key provided"
+            return
         offered.extend(d.name for d in sess.tool_registry.list_definitions())
         if loop_call is not None:
             name, args = loop_call
@@ -139,6 +157,31 @@ async def test_continue_is_applied_and_the_tools_leave_with_the_fire(monkeypatch
     assert run.status == "succeeded"
 
 
+async def test_a_session_that_never_ran_a_turn_still_gets_the_loop_tools(monkeypatch) -> None:
+    # A new job session builds its tool registry on its first turn, after
+    # the fire registers the loop tools; they used to be left out silently.
+    from bridge.scheduler.runtime import fire_job
+    from bridge.tools.schedule_tool import COMPLETE_LOOP_TOOL, CONTINUE_LOOP_TOOL
+
+    sess = _session(cost_so_far=0.0)
+    sess.tool_registry = None
+
+    async def initialize() -> None:
+        if sess.tool_registry is None:
+            sess.tool_registry = ToolRegistry()
+
+    sess.initialize = initialize
+    job = _job()
+    offered = _drive_fire(
+        monkeypatch, sess, loop_call=(COMPLETE_LOOP_TOOL, {"reason": "done"}), cost=0.1
+    )
+
+    await fire_job(_Service({"s1": sess}), job)
+
+    assert {CONTINUE_LOOP_TOOL, COMPLETE_LOOP_TOOL} <= set(offered)
+    assert not load_job(job.id).enabled
+
+
 async def test_complete_disables_the_job_for_good(monkeypatch) -> None:
     from bridge.scheduler.runtime import fire_job
     from bridge.tools.schedule_tool import COMPLETE_LOOP_TOOL
@@ -167,6 +210,87 @@ async def test_no_decision_waits_the_maximum_delay(monkeypatch) -> None:
     await fire_job(_Service({"s1": sess}), job)
 
     assert load_job(job.id).next_fire_at >= time.time() + 590
+
+
+async def test_a_fire_nothing_answered_leaves_no_prompt_behind(monkeypatch) -> None:
+    from bridge.scheduler.runtime import fire_job
+
+    sess = _session(cost_so_far=0.0)
+    transcript = sess.session.transcript
+    transcript.append_message(Message(role="user", content="merge the stack"))
+    transcript.append_message(Message(role="assistant", content="On it."))
+    job = _job()
+    _drive_fire(monkeypatch, sess, loop_call=None, cost=0.0, replies=False,
+                operator_says="any news?")
+
+    run = await fire_job(_Service({"s1": sess}), job)
+
+    texts = [e.message.content for e in transcript.entries]
+    assert texts == ["merge the stack", "On it.", "any news?"]
+    assert [e.parent_id for e in transcript.entries[1:]] == [e.id for e in transcript.entries[:-1]]
+    assert transcript.head_id == transcript.entries[-1].id
+    assert sess.saves == 1
+    # The run record keeps the prompt, and the turn's real error.
+    assert run.status == "failed" and run.prompt
+    assert "Incorrect API key" in run.error
+
+
+async def test_an_answered_fire_keeps_its_prompt(monkeypatch) -> None:
+    from bridge.scheduler.runtime import fire_job
+
+    sess = _session(cost_so_far=0.0)
+    _drive_fire(monkeypatch, sess, loop_call=None, cost=0.1)
+
+    await fire_job(_Service({"s1": sess}), _job())
+
+    roles = [e.message.role for e in sess.session.transcript.entries]
+    assert roles == ["user", "assistant"] and sess.saves == 0
+
+
+# ─── a bad tool name can't reach a request ────────────────────────────
+
+
+class _NamedTool:
+    requires_permission = False
+
+    def __init__(self, name: str) -> None:
+        from engine.tools import ToolDefinition
+
+        self.definition = ToolDefinition(
+            name=name, summary="s", description="d", parameters={"type": "object"}
+        )
+
+    async def execute(self, call_id, arguments):  # pragma: no cover - never run
+        raise AssertionError
+
+
+@pytest.mark.parametrize("name", ["scheduler.continue_loop", "has space", "x" * 65, ""])
+def test_the_registry_refuses_a_name_providers_reject(name) -> None:
+    registry = ToolRegistry()
+    with pytest.raises(ValueError, match="must match"):
+        registry.register(_NamedTool(name))
+    assert registry.list_definitions() == []
+
+
+def test_the_registry_takes_valid_names() -> None:
+    registry = ToolRegistry()
+    registry.register(_NamedTool("scheduler_continue_loop"))
+    registry.register(_NamedTool("mcp__slack__read-thread"))
+    assert len(registry.list_definitions()) == 2
+
+
+def test_removing_entries_relinks_the_history() -> None:
+    transcript = TranscriptManager()
+    ids = [transcript.append_message(Message(role="user", content=str(i))) for i in range(4)]
+
+    assert transcript.remove_entries({ids[1], ids[2]}) == 2
+    assert [e.id for e in transcript.entries] == [ids[0], ids[3]]
+    assert transcript.entries[1].parent_id == ids[0]
+
+    transcript.remove_entries({ids[3]})
+    assert transcript.head_id == ids[0]
+    transcript.append_message(Message(role="user", content="next"))
+    assert transcript.entries[-1].parent_id == ids[0]
 
 
 # ─── a failing job stops and says so ──────────────────────────────────

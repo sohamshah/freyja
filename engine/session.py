@@ -262,6 +262,24 @@ class TranscriptManager:
 
         return entry_id
 
+    def remove_entries(self, entry_ids: set[str]) -> int:
+        """Drop the given entries, re-pointing each survivor whose parent was
+        dropped at its nearest surviving ancestor. Returns how many went."""
+        parent_of_removed: dict[str, str | None] = {}
+        kept: list[TranscriptEntry] = []
+        for entry in self._entries:
+            if entry.id in entry_ids:
+                parent_of_removed[entry.id] = entry.parent_id
+                continue
+            while entry.parent_id in parent_of_removed:
+                entry.parent_id = parent_of_removed[entry.parent_id]
+            kept.append(entry)
+        removed = len(self._entries) - len(kept)
+        self._entries = kept
+        if self._head_id in parent_of_removed:
+            self._head_id = kept[-1].id if kept else None
+        return removed
+
     def append_compaction(
         self,
         summary: str,
