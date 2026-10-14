@@ -110,22 +110,25 @@ async def fire_job(
     save_run(run)
 
     # For self-paced loops, register the loop-control tools on this
-    # session's tool registry for the duration of the fire. They
-    # mutate next_fire_at on this exact job. We unregister after the
-    # turn completes so other jobs sharing the session don't see
-    # stale references.
+    # session's tool registry for the duration of the fire. They record
+    # the agent's decision, which is applied to the job once the turn
+    # ends. We unregister after the turn completes so the session's
+    # later turns don't send them.
     registered_loop_tools: list[str] = []
+    loop_decision = None
     if isinstance(job.schedule, SelfPacedSchedule):
         try:
             from bridge.tools.schedule_tool import (
+                LoopDecision,
                 build_complete_loop_tool,
                 build_continue_loop_tool,
             )
             reg = getattr(sess, "tool_registry", None)
             inner_reg = getattr(reg, "_underlying", None) or reg
             if inner_reg is not None:
-                cont = build_continue_loop_tool(service=service, job_id=job.id)
-                comp = build_complete_loop_tool(service=service, job_id=job.id)
+                loop_decision = LoopDecision()
+                cont = build_continue_loop_tool(schedule=job.schedule, decision=loop_decision)
+                comp = build_complete_loop_tool(schedule=job.schedule, decision=loop_decision)
                 inner_reg.register(cont)
                 inner_reg.register(comp)
                 registered_loop_tools.extend([
@@ -165,6 +168,9 @@ async def fire_job(
         preexisting = {
             w.id for w in (_running_work() if callable(_running_work) else [])
         }
+        # The session's spend so far: a fire into an existing session
+        # costs only what it adds on top.
+        cost_before = float(getattr(sess, "cumulative_cost", 0.0) or 0.0)
         _schedule_or_queue_turn(sess, prompt, attachments=None)
         pending = getattr(sess, "pending_task", None)
         # Detect the self-await trap. This fires when:
@@ -270,7 +276,7 @@ async def fire_job(
         # the dashboard Metrics view and the per-run cost in the
         # filesystem sink's JSON output.
         try:
-            in_tok, out_tok, cache_tok, cost = _extract_run_usage(sess, run.started_at)
+            in_tok, out_tok, cache_tok, cost = _extract_run_usage(sess, cost_before)
             run.input_tokens = in_tok
             run.output_tokens = out_tok
             run.cache_read_tokens = cache_tok
@@ -304,7 +310,10 @@ async def fire_job(
         run.error = f"agent turn failed: {exc}"
     finally:
         service.state.permission_tier = original_tier
-        # Clean up loop-control tools so they don't dangle.
+        # Clean up loop-control tools so they don't dangle. unregister()
+        # drops the catalog entry too: the request's tool list is built
+        # from the catalog, so popping only the tool table left them in
+        # every later request of the session.
         if registered_loop_tools:
             try:
                 reg = getattr(sess, "tool_registry", None)
@@ -312,7 +321,7 @@ async def fire_job(
                 if inner_reg is not None:
                     for name in registered_loop_tools:
                         try:
-                            inner_reg._tools.pop(name, None)  # noqa: SLF001
+                            inner_reg.unregister(name)
                         except Exception:  # noqa: BLE001
                             pass
             except Exception:  # noqa: BLE001
@@ -391,6 +400,8 @@ async def fire_job(
     save_run(run)
 
     # ── Job-level bookkeeping ─────────────────────────────────────────
+    if loop_decision is not None:
+        _apply_loop_decision(service, job, loop_decision)
     job.fire_count += 1
     job.last_fire_at = run.started_at
     if job.max_fires is not None and job.fire_count >= job.max_fires:
@@ -416,6 +427,54 @@ async def fire_job(
         },
     )
     return run
+
+
+def _apply_loop_decision(service: "SchedulerService", job: JobRecord, decision: Any) -> None:
+    """Set a self-paced job's next fire from what the agent decided this
+    turn. With no decision, the next fire waits the maximum delay. (The
+    pre-advance before the fire already set ``next_fire_at`` to the
+    minimum delay, which is why a loop whose agent never decided used to
+    fire at the minimum instead.)"""
+    schedule = job.schedule
+    if decision.kind == "complete":
+        job.enabled = False
+        job.status = "disabled_max_fires"  # reuse — "natural completion"
+        job.next_fire_at = None
+        append_event({
+            "type": "scheduler_self_paced_completed",
+            "job_id": job.id,
+            "reason": decision.reason,
+        })
+        service.emit_event(
+            subtype="scheduler_self_paced_completed",
+            message=f"Self-paced job '{job.name}' completed",
+            details={"jobId": job.id, "reason": decision.reason},
+        )
+        return
+    if decision.kind == "continue":
+        job.next_fire_at = time.time() + decision.delay_seconds
+        append_event({
+            "type": "scheduler_self_paced_continued",
+            "job_id": job.id,
+            "delay_seconds": decision.delay_seconds,
+            "reason": decision.reason,
+        })
+        service.emit_event(
+            subtype="scheduler_self_paced_continued",
+            message=f"Self-paced job '{job.name}' continued",
+            details={
+                "jobId": job.id,
+                "delaySeconds": decision.delay_seconds,
+                "reason": decision.reason,
+            },
+        )
+        return
+    job.next_fire_at = time.time() + schedule.max_delay_seconds
+    append_event({
+        "type": "scheduler_self_paced_defaulted",
+        "job_id": job.id,
+        "delay_seconds": schedule.max_delay_seconds,
+    })
 
 
 # ─── Execution context resolution ──────────────────────────────────────
@@ -473,7 +532,9 @@ async def _resolve_execution_session(
     sess = await state.ensure_session(
         sess_id,
         coordination_strategy=spec.coordination_strategy,
-        model_id=spec.model_id or job.model_id,
+        # A fresh session per fire runs on the current default, not on the
+        # model an earlier fire's transcript was saved with.
+        model_id=spec.model_id or job.model_id or getattr(state, "default_model", None),
     )
     try:
         # If the session already has prior content from earlier fires,
@@ -664,23 +725,25 @@ def _artifact_block(job: JobRecord) -> str:
 
 
 def _self_paced_contract(job: JobRecord, run: RunRecord) -> str:
+    from bridge.tools.schedule_tool import COMPLETE_LOOP_TOOL, CONTINUE_LOOP_TOOL
+
     schedule = job.schedule
     assert isinstance(schedule, SelfPacedSchedule)
     until = schedule.until_condition
     until_clause = (
         f"\nIf this condition is now satisfied — \"{until}\" — call "
-        "`scheduler.complete_loop` instead of continuing."
+        f"`{COMPLETE_LOOP_TOOL}` instead of continuing."
         if until else ""
     )
     return (
         f"[Self-paced loop — iteration {run.iteration + 1}]\n"
         f"Before finishing this turn, call EXACTLY ONE of:\n"
-        f"  • `scheduler.continue_loop(delay_seconds, reason)` — schedule"
+        f"  • `{CONTINUE_LOOP_TOOL}(delay_seconds, reason)` — schedule"
         f" the next iteration. delay_seconds must be in"
         f" [{schedule.min_delay_seconds}, {schedule.max_delay_seconds}].\n"
-        f"  • `scheduler.complete_loop(reason)` — terminate the loop.\n"
-        f"If you call neither, the runtime defaults to the maximum "
-        f"delay and emits a warning."
+        f"  • `{COMPLETE_LOOP_TOOL}(reason)` — terminate the loop.\n"
+        f"If you call neither, the next iteration waits the maximum "
+        f"delay."
         f"{until_clause}"
     )
 
@@ -756,12 +819,11 @@ def _extract_last_assistant_text(sess: Any) -> tuple[str, int]:
     return final_text, assistant_count
 
 
-def _extract_run_usage(sess: Any, run_started_at: float) -> tuple[int, int, int, float]:
-    """Walk back through the transcript adding up token counts on
-    assistant messages whose timestamp is at or after ``run_started_at``.
-    Cost is approximated via the runner's cumulative_cost delta when
-    available; otherwise we leave it at 0 and let the dashboard rely
-    on token counts alone."""
+def _extract_run_usage(sess: Any, cost_before: float) -> tuple[int, int, int, float]:
+    """Walk back through the transcript adding up token counts on the
+    assistant messages after the fire's prompt. Cost is what the
+    session's cumulative_cost grew by since ``cost_before``, taken just
+    before the fire started its turn."""
     inner = getattr(sess, "session", None)
     if inner is None:
         return 0, 0, 0, 0.0
@@ -785,17 +847,13 @@ def _extract_run_usage(sess: Any, run_started_at: float) -> tuple[int, int, int,
         in_tok += int(getattr(msg, "input_tokens", 0) or 0)
         out_tok += int(getattr(msg, "output_tokens", 0) or 0)
         cache_tok += int(getattr(msg, "cache_read_tokens", 0) or 0)
-    # Best-effort cost. The runner tracks cumulative_cost on the
-    # session; we can't easily slice "just this run" without a delta
-    # snapshot, so leave cost at 0 unless the session exposes a
-    # per-run hook later.
+    # The session's lifetime spend is not this run's: a fire into a
+    # session that had already spent more than the per-run cap was
+    # counted as over budget before it made a single call.
     cost = 0.0
     cumulative = getattr(sess, "cumulative_cost", None)
     if isinstance(cumulative, (int, float)):
-        # Approximate by attributing the latest delta — caller is
-        # responsible for snapshotting before/after if precision
-        # matters.
-        cost = float(cumulative)
+        cost = max(0.0, float(cumulative) - cost_before)
     return in_tok, out_tok, cache_tok, cost
 
 

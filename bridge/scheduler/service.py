@@ -26,11 +26,9 @@ Crash safety: ``fcntl.flock`` is released automatically by the kernel
 when the holder exits (clean OR crash). A dead process can never leave
 a job permanently locked.
 
-Internal hooks:
-
-  ``advance_self_paced(job_id, delay_seconds)`` — used by the
-  auto-registered ``continue_loop`` tool.
-  ``complete_self_paced(job_id, reason)`` — used by ``complete_loop``.
+Self-paced loops: the fire registers the loop-control tools and applies
+the agent's decision itself, under the lock it already holds
+(``runtime._apply_loop_decision``).
 """
 
 from __future__ import annotations
@@ -98,6 +96,13 @@ _DEFAULT_MAX_CONCURRENT_RUNS = 256
 # without burning CPU.
 _TICK_CAP_SECONDS = 1.0
 
+# A job whose last runs all failed is stopped and says so where it
+# reports. Without this a job that cannot run fires until max_fires,
+# silently, since failed runs deliver nothing: one self-paced loop failed
+# 180 times in six hours before anyone noticed.
+MAX_FAILED_RUNS_IN_A_ROW = 3
+_FAILED_RUN_STATUSES = frozenset({"failed", "timed_out"})
+
 
 class SchedulerService:
     """Process-level scheduler. Multiple instances may coexist; disk +
@@ -120,12 +125,6 @@ class SchedulerService:
     Loop control:
 
       ``await start()`` / ``await stop()``
-
-    Internal hooks:
-
-      ``advance_self_paced(job_id, delay_seconds)`` — used by the
-      auto-registered ``continue_loop`` tool.
-      ``complete_self_paced(job_id, reason)`` — used by ``complete_loop``.
 
     Notes:
 
@@ -345,10 +344,12 @@ class SchedulerService:
 
     async def _fire_under_lock(self, job: JobRecord) -> None:
         """Run the agent turn for ``job``. The per-job flock is already
-        held by our caller, so retry-policy + self-paced default
-        writes are race-free."""
+        held by our caller, so the failure stop and retry-policy writes
+        are race-free."""
         from bridge.scheduler.runtime import fire_job
         run = await fire_job(self, job)
+        if await self._stop_if_failing(job, run):
+            return
         # Retry policy. If the run failed and the user configured
         # retries, schedule a backoff fire.
         retry = job.retry_policy
@@ -377,22 +378,54 @@ class SchedulerService:
                     "attempt": attempts,
                     "delay_seconds": delay,
                 })
-        # Self-paced jobs whose agent didn't set a next_fire_at get
-        # the configured max_delay as a safety net.
-        if isinstance(job.schedule, SelfPacedSchedule):
-            fresh = load_job(job.id) or job
-            if fresh.enabled and (
-                fresh.next_fire_at is None
-                or fresh.next_fire_at <= time.time()
-            ):
-                fresh.next_fire_at = time.time() + job.schedule.max_delay_seconds
-                save_job(fresh)
-                touch_wake()
-                append_event({
-                    "type": "scheduler_self_paced_defaulted",
-                    "job_id": job.id,
-                    "delay_seconds": job.schedule.max_delay_seconds,
-                })
+
+    async def _stop_if_failing(self, job: JobRecord, run: RunRecord) -> bool:
+        """Disable ``job`` when its last ``MAX_FAILED_RUNS_IN_A_ROW`` runs
+        all failed, and post why to its sinks. Returns True if stopped."""
+        if run.status not in _FAILED_RUN_STATUSES:
+            return False
+        recent = load_runs_for_job(job.id, limit=MAX_FAILED_RUNS_IN_A_ROW)
+        if len(recent) < MAX_FAILED_RUNS_IN_A_ROW or any(
+            r.status not in _FAILED_RUN_STATUSES for r in recent
+        ):
+            return False
+        fresh = load_job(job.id) or job
+        if not fresh.enabled:
+            return False
+        fresh.enabled = False
+        fresh.status = "disabled_error"
+        fresh.next_fire_at = None
+        save_job(fresh)
+        touch_wake()
+        error = (run.error or "no error was recorded")[:600]
+        notice = (
+            f"I stopped the scheduled job *{fresh.name}*: its last "
+            f"{MAX_FAILED_RUNS_IN_A_ROW} runs failed. Last error: {error}"
+        )
+        append_event({
+            "type": "scheduler_job_stopped_failing",
+            "job_id": job.id,
+            "run_id": run.run_id,
+            "error": error,
+        })
+        self.emit_event(
+            subtype="scheduler_job_stopped_failing",
+            message=notice,
+            details={"jobId": job.id, "runId": run.run_id, "error": error},
+        )
+        from bridge.scheduler.persistence import write_run_output
+        from bridge.scheduler.sinks import RunOutput, SinkContext, deliver_all
+
+        try:
+            await deliver_all(
+                fresh,
+                run,
+                RunOutput(text=notice, attachments=[], run=run, job=fresh),
+                SinkContext(state=self.state, outputs_dir=write_run_output, log=logger.info),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("failure notice for job %s was not delivered", job.id)
+        return True
 
     # ─── CRUD ─────────────────────────────────────────────────────────
 
@@ -660,78 +693,6 @@ class SchedulerService:
             next_fire_job_id=next_job.id if next_job else None,
             next_fire_job_name=next_job.name if next_job else None,
         )
-
-    # ─── Self-paced loop hooks ────────────────────────────────────────
-
-    async def advance_self_paced(
-        self,
-        job_id: str,
-        *,
-        delay_seconds: int,
-        reason: str = "",
-    ) -> dict[str, Any]:
-        """Called by the auto-registered ``continue_loop`` tool when
-        the agent declares the next wakeup."""
-        with FileLock(job_lock_path(job_id)) as got:
-            if not got:
-                raise RuntimeError(
-                    f"job {job_id} is locked by a peer; cannot advance"
-                )
-            job = load_job(job_id)
-            if job is None:
-                raise KeyError(job_id)
-            if not isinstance(job.schedule, SelfPacedSchedule):
-                raise ValueError("continue_loop is only valid for self-paced jobs")
-            clamped = max(
-                job.schedule.min_delay_seconds,
-                min(job.schedule.max_delay_seconds, int(delay_seconds)),
-            )
-            job.next_fire_at = time.time() + clamped
-            save_job(job)
-        touch_wake()
-        append_event({
-            "type": "scheduler_self_paced_continued",
-            "job_id": job_id,
-            "delay_seconds": clamped,
-            "reason": reason,
-        })
-        self.emit_event(
-            subtype="scheduler_self_paced_continued",
-            message=f"Self-paced job '{job.name}' continued",
-            details={"jobId": job_id, "delaySeconds": clamped, "reason": reason},
-        )
-        return {"delay_seconds": clamped, "next_fire_at": job.next_fire_at}
-
-    async def complete_self_paced(
-        self,
-        job_id: str,
-        *,
-        reason: str = "",
-    ) -> dict[str, Any]:
-        with FileLock(job_lock_path(job_id)) as got:
-            if not got:
-                raise RuntimeError(
-                    f"job {job_id} is locked by a peer; cannot complete"
-                )
-            job = load_job(job_id)
-            if job is None:
-                raise KeyError(job_id)
-            job.enabled = False
-            job.status = "disabled_max_fires"  # reuse — "natural completion"
-            job.next_fire_at = None
-            save_job(job)
-        touch_wake()
-        append_event({
-            "type": "scheduler_self_paced_completed",
-            "job_id": job_id,
-            "reason": reason,
-        })
-        self.emit_event(
-            subtype="scheduler_self_paced_completed",
-            message=f"Self-paced job '{job.name}' completed",
-            details={"jobId": job_id, "reason": reason},
-        )
-        return {"completed": True}
 
     # ─── Utility ──────────────────────────────────────────────────────
 

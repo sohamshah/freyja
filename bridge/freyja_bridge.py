@@ -598,6 +598,12 @@ def emit_error(message: str, recoverable: bool = False) -> None:
     emit({"type": "error", "message": message, "recoverable": recoverable})
 
 
+# A rejected tool definition: Anthropic's "tools.27.custom.name: ...",
+# OpenAI's "Invalid 'tools[27].name'", or the check some providers run
+# before sending ("Invalid tool name ...").
+_TOOL_LIST_ERROR = re.compile(r"\btools(?:\.\d+\.|\[\d+\])|Invalid tool name")
+
+
 def _format_user_facing_runner_failure(
     *,
     reason: str,
@@ -717,6 +723,16 @@ def _format_user_facing_runner_failure(
             f"agent stopped before responding. Detail: {short}. The session's "
             "history is fine and `/repair` will not help: switch model with "
             "`/model` or change the reasoning level, then send your message again."
+        )
+    if _TOOL_LIST_ERROR.search(message or ""):
+        # The API (or the provider's own check before sending) rejected a
+        # tool definition. That is Freyja's doing, not the history's, so
+        # /repair finds nothing and resending fails the same way.
+        return (
+            "The API rejected one of the tools Freyja sent, so the agent "
+            f"stopped before responding. Detail: {short}. The session's "
+            "history is fine and `/repair` will not help: this needs a fix "
+            "in Freyja."
         )
     if "invalid_request_error" in (message or ""):
         # The API rejected the request itself, usually because something
@@ -1140,6 +1156,23 @@ def _record_is_terminal(rec: Any) -> bool:
         SubAgentState.FAILED,
         SubAgentState.CANCELLED,
     )
+
+
+def _saved_model(session_id: str) -> tuple[str | None, str | None]:
+    """The model and reasoning level a persisted session was last saved
+    with: (None, None) without a transcript, or when that model is no
+    longer offered."""
+    from bridge.transcript_persistence import load_transcript
+    from engine.providers import MODEL_REGISTRY
+
+    persisted = load_transcript(session_id)
+    meta = persisted.get("metadata") if isinstance(persisted, dict) else None
+    if not isinstance(meta, dict):
+        return None, None
+    model_id = str(meta.get("model_id") or "")
+    if model_id not in MODEL_REGISTRY:
+        return None, None
+    return model_id, str(meta.get("reasoning_level") or "") or None
 
 
 async def _cold_load_session(state: Any, sid: str) -> Any:
@@ -12652,6 +12685,14 @@ class _BridgeState:
             self.active_session_id = session_id
             return existing
 
+        if model_id is None:
+            # A session loaded from disk keeps the model it was saved with.
+            # The process default put a Slack thread started on GPT onto
+            # Opus after a gateway restart, and a provider-family change
+            # also strips every thinking block from the transcript.
+            model_id, saved_reasoning = _saved_model(session_id)
+            if reasoning_level is None:
+                reasoning_level = saved_reasoning
         s = _BridgeSession(
             session_id,
             workspace=self.workspace,

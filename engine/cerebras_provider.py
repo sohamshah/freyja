@@ -62,8 +62,7 @@ def _validate_tool_name(name: str) -> None:
     if not _TOOL_NAME_PATTERN.match(name):
         raise ValueError(
             f"Invalid tool name {name!r}: must match ^[a-zA-Z0-9_-]+$ "
-            "(no dots, spaces, or special characters). Cerebras rejects "
-            "names containing dots."
+            "(no dots, spaces, or special characters)."
         )
 
 

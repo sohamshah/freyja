@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from bridge.scheduler.models import (
@@ -590,8 +591,8 @@ Sinks (where the output goes):
 
 Self-paced loops:
   When the schedule is `self_paced`, two extra tools are auto-registered
-  during each fire: `scheduler.continue_loop(delay_seconds, reason)` and
-  `scheduler.complete_loop(reason)`. The agent must call exactly one
+  during each fire: `scheduler_continue_loop(delay_seconds, reason)` and
+  `scheduler_complete_loop(reason)`. The agent must call exactly one
   before finishing the turn. If neither is called, the runtime defaults
   to the max delay.
 """
@@ -727,28 +728,46 @@ _PARAMETERS = {
 
 # ─── Continue/complete loop tools (auto-registered for self-paced fires) ──
 
+# Tool names must match ^[a-zA-Z0-9_-]+$ on every provider: a dot in the
+# name makes Anthropic reject the whole request and OpenAI fail before it.
+CONTINUE_LOOP_TOOL = "scheduler_continue_loop"
+COMPLETE_LOOP_TOOL = "scheduler_complete_loop"
+
+
+@dataclass
+class LoopDecision:
+    """What the agent decided during one self-paced fire.
+
+    The fire holds the job's lock for its whole turn and saves the job
+    when the turn ends. So the tools only record the decision here and
+    the fire applies it: taking the lock again from the same process
+    fails, and the fire's save would overwrite a write made mid-turn."""
+
+    kind: str | None = None  # "continue" | "complete"
+    delay_seconds: int | None = None
+    reason: str = ""
+
 
 class _LoopControlTool:
-    """Base for continue_loop / complete_loop. Both share the same
-    permission model + reach into SchedulerService."""
+    """Base for the continue/complete loop tools of one fire."""
 
     requires_permission = False
 
     def __init__(
         self,
         *,
-        service: SchedulerService,
-        job_id: str,
+        schedule: SelfPacedSchedule,
+        decision: LoopDecision,
         mode: str,
     ) -> None:
-        self._service = service
-        self._job_id = job_id
+        self._schedule = schedule
+        self._decision = decision
         self._mode = mode  # "continue" | "complete"
 
     @property
     def definition(self) -> ToolDefinition:
         if self._mode == "continue":
-            name = "scheduler.continue_loop"
+            name = CONTINUE_LOOP_TOOL
             summary = (
                 "Schedule the next iteration of the current self-paced "
                 "loop. Required before ending this turn."
@@ -757,7 +776,7 @@ class _LoopControlTool:
                 "Set the next wakeup of the current self-paced loop "
                 "to `delay_seconds` from now (clamped to the job's "
                 "configured min/max). MUST be called before ending "
-                "the turn unless you call scheduler.complete_loop."
+                f"the turn unless you call {COMPLETE_LOOP_TOOL}."
             )
             params = {
                 "type": "object",
@@ -768,7 +787,7 @@ class _LoopControlTool:
                 "required": ["delay_seconds"],
             }
         else:
-            name = "scheduler.complete_loop"
+            name = COMPLETE_LOOP_TOOL
             summary = "Terminate the current self-paced loop."
             description = (
                 "Mark the current self-paced loop as completed. The "
@@ -789,31 +808,29 @@ class _LoopControlTool:
         )
 
     async def execute(self, call_id: str, arguments: dict[str, Any]) -> ToolResult:
+        import json
+
+        self._decision.reason = str(arguments.get("reason") or "")
+        if self._mode == "complete":
+            self._decision.kind = "complete"
+            self._decision.delay_seconds = None
+            return ToolResult(call_id=call_id, content=json.dumps({"completed": True}))
         try:
-            if self._mode == "continue":
-                delay = int(arguments.get("delay_seconds") or 0)
-                reason = str(arguments.get("reason") or "")
-                payload = await self._service.advance_self_paced(
-                    self._job_id, delay_seconds=delay, reason=reason,
-                )
-            else:
-                reason = str(arguments.get("reason") or "")
-                payload = await self._service.complete_self_paced(
-                    self._job_id, reason=reason,
-                )
-            import json
-            return ToolResult(
-                call_id=call_id,
-                content=json.dumps(payload, default=str),
-                is_error=False,
-            )
-        except Exception as exc:  # noqa: BLE001
-            return _err(call_id, str(exc))
+            requested = int(arguments.get("delay_seconds") or 0)
+        except (TypeError, ValueError):
+            return _err(call_id, "delay_seconds must be an integer")
+        delay = max(
+            self._schedule.min_delay_seconds,
+            min(self._schedule.max_delay_seconds, requested),
+        )
+        self._decision.kind = "continue"
+        self._decision.delay_seconds = delay
+        return ToolResult(call_id=call_id, content=json.dumps({"delay_seconds": delay}))
 
 
-def build_continue_loop_tool(*, service, job_id: str):
-    return _LoopControlTool(service=service, job_id=job_id, mode="continue")
+def build_continue_loop_tool(*, schedule: SelfPacedSchedule, decision: LoopDecision):
+    return _LoopControlTool(schedule=schedule, decision=decision, mode="continue")
 
 
-def build_complete_loop_tool(*, service, job_id: str):
-    return _LoopControlTool(service=service, job_id=job_id, mode="complete")
+def build_complete_loop_tool(*, schedule: SelfPacedSchedule, decision: LoopDecision):
+    return _LoopControlTool(schedule=schedule, decision=decision, mode="complete")
