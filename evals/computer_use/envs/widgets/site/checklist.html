@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Release checklist · Tessaly Console</title><link rel="stylesheet" href="style.css"></head>
+<body data-page="checklist">
+<div class="app">
+<main class="main">
+  <header><h1>Release checklist</h1><p class="muted">Release 4.2 · the steps run top to bottom.</p></header>
+  <section class="checklist" aria-labelledby="listHead">
+    <h2 id="listHead" class="sr-only">Steps</h2>
+    <p class="hint muted" id="hint"></p>
+    <p id="dndHelp" class="sr-only">To pick up a card, focus its handle and press Enter or Space. Use the Up and Down arrow keys to move it. Press Enter or Space again to drop it, or Escape to cancel.</p>
+    <div id="dndLive" class="sr-only" aria-live="assertive" aria-atomic="true"></div>
+    <ol class="ccards" id="ccards"></ol>
+    <div class="listfoot">
+      <button type="button" class="btn primary" id="saveOrder">Save order</button>
+      <span class="muted" id="orderState"></span>
+    </div>
+  </section>
+</main>
+</div>
+<script src="app.js"></script>
+<script src="checklist.js"></script>
+</body>
+</html>

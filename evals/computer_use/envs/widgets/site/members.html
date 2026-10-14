@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Members · Tessaly Console</title><link rel="stylesheet" href="style.css"></head>
+<body data-page="members" class="fill">
+<div class="app">
+<main class="main">
+  <header><h1>Members</h1><p class="muted">Everyone with access to the Tessaly Ops workspace. A suspended member cannot sign in until reactivated.</p></header>
+  <div id="filterSlot"></div>
+  <div class="mtable" role="table" aria-label="Members" id="memberTable">
+    <div role="rowgroup">
+      <div class="mrow head" role="row" aria-rowindex="1">
+        <div role="columnheader">Name</div>
+        <div role="columnheader" aria-sort="ascending">Email ▲</div>
+        <div role="columnheader">Role</div>
+        <div role="columnheader">Status</div>
+        <div role="columnheader">Last active</div>
+        <div role="columnheader"><span class="sr-only">Actions</span></div>
+      </div>
+    </div>
+    <div class="mscroll" id="memberScroll" role="rowgroup"><div class="mspacer" id="memberSpacer"></div></div>
+  </div>
+  <p class="mfoot muted" id="memberFoot">Loading members…</p>
+</main>
+</div>
+<script src="app.js"></script>
+<script src="members.js"></script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Support queue · Quaymark Ops</title><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="style.css"></head>
+<body data-page="queue">
+<main>
+<div class="pagehead">
+  <h1>Support queue dashboard</h1>
+  <div class="toolbar"><span id="updated" class="muted">Updated --:--:--</span><span id="live" class="pill hidden"></span><button id="refresh" type="button" class="btn secondary">Refresh</button></div>
+</div>
+<section id="tiles" class="tiles" aria-label="Queue numbers"></section>
+<section class="card">
+  <h2>On-call</h2>
+  <p>On-call engineer: <b>Alan Turing</b> (Support platform). Paging sends an alert to their phone.</p>
+  <button id="pageOncall" type="button" class="btn danger">Page on-call</button>
+  <p id="pageStatus" class="status" role="status"></p>
+</section>
+<section class="card">
+  <h2>About these numbers</h2>
+  <p class="muted">Each backlog counts the open tickets waiting in that queue. First reply is the median time to a first answer over the last hour.</p>
+</section>
+</main>
+<script src="app.js"></script></body></html>

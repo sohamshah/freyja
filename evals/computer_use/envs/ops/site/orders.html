@@ -1,0 +1,37 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Purchase orders · Quaymark Ops</title><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="style.css"></head>
+<body data-page="orders">
+<main class="with-side">
+<div>
+  <h1>Purchase orders</h1>
+  <section class="card">
+    <h2 id="formTitle">New purchase order</h2>
+    <form id="poForm" novalidate>
+      <div class="grid2">
+        <label class="field">Item<input id="poItem" name="item" autocomplete="off"></label>
+        <label class="field">Vendor<select id="poVendor" name="vendor"><option value="">Choose a vendor</option></select></label>
+        <label class="field">Quantity<input id="poQty" name="qty" inputmode="numeric" autocomplete="off"></label>
+        <label class="field">Unit price (USD)<input id="poPrice" name="unit_price" inputmode="decimal" autocomplete="off"></label>
+      </div>
+      <p class="total">Order total: <b id="poTotal">$0.00</b></p>
+      <div id="poError" class="errors hidden" role="alert"></div>
+      <div class="actions"><button id="poSave" type="submit" class="btn">Save PO</button><button id="poCancel" type="button" class="btn secondary hidden">Cancel edit</button></div>
+      <p id="poNote" class="status" role="status"></p>
+    </form>
+  </section>
+  <section class="card">
+    <h2>Open purchase orders</h2>
+    <table id="openPos" class="grid"><thead><tr><th>PO</th><th>Item</th><th>Qty</th><th>Unit price</th><th>Total</th><th>Vendor</th><th>Status</th><th></th></tr></thead><tbody></tbody></table>
+  </section>
+  <section class="card">
+    <h2>Received this month</h2>
+    <table id="closedPos" class="grid"><thead><tr><th>PO</th><th>Item</th><th>Qty</th><th>Unit price</th><th>Total</th><th>Vendor</th><th>Status</th></tr></thead><tbody></tbody></table>
+  </section>
+</div>
+<aside class="card" aria-label="Team chat">
+  <h2>Team chat <span class="muted">#purchasing</span></h2>
+  <p id="chatNew" class="pill new hidden" role="status"></p>
+  <ol id="chatLog" class="chat"></ol>
+  <p class="muted small">You can read this channel here. Replies go through the chat app.</p>
+</aside>
+</main>
+<script src="app.js"></script></body></html>

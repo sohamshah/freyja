@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Account · Tessaly Console</title><link rel="stylesheet" href="style.css"></head>
+<body data-page="account">
+<div class="app">
+<main class="main">
+  <p><a href="signup.html">← New customer account</a></p>
+  <section class="card signup" id="account"><p class="muted">Loading…</p></section>
+</main>
+</div>
+<script src="app.js"></script>
+<script>
+TC.pages.account = function () {
+  var id = new URLSearchParams(location.search).get('id') || '';
+  return TC.api('account?id=' + encodeURIComponent(id)).then(function (r) {
+    var box = TC.$('account'), el = TC.el;
+    box.innerHTML = '';
+    if (r.status !== 200) { box.appendChild(el('p', { text: 'This account was not found.' })); return; }
+    var a = r.data;
+    document.title = a.name + ' · Accounts · Tessaly Console';
+    box.appendChild(el('h1', { text: a.name }));
+    box.appendChild(el('p', { class: 'muted', text: (a.type === 'business' ? 'Business' : 'Personal') + ' account ' + a.id }));
+    var rows = [['Email', a.email], ['Phone', a.phone], ['Address', [a.address1, a.address2].filter(Boolean).join(', ')],
+      ['Postcode', a.postcode], ['City', a.city], ['Country', a.country], ['Team size', a.team_size]];
+    if (a.type === 'business') rows.push(['VAT ID', a.vat]);
+    var dl = el('dl', { class: 'facts' });
+    rows.forEach(function (x) { dl.appendChild(el('dt', { text: x[0] })); dl.appendChild(el('dd', { text: x[1] || '—' })); });
+    box.appendChild(dl);
+    document.body.setAttribute('data-account', a.id);
+  });
+};
+</script>
+</body>
+</html>

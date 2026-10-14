@@ -333,20 +333,67 @@ def report(dirs: list[str]) -> int:
     return 0
 
 
-async def serve_forever(names: list[str], port: int) -> None:
-    """Serve the mocks to a person: one fresh episode per task, at the page it starts on.
+def _index_html(tasks: list[Any], base: str) -> str:
+    """The task list `serve` shows at /: each link starts a fresh episode."""
+    import html  # noqa: PLC0415
 
-    Airline pages find their booking by a cookie, and a browser keeps one cookie
-    per host: the airline link opened last sets the booking every airline tab uses.
-    """
+    from computer_use import envs  # noqa: PLC0415
+
+    rows, env = [], None
+    for t in tasks:
+        if t.env != env:
+            env = t.env
+            rows.append(f"<h2>{html.escape(env)}</h2>")
+        twin = (
+            f' · <a href="/__task?id={t.id}&amp;quirks=off">control twin (quirks off)</a>'
+            if t.env in envs.NAMES and getattr(envs.backend(t.env), "QUIRKS", None)
+            else ""
+        )
+        tags = "".join(f' <span class="tag">{html.escape(x)}</span>' for x in t.tags)
+        goal = t.goal.replace("{base}", f"{base}/{t.env}").replace("{run}", "…")
+        rows.append(
+            f'<div class="task"><a href="/__task?id={t.id}"><b>{html.escape(t.id)}</b></a>{tags}'
+            f'{twin}<p>{html.escape(goal)}</p></div>'
+        )
+    return (
+        "<!doctype html><meta charset=utf-8><title>Computer-use envs</title>"
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<style>:root{color-scheme:light dark}body{font:15px/1.45 system-ui,sans-serif;"
+        "max-width:60rem;margin:2rem auto;padding:0 1rem}h2{margin-top:2rem}"
+        ".task{padding:.5rem 0;border-top:1px solid #8884}.task p{margin:.2rem 0 0;"
+        "opacity:.8}.tag{font-size:12px;border:1px solid #8888;border-radius:4px;"
+        "padding:0 4px}</style><h1>Computer-use environments</h1><p>Each link starts a "
+        "fresh episode at the page the task starts on. Pages with server state find "
+        "their episode by a cookie, one per host: the link opened last sets the episode "
+        "for every tab of that env.</p>" + "".join(rows)
+    )
+
+
+async def serve_forever(names: list[str], port: int) -> None:
+    """Serve the mocks to a person. The index at / lists every task, and each link
+    starts a fresh episode at the page the task starts on."""
+    from computer_use import envs  # noqa: PLC0415
+    from computer_use.server import Response  # noqa: PLC0415
     from computer_use.tasks import select  # noqa: PLC0415
 
+    tasks = select(names)
+    by_id = {t.id: t for t in tasks}
     server = make_server(port)
-    flow = server.new_episode("airline", {})
-    print(f"{'airline (the whole flow)':<30} {server.start_url(flow, '/airline/index.html')}")
-    print(f"{'fixtures (vertex, basics)':<30} {server.base}/vertex/index.html")
-    for t in select(names):
-        print(f"{t.id:<30} {task_url(server, t, server.new_episode(t.env, t.config))}")
+
+    def start(query: dict[str, str]) -> Any:
+        t = by_id.get(query.get("id", ""))
+        if t is None:
+            return Response(404, "no such task")
+        cfg = dict(t.config)
+        if query.get("quirks") == "off" and t.env in envs.NAMES:
+            cfg["quirks"] = {k: False for k in getattr(envs.backend(t.env), "QUIRKS", {})}
+        return Response(302, "", {"Location": task_url(server, t, server.new_episode(t.env, cfg))})
+
+    server.pages["/"] = lambda q: Response(200, _index_html(tasks, server.base))
+    server.pages["/__task"] = start
+    print(f"index: {server.base}/")
+    for t in tasks:
+        print(f"{t.id:<30} {server.base}/__task?id={t.id}")
     sys.stdout.flush()
     try:
         while True:

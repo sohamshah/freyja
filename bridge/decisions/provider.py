@@ -8,6 +8,7 @@ personal/secret state stays on the machine.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from typing import Any, Protocol
@@ -21,6 +22,10 @@ DEFAULT_MODEL = "jev-latest"
 ENV_API_KEY = "TYPESAFE_AI_API_KEY"
 ENV_BASE_URL = "TYPESAFE_AI_BASE_URL"
 ENV_LOCAL_BASE_URL = "DECISIONS_LOCAL_BASE_URL"
+# A request that fails in transport (timed out, reset, dropped) is sent once more
+# after this wait. The service once stalled for 30 s and every run in flight ended
+# "error" on that one request. An HTTP answer, even an error, is not retried.
+TRANSPORT_RETRY_S = 1.0
 
 
 class DecisionError(RuntimeError):
@@ -78,24 +83,36 @@ class TypeSafeProvider:
         self, state: Any, questions: dict[str, Question], *, model: str | None = None
     ) -> Answers:
         url, headers, body = self._request(state, questions, model)
-        t0 = time.perf_counter()
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(url, headers=headers, json=body)
-        except httpx.HTTPError as exc:
-            raise DecisionError(f"{self.name}: transport error: {exc}") from exc
+        for retry in (True, False):
+            t0 = time.perf_counter()
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    resp = await client.post(url, headers=headers, json=body)
+                break
+            except httpx.TransportError as exc:
+                if not retry:
+                    raise DecisionError(f"{self.name}: transport error: {exc!r}") from exc
+                await asyncio.sleep(TRANSPORT_RETRY_S)
+            except httpx.HTTPError as exc:
+                raise DecisionError(f"{self.name}: transport error: {exc!r}") from exc
         return self._finish(resp, t0)
 
     def decide_sync(
         self, state: Any, questions: dict[str, Question], *, model: str | None = None
     ) -> Answers:
         url, headers, body = self._request(state, questions, model)
-        t0 = time.perf_counter()
-        try:
-            with httpx.Client(timeout=self.timeout) as client:
-                resp = client.post(url, headers=headers, json=body)
-        except httpx.HTTPError as exc:
-            raise DecisionError(f"{self.name}: transport error: {exc}") from exc
+        for retry in (True, False):
+            t0 = time.perf_counter()
+            try:
+                with httpx.Client(timeout=self.timeout) as client:
+                    resp = client.post(url, headers=headers, json=body)
+                break
+            except httpx.TransportError as exc:
+                if not retry:
+                    raise DecisionError(f"{self.name}: transport error: {exc!r}") from exc
+                time.sleep(TRANSPORT_RETRY_S)
+            except httpx.HTTPError as exc:
+                raise DecisionError(f"{self.name}: transport error: {exc!r}") from exc
         return self._finish(resp, t0)
 
     def _finish(self, resp: httpx.Response, t0: float) -> Answers:

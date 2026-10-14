@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>New account · Tessaly Console</title><link rel="stylesheet" href="style.css"></head>
+<body data-page="signup">
+<div class="app">
+<main class="main">
+  <div id="formErrors" class="banner error hidden" role="alert"></div>
+  <header><h1>New customer account</h1><p class="muted">Open a Tessaly account for a person or a company. We email them a link to set a password.</p></header>
+  <section class="card signup">
+    <form id="signupForm" novalidate>
+      <fieldset>
+        <legend>Account type</legend>
+        <div class="choice">
+          <label><input type="radio" name="acct" value="personal" checked> Personal</label>
+          <label><input type="radio" name="acct" value="business"> Business</label>
+        </div>
+      </fieldset>
+      <div class="field"><label class="lab" for="name" id="nameLabel">Full name</label><input type="text" id="name" name="name" autocomplete="off"></div>
+      <div class="field"><label class="lab" for="email">Email</label><input type="email" id="email" name="email" autocomplete="off"></div>
+      <div class="field"><label class="lab" for="phone">Phone (optional)</label><input type="tel" id="phone" name="phone" autocomplete="off"></div>
+      <div class="field"><label class="lab" for="address1">Address line 1 (optional)</label><input type="text" id="address1" name="address1" autocomplete="off"></div>
+      <div class="field"><label class="lab" for="address2">Address line 2 (optional)</label><input type="text" id="address2" name="address2" autocomplete="off"></div>
+      <div class="field"><label class="lab" for="postcode">Postcode</label><input type="text" id="postcode" name="postcode" autocomplete="off"></div>
+      <div class="field"><label class="lab" for="city">City</label><input type="text" id="city" name="city" autocomplete="off"></div>
+      <div class="field"><label class="lab" for="country">Country</label>
+        <select id="country" name="country">
+          <option>United Kingdom</option><option>Ireland</option><option>France</option><option>Germany</option><option>Netherlands</option><option>Other</option>
+        </select></div>
+      <div class="field"><label class="lab" for="teamSize">Team size (optional)</label>
+        <select id="teamSize" name="team_size">
+          <option value="">Select</option><option>1 to 10</option><option>11 to 50</option><option>51 to 200</option><option>More than 200</option>
+        </select></div>
+      <div class="field"><label class="lab" for="source">How did they hear about us? (optional)</label>
+        <select id="source" name="source">
+          <option value="">Select</option><option>A colleague</option><option>An event</option><option>Search</option><option>Other</option>
+        </select></div>
+      <label class="check"><input type="checkbox" id="marketing" name="marketing"> Send them product news by email</label>
+      <div id="vatSlot"></div>
+      <button type="submit" class="btn primary" id="createBtn">Create account</button>
+    </form>
+  </section>
+</main>
+</div>
+<script src="app.js"></script>
+<script src="signup.js"></script>
+</body>
+</html>

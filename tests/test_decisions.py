@@ -194,3 +194,40 @@ def test_dynamic_options_are_required(tmp_path):
     client = DecisionClient({"local": FakeProvider("local")}, log=DecisionLog(tmp_path / "l.jsonl"))
     with pytest.raises(ValueError):
         client.decide_sync("ax_action", {"goal": "x"})
+
+
+def test_a_transport_failure_is_retried_once(monkeypatch):
+    """The decision service once stalled for 30 s, and every jev run in flight
+    ended "error" on that one request. A transport failure gets one more try; an
+    HTTP answer is final."""
+    import asyncio
+
+    import httpx
+
+    from bridge.decisions import provider as prov
+    from bridge.decisions.types import Choice
+
+    monkeypatch.setattr(prov, "TRANSPORT_RETRY_S", 0.0)
+    calls = []
+
+    def post_with(failures):
+        async def post(self, url, **kw):
+            calls.append(url)
+            if len(calls) <= failures:
+                raise httpx.ReadTimeout("timed out")
+            return httpx.Response(500, text="boom", request=httpx.Request("POST", url))
+
+        return post
+
+    p = prov.TypeSafeProvider(api_key="k")
+    qs = {"op": Choice(instructions="pick", options={"a": "A", "b": "B"})}
+    monkeypatch.setattr(httpx.AsyncClient, "post", post_with(1))
+    with pytest.raises(prov.DecisionError, match="HTTP 500"):
+        asyncio.run(p.decide({}, qs))
+    assert len(calls) == 2, "one retry after the timeout, none after the HTTP error"
+
+    calls.clear()
+    monkeypatch.setattr(httpx.AsyncClient, "post", post_with(2))
+    with pytest.raises(prov.DecisionError, match="transport error: ReadTimeout"):
+        asyncio.run(p.decide({}, qs))
+    assert len(calls) == 2

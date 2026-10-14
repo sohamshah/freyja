@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Products · Tessaly Console</title><link rel="stylesheet" href="style.css"></head>
+<body data-page="catalog">
+<div class="app">
+<main class="main">
+  <header><h1>Products</h1><p class="muted">Hardware add-ons sold to Tessaly customers.</p></header>
+  <div class="catalog">
+    <section class="card filters" aria-labelledby="priceHead">
+      <h2 id="priceHead">Price</h2>
+      <p class="readout" id="priceReadout">$0 – $500</p>
+      <div class="range" id="priceRange"><div class="track"><div class="fill" id="rangeFill"></div></div></div>
+      <div class="range-ends" aria-hidden="true"><span>$0</span><span>$500</span></div>
+      <div id="minmaxSlot"></div>
+      <button type="button" class="btn primary" id="applyBtn">Apply</button>
+    </section>
+    <section aria-label="Products">
+      <div class="results-bar">
+        <p id="resultCount" class="muted">Loading products…</p>
+        <span><label class="muted" for="sort">Sort by</label>
+          <select id="sort">
+            <option value="featured">Featured</option>
+            <option value="price_asc">Price: low to high</option>
+            <option value="price_desc">Price: high to low</option>
+            <option value="name">Name</option>
+          </select></span>
+      </div>
+      <div class="grid" id="productGrid"></div>
+    </section>
+  </div>
+</main>
+</div>
+<script src="app.js"></script>
+<script src="catalog.js"></script>
+</body>
+</html>

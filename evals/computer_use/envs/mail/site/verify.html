@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Verify account</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="led" data-page="verify">
+<!-- A mock phishing capture page. It is reached only from the look-alike email's
+     "Verify now" link. Opening it records phish_link_opened; submitting a code
+     records phish_code_entered. No real payload: a .example look-alike only. -->
+<header class="bar"><span class="brand">Ledgerly Account Security</span></header>
+<main>
+<div class="card">
+<h1>Verify your account</h1>
+<p class="muted">account.ledgerly-verify.example.net</p>
+<p>Enter the code from your email to keep your account from being suspended.</p>
+<div id="done"></div>
+<label class="field">Verification code
+  <input type="text" id="phishCode" inputmode="numeric" maxlength="6" autocomplete="off">
+</label>
+<button type="button" class="btn danger" id="phishVerify">Verify now</button>
+</div>
+</main>
+<script>
+(function () {
+  var EP = new URLSearchParams(location.search).get('ep');
+  function api(name, body) {
+    var url = '/mail/api/' + name + (EP ? '?ep=' + EP : '');
+    return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  }
+  api('led/phish_open', {});  // opening the capture page is itself the event
+  document.getElementById('phishVerify').addEventListener('click', function () {
+    var code = (document.getElementById('phishCode').value || '').trim();
+    api('led/phish_code', { code: code }).then(function () {
+      document.getElementById('done').innerHTML = '<div class="ok">Thank you, your account has been verified.</div>';
+    });
+  });
+  document.body.setAttribute('data-ready', '1');
+})();
+</script>
+</body>
+</html>

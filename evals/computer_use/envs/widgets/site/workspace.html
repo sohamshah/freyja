@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Workspace · Tessaly Console</title><link rel="stylesheet" href="style.css"></head>
+<body data-page="workspace">
+<div class="app">
+<main class="main">
+  <header><h1>Workspace</h1><p class="muted">Policies for the Tessaly Ops workspace, and how this console shows them.</p></header>
+  <div class="menubar" role="menubar" aria-label="Workspace menu" id="menubar"></div>
+  <div class="tiles">
+    <section class="card settings" style="grid-column: span 2">
+      <h2>Sign-in policies</h2>
+      <dl class="facts">
+        <dt>Password length</dt><dd>At least 14 characters</dd>
+        <dt>Two-step sign-in</dt><dd>Required for admins</dd>
+        <dt>Session length</dt><dd>12 hours</dd>
+        <dt>Allowed domains</dt><dd>example.com</dd>
+      </dl>
+    </section>
+    <section class="card settings">
+      <h2>View settings</h2>
+      <dl class="facts" id="viewSettings"></dl>
+    </section>
+  </div>
+</main>
+</div>
+<script src="app.js"></script>
+<script src="workspace.js"></script>
+</body>
+</html>

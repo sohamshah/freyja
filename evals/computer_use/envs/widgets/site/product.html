@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Product · Tessaly Console</title><link rel="stylesheet" href="style.css"></head>
+<body data-page="product">
+<div class="app">
+<main class="main">
+  <p><a href="catalog.html">← Back to products</a></p>
+  <section class="card detail" id="detail"><p class="muted">Loading…</p></section>
+</main>
+</div>
+<script src="app.js"></script>
+<script>
+TC.pages.product = function () {
+  var id = new URLSearchParams(location.search).get('id') || '';
+  return TC.api('product?id=' + encodeURIComponent(id)).then(function (r) {
+    var box = TC.$('detail'), el = TC.el;
+    box.innerHTML = '';
+    if (r.status !== 200) { box.appendChild(el('p', { text: 'This product was not found.' })); return; }
+    var p = r.data;
+    document.title = p.name + ' · Products · Tessaly Console';
+    box.appendChild(el('p', { class: 'muted', text: p.category }));
+    box.appendChild(el('h1', { text: p.name }));
+    box.appendChild(el('p', { class: 'price', text: TC.money(p.price) }));
+    box.appendChild(el('p', { text: 'Ships to Tessaly customers within 3 working days. Covered by the standard two-year hardware warranty.' }));
+    document.body.setAttribute('data-product', p.id);
+  });
+};
+</script>
+</body>
+</html>

@@ -8,6 +8,7 @@ way third-party widgets are embedded.
 
 Routes:
   GET  /__start/<ep>?to=<path>   set the episode cookie, then redirect to <path>
+  GET  <a page in .pages>         a tool page, such as `serve`'s index of tasks
   GET  /<env>/<file>             static files of an env's site
   ANY  /<env>/api/<name>         the env backend (JSON), with the episode's state
   POST /event                    a page event (old jev_live fixtures, sendBeacon)
@@ -71,6 +72,8 @@ class EnvServer:
         self.envs = {e.name: e for e in envs}
         self.episodes: dict[str, Episode] = {}
         self.fixture_events: list[dict[str, Any]] = []  # POST /event (keyed by "run")
+        # Tool pages outside every env: path -> handler(query) -> Response.
+        self.pages: dict[str, Callable[[dict[str, str]], Response]] = {}
         self._lock = threading.Lock()
         server = self
 
@@ -158,6 +161,8 @@ class EnvServer:
                         },
                     ),
                 )
+            if path in self.pages:
+                return self._send(h, self.pages[path](query))
             if path == "/event" and method == "POST":
                 try:
                     ev = json.loads(raw.decode("utf-8", "replace") or "{}")

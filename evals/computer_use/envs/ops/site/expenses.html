@@ -1,0 +1,35 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Expense report · Quaymark Ops</title><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="style.css"></head>
+<body data-page="expenses">
+<main>
+<h1>Expense report: September client visit</h1>
+<p class="muted">Report owner: Ada Lovelace. Trip dates: 2026-09-07 to 2026-09-11. Saved expenses go straight to the report.</p>
+<div class="two">
+  <section class="card">
+    <h2>Receipts to enter</h2>
+    <table id="receipts" class="grid"><thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th>Currency</th><th>Category</th></tr></thead><tbody></tbody></table>
+  </section>
+  <section class="card">
+    <h2>New expense</h2>
+    <div id="stay" class="stay hidden" role="dialog" aria-labelledby="stayTitle" aria-describedby="stayText">
+      <h3 id="stayTitle">Stay signed in? (<span id="staySecs">60</span> s)</h3>
+      <p id="stayText">Your session is about to expire. Anything you have not saved will be discarded.</p>
+      <button id="stayBtn" type="button" class="btn">Stay signed in</button>
+    </div>
+    <form id="expForm" novalidate>
+      <label class="field">Date<input id="expDate" name="date" placeholder="YYYY-MM-DD" autocomplete="off"></label>
+      <label class="field">Merchant<input id="expMerchant" name="merchant" autocomplete="off"></label>
+      <label class="field">Amount<input id="expAmount" name="amount" inputmode="decimal" autocomplete="off"></label>
+      <label class="field">Currency<select id="expCurrency" name="currency"><option value="">Choose a currency</option></select></label>
+      <label class="field">Category<select id="expCategory" name="category"><option value="">Choose a category</option></select></label>
+      <div id="expError" class="errors hidden" role="alert"></div>
+      <div class="actions"><button id="expSave" type="submit" class="btn">Save &amp; add another</button></div>
+      <p id="expStatus" class="status" role="status"></p>
+    </form>
+  </section>
+</div>
+<section class="card">
+  <h2>Saved expenses (<span id="savedCount">0</span>)</h2>
+  <table id="saved" class="grid"><thead><tr><th>Date</th><th>Merchant</th><th>Amount</th><th>Currency</th><th>Category</th></tr></thead><tbody></tbody></table>
+</section>
+</main>
+<script src="app.js"></script></body></html>

@@ -49,6 +49,8 @@ async def _solve(task_id: str, quirks: dict | None = None):
 
 @pytest.mark.parametrize("task_id", sorted(oracle.SOLVERS))
 def test_every_task_can_be_finished_and_nothing_done_scores_zero(task_id):
+    if "slow" in select([task_id])[0].tags:
+        pytest.skip("waits on a real timeline; its env's own test solves it on a shorter one")
     before, after = asyncio.run(_solve(task_id))
     assert before.reward == 0.0
     assert after.reward == 1.0, after.why
