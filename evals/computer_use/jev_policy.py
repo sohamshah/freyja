@@ -164,6 +164,7 @@ class JevConfig:
     allow_irreversible: bool = False
     llm_model: str | None = None
     notes: str = ""  # jev-site notes to give the run (a mitigation under test)
+    llm_max_calls: int | None = None  # None: the operator's own budget
 
 
 async def run_jev(page: Page, goal: str, cfg: JevConfig, *, log_dir: Path) -> dict[str, Any]:
@@ -190,6 +191,8 @@ async def run_jev(page: Page, goal: str, cfg: JevConfig, *, log_dir: Path) -> di
         llm = LLMHelper(
             completer_from_provider(build_provider(cfg.llm_model or default_llm_model(), "off"))
         )
+        if cfg.llm_max_calls is not None:
+            llm.max_calls = cfg.llm_max_calls
     spec = ComputerToolSpec(
         session_id="cua-episode",
         emit_event=lambda e: None,
@@ -255,6 +258,7 @@ async def run_jev(page: Page, goal: str, cfg: JevConfig, *, log_dir: Path) -> di
         "jev_calls": res.jev_calls,
         "llm_calls": res.llm_calls,
         "llm_ms": res.llm_ms,
+        "llm_tokens": list(res.llm_tokens),
         "elapsed_s": round(time.time() - t0, 1),
         "log": str(res.log_path),
         "page_log": steps,

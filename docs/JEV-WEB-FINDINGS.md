@@ -121,11 +121,31 @@ On the live airline site, headless and read-only, the changed jev:
 
 It then stops at Search, behind the Travelers panel that ignores script clicks. The unchanged jev never committed an airport: it stopped at the first field, asking to confirm Enter.
 
+## The LLM call budget
+
+A run had 8 LLM calls. The number came with the first version of jev, as a guess for one-screen desktop goals, and was never measured. `OperatorConfig.llm_max_calls` was never read: the helper's own default was the real cap.
+
+On web pages Jev hands over far more often than on the desktop, and the cap was what ended long goals. All five whole-booking runs spent their 8 calls by the second page (3 text, 4 replans, 1 end-state check), 50 s into a 1500 s limit, while every replan still led to a correct action. They then reported "blocked". Measured on the whole booking as one goal, 5 runs each:
+
+| LLM calls per run | Whole booking | Calls used | Time |
+|---|---|---|---|
+| 8 (before) | 0/5 | 8 | 51 s |
+| 16 | 1/5 | 16 | 98 s |
+| 32 | 5/5 | 15–20 (mean 18.8) | 119 s |
+| 32, and the text door names the goal's values | 5/5 | 13–15 (mean 14.0) | 107 s |
+
+The budget is now 32. A run that stops making progress still ends at its third replan without progress, so the budget only limits runs that keep moving. A run that runs out of calls while still making progress now ends `budget_exhausted`: its hint says to continue from the last page, where "blocked" made the calling agent take over.
+
+**A third of the calls copied a word of the goal.** Over the final runs, 95 of 304 door calls were the text door, and every one returned a word the goal already held: DEN, MCO, Ada, Lovelace, ada@example.com. Literals were only quoted text and numbers, and calling agents do not quote: none of the 25 goals in the real session did. The text door now also returns the goal's other values to type, and the single words among them become typing options for the rest of the run. The first try kept phrases too. Jev then typed "Orlando (MCO)" into the airport field, which matched no suggestion, so only single words are kept. Passengers went from 6.6 calls to 3.4 per run, and search from 7.4 to 5.8.
+
+**Cost.** The door calls' token counts left out the prompt cache, so each call logged about 4 input tokens. Counted in full, a door call reads 1-9k tokens (median 4k) and writes 90-500 (median 240), which is $0.01-0.06 at Opus 5.5 prices. A whole booking as one goal costs $0.52 in door calls, and a run that used all 32 calls would cost about $1.20. Most regression tasks cost $0.01. The doors ask for no thinking, but Opus 5.5 cannot turn thinking off, so they run at its default (medium).
+
+**One goal, or one per page.** With the budget raised, the whole booking as one goal finished 5/5, and one goal per page finished 5/10. Every seat run, in both forms, gives the first passenger's seat away on the second click (the seat map's active passenger). One goal's end-state check then finds the missing seat and fixes it. The page goal ends "Then click Continue", and about half the time Jev clicks it before checking, and a page run has no way back. So the tool description now says to give a flow one goal when the goal holds everything the pages ask for, with about 12 steps per page.
+
 ## Still open
 
 - **Trusted-only controls.** Some controls ignore script events, like the live Travelers panel. A page run needs a trusted-input fallback for them: the real pointer, scoped to the run's tab and its window position. Until then, `computer_use` handles them.
 - **Embedded frames.** A page run cannot enter a cross-origin frame. It now says so and hands that step to `computer_use`.
-- **Long single goals.** One goal for a whole booking runs out of LLM calls (8 per run), before and after. One goal per page works better: 3/5.
 - **Going past the goal after a page change.** Jev sometimes keeps clicking Continue on the pages after the goal's last one. A stricter check on the first action after a page change may fix it, but it was not measured here.
 - **Late suggestion lists.** The surface waits for suggestions only when the field shows it has them: `aria-autocomplete`, the combobox role, an autocomplete class, or `autocomplete=off`. If a field shows none of these, its list can open after the settle, and the run sees no list. The mock's airport fields show the same signs as the live site's widget.
 - **Checkouts that expire.** A booking session can expire while the agent waits for the person. The tool description now says to gather everything before checkout.

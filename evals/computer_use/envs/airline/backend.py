@@ -12,9 +12,12 @@ from __future__ import annotations
 import datetime as dt
 import random
 import time
+from pathlib import Path
 from typing import Any
 
 from ...server import Episode, Response
+
+SITE = Path(__file__).resolve().parent / "site"
 
 QUIRKS = {
     # Home page
@@ -361,6 +364,11 @@ def _need(ep: Episode, stage: str) -> Response | None:
     if STAGES.index(ep.state["stage"]) < STAGES.index(stage):
         return Response(409, {"error": f"not at {stage} yet", "go": _page_for(ep.state["stage"])})
     return None
+
+
+def view(ep: Episode) -> dict[str, Any]:
+    """The state a task's check reads."""
+    return {**session_view(ep), "_total": total(ep)}
 
 
 def session_view(ep: Episode) -> dict[str, Any]:

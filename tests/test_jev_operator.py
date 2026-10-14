@@ -877,6 +877,75 @@ def test_budget_exhaustion_observes_last_action(tmp_path, monkeypatch):
     assert "7" in res.final_screen_text
 
 
+def test_a_run_out_of_calls_while_progressing_reports_the_budget(tmp_path, monkeypatch):
+    """Out of LLM calls while each replan still led somewhere is the budget, not a
+    dead end: the caller can continue from that page. A run that stops moving is
+    still blocked. A whole booking ended "blocked" on page 2 with every call spent."""
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+
+    async def planner(messages, system_prompt, max_tokens):
+        if "planner" in system_prompt:
+            return json.dumps(
+                {"status": "continue", "subgoal": "press 8", "direct_action": None, "note": ""}
+            )
+        return json.dumps({"satisfied": False, "summary": "not yet", "subgoal": None})
+
+    script = ScriptedProvider([("click", "7"), ("need_help", None)])
+    llm = LLMHelper(planner, max_calls=1)
+    op, _ = make_operator(FakeCalculator(), script, goal="press 7 then 8", llm=llm)
+    res = asyncio.run(op.run())
+    assert res.status == "budget_exhausted" and "used its 1 LLM calls" in res.summary
+    assert res.llm_calls == 1, "the last call went to the end-state check"
+
+    script = ScriptedProvider([("need_help", None)] * 4)
+    llm = LLMHelper(planner, max_calls=8)
+    op2, _ = make_operator(FakeCalculator(), script, goal="press 7 then 8", llm=llm)
+    res2 = asyncio.run(op2.run())
+    assert res2.status == "blocked", "three replans without progress is stuck, whatever the budget"
+
+
+def test_the_text_door_names_the_goals_other_values_once(tmp_path, monkeypatch):
+    """Goals give values without quotes ("first name Ada"), so each field took a
+    door call. The first call names the others too; only single words of the goal
+    are kept as typing options ("Orlando (MCO)" matched no airport suggestion)."""
+    monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
+    values = ["Lovelace", "Alan", "Grace", "ada@example.com", "Orlando (MCO)", 7]
+
+    async def door(messages, system_prompt, max_tokens):
+        return json.dumps({"text": "Ada", "values": values})
+
+    provider = ScriptedProvider([("done", None)])
+    goal = (
+        "to Orlando (MCO); first name Ada, last name Lovelace; "
+        "passenger 2 first name Alan; email ada@example.com"
+    )
+    op, _ = make_operator(FormNative(), provider, goal=goal, llm=LLMHelper(door, max_calls=4))
+    d = SimpleNamespace(target=SimpleNamespace(label="First Name", role="AXTextField", value=""))
+    assert asyncio.run(op._field_text(d, SimpleNamespace(screen_text=""))) == "Ada"
+    assert op._goal_values == ["Ada", "Lovelace", "Alan", "ada@example.com"]
+    asyncio.run(op.run())
+    opts = list(provider.calls[0]["questions"]["text_source"].options.values())
+    assert "type exactly: Lovelace" in opts and "type exactly: ada@example.com" in opts
+    assert not any("Grace" in o or "Orlando" in o for o in opts)
+
+
+def test_door_usage_counts_the_cached_input():
+    """The door's prompt goes to the prompt cache, and providers count cached input
+    apart from input_tokens: every door call logged 4 input tokens."""
+    from bridge.tools.jev_operator.handoff import completer_from_provider
+
+    usage = SimpleNamespace(
+        input_tokens=4, output_tokens=64, cache_read_tokens=1000, cache_write_tokens=6000
+    )
+    reply = SimpleNamespace(content='{"text": "DEN"}', usage=usage, stop_reason="end_turn")
+    llm = LLMHelper(completer_from_provider(SimpleNamespace(complete=lambda *a, **k: reply)))
+    field = {"field_label": "From", "field_role": "AXTextField", "field_value": ""}
+    asyncio.run(llm.field_text(goal="from Denver (DEN)", screen_text="", history=[], **field))
+    assert (llm.stats.input_tokens, llm.stats.output_tokens) == (7004, 64)
+    assert (llm.stats.cache_read_tokens, llm.stats.cache_write_tokens) == (1000, 6000)
+    assert llm.stats.log[-1]["input_tokens"] == 7004
+
+
 def test_commit_key_in_dialog_with_irreversible_button_is_gated(tmp_path, monkeypatch):
     monkeypatch.setattr("bridge.tools.jev_operator.loop.RUN_DIR", tmp_path)
 

@@ -58,11 +58,17 @@ uv run python evals/computer_use/run.py run airline --reps 3 --jobs 4 --tag afte
 uv run python evals/computer_use/run.py run airline/select --quirk upsell_modal=off
 uv run python evals/computer_use/run.py run airline vertex basics --jev-root ../freyja-baseline --tag before
 uv run python evals/computer_use/run.py report results/<before> results/<after>
-uv run python evals/computer_use/run.py serve     # print an episode's address and browse the mock yourself
+uv run python evals/computer_use/run.py run airline/e2e --reps 5 --llm-calls 16
+uv run python evals/computer_use/run.py serve                    # browse the mocks yourself
+uv run python evals/computer_use/run.py serve airline/seats --port 8777
 ```
 
 - `--jev-root` imports jev from another checkout, such as a baseline, while the envs stay the same.
 - `--notes "..."` gives every run site notes, as a `jev-site-<host>` skill does in the app. Use it to test whether a note fixes a site behaviour before saving the note.
+- `--llm-calls N` sets jev's LLM call budget per run (default: jev's own, 32).
+- `CUA_ENVS=airline,widgets` limits every command to those envs (the fixture envs stay).
+- `serve` prints one address per task, each a fresh episode at the page the task starts on, on a fixed port (8777 unless `--port`). Pages that find their episode by a cookie share one per host in a normal browser: the link opened last sets the episode that every tab of that env uses.
+- Each episode's JSON has the run's LLM tokens (`llm_tokens`: input with the prompt cache's reads and writes, output).
 - The keys (`TYPESAFE_AI_API_KEY` for Jev, and the LLM provider's key for jev's planner and check) come from the repo's `.env`.
 - Results go to `results/<time>-<tag>/`: one JSON per episode, `summary.json`, the jev run logs under `runs/`, and a final screenshot per episode under `frames/`.
 

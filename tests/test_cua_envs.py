@@ -14,9 +14,8 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "evals"))
 
-from computer_use import oracle  # noqa: E402
+from computer_use import envs, oracle  # noqa: E402
 from computer_use.browser import Browser, find_chrome  # noqa: E402
-from computer_use.envs.airline import backend as airline  # noqa: E402
 from computer_use.envs.airline.backend import QUIRKS  # noqa: E402
 from computer_use.run import make_server  # noqa: E402
 from computer_use.tasks import select  # noqa: E402
@@ -25,9 +24,7 @@ pytestmark = pytest.mark.skipif(find_chrome() is None, reason="no Chromium for t
 
 
 def _state(ep):
-    st = airline.session_view(ep)
-    st["_total"] = airline.total(ep)
-    return st
+    return envs.backend(ep.env).view(ep)
 
 
 async def _solve(task_id: str, quirks: dict | None = None):
@@ -38,10 +35,10 @@ async def _solve(task_id: str, quirks: dict | None = None):
         cfg = dict(t.config)
         if quirks is not None:
             cfg["quirks"] = quirks
-        ep = server.new_episode("airline", cfg)
+        ep = server.new_episode(t.env, cfg)
         before = t.check(_state(ep), list(ep.events), {"status": "", "text": ""})
         p = await b.new_page(context=await b.new_context())
-        await p.navigate(server.start_url(ep, f"/airline/{t.start}"))
+        await p.navigate(server.start_url(ep, f"/{t.env}/{t.start}"))
         run = await oracle.solve(task_id, p)
         after = t.check(_state(ep), list(ep.events), run)
         return before, after
@@ -51,7 +48,7 @@ async def _solve(task_id: str, quirks: dict | None = None):
 
 
 @pytest.mark.parametrize("task_id", sorted(oracle.SOLVERS))
-def test_every_airline_task_can_be_finished_and_nothing_done_scores_zero(task_id):
+def test_every_task_can_be_finished_and_nothing_done_scores_zero(task_id):
     before, after = asyncio.run(_solve(task_id))
     assert before.reward == 0.0
     assert after.reward == 1.0, after.why

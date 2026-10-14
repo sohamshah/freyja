@@ -233,7 +233,6 @@ class OperatorConfig:
     surface: str = "auto"
     use_llm: bool = True
     verify_with_llm: bool = True
-    llm_max_calls: int = 8
     thresholds: Thresholds = field(default_factory=Thresholds)
     dry_run: bool = False
     jev_model: str | None = None
@@ -396,6 +395,9 @@ class Operator:
         self._subgoal: str | None = None
         self._subgoal_steps = 0
         self._subgoal_at = 0  # len(self.history) when the planner set the sub-goal
+        # Values the goal states without quotes ("first name Ada"), as the text
+        # door read them out of it: typing options for the fields after.
+        self._goal_values: list[str] = []
         self._replans_since_progress = 0
         # (window, role, label, text) of the last step when it appended text to a
         # text area; any other step clears it.
@@ -961,7 +963,11 @@ class Operator:
                     history=self.history,
                     # The planner's own quoted text ("\\nBread 1", with its line break)
                     # is a typing option too; the goal's literals alone lost the break.
-                    literals=list(dict.fromkeys([*literals, *quoted_literals(self._subgoal or "")])),
+                    literals=list(
+                        dict.fromkeys(
+                            [*literals, *self._goal_values, *quoted_literals(self._subgoal or "")]
+                        )
+                    ),
                     launch_candidates=launch_cands,
                     thresholds=cfg.thresholds,
                     model=cfg.jev_model,
@@ -1476,7 +1482,7 @@ class Operator:
             return None
         await self._say("  → LLM: composing field text")
         since = len(self.llm.stats.log)
-        text = await self.llm.field_text(
+        text, values = await self.llm.field_text(
             goal=self.cfg.goal,
             field_label=d.target.label,
             field_role=d.target.role,
@@ -1485,6 +1491,21 @@ class Operator:
             history=self.history,
         )
         self._log_llm(since)
+        # Goals give names, codes and addresses without quotes, so each field took
+        # a door call: a third of the calls on the booking pages only copied a word
+        # of the goal. The door now names them all once. Only single words the goal
+        # holds are kept, so a typing option never comes from the model alone. A
+        # phrase bundles things a field takes apart: "Orlando (MCO)" typed into an
+        # airport field matched no suggestion.
+        for v in [text or "", *values]:
+            v = v.strip()
+            if (
+                len(v) >= 2
+                and not re.search(r"\s", v)
+                and v not in self._goal_values
+                and re.search(r"(?<!\w)" + re.escape(v) + r"(?!\w)", self.cfg.goal)
+            ):
+                self._goal_values.append(v)
         return text
 
     async def _window_shot(self, target: Target) -> tuple[Any, tuple[float, ...]] | None:
@@ -1551,6 +1572,15 @@ class Operator:
                     return self._finish(
                         "done", summary, screen=obs.screen_text, report=self._report(check)
                     )
+            if self.llm is not None and self.llm.budget_left <= 1 and self._replans_since_progress <= 2:
+                # Still making progress: the run is out of calls, not stuck, and the
+                # caller can continue from this page. "blocked" told it to take over.
+                return self._finish_blocked(
+                    obs,
+                    f"used its {self.llm.max_calls} LLM calls ({reason})",
+                    check,
+                    status="budget_exhausted",
+                )
             return self._finish_blocked(obs, reason, check)
         want_shot = not obs.elements or self._replans_since_progress >= 2
         shot = await self._window_shot(target) if want_shot else None
@@ -1801,14 +1831,19 @@ class Operator:
         return head + (f". Screen now shows: {text}" if text else ".")
 
     def _finish_blocked(
-        self, obs: Observation, reason: str, check: dict[str, Any] | None = None
+        self,
+        obs: Observation,
+        reason: str,
+        check: dict[str, Any] | None = None,
+        *,
+        status: str = "blocked",
     ) -> RunResult:
         """A stuck run's result. With an end-state check of this screen (`check`),
         its account of what was done and read replaces the action template."""
         tried = f" Last sub-goal: {self._subgoal}." if self._subgoal else ""
         said = str((check or {}).get("summary") or "").strip()
         return self._finish(
-            "blocked",
+            status,
             f"Stopped: {reason}.{tried} " + (said or self._template_summary(obs)),
             screen=obs.screen_text,
             report=self._report(check),

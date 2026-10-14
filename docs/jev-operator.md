@@ -68,7 +68,7 @@ code executes it once before returning to Jev. This is the existing vision loop,
 to a single step. Only a window capture is sent: a display capture may not show the
 target at all when it sits on another monitor.
 
-The doors use `$FREYJA_JEV_OPERATOR_LLM`, default `claude-opus-5-5`, with thinking off.
+The doors use `$FREYJA_JEV_OPERATOR_LLM`, default `claude-opus-5-5`. They ask for thinking off, but Opus 5.5 cannot turn thinking off, and the level falls back to the model's default (medium).
 Replayed door calls took 4-8 s on Opus 5.5 against about 2 s on Haiku 4.5; Opus planned
 recoveries and judged end states better, and its replies (130-550 tokens) fit the 2048
 token caps. Earlier caps of 300-600 tokens truncated its JSON. Every door call's raw
@@ -78,6 +78,8 @@ event.
 When the goal contains a quoted string or a number, Jev can pick it as the text to type
 (`text_source` options are the literals extracted from the goal plus `needs_llm`), so
 "type \"hello\" into the search field" needs no LLM call.
+
+Calling agents rarely quote values: none of 25 goals in a real booking session did ("first name Ada, last name Lovelace"). Each such field took a text-door call, and on the booking pages those calls were a third of all door calls, every one copying a word of the goal. The text door now also returns the goal's other values to type, one per field. The words of the goal among them become typing options for the rest of the run, so a passenger form takes one call instead of one per field. A value that is not a word of the goal is dropped, so the model cannot add a typing option of its own.
 
 ## Safety
 
@@ -114,7 +116,7 @@ When the goal contains a quoted string or a number, Jev can pick it as the text 
 - Without `app`, the run targets the frontmost app and stops if that is Freyja itself;
   it never guesses the next window in z-order.
 - Secure text fields are excluded from targets; passwords are never typed.
-- Budgets: `max_steps` (default 40), Jev calls ≤ 2 × steps, LLM calls ≤ 8 per run.
+- Budgets: `max_steps` (default 40), Jev calls ≤ 2 × steps, LLM calls ≤ 32 per run (`DEFAULT_MAX_CALLS` in `handoff.py`). The first LLM budget, 8, was a guess for one-screen desktop goals. On web pages Jev hands over more often, and a whole booking as one goal spent all 8 calls on the first two pages while each replan still led somewhere. It went 0/5 at 8 calls, 1/5 at 16 and 5/5 at 32, using 15-20. A run that stops making progress ends on the replan rule (three replans without progress), whatever the budget. A run that runs out of calls while still making progress ends `budget_exhausted`, not `blocked`, so the caller continues from that page instead of taking over.
 - Every step is logged to `~/.freyja/jev-operator/runs/<run_id>.jsonl` with the state
   hash, answers, executed action, and diff, which is the data a future calibration map
   is fit on. Confidence thresholds (operation 0.5, target 0.5, done 0.6) are starting

@@ -7,6 +7,7 @@
     uv run python evals/computer_use/run.py run airline --jev-root ../baseline --tag before
     uv run python evals/computer_use/run.py report results/<dir> [results/<dir> ...]
     uv run python evals/computer_use/run.py serve            # browse the mocks yourself
+    uv run python evals/computer_use/run.py serve airline/seats --port 8777
 
 Every episode runs in a fresh headless browser context against a fresh server
 episode, so runs never touch a real browser, window or account. `--jev-root`
@@ -54,17 +55,19 @@ def _load_env() -> None:
         return
 
 
-def make_server() -> Any:
-    from computer_use.envs.airline import backend as airline  # noqa: PLC0415
+def make_server(port: int = 0) -> Any:
+    from computer_use import envs  # noqa: PLC0415
     from computer_use.server import EnvServer, EnvSpec  # noqa: PLC0415
     from computer_use.tasks import FIXTURES  # noqa: PLC0415
 
+    own = [(n, envs.backend(n)) for n in envs.NAMES]
     return EnvServer(
         [
-            EnvSpec("airline", HERE / "envs" / "airline" / "site", airline.backend, airline.init),
+            *(EnvSpec(n, b.SITE, b.backend, b.init) for n, b in own),
             EnvSpec("vertex", FIXTURES),
             EnvSpec("basics", FIXTURES),
-        ]
+        ],
+        port=port,
     ).start()
 
 
@@ -76,10 +79,20 @@ def _parse_quirks(pairs: list[str]) -> dict[str, bool]:
     return out
 
 
+def task_url(server: Any, task: Any, ep: Any) -> str:
+    """The address a task's episode starts at."""
+    from computer_use import envs  # noqa: PLC0415
+
+    if task.env in envs.NAMES:
+        return server.start_url(ep, f"/{task.env}/{task.start}")
+    sep = "&" if "?" in task.start else "?"
+    return f"{server.base}/{task.env}/{task.start}{sep}run={ep.id}"
+
+
 async def run_episode(
     server: Any, browser: Any, task: Any, rep: int, out_dir: Path, args: Any
 ) -> dict[str, Any]:
-    from computer_use.envs.airline import backend as airline  # noqa: PLC0415
+    from computer_use import envs  # noqa: PLC0415
     from computer_use.jev_policy import JevConfig, run_jev  # noqa: PLC0415
 
     cfg = dict(task.config)
@@ -88,12 +101,9 @@ async def run_episode(
         q.update(_parse_quirks(args.quirk))
         cfg["quirks"] = q
     ep = server.new_episode(task.env, cfg)
+    url = task_url(server, task, ep)
     goal = task.goal
-    if task.env == "airline":
-        url = server.start_url(ep, f"/airline/{task.start}")
-    else:
-        sep = "&" if "?" in task.start else "?"
-        url = f"{server.base}/{task.env}/{task.start}{sep}run={ep.id}"
+    if task.env not in envs.NAMES:
         goal = goal.replace("{base}", f"{server.base}/{task.env}").replace("{run}", ep.id)
     ctx = await browser.new_context()
     page = await browser.new_page(context=ctx)
@@ -115,6 +125,7 @@ async def run_episode(
             max_runtime_s=task.timeout_s,
             allow_irreversible=task.allow_irreversible,
             notes=args.notes or "",
+            llm_max_calls=args.llm_calls,
         )
         if task.chain:
             run = {
@@ -132,6 +143,9 @@ async def run_episode(
                 )
                 for k in ("steps", "jev_calls", "llm_calls", "llm_ms"):
                     run[k] += one.get(k) or 0
+                run["llm_tokens"] = [
+                    a + b for a, b in zip(run.get("llm_tokens") or (0, 0), one["llm_tokens"])
+                ]
                 run["links"].append({"goal": g[:80], "status": one["status"], "log": one["log"]})
                 run["text"] += f"\n--- goal {i + 1}: {one['status']}\n{one['text']}"
                 run["status"], run["log"] = one["status"], one["log"]
@@ -157,9 +171,8 @@ async def run_episode(
         except Exception:  # noqa: BLE001
             pass
         await browser.dispose_context(ctx)
-    if task.env == "airline":
-        state = airline.session_view(ep)
-        state["_total"] = airline.total(ep)
+    if task.env in envs.NAMES:
+        state = envs.backend(task.env).view(ep)
         events = list(ep.events)
     else:
         state = {}
@@ -182,6 +195,7 @@ async def run_episode(
             "jev_calls": run.get("jev_calls"),
             "llm_calls": run.get("llm_calls"),
             "llm_ms": run.get("llm_ms"),
+            "llm_tokens": run.get("llm_tokens"),
             "log": run.get("log"),
             "result": run.get("text", "")[:6000],
             "server_events": events[-80:],
@@ -319,13 +333,21 @@ def report(dirs: list[str]) -> int:
     return 0
 
 
-async def serve_forever() -> None:
-    server = make_server()
-    ep = server.new_episode("airline", {})
-    print(
-        f"airline: {server.start_url(ep, '/airline/index.html')}\n"
-        f"fixtures: {server.base}/vertex/questionnaire.html"
-    )
+async def serve_forever(names: list[str], port: int) -> None:
+    """Serve the mocks to a person: one fresh episode per task, at the page it starts on.
+
+    Airline pages find their booking by a cookie, and a browser keeps one cookie
+    per host: the airline link opened last sets the booking every airline tab uses.
+    """
+    from computer_use.tasks import select  # noqa: PLC0415
+
+    server = make_server(port)
+    flow = server.new_episode("airline", {})
+    print(f"{'airline (the whole flow)':<30} {server.start_url(flow, '/airline/index.html')}")
+    print(f"{'fixtures (vertex, basics)':<30} {server.base}/vertex/index.html")
+    for t in select(names):
+        print(f"{t.id:<30} {task_url(server, t, server.new_episode(t.env, t.config))}")
+    sys.stdout.flush()
     try:
         while True:
             await asyncio.sleep(3600)
@@ -350,9 +372,12 @@ def main() -> int:
     r.add_argument(
         "--notes", help="jev-site notes text given to every run (a mitigation under test)"
     )
+    r.add_argument("--llm-calls", type=int, help="jev's LLM call budget per run (default: jev's)")
     rp = sub.add_parser("report")
     rp.add_argument("dirs", nargs="+")
-    sub.add_parser("serve")
+    sv = sub.add_parser("serve")
+    sv.add_argument("names", nargs="*")
+    sv.add_argument("--port", type=int, default=8777)
     args = ap.parse_args()
     _bootstrap(getattr(args, "jev_root", None))
     if args.cmd == "list":
@@ -364,7 +389,7 @@ def main() -> int:
     if args.cmd == "report":
         return report(args.dirs)
     if args.cmd == "serve":
-        asyncio.run(serve_forever())
+        asyncio.run(serve_forever(args.names, args.port))
         return 0
     import logging  # noqa: PLC0415
 

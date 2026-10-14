@@ -213,7 +213,22 @@ SOLVERS = {
 }
 
 
+def _env_solvers() -> None:
+    """The other environments keep their solvers next to their tasks."""
+    from . import envs  # noqa: PLC0415
+
+    for name in envs.NAMES:
+        SOLVERS.update(getattr(envs.tasks(name), "SOLVERS", {}))
+
+
+_env_solvers()
+
+
 async def solve(task_id: str, page: Page) -> dict[str, Any]:
+    """Runs the task's steps; a step that returns text gives the run's report."""
+    text = "Business Bundle standard $422 on the 9:05 PM nonstop."
     for step in SOLVERS[task_id]:
-        await step(page)
-    return {"status": "done", "text": "Business Bundle standard $422 on the 9:05 PM nonstop."}
+        out = await step(page)
+        if isinstance(out, str):
+            text = out
+    return {"status": "done", "text": text}

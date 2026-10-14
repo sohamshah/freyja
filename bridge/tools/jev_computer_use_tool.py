@@ -150,9 +150,13 @@ Write the goal well. Put the person's exact wording and every literal value
 typed verbatim (e.g. type "hello world"). Merge consecutive micro-steps into
 one goal ("open Notes, create a note titled "Plan" with the body ...") instead
 of making one call per click. State what must not happen ("do not submit").
-Give a multi-page flow one goal per page or step. Before starting a checkout,
-get everything you will need from the person: a checkout left idle while you
-wait for an answer can expire and send the page back to the start.
+Give a multi-page flow one goal when the goal holds every value its pages ask
+for, with `max_steps` of about 12 per page (a six-page booking: 80): the run's
+end-state check then sees the whole flow, and a page goal tends to click on
+before checking its page. Use one goal per page only when you must check a
+page before the next. Before starting a checkout, get everything you will need from
+the person: a checkout left idle while you wait for an answer can expire and
+send the page back to the start.
 
 For a repeated procedure over a list (the same steps for each of N names,
 rows, files), pass `items` (up to 50 short strings, text data only). The same

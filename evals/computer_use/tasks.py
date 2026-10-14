@@ -111,9 +111,9 @@ def _fixture_tasks() -> list[Task]:
 
 
 def all_tasks() -> list[Task]:
-    from .envs.airline.tasks import TASKS as AIRLINE  # noqa: PLC0415
+    from . import envs  # noqa: PLC0415
 
-    return [*AIRLINE, *_fixture_tasks()]
+    return [*(t for n in envs.NAMES for t in envs.tasks(n).TASKS), *_fixture_tasks()]
 
 
 def select(names: list[str]) -> list[Task]:

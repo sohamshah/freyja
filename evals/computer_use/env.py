@@ -76,10 +76,9 @@ class WebEnv:
         self.episode = self.server.new_episode(self.task.env, cfg)
         self._ctx = await self.browser.new_context()
         self.page = await self.browser.new_page(context=self._ctx)
-        if self.task.env == "airline":
-            url = self.server.start_url(self.episode, f"/airline/{self.task.start}")
-        else:
-            url = f"{self.server.base}/{self.task.env}/{self.task.start}?run={self.episode.id}"
+        from .run import task_url  # noqa: PLC0415
+
+        url = task_url(self.server, self.task, self.episode)
         await self.page.navigate(url)
         await asyncio.sleep(1.0)
         self._surface = _surface_class()(self.page, asyncio.get_running_loop())
@@ -143,11 +142,10 @@ class WebEnv:
         return SimpleNamespace(ok=False, error=f"bad action {a!r}")
 
     def _marks(self) -> tuple[float, Any]:
-        from .envs.airline import backend as airline  # noqa: PLC0415
+        from . import envs  # noqa: PLC0415
 
-        if self.task.env == "airline":
-            state = airline.session_view(self.episode)
-            state["_total"] = airline.total(self.episode)
+        if self.task.env in envs.NAMES:
+            state = envs.backend(self.task.env).view(self.episode)
             events = list(self.episode.events)
         else:
             state, events = {}, self.server.events_for_run(self.episode.id)
